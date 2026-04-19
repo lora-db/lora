@@ -5,30 +5,39 @@ on:
     branches: [main]
     paths:
       - "crates/lora-python/**"
-      - "../../crates/lora-store/**"
-      - "crates/lora-database/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
       - "crates/lora-executor/**"
-      - "../../crates/lora-compiler/**"
-      - "../../crates/lora-analyzer/**"
-      - "../../crates/lora-parser/**"
-      - "../../crates/lora-ast/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/lora-python.yml"
   pull_request:
     paths:
       - "crates/lora-python/**"
-      - "../../crates/lora-store/**"
-      - "crates/lora-database/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
       - "crates/lora-executor/**"
-      - "../../crates/lora-compiler/**"
-      - "../../crates/lora-analyzer/**"
-      - "../../crates/lora-parser/**"
-      - "../../crates/lora-ast/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/lora-python.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lora-python-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:

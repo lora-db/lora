@@ -1,0 +1,80 @@
+name: workspace-quality
+
+# Workspace-wide Rust quality gate: fmt, clippy (-D warnings), and full
+# `cargo test --workspace`. This complements the per-package workflows
+# (lora-server, lora-node, lora-wasm, lora-python) — those exist to run
+# package-specific tooling (napi, wasm-pack, maturin). This job covers
+# everything else and guarantees the whole Cargo workspace stays coherent
+# even when a change only touches a leaf crate.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/workspace-quality.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/workspace-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain (stable, with rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: cargo clippy -D warnings
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain (stable, with clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-quality-clippy
+      # Exclude lora-node: it needs napi-rs codegen to compile cleanly and
+      # is covered end-to-end by the lora-node workflow.
+      - run: cargo clippy --workspace --exclude lora-node --all-targets --locked -- -D warnings
+
+  test:
+    name: cargo test --workspace (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-quality-test-${{ matrix.os }}
+      - run: cargo test --workspace --exclude lora-node --locked --no-fail-fast

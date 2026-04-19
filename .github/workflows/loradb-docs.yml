@@ -1,14 +1,27 @@
-name: lora-docs
+name: loradb-docs
 
-# Build the Docusaurus site in `apps/loradb.com` and deploy it to GitHub Pages
-# at https://loradb.com (custom apex domain, CNAME committed in static/).
+# Docusaurus site under `apps/loradb.com` published to GitHub Pages at
+# https://loradb.com (custom apex domain, CNAME committed in static/).
+#
+# Deploy policy:
+#   - PR + push to main run `build` only (verify the site still builds).
+#   - A *published* GitHub Release triggers `build` + `deploy`. Deployment is
+#     tied to the same manual-publish gate that already exists for the binary
+#     release draft — see .github/workflows/release.yml.
+#   - `workflow_dispatch` runs deploy too, for emergency rebuilds.
 
 on:
   push:
     branches: [main]
     paths:
       - "apps/loradb.com/**"
-      - "lora-docs.yml"
+      - ".github/workflows/loradb-docs.yml"
+  pull_request:
+    paths:
+      - "apps/loradb.com/**"
+      - ".github/workflows/loradb-docs.yml"
+  release:
+    types: [released]
   workflow_dispatch:
 
 permissions:
@@ -17,8 +30,11 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  # Serialise Pages deploys across ref boundaries (release + dispatch can't
+  # race each other) but let PR validation runs cancel stale builds of
+  # themselves.
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -48,15 +64,29 @@ jobs:
         run: test -f build/CNAME && grep -qx loradb.com build/CNAME
 
       - name: Configure Pages
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v3
         with:
           path: apps/loradb.com/build
 
+      - name: Upload build artifact (PR / main inspection)
+        if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@v5
+        with:
+          name: loradb-docs-build-${{ github.sha }}
+          path: apps/loradb.com/build
+          if-no-files-found: error
+          retention-days: 7
+
   deploy:
     name: deploy
+    # Deploys ONLY on a published GitHub Release or manual dispatch.
+    # This is the single rule that keeps Pages in sync with official versions.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

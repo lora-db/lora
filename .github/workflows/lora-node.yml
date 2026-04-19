@@ -5,32 +5,41 @@ on:
     branches: [main]
     paths:
       - "crates/lora-node/**"
-      - "../../crates/lora-store/**"
-      - "crates/lora-database/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
       - "crates/lora-executor/**"
-      - "../../crates/lora-compiler/**"
-      - "../../crates/lora-analyzer/**"
-      - "../../crates/lora-parser/**"
-      - "../../crates/lora-ast/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
       - "crates/shared-ts/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/lora-node.yml"
   pull_request:
     paths:
       - "crates/lora-node/**"
-      - "../../crates/lora-store/**"
-      - "crates/lora-database/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
       - "crates/lora-executor/**"
-      - "../../crates/lora-compiler/**"
-      - "../../crates/lora-analyzer/**"
-      - "../../crates/lora-parser/**"
-      - "../../crates/lora-ast/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
       - "crates/shared-ts/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/lora-node.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lora-node-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -38,7 +47,7 @@ defaults:
 
 jobs:
   verify:
-    name: build, typecheck, test, npm pack
+    name: build, typecheck, test, npm pack (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +72,7 @@ jobs:
 
       - name: cargo check
         working-directory: .
-        run: cargo check -p lora-node
+        run: cargo check -p lora-node --locked
 
       - name: npm install
         run: npm ci --no-audit --no-fund --ignore-scripts

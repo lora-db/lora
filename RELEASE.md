@@ -19,13 +19,22 @@ Operational checklist for cutting a LoraDB release. The technical workflow
   - [ ] `apps/loradb.com/LICENSE` is MIT.
   - [ ] No project-authored docs claim the database core is MIT or Apache before
         the Change Date.
-- [ ] Version bumped consistently:
-  - [ ] workspace `Cargo.toml` `[workspace.package].version`
-  - [ ] `apps/loradb.com/package.json` `version`
-  - [ ] `crates/lora-node/package.json` and `crates/lora-wasm/package.json` `version`
-  - [ ] `crates/lora-python/pyproject.toml` `[project].version`
-  - [ ] Run `cargo check --workspace` so `Cargo.lock` picks up the new version.
+- [ ] Version bumped consistently. Run the sync helper — it updates every manifest in one go:
+  ```bash
+  node scripts/sync-versions.mjs X.Y.Z
+  cargo check --workspace                                # refresh Cargo.lock
+  (cd crates/lora-node && npm install --package-lock-only --ignore-scripts)
+  (cd crates/lora-wasm && npm install --package-lock-only --ignore-scripts)
+  (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
+  node scripts/sync-versions.mjs X.Y.Z --check           # sanity check
+  ```
+  Touches: workspace `Cargo.toml`, `crates/lora-node/package.json`,
+  `crates/lora-wasm/package.json`, `apps/loradb.com/package.json`,
+  `crates/lora-python/pyproject.toml`, and the corresponding lockfiles.
 - [ ] The commit that bumps versions is `chore(release): vX.Y.Z`.
+- [ ] The release workflow's `verify-versions` job will re-run this check on
+      the pushed tag; if any manifest is out of sync with the tag, the release
+      fails before any build runs.
 
 ## Secrets and sensitive data audit
 

@@ -5,32 +5,41 @@ on:
     branches: [main]
     paths:
       - "crates/lora-wasm/**"
-      - "../../crates/lora-store/**"
-      - "crates/lora-database/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
       - "crates/lora-executor/**"
-      - "../../crates/lora-compiler/**"
-      - "../../crates/lora-analyzer/**"
-      - "../../crates/lora-parser/**"
-      - "../../crates/lora-ast/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
       - "crates/shared-ts/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/lora-wasm.yml"
   pull_request:
     paths:
       - "crates/lora-wasm/**"
-      - "../../crates/lora-store/**"
-      - "crates/lora-database/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
       - "crates/lora-executor/**"
-      - "../../crates/lora-compiler/**"
-      - "../../crates/lora-analyzer/**"
-      - "../../crates/lora-parser/**"
-      - "../../crates/lora-ast/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
       - "crates/shared-ts/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/lora-wasm.yml"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lora-wasm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -66,11 +75,11 @@ jobs:
 
       - name: cargo check (host)
         working-directory: .
-        run: cargo check --workspace --exclude lora-node
+        run: cargo check --workspace --exclude lora-node --locked
 
       - name: cargo check (wasm32)
         working-directory: .
-        run: cargo check -p lora-wasm --target wasm32-unknown-unknown
+        run: cargo check -p lora-wasm --target wasm32-unknown-unknown --locked
 
       - name: npm install
         run: npm ci --no-audit --no-fund --ignore-scripts

@@ -48,9 +48,51 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  # One release per tag at a time; never cancel mid-publish.
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  verify-versions:
+    # Hard guard: the tag is the source of truth. Fail fast if any manifest
+    # disagrees so no downstream job wastes time building a mismatched release.
+    name: verify tag matches manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::Expected a tag like 'vX.Y.Z' (got '${tag}')."
+              exit 1
+              ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify all manifests match ${{ steps.version.outputs.version }}
+        run: node scripts/sync-versions.mjs "${{ steps.version.outputs.version }}" --check
+
   build:
     name: build ${{ matrix.target }}
+    needs: verify-versions
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -162,6 +204,7 @@ jobs:
 
   changelog:
     name: generate changelog
+    needs: verify-versions
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -234,6 +277,7 @@ jobs:
 
   bench:
     name: benchmarks (criterion)
+    needs: verify-versions
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

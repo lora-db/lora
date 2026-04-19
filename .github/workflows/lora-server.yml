@@ -32,6 +32,13 @@ on:
       - ".github/workflows/lora-server.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: lora-server-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     name: check, test, release build (${{ matrix.os }})
