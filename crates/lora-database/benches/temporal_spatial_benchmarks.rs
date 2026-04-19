@@ -13,12 +13,10 @@
 
 mod fixtures;
 
-use std::hint::black_box;
-use criterion::{
-    criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
-use lora_database::{ExecuteOptions, ResultFormat};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use fixtures::*;
+use lora_database::{ExecuteOptions, ResultFormat};
+use std::hint::black_box;
 use std::time::Duration;
 
 fn opts() -> Option<ExecuteOptions> {
@@ -65,10 +63,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute(
-                        "RETURN date({year: 2024, month: 6, day: 15}) AS d",
-                        opts(),
-                    )
+                    .execute("RETURN date({year: 2024, month: 6, day: 15}) AS d", opts())
                     .unwrap(),
             );
         });
@@ -213,7 +208,11 @@ fn bench_temporal_filtering(c: &mut Criterion) {
         .iter()
         .map(|&s| (s, build_temporal_graph(s)))
         .collect();
-    let db_500 = temporal.iter().find(|(s, _)| *s == 500).map(|(_, d)| d).unwrap();
+    let db_500 = temporal
+        .iter()
+        .find(|(s, _)| *s == 500)
+        .map(|(_, d)| d)
+        .unwrap();
 
     // --- filter events by date comparison ---
     for (size, db) in &temporal {
@@ -387,10 +386,7 @@ fn bench_temporal_arithmetic(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute(
-                        "RETURN duration('P1Y') + duration('P6M') AS total",
-                        opts(),
-                    )
+                    .execute("RETURN duration('P1Y') + duration('P6M') AS total", opts())
                     .unwrap(),
             );
         });

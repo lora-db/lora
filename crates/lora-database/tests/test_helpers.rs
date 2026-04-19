@@ -7,13 +7,19 @@
 use std::collections::BTreeMap;
 
 use lora_database::{
-    Database, ExecuteOptions, InMemoryGraph, QueryResult, ResultFormat, LoraValue,
+    Database, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
 };
 use serde_json::Value as JsonValue;
 
 /// A test harness wrapping a fresh in-memory graph and database.
 pub struct TestDb {
     pub service: Database<InMemoryGraph>,
+}
+
+impl Default for TestDb {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestDb {
@@ -195,7 +201,14 @@ impl TestDb {
         self.run("CREATE (:City {name:'Tokyo'})");
 
         // WORKS_AT
-        for (person, since) in [("Alice",2018),("Bob",2020),("Carol",2015),("Dave",2021),("Eve",2022),("Frank",2012)] {
+        for (person, since) in [
+            ("Alice", 2018),
+            ("Bob", 2020),
+            ("Carol", 2015),
+            ("Dave", 2021),
+            ("Eve", 2022),
+            ("Frank", 2012),
+        ] {
             self.run(&format!(
                 "MATCH (p:Person {{name:'{person}'}}), (c:Company {{name:'Acme'}}) \
                  CREATE (p)-[:WORKS_AT {{since:{since}}}]->(c)"
@@ -203,7 +216,12 @@ impl TestDb {
         }
 
         // MANAGES
-        for (mgr, sub) in [("Frank","Alice"),("Frank","Bob"),("Frank","Eve"),("Carol","Dave")] {
+        for (mgr, sub) in [
+            ("Frank", "Alice"),
+            ("Frank", "Bob"),
+            ("Frank", "Eve"),
+            ("Carol", "Dave"),
+        ] {
             self.run(&format!(
                 "MATCH (m:Person {{name:'{mgr}'}}), (s:Person {{name:'{sub}'}}) \
                  CREATE (m)-[:MANAGES]->(s)"
@@ -211,7 +229,12 @@ impl TestDb {
         }
 
         // ASSIGNED_TO
-        for (person, project, role) in [("Alice","Alpha","lead"),("Bob","Alpha","dev"),("Carol","Beta","lead"),("Eve","Beta","dev")] {
+        for (person, project, role) in [
+            ("Alice", "Alpha", "lead"),
+            ("Bob", "Alpha", "dev"),
+            ("Carol", "Beta", "lead"),
+            ("Eve", "Beta", "dev"),
+        ] {
             self.run(&format!(
                 "MATCH (p:Person {{name:'{person}'}}), (pr:Project {{name:'{project}'}}) \
                  CREATE (p)-[:ASSIGNED_TO {{role:'{role}'}}]->(pr)"
@@ -219,7 +242,14 @@ impl TestDb {
         }
 
         // LIVES_IN
-        for (person, city) in [("Alice","London"),("Bob","Berlin"),("Carol","London"),("Dave","Tokyo"),("Eve","Berlin"),("Frank","London")] {
+        for (person, city) in [
+            ("Alice", "London"),
+            ("Bob", "Berlin"),
+            ("Carol", "London"),
+            ("Dave", "Tokyo"),
+            ("Eve", "Berlin"),
+            ("Frank", "London"),
+        ] {
             self.run(&format!(
                 "MATCH (p:Person {{name:'{person}'}}), (c:City {{name:'{city}'}}) \
                  CREATE (p)-[:LIVES_IN]->(c)"
@@ -295,10 +325,28 @@ impl TestDb {
     ///   auth -[:DEPENDS_ON]-> log
     ///   crypto -[:DEPENDS_ON]-> util
     pub fn seed_dependency_graph(&self) {
-        for (name, ver) in [("app","1.0"),("web","2.1"),("auth","0.9"),("crypto","1.2"),("log","3.0"),("util","1.0")] {
-            self.run(&format!("CREATE (:Package {{name:'{name}', version:'{ver}'}})"));
+        for (name, ver) in [
+            ("app", "1.0"),
+            ("web", "2.1"),
+            ("auth", "0.9"),
+            ("crypto", "1.2"),
+            ("log", "3.0"),
+            ("util", "1.0"),
+        ] {
+            self.run(&format!(
+                "CREATE (:Package {{name:'{name}', version:'{ver}'}})"
+            ));
         }
-        for (from, to) in [("app","web"),("app","auth"),("app","log"),("web","log"),("web","util"),("auth","crypto"),("auth","log"),("crypto","util")] {
+        for (from, to) in [
+            ("app", "web"),
+            ("app", "auth"),
+            ("app", "log"),
+            ("web", "log"),
+            ("web", "util"),
+            ("auth", "crypto"),
+            ("auth", "log"),
+            ("crypto", "util"),
+        ] {
             self.run(&format!(
                 "MATCH (a:Package {{name:'{from}'}}), (b:Package {{name:'{to}'}}) CREATE (a)-[:DEPENDS_ON]->(b)"
             ));
@@ -321,15 +369,21 @@ impl TestDb {
     ///   Rotterdam <-[:ROUTE {distance:25,  duration:15}]-> Den Haag
     ///   Utrecht   <-[:ROUTE {distance:100, duration:60}]-> Eindhoven
     pub fn seed_transport_graph(&self) {
-        for (name, zone) in [("Amsterdam",1),("Rotterdam",2),("Utrecht",1),("Den Haag",2),("Eindhoven",3)] {
+        for (name, zone) in [
+            ("Amsterdam", 1),
+            ("Rotterdam", 2),
+            ("Utrecht", 1),
+            ("Den Haag", 2),
+            ("Eindhoven", 3),
+        ] {
             self.run(&format!("CREATE (:Station {{name:'{name}', zone:{zone}}})"));
         }
         for (a, b, dist, dur) in [
-            ("Amsterdam","Utrecht",40,25),
-            ("Amsterdam","Rotterdam",60,40),
-            ("Utrecht","Rotterdam",55,35),
-            ("Rotterdam","Den Haag",25,15),
-            ("Utrecht","Eindhoven",100,60),
+            ("Amsterdam", "Utrecht", 40, 25),
+            ("Amsterdam", "Rotterdam", 60, 40),
+            ("Utrecht", "Rotterdam", 55, 35),
+            ("Rotterdam", "Den Haag", 25, 15),
+            ("Utrecht", "Eindhoven", 100, 60),
         ] {
             self.run(&format!(
                 "MATCH (s1:Station {{name:'{a}'}}), (s2:Station {{name:'{b}'}}) \
@@ -518,12 +572,8 @@ impl TestDb {
         }
 
         // Documents
-        self.run(
-            "CREATE (:Document {title:'On the Electrodynamics of Moving Bodies', year:1905})",
-        );
-        self.run(
-            "CREATE (:Document {title:'The Foundation of General Relativity', year:1916})",
-        );
+        self.run("CREATE (:Document {title:'On the Electrodynamics of Moving Bodies', year:1905})");
+        self.run("CREATE (:Document {title:'The Foundation of General Relativity', year:1916})");
 
         // Topics
         for topic in ["Theoretical Physics", "Cosmology"] {
@@ -627,10 +677,25 @@ impl TestDb {
         for name in ["Alice", "Bob", "Carol"] {
             self.run(&format!("CREATE (:Viewer {{name:'{name}'}})"));
         }
-        for (title, year, genre) in [("Matrix",1999,"sci-fi"),("Inception",2010,"sci-fi"),("Amelie",2001,"drama"),("Jaws",1975,"thriller")] {
-            self.run(&format!("CREATE (:Movie {{title:'{title}', year:{year}, genre:'{genre}'}})"));
+        for (title, year, genre) in [
+            ("Matrix", 1999, "sci-fi"),
+            ("Inception", 2010, "sci-fi"),
+            ("Amelie", 2001, "drama"),
+            ("Jaws", 1975, "thriller"),
+        ] {
+            self.run(&format!(
+                "CREATE (:Movie {{title:'{title}', year:{year}, genre:'{genre}'}})"
+            ));
         }
-        for (viewer, movie, score) in [("Alice","Matrix",5),("Alice","Inception",4),("Alice","Amelie",3),("Bob","Matrix",5),("Bob","Jaws",2),("Carol","Amelie",4),("Carol","Inception",5)] {
+        for (viewer, movie, score) in [
+            ("Alice", "Matrix", 5),
+            ("Alice", "Inception", 4),
+            ("Alice", "Amelie", 3),
+            ("Bob", "Matrix", 5),
+            ("Bob", "Jaws", 2),
+            ("Carol", "Amelie", 4),
+            ("Carol", "Inception", 5),
+        ] {
             self.run(&format!(
                 "MATCH (v:Viewer {{name:'{viewer}'}}), (m:Movie {{title:'{movie}'}}) \
                  CREATE (v)-[:RATED {{score:{score}}}]->(m)"

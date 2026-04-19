@@ -138,7 +138,7 @@ fn recommend_average_rating() {
     // All average ratings should be between 1 and 5
     for row in &rows {
         let avg = row["avg_rating"].as_f64().unwrap();
-        assert!(avg >= 1.0 && avg <= 5.0);
+        assert!((1.0..=5.0).contains(&avg));
     }
 }
 
@@ -352,9 +352,7 @@ fn null_property_ordering() {
     db.run("CREATE (:N {name: 'B', rank: 2})");
     db.run("CREATE (:N {name: 'A', rank: 1})");
     db.run("CREATE (:N {name: 'C'})"); // no rank → null
-    let rows = db.run(
-        "MATCH (n:N) RETURN n.name AS name, n.rank AS rank ORDER BY rank ASC",
-    );
+    let rows = db.run("MATCH (n:N) RETURN n.name AS name, n.rank AS rank ORDER BY rank ASC");
     assert_eq!(rows.len(), 3);
     // Null sorts last in ascending order — the non-null rows come first
     let last_rank = &rows[2]["rank"];
@@ -389,9 +387,7 @@ fn skip_and_limit_combined() {
     for i in 0..10 {
         db.run(&format!("CREATE (:Seq {{i: {i}}})"));
     }
-    let rows = db.run(
-        "MATCH (s:Seq) RETURN s.i AS i ORDER BY i SKIP 3 LIMIT 4",
-    );
+    let rows = db.run("MATCH (s:Seq) RETURN s.i AS i ORDER BY i SKIP 3 LIMIT 4");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["i"], 3);
     assert_eq!(rows[3]["i"], 6);
@@ -443,9 +439,7 @@ fn subquery_in_return() {
 fn map_projection_on_node() {
     let db = TestDb::new();
     db.run("CREATE (:P {name: 'Alice', age: 30, city: 'London'})");
-    let _rows = db.run(
-        "MATCH (p:P) RETURN p { .name, .age } AS profile",
-    );
+    let _rows = db.run("MATCH (p:P) RETURN p { .name, .age } AS profile");
 }
 
 // ============================================================
@@ -607,9 +601,8 @@ fn transform_materialized_view_creation() {
          WITH c.name AS city, count(p) AS pop \
          CREATE (:CityStats {city: city, population: pop})",
     );
-    let rows = db.run(
-        "MATCH (cs:CityStats) RETURN cs.city AS city, cs.population AS pop ORDER BY cs.city",
-    );
+    let rows = db
+        .run("MATCH (cs:CityStats) RETURN cs.city AS city, cs.population AS pop ORDER BY cs.city");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[1]["city"], "London");
     assert_eq!(rows[1]["pop"], 3);
@@ -689,18 +682,14 @@ fn list_comprehension_filter_and_transform() {
 #[test]
 fn reduce_sum_of_list() {
     let db = TestDb::new();
-    let rows = db.run(
-        "RETURN reduce(acc = 0, x IN [1, 2, 3, 4, 5] | acc + x) AS total",
-    );
+    let rows = db.run("RETURN reduce(acc = 0, x IN [1, 2, 3, 4, 5] | acc + x) AS total");
     assert_eq!(rows[0]["total"], 15);
 }
 
 #[test]
 fn reduce_string_concatenation() {
     let db = TestDb::new();
-    let rows = db.run(
-        "RETURN reduce(acc = '', x IN ['a', 'b', 'c'] | acc + x) AS result",
-    );
+    let rows = db.run("RETURN reduce(acc = '', x IN ['a', 'b', 'c'] | acc + x) AS result");
     assert_eq!(rows[0]["result"], "abc");
 }
 
@@ -714,9 +703,7 @@ fn temporal_chronological_event_query() {
     db.run("CREATE (:Event {name: 'Launch', date: date('2024-03-15')})");
     db.run("CREATE (:Event {name: 'Release', date: date('2024-06-01')})");
     db.run("CREATE (:Event {name: 'Review', date: date('2024-09-10')})");
-    let rows = db.run(
-        "MATCH (e:Event) RETURN e.name AS name, e.date AS d ORDER BY e.date ASC",
-    );
+    let rows = db.run("MATCH (e:Event) RETURN e.name AS name, e.date AS d ORDER BY e.date ASC");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], "Launch");
     assert_eq!(rows[2]["name"], "Review");
@@ -743,9 +730,8 @@ fn exists_subquery_in_return() {
 fn call_in_transactions() {
     let db = TestDb::new();
     db.run("UNWIND range(1, 1000) AS i CREATE (:Bulk {id: i})");
-    let _rows = db.run(
-        "CALL { MATCH (b:Bulk) SET b.processed = true } IN TRANSACTIONS OF 100 ROWS",
-    );
+    let _rows =
+        db.run("CALL { MATCH (b:Bulk) SET b.processed = true } IN TRANSACTIONS OF 100 ROWS");
 }
 
 #[test]
@@ -760,9 +746,7 @@ fn use_graph_clause() {
 #[ignore = "pending implementation"]
 fn create_fulltext_index() {
     let db = TestDb::new();
-    let _rows = db.run(
-        "CREATE FULLTEXT INDEX personNames FOR (n:Person) ON EACH [n.name]",
-    );
+    let _rows = db.run("CREATE FULLTEXT INDEX personNames FOR (n:Person) ON EACH [n.name]");
 }
 
 #[test]

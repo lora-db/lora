@@ -1,5 +1,8 @@
-use lora_analyzer::{ResolvedExpr, ResolvedMergeAction, ResolvedPattern, ResolvedPatternPart, ResolvedProjection, ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem};
 use lora_analyzer::symbols::VarId;
+use lora_analyzer::{
+    ResolvedExpr, ResolvedMergeAction, ResolvedPattern, ResolvedPatternPart, ResolvedProjection,
+    ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
+};
 use lora_ast::{Direction, RangeLiteral};
 
 pub type PlanNodeId = usize;

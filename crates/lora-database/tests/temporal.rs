@@ -148,9 +148,8 @@ fn duration_from_iso_string() {
 #[test]
 
 fn duration_from_map() {
-    let v = TestDb::new().scalar(
-        "RETURN duration({years: 1, months: 2, days: 3, hours: 4}) AS dur",
-    );
+    let v =
+        TestDb::new().scalar("RETURN duration({years: 1, months: 2, days: 3, hours: 4}) AS dur");
     assert!(!v.is_null());
 }
 
@@ -164,18 +163,16 @@ fn duration_with_time_components() {
 #[test]
 
 fn duration_between_dates() {
-    let rows = TestDb::new().run(
-        "RETURN duration.between(date('2024-01-01'), date('2024-03-15')) AS d",
-    );
+    let rows =
+        TestDb::new().run("RETURN duration.between(date('2024-01-01'), date('2024-03-15')) AS d");
     assert_eq!(rows.len(), 1);
 }
 
 #[test]
 
 fn duration_in_days_between_dates() {
-    let rows = TestDb::new().run(
-        "RETURN duration.inDays(date('2024-01-01'), date('2024-01-31')) AS d",
-    );
+    let rows =
+        TestDb::new().run("RETURN duration.inDays(date('2024-01-01'), date('2024-01-31')) AS d");
     assert_eq!(rows.len(), 1);
 }
 
@@ -300,17 +297,25 @@ fn date_greater_than() {
 
 fn date_less_than_or_equal() {
     let db = TestDb::new();
-    assert_eq!(db.scalar("RETURN date('2024-01-01') <= date('2024-01-01')"), true);
-    assert_eq!(db.scalar("RETURN date('2024-01-01') <= date('2024-01-02')"), true);
-    assert_eq!(db.scalar("RETURN date('2024-01-02') <= date('2024-01-01')"), false);
+    assert_eq!(
+        db.scalar("RETURN date('2024-01-01') <= date('2024-01-01')"),
+        true
+    );
+    assert_eq!(
+        db.scalar("RETURN date('2024-01-01') <= date('2024-01-02')"),
+        true
+    );
+    assert_eq!(
+        db.scalar("RETURN date('2024-01-02') <= date('2024-01-01')"),
+        false
+    );
 }
 
 #[test]
 
 fn datetime_comparison() {
-    let v = TestDb::new().scalar(
-        "RETURN datetime('2024-01-01T00:00:00Z') < datetime('2024-01-01T12:00:00Z')",
-    );
+    let v = TestDb::new()
+        .scalar("RETURN datetime('2024-01-01T00:00:00Z') < datetime('2024-01-01T12:00:00Z')");
     assert_eq!(v, true);
 }
 
@@ -342,9 +347,7 @@ fn duration_ordering() {
 #[test]
 
 fn date_plus_duration_days() {
-    let v = TestDb::new().scalar(
-        "RETURN date('2024-01-01') + duration('P10D') AS d",
-    );
+    let v = TestDb::new().scalar("RETURN date('2024-01-01') + duration('P10D') AS d");
     // Expected: 2024-01-11
     assert!(!v.is_null());
 }
@@ -352,9 +355,7 @@ fn date_plus_duration_days() {
 #[test]
 
 fn date_plus_duration_months() {
-    let v = TestDb::new().scalar(
-        "RETURN date('2024-01-31') + duration('P1M') AS d",
-    );
+    let v = TestDb::new().scalar("RETURN date('2024-01-31') + duration('P1M') AS d");
     // Expected: 2024-02-29 (2024 is leap year) or 2024-02-28 depending on semantics
     assert!(!v.is_null());
 }
@@ -362,9 +363,7 @@ fn date_plus_duration_months() {
 #[test]
 
 fn date_minus_duration() {
-    let v = TestDb::new().scalar(
-        "RETURN date('2024-06-15') - duration('P15D') AS d",
-    );
+    let v = TestDb::new().scalar("RETURN date('2024-06-15') - duration('P15D') AS d");
     // Expected: 2024-05-31
     assert!(!v.is_null());
 }
@@ -372,9 +371,7 @@ fn date_minus_duration() {
 #[test]
 
 fn date_minus_date_produces_duration() {
-    let v = TestDb::new().scalar(
-        "RETURN date('2024-03-01') - date('2024-01-01') AS d",
-    );
+    let v = TestDb::new().scalar("RETURN date('2024-03-01') - date('2024-01-01') AS d");
     // Expected: a duration representing 60 days
     assert!(!v.is_null());
 }
@@ -382,27 +379,23 @@ fn date_minus_date_produces_duration() {
 #[test]
 
 fn datetime_plus_duration() {
-    let v = TestDb::new().scalar(
-        "RETURN datetime('2024-01-01T00:00:00Z') + duration('PT2H30M') AS dt",
-    );
+    let v =
+        TestDb::new().scalar("RETURN datetime('2024-01-01T00:00:00Z') + duration('PT2H30M') AS dt");
     assert!(!v.is_null());
 }
 
 #[test]
 
 fn datetime_minus_datetime_produces_duration() {
-    let v = TestDb::new().scalar(
-        "RETURN datetime('2024-01-02T00:00:00Z') - datetime('2024-01-01T00:00:00Z') AS d",
-    );
+    let v = TestDb::new()
+        .scalar("RETURN datetime('2024-01-02T00:00:00Z') - datetime('2024-01-01T00:00:00Z') AS d");
     assert!(!v.is_null());
 }
 
 #[test]
 
 fn duration_plus_duration() {
-    let v = TestDb::new().scalar(
-        "RETURN duration('P1D') + duration('P2D') AS d",
-    );
+    let v = TestDb::new().scalar("RETURN duration('P1D') + duration('P2D') AS d");
     assert!(!v.is_null());
 }
 
@@ -451,9 +444,8 @@ fn tostring_of_duration() {
 #[test]
 
 fn date_roundtrip_through_tostring() {
-    let v = TestDb::new().scalar(
-        "WITH date('2024-06-15') AS d RETURN date(toString(d)) = d AS same",
-    );
+    let v =
+        TestDb::new().scalar("WITH date('2024-06-15') AS d RETURN date(toString(d)) = d AS same");
     assert_eq!(v, true);
 }
 
@@ -464,9 +456,7 @@ fn date_roundtrip_through_tostring() {
 #[test]
 
 fn date_truncate_to_month() {
-    let v = TestDb::new().scalar(
-        "RETURN date.truncate('month', date('2024-06-15')) AS d",
-    );
+    let v = TestDb::new().scalar("RETURN date.truncate('month', date('2024-06-15')) AS d");
     // Expected: 2024-06-01
     assert!(!v.is_null());
 }
@@ -474,9 +464,8 @@ fn date_truncate_to_month() {
 #[test]
 
 fn datetime_truncate_to_day() {
-    let v = TestDb::new().scalar(
-        "RETURN datetime.truncate('day', datetime('2024-06-15T10:30:45Z')) AS dt",
-    );
+    let v = TestDb::new()
+        .scalar("RETURN datetime.truncate('day', datetime('2024-06-15T10:30:45Z')) AS dt");
     // Expected: 2024-06-15T00:00:00Z
     assert!(!v.is_null());
 }
@@ -484,9 +473,8 @@ fn datetime_truncate_to_day() {
 #[test]
 
 fn datetime_truncate_to_hour() {
-    let v = TestDb::new().scalar(
-        "RETURN datetime.truncate('hour', datetime('2024-06-15T10:30:45Z')) AS dt",
-    );
+    let v = TestDb::new()
+        .scalar("RETURN datetime.truncate('hour', datetime('2024-06-15T10:30:45Z')) AS dt");
     assert!(!v.is_null());
 }
 
@@ -508,9 +496,7 @@ fn create_node_with_date_property() {
 
 fn create_node_with_datetime_property() {
     let db = TestDb::new();
-    db.run(
-        "CREATE (:Event {name: 'Launch', ts: datetime('2025-01-15T10:00:00Z')})",
-    );
+    db.run("CREATE (:Event {name: 'Launch', ts: datetime('2025-01-15T10:00:00Z')})");
     let rows = db.run("MATCH (e:Event) RETURN e.ts AS ts");
     assert_eq!(rows.len(), 1);
 }
@@ -599,9 +585,7 @@ fn order_by_date_ascending() {
     db.run("CREATE (:Event {name: 'C', date: date('2024-12-31')})");
     db.run("CREATE (:Event {name: 'A', date: date('2024-01-01')})");
     db.run("CREATE (:Event {name: 'B', date: date('2024-06-15')})");
-    let rows = db.run(
-        "MATCH (e:Event) RETURN e.name AS name ORDER BY e.date ASC",
-    );
+    let rows = db.run("MATCH (e:Event) RETURN e.name AS name ORDER BY e.date ASC");
     assert_eq!(rows[0]["name"], "A");
     assert_eq!(rows[1]["name"], "B");
     assert_eq!(rows[2]["name"], "C");
@@ -631,9 +615,7 @@ fn min_max_date() {
     db.run("CREATE (:Event {date: date('2024-01-01')})");
     db.run("CREATE (:Event {date: date('2024-06-15')})");
     db.run("CREATE (:Event {date: date('2024-12-31')})");
-    let rows = db.run(
-        "MATCH (e:Event) RETURN min(e.date) AS earliest, max(e.date) AS latest",
-    );
+    let rows = db.run("MATCH (e:Event) RETURN min(e.date) AS earliest, max(e.date) AS latest");
     assert_eq!(rows.len(), 1);
     // earliest should be 2024-01-01, latest 2024-12-31
 }
@@ -701,9 +683,7 @@ fn parameter_date_in_where() {
     db.run("CREATE (:Event {name: 'A', date: date('2024-01-15')})");
     db.run("CREATE (:Event {name: 'B', date: date('2024-06-15')})");
     // Once temporal types exist in LoraValue, they can be passed as $params
-    let rows = db.run(
-        "MATCH (e:Event) WHERE e.date > date('2024-03-01') RETURN e.name AS name",
-    );
+    let rows = db.run("MATCH (e:Event) WHERE e.date > date('2024-03-01') RETURN e.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "B");
 }
@@ -716,9 +696,7 @@ fn parameter_date_string_parsed_in_function() {
     db.run("CREATE (:Event {name: 'A', date: date('2024-01-15')})");
     db.run("CREATE (:Event {name: 'B', date: date('2024-06-15')})");
     // Hypothetical: date($dateStr) where $dateStr = '2024-03-01'
-    let rows = db.run(
-        "MATCH (e:Event) WHERE e.date > date('2024-03-01') RETURN e.name AS name",
-    );
+    let rows = db.run("MATCH (e:Event) WHERE e.date > date('2024-03-01') RETURN e.name AS name");
     assert_eq!(rows.len(), 1);
 }
 
@@ -791,9 +769,7 @@ fn date_plus_integer_errors() {
 
 fn cross_type_date_datetime_comparison_errors() {
     // Comparing date to datetime directly may be unsupported or coerced
-    let _v = TestDb::new().scalar(
-        "RETURN date('2024-01-01') = datetime('2024-01-01T00:00:00Z')",
-    );
+    let _v = TestDb::new().scalar("RETURN date('2024-01-01') = datetime('2024-01-01T00:00:00Z')");
     // Behavior TBD: could error, return null, or coerce
 }
 
@@ -825,9 +801,8 @@ fn date_year_1() {
 #[test]
 
 fn datetime_midnight_boundary() {
-    let v = TestDb::new().scalar(
-        "RETURN datetime('2024-01-01T23:59:59Z') < datetime('2024-01-02T00:00:00Z')",
-    );
+    let v = TestDb::new()
+        .scalar("RETURN datetime('2024-01-01T23:59:59Z') < datetime('2024-01-02T00:00:00Z')");
     assert_eq!(v, true);
 }
 
@@ -842,9 +817,7 @@ fn duration_zero() {
 
 fn date_end_of_month_rollover() {
     // Adding 1 month to Jan 31 — what happens?
-    let v = TestDb::new().scalar(
-        "RETURN date('2024-01-31') + duration('P1M') AS d",
-    );
+    let v = TestDb::new().scalar("RETURN date('2024-01-31') + duration('P1M') AS d");
     assert!(!v.is_null());
 }
 
@@ -892,9 +865,8 @@ fn case_on_date_comparison() {
 fn relationship_with_date_property() {
     let db = TestDb::new();
     db.run("CREATE (a:Person {name:'Alice'})-[:HIRED {date: date('2020-03-15')}]->(c:Company {name:'Acme'})");
-    let rows = db.run(
-        "MATCH (:Person {name:'Alice'})-[r:HIRED]->(:Company) RETURN r.date AS hireDate",
-    );
+    let rows =
+        db.run("MATCH (:Person {name:'Alice'})-[r:HIRED]->(:Company) RETURN r.date AS hireDate");
     assert_eq!(rows.len(), 1);
     assert!(!rows[0]["hireDate"].is_null());
 }

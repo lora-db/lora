@@ -1,9 +1,15 @@
 use crate::logical::*;
 use crate::physical::*;
-use lora_analyzer::{ResolvedExpr, symbols::VarId};
+use lora_analyzer::{symbols::VarId, ResolvedExpr};
 use std::collections::BTreeSet;
 
 pub struct Optimizer;
+
+impl Default for Optimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Optimizer {
     pub fn new() -> Self {
@@ -240,18 +246,40 @@ fn collect_vars_inner(expr: &ResolvedExpr, out: &mut BTreeSet<VarId>) {
                 collect_vars_inner(e, out);
             }
         }
-        ResolvedExpr::ListPredicate { variable, list, predicate, .. } => {
+        ResolvedExpr::ListPredicate {
+            variable,
+            list,
+            predicate,
+            ..
+        } => {
             out.insert(*variable);
             collect_vars_inner(list, out);
             collect_vars_inner(predicate, out);
         }
-        ResolvedExpr::ListComprehension { variable, list, filter, map_expr, .. } => {
+        ResolvedExpr::ListComprehension {
+            variable,
+            list,
+            filter,
+            map_expr,
+            ..
+        } => {
             out.insert(*variable);
             collect_vars_inner(list, out);
-            if let Some(f) = filter { collect_vars_inner(f, out); }
-            if let Some(m) = map_expr { collect_vars_inner(m, out); }
+            if let Some(f) = filter {
+                collect_vars_inner(f, out);
+            }
+            if let Some(m) = map_expr {
+                collect_vars_inner(m, out);
+            }
         }
-        ResolvedExpr::Reduce { accumulator, init, variable, list, expr, .. } => {
+        ResolvedExpr::Reduce {
+            accumulator,
+            init,
+            variable,
+            list,
+            expr,
+            ..
+        } => {
             out.insert(*accumulator);
             out.insert(*variable);
             collect_vars_inner(init, out);
@@ -264,8 +292,12 @@ fn collect_vars_inner(expr: &ResolvedExpr, out: &mut BTreeSet<VarId>) {
         }
         ResolvedExpr::Slice { expr, from, to } => {
             collect_vars_inner(expr, out);
-            if let Some(f) = from { collect_vars_inner(f, out); }
-            if let Some(t) = to { collect_vars_inner(t, out); }
+            if let Some(f) = from {
+                collect_vars_inner(f, out);
+            }
+            if let Some(t) = to {
+                collect_vars_inner(t, out);
+            }
         }
         ResolvedExpr::MapProjection { base, selectors } => {
             collect_vars_inner(base, out);

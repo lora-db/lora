@@ -207,10 +207,9 @@ fn parse_case_when() {
 
 #[test]
 fn parse_simple_case() {
-    assert!(parse_query(
-        "MATCH (n) RETURN CASE n.age WHEN 25 THEN 'young' ELSE 'other' END"
-    )
-    .is_ok());
+    assert!(
+        parse_query("MATCH (n) RETURN CASE n.age WHEN 25 THEN 'young' ELSE 'other' END").is_ok()
+    );
 }
 
 #[test]

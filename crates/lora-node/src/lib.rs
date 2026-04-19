@@ -20,12 +20,10 @@ use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
 use napi_derive::napi;
 
 use lora_database::{
-    LoraValue, Database as InnerDatabase, ExecuteOptions, InMemoryGraph, QueryResult,
-    ResultFormat,
+    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
-    LoraTime,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
 };
 
 const LORA_ERROR_CODE: &str = "LORA_ERROR";
@@ -61,9 +59,7 @@ impl Database {
     ///
     /// Errors surface as `LoraError` in the TS wrapper with a narrowed
     /// `code` (`LORA_ERROR`, `INVALID_PARAMS`).
-    #[napi(
-        ts_return_type = "Promise<{ columns: string[]; rows: Array<Record<string, any>> }>"
-    )]
+    #[napi(ts_return_type = "Promise<{ columns: string[]; rows: Array<Record<string, any>> }>")]
     pub fn execute(
         &self,
         query: String,
@@ -335,10 +331,7 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue> {
                         return Ok(LoraValue::Duration(d));
                     }
                     "point" => {
-                        let srid = obj
-                            .get("srid")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(7203) as u32;
+                        let srid = obj.get("srid").and_then(|v| v.as_u64()).unwrap_or(7203) as u32;
                         let x = obj
                             .get("x")
                             .and_then(|v| v.as_f64())

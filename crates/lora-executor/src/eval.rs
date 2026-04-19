@@ -1,11 +1,11 @@
-use crate::value::{Row, LoraValue};
 #[allow(unused_imports)]
 use crate::value::LoraPath;
+use crate::value::{LoraValue, Row};
 use lora_analyzer::{LiteralValue, ResolvedExpr, ResolvedMapSelector};
 use lora_ast::{BinaryOp, ListPredicateKind, UnaryOp};
 use lora_store::{
-    GraphStorage, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime,
-    LoraPoint, LoraTime, PointKeyFamily, point_distance, resolve_srid, srid_is_3d,
+    point_distance, resolve_srid, srid_is_3d, GraphStorage, LoraDate, LoraDateTime, LoraDuration,
+    LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime, PointKeyFamily,
 };
 use std::collections::BTreeMap;
 
@@ -61,9 +61,7 @@ pub fn eval_expr<S: GraphStorage + ?Sized>(
             eval_function(name, &args, ctx)
         }
 
-        ResolvedExpr::Parameter(name) => {
-            ctx.params.get(name).cloned().unwrap_or(LoraValue::Null)
-        }
+        ResolvedExpr::Parameter(name) => ctx.params.get(name).cloned().unwrap_or(LoraValue::Null),
 
         ResolvedExpr::ListPredicate {
             kind,
@@ -122,10 +120,7 @@ pub fn eval_expr<S: GraphStorage + ?Sized>(
                         } else {
                             // Clone the binding; we still need inner_row for
                             // the next iteration.
-                            inner_row
-                                .get(*variable)
-                                .cloned()
-                                .unwrap_or(LoraValue::Null)
+                            inner_row.get(*variable).cloned().unwrap_or(LoraValue::Null)
                         };
                         result.push(val);
                     }
@@ -168,7 +163,11 @@ pub fn eval_expr<S: GraphStorage + ?Sized>(
             let idx = eval_expr(index, row, ctx);
             match (base, idx) {
                 (LoraValue::List(items), LoraValue::Int(i)) => {
-                    let i = if i < 0 { (items.len() as i64 + i) as usize } else { i as usize };
+                    let i = if i < 0 {
+                        (items.len() as i64 + i) as usize
+                    } else {
+                        i as usize
+                    };
                     items.get(i).cloned().unwrap_or(LoraValue::Null)
                 }
                 (LoraValue::Map(m), LoraValue::String(key)) => {
@@ -183,12 +182,14 @@ pub fn eval_expr<S: GraphStorage + ?Sized>(
             match base {
                 LoraValue::List(items) => {
                     let len = items.len() as i64;
-                    let start = from.as_ref()
+                    let start = from
+                        .as_ref()
                         .map(|e| eval_expr(e, row, ctx).as_i64().unwrap_or(0))
                         .unwrap_or(0)
                         .max(0)
                         .min(len) as usize;
-                    let end = to.as_ref()
+                    let end = to
+                        .as_ref()
                         .map(|e| eval_expr(e, row, ctx).as_i64().unwrap_or(len))
                         .unwrap_or(len)
                         .max(0)
@@ -291,9 +292,7 @@ pub fn eval_expr<S: GraphStorage + ?Sized>(
             pattern,
             where_,
             map_expr,
-        } => {
-            eval_pattern_comprehension(pattern, where_.as_deref(), map_expr, row, ctx)
-        }
+        } => eval_pattern_comprehension(pattern, where_.as_deref(), map_expr, row, ctx),
     }
 }
 
@@ -312,7 +311,11 @@ fn eval_exists_subquery<S: GraphStorage + ?Sized>(
         let mut next_rows = Vec::new();
         for current_row in &candidate_rows {
             match &part.element {
-                ResolvedPatternElement::Node { var, labels, properties } => {
+                ResolvedPatternElement::Node {
+                    var,
+                    labels,
+                    properties,
+                } => {
                     let tmp_node = lora_analyzer::ResolvedNode {
                         var: *var,
                         labels: labels.clone(),
@@ -320,8 +323,8 @@ fn eval_exists_subquery<S: GraphStorage + ?Sized>(
                     };
                     next_rows.extend(match_node_pattern(&tmp_node, current_row, ctx));
                 }
-                ResolvedPatternElement::ShortestPath { head, chain, .. } |
-                ResolvedPatternElement::NodeChain { head, chain } => {
+                ResolvedPatternElement::ShortestPath { head, chain, .. }
+                | ResolvedPatternElement::NodeChain { head, chain } => {
                     let head_rows = match_node_pattern(head, current_row, ctx);
                     for hr in head_rows {
                         let mut frontier = vec![hr];
@@ -330,10 +333,11 @@ fn eval_exists_subquery<S: GraphStorage + ?Sized>(
                             for fr in &frontier {
                                 let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
                                 if let Some(sid) = src_node_id {
-                                    for (rel_id, dst_id) in ctx
-                                        .storage
-                                        .expand_ids(sid, step.rel.direction, &step.rel.types)
-                                    {
+                                    for (rel_id, dst_id) in ctx.storage.expand_ids(
+                                        sid,
+                                        step.rel.direction,
+                                        &step.rel.types,
+                                    ) {
                                         let Some(dst) = ctx.storage.node_ref(dst_id) else {
                                             continue;
                                         };
@@ -391,7 +395,11 @@ fn eval_pattern_comprehension<S: GraphStorage + ?Sized>(
         let mut next_rows = Vec::new();
         for current_row in &candidate_rows {
             match &part.element {
-                lora_analyzer::ResolvedPatternElement::Node { var, labels, properties } => {
+                lora_analyzer::ResolvedPatternElement::Node {
+                    var,
+                    labels,
+                    properties,
+                } => {
                     let tmp_node = lora_analyzer::ResolvedNode {
                         var: *var,
                         labels: labels.clone(),
@@ -399,8 +407,8 @@ fn eval_pattern_comprehension<S: GraphStorage + ?Sized>(
                     };
                     next_rows.extend(match_node_pattern(&tmp_node, current_row, ctx));
                 }
-                lora_analyzer::ResolvedPatternElement::ShortestPath { head, chain, .. } |
-                lora_analyzer::ResolvedPatternElement::NodeChain { head, chain } => {
+                lora_analyzer::ResolvedPatternElement::ShortestPath { head, chain, .. }
+                | lora_analyzer::ResolvedPatternElement::NodeChain { head, chain } => {
                     let head_rows = match_node_pattern(head, current_row, ctx);
                     for hr in head_rows {
                         let mut frontier = vec![hr];
@@ -409,10 +417,11 @@ fn eval_pattern_comprehension<S: GraphStorage + ?Sized>(
                             for fr in &frontier {
                                 let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
                                 if let Some(sid) = src_node_id {
-                                    for (rel_id, dst_id) in ctx
-                                        .storage
-                                        .expand_ids(sid, step.rel.direction, &step.rel.types)
-                                    {
+                                    for (rel_id, dst_id) in ctx.storage.expand_ids(
+                                        sid,
+                                        step.rel.direction,
+                                        &step.rel.types,
+                                    ) {
                                         let Some(dst) = ctx.storage.node_ref(dst_id) else {
                                             continue;
                                         };
@@ -483,11 +492,7 @@ fn match_node_pattern<S: GraphStorage + ?Sized>(
 
     // Candidate discovery only needs IDs — defer record lookup until after
     // label/property filtering so we can borrow once per matching candidate.
-    let first_label = node
-        .labels
-        .iter()
-        .flat_map(|g| g.iter())
-        .next();
+    let first_label = node.labels.iter().flat_map(|g| g.iter()).next();
     let candidate_ids: Vec<lora_store::NodeId> = match first_label {
         Some(label) => ctx.storage.node_ids_by_label(label),
         None => ctx.storage.all_node_ids(),
@@ -535,9 +540,9 @@ fn find_last_node_in_row(
 }
 
 fn node_matches_labels(node_labels: &[String], groups: &[Vec<String>]) -> bool {
-    groups.iter().all(|group| {
-        group.iter().any(|l| node_labels.iter().any(|nl| nl == l))
-    })
+    groups
+        .iter()
+        .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))
 }
 
 fn node_matches_properties<S: GraphStorage + ?Sized>(
@@ -546,7 +551,9 @@ fn node_matches_properties<S: GraphStorage + ?Sized>(
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> bool {
-    let Some(props_expr) = expected else { return true; };
+    let Some(props_expr) = expected else {
+        return true;
+    };
     let expected = eval_expr(props_expr, row, ctx);
     if let LoraValue::Map(exp) = expected {
         exp.iter().all(|(k, v)| {
@@ -798,7 +805,9 @@ fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> LoraValue {
                 return LoraValue::Null;
             }
             match rhs {
-                LoraValue::List(values) => LoraValue::Bool(values.iter().any(|v| value_eq(&lhs, v))),
+                LoraValue::List(values) => {
+                    LoraValue::Bool(values.iter().any(|v| value_eq(&lhs, v)))
+                }
                 LoraValue::Null => LoraValue::Null,
                 _ => LoraValue::Bool(false),
             }
@@ -890,7 +899,12 @@ fn eval_function<S: GraphStorage + ?Sized>(
                 .storage
                 .node_ref(*id)
                 .map(|n| {
-                    LoraValue::List(n.labels.iter().map(|s| LoraValue::String(s.clone())).collect())
+                    LoraValue::List(
+                        n.labels
+                            .iter()
+                            .map(|s| LoraValue::String(s.clone()))
+                            .collect(),
+                    )
                 })
                 .unwrap_or(LoraValue::Null),
             _ => LoraValue::Null,
@@ -942,9 +956,12 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         "relationships" => match args.first() {
-            Some(LoraValue::Path(p)) => {
-                LoraValue::List(p.rels.iter().map(|id| LoraValue::Relationship(*id)).collect())
-            }
+            Some(LoraValue::Path(p)) => LoraValue::List(
+                p.rels
+                    .iter()
+                    .map(|id| LoraValue::Relationship(*id))
+                    .collect(),
+            ),
             _ => LoraValue::Null,
         },
 
@@ -982,14 +999,22 @@ fn eval_function<S: GraphStorage + ?Sized>(
         "tointeger" | "toint" => match args.first() {
             Some(LoraValue::Int(i)) => LoraValue::Int(*i),
             Some(LoraValue::Float(f)) => LoraValue::Int(*f as i64),
-            Some(LoraValue::String(s)) => s.parse::<i64>().ok().map(LoraValue::Int).unwrap_or(LoraValue::Null),
+            Some(LoraValue::String(s)) => s
+                .parse::<i64>()
+                .ok()
+                .map(LoraValue::Int)
+                .unwrap_or(LoraValue::Null),
             _ => LoraValue::Null,
         },
 
         "tofloat" => match args.first() {
             Some(LoraValue::Float(f)) => LoraValue::Float(*f),
             Some(LoraValue::Int(i)) => LoraValue::Float(*i as f64),
-            Some(LoraValue::String(s)) => s.parse::<f64>().ok().map(LoraValue::Float).unwrap_or(LoraValue::Null),
+            Some(LoraValue::String(s)) => s
+                .parse::<f64>()
+                .ok()
+                .map(LoraValue::Float)
+                .unwrap_or(LoraValue::Null),
             _ => LoraValue::Null,
         },
 
@@ -1000,7 +1025,6 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- Math functions ------------------------------------------------
-
         "ceil" => match args.first() {
             Some(LoraValue::Float(f)) => LoraValue::Int(f.ceil() as i64),
             Some(LoraValue::Int(i)) => LoraValue::Int(*i),
@@ -1050,7 +1074,6 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- String functions -----------------------------------------------
-
         "trim" => match args.first() {
             Some(LoraValue::String(s)) => LoraValue::String(s.trim().to_string()),
             _ => LoraValue::Null,
@@ -1066,27 +1089,23 @@ fn eval_function<S: GraphStorage + ?Sized>(
             _ => LoraValue::Null,
         },
 
-        "replace" => {
-            match (args.first(), args.get(1), args.get(2)) {
-                (Some(LoraValue::String(s)), Some(LoraValue::String(search)), Some(LoraValue::String(replacement))) => {
-                    LoraValue::String(s.replace(search.as_str(), replacement.as_str()))
-                }
-                _ => LoraValue::Null,
-            }
-        }
+        "replace" => match (args.first(), args.get(1), args.get(2)) {
+            (
+                Some(LoraValue::String(s)),
+                Some(LoraValue::String(search)),
+                Some(LoraValue::String(replacement)),
+            ) => LoraValue::String(s.replace(search.as_str(), replacement.as_str())),
+            _ => LoraValue::Null,
+        },
 
-        "split" => {
-            match (args.first(), args.get(1)) {
-                (Some(LoraValue::String(s)), Some(LoraValue::String(delimiter))) => {
-                    LoraValue::List(
-                        s.split(delimiter.as_str())
-                            .map(|part| LoraValue::String(part.to_string()))
-                            .collect(),
-                    )
-                }
-                _ => LoraValue::Null,
-            }
-        }
+        "split" => match (args.first(), args.get(1)) {
+            (Some(LoraValue::String(s)), Some(LoraValue::String(delimiter))) => LoraValue::List(
+                s.split(delimiter.as_str())
+                    .map(|part| LoraValue::String(part.to_string()))
+                    .collect(),
+            ),
+            _ => LoraValue::Null,
+        },
 
         "substring" => {
             match args.first() {
@@ -1197,47 +1216,41 @@ fn eval_function<S: GraphStorage + ?Sized>(
         }
 
         // -- Last (list) -----------------------------------------------------
-
         "last" => match args.first() {
             Some(LoraValue::List(l)) => l.last().cloned().unwrap_or(LoraValue::Null),
             _ => LoraValue::Null,
         },
 
         // -- String padding / char_length / normalize -------------------------
-
-        "lpad" => {
-            match (args.first(), args.get(1), args.get(2)) {
-                (Some(LoraValue::String(s)), Some(len_val), Some(LoraValue::String(pad))) => {
-                    let target_len = len_val.as_i64().unwrap_or(0).max(0) as usize;
-                    let current_len = s.chars().count();
-                    if current_len >= target_len {
-                        LoraValue::String(s.clone())
-                    } else {
-                        let pad_needed = target_len - current_len;
-                        let pad_chars: String = pad.chars().cycle().take(pad_needed).collect();
-                        LoraValue::String(format!("{}{}", pad_chars, s))
-                    }
+        "lpad" => match (args.first(), args.get(1), args.get(2)) {
+            (Some(LoraValue::String(s)), Some(len_val), Some(LoraValue::String(pad))) => {
+                let target_len = len_val.as_i64().unwrap_or(0).max(0) as usize;
+                let current_len = s.chars().count();
+                if current_len >= target_len {
+                    LoraValue::String(s.clone())
+                } else {
+                    let pad_needed = target_len - current_len;
+                    let pad_chars: String = pad.chars().cycle().take(pad_needed).collect();
+                    LoraValue::String(format!("{}{}", pad_chars, s))
                 }
-                _ => LoraValue::Null,
             }
-        }
+            _ => LoraValue::Null,
+        },
 
-        "rpad" => {
-            match (args.first(), args.get(1), args.get(2)) {
-                (Some(LoraValue::String(s)), Some(len_val), Some(LoraValue::String(pad))) => {
-                    let target_len = len_val.as_i64().unwrap_or(0).max(0) as usize;
-                    let current_len = s.chars().count();
-                    if current_len >= target_len {
-                        LoraValue::String(s.clone())
-                    } else {
-                        let pad_needed = target_len - current_len;
-                        let pad_chars: String = pad.chars().cycle().take(pad_needed).collect();
-                        LoraValue::String(format!("{}{}", s, pad_chars))
-                    }
+        "rpad" => match (args.first(), args.get(1), args.get(2)) {
+            (Some(LoraValue::String(s)), Some(len_val), Some(LoraValue::String(pad))) => {
+                let target_len = len_val.as_i64().unwrap_or(0).max(0) as usize;
+                let current_len = s.chars().count();
+                if current_len >= target_len {
+                    LoraValue::String(s.clone())
+                } else {
+                    let pad_needed = target_len - current_len;
+                    let pad_chars: String = pad.chars().cycle().take(pad_needed).collect();
+                    LoraValue::String(format!("{}{}", s, pad_chars))
                 }
-                _ => LoraValue::Null,
             }
-        }
+            _ => LoraValue::Null,
+        },
 
         "char_length" => match args.first() {
             Some(LoraValue::String(s)) => LoraValue::Int(s.chars().count() as i64),
@@ -1251,7 +1264,6 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- toBoolean --------------------------------------------------------
-
         "toboolean" | "tobooleanornull" => match args.first() {
             Some(LoraValue::Bool(b)) => LoraValue::Bool(*b),
             Some(LoraValue::String(s)) => match s.to_ascii_lowercase().as_str() {
@@ -1268,7 +1280,6 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- valueType --------------------------------------------------------
-
         "valuetype" => match args.first() {
             Some(LoraValue::Null) => LoraValue::String("NULL".to_string()),
             Some(LoraValue::Bool(_)) => LoraValue::String("BOOLEAN".to_string()),
@@ -1297,7 +1308,11 @@ fn eval_function<S: GraphStorage + ?Sized>(
                                 | (LoraValue::Bool(_), "BOOLEAN")
                         )
                     });
-                    if homogeneous { first_type } else { "ANY" }
+                    if homogeneous {
+                        first_type
+                    } else {
+                        "ANY"
+                    }
                 };
                 LoraValue::String(format!("LIST<{elem_type}>"))
             }
@@ -1316,7 +1331,6 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- Trigonometric / logarithmic / constants --------------------------
-
         "log" | "ln" => match args.first() {
             Some(v) => match v.as_f64() {
                 Some(f) if f > 0.0 => LoraValue::Float(f.ln()),
@@ -1409,7 +1423,9 @@ fn eval_function<S: GraphStorage + ?Sized>(
                 .map(|d| d.subsec_nanos())
                 .unwrap_or(0);
             // Use a simple hash to get pseudo-random distribution
-            let hash = ((nanos as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)) as f64;
+            let hash = ((nanos as u64)
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407)) as f64;
             LoraValue::Float((hash / u64::MAX as f64).abs())
         }
 
@@ -1430,12 +1446,14 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- Temporal constructors -------------------------------------------
-
         "date" => match args.first() {
             None => LoraValue::Date(LoraDate::today()),
             Some(LoraValue::String(s)) => match LoraDate::parse(s) {
                 Ok(d) => LoraValue::Date(d),
-                Err(e) => { set_eval_error(e); LoraValue::Null }
+                Err(e) => {
+                    set_eval_error(e);
+                    LoraValue::Null
+                }
             },
             Some(LoraValue::Map(m)) => {
                 let year = m.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -1443,7 +1461,10 @@ fn eval_function<S: GraphStorage + ?Sized>(
                 let day = m.get("day").and_then(|v| v.as_i64()).unwrap_or(1) as u32;
                 match LoraDate::new(year, month, day) {
                     Ok(d) => LoraValue::Date(d),
-                    Err(e) => { set_eval_error(e); LoraValue::Null }
+                    Err(e) => {
+                        set_eval_error(e);
+                        LoraValue::Null
+                    }
                 }
             }
             // Roundtrip: date(date) -> date
@@ -1455,7 +1476,10 @@ fn eval_function<S: GraphStorage + ?Sized>(
             None => LoraValue::DateTime(LoraDateTime::now()),
             Some(LoraValue::String(s)) => match LoraDateTime::parse(s) {
                 Ok(dt) => LoraValue::DateTime(dt),
-                Err(e) => { set_eval_error(e); LoraValue::Null }
+                Err(e) => {
+                    set_eval_error(e);
+                    LoraValue::Null
+                }
             },
             Some(LoraValue::Map(m)) => {
                 let year = m.get("year").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -1471,9 +1495,21 @@ fn eval_function<S: GraphStorage + ?Sized>(
                 } else {
                     0
                 };
-                match LoraDateTime::new(year, month, day, hour, minute, second, ms * 1_000_000, offset) {
+                match LoraDateTime::new(
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    ms * 1_000_000,
+                    offset,
+                ) {
                     Ok(dt) => LoraValue::DateTime(dt),
-                    Err(e) => { set_eval_error(e); LoraValue::Null }
+                    Err(e) => {
+                        set_eval_error(e);
+                        LoraValue::Null
+                    }
                 }
             }
             _ => LoraValue::Null,
@@ -1483,7 +1519,10 @@ fn eval_function<S: GraphStorage + ?Sized>(
             None => LoraValue::Time(LoraTime::now()),
             Some(LoraValue::String(s)) => match LoraTime::parse(s) {
                 Ok(t) => LoraValue::Time(t),
-                Err(e) => { set_eval_error(e); LoraValue::Null }
+                Err(e) => {
+                    set_eval_error(e);
+                    LoraValue::Null
+                }
             },
             _ => LoraValue::Null,
         },
@@ -1492,7 +1531,10 @@ fn eval_function<S: GraphStorage + ?Sized>(
             None => LoraValue::LocalTime(LoraLocalTime::now()),
             Some(LoraValue::String(s)) => match LoraLocalTime::parse(s) {
                 Ok(t) => LoraValue::LocalTime(t),
-                Err(e) => { set_eval_error(e); LoraValue::Null }
+                Err(e) => {
+                    set_eval_error(e);
+                    LoraValue::Null
+                }
             },
             _ => LoraValue::Null,
         },
@@ -1501,7 +1543,10 @@ fn eval_function<S: GraphStorage + ?Sized>(
             None => LoraValue::LocalDateTime(LoraLocalDateTime::now()),
             Some(LoraValue::String(s)) => match LoraLocalDateTime::parse(s) {
                 Ok(dt) => LoraValue::LocalDateTime(dt),
-                Err(e) => { set_eval_error(e); LoraValue::Null }
+                Err(e) => {
+                    set_eval_error(e);
+                    LoraValue::Null
+                }
             },
             _ => LoraValue::Null,
         },
@@ -1509,7 +1554,10 @@ fn eval_function<S: GraphStorage + ?Sized>(
         "duration" => match args.first() {
             Some(LoraValue::String(s)) => match LoraDuration::parse(s) {
                 Ok(d) => LoraValue::Duration(d),
-                Err(e) => { set_eval_error(e); LoraValue::Null }
+                Err(e) => {
+                    set_eval_error(e);
+                    LoraValue::Null
+                }
             },
             Some(LoraValue::Map(m)) => {
                 let years = m.get("years").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1529,31 +1577,35 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- Temporal namespace functions -----------------------------------
-
         "date.truncate" => match (args.first(), args.get(1)) {
-            (Some(LoraValue::String(unit)), Some(LoraValue::Date(d))) => {
-                match unit.as_str() {
-                    "month" => LoraValue::Date(d.truncate_to_month()),
-                    "year" => LoraValue::Date(LoraDate { year: d.year, month: 1, day: 1 }),
-                    _ => LoraValue::Date(d.clone()),
-                }
-            }
+            (Some(LoraValue::String(unit)), Some(LoraValue::Date(d))) => match unit.as_str() {
+                "month" => LoraValue::Date(d.truncate_to_month()),
+                "year" => LoraValue::Date(LoraDate {
+                    year: d.year,
+                    month: 1,
+                    day: 1,
+                }),
+                _ => LoraValue::Date(d.clone()),
+            },
             _ => LoraValue::Null,
         },
 
         "datetime.truncate" => match (args.first(), args.get(1)) {
-            (Some(LoraValue::String(unit)), Some(LoraValue::DateTime(dt))) => {
-                match unit.as_str() {
-                    "day" => LoraValue::DateTime(dt.truncate_to_day()),
-                    "hour" => LoraValue::DateTime(dt.truncate_to_hour()),
-                    "month" => LoraValue::DateTime(LoraDateTime {
-                        year: dt.year, month: dt.month, day: 1,
-                        hour: 0, minute: 0, second: 0, nanosecond: 0,
-                        offset_seconds: dt.offset_seconds,
-                    }),
-                    _ => LoraValue::DateTime(dt.clone()),
-                }
-            }
+            (Some(LoraValue::String(unit)), Some(LoraValue::DateTime(dt))) => match unit.as_str() {
+                "day" => LoraValue::DateTime(dt.truncate_to_day()),
+                "hour" => LoraValue::DateTime(dt.truncate_to_hour()),
+                "month" => LoraValue::DateTime(LoraDateTime {
+                    year: dt.year,
+                    month: dt.month,
+                    day: 1,
+                    hour: 0,
+                    minute: 0,
+                    second: 0,
+                    nanosecond: 0,
+                    offset_seconds: dt.offset_seconds,
+                }),
+                _ => LoraValue::DateTime(dt.clone()),
+            },
             _ => LoraValue::Null,
         },
 
@@ -1575,7 +1627,6 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         // -- Spatial functions -----------------------------------------------
-
         "point" => match args.first() {
             None | Some(LoraValue::Null) => LoraValue::Null,
             Some(LoraValue::Map(m)) => match build_point_from_map(m) {
@@ -1593,15 +1644,15 @@ fn eval_function<S: GraphStorage + ?Sized>(
         },
 
         "distance" => match (args.first(), args.get(1)) {
-            (Some(LoraValue::Point(a)), Some(LoraValue::Point(b))) => {
-                match point_distance(a, b) {
-                    Some(d) => LoraValue::Float(d),
-                    None => {
-                        set_eval_error("Cannot compute distance between points with different SRIDs".to_string());
-                        LoraValue::Null
-                    }
+            (Some(LoraValue::Point(a)), Some(LoraValue::Point(b))) => match point_distance(a, b) {
+                Some(d) => LoraValue::Float(d),
+                None => {
+                    set_eval_error(
+                        "Cannot compute distance between points with different SRIDs".to_string(),
+                    );
+                    LoraValue::Null
                 }
-            }
+            },
             _ => LoraValue::Null,
         },
 
@@ -1610,7 +1661,7 @@ fn eval_function<S: GraphStorage + ?Sized>(
 }
 
 thread_local! {
-    static EVAL_ERROR: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    static EVAL_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 fn set_eval_error(msg: String) {
@@ -1625,15 +1676,20 @@ pub fn take_eval_error() -> Option<String> {
 ///
 /// - `Ok(Some(p))` → construction succeeded.
 /// - `Ok(None)`    → null propagation: the map contained a null on one of the
-///                   recognised coordinate/crs/srid keys, so the call should
-///                   return `null` *without* signalling an error.
+///   recognised coordinate/crs/srid keys, so the call should
+///   return `null` *without* signalling an error.
 /// - `Err(msg)`    → validation failure (unknown key, bad type, conflicting
-///                   crs/srid, dimensionality mismatch, missing coords, …).
-fn build_point_from_map(
-    map: &BTreeMap<String, LoraValue>,
-) -> Result<Option<LoraPoint>, String> {
+///   crs/srid, dimensionality mismatch, missing coords, …).
+fn build_point_from_map(map: &BTreeMap<String, LoraValue>) -> Result<Option<LoraPoint>, String> {
     const KNOWN_KEYS: &[&str] = &[
-        "x", "y", "z", "longitude", "latitude", "height", "crs", "srid",
+        "x",
+        "y",
+        "z",
+        "longitude",
+        "latitude",
+        "height",
+        "crs",
+        "srid",
     ];
 
     // Reject unknown keys up front — strictness is preferred over silently
@@ -1692,10 +1748,8 @@ fn build_point_from_map(
     let (family, first, second) = if has_geographic {
         (
             PointKeyFamily::Geographic,
-            longitude
-                .ok_or_else(|| "point() is missing longitude".to_string())?,
-            latitude
-                .ok_or_else(|| "point() is missing latitude".to_string())?,
+            longitude.ok_or_else(|| "point() is missing longitude".to_string())?,
+            latitude.ok_or_else(|| "point() is missing latitude".to_string())?,
         )
     } else if has_cartesian {
         (
@@ -1705,8 +1759,7 @@ fn build_point_from_map(
         )
     } else {
         return Err(
-            "point() requires coordinates — either {x, y} or {longitude, latitude}"
-                .to_string(),
+            "point() requires coordinates — either {x, y} or {longitude, latitude}".to_string(),
         );
     };
 
@@ -1795,16 +1848,15 @@ fn timezone_name_to_offset(name: &str) -> i32 {
     // This is a simplified mapping; a full implementation would use a timezone database.
     match name {
         "UTC" | "GMT" | "Z" => 0,
-        "Europe/London" => 0,      // Ignoring DST for simplicity
-        "Europe/Amsterdam" | "Europe/Berlin" | "Europe/Paris"
-        | "CET" => 3600,           // +01:00 (ignoring DST)
-        "Europe/Moscow" => 10800,  // +03:00
-        "US/Eastern" | "America/New_York" | "EST" => -18000, // -05:00
-        "US/Central" | "America/Chicago" | "CST" => -21600,  // -06:00
-        "US/Mountain" | "America/Denver" | "MST" => -25200,  // -07:00
-        "US/Pacific" | "America/Los_Angeles" | "PST" => -28800, // -08:00
-        "Asia/Tokyo" | "JST" => 32400, // +09:00
-        "Asia/Shanghai" | "Asia/Hong_Kong" => 28800, // +08:00
+        "Europe/London" => 0, // Ignoring DST for simplicity
+        "Europe/Amsterdam" | "Europe/Berlin" | "Europe/Paris" | "CET" => 3600, // +01:00 (ignoring DST)
+        "Europe/Moscow" => 10800,                                              // +03:00
+        "US/Eastern" | "America/New_York" | "EST" => -18000,                   // -05:00
+        "US/Central" | "America/Chicago" | "CST" => -21600,                    // -06:00
+        "US/Mountain" | "America/Denver" | "MST" => -25200,                    // -07:00
+        "US/Pacific" | "America/Los_Angeles" | "PST" => -28800,                // -08:00
+        "Asia/Tokyo" | "JST" => 32400,                                         // +09:00
+        "Asia/Shanghai" | "Asia/Hong_Kong" => 28800,                           // +08:00
         _ => 0, // Default to UTC for unknown timezones
     }
 }
@@ -1844,9 +1896,10 @@ fn cmp_numeric_or_string(
         (LoraValue::Date(a), LoraValue::Date(b)) => {
             LoraValue::Bool(num_cmp(a.to_epoch_days() as f64, b.to_epoch_days() as f64))
         }
-        (LoraValue::DateTime(a), LoraValue::DateTime(b)) => {
-            LoraValue::Bool(num_cmp(a.to_epoch_millis() as f64, b.to_epoch_millis() as f64))
-        }
+        (LoraValue::DateTime(a), LoraValue::DateTime(b)) => LoraValue::Bool(num_cmp(
+            a.to_epoch_millis() as f64,
+            b.to_epoch_millis() as f64,
+        )),
         (LoraValue::Duration(a), LoraValue::Duration(b)) => {
             LoraValue::Bool(num_cmp(a.total_seconds_approx(), b.total_seconds_approx()))
         }
@@ -1868,8 +1921,12 @@ fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
         // Temporal + Duration
         (LoraValue::Date(d), LoraValue::Duration(dur)) => LoraValue::Date(d.add_duration(&dur)),
         (LoraValue::Duration(dur), LoraValue::Date(d)) => LoraValue::Date(d.add_duration(&dur)),
-        (LoraValue::DateTime(dt), LoraValue::Duration(dur)) => LoraValue::DateTime(dt.add_duration(&dur)),
-        (LoraValue::Duration(dur), LoraValue::DateTime(dt)) => LoraValue::DateTime(dt.add_duration(&dur)),
+        (LoraValue::DateTime(dt), LoraValue::Duration(dur)) => {
+            LoraValue::DateTime(dt.add_duration(&dur))
+        }
+        (LoraValue::Duration(dur), LoraValue::DateTime(dt)) => {
+            LoraValue::DateTime(dt.add_duration(&dur))
+        }
         (LoraValue::Duration(a), LoraValue::Duration(b)) => LoraValue::Duration(a.add(&b)),
         // Type errors for temporal + non-duration
         (LoraValue::Date(_), _) | (_, LoraValue::Date(_)) => {

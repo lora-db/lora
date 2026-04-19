@@ -2,20 +2,37 @@ use lora_database::{Database, ExecuteOptions, ResultFormat};
 
 fn rss_kb() -> u64 {
     let pid = std::process::id();
-    let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
 }
-fn opts() -> Option<ExecuteOptions> { Some(ExecuteOptions { format: ResultFormat::Rows }) }
+fn opts() -> Option<ExecuteOptions> {
+    Some(ExecuteOptions {
+        format: ResultFormat::Rows,
+    })
+}
 
 fn main() {
-    let n: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1000);
+    let n: usize = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
     let pattern: String = std::env::args().nth(2).unwrap_or_else(|| "original".into());
     println!("n={} pattern={}", n, pattern);
 
     let svc = Database::in_memory();
     println!("start: {}", rss_kb());
 
-    svc.execute(&format!("UNWIND range(0, {}) AS i CREATE (:Chain {{idx: i}})", n-1), opts()).unwrap();
+    svc.execute(
+        &format!("UNWIND range(0, {}) AS i CREATE (:Chain {{idx: i}})", n - 1),
+        opts(),
+    )
+    .unwrap();
     println!("after nodes: {}", rss_kb());
 
     let q: String = match pattern.as_str() {
@@ -40,6 +57,8 @@ fn main() {
     println!("after edges ({}): {}", pattern, rss_kb());
 
     // Now verify edge count
-    let r = svc.execute("MATCH ()-[r:NEXT]->() RETURN count(r) AS c", opts()).unwrap();
+    let r = svc
+        .execute("MATCH ()-[r:NEXT]->() RETURN count(r) AS c", opts())
+        .unwrap();
     println!("edges: {:?}", r);
 }

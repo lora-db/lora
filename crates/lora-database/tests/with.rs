@@ -78,9 +78,7 @@ fn with_hides_unmentioned_variables() {
 fn with_hides_unselected_variables() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let err = db.run_err(
-        "MATCH (p:Person)-[r:WORKS_AT]->(c:Company) WITH p RETURN r",
-    );
+    let err = db.run_err("MATCH (p:Person)-[r:WORKS_AT]->(c:Company) WITH p RETURN r");
     assert!(err.contains("Unknown variable") || err.contains("variable"));
 }
 
@@ -160,9 +158,8 @@ fn with_aggregation_then_filter() {
     db.run("CREATE (a:User {name: 'Alice', dept: 'eng'})");
     db.run("CREATE (b:User {name: 'Bob', dept: 'eng'})");
     db.run("CREATE (c:User {name: 'Carol', dept: 'sales'})");
-    let rows = db.run(
-        "MATCH (n:User) WITH n.dept AS dept, count(n) AS c WHERE c > 1 RETURN dept, c",
-    );
+    let rows =
+        db.run("MATCH (n:User) WITH n.dept AS dept, count(n) AS c WHERE c > 1 RETURN dept, c");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["dept"], "eng");
 }
@@ -204,9 +201,8 @@ fn with_grouped_aggregation_pipeline() {
 fn with_collect_then_unwind() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) WITH collect(p.name) AS names UNWIND names AS name RETURN name",
-    );
+    let rows =
+        db.run("MATCH (p:Person) WITH collect(p.name) AS names UNWIND names AS name RETURN name");
     assert_eq!(rows.len(), 6);
 }
 

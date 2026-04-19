@@ -66,20 +66,14 @@ fn org_graph_person_count() {
 fn org_graph_engineering_dept_count() {
     let db = TestDb::new();
     db.seed_org_graph();
-    db.assert_count(
-        "MATCH (p:Person) WHERE p.dept = 'Engineering' RETURN p",
-        4,
-    );
+    db.assert_count("MATCH (p:Person) WHERE p.dept = 'Engineering' RETURN p", 4);
 }
 
 #[test]
 fn org_graph_marketing_dept_count() {
     let db = TestDb::new();
     db.seed_org_graph();
-    db.assert_count(
-        "MATCH (p:Person) WHERE p.dept = 'Marketing' RETURN p",
-        2,
-    );
+    db.assert_count("MATCH (p:Person) WHERE p.dept = 'Marketing' RETURN p", 2);
 }
 
 #[test]
@@ -122,10 +116,7 @@ fn chain_tail_is_last_index() {
     // The last node (idx=4) exists
     db.assert_count("MATCH (n:Chain {idx: 4}) RETURN n", 1);
     // And idx=4 has no outgoing NEXT (nothing beyond it)
-    db.assert_count(
-        "MATCH (a:Chain {idx: 4})-[:NEXT]->(b:Chain) RETURN b",
-        0,
-    );
+    db.assert_count("MATCH (a:Chain {idx: 4})-[:NEXT]->(b:Chain) RETURN b", 0);
 }
 
 #[test]
@@ -326,14 +317,8 @@ fn rich_social_interested_in_count() {
 fn rich_social_influencer_label_on_eve() {
     let db = TestDb::new();
     db.seed_rich_social_graph();
-    db.assert_count(
-        "MATCH (p:Person:Influencer) RETURN p",
-        1,
-    );
-    let names = db.sorted_strings(
-        "MATCH (p:Influencer) RETURN p.name AS name",
-        "name",
-    );
+    db.assert_count("MATCH (p:Person:Influencer) RETURN p", 1);
+    let names = db.sorted_strings("MATCH (p:Influencer) RETURN p.name AS name", "name");
     assert_eq!(names, vec!["Eve"]);
 }
 

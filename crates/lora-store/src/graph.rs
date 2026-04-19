@@ -115,7 +115,10 @@ pub trait GraphStorage {
 
     /// Index lookup returning only IDs. Default falls back to cloning.
     fn node_ids_by_label(&self, label: &str) -> Vec<NodeId> {
-        self.nodes_by_label(label).into_iter().map(|n| n.id).collect()
+        self.nodes_by_label(label)
+            .into_iter()
+            .map(|n| n.id)
+            .collect()
     }
 
     // ---------- Relationship scans / lookup ----------
@@ -560,7 +563,11 @@ pub trait GraphStorageMut: GraphStorage {
 
     fn remove_relationship_property(&mut self, rel_id: RelationshipId, key: &str) -> bool;
 
-    fn replace_relationship_properties(&mut self, rel_id: RelationshipId, properties: Properties) -> bool {
+    fn replace_relationship_properties(
+        &mut self,
+        rel_id: RelationshipId,
+        properties: Properties,
+    ) -> bool {
         if !self.has_relationship(rel_id) {
             return false;
         }
@@ -581,7 +588,11 @@ pub trait GraphStorageMut: GraphStorage {
         true
     }
 
-    fn merge_relationship_properties(&mut self, rel_id: RelationshipId, properties: Properties) -> bool {
+    fn merge_relationship_properties(
+        &mut self,
+        rel_id: RelationshipId,
+        properties: Properties,
+    ) -> bool {
         if !self.has_relationship(rel_id) {
             return false;
         }

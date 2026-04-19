@@ -14,12 +14,10 @@ use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
 use lora_database::{
-    LoraValue, Database as InnerDatabase, ExecuteOptions, InMemoryGraph, QueryResult,
-    ResultFormat,
+    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
-    LoraTime,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
 };
 
 const LORA_ERROR_CODE: &str = "LORA_ERROR";
@@ -255,14 +253,14 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, JsError> 
                 match kind.as_str() {
                     "date" => {
                         let iso = require_iso(&obj, "date")?;
-                        let d = LoraDate::parse(iso)
-                            .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
+                        let d =
+                            LoraDate::parse(iso).map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
                         return Ok(LoraValue::Date(d));
                     }
                     "time" => {
                         let iso = require_iso(&obj, "time")?;
-                        let t = LoraTime::parse(iso)
-                            .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
+                        let t =
+                            LoraTime::parse(iso).map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
                         return Ok(LoraValue::Time(t));
                     }
                     "localtime" => {
@@ -290,18 +288,13 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, JsError> 
                         return Ok(LoraValue::Duration(d));
                     }
                     "point" => {
-                        let srid = obj
-                            .get("srid")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(7203) as u32;
-                        let x = obj
-                            .get("x")
-                            .and_then(|v| v.as_f64())
-                            .ok_or_else(|| js_error(INVALID_PARAMS_CODE, "point.x must be a number"))?;
-                        let y = obj
-                            .get("y")
-                            .and_then(|v| v.as_f64())
-                            .ok_or_else(|| js_error(INVALID_PARAMS_CODE, "point.y must be a number"))?;
+                        let srid = obj.get("srid").and_then(|v| v.as_u64()).unwrap_or(7203) as u32;
+                        let x = obj.get("x").and_then(|v| v.as_f64()).ok_or_else(|| {
+                            js_error(INVALID_PARAMS_CODE, "point.x must be a number")
+                        })?;
+                        let y = obj.get("y").and_then(|v| v.as_f64()).ok_or_else(|| {
+                            js_error(INVALID_PARAMS_CODE, "point.y must be a number")
+                        })?;
                         let z = obj.get("z").and_then(|v| v.as_f64());
                         return Ok(LoraValue::Point(LoraPoint { x, y, z, srid }));
                     }

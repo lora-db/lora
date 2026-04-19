@@ -6,7 +6,7 @@ use lora_analyzer::Analyzer;
 use lora_ast::Document;
 use lora_compiler::{CompiledQuery, Compiler};
 use lora_executor::{
-    ExecuteOptions, MutableExecutionContext, MutableExecutor, QueryResult, LoraValue,
+    ExecuteOptions, LoraValue, MutableExecutionContext, MutableExecutor, QueryResult,
 };
 use lora_parser::parse_query;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph};

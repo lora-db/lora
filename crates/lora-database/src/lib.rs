@@ -20,7 +20,7 @@ pub use database::{Database, QueryRunner};
 
 // Re-export the core execution types so callers don't need a direct
 // dependency on `lora-executor`.
-pub use lora_executor::{ExecuteOptions, QueryResult, ResultFormat, LoraValue};
+pub use lora_executor::{ExecuteOptions, LoraValue, QueryResult, ResultFormat};
 
 // Re-export the default in-memory backing store so callers only need to
 // depend on `lora-database` for the happy path.

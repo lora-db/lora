@@ -82,13 +82,19 @@ fn where_less_than_or_equal() {
 #[test]
 fn where_and() {
     let db = db_with_users();
-    db.assert_count("MATCH (n:User) WHERE n.age > 25 AND n.active = true RETURN n", 2);
+    db.assert_count(
+        "MATCH (n:User) WHERE n.age > 25 AND n.active = true RETURN n",
+        2,
+    );
 }
 
 #[test]
 fn where_or() {
     let db = db_with_users();
-    db.assert_count("MATCH (n:User) WHERE n.name = 'Alice' OR n.name = 'Bob' RETURN n", 2);
+    db.assert_count(
+        "MATCH (n:User) WHERE n.name = 'Alice' OR n.name = 'Bob' RETURN n",
+        2,
+    );
 }
 
 #[test]
@@ -231,7 +237,10 @@ fn where_false_constant() {
 fn where_on_relationship_property() {
     let db = TestDb::new();
     db.seed_social_graph();
-    db.assert_count("MATCH (a)-[r:FOLLOWS]->(b) WHERE r.since > 2020 RETURN a, b", 1);
+    db.assert_count(
+        "MATCH (a)-[r:FOLLOWS]->(b) WHERE r.since > 2020 RETURN a, b",
+        1,
+    );
 }
 
 // ============================================================
@@ -362,7 +371,10 @@ fn where_ends_with_empty_string_matches_all() {
 #[test]
 fn where_starts_with_full_string() {
     let db = db_with_users();
-    db.assert_count("MATCH (n:User) WHERE n.name STARTS WITH 'Alice' RETURN n", 1);
+    db.assert_count(
+        "MATCH (n:User) WHERE n.name STARTS WITH 'Alice' RETURN n",
+        1,
+    );
 }
 
 #[test]
@@ -391,7 +403,10 @@ fn where_is_not_null_on_relationship_property() {
     let db = TestDb::new();
     db.run("CREATE (a:N {id:1})-[:R {weight: 5}]->(b:N {id:2})");
     db.run("CREATE (c:N {id:3})-[:R]->(d:N {id:4})");
-    db.assert_count("MATCH (a)-[r:R]->(b) WHERE r.weight IS NOT NULL RETURN r", 1);
+    db.assert_count(
+        "MATCH (a)-[r:R]->(b) WHERE r.weight IS NOT NULL RETURN r",
+        1,
+    );
 }
 
 // ============================================================
@@ -551,10 +566,7 @@ fn where_ends_with_on_property() {
     let db = TestDb::new();
     db.seed_org_graph();
     // Names ending with 'e': Alice, Dave, Eve => 3
-    db.assert_count(
-        "MATCH (p:Person) WHERE p.name ENDS WITH 'e' RETURN p",
-        3,
-    );
+    db.assert_count("MATCH (p:Person) WHERE p.name ENDS WITH 'e' RETURN p", 3);
 }
 
 #[test]
@@ -562,10 +574,7 @@ fn where_contains_substring() {
     let db = TestDb::new();
     db.seed_org_graph();
     // Names containing 'a': Carol, Dave, Frank => 3
-    db.assert_count(
-        "MATCH (p:Person) WHERE p.name CONTAINS 'a' RETURN p",
-        3,
-    );
+    db.assert_count("MATCH (p:Person) WHERE p.name CONTAINS 'a' RETURN p", 3);
 }
 
 #[test]
@@ -582,10 +591,7 @@ fn where_string_operators_combined_with_and() {
 fn where_case_sensitive_starts_with() {
     let db = db_with_users();
     // 'a' lowercase should NOT match 'Alice'
-    db.assert_count(
-        "MATCH (n:User) WHERE n.name STARTS WITH 'a' RETURN n",
-        0,
-    );
+    db.assert_count("MATCH (n:User) WHERE n.name STARTS WITH 'a' RETURN n", 0);
 }
 
 #[test]
@@ -594,10 +600,7 @@ fn where_string_comparison_with_property_access() {
     db.seed_org_graph();
     // Compare property to literal string with > (lexicographic)
     // Names > 'D': Dave, Eve, Frank => 3
-    db.assert_count(
-        "MATCH (p:Person) WHERE p.name > 'D' RETURN p",
-        3,
-    );
+    db.assert_count("MATCH (p:Person) WHERE p.name > 'D' RETURN p", 3);
 }
 
 // ============================================================
@@ -640,9 +643,7 @@ fn where_null_check_on_relationship_property_missing() {
     db.seed_rich_social_graph();
     // FOLLOWS relationships have no 'since' property, KNOWS relationships do
     // All FOLLOWS edges should have since IS NULL
-    let follows_count = db.run(
-        "MATCH (a)-[r:FOLLOWS]->(b) WHERE r.since IS NULL RETURN r",
-    );
+    let follows_count = db.run("MATCH (a)-[r:FOLLOWS]->(b) WHERE r.since IS NULL RETURN r");
     assert_eq!(follows_count.len(), 6); // 6 FOLLOWS edges
 }
 
@@ -666,23 +667,17 @@ fn where_is_null_or_value_check() {
 #[test]
 fn where_price_times_qty_greater_than() {
     let db = TestDb::new();
-    db.run("CREATE (:Order {name: 'A', price: 20, qty: 3})");  // 60
-    db.run("CREATE (:Order {name: 'B', price: 50, qty: 3})");  // 150
-    db.run("CREATE (:Order {name: 'C', price: 10, qty: 5})");  // 50
-    db.assert_count(
-        "MATCH (o:Order) WHERE o.price * o.qty > 100 RETURN o",
-        1,
-    );
+    db.run("CREATE (:Order {name: 'A', price: 20, qty: 3})"); // 60
+    db.run("CREATE (:Order {name: 'B', price: 50, qty: 3})"); // 150
+    db.run("CREATE (:Order {name: 'C', price: 10, qty: 5})"); // 50
+    db.assert_count("MATCH (o:Order) WHERE o.price * o.qty > 100 RETURN o", 1);
 }
 
 #[test]
 fn where_age_plus_offset_less_than() {
     let db = db_with_users();
     // age + 5 < 32 => age < 27 => Bob(25), Dave(25) => 2
-    db.assert_count(
-        "MATCH (n:User) WHERE n.age + 5 < 32 RETURN n",
-        2,
-    );
+    db.assert_count("MATCH (n:User) WHERE n.age + 5 < 32 RETURN n", 2);
 }
 
 #[test]
@@ -690,10 +685,7 @@ fn where_modulo_filters_even_values() {
     let db = TestDb::new();
     db.seed_org_graph();
     // Even ages: Bob(28), Carol(42), Eve(26), Frank(50) => 4
-    db.assert_count(
-        "MATCH (p:Person) WHERE p.age % 2 = 0 RETURN p",
-        4,
-    );
+    db.assert_count("MATCH (p:Person) WHERE p.age % 2 = 0 RETURN p", 4);
 }
 
 #[test]
@@ -703,20 +695,14 @@ fn where_computed_expression_comparison() {
     db.run("CREATE (:Rect {width: 3, height: 3})");
     db.run("CREATE (:Rect {width: 20, height: 2})");
     // Area = width * height > 30 => Rect1(50), Rect3(40) => 2
-    db.assert_count(
-        "MATCH (r:Rect) WHERE r.width * r.height > 30 RETURN r",
-        2,
-    );
+    db.assert_count("MATCH (r:Rect) WHERE r.width * r.height > 30 RETURN r", 2);
 }
 
 #[test]
 fn where_subtraction_in_predicate() {
     let db = db_with_users();
     // age - 25 > 0 => age > 25 => Alice(30), Carol(35) => 2
-    db.assert_count(
-        "MATCH (n:User) WHERE n.age - 25 > 0 RETURN n",
-        2,
-    );
+    db.assert_count("MATCH (n:User) WHERE n.age - 25 > 0 RETURN n", 2);
 }
 
 // ============================================================
@@ -765,10 +751,7 @@ fn where_filter_relationship_by_year() {
     db.seed_rich_social_graph();
     // KNOWS relationships established since 2019 or later
     // Bob->Carol(2019), Bob->Dave(2020), Dave->Eve(2021) => 3
-    db.assert_count(
-        "MATCH (a)-[r:KNOWS]->(b) WHERE r.since >= 2019 RETURN r",
-        3,
-    );
+    db.assert_count("MATCH (a)-[r:KNOWS]->(b) WHERE r.since >= 2019 RETURN r", 3);
 }
 
 // ============================================================
@@ -780,9 +763,8 @@ fn where_exists_pattern_subquery() {
     // Lora: WHERE EXISTS { MATCH pattern }
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:MANAGES]->() } RETURN p.name AS name",
-    );
+    let rows =
+        db.run("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:MANAGES]->() } RETURN p.name AS name");
     // Frank and Carol are managers
     assert_eq!(rows.len(), 2);
 }
@@ -827,9 +809,7 @@ fn where_none_list_predicate() {
 fn where_regex_matching() {
     // Lora: WHERE n.name =~ 'regex.*pattern'
     let db = db_with_users();
-    let rows = db.run(
-        "MATCH (n:User) WHERE n.name =~ 'A.*' RETURN n.name AS name",
-    );
+    let rows = db.run("MATCH (n:User) WHERE n.name =~ 'A.*' RETURN n.name AS name");
     assert_eq!(rows.len(), 1);
 }
 
@@ -854,7 +834,7 @@ fn where_null_and_true_yields_null() {
     let db = TestDb::new();
     db.run("CREATE (:V {name: 'a', x: 1})");
     db.run("CREATE (:V {name: 'b'})"); // no x property
-    // null AND true → null (not truthy), so 'b' should NOT appear
+                                       // null AND true → null (not truthy), so 'b' should NOT appear
     let rows = db.run(
         "MATCH (v:V) WHERE v.x > 0 AND v.name IS NOT NULL RETURN v.name AS name ORDER BY name",
     );
@@ -867,10 +847,9 @@ fn where_null_or_true_yields_true() {
     let db = TestDb::new();
     db.run("CREATE (:V {name: 'a', x: 1})");
     db.run("CREATE (:V {name: 'b'})"); // no x property
-    // null OR true → true, so both should appear when combined with name IS NOT NULL
-    let rows = db.run(
-        "MATCH (v:V) WHERE v.x > 0 OR v.name IS NOT NULL RETURN v.name AS name ORDER BY name",
-    );
+                                       // null OR true → true, so both should appear when combined with name IS NOT NULL
+    let rows = db
+        .run("MATCH (v:V) WHERE v.x > 0 OR v.name IS NOT NULL RETURN v.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
 }
 
@@ -923,9 +902,7 @@ fn where_regex_match_basic() {
     db.run("CREATE (:Word {val: 'hello'})");
     db.run("CREATE (:Word {val: 'world'})");
     db.run("CREATE (:Word {val: 'help'})");
-    let rows = db.run(
-        "MATCH (w:Word) WHERE w.val =~ 'hel.*' RETURN w.val AS v ORDER BY v",
-    );
+    let rows = db.run("MATCH (w:Word) WHERE w.val =~ 'hel.*' RETURN w.val AS v ORDER BY v");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["v"], "hello");
     assert_eq!(rows[1]["v"], "help");
@@ -936,9 +913,7 @@ fn where_regex_case_insensitive() {
     let db = TestDb::new();
     db.run("CREATE (:W {val: 'Hello'})");
     db.run("CREATE (:W {val: 'WORLD'})");
-    let rows = db.run(
-        "MATCH (w:W) WHERE w.val =~ '(?i)hello' RETURN w.val AS v",
-    );
+    let rows = db.run("MATCH (w:W) WHERE w.val =~ '(?i)hello' RETURN w.val AS v");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["v"], "Hello");
 }
@@ -976,9 +951,7 @@ fn where_xor_logic() {
     db.run("CREATE (:B {a: true, b: false})");
     db.run("CREATE (:B {a: false, b: true})");
     db.run("CREATE (:B {a: false, b: false})");
-    let rows = db.run(
-        "MATCH (n:B) WHERE n.a XOR n.b RETURN n.a, n.b",
-    );
+    let rows = db.run("MATCH (n:B) WHERE n.a XOR n.b RETURN n.a, n.b");
     // XOR is true when exactly one is true
     assert_eq!(rows.len(), 2);
 }
@@ -989,9 +962,8 @@ fn where_multiple_property_ranges() {
     for i in 0..10 {
         db.run(&format!("CREATE (:N {{x: {}, y: {}}})", i, i * 2));
     }
-    let rows = db.run(
-        "MATCH (n:N) WHERE n.x >= 3 AND n.x <= 7 AND n.y > 8 RETURN n.x AS x ORDER BY x",
-    );
+    let rows =
+        db.run("MATCH (n:N) WHERE n.x >= 3 AND n.x <= 7 AND n.y > 8 RETURN n.x AS x ORDER BY x");
     // x in [3,7] and y > 8 → y=2x, so y>8 means x>4 → x in {5,6,7}
     assert_eq!(rows.len(), 3);
 }
@@ -1001,9 +973,7 @@ fn where_property_existence_check() {
     let db = TestDb::new();
     db.run("CREATE (:M {name: 'has', tag: 'yes'})");
     db.run("CREATE (:M {name: 'no_tag'})");
-    let rows = db.run(
-        "MATCH (m:M) WHERE m.tag IS NOT NULL RETURN m.name AS name",
-    );
+    let rows = db.run("MATCH (m:M) WHERE m.tag IS NOT NULL RETURN m.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "has");
 }
@@ -1014,9 +984,7 @@ fn where_string_comparison_ordering() {
     db.run("CREATE (:S {v: 'apple'})");
     db.run("CREATE (:S {v: 'banana'})");
     db.run("CREATE (:S {v: 'cherry'})");
-    let rows = db.run(
-        "MATCH (s:S) WHERE s.v > 'banana' RETURN s.v AS v",
-    );
+    let rows = db.run("MATCH (s:S) WHERE s.v > 'banana' RETURN s.v AS v");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["v"], "cherry");
 }
@@ -1063,10 +1031,7 @@ fn where_null_and_false_yields_false() {
     db.run("CREATE (:V {name: 'b', x: 1})");
     // For 'a': x IS missing → x > 0 is null; null AND (name='z') = null AND false = false
     // For 'b': x=1 > 0 is true; true AND (name='z') = true AND false = false
-    db.assert_count(
-        "MATCH (v:V) WHERE v.x > 0 AND v.name = 'z' RETURN v",
-        0,
-    );
+    db.assert_count("MATCH (v:V) WHERE v.x > 0 AND v.name = 'z' RETURN v", 0);
 }
 
 #[test]
@@ -1218,4 +1183,3 @@ fn where_pattern_predicate_not_exists() {
          RETURN p.name AS name",
     );
 }
-

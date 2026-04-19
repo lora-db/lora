@@ -1,5 +1,10 @@
 use crate::{errors::*, resolved::*, scope::*, symbols::*};
-use lora_ast::{Create, Delete, Document, Expr, InQueryCall, MapProjectionSelector, Match, Merge, NodePattern, Pattern, PatternElement, PatternPart, ProjectionBody, ProjectionItem, Query, QueryPart, ReadingClause, RelationshipPattern, Remove, RemoveItem, Return, Set, SetItem, SinglePartQuery, SingleQuery, Statement, Unwind, UpdatingClause, With};
+use lora_ast::{
+    Create, Delete, Document, Expr, InQueryCall, MapProjectionSelector, Match, Merge, NodePattern,
+    Pattern, PatternElement, PatternPart, ProjectionBody, ProjectionItem, Query, QueryPart,
+    ReadingClause, RelationshipPattern, Remove, RemoveItem, Return, Set, SetItem, SinglePartQuery,
+    SingleQuery, Statement, Unwind, UpdatingClause, With,
+};
 use lora_store::GraphStorage;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -68,7 +73,9 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                             }
                             // Validate column names when at least one side
                             // uses an explicit AS alias.
-                            for ((h_name, h_explicit), (b_name, b_explicit)) in hc.iter().zip(bc.iter()) {
+                            for ((h_name, h_explicit), (b_name, b_explicit)) in
+                                hc.iter().zip(bc.iter())
+                            {
                                 if (*h_explicit || *b_explicit) && h_name != b_name {
                                     return Err(SemanticError::UnionColumnNameMismatch(
                                         h_name.clone(),
@@ -173,9 +180,17 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
     }
 
     fn analyze_match(&mut self, m: &Match) -> Result<ResolvedMatch, SemanticError> {
-        let ctx = if m.optional { PatternContext::OptionalRead } else { PatternContext::Read };
+        let ctx = if m.optional {
+            PatternContext::OptionalRead
+        } else {
+            PatternContext::Read
+        };
         let pattern = self.analyze_pattern(&m.pattern, ctx)?;
-        let where_ = m.where_.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
+        let where_ = m
+            .where_
+            .as_ref()
+            .map(|e| self.analyze_expr(e))
+            .transpose()?;
 
         if let Some(ref w) = where_ {
             if expr_contains_aggregate(w) {
@@ -254,21 +269,27 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                         value: self.analyze_expr(value)?,
                     });
                 }
-                SetItem::SetVariable { variable, value, .. } => {
+                SetItem::SetVariable {
+                    variable, value, ..
+                } => {
                     let var = self.resolve_required_variable(&variable.name)?;
                     items.push(ResolvedSetItem::SetVariable {
                         variable: var,
                         value: self.analyze_expr(value)?,
                     });
                 }
-                SetItem::MutateVariable { variable, value, .. } => {
+                SetItem::MutateVariable {
+                    variable, value, ..
+                } => {
                     let var = self.resolve_required_variable(&variable.name)?;
                     items.push(ResolvedSetItem::MutateVariable {
                         variable: var,
                         value: self.analyze_expr(value)?,
                     });
                 }
-                SetItem::SetLabels { variable, labels, .. } => {
+                SetItem::SetLabels {
+                    variable, labels, ..
+                } => {
                     let var = self.resolve_required_variable(&variable.name)?;
                     for label in labels {
                         self.validate_label_name(label, PatternContext::Write)?;
@@ -289,7 +310,9 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
 
         for item in &r.items {
             match item {
-                RemoveItem::Labels { variable, labels, .. } => {
+                RemoveItem::Labels {
+                    variable, labels, ..
+                } => {
                     let var = self.resolve_required_variable(&variable.name)?;
                     items.push(ResolvedRemoveItem::Labels {
                         variable: var,
@@ -324,7 +347,8 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
             for (name, labels_list) in &node_labels {
                 // Only reject if the variable appears with distinct non-empty label sets
                 if labels_list.len() > 1 {
-                    let non_empty: Vec<&String> = labels_list.iter().filter(|l| !l.is_empty()).collect();
+                    let non_empty: Vec<&String> =
+                        labels_list.iter().filter(|l| !l.is_empty()).collect();
                     let unique_labels: BTreeSet<&String> = non_empty.iter().copied().collect();
                     if unique_labels.len() > 1 {
                         return Err(SemanticError::DuplicateVariable(name.clone()));
@@ -415,9 +439,7 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                 })
             }
 
-            PatternElement::Parenthesized(inner, _) => {
-                self.analyze_pattern_element(inner, context)
-            }
+            PatternElement::Parenthesized(inner, _) => self.analyze_pattern_element(inner, context),
 
             PatternElement::ShortestPath { all, element, .. } => {
                 let resolved = self.analyze_pattern_element(element, context)?;
@@ -556,7 +578,11 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                 self.analyze_expr(expr)
             }
             // For property access like `alias.prop`, check if the base is an alias.
-            Expr::Property { expr: inner, key, span } => {
+            Expr::Property {
+                expr: inner,
+                key,
+                span,
+            } => {
                 let inner = self.analyze_expr_with_aliases(inner, aliases)?;
                 if self.property_access_allowed(&inner, key) {
                     Ok(ResolvedExpr::Property {
@@ -572,7 +598,12 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                 }
             }
             // For function calls in ORDER BY (e.g. ORDER BY count(p))
-            Expr::FunctionCall { name, distinct, args, span } => {
+            Expr::FunctionCall {
+                name,
+                distinct,
+                args,
+                span,
+            } => {
                 let fn_name = name.join(".");
                 validate_function_name(&fn_name, span.start, span.end)?;
                 validate_function_arity(&fn_name, args.len())?;
@@ -721,7 +752,10 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                 self.scopes.push();
                 self.scopes.declare(variable.name.clone(), var_id);
                 let filter = filter.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
-                let map_expr = map_expr.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
+                let map_expr = map_expr
+                    .as_ref()
+                    .map(|e| self.analyze_expr(e))
+                    .transpose()?;
                 self.scopes.pop();
 
                 Ok(ResolvedExpr::ListComprehension {
@@ -759,7 +793,9 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                 })
             }
 
-            Expr::Index { expr: inner, index, .. } => {
+            Expr::Index {
+                expr: inner, index, ..
+            } => {
                 let expr = self.analyze_expr(inner)?;
                 let index = self.analyze_expr(index)?;
                 Ok(ResolvedExpr::Index {
@@ -768,10 +804,23 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                 })
             }
 
-            Expr::Slice { expr: inner, from, to, .. } => {
+            Expr::Slice {
+                expr: inner,
+                from,
+                to,
+                ..
+            } => {
                 let expr = self.analyze_expr(inner)?;
-                let from = from.as_ref().map(|e| self.analyze_expr(e)).transpose()?.map(Box::new);
-                let to = to.as_ref().map(|e| self.analyze_expr(e)).transpose()?.map(Box::new);
+                let from = from
+                    .as_ref()
+                    .map(|e| self.analyze_expr(e))
+                    .transpose()?
+                    .map(Box::new);
+                let to = to
+                    .as_ref()
+                    .map(|e| self.analyze_expr(e))
+                    .transpose()?
+                    .map(Box::new);
                 Ok(ResolvedExpr::Slice {
                     expr: Box::new(expr),
                     from,
@@ -780,9 +829,7 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
             }
 
             Expr::MapProjection {
-                base,
-                selectors,
-                ..
+                base, selectors, ..
             } => {
                 let base = self.analyze_expr(base)?;
                 let mut resolved_selectors = Vec::new();
@@ -796,7 +843,8 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                         }
                         MapProjectionSelector::Literal(key, expr) => {
                             let resolved = self.analyze_expr(expr)?;
-                            resolved_selectors.push(ResolvedMapSelector::Literal(key.clone(), resolved));
+                            resolved_selectors
+                                .push(ResolvedMapSelector::Literal(key.clone(), resolved));
                         }
                     }
                 }
@@ -837,16 +885,11 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
             }
 
             Expr::ExistsSubquery {
-                pattern,
-                where_,
-                ..
+                pattern, where_, ..
             } => {
                 let resolved_pattern =
                     self.analyze_pattern(pattern, PatternContext::OptionalRead)?;
-                let resolved_where = where_
-                    .as_ref()
-                    .map(|e| self.analyze_expr(e))
-                    .transpose()?;
+                let resolved_where = where_.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
                 Ok(ResolvedExpr::ExistsSubquery {
                     pattern: resolved_pattern,
                     where_: resolved_where.map(Box::new),
@@ -868,12 +911,8 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
                     }],
                     span: map_expr.span(),
                 };
-                let resolved_pattern =
-                    self.analyze_pattern(&pat, PatternContext::OptionalRead)?;
-                let resolved_where = where_
-                    .as_ref()
-                    .map(|e| self.analyze_expr(e))
-                    .transpose()?;
+                let resolved_pattern = self.analyze_pattern(&pat, PatternContext::OptionalRead)?;
+                let resolved_where = where_.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
                 let resolved_map = self.analyze_expr(map_expr)?;
                 Ok(ResolvedExpr::PatternComprehension {
                     pattern: resolved_pattern,
@@ -925,7 +964,11 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
 
         self.replace_scope(new_scope);
 
-        let where_ = w.where_.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
+        let where_ = w
+            .where_
+            .as_ref()
+            .map(|e| self.analyze_expr(e))
+            .transpose()?;
 
         Ok(ResolvedWith {
             distinct: w.body.distinct,
@@ -1003,8 +1046,16 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
             })
             .collect::<Result<Vec<_>, SemanticError>>()?;
 
-        let skip = body.skip.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
-        let limit = body.limit.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
+        let skip = body
+            .skip
+            .as_ref()
+            .map(|e| self.analyze_expr(e))
+            .transpose()?;
+        let limit = body
+            .limit
+            .as_ref()
+            .map(|e| self.analyze_expr(e))
+            .transpose()?;
 
         Ok(AnalyzedProjectionBody {
             items,
@@ -1047,8 +1098,10 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
         label: &str,
         context: PatternContext,
     ) -> Result<(), SemanticError> {
-        if matches!(context, PatternContext::Write | PatternContext::OptionalRead)
-            || self.storage.has_label_name(label)
+        if matches!(
+            context,
+            PatternContext::Write | PatternContext::OptionalRead
+        ) || self.storage.has_label_name(label)
             || self.storage.node_count() == 0
         {
             Ok(())
@@ -1062,8 +1115,10 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
         rel_type: &str,
         context: PatternContext,
     ) -> Result<(), SemanticError> {
-        if matches!(context, PatternContext::Write | PatternContext::OptionalRead)
-            || self.storage.has_relationship_type_name(rel_type)
+        if matches!(
+            context,
+            PatternContext::Write | PatternContext::OptionalRead
+        ) || self.storage.has_relationship_type_name(rel_type)
             || self.storage.relationship_count() == 0
         {
             Ok(())
@@ -1076,7 +1131,9 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
     /// Property names on the left side of SET are always allowed (new property creation).
     fn analyze_expr_write_property(&mut self, expr: &Expr) -> Result<ResolvedExpr, SemanticError> {
         match expr {
-            Expr::Property { expr: inner, key, .. } => {
+            Expr::Property {
+                expr: inner, key, ..
+            } => {
                 let inner_resolved = self.analyze_expr(inner)?;
                 Ok(ResolvedExpr::Property {
                     expr: Box::new(inner_resolved),
@@ -1113,42 +1170,111 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
 /// Known scalar and aggregate function names accepted by the engine.
 const KNOWN_FUNCTIONS: &[&str] = &[
     // Aggregate
-    "count", "sum", "avg", "min", "max", "collect",
-    "stdev", "stdevp", "percentilecont", "percentiledisc",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "collect",
+    "stdev",
+    "stdevp",
+    "percentilecont",
+    "percentiledisc",
     // Entity introspection
-    "id", "type", "labels", "keys", "properties",
+    "id",
+    "type",
+    "labels",
+    "keys",
+    "properties",
     // Path functions
-    "nodes", "relationships",
+    "nodes",
+    "relationships",
     // String
-    "tolower", "toupper", "trim", "ltrim", "rtrim",
-    "replace", "split", "substring", "reverse", "left", "right",
-    "lpad", "rpad", "char_length", "normalize",
+    "tolower",
+    "toupper",
+    "trim",
+    "ltrim",
+    "rtrim",
+    "replace",
+    "split",
+    "substring",
+    "reverse",
+    "left",
+    "right",
+    "lpad",
+    "rpad",
+    "char_length",
+    "normalize",
     // Type conversion / introspection
-    "tostring", "tointeger", "toint", "tofloat", "toboolean", "tobooleanornull",
+    "tostring",
+    "tointeger",
+    "toint",
+    "tofloat",
+    "toboolean",
+    "tobooleanornull",
     "valuetype",
     // Math — basic
-    "abs", "ceil", "floor", "round", "sqrt", "sign",
+    "abs",
+    "ceil",
+    "floor",
+    "round",
+    "sqrt",
+    "sign",
     // Math — trigonometric / logarithmic
-    "log", "ln", "log10", "exp",
-    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-    "degrees", "radians",
+    "log",
+    "ln",
+    "log10",
+    "exp",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "degrees",
+    "radians",
     // Math — constants
-    "pi", "e", "rand",
+    "pi",
+    "e",
+    "rand",
     // List / size
-    "size", "length", "head", "tail", "last", "range",
+    "size",
+    "length",
+    "head",
+    "tail",
+    "last",
+    "range",
     // Other
-    "coalesce", "timestamp",
+    "coalesce",
+    "timestamp",
     // Temporal
-    "date", "datetime", "time", "localtime", "localdatetime", "duration",
-    "date.truncate", "datetime.truncate",
-    "duration.between", "duration.indays",
+    "date",
+    "datetime",
+    "time",
+    "localtime",
+    "localdatetime",
+    "duration",
+    "date.truncate",
+    "datetime.truncate",
+    "duration.between",
+    "duration.indays",
     // Spatial
-    "point", "distance",
+    "point",
+    "distance",
 ];
 
 const AGGREGATE_FUNCTIONS: &[&str] = &[
-    "count", "sum", "avg", "min", "max", "collect",
-    "stdev", "stdevp", "percentilecont", "percentiledisc",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "collect",
+    "stdev",
+    "stdevp",
+    "percentilecont",
+    "percentiledisc",
 ];
 
 /// Returns (min_args, max_args) for known functions. `None` means no upper bound (variadic).
@@ -1156,12 +1282,12 @@ fn function_arity(name: &str) -> Option<(usize, Option<usize>)> {
     match name {
         // Aggregate — all take exactly 1 argument (count can take 0 for count(*))
         "count" => Some((0, Some(1))),
-        "sum" | "avg" | "min" | "max" | "collect"
-        | "stdev" | "stdevp" => Some((1, Some(1))),
+        "sum" | "avg" | "min" | "max" | "collect" | "stdev" | "stdevp" => Some((1, Some(1))),
         "percentilecont" | "percentiledisc" => Some((2, Some(2))),
         // Entity introspection — exactly 1
-        "id" | "type" | "labels" | "keys" | "properties"
-        | "nodes" | "relationships" => Some((1, Some(1))),
+        "id" | "type" | "labels" | "keys" | "properties" | "nodes" | "relationships" => {
+            Some((1, Some(1)))
+        }
         // String — 1 arg
         "tolower" | "toupper" | "trim" | "ltrim" | "rtrim" | "reverse" => Some((1, Some(1))),
         // String — 2 args
@@ -1171,8 +1297,8 @@ fn function_arity(name: &str) -> Option<(usize, Option<usize>)> {
         // substring: 2 or 3 args
         "substring" => Some((2, Some(3))),
         // Type conversion — exactly 1
-        "tostring" | "tointeger" | "toint" | "tofloat"
-        | "toboolean" | "tobooleanornull" | "valuetype" => Some((1, Some(1))),
+        "tostring" | "tointeger" | "toint" | "tofloat" | "toboolean" | "tobooleanornull"
+        | "valuetype" => Some((1, Some(1))),
         // String — lpad/rpad take 3
         "lpad" | "rpad" => Some((3, Some(3))),
         // String — char_length/normalize take 1
@@ -1180,8 +1306,7 @@ fn function_arity(name: &str) -> Option<(usize, Option<usize>)> {
         // Math — exactly 1
         "abs" | "ceil" | "floor" | "round" | "sqrt" | "sign" => Some((1, Some(1))),
         // Math — trig / logarithmic (1 arg)
-        "log" | "ln" | "log10" | "exp"
-        | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
+        "log" | "ln" | "log10" | "exp" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
         | "degrees" | "radians" => Some((1, Some(1))),
         // Math — atan2 (2 args)
         "atan2" => Some((2, Some(2))),
@@ -1200,8 +1325,9 @@ fn function_arity(name: &str) -> Option<(usize, Option<usize>)> {
         // duration: exactly 1
         "duration" => Some((1, Some(1))),
         // Temporal namespace functions: exactly 2
-        "date.truncate" | "datetime.truncate"
-        | "duration.between" | "duration.indays" => Some((2, Some(2))),
+        "date.truncate" | "datetime.truncate" | "duration.between" | "duration.indays" => {
+            Some((2, Some(2)))
+        }
         // Spatial
         "point" => Some((1, Some(1))),
         "distance" => Some((2, Some(2))),
@@ -1215,7 +1341,7 @@ fn is_aggregate_function(name: &str) -> bool {
 
 fn validate_function_name(name: &str, start: usize, end: usize) -> Result<(), SemanticError> {
     let lower = name.to_ascii_lowercase();
-    if KNOWN_FUNCTIONS.iter().any(|f| *f == lower.as_str()) {
+    if KNOWN_FUNCTIONS.contains(&lower.as_str()) {
         Ok(())
     } else {
         Err(SemanticError::UnknownFunction(name.to_string(), start, end))
@@ -1233,7 +1359,11 @@ fn validate_function_arity(name: &str, arg_count: usize) -> Result<(), SemanticE
             } else {
                 format!("at least {min}")
             };
-            return Err(SemanticError::WrongArity(name.to_string(), expected, arg_count));
+            return Err(SemanticError::WrongArity(
+                name.to_string(),
+                expected,
+                arg_count,
+            ));
         }
         if let Some(mx) = max {
             if arg_count > mx {
@@ -1242,7 +1372,11 @@ fn validate_function_arity(name: &str, arg_count: usize) -> Result<(), SemanticE
                 } else {
                     format!("{min}..{mx}")
                 };
-                return Err(SemanticError::WrongArity(name.to_string(), expected, arg_count));
+                return Err(SemanticError::WrongArity(
+                    name.to_string(),
+                    expected,
+                    arg_count,
+                ));
             }
         }
     }
@@ -1289,21 +1423,40 @@ fn expr_contains_aggregate(expr: &ResolvedExpr) -> bool {
         ResolvedExpr::Property { expr, .. } => expr_contains_aggregate(expr),
         ResolvedExpr::List(items) => items.iter().any(expr_contains_aggregate),
         ResolvedExpr::Map(items) => items.iter().any(|(_, v)| expr_contains_aggregate(v)),
-        ResolvedExpr::Case { input, alternatives, else_expr } => {
+        ResolvedExpr::Case {
+            input,
+            alternatives,
+            else_expr,
+        } => {
             input.as_ref().is_some_and(|e| expr_contains_aggregate(e))
-                || alternatives.iter().any(|(w, t)| expr_contains_aggregate(w) || expr_contains_aggregate(t))
-                || else_expr.as_ref().is_some_and(|e| expr_contains_aggregate(e))
+                || alternatives
+                    .iter()
+                    .any(|(w, t)| expr_contains_aggregate(w) || expr_contains_aggregate(t))
+                || else_expr
+                    .as_ref()
+                    .is_some_and(|e| expr_contains_aggregate(e))
         }
-        ResolvedExpr::ListPredicate { list, predicate, .. } => {
-            expr_contains_aggregate(list) || expr_contains_aggregate(predicate)
-        }
-        ResolvedExpr::ListComprehension { list, filter, map_expr, .. } => {
+        ResolvedExpr::ListPredicate {
+            list, predicate, ..
+        } => expr_contains_aggregate(list) || expr_contains_aggregate(predicate),
+        ResolvedExpr::ListComprehension {
+            list,
+            filter,
+            map_expr,
+            ..
+        } => {
             expr_contains_aggregate(list)
                 || filter.as_ref().is_some_and(|e| expr_contains_aggregate(e))
-                || map_expr.as_ref().is_some_and(|e| expr_contains_aggregate(e))
+                || map_expr
+                    .as_ref()
+                    .is_some_and(|e| expr_contains_aggregate(e))
         }
-        ResolvedExpr::Reduce { init, list, expr, .. } => {
-            expr_contains_aggregate(init) || expr_contains_aggregate(list) || expr_contains_aggregate(expr)
+        ResolvedExpr::Reduce {
+            init, list, expr, ..
+        } => {
+            expr_contains_aggregate(init)
+                || expr_contains_aggregate(list)
+                || expr_contains_aggregate(expr)
         }
         ResolvedExpr::Index { expr, index } => {
             expr_contains_aggregate(expr) || expr_contains_aggregate(index)
@@ -1313,10 +1466,10 @@ fn expr_contains_aggregate(expr: &ResolvedExpr) -> bool {
                 || from.as_ref().is_some_and(|e| expr_contains_aggregate(e))
                 || to.as_ref().is_some_and(|e| expr_contains_aggregate(e))
         }
-        ResolvedExpr::MapProjection { base, selectors } => {
-            expr_contains_aggregate(base)
-                || selectors.iter().any(|s| matches!(s, ResolvedMapSelector::Literal(_, e) if expr_contains_aggregate(e)))
-        }
+        ResolvedExpr::MapProjection { base, selectors } => expr_contains_aggregate(base)
+            || selectors.iter().any(
+                |s| matches!(s, ResolvedMapSelector::Literal(_, e) if expr_contains_aggregate(e)),
+            ),
         ResolvedExpr::ExistsSubquery { .. } | ResolvedExpr::PatternComprehension { .. } => false,
         ResolvedExpr::Variable(_) | ResolvedExpr::Literal(_) | ResolvedExpr::Parameter(_) => false,
     }

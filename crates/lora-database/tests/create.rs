@@ -1,5 +1,9 @@
-/// CREATE clause tests — node creation, relationship creation, pattern creation,
-/// property types, edge cases.
+// Float literal 3.14 in this file is a test fixture, not a PI approximation.
+#![allow(clippy::approx_constant)]
+
+//! CREATE clause tests — node creation, relationship creation, pattern creation,
+//! property types, edge cases.
+
 mod test_helpers;
 use test_helpers::TestDb;
 
@@ -187,7 +191,8 @@ fn create_multiple_relationships_same_type() {
 #[test]
 fn create_pattern_node_and_relationship() {
     let db = TestDb::new();
-    let rows = db.run("CREATE (a:User {name: 'Alice'})-[:FOLLOWS]->(b:User {name: 'Bob'}) RETURN a, b");
+    let rows =
+        db.run("CREATE (a:User {name: 'Alice'})-[:FOLLOWS]->(b:User {name: 'Bob'}) RETURN a, b");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["a"]["properties"]["name"], "Alice");
     assert_eq!(rows[0]["b"]["properties"]["name"], "Bob");
@@ -205,7 +210,10 @@ fn create_self_referential_relationship() {
     let db = TestDb::new();
     db.run("CREATE (a:User {name: 'Alice'})");
     db.run("MATCH (a:User {name: 'Alice'}) CREATE (a)-[:SELF_REF]->(a)");
-    db.assert_count("MATCH (a:User {name: 'Alice'})-[:SELF_REF]->(a) RETURN a", 1);
+    db.assert_count(
+        "MATCH (a:User {name: 'Alice'})-[:SELF_REF]->(a) RETURN a",
+        1,
+    );
 }
 
 #[test]
@@ -215,7 +223,10 @@ fn create_parallel_edges_between_same_nodes() {
     db.run("CREATE (b:User {name: 'Bob'})");
     db.run("MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'}) CREATE (a)-[:FOLLOWS]->(b)");
     db.run("MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'}) CREATE (a)-[:KNOWS]->(b)");
-    db.assert_count("MATCH (a:User {name: 'Alice'})-[r]->(b:User {name: 'Bob'}) RETURN r", 2);
+    db.assert_count(
+        "MATCH (a:User {name: 'Alice'})-[r]->(b:User {name: 'Bob'}) RETURN r",
+        2,
+    );
 }
 
 #[test]
@@ -225,7 +236,10 @@ fn create_duplicate_relationship_type_same_pair() {
     db.run("CREATE (b:User {name: 'Bob'})");
     db.run("MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'}) CREATE (a)-[:FOLLOWS]->(b)");
     db.run("MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'}) CREATE (a)-[:FOLLOWS]->(b)");
-    db.assert_count("MATCH (a:User {name: 'Alice'})-[r:FOLLOWS]->(b:User {name: 'Bob'}) RETURN r", 2);
+    db.assert_count(
+        "MATCH (a:User {name: 'Alice'})-[r:FOLLOWS]->(b:User {name: 'Bob'}) RETURN r",
+        2,
+    );
 }
 
 #[test]
@@ -236,7 +250,10 @@ fn create_company_with_employees_and_verify() {
     db.run("CREATE (:Emp {name:'Bob', salary: 55000})");
     db.run("MATCH (e:Emp {name:'Alice'}), (d:Dept {name:'Sales'}) CREATE (e)-[:IN_DEPT]->(d)");
     db.run("MATCH (e:Emp {name:'Bob'}),   (d:Dept {name:'Sales'}) CREATE (e)-[:IN_DEPT]->(d)");
-    db.assert_count("MATCH (e:Emp)-[:IN_DEPT]->(d:Dept {name:'Sales'}) RETURN e", 2);
+    db.assert_count(
+        "MATCH (e:Emp)-[:IN_DEPT]->(d:Dept {name:'Sales'}) RETURN e",
+        2,
+    );
 }
 
 // ============================================================
@@ -297,7 +314,8 @@ fn create_chain_three_hops() {
 #[test]
 fn create_returning_node_properties() {
     let db = TestDb::new();
-    let rows = db.run("CREATE (n:User {name: 'Alice', age: 30}) RETURN n.name AS name, n.age AS age");
+    let rows =
+        db.run("CREATE (n:User {name: 'Alice', age: 30}) RETURN n.name AS name, n.age AS age");
     assert_eq!(rows[0]["name"], "Alice");
     assert_eq!(rows[0]["age"], 30);
 }
@@ -333,7 +351,10 @@ fn create_relationship_reusing_matched_variable() {
         "MATCH (a:Person), (b:Person {name:'Alice'}) WHERE a.name <> 'Alice' \
          CREATE (a)-[:FOLLOWS]->(b)",
     );
-    db.assert_count("MATCH (a)-[:FOLLOWS]->(b:Person {name:'Alice'}) RETURN a", 2);
+    db.assert_count(
+        "MATCH (a)-[:FOLLOWS]->(b:Person {name:'Alice'}) RETURN a",
+        2,
+    );
 }
 
 // ============================================================
@@ -449,8 +470,14 @@ fn create_bidirectional_edges_between_matched_nodes() {
     db.run("CREATE (:Peer {name:'B'})");
     db.run("MATCH (a:Peer {name:'A'}), (b:Peer {name:'B'}) CREATE (a)-[:LINK]->(b)");
     db.run("MATCH (a:Peer {name:'A'}), (b:Peer {name:'B'}) CREATE (b)-[:LINK]->(a)");
-    db.assert_count("MATCH (a:Peer {name:'A'})-[:LINK]->(b:Peer {name:'B'}) RETURN a", 1);
-    db.assert_count("MATCH (b:Peer {name:'B'})-[:LINK]->(a:Peer {name:'A'}) RETURN b", 1);
+    db.assert_count(
+        "MATCH (a:Peer {name:'A'})-[:LINK]->(b:Peer {name:'B'}) RETURN a",
+        1,
+    );
+    db.assert_count(
+        "MATCH (b:Peer {name:'B'})-[:LINK]->(a:Peer {name:'A'}) RETURN b",
+        1,
+    );
     db.assert_count("MATCH (x:Peer)-[:LINK]->(y:Peer) RETURN x, y", 2);
 }
 
@@ -472,9 +499,8 @@ fn create_then_match_with_complex_where_to_verify() {
     db.run("CREATE (:Product {name:'Widget', price: 25, category: 'tools'})");
     db.run("CREATE (:Product {name:'Gadget', price: 50, category: 'electronics'})");
     db.run("CREATE (:Product {name:'Gizmo', price: 15, category: 'tools'})");
-    let rows = db.run(
-        "MATCH (p:Product) WHERE p.category = 'tools' AND p.price > 20 RETURN p.name AS name",
-    );
+    let rows = db
+        .run("MATCH (p:Product) WHERE p.category = 'tools' AND p.price > 20 RETURN p.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "Widget");
 }
@@ -580,9 +606,8 @@ fn create_summary_from_aggregation() {
          WITH p.dept AS dept, count(p) AS cnt \
          CREATE (:DeptSummary {dept: dept, headcount: cnt})",
     );
-    let rows = db.run(
-        "MATCH (d:DeptSummary) RETURN d.dept AS dept, d.headcount AS cnt ORDER BY d.dept",
-    );
+    let rows =
+        db.run("MATCH (d:DeptSummary) RETURN d.dept AS dept, d.headcount AS cnt ORDER BY d.dept");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["dept"], "Engineering");
     assert_eq!(rows[0]["cnt"], 4);

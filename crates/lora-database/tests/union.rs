@@ -12,9 +12,8 @@ fn union_combines_results() {
     let db = TestDb::new();
     db.run("CREATE (a:User {name: 'Alice'})");
     db.run("CREATE (b:Product {name: 'Widget'})");
-    let rows = db.run(
-        "MATCH (n:User) RETURN n.name AS name UNION MATCH (n:Product) RETURN n.name AS name",
-    );
+    let rows = db
+        .run("MATCH (n:User) RETURN n.name AS name UNION MATCH (n:Product) RETURN n.name AS name");
     assert_eq!(rows.len(), 2);
 }
 
@@ -52,9 +51,8 @@ fn union_all_preserves_duplicates() {
     let db = TestDb::new();
     db.run("CREATE (a:User {name: 'Alice'})");
     db.run("CREATE (b:User {name: 'Alice'})");
-    let rows = db.run(
-        "MATCH (n:User) RETURN n.name AS name UNION ALL MATCH (n:User) RETURN n.name AS name",
-    );
+    let rows = db
+        .run("MATCH (n:User) RETURN n.name AS name UNION ALL MATCH (n:User) RETURN n.name AS name");
     assert_eq!(rows.len(), 4);
 }
 
@@ -63,9 +61,7 @@ fn union_all_keeps_all_rows() {
     let db = TestDb::new();
     db.run("CREATE (:A {val: 1})");
     db.run("CREATE (:B {val: 1})");
-    let rows = db.run(
-        "MATCH (n:A) RETURN n.val AS v UNION ALL MATCH (n:B) RETURN n.val AS v",
-    );
+    let rows = db.run("MATCH (n:A) RETURN n.val AS v UNION ALL MATCH (n:B) RETURN n.val AS v");
     assert_eq!(rows.len(), 2);
 }
 
@@ -76,9 +72,7 @@ fn union_all_preserves_branch_order() {
     db.run("CREATE (:A {v:2})");
     db.run("CREATE (:B {v:3})");
     db.run("CREATE (:B {v:4})");
-    let rows = db.run(
-        "MATCH (n:A) RETURN n.v AS v UNION ALL MATCH (n:B) RETURN n.v AS v",
-    );
+    let rows = db.run("MATCH (n:A) RETURN n.v AS v UNION ALL MATCH (n:B) RETURN n.v AS v");
     assert_eq!(rows.len(), 4);
     let vals: Vec<i64> = rows.iter().map(|r| r["v"].as_i64().unwrap()).collect();
     assert!(vals[0] <= 2 && vals[1] <= 2);
@@ -111,9 +105,8 @@ fn union_three_branches() {
 #[test]
 fn union_one_empty_branch() {
     let db = TestDb::new();
-    let rows = db.run(
-        "MATCH (n:X) RETURN n.name AS name UNION ALL MATCH (n:Y) RETURN n.name AS name",
-    );
+    let rows =
+        db.run("MATCH (n:X) RETURN n.name AS name UNION ALL MATCH (n:Y) RETURN n.name AS name");
     assert_eq!(rows.len(), 0);
 }
 
@@ -133,9 +126,7 @@ fn union_one_populated_one_empty() {
 #[test]
 fn union_both_empty() {
     let db = TestDb::new();
-    let rows = db.run(
-        "MATCH (a:Nothing) RETURN a.x AS v UNION ALL MATCH (b:Nada) RETURN b.x AS v",
-    );
+    let rows = db.run("MATCH (a:Nothing) RETURN a.x AS v UNION ALL MATCH (b:Nada) RETURN b.x AS v");
     assert_eq!(rows.len(), 0);
 }
 

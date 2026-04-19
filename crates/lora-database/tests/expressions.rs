@@ -1,6 +1,11 @@
-/// Expression evaluation tests — arithmetic, boolean, comparison, string ops,
-/// CASE, UNWIND, functions (type, labels, keys, size, head, tail, coalesce,
-/// id, toString, toInteger, toFloat, abs, range).
+// Float literals like 3.14 / 1.4142 in this file are test fixtures, not
+// mathematical approximations of PI / SQRT_2.
+#![allow(clippy::approx_constant)]
+
+//! Expression evaluation tests — arithmetic, boolean, comparison, string ops,
+//! CASE, UNWIND, functions (type, labels, keys, size, head, tail, coalesce,
+//! id, toString, toInteger, toFloat, abs, range).
+
 mod test_helpers;
 use test_helpers::TestDb;
 
@@ -9,13 +14,19 @@ use test_helpers::TestDb;
 // ============================================================
 
 #[test]
-fn expr_addition() { assert_eq!(TestDb::new().scalar("RETURN 1 + 2"), 3); }
+fn expr_addition() {
+    assert_eq!(TestDb::new().scalar("RETURN 1 + 2"), 3);
+}
 
 #[test]
-fn expr_subtraction() { assert_eq!(TestDb::new().scalar("RETURN 10 - 3"), 7); }
+fn expr_subtraction() {
+    assert_eq!(TestDb::new().scalar("RETURN 10 - 3"), 7);
+}
 
 #[test]
-fn expr_multiplication() { assert_eq!(TestDb::new().scalar("RETURN 4 * 5"), 20); }
+fn expr_multiplication() {
+    assert_eq!(TestDb::new().scalar("RETURN 4 * 5"), 20);
+}
 
 #[test]
 fn expr_division() {
@@ -24,34 +35,52 @@ fn expr_division() {
 }
 
 #[test]
-fn expr_modulo() { assert_eq!(TestDb::new().scalar("RETURN 10 % 3"), 1); }
+fn expr_modulo() {
+    assert_eq!(TestDb::new().scalar("RETURN 10 % 3"), 1);
+}
 
 #[test]
-fn expr_power() { assert_eq!(TestDb::new().scalar("RETURN 2 ^ 3"), 8); }
+fn expr_power() {
+    assert_eq!(TestDb::new().scalar("RETURN 2 ^ 3"), 8);
+}
 
 #[test]
-fn expr_unary_negative() { assert_eq!(TestDb::new().scalar("RETURN -5"), -5); }
+fn expr_unary_negative() {
+    assert_eq!(TestDb::new().scalar("RETURN -5"), -5);
+}
 
 #[test]
-fn expr_unary_positive() { assert_eq!(TestDb::new().scalar("RETURN +5"), 5); }
+fn expr_unary_positive() {
+    assert_eq!(TestDb::new().scalar("RETURN +5"), 5);
+}
 
 #[test]
-fn expr_parenthesized_precedence() { assert_eq!(TestDb::new().scalar("RETURN (1 + 2) * 3"), 9); }
+fn expr_parenthesized_precedence() {
+    assert_eq!(TestDb::new().scalar("RETURN (1 + 2) * 3"), 9);
+}
 
 #[test]
-fn expr_operator_precedence() { assert_eq!(TestDb::new().scalar("RETURN 2 + 3 * 4"), 14); }
+fn expr_operator_precedence() {
+    assert_eq!(TestDb::new().scalar("RETURN 2 + 3 * 4"), 14);
+}
 
 #[test]
-fn division_by_zero_returns_null() { assert!(TestDb::new().scalar("RETURN 10 / 0").is_null()); }
+fn division_by_zero_returns_null() {
+    assert!(TestDb::new().scalar("RETURN 10 / 0").is_null());
+}
 
 #[test]
-fn modulo_by_zero_returns_null() { assert!(TestDb::new().scalar("RETURN 10 % 0").is_null()); }
+fn modulo_by_zero_returns_null() {
+    assert!(TestDb::new().scalar("RETURN 10 % 0").is_null());
+}
 
 #[test]
 fn arithmetic_on_properties() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run("MATCH (p:Person {name:'Alice'})-[r:WORKS_AT]->(c:Company) RETURN 2024 - r.since AS years");
+    let rows = db.run(
+        "MATCH (p:Person {name:'Alice'})-[r:WORKS_AT]->(c:Company) RETURN 2024 - r.since AS years",
+    );
     assert_eq!(rows[0]["years"], 6);
 }
 
@@ -60,16 +89,24 @@ fn arithmetic_on_properties() {
 // ============================================================
 
 #[test]
-fn expr_boolean_and() { assert_eq!(TestDb::new().scalar("RETURN true AND false"), false); }
+fn expr_boolean_and() {
+    assert_eq!(TestDb::new().scalar("RETURN true AND false"), false);
+}
 
 #[test]
-fn expr_boolean_or() { assert_eq!(TestDb::new().scalar("RETURN true OR false"), true); }
+fn expr_boolean_or() {
+    assert_eq!(TestDb::new().scalar("RETURN true OR false"), true);
+}
 
 #[test]
-fn expr_boolean_not() { assert_eq!(TestDb::new().scalar("RETURN NOT true"), false); }
+fn expr_boolean_not() {
+    assert_eq!(TestDb::new().scalar("RETURN NOT true"), false);
+}
 
 #[test]
-fn not_of_not() { assert_eq!(TestDb::new().scalar("RETURN NOT NOT true"), true); }
+fn not_of_not() {
+    assert_eq!(TestDb::new().scalar("RETURN NOT NOT true"), true);
+}
 
 #[test]
 fn chained_comparisons() {
@@ -83,35 +120,56 @@ fn chained_comparisons() {
 // ============================================================
 
 #[test]
-fn expr_eq_true() { assert_eq!(TestDb::new().scalar("RETURN 1 = 1"), true); }
+fn expr_eq_true() {
+    assert_eq!(TestDb::new().scalar("RETURN 1 = 1"), true);
+}
 
 #[test]
-fn expr_eq_false() { assert_eq!(TestDb::new().scalar("RETURN 1 = 2"), false); }
+fn expr_eq_false() {
+    assert_eq!(TestDb::new().scalar("RETURN 1 = 2"), false);
+}
 
 #[test]
-fn expr_ne() { assert_eq!(TestDb::new().scalar("RETURN 1 <> 2"), true); }
+fn expr_ne() {
+    assert_eq!(TestDb::new().scalar("RETURN 1 <> 2"), true);
+}
 
 #[test]
-fn expr_lt() { assert_eq!(TestDb::new().scalar("RETURN 1 < 2"), true); }
+fn expr_lt() {
+    assert_eq!(TestDb::new().scalar("RETURN 1 < 2"), true);
+}
 
 #[test]
-fn expr_gt() { assert_eq!(TestDb::new().scalar("RETURN 2 > 1"), true); }
+fn expr_gt() {
+    assert_eq!(TestDb::new().scalar("RETURN 2 > 1"), true);
+}
 
 #[test]
-fn expr_string_comparison() { assert_eq!(TestDb::new().scalar("RETURN 'a' < 'b'"), true); }
+fn expr_string_comparison() {
+    assert_eq!(TestDb::new().scalar("RETURN 'a' < 'b'"), true);
+}
 
 // ============================================================
 // String functions
 // ============================================================
 
 #[test]
-fn expr_tolower() { assert_eq!(TestDb::new().scalar("RETURN toLower('HELLO')"), "hello"); }
+fn expr_tolower() {
+    assert_eq!(TestDb::new().scalar("RETURN toLower('HELLO')"), "hello");
+}
 
 #[test]
-fn expr_toupper() { assert_eq!(TestDb::new().scalar("RETURN toUpper('hello')"), "HELLO"); }
+fn expr_toupper() {
+    assert_eq!(TestDb::new().scalar("RETURN toUpper('hello')"), "HELLO");
+}
 
 #[test]
-fn expr_string_concatenation() { assert_eq!(TestDb::new().scalar("RETURN 'hello' + ' ' + 'world'"), "hello world"); }
+fn expr_string_concatenation() {
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello' + ' ' + 'world'"),
+        "hello world"
+    );
+}
 
 #[test]
 fn tolower_on_property() {
@@ -142,22 +200,33 @@ fn string_concatenation_with_properties() {
 // ============================================================
 
 #[test]
-fn tointeger_from_string() { assert_eq!(TestDb::new().scalar("RETURN toInteger('42')"), 42); }
+fn tointeger_from_string() {
+    assert_eq!(TestDb::new().scalar("RETURN toInteger('42')"), 42);
+}
 
 #[test]
-fn tointeger_from_float() { assert_eq!(TestDb::new().scalar("RETURN toInteger(3.9)"), 3); }
+fn tointeger_from_float() {
+    assert_eq!(TestDb::new().scalar("RETURN toInteger(3.9)"), 3);
+}
 
 #[test]
 fn tofloat_from_string() {
-    let f = TestDb::new().scalar("RETURN toFloat('3.14')").as_f64().unwrap();
+    let f = TestDb::new()
+        .scalar("RETURN toFloat('3.14')")
+        .as_f64()
+        .unwrap();
     assert!((f - 3.14).abs() < 0.001);
 }
 
 #[test]
-fn tostring_from_integer() { assert_eq!(TestDb::new().scalar("RETURN toString(42)"), "42"); }
+fn tostring_from_integer() {
+    assert_eq!(TestDb::new().scalar("RETURN toString(42)"), "42");
+}
 
 #[test]
-fn tostring_from_boolean() { assert_eq!(TestDb::new().scalar("RETURN toString(true)"), "true"); }
+fn tostring_from_boolean() {
+    assert_eq!(TestDb::new().scalar("RETURN toString(true)"), "true");
+}
 
 #[test]
 fn abs_positive_and_negative() {
@@ -218,16 +287,24 @@ fn keys_returns_property_names() {
 // ============================================================
 
 #[test]
-fn size_of_list() { assert_eq!(TestDb::new().scalar("RETURN size([1,2,3,4,5])"), 5); }
+fn size_of_list() {
+    assert_eq!(TestDb::new().scalar("RETURN size([1,2,3,4,5])"), 5);
+}
 
 #[test]
-fn size_of_empty_list() { assert_eq!(TestDb::new().scalar("RETURN size([])"), 0); }
+fn size_of_empty_list() {
+    assert_eq!(TestDb::new().scalar("RETURN size([])"), 0);
+}
 
 #[test]
-fn size_of_string() { assert_eq!(TestDb::new().scalar("RETURN size('hello')"), 5); }
+fn size_of_string() {
+    assert_eq!(TestDb::new().scalar("RETURN size('hello')"), 5);
+}
 
 #[test]
-fn head_returns_first() { assert_eq!(TestDb::new().scalar("RETURN head([10, 20, 30])"), 10); }
+fn head_returns_first() {
+    assert_eq!(TestDb::new().scalar("RETURN head([10, 20, 30])"), 10);
+}
 
 #[test]
 fn tail_returns_rest() {
@@ -239,7 +316,9 @@ fn tail_returns_rest() {
 }
 
 #[test]
-fn head_of_empty_list_is_null() { assert!(TestDb::new().scalar("RETURN head([])").is_null()); }
+fn head_of_empty_list_is_null() {
+    assert!(TestDb::new().scalar("RETURN head([])").is_null());
+}
 
 // ============================================================
 // Range function
@@ -248,14 +327,24 @@ fn head_of_empty_list_is_null() { assert!(TestDb::new().scalar("RETURN head([])"
 #[test]
 fn range_basic() {
     let rows = TestDb::new().run("RETURN range(1, 5) AS r");
-    let vals: Vec<i64> = rows[0]["r"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    let vals: Vec<i64> = rows[0]["r"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
     assert_eq!(vals, vec![1, 2, 3, 4, 5]);
 }
 
 #[test]
 fn range_with_step() {
     let rows = TestDb::new().run("RETURN range(0, 10, 3) AS r");
-    let vals: Vec<i64> = rows[0]["r"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    let vals: Vec<i64> = rows[0]["r"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
     assert_eq!(vals, vec![0, 3, 6, 9]);
 }
 
@@ -264,17 +353,28 @@ fn range_with_step() {
 // ============================================================
 
 #[test]
-fn coalesce_returns_first_non_null() { assert_eq!(TestDb::new().scalar("RETURN coalesce(null, 'fallback')"), "fallback"); }
+fn coalesce_returns_first_non_null() {
+    assert_eq!(
+        TestDb::new().scalar("RETURN coalesce(null, 'fallback')"),
+        "fallback"
+    );
+}
 
 #[test]
-fn coalesce_returns_first_when_not_null() { assert_eq!(TestDb::new().scalar("RETURN coalesce('first', 'second')"), "first"); }
+fn coalesce_returns_first_when_not_null() {
+    assert_eq!(
+        TestDb::new().scalar("RETURN coalesce('first', 'second')"),
+        "first"
+    );
+}
 
 #[test]
 fn coalesce_on_node_with_and_without_property() {
     let db = TestDb::new();
     db.run("CREATE (:Person {name:'Alice', nick:'Ali'})");
     db.run("CREATE (:Person {name:'Bob'})");
-    let rows = db.run("MATCH (p:Person) RETURN coalesce(p.nick, p.name) AS display ORDER BY p.name");
+    let rows =
+        db.run("MATCH (p:Person) RETURN coalesce(p.nick, p.name) AS display ORDER BY p.name");
     assert_eq!(rows[0]["display"], "Ali");
     assert_eq!(rows[1]["display"], "Bob");
 }
@@ -284,10 +384,20 @@ fn coalesce_on_node_with_and_without_property() {
 // ============================================================
 
 #[test]
-fn case_generic_when_then() { assert_eq!(TestDb::new().scalar("RETURN CASE WHEN 1 = 1 THEN 'yes' ELSE 'no' END"), "yes"); }
+fn case_generic_when_then() {
+    assert_eq!(
+        TestDb::new().scalar("RETURN CASE WHEN 1 = 1 THEN 'yes' ELSE 'no' END"),
+        "yes"
+    );
+}
 
 #[test]
-fn case_generic_else_branch() { assert_eq!(TestDb::new().scalar("RETURN CASE WHEN 1 = 2 THEN 'yes' ELSE 'no' END"), "no"); }
+fn case_generic_else_branch() {
+    assert_eq!(
+        TestDb::new().scalar("RETURN CASE WHEN 1 = 2 THEN 'yes' ELSE 'no' END"),
+        "no"
+    );
+}
 
 #[test]
 fn case_simple_form() {
@@ -298,7 +408,11 @@ fn case_simple_form() {
 }
 
 #[test]
-fn case_no_match_returns_null_without_else() { assert!(TestDb::new().scalar("RETURN CASE WHEN false THEN 'yes' END").is_null()); }
+fn case_no_match_returns_null_without_else() {
+    assert!(TestDb::new()
+        .scalar("RETURN CASE WHEN false THEN 'yes' END")
+        .is_null());
+}
 
 #[test]
 fn case_in_return_classifies_data() {
@@ -320,10 +434,14 @@ fn case_in_return_classifies_data() {
 // ============================================================
 
 #[test]
-fn unwind_list() { assert_eq!(TestDb::new().run("UNWIND [1, 2, 3] AS n RETURN n").len(), 3); }
+fn unwind_list() {
+    assert_eq!(TestDb::new().run("UNWIND [1, 2, 3] AS n RETURN n").len(), 3);
+}
 
 #[test]
-fn unwind_empty_list() { TestDb::new().assert_count("UNWIND [] AS n RETURN n", 0); }
+fn unwind_empty_list() {
+    TestDb::new().assert_count("UNWIND [] AS n RETURN n", 0);
+}
 
 #[test]
 fn unwind_single_element() {
@@ -332,7 +450,9 @@ fn unwind_single_element() {
 }
 
 #[test]
-fn unwind_null_produces_no_rows() { TestDb::new().assert_count("UNWIND null AS n RETURN n", 0); }
+fn unwind_null_produces_no_rows() {
+    TestDb::new().assert_count("UNWIND null AS n RETURN n", 0);
+}
 
 // ============================================================
 // Pending: list comprehensions and subqueries
@@ -378,7 +498,8 @@ fn foreach_sets_property_on_list() {
 fn exists_subquery_in_where() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:MANAGES]->() } RETURN p.name AS name");
+    let rows =
+        db.run("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:MANAGES]->() } RETURN p.name AS name");
     assert_eq!(rows.len(), 2);
 }
 
@@ -485,7 +606,10 @@ fn expr_nested_tostring_tointeger() {
 
 #[test]
 fn expr_tolower_of_toupper() {
-    assert_eq!(TestDb::new().scalar("RETURN toLower(toUpper('hello'))"), "hello");
+    assert_eq!(
+        TestDb::new().scalar("RETURN toLower(toUpper('hello'))"),
+        "hello"
+    );
 }
 
 #[test]
@@ -500,13 +624,19 @@ fn expr_size_of_range() {
 #[test]
 fn case_multiple_whens() {
     let db = TestDb::new();
-    assert_eq!(db.scalar("RETURN CASE WHEN 1=2 THEN 'a' WHEN 2=3 THEN 'b' WHEN 3=3 THEN 'c' ELSE 'd' END"), "c");
+    assert_eq!(
+        db.scalar("RETURN CASE WHEN 1=2 THEN 'a' WHEN 2=3 THEN 'b' WHEN 3=3 THEN 'c' ELSE 'd' END"),
+        "c"
+    );
 }
 
 #[test]
 fn case_first_matching_when_wins() {
     let db = TestDb::new();
-    assert_eq!(db.scalar("RETURN CASE WHEN true THEN 'first' WHEN true THEN 'second' END"), "first");
+    assert_eq!(
+        db.scalar("RETURN CASE WHEN true THEN 'first' WHEN true THEN 'second' END"),
+        "first"
+    );
 }
 
 // ============================================================
@@ -587,12 +717,17 @@ fn abs_on_float() {
 
 #[test]
 fn coalesce_multiple_nulls_then_value() {
-    assert_eq!(TestDb::new().scalar("RETURN coalesce(null, null, null, 42)"), 42);
+    assert_eq!(
+        TestDb::new().scalar("RETURN coalesce(null, null, null, 42)"),
+        42
+    );
 }
 
 #[test]
 fn coalesce_all_nulls_returns_null() {
-    assert!(TestDb::new().scalar("RETURN coalesce(null, null, null)").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN coalesce(null, null, null)")
+        .is_null());
 }
 
 // ============================================================
@@ -631,27 +766,41 @@ fn rtrim_whitespace() {
 
 #[test]
 fn replace_substring() {
-    assert_eq!(TestDb::new().scalar("RETURN replace('hello world', 'world', 'rust')"), "hello rust");
+    assert_eq!(
+        TestDb::new().scalar("RETURN replace('hello world', 'world', 'rust')"),
+        "hello rust"
+    );
 }
 
 #[test]
 fn replace_all_occurrences() {
-    assert_eq!(TestDb::new().scalar("RETURN replace('a-b-c', '-', ':')"), "a:b:c");
+    assert_eq!(
+        TestDb::new().scalar("RETURN replace('a-b-c', '-', ':')"),
+        "a:b:c"
+    );
 }
 
 #[test]
 fn replace_no_match() {
-    assert_eq!(TestDb::new().scalar("RETURN replace('hello', 'xyz', 'abc')"), "hello");
+    assert_eq!(
+        TestDb::new().scalar("RETURN replace('hello', 'xyz', 'abc')"),
+        "hello"
+    );
 }
 
 #[test]
 fn replace_with_empty() {
-    assert_eq!(TestDb::new().scalar("RETURN replace('hello', 'l', '')"), "heo");
+    assert_eq!(
+        TestDb::new().scalar("RETURN replace('hello', 'l', '')"),
+        "heo"
+    );
 }
 
 #[test]
 fn replace_null_returns_null() {
-    assert!(TestDb::new().scalar("RETURN replace(null, 'a', 'b')").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN replace(null, 'a', 'b')")
+        .is_null());
 }
 
 #[test]
@@ -679,7 +828,10 @@ fn split_null_returns_null() {
 
 #[test]
 fn substring_three_args() {
-    assert_eq!(TestDb::new().scalar("RETURN substring('hello', 1, 3)"), "ell");
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('hello', 1, 3)"),
+        "ell"
+    );
 }
 
 #[test]
@@ -689,7 +841,10 @@ fn substring_two_args_rest_of_string() {
 
 #[test]
 fn substring_from_start() {
-    assert_eq!(TestDb::new().scalar("RETURN substring('hello', 0, 5)"), "hello");
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('hello', 0, 5)"),
+        "hello"
+    );
 }
 
 #[test]
@@ -704,7 +859,9 @@ fn substring_start_beyond_length() {
 
 #[test]
 fn substring_null_returns_null() {
-    assert!(TestDb::new().scalar("RETURN substring(null, 0, 5)").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN substring(null, 0, 5)")
+        .is_null());
 }
 
 #[test]
@@ -920,7 +1077,10 @@ fn ceil_of_sqrt() {
 fn round_computed_average() {
     // Simulate rounding an average: round((10 + 20 + 33) / 3.0)
     // 63 / 3.0 = 21.0 => round(21.0) => 21
-    assert_eq!(TestDb::new().scalar("RETURN round((10 + 20 + 33) / 3.0)"), 21);
+    assert_eq!(
+        TestDb::new().scalar("RETURN round((10 + 20 + 33) / 3.0)"),
+        21
+    );
 }
 
 #[test]
@@ -956,9 +1116,8 @@ fn case_with_null_input() {
     // Since null = null currently returns true in this engine, this matches.
     // In standard Lora, null = null => null => would fall to ELSE.
     // Accept whatever the engine does; just verify no crash.
-    let result = TestDb::new().scalar(
-        "RETURN CASE null WHEN null THEN 'matched' ELSE 'not-matched' END",
-    );
+    let result =
+        TestDb::new().scalar("RETURN CASE null WHEN null THEN 'matched' ELSE 'not-matched' END");
     assert!(result == "matched" || result == "not-matched");
 }
 
@@ -982,17 +1141,13 @@ fn case_with_expression_in_when() {
 fn case_returning_different_types() {
     // Branches return string vs integer — engine should handle gracefully
     let db = TestDb::new();
-    let result = db.scalar(
-        "RETURN CASE WHEN false THEN 'hello' WHEN true THEN 42 ELSE null END",
-    );
+    let result = db.scalar("RETURN CASE WHEN false THEN 'hello' WHEN true THEN 42 ELSE null END");
     assert_eq!(result, 42);
 }
 
 #[test]
 fn case_all_whens_false_no_else_returns_null() {
-    let result = TestDb::new().scalar(
-        "RETURN CASE WHEN 1 = 2 THEN 'a' WHEN 2 = 3 THEN 'b' END",
-    );
+    let result = TestDb::new().scalar("RETURN CASE WHEN 1 = 2 THEN 'a' WHEN 2 = 3 THEN 'b' END");
     assert!(result.is_null());
 }
 
@@ -1035,18 +1190,15 @@ fn unwind_with_aggregation() {
 #[test]
 fn unwind_strings_with_function() {
     // UNWIND list of strings and apply toUpper
-    let rows = TestDb::new().run(
-        "UNWIND ['hello', 'world'] AS word RETURN toUpper(word) AS upper",
-    );
+    let rows = TestDb::new().run("UNWIND ['hello', 'world'] AS word RETURN toUpper(word) AS upper");
     assert_eq!(rows[0]["upper"], "HELLO");
     assert_eq!(rows[1]["upper"], "WORLD");
 }
 
 #[test]
 fn unwind_nested_list() {
-    let rows = TestDb::new().run(
-        "UNWIND [[1,2],[3,4]] AS sublist UNWIND sublist AS val RETURN val",
-    );
+    let rows =
+        TestDb::new().run("UNWIND [[1,2],[3,4]] AS sublist UNWIND sublist AS val RETURN val");
     assert_eq!(rows.len(), 4);
 }
 
@@ -1073,9 +1225,7 @@ fn list_literal_in_return() {
 
 #[test]
 fn nested_map_list_literal() {
-    let rows = TestDb::new().run(
-        "RETURN {items: [1, 2, 3], label: 'test'} AS data",
-    );
+    let rows = TestDb::new().run("RETURN {items: [1, 2, 3], label: 'test'} AS data");
     let data = &rows[0]["data"];
     assert_eq!(data["label"], "test");
     let items = data["items"].as_array().unwrap();
@@ -1104,9 +1254,7 @@ fn empty_list_literal() {
 #[test]
 fn list_comprehension_filter_and_map() {
     // Lora: list comprehension [x IN list WHERE ... | expr]
-    let rows = TestDb::new().run(
-        "RETURN [x IN range(1, 10) WHERE x % 2 = 0 | x * x] AS squares",
-    );
+    let rows = TestDb::new().run("RETURN [x IN range(1, 10) WHERE x % 2 = 0 | x * x] AS squares");
     let arr = rows[0]["squares"].as_array().unwrap();
     assert_eq!(arr, &[4, 16, 36, 64, 100]);
 }
@@ -1114,9 +1262,7 @@ fn list_comprehension_filter_and_map() {
 #[test]
 fn reduce_function() {
     // Lora: reduce(acc = 0, x IN list | acc + x)
-    let result = TestDb::new().scalar(
-        "RETURN reduce(total = 0, x IN [1, 2, 3, 4, 5] | total + x)",
-    );
+    let result = TestDb::new().scalar("RETURN reduce(total = 0, x IN [1, 2, 3, 4, 5] | total + x)");
     assert_eq!(result, 15);
 }
 
@@ -1141,9 +1287,7 @@ fn timestamp_function() {
 #[test]
 fn point_and_distance_functions() {
     // Lora: point({x, y}) and distance(point1, point2)
-    let result = TestDb::new().scalar(
-        "RETURN distance(point({x: 0, y: 0}), point({x: 3, y: 4}))",
-    );
+    let result = TestDb::new().scalar("RETURN distance(point({x: 0, y: 0}), point({x: 3, y: 4}))");
     let v = result.as_f64().unwrap();
     assert!((v - 5.0).abs() < 0.001);
 }
@@ -1152,17 +1296,14 @@ fn point_and_distance_functions() {
 #[ignore = "duration type: duration arithmetic not yet implemented"]
 fn duration_type_and_arithmetic() {
     // Lora: duration type and arithmetic
-    let _rows = TestDb::new().run(
-        "RETURN duration('P1Y2M3D') AS d",
-    );
+    let _rows = TestDb::new().run("RETURN duration('P1Y2M3D') AS d");
 }
 
 #[test]
 fn case_type_coercion_in_branches() {
     // Lora: CASE branches returning mixed types with coercion
-    let result = TestDb::new().scalar(
-        "RETURN CASE WHEN true THEN 1 ELSE '1' END = CASE WHEN true THEN '1' ELSE 1 END",
-    );
+    let result = TestDb::new()
+        .scalar("RETURN CASE WHEN true THEN 1 ELSE '1' END = CASE WHEN true THEN '1' ELSE 1 END");
     assert_eq!(result, false);
 }
 
@@ -1170,7 +1311,5 @@ fn case_type_coercion_in_branches() {
 #[ignore = "APOC utilities: apoc-like utility functions not yet implemented"]
 fn apoc_like_utility_functions() {
     // Future extension target: apoc-like utility functions
-    let _rows = TestDb::new().run(
-        "RETURN apoc.text.join(['a', 'b', 'c'], '-') AS joined",
-    );
+    let _rows = TestDb::new().run("RETURN apoc.text.join(['a', 'b', 'c'], '-') AS joined");
 }

@@ -17,12 +17,10 @@
 
 mod fixtures;
 
-use std::hint::black_box;
-use criterion::{
-    criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
-use lora_database::{ExecuteOptions, ResultFormat};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use fixtures::*;
+use lora_database::{ExecuteOptions, ResultFormat};
+use std::hint::black_box;
 use std::time::Duration;
 
 fn opts() -> Option<ExecuteOptions> {
@@ -362,19 +360,13 @@ fn bench_list_predicates(c: &mut Criterion) {
     // without adding a new data point.
     for &size in &[100usize, 500] {
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("reduce_sum", size),
-            &size,
-            |b, &size| {
-                let db = BenchDb::new();
-                let q = format!(
-                    "RETURN reduce(acc = 0, x IN range(1, {size}) | acc + x) AS total"
-                );
-                b.iter(|| {
-                    black_box(db.service.execute(&q, opts()).unwrap());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("reduce_sum", size), &size, |b, &size| {
+            let db = BenchDb::new();
+            let q = format!("RETURN reduce(acc = 0, x IN range(1, {size}) | acc + x) AS total");
+            b.iter(|| {
+                black_box(db.service.execute(&q, opts()).unwrap());
+            });
+        });
     }
 
     group.finish();
@@ -562,10 +554,7 @@ fn bench_math_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute(
-                        "RETURN sin(1.0) AS s, cos(1.0) AS c, tan(0.5) AS t",
-                        opts(),
-                    )
+                    .execute("RETURN sin(1.0) AS s, cos(1.0) AS c, tan(0.5) AS t", opts())
                     .unwrap(),
             );
         });
@@ -747,10 +736,7 @@ fn bench_list_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute(
-                        "RETURN reverse(range(1, 100)) AS rev",
-                        opts(),
-                    )
+                    .execute("RETURN reverse(range(1, 100)) AS rev", opts())
                     .unwrap(),
             );
         });
@@ -777,10 +763,7 @@ fn bench_list_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute(
-                        "RETURN range(0, 100, 3) AS nums",
-                        opts(),
-                    )
+                    .execute("RETURN range(0, 100, 3) AS nums", opts())
                     .unwrap(),
             );
         });
@@ -792,10 +775,7 @@ fn bench_list_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute(
-                        "WITH range(1, 500) AS lst RETURN size(lst) AS s",
-                        opts(),
-                    )
+                    .execute("WITH range(1, 500) AS lst RETURN size(lst) AS s", opts())
                     .unwrap(),
             );
         });

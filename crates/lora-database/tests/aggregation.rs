@@ -70,9 +70,8 @@ fn count_distinct_departments() {
 fn count_distinct_cities() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN count(DISTINCT c.name) AS cities",
-    );
+    let rows =
+        db.run("MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN count(DISTINCT c.name) AS cities");
     assert_eq!(rows[0]["cities"], 3);
 }
 
@@ -188,9 +187,7 @@ fn count_grouped_by_property() {
 fn count_employees_per_department() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.dept AS dept, count(p) AS cnt ORDER BY p.dept",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN p.dept AS dept, count(p) AS cnt ORDER BY p.dept");
     assert_eq!(rows.len(), 2);
     for row in &rows {
         match row["dept"].as_str().unwrap() {
@@ -205,9 +202,8 @@ fn count_employees_per_department() {
 fn avg_age_per_department() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.dept AS dept, avg(p.age) AS avg_age ORDER BY p.dept",
-    );
+    let rows =
+        db.run("MATCH (p:Person) RETURN p.dept AS dept, avg(p.age) AS avg_age ORDER BY p.dept");
     assert_eq!(rows.len(), 2);
     for row in &rows {
         let avg = row["avg_age"].as_f64().unwrap();
@@ -246,9 +242,7 @@ fn having_filter_on_grouped_count() {
 fn count_outgoing_relationships_per_person() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person {name:'Frank'})-[r]->(x) RETURN count(r) AS rels",
-    );
+    let rows = db.run("MATCH (p:Person {name:'Frank'})-[r]->(x) RETURN count(r) AS rels");
     assert_eq!(rows[0]["rels"], 5);
 }
 
@@ -260,9 +254,8 @@ fn count_outgoing_relationships_per_person() {
 fn aggregation_on_empty_match() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) WHERE p.age > 100 RETURN count(p) AS cnt, sum(p.age) AS total",
-    );
+    let rows =
+        db.run("MATCH (p:Person) WHERE p.age > 100 RETURN count(p) AS cnt, sum(p.age) AS total");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], 0);
     assert!(rows[0]["total"].is_null() || rows[0]["total"] == 0);
@@ -324,9 +317,7 @@ fn count_star_no_match_clause() {
 #[test]
 fn count_star_grouped() {
     let db = db_with_data();
-    let rows = db.run(
-        "MATCH (n:User) RETURN n.dept AS dept, count(*) AS c ORDER BY n.dept",
-    );
+    let rows = db.run("MATCH (n:User) RETURN n.dept AS dept, count(*) AS c ORDER BY n.dept");
     assert_eq!(rows.len(), 2);
     for row in &rows {
         assert_eq!(row["c"], 2);
@@ -453,9 +444,8 @@ fn multiple_aggregates_grouped() {
 fn count_relationships_grouped_by_type() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (a)-[r]->(b) RETURN type(r) AS rel_type, count(r) AS cnt ORDER BY type(r)",
-    );
+    let rows =
+        db.run("MATCH (a)-[r]->(b) RETURN type(r) AS rel_type, count(r) AS cnt ORDER BY type(r)");
     // ASSIGNED_TO=4, LIVES_IN=6, MANAGES=4, WORKS_AT=6
     assert!(rows.len() >= 4);
 }
@@ -557,9 +547,7 @@ fn rich_social_avg_friendship_strength() {
     // Average friendship strength across all KNOWS relationships
     let db = TestDb::new();
     db.seed_rich_social_graph();
-    let rows = db.run(
-        "MATCH (a:Person)-[k:KNOWS]->(b:Person) RETURN avg(k.strength) AS avg_str",
-    );
+    let rows = db.run("MATCH (a:Person)-[k:KNOWS]->(b:Person) RETURN avg(k.strength) AS avg_str");
     // Strengths: 5, 8, 4, 3, 6, 2, 7 => sum=35, count=7, avg=5.0
     let avg = rows[0]["avg_str"].as_f64().unwrap();
     assert!((avg - 5.0).abs() < 0.01);
@@ -609,9 +597,7 @@ fn knowledge_graph_count_entities_per_type() {
     // Count entities grouped by type
     let db = TestDb::new();
     db.seed_knowledge_graph();
-    let rows = db.run(
-        "MATCH (e:Entity) RETURN e.type AS etype, count(e) AS cnt ORDER BY e.type",
-    );
+    let rows = db.run("MATCH (e:Entity) RETURN e.type AS etype, count(e) AS cnt ORDER BY e.type");
     // award=1, field=3 (Physics, Mathematics, Radioactivity), person=2, theory=2
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["etype"], "award");
@@ -629,9 +615,7 @@ fn knowledge_graph_count_relationships_per_entity() {
     // Count outgoing relationships for Einstein
     let db = TestDb::new();
     db.seed_knowledge_graph();
-    let rows = db.run(
-        "MATCH (e:Entity {name:'Albert Einstein'})-[r]->(x) RETURN count(r) AS rels",
-    );
+    let rows = db.run("MATCH (e:Entity {name:'Albert Einstein'})-[r]->(x) RETURN count(r) AS rels");
     // STUDIED(2) + PROPOSED(1) + CONTRIBUTED_TO(1) + RECEIVED(1) + AUTHORED(2) + HAS_ALIAS(2) = 9
     assert_eq!(rows[0]["rels"], 9);
 }
@@ -743,9 +727,7 @@ fn percentile_cont_function() {
     // Lora: percentileCont() function
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN percentileCont(p.age, 0.5) AS median_age",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN percentileCont(p.age, 0.5) AS median_age");
     assert!(!rows.is_empty());
 }
 
@@ -754,9 +736,7 @@ fn percentile_disc_function() {
     // Lora: percentileDisc() function
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN percentileDisc(p.age, 0.5) AS median_age",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN percentileDisc(p.age, 0.5) AS median_age");
     assert!(!rows.is_empty());
 }
 
@@ -765,9 +745,7 @@ fn stdev_function() {
     // Lora: stDev() function
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN stDev(p.age) AS sd",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN stDev(p.age) AS sd");
     let sd = rows[0]["sd"].as_f64().unwrap();
     assert!(sd > 0.0);
 }
@@ -842,9 +820,7 @@ fn agg_group_by_with_having_equivalent() {
 fn agg_count_distinct_values() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN count(DISTINCT p.dept) AS dept_count",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN count(DISTINCT p.dept) AS dept_count");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["dept_count"], 2); // Engineering and Marketing
 }
@@ -893,9 +869,7 @@ fn agg_min_max_on_strings() {
     db.run("CREATE (:W {v: 'banana'})");
     db.run("CREATE (:W {v: 'apple'})");
     db.run("CREATE (:W {v: 'cherry'})");
-    let rows = db.run(
-        "MATCH (w:W) RETURN min(w.v) AS lo, max(w.v) AS hi",
-    );
+    let rows = db.run("MATCH (w:W) RETURN min(w.v) AS lo, max(w.v) AS hi");
     assert_eq!(rows[0]["lo"], "apple");
     assert_eq!(rows[0]["hi"], "cherry");
 }
@@ -906,9 +880,7 @@ fn agg_count_star_vs_count_property() {
     db.run("CREATE (:T {v: 1})");
     db.run("CREATE (:T {v: 2})");
     db.run("CREATE (:T {})"); // no v
-    let rows = db.run(
-        "MATCH (t:T) RETURN count(*) AS all_rows, count(t.v) AS non_null",
-    );
+    let rows = db.run("MATCH (t:T) RETURN count(*) AS all_rows, count(t.v) AS non_null");
     assert_eq!(rows[0]["all_rows"], 3);
     assert_eq!(rows[0]["non_null"], 2);
 }
@@ -952,9 +924,7 @@ fn agg_percentile_disc() {
     for i in 1..=10 {
         db.run(&format!("CREATE (:V {{x: {}}})", i));
     }
-    let rows = db.run(
-        "MATCH (v:V) RETURN percentileDisc(v.x, 0.5) AS median",
-    );
+    let rows = db.run("MATCH (v:V) RETURN percentileDisc(v.x, 0.5) AS median");
     // Median of 1..10 should be 5 or 6
     let m = rows[0]["median"].as_i64().unwrap();
     assert!(m == 5 || m == 6);

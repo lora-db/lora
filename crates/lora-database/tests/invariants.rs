@@ -93,7 +93,10 @@ fn multiple_rels_different_types_same_pair() {
     db.run("MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'}) CREATE (a)-[:FOLLOWS]->(b)");
     db.run("MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'}) CREATE (a)-[:KNOWS]->(b)");
     db.run("MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'}) CREATE (a)-[:LIKES]->(b)");
-    db.assert_count("MATCH (a:User {name: 'Alice'})-[r]->(b:User {name: 'Bob'}) RETURN r", 3);
+    db.assert_count(
+        "MATCH (a:User {name: 'Alice'})-[r]->(b:User {name: 'Bob'}) RETURN r",
+        3,
+    );
 }
 
 #[test]
@@ -650,7 +653,9 @@ fn fan_out_50_spokes_query_performance() {
     // Verify all spokes
     db.assert_count("MATCH (:Hub)-[:SPOKE]->(l:Leaf) RETURN l", 50);
     // Aggregation over fan-out
-    let rows = db.run("MATCH (h:Hub)-[:SPOKE]->(l:Leaf) RETURN count(l) AS cnt, min(l.id) AS lo, max(l.id) AS hi");
+    let rows = db.run(
+        "MATCH (h:Hub)-[:SPOKE]->(l:Leaf) RETURN count(l) AS cnt, min(l.id) AS lo, max(l.id) AS hi",
+    );
     assert_eq!(rows[0]["cnt"], 50);
     assert_eq!(rows[0]["lo"], 1);
     assert_eq!(rows[0]["hi"], 50);
@@ -693,7 +698,7 @@ fn recommendation_graph_complete_verification() {
     let rows = db.run("MATCH ()-[r:RATED]->() RETURN r.score AS score");
     for row in &rows {
         let score = row["score"].as_i64().unwrap();
-        assert!(score >= 1 && score <= 5, "score {score} out of range");
+        assert!((1..=5).contains(&score), "score {score} out of range");
     }
 }
 

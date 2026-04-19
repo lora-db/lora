@@ -773,7 +773,9 @@ fn lower_pattern_part(pair: Pair<Rule>) -> Result<PatternPart, ParseError> {
                 for inner in p.into_inner() {
                     match inner.as_rule() {
                         Rule::pattern_element => element = Some(lower_pattern_element(inner)?),
-                        Rule::shortest_path_pattern => element = Some(lower_shortest_path_pattern(inner)?),
+                        Rule::shortest_path_pattern => {
+                            element = Some(lower_shortest_path_pattern(inner)?)
+                        }
                         _ => {}
                     }
                 }
@@ -808,7 +810,11 @@ fn lower_shortest_path_pattern(pair: Pair<Rule>) -> Result<PatternElement, Parse
     Ok(PatternElement::ShortestPath {
         all,
         element: Box::new(inner_element.ok_or_else(|| {
-            ParseError::new("expected pattern element in shortestPath", span.start, span.end)
+            ParseError::new(
+                "expected pattern element in shortestPath",
+                span.start,
+                span.end,
+            )
         })?),
         span,
     })
@@ -1419,7 +1425,9 @@ fn lower_postfix_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
                                 };
                             }
                             Rule::index_op => {
-                                let idx_pair = inner_op.into_inner().find(|p| p.as_rule() == Rule::expression);
+                                let idx_pair = inner_op
+                                    .into_inner()
+                                    .find(|p| p.as_rule() == Rule::expression);
                                 if let Some(idx) = idx_pair {
                                     let merged = merge_spans(expr.span(), is_span);
                                     expr = Expr::Index {
@@ -1723,7 +1731,11 @@ fn lower_pattern_comprehension(pair: Pair<Rule>, outer_span: Span) -> Result<Exp
             }
             Rule::WHERE => {
                 let expr_pair = inner.next().ok_or_else(|| {
-                    ParseError::new("expected WHERE expression", outer_span.start, outer_span.end)
+                    ParseError::new(
+                        "expected WHERE expression",
+                        outer_span.start,
+                        outer_span.end,
+                    )
                 })?;
                 where_ = Some(Box::new(lower_expression(expr_pair)?));
             }
@@ -1736,11 +1748,19 @@ fn lower_pattern_comprehension(pair: Pair<Rule>, outer_span: Span) -> Result<Exp
 
     Ok(Expr::PatternComprehension {
         pattern: Box::new(pattern.ok_or_else(|| {
-            ParseError::new("expected pattern in comprehension", outer_span.start, outer_span.end)
+            ParseError::new(
+                "expected pattern in comprehension",
+                outer_span.start,
+                outer_span.end,
+            )
         })?),
         where_,
         map_expr: map_expr.ok_or_else(|| {
-            ParseError::new("expected map expression after |", outer_span.start, outer_span.end)
+            ParseError::new(
+                "expected map expression after |",
+                outer_span.start,
+                outer_span.end,
+            )
         })?,
         span: outer_span,
     })
@@ -1749,13 +1769,17 @@ fn lower_pattern_comprehension(pair: Pair<Rule>, outer_span: Span) -> Result<Exp
 fn lower_list_comprehension(pair: Pair<Rule>, outer_span: Span) -> Result<Expr, ParseError> {
     let mut inner = pair.into_inner();
 
-    let var_pair = inner.next().ok_or_else(|| ParseError::new("expected variable", outer_span.start, outer_span.end))?;
+    let var_pair = inner
+        .next()
+        .ok_or_else(|| ParseError::new("expected variable", outer_span.start, outer_span.end))?;
     let variable = lower_variable(var_pair)?;
 
     // skip IN
     let _in_kw = inner.next();
 
-    let list_pair = inner.next().ok_or_else(|| ParseError::new("expected list expression", outer_span.start, outer_span.end))?;
+    let list_pair = inner.next().ok_or_else(|| {
+        ParseError::new("expected list expression", outer_span.start, outer_span.end)
+    })?;
     let list = lower_expression(list_pair)?;
 
     let mut filter = None;
@@ -1765,11 +1789,19 @@ fn lower_list_comprehension(pair: Pair<Rule>, outer_span: Span) -> Result<Expr, 
     while let Some(p) = inner.next() {
         match p.as_rule() {
             Rule::WHERE => {
-                let filter_pair = inner.next().ok_or_else(|| ParseError::new("expected filter expression", outer_span.start, outer_span.end))?;
+                let filter_pair = inner.next().ok_or_else(|| {
+                    ParseError::new(
+                        "expected filter expression",
+                        outer_span.start,
+                        outer_span.end,
+                    )
+                })?;
                 filter = Some(Box::new(lower_expression(filter_pair)?));
             }
             Rule::pipe => {
-                let map_pair = inner.next().ok_or_else(|| ParseError::new("expected map expression", outer_span.start, outer_span.end))?;
+                let map_pair = inner.next().ok_or_else(|| {
+                    ParseError::new("expected map expression", outer_span.start, outer_span.end)
+                })?;
                 map_expr = Some(Box::new(lower_expression(map_pair)?));
             }
             _ if p.as_rule() == Rule::expression => {
@@ -1807,7 +1839,13 @@ fn lower_list_predicate(pair: Pair<Rule>) -> Result<Expr, ParseError> {
         Rule::ALL => ListPredicateKind::All,
         Rule::NONE => ListPredicateKind::None,
         Rule::SINGLE => ListPredicateKind::Single,
-        _ => return Err(ParseError::new("expected ANY/ALL/NONE/SINGLE", span.start, span.end)),
+        _ => {
+            return Err(ParseError::new(
+                "expected ANY/ALL/NONE/SINGLE",
+                span.start,
+                span.end,
+            ))
+        }
     };
 
     let var_pair = inner
@@ -1847,29 +1885,39 @@ fn lower_reduce_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     // skip REDUCE keyword
     let _reduce_kw = inner.next();
 
-    let acc_pair = inner.next().ok_or_else(|| ParseError::new("expected accumulator variable", span.start, span.end))?;
+    let acc_pair = inner
+        .next()
+        .ok_or_else(|| ParseError::new("expected accumulator variable", span.start, span.end))?;
     let accumulator = lower_variable(acc_pair)?;
 
     // skip = (eq)
     let _eq = inner.next();
 
-    let init_pair = inner.next().ok_or_else(|| ParseError::new("expected init expression", span.start, span.end))?;
+    let init_pair = inner
+        .next()
+        .ok_or_else(|| ParseError::new("expected init expression", span.start, span.end))?;
     let init = lower_expression(init_pair)?;
 
     // skip comma (already consumed by pest)
 
-    let var_pair = inner.next().ok_or_else(|| ParseError::new("expected variable", span.start, span.end))?;
+    let var_pair = inner
+        .next()
+        .ok_or_else(|| ParseError::new("expected variable", span.start, span.end))?;
     let variable = lower_variable(var_pair)?;
 
     // skip IN
     let _in_kw = inner.next();
 
-    let list_pair = inner.next().ok_or_else(|| ParseError::new("expected list expression", span.start, span.end))?;
+    let list_pair = inner
+        .next()
+        .ok_or_else(|| ParseError::new("expected list expression", span.start, span.end))?;
     let list = lower_expression(list_pair)?;
 
     // skip pipe (already consumed by pest)
 
-    let expr_pair = inner.next().ok_or_else(|| ParseError::new("expected reduce expression", span.start, span.end))?;
+    let expr_pair = inner
+        .next()
+        .ok_or_else(|| ParseError::new("expected reduce expression", span.start, span.end))?;
     let expr = lower_expression(expr_pair)?;
 
     Ok(Expr::Reduce {

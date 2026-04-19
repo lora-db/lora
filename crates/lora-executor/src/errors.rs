@@ -51,7 +51,9 @@ pub enum ExecutorError {
     #[error("failed to delete relationship {rel_id}")]
     DeleteRelationshipFailed { rel_id: RelationshipId },
 
-    #[error("DELETE can only be used with nodes, relationships, or lists of them, but found {found}")]
+    #[error(
+        "DELETE can only be used with nodes, relationships, or lists of them, but found {found}"
+    )]
     InvalidDeleteTarget { found: String },
 
     #[error("REMOVE label can only be applied to a node, but found {found}")]
@@ -75,7 +77,9 @@ pub enum ExecutorError {
     #[error("REMOVE target must be a node or relationship property, but found {found}")]
     InvalidRemoveTarget { found: String },
 
-    #[error("SET property currently only supports direct property expressions like n.name or r.weight")]
+    #[error(
+        "SET property currently only supports direct property expressions like n.name or r.weight"
+    )]
     UnsupportedSetTarget,
 
     #[error("expected variable {var} to contain a relationship during EXPAND, but found {found}")]

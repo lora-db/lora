@@ -177,7 +177,10 @@ fn nested_list_literal() {
 
 #[test]
 fn nested_list_index() {
-    assert_eq!(TestDb::new().scalar("RETURN [[10, 20], [30, 40]][1][0]"), 30);
+    assert_eq!(
+        TestDb::new().scalar("RETURN [[10, 20], [30, 40]][1][0]"),
+        30
+    );
 }
 
 #[test]
@@ -274,7 +277,10 @@ fn range_zero_step_returns_null() {
 
 #[test]
 fn map_literal_access_by_key() {
-    assert_eq!(TestDb::new().scalar("RETURN {name: 'Alice', age: 30}.name"), "Alice");
+    assert_eq!(
+        TestDb::new().scalar("RETURN {name: 'Alice', age: 30}.name"),
+        "Alice"
+    );
 }
 
 #[test]
@@ -305,10 +311,7 @@ fn map_inequality_different_values() {
 
 #[test]
 fn map_inequality_different_keys() {
-    assert_eq!(
-        TestDb::new().scalar("RETURN {a: 1} = {b: 1}"),
-        false
-    );
+    assert_eq!(TestDb::new().scalar("RETURN {a: 1} = {b: 1}"), false);
 }
 
 #[test]
@@ -342,12 +345,17 @@ fn keys_of_map() {
 
 #[test]
 fn map_bracket_access() {
-    assert_eq!(TestDb::new().scalar("RETURN {name: 'Alice'}['name']"), "Alice");
+    assert_eq!(
+        TestDb::new().scalar("RETURN {name: 'Alice'}['name']"),
+        "Alice"
+    );
 }
 
 #[test]
 fn map_bracket_missing_key() {
-    assert!(TestDb::new().scalar("RETURN {name: 'Alice'}['missing']").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN {name: 'Alice'}['missing']")
+        .is_null());
 }
 
 // ============================================================
@@ -508,42 +516,64 @@ fn bool_not_equal_to_int() {
 
 #[test]
 fn starts_with_true() {
-    assert_eq!(TestDb::new().scalar("RETURN 'hello world' STARTS WITH 'hello'"), true);
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello world' STARTS WITH 'hello'"),
+        true
+    );
 }
 
 #[test]
 fn starts_with_false() {
-    assert_eq!(TestDb::new().scalar("RETURN 'hello world' STARTS WITH 'world'"), false);
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello world' STARTS WITH 'world'"),
+        false
+    );
 }
 
 #[test]
 fn ends_with_true() {
-    assert_eq!(TestDb::new().scalar("RETURN 'hello world' ENDS WITH 'world'"), true);
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello world' ENDS WITH 'world'"),
+        true
+    );
 }
 
 #[test]
 fn ends_with_false() {
-    assert_eq!(TestDb::new().scalar("RETURN 'hello world' ENDS WITH 'hello'"), false);
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello world' ENDS WITH 'hello'"),
+        false
+    );
 }
 
 #[test]
 fn contains_true() {
-    assert_eq!(TestDb::new().scalar("RETURN 'hello world' CONTAINS 'lo wo'"), true);
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello world' CONTAINS 'lo wo'"),
+        true
+    );
 }
 
 #[test]
 fn contains_false() {
-    assert_eq!(TestDb::new().scalar("RETURN 'hello world' CONTAINS 'xyz'"), false);
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello world' CONTAINS 'xyz'"),
+        false
+    );
 }
 
 #[test]
 fn starts_with_null_returns_null() {
-    assert!(TestDb::new().scalar("RETURN null STARTS WITH 'x'").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN null STARTS WITH 'x'")
+        .is_null());
 }
 
 #[test]
 fn contains_null_rhs_returns_null() {
-    assert!(TestDb::new().scalar("RETURN 'hello' CONTAINS null").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN 'hello' CONTAINS null")
+        .is_null());
 }
 
 // ============================================================
@@ -552,7 +582,10 @@ fn contains_null_rhs_returns_null() {
 
 #[test]
 fn regex_match_simple() {
-    assert_eq!(TestDb::new().scalar("RETURN 'hello123' =~ 'hello[0-9]+'"), true);
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'hello123' =~ 'hello[0-9]+'"),
+        true
+    );
 }
 
 #[test]
@@ -593,9 +626,7 @@ fn properties_of_map() {
 
 #[test]
 fn list_comprehension_filter_and_transform() {
-    let v = TestDb::new().scalar(
-        "RETURN [x IN range(1, 10) WHERE x % 3 = 0 | x * x] AS squares",
-    );
+    let v = TestDb::new().scalar("RETURN [x IN range(1, 10) WHERE x % 3 = 0 | x * x] AS squares");
     // 3, 6, 9 -> 9, 36, 81
     assert_eq!(v.as_array().unwrap(), &[9, 36, 81]);
 }
@@ -609,9 +640,7 @@ fn list_comprehension_identity() {
 
 #[test]
 fn list_comprehension_with_strings() {
-    let v = TestDb::new().scalar(
-        "RETURN [x IN ['hello', 'world'] | toUpper(x)] AS upper",
-    );
+    let v = TestDb::new().scalar("RETURN [x IN ['hello', 'world'] | toUpper(x)] AS upper");
     let arr = v.as_array().unwrap();
     assert_eq!(arr[0], "HELLO");
     assert_eq!(arr[1], "WORLD");
@@ -623,25 +652,20 @@ fn list_comprehension_with_strings() {
 
 #[test]
 fn reduce_sum() {
-    let v = TestDb::new().scalar(
-        "RETURN reduce(total = 0, x IN [1, 2, 3, 4, 5] | total + x) AS sum",
-    );
+    let v =
+        TestDb::new().scalar("RETURN reduce(total = 0, x IN [1, 2, 3, 4, 5] | total + x) AS sum");
     assert_eq!(v, 15);
 }
 
 #[test]
 fn reduce_string_concat() {
-    let v = TestDb::new().scalar(
-        "RETURN reduce(s = '', x IN ['a', 'b', 'c'] | s + x) AS joined",
-    );
+    let v = TestDb::new().scalar("RETURN reduce(s = '', x IN ['a', 'b', 'c'] | s + x) AS joined");
     assert_eq!(v, "abc");
 }
 
 #[test]
 fn reduce_empty_list() {
-    let v = TestDb::new().scalar(
-        "RETURN reduce(total = 0, x IN [] | total + x) AS sum",
-    );
+    let v = TestDb::new().scalar("RETURN reduce(total = 0, x IN [] | total + x) AS sum");
     assert_eq!(v, 0);
 }
 
@@ -740,7 +764,9 @@ fn all_on_empty_list() {
 
 #[test]
 fn any_on_null_list() {
-    assert!(TestDb::new().scalar("RETURN any(x IN null WHERE x > 0)").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN any(x IN null WHERE x > 0)")
+        .is_null());
 }
 
 // ============================================================
@@ -763,9 +789,8 @@ fn unwind_with_index() {
 
 #[test]
 fn unwind_then_collect() {
-    let v = TestDb::new().scalar(
-        "UNWIND [3, 1, 2] AS x WITH x ORDER BY x RETURN collect(x) AS sorted",
-    );
+    let v =
+        TestDb::new().scalar("UNWIND [3, 1, 2] AS x WITH x ORDER BY x RETURN collect(x) AS sorted");
     assert_eq!(v.as_array().unwrap(), &[1, 2, 3]);
 }
 
@@ -830,12 +855,16 @@ fn tofloat_from_int() {
 
 #[test]
 fn tointeger_invalid_string_returns_null() {
-    assert!(TestDb::new().scalar("RETURN toInteger('not_a_number')").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN toInteger('not_a_number')")
+        .is_null());
 }
 
 #[test]
 fn tofloat_invalid_string_returns_null() {
-    assert!(TestDb::new().scalar("RETURN toFloat('not_a_number')").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN toFloat('not_a_number')")
+        .is_null());
 }
 
 #[test]
@@ -931,9 +960,7 @@ fn filter_using_in_with_list_property() {
     db.run("CREATE (:Item {name: 'B', tags: ['green', 'blue']})");
     db.run("CREATE (:Item {name: 'C', tags: ['red', 'green']})");
     // Find items that have 'red' in their tags
-    let rows = db.run(
-        "MATCH (i:Item) WHERE 'red' IN i.tags RETURN i.name AS name ORDER BY name",
-    );
+    let rows = db.run("MATCH (i:Item) WHERE 'red' IN i.tags RETURN i.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], "A");
     assert_eq!(rows[1]["name"], "C");
@@ -959,34 +986,28 @@ fn create_node_with_map_property() {
 
 #[test]
 fn distinct_integers() {
-    let v = TestDb::new().scalar(
-        "UNWIND [1, 2, 2, 3, 3, 3] AS x RETURN count(DISTINCT x) AS cnt",
-    );
+    let v = TestDb::new().scalar("UNWIND [1, 2, 2, 3, 3, 3] AS x RETURN count(DISTINCT x) AS cnt");
     assert_eq!(v, 3);
 }
 
 #[test]
 fn distinct_strings() {
-    let v = TestDb::new().scalar(
-        "UNWIND ['a', 'b', 'a', 'c'] AS x RETURN count(DISTINCT x) AS cnt",
-    );
+    let v =
+        TestDb::new().scalar("UNWIND ['a', 'b', 'a', 'c'] AS x RETURN count(DISTINCT x) AS cnt");
     assert_eq!(v, 3);
 }
 
 #[test]
 fn distinct_mixed_null() {
     // null values are filtered by count()
-    let v = TestDb::new().scalar(
-        "UNWIND [1, null, 2, null, 3] AS x RETURN count(DISTINCT x) AS cnt",
-    );
+    let v =
+        TestDb::new().scalar("UNWIND [1, null, 2, null, 3] AS x RETURN count(DISTINCT x) AS cnt");
     assert_eq!(v, 3);
 }
 
 #[test]
 fn collect_distinct() {
-    let v = TestDb::new().scalar(
-        "UNWIND [1, 2, 2, 3, 1] AS x RETURN collect(DISTINCT x) AS items",
-    );
+    let v = TestDb::new().scalar("UNWIND [1, 2, 2, 3, 1] AS x RETURN collect(DISTINCT x) AS items");
     let items = v.as_array().unwrap();
     assert_eq!(items.len(), 3);
 }
@@ -1013,7 +1034,9 @@ fn coalesce_first_non_null_wins() {
 
 #[test]
 fn coalesce_all_null() {
-    assert!(TestDb::new().scalar("RETURN coalesce(null, null)").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN coalesce(null, null)")
+        .is_null());
 }
 
 // ============================================================
@@ -1052,17 +1075,14 @@ fn point_2d_creation() {
 
 #[test]
 fn point_geographic_creation() {
-    let v = TestDb::new().scalar(
-        "RETURN point({latitude: 52.37, longitude: 4.89}) AS p",
-    );
+    let v = TestDb::new().scalar("RETURN point({latitude: 52.37, longitude: 4.89}) AS p");
     assert!(!v.is_null());
 }
 
 #[test]
 fn distance_between_points() {
-    let v = TestDb::new().scalar(
-        "RETURN distance(point({x: 0.0, y: 0.0}), point({x: 3.0, y: 4.0}))",
-    );
+    let v =
+        TestDb::new().scalar("RETURN distance(point({x: 0.0, y: 0.0}), point({x: 3.0, y: 4.0}))");
     let d = v.as_f64().unwrap();
     assert!((d - 5.0).abs() < 0.001);
 }
@@ -1077,9 +1097,7 @@ fn point_property_access() {
 #[test]
 fn point_equality() {
     assert_eq!(
-        TestDb::new().scalar(
-            "RETURN point({x: 1.0, y: 2.0}) = point({x: 1.0, y: 2.0})"
-        ),
+        TestDb::new().scalar("RETURN point({x: 1.0, y: 2.0}) = point({x: 1.0, y: 2.0})"),
         true
     );
 }
@@ -1132,18 +1150,15 @@ fn point_latitude_longitude_access() {
 #[test]
 fn point_inequality() {
     assert_eq!(
-        TestDb::new().scalar(
-            "RETURN point({x: 1.0, y: 2.0}) = point({x: 3.0, y: 4.0})"
-        ),
+        TestDb::new().scalar("RETURN point({x: 1.0, y: 2.0}) = point({x: 3.0, y: 4.0})"),
         false
     );
 }
 
 #[test]
 fn distance_zero_same_point() {
-    let v = TestDb::new().scalar(
-        "RETURN distance(point({x: 5.0, y: 5.0}), point({x: 5.0, y: 5.0}))",
-    );
+    let v =
+        TestDb::new().scalar("RETURN distance(point({x: 5.0, y: 5.0}), point({x: 5.0, y: 5.0}))");
     let d = v.as_f64().unwrap();
     assert!(d.abs() < 0.001);
 }

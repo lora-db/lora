@@ -7,7 +7,7 @@ use crate::{
     RelationshipRecord,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct InMemoryGraph {
     next_node_id: NodeId,
     next_rel_id: RelationshipId,
@@ -22,21 +22,6 @@ pub struct InMemoryGraph {
     // secondary indexes
     nodes_by_label: BTreeMap<String, BTreeSet<NodeId>>,
     relationships_by_type: BTreeMap<String, BTreeSet<RelationshipId>>,
-}
-
-impl Default for InMemoryGraph {
-    fn default() -> Self {
-        Self {
-            next_node_id: 0,
-            next_rel_id: 0,
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
-            outgoing: BTreeMap::new(),
-            incoming: BTreeMap::new(),
-            nodes_by_label: BTreeMap::new(),
-            relationships_by_type: BTreeMap::new(),
-        }
-    }
 }
 
 impl InMemoryGraph {
@@ -140,7 +125,11 @@ impl InMemoryGraph {
         self.remove_relationship_type_index(rel.id, &rel.rel_type);
     }
 
-    fn relationship_ids_for_direction(&self, node_id: NodeId, direction: Direction) -> Vec<RelationshipId> {
+    fn relationship_ids_for_direction(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+    ) -> Vec<RelationshipId> {
         match direction {
             Direction::Left => self
                 .incoming

@@ -1,5 +1,5 @@
-use std::fmt;
 use std::cmp::Ordering;
+use std::fmt;
 
 // ===== Calendar helpers =====
 
@@ -10,7 +10,13 @@ pub fn is_leap_year(year: i32) -> bool {
 pub fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
         1 => 31,
-        2 => if is_leap_year(year) { 29 } else { 28 },
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
         3 => 31,
         4 => 30,
         5 => 31,
@@ -63,7 +69,9 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn unix_now() -> (u64, u32) {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     (dur.as_secs(), dur.subsec_nanos())
 }
 
@@ -104,9 +112,15 @@ impl LoraDate {
         if parts.len() != 3 {
             return Err(format!("Invalid date format: {s}"));
         }
-        let year = parts[0].parse::<i32>().map_err(|_| format!("Invalid date: {s}"))?;
-        let month = parts[1].parse::<u32>().map_err(|_| format!("Invalid date: {s}"))?;
-        let day = parts[2].parse::<u32>().map_err(|_| format!("Invalid date: {s}"))?;
+        let year = parts[0]
+            .parse::<i32>()
+            .map_err(|_| format!("Invalid date: {s}"))?;
+        let month = parts[1]
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid date: {s}"))?;
+        let day = parts[2]
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid date: {s}"))?;
         Self::new(year, month, day)
     }
 
@@ -122,7 +136,11 @@ impl LoraDate {
 
     pub fn from_epoch_days(days: i64) -> Self {
         let (y, m, d) = civil_from_days(days);
-        Self { year: y, month: m, day: d }
+        Self {
+            year: y,
+            month: m,
+            day: d,
+        }
     }
 
     pub fn day_of_week(&self) -> u32 {
@@ -155,7 +173,11 @@ impl LoraDate {
     }
 
     pub fn truncate_to_month(&self) -> Self {
-        Self { year: self.year, month: self.month, day: 1 }
+        Self {
+            year: self.year,
+            month: self.month,
+            day: 1,
+        }
     }
 }
 
@@ -167,7 +189,8 @@ impl PartialOrd for LoraDate {
 
 impl Ord for LoraDate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.year.cmp(&other.year)
+        self.year
+            .cmp(&other.year)
             .then(self.month.cmp(&other.month))
             .then(self.day.cmp(&other.day))
     }
@@ -191,11 +214,29 @@ pub struct LoraTime {
 }
 
 impl LoraTime {
-    pub fn new(hour: u32, minute: u32, second: u32, nanosecond: u32, offset_seconds: i32) -> Result<Self, String> {
-        if hour > 23 { return Err(format!("Invalid hour: {hour}")); }
-        if minute > 59 { return Err(format!("Invalid minute: {minute}")); }
-        if second > 59 { return Err(format!("Invalid second: {second}")); }
-        Ok(Self { hour, minute, second, nanosecond, offset_seconds })
+    pub fn new(
+        hour: u32,
+        minute: u32,
+        second: u32,
+        nanosecond: u32,
+        offset_seconds: i32,
+    ) -> Result<Self, String> {
+        if hour > 23 {
+            return Err(format!("Invalid hour: {hour}"));
+        }
+        if minute > 59 {
+            return Err(format!("Invalid minute: {minute}"));
+        }
+        if second > 59 {
+            return Err(format!("Invalid second: {second}"));
+        }
+        Ok(Self {
+            hour,
+            minute,
+            second,
+            nanosecond,
+            offset_seconds,
+        })
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -237,10 +278,21 @@ pub struct LoraLocalTime {
 
 impl LoraLocalTime {
     pub fn new(hour: u32, minute: u32, second: u32, nanosecond: u32) -> Result<Self, String> {
-        if hour > 23 { return Err(format!("Invalid hour: {hour}")); }
-        if minute > 59 { return Err(format!("Invalid minute: {minute}")); }
-        if second > 59 { return Err(format!("Invalid second: {second}")); }
-        Ok(Self { hour, minute, second, nanosecond })
+        if hour > 23 {
+            return Err(format!("Invalid hour: {hour}"));
+        }
+        if minute > 59 {
+            return Err(format!("Invalid minute: {minute}"));
+        }
+        if second > 59 {
+            return Err(format!("Invalid second: {second}"));
+        }
+        Ok(Self {
+            hour,
+            minute,
+            second,
+            nanosecond,
+        })
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -282,20 +334,43 @@ pub struct LoraDateTime {
 }
 
 impl LoraDateTime {
+    #[allow(clippy::too_many_arguments)] // Structural datetime constructor — every field is required.
     pub fn new(
-        year: i32, month: u32, day: u32,
-        hour: u32, minute: u32, second: u32, nanosecond: u32,
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+        nanosecond: u32,
         offset_seconds: i32,
     ) -> Result<Self, String> {
         LoraDate::new(year, month, day)?;
-        if hour > 23 { return Err(format!("Invalid hour: {hour}")); }
-        if minute > 59 { return Err(format!("Invalid minute: {minute}")); }
-        if second > 59 { return Err(format!("Invalid second: {second}")); }
-        Ok(Self { year, month, day, hour, minute, second, nanosecond, offset_seconds })
+        if hour > 23 {
+            return Err(format!("Invalid hour: {hour}"));
+        }
+        if minute > 59 {
+            return Err(format!("Invalid minute: {minute}"));
+        }
+        if second > 59 {
+            return Err(format!("Invalid second: {second}"));
+        }
+        Ok(Self {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            nanosecond,
+            offset_seconds,
+        })
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
-        let t_pos = s.find('T').ok_or_else(|| format!("Invalid datetime: {s}"))?;
+        let t_pos = s
+            .find('T')
+            .ok_or_else(|| format!("Invalid datetime: {s}"))?;
         let date_part = &s[..t_pos];
         let time_part = &s[t_pos + 1..];
 
@@ -312,7 +387,9 @@ impl LoraDateTime {
         let day_secs = secs % 86400;
         let (y, mo, d) = civil_from_days(days);
         Self {
-            year: y, month: mo, day: d,
+            year: y,
+            month: mo,
+            day: d,
             hour: (day_secs / 3600) as u32,
             minute: ((day_secs % 3600) / 60) as u32,
             second: (day_secs % 60) as u32,
@@ -339,7 +416,8 @@ impl LoraDateTime {
 
         // Add days + seconds
         let base_days = days_from_civil(new_year, new_month, new_day) + dur.days;
-        let base_secs = self.hour as i64 * 3600 + self.minute as i64 * 60 + self.second as i64 + dur.seconds;
+        let base_secs =
+            self.hour as i64 * 3600 + self.minute as i64 * 60 + self.second as i64 + dur.seconds;
 
         let total_secs = base_days * 86400 + base_secs;
         let final_days = total_secs.div_euclid(86400);
@@ -347,7 +425,9 @@ impl LoraDateTime {
         let (y, m, d) = civil_from_days(final_days);
 
         Self {
-            year: y, month: m, day: d,
+            year: y,
+            month: m,
+            day: d,
             hour: (rem / 3600) as u32,
             minute: ((rem % 3600) / 60) as u32,
             second: (rem % 60) as u32,
@@ -358,28 +438,42 @@ impl LoraDateTime {
 
     pub fn truncate_to_day(&self) -> Self {
         Self {
-            year: self.year, month: self.month, day: self.day,
-            hour: 0, minute: 0, second: 0, nanosecond: 0,
+            year: self.year,
+            month: self.month,
+            day: self.day,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            nanosecond: 0,
             offset_seconds: self.offset_seconds,
         }
     }
 
     pub fn truncate_to_hour(&self) -> Self {
         Self {
-            year: self.year, month: self.month, day: self.day,
-            hour: self.hour, minute: 0, second: 0, nanosecond: 0,
+            year: self.year,
+            month: self.month,
+            day: self.day,
+            hour: self.hour,
+            minute: 0,
+            second: 0,
+            nanosecond: 0,
             offset_seconds: self.offset_seconds,
         }
     }
 
     pub fn date(&self) -> LoraDate {
-        LoraDate { year: self.year, month: self.month, day: self.day }
+        LoraDate {
+            year: self.year,
+            month: self.month,
+            day: self.day,
+        }
     }
 }
 
 impl PartialOrd for LoraDateTime {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.to_epoch_millis().cmp(&other.to_epoch_millis()))
+        Some(self.cmp(other))
     }
 }
 
@@ -391,9 +485,11 @@ impl Ord for LoraDateTime {
 
 impl fmt::Display for LoraDateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            self.year, self.month, self.day,
-            self.hour, self.minute, self.second)?;
+        write!(
+            f,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
+        )?;
         format_subsecond(f, self.nanosecond)?;
         format_offset(f, self.offset_seconds)
     }
@@ -414,15 +510,28 @@ pub struct LoraLocalDateTime {
 
 impl LoraLocalDateTime {
     pub fn parse(s: &str) -> Result<Self, String> {
-        let t_pos = s.find('T').ok_or_else(|| format!("Invalid localdatetime: {s}"))?;
+        let t_pos = s
+            .find('T')
+            .ok_or_else(|| format!("Invalid localdatetime: {s}"))?;
         let date = LoraDate::parse(&s[..t_pos])?;
         let (h, m, sec, ns, _) = parse_time_string(&s[t_pos + 1..])?;
-        if h > 23 { return Err(format!("Invalid hour: {h}")); }
-        if m > 59 { return Err(format!("Invalid minute: {m}")); }
-        if sec > 59 { return Err(format!("Invalid second: {sec}")); }
+        if h > 23 {
+            return Err(format!("Invalid hour: {h}"));
+        }
+        if m > 59 {
+            return Err(format!("Invalid minute: {m}"));
+        }
+        if sec > 59 {
+            return Err(format!("Invalid second: {sec}"));
+        }
         Ok(Self {
-            year: date.year, month: date.month, day: date.day,
-            hour: h, minute: m, second: sec, nanosecond: ns,
+            year: date.year,
+            month: date.month,
+            day: date.day,
+            hour: h,
+            minute: m,
+            second: sec,
+            nanosecond: ns,
         })
     }
 
@@ -432,7 +541,9 @@ impl LoraLocalDateTime {
         let day_secs = secs % 86400;
         let (y, mo, d) = civil_from_days(days);
         Self {
-            year: y, month: mo, day: d,
+            year: y,
+            month: mo,
+            day: d,
             hour: (day_secs / 3600) as u32,
             minute: ((day_secs % 3600) / 60) as u32,
             second: (day_secs % 60) as u32,
@@ -443,9 +554,11 @@ impl LoraLocalDateTime {
 
 impl fmt::Display for LoraLocalDateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            self.year, self.month, self.day,
-            self.hour, self.minute, self.second)?;
+        write!(
+            f,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
+        )?;
         format_subsecond(f, self.nanosecond)
     }
 }
@@ -462,7 +575,12 @@ pub struct LoraDuration {
 
 impl LoraDuration {
     pub fn zero() -> Self {
-        Self { months: 0, days: 0, seconds: 0, nanoseconds: 0 }
+        Self {
+            months: 0,
+            days: 0,
+            seconds: 0,
+            nanoseconds: 0,
+        }
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -491,45 +609,61 @@ impl LoraDuration {
                     num_buf.push(c);
                 }
                 'Y' if !in_time => {
-                    let n: i64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                    let n: i64 = num_buf
+                        .parse()
+                        .map_err(|_| format!("Invalid duration: {s}"))?;
                     months += n * 12;
                     num_buf.clear();
                 }
                 'M' if !in_time => {
-                    let n: i64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                    let n: i64 = num_buf
+                        .parse()
+                        .map_err(|_| format!("Invalid duration: {s}"))?;
                     months += n;
                     num_buf.clear();
                 }
                 'W' if !in_time => {
-                    let n: i64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                    let n: i64 = num_buf
+                        .parse()
+                        .map_err(|_| format!("Invalid duration: {s}"))?;
                     days += n * 7;
                     num_buf.clear();
                 }
                 'D' => {
-                    let n: i64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                    let n: i64 = num_buf
+                        .parse()
+                        .map_err(|_| format!("Invalid duration: {s}"))?;
                     days += n;
                     num_buf.clear();
                 }
                 'H' if in_time => {
-                    let n: i64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                    let n: i64 = num_buf
+                        .parse()
+                        .map_err(|_| format!("Invalid duration: {s}"))?;
                     seconds += n * 3600;
                     num_buf.clear();
                 }
                 'M' if in_time => {
-                    let n: i64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                    let n: i64 = num_buf
+                        .parse()
+                        .map_err(|_| format!("Invalid duration: {s}"))?;
                     seconds += n * 60;
                     num_buf.clear();
                 }
                 'S' if in_time => {
                     if num_buf.contains('.') {
-                        let n: f64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                        let n: f64 = num_buf
+                            .parse()
+                            .map_err(|_| format!("Invalid duration: {s}"))?;
                         seconds += n.floor() as i64;
                         let frac = n - n.floor();
                         if frac > 0.0 {
                             nanoseconds += (frac * 1_000_000_000.0) as i64;
                         }
                     } else {
-                        let n: i64 = num_buf.parse().map_err(|_| format!("Invalid duration: {s}"))?;
+                        let n: i64 = num_buf
+                            .parse()
+                            .map_err(|_| format!("Invalid duration: {s}"))?;
                         seconds += n;
                     }
                     num_buf.clear();
@@ -542,7 +676,12 @@ impl LoraDuration {
             return Err(format!("Trailing number in duration: {s}"));
         }
 
-        Ok(Self { months, days, seconds, nanoseconds })
+        Ok(Self {
+            months,
+            days,
+            seconds,
+            nanoseconds,
+        })
     }
 
     pub fn negate(&self) -> Self {
@@ -573,7 +712,9 @@ impl LoraDuration {
     }
 
     pub fn div_int(&self, n: i64) -> Self {
-        if n == 0 { return Self::zero(); }
+        if n == 0 {
+            return Self::zero();
+        }
         Self {
             months: self.months / n,
             days: self.days / n,
@@ -592,20 +733,40 @@ impl LoraDuration {
             + (later.month as i64 - earlier.month as i64);
 
         // Apply months to earlier and check if we overshot
-        let intermediate = earlier.add_duration(&LoraDuration { months, days: 0, seconds: 0, nanoseconds: 0 });
+        let intermediate = earlier.add_duration(&LoraDuration {
+            months,
+            days: 0,
+            seconds: 0,
+            nanoseconds: 0,
+        });
         if intermediate.to_epoch_days() > later.to_epoch_days() {
             months -= 1;
         }
-        let intermediate = earlier.add_duration(&LoraDuration { months, days: 0, seconds: 0, nanoseconds: 0 });
+        let intermediate = earlier.add_duration(&LoraDuration {
+            months,
+            days: 0,
+            seconds: 0,
+            nanoseconds: 0,
+        });
         let remaining_days = later.to_epoch_days() - intermediate.to_epoch_days();
 
-        Self { months: months * sign, days: remaining_days * sign, seconds: 0, nanoseconds: 0 }
+        Self {
+            months: months * sign,
+            days: remaining_days * sign,
+            seconds: 0,
+            nanoseconds: 0,
+        }
     }
 
     /// Duration from date1 to date2 expressed purely in days.
     pub fn in_days(from: &LoraDate, to: &LoraDate) -> Self {
         let days = to.to_epoch_days() - from.to_epoch_days();
-        Self { months: 0, days, seconds: 0, nanoseconds: 0 }
+        Self {
+            months: 0,
+            days,
+            seconds: 0,
+            nanoseconds: 0,
+        }
     }
 
     /// Duration between two datetimes, expressed in days + seconds.
@@ -630,23 +791,38 @@ impl LoraDuration {
             + self.nanoseconds as f64 / 1_000_000_000.0
     }
 
-    pub fn years_component(&self) -> i64 { self.months / 12 }
-    pub fn months_component(&self) -> i64 { self.months % 12 }
-    pub fn days_component(&self) -> i64 { self.days }
-    pub fn hours_component(&self) -> i64 { self.seconds / 3600 }
-    pub fn minutes_component(&self) -> i64 { (self.seconds % 3600) / 60 }
-    pub fn seconds_component(&self) -> i64 { self.seconds % 60 }
+    pub fn years_component(&self) -> i64 {
+        self.months / 12
+    }
+    pub fn months_component(&self) -> i64 {
+        self.months % 12
+    }
+    pub fn days_component(&self) -> i64 {
+        self.days
+    }
+    pub fn hours_component(&self) -> i64 {
+        self.seconds / 3600
+    }
+    pub fn minutes_component(&self) -> i64 {
+        (self.seconds % 3600) / 60
+    }
+    pub fn seconds_component(&self) -> i64 {
+        self.seconds % 60
+    }
 }
 
 impl PartialOrd for LoraDuration {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.total_seconds_approx().partial_cmp(&other.total_seconds_approx())
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for LoraDuration {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap_or(Ordering::Equal)
+        // total_seconds_approx returns f64; total_cmp gives a total order
+        // (NaN comparisons become deterministic) so Ord can be authoritative.
+        self.total_seconds_approx()
+            .total_cmp(&other.total_seconds_approx())
     }
 }
 
@@ -655,9 +831,15 @@ impl fmt::Display for LoraDuration {
         write!(f, "P")?;
         let years = self.months / 12;
         let months = self.months % 12;
-        if years != 0 { write!(f, "{}Y", years)?; }
-        if months != 0 { write!(f, "{}M", months)?; }
-        if self.days != 0 { write!(f, "{}D", self.days)?; }
+        if years != 0 {
+            write!(f, "{}Y", years)?;
+        }
+        if months != 0 {
+            write!(f, "{}M", months)?;
+        }
+        if self.days != 0 {
+            write!(f, "{}D", self.days)?;
+        }
 
         let hours = self.seconds / 3600;
         let minutes = (self.seconds % 3600) / 60;
@@ -665,8 +847,12 @@ impl fmt::Display for LoraDuration {
 
         if hours != 0 || minutes != 0 || secs != 0 || self.nanoseconds != 0 {
             write!(f, "T")?;
-            if hours != 0 { write!(f, "{}H", hours)?; }
-            if minutes != 0 { write!(f, "{}M", minutes)?; }
+            if hours != 0 {
+                write!(f, "{}H", hours)?;
+            }
+            if minutes != 0 {
+                write!(f, "{}M", minutes)?;
+            }
             if secs != 0 {
                 write!(f, "{}S", secs)?;
             } else if self.nanoseconds != 0 {
@@ -688,8 +874,8 @@ impl fmt::Display for LoraDuration {
 /// Parse a time string returning (hour, minute, second, nanosecond, optional offset_seconds).
 fn parse_time_string(s: &str) -> Result<(u32, u32, u32, u32, Option<i32>), String> {
     // Find offset suffix: Z, +HH:MM, -HH:MM
-    let (time_str, offset) = if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some(0i32))
+    let (time_str, offset) = if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some(0i32))
     } else if let Some(pos) = s.rfind('+') {
         if pos >= 2 {
             let off = parse_offset(&s[pos..])?;
@@ -715,8 +901,12 @@ fn parse_time_string(s: &str) -> Result<(u32, u32, u32, u32, Option<i32>), Strin
         return Err(format!("Invalid time: {s}"));
     }
 
-    let hour = parts[0].parse::<u32>().map_err(|_| format!("Invalid time: {s}"))?;
-    let minute = parts[1].parse::<u32>().map_err(|_| format!("Invalid time: {s}"))?;
+    let hour = parts[0]
+        .parse::<u32>()
+        .map_err(|_| format!("Invalid time: {s}"))?;
+    let minute = parts[1]
+        .parse::<u32>()
+        .map_err(|_| format!("Invalid time: {s}"))?;
 
     let (second, nanosecond) = if parts.len() == 3 {
         parse_seconds_and_fraction(parts[2])?
@@ -729,20 +919,28 @@ fn parse_time_string(s: &str) -> Result<(u32, u32, u32, u32, Option<i32>), Strin
 
 fn parse_seconds_and_fraction(s: &str) -> Result<(u32, u32), String> {
     if let Some(dot_pos) = s.find('.') {
-        let sec = s[..dot_pos].parse::<u32>().map_err(|_| format!("Invalid seconds: {s}"))?;
+        let sec = s[..dot_pos]
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid seconds: {s}"))?;
         let frac = &s[dot_pos + 1..];
         // Pad/truncate to 9 digits for nanoseconds
         let padded = format!("{:0<9}", frac);
         let ns = padded[..9].parse::<u32>().unwrap_or(0);
         Ok((sec, ns))
     } else {
-        let sec = s.parse::<u32>().map_err(|_| format!("Invalid seconds: {s}"))?;
+        let sec = s
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid seconds: {s}"))?;
         Ok((sec, 0))
     }
 }
 
 fn parse_offset(s: &str) -> Result<i32, String> {
-    let sign = if s.starts_with('+') { 1 } else if s.starts_with('-') { -1 } else {
+    let sign = if s.starts_with('+') {
+        1
+    } else if s.starts_with('-') {
+        -1
+    } else {
         return Err(format!("Invalid offset: {s}"));
     };
     let rest = &s[1..];
@@ -750,8 +948,12 @@ fn parse_offset(s: &str) -> Result<i32, String> {
     if parts.len() != 2 {
         return Err(format!("Invalid offset: {s}"));
     }
-    let h = parts[0].parse::<i32>().map_err(|_| format!("Invalid offset: {s}"))?;
-    let m = parts[1].parse::<i32>().map_err(|_| format!("Invalid offset: {s}"))?;
+    let h = parts[0]
+        .parse::<i32>()
+        .map_err(|_| format!("Invalid offset: {s}"))?;
+    let m = parts[1]
+        .parse::<i32>()
+        .map_err(|_| format!("Invalid offset: {s}"))?;
     Ok(sign * (h * 3600 + m * 60))
 }
 
@@ -770,7 +972,7 @@ fn format_offset(f: &mut fmt::Formatter<'_>, offset_seconds: i32) -> fmt::Result
 fn format_subsecond(f: &mut fmt::Formatter<'_>, nanosecond: u32) -> fmt::Result {
     if nanosecond > 0 {
         let ms = nanosecond / 1_000_000;
-        if ms > 0 && nanosecond % 1_000_000 == 0 {
+        if ms > 0 && nanosecond.is_multiple_of(1_000_000) {
             write!(f, ".{:03}", ms)
         } else {
             write!(f, ".{:09}", nanosecond)

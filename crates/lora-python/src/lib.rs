@@ -1,4 +1,9 @@
 #![deny(clippy::all)]
+// The pyo3 `#[pymethods]` / `#[pyo3(signature = ...)]` macros expand to code
+// that includes `PyErr::from(e)` on `?` error paths; because our error type is
+// already `PyErr`, clippy flags it as a useless conversion. The expansion is
+// outside our control, so the allow lives at the crate level.
+#![allow(clippy::useless_conversion)]
 
 //! PyO3 bindings for the Lora graph database.
 //!
@@ -22,21 +27,34 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
 use lora_database::{
-    LoraValue, Database as InnerDatabase, ExecuteOptions, InMemoryGraph, QueryResult,
-    ResultFormat,
+    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
-    LoraTime,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
 };
 
 // ============================================================================
 // Module entry point
 // ============================================================================
 
-create_exception!(lora_python, LoraError, PyException, "Base class for Lora engine errors.");
-create_exception!(lora_python, LoraQueryError, LoraError, "Parse / analyze / execute failure.");
-create_exception!(lora_python, InvalidParamsError, LoraError, "A parameter value could not be mapped to a Lora value.");
+create_exception!(
+    lora_python,
+    LoraError,
+    PyException,
+    "Base class for Lora engine errors."
+);
+create_exception!(
+    lora_python,
+    LoraQueryError,
+    LoraError,
+    "Parse / analyze / execute failure."
+);
+create_exception!(
+    lora_python,
+    InvalidParamsError,
+    LoraError,
+    "A parameter value could not be mapped to a Lora value."
+);
 
 /// Native extension module. The pure-Python layer in `lora_python`
 /// re-exports `Database` plus the typed `AsyncDatabase` wrapper.
@@ -45,7 +63,10 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
     m.add("LoraError", py.get_type_bound::<LoraError>())?;
     m.add("LoraQueryError", py.get_type_bound::<LoraQueryError>())?;
-    m.add("InvalidParamsError", py.get_type_bound::<InvalidParamsError>())?;
+    m.add(
+        "InvalidParamsError",
+        py.get_type_bound::<InvalidParamsError>(),
+    )?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
@@ -267,9 +288,9 @@ fn point_to_py<'py>(py: Python<'py>, p: &LoraPoint) -> PyResult<Bound<'py, PyAny
 // ============================================================================
 
 fn py_object_to_params(obj: &Bound<'_, PyAny>) -> PyResult<BTreeMap<String, LoraValue>> {
-    let dict: &Bound<'_, PyDict> = obj
-        .downcast::<PyDict>()
-        .map_err(|_| InvalidParamsError::new_err("params must be a dict keyed by parameter name"))?;
+    let dict: &Bound<'_, PyDict> = obj.downcast::<PyDict>().map_err(|_| {
+        InvalidParamsError::new_err("params must be a dict keyed by parameter name")
+    })?;
     let mut out = BTreeMap::new();
     for (k, v) in dict {
         let key: String = k
@@ -324,24 +345,36 @@ fn py_dict_to_cypher(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
     if let Some(kind_val) = dict.get_item("kind")? {
         if let Ok(kind) = kind_val.extract::<String>() {
             match kind.as_str() {
-                "date" => return parse_tagged(dict, "date", |iso| {
-                    LoraDate::parse(iso).map(LoraValue::Date)
-                }),
-                "time" => return parse_tagged(dict, "time", |iso| {
-                    LoraTime::parse(iso).map(LoraValue::Time)
-                }),
-                "localtime" => return parse_tagged(dict, "localtime", |iso| {
-                    LoraLocalTime::parse(iso).map(LoraValue::LocalTime)
-                }),
-                "datetime" => return parse_tagged(dict, "datetime", |iso| {
-                    LoraDateTime::parse(iso).map(LoraValue::DateTime)
-                }),
-                "localdatetime" => return parse_tagged(dict, "localdatetime", |iso| {
-                    LoraLocalDateTime::parse(iso).map(LoraValue::LocalDateTime)
-                }),
-                "duration" => return parse_tagged(dict, "duration", |iso| {
-                    LoraDuration::parse(iso).map(LoraValue::Duration)
-                }),
+                "date" => {
+                    return parse_tagged(dict, "date", |iso| {
+                        LoraDate::parse(iso).map(LoraValue::Date)
+                    })
+                }
+                "time" => {
+                    return parse_tagged(dict, "time", |iso| {
+                        LoraTime::parse(iso).map(LoraValue::Time)
+                    })
+                }
+                "localtime" => {
+                    return parse_tagged(dict, "localtime", |iso| {
+                        LoraLocalTime::parse(iso).map(LoraValue::LocalTime)
+                    })
+                }
+                "datetime" => {
+                    return parse_tagged(dict, "datetime", |iso| {
+                        LoraDateTime::parse(iso).map(LoraValue::DateTime)
+                    })
+                }
+                "localdatetime" => {
+                    return parse_tagged(dict, "localdatetime", |iso| {
+                        LoraLocalDateTime::parse(iso).map(LoraValue::LocalDateTime)
+                    })
+                }
+                "duration" => {
+                    return parse_tagged(dict, "duration", |iso| {
+                        LoraDuration::parse(iso).map(LoraValue::Duration)
+                    })
+                }
                 "point" => {
                     let srid = dict
                         .get_item("srid")?

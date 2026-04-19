@@ -3,15 +3,21 @@ use crate::{
     Aggregation, Argument, Filter, Limit, LogicalOp, LogicalPlan, OptionalMatch, PlanNodeId,
     Projection, Sort, Unwind,
 };
+use lora_analyzer::symbols::VarId;
 use lora_analyzer::{
     ResolvedClause, ResolvedCreate, ResolvedDelete, ResolvedExpr, ResolvedMatch, ResolvedMerge,
     ResolvedPattern, ResolvedPatternElement, ResolvedProjection, ResolvedQuery, ResolvedRemove,
     ResolvedReturn, ResolvedSet, ResolvedUnwind, ResolvedWith,
 };
-use lora_analyzer::symbols::VarId;
 
 pub struct Planner {
     nodes: Vec<LogicalOp>,
+}
+
+impl Default for Planner {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Planner {
@@ -87,10 +93,9 @@ impl Planner {
     }
 
     fn plan_match(&mut self, input: Option<PlanNodeId>, m: &ResolvedMatch) -> PlanNodeId {
-        if m.optional && input.is_some() {
+        if let (true, Some(upstream)) = (m.optional, input) {
             // OPTIONAL MATCH: build the inner sub-plan that reads from Argument,
             // then wrap it in an OptionalMatch node that provides null-extension.
-            let upstream = input.unwrap();
 
             // Collect variables introduced by this pattern (for null-extension).
             let new_vars = collect_pattern_vars(&m.pattern);
@@ -315,8 +320,16 @@ impl Planner {
 }
 
 const AGGREGATE_FUNCTIONS: &[&str] = &[
-    "count", "sum", "avg", "min", "max", "collect",
-    "stdev", "stdevp", "percentilecont", "percentiledisc",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "collect",
+    "stdev",
+    "stdevp",
+    "percentilecont",
+    "percentiledisc",
 ];
 
 fn is_aggregate_function(name: &str) -> bool {
@@ -338,8 +351,8 @@ fn collect_pattern_vars(pattern: &ResolvedPattern) -> Vec<VarId> {
                     vars.push(*v);
                 }
             }
-            ResolvedPatternElement::ShortestPath { head, chain, .. } |
-            ResolvedPatternElement::NodeChain { head, chain } => {
+            ResolvedPatternElement::ShortestPath { head, chain, .. }
+            | ResolvedPatternElement::NodeChain { head, chain } => {
                 if let Some(v) = head.var {
                     vars.push(v);
                 }
@@ -377,13 +390,13 @@ fn expr_contains_aggregate(expr: &ResolvedExpr) -> bool {
             alternatives,
             else_expr,
         } => {
-            input.as_ref().map_or(false, |e| expr_contains_aggregate(e))
+            input.as_ref().is_some_and(|e| expr_contains_aggregate(e))
                 || alternatives
                     .iter()
                     .any(|(w, t)| expr_contains_aggregate(w) || expr_contains_aggregate(t))
                 || else_expr
                     .as_ref()
-                    .map_or(false, |e| expr_contains_aggregate(e))
+                    .is_some_and(|e| expr_contains_aggregate(e))
         }
         _ => false,
     }

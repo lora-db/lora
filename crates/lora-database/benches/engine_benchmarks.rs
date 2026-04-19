@@ -14,11 +14,9 @@
 
 mod fixtures;
 
-use criterion::{
-    criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
-};
-use lora_database::{ExecuteOptions, ResultFormat};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use fixtures::*;
+use lora_database::{ExecuteOptions, ResultFormat};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::time::Duration;
@@ -175,27 +173,27 @@ fn bench_traversal(c: &mut Criterion) {
     // Chain of N nodes has N-1 NEXT edges; the query emits N-1 rows.
     for (size, db) in &chains {
         group.throughput(Throughput::Elements((*size - 1) as u64));
-        group.bench_with_input(
-            BenchmarkId::new("single_hop_chain", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("single_hop_chain", size), size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute(
+                            "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx",
+                            opts(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
     }
 
     // --- multi-hop fixed chain (3 hops) ---
     // One row emitted per query (single anchored 3-hop walk).
-    let chain_500 = chains.iter().find(|(s, _)| *s == 500).map(|(_, d)| d).unwrap();
+    let chain_500 = chains
+        .iter()
+        .find(|(s, _)| *s == 500)
+        .map(|(_, d)| d)
+        .unwrap();
     group.throughput(Throughput::Elements(1));
     group.bench_function("three_hop_chain_500", |b| {
         b.iter(|| {
@@ -216,22 +214,18 @@ fn bench_traversal(c: &mut Criterion) {
     for (size, db) in &chains {
         let hops = 5usize.min(size.saturating_sub(1));
         group.throughput(Throughput::Elements(hops as u64));
-        group.bench_with_input(
-            BenchmarkId::new("varlen_1_5_chain", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (a:Chain {idx:0})-[:NEXT*1..5]->(b) RETURN b.idx",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("varlen_1_5_chain", size), size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute(
+                            "MATCH (a:Chain {idx:0})-[:NEXT*1..5]->(b) RETURN b.idx",
+                            opts(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
     }
 
     // --- variable-length unbounded on chain (tests termination) ---
@@ -263,22 +257,15 @@ fn bench_traversal(c: &mut Criterion) {
     for &size in &[100usize, 500, 1000] {
         let db = build_star(size);
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("star_fan_out", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (:Hub)-[:ARM]->(l:Leaf) RETURN l.id",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("star_fan_out", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (:Hub)-[:ARM]->(l:Leaf) RETURN l.id", opts())
+                        .unwrap(),
+                );
+            });
+        });
     }
 
     // --- cycle traversal (tests relationship dedup) ---
@@ -416,10 +403,7 @@ fn bench_filtering(c: &mut Criterion) {
             black_box(
                 db_1k
                     .service
-                    .execute(
-                        "MATCH (n:Node) WHERE NOT n.value > 50 RETURN n.id",
-                        opts(),
-                    )
+                    .execute("MATCH (n:Node) WHERE NOT n.value > 50 RETURN n.id", opts())
                     .unwrap(),
             );
         });
@@ -491,10 +475,7 @@ fn bench_filtering(c: &mut Criterion) {
             black_box(
                 db_1k
                     .service
-                    .execute(
-                        "MATCH (n:Node) WHERE n.value >= 0 RETURN n.id",
-                        opts(),
-                    )
+                    .execute("MATCH (n:Node) WHERE n.value >= 0 RETURN n.id", opts())
                     .unwrap(),
             );
         });
@@ -538,8 +519,16 @@ fn bench_aggregation(c: &mut Criterion) {
         .iter()
         .map(|&s| (s, build_node_graph(s)))
         .collect();
-    let db_tiny = dbs.iter().find(|(s, _)| *s == Scale::TINY).map(|(_, d)| d).unwrap();
-    let db_small = dbs.iter().find(|(s, _)| *s == Scale::SMALL).map(|(_, d)| d).unwrap();
+    let db_tiny = dbs
+        .iter()
+        .find(|(s, _)| *s == Scale::TINY)
+        .map(|(_, d)| d)
+        .unwrap();
+    let db_small = dbs
+        .iter()
+        .find(|(s, _)| *s == Scale::SMALL)
+        .map(|(_, d)| d)
+        .unwrap();
 
     // --- count(*) across scales ---
     for (size, db) in &dbs {
@@ -634,10 +623,7 @@ fn bench_aggregation(c: &mut Criterion) {
             black_box(
                 db_small
                     .service
-                    .execute(
-                        "MATCH (n:Node) RETURN count(DISTINCT n.value) AS c",
-                        opts(),
-                    )
+                    .execute("MATCH (n:Node) RETURN count(DISTINCT n.value) AS c", opts())
                     .unwrap(),
             );
         });
@@ -786,10 +772,7 @@ fn bench_write_operations(c: &mut Criterion) {
             |db| {
                 black_box(
                     db.service
-                        .execute(
-                            "CREATE (:Bench {name: 'test', value: 42})",
-                            opts(),
-                        )
+                        .execute("CREATE (:Bench {name: 'test', value: 42})", opts())
                         .unwrap(),
                 );
             },
@@ -979,7 +962,10 @@ fn bench_functions(c: &mut Criterion) {
             black_box(
                 db_empty
                     .service
-                    .execute("RETURN replace('hello world', 'world', 'bench') AS r", opts())
+                    .execute(
+                        "RETURN replace('hello world', 'world', 'bench') AS r",
+                        opts(),
+                    )
                     .unwrap(),
             );
         });
@@ -1373,8 +1359,14 @@ fn bench_parse_compile(c: &mut Criterion) {
 
     let queries = [
         ("simple_match", "MATCH (n:Node) RETURN n"),
-        ("match_where", "MATCH (n:Node) WHERE n.value > 10 RETURN n.id"),
-        ("multi_hop", "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN c"),
+        (
+            "match_where",
+            "MATCH (n:Node) WHERE n.value > 10 RETURN n.id",
+        ),
+        (
+            "multi_hop",
+            "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN c",
+        ),
         (
             "aggregation",
             "MATCH (n:Node) RETURN n.value AS grp, count(n) AS cnt",
@@ -1404,8 +1396,14 @@ fn bench_parse_compile(c: &mut Criterion) {
         let db = build_org_graph();
         let org_queries = [
             ("simple_match", "MATCH (n:Person) RETURN n"),
-            ("match_where", "MATCH (n:Person) WHERE n.age > 30 RETURN n.name"),
-            ("multi_hop", "MATCH (a:Person)-[:MANAGES]->(b)-[:ASSIGNED_TO]->(c) RETURN c"),
+            (
+                "match_where",
+                "MATCH (n:Person) WHERE n.age > 30 RETURN n.name",
+            ),
+            (
+                "multi_hop",
+                "MATCH (a:Person)-[:MANAGES]->(b)-[:ASSIGNED_TO]->(c) RETURN c",
+            ),
             (
                 "aggregation",
                 "MATCH (n:Person) RETURN n.dept AS grp, count(n) AS cnt",

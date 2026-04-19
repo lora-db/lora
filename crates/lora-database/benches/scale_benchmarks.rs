@@ -17,12 +17,10 @@
 
 mod fixtures;
 
-use std::hint::black_box;
-use criterion::{
-    criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
-};
-use lora_database::{ExecuteOptions, ResultFormat};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use fixtures::*;
+use lora_database::{ExecuteOptions, ResultFormat};
+use std::hint::black_box;
 use std::time::Duration;
 
 fn opts() -> Option<ExecuteOptions> {
@@ -53,73 +51,54 @@ fn bench_scale_match(c: &mut Criterion) {
         group.throughput(Throughput::Elements(size as u64));
 
         // --- full scan ---
-        group.bench_with_input(
-            BenchmarkId::new("full_scan", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute("MATCH (n:Node) RETURN count(n) AS c", opts())
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("full_scan", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) RETURN count(n) AS c", opts())
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- property equality (high selectivity) ---
-        group.bench_with_input(
-            BenchmarkId::new("property_eq", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) WHERE n.value = 42 RETURN n.id",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("property_eq", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) WHERE n.value = 42 RETURN n.id", opts())
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- range filter (medium selectivity) ---
-        group.bench_with_input(
-            BenchmarkId::new("range_filter", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) WHERE n.value >= 40 AND n.value < 60 RETURN n.id",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("range_filter", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute(
+                            "MATCH (n:Node) WHERE n.value >= 40 AND n.value < 60 RETURN n.id",
+                            opts(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- string predicate ---
-        group.bench_with_input(
-            BenchmarkId::new("starts_with", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) WHERE n.name STARTS WITH 'node_5' RETURN n.id",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("starts_with", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute(
+                            "MATCH (n:Node) WHERE n.name STARTS WITH 'node_5' RETURN n.id",
+                            opts(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- return multiple properties ---
         group.bench_with_input(
@@ -266,19 +245,15 @@ fn bench_scale_aggregation(c: &mut Criterion) {
         group.throughput(Throughput::Elements(size as u64));
 
         // --- count(*) ---
-        group.bench_with_input(
-            BenchmarkId::new("count_star", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute("MATCH (n:Node) RETURN count(*) AS c", opts())
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("count_star", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) RETURN count(*) AS c", opts())
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- group by (100 groups) ---
         group.bench_with_input(
@@ -299,42 +274,31 @@ fn bench_scale_aggregation(c: &mut Criterion) {
         );
 
         // --- multi aggregate ---
-        group.bench_with_input(
-            BenchmarkId::new("multi_aggregate", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) \
+        group.bench_with_input(BenchmarkId::new("multi_aggregate", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute(
+                            "MATCH (n:Node) \
                                  RETURN count(n) AS cnt, min(n.value) AS lo, \
                                         max(n.value) AS hi, sum(n.value) AS total",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+                            opts(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- count DISTINCT ---
-        group.bench_with_input(
-            BenchmarkId::new("count_distinct", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) RETURN count(DISTINCT n.value) AS c",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("count_distinct", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) RETURN count(DISTINCT n.value) AS c", opts())
+                        .unwrap(),
+                );
+            });
+        });
     }
 
     group.finish();
@@ -352,22 +316,15 @@ fn bench_scale_ordering(c: &mut Criterion) {
         group.throughput(Throughput::Elements(size as u64));
 
         // --- ORDER BY single key ---
-        group.bench_with_input(
-            BenchmarkId::new("order_by_single", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) RETURN n.id ORDER BY n.value ASC",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("order_by_single", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) RETURN n.id ORDER BY n.value ASC", opts())
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- ORDER BY + LIMIT (top-N should be cheaper) ---
         group.bench_with_input(
@@ -388,40 +345,29 @@ fn bench_scale_ordering(c: &mut Criterion) {
         );
 
         // --- DISTINCT ---
-        group.bench_with_input(
-            BenchmarkId::new("distinct", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) RETURN DISTINCT n.value",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("distinct", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) RETURN DISTINCT n.value", opts())
+                        .unwrap(),
+                );
+            });
+        });
 
         // --- ORDER BY multi-key ---
-        group.bench_with_input(
-            BenchmarkId::new("order_multi_key", size),
-            &size,
-            |b, _| {
-                b.iter(|| {
-                    black_box(
-                        db.service
-                            .execute(
-                                "MATCH (n:Node) RETURN n.id, n.value ORDER BY n.value ASC, n.id DESC",
-                                opts(),
-                            )
-                            .unwrap(),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("order_multi_key", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute(
+                            "MATCH (n:Node) RETURN n.id, n.value ORDER BY n.value ASC, n.id DESC",
+                            opts(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
     }
 
     group.finish();
@@ -471,10 +417,8 @@ fn bench_scale_write(c: &mut Criterion) {
                     BenchDb::new,
                     |db| {
                         // Create nodes
-                        let q = format!(
-                            "UNWIND range(0, {}) AS i CREATE (:W {{idx: i}})",
-                            size - 1
-                        );
+                        let q =
+                            format!("UNWIND range(0, {}) AS i CREATE (:W {{idx: i}})", size - 1);
                         black_box(db.service.execute(&q, opts()).unwrap());
                         // Create chain edges
                         let q2 = format!(

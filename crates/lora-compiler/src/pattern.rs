@@ -28,11 +28,7 @@ impl<'a> PatternPlanner<'a> {
         last.expect("pattern produced no plan")
     }
 
-    fn plan_part(
-        &mut self,
-        input: Option<PlanNodeId>,
-        part: &ResolvedPatternPart,
-    ) -> PlanNodeId {
+    fn plan_part(&mut self, input: Option<PlanNodeId>, part: &ResolvedPatternPart) -> PlanNodeId {
         let shortest_path_all = match &part.element {
             ResolvedPatternElement::ShortestPath { all, .. } => Some(*all),
             _ => None,
@@ -69,9 +65,10 @@ impl<'a> PatternPlanner<'a> {
                 properties, // ← was `properties: _`, now used
             } => self.plan_node(input, *var, labels, properties.as_ref()),
 
-            ResolvedPatternElement::ShortestPath { head, chain, .. } |
-            ResolvedPatternElement::NodeChain { head, chain } => {
-                let mut node = self.plan_node(input, head.var, &head.labels, head.properties.as_ref());
+            ResolvedPatternElement::ShortestPath { head, chain, .. }
+            | ResolvedPatternElement::NodeChain { head, chain } => {
+                let mut node =
+                    self.plan_node(input, head.var, &head.labels, head.properties.as_ref());
                 // The analyzer always assigns a VarId (even for anonymous nodes),
                 // so .unwrap() is safe here.
                 let mut current_src = head.var.unwrap();
@@ -151,14 +148,17 @@ impl<'a> PatternPlanner<'a> {
 /// Extract node and relationship VarIds from a pattern element for path construction.
 fn collect_chain_vars(
     el: &ResolvedPatternElement,
-) -> (Vec<lora_analyzer::symbols::VarId>, Vec<lora_analyzer::symbols::VarId>) {
+) -> (
+    Vec<lora_analyzer::symbols::VarId>,
+    Vec<lora_analyzer::symbols::VarId>,
+) {
     match el {
         ResolvedPatternElement::Node { var, .. } => {
             let node_vars = var.iter().copied().collect();
             (node_vars, Vec::new())
         }
-        ResolvedPatternElement::ShortestPath { head, chain, .. } |
-        ResolvedPatternElement::NodeChain { head, chain } => {
+        ResolvedPatternElement::ShortestPath { head, chain, .. }
+        | ResolvedPatternElement::NodeChain { head, chain } => {
             let mut node_vars = Vec::new();
             let mut rel_vars = Vec::new();
 

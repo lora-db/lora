@@ -167,7 +167,10 @@ fn remove_property_from_node() {
     db.run("CREATE (n:User {name: 'Alice', age: 30})");
     db.run("MATCH (n:User {name: 'Alice'}) REMOVE n.age");
     let rows = db.run("MATCH (n:User {name: 'Alice'}) RETURN n");
-    assert!(rows[0]["n"]["properties"].get("age").is_none() || rows[0]["n"]["properties"]["age"].is_null());
+    assert!(
+        rows[0]["n"]["properties"].get("age").is_none()
+            || rows[0]["n"]["properties"]["age"].is_null()
+    );
 }
 
 #[test]
@@ -176,7 +179,10 @@ fn remove_property_from_relationship() {
     db.run("CREATE (a:User {name: 'Alice'})-[:FOLLOWS {since: 2020}]->(b:User {name: 'Bob'})");
     db.run("MATCH (a)-[r:FOLLOWS]->(b) REMOVE r.since");
     let rows = db.run("MATCH (a)-[r:FOLLOWS]->(b) RETURN r");
-    assert!(rows[0]["r"]["properties"].get("since").is_none() || rows[0]["r"]["properties"]["since"].is_null());
+    assert!(
+        rows[0]["r"]["properties"].get("since").is_none()
+            || rows[0]["r"]["properties"]["since"].is_null()
+    );
 }
 
 #[test]
@@ -195,7 +201,10 @@ fn remove_property_from_all_nodes() {
     db.run("MATCH (i:Item) REMOVE i.temp");
     let rows = db.run("MATCH (i:Item) RETURN i");
     for row in &rows {
-        assert!(row["i"]["properties"].get("temp").is_none() || row["i"]["properties"]["temp"].is_null());
+        assert!(
+            row["i"]["properties"].get("temp").is_none()
+                || row["i"]["properties"]["temp"].is_null()
+        );
     }
 }
 
@@ -272,7 +281,9 @@ fn detach_delete_removes_all_incident_relationships() {
     db.run("CREATE (:Hub {name:'center'})");
     for i in 0..5 {
         db.run(&format!("CREATE (:Spoke {{id:{i}}})"));
-        db.run(&format!("MATCH (h:Hub), (s:Spoke {{id:{i}}}) CREATE (h)-[:CONNECTS]->(s)"));
+        db.run(&format!(
+            "MATCH (h:Hub), (s:Spoke {{id:{i}}}) CREATE (h)-[:CONNECTS]->(s)"
+        ));
     }
     db.assert_count("MATCH (h:Hub)-[r:CONNECTS]->(s) RETURN r", 5);
     db.run("MATCH (h:Hub) DETACH DELETE h");
@@ -298,7 +309,10 @@ fn set_property_to_null() {
     db.run("CREATE (n:User {name: 'Alice', age: 30})");
     db.run("MATCH (n:User {name: 'Alice'}) SET n.age = null");
     let rows = db.run("MATCH (n:User {name: 'Alice'}) RETURN n");
-    assert!(rows[0]["n"]["properties"].get("age").is_none() || rows[0]["n"]["properties"]["age"].is_null());
+    assert!(
+        rows[0]["n"]["properties"].get("age").is_none()
+            || rows[0]["n"]["properties"]["age"].is_null()
+    );
 }
 
 // ============================================================
@@ -440,9 +454,7 @@ fn set_property_from_another_node() {
     let db = TestDb::new();
     db.run("CREATE (:Source {name:'src', data: 42})");
     db.run("CREATE (:Dest {name:'dst'})");
-    db.run(
-        "MATCH (s:Source {name:'src'}), (d:Dest {name:'dst'}) SET d.data = s.data",
-    );
+    db.run("MATCH (s:Source {name:'src'}), (d:Dest {name:'dst'}) SET d.data = s.data");
     let rows = db.run("MATCH (d:Dest {name:'dst'}) RETURN d");
     assert_eq!(rows[0]["d"]["properties"]["data"], 42);
 }
@@ -506,7 +518,10 @@ fn delete_all_relationships_of_specific_type_between_specific_nodes() {
     db.assert_count("MATCH (a:P {name:'A'})-[r]->(b:P {name:'B'}) RETURN r", 2);
     db.run("MATCH (a:P {name:'A'})-[r:FRIEND]->(b:P {name:'B'}) DELETE r");
     db.assert_count("MATCH (a:P {name:'A'})-[r]->(b:P {name:'B'}) RETURN r", 1);
-    db.assert_count("MATCH (a:P {name:'A'})-[r:COLLEAGUE]->(b:P {name:'B'}) RETURN r", 1);
+    db.assert_count(
+        "MATCH (a:P {name:'A'})-[r:COLLEAGUE]->(b:P {name:'B'}) RETURN r",
+        1,
+    );
 }
 
 #[test]
@@ -541,9 +556,7 @@ fn delete_specific_relationship_verify_other_relationships_survive() {
 #[test]
 fn delete_from_middle_of_chain_verify_broken_graph() {
     let db = TestDb::new();
-    db.run(
-        "CREATE (a:Link {id:1})-[:SEQ]->(b:Link {id:2})-[:SEQ]->(c:Link {id:3})",
-    );
+    db.run("CREATE (a:Link {id:1})-[:SEQ]->(b:Link {id:2})-[:SEQ]->(c:Link {id:3})");
     db.run("MATCH (b:Link {id:2}) DETACH DELETE b");
     db.assert_count("MATCH (n:Link) RETURN n", 2);
     // No relationships should remain — both edges to/from b are gone
@@ -617,9 +630,7 @@ fn set_with_case_expression() {
     let db = TestDb::new();
     db.run("CREATE (:Grade {name:'Alice', score: 85})");
     db.run("CREATE (:Grade {name:'Bob',   score: 45})");
-    db.run(
-        "MATCH (g:Grade) SET g.pass = CASE WHEN g.score >= 60 THEN true ELSE false END",
-    );
+    db.run("MATCH (g:Grade) SET g.pass = CASE WHEN g.score >= 60 THEN true ELSE false END");
     let rows = db.run("MATCH (g:Grade {name:'Alice'}) RETURN g");
     assert_eq!(rows[0]["g"]["properties"]["pass"], true);
     let rows = db.run("MATCH (g:Grade {name:'Bob'}) RETURN g");
@@ -691,9 +702,7 @@ fn set_property_from_other_node() {
     let db = TestDb::new();
     db.run("CREATE (:Source {val: 42})");
     db.run("CREATE (:Target {name: 'dest'})");
-    db.run(
-        "MATCH (s:Source), (t:Target) SET t.copied = s.val",
-    );
+    db.run("MATCH (s:Source), (t:Target) SET t.copied = s.val");
     let rows = db.run("MATCH (t:Target) RETURN t.copied AS v");
     assert_eq!(rows[0]["v"], 42);
 }
@@ -781,18 +790,14 @@ fn remove_label_and_verify() {
 fn foreach_update() {
     let db = TestDb::new();
     db.run("CREATE (:List {items: [1, 2, 3]})");
-    let _rows = db.run(
-        "MATCH (l:List) FOREACH (i IN l.items | CREATE (:Item {val: i}))",
-    );
+    let _rows = db.run("MATCH (l:List) FOREACH (i IN l.items | CREATE (:Item {val: i}))");
 }
 
 #[test]
 #[ignore = "pending implementation"]
 fn create_unique_constraint() {
     let db = TestDb::new();
-    let _err = db.run(
-        "CREATE CONSTRAINT FOR (n:User) REQUIRE n.email IS UNIQUE",
-    );
+    let _err = db.run("CREATE CONSTRAINT FOR (n:User) REQUIRE n.email IS UNIQUE");
 }
 
 // ============================================================

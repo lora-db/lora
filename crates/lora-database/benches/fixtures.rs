@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 
-use lora_database::{Database, ExecuteOptions, InMemoryGraph, ResultFormat, LoraValue};
+use lora_database::{Database, ExecuteOptions, InMemoryGraph, LoraValue, ResultFormat};
 
 // ---------------------------------------------------------------------------
 // Wrapper (mirrors TestDb from integration tests but without serde_json dep)
@@ -33,6 +33,12 @@ use lora_database::{Database, ExecuteOptions, InMemoryGraph, ResultFormat, LoraV
 
 pub struct BenchDb {
     pub service: Database<InMemoryGraph>,
+}
+
+impl Default for BenchDb {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BenchDb {
@@ -327,25 +333,49 @@ pub fn build_org_graph() -> BenchDb {
     db.run("CREATE (:City {name:'London'})");
     db.run("CREATE (:City {name:'Berlin'})");
     db.run("CREATE (:City {name:'Tokyo'})");
-    for (person, since) in [("Alice",2018),("Bob",2020),("Carol",2015),("Dave",2021),("Eve",2022),("Frank",2012)] {
+    for (person, since) in [
+        ("Alice", 2018),
+        ("Bob", 2020),
+        ("Carol", 2015),
+        ("Dave", 2021),
+        ("Eve", 2022),
+        ("Frank", 2012),
+    ] {
         db.run(&format!(
             "MATCH (p:Person {{name:'{person}'}}), (c:Company {{name:'Acme'}}) \
              CREATE (p)-[:WORKS_AT {{since:{since}}}]->(c)"
         ));
     }
-    for (mgr, sub) in [("Frank","Alice"),("Frank","Bob"),("Frank","Eve"),("Carol","Dave")] {
+    for (mgr, sub) in [
+        ("Frank", "Alice"),
+        ("Frank", "Bob"),
+        ("Frank", "Eve"),
+        ("Carol", "Dave"),
+    ] {
         db.run(&format!(
             "MATCH (m:Person {{name:'{mgr}'}}), (s:Person {{name:'{sub}'}}) \
              CREATE (m)-[:MANAGES]->(s)"
         ));
     }
-    for (person, project, role) in [("Alice","Alpha","lead"),("Bob","Alpha","dev"),("Carol","Beta","lead"),("Eve","Beta","dev")] {
+    for (person, project, role) in [
+        ("Alice", "Alpha", "lead"),
+        ("Bob", "Alpha", "dev"),
+        ("Carol", "Beta", "lead"),
+        ("Eve", "Beta", "dev"),
+    ] {
         db.run(&format!(
             "MATCH (p:Person {{name:'{person}'}}), (pr:Project {{name:'{project}'}}) \
              CREATE (p)-[:ASSIGNED_TO {{role:'{role}'}}]->(pr)"
         ));
     }
-    for (person, city) in [("Alice","London"),("Bob","Berlin"),("Carol","London"),("Dave","Tokyo"),("Eve","Berlin"),("Frank","London")] {
+    for (person, city) in [
+        ("Alice", "London"),
+        ("Bob", "Berlin"),
+        ("Carol", "London"),
+        ("Dave", "Tokyo"),
+        ("Eve", "Berlin"),
+        ("Frank", "London"),
+    ] {
         db.run(&format!(
             "MATCH (p:Person {{name:'{person}'}}), (c:City {{name:'{city}'}}) \
              CREATE (p)-[:LIVES_IN]->(c)"

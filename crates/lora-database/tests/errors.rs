@@ -8,28 +8,44 @@ use test_helpers::TestDb;
 // ============================================================
 
 #[test]
-fn error_invalid_syntax() { assert!(!TestDb::new().run_err("THIS IS NOT CYPHER").is_empty()); }
+fn error_invalid_syntax() {
+    assert!(!TestDb::new().run_err("THIS IS NOT CYPHER").is_empty());
+}
 
 #[test]
-fn error_incomplete_match() { assert!(!TestDb::new().run_err("MATCH").is_empty()); }
+fn error_incomplete_match() {
+    assert!(!TestDb::new().run_err("MATCH").is_empty());
+}
 
 #[test]
-fn error_unclosed_parenthesis() { assert!(!TestDb::new().run_err("MATCH (n RETURN n").is_empty()); }
+fn error_unclosed_parenthesis() {
+    assert!(!TestDb::new().run_err("MATCH (n RETURN n").is_empty());
+}
 
 #[test]
-fn error_missing_return_or_update() { assert!(!TestDb::new().run_err("MATCH (n:User)").is_empty()); }
+fn error_missing_return_or_update() {
+    assert!(!TestDb::new().run_err("MATCH (n:User)").is_empty());
+}
 
 #[test]
-fn error_empty_query() { assert!(!TestDb::new().run_err("").is_empty()); }
+fn error_empty_query() {
+    assert!(!TestDb::new().run_err("").is_empty());
+}
 
 #[test]
-fn error_parse_unmatched_bracket() { assert!(TestDb::new().exec("MATCH (a)-[r:X->(b) RETURN a").is_err()); }
+fn error_parse_unmatched_bracket() {
+    assert!(TestDb::new().exec("MATCH (a)-[r:X->(b) RETURN a").is_err());
+}
 
 #[test]
-fn error_parse_only_keyword() { assert!(TestDb::new().exec("MATCH").is_err()); }
+fn error_parse_only_keyword() {
+    assert!(TestDb::new().exec("MATCH").is_err());
+}
 
 #[test]
-fn error_parse_nonsense() { assert!(TestDb::new().exec("SELECT * FROM users").is_err()); }
+fn error_parse_nonsense() {
+    assert!(TestDb::new().exec("SELECT * FROM users").is_err());
+}
 
 // ============================================================
 // Semantic: unknown variables
@@ -134,7 +150,9 @@ fn create_allows_new_labels_on_nonempty_graph() {
 fn create_allows_new_relationship_type() {
     let db = TestDb::new();
     db.run("CREATE (:A {id:1})-[:EXISTING]->(:B {id:2})");
-    assert!(db.exec("MATCH (a:A), (b:B) CREATE (a)-[:BRAND_NEW]->(b)").is_ok());
+    assert!(db
+        .exec("MATCH (a:A), (b:B) CREATE (a)-[:BRAND_NEW]->(b)")
+        .is_ok());
 }
 
 // ============================================================
@@ -144,14 +162,18 @@ fn create_allows_new_relationship_type() {
 #[test]
 fn union_is_supported() {
     let db = TestDb::new();
-    assert!(db.exec("MATCH (a) RETURN a UNION MATCH (b) RETURN b").is_ok());
+    assert!(db
+        .exec("MATCH (a) RETURN a UNION MATCH (b) RETURN b")
+        .is_ok());
 }
 
 #[test]
 fn error_standalone_call_unsupported() {
     let db = TestDb::new();
     let err = db.run_err("CALL db.labels()");
-    assert!(err.contains("Unsupported") || err.contains("not yet supported") || err.contains("CALL"));
+    assert!(
+        err.contains("Unsupported") || err.contains("not yet supported") || err.contains("CALL")
+    );
 }
 
 // ============================================================
@@ -385,7 +407,9 @@ fn error_unterminated_string_literal() {
 
 #[test]
 fn error_invalid_operator() {
-    assert!(TestDb::new().exec("MATCH (n:X) WHERE n.val === 1 RETURN n").is_err());
+    assert!(TestDb::new()
+        .exec("MATCH (n:X) WHERE n.val === 1 RETURN n")
+        .is_err());
 }
 
 #[test]
@@ -555,9 +579,7 @@ fn error_modulo_by_zero() {
 #[test]
 fn error_union_column_count_mismatch() {
     let db = TestDb::new();
-    let err = db.run_err(
-        "RETURN 1 AS a, 2 AS b UNION RETURN 1 AS a",
-    );
+    let err = db.run_err("RETURN 1 AS a, 2 AS b UNION RETURN 1 AS a");
     assert!(!err.is_empty());
 }
 
@@ -590,9 +612,7 @@ fn error_constraint_violation() {
 fn error_read_after_write_in_same_clause() {
     // Lora spec: cannot read and write in the same clause
     let db = TestDb::new();
-    let _err = db.run_err(
-        "MATCH (n) CREATE (n)-[:R]->(:New) RETURN n",
-    );
+    let _err = db.run_err("MATCH (n) CREATE (n)-[:R]->(:New) RETURN n");
 }
 
 // ============================================================
@@ -701,9 +721,7 @@ fn error_write_conflict_in_same_clause() {
     // Reading and writing to the same node in same clause
     let db = TestDb::new();
     db.run("CREATE (:X {val: 1})");
-    let _err = db.run_err(
-        "MATCH (n:X) SET n.val = n.val + 1 DELETE n",
-    );
+    let _err = db.run_err("MATCH (n:X) SET n.val = n.val + 1 DELETE n");
 }
 
 #[test]

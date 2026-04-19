@@ -63,10 +63,7 @@ fn parameter_scalar_boolean() {
 #[test]
 fn parameter_in_return_expression() {
     let db = TestDb::new();
-    let rows = db.run_with_params(
-        "RETURN $val AS v",
-        params(&[("val", LoraValue::Int(42))]),
-    );
+    let rows = db.run_with_params("RETURN $val AS v", params(&[("val", LoraValue::Int(42))]));
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["v"], 42);
 }
@@ -300,7 +297,7 @@ fn parameter_as_list_in_unwind() {
 fn parameter_match_on_org_graph() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let names = db.sorted_strings(
+    let _names = db.sorted_strings(
         "MATCH (p:Person) WHERE p.dept = $dept RETURN p.name AS name",
         "name",
     );
@@ -401,8 +398,8 @@ fn param_list_value() {
     db.run("CREATE (:Item {name: 'B', tag: 'y'})");
     db.run("CREATE (:Item {name: 'C', tag: 'x'})");
 
-    use std::collections::BTreeMap;
     use lora_database::LoraValue;
+    use std::collections::BTreeMap;
 
     let mut params = BTreeMap::new();
     params.insert(
@@ -422,16 +419,16 @@ fn param_list_value() {
 fn param_in_create() {
     let db = TestDb::new();
 
-    use std::collections::BTreeMap;
     use lora_database::LoraValue;
+    use std::collections::BTreeMap;
 
     let mut params = BTreeMap::new();
-    params.insert("name".to_string(), LoraValue::String("Parameterized".to_string()));
-    params.insert("age".to_string(), LoraValue::Int(25));
-    db.run_with_params(
-        "CREATE (:Person {name: $name, age: $age})",
-        params,
+    params.insert(
+        "name".to_string(),
+        LoraValue::String("Parameterized".to_string()),
     );
+    params.insert("age".to_string(), LoraValue::Int(25));
+    db.run_with_params("CREATE (:Person {name: $name, age: $age})", params);
     let rows = db.run("MATCH (p:Person {name: 'Parameterized'}) RETURN p.age AS age");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["age"], 25);
@@ -443,8 +440,8 @@ fn param_boolean_in_where() {
     db.run("CREATE (:Flag {active: true, name: 'on'})");
     db.run("CREATE (:Flag {active: false, name: 'off'})");
 
-    use std::collections::BTreeMap;
     use lora_database::LoraValue;
+    use std::collections::BTreeMap;
 
     let mut params = BTreeMap::new();
     params.insert("active".to_string(), LoraValue::Bool(true));
@@ -461,8 +458,8 @@ fn param_boolean_in_where() {
 fn param_map_as_properties() {
     let db = TestDb::new();
 
-    use std::collections::BTreeMap;
     use lora_database::LoraValue;
+    use std::collections::BTreeMap;
 
     let mut props = BTreeMap::new();
     props.insert("name".to_string(), LoraValue::String("Dynamic".to_string()));
@@ -582,9 +579,6 @@ fn parameter_in_skip_limit() {
     db.run("UNWIND range(1, 10) AS i CREATE (:N {id: i})");
     let _rows = db.run_with_params(
         "MATCH (n:N) RETURN n.id AS id ORDER BY id SKIP $skip LIMIT $limit",
-        params(&[
-            ("skip", LoraValue::Int(2)),
-            ("limit", LoraValue::Int(3)),
-        ]),
+        params(&[("skip", LoraValue::Int(2)), ("limit", LoraValue::Int(3))]),
     );
 }

@@ -1,12 +1,11 @@
 use crate::errors::{value_kind, ExecResult, ExecutorError};
 use crate::eval::{eval_expr, take_eval_error, EvalContext};
-use crate::value::{LoraPath, Row, LoraValue};
+use crate::value::{LoraPath, LoraValue, Row};
 use crate::{project_rows, ExecuteOptions, QueryResult};
 
 use lora_analyzer::{
-    ResolvedExpr, ResolvedPattern, ResolvedPatternElement, ResolvedPatternPart, ResolvedRemoveItem,
-    ResolvedSetItem, ResolvedSortItem,
-    symbols::VarId,
+    symbols::VarId, ResolvedExpr, ResolvedPattern, ResolvedPatternElement, ResolvedPatternPart,
+    ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
 };
 use lora_ast::{Direction, RangeLiteral};
 use lora_compiler::physical::*;
@@ -210,18 +209,16 @@ impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
                 None => continue,
             };
 
-            for (rel_id, dst_id) in self
-                .ctx
-                .storage
-                .expand_ids(src_node_id, op.direction, &op.types)
+            for (rel_id, dst_id) in
+                self.ctx
+                    .storage
+                    .expand_ids(src_node_id, op.direction, &op.types)
             {
                 if let Some(expr) = op.rel_properties.as_ref() {
                     let matches = match self.ctx.storage.relationship_ref(rel_id) {
-                        Some(rel) => self.relationship_matches_properties(
-                            &rel.properties,
-                            Some(expr),
-                            &row,
-                        )?,
+                        Some(rel) => {
+                            self.relationship_matches_properties(&rel.properties, Some(expr), &row)?
+                        }
                         None => false,
                     };
                     if !matches {
@@ -598,10 +595,12 @@ impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
 
             for inner_row in &inner_rows {
                 // Each variable already bound in input_row must match.
-                let compatible = input_row.iter().all(|(var, val)| match inner_row.get(*var) {
-                    Some(inner_val) => inner_val == val,
-                    None => true,
-                });
+                let compatible = input_row
+                    .iter()
+                    .all(|(var, val)| match inner_row.get(*var) {
+                        Some(inner_val) => inner_val == val,
+                        None => true,
+                    });
                 if !compatible {
                     continue;
                 }
@@ -630,11 +629,7 @@ impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
         Ok(out)
     }
 
-    fn exec_path_build(
-        &self,
-        plan: &PhysicalPlan,
-        op: &PathBuildExec,
-    ) -> ExecResult<Vec<Row>> {
+    fn exec_path_build(&self, plan: &PhysicalPlan, op: &PathBuildExec) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
         let mut rows: Vec<Row> = input_rows
             .into_iter()
@@ -728,10 +723,7 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
 
     fn execute_and_hydrate(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         let rows = self.execute_node(plan, plan.root)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| self.hydrate_row(row))
-            .collect())
+        Ok(rows.into_iter().map(|row| self.hydrate_row(row)).collect())
     }
 
     fn hydrate_row(&self, row: Row) -> Row {
@@ -900,18 +892,16 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                 None => continue,
             };
 
-            for (rel_id, dst_id) in self
-                .ctx
-                .storage
-                .expand_ids(src_node_id, op.direction, &op.types)
+            for (rel_id, dst_id) in
+                self.ctx
+                    .storage
+                    .expand_ids(src_node_id, op.direction, &op.types)
             {
                 if let Some(expr) = op.rel_properties.as_ref() {
                     let matches = match self.ctx.storage.relationship_ref(rel_id) {
-                        Some(rel) => self.relationship_matches_properties(
-                            &rel.properties,
-                            Some(expr),
-                            &row,
-                        )?,
+                        Some(rel) => {
+                            self.relationship_matches_properties(&rel.properties, Some(expr), &row)?
+                        }
                         None => false,
                     };
                     if !matches {
@@ -1284,10 +1274,12 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
             let mut matched = false;
 
             for inner_row in &inner_rows {
-                let compatible = input_row.iter().all(|(var, val)| match inner_row.get(*var) {
-                    Some(inner_val) => inner_val == val,
-                    None => true,
-                });
+                let compatible = input_row
+                    .iter()
+                    .all(|(var, val)| match inner_row.get(*var) {
+                        Some(inner_val) => inner_val == val,
+                        None => true,
+                    });
                 if !compatible {
                     continue;
                 }
@@ -1316,11 +1308,7 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
         Ok(out)
     }
 
-    fn exec_path_build(
-        &mut self,
-        plan: &PhysicalPlan,
-        op: &PathBuildExec,
-    ) -> ExecResult<Vec<Row>> {
+    fn exec_path_build(&mut self, plan: &PhysicalPlan, op: &PathBuildExec) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
         let mut rows: Vec<Row> = input_rows
             .into_iter()
@@ -1351,23 +1339,21 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
 
     fn apply_remove_item(&mut self, row: &Row, item: &ResolvedRemoveItem) -> ExecResult<()> {
         match item {
-            ResolvedRemoveItem::Labels { variable, labels } => {
-                match row.get(*variable) {
-                    Some(LoraValue::Node(node_id)) => {
-                        let node_id = *node_id;
-                        for label in labels {
-                            self.ctx.storage.remove_node_label(node_id, label);
-                        }
-                        Ok(())
+            ResolvedRemoveItem::Labels { variable, labels } => match row.get(*variable) {
+                Some(LoraValue::Node(node_id)) => {
+                    let node_id = *node_id;
+                    for label in labels {
+                        self.ctx.storage.remove_node_label(node_id, label);
                     }
-                    Some(other) => Err(ExecutorError::ExpectedNodeForRemoveLabels {
-                        found: value_kind(other),
-                    }),
-                    None => Err(ExecutorError::UnboundVariableForRemove {
-                        var: format!("{variable:?}"),
-                    }),
+                    Ok(())
                 }
-            }
+                Some(other) => Err(ExecutorError::ExpectedNodeForRemoveLabels {
+                    found: value_kind(other),
+                }),
+                None => Err(ExecutorError::UnboundVariableForRemove {
+                    var: format!("{variable:?}"),
+                }),
+            },
 
             ResolvedRemoveItem::Property { expr } => self.remove_property_from_expr(row, expr),
         }
@@ -1472,9 +1458,7 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                     storage: &*self.ctx.storage,
                     params: &self.ctx.params,
                 };
-                let expected_props = properties
-                    .as_ref()
-                    .map(|e| eval_expr(e, row, &eval_ctx));
+                let expected_props = properties.as_ref().map(|e| eval_expr(e, row, &eval_ctx));
 
                 for id in candidate_ids {
                     let Some(node) = self.ctx.storage.node_ref(id) else {
@@ -1487,9 +1471,7 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                         let all_match = expected.iter().all(|(key, expected_value)| {
                             node.properties
                                 .get(key)
-                                .map(|actual| {
-                                    value_matches_property_value(expected_value, actual)
-                                })
+                                .map(|actual| value_matches_property_value(expected_value, actual))
                                 .unwrap_or(false)
                         });
                         if !all_match {
@@ -1555,11 +1537,10 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
 
                     // ID-only traversal; look up records by reference only for
                     // candidates that pass the label/property filters.
-                    let edges = self.ctx.storage.expand_ids(
-                        current_node_id,
-                        direction,
-                        &step.rel.types,
-                    );
+                    let edges =
+                        self.ctx
+                            .storage
+                            .expand_ids(current_node_id, direction, &step.rel.types);
 
                     // Try to find a matching edge + target node
                     let mut found = false;
@@ -1584,7 +1565,9 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                                     node_rec
                                         .properties
                                         .get(key)
-                                        .map(|actual| value_matches_property_value(expected_val, actual))
+                                        .map(|actual| {
+                                            value_matches_property_value(expected_val, actual)
+                                        })
                                         .unwrap_or(false)
                                 });
                                 if !all_match {
@@ -1601,7 +1584,9 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                                     rel_rec
                                         .properties
                                         .get(key)
-                                        .map(|actual| value_matches_property_value(expected_val, actual))
+                                        .map(|actual| {
+                                            value_matches_property_value(expected_val, actual)
+                                        })
                                         .unwrap_or(false)
                                 });
                                 if !all_match {
@@ -1692,11 +1677,11 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
 
             ResolvedSetItem::SetVariable { variable, value } => {
                 // Only need the entity's id — peek at the binding by reference.
-                let entity_ref = row
-                    .get(*variable)
-                    .ok_or(ExecutorError::UnboundVariableForSet {
-                        var: format!("{variable:?}"),
-                    })?;
+                let entity_ref =
+                    row.get(*variable)
+                        .ok_or(ExecutorError::UnboundVariableForSet {
+                            var: format!("{variable:?}"),
+                        })?;
                 let entity_target = entity_target_from_value(entity_ref)?;
 
                 let new_value = {
@@ -1711,11 +1696,11 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
             }
 
             ResolvedSetItem::MutateVariable { variable, value } => {
-                let entity_ref = row
-                    .get(*variable)
-                    .ok_or(ExecutorError::UnboundVariableForSet {
-                        var: format!("{variable:?}"),
-                    })?;
+                let entity_ref =
+                    row.get(*variable)
+                        .ok_or(ExecutorError::UnboundVariableForSet {
+                            var: format!("{variable:?}"),
+                        })?;
                 let entity_target = entity_target_from_value(entity_ref)?;
 
                 let patch = {
@@ -1729,23 +1714,21 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                 self.mutate_entity_target(entity_target, patch)
             }
 
-            ResolvedSetItem::SetLabels { variable, labels } => {
-                match row.get(*variable) {
-                    Some(LoraValue::Node(node_id)) => {
-                        let node_id = *node_id;
-                        for label in labels {
-                            self.ctx.storage.add_node_label(node_id, label);
-                        }
-                        Ok(())
+            ResolvedSetItem::SetLabels { variable, labels } => match row.get(*variable) {
+                Some(LoraValue::Node(node_id)) => {
+                    let node_id = *node_id;
+                    for label in labels {
+                        self.ctx.storage.add_node_label(node_id, label);
                     }
-                    Some(other) => Err(ExecutorError::ExpectedNodeForSetLabels {
-                        found: value_kind(other),
-                    }),
-                    None => Err(ExecutorError::UnboundVariableForSet {
-                        var: format!("{variable:?}"),
-                    }),
+                    Ok(())
                 }
-            }
+                Some(other) => Err(ExecutorError::ExpectedNodeForSetLabels {
+                    found: value_kind(other),
+                }),
+                None => Err(ExecutorError::UnboundVariableForSet {
+                    var: format!("{variable:?}"),
+                }),
+            },
         }
     }
 
@@ -2025,9 +2008,7 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                         Direction::Right | Direction::Undirected => {
                             src == left_node_id && dst == right_node_id
                         }
-                        Direction::Left => {
-                            src == right_node_id && dst == left_node_id
-                        }
+                        Direction::Left => src == right_node_id && dst == left_node_id,
                     };
 
                     if endpoints_match {
@@ -2316,15 +2297,12 @@ fn compute_aggregate_expr<S: GraphStorage + ?Sized>(
 
                     let is_population = func == "stdevp";
 
-                    if nums.is_empty()
-                        || (!is_population && nums.len() < 2)
-                    {
+                    if nums.is_empty() || (!is_population && nums.len() < 2) {
                         return LoraValue::Float(0.0);
                     }
 
                     let mean = nums.iter().sum::<f64>() / nums.len() as f64;
-                    let variance_sum: f64 =
-                        nums.iter().map(|x| (x - mean).powi(2)).sum();
+                    let variance_sum: f64 = nums.iter().map(|x| (x - mean).powi(2)).sum();
                     let denom = if is_population {
                         nums.len() as f64
                     } else {
@@ -2361,9 +2339,7 @@ fn compute_aggregate_expr<S: GraphStorage + ?Sized>(
                     if lower == upper || upper >= nums.len() {
                         LoraValue::Float(nums[lower])
                     } else {
-                        LoraValue::Float(
-                            nums[lower] * (1.0 - fraction) + nums[upper] * fraction,
-                        )
+                        LoraValue::Float(nums[lower] * (1.0 - fraction) + nums[upper] * fraction)
                     }
                 }
 
@@ -2387,8 +2363,7 @@ fn compute_aggregate_expr<S: GraphStorage + ?Sized>(
 
                     nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
-                    let index =
-                        (percentile * (nums.len() - 1) as f64).round() as usize;
+                    let index = (percentile * (nums.len() - 1) as f64).round() as usize;
                     let index = index.min(nums.len() - 1);
                     LoraValue::Float(nums[index])
                 }
@@ -2606,9 +2581,9 @@ fn type_rank(v: &LoraValue) -> u8 {
 /// Each group is a disjunction (OR): the node must have at least one label
 /// from the group.  Groups are conjunctive (AND): all groups must be satisfied.
 fn node_matches_label_groups(node_labels: &[String], groups: &[Vec<String>]) -> bool {
-    groups.iter().all(|group| {
-        group.iter().any(|l| node_labels.iter().any(|nl| nl == l))
-    })
+    groups
+        .iter()
+        .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))
 }
 
 /// Scan the graph for candidate node IDs matching the label groups. Uses the

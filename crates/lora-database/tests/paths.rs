@@ -110,7 +110,9 @@ fn variable_length_zero_hops() {
 fn varlen_in_cycle_terminates() {
     let db = TestDb::new();
     db.seed_cycle(3);
-    let count = db.exec_count("MATCH (a:Ring {idx:0})-[:LOOP*1..3]->(b) RETURN b").unwrap();
+    let count = db
+        .exec_count("MATCH (a:Ring {idx:0})-[:LOOP*1..3]->(b) RETURN b")
+        .unwrap();
     assert_eq!(count, 3);
 }
 
@@ -118,7 +120,9 @@ fn varlen_in_cycle_terminates() {
 fn varlen_cycle_does_not_revisit_relationships() {
     let db = TestDb::new();
     db.seed_cycle(3);
-    let count = db.exec_count("MATCH (a:Ring {idx:0})-[:LOOP*1..10]->(b) RETURN b").unwrap();
+    let count = db
+        .exec_count("MATCH (a:Ring {idx:0})-[:LOOP*1..10]->(b) RETURN b")
+        .unwrap();
     assert_eq!(count, 3);
 }
 
@@ -211,9 +215,7 @@ fn path_length_on_matched_path() {
 fn path_nodes_function() {
     let db = TestDb::new();
     db.seed_social_graph();
-    let rows = db.run(
-        "MATCH p = (a:User {name: 'Alice'})-[:FOLLOWS]->(b) RETURN nodes(p) AS ns",
-    );
+    let rows = db.run("MATCH p = (a:User {name: 'Alice'})-[:FOLLOWS]->(b) RETURN nodes(p) AS ns");
     let ns = rows[0]["ns"].as_array().unwrap();
     assert_eq!(ns.len(), 2);
 }
@@ -222,9 +224,7 @@ fn path_nodes_function() {
 fn path_nodes_extraction() {
     let db = TestDb::new();
     db.seed_chain(3);
-    let rows = db.run(
-        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN nodes(p) AS ns",
-    );
+    let rows = db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN nodes(p) AS ns");
     assert!(!rows.is_empty());
 }
 
@@ -232,9 +232,8 @@ fn path_nodes_extraction() {
 fn path_relationships_extraction() {
     let db = TestDb::new();
     db.seed_chain(3);
-    let rows = db.run(
-        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN relationships(p) AS rels",
-    );
+    let rows =
+        db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN relationships(p) AS rels");
     assert!(!rows.is_empty());
 }
 
@@ -254,7 +253,9 @@ fn varlen_diamond_multiple_paths() {
     db.run("MATCH (l:D {name:'left'}), (b:D {name:'bottom'}) CREATE (l)-[:E]->(b)");
     db.run("MATCH (r:D {name:'right'}), (b:D {name:'bottom'}) CREATE (r)-[:E]->(b)");
     // Variable-length 1..2 from top should find: left(1), right(1), bottom(2), bottom(2) = 4 unique paths
-    let count = db.exec_count("MATCH (src:D {name:'top'})-[:E*1..2]->(d:D) RETURN d.name AS name").unwrap();
+    let count = db
+        .exec_count("MATCH (src:D {name:'top'})-[:E*1..2]->(d:D) RETURN d.name AS name")
+        .unwrap();
     // left, right at dist 1; bottom via left and bottom via right at dist 2 = 4
     assert_eq!(count, 4);
 }
@@ -323,7 +324,9 @@ fn varlen_upper_bound_only() {
     let db = TestDb::new();
     db.seed_chain(5);
     // *..3 means *1..3 (default lower bound is 1)
-    let count = db.exec_count("MATCH (a:Chain {idx:0})-[:NEXT*..3]->(b:Chain) RETURN b").unwrap();
+    let count = db
+        .exec_count("MATCH (a:Chain {idx:0})-[:NEXT*..3]->(b:Chain) RETURN b")
+        .unwrap();
     assert_eq!(count, 3);
 }
 
@@ -336,7 +339,9 @@ fn varlen_lower_bound_only() {
     let db = TestDb::new();
     db.seed_chain(5);
     // *2.. means at least 2 hops (up to max)
-    let count = db.exec_count("MATCH (a:Chain {idx:0})-[:NEXT*2..]->(b:Chain) RETURN b").unwrap();
+    let count = db
+        .exec_count("MATCH (a:Chain {idx:0})-[:NEXT*2..]->(b:Chain) RETURN b")
+        .unwrap();
     // nodes 2, 3, 4 = 3
     assert_eq!(count, 3);
 }
@@ -401,10 +406,12 @@ fn knowledge_graph_reachable_from_einstein_within_3_hops() {
     // All entities/nodes reachable from Einstein within 3 hops (any rel type)
     let db = TestDb::new();
     db.seed_knowledge_graph();
-    let count = db.exec_count(
-        "MATCH (e:Entity {name:'Albert Einstein'})-[*1..3]->(target) \
+    let count = db
+        .exec_count(
+            "MATCH (e:Entity {name:'Albert Einstein'})-[*1..3]->(target) \
          RETURN DISTINCT target",
-    ).unwrap();
+        )
+        .unwrap();
     // 1 hop: Physics, Mathematics, General Relativity, Quantum Mechanics, Nobel Prize,
     //        Doc1905, Doc1916, AliasEinstein, AliasA.Einstein = 9
     // 2 hop: From Physics->Theoretical Physics; From GR->Theoretical Physics, Cosmology;
@@ -436,12 +443,16 @@ fn knowledge_graph_count_reachable_at_each_depth() {
     // Count reachable nodes at depth 1 vs depth 2 from Einstein
     let db = TestDb::new();
     db.seed_knowledge_graph();
-    let hop1 = db.exec_count(
-        "MATCH (e:Entity {name:'Albert Einstein'})-[*1..1]->(target) RETURN DISTINCT target",
-    ).unwrap();
-    let hop2 = db.exec_count(
-        "MATCH (e:Entity {name:'Albert Einstein'})-[*1..2]->(target) RETURN DISTINCT target",
-    ).unwrap();
+    let hop1 = db
+        .exec_count(
+            "MATCH (e:Entity {name:'Albert Einstein'})-[*1..1]->(target) RETURN DISTINCT target",
+        )
+        .unwrap();
+    let hop2 = db
+        .exec_count(
+            "MATCH (e:Entity {name:'Albert Einstein'})-[*1..2]->(target) RETURN DISTINCT target",
+        )
+        .unwrap();
     // More nodes reachable at 2 hops than at 1 hop
     assert!(hop2 >= hop1);
     // Einstein has 9 direct neighbors
@@ -489,10 +500,12 @@ fn rich_social_count_reachable_at_distance_2() {
     // Count of reachable people at exactly distance 2 via KNOWS
     let db = TestDb::new();
     db.seed_rich_social_graph();
-    let count = db.exec_count(
-        "MATCH (a:Person {name:'Alice'})-[:KNOWS*2..2]->(p:Person) \
+    let count = db
+        .exec_count(
+            "MATCH (a:Person {name:'Alice'})-[:KNOWS*2..2]->(p:Person) \
          RETURN DISTINCT p.name AS name",
-    ).unwrap();
+        )
+        .unwrap();
     // Alice->Bob->Carol, Alice->Bob->Dave, Alice->Carol->Eve = 3 distinct (Carol, Dave, Eve)
     assert_eq!(count, 3);
 }
@@ -519,9 +532,9 @@ fn varlen_large_cycle_with_bounded_range() {
     // Large cycle (10 nodes) with bounded varlen
     let db = TestDb::new();
     db.seed_cycle(10);
-    let count = db.exec_count(
-        "MATCH (a:Ring {idx:0})-[:LOOP*1..5]->(b) RETURN b",
-    ).unwrap();
+    let count = db
+        .exec_count("MATCH (a:Ring {idx:0})-[:LOOP*1..5]->(b) RETURN b")
+        .unwrap();
     // Can reach nodes at distances 1..5: that's 5 distinct nodes
     assert_eq!(count, 5);
 }
@@ -531,9 +544,9 @@ fn varlen_large_cycle_unbounded_visits_all() {
     // Unbounded varlen on cycle of 10 should visit all other 9 nodes (plus might re-hit start)
     let db = TestDb::new();
     db.seed_cycle(10);
-    let count = db.exec_count(
-        "MATCH (a:Ring {idx:0})-[:LOOP*]->(b) RETURN b",
-    ).unwrap();
+    let count = db
+        .exec_count("MATCH (a:Ring {idx:0})-[:LOOP*]->(b) RETURN b")
+        .unwrap();
     // With cycle termination, should visit exactly 10 (nodes 1-9 at dist 1-9, and node 0 at dist 10)
     assert_eq!(count, 10);
 }
@@ -543,7 +556,7 @@ fn varlen_disconnected_components_no_cross() {
     // Variable-length on disconnected components should not cross between them
     let db = TestDb::new();
     db.seed_chain(3); // Chain: 0->1->2
-    // Create a separate disconnected chain
+                      // Create a separate disconnected chain
     db.run("CREATE (:Island {idx: 10})");
     db.run("CREATE (:Island {idx: 11})");
     db.run("MATCH (a:Island {idx:10}), (b:Island {idx:11}) CREATE (a)-[:LINK]->(b)");
@@ -572,9 +585,7 @@ fn varlen_zero_to_zero_returns_only_start_node_social() {
     // Variable-length *0..0 returns only start node
     let db = TestDb::new();
     db.seed_rich_social_graph();
-    let rows = db.run(
-        "MATCH (a:Person {name:'Alice'})-[:KNOWS*0..0]->(b) RETURN b.name AS name",
-    );
+    let rows = db.run("MATCH (a:Person {name:'Alice'})-[:KNOWS*0..0]->(b) RETURN b.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "Alice");
 }
@@ -588,9 +599,7 @@ fn path_variable_as_structured_return_value() {
     // Lora: path variable as structured return value
     let db = TestDb::new();
     db.seed_rich_social_graph();
-    let rows = db.run(
-        "MATCH p = (a:Person {name:'Alice'})-[:KNOWS]->(b:Person) RETURN p",
-    );
+    let rows = db.run("MATCH p = (a:Person {name:'Alice'})-[:KNOWS]->(b:Person) RETURN p");
     assert_eq!(rows.len(), 2); // Alice->Bob, Alice->Carol
 }
 
@@ -610,9 +619,8 @@ fn path_nodes_returns_ordered_node_list() {
     // Lora: nodes(path) returns ordered node list
     let db = TestDb::new();
     db.seed_chain(4);
-    let rows = db.run(
-        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain {idx:3}) RETURN nodes(p) AS ns",
-    );
+    let rows =
+        db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain {idx:3}) RETURN nodes(p) AS ns");
     let ns = rows[0]["ns"].as_array().unwrap();
     assert_eq!(ns.len(), 4); // nodes 0, 1, 2, 3
 }

@@ -64,7 +64,7 @@ mod http_tests {
                         json!({
                             "query": "CREATE (n:User {id: 1, name: 'alice'}) RETURN n"
                         })
-                            .to_string(),
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -81,7 +81,7 @@ mod http_tests {
                         json!({
                             "query": "MATCH (n:User {id: 1}) RETURN n"
                         })
-                            .to_string(),
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -102,7 +102,9 @@ mod http_tests {
                     .method("POST")
                     .uri("/query")
                     .header("content-type", "application/json")
-                    .body(Body::from(json!({ "query": "THIS IS NOT CYPHER" }).to_string()))
+                    .body(Body::from(
+                        json!({ "query": "THIS IS NOT CYPHER" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await

@@ -52,7 +52,10 @@ fn order_by_numeric_ascending() {
 #[test]
 fn order_by_default_is_ascending() {
     let db = db_with_users();
-    let names = db.column("MATCH (n:User) RETURN n.name AS name ORDER BY n.name", "name");
+    let names = db.column(
+        "MATCH (n:User) RETURN n.name AS name ORDER BY n.name",
+        "name",
+    );
     let s: Vec<&str> = names.iter().map(|v| v.as_str().unwrap()).collect();
     assert_eq!(s, vec!["Alice", "Bob", "Carol", "Dave"]);
 }
@@ -60,9 +63,8 @@ fn order_by_default_is_ascending() {
 #[test]
 fn order_by_multiple_keys() {
     let db = db_with_users();
-    let rows = db.run(
-        "MATCH (n:User) RETURN n.name AS name, n.age AS age ORDER BY n.age ASC, n.name DESC",
-    );
+    let rows = db
+        .run("MATCH (n:User) RETURN n.name AS name, n.age AS age ORDER BY n.age ASC, n.name DESC");
     let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
     assert_eq!(names, vec!["Dave", "Bob", "Alice", "Carol"]);
 }
@@ -89,7 +91,7 @@ fn order_by_computed_expression() {
     );
     assert_eq!(rows.len(), 6);
     assert_eq!(rows[0]["name"], "Frank"); // 2012
-    assert_eq!(rows[5]["name"], "Eve");   // 2022
+    assert_eq!(rows[5]["name"], "Eve"); // 2022
 }
 
 // ============================================================
@@ -102,7 +104,10 @@ fn order_by_null_values_sort_last_ascending() {
     db.run("CREATE (:Item {name:'A', score: 10})");
     db.run("CREATE (:Item {name:'B', score: 20})");
     db.run("CREATE (:Item {name:'C'})");
-    let names = db.column("MATCH (i:Item) RETURN i.name AS name ORDER BY i.score ASC", "name");
+    let names = db.column(
+        "MATCH (i:Item) RETURN i.name AS name ORDER BY i.score ASC",
+        "name",
+    );
     let s: Vec<&str> = names.iter().map(|v| v.as_str().unwrap()).collect();
     assert_eq!(s, vec!["A", "B", "C"]);
 }
@@ -113,7 +118,10 @@ fn order_by_null_values_sort_first_descending() {
     db.run("CREATE (:Item {name:'A', score: 10})");
     db.run("CREATE (:Item {name:'B', score: 20})");
     db.run("CREATE (:Item {name:'C'})");
-    let names = db.column("MATCH (i:Item) RETURN i.name AS name ORDER BY i.score DESC", "name");
+    let names = db.column(
+        "MATCH (i:Item) RETURN i.name AS name ORDER BY i.score DESC",
+        "name",
+    );
     let s: Vec<&str> = names.iter().map(|v| v.as_str().unwrap()).collect();
     assert_eq!(s, vec!["C", "B", "A"]);
 }
@@ -305,9 +313,7 @@ fn limit_on_aggregation_via_with() {
 fn order_by_alias_name() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.name AS name ORDER BY name ASC LIMIT 3",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN p.name AS name ORDER BY name ASC LIMIT 3");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], "Alice");
 }
@@ -346,7 +352,10 @@ fn order_by_float_values() {
     db.run("CREATE (:M {name:'a', val: 3.14})");
     db.run("CREATE (:M {name:'b', val: 2.71})");
     db.run("CREATE (:M {name:'c', val: 1.41})");
-    let names = db.column("MATCH (m:M) RETURN m.name AS name ORDER BY m.val ASC", "name");
+    let names = db.column(
+        "MATCH (m:M) RETURN m.name AS name ORDER BY m.val ASC",
+        "name",
+    );
     let s: Vec<&str> = names.iter().map(|v| v.as_str().unwrap()).collect();
     assert_eq!(s, vec!["c", "b", "a"]);
 }
@@ -357,7 +366,10 @@ fn order_by_boolean_values() {
     db.run("CREATE (:B {name:'a', flag: false})");
     db.run("CREATE (:B {name:'b', flag: true})");
     db.run("CREATE (:B {name:'c', flag: false})");
-    let names = db.column("MATCH (b:B) RETURN b.name AS name ORDER BY b.flag ASC, b.name ASC", "name");
+    let names = db.column(
+        "MATCH (b:B) RETURN b.name AS name ORDER BY b.flag ASC, b.name ASC",
+        "name",
+    );
     let s: Vec<&str> = names.iter().map(|v| v.as_str().unwrap()).collect();
     // false sorts before true
     assert_eq!(s[0], "a");
@@ -466,9 +478,7 @@ fn order_by_arithmetic_expression() {
     // Order by computed expression (age * -1 reverses the sort)
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.name AS name, p.age AS age ORDER BY p.age * -1",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN p.name AS name, p.age AS age ORDER BY p.age * -1");
     // Sorted by age descending (via *-1 trick): Frank(50), Carol(42), Alice(35), Dave(31), Bob(28), Eve(26)
     assert_eq!(rows[0]["name"], "Frank");
     assert_eq!(rows[0]["age"], 50);
@@ -524,7 +534,7 @@ fn order_by_null_handling_mixed() {
     assert_eq!(s[0], "C"); // rank 1
     assert_eq!(s[1], "E"); // rank 2
     assert_eq!(s[2], "A"); // rank 3
-    // B and D have null rank, should be last
+                           // B and D have null rank, should be last
     assert!(s[3] == "B" || s[3] == "D");
     assert!(s[4] == "B" || s[4] == "D");
 }
@@ -567,12 +577,8 @@ fn skip_zero_same_as_no_skip() {
     // SKIP 0 same as no skip
     let db = TestDb::new();
     db.seed_org_graph();
-    let with_skip = db.run(
-        "MATCH (p:Person) RETURN p.name AS name ORDER BY p.name ASC SKIP 0",
-    );
-    let without_skip = db.run(
-        "MATCH (p:Person) RETURN p.name AS name ORDER BY p.name ASC",
-    );
+    let with_skip = db.run("MATCH (p:Person) RETURN p.name AS name ORDER BY p.name ASC SKIP 0");
+    let without_skip = db.run("MATCH (p:Person) RETURN p.name AS name ORDER BY p.name ASC");
     assert_eq!(with_skip.len(), without_skip.len());
     assert_eq!(with_skip[0]["name"], without_skip[0]["name"]);
 }
@@ -610,9 +616,7 @@ fn skip_limit_past_end_returns_partial() {
     // SKIP + LIMIT where LIMIT extends past end of results
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.name AS name ORDER BY p.name ASC SKIP 4 LIMIT 10",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN p.name AS name ORDER BY p.name ASC SKIP 4 LIMIT 10");
     // Only 2 remaining after skip 4 (Eve, Frank)
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], "Eve");
@@ -624,9 +628,8 @@ fn order_by_alias_from_projection() {
     // Lora: ORDER BY alias from projection
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.name AS person_name ORDER BY person_name ASC LIMIT 3",
-    );
+    let rows =
+        db.run("MATCH (p:Person) RETURN p.name AS person_name ORDER BY person_name ASC LIMIT 3");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["person_name"], "Alice");
     assert_eq!(rows[1]["person_name"], "Bob");
@@ -642,9 +645,7 @@ fn stable_sort_guarantee() {
     db.run("CREATE (:S {group: 1, name: 'C'})");
     db.run("CREATE (:S {group: 2, name: 'D'})");
     // When sorting by group only, items within same group should preserve insertion order
-    let rows = db.run(
-        "MATCH (s:S) RETURN s.group AS g, s.name AS name ORDER BY s.group ASC",
-    );
+    let rows = db.run("MATCH (s:S) RETURN s.group AS g, s.name AS name ORDER BY s.group ASC");
     assert_eq!(rows.len(), 4);
     // Within group 1, order should be stable: A, B, C
     assert_eq!(rows[0]["name"], "A");
@@ -697,7 +698,7 @@ fn distinct_with_nulls_ordered() {
     db.run("CREATE (:V {x: 1})");
     db.run("CREATE (:V {x: 3})");
     db.run("CREATE (:V {x: 2})"); // duplicate
-    // DISTINCT should deduplicate to 3 distinct values
+                                  // DISTINCT should deduplicate to 3 distinct values
     let rows = db.run("MATCH (v:V) RETURN DISTINCT v.x AS x");
     assert_eq!(rows.len(), 3);
     let mut vals: Vec<i64> = rows.iter().map(|r| r["x"].as_i64().unwrap()).collect();
@@ -715,9 +716,7 @@ fn order_by_string_function() {
     db.run("CREATE (:W {name: 'Charlie'})");
     db.run("CREATE (:W {name: 'alice'})");
     db.run("CREATE (:W {name: 'Bob'})");
-    let rows = db.run(
-        "MATCH (w:W) RETURN w.name AS name ORDER BY toLower(w.name) ASC",
-    );
+    let rows = db.run("MATCH (w:W) RETURN w.name AS name ORDER BY toLower(w.name) ASC");
     // Alphabetical case-insensitive: alice, Bob, Charlie
     assert_eq!(rows[0]["name"], "alice");
     assert_eq!(rows[1]["name"], "Bob");

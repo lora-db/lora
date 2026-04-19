@@ -1,7 +1,7 @@
 use lora_analyzer::symbols::VarId;
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
-    LoraTime, NodeId, PropertyValue, RelationshipId,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
+    NodeId, PropertyValue, RelationshipId,
 };
 
 /// A materialised path: alternating node/relationship IDs.
@@ -144,9 +144,11 @@ impl From<PropertyValue> for LoraValue {
             PropertyValue::List(values) => {
                 LoraValue::List(values.into_iter().map(LoraValue::from).collect())
             }
-            PropertyValue::Map(map) => {
-                LoraValue::Map(map.into_iter().map(|(k, v)| (k, LoraValue::from(v))).collect())
-            }
+            PropertyValue::Map(map) => LoraValue::Map(
+                map.into_iter()
+                    .map(|(k, v)| (k, LoraValue::from(v)))
+                    .collect(),
+            ),
             PropertyValue::Date(d) => LoraValue::Date(d),
             PropertyValue::Time(t) => LoraValue::Time(t),
             PropertyValue::LocalTime(t) => LoraValue::LocalTime(t),
@@ -172,9 +174,11 @@ impl From<&PropertyValue> for LoraValue {
             PropertyValue::List(values) => {
                 LoraValue::List(values.iter().map(LoraValue::from).collect())
             }
-            PropertyValue::Map(map) => {
-                LoraValue::Map(map.iter().map(|(k, v)| (k.clone(), LoraValue::from(v))).collect())
-            }
+            PropertyValue::Map(map) => LoraValue::Map(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), LoraValue::from(v)))
+                    .collect(),
+            ),
             PropertyValue::Date(d) => LoraValue::Date(d.clone()),
             PropertyValue::Time(t) => LoraValue::Time(t.clone()),
             PropertyValue::LocalTime(t) => LoraValue::LocalTime(t.clone()),
@@ -318,9 +322,13 @@ impl Row {
     /// Consume the row and yield owned `(VarId, name, LoraValue)` triples.
     /// Used by hydrate_row to avoid cloning values on the projection hot path.
     pub fn into_iter_named(self) -> impl Iterator<Item = (VarId, String, LoraValue)> {
-        self.values
-            .into_iter()
-            .map(|(k, entry)| (k, entry.name.unwrap_or_else(|| format!("_{k}")), entry.value))
+        self.values.into_iter().map(|(k, entry)| {
+            (
+                k,
+                entry.name.unwrap_or_else(|| format!("_{k}")),
+                entry.value,
+            )
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -425,10 +433,7 @@ pub fn project_rows(rows: Vec<Row>, options: ExecuteOptions) -> QueryResult {
 
         ResultFormat::RowArrays => {
             let columns = infer_columns(&rows);
-            let projected_rows = rows
-                .iter()
-                .map(|row| row_to_array(row, &columns))
-                .collect();
+            let projected_rows = rows.iter().map(|row| row_to_array(row, &columns)).collect();
 
             QueryResult::RowArrays(RowArraysResult {
                 columns,

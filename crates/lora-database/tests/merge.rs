@@ -74,7 +74,10 @@ fn merge_on_match_not_triggered_when_not_exists() {
     let db = TestDb::new();
     db.run("MERGE (n:User {name: 'Alice'}) ON MATCH SET n.age = 99");
     let rows = db.run("MATCH (n:User {name: 'Alice'}) RETURN n");
-    assert!(rows[0]["n"]["properties"].get("age").is_none() || rows[0]["n"]["properties"]["age"].is_null());
+    assert!(
+        rows[0]["n"]["properties"].get("age").is_none()
+            || rows[0]["n"]["properties"]["age"].is_null()
+    );
 }
 
 #[test]
@@ -367,7 +370,9 @@ fn merge_relationship_on_create_set_advanced() {
     let db = TestDb::new();
     db.run("CREATE (:X {id:1})");
     db.run("CREATE (:Y {id:2})");
-    db.run("MATCH (x:X {id:1}), (y:Y {id:2}) MERGE (x)-[r:CONNECTS]->(y) ON CREATE SET r.weight = 1.0");
+    db.run(
+        "MATCH (x:X {id:1}), (y:Y {id:2}) MERGE (x)-[r:CONNECTS]->(y) ON CREATE SET r.weight = 1.0",
+    );
     let rows = db.run("MATCH (x)-[r:CONNECTS]->(y) RETURN r");
     let weight = rows[0]["r"]["properties"]["weight"].as_f64().unwrap();
     assert!((weight - 1.0).abs() < 0.001);
@@ -413,12 +418,14 @@ fn merge_upsert_pattern_counter() {
 fn merge_upsert_last_seen_timestamp() {
     let db = TestDb::new();
     db.run("MERGE (u:Session {user: 'alice'}) ON CREATE SET u.count = 1, u.status = 'new' ON MATCH SET u.count = u.count + 1, u.status = 'returning'");
-    let rows = db.run("MATCH (u:Session {user: 'alice'}) RETURN u.status AS status, u.count AS cnt");
+    let rows =
+        db.run("MATCH (u:Session {user: 'alice'}) RETURN u.status AS status, u.count AS cnt");
     assert_eq!(rows[0]["status"], "new");
     assert_eq!(rows[0]["cnt"], 1);
 
     db.run("MERGE (u:Session {user: 'alice'}) ON CREATE SET u.count = 1, u.status = 'new' ON MATCH SET u.count = u.count + 1, u.status = 'returning'");
-    let rows = db.run("MATCH (u:Session {user: 'alice'}) RETURN u.status AS status, u.count AS cnt");
+    let rows =
+        db.run("MATCH (u:Session {user: 'alice'}) RETURN u.status AS status, u.count AS cnt");
     assert_eq!(rows[0]["status"], "returning");
     assert_eq!(rows[0]["cnt"], 2);
 }

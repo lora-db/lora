@@ -191,9 +191,7 @@ fn match_relationship_any_type() {
 fn match_chain_two_hops() {
     let db = TestDb::new();
     db.seed_social_graph();
-    let rows = db.run(
-        "MATCH (a:User {name: 'Alice'})-[:FOLLOWS]->(b)-[:FOLLOWS]->(c) RETURN c",
-    );
+    let rows = db.run("MATCH (a:User {name: 'Alice'})-[:FOLLOWS]->(b)-[:FOLLOWS]->(c) RETURN c");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["c"]["properties"]["name"], "Carol");
 }
@@ -267,7 +265,9 @@ fn match_disconnected_patterns_cross_product() {
 fn match_cross_product_three_labels() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let count = db.exec_count("MATCH (p:Project), (c:City) RETURN p.name, c.name").unwrap();
+    let count = db
+        .exec_count("MATCH (p:Project), (c:City) RETURN p.name, c.name")
+        .unwrap();
     assert_eq!(count, 6); // 2 projects * 3 cities
 }
 
@@ -309,9 +309,7 @@ fn match_same_variable_both_sides_constrains_identity() {
 fn match_reuse_in_where_constrains_single_node() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (a:Person), (b:Person) WHERE a.name = b.name RETURN a.name AS name",
-    );
+    let rows = db.run("MATCH (a:Person), (b:Person) WHERE a.name = b.name RETURN a.name AS name");
     assert_eq!(rows.len(), 6);
 }
 
@@ -388,9 +386,8 @@ fn match_in_cycle_returns_all_edges() {
 fn match_two_hops_in_cycle() {
     let db = TestDb::new();
     db.seed_cycle(3);
-    let rows = db.run(
-        "MATCH (a:Ring)-[:LOOP]->(b:Ring)-[:LOOP]->(c:Ring) RETURN a.idx AS a, c.idx AS c",
-    );
+    let rows =
+        db.run("MATCH (a:Ring)-[:LOOP]->(b:Ring)-[:LOOP]->(c:Ring) RETURN a.idx AS a, c.idx AS c");
     assert_eq!(rows.len(), 3);
 }
 
@@ -1017,9 +1014,7 @@ fn rich_social_influencer_label_match() {
     let db = TestDb::new();
     db.seed_rich_social_graph();
     // Eve is :Person:Influencer — match by the Influencer label
-    let rows = db.run(
-        "MATCH (inf:Influencer) RETURN inf.name AS name",
-    );
+    let rows = db.run("MATCH (inf:Influencer) RETURN inf.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "Eve");
 }
@@ -1175,9 +1170,7 @@ fn knowledge_dense_subgraph_einstein_outgoing() {
     db.seed_knowledge_graph();
     // Count all outgoing relationships from Einstein
     // STUDIED(2) + PROPOSED(1) + CONTRIBUTED_TO(1) + RECEIVED(1) + AUTHORED(2) + HAS_ALIAS(2) = 9
-    let rows = db.run(
-        "MATCH (e:Entity {name:'Albert Einstein'})-[r]->(x) RETURN count(r) AS cnt",
-    );
+    let rows = db.run("MATCH (e:Entity {name:'Albert Einstein'})-[r]->(x) RETURN count(r) AS cnt");
     assert_eq!(rows[0]["cnt"], 9);
 }
 
@@ -1307,10 +1300,15 @@ fn advanced_transport_three_hop_route() {
     );
     // Amsterdam->Rotterdam->Utrecht->Eindhoven
     // Amsterdam->Utrecht->Rotterdam->... Rotterdam has no route to Eindhoven
-    assert!(rows.len() >= 1);
+    assert!(!rows.is_empty());
     // At least the path through Rotterdam->Utrecht should exist
-    let has_rot_utr = rows.iter().any(|r| r["hop1"] == "Rotterdam" && r["hop2"] == "Utrecht");
-    assert!(has_rot_utr, "expected path via Rotterdam->Utrecht, got: {rows:?}");
+    let has_rot_utr = rows
+        .iter()
+        .any(|r| r["hop1"] == "Rotterdam" && r["hop2"] == "Utrecht");
+    assert!(
+        has_rot_utr,
+        "expected path via Rotterdam->Utrecht, got: {rows:?}"
+    );
 }
 
 // ============================================================
@@ -1326,7 +1324,10 @@ fn multi_edge_different_types_between_same_pair() {
     // Two different relationship types between the same pair
     db.assert_count("MATCH (a:N {id:1})-[r]->(b:N {id:2}) RETURN r", 2);
     db.assert_count("MATCH (a:N {id:1})-[:LIKES]->(b:N {id:2}) RETURN 1 AS x", 1);
-    db.assert_count("MATCH (a:N {id:1})-[:FOLLOWS]->(b:N {id:2}) RETURN 1 AS x", 1);
+    db.assert_count(
+        "MATCH (a:N {id:1})-[:FOLLOWS]->(b:N {id:2}) RETURN 1 AS x",
+        1,
+    );
 }
 
 #[test]
@@ -1346,9 +1347,8 @@ fn multi_edge_filter_specific_edge_by_property() {
     db.run("MATCH (a:N {id:1}), (b:N {id:2}) CREATE (a)-[:MSG {text:'hello', priority:1}]->(b)");
     db.run("MATCH (a:N {id:1}), (b:N {id:2}) CREATE (a)-[:MSG {text:'world', priority:2}]->(b)");
     // Filter to the high-priority message
-    let rows = db.run(
-        "MATCH (a:N {id:1})-[r:MSG]->(b:N {id:2}) WHERE r.priority = 2 RETURN r.text AS text",
-    );
+    let rows = db
+        .run("MATCH (a:N {id:1})-[r:MSG]->(b:N {id:2}) WHERE r.priority = 2 RETURN r.text AS text");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["text"], "world");
 }
@@ -1482,9 +1482,7 @@ fn future_label_disjunction() {
     // Lora: label disjunction :A|B in MATCH
     let db = TestDb::new();
     db.seed_knowledge_graph();
-    let _rows = db.run(
-        "MATCH (n:Entity|Alias) RETURN n",
-    );
+    let _rows = db.run("MATCH (n:Entity|Alias) RETURN n");
     // 8 Entity + 2 Alias = 10
     assert_eq!(_rows.len(), 10);
 }
@@ -1496,9 +1494,7 @@ fn future_node_key_constraint_matching() {
     db.run("CREATE (:Item {sku:'ABC', region:'EU', stock:5})");
     db.run("CREATE (:Item {sku:'ABC', region:'US', stock:3})");
     db.run("CREATE (:Item {sku:'DEF', region:'EU', stock:7})");
-    let _rows = db.run(
-        "MATCH (i:Item {sku:'ABC', region:'EU'}) RETURN i.stock AS stock",
-    );
+    let _rows = db.run("MATCH (i:Item {sku:'ABC', region:'EU'}) RETURN i.stock AS stock");
     assert_eq!(_rows.len(), 1);
     assert_eq!(_rows[0]["stock"], 5);
 }
@@ -1583,9 +1579,7 @@ fn match_optional_match_mixed_with_regular() {
 fn match_self_relationship() {
     let db = TestDb::new();
     db.run("CREATE (n:Node {name: 'self'})-[:LOOP]->(n)");
-    let rows = db.run(
-        "MATCH (n:Node)-[:LOOP]->(n) RETURN n.name AS name",
-    );
+    let rows = db.run("MATCH (n:Node)-[:LOOP]->(n) RETURN n.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "self");
 }
@@ -1626,9 +1620,7 @@ fn match_undirected_relationship_extended() {
     let db = TestDb::new();
     db.run("CREATE (a:N {name:'A'})-[:E]->(b:N {name:'B'})");
     // Undirected match should find the relationship from either side
-    let rows = db.run(
-        "MATCH (a:N {name:'A'})-[:E]-(b:N {name:'B'}) RETURN a.name, b.name",
-    );
+    let rows = db.run("MATCH (a:N {name:'A'})-[:E]-(b:N {name:'B'}) RETURN a.name, b.name");
     assert!(!rows.is_empty());
 }
 
@@ -1868,9 +1860,7 @@ fn large_fan_out_hub_20_spokes() {
     db.run("UNWIND range(1, 20) AS i MATCH (h:Center) CREATE (h)-[:SPOKE]->(:Leaf {id: i})");
     db.assert_count("MATCH (:Center)-[:SPOKE]->(l:Leaf) RETURN l", 20);
     // Count from the hub
-    let rows = db.run(
-        "MATCH (h:Center)-[r:SPOKE]->(l:Leaf) RETURN count(r) AS cnt",
-    );
+    let rows = db.run("MATCH (h:Center)-[r:SPOKE]->(l:Leaf) RETURN count(r) AS cnt");
     assert_eq!(rows[0]["cnt"], 20);
 }
 

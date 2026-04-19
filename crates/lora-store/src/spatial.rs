@@ -260,11 +260,7 @@ pub fn resolve_srid(
                     } else {
                         "cartesian (x/y)"
                     },
-                    if srid_geo {
-                        "geographic"
-                    } else {
-                        "cartesian"
-                    }
+                    if srid_geo { "geographic" } else { "cartesian" }
                 ));
             }
             // Dimensionality agreement.
@@ -390,13 +386,8 @@ mod tests {
 
     #[test]
     fn resolve_srid_rejects_unknown_crs() {
-        let err = resolve_srid(
-            Some("mars-centric"),
-            None,
-            PointKeyFamily::Cartesian,
-            false,
-        )
-        .unwrap_err();
+        let err =
+            resolve_srid(Some("mars-centric"), None, PointKeyFamily::Cartesian, false).unwrap_err();
         assert!(err.contains("unsupported crs"));
     }
 
@@ -415,20 +406,15 @@ mod tests {
 
     #[test]
     fn resolve_srid_rejects_3d_crs_with_2d_coords() {
-        let err = resolve_srid(
-            Some("WGS-84-3D"),
-            None,
-            PointKeyFamily::Geographic,
-            false,
-        )
-        .unwrap_err();
+        let err =
+            resolve_srid(Some("WGS-84-3D"), None, PointKeyFamily::Geographic, false).unwrap_err();
         assert!(err.contains("dimensionality"));
     }
 
     #[test]
     fn resolve_srid_rejects_family_mismatch() {
-        let err = resolve_srid(Some("cartesian"), None, PointKeyFamily::Geographic, false)
-            .unwrap_err();
+        let err =
+            resolve_srid(Some("cartesian"), None, PointKeyFamily::Geographic, false).unwrap_err();
         assert!(err.contains("coordinates use"));
     }
 

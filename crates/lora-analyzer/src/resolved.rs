@@ -1,5 +1,7 @@
 use crate::symbols::*;
-use lora_ast::{BinaryOp, Direction, ListPredicateKind, RangeLiteral, SortDirection, Span, UnaryOp};
+use lora_ast::{
+    BinaryOp, Direction, ListPredicateKind, RangeLiteral, SortDirection, Span, UnaryOp,
+};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedQuery {

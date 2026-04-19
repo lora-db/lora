@@ -1,8 +1,14 @@
-/// Extended function coverage — edge cases for string, numeric, list, and
-/// conversion functions, plus tests for functions not yet implemented.
-///
-/// Active tests verify currently supported behavior.
-/// Ignored tests specify desired future behavior.
+// Float literals like 3.14 / 2.718 / 1.4142 in this file are test fixtures
+// (property values stored in the graph and asserted on), not mathematical
+// approximations of PI / E / SQRT_2.
+#![allow(clippy::approx_constant)]
+
+//! Extended function coverage — edge cases for string, numeric, list, and
+//! conversion functions, plus tests for functions not yet implemented.
+//!
+//! Active tests verify currently supported behavior.
+//! Ignored tests specify desired future behavior.
+
 mod test_helpers;
 use test_helpers::TestDb;
 
@@ -32,7 +38,10 @@ fn toupper_already_upper() {
 
 #[test]
 fn tolower_mixed_case() {
-    assert_eq!(TestDb::new().scalar("RETURN toLower('HeLLo WoRLd')"), "hello world");
+    assert_eq!(
+        TestDb::new().scalar("RETURN toLower('HeLLo WoRLd')"),
+        "hello world"
+    );
 }
 
 #[test]
@@ -170,27 +179,42 @@ fn split_consecutive_delimiters() {
 
 #[test]
 fn substring_basic() {
-    assert_eq!(TestDb::new().scalar("RETURN substring('hello world', 0, 5)"), "hello");
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('hello world', 0, 5)"),
+        "hello"
+    );
 }
 
 #[test]
 fn substring_from_middle() {
-    assert_eq!(TestDb::new().scalar("RETURN substring('hello world', 6, 5)"), "world");
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('hello world', 6, 5)"),
+        "world"
+    );
 }
 
 #[test]
 fn substring_two_arg_to_end() {
-    assert_eq!(TestDb::new().scalar("RETURN substring('hello world', 6)"), "world");
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('hello world', 6)"),
+        "world"
+    );
 }
 
 #[test]
 fn substring_start_beyond_length() {
-    assert_eq!(TestDb::new().scalar("RETURN substring('hello', 100, 5)"), "");
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('hello', 100, 5)"),
+        ""
+    );
 }
 
 #[test]
 fn substring_length_beyond_end() {
-    assert_eq!(TestDb::new().scalar("RETURN substring('hello', 3, 100)"), "lo");
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('hello', 3, 100)"),
+        "lo"
+    );
 }
 
 #[test]
@@ -452,7 +476,10 @@ fn tointeger_null_returns_null() {
 
 #[test]
 fn tofloat_string() {
-    let v = TestDb::new().scalar("RETURN toFloat('3.14')").as_f64().unwrap();
+    let v = TestDb::new()
+        .scalar("RETURN toFloat('3.14')")
+        .as_f64()
+        .unwrap();
     assert!((v - 3.14).abs() < 0.001);
 }
 
@@ -464,7 +491,10 @@ fn tofloat_integer_to_float() {
 
 #[test]
 fn tofloat_already_float() {
-    let v = TestDb::new().scalar("RETURN toFloat(3.14)").as_f64().unwrap();
+    let v = TestDb::new()
+        .scalar("RETURN toFloat(3.14)")
+        .as_f64()
+        .unwrap();
     assert!((v - 3.14).abs() < 0.001);
 }
 
@@ -494,9 +524,7 @@ fn coalesce_missing_property_to_default() {
 fn coalesce_existing_property() {
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice', nickname: 'Ali'})");
-    let rows = db.run(
-        "MATCH (u:User) RETURN coalesce(u.nickname, 'N/A') AS nick",
-    );
+    let rows = db.run("MATCH (u:User) RETURN coalesce(u.nickname, 'N/A') AS nick");
     assert_eq!(rows[0]["nick"], "Ali");
 }
 
@@ -612,9 +640,7 @@ fn timestamp_is_recent() {
 fn length_of_path() {
     let db = TestDb::new();
     db.run("CREATE (:A {id:1})-[:R]->(:B {id:2})");
-    let v = db.scalar(
-        "MATCH p = (:A)-[:R]->(:B) RETURN length(p) AS len",
-    );
+    let v = db.scalar("MATCH p = (:A)-[:R]->(:B) RETURN length(p) AS len");
     assert_eq!(v, 1);
 }
 
@@ -631,9 +657,7 @@ fn nodes_of_path() {
 fn relationships_of_path() {
     let db = TestDb::new();
     db.run("CREATE (:A {id:1})-[:R {w:1}]->(:B {id:2})");
-    let rows = db.run(
-        "MATCH p = (:A)-[:R]->(:B) RETURN relationships(p) AS rels",
-    );
+    let rows = db.run("MATCH p = (:A)-[:R]->(:B) RETURN relationships(p) AS rels");
     let rels = rows[0]["rels"].as_array().unwrap();
     assert_eq!(rels.len(), 1);
 }
@@ -788,7 +812,10 @@ fn list_contains_function() {
 
 #[test]
 fn log_function() {
-    let v = TestDb::new().scalar("RETURN log(2.718281828)").as_f64().unwrap();
+    let v = TestDb::new()
+        .scalar("RETURN log(2.718281828)")
+        .as_f64()
+        .unwrap();
     assert!((v - 1.0).abs() < 0.01);
 }
 
@@ -832,7 +859,7 @@ fn e_function() {
 fn rand_function() {
     // rand() returns a float between 0.0 (inclusive) and 1.0 (exclusive)
     let v = TestDb::new().scalar("RETURN rand()").as_f64().unwrap();
-    assert!(v >= 0.0 && v < 1.0);
+    assert!((0.0..1.0).contains(&v));
 }
 
 // ============================================================
@@ -849,18 +876,12 @@ fn nested_tolower_replace() {
 
 #[test]
 fn nested_tostring_tointeger() {
-    assert_eq!(
-        TestDb::new().scalar("RETURN toInteger(toString(42))"),
-        42
-    );
+    assert_eq!(TestDb::new().scalar("RETURN toInteger(toString(42))"), 42);
 }
 
 #[test]
 fn size_of_split_result() {
-    assert_eq!(
-        TestDb::new().scalar("RETURN size(split('a.b.c', '.'))"),
-        3
-    );
+    assert_eq!(TestDb::new().scalar("RETURN size(split('a.b.c', '.'))"), 3);
 }
 
 #[test]
@@ -896,9 +917,7 @@ fn string_functions_in_where_clause() {
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice'})");
     db.run("CREATE (:User {name: 'BOB'})");
-    let rows = db.run(
-        "MATCH (u:User) WHERE toLower(u.name) STARTS WITH 'a' RETURN u.name AS name",
-    );
+    let rows = db.run("MATCH (u:User) WHERE toLower(u.name) STARTS WITH 'a' RETURN u.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "Alice");
 }
@@ -907,9 +926,7 @@ fn string_functions_in_where_clause() {
 fn string_concat_in_return() {
     let db = TestDb::new();
     db.run("CREATE (:Person {first: 'John', last: 'Doe'})");
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.first + ' ' + p.last AS fullName",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN p.first + ' ' + p.last AS fullName");
     assert_eq!(rows[0]["fullName"], "John Doe");
 }
 

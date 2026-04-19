@@ -99,9 +99,7 @@ fn return_star_with_relationship() {
 fn return_star_plus_expression() {
     let db = TestDb::new();
     db.seed_social_graph();
-    let rows = db.run(
-        "MATCH (a:User {name: 'Alice'})-[r:FOLLOWS]->(b) RETURN *, a.name AS name",
-    );
+    let rows = db.run("MATCH (a:User {name: 'Alice'})-[r:FOLLOWS]->(b) RETURN *, a.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], "Alice");
 }
@@ -231,9 +229,8 @@ fn return_mixed_node_rel_and_scalar() {
 fn return_multiple_aliases_different_expressions() {
     let db = TestDb::new();
     db.run("CREATE (:P {first:'John', last:'Doe', age:40})");
-    let rows = db.run(
-        "MATCH (p:P) RETURN p.first + ' ' + p.last AS full_name, p.age + 10 AS future_age",
-    );
+    let rows =
+        db.run("MATCH (p:P) RETURN p.first + ' ' + p.last AS full_name, p.age + 10 AS future_age");
     assert_eq!(rows[0]["full_name"], "John Doe");
     assert_eq!(rows[0]["future_age"], 50);
 }
@@ -266,10 +263,7 @@ fn return_count_in_projection() {
 fn return_distinct_property_values() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let depts = db.sorted_strings(
-        "MATCH (p:Person) RETURN DISTINCT p.dept AS dept",
-        "dept",
-    );
+    let depts = db.sorted_strings("MATCH (p:Person) RETURN DISTINCT p.dept AS dept", "dept");
     assert_eq!(depts, vec!["Engineering", "Marketing"]);
 }
 
@@ -328,10 +322,7 @@ fn return_distinct_on_property_expression() {
     // DISTINCT on property expression
     let db = TestDb::new();
     db.seed_org_graph();
-    let depts = db.sorted_strings(
-        "MATCH (p:Person) RETURN DISTINCT p.dept AS dept",
-        "dept",
-    );
+    let depts = db.sorted_strings("MATCH (p:Person) RETURN DISTINCT p.dept AS dept", "dept");
     assert_eq!(depts, vec!["Engineering", "Marketing"]);
 }
 
@@ -351,9 +342,8 @@ fn return_relationship_type_in_projection() {
     // Returning relationship type() in projection
     let db = TestDb::new();
     db.seed_social_graph();
-    let rows = db.run(
-        "MATCH (a:User {name:'Alice'})-[r]->(b) RETURN type(r) AS rel_type ORDER BY type(r)",
-    );
+    let rows = db
+        .run("MATCH (a:User {name:'Alice'})-[r]->(b) RETURN type(r) AS rel_type ORDER BY type(r)");
     // Alice has FOLLOWS->Bob and KNOWS->Carol
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["rel_type"], "FOLLOWS");
@@ -365,9 +355,7 @@ fn return_string_concatenation_computed() {
     // String concatenation as computed expression
     let db = TestDb::new();
     db.run("CREATE (:Person {first: 'John', last: 'Smith'})");
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.first + ' ' + p.last AS full_name",
-    );
+    let rows = db.run("MATCH (p:Person) RETURN p.first + ' ' + p.last AS full_name");
     assert_eq!(rows[0]["full_name"], "John Smith");
 }
 
@@ -394,9 +382,7 @@ fn mixed_aliases_and_raw_expressions() {
     // Mixed aliases and raw property expressions
     let db = TestDb::new();
     db.run("CREATE (:Widget {name: 'Gadget', weight: 15, color: 'red'})");
-    let rows = db.run(
-        "MATCH (w:Widget) RETURN w.name AS label, w.weight, w.color AS hue",
-    );
+    let rows = db.run("MATCH (w:Widget) RETURN w.name AS label, w.weight, w.color AS hue");
     assert_eq!(rows[0]["label"], "Gadget");
     assert_eq!(rows[0]["weight"], 15);
     assert_eq!(rows[0]["hue"], "red");
@@ -407,9 +393,8 @@ fn return_count_with_alias() {
     // Aggregation with alias in return
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person) RETURN p.dept AS department, count(p) AS headcount ORDER BY p.dept",
-    );
+    let rows = db
+        .run("MATCH (p:Person) RETURN p.dept AS department, count(p) AS headcount ORDER BY p.dept");
     assert_eq!(rows[0]["department"], "Engineering");
     assert_eq!(rows[0]["headcount"], 4);
     assert_eq!(rows[1]["department"], "Marketing");
@@ -485,9 +470,7 @@ fn distinct_on_complex_expression_returning_nodes() {
     // Lora: DISTINCT on complex expressions returning nodes
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows = db.run(
-        "MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN DISTINCT c",
-    );
+    let rows = db.run("MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN DISTINCT c");
     assert_eq!(rows.len(), 3); // London, Berlin, Tokyo
 }
 
