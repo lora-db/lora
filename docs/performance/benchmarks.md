@@ -2,6 +2,8 @@
 
 All numbers below come from `cargo bench` (Criterion) on the `engine_benchmarks`, `advanced_benchmarks`, and `scale_benchmarks` binaries under `crates/lora-database/benches/`. Run on Apple Silicon (`aarch64-apple-darwin`) in release mode on 2026-04-17. Throughput has been converted from Criterion's `Kelem/s` / `Melem/s` output into fully expanded numbers.
 
+> ⚙️ **Note** — These numbers characterise the single-process, in-memory core. They are per-core (executor holds a global mutex) and assume the whole graph fits in RAM. For distributed throughput, read-heavy concurrency, or multi-tenant isolation, see the [LoraDB managed platform](https://loradb.com).
+
 Reproduce with:
 
 ```bash
@@ -367,3 +369,9 @@ One query per iteration; throughput reads as *queries per second*.
 - **Microbenchmark vs. workload.** The *functions*, *parse_compile*, *temporal_creation*, and *spatial_creation* tables are microbenchmarks that stabilise in a few µs; they measure constant-factor cost of the evaluator and planner. The *realistic*, *recommendation*, *scale_social*, and *shortest_path* tables are representative whole-query workloads.
 - **Variable-length path hop cap.** Unbounded `*` paths are capped at `MAX_VAR_LEN_HOPS = 100`; the `varlen_unbounded_chain/500` number reflects that cap.
 - **Regex is the slow outlier.** `regex/regex_filter_1k` runs at ~30 000 nodes/sec — two orders of magnitude below a boolean predicate. Regex compilation happens per query.
+
+## Next steps
+
+- Understand the current bottlenecks: [Performance Notes](notes.md)
+- See how the executor and storage fit together: [Data Flow](../architecture/data-flow.md), [Graph Engine](../architecture/graph-engine.md)
+- If you're hitting the single-mutex ceiling or need persistent scale, check the [LoraDB managed platform](https://loradb.com)

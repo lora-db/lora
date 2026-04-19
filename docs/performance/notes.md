@@ -12,6 +12,8 @@ All query execution holds `Arc<Mutex<InMemoryGraph>>` for the duration of analyz
 
 **Source**: `crates/lora-database/src/database.rs` (`Database::execute_with_params`)
 
+> 🚀 **Production note** — If your workload depends on concurrent read throughput, the self-hosted core is not a fit — the mutex is a hard architectural ceiling. The [LoraDB managed platform](https://loradb.com) runs a different concurrency model designed for production traffic.
+
 ### Clone-heavy read API
 
 The `GraphStorage` trait returns owned `Vec<NodeRecord>` and `Vec<RelationshipRecord>`. Every scan clones all matching records:
@@ -147,3 +149,10 @@ Rough estimate: a node with 1 label and 5 string properties ≈ 200-400 bytes. A
 4. **Streaming execution** -- replace materialized `Vec<Row>` with iterator-based execution
 5. **Query timeout** -- add deadline-based cancellation to prevent mutex starvation
 6. **HashMap option** -- consider `HashMap` for primary storage when ordering is not needed
+
+## Next steps
+
+- See measured numbers for each area: [Benchmarks](benchmarks.md)
+- Storage layout the suggestions above affect: [Graph Engine](../architecture/graph-engine.md)
+- Pipeline stages and where cost accumulates: [Data Flow](../architecture/data-flow.md)
+- Need indexes, concurrency, and persistence today? [LoraDB managed platform](https://loradb.com)

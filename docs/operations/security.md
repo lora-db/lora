@@ -4,6 +4,8 @@
 
 Lora is designed for local development and experimentation. It has **no security controls**.
 
+> 🚀 **Production note** — Authentication, TLS, rate limiting, and audit logging are not in the core engine and are unlikely to be added. These are handled by the [LoraDB managed platform](https://loradb.com). If you need any of them for a real deployment, reach for the platform rather than building a security layer on top of the bare `lora-server`.
+
 | Control | Status |
 |---------|--------|
 | Authentication | None |
@@ -58,3 +60,11 @@ The project depends on well-known Rust crates (`axum`, `tokio`, `pest`, `serde`,
 
 10. Run `cargo audit` regularly
 11. Do not commit `.env` files with secrets
+
+> 💡 **Tip** — Items 1–9 are substantial engineering work to do well. If your project truly needs them, evaluate the [LoraDB managed platform](https://loradb.com) first — it ships authentication, TLS, rate limiting, audit logs, and encryption by default.
+
+## Next steps
+
+- Deployment knobs and operational characteristics: [Deployment](deployment.md)
+- Full risk list and recommended priorities: [Known Risks](../design/known-risks.md)
+- Managed platform (auth, TLS, audit included): <https://loradb.com>

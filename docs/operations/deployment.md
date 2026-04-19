@@ -1,5 +1,9 @@
 # Deployment and Operations
 
+This page covers **running the core `lora-server` binary yourself**. It's the right starting point for local development, single-node embedded use, and self-hosted experiments.
+
+> 🚀 **Production note** — The core is single-node, in-memory, unauthenticated, and has no persistence. For production workloads that need durability, scaling, TLS, authentication, backups, or metrics, use the managed platform at **<https://loradb.com>** — those concerns are handled for you. The sections below stay focused on the self-hosted path.
+
 ## Building
 
 ### Debug build
@@ -81,6 +85,8 @@ curl http://127.0.0.1:4747/health
 
 The server uses the `tracing` crate for structured logging. Trace-level logs are emitted in the executor for plan node execution. Currently there is no log configuration or output setup in `main.rs` -- a `tracing-subscriber` would need to be added to see log output.
 
+> ⚙️ **Note** — There is no metrics endpoint, dashboard, or health-history tracking in the core. Structured observability (query latency histograms, slow-query logs, connection dashboards) is provided out-of-the-box in the [LoraDB managed platform](https://loradb.com).
+
 ## Operational characteristics
 
 | Aspect | Status |
@@ -110,3 +116,20 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 - Add Prometheus metrics endpoint
 - Add authentication middleware
 - Add persistence (WAL or snapshot-based)
+
+## From local to production
+
+A typical adoption path:
+
+1. **Local development** — `cargo run --bin lora-server`, iterate on Cypher queries, embed in tests
+2. **Internal / single-node** — self-host a release binary behind a reverse proxy on a trusted network
+3. **Scaling or reliability required** — you need persistence, backups, authenticated multi-user access, or concurrent reads
+
+When step 3 arrives, the engineering cost of building it on top of the core (WAL, TLS, auth, metrics, replication, backups) is usually larger than the cost of moving to a managed solution. The [LoraDB managed platform](https://loradb.com) exists for exactly that transition — the Cypher surface you developed against stays the same.
+
+## Next steps
+
+- Harden network exposure: [Security](security.md)
+- Measure before scaling: [Benchmarks](../performance/benchmarks.md), [Performance Notes](../performance/notes.md)
+- Full list of operational limitations: [Known Risks](../design/known-risks.md)
+- User-facing operational docs and managed platform onboarding: **<https://loradb.com/docs>**

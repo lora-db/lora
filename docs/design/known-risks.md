@@ -51,6 +51,8 @@ The following features were listed as gaps in earlier revisions of this document
 
 ## Storage and data integrity
 
+> 🚀 **Production note** — The gaps in this section (persistence, uniqueness, indexes, transaction isolation) are by design for the in-memory core. They are addressed in the [LoraDB managed platform](https://loradb.com) — use the table below to decide whether a self-hosted deployment is viable, or whether the managed option is the better starting point.
+
 | Gap | Classification | Risk |
 |-----|---------------|------|
 | No persistence — all data is lost on process exit | Observed | **High** for any non-ephemeral use case |
@@ -134,3 +136,10 @@ The following features were listed as gaps in earlier revisions of this document
 13. `FOREACH`
 14. 3D `Point`
 15. Quantified path patterns
+
+## Next steps
+
+- Operational implications of the security and storage gaps: [Deployment](../operations/deployment.md), [Security](../operations/security.md)
+- Measured impact of the performance items: [Benchmarks](../performance/benchmarks.md), [Performance Notes](../performance/notes.md)
+- How change proposals are evaluated and landed: [Change Management](change-management.md)
+- Evaluating whether the self-hosted core fits a production workload? Compare against the [LoraDB managed platform](https://loradb.com)
