@@ -317,11 +317,11 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p bench-out
-          # `--benches` restricts selection to the declared [[bench]] targets
-          # (all criterion, harness = false). Without it, `cargo bench` also
-          # runs the lib and integration-test targets with the default libtest
-          # harness, which rejects criterion's `--output-format bencher` flag
-          # and aborts the job before any criterion bench runs.
+          # `--benches` selects the declared [[bench]] targets (all criterion,
+          # harness = false). Note that cargo still builds the lib as a
+          # benchmark under this flag unless `[lib] bench = false` is set in
+          # the crate manifest — without that, the default libtest harness
+          # rejects criterion's `--output-format bencher` and aborts the job.
           #
           # Capture stdout as well so the archive ships a human-readable log
           # alongside the criterion HTML reports.
