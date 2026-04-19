@@ -1,0 +1,72 @@
+name: lora-server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/lora-server/**"
+      - "crates/lora-database/**"
+      - "crates/lora-store/**"
+      - "crates/lora-executor/**"
+      - "crates/lora-compiler/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-ast/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/lora-server.yml"
+  pull_request:
+    paths:
+      - "crates/lora-server/**"
+      - "crates/lora-database/**"
+      - "crates/lora-store/**"
+      - "crates/lora-executor/**"
+      - "crates/lora-compiler/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-ast/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/lora-server.yml"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: check, test, release build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lora-server-${{ matrix.os }}
+
+      - name: cargo check (lora-server)
+        run: cargo check -p lora-server --locked
+
+      - name: cargo test (lora-server)
+        run: cargo test -p lora-server --locked
+
+      - name: cargo build --release (lora-server)
+        run: cargo build --release --locked -p lora-server --bin lora-server
+
+      - name: Upload release binary (CI artifact)
+        uses: actions/upload-artifact@v5
+        with:
+          name: lora-server-${{ matrix.os }}-release
+          path: |
+            target/release/lora-server
+            target/release/lora-server.exe
+          if-no-files-found: error
+          retention-days: 7

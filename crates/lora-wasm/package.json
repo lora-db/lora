@@ -1,0 +1,71 @@
+{
+  "name": "lora-wasm",
+  "version": "0.1.0",
+  "description": "WebAssembly bindings for the Lora in-memory graph database",
+  "private": true,
+  "license": "BUSL-1.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./worker-client": {
+      "types": "./dist/worker-client.d.ts",
+      "import": "./dist/worker-client.js"
+    },
+    "./bundler": {
+      "types": "./pkg-bundler/lora_wasm.d.ts",
+      "import": "./pkg-bundler/lora_wasm.js"
+    },
+    "./web": {
+      "types": "./pkg-web/lora_wasm.d.ts",
+      "import": "./pkg-web/lora_wasm.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "pkg-node/",
+    "pkg-bundler/",
+    "pkg-web/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "sync:types": "node -e \"require('fs').copyFileSync('../shared-ts/types.ts','ts/types.ts')\"",
+    "verify:types": "node -e \"const fs=require('fs'); const a=fs.readFileSync('../shared-ts/types.ts','utf8'); const b=fs.readFileSync('ts/types.ts','utf8'); if (a!==b) { console.error('ts/types.ts is out of sync with shared-ts/types.ts — run npm run sync:types'); process.exit(1);} \"",
+    "prebuild": "npm run sync:types",
+    "pretypecheck": "npm run sync:types",
+    "pretest": "npm run sync:types",
+    "build:wasm:node": "wasm-pack build --target nodejs --release --out-dir pkg-node",
+    "build:wasm:bundler": "wasm-pack build --target bundler --release --out-dir pkg-bundler",
+    "build:wasm:web": "wasm-pack build --target web --release --out-dir pkg-web",
+    "build:wasm": "npm run build:wasm:node && npm run build:wasm:bundler && npm run build:wasm:web",
+    "postbuild:wasm": "node -e \"for (const d of ['pkg-node','pkg-bundler','pkg-web']) { try { require('fs').rmSync(d + '/.gitignore'); } catch {} }\"",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run build:wasm && npm run build:ts",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "playwright test",
+    "test:browser:install": "playwright install chromium",
+    "prepack": "npm run sync:types && npm run build",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^22.7.4",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.21",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0",
+    "vitest": "^2.1.1"
+  }
+}

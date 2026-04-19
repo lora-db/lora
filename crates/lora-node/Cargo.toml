@@ -1,0 +1,24 @@
+[package]
+name = "lora-node"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi4", "serde-json"] }
+napi-derive = "2"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow.workspace = true
+
+lora-database = { path = "../lora-database" }
+lora-store = { path = "../lora-store" }
+
+[build-dependencies]
+napi-build = "2"

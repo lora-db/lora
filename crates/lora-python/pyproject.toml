@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "lora-python"
+version = "0.1.0"
+description = "Python bindings for the Lora in-memory graph database"
+readme = "README.md"
+license = { text = "BUSL-1.1" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Typing :: Typed",
+    "Development Status :: 3 - Alpha",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.maturin]
+# Bind the Rust cdylib as a submodule of the pure-Python package so we can
+# layer an async wrapper + typing stubs on top.
+module-name = "lora_python._native"
+python-source = "python"
+features = ["pyo3/extension-module"]
+# Build a stable-ABI wheel so one build serves 3.8+.
+bindings = "pyo3"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"

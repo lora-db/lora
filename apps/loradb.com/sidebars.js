@@ -1,0 +1,92 @@
+module.exports = {
+  docs: [
+    {
+      type: 'category',
+      label: 'Introduction',
+      collapsed: false,
+      items: ['index'],
+    },
+    {
+      type: 'category',
+      label: 'Getting Started',
+      collapsed: false,
+      items: [
+        'getting-started/installation',
+        'getting-started/node',
+        'getting-started/python',
+        'getting-started/wasm',
+        'getting-started/tutorial',
+        {
+          type: 'category',
+          label: 'Other runtimes',
+          collapsed: true,
+          items: [
+            'getting-started/rust',
+            'getting-started/server',
+          ],
+        },
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Concepts',
+      collapsed: false,
+      items: [
+        'concepts/graph-model',
+        'concepts/nodes',
+        'concepts/relationships',
+        'concepts/properties',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Queries',
+      collapsed: false,
+      items: [
+        'queries/index',
+        'queries/match',
+        'queries/create',
+        'queries/where',
+        'queries/return-with',
+        'queries/set-delete',
+        'queries/unwind-merge',
+        'queries/aggregation',
+        'queries/ordering',
+        'queries/paths',
+        'queries/examples',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Functions',
+      collapsed: false,
+      items: [
+        'functions/overview',
+        'functions/aggregation',
+        'functions/string',
+        'functions/math',
+        'functions/list',
+        'functions/temporal',
+        'functions/spatial',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Data Types',
+      collapsed: false,
+      items: [
+        'data-types/overview',
+        'data-types/scalars',
+        'data-types/lists-and-maps',
+        'data-types/temporal',
+        'data-types/spatial',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      collapsed: false,
+      items: ['cookbook', 'limitations', 'troubleshooting'],
+    },
+  ],
+};

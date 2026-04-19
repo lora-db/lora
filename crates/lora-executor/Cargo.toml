@@ -1,0 +1,16 @@
+[package]
+name = "lora-executor"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lora-compiler = { path = "../lora-compiler" }
+lora-store = { path = "../lora-store" }
+lora-analyzer = { path = "../lora-analyzer" }
+lora-ast = { path = "../lora-ast" }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+regex.workspace = true

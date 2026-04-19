@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>lora-wasm browser demo</title>
+  </head>
+  <body>
+    <h1>lora-wasm — worker-backed Database</h1>
+    <pre id="out">running…</pre>
+
+    <!--
+      This example assumes you have bundled `ts/worker.ts` (or `ts/worker.js`
+      after tsc) together with `pkg-bundler/` using Vite / esbuild / webpack.
+      The key point is that the WASM engine lives inside the Worker; the main
+      thread only posts messages and renders results.
+    -->
+    <script type="module">
+      const out = document.getElementById("out");
+      const log = (m) => {
+        console.log("[demo]", m);
+      };
+      try {
+        log("importing worker-client");
+        const { createWorkerDatabase } = await import("../dist/worker-client.js");
+
+        log("spawning worker");
+        const worker = new Worker(
+          new URL("../dist/worker.js", import.meta.url),
+          { type: "module" },
+        );
+        worker.addEventListener("error", (e) => {
+          console.error("[demo] worker error:", e.message, e);
+          out.textContent = "error: worker error: " + (e.message ?? "unknown");
+        });
+        worker.addEventListener("messageerror", (e) => {
+          console.error("[demo] worker messageerror:", e);
+        });
+
+        log("creating db client");
+        const db = createWorkerDatabase(worker);
+
+        log("running CREATE");
+        await db.execute("CREATE (:Person {name: $n})", { n: "Alice" });
+        log("running MATCH");
+        const r = await db.execute("MATCH (n:Person) RETURN n.name AS name");
+        log("done");
+        out.textContent = JSON.stringify(r, null, 2);
+      } catch (err) {
+        console.error("[demo] caught:", err);
+        out.textContent =
+          "error: " + (err && err.message ? err.message : String(err));
+      }
+    </script>
+  </body>
+</html>

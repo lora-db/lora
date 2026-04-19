@@ -1,0 +1,209 @@
+/* stylelint-disable docusaurus/copyright-header */
+/**
+ * Global styles. The classic Docusaurus template bundles Infima, which is
+ * extended below with design tokens and component-level overrides.
+ */
+
+@use './components/admonition';
+@use './components/back-to-top-button';
+@use './components/blog';
+@use './components/brand-pages';
+@use './components/code';
+@use './components/doc-item';
+@use './components/doc-root';
+@use './components/doc-sidebar';
+@use './components/edit-this-page';
+@use './components/markdown';
+@use './components/navbar';
+@use './components/navbar-sidebar';
+@use './components/pagination';
+@use './components/search';
+@use './components/table';
+@use './components/tabs';
+@use './components/theme-toggle';
+@use './components/toc';
+
+:root {
+  --ifm-background-color: var(--token-primary-bg-c);
+
+  --ifm-navbar-link-hover-color: initial;
+  --ifm-navbar-padding-vertical: 0;
+  --ifm-navbar-item-padding-vertical: 0;
+
+  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, Inter, Helvetica, Arial, sans-serif, 'Apple Color Emoji',
+    'Segoe UI emoji';
+  --ifm-font-family-monospace: 'SFMono-Regular', 'Roboto Mono', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+
+  --ifm-menu-link-sublist-icon: url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iNiIgdmlld0JveD0iMCAwIDEwIDYiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik04Ljk5OTg4IDVMNC45OTk4OCAxTDAuOTk5ODc4IDUiIHN0cm9rZT0iIzAzMDYwQiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K');
+
+  //#region ----------- Z Indices ------------
+  --z-sidebar: 2000;
+  --z-backdrop: 1100;
+  //#endregion
+}
+
+html[data-theme='light'] {
+  --token-primary-bg-c: #fff;
+  --token-secondary-bg-c: #fff;
+
+  --ifm-link-color: var(--c-blue-90);
+  --ifm-link-hover-color: rgba(27, 109, 255, 0.8);
+
+  --ifm-background-surface-color: var(--token-primary-bg-c);
+
+  --ifm-navbar-background-color: var(--token-primary-bg-c);
+  --ifm-navbar-shadow: 0 1px 0 0 var(--c-gray-0);
+
+  --ifm-heading-color: var(--c-carbon-100);
+  --ifm-secondary-heading-color: var(--c-carbon-300);
+
+  --ifm-code-background: var(--c-indigo-10);
+  --ifm-font-color-base: var(--c-carbon-90);
+  --ifm-info-color-bg: var(--c-carbon-90);
+
+  // --- LoraDB brand accents (light) ----------------------------------
+  // Used by the homepage, the BrandGraph illustration, and shared
+  // section accents. Kept generic so they can be reused beyond
+  // hero-specific rules.
+  --brand-accent-a: #1b6dff;          // primary — "context blue"
+  --brand-accent-b: #6e5afd;          // secondary — "reasoning violet"
+  --brand-accent-c: #35e2e9;          // tertiary — "signal teal"
+  --brand-accent-a-soft: rgba(27, 109, 255, 0.12);
+  --brand-accent-b-soft: rgba(110, 90, 253, 0.12);
+  --brand-gradient: linear-gradient(135deg, var(--brand-accent-a) 0%, var(--brand-accent-b) 100%);
+  --brand-gradient-soft: linear-gradient(135deg, var(--brand-accent-a-soft) 0%, var(--brand-accent-b-soft) 100%);
+  --brand-surface-c: #fafbff;
+  --brand-border-c: rgba(27, 109, 255, 0.16);
+  --brand-border-strong-c: rgba(27, 109, 255, 0.35);
+
+  // BrandGraph tokens
+  --brand-graph-glow-inner: #6e5afd;
+  --brand-graph-glow-mid: #1b6dff;
+  --brand-graph-glow-outer: #1b6dff;
+  --brand-node-fill: #ffffff;
+  --brand-node-stroke: #b8c4e8;
+  --brand-node-core: #6e5afd;
+  --brand-node-ring: #c7d2f7;
+  --brand-node-label: var(--c-carbon-100);
+  --brand-node-label-soft: var(--c-carbon-50);
+  --brand-edge-c: #8b9dd3;
+  --brand-edge-soft-c: #b8c4e8;
+}
+
+html[data-theme='dark'] {
+  --token-primary-bg-c: #03060b;
+  --token-secondary-bg-c: #13171c;
+
+  --ifm-link-color: var(--c-blue-70);
+  --ifm-link-hover-color: rgba(77, 141, 255, 0.8);
+
+  --ifm-background-surface-color: var(--token-primary-bg-c);
+
+  --ifm-navbar-background-color: var(--token-primary-bg-c);
+  --ifm-navbar-shadow: 0 1px 0 0 var(--c-gray-90);
+
+  --ifm-heading-color: #fff;
+  --ifm-secondary-heading-color: #f6f6f6;
+
+  --ifm-font-color-base: var(--c-carbon-10);
+  --ifm-background-color: var(--token-primary-bg-c);
+  --ifm-dropdown-background-color: var(--token-secondary-bg-c);
+  --ifm-info-color-bg: var(--c-carbon-10);
+
+  --ifm-menu-link-sublist-icon-filter: invert(100%);
+
+  // --- LoraDB brand accents (dark) -----------------------------------
+  --brand-accent-a: #4d8dff;
+  --brand-accent-b: #8482fb;
+  --brand-accent-c: #55ecf2;
+  --brand-accent-a-soft: rgba(77, 141, 255, 0.18);
+  --brand-accent-b-soft: rgba(132, 130, 251, 0.16);
+  --brand-gradient: linear-gradient(135deg, var(--brand-accent-a) 0%, var(--brand-accent-b) 100%);
+  --brand-gradient-soft: linear-gradient(135deg, var(--brand-accent-a-soft) 0%, var(--brand-accent-b-soft) 100%);
+  --brand-surface-c: #0a0f18;
+  --brand-border-c: rgba(77, 141, 255, 0.22);
+  --brand-border-strong-c: rgba(77, 141, 255, 0.45);
+
+  // BrandGraph tokens
+  --brand-graph-glow-inner: #8482fb;
+  --brand-graph-glow-mid: #4d8dff;
+  --brand-graph-glow-outer: #1b6dff;
+  --brand-node-fill: #0e1420;
+  --brand-node-stroke: #2a3550;
+  --brand-node-core: #8482fb;
+  --brand-node-ring: #2a3550;
+  --brand-node-label: #e9ecf5;
+  --brand-node-label-soft: #7d8894;
+  --brand-edge-c: #3a4765;
+  --brand-edge-soft-c: #2a3550;
+}
+
+html {
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-smoothing: antialiased;
+
+  scroll-padding-top: calc(var(--ifm-navbar-height) + 16px);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+a {
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: none;
+  }
+}
+
+body {
+  margin: 0;
+}
+
+.theme-doc-version-badge {
+  display: none;
+}
+
+figure {
+  margin: 0;
+}
+
+figure > * {
+  display: block;
+  margin: 0 auto;
+}
+
+figcaption {
+  text-align: center;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+iframe {
+  background-color: rgba(0, 0, 0, 0.02);
+  box-shadow: 10px 10px 20px rgba(0, 0, 0, 0.1);
+}
+
+.git-link {
+  &::before {
+    content: '';
+    height: 1em;
+    width: 1em;
+    display: inline-block;
+    background-color: currentColor;
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: 100% 100%;
+    mask-image: url(../../static/icons/code-branch.svg);
+    vertical-align: -0.1em;
+    margin-inline-end: 5px;
+  }
+}

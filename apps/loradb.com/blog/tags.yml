@@ -1,0 +1,44 @@
+announcement:
+  label: Announcement
+  permalink: /announcement
+  description: Product updates and launch posts.
+
+architecture:
+  label: Architecture
+  permalink: /architecture
+  description: How LoraDB is built — crates, pipeline, internals.
+
+cypher:
+  label: Cypher
+  permalink: /cypher
+  description: Query language walkthroughs and patterns.
+
+release-notes:
+  label: Release notes
+  permalink: /release-notes
+  description: What landed in each release.
+
+deep-dive:
+  label: Deep dive
+  permalink: /deep-dive
+  description: Longer technical essays.
+
+ai:
+  label: AI & agents
+  permalink: /ai
+  description: Graphs as memory and context for AI systems.
+
+rust:
+  label: Rust
+  permalink: /rust
+  description: Rust implementation notes and patterns.
+
+design:
+  label: Design
+  permalink: /design
+  description: Design decisions and tradeoffs.
+
+founder-notes:
+  label: Founder notes
+  permalink: /founder-notes
+  description: Why LoraDB exists, who it is for, and how the product is shaped.

@@ -1,0 +1,54 @@
+{
+  "name": "lora-node",
+  "version": "0.1.0",
+  "description": "Node.js / TypeScript bindings for the Lora in-memory graph database",
+  "private": true,
+  "license": "BUSL-1.1",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "ts/native.js",
+    "ts/native.d.ts",
+    "*.node"
+  ],
+  "napi": {
+    "name": "lora-node",
+    "triples": {
+      "defaults": true,
+      "additional": []
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "sync:types": "node -e \"require('fs').copyFileSync('../shared-ts/types.ts','ts/types.ts')\"",
+    "verify:types": "node -e \"const fs=require('fs'); const a=fs.readFileSync('../shared-ts/types.ts','utf8'); const b=fs.readFileSync('ts/types.ts','utf8'); if (a!==b) { console.error('ts/types.ts is out of sync with shared-ts/types.ts — run npm run sync:types'); process.exit(1);} \"",
+    "prebuild": "npm run sync:types",
+    "pretypecheck": "npm run sync:types",
+    "pretest": "npm run sync:types",
+    "build:native": "napi build --platform --release --js false",
+    "build:native:debug": "napi build --platform --js false",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run build:native && npm run build:ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepack": "npm run sync:types && npm run build",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^22.7.4",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

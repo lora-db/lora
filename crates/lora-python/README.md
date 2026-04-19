@@ -1,0 +1,107 @@
+# lora-python
+
+Python bindings for the [Lora](../../README.md) in-memory graph
+engine. Ships both a synchronous PyO3 `Database` class and an
+asyncio-compatible `AsyncDatabase` wrapper that never blocks the event loop.
+
+> **Status:** prototype / feasibility check. Not published to PyPI.
+
+## Install (local dev)
+
+```bash
+cd crates/lora-python
+python3 -m venv .venv && source .venv/bin/activate
+pip install -U pip maturin pytest pytest-asyncio
+maturin develop         # builds the Rust extension into the venv
+pytest                  # runs the sync + async smoke tests
+```
+
+`maturin develop` produces a `lora_python/_native.<platform>.so` inside the
+package and makes `import lora_python` work immediately.
+
+## Sync usage
+
+```python
+from lora_python import Database, is_node
+
+db = Database.create()
+db.execute("CREATE (:Person {name: $n, age: $a})", {"n": "Alice", "a": 30})
+
+res = db.execute("MATCH (n:Person) RETURN n")
+for row in res["rows"]:
+    n = row["n"]
+    if is_node(n):
+        print(n["properties"]["name"])
+```
+
+## Async usage (non-blocking)
+
+```python
+import asyncio
+from lora_python import AsyncDatabase
+
+async def main():
+    db = await AsyncDatabase.create()
+    await db.execute("CREATE (:Person {name: 'Alice'})")
+    r = await db.execute("MATCH (n:Person) RETURN n.name AS name")
+    print(r["rows"])
+
+asyncio.run(main())
+```
+
+`AsyncDatabase.execute` dispatches the query onto the default asyncio
+thread pool via `asyncio.to_thread`. The PyO3 `Database.execute` releases
+the Python GIL for the duration of engine work, so other coroutines on the
+event loop can progress while a query runs. A dedicated test proves the
+event loop continues ticking during a 2 000-node `MATCH`.
+
+## Typed value model
+
+Same conceptual contract as `lora-node` / `lora-wasm`:
+
+| Python shape                                               | Lora value         |
+|------------------------------------------------------------|----------------------|
+| `None`, `bool`, `int`, `float`, `str`                      | scalars              |
+| `list`, `dict`                                             | collections          |
+| `{"kind": "node", "id", "labels", "properties"}`           | node                 |
+| `{"kind": "relationship", "id", …}`                        | relationship         |
+| `{"kind": "path", "nodes": [...], "rels": [...]}`          | path                 |
+| `{"kind": "date", "iso": "YYYY-MM-DD"}` (and `time`, …)    | temporal             |
+| point dicts — see below                                    | point                |
+
+Points are returned as dicts keyed on their CRS:
+
+| SRID | Dict                                                                                               |
+|------|----------------------------------------------------------------------------------------------------|
+| 7203 | `{"kind": "point", "srid": 7203, "crs": "cartesian", "x", "y"}`                                    |
+| 9157 | `{"kind": "point", "srid": 9157, "crs": "cartesian-3D", "x", "y", "z"}`                            |
+| 4326 | `{"kind": "point", "srid": 4326, "crs": "WGS-84-2D", "x", "y", "longitude", "latitude"}`           |
+| 4979 | `{"kind": "point", "srid": 4979, "crs": "WGS-84-3D", "x", "y", "z", "longitude", "latitude", "height"}` |
+
+Constructors and guards are exported from `lora_python.types`:
+`date`, `time`, `localtime`, `datetime`, `localdatetime`, `duration`,
+`cartesian`, `cartesian_3d`, `wgs84`, `wgs84_3d`, `is_node`,
+`is_relationship`, `is_path`, `is_point`, `is_temporal`.
+
+> `distance()` on WGS-84-3D points ignores `height` — see
+> [docs/functions.md](../../docs/functions.md) for the full spatial
+> reference and known limitations.
+
+## Errors
+
+- `LoraError` — base class
+- `LoraQueryError` — parse / analyze / execute failure
+- `InvalidParamsError` — a parameter value couldn't be mapped
+
+All three are available as `lora_python.LoraError`, etc.
+
+## Architecture
+
+```
+lora-database (Rust)
+   └── lora-python (crate, cdylib)             <- PyO3 bindings
+          ├── Database (sync, releases the GIL)
+          └── python/lora_python/
+                 ├── _async.py  AsyncDatabase via asyncio.to_thread
+                 └── types.py   typed dicts + constructors + guards
+```

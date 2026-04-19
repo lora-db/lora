@@ -1,0 +1,12 @@
+node_modules/
+dist/
+pkg-node/
+pkg-bundler/
+pkg-web/
+*.tsbuildinfo
+# Playwright artefacts
+test-results/
+playwright-report/
+.playwright/
+# Built tarballs from `npm pack`
+lora-wasm-*.tgz

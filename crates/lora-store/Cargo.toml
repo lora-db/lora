@@ -1,0 +1,15 @@
+[package]
+name = "lora-store"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lora-ast = { path = "../lora-ast" }
+
+# Wall-clock reads go through the standard library on native targets and
+# through `js_sys::Date::now()` on wasm32-unknown-unknown, where
+# `SystemTime::now()` panics. See `temporal::unix_now`.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = "0.3"

@@ -1,0 +1,426 @@
+name: release
+
+# Release build + publish for the `lora-server` binary.
+#
+# Triggers:
+#   - Pushing a semver tag of the form `vX.Y.Z` (optionally with a pre-release
+#     suffix, e.g. `v0.2.0-rc.1`). The tag SHA is the commit that gets built.
+#   - Manual dispatch: run the workflow against an existing tag to rebuild or
+#     recover from a failed release without re-tagging.
+#
+# Flow:
+#   1. `build` runs in parallel across every target in the matrix. Each job
+#      produces a per-target archive + SHA-256 checksum and uploads both as
+#      workflow artifacts (these are the recovery/backup copy).
+#   2. `changelog` runs in parallel with `build`. It uses git-cliff (configured
+#      in `cliff.toml`) to render:
+#        - `release-notes.md` — Conventional-Commits-derived notes for the
+#          current tag (used as the body of the GitHub Release);
+#        - `CHANGELOG.md`     — full cumulative changelog across every tag
+#          (attached as a release asset).
+#   3. `bench` runs in parallel with `build`. It executes the criterion
+#      benchmark suite in release mode on `ubuntu-latest`, tarballs the HTML
+#      reports under `target/criterion/`, and uploads the archive so it can
+#      be pinned to the release. Results are a CI-hardware snapshot — not a
+#      controlled benchmarking environment — but give a per-version baseline.
+#   4. `publish` runs once after every `build` leg, `changelog`, and `bench`
+#      have finished. It downloads all artifacts, creates (or updates) a DRAFT
+#      GitHub Release for the tag using the rendered release notes as the body,
+#      and attaches every binary archive + checksums + full `CHANGELOG.md` +
+#      the benchmark tarball. The draft must be published manually.
+#   5. Tags containing a hyphen (e.g. `v0.2.0-rc.1`) are marked as pre-release.
+#
+# Extending to more targets: add a row to `matrix.include`. The `publish` job
+# is target-agnostic and will pick up any new binary artifact automatically.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.0)."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive-ext: tar.gz
+            bin-ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive-ext: zip
+            bin-ext: ".exe"
+          # Both macOS targets run on `macos-latest` (Apple Silicon). The
+          # Intel target is built via cross-compile so we don't depend on
+          # the increasingly-queue-constrained `macos-13` Intel runners.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive-ext: tar.gz
+            bin-ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive-ext: tar.gz
+            bin-ext: ""
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain (stable, ${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *)
+              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
+              exit 1
+              ;;
+          esac
+          version="${tag#v}"
+          artifact="lora-server-${tag}-${{ matrix.target }}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "artifact=${artifact}" >> "$GITHUB_OUTPUT"
+          echo "archive=${artifact}.${{ matrix.archive-ext }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build lora-server (release)
+        run: cargo build --release --locked -p lora-server --bin lora-server --target ${{ matrix.target }}
+
+      - name: Stage artifact contents
+        id: stage
+        shell: bash
+        run: |
+          staging="${{ steps.version.outputs.artifact }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/lora-server${{ matrix.bin-ext }}" "$staging/"
+          cp README.md "$staging/"
+          cp RELEASING.md "$staging/"
+          echo "dir=${staging}" >> "$GITHUB_OUTPUT"
+
+      - name: Package (zip, Windows)
+        if: matrix.archive-ext == 'zip'
+        shell: pwsh
+        run: |
+          $archive = "${{ steps.version.outputs.archive }}"
+          $staging = "${{ steps.stage.outputs.dir }}"
+          Compress-Archive -Path $staging -DestinationPath $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          "$hash  $archive" | Out-File -Encoding ascii -NoNewline "$archive.sha256"
+
+      - name: Package (tar.gz, unix)
+        if: matrix.archive-ext == 'tar.gz'
+        shell: bash
+        run: |
+          archive="${{ steps.version.outputs.archive }}"
+          staging="${{ steps.stage.outputs.dir }}"
+          tar -czf "$archive" "$staging"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+
+      - name: Upload workflow artifact (handed to the publish job)
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ steps.version.outputs.archive }}
+            ${{ steps.version.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  changelog:
+    name: generate changelog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # git-cliff needs the full history + every tag so it can diff
+          # the current tag against its predecessor.
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *)
+              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
+              exit 1
+              ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Render release notes (current tag only)
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          # `--latest` renders the section for the most recent tag. Combined
+          # with the checkout ref above, that is the tag being released.
+          # `--strip header` drops the top-level heading so the output slots
+          # cleanly into the GitHub Release body.
+          args: --latest --strip header
+        env:
+          OUTPUT: release-notes.md
+          GITHUB_REPO_URL: https://github.com/${{ github.repository }}
+
+      - name: Render full CHANGELOG.md (all tags)
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: ""
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO_URL: https://github.com/${{ github.repository }}
+
+      - name: Sanity-check generated files
+        shell: bash
+        run: |
+          test -s release-notes.md || { echo "::error::release-notes.md is empty"; exit 1; }
+          test -s CHANGELOG.md     || { echo "::error::CHANGELOG.md is empty";     exit 1; }
+          echo "--- release-notes.md (first 40 lines) ---"
+          head -n 40 release-notes.md
+          echo "--- CHANGELOG.md (first 20 lines) ---"
+          head -n 20 CHANGELOG.md
+
+      - name: Upload changelog artifact (handed to the publish job)
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-changelog
+          path: |
+            release-notes.md
+            CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 30
+
+  bench:
+    name: benchmarks (criterion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-bench
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *)
+              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
+              exit 1
+              ;;
+          esac
+          archive="lora-server-${tag}-benchmarks.tar.gz"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: Run criterion benchmarks
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p bench-out
+          # Capture stdout as well so the archive ships a human-readable log
+          # alongside the criterion HTML reports.
+          cargo bench --locked -p lora-database -- --output-format bencher \
+            | tee bench-out/benchmarks.log
+
+      - name: Collect criterion reports
+        shell: bash
+        run: |
+          if [ -d target/criterion ]; then
+            cp -R target/criterion bench-out/criterion
+          else
+            echo "::warning::target/criterion not found; criterion may have been skipped"
+          fi
+          # Small README inside the archive so consumers know what this is.
+          cat > bench-out/README.txt <<EOF
+          lora-database benchmarks — ${{ steps.version.outputs.tag }}
+
+          This archive is a per-version snapshot of the criterion benchmarks
+          run on GitHub Actions (ubuntu-latest). Results include CI-hardware
+          noise and should be treated as a relative trend signal, not
+          authoritative absolute numbers.
+
+          Contents:
+            benchmarks.log   Raw cargo-bench output (bencher format)
+            criterion/       criterion HTML reports + raw estimates.json
+            README.txt       This file
+          EOF
+
+      - name: Package benchmark archive
+        shell: bash
+        run: |
+          archive="${{ steps.version.outputs.archive }}"
+          tar -czf "$archive" -C bench-out .
+          sha256sum "$archive" > "$archive.sha256"
+          ls -lh "$archive" "$archive.sha256"
+
+      - name: Upload benchmark artifact (handed to the publish job)
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-benchmarks
+          path: |
+            ${{ steps.version.outputs.archive }}
+            ${{ steps.version.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: publish GitHub Release
+    needs: [build, changelog, bench]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *)
+              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
+              exit 1
+              ;;
+          esac
+          version="${tag#v}"
+          if [[ "$tag" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Binary archives + checksums (one per matrix target), the generated
+          # changelog files, and the benchmark archive — everything uploaded
+          # upstream uses the `release-*` artifact name prefix.
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: List collected assets
+        shell: bash
+        run: ls -lh dist
+
+      - name: Aggregate SHA-256 checksums
+        shell: bash
+        run: |
+          cd dist
+          # Covers every `.sha256` file — binary archives + benchmark archive.
+          cat *.sha256 > "lora-server-${{ steps.version.outputs.tag }}-SHA256SUMS.txt"
+
+      - name: Compose release body
+        id: body
+        shell: bash
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          notes="dist/release-notes.md"
+          body="RELEASE_BODY.md"
+          {
+            if [ -s "$notes" ]; then
+              cat "$notes"
+              echo
+              echo "---"
+              echo
+            else
+              echo "## lora-server ${tag}"
+              echo
+              echo "_(no conventional-commits changes detected for this tag)_"
+              echo
+            fi
+            echo "### Assets"
+            echo
+            echo "| Platform              | Asset |"
+            echo "| --------------------- | ----- |"
+            echo "| Linux x86_64          | \`lora-server-${tag}-x86_64-unknown-linux-gnu.tar.gz\` |"
+            echo "| Windows x86_64        | \`lora-server-${tag}-x86_64-pc-windows-msvc.zip\` |"
+            echo "| macOS Intel           | \`lora-server-${tag}-x86_64-apple-darwin.tar.gz\` |"
+            echo "| macOS Apple Silicon   | \`lora-server-${tag}-aarch64-apple-darwin.tar.gz\` |"
+            echo "| Full changelog        | \`CHANGELOG.md\` |"
+            echo "| Benchmarks (criterion)| \`lora-server-${tag}-benchmarks.tar.gz\` |"
+            echo
+            echo "Each binary archive ships with a matching \`.sha256\` file. An aggregated \`lora-server-${tag}-SHA256SUMS.txt\` is also attached."
+            echo
+            echo "Download, verify, and run instructions: see [RELEASING.md](https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/RELEASING.md) and the README."
+          } > "$body"
+          echo "path=${body}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish draft GitHub Release with all assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: ${{ steps.body.outputs.path }}
+          draft: true
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/lora-server-${{ steps.version.outputs.tag }}-*.tar.gz
+            dist/lora-server-${{ steps.version.outputs.tag }}-*.tar.gz.sha256
+            dist/lora-server-${{ steps.version.outputs.tag }}-*.zip
+            dist/lora-server-${{ steps.version.outputs.tag }}-*.zip.sha256
+            dist/lora-server-${{ steps.version.outputs.tag }}-SHA256SUMS.txt
+            dist/CHANGELOG.md

@@ -1,0 +1,87 @@
+// Inline Cypher reference.
+//
+// Shares colour tokens with the site-wide Prism theme in
+// `src/styles/components/_code.scss` so coloured snippets look identical
+// to equivalent content inside fenced code blocks.
+//
+// Visually distinct from plain `<code>` (carries syntax colour) but still
+// inline typography — no block padding, no heavy border, no shadow.
+
+.cypherCode {
+  // Reuse the exact same background variable plain inline `code` uses.
+  // Light mode: --c-indigo-10; dark mode: --token-secondary-bg-c.
+  background-color: var(--code-block-bg-c);
+  color: var(--ifm-font-color-base);
+
+  padding: 0.05em 0.32em;
+  margin: 0;
+  border: 0;
+  border-radius: 0.28em;
+  box-shadow: none;
+  vertical-align: baseline;
+
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.87em;
+  line-height: inherit;
+
+  // Tables and dense lists: allow wrapping when the snippet is long,
+  // but keep short fragments together.
+  white-space: normal;
+  word-break: break-word;
+
+  // ---- Token colours (match _code.scss exactly) ----
+
+  // Keywords — matches `.token.keyword`.
+  .tok_keyword {
+    color: #f55073;
+  }
+
+  // Function names — matches `.token.function`, `.token.builtin`.
+  .tok_function {
+    color: #ff6810;
+  }
+
+  // Node labels / relationship types — matches `.token.class-name`.
+  .tok_label {
+    color: #2b90ff;
+  }
+
+  // Properties (`.name` portion after the dot) — matches `.token.property`.
+  .tok_property {
+    color: #8454ff;
+  }
+
+  // Parameters — styled like identifiers: blue + italic, matches
+  // `.token.identifier` in the Prism theme.
+  .tok_parameter {
+    color: #2b90ff;
+    font-style: italic;
+  }
+
+  // Strings / operators — matches `.token.string`, `.token.operator`,
+  // `.token.variable` (all share #42b983 in the theme).
+  .tok_string {
+    color: #42b983;
+  }
+
+  .tok_operator {
+    color: #42b983;
+  }
+
+  // Numbers — matches `.token.number`.
+  .tok_number {
+    color: #8454ff;
+  }
+
+  // Punctuation — matches `.token.punctuation`'s opacity dim.
+  .tok_punctuation {
+    opacity: 0.7;
+  }
+
+  // Bare variables / fallbacks — inherit normal prose colour so they
+  // don't shout.
+  .tok_variable,
+  .tok_plain {
+    color: inherit;
+  }
+}

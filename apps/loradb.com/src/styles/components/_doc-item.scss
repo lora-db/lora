@@ -1,0 +1,93 @@
+:root {
+  --doc-item-container-width: 42rem;
+}
+
+// Standalone `src/pages/*.md` pages (About, Why, Contact) render inside
+// Docusaurus's `.row.mdxPageWrapper > .col--8` grid. Docs pages have a
+// sidebar filling the left third; these pages don't — so the default
+// left-aligned `col--8` leaves an empty strip on the right that reads
+// as a missing sidebar. Centre the column so the content sits balanced
+// on the page, and tighten the first H1's top margin since these pages
+// don't have a breadcrumb above the title.
+#__docusaurus [class*='mdxPageWrapper_'] > .col {
+  margin-inline: auto;
+}
+
+.mdx-wrapper.mdx-page > h1:first-child {
+  margin-block-start: 2rem;
+}
+
+//overrides
+#__docusaurus {
+  //#region ------------ DocItem -------------
+  [class*='docItemCol_'] {
+    max-width: initial;
+    min-width: 0;
+
+    @media (min-width: 997px) {
+      max-width: initial !important;
+    }
+  }
+
+  [class*='docItemContainer_'] {
+    max-width: var(--doc-item-container-width);
+    flex-grow: 1;
+    min-width: 0;
+  }
+
+  [class*='docMainContainer_'] {
+    .doc-demo-wrapper {
+      @media (max-width: 1364px) {
+        display: none;
+      }
+
+      .doc-demo {
+        position: sticky;
+        top: calc(var(--ifm-navbar-height));
+
+        padding-block-end: 32px;
+
+        margin-block-start: 5rem;
+        overflow-y: auto;
+        max-height: calc(100vh - var(--ifm-navbar-height));
+      }
+    }
+
+    > .container {
+      > .row {
+        > .col {
+          display: flex;
+          justify-content: center;
+
+          min-width: 0;
+
+          // Docs Demo
+          &.col--4 {
+            @media (max-width: 1364px) {
+              // The docs demo is hidden on mobile and tablet.
+              // Since the docs demo is the only thing in the right column,
+              // the column should be hidden as well.
+              // Otherwise, it will be a blank column, making it
+              // look like there is a lot of empty space.
+              display: none;
+            }
+          }
+        }
+      }
+    }
+
+    .spacer {
+      flex-basis: 5rem;
+
+      @media (max-width: 996px) {
+        display: none;
+      }
+    }
+  }
+
+  [class^='docItemCol_'] {
+    margin-inline-start: auto;
+    margin-inline-end: auto;
+  }
+  //#endregion
+}

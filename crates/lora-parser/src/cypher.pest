@@ -1,0 +1,371 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" | block_comment | line_comment }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+line_comment = _{ "//" ~ (!"\n" ~ ANY)* }
+
+query = { SOI ~ statement ~ semicolon? ~ EOI }
+semicolon = _{ ";" }
+
+statement = { regular_query | standalone_call }
+
+regular_query = { single_query ~ (union_clause ~ single_query)* }
+union_clause = { UNION ~ ALL? }
+
+single_query = { multi_part_query | single_part_query }
+multi_part_query = { query_part+ ~ single_part_query }
+query_part = { reading_clause* ~ updating_clause* ~ with_clause }
+
+single_part_query = {
+    (reading_clause* ~ return_clause)
+    | (reading_clause* ~ updating_clause+ ~ return_clause?)
+}
+
+reading_clause = { match_clause | unwind_clause | in_query_call }
+updating_clause = { create_clause | merge_clause | delete_clause | set_clause | remove_clause }
+
+match_clause = { OPTIONAL? ~ MATCH ~ pattern ~ where_clause? }
+unwind_clause = { UNWIND ~ expression ~ AS ~ variable }
+create_clause = { CREATE ~ pattern }
+merge_clause = { MERGE ~ pattern_part ~ merge_action* }
+merge_action = { ON ~ (MATCH | CREATE) ~ set_clause }
+
+delete_clause = { DETACH? ~ DELETE ~ expression ~ (comma ~ expression)* }
+
+set_clause = { SET ~ set_item ~ (comma ~ set_item)* }
+
+set_item = {
+      variable ~ plus_eq ~ expression
+    | property_set_target ~ eq ~ expression
+    | variable ~ eq ~ expression
+    | variable ~ node_labels
+}
+
+property_set_target = { variable ~ property_lookup+ }
+
+remove_clause = { REMOVE ~ remove_item ~ (comma ~ remove_item)* }
+remove_item = {
+      variable ~ node_labels
+    | expression
+}
+
+in_query_call = { CALL ~ procedure_invocation ~ yield_clause? ~ where_clause? }
+standalone_call = { CALL ~ (procedure_invocation | procedure_name) ~ yield_clause? }
+
+yield_clause = { YIELD ~ (STAR | yield_items) }
+yield_items = { yield_item ~ (comma ~ yield_item)* }
+yield_item = { symbolic_name ~ (AS ~ variable)? }
+
+with_clause = { WITH ~ projection_body ~ where_clause? }
+where_clause = { WHERE ~ expression }
+return_clause = { RETURN ~ projection_body }
+
+projection_body = {
+    DISTINCT? ~ projection_items ~ order_clause? ~ skip_clause? ~ limit_clause?
+}
+
+projection_items = { projection_item ~ (comma ~ projection_item)* }
+projection_item = { star | expression ~ (AS ~ variable)? }
+star = { STAR }
+
+order_clause = { ORDER ~ BY ~ sort_item ~ (comma ~ sort_item)* }
+sort_item = { expression ~ (ASCENDING | ASC | DESCENDING | DESC)? }
+skip_clause = { SKIP ~ expression }
+limit_clause = { LIMIT ~ expression }
+
+pattern = { pattern_part ~ (comma ~ pattern_part)* }
+pattern_part = { (variable ~ eq)? ~ anonymous_pattern_part }
+
+anonymous_pattern_part = {
+    shortest_path_pattern | pattern_element
+}
+
+shortest_path_pattern = {
+    (SHORTEST_PATH | ALL_SHORTEST_PATHS) ~ lparen ~ pattern_element ~ rparen
+}
+
+pattern_element = {
+    node_pattern ~ pattern_element_chain*
+    | lparen ~ pattern_element ~ rparen
+}
+
+pattern_element_chain = { relationship_pattern ~ node_pattern }
+
+node_pattern = {
+    lparen ~ variable? ~ node_labels? ~ properties? ~ rparen
+}
+
+relationship_pattern = {
+    left_arrow? ~ dash ~ relationship_detail? ~ dash ~ right_arrow?
+}
+
+relationship_detail = {
+    lbrack ~ variable? ~ relationship_types? ~ range_literal? ~ properties? ~ rbrack
+}
+
+relationship_types = { colon ~ rel_type_name ~ (pipe ~ colon? ~ rel_type_name)* }
+node_labels = { node_label_set+ }
+node_label_set = { colon ~ label_name ~ (pipe ~ label_name)* }
+node_label = { colon ~ label_name }
+
+range_literal = { STAR ~ integer_literal? ~ (dotdot ~ integer_literal?)? }
+
+properties = { map_literal | parameter }
+
+expression = { or_expression }
+
+case_expression = { simple_case_expression | generic_case_expression }
+
+simple_case_expression = {
+    CASE ~ expression ~ (WHEN ~ expression ~ THEN ~ expression)+ ~ (ELSE ~ expression)? ~ END
+}
+
+generic_case_expression = {
+    CASE ~ (WHEN ~ expression ~ THEN ~ expression)+ ~ (ELSE ~ expression)? ~ END
+}
+
+or_expression = { xor_expression ~ (OR ~ xor_expression)* }
+xor_expression = { and_expression ~ (XOR ~ and_expression)* }
+and_expression = { not_expression ~ (AND ~ not_expression)* }
+not_expression = { NOT* ~ comparison_expression }
+
+comparison_expression = { add_expression ~ comparison_tail* }
+comparison_tail = {
+      comparison_op ~ add_expression
+    | regex_match ~ add_expression
+    | IN ~ add_expression
+    | STARTS ~ WITH ~ add_expression
+    | ENDS ~ WITH ~ add_expression
+    | CONTAINS ~ add_expression
+    | IS ~ NOT ~ NULL
+    | IS ~ NULL
+}
+regex_match = { "=~" }
+comparison_op = { eq | ne | le | ge | lt | gt }
+
+add_expression = { mul_expression ~ ((add | sub) ~ mul_expression)* }
+mul_expression = { pow_expression ~ ((mul | div | modulo) ~ pow_expression)* }
+pow_expression = { unary_expression ~ (pow ~ unary_expression)* }
+unary_expression = { (add | sub)* ~ postfix_expression }
+
+postfix_expression = { atom ~ postfix_op* }
+
+postfix_op = { property_lookup | map_projection_postfix | index_or_slice }
+
+property_lookup = { dot ~ property_key_name }
+
+map_projection_postfix = {
+    lbrace
+    ~ (map_projection_selector ~ (comma ~ map_projection_selector)*)?
+    ~ rbrace
+}
+
+map_projection_selector = {
+    dot ~ STAR                                   // .*
+    | dot ~ property_key_name                     // .name
+    | property_key_name ~ colon_sep ~ expression  // key: expr
+}
+
+
+atom = {
+    case_expression
+    | exists_subquery
+    | list_predicate
+    | reduce_expression
+    | function_invocation
+    | literal
+    | parameter
+    | variable
+    | parenthesized_expression
+}
+
+exists_subquery = {
+    EXISTS ~ lbrace ~ (MATCH ~ pattern ~ where_clause? | pattern) ~ rbrace
+}
+
+reduce_expression = {
+    REDUCE ~ lparen ~ variable ~ eq ~ expression ~ comma ~ variable ~ IN ~ expression ~ pipe ~ expression ~ rparen
+}
+
+REDUCE = @{ ^"reduce" ~ !ident_part }
+
+list_predicate = {
+    (ANY_ | ALL | NONE | SINGLE)
+    ~ lparen ~ variable ~ IN ~ expression ~ WHERE ~ expression ~ rparen
+}
+
+parenthesized_expression = { lparen ~ expression ~ rparen }
+
+function_invocation = {
+    function_name ~ lparen ~ DISTINCT? ~ (STAR | expression ~ (comma ~ expression)*)? ~ rparen
+}
+
+procedure_invocation = {
+    procedure_name ~ lparen ~ (expression ~ (comma ~ expression)*)? ~ rparen
+}
+
+procedure_name = { namespace? ~ symbolic_name }
+function_name = { namespace? ~ symbolic_name }
+namespace = { (symbolic_name ~ dot)+ }
+
+literal = {
+    number_literal
+    | string_literal
+    | boolean_literal
+    | null_literal
+    | map_literal
+    | list_literal
+}
+
+boolean_literal = { TRUE | FALSE }
+null_literal = { NULL }
+
+list_literal = { lbrack ~ (pattern_comprehension | list_comprehension | (expression ~ (comma ~ expression)*)?) ~ rbrack }
+
+pattern_comprehension = {
+    pattern_element ~ (WHERE ~ expression)? ~ pipe ~ expression
+}
+
+list_comprehension = {
+    variable ~ IN ~ expression ~ (WHERE ~ expression)? ~ (pipe ~ expression)?
+}
+
+map_literal = {
+    lbrace
+    ~ (property_key_name ~ colon_sep ~ expression ~ (comma ~ property_key_name ~ colon_sep ~ expression)*)?
+    ~ rbrace
+}
+
+parameter = { "$" ~ (symbolic_name | decimal_integer) }
+
+number_literal = { double_literal | integer_literal }
+integer_literal = { hex_integer | octal_integer | decimal_integer }
+double_literal = { exponent_decimal_real | regular_decimal_real }
+
+hex_integer = @{ "0x" ~ ASCII_HEX_DIGIT+ }
+octal_integer = @{ "0" ~ ASCII_OCT_DIGIT+ }
+decimal_integer = @{ "0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+
+exponent_decimal_real = @{
+    (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ | ASCII_DIGIT+ | "." ~ ASCII_DIGIT+)
+    ~ ^"E" ~ "-"? ~ ASCII_DIGIT+
+}
+regular_decimal_real = @{ ASCII_DIGIT* ~ "." ~ ASCII_DIGIT+ }
+
+string_literal = { string_double | string_single }
+string_double = @{ "\"" ~ ( "\\\"" | "\\\\" | "\\n" | "\\r" | "\\t" | !("\"") ~ ANY )* ~ "\"" }
+string_single = @{ "'" ~ ( "\\'" | "\\\\" | "\\n" | "\\r" | "\\t" | !("'" ) ~ ANY )* ~ "'" }
+
+variable = { symbolic_name }
+property_key_name = { schema_name }
+label_name = { schema_name }
+rel_type_name = { schema_name }
+
+schema_name = { symbolic_name | reserved_word }
+symbolic_name = { escaped_symbolic_name | unescaped_symbolic_name | COUNT | ANY_ | NONE | SINGLE }
+unescaped_symbolic_name = @{ ident_start ~ ident_part* }
+escaped_symbolic_name = @{ "`" ~ (!"`" ~ ANY)* ~ "`" }
+
+ident_start = _{ ASCII_ALPHA | "_" }
+ident_part = _{ ASCII_ALPHANUMERIC | "_" | "$" }
+
+reserved_word = {
+    ALL | ASC | ASCENDING | BY | CALL | CREATE | DELETE | DESC | DESCENDING | DETACH |
+    EXISTS | LIMIT | MATCH | MERGE | ON | OPTIONAL | ORDER | REMOVE | RETURN |
+    SET | SKIP | WHERE | WITH | UNION | UNWIND | AND | AS | CONTAINS | DISTINCT |
+    ENDS | IN | IS | NOT | OR | STARTS | XOR | FALSE | TRUE | NULL | CASE |
+    WHEN | THEN | ELSE | END | YIELD
+}
+
+lparen = _{ "(" }
+rparen = _{ ")" }
+lbrack = _{ "[" }
+rbrack = _{ "]" }
+lbrace = _{ "{" }
+rbrace = _{ "}" }
+comma = _{ "," }
+dot = _{ "." }
+pipe = _{ "|" }
+colon = _{ ":" }
+colon_sep = _{ ":" }
+dotdot = _{ ".." }
+
+eq = { "=" }
+plus_eq = { "+=" }
+ne = { "<>" }
+lt = { "<" }
+gt = { ">" }
+le = { "<=" }
+ge = { ">=" }
+
+add = { "+" }
+sub = { "-" }
+mul = { "*" }
+div = { "/" }
+modulo = { "%" }
+pow = { "^" }
+
+dash = _{ "-" | "‐" | "–" | "—" | "−" }
+left_arrow = { "<" }
+right_arrow = { ">" }
+
+ALL = @{ ^"ALL" ~ !ident_part }
+ASC = @{ ^"ASC" ~ !ident_part }
+ASCENDING = @{ ^"ASCENDING" ~ !ident_part }
+BY = @{ ^"BY" ~ !ident_part }
+CALL = @{ ^"CALL" ~ !ident_part }
+CREATE = @{ ^"CREATE" ~ !ident_part }
+DELETE = @{ ^"DELETE" ~ !ident_part }
+DESC = @{ ^"DESC" ~ !ident_part }
+DESCENDING = @{ ^"DESCENDING" ~ !ident_part }
+DETACH = @{ ^"DETACH" ~ !ident_part }
+DISTINCT = @{ ^"DISTINCT" ~ !ident_part }
+EXISTS = @{ ^"EXISTS" ~ !ident_part }
+LIMIT = @{ ^"LIMIT" ~ !ident_part }
+MATCH = @{ ^"MATCH" ~ !ident_part }
+MERGE = @{ ^"MERGE" ~ !ident_part }
+ON = @{ ^"ON" ~ !ident_part }
+OPTIONAL = @{ ^"OPTIONAL" ~ !ident_part }
+ORDER = @{ ^"ORDER" ~ !ident_part }
+REMOVE = @{ ^"REMOVE" ~ !ident_part }
+RETURN = @{ ^"RETURN" ~ !ident_part }
+SET = @{ ^"SET" ~ !ident_part }
+SKIP = @{ ^"SKIP" ~ !ident_part }
+WHERE = @{ ^"WHERE" ~ !ident_part }
+WITH = @{ ^"WITH" ~ !ident_part }
+YIELD = @{ ^"YIELD" ~ !ident_part }
+UNION = @{ ^"UNION" ~ !ident_part }
+UNWIND = @{ ^"UNWIND" ~ !ident_part }
+AND = @{ ^"AND" ~ !ident_part }
+AS = @{ ^"AS" ~ !ident_part }
+CONTAINS = @{ ^"CONTAINS" ~ !ident_part }
+ENDS = @{ ^"ENDS" ~ !ident_part }
+IN = @{ ^"IN" ~ !ident_part }
+IS = @{ ^"IS" ~ !ident_part }
+NOT = @{ ^"NOT" ~ !ident_part }
+OR = @{ ^"OR" ~ !ident_part }
+STARTS = @{ ^"STARTS" ~ !ident_part }
+XOR = @{ ^"XOR" ~ !ident_part }
+FALSE = @{ ^"FALSE" ~ !ident_part }
+TRUE = @{ ^"TRUE" ~ !ident_part }
+NULL = @{ ^"NULL" ~ !ident_part }
+CASE = @{ ^"CASE" ~ !ident_part }
+WHEN = @{ ^"WHEN" ~ !ident_part }
+THEN = @{ ^"THEN" ~ !ident_part }
+ELSE = @{ ^"ELSE" ~ !ident_part }
+END = @{ ^"END" ~ !ident_part }
+COUNT = @{ ^"COUNT" ~ !ident_part }
+ANY_ = @{ ^"ANY" ~ !ident_part }
+NONE = @{ ^"NONE" ~ !ident_part }
+SINGLE = @{ ^"SINGLE" ~ !ident_part }
+index_or_slice = {
+    slice_op
+    | index_op
+}
+
+slice_op = { lbrack ~ expression? ~ slice_dots ~ expression? ~ rbrack }
+slice_dots = { ".." }
+index_op = { lbrack ~ expression ~ rbrack }
+
+SHORTEST_PATH = @{ ^"shortestPath" ~ !ident_part }
+ALL_SHORTEST_PATHS = @{ ^"allShortestPaths" ~ !ident_part }
+
+STAR = @{ "*" }

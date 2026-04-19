@@ -1,0 +1,11 @@
+[package]
+name = "lora-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+pest.workspace = true
+pest_derive.workspace = true
+smallvec.workspace = true
+lora-ast = { path = "../lora-ast" }

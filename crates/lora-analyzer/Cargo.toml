@@ -1,0 +1,10 @@
+[package]
+name = "lora-analyzer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lora-ast = { path = "../lora-ast" }
+lora-store = { path = "../lora-store" }
+lora-parser = { path = "../lora-parser" }
+thiserror.workspace = true

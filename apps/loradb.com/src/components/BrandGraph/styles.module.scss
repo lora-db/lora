@@ -1,0 +1,182 @@
+// Homepage brand illustration — a connected graph of labeled nodes.
+// Tones come from `--brand-accent-*` tokens defined in custom.scss so
+// both modes stay on-brand without per-mode rules here.
+
+.wrap {
+  position: relative;
+  width: 100%;
+  max-width: 780px;
+  aspect-ratio: 800 / 600;
+  margin-inline: auto;
+  pointer-events: none;
+}
+
+.svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.glow {
+  opacity: 0.55;
+  filter: url(#brandGraphBlur);
+}
+
+.edges {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.edge {
+  stroke: var(--brand-edge-c);
+  stroke-width: 1.25;
+  opacity: 0.55;
+}
+
+.edgeSoft {
+  stroke: var(--brand-edge-soft-c);
+  stroke-width: 1;
+  opacity: 0.8;
+  stroke-dasharray: 3 5;
+}
+
+.edgeFlow {
+  stroke: url(#brandGraphEdge);
+  stroke-width: 1.6;
+  opacity: 0.85;
+  stroke-dasharray: 6 10;
+  animation: edgeFlow 4.5s linear infinite;
+  animation-delay: var(--edge-delay, 0s);
+}
+
+@keyframes edgeFlow {
+  to {
+    stroke-dashoffset: -160;
+  }
+}
+
+.nodes {
+  // Let children drive their own colors.
+}
+
+.node {
+  // Keep CSS transforms scoped to the inner group so they can't
+  // clobber the outer group's SVG translate attribute.
+  transform-origin: center;
+}
+
+.nodeDot {
+  fill: var(--brand-node-fill);
+  stroke: var(--brand-node-stroke);
+  stroke-width: 1.5;
+}
+
+.nodeCore {
+  fill: var(--brand-node-core);
+  opacity: 0.9;
+}
+
+.nodeRing {
+  fill: none;
+  stroke: var(--brand-node-ring);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+
+.nodeHalo {
+  fill: none;
+  stroke: var(--brand-accent-a);
+  stroke-width: 1;
+  opacity: 0.35;
+  animation: haloPulse 3.8s ease-in-out infinite;
+}
+
+@keyframes haloPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.15;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.45;
+  }
+}
+
+.node_core {
+  .nodeDot {
+    stroke: var(--brand-accent-a);
+    stroke-width: 2;
+    filter: drop-shadow(0 0 12px color-mix(in srgb, var(--brand-accent-a) 55%, transparent));
+  }
+  .nodeCore {
+    fill: #fff;
+    opacity: 0.95;
+  }
+}
+
+.node_primary {
+  .nodeDot {
+    fill: var(--brand-node-fill);
+    stroke: var(--brand-accent-b);
+  }
+  .nodeCore {
+    fill: var(--brand-accent-b);
+  }
+  animation: nodePulse 4s ease-in-out infinite;
+  animation-delay: var(--node-delay, 0s);
+}
+
+.node_satellite {
+  .nodeDot {
+    fill: var(--brand-node-fill);
+    stroke: var(--brand-edge-c);
+    stroke-width: 1;
+  }
+  .nodeCore {
+    fill: var(--brand-edge-c);
+    opacity: 0.8;
+  }
+  opacity: 0.9;
+}
+
+@keyframes nodePulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.04);
+  }
+}
+
+.nodeLabel {
+  font-family: var(--ifm-font-family-base);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  fill: var(--brand-node-label);
+  paint-order: stroke;
+  stroke: var(--token-primary-bg-c);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.nodeLabelSmall {
+  font-size: 11px;
+  font-weight: 500;
+  fill: var(--brand-node-label-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edgeFlow,
+  .nodeHalo,
+  .node_primary {
+    animation: none;
+  }
+  .edgeFlow {
+    stroke-dasharray: 4 8;
+    opacity: 0.7;
+  }
+}

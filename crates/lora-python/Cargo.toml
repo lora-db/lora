@@ -1,0 +1,31 @@
+[package]
+name = "lora-python"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+description = "Python bindings for the Lora in-memory graph database"
+
+[lib]
+# `cdylib` produces the `.so`/`.dylib`/`.pyd` that Python's import machinery
+# loads. `rlib` lets other Rust crates (e.g. integration tests) link against
+# this crate as a normal library.
+crate-type = ["cdylib", "rlib"]
+name = "lora_python"
+
+[lints.rust]
+# pyo3 0.22's `create_exception!` macro expands `#[cfg(feature = "gil-refs")]`
+# in the downstream crate, which doesn't define that feature. Declaring it
+# here as a known check-cfg value silences the false-positive warnings.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("gil-refs"))'] }
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow.workspace = true
+
+lora-database = { path = "../lora-database" }
+lora-store = { path = "../lora-store" }

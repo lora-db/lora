@@ -1,0 +1,537 @@
+// LoraDB blog styling.
+//
+// The blog is a layer of custom chrome on top of Docusaurus's classic blog
+// theme. Shared typography, tables, admonitions, and inline/code-block
+// styling come from `_markdown.scss`; this file owns:
+//
+//   - the blog hero (swizzled in `src/theme/BlogListPage`)
+//   - the post cards on the index (list view)
+//   - the reading column on single post pages
+//   - metadata / tag / paginator polish
+//
+// Docusaurus's `HtmlClassNameProvider` puts routing classes like
+// `blog-list-page`, `blog-post-page`, and `blog-wrapper` on `<html>`.
+// We rely on those directly as selectors so these rules don't need to be
+// nested inside `#__docusaurus`.
+
+html[data-theme='light'] {
+  --blog-meta-c: var(--c-carbon-70, #555);
+  --blog-meta-soft-c: var(--c-carbon-60, #7a7f8a);
+  --blog-border-c: rgba(27, 109, 255, 0.14);
+  --blog-border-strong-c: rgba(27, 109, 255, 0.32);
+  --blog-card-bg-c: var(--token-primary-bg-c);
+  --blog-card-hover-bg-c: #fafbff;
+  --blog-tag-bg-c: var(--c-indigo-10);
+  --blog-tag-c: var(--c-indigo-80);
+  --blog-hero-bg-c: #fafbff;
+  --blog-divider-c: rgba(27, 109, 255, 0.1);
+  --blog-meta-chip-bg-c: rgba(27, 109, 255, 0.06);
+}
+
+html[data-theme='dark'] {
+  --blog-meta-c: var(--c-gray-20, #b8bcc5);
+  --blog-meta-soft-c: #8f98a8;
+  --blog-border-c: rgba(77, 141, 255, 0.18);
+  --blog-border-strong-c: rgba(77, 141, 255, 0.42);
+  --blog-card-bg-c: var(--token-secondary-bg-c);
+  --blog-card-hover-bg-c: #161c26;
+  --blog-tag-bg-c: rgba(77, 141, 255, 0.14);
+  --blog-tag-c: var(--c-blue-70, #4d8dff);
+  --blog-hero-bg-c: #0a0f18;
+  --blog-divider-c: rgba(77, 141, 255, 0.14);
+  --blog-meta-chip-bg-c: rgba(77, 141, 255, 0.1);
+}
+
+// -------------------------------------------------------------------
+// Blog hero (index + archive + tag pages)
+// -------------------------------------------------------------------
+
+.blog-hero {
+  position: relative;
+  isolation: isolate;
+  margin: -1rem 0 2.5rem;
+  padding: clamp(2.5rem, 7vh, 4rem) clamp(1.5rem, 4vw, 2.5rem)
+    clamp(2.25rem, 6vh, 3.25rem);
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid var(--blog-border-c);
+  background: var(--blog-hero-bg-c);
+
+  html[data-theme='dark'] & {
+    background:
+      linear-gradient(180deg, rgba(77, 141, 255, 0.04) 0%, transparent 100%),
+      var(--blog-hero-bg-c);
+  }
+}
+
+.blog-hero__glow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(45% 60% at 85% 20%, var(--brand-accent-a-soft), transparent 70%),
+    radial-gradient(40% 60% at 15% 90%, var(--brand-accent-b-soft), transparent 70%);
+}
+
+.blog-hero__inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  max-width: 48rem;
+}
+
+.blog-hero__eyebrow {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  align-self: flex-start;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--blog-border-c);
+}
+
+.blog-hero__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-accent-a);
+  box-shadow: 0 0 0 3px var(--brand-accent-a-soft);
+}
+
+.blog-hero__title {
+  margin: 0;
+  font-size: clamp(2rem, 4.5vw, 3rem);
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: -0.028em;
+  max-width: 18ch;
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.blog-hero__description {
+  margin: 0;
+  max-width: 44rem;
+  font-size: clamp(1rem, 1.3vw, 1.125rem);
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+.blog-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.blog-hero__feed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--blog-border-c);
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease, transform 0.18s ease;
+
+  &:hover,
+  &:focus-visible {
+    text-decoration: none;
+    background: color-mix(in srgb, var(--brand-accent-a) 14%, transparent);
+    border-color: var(--blog-border-strong-c);
+    color: var(--brand-accent-a);
+    transform: translateY(-1px);
+  }
+}
+
+.blog-hero__feed--muted {
+  color: var(--ifm-heading-color);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--ifm-heading-color) 18%, transparent);
+
+  &:hover,
+  &:focus-visible {
+    color: var(--ifm-heading-color);
+    background: color-mix(in srgb, var(--ifm-heading-color) 6%, transparent);
+    border-color: color-mix(in srgb, var(--ifm-heading-color) 30%, transparent);
+  }
+}
+
+// -------------------------------------------------------------------
+// Blog shell — reading column + sidebar
+// -------------------------------------------------------------------
+// Docusaurus adds `.blog-wrapper` and `.blog-list-page` / `.blog-post-page`
+// to `<html>`. Using those directly as selectors gives us proper scoping
+// without the `#__docusaurus` wrapper.
+
+html.blog-wrapper .container {
+  max-width: 72rem;
+}
+
+html.blog-wrapper {
+  .markdown > h1:first-child,
+  header > h1:first-child {
+    margin-block-start: 1.25rem;
+  }
+}
+
+// Constrain the single-post reading column to ~48rem for comfortable
+// line lengths (~70ch).
+html.blog-post-page .container .row > .col {
+  &[class*='col--7'],
+  &[class*='col--9'] {
+    max-width: 48rem;
+    margin-inline-start: auto;
+    margin-inline-end: auto;
+  }
+}
+
+// -------------------------------------------------------------------
+// Index view — each post as a card
+// -------------------------------------------------------------------
+html.blog-wrapper:not(.blog-post-page) main article {
+  position: relative;
+  padding: 1.75rem 1.75rem 1.5rem;
+  margin-block-end: 1.25rem;
+  background: var(--blog-card-bg-c);
+  border: 1px solid var(--blog-border-c);
+  border-radius: 16px;
+  transition: transform 0.2s ease, border-color 0.2s ease,
+    box-shadow 0.2s ease, background-color 0.2s ease;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--brand-gradient);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: var(--blog-border-strong-c);
+    background: var(--blog-card-hover-bg-c);
+    box-shadow: 0 16px 32px -18px
+      color-mix(in srgb, var(--brand-accent-a) 40%, transparent);
+
+    &::before {
+      opacity: 1;
+    }
+  }
+
+  &:last-child {
+    margin-block-end: 0;
+  }
+
+  header {
+    margin-block-end: 0.25rem;
+  }
+
+  header h2 {
+    font-size: clamp(1.375rem, 2.6vw, 1.75rem);
+    letter-spacing: -0.018em;
+    line-height: 1.2;
+    font-weight: 700;
+    margin: 0 0 0.5rem;
+
+    a {
+      color: var(--ifm-heading-color);
+      transition: color 0.15s ease;
+
+      &:hover {
+        color: var(--ifm-link-color);
+        text-decoration: none;
+      }
+    }
+  }
+
+  // Post body in list view: keep it short, soft, scannable.
+  .markdown {
+    font-size: 0.95rem;
+    line-height: 1.65;
+    color: var(--ifm-font-color-base);
+    opacity: 0.86;
+
+    > p {
+      margin-block: 0.5rem 0;
+    }
+
+    // Avoid giant "intro paragraph" styling from _markdown.scss bleeding
+    // into the preview blurb in post cards.
+    > header + p,
+    > h1 + p {
+      font-size: inherit;
+      color: inherit;
+    }
+  }
+
+  // Compact the footer row (tags + read more).
+  footer.row {
+    margin-top: 1.1rem !important;
+    align-items: center;
+  }
+}
+
+// -------------------------------------------------------------------
+// Metadata row: date · reading time
+// -------------------------------------------------------------------
+html.blog-wrapper [class*='blogPostData'] {
+  color: var(--blog-meta-c);
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--ifm-font-family-monospace);
+  opacity: 0.9;
+}
+
+html.blog-wrapper time {
+  color: inherit;
+}
+
+// Author row.
+html.blog-wrapper [class*='authorCol'],
+html.blog-wrapper [class*='author_'] {
+  [class*='authorName'],
+  a[class*='authorName'] {
+    color: var(--ifm-heading-color);
+    font-weight: 600;
+    font-size: 0.9375rem;
+  }
+
+  [class*='authorDetails'],
+  small {
+    color: var(--blog-meta-c);
+    font-size: 0.8125rem;
+  }
+}
+
+// Tag chips.
+html.blog-wrapper a[class*='tag_'] {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: var(--blog-tag-bg-c);
+  color: var(--blog-tag-c);
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, color 0.15s ease,
+    border-color 0.15s ease;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--brand-accent-a);
+    color: var(--token-primary-bg-c);
+    border-color: var(--brand-accent-a);
+    text-decoration: none;
+  }
+}
+
+// "Read more" link.
+html.blog-wrapper {
+  [class*='blogPostReadMore'] a,
+  [class*='readMoreLink'] a,
+  a[class*='readMore'] {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--brand-accent-a);
+    transition: gap 0.18s ease, color 0.18s ease;
+
+    &::after {
+      content: '→';
+      transition: transform 0.18s ease;
+      display: inline-block;
+    }
+
+    &:hover {
+      color: var(--ifm-link-hover-color);
+      text-decoration: none;
+
+      &::after {
+        transform: translateX(3px);
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------------
+// Single post page — header polish
+// -------------------------------------------------------------------
+html.blog-post-page main article > header {
+  margin-block-end: 2rem;
+  padding-block-end: 1.5rem;
+  border-block-end: 1px solid var(--blog-divider-c);
+  position: relative;
+
+  // Small brand accent line above the title, echoes the card hover line.
+  &::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--brand-gradient);
+    margin-block-end: 1rem;
+  }
+
+  h1 {
+    margin-block-start: 0;
+    font-size: clamp(2.25rem, 4.8vw, 3.25rem);
+    font-weight: 800;
+    letter-spacing: -0.028em;
+    line-height: 1.1;
+  }
+}
+
+// -------------------------------------------------------------------
+// Paginator (prev / next post)
+// -------------------------------------------------------------------
+html.blog-wrapper {
+  nav[class*='paginator'],
+  nav.pagination-nav {
+    margin-block-start: 3.5rem;
+    padding-block-start: 2rem;
+    border-block-start: 1px solid var(--blog-divider-c);
+    gap: 1rem;
+
+    a.pagination-nav__link {
+      background: var(--blog-card-bg-c);
+      border: 1px solid var(--blog-border-c);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      transition: transform 0.2s ease, border-color 0.2s ease,
+        box-shadow 0.2s ease;
+
+      &:hover {
+        transform: translateY(-2px);
+        border-color: var(--blog-border-strong-c);
+        box-shadow: 0 10px 24px -16px
+          color-mix(in srgb, var(--brand-accent-a) 45%, transparent);
+      }
+
+      .pagination-nav__sublabel {
+        color: var(--blog-meta-soft-c);
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }
+
+      .pagination-nav__label {
+        color: var(--ifm-heading-color);
+        font-weight: 600;
+        font-size: 0.9375rem;
+        letter-spacing: -0.005em;
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------------
+// Sidebar (recent posts) on blog pages
+// -------------------------------------------------------------------
+html.blog-wrapper aside[class*='sidebar_'] {
+  [class*='sidebarItemTitle'] {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.7rem;
+    color: var(--brand-accent-a);
+    font-weight: 700;
+    margin-block-end: 0.75rem;
+  }
+
+  ul[class*='sidebarItemList'] li a {
+    color: var(--ifm-font-color-base);
+    font-size: 0.9rem;
+    line-height: 1.4;
+    display: block;
+    padding: 0.5rem 0.75rem;
+    border-inline-start: 2px solid transparent;
+    border-radius: 0 6px 6px 0;
+    transition: color 0.15s ease, background-color 0.15s ease,
+      border-color 0.15s ease;
+
+    &:hover,
+    &[class*='sidebarItemLinkActive'] {
+      color: var(--brand-accent-a);
+      border-inline-start-color: var(--brand-accent-a);
+      background: var(--blog-meta-chip-bg-c);
+      text-decoration: none;
+    }
+  }
+}
+
+// -------------------------------------------------------------------
+// Author page card
+// -------------------------------------------------------------------
+html.blog-wrapper {
+  [class*='authorPageHeader'],
+  [class*='authorBlogPosts'] {
+    [class*='authorName'] {
+      color: var(--ifm-heading-color);
+      font-weight: 700;
+    }
+  }
+}
+
+// -------------------------------------------------------------------
+// Responsive — tighten spacing on mobile
+// -------------------------------------------------------------------
+
+@media (max-width: 996px) {
+  .blog-hero {
+    margin: 0 0 2rem;
+    padding: 2rem 1.25rem 1.75rem;
+    border-radius: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  html.blog-wrapper:not(.blog-post-page) main article {
+    padding: 1.25rem 1.25rem 1.1rem;
+    border-radius: 14px;
+
+    header h2 {
+      font-size: 1.25rem;
+    }
+  }
+
+  html.blog-wrapper nav.pagination-nav {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .blog-hero__title {
+    font-size: 1.85rem;
+  }
+}

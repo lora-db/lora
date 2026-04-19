@@ -1,0 +1,38 @@
+[package]
+name = "lora-database"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+
+lora-ast = { path = "../lora-ast" }
+lora-parser = { path = "../lora-parser" }
+lora-analyzer = { path = "../lora-analyzer" }
+lora-compiler = { path = "../lora-compiler" }
+lora-executor = { path = "../lora-executor" }
+lora-store = { path = "../lora-store" }
+
+serde_json.workspace = true
+tower.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "engine_benchmarks"
+harness = false
+
+[[bench]]
+name = "temporal_spatial_benchmarks"
+harness = false
+
+[[bench]]
+name = "advanced_benchmarks"
+harness = false
+
+[[bench]]
+name = "scale_benchmarks"
+harness = false

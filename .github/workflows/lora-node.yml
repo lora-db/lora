@@ -1,0 +1,97 @@
+name: lora-node
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/lora-node/**"
+      - "../../crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "crates/lora-executor/**"
+      - "../../crates/lora-compiler/**"
+      - "../../crates/lora-analyzer/**"
+      - "../../crates/lora-parser/**"
+      - "../../crates/lora-ast/**"
+      - "crates/shared-ts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lora-node.yml"
+  pull_request:
+    paths:
+      - "crates/lora-node/**"
+      - "../../crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "crates/lora-executor/**"
+      - "../../crates/lora-compiler/**"
+      - "../../crates/lora-analyzer/**"
+      - "../../crates/lora-parser/**"
+      - "../../crates/lora-ast/**"
+      - "crates/shared-ts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lora-node.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: crates/lora-node
+
+jobs:
+  verify:
+    name: build, typecheck, test, npm pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lora-node-${{ matrix.os }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/lora-node/package-lock.json
+
+      - name: cargo check
+        working-directory: .
+        run: cargo check -p lora-node
+
+      - name: npm install
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: verify shared TS types are in sync
+        run: npm run verify:types
+
+      - name: build native (napi)
+        run: npm run build:native
+
+      - name: build TS
+        run: npm run build:ts
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: vitest (includes non-blocking event-loop test)
+        run: npm test
+
+      - name: npm pack (dry-run)
+        run: npm pack --dry-run
+
+      - name: npm pack
+        run: npm pack
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-node-${{ matrix.os }}-tarball
+          path: crates/lora-node/lora-node-*.tgz
+          if-no-files-found: error
+          retention-days: 7

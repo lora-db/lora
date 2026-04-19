@@ -1,0 +1,390 @@
+// Branded treatment for standalone MDX pages (about, why, contact)
+// and the docs landing. Non-homepage surfaces pick up the same brand
+// accents as the homepage without needing per-page markup changes —
+// everything here hooks off the DOM Docusaurus already emits.
+
+// -------------------------------------------------------------------
+// Standalone MDX pages: hero-style H1 + intro, section markers on H2
+// -------------------------------------------------------------------
+
+// `.mdx-page` is a class Docusaurus puts on the `<html>` element for
+// standalone pages (about/why/contact), not a wrapper element. The
+// actual content lives inside `main > .row > .col > article`, so scope
+// branded prose treatments to `article` descendants under .mdx-page.
+//
+// All branded H1 / intro / H2 accents share a single left gutter so
+// the text baselines line up vertically across element types. The
+// gutter width is this token:
+.mdx-page article {
+  --brand-gutter-w: 1.15rem;
+
+  // Thin gradient rule above the H1. The bar anchors to the same
+  // left gutter line as the intro rail and H2 dots below, so all
+  // brand accents on the page sit on a single vertical axis.
+  > header > h1,
+  > h1:first-child {
+    position: relative;
+    padding-block-start: 1.5rem;
+    padding-inline-start: var(--brand-gutter-w);
+    letter-spacing: -0.03em;
+
+    &::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 3rem;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--brand-gradient);
+    }
+  }
+
+  // Intro paragraph (first paragraph after the H1) gets an accent
+  // rail in the left gutter so text stays aligned with H1 / H2.
+  > header + p,
+  > h1 + p {
+    position: relative;
+    padding-inline-start: var(--brand-gutter-w);
+    border-inline-start: 2px solid var(--brand-border-c);
+    transition: border-color 0.2s ease;
+  }
+
+  // Section headings get a subtle brand marker — a small gradient
+  // square in the gutter, so H2 text aligns with H1 and intro text.
+  > h2 {
+    position: relative;
+    padding-inline-start: var(--brand-gutter-w);
+    letter-spacing: -0.022em;
+
+    &::before {
+      content: '';
+      position: absolute;
+      // Flush with the same left gutter as H1 bar + intro rail.
+      left: 0;
+      top: 0.7em;
+      width: 6px;
+      height: 6px;
+      border-radius: 2px;
+      background: var(--brand-gradient);
+      box-shadow: 0 0 0 4px var(--brand-accent-a-soft);
+    }
+  }
+
+  // Blockquotes: turn into a soft branded callout.
+  blockquote {
+    margin-inline: 0;
+    padding: 1rem 1.25rem;
+    border-inline-start: 3px solid var(--brand-accent-a);
+    background: var(--brand-accent-a-soft);
+    border-radius: 0 10px 10px 0;
+
+    p {
+      margin: 0;
+    }
+  }
+
+  // Tables: gradient accent on the header row.
+  table {
+    border-collapse: collapse;
+    border-radius: 10px;
+    overflow: hidden;
+
+    thead {
+      background: var(--brand-gradient-soft);
+
+      th {
+        border-bottom: 1px solid var(--brand-border-c);
+        color: var(--ifm-heading-color);
+        letter-spacing: -0.005em;
+      }
+    }
+  }
+
+  // Horizontal rules: swap the default thick grey line for a thin
+  // branded gradient.
+  hr {
+    border: 0;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--brand-border-strong-c) 50%,
+      transparent 100%
+    );
+    margin-block: 3rem;
+  }
+}
+
+// -------------------------------------------------------------------
+// Docs pages: gentler version — docs have structure of their own, so
+// we only tint H2 markers and restyle blockquotes/tables.
+// -------------------------------------------------------------------
+
+html:not(.mdx-page) .markdown {
+  h2 {
+    position: relative;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: -1rem;
+      top: 3px;
+      width: 4px;
+      height: 1.1em;
+      border-radius: 2px;
+      background: var(--brand-gradient);
+      opacity: 0.85;
+    }
+
+    @media (max-width: 996px) {
+      &::before {
+        display: none;
+      }
+    }
+  }
+
+  blockquote {
+    margin-inline: 0;
+    padding: 0.9rem 1.15rem;
+    border-inline-start: 3px solid var(--brand-accent-a);
+    background: var(--brand-accent-a-soft);
+    border-radius: 0 10px 10px 0;
+
+    p {
+      margin: 0;
+    }
+  }
+
+  table {
+    thead {
+      background: var(--brand-gradient-soft);
+    }
+  }
+}
+
+// -------------------------------------------------------------------
+// Footer — branded and intentional rather than a neutral sitemap.
+//
+// Structure we're styling (emitted by Docusaurus classic theme):
+//   .footer
+//     .container.container-fluid
+//       .row.footer__links
+//         .col.footer__col × N
+//           .footer__title
+//           ul.footer__items > li > a.footer__link-item
+//       .footer__bottom
+//         .footer__copyright
+// -------------------------------------------------------------------
+
+html[data-theme='light'] {
+  --footer-bg-c: #f7f9ff;
+  --footer-divider-c: rgba(27, 109, 255, 0.16);
+  --footer-copyright-c: var(--c-carbon-60);
+}
+
+html[data-theme='dark'] {
+  --footer-bg-c: #05080f;
+  --footer-divider-c: rgba(77, 141, 255, 0.18);
+  --footer-copyright-c: var(--c-carbon-30);
+}
+
+.footer {
+  position: relative;
+  --ifm-footer-background-color: var(--footer-bg-c);
+  background: var(--footer-bg-c);
+  color: var(--ifm-font-color-base);
+  padding-block: 4rem 2.5rem;
+  border-top: 1px solid var(--footer-divider-c);
+  overflow: hidden;
+
+  // Ambient brand glow — far softer than the hero, but ties the
+  // footer to the top-of-page palette so the page feels framed.
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(60% 90% at 0% 0%, var(--brand-accent-a-soft), transparent 60%),
+      radial-gradient(40% 80% at 100% 0%, var(--brand-accent-b-soft), transparent 60%);
+    opacity: 0.85;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  // Gradient rule along the very top of the footer — the same gradient
+  // used in the hero visual and primary buttons, so visual identity
+  // carries from top-of-page to bottom.
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--brand-accent-a) 22%,
+      var(--brand-accent-b) 50%,
+      var(--brand-accent-c) 78%,
+      transparent 100%
+    );
+    opacity: 0.8;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  > .container {
+    position: relative;
+    z-index: 1;
+  }
+
+  // ---- Link columns ----
+  .footer__links {
+    margin-block-end: 2.5rem;
+  }
+
+  .footer__col {
+    padding: 0 1rem;
+  }
+
+  .footer__title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--ifm-heading-color);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-block-end: 1.1rem;
+
+    &::before {
+      content: '';
+      width: 5px;
+      height: 5px;
+      border-radius: 2px;
+      background: var(--brand-gradient);
+      box-shadow: 0 0 0 3px var(--brand-accent-a-soft);
+      flex-shrink: 0;
+    }
+  }
+
+  .footer__items {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    margin: 0;
+    padding: 0;
+  }
+
+  .footer__link-item {
+    color: var(--ifm-font-color-base);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    opacity: 0.82;
+    transition: color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+
+    &:hover,
+    &:focus-visible {
+      color: var(--brand-accent-a);
+      opacity: 1;
+      text-decoration: none;
+      transform: translateX(2px);
+    }
+
+    .iconExternalLink,
+    svg {
+      opacity: 0.5;
+    }
+  }
+
+  // ---- Bottom row: copyright + built-with line ----
+  .footer__bottom {
+    position: relative;
+    padding-block-start: 1.5rem;
+    border-top: 1px solid var(--footer-divider-c);
+
+    &::before {
+      content: '';
+      position: absolute;
+      top: -1px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 56px;
+      height: 2px;
+      border-radius: 999px;
+      background: var(--brand-gradient);
+      opacity: 0.8;
+    }
+  }
+
+  .footer__copyright {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem 1.25rem;
+    color: var(--footer-copyright-c);
+    font-size: 0.8125rem;
+    letter-spacing: 0.01em;
+
+    &::after {
+      content: 'Built in Rust · Open source';
+      color: var(--footer-copyright-c);
+      opacity: 0.7;
+      font-size: 0.75rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding-inline-start: 1rem;
+      border-inline-start: 1px solid var(--footer-divider-c);
+    }
+  }
+}
+
+// Collapse the copyright to a single centered line on mobile — the
+// uppercase tagline is a nice-to-have, not essential.
+@media (max-width: 640px) {
+  .footer .footer__copyright::after {
+    display: none;
+  }
+}
+
+// -------------------------------------------------------------------
+// Navbar: soft branded underline on the active top-level link.
+// -------------------------------------------------------------------
+
+#__docusaurus .navbar .navbar__items:not(.navbar__items--right) {
+  .navbar__link--active::after {
+    // Override the flat single-color bar with the brand gradient.
+    background: var(--brand-gradient) !important;
+    height: 2px !important;
+  }
+}
+
+// -------------------------------------------------------------------
+// 404 / not-found pages — catch any orphan `h1` without an mdx-page
+// wrapper and still give it a branded accent.
+// -------------------------------------------------------------------
+
+main[class*='notFound'] h1,
+main[class*='errorBoundary'] h1 {
+  position: relative;
+  padding-block-start: 1rem;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 3rem;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--brand-gradient);
+  }
+}

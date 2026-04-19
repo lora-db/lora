@@ -1,0 +1,132 @@
+# Rust / Cargo
+# Build output
+target/
+
+# Cargo backup files
+**/*.rs.bk
+
+# Incremental compilation
+**/*.dSYM
+
+# Cargo.lock
+
+# Keep Cargo.lock for binaries / applications
+# Uncomment the next line if this repo is ONLY libraries
+# Cargo.lock
+
+# Workspace / Monorepo Extras
+# Local cargo config
+.cargo/config.local.toml
+
+# Rust Analyzer
+
+# rust-analyzer cache
+.rust-analyzer/
+
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# IntelliJ / JetBrains (IDEA, CLion, RustRover)
+
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# JetBrains cache
+out/
+
+# Testing / Coverage
+
+# Tarpaulin
+tarpaulin-report.html
+
+# LLVM coverage
+*.profraw
+*.profdata
+
+# Coverage tools
+coverage/
+coverage.xml
+
+# Benchmarks
+benchmark_results/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*
+!.env.example
+!.env.sample
+
+# Secrets and local credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+
+# OS Files
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+tmp/
+temp/
+
+# Local databases and dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql
+
+# Node (if tools/scripts exist)
+node_modules/
+dist/
+build/
+
+# napi-rs / wasm-pack build outputs
+*.node
+pkg-node/
+pkg-bundler/
+pkg-web/
+
+# Python virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Docusaurus build cache
+.docusaurus/
+
+# Documentation builds
+book/
+mdbook/
+
+# Misc
+*.swp
+*.swo
+/apps/mantine.dev/
+
+.playwright-mcp/

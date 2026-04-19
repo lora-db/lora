@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Build output
+target/
+dist/
+build/
+*.egg-info/
+wheels/
+
+# maturin
+.maturin/

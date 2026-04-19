@@ -1,0 +1,52 @@
+{
+  "name": "loradb-docs",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "docusaurus build",
+    "clear": "docusaurus clear",
+    "deploy": "docusaurus deploy",
+    "docusaurus": "docusaurus",
+    "serve": "docusaurus serve",
+    "start": "docusaurus start",
+    "swizzle": "docusaurus swizzle"
+  },
+  "browserslist": {
+    "production": [
+      ">0.5%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.7.0",
+    "@docusaurus/preset-classic": "^3.7.0",
+    "@docusaurus/theme-mermaid": "^3.7.0",
+    "@easyops-cn/docusaurus-search-local": "^0.55.1",
+    "@ionic-internal/ionic-ds": "^7.0.0",
+    "@mdx-js/react": "^3.0.0",
+    "clsx": "^1.1.1",
+    "docusaurus-plugin-module-alias": "^0.0.2",
+    "docusaurus-plugin-sass": "^0.2.6",
+    "modern-normalize": "^1.1.0",
+    "prism-react-renderer": "^2.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "sass": "^1.44.0"
+  },
+  "devDependencies": {
+    "@docusaurus/module-type-aliases": "^3.7.0",
+    "@docusaurus/tsconfig": "^3.7.0",
+    "@types/react": "^18.2.29",
+    "typescript": "^5.2.2"
+  }
+}

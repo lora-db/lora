@@ -1,0 +1,109 @@
+name: lora-python
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/lora-python/**"
+      - "../../crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "crates/lora-executor/**"
+      - "../../crates/lora-compiler/**"
+      - "../../crates/lora-analyzer/**"
+      - "../../crates/lora-parser/**"
+      - "../../crates/lora-ast/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lora-python.yml"
+  pull_request:
+    paths:
+      - "crates/lora-python/**"
+      - "../../crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "crates/lora-executor/**"
+      - "../../crates/lora-compiler/**"
+      - "../../crates/lora-analyzer/**"
+      - "../../crates/lora-parser/**"
+      - "../../crates/lora-ast/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lora-python.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: crates/lora-python
+
+jobs:
+  verify:
+    name: build (${{ matrix.os }} / py${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.8", "3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate from the lora-node / lora-wasm workflow caches so
+          # a cross-workflow cache restore can't leave stale pyo3 build
+          # artefacts in target/ (seen crashing with SIGILL).
+          shared-key: lora-python-${{ matrix.os }}
+          workspaces: ". -> target"
+          cache-on-failure: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Create venv & export it to subsequent steps
+        # `maturin develop` requires an active venv. Creating one here and
+        # exporting VIRTUAL_ENV + PATH via $GITHUB_ENV makes every later
+        # `run:` step pick the venv up without re-sourcing `activate`.
+        shell: bash
+        run: |
+          python -m venv .venv
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install Python build & test deps
+        run: python -m pip install --upgrade pip maturin pytest pytest-asyncio
+
+      - name: Point pyo3 at the venv Python explicitly
+        # Export PYO3_PYTHON so the pyo3-build-config build script does
+        # not have to auto-discover an interpreter. This avoids the
+        # occasional discovery crash on Ubuntu runners and keeps the
+        # matrix deterministic.
+        shell: bash
+        run: echo "PYO3_PYTHON=$VIRTUAL_ENV/bin/python" >> "$GITHUB_ENV"
+
+      - name: maturin develop
+        # maturin invokes cargo internally, so a separate `cargo check`
+        # step would be redundant and has been observed to SIGILL when
+        # it restores stale build artefacts from an incompatible cache.
+        run: maturin develop --release
+
+      - name: pytest (sync + async + non-blocking proof)
+        run: pytest -v
+
+      - name: maturin build (release wheel)
+        run: maturin build --release
+
+      - name: Sanity-import the wheel
+        run: |
+          python -c "import lora_python; print(lora_python.__version__)"
+          python examples/basic.py
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-python-${{ matrix.os }}-py${{ matrix.python-version }}-wheel
+          path: target/wheels/lora_python-*.whl
+          if-no-files-found: error
+          retention-days: 7

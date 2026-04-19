@@ -1,0 +1,18 @@
+loradb:
+  name: The LoraDB team
+  title: Engineering
+  url: https://github.com/loradb
+  image_url: /logos/loradb-bird.svg
+  page: true
+  socials:
+    github: loradb
+    x: loradb
+
+joost:
+  name: Joost van Berkel
+  title: Author, LoraDB
+  url: https://github.com/loradb
+  image_url: /logos/loradb-bird.svg
+  page: true
+  socials:
+    github: loradb
