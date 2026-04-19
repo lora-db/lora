@@ -101,7 +101,7 @@ Helper constructors: `date`, `time`, `datetime`, `localtime`, `localdatetime`,
 `isNode`, `isRelationship`, `isPath`, `isPoint`, `isTemporal`.
 
 > `distance()` on WGS-84-3D points ignores `height`. See
-> [docs/functions.md](../../docs/functions.md) for the spatial
+> [functions reference](../../apps/loradb.com/docs/functions/overview.md) for the spatial
 > reference and out-of-scope operations.
 
 ## Errors

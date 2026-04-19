@@ -72,7 +72,7 @@ narrowing guards (`isNode`, `isRelationship`, `isPath`, `isPoint`, `isTemporal`)
 are exported from `lora-node`.
 
 > `distance()` on WGS-84-3D points ignores `height` — see
-> [docs/functions.md](../../docs/functions.md) for the full spatial
+> [functions reference](../../apps/loradb.com/docs/functions/overview.md) for the full spatial
 > reference and known limitations.
 
 ## Architecture

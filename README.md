@@ -49,7 +49,7 @@ Prefer a binary? Download a platform build from the [Releases page](../../releas
 - **Aggregation** — `count`, `sum`, `avg`, `min`, `max`, `collect`, `stdev`, `stdevp`, `percentileCont`, `percentileDisc`; grouped aggregation and `WITH`-based HAVING
 - **Temporal types** — `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration`; arithmetic, truncation, `duration.between`
 - **Spatial types** — 2D and 3D `Point` values in Cartesian (SRID 7203 / 9157) and WGS-84 geographic (SRID 4326 / 4979) reference systems; `point()` constructor with CRS/SRID inference and validation; `distance()` with Euclidean (2D + 3D) and Haversine on WGS-84 (height ignored — see limitations)
-- **60+ built-in functions** — string, math (incl. full trigonometry), list, type conversion, entity introspection, path, temporal, spatial (see [docs/functions.md](docs/functions.md))
+- **60+ built-in functions** — string, math (incl. full trigonometry), list, type conversion, entity introspection, path, temporal, spatial (see [apps/loradb.com/docs/functions/overview.md](apps/loradb.com/docs/functions/overview.md))
 - **Parameter binding** — `$name` and `$1` parameters with typed values (string, int, float, bool, list, map, temporal, spatial) via the Rust API (`Database::execute_with_params`)
 - **Result formats** — `rows`, `rowArrays`, `graph`, `combined`
 - **HTTP server** — Axum-based JSON API (`POST /query`, `GET /health`)
@@ -123,7 +123,7 @@ Lora implements the **property graph model**:
 - **Relationships** have an auto-incremented `RelationshipId` (`u64`), a source node, a destination node, exactly one type, and a property map
 - **Properties** are `BTreeMap<String, PropertyValue>` where values can be null, bool, int, float, string, list, map, any temporal type, or a spatial point
 
-See [docs/schema-and-entities.md](docs/schema-and-entities.md) and [docs/graph-architecture.md](docs/graph-architecture.md).
+See [docs/internals/value-model.md](docs/internals/value-model.md) and [docs/architecture/graph-engine.md](docs/architecture/graph-engine.md).
 
 ## Running `lora-server`
 
@@ -244,7 +244,7 @@ The analyzer validates labels and types against the current graph state for `MAT
 
 ### Adding support for a new Cypher clause
 
-See [docs/lora-development-guide.md](docs/lora-development-guide.md). The typical flow is:
+See [docs/internals/cypher-development.md](docs/internals/cypher-development.md). The typical flow is:
 
 1. Add AST node in `lora-ast/src/ast.rs`
 2. Add grammar rule in `lora-parser/src/cypher.pest`
@@ -276,7 +276,7 @@ cargo bench --bench scale_benchmarks
 cargo bench --bench temporal_spatial_benchmarks
 ```
 
-See [docs/benchmarking.md](docs/performance-benchmarks.md) for more.
+See [docs/performance/benchmarks.md](docs/performance/benchmarks.md) for more.
 
 ## Releases
 
@@ -324,23 +324,23 @@ Each archive ships with a matching `.sha256` file, and every release also attach
 - **Spatial `Point`** — no WKT parsing / output, no CRS transformation between SRIDs, no bounding-box predicates (`point.withinBBox`)
 - **`distance()` on WGS-84-3D ignores `height`** — the returned value is the great-circle surface distance; a full 3D geodesic (ellipsoid + altitude) is not implemented
 
-See [docs/known-gaps-and-risks.md](docs/known-gaps-and-risks.md) for the full list and [docs/lora-support-matrix.md](docs/lora-support-matrix.md) for the feature matrix.
+See [docs/design/known-risks.md](docs/design/known-risks.md) for the full list and [docs/reference/cypher-support-matrix.md](docs/reference/cypher-support-matrix.md) for the feature matrix.
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [docs/INDEX.md](docs/INDEX.md) | Documentation index |
-| [docs/lora-support-matrix.md](docs/lora-support-matrix.md) | Feature support matrix with test evidence |
-| [docs/functions.md](docs/functions.md) | Complete function reference |
-| [docs/architecture-overview.md](docs/architecture-overview.md) | System architecture and pipeline |
-| [docs/graph-architecture.md](docs/graph-architecture.md) | In-memory graph engine design |
-| [docs/schema-and-entities.md](docs/schema-and-entities.md) | Property graph model and data types |
-| [docs/lora-development-guide.md](docs/lora-development-guide.md) | How to add Cypher features |
-| [docs/query-patterns.md](docs/query-patterns.md) | Supported query patterns with examples |
-| [docs/data-flow.md](docs/data-flow.md) | Query execution pipeline |
-| [docs/testing-strategy.md](docs/testing-strategy.md) | Testing approach and coverage |
-| [docs/known-gaps-and-risks.md](docs/known-gaps-and-risks.md) | Limitations and open questions |
+| [docs/README.md](docs/README.md) | Documentation index |
+| [docs/reference/cypher-support-matrix.md](docs/reference/cypher-support-matrix.md) | Feature support matrix with test evidence |
+| [apps/loradb.com/docs/functions/overview.md](apps/loradb.com/docs/functions/overview.md) | Complete function reference |
+| [docs/architecture/overview.md](docs/architecture/overview.md) | System architecture and pipeline |
+| [docs/architecture/graph-engine.md](docs/architecture/graph-engine.md) | In-memory graph engine design |
+| [docs/internals/value-model.md](docs/internals/value-model.md) | Property graph model and data types |
+| [docs/internals/cypher-development.md](docs/internals/cypher-development.md) | How to add Cypher features |
+| [apps/loradb.com/docs/cookbook.md](apps/loradb.com/docs/cookbook.md) | Supported query patterns with examples |
+| [docs/architecture/data-flow.md](docs/architecture/data-flow.md) | Query execution pipeline |
+| [docs/testing/strategy.md](docs/testing/strategy.md) | Testing approach and coverage |
+| [docs/design/known-risks.md](docs/design/known-risks.md) | Limitations and open questions |
 | [docs/glossary.md](docs/glossary.md) | Terminology reference |
 
 ## Usage model

@@ -52,7 +52,7 @@ The workspace is split into seven crates that form a pipeline:
 6. **lora-executor** -- physical plan execution, expression evaluation
 7. **lora-server** -- HTTP server (Axum), `QueryService` orchestrator
 
-Changes to Cypher language support typically touch crates 1-6 in order. See [docs/lora-development-guide.md](docs/lora-development-guide.md) for a step-by-step walkthrough.
+Changes to Cypher language support typically touch crates 1-6 in order. See [docs/internals/cypher-development.md](docs/internals/cypher-development.md) for a step-by-step walkthrough.
 
 ## Adding a new Cypher feature
 
