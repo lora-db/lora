@@ -1,0 +1,157 @@
+name: benchmarks
+
+# Criterion benchmark snapshot for a tagged release.
+#
+# Purpose:
+#   - Keep benchmarks out of the critical release path.
+#   - Allow benchmarks to be run on demand for an existing release tag.
+#
+# Trigger:
+#   - Manual dispatch only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to benchmark (e.g. v0.1.0)."
+        required: true
+        type: string
+      attach_to_release:
+        description: "Attach benchmark archive to the matching GitHub Release."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: benchmarks-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify-versions:
+    name: verify tag matches manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Resolve benchmark version
+        id: version
+        shell: bash
+        run: |
+          tag="${{ inputs.tag }}"
+          case "$tag" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::Expected a tag like 'vX.Y.Z' (got '${tag}')."
+              exit 1
+              ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify all manifests match ${{ steps.version.outputs.version }}
+        run: node scripts/sync-versions.mjs "${{ steps.version.outputs.version }}" --check
+
+  bench:
+    name: benchmarks (criterion)
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-bench
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          tag="${{ inputs.tag }}"
+          archive="lora-server-${tag}-benchmarks.tar.gz"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: Run criterion benchmarks
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p bench-out
+          cargo bench --locked -p lora-database --benches -- --output-format bencher \
+            | tee bench-out/benchmarks.log
+
+      - name: Collect criterion reports
+        shell: bash
+        run: |
+          if [ -d target/criterion ]; then
+            cp -R target/criterion bench-out/criterion
+          else
+            echo "::warning::target/criterion not found; criterion may have been skipped"
+          fi
+
+          cat > bench-out/README.txt <<EOF
+          lora-database benchmarks — ${{ steps.version.outputs.tag }}
+
+          This archive is a per-version snapshot of the criterion benchmarks
+          run on GitHub Actions (ubuntu-latest). Results include CI-hardware
+          noise and should be treated as a relative trend signal, not
+          authoritative absolute numbers.
+
+          Contents:
+            benchmarks.log   Raw cargo-bench output (bencher format)
+            criterion/       criterion HTML reports + raw estimates.json
+            README.txt       This file
+          EOF
+
+      - name: Package benchmark archive
+        shell: bash
+        run: |
+          archive="${{ steps.version.outputs.archive }}"
+          tar -czf "$archive" -C bench-out .
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-benchmarks
+          path: |
+            ${{ steps.version.outputs.archive }}
+            ${{ steps.version.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  attach-to-release:
+    name: attach benchmark assets to GitHub Release
+    needs: [verify-versions, bench]
+    runs-on: ubuntu-latest
+    if: inputs.attach_to_release == true
+    timeout-minutes: 10
+    steps:
+      - name: Download benchmark artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-benchmarks
+          path: dist
+
+      - name: Upload benchmark assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.verify-versions.outputs.tag }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.tar.gz
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.tar.gz.sha256

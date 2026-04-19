@@ -18,20 +18,16 @@ name: release
 #          current tag (used as the body of the GitHub Release);
 #        - `CHANGELOG.md`     — full cumulative changelog across every tag
 #          (attached as a release asset).
-#   3. `bench` runs in parallel with `build`. It executes the criterion
-#      benchmark suite in release mode on `ubuntu-latest`, tarballs the HTML
-#      reports under `target/criterion/`, and uploads the archive so it can
-#      be pinned to the release. Results are a CI-hardware snapshot — not a
-#      controlled benchmarking environment — but give a per-version baseline.
-#   4. `publish` runs once after every `build` leg, `changelog`, and `bench`
-#      have finished. It downloads all artifacts, creates (or updates) a DRAFT
+#   3. `publish` runs once after every `build` leg and `changelog` have
+#      finished. It downloads all artifacts, creates (or updates) a DRAFT
 #      GitHub Release for the tag using the rendered release notes as the body,
-#      and attaches every binary archive + checksums + full `CHANGELOG.md` +
-#      the benchmark tarball. The draft must be published manually.
-#   5. Tags containing a hyphen (e.g. `v0.2.0-rc.1`) are marked as pre-release.
+#      and attaches every binary archive + checksums + full `CHANGELOG.md`.
+#      The draft must be published manually.
+#   4. Tags containing a hyphen (e.g. `v0.2.0-rc.1`) are marked as pre-release.
 #
-# Extending to more targets: add a row to `matrix.include`. The `publish` job
-# is target-agnostic and will pick up any new binary artifact automatically.
+# Benchmarks intentionally live in a separate workflow so release publication
+# is never blocked by CI benchmark noise, runner variance, or longer benchmark
+# runtimes.
 
 on:
   push:
@@ -49,14 +45,11 @@ permissions:
   contents: write
 
 concurrency:
-  # One release per tag at a time; never cancel mid-publish.
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   verify-versions:
-    # Hard guard: the tag is the source of truth. Fail fast if any manifest
-    # disagrees so no downstream job wastes time building a mismatched release.
     name: verify tag matches manifests
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -107,9 +100,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             archive-ext: zip
             bin-ext: ".exe"
-          # Both macOS targets run on `macos-latest` (Apple Silicon). The
-          # Intel target is built via cross-compile so we don't depend on
-          # the increasingly-queue-constrained `macos-13` Intel runners.
           - os: macos-latest
             target: x86_64-apple-darwin
             archive-ext: tar.gz
@@ -192,7 +182,7 @@ jobs:
             shasum -a 256 "$archive" > "$archive.sha256"
           fi
 
-      - name: Upload workflow artifact (handed to the publish job)
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v5
         with:
           name: release-${{ matrix.target }}
@@ -211,8 +201,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
-          # git-cliff needs the full history + every tag so it can diff
-          # the current tag against its predecessor.
           fetch-depth: 0
 
       - name: Resolve release version
@@ -237,10 +225,6 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          # `--latest` renders the section for the most recent tag. Combined
-          # with the checkout ref above, that is the tag being released.
-          # `--strip header` drops the top-level heading so the output slots
-          # cleanly into the GitHub Release body.
           args: --latest --strip header
         env:
           OUTPUT: release-notes.md
@@ -260,12 +244,8 @@ jobs:
         run: |
           test -s release-notes.md || { echo "::error::release-notes.md is empty"; exit 1; }
           test -s CHANGELOG.md     || { echo "::error::CHANGELOG.md is empty";     exit 1; }
-          echo "--- release-notes.md (first 40 lines) ---"
-          head -n 40 release-notes.md
-          echo "--- CHANGELOG.md (first 20 lines) ---"
-          head -n 20 CHANGELOG.md
 
-      - name: Upload changelog artifact (handed to the publish job)
+      - name: Upload changelog artifact
         uses: actions/upload-artifact@v5
         with:
           name: release-changelog
@@ -275,103 +255,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  bench:
-    name: benchmarks (criterion)
-    needs: verify-versions
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.tag || github.ref }}
-
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-bench
-
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
-          case "$tag" in
-            v*) ;;
-            *)
-              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
-              exit 1
-              ;;
-          esac
-          archive="lora-server-${tag}-benchmarks.tar.gz"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
-
-      - name: Run criterion benchmarks
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p bench-out
-          # `--benches` selects the declared [[bench]] targets (all criterion,
-          # harness = false). Note that cargo still builds the lib as a
-          # benchmark under this flag unless `[lib] bench = false` is set in
-          # the crate manifest — without that, the default libtest harness
-          # rejects criterion's `--output-format bencher` and aborts the job.
-          #
-          # Capture stdout as well so the archive ships a human-readable log
-          # alongside the criterion HTML reports.
-          cargo bench --locked -p lora-database --benches -- --output-format bencher \
-            | tee bench-out/benchmarks.log
-
-      - name: Collect criterion reports
-        shell: bash
-        run: |
-          if [ -d target/criterion ]; then
-            cp -R target/criterion bench-out/criterion
-          else
-            echo "::warning::target/criterion not found; criterion may have been skipped"
-          fi
-          # Small README inside the archive so consumers know what this is.
-          cat > bench-out/README.txt <<EOF
-          lora-database benchmarks — ${{ steps.version.outputs.tag }}
-
-          This archive is a per-version snapshot of the criterion benchmarks
-          run on GitHub Actions (ubuntu-latest). Results include CI-hardware
-          noise and should be treated as a relative trend signal, not
-          authoritative absolute numbers.
-
-          Contents:
-            benchmarks.log   Raw cargo-bench output (bencher format)
-            criterion/       criterion HTML reports + raw estimates.json
-            README.txt       This file
-          EOF
-
-      - name: Package benchmark archive
-        shell: bash
-        run: |
-          archive="${{ steps.version.outputs.archive }}"
-          tar -czf "$archive" -C bench-out .
-          sha256sum "$archive" > "$archive.sha256"
-          ls -lh "$archive" "$archive.sha256"
-
-      - name: Upload benchmark artifact (handed to the publish job)
-        uses: actions/upload-artifact@v5
-        with:
-          name: release-benchmarks
-          path: |
-            ${{ steps.version.outputs.archive }}
-            ${{ steps.version.outputs.archive }}.sha256
-          if-no-files-found: error
-          retention-days: 30
-
   publish:
     name: publish GitHub Release
-    needs: [build, changelog, bench]
+    needs: [build, changelog]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -404,9 +290,6 @@ jobs:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          # Binary archives + checksums (one per matrix target), the generated
-          # changelog files, and the benchmark archive — everything uploaded
-          # upstream uses the `release-*` artifact name prefix.
           pattern: release-*
           merge-multiple: true
           path: dist
@@ -419,7 +302,6 @@ jobs:
         shell: bash
         run: |
           cd dist
-          # Covers every `.sha256` file — binary archives + benchmark archive.
           cat *.sha256 > "lora-server-${{ steps.version.outputs.tag }}-SHA256SUMS.txt"
 
       - name: Compose release body
@@ -443,14 +325,13 @@ jobs:
             fi
             echo "### Assets"
             echo
-            echo "| Platform              | Asset |"
-            echo "| --------------------- | ----- |"
-            echo "| Linux x86_64          | \`lora-server-${tag}-x86_64-unknown-linux-gnu.tar.gz\` |"
-            echo "| Windows x86_64        | \`lora-server-${tag}-x86_64-pc-windows-msvc.zip\` |"
-            echo "| macOS Intel           | \`lora-server-${tag}-x86_64-apple-darwin.tar.gz\` |"
-            echo "| macOS Apple Silicon   | \`lora-server-${tag}-aarch64-apple-darwin.tar.gz\` |"
-            echo "| Full changelog        | \`CHANGELOG.md\` |"
-            echo "| Benchmarks (criterion)| \`lora-server-${tag}-benchmarks.tar.gz\` |"
+            echo "| Platform            | Asset |"
+            echo "| ------------------- | ----- |"
+            echo "| Linux x86_64        | \`lora-server-${tag}-x86_64-unknown-linux-gnu.tar.gz\` |"
+            echo "| Windows x86_64      | \`lora-server-${tag}-x86_64-pc-windows-msvc.zip\` |"
+            echo "| macOS Intel         | \`lora-server-${tag}-x86_64-apple-darwin.tar.gz\` |"
+            echo "| macOS Apple Silicon | \`lora-server-${tag}-aarch64-apple-darwin.tar.gz\` |"
+            echo "| Full changelog      | \`CHANGELOG.md\` |"
             echo
             echo "Each binary archive ships with a matching \`.sha256\` file. An aggregated \`lora-server-${tag}-SHA256SUMS.txt\` is also attached."
             echo
