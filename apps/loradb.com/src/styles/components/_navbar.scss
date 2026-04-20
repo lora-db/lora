@@ -60,7 +60,7 @@ html[data-theme='dark'] {
     
               background: rgba(0, 0, 0, 0);
     
-              transition: background-color 0.2s ease-out;
+              transition: background-color var(--t) var(--t-ease);
             }
     
             &--active {
@@ -94,7 +94,7 @@ html[data-theme='dark'] {
           padding: 0.5rem;
           display: flex;
 
-          transition: opacity 0.2s ease-out;
+          transition: opacity var(--t) var(--t-ease);
           color: var(--navbar-icon-link-c);
 
           &:hover,
@@ -189,7 +189,7 @@ html[data-theme='dark'] {
     }
 
     &__item {
-      transition: opacity 0.2s ease-out;
+      transition: opacity var(--t) var(--t-ease);
 
       display: inline-block;
 

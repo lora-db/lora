@@ -15,6 +15,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
       - ".github/workflows/workspace-quality.yml"
   pull_request:
     paths:
@@ -22,6 +23,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
       - ".github/workflows/workspace-quality.yml"
   workflow_dispatch:
 
@@ -29,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: workspace-quality-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -39,8 +41,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      - name: Install Rust toolchain (stable, with rustfmt)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -51,30 +52,21 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
-      - name: Install Rust toolchain (stable, with clippy)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: workspace-quality-clippy
+          cache-key: workspace-quality-clippy
       # Exclude lora-node: it needs napi-rs codegen to compile cleanly and
       # is covered end-to-end by the lora-node workflow.
       - run: cargo clippy --workspace --exclude lora-node --all-targets --locked -- -D warnings
 
   test:
-    name: cargo test --workspace (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    name: cargo test --workspace
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          shared-key: workspace-quality-test-${{ matrix.os }}
+          cache-key: workspace-quality-test-ubuntu-latest
       - run: cargo test --workspace --exclude lora-node --locked --no-fail-fast

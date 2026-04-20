@@ -81,7 +81,7 @@ html[data-theme='dark'] {
       letter-spacing: 0.02em;
 
       color: var(--ifm-font-color-base);
-      transition: 0.2s color;
+      transition: color var(--t) var(--t-ease);
     }
   }
 

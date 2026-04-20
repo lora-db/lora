@@ -13,7 +13,7 @@
 
   color: var(--edit-this-page-c);
 
-  transition: opacity 0.2s ease-out;
+  transition: opacity var(--t) var(--t-ease);
 
   &:hover,
   &:active,

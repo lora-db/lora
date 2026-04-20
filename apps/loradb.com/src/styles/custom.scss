@@ -40,6 +40,36 @@
   --z-sidebar: 2000;
   --z-backdrop: 1100;
   //#endregion
+
+  //#region ----------- Motion tokens ------------
+  // One set of durations and easings for every hover / focus / card
+  // transition across the site. Component files should use these
+  // instead of hard-coded `0.15s ease` / `0.2s ease` values.
+  --t-fast: 150ms;
+  --t: 200ms;
+  --t-slow: 250ms;
+  --t-ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+  //#endregion
+
+  //#region ----------- Content widths ------------
+  // Reading column for docs + blog long-form prose.
+  --content-width-reading: 42rem;   // ~672px — ~68ch at 16px
+  // Slightly wider column for MDX pages (About / Why) which use the
+  // brand-gutter layout and sit without a sidebar.
+  --content-width-wide: 52rem;      // ~832px
+  //#endregion
+
+  //#region ----------- Shared typographic scale ------------
+  // Applied to every long-form content surface
+  // (`.markdown`, `.mdx-page article`) so docs / blog / MDX pages use
+  // one harmonized set of heading sizes.
+  --content-h1-font-size: clamp(2.25rem, 4vw + 0.5rem, 3rem);    // 36→48
+  --content-h2-font-size: 1.875rem;   // 30
+  --content-h3-font-size: 1.375rem;   // 22
+  --content-h4-font-size: 1.125rem;   // 18
+  --content-h5-font-size: 1rem;       // 16
+  --content-h6-font-size: 0.875rem;   // 14
+  //#endregion
 }
 
 html[data-theme='light'] {
@@ -47,7 +77,10 @@ html[data-theme='light'] {
   --token-secondary-bg-c: #fff;
 
   --ifm-link-color: var(--c-blue-90);
-  --ifm-link-hover-color: rgba(27, 109, 255, 0.8);
+  // Shift hue toward brand accent B on hover so the transition is
+  // perceptible (an 80% alpha fade of the same blue is effectively
+  // invisible on most monitors).
+  --ifm-link-hover-color: var(--brand-accent-b);
 
   --ifm-background-surface-color: var(--token-primary-bg-c);
 
@@ -95,7 +128,8 @@ html[data-theme='dark'] {
   --token-secondary-bg-c: #13171c;
 
   --ifm-link-color: var(--c-blue-70);
-  --ifm-link-hover-color: rgba(77, 141, 255, 0.8);
+  // Same rationale as light mode — shift to brand accent B on hover.
+  --ifm-link-hover-color: var(--brand-accent-b);
 
   --ifm-background-surface-color: var(--token-primary-bg-c);
 
@@ -155,9 +189,32 @@ html {
 
 a {
   text-decoration: none;
+  // Default interaction on every link: colour fades. Content-specific
+  // hover affordances (underline, translate) live in the owning
+  // component so navbar/footer/cards stay untouched.
+  transition: color var(--t) var(--t-ease);
 
   &:hover {
     text-decoration: none;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--brand-accent-a);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+}
+
+// Respect reduced-motion preference — collapse every transition and
+// animation to near-zero but keep the end-state styles intact.
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }
 

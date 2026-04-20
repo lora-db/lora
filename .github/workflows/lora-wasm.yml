@@ -16,6 +16,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
       - ".github/workflows/lora-wasm.yml"
   pull_request:
     paths:
@@ -31,6 +32,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
       - ".github/workflows/lora-wasm.yml"
   workflow_dispatch:
 
@@ -38,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lora-wasm-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -53,14 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain (stable + wasm32-unknown-unknown)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
+          cache-key: lora-wasm-ubuntu
           targets: wasm32-unknown-unknown
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: lora-wasm-ubuntu
 
       - name: Install wasm-pack
         uses: jetli/wasm-pack-action@v0.4.0

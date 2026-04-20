@@ -149,8 +149,11 @@ html[data-theme='dark'] {
   color: var(--brand-accent-a);
   background: var(--brand-accent-a-soft);
   border: 1px solid var(--blog-border-c);
-  transition: background-color 0.18s ease, border-color 0.18s ease,
-    color 0.18s ease, transform 0.18s ease;
+  transition:
+    background-color var(--t) var(--t-ease),
+    border-color var(--t) var(--t-ease),
+    color var(--t) var(--t-ease),
+    transform var(--t) var(--t-ease);
 
   &:hover,
   &:focus-visible {
@@ -182,10 +185,6 @@ html[data-theme='dark'] {
 // to `<html>`. Using those directly as selectors gives us proper scoping
 // without the `#__docusaurus` wrapper.
 
-html.blog-wrapper .container {
-  max-width: 72rem;
-}
-
 html.blog-wrapper {
   .markdown > h1:first-child,
   header > h1:first-child {
@@ -214,8 +213,11 @@ html.blog-wrapper:not(.blog-post-page) main article {
   background: var(--blog-card-bg-c);
   border: 1px solid var(--blog-border-c);
   border-radius: 16px;
-  transition: transform 0.2s ease, border-color 0.2s ease,
-    box-shadow 0.2s ease, background-color 0.2s ease;
+  transition:
+    transform var(--t) var(--t-ease),
+    border-color var(--t) var(--t-ease),
+    box-shadow var(--t) var(--t-ease),
+    background-color var(--t) var(--t-ease);
   overflow: hidden;
 
   &::before {
@@ -227,7 +229,7 @@ html.blog-wrapper:not(.blog-post-page) main article {
     height: 2px;
     background: var(--brand-gradient);
     opacity: 0;
-    transition: opacity 0.2s ease;
+    transition: opacity var(--t) var(--t-ease);
   }
 
   &:hover {
@@ -259,7 +261,7 @@ html.blog-wrapper:not(.blog-post-page) main article {
 
     a {
       color: var(--ifm-heading-color);
-      transition: color 0.15s ease;
+      transition: color var(--t-fast) var(--t-ease);
 
       &:hover {
         color: var(--ifm-link-color);
@@ -342,8 +344,10 @@ html.blog-wrapper a[class*='tag_'] {
   background: var(--blog-tag-bg-c);
   color: var(--blog-tag-c);
   border: 1px solid transparent;
-  transition: background-color 0.15s ease, color 0.15s ease,
-    border-color 0.15s ease;
+  transition:
+    background-color var(--t-fast) var(--t-ease),
+    color var(--t-fast) var(--t-ease),
+    border-color var(--t-fast) var(--t-ease);
 
   &:hover,
   &:focus-visible {
@@ -365,11 +369,13 @@ html.blog-wrapper {
     font-weight: 600;
     font-size: 0.875rem;
     color: var(--brand-accent-a);
-    transition: gap 0.18s ease, color 0.18s ease;
+    transition:
+      gap var(--t) var(--t-ease),
+      color var(--t) var(--t-ease);
 
     &::after {
       content: '→';
-      transition: transform 0.18s ease;
+      transition: transform var(--t) var(--t-ease);
       display: inline-block;
     }
 
@@ -406,10 +412,10 @@ html.blog-post-page main article > header {
 
   h1 {
     margin-block-start: 0;
-    font-size: clamp(2.25rem, 4.8vw, 3.25rem);
+    font-size: var(--content-h1-font-size);
     font-weight: 800;
-    letter-spacing: -0.028em;
-    line-height: 1.1;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
   }
 }
 
@@ -429,8 +435,10 @@ html.blog-wrapper {
       border: 1px solid var(--blog-border-c);
       border-radius: 12px;
       padding: 1rem 1.25rem;
-      transition: transform 0.2s ease, border-color 0.2s ease,
-        box-shadow 0.2s ease;
+      transition:
+        transform var(--t) var(--t-ease),
+        border-color var(--t) var(--t-ease),
+        box-shadow var(--t) var(--t-ease);
 
       &:hover {
         transform: translateY(-2px);
@@ -478,8 +486,10 @@ html.blog-wrapper aside[class*='sidebar_'] {
     padding: 0.5rem 0.75rem;
     border-inline-start: 2px solid transparent;
     border-radius: 0 6px 6px 0;
-    transition: color 0.15s ease, background-color 0.15s ease,
-      border-color 0.15s ease;
+    transition:
+      color var(--t-fast) var(--t-ease),
+      background-color var(--t-fast) var(--t-ease),
+      border-color var(--t-fast) var(--t-ease);
 
     &:hover,
     &[class*='sidebarItemLinkActive'] {

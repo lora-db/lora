@@ -35,30 +35,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag }}
 
-      - name: Resolve benchmark version
-        id: version
-        shell: bash
-        run: |
-          tag="${{ inputs.tag }}"
-          case "$tag" in
-            v[0-9]*) ;;
-            *)
-              echo "::error::Expected a tag like 'vX.Y.Z' (got '${tag}')."
-              exit 1
-              ;;
-          esac
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/resolve-release-tag
+        id: tag
+        with:
+          tag: ${{ inputs.tag }}
 
-      - name: Verify all manifests match ${{ steps.version.outputs.version }}
-        run: node scripts/sync-versions.mjs "${{ steps.version.outputs.version }}" --check
+      - name: Verify all manifests match ${{ steps.tag.outputs.version }}
+        run: node scripts/sync-versions.mjs "${{ steps.tag.outputs.version }}" --check
 
   bench:
     name: benchmarks (criterion)
@@ -70,21 +60,16 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
 
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          shared-key: release-bench
+          cache-key: release-bench
 
-      - name: Resolve release version
-        id: version
+      - name: Resolve benchmark archive name
+        id: names
         shell: bash
-        run: |
-          tag="${{ inputs.tag }}"
-          archive="lora-server-${tag}-benchmarks.tar.gz"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ needs.verify-versions.outputs.tag }}
+        run: echo "archive=lora-server-${TAG}-benchmarks.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Run criterion benchmarks
         shell: bash
@@ -96,6 +81,8 @@ jobs:
 
       - name: Collect criterion reports
         shell: bash
+        env:
+          TAG: ${{ needs.verify-versions.outputs.tag }}
         run: |
           if [ -d target/criterion ]; then
             cp -R target/criterion bench-out/criterion
@@ -104,7 +91,7 @@ jobs:
           fi
 
           cat > bench-out/README.txt <<EOF
-          lora-database benchmarks — ${{ steps.version.outputs.tag }}
+          lora-database benchmarks — ${TAG}
 
           This archive is a per-version snapshot of the criterion benchmarks
           run on GitHub Actions (ubuntu-latest). Results include CI-hardware
@@ -119,18 +106,19 @@ jobs:
 
       - name: Package benchmark archive
         shell: bash
+        env:
+          ARCHIVE: ${{ steps.names.outputs.archive }}
         run: |
-          archive="${{ steps.version.outputs.archive }}"
-          tar -czf "$archive" -C bench-out .
-          sha256sum "$archive" > "$archive.sha256"
+          tar -czf "$ARCHIVE" -C bench-out .
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v5
         with:
           name: release-benchmarks
           path: |
-            ${{ steps.version.outputs.archive }}
-            ${{ steps.version.outputs.archive }}.sha256
+            ${{ steps.names.outputs.archive }}
+            ${{ steps.names.outputs.archive }}.sha256
           if-no-files-found: error
           retention-days: 30
 

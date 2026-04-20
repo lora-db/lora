@@ -1,16 +1,20 @@
 :root {
-  --doc-item-container-width: 42rem;
+  // Docs reading column — pinned to the shared reading-width token so
+  // docs and blog posts resolve to the same reading measure.
+  --doc-item-container-width: var(--content-width-reading);
 }
 
 // Standalone `src/pages/*.md` pages (About, Why, Contact) render inside
 // Docusaurus's `.row.mdxPageWrapper > .col--8` grid. Docs pages have a
 // sidebar filling the left third; these pages don't — so the default
 // left-aligned `col--8` leaves an empty strip on the right that reads
-// as a missing sidebar. Centre the column so the content sits balanced
-// on the page, and tighten the first H1's top margin since these pages
-// don't have a breadcrumb above the title.
+// as a missing sidebar. Centre the column and cap its width at the
+// wide-content token (~52rem) so MDX pages feel broader than docs/blog
+// (they carry the brand-gutter hero layout) without ballooning to full
+// grid width at large viewports.
 #__docusaurus [class*='mdxPageWrapper_'] > .col {
   margin-inline: auto;
+  max-width: var(--content-width-wide);
 }
 
 .mdx-wrapper.mdx-page > h1:first-child {

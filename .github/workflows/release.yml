@@ -54,34 +54,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
-          case "$tag" in
-            v[0-9]*) ;;
-            *)
-              echo "::error::Expected a tag like 'vX.Y.Z' (got '${tag}')."
-              exit 1
-              ;;
-          esac
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/resolve-release-tag
+        id: tag
+        with:
+          tag: ${{ inputs.tag }}
 
-      - name: Verify all manifests match ${{ steps.version.outputs.version }}
-        run: node scripts/sync-versions.mjs "${{ steps.version.outputs.version }}" --check
+      - name: Verify all manifests match ${{ steps.tag.outputs.version }}
+        run: node scripts/sync-versions.mjs "${{ steps.tag.outputs.version }}" --check
 
   build:
     name: build ${{ matrix.target }}
@@ -113,37 +100,22 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Install Rust toolchain (stable, ${{ matrix.target }})
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
+          cache-key: release-${{ matrix.target }}
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-${{ matrix.target }}
-
-      - name: Resolve release version
-        id: version
+      - name: Derive artifact + archive names
+        id: names
         shell: bash
+        env:
+          TAG: ${{ needs.verify-versions.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE_EXT: ${{ matrix.archive-ext }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
-          case "$tag" in
-            v*) ;;
-            *)
-              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
-              exit 1
-              ;;
-          esac
-          version="${tag#v}"
-          artifact="lora-server-${tag}-${{ matrix.target }}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          artifact="lora-server-${TAG}-${TARGET}"
           echo "artifact=${artifact}" >> "$GITHUB_OUTPUT"
-          echo "archive=${artifact}.${{ matrix.archive-ext }}" >> "$GITHUB_OUTPUT"
+          echo "archive=${artifact}.${ARCHIVE_EXT}" >> "$GITHUB_OUTPUT"
 
       - name: Build lora-server (release)
         run: cargo build --release --locked -p lora-server --bin lora-server --target ${{ matrix.target }}
@@ -151,19 +123,22 @@ jobs:
       - name: Stage artifact contents
         id: stage
         shell: bash
+        env:
+          STAGING: ${{ steps.names.outputs.artifact }}
+          TARGET: ${{ matrix.target }}
+          BIN_EXT: ${{ matrix.bin-ext }}
         run: |
-          staging="${{ steps.version.outputs.artifact }}"
-          mkdir -p "$staging"
-          cp "target/${{ matrix.target }}/release/lora-server${{ matrix.bin-ext }}" "$staging/"
-          cp README.md "$staging/"
-          cp RELEASING.md "$staging/"
-          echo "dir=${staging}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$STAGING"
+          cp "target/${TARGET}/release/lora-server${BIN_EXT}" "$STAGING/"
+          cp README.md "$STAGING/"
+          cp RELEASING.md "$STAGING/"
+          echo "dir=${STAGING}" >> "$GITHUB_OUTPUT"
 
       - name: Package (zip, Windows)
         if: matrix.archive-ext == 'zip'
         shell: pwsh
         run: |
-          $archive = "${{ steps.version.outputs.archive }}"
+          $archive = "${{ steps.names.outputs.archive }}"
           $staging = "${{ steps.stage.outputs.dir }}"
           Compress-Archive -Path $staging -DestinationPath $archive
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
@@ -172,14 +147,15 @@ jobs:
       - name: Package (tar.gz, unix)
         if: matrix.archive-ext == 'tar.gz'
         shell: bash
+        env:
+          ARCHIVE: ${{ steps.names.outputs.archive }}
+          STAGING: ${{ steps.stage.outputs.dir }}
         run: |
-          archive="${{ steps.version.outputs.archive }}"
-          staging="${{ steps.stage.outputs.dir }}"
-          tar -czf "$archive" "$staging"
+          tar -czf "$ARCHIVE" "$STAGING"
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$archive" > "$archive.sha256"
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           else
-            shasum -a 256 "$archive" > "$archive.sha256"
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           fi
 
       - name: Upload workflow artifact
@@ -187,8 +163,8 @@ jobs:
         with:
           name: release-${{ matrix.target }}
           path: |
-            ${{ steps.version.outputs.archive }}
-            ${{ steps.version.outputs.archive }}.sha256
+            ${{ steps.names.outputs.archive }}
+            ${{ steps.names.outputs.archive }}.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -202,24 +178,6 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
-
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
-          case "$tag" in
-            v*) ;;
-            *)
-              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
-              exit 1
-              ;;
-          esac
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Render release notes (current tag only)
         uses: orhun/git-cliff-action@v4
@@ -257,36 +215,10 @@ jobs:
 
   publish:
     name: publish GitHub Release
-    needs: [build, changelog]
+    needs: [verify-versions, build, changelog]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
-          case "$tag" in
-            v*) ;;
-            *)
-              echo "::error::Expected a tag starting with 'v' (got '${tag}')."
-              exit 1
-              ;;
-          esac
-          version="${tag#v}"
-          if [[ "$tag" == *-* ]]; then
-            prerelease=true
-          else
-            prerelease=false
-          fi
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
-
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -300,15 +232,18 @@ jobs:
 
       - name: Aggregate SHA-256 checksums
         shell: bash
+        env:
+          TAG: ${{ needs.verify-versions.outputs.tag }}
         run: |
           cd dist
-          cat *.sha256 > "lora-server-${{ steps.version.outputs.tag }}-SHA256SUMS.txt"
+          cat *.sha256 > "lora-server-${TAG}-SHA256SUMS.txt"
 
       - name: Compose release body
         id: body
         shell: bash
+        env:
+          TAG: ${{ needs.verify-versions.outputs.tag }}
         run: |
-          tag="${{ steps.version.outputs.tag }}"
           notes="dist/release-notes.md"
           body="RELEASE_BODY.md"
           {
@@ -318,7 +253,7 @@ jobs:
               echo "---"
               echo
             else
-              echo "## lora-server ${tag}"
+              echo "## lora-server ${TAG}"
               echo
               echo "_(no conventional-commits changes detected for this tag)_"
               echo
@@ -327,31 +262,31 @@ jobs:
             echo
             echo "| Platform            | Asset |"
             echo "| ------------------- | ----- |"
-            echo "| Linux x86_64        | \`lora-server-${tag}-x86_64-unknown-linux-gnu.tar.gz\` |"
-            echo "| Windows x86_64      | \`lora-server-${tag}-x86_64-pc-windows-msvc.zip\` |"
-            echo "| macOS Intel         | \`lora-server-${tag}-x86_64-apple-darwin.tar.gz\` |"
-            echo "| macOS Apple Silicon | \`lora-server-${tag}-aarch64-apple-darwin.tar.gz\` |"
+            echo "| Linux x86_64        | \`lora-server-${TAG}-x86_64-unknown-linux-gnu.tar.gz\` |"
+            echo "| Windows x86_64      | \`lora-server-${TAG}-x86_64-pc-windows-msvc.zip\` |"
+            echo "| macOS Intel         | \`lora-server-${TAG}-x86_64-apple-darwin.tar.gz\` |"
+            echo "| macOS Apple Silicon | \`lora-server-${TAG}-aarch64-apple-darwin.tar.gz\` |"
             echo "| Full changelog      | \`CHANGELOG.md\` |"
             echo
-            echo "Each binary archive ships with a matching \`.sha256\` file. An aggregated \`lora-server-${tag}-SHA256SUMS.txt\` is also attached."
+            echo "Each binary archive ships with a matching \`.sha256\` file. An aggregated \`lora-server-${TAG}-SHA256SUMS.txt\` is also attached."
             echo
-            echo "Download, verify, and run instructions: see [RELEASING.md](https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/RELEASING.md) and the README."
+            echo "Download, verify, and run instructions: see [RELEASING.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/RELEASING.md) and the README."
           } > "$body"
           echo "path=${body}" >> "$GITHUB_OUTPUT"
 
       - name: Publish draft GitHub Release with all assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.verify-versions.outputs.tag }}
+          name: ${{ needs.verify-versions.outputs.tag }}
           body_path: ${{ steps.body.outputs.path }}
           draft: true
-          prerelease: ${{ steps.version.outputs.prerelease }}
+          prerelease: ${{ needs.verify-versions.outputs.prerelease }}
           fail_on_unmatched_files: true
           files: |
-            dist/lora-server-${{ steps.version.outputs.tag }}-*.tar.gz
-            dist/lora-server-${{ steps.version.outputs.tag }}-*.tar.gz.sha256
-            dist/lora-server-${{ steps.version.outputs.tag }}-*.zip
-            dist/lora-server-${{ steps.version.outputs.tag }}-*.zip.sha256
-            dist/lora-server-${{ steps.version.outputs.tag }}-SHA256SUMS.txt
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-*.tar.gz
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-*.tar.gz.sha256
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-*.zip
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-*.zip.sha256
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-SHA256SUMS.txt
             dist/CHANGELOG.md

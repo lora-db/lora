@@ -4,7 +4,7 @@
     &__link {
       border: none;
 
-      transition: color 0.2s ease-out;
+      transition: color var(--t) var(--t-ease);
 
       //Previous item
       &--prev {

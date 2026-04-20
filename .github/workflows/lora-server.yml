@@ -15,6 +15,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
       - ".github/workflows/lora-server.yml"
   pull_request:
     paths:
@@ -29,6 +30,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
       - ".github/workflows/lora-server.yml"
   workflow_dispatch:
 
@@ -36,7 +38,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lora-server-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -46,18 +48,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          shared-key: lora-server-${{ matrix.os }}
+          cache-key: lora-server-${{ matrix.os }}
 
       - name: cargo check (lora-server)
         run: cargo check -p lora-server --locked
@@ -68,10 +66,10 @@ jobs:
       - name: cargo build --release (lora-server)
         run: cargo build --release --locked -p lora-server --bin lora-server
 
-      - name: Upload release binary (CI artifact)
+      - name: Upload CI release-profile binary (not a release asset)
         uses: actions/upload-artifact@v5
         with:
-          name: lora-server-${{ matrix.os }}-release
+          name: lora-server-${{ matrix.os }}-ci-build
           path: |
             target/release/lora-server
             target/release/lora-server.exe

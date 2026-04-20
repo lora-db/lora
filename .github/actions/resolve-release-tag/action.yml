@@ -1,0 +1,56 @@
+name: resolve-release-tag
+description: >-
+  Resolve a release tag from either an explicit `tag` input or the pushed
+  `GITHUB_REF_NAME`, validate it looks like `vX.Y.Z` (optionally with a
+  pre-release suffix), and expose `tag` / `version` / `prerelease` outputs.
+  Used by the release and benchmark workflows so tag-handling logic lives in
+  one place instead of being copy-pasted into every job that needs it.
+
+inputs:
+  tag:
+    description: >-
+      Explicit tag to use (e.g. `v0.1.0`). If empty, falls back to
+      `GITHUB_REF_NAME` (the tag that triggered the workflow).
+    required: false
+    default: ""
+
+outputs:
+  tag:
+    description: Resolved tag, e.g. "v0.1.0".
+    value: ${{ steps.resolve.outputs.tag }}
+  version:
+    description: Tag with the leading "v" stripped, e.g. "0.1.0".
+    value: ${{ steps.resolve.outputs.version }}
+  prerelease:
+    description: "\"true\" if the tag contains a pre-release suffix (e.g. v0.2.0-rc.1), else \"false\"."
+    value: ${{ steps.resolve.outputs.prerelease }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_TAG: ${{ inputs.tag }}
+      run: |
+        if [ -n "$INPUT_TAG" ]; then
+          tag="$INPUT_TAG"
+        else
+          tag="${GITHUB_REF_NAME}"
+        fi
+        case "$tag" in
+          v[0-9]*) ;;
+          *)
+            echo "::error::Expected a tag like 'vX.Y.Z' (got '${tag}')."
+            exit 1
+            ;;
+        esac
+        version="${tag#v}"
+        if [[ "$tag" == *-* ]]; then
+          prerelease=true
+        else
+          prerelease=false
+        fi
+        echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+        echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"

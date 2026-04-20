@@ -1,0 +1,48 @@
+name: setup-rust
+description: >-
+  Install a Rust toolchain via dtolnay/rust-toolchain and (optionally) prime
+  the cargo/target cache via Swatinem/rust-cache. Each call supplies its own
+  cache partition via `cache-key` so workflows never accidentally share build
+  artefacts — that isolation has previously masked stale-cache SIGILLs in the
+  pyo3 build script.
+
+inputs:
+  cache-key:
+    description: >-
+      Shared key for Swatinem/rust-cache (passed as `shared-key`). Leave empty
+      to skip caching entirely (useful for fast-only jobs like `cargo fmt`).
+    required: false
+    default: ""
+  targets:
+    description: Comma-separated Rust targets to add (e.g. `wasm32-unknown-unknown`).
+    required: false
+    default: ""
+  components:
+    description: Comma-separated Rust components to install (e.g. `rustfmt`, `clippy`).
+    required: false
+    default: ""
+  workspaces:
+    description: Passthrough to `Swatinem/rust-cache` `workspaces`. Defaults to the action's own default.
+    required: false
+    default: ""
+  cache-on-failure:
+    description: Passthrough to `Swatinem/rust-cache` `cache-on-failure`. Defaults to `true`.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain (stable)
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - name: Cache cargo registry + target/
+      if: inputs.cache-key != ''
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        workspaces: ${{ inputs.workspaces }}
+        cache-on-failure: ${{ inputs.cache-on-failure }}

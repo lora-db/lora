@@ -47,7 +47,10 @@
     position: relative;
     padding-inline-start: var(--brand-gutter-w);
     border-inline-start: 2px solid var(--brand-border-c);
-    transition: border-color 0.2s ease;
+    font-size: 1.125rem;
+    line-height: 1.7;
+    color: var(--markdown-text-intro-c);
+    transition: border-color var(--t) var(--t-ease);
   }
 
   // Section headings get a subtle brand marker — a small gradient
@@ -55,6 +58,8 @@
   > h2 {
     position: relative;
     padding-inline-start: var(--brand-gutter-w);
+    margin-bottom: calc(var(--ifm-heading-vertical-rhythm-bottom) * var(--ifm-leading));
+    margin-top: calc(var(--ifm-h2-vertical-rhythm-top) * var(--ifm-leading));
 
     &::before {
       content: '';
@@ -68,6 +73,27 @@
       background: var(--brand-gradient);
       box-shadow: 0 0 0 4px var(--brand-accent-a-soft);
     }
+  }
+
+  // Sub-headings and body-text blocks inherit the same left gutter so
+  // every baseline lines up with the H1 bar, intro rail and H2 dot.
+  > h3,
+  > h4,
+  > h5,
+  > h6,
+  > p,
+  > blockquote,
+  > table {
+    padding-inline-start: var(--brand-gutter-w);
+  }
+
+  // Lists: offset the whole list by the gutter, then keep their own
+  // marker padding so bullets/numbers still read correctly aligned
+  // with the list text and every other block shares the same left
+  // baseline as H1 / H2 / intro.
+  > ul,
+  > ol {
+    margin-inline-start: var(--brand-gutter-w);
   }
 
   // Blockquotes: turn into a soft branded callout.
@@ -283,7 +309,10 @@ html[data-theme='dark'] {
     font-size: 0.9375rem;
     font-weight: 500;
     opacity: 0.82;
-    transition: color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+    transition:
+      color var(--t-fast) var(--t-ease),
+      opacity var(--t-fast) var(--t-ease),
+      transform var(--t-fast) var(--t-ease);
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
