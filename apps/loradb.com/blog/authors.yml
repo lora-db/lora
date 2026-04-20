@@ -2,7 +2,7 @@ loradb:
   name: The LoraDB team
   title: Engineering
   url: https://github.com/lora-db/lora
-  image_url: /logos/loradb-bird.svg
+  image_url: /logos/loradb-mark.svg
   page: true
   socials:
     github: lora-db
@@ -12,7 +12,7 @@ joost:
   name: Joost van Berkel
   title: Author, LoraDB
   url: https://github.com/lora-db/lora
-  image_url: /logos/loradb-bird.svg
+  image_url: /img/joost-van-berkel.jpeg
   page: true
   socials:
     github: zolero
