@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-  <!-- Bird mark — based on the ISC-licensed Lucide `bird` icon -->
-  <path d="M16 7h.01"/>
-  <path d="M3.5 3h.01"/>
-  <path d="M2.89 8 8 7.5 12 20"/>
-  <path d="M16 11l-5 9"/>
-  <path d="M11 3c.88 0 1.74.27 2.45.78L21 9l-4 6h-3.45c-.79 0-1.57-.26-2.2-.73L5 9.5C5.8 5.9 8.2 3 11 3Z"/>
-</svg>

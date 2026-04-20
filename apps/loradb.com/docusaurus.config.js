@@ -80,8 +80,8 @@ module.exports = {
       title: 'LoraDB',
       logo: {
         alt: 'LoraDB',
-        src: 'logos/loradb-bird.svg',
-        srcDark: 'logos/loradb-bird-dark.svg',
+        src: 'logos/loradb-mark.svg',
+        srcDark: 'logos/loradb-mark-dark.svg',
         href: '/',
         target: '_self',
         width: 24,

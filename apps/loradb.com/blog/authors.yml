@@ -5,7 +5,7 @@ loradb:
   image_url: /logos/loradb-bird.svg
   page: true
   socials:
-    github: lora-db/lora
+    github: lora-db
     x: loradb
 
 joost:
@@ -15,4 +15,4 @@ joost:
   image_url: /logos/loradb-bird.svg
   page: true
   socials:
-    github: lora-db/lora
+    github: zolero
