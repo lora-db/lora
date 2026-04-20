@@ -185,7 +185,7 @@ module.exports = {
     [
       '@easyops-cn/docusaurus-search-local',
       {
-        hashed: true,
+        hashed: 'filename',
         indexDocs: true,
         indexPages: true,
         indexBlog: true,
@@ -195,6 +195,43 @@ module.exports = {
         searchResultLimits: 8,
         searchResultContextMaxLength: 50,
         explicitSearchResultPath: true,
+
+        removeDefaultStopWordFilter: ['en'],
+        // Heading-focused index. Everything here is stripped before lunr sees
+        // the page, so search mostly matches h1–h6 text per section.
+        ignoreCssSelectors: [
+          // Page chrome repeated on every route
+          '.navbar',
+          '.footer',
+          'aside', // docs left sidebar + blog "Recent posts" sidebar
+          '.theme-doc-breadcrumbs',
+          '.theme-doc-toc-mobile',
+          '.theme-doc-toc-desktop',
+          '[class*="tableOfContents_"]', // blog post right-side TOC
+          '.theme-doc-version-badge',
+          '.theme-doc-footer',
+          '.theme-edit-this-page',
+          '.theme-last-updated',
+          '.pagination-nav',
+          // Blog post meta
+          '[class*="authorCol_"]',
+          '[class*="tags_"]',
+          // Anchor link (#) injected into each heading — invisible but noisy
+          '.hash-link',
+          // Body prose — scoped to <main> so it covers .markdown docs/blog,
+          // MDX pages (/about, /why), and custom React pages (/) alike.
+          'main p',
+          'main ul',
+          'main ol',
+          'main blockquote',
+          'main pre',
+          'main table',
+          'main figure',
+          'main img',
+          'main details',
+          'main .admonition',
+          'main .tabs-container',
+        ],
       },
     ],
   ],
