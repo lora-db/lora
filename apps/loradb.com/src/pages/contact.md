@@ -20,7 +20,7 @@ Cypher that misbehaves plus the data model — goes a long way.
 Design questions, "is this the right tool for X", Cypher patterns,
 integration notes.
 
-- **Discord** — [discord.gg/loradb](https://discord.gg/loradb)
+- **Discord** — [discord.gg/loradb](https://discord.gg/vUgKb6C8Af)
 - **GitHub Discussions** — [github.com/lora-db/lora/discussions](https://github.com/lora-db/lora/discussions)
 
 ## Updates

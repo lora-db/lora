@@ -1,0 +1,337 @@
+// PlaygroundPreview — brand-aligned product mock for the Graph Query
+// Playground. The graph half of the illustration uses the same node
+// and edge vocabulary as `BrandGraph` so the two surfaces read as one
+// illustration family. Colours come from `--brand-*` tokens defined
+// in custom.scss, so light/dark mode come for free.
+
+.frame {
+  position: relative;
+  width: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+  background: var(--token-secondary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  box-shadow:
+    0 30px 60px -32px color-mix(in srgb, var(--brand-accent-a) 45%, transparent),
+    0 1px 0 0 rgba(255, 255, 255, 0.04) inset;
+  isolation: isolate;
+
+  html[data-theme='dark'] & {
+    background: rgba(14, 20, 32, 0.9);
+    border-color: rgba(77, 141, 255, 0.28);
+  }
+}
+
+// --- window chrome ------------------------------------------------
+
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--brand-border-c);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  color: var(--ifm-secondary-heading-color);
+  background: color-mix(in srgb, var(--token-secondary-bg-c) 92%, transparent);
+}
+
+.dots {
+  display: inline-flex;
+  gap: 0.35rem;
+  flex-shrink: 0;
+
+  span {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+  }
+  span:nth-child(1) { background: #ff6b6b; opacity: 0.72; }
+  span:nth-child(2) { background: #ffd66b; opacity: 0.72; }
+  span:nth-child(3) { background: #6bd48a; opacity: 0.72; }
+}
+
+.address {
+  letter-spacing: 0.02em;
+  opacity: 0.8;
+}
+
+.runChip {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--brand-gradient);
+  box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--brand-accent-a) 60%, transparent);
+
+  svg { flex-shrink: 0; }
+}
+
+// --- body ---------------------------------------------------------
+
+.body {
+  background:
+    radial-gradient(60% 80% at 78% 50%, var(--brand-accent-a-soft), transparent 70%),
+    radial-gradient(40% 60% at 82% 85%, var(--brand-accent-b-soft), transparent 70%);
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;  // let halos / drop-shadows extend past the viewBox
+  color: color-mix(in srgb, var(--ifm-font-color-base) 30%, transparent);
+}
+
+// --- editor pane --------------------------------------------------
+
+.gutter {
+  fill: color-mix(in srgb, var(--brand-accent-a) 6%, transparent);
+  stroke: var(--brand-border-c);
+  stroke-width: 1;
+
+  html[data-theme='dark'] & {
+    fill: rgba(77, 141, 255, 0.08);
+  }
+}
+
+.lineno {
+  fill: color-mix(in srgb, var(--ifm-font-color-base) 35%, transparent);
+  font-weight: 500;
+}
+
+.codeLine {
+  fill: var(--ifm-font-color-base);
+}
+
+// Syntax tokens — subtle, brand-aligned, readable in both themes.
+.tok_kw  { fill: var(--brand-accent-a); font-weight: 600; }
+.tok_rel { fill: var(--brand-accent-b); }
+.tok_fn  { fill: color-mix(in srgb, var(--brand-accent-a) 80%, var(--brand-accent-b)); }
+.tok_lbl { fill: var(--ifm-heading-color); font-weight: 600; }
+.tok_p   { fill: var(--ifm-font-color-base); opacity: 0.78; }
+
+.caret {
+  fill: var(--brand-accent-a);
+  animation: pgCaret 1s steps(2, start) infinite;
+}
+@keyframes pgCaret {
+  50% { opacity: 0; }
+}
+
+.pill {
+  fill: color-mix(in srgb, var(--brand-accent-a) 8%, transparent);
+  stroke: var(--brand-border-c);
+  stroke-width: 1;
+}
+.pillDot  { fill: var(--brand-accent-c); }
+.pillText {
+  fill: var(--ifm-font-color-base);
+  opacity: 0.85;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.divider {
+  stroke: var(--brand-border-c);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+  opacity: 0.6;
+}
+
+// --- graph canvas (BrandGraph vocabulary) -------------------------
+
+.glow {
+  opacity: 0.55;
+  filter: url(#pgBlur);
+}
+
+.edges {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+// Default edge — used by every edge; `.edgeFlow` / `.edgeSoft`
+// layered on top override stroke + dash. Same ladder as BrandGraph.
+.edge {
+  stroke: var(--brand-edge-c);
+  stroke-width: 1.25;
+  opacity: 0.55;
+}
+
+.edgeSoft {
+  stroke: var(--brand-edge-soft-c);
+  stroke-width: 1;
+  opacity: 0.8;
+  stroke-dasharray: 3 5;
+}
+
+.edgeFlow {
+  stroke: url(#pgEdge);
+  stroke-width: 1.8;
+  opacity: 0.9;
+  stroke-dasharray: 6 10;
+  animation: pgEdgeFlow 4.5s linear infinite;
+  animation-delay: var(--edge-delay, 0s);
+}
+
+@keyframes pgEdgeFlow {
+  to { stroke-dashoffset: -160; }
+}
+
+// --- nodes (BrandGraph vocabulary) --------------------------------
+
+.node {
+  transform-origin: center;
+}
+
+.nodeDot {
+  fill: var(--brand-node-fill);
+  stroke: var(--brand-node-stroke);
+  stroke-width: 1.5;
+}
+
+.nodeCore {
+  fill: var(--brand-node-core);
+  opacity: 0.9;
+}
+
+.nodeRing {
+  fill: none;
+  stroke: var(--brand-node-ring);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+
+.nodeHalo {
+  fill: none;
+  stroke: var(--brand-accent-a);
+  stroke-width: 1;
+  opacity: 0.35;
+  animation: pgHaloPulse 3.8s ease-in-out infinite;
+}
+
+@keyframes pgHaloPulse {
+  0%, 100% { transform: scale(1);    opacity: 0.15; }
+  50%      { transform: scale(1.15); opacity: 0.45; }
+}
+
+.node_core {
+  .nodeDot {
+    stroke: var(--brand-accent-a);
+    stroke-width: 2;
+    filter: drop-shadow(0 0 12px color-mix(in srgb, var(--brand-accent-a) 55%, transparent));
+  }
+  .nodeCore {
+    fill: #fff;
+    opacity: 0.95;
+  }
+}
+
+.node_primary {
+  .nodeDot {
+    fill: var(--brand-node-fill);
+    stroke: var(--brand-accent-b);
+  }
+  .nodeCore {
+    fill: var(--brand-accent-b);
+  }
+  animation: pgNodePulse 4s ease-in-out infinite;
+  animation-delay: var(--node-delay, 0s);
+}
+
+.node_satellite {
+  .nodeDot {
+    fill: var(--brand-node-fill);
+    stroke: var(--brand-edge-c);
+    stroke-width: 1;
+  }
+  .nodeCore {
+    fill: var(--brand-edge-c);
+    opacity: 0.8;
+  }
+  opacity: 0.9;
+}
+
+@keyframes pgNodePulse {
+  0%, 100% { transform: scale(1);    }
+  50%      { transform: scale(1.04); }
+}
+
+.nodeLabel {
+  font-family: var(--ifm-font-family-base);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  fill: var(--brand-node-label);
+  // Outline labels with the page background so they stay readable
+  // when they cross edges — same trick BrandGraph uses.
+  paint-order: stroke;
+  stroke: var(--token-primary-bg-c);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.nodeLabelSmall {
+  font-size: 11px;
+  font-weight: 500;
+  fill: var(--brand-node-label-soft);
+}
+
+// --- legend -------------------------------------------------------
+
+.legend {
+  filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--brand-accent-a) 18%, transparent));
+}
+
+.legendBg {
+  fill: color-mix(in srgb, var(--token-primary-bg-c) 94%, transparent);
+  stroke: var(--brand-border-c);
+  stroke-width: 1;
+
+  html[data-theme='dark'] & {
+    fill: rgba(10, 15, 24, 0.92);
+  }
+}
+
+.legendText {
+  fill: var(--ifm-font-color-base);
+  opacity: 0.85;
+  font-family: var(--ifm-font-family-base);
+}
+
+.legendEdgeSoft {
+  stroke: var(--brand-edge-soft-c);
+  stroke-dasharray: 3 4;
+  opacity: 0.9;
+}
+
+// --- reduced motion ----------------------------------------------
+// One place to collapse every animation on the illustration.
+@media (prefers-reduced-motion: reduce) {
+  .caret,
+  .edgeFlow,
+  .nodeHalo,
+  .node_primary {
+    animation: none;
+  }
+  .edgeFlow {
+    stroke-dasharray: 4 8;
+    opacity: 0.75;
+  }
+}
+
+// --- responsive tweak --------------------------------------------
+// Below the tablet breakpoint the chrome address bar gets clipped —
+// hide the label so the dots + Run chip still fit.
+@media (max-width: 520px) {
+  .address { display: none; }
+  .chrome  { padding-inline: 0.75rem; }
+}

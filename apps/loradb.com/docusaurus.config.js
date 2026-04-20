@@ -95,11 +95,18 @@ module.exports = {
           position: 'left',
         },
         { to: '/blog', label: 'Blog', position: 'left' },
+        {
+          to: '/playground',
+          label: 'Playground',
+          position: 'left',
+          className: 'navbar-soon',
+          'aria-label': 'Playground (coming soon)',
+        },
         { to: '/about', label: 'About', position: 'left' },
         { to: '/why', label: 'Why', position: 'left' },
         { type: 'search', position: 'right' },
         {
-          href: 'https://discord.gg/loradb',
+          href: 'https://discord.gg/vUgKb6C8Af',
           position: 'right',
           className: 'icon-link icon-link-mask icon-link-discord',
           'aria-label': 'Discord',
@@ -147,7 +154,7 @@ module.exports = {
           title: 'Community',
           items: [
             { label: 'GitHub', href: 'https://github.com/lora-db/lora' },
-            { label: 'Discord', href: 'https://discord.gg/loradb' },
+            { label: 'Discord', href: 'https://discord.gg/vUgKb6C8Af' },
             { label: 'X', href: 'https://x.com/loradb' },
             { label: 'LinkedIn', href: 'https://linkedin.com/company/loradb' },
             { label: 'Medium', href: 'https://medium.com/loradb' },

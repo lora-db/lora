@@ -1,0 +1,419 @@
+// Playground (coming-soon) page composition.
+//
+// Mirrors the homepage vocabulary: same eyebrow pill, gradient accent
+// title word, button trio, sectionInner/eyebrow/title primitives and
+// card-hover treatment. No new design language — the page should feel
+// like a natural extension of `/`.
+
+.wrapper {
+  background: var(--token-primary-bg-c);
+}
+
+.page {
+  display: block;
+  color: var(--ifm-font-color-base);
+}
+
+// -------------------------------------------------------------------
+// Shared section primitives — intentionally identical to the homepage
+// so pages cohere across the site.
+// -------------------------------------------------------------------
+
+.sectionInner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.sectionEyebrow {
+  margin: 0 0 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+}
+
+.sectionTitle {
+  margin: 0 0 2.5rem;
+  font-size: clamp(1.75rem, 3.8vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.15;
+  color: var(--ifm-heading-color);
+  max-width: 32ch;
+}
+
+// -------------------------------------------------------------------
+// Hero
+// -------------------------------------------------------------------
+
+.hero {
+  position: relative;
+  padding: clamp(3rem, 8vh, 5.5rem) 1.5rem clamp(2.5rem, 6vh, 4rem);
+  overflow: hidden;
+  isolation: isolate;
+  border-bottom: 1px solid var(--brand-border-c);
+  text-align: center;
+}
+
+.heroInner {
+  position: relative;
+  z-index: 1;
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.4rem;
+}
+
+.eyebrow {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--brand-border-c);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-accent-a);
+  box-shadow: 0 0 0 3px var(--brand-accent-a-soft);
+  animation: pgPulse 2.8s ease-in-out infinite;
+}
+
+@keyframes pgPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.85); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot { animation: none; }
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(2.25rem, 5vw, 3.75rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--ifm-heading-color);
+  max-width: 18ch;
+}
+
+.titleAccent {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.tagline {
+  margin: 0;
+  max-width: 42rem;
+  font-size: clamp(1rem, 1.4vw, 1.125rem);
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.78rem 1.3rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9375rem;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition:
+    transform var(--t) var(--t-ease),
+    box-shadow var(--t) var(--t-ease),
+    background-color var(--t) var(--t-ease),
+    border-color var(--t) var(--t-ease),
+    color var(--t) var(--t-ease);
+
+  &:hover {
+    text-decoration: none;
+    transform: translateY(-1px);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--brand-accent-a);
+    outline-offset: 3px;
+  }
+}
+
+.btnPrimary {
+  background: var(--brand-gradient);
+  color: #fff;
+  box-shadow: 0 10px 24px -10px color-mix(in srgb, var(--brand-accent-a) 70%, transparent);
+
+  &:hover,
+  &:focus-visible {
+    color: #fff;
+    box-shadow: 0 14px 28px -10px color-mix(in srgb, var(--brand-accent-a) 80%, transparent);
+  }
+}
+
+.btnSecondary {
+  background: var(--brand-accent-a-soft);
+  color: var(--brand-accent-a);
+  border: 1px solid var(--brand-border-c);
+
+  &:hover,
+  &:focus-visible {
+    background: color-mix(in srgb, var(--brand-accent-a) 15%, transparent);
+    border-color: var(--brand-border-strong-c);
+    color: var(--brand-accent-a);
+  }
+}
+
+.btnGhost {
+  background: transparent;
+  color: var(--ifm-heading-color);
+  border: 1px solid color-mix(in srgb, var(--ifm-heading-color) 20%, transparent);
+
+  &:hover,
+  &:focus-visible {
+    background: color-mix(in srgb, var(--ifm-heading-color) 6%, transparent);
+    border-color: color-mix(in srgb, var(--ifm-heading-color) 35%, transparent);
+    color: var(--ifm-heading-color);
+  }
+}
+
+// "Coming soon" is the primary CTA on the page, but not a real link —
+// render as a static pill that still matches btnPrimary's look so the
+// visual hierarchy is correct without misleading the user into
+// expecting a destination.
+.btnStatic {
+  cursor: default;
+  &:hover { transform: none; }
+}
+
+.btnDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35);
+  animation: pgPulse 2.8s ease-in-out infinite;
+}
+
+.heroMeta {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--ifm-font-color-base);
+  opacity: 0.75;
+
+  li {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+}
+
+.heroMetaDot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--brand-accent-b);
+  flex-shrink: 0;
+}
+
+.heroGlow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(50% 60% at 50% 20%, var(--brand-accent-a-soft), transparent 70%),
+    radial-gradient(40% 60% at 85% 90%, var(--brand-accent-b-soft), transparent 70%),
+    radial-gradient(35% 40% at 10% 90%, color-mix(in srgb, var(--brand-accent-b) 10%, transparent), transparent 70%);
+  pointer-events: none;
+
+  html[data-theme='dark'] & {
+    background:
+      radial-gradient(50% 60% at 50% 20%, rgba(77, 141, 255, 0.16), transparent 70%),
+      radial-gradient(40% 60% at 85% 90%, rgba(132, 130, 251, 0.14), transparent 70%),
+      radial-gradient(35% 40% at 10% 90%, rgba(77, 141, 255, 0.1), transparent 70%);
+  }
+}
+
+// -------------------------------------------------------------------
+// Preview section
+// -------------------------------------------------------------------
+
+.previewSection {
+  padding: clamp(4rem, 10vh, 6rem) 0 clamp(3.5rem, 9vh, 5.5rem);
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.previewFrame {
+  position: relative;
+  margin-top: 1rem;
+}
+
+.previewOverlay {
+  position: absolute;
+  // Sits below the chrome bar so it doesn't overlap the Run chip.
+  top: 3rem;
+  right: 0.9rem;
+  pointer-events: none;
+}
+
+.previewBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+  background: color-mix(in srgb, var(--token-primary-bg-c) 92%, transparent);
+  border: 1px solid var(--brand-border-c);
+  backdrop-filter: blur(6px);
+}
+
+// -------------------------------------------------------------------
+// Features grid — mirrors homepage valueCard treatment
+// -------------------------------------------------------------------
+
+.features {
+  padding: clamp(5rem, 12vh, 7rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.featureGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.2rem;
+}
+
+.featureCard {
+  display: flex;
+  gap: 1rem;
+  padding: 1.5rem 1.5rem 1.5rem 1.25rem;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--brand-border-c);
+  transition:
+    border-color var(--t) var(--t-ease),
+    background-color var(--t) var(--t-ease);
+
+  &:hover {
+    border-left-color: var(--brand-accent-a);
+    background: color-mix(in srgb, var(--brand-accent-a) 4%, transparent);
+  }
+
+  h3 {
+    margin: 0 0 0.35rem;
+    font-size: 1.0625rem;
+    font-weight: 600;
+    color: var(--ifm-heading-color);
+    letter-spacing: -0.01em;
+  }
+
+  p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--ifm-font-color-base);
+    opacity: 0.8;
+  }
+}
+
+.featureIndex {
+  flex-shrink: 0;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  padding-top: 0.15rem;
+  letter-spacing: 0.02em;
+}
+
+// -------------------------------------------------------------------
+// Final CTA — echoes the homepage's final section, smaller footprint
+// -------------------------------------------------------------------
+
+.cta {
+  padding: clamp(4rem, 12vh, 7rem) 0;
+  text-align: center;
+  background: var(--token-primary-bg-c);
+  position: relative;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(40% 60% at 50% 30%, var(--brand-accent-b-soft), transparent 70%),
+      radial-gradient(40% 60% at 50% 80%, var(--brand-accent-a-soft), transparent 70%);
+    pointer-events: none;
+  }
+
+  .sectionInner {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+}
+
+.ctaTitle {
+  margin: 0;
+  font-size: clamp(1.75rem, 3.6vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ifm-heading-color);
+  max-width: 22ch;
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.ctaBody {
+  margin: 0.25rem 0 1rem;
+  max-width: 40rem;
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}

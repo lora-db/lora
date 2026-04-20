@@ -296,4 +296,69 @@ html[data-theme='dark'] {
       }
     }
   }
+
+  // "SOON" badge for coming-soon nav items (e.g. Playground). The
+  // `::after` on `&--active` is the underline bar, so we can't use
+  // it again — use `::before` for the badge on desktop and, on
+  // mobile, render the badge inline in the sidebar menu item.
+  .navbar__link.navbar-soon {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+
+    &::before {
+      content: 'Soon';
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.42rem;
+      border-radius: 999px;
+      color: var(--brand-accent-a);
+      background: var(--brand-accent-a-soft);
+      border: 1px solid var(--brand-border-c);
+      line-height: 1;
+      order: 2;
+      transition:
+        color var(--t) var(--t-ease),
+        background-color var(--t) var(--t-ease),
+        border-color var(--t) var(--t-ease);
+    }
+
+    &:hover::before,
+    &--active::before {
+      color: #fff;
+      background: var(--brand-gradient);
+      border-color: transparent;
+    }
+  }
+
+  // Mobile / off-canvas sidebar version of the same badge. The
+  // off-canvas menu uses `.menu__link` (not `.navbar__link`) so we
+  // re-state the rule there. Smaller, flush with the link label.
+  .menu__link.navbar-soon {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    &::after {
+      content: 'Soon';
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.15rem 0.42rem;
+      border-radius: 999px;
+      color: var(--brand-accent-a);
+      background: var(--brand-accent-a-soft);
+      border: 1px solid var(--brand-border-c);
+      line-height: 1;
+    }
+
+    &.menu__link--active::after {
+      color: #fff;
+      background: var(--brand-gradient);
+      border-color: transparent;
+    }
+  }
 }
