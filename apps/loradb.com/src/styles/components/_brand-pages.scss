@@ -73,6 +73,23 @@
       background: var(--brand-gradient);
       box-shadow: 0 0 0 4px var(--brand-accent-a-soft);
     }
+
+    // On phone widths the left gutter disappears — promote the
+    // brand dot to a short gradient bar sitting above the heading
+    // so the accent still reads without squeezing the text column.
+    @media (max-width: 640px) {
+      padding-inline-start: 0;
+      padding-block-start: 0.9rem;
+
+      &::before {
+        top: 0;
+        left: 0;
+        width: 2rem;
+        height: 3px;
+        border-radius: 999px;
+        box-shadow: none;
+      }
+    }
   }
 
   // Sub-headings and body-text blocks inherit the same left gutter so
@@ -162,9 +179,18 @@ html:not(.mdx-page) .markdown {
       opacity: 0.85;
     }
 
+    // On phone widths there's no left gutter, so turn the vertical
+    // rule into a short gradient bar sitting above the heading.
     @media (max-width: 996px) {
+      padding-block-start: 0.75rem;
+
       &::before {
-        display: none;
+        left: 0;
+        top: 0;
+        width: 2rem;
+        height: 3px;
+        border-radius: 999px;
+        opacity: 1;
       }
     }
   }
