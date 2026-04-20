@@ -4,11 +4,12 @@ name: loradb-docs
 # https://loradb.com (custom apex domain, CNAME committed in static/).
 #
 # Deploy policy:
-#   - PR + push to main run `build` only (verify the site still builds).
-#   - A *published* GitHub Release triggers `build` + `deploy`. Deployment is
-#     tied to the same manual-publish gate that already exists for the binary
-#     release draft — see .github/workflows/release.yml.
-#   - `workflow_dispatch` runs deploy too, for emergency rebuilds.
+#   - Push to `main` (apps/loradb.com/** paths) → build + deploy.
+#   - `release.released` → build + deploy (keeps Pages in sync with tagged
+#     releases after the draft in .github/workflows/release.yml is published).
+#   - `workflow_dispatch` → build + deploy (manual rebuild / recovery).
+#   - PR → build only (verify the site still builds; artefact uploaded for
+#     inspection, no deploy).
 
 on:
   push:
@@ -64,17 +65,17 @@ jobs:
         run: test -f build/CNAME && grep -qx loradb.com build/CNAME
 
       - name: Configure Pages
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v3
         with:
           path: apps/loradb.com/build
 
-      - name: Upload build artifact (PR / main inspection)
-        if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
+      - name: Upload build artifact (PR inspection)
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v5
         with:
           name: loradb-docs-build-${{ github.sha }}
@@ -84,9 +85,9 @@ jobs:
 
   deploy:
     name: deploy
-    # Deploys ONLY on a published GitHub Release or manual dispatch.
-    # This is the single rule that keeps Pages in sync with official versions.
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # Deploys on push to main, published GitHub Release, or manual dispatch.
+    # PRs never deploy — they hit the `build` job only.
+    if: github.event_name == 'push' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -13,7 +13,7 @@ system? Pick the channel that matches what you need.
 Open an issue on GitHub. A small, reproducible repro — ideally the
 Cypher that misbehaves plus the data model — goes a long way.
 
-- **GitHub Issues** — [github.com/loradb/loradb/issues](https://github.com/loradb/loradb/issues)
+- **GitHub Issues** — [github.com/lora-db/lora/issues](https://github.com/lora-db/lora/issues)
 
 ## Discussion and help
 
@@ -21,7 +21,7 @@ Design questions, "is this the right tool for X", Cypher patterns,
 integration notes.
 
 - **Discord** — [discord.gg/loradb](https://discord.gg/loradb)
-- **GitHub Discussions** — [github.com/loradb/loradb/discussions](https://github.com/loradb/loradb/discussions)
+- **GitHub Discussions** — [github.com/lora-db/lora/discussions](https://github.com/lora-db/lora/discussions)
 
 ## Updates
 

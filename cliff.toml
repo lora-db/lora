@@ -23,7 +23,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 # release workflow exports that variable (see .github/workflows/release.yml)
 # and the default keeps local `git cliff` runs working too.
 body = """
-{% set repo_url = get_env(name="GITHUB_REPO_URL", default="https://github.com/loradb/loradb") -%}
+{% set repo_url = get_env(name="GITHUB_REPO_URL", default="https://github.com/lora-db/lora") -%}
 {% if version -%}
 ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else -%}

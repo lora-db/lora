@@ -10,7 +10,7 @@ What's **not** supported today. Everything below produces a clear error
 — nothing silently misbehaves.
 
 For the full, machine-checkable feature list see the
-[Cypher support matrix](https://github.com/loradb/loradb/blob/main/docs/reference/cypher-support-matrix.md)
+[Cypher support matrix](https://github.com/lora-db/lora/blob/main/docs/reference/cypher-support-matrix.md)
 in the internal documentation.
 
 ## At a glance

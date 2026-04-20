@@ -252,7 +252,7 @@ export default function Home() {
                   Read the docs
                 </Link>
                 <Link
-                  to="https://github.com/loradb/loradb"
+                  to="https://github.com/lora-db/lora"
                   className={clsx(styles.btn, styles.btnGhost)}
                 >
                   <svg
@@ -505,7 +505,7 @@ export default function Home() {
                 Start reading the docs
               </Link>
               <Link
-                to="https://github.com/loradb/loradb"
+                to="https://github.com/lora-db/lora"
                 className={clsx(styles.btn, styles.btnGhost)}
               >
                 Star on GitHub

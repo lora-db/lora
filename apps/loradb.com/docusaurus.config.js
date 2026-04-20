@@ -9,7 +9,7 @@ module.exports = {
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/meta/favicon-96x96.png',
   organizationName: 'loradb',
-  projectName: 'loradb-docs',
+  projectName: 'lora',
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
@@ -23,7 +23,7 @@ module.exports = {
           routeBasePath: '/docs',
           sidebarPath: require.resolve('./sidebars.js'),
           editUrl: ({ docPath }) =>
-            `https://github.com/loradb/loradb-docs/edit/main/docs/${docPath}`,
+            `https://github.com/lora-db/lora/edit/main/apps/loradb.com/docs/${docPath}`,
           exclude: ['README.md'],
         },
         blog: {
@@ -37,7 +37,7 @@ module.exports = {
           postsPerPage: 10,
           showReadingTime: true,
           editUrl: ({ blogPath }) =>
-            `https://github.com/loradb/loradb-docs/edit/main/blog/${blogPath}`,
+            `https://github.com/lora-db/lora/edit/main/apps/loradb.com/blog/${blogPath}`,
           feedOptions: {
             type: ['rss', 'atom'],
             title: 'LoraDB Blog',
@@ -113,7 +113,7 @@ module.exports = {
           target: '_blank',
         },
         {
-          href: 'https://github.com/loradb/loradb',
+          href: 'https://github.com/lora-db/lora',
           position: 'right',
           className: 'icon-link icon-link-mask icon-link-github',
           'aria-label': 'GitHub repository',
@@ -146,7 +146,7 @@ module.exports = {
         {
           title: 'Community',
           items: [
-            { label: 'GitHub', href: 'https://github.com/loradb/loradb' },
+            { label: 'GitHub', href: 'https://github.com/lora-db/lora' },
             { label: 'Discord', href: 'https://discord.gg/loradb' },
             { label: 'X', href: 'https://x.com/loradb' },
             { label: 'LinkedIn', href: 'https://linkedin.com/company/loradb' },
