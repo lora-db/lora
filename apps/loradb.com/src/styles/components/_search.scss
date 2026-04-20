@@ -45,6 +45,22 @@ html[data-theme='dark'] {
     }
   }
 
+  @media (max-width: 767px) {
+    [class^='navbarSearchContainer_'] {
+      max-width: none;
+      padding-inline-start: 0.5rem;
+    }
+
+    // The easyops search plugin collapses the input to a 2rem icon under 576px
+    // and restores its default width on focus. We've already freed up the row
+    // by hiding the brand, so keep the input at full width in both states —
+    // otherwise focusing it at ~320px would push the social icons offscreen.
+    .navbar__search-input,
+    .navbar__search-input:not(:focus) {
+      width: 100%;
+    }
+  }
+
   .DocSearch-Button {
     width: 100%;
     border-radius: 8px;

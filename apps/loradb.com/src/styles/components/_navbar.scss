@@ -77,6 +77,18 @@ html[data-theme='dark'] {
       &--right {
         flex-grow: 1;
 
+        // On mobile the brand is hidden and the search fills the row —
+        // allow this group (and its search child) to shrink so icons
+        // don't get pushed past the viewport edge at 320px.
+        @media (max-width: 767px) {
+          flex-shrink: 1;
+          min-width: 0;
+
+          [class^='navbarSearchContainer_'] {
+            min-width: 0;
+          }
+        }
+
         .icon-link,
         [class*='toggle_'] {
           padding: 0.5rem;
@@ -238,6 +250,12 @@ html[data-theme='dark'] {
 
       &:hover {
         text-decoration: none;
+      }
+
+      // Hide brand (logo + title) on mobile so the search bar can span the row.
+      // The navbar sidebar (off-canvas) still shows it via its own selector.
+      @media (max-width: 767px) {
+        display: none;
       }
     }
 
