@@ -67,7 +67,7 @@ Narrow graph-typed results in host code with `isNode` /
 `isRelationship` / `isPath` (JS —
 [Node](../getting-started/node#type-guards)) or `is_node` /
 `is_relationship` / `is_path` (Python —
-[guards](../getting-started/python#c-structured-result-handling)).
+[guards](../getting-started/python#structured-result-handling)).
 
 ## Runtime type checking
 
@@ -128,10 +128,10 @@ binding's "Parameters" section for specifics:
 | `dict` / `object` / `BTreeMap` | `Map` |
 | helpers (`date()`, `wgs84()`, …) | `Date`, `Point`, etc. |
 
-Details: [Rust](../getting-started/rust#b-parameterised-query),
-[Node](../getting-started/node#b-parameterised-query),
-[Python](../getting-started/python#b-parameterised-query),
-[WASM](../getting-started/wasm#b-parameterised-query).
+Details: [Rust](../getting-started/rust#parameterised-query),
+[Node](../getting-started/node#parameterised-query),
+[Python](../getting-started/python#parameterised-query),
+[WASM](../getting-started/wasm#parameterised-query).
 
 ## Null across types
 

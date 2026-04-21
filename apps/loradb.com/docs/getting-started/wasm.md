@@ -101,11 +101,11 @@ browser, use the Worker variant.
 
 ## Examples
 
-### A. Minimal working example
+### Minimal working example
 
 Shown above.
 
-### B. Parameterised query
+### Parameterised query
 
 ```ts
 const res = await db.execute(
@@ -114,7 +114,7 @@ const res = await db.execute(
 );
 ```
 
-### C. Structured result handling (typed helpers)
+### Structured result handling (typed helpers)
 
 ```ts
 import { Database, wgs84 } from 'lora-wasm';
@@ -131,7 +131,7 @@ See the [Node guide → typed helpers](./node#typed-helpers) —
 `date`, `duration`, `cartesian`, `wgs84`, … export from both
 packages with identical signatures.
 
-### D. Application-style example — React + Worker
+### React + Worker example
 
 ```tsx
 // src/worker.ts
@@ -173,7 +173,7 @@ export function useUserCount() {
 The main thread posts messages; the engine runs in the Worker; the
 UI stays interactive.
 
-### E. Error handling
+### Handle errors
 
 ```ts
 try {
@@ -184,7 +184,7 @@ try {
 }
 ```
 
-### F. Browser constraints / async
+### Browser constraints and concurrency
 
 - WASM execution is synchronous inside the Worker — a heavy query
   blocks the worker thread, not the UI. Use one Worker per

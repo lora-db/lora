@@ -68,11 +68,11 @@ console.log(result.rows);
 
 ## Examples
 
-### A. Minimal working example
+### Minimal working example
 
 Already shown above — `create` → `execute` → inspect `result.rows`.
 
-### B. Parameterised query
+### Parameterised query
 
 ```ts
 const result = await db.execute(
@@ -86,7 +86,7 @@ Values map automatically: JS numbers → `Int` or `Float`, strings →
 objects → `Map`. Dates and spatial points use helper factories — see
 [Typed helpers](#typed-helpers).
 
-### C. Structured result handling
+### Structured result handling
 
 ```ts
 import type { LoraNode } from 'lora-node';
@@ -103,7 +103,7 @@ for (const row of res.rows) {
 }
 ```
 
-### D. Application-style example — Express handler
+### Express route handler
 
 ```ts
 import express from 'express';
@@ -136,7 +136,7 @@ app.listen(3000);
 The same shape generalises to Fastify, Hono, and the edge/serverless
 handlers — the `Database` instance lives at module scope.
 
-### E. Error handling
+### Handle errors
 
 ```ts
 import { LoraError } from 'lora-node';
@@ -153,7 +153,7 @@ try {
 }
 ```
 
-### F. Async / concurrency
+### Concurrency
 
 ```ts
 // Five lookups in parallel — each awaits the engine mutex

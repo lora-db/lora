@@ -103,10 +103,10 @@ MATCH (p:Person) WHERE p.name = $name RETURN p
 
 Parameters are bound at call time from the host language:
 
-- [Rust](../getting-started/rust#b-parameterised-query) — `BTreeMap<String, LoraValue>`
-- [Node.js](../getting-started/node#b-parameterised-query) — plain object
-- [Python](../getting-started/python#b-parameterised-query) — `dict`
-- [WASM](../getting-started/wasm#b-parameterised-query) — plain object
+- [Rust](../getting-started/rust#parameterised-query) — `BTreeMap<String, LoraValue>`
+- [Node.js](../getting-started/node#parameterised-query) — plain object
+- [Python](../getting-started/python#parameterised-query) — `dict`
+- [WASM](../getting-started/wasm#parameterised-query) — plain object
 - [HTTP server](../getting-started/server#post-query) — **not yet**
   supported, see [Limitations → Parameters](../limitations#parameters)
 

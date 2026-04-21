@@ -4,6 +4,12 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "LoraDB — embeddable in-memory graph database with Cypher query support."
+keywords = ["loradb", "graph", "cypher", "database", "in-memory"]
+categories = ["database-implementations", "database"]
 
 [lib]
 bench = false
@@ -11,12 +17,12 @@ bench = false
 [dependencies]
 anyhow.workspace = true
 
-lora-ast = { path = "../lora-ast" }
-lora-parser = { path = "../lora-parser" }
-lora-analyzer = { path = "../lora-analyzer" }
-lora-compiler = { path = "../lora-compiler" }
-lora-executor = { path = "../lora-executor" }
-lora-store = { path = "../lora-store" }
+lora-ast.workspace = true
+lora-parser.workspace = true
+lora-analyzer.workspace = true
+lora-compiler.workspace = true
+lora-executor.workspace = true
+lora-store.workspace = true
 
 serde_json.workspace = true
 tower.workspace = true

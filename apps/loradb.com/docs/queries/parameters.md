@@ -47,7 +47,7 @@ db.execute_with_params(
 )?;
 ```
 
-More detail: [Rust → Parameterised query](../getting-started/rust#b-parameterised-query).
+More detail: [Rust → Parameterised query](../getting-started/rust#parameterised-query).
 
 ### Node / TypeScript
 
@@ -58,7 +58,7 @@ await db.execute(
 );
 ```
 
-More detail: [Node → Parameterised query](../getting-started/node#b-parameterised-query).
+More detail: [Node → Parameterised query](../getting-started/node#parameterised-query).
 
 ### Python
 
@@ -69,7 +69,7 @@ db.execute(
 )
 ```
 
-More detail: [Python → Parameterised query](../getting-started/python#b-parameterised-query).
+More detail: [Python → Parameterised query](../getting-started/python#parameterised-query).
 
 ### WASM
 
@@ -80,7 +80,7 @@ await db.execute(
 );
 ```
 
-More detail: [WASM → Parameterised query](../getting-started/wasm#b-parameterised-query).
+More detail: [WASM → Parameterised query](../getting-started/wasm#parameterised-query).
 
 ## Host → LoraDB type mapping
 

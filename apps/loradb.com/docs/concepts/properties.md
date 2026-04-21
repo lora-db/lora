@@ -1,9 +1,9 @@
 ---
-title: Properties and Values on Entities
+title: Properties on Nodes and Relationships
 sidebar_label: Properties
 ---
 
-# Properties
+# Properties on Nodes and Relationships
 
 **Properties** are typed key/value pairs on [nodes](./nodes) and
 [relationships](./relationships). Keys are strings; values are any of

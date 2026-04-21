@@ -20,8 +20,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow.workspace = true
 
-lora-database = { path = "../lora-database" }
-lora-store = { path = "../lora-store" }
+lora-database.workspace = true
+lora-store.workspace = true
 
 [features]
 default = ["console_error_panic_hook"]

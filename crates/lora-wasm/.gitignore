@@ -4,9 +4,12 @@ pkg-node/
 pkg-bundler/
 pkg-web/
 *.tsbuildinfo
+# LICENSE is copied from the repo root by `npm run copy-license`.
+LICENSE
 # Playwright artefacts
 test-results/
 playwright-report/
 .playwright/
 # Built tarballs from `npm pack`
 lora-wasm-*.tgz
+loradb-lora-wasm-*.tgz

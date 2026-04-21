@@ -4,6 +4,12 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "HTTP server binary for LoraDB, exposing a Cypher-over-HTTP API."
+keywords = ["loradb", "graph", "database", "server", "cypher"]
+categories = ["database", "database-implementations", "web-programming::http-server"]
 autobenches = false
 
 [dependencies]
@@ -13,4 +19,4 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tower.workspace = true
-lora-database = { path = "../lora-database" }
+lora-database.workspace = true

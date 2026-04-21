@@ -4,9 +4,15 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "In-memory graph store with property indexes for LoraDB."
+keywords = ["loradb", "graph", "in-memory", "storage", "database"]
+categories = ["database-implementations", "data-structures"]
 
 [dependencies]
-lora-ast = { path = "../lora-ast" }
+lora-ast.workspace = true
 
 # Wall-clock reads go through the standard library on native targets and
 # through `js_sys::Date::now()` on wasm32-unknown-unknown, where

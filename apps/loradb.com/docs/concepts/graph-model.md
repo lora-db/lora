@@ -168,34 +168,6 @@ Otherwise you'd get both `(alice, bob)` and `(bob, alice)` rows.
 - **Adjacency on both ends.** Each relationship is reachable from both
   endpoints without a separate index.
 
-## Diagram (planned)
-
-**Type:** graph
-
-**Purpose:** Show the three primitives — node, relationship, property
-— in one picture so a reader who read
-[See it in four queries](#see-it-in-four-queries) can map every term
-to a visual element.
-
-**Elements:**
-- Two labelled nodes (`:Person {name: 'Ada'}`, `:Person {name: 'Grace'}`)
-- One directed relationship between them (`INFLUENCED {year: 1843}`)
-- Inline property annotations on each node and the edge
-
-**Labels:**
-- Node label (top, e.g. "Person")
-- Property map (beneath the label)
-- Relationship type on the arrow (e.g. "INFLUENCED")
-- Relationship properties hanging off the arrow body
-
-**Description:**
-Two rounded rectangles connected by a solid arrow. Each rectangle
-has a label pill (`:Person`) and a key/value list. The arrow carries
-its own pill (`:INFLUENCED`) plus a small map (`{year: 1843}`). The
-diagram should make clear that properties live on **both** nodes and
-the edge, and that direction is part of the relationship — the
-arrow head is never ambiguous.
-
 ## Comparison to other models
 
 | Model | How LoraDB differs |

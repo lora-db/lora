@@ -19,8 +19,23 @@ edition = "2021"
 version = "0.1.0"
 license = "BUSL-1.1"
 authors = ["LoraDB, Inc."]
+repository = "https://github.com/lora-db/lora"
+homepage = "https://github.com/lora-db/lora"
+rust-version = "1.75"
 
 [workspace.dependencies]
+# Internal crates — versions are kept in lockstep with [workspace.package].version
+# by `scripts/sync-versions.mjs`. Both `path` and `version` are set so that
+# `cargo publish` works (crates.io cannot resolve path-only deps).
+lora-ast = { path = "crates/lora-ast", version = "=0.1.0" }
+lora-parser = { path = "crates/lora-parser", version = "=0.1.0" }
+lora-analyzer = { path = "crates/lora-analyzer", version = "=0.1.0" }
+lora-compiler = { path = "crates/lora-compiler", version = "=0.1.0" }
+lora-store = { path = "crates/lora-store", version = "=0.1.0" }
+lora-executor = { path = "crates/lora-executor", version = "=0.1.0" }
+lora-database = { path = "crates/lora-database", version = "=0.1.0" }
+
+# External crates.
 anyhow = "1"
 thiserror = "2"
 tracing = "0"

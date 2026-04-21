@@ -4,6 +4,12 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "AST types for the Cypher query language used by LoraDB."
+keywords = ["loradb", "cypher", "ast", "graph"]
+categories = ["parser-implementations", "data-structures"]
 
 [dependencies]
 smallvec.workspace = true

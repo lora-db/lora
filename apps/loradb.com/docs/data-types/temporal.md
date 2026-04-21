@@ -70,7 +70,7 @@ Every binding ships a helper so you don't have to write constructor
 strings manually:
 
 - Node/WASM — [typed helpers](../getting-started/node#typed-helpers)
-- Python — [parameters](../getting-started/python#b-parameterised-query)
+- Python — [parameters](../getting-started/python#parameterised-query)
 
 ## Comparison and ordering
 
@@ -129,7 +129,7 @@ Across host-language bindings, temporals are tagged:
 
 Use the host-language helpers (`date()`, `datetime()`, `duration()` in
 each binding — see [Node](../getting-started/node#typed-helpers),
-[Python](../getting-started/python#b-parameterised-query)) to build these values
+[Python](../getting-started/python#parameterised-query)) to build these values
 without touching the tagged shape manually.
 
 ## Examples

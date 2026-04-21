@@ -9,13 +9,28 @@ description = "Python bindings for the Lora in-memory graph database"
 readme = "README.md"
 license = { text = "BUSL-1.1" }
 requires-python = ">=3.8"
+authors = [{ name = "LoraDB, Inc." }]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: Implementation :: CPython",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Typing :: Typed",
     "Development Status :: 3 - Alpha",
 ]
+
+[project.urls]
+Homepage = "https://github.com/lora-db/lora"
+Repository = "https://github.com/lora-db/lora"
+Issues = "https://github.com/lora-db/lora/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-asyncio>=0.23"]

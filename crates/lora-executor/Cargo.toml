@@ -4,12 +4,18 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Query-plan executor for LoraDB's Cypher implementation."
+keywords = ["loradb", "cypher", "executor", "graph", "query"]
+categories = ["database-implementations", "algorithms"]
 
 [dependencies]
-lora-compiler = { path = "../lora-compiler" }
-lora-store = { path = "../lora-store" }
-lora-analyzer = { path = "../lora-analyzer" }
-lora-ast = { path = "../lora-ast" }
+lora-compiler.workspace = true
+lora-store.workspace = true
+lora-analyzer.workspace = true
+lora-ast.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

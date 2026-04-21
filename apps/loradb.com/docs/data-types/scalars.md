@@ -215,9 +215,9 @@ See [String Functions](../functions/string) for the full reference.
 Highlights:
 
 ```cypher
-RETURN toLower('LoroDB'),           -- 'lorodb'
+RETURN toLower('LoraDB'),           -- 'loradb'
        split('a,b,c', ','),         -- ['a', 'b', 'c']
-       substring('LoroDB', 0, 4),   -- 'Loro'
+       substring('LoraDB', 0, 4),   -- 'Lora'
        replace('aba', 'a', 'x')     -- 'xbx'
 ```
 

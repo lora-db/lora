@@ -5,10 +5,12 @@
 //   - Linux GNU:   lora-node.linux-x64-gnu.node
 //   - Linux musl:  lora-node.linux-x64-musl.node
 //   - Windows:     lora-node.win32-x64-msvc.node
-//   - macOS:       lora-node.darwin-arm64.node  (no suffix)
+//   - macOS:       lora-node.darwin-arm64.node  (no ABI suffix)
 //   - FreeBSD:     lora-node.freebsd-x64.node
 //
-// We build the list of candidate filenames accordingly and try each one.
+// Published installs resolve the binary through an optional platform
+// subpackage named `@loradb/lora-node-<triple>`; local dev builds drop the
+// `.node` at the crate root. We try both.
 
 "use strict";
 
@@ -66,19 +68,22 @@ function loadNative() {
     }
   }
 
-  // 2. Platform-specific npm subpackage (future: @lora/lora-node-<triple>).
-  for (const triple of triples) {
+  // 2. Platform-specific npm subpackage (@loradb/lora-node-<triple>).
+  const subpackageNames = triples.map((t) => `@loradb/lora-node-${t}`);
+  for (const name of subpackageNames) {
     try {
-      return require(`@lora/lora-node-${triple}`);
-    } catch {
+      return require(name);
+    } catch (err) {
+      if (err && err.code !== "MODULE_NOT_FOUND") throw err;
       // fall through to the next triple / final error.
     }
   }
 
   throw new Error(
     `lora-node: no native binary found for ${platform}-${arch}. ` +
-      `Tried: ${localCandidates.join(", ")}. ` +
-      "Run `npm run build` in the crate directory to produce a local build.",
+      `Tried local: ${localCandidates.join(", ")}. ` +
+      `Tried npm: ${subpackageNames.join(", ")}. ` +
+      "For local development, run `npm run build` in the crate directory.",
   );
 }
 

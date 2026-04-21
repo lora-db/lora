@@ -53,6 +53,6 @@ publicly.
 
 ## See also
 
-- [**About**](/about) — what LoraDB is and who it's for.
-- [**Why LoraDB**](/why) — the longer-form case.
+- [**What is LoraDB**](/docs) — introduction and who it's for.
+- [**Why LoraDB**](/docs/why) — the longer-form case.
 - [**Docs**](/docs) — installation, queries, and reference.

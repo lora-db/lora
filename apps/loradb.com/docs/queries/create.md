@@ -152,9 +152,9 @@ CREATE (:Person {name: p.name, born: p.born})
 Where `$people = [{name: 'Ada', born: 1815}, …]`. This is the
 recommended way to load hundreds or thousands of rows in one query —
 see each binding's parameters section
-([Rust](../getting-started/rust#b-parameterised-query),
-[Node](../getting-started/node#b-parameterised-query),
-[Python](../getting-started/python#b-parameterised-query)).
+([Rust](../getting-started/rust#parameterised-query),
+[Node](../getting-started/node#parameterised-query),
+[Python](../getting-started/python#parameterised-query)).
 
 ### Bulk relationships
 

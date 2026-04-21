@@ -424,7 +424,7 @@ export default function Home() {
                     Cookbook
                   </Link>
                   <Link
-                    to="/why"
+                    to="/docs/why"
                     className={clsx(styles.btn, styles.btnGhost)}
                   >
                     Why LoraDB

@@ -1,9 +1,14 @@
 ---
-title: Troubleshooting Common Issues
+title: Troubleshooting LoraDB Errors
 sidebar_label: Troubleshooting
 ---
 
-# Troubleshooting Common Issues
+# Troubleshooting LoraDB Errors
+
+When a query fails, returns no rows, or the server refuses to start,
+find the symptom in the lookup table below and jump straight to the
+fix. Each section explains the cause, shows the failure mode, and
+gives the shortest way out.
 
 ## Quick lookup
 

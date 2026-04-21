@@ -98,7 +98,7 @@ await db.execute(
 ```
 
 See [Node → typed helpers](../getting-started/node#typed-helpers) and
-[Python → parameters](../getting-started/python#b-parameterised-query).
+[Python → parameters](../getting-started/python#parameterised-query).
 
 ## Component access
 

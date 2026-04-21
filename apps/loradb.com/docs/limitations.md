@@ -5,9 +5,12 @@ sidebar_label: Limitations
 
 # What's Not Supported Yet
 
-What's **not** supported today. Everything below produces a clear error
-(parse error, `SemanticError::UnsupportedFeature`, or `UnknownFunction`)
-— nothing silently misbehaves.
+This page lists every Cypher feature and operational capability LoraDB
+does **not** support today, so you can decide whether LoraDB fits your
+use case and know what to reach for instead. Every unsupported feature
+below raises a clear error (a parse error,
+`SemanticError::UnsupportedFeature`, or `UnknownFunction`) — nothing
+silently misbehaves.
 
 For the full, machine-checkable feature list see the
 [Cypher support matrix](https://github.com/lora-db/lora/blob/main/docs/reference/cypher-support-matrix.md)
@@ -156,7 +159,7 @@ roadmap:
 - Schema constraints / indexes at the DDL level
 - Multi-database `USE`
 
-See [Why LoraDB](/why) for the project's intended direction.
+See [Why LoraDB](./why) for the project's intended direction.
 
 ## See also
 

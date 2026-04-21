@@ -67,11 +67,11 @@ defaults.
 
 ## Examples
 
-### A. Minimal working example
+### Minimal working example
 
 Already shown above — `in_memory` → `execute` → inspect.
 
-### B. Parameterised query
+### Parameterised query
 
 ```rust
 use std::collections::BTreeMap;
@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
 Missing parameters resolve to `null`. Always bind every `$name` used
 in the query. See [Queries → Parameters](../queries/#parameters).
 
-### C. Structured result handling
+### Structured result handling
 
 ```rust
 use lora_database::{Database, LoraValue, QueryResult};
@@ -125,7 +125,7 @@ fn names(db: &Database) -> anyhow::Result<Vec<String>> {
 See [Data Types → Scalars](../data-types/scalars) for the full
 `LoraValue` variants.
 
-### D. Service-layer abstraction
+### Service-layer abstraction
 
 A thin wrapper you'd realistically put in your application code:
 
@@ -166,7 +166,7 @@ impl UserService {
 # fn extract_int(_r: lora_database::QueryResult, _c: &str) -> anyhow::Result<i64> { Ok(0) }
 ```
 
-### E. Error handling
+### Handle errors
 
 Every `execute` call returns `Result`. Distinguish query errors from
 connection-layer errors (not currently surfaced in the in-memory
@@ -192,7 +192,7 @@ Common causes: parse errors, unknown labels, unknown functions. See
 [Troubleshooting → Parse errors](../troubleshooting#parse-errors)
 and [Semantic errors](../troubleshooting#semantic-errors).
 
-### F. Concurrency
+### Concurrency
 
 ```rust
 use std::sync::Arc;

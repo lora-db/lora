@@ -5,8 +5,14 @@ sidebar_label: HTTP API
 
 # HTTP API Reference
 
-`lora-server` exposes the engine over HTTP. One process serves exactly
-one in-memory graph. For an install / run walkthrough, see the
+Endpoint-by-endpoint reference for `lora-server` — the Axum-based HTTP
+wrapper around the engine. Use this page when you're calling LoraDB
+over the wire from a non-Rust/Node/Python stack, or when you want to
+poke at the engine from `curl`. One process serves exactly one
+in-memory graph.
+
+For an install-and-run walkthrough (how to start the server, set host
+and port, embed it in a larger Axum app), see the
 [HTTP server quickstart](../getting-started/server).
 
 ## Endpoints at a glance
@@ -56,10 +62,10 @@ a structured result back.
 :::caution
 
 The request body does **not** yet accept a `params` field. Bind
-parameters via the [Rust](../getting-started/rust#b-parameterised-query),
-[Node](../getting-started/node#b-parameterised-query),
-[Python](../getting-started/python#b-parameterised-query), or
-[WASM](../getting-started/wasm#b-parameterised-query) bindings. See
+parameters via the [Rust](../getting-started/rust#parameterised-query),
+[Node](../getting-started/node#parameterised-query),
+[Python](../getting-started/python#parameterised-query), or
+[WASM](../getting-started/wasm#parameterised-query) bindings. See
 [Limitations → Parameters](../limitations#parameters).
 
 :::

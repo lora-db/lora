@@ -492,39 +492,6 @@ RETURN u.handle, best_post.title, best_post.views
 One row per user with their highest-viewed post. The `collect(…)[..1]`
 slice picks the first element of the sort-ordered `collect`.
 
-## Diagram (planned)
-
-**Type:** pipeline / flow
-
-**Purpose:** Show rows flowing through the aggregation pipeline and
-where the implicit `GROUP BY` collapses them — illustrating the
-mental model behind the five-step walkthrough.
-
-**Elements:**
-- A vertical pipeline with five stacked stages: `MATCH`, `WHERE`,
-  `RETURN`-with-aggregate (or `WITH`), optional `WHERE` after `WITH`,
-  `RETURN`
-- A column showing row count at each stage (6 → 6 → 5 → 3 → 3 for
-  the EU/US/APAC example)
-- A collapse arrow between the pre-aggregate and post-aggregate
-  stages, visually "pinching" many rows into one per group
-
-**Labels:**
-- Stage name on the left
-- Row count on the right
-- The collapse point explicitly labelled "implicit GROUP BY on
-  non-aggregated columns"
-- The HAVING-style filter stage labelled
-  "aggregates allowed here — not in WHERE"
-
-**Description:**
-A top-to-bottom flowchart. Pre-aggregate rows are drawn as small
-stacked tiles on the right. At the aggregate stage, tiles with the
-same group key are tied together with a brace and replaced by a
-single larger tile that carries the aggregated values. The reader
-should be able to point at any stage and say "this many rows,
-because".
-
 ## Limitations
 
 - **No `GROUP BY` keyword** — grouping is always implicit on non-aggregated

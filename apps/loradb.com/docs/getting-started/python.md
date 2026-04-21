@@ -78,11 +78,11 @@ print(result["rows"])
 
 ## Examples
 
-### A. Minimal working example
+### Minimal working example
 
 Already shown above.
 
-### B. Parameterised query
+### Parameterised query
 
 ```python
 result = db.execute(
@@ -95,7 +95,7 @@ Python values map to engine values automatically:
 `int`/`float`/`bool`/`str`/`None` and `list`/`dict` pass through. For
 temporal and spatial values, use the tagged helpers below.
 
-### C. Structured result handling
+### Structured result handling
 
 ```python
 from lora_python import Database, is_node
@@ -114,7 +114,7 @@ for row in result["rows"]:
 Available guards: `is_node`, `is_relationship`, `is_path`,
 `is_point`, `is_temporal`.
 
-### D. Application-style example — FastAPI handler
+### FastAPI route handler
 
 ```python
 from fastapi import FastAPI, HTTPException
@@ -146,7 +146,7 @@ async def get_user(user_id: int):
 Works unchanged under Flask/Django/Litestar — swap the framework
 but keep the `AsyncDatabase` instance at module scope.
 
-### E. Error handling
+### Handle errors
 
 ```python
 from lora_python import Database, LoraQueryError, InvalidParamsError
@@ -164,7 +164,7 @@ except InvalidParamsError as exc:
 `LoraError` is the common base class — catch it if you don't need
 to distinguish.
 
-### F. Sync vs async
+### Sync vs async
 
 Sync:
 

@@ -4,7 +4,7 @@ module.exports = {
       type: 'category',
       label: 'Introduction',
       collapsed: false,
-      items: ['index'],
+      items: ['index', 'why'],
     },
     {
       type: 'category',
@@ -94,7 +94,7 @@ module.exports = {
     },
     {
       type: 'category',
-      label: 'Reference',
+      label: 'Guides & Reference',
       collapsed: false,
       items: ['cookbook', 'limitations', 'troubleshooting'],
     },

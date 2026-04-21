@@ -3,7 +3,7 @@ title: Relationships Between Nodes
 sidebar_label: Relationships
 ---
 
-# Relationships
+# Relationships Between Nodes
 
 A **relationship** is a directed, typed edge between two nodes. Like
 nodes, it can carry properties.

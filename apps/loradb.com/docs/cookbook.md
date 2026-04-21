@@ -6,21 +6,18 @@ sidebar_label: Cookbook
 # LoraDB Query Cookbook
 
 A scenario-driven companion to the clause-by-clause
-[**Queries reference**](./queries/). Each recipe names a real problem,
-states the assumed data model, gives a query, and explains why it
-works — then lists useful variations and related concepts.
+[**Queries reference**](./queries/). Use this page when you know the
+question you want to ask ("who are my mutual follows?", "which orders
+are late?") but aren't sure how to shape the Cypher. Where the
+reference answers *"what does this clause do"*, the cookbook answers
+*"how do I ask this question"*.
 
-When the reference answers *"what does this clause do"*, this page
-answers *"how do I ask this question"*.
-
-## Introduction
-
-- Recipes are grouped by domain: social, e-commerce, events, geo.
-- Every query is idiomatic LoraDB — no APOC, no `CALL`, no window
-  functions. When a SQL idiom doesn't translate, the recipe shows the
-  Cypher-native shape.
-- Data-model assumptions are stated explicitly so you can adapt each
-  query to your own schema.
+Each recipe names a real problem, states the assumed data model, gives
+a query, and explains why it works — then lists useful variations and
+related concepts. Recipes are grouped by domain: social, e-commerce,
+events, geospatial. Every query is idiomatic LoraDB — no APOC, no
+`CALL`, no window functions — and when a SQL idiom doesn't translate,
+the recipe shows the Cypher-native shape.
 
 ## On this page
 

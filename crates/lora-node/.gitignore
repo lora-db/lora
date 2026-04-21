@@ -2,3 +2,11 @@ node_modules/
 dist/
 *.node
 *.tsbuildinfo
+# LICENSE is copied from the repo root by `npm run copy-license`.
+LICENSE
+# Per-triple subpackage scaffolds created by `napi create-npm-dir`.
+npm/
+# Downloaded release artifacts collected by `napi artifacts`.
+artifacts/
+# Built tarballs from `npm pack` / `npm publish`.
+loradb-lora-node-*.tgz

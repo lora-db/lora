@@ -4,7 +4,13 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Query-plan compiler for LoraDB's Cypher implementation."
+keywords = ["loradb", "cypher", "compiler", "graph", "query-plan"]
+categories = ["compilers", "database-implementations"]
 
 [dependencies]
-lora-analyzer = { path = "../lora-analyzer" }
-lora-ast = { path = "../lora-ast" }
+lora-analyzer.workspace = true
+lora-ast.workspace = true

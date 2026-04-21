@@ -64,11 +64,11 @@ curl -s http://127.0.0.1:4747/query \
 
 ## Examples
 
-### A. Minimal working example — via `curl`
+### Minimal working example with `curl`
 
 Shown above. Two `POST /query` calls.
 
-### B. Parameterised query
+### Parameterised query
 
 :::caution
 
@@ -92,7 +92,7 @@ curl -s http://127.0.0.1:4747/query \
 For anything user-supplied, run against the [Rust binding](./rust)
 with real parameters and expose a narrower API on top.
 
-### C. Structured result handling — `jq`
+### Structured result handling with `jq`
 
 ```bash
 curl -s http://127.0.0.1:4747/query \
@@ -101,7 +101,7 @@ curl -s http://127.0.0.1:4747/query \
   | jq '.rows[].name'
 ```
 
-### D. Application-style example — Node client
+### Node client example
 
 ```ts
 async function runQuery(query: string) {
@@ -121,7 +121,7 @@ const { rows } = await runQuery('MATCH (p:Person) RETURN count(*) AS n');
 console.log(rows[0].n);
 ```
 
-### E. Error handling
+### Handle errors
 
 HTTP status codes:
 
@@ -136,7 +136,7 @@ HTTP status codes:
 
 Handle both explicitly; never assume `200` on a mis-typed query.
 
-### F. Batch / embedding
+### Embedding in a larger Axum app
 
 `lora-server` is also a library — embed it in a larger Axum
 application, or run several processes on different ports for

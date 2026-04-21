@@ -1,11 +1,19 @@
 [package]
 name = "lora-parser"
-version.workspace = true
 edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Cypher grammar and parser for LoraDB, built on pest."
+keywords = ["loradb", "cypher", "parser", "graph", "pest"]
+categories = ["parser-implementations", "parsing"]
 
 [dependencies]
 thiserror.workspace = true
 pest.workspace = true
 pest_derive.workspace = true
 smallvec.workspace = true
-lora-ast = { path = "../lora-ast" }
+lora-ast.workspace = true

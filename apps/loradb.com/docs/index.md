@@ -7,9 +7,11 @@ slug: /
 # What is LoraDB
 
 LoraDB is a **local-first, in-memory property-graph engine** written
-in Rust. You embed it in your Rust / Node / Python / WASM host, or
-talk to it over HTTP, and query it with a pragmatic subset of
-**Cypher**.
+in Rust, built for services, pipelines, and agents that model richly
+connected data and need to query it in-process without standing up a
+separate database. You embed it in your Rust, Node, Python, or WASM
+host — or talk to it over HTTP — and query it with a pragmatic subset
+of **Cypher**.
 
 It is:
 
@@ -22,22 +24,67 @@ It is:
 
 It is **not**:
 
-- A durable, clustered production database. There's no persistence
-  today — state is lost on restart.
-- A multi-tenant server with auth or TLS. Bind to `127.0.0.1` or put
-  it behind a proxy.
 - A drop-in replacement for Neo4j. LoraDB speaks Cypher, but a
   scoped subset — see [Limitations](./limitations) for the exact
   shape.
+- A product suite. It's a crate you embed, not a service you operate.
+- A durable, clustered database tier — see
+  [the engine's boundaries](#the-engines-boundaries) below for the
+  technical limits.
+
+For the longer-form positioning — why an embedded graph at all, and
+how LoraDB compares against managed graph DBs, SQL, and document
+stores — see [**Why LoraDB**](./why).
 
 ## Who it's for
 
-- Developers who want a graph database **embedded** in their process
-  rather than running one as a service.
-- Engineers prototyping or shipping a **local-first** app that
-  benefits from graph queries (Electron, browser worker, CLI, edge).
-- Teams evaluating graph data models who want a fast, zero-ops
-  starting point — write Cypher, read rows, keep moving.
+### Backend services
+
+Services that already own their storage and want a graph view over it
+— permissions, org charts, supply chains, lineage — without running a
+second database tier.
+
+### AI agents and LLM pipelines
+
+Agents accumulate context: entities, relations, observations,
+decisions, tool calls. Storing that as a graph gives you typed
+traversal (`what does this agent know about entity X?`) instead of
+ad-hoc JSON lookups. The in-process model keeps the memory close to
+the reasoning loop.
+
+### Robotics and stateful systems
+
+Scenes, maps, tasks, and their dependencies change constantly. A graph
+captures the structure; Cypher captures the question. Running in the
+same process as the controller avoids cross-service latency on the
+control loop.
+
+### Event-driven and real-time pipelines
+
+Entity resolution, relationship inference, and path queries over
+streams — done in memory, alongside the code that produces the events.
+
+### Notebooks, CLIs, tests, research tooling
+
+A Cypher-capable graph you can open in one line of code. No Docker, no
+auth, no network hop. Useful any time reaching for Neo4j or Memgraph
+would be disproportionate to the task.
+
+## Why it fits modern workloads
+
+Agents, robots, and real-time pipelines all end up building an
+in-memory structure of entities and relations with typed keys and an
+evolving shape. Three properties make that structure a good fit for
+an embedded graph:
+
+- **Context is relational.** What matters is rarely a row; it's how
+  rows connect. A graph model states that directly.
+- **Context changes.** Schemas shift as the system learns. LoraDB is
+  schema-free — new labels and properties come into existence the
+  first time you write them.
+- **Context must stay close.** Reasoning that crosses a network
+  boundary is slower and less reliable. An embedded engine removes
+  the boundary.
 
 ## From zero to first query
 
@@ -114,7 +161,8 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 
 ## The engine's boundaries
 
-Honest up front:
+Every item below is a deliberate trade-off, not an oversight — worth
+knowing up front:
 
 - **No persistence.** All state is in-memory; `kill -9` loses it.
 - **No property indexes.** `MATCH (n {prop: v})` without a label is
@@ -127,9 +175,6 @@ Honest up front:
   reverse proxy.
 - **No HTTP-level parameters yet.** Bind via the embedded bindings;
   see [Parameters](./queries/parameters#http-api-doesnt-forward-params).
-
-None of these are accidents — see [Why LoraDB](/why) for the
-positioning.
 
 ## Help and community
 

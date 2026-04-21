@@ -2,8 +2,27 @@
   "name": "@loradb/lora-wasm",
   "version": "0.1.0",
   "description": "WebAssembly bindings for the Lora in-memory graph database",
-  "private": true,
   "license": "BUSL-1.1",
+  "author": "LoraDB, Inc.",
+  "homepage": "https://github.com/lora-db/lora#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lora-db/lora.git",
+    "directory": "crates/lora-wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/lora-db/lora/issues"
+  },
+  "keywords": [
+    "lora",
+    "loradb",
+    "graph",
+    "cypher",
+    "database",
+    "wasm",
+    "webassembly",
+    "neo4j"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,8 +52,15 @@
     "dist/",
     "pkg-node/",
     "pkg-bundler/",
-    "pkg-web/"
+    "pkg-web/",
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -56,7 +82,8 @@
     "test:watch": "vitest",
     "test:browser": "playwright test",
     "test:browser:install": "playwright install chromium",
-    "prepack": "npm run sync:types && npm run build",
+    "copy-license": "node -e \"const fs=require('fs'); try { fs.copyFileSync('../../LICENSE','LICENSE'); } catch (e) { if (e.code !== 'ENOENT') throw e; }\"",
+    "prepack": "npm run sync:types && npm run copy-license && npm run build",
     "pack:dry": "npm pack --dry-run"
   },
   "devDependencies": {

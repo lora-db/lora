@@ -1,0 +1,154 @@
+name: cargo-release
+
+# Publishes every publishable workspace crate to crates.io when a semver
+# tag is pushed.
+#
+# Flow:
+#   1. `verify-versions` re-runs `scripts/sync-versions.mjs --check` so
+#      the tag, every manifest, and every pinned internal dep agree.
+#   2. `dry-run` executes `cargo publish --dry-run` for every publishable
+#      crate in dependency order. Nothing is published in this stage —
+#      a bad manifest (missing description, unresolvable dep, …) is
+#      caught here before any crate goes out.
+#   3. `publish` runs `scripts/publish-crates.mjs`, which re-runs the
+#      dry-run once more (defence in depth) and then publishes each
+#      crate in order. "Already uploaded" errors are tolerated so a
+#      recovery run against the same tag converges correctly.
+#
+# Published crates (in order):
+#   lora-ast -> lora-store -> lora-parser -> lora-analyzer -> lora-compiler
+#     -> lora-executor -> lora-database -> lora-server
+#
+# Not published:
+#   lora-node, lora-wasm, lora-python  (ship via npm / PyPI instead).
+#
+# Runs in parallel with release.yml (lora-server binary draft) and
+# packages-release.yml (npm + PyPI). All three keyed off the same tag.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.0)."
+        required: true
+        type: string
+      dry_run:
+        description: "Run `cargo publish --dry-run` only. Skip the real publish."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargo-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  DRY_RUN: ${{ inputs.dry_run || 'false' }}
+
+jobs:
+  verify-versions:
+    name: verify tag matches manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      dry_run: ${{ env.DRY_RUN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/resolve-release-tag
+        id: tag
+        with:
+          tag: ${{ inputs.tag }}
+
+      - name: Verify all manifests match ${{ steps.tag.outputs.version }}
+        run: node scripts/sync-versions.mjs "${{ steps.tag.outputs.version }}" --check
+
+  dry-run:
+    name: cargo publish --dry-run (all crates)
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: cargo-release-dry-run
+
+      - name: cargo check (workspace, locked)
+        run: cargo check --workspace --locked
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: Validate every publishable crate's manifest
+        run: node scripts/publish-crates.mjs --dry-run
+
+  publish:
+    name: publish to crates.io
+    needs: [verify-versions, dry-run]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: crates-io-publish
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: cargo-release-publish
+
+      - name: Publish every crate in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN secret is missing on environment 'crates-io-publish'."
+            echo "::error::See RELEASING.md → 'crates.io — one-time registry setup' for setup steps."
+            exit 1
+          fi
+          node scripts/publish-crates.mjs --version "${{ needs.verify-versions.outputs.tag }}" --skip-published
+
+  summary:
+    name: cargo-release summary
+    needs: [verify-versions, dry-run, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+          DRY: ${{ needs.verify-versions.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "dry_run=${DRY}"
+          echo "$NEEDS_JSON"
+          if echo "$NEEDS_JSON" | grep -Eq '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled)"'; then
+            echo "::error::one or more upstream jobs failed or were cancelled"
+            exit 1
+          fi
+          if [ "$DRY" != "true" ]; then
+            result=$(echo "$NEEDS_JSON" | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(j.publish.result)")
+            if [ "$result" != "success" ]; then
+              echo "::error::publish did not succeed (result=${result})"
+              exit 1
+            fi
+          fi
+          echo "all good"

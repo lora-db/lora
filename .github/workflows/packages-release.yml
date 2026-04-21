@@ -1,0 +1,615 @@
+name: packages-release
+
+# Publishes the three distributable packages when a semver tag is pushed:
+#   - @loradb/lora-wasm                → npm
+#   - @loradb/lora-node                → npm (root + per-triple subpackages)
+#   - lora-python                      → PyPI (manylinux + macOS + Windows wheels + sdist)
+#
+# Triggers:
+#   - `git push origin vX.Y.Z`  (or `vX.Y.Z-rc.1` etc.) starts the full flow.
+#   - Manual dispatch lets you rebuild an existing tag (recovery) or
+#     rehearse the entire pipeline with `dry_run: true`, which builds
+#     and packs everything but skips the actual publish.
+#
+# Artifacts from every build leg are uploaded before any publish job runs,
+# so a failed publish can be inspected or re-driven from the tag without
+# re-tagging. The lora-server binary release (release.yml) is intentionally
+# separate — that workflow creates a draft GitHub Release; this one pushes
+# to npm and PyPI which have no draft concept.
+#
+# Trusted publishing (OIDC) is preferred for both registries:
+#   - npm:  configure a trusted publisher on npmjs.com for each package,
+#           bound to GitHub environment `npm-publish`.
+#   - PyPI: configure a trusted publisher at pypi.org, bound to GitHub
+#           environment `pypi-publish`.
+# If trusted publishing is unavailable (e.g. first-ever publish of a new
+# package name), the workflow falls back to `NPM_TOKEN` / `PYPI_API_TOKEN`
+# secrets when present. See RELEASING.md for the exact setup.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.0)."
+        required: true
+        type: string
+      dry_run:
+        description: "Build+pack only. Skip all publish steps."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # `dry_run` only exists on workflow_dispatch. On a tag push the input is
+  # empty, which we want to mean "do publish". Normalise that here so
+  # every downstream `if:` can just compare to 'true'.
+  DRY_RUN: ${{ inputs.dry_run || 'false' }}
+
+jobs:
+  verify-versions:
+    name: verify tag matches manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      dry_run: ${{ env.DRY_RUN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/resolve-release-tag
+        id: tag
+        with:
+          tag: ${{ inputs.tag }}
+
+      - name: Verify all manifests match ${{ steps.tag.outputs.version }}
+        run: node scripts/sync-versions.mjs "${{ steps.tag.outputs.version }}" --check
+
+  # ──────────────────────────────────────────────────────────────────────
+  # @loradb/lora-wasm
+  # Single tarball that ships dist/ + pkg-node/ + pkg-bundler/ + pkg-web/.
+  # ──────────────────────────────────────────────────────────────────────
+
+  build-wasm:
+    name: build @loradb/lora-wasm
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: crates/lora-wasm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-wasm-release-ubuntu
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.14.0"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/lora-wasm/package-lock.json
+
+      - name: npm install
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Copy LICENSE from repo root
+        run: cp ../../LICENSE LICENSE
+
+      - name: Build (WASM + TS)
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: npm pack (dry-run, inspection)
+        run: npm pack --dry-run
+
+      - name: npm pack (produce tarball)
+        run: npm pack
+
+      - name: Stage tarball at workspace root for clean artifact layout
+        run: mv loradb-lora-wasm-*.tgz ../../
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-wasm-tarball
+          path: loradb-lora-wasm-*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-wasm:
+    name: publish @loradb/lora-wasm
+    needs: [verify-versions, build-wasm]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: crates/lora-wasm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-wasm-release-ubuntu
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.14.0"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/lora-wasm/package-lock.json
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm to a version that supports --provenance (>=9.5)
+        run: npm install -g npm@latest
+
+      - name: npm install
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Copy LICENSE from repo root
+        run: cp ../../LICENSE LICENSE
+
+      - name: Build (WASM + TS)
+        run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          # Populated when trusted publishing is NOT yet configured.
+          # With trusted publishing live, this is empty and npm falls back
+          # to the GitHub OIDC token automatically.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # @loradb/lora-node
+  # One root package (JS + TS + loader) plus one platform subpackage per
+  # napi triple. Native binaries are built in parallel matrix jobs and
+  # assembled in the publish job using napi-rs' create-npm-dir / artifacts
+  # commands.
+  # ──────────────────────────────────────────────────────────────────────
+
+  build-node:
+    name: build lora-node ${{ matrix.triple }}
+    needs: verify-versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            triple: linux-x64-gnu
+            cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            triple: linux-arm64-gnu
+            cross: zig
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            triple: darwin-x64
+            cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            triple: darwin-arm64
+            cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            triple: win32-x64-msvc
+            cross: false
+    defaults:
+      run:
+        working-directory: crates/lora-node
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-node-release-${{ matrix.triple }}
+          targets: ${{ matrix.target }}
+
+      - name: Install zig for linux-arm64 cross-compile
+        if: matrix.cross == 'zig'
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: "0.13.0"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/lora-node/package-lock.json
+
+      - name: npm install
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Verify shared TS types are in sync
+        run: npm run verify:types
+
+      - name: Copy LICENSE from repo root (unix)
+        if: runner.os != 'Windows'
+        run: cp ../../LICENSE LICENSE
+
+      - name: Copy LICENSE from repo root (pwsh)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item ..\..\LICENSE LICENSE
+
+      - name: Build native for target ${{ matrix.target }} (zig=${{ matrix.cross == 'zig' }})
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ZIG: ${{ matrix.cross == 'zig' && '--zig' || '' }}
+        run: |
+          npx napi build --platform --release --js false --target "$TARGET" $ZIG
+
+      - name: Verify the expected .node file exists
+        shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          if [ ! -f "lora-node.${TRIPLE}.node" ]; then
+            echo "::error::expected lora-node.${TRIPLE}.node" >&2
+            ls -la *.node || true
+            exit 1
+          fi
+
+      - name: Stage binary at workspace root for clean artifact layout
+        shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: mv "lora-node.${TRIPLE}.node" ../../
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-node-binary-${{ matrix.triple }}
+          path: lora-node.${{ matrix.triple }}.node
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-node:
+    name: publish @loradb/lora-node
+    needs: [verify-versions, build-node]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: crates/lora-node
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/lora-node/package-lock.json
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm to a version that supports --provenance (>=9.5)
+        run: npm install -g npm@latest
+
+      - name: npm install (@napi-rs/cli + tsc are needed below)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Sync + typecheck + build TS (the root package's dist/)
+        run: |
+          npm run sync:types
+          npm run typecheck
+          npm run build:ts
+
+      - name: Copy LICENSE from repo root
+        run: cp ../../LICENSE LICENSE
+
+      - name: Download every per-triple native artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lora-node-binary-*
+          path: crates/lora-node/artifacts
+          merge-multiple: true
+
+      - name: Show collected .node files
+        run: ls -la artifacts
+
+      - name: Create per-triple npm subpackage scaffolds
+        run: npx napi create-npm-dir -t .
+
+      - name: Move .node binaries into subpackage dirs
+        run: npx napi artifacts --dir artifacts --dist npm
+
+      - name: Verify every triple subpackage now has its binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="linux-x64-gnu linux-arm64-gnu darwin-x64 darwin-arm64 win32-x64-msvc"
+          missing=0
+          for triple in $expected; do
+            bin="npm/${triple}/lora-node.${triple}.node"
+            if [ ! -f "$bin" ]; then
+              echo "::error::missing $bin"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "--- npm/ tree ---"
+            find npm -type f | sort
+            exit 1
+          fi
+
+      - name: Inject optionalDependencies into root package.json
+        shell: bash
+        run: |
+          node <<'EOF'
+          const fs = require('node:fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const triples = ['linux-x64-gnu', 'linux-arm64-gnu', 'darwin-x64', 'darwin-arm64', 'win32-x64-msvc'];
+          pkg.optionalDependencies = Object.fromEntries(
+            triples.map((t) => [`@loradb/lora-node-${t}`, pkg.version])
+          );
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          console.log('optionalDependencies:', pkg.optionalDependencies);
+          EOF
+
+      - name: Publish each platform subpackage
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for dir in npm/*/; do
+            echo "::group::publish ${dir}"
+            (cd "${dir}" && npm publish --provenance --access public --ignore-scripts)
+            echo "::endgroup::"
+          done
+
+      - name: Publish root package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public --ignore-scripts
+
+  # ──────────────────────────────────────────────────────────────────────
+  # lora-python
+  # abi3-py38 means ONE wheel per (os, arch) covers every Python 3.8+
+  # interpreter — we deliberately do NOT put Python versions in the
+  # matrix here (that would produce identical wheel filenames and either
+  # collide on upload or waste CI time). The standard lora-python CI
+  # workflow is what exercises multiple interpreter versions.
+  # ──────────────────────────────────────────────────────────────────────
+
+  build-python-wheels:
+    name: build wheel (${{ matrix.os }} / ${{ matrix.target }})
+    needs: verify-versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+            manylinux: "auto"
+          - os: ubuntu-latest
+            target: aarch64
+            manylinux: "auto"
+          - os: macos-latest
+            target: x86_64
+            manylinux: "off"
+          - os: macos-latest
+            target: aarch64
+            manylinux: "off"
+          - os: windows-latest
+            target: x64
+            manylinux: "off"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Copy LICENSE next to pyproject.toml (unix)
+        if: runner.os != 'Windows'
+        run: cp LICENSE crates/lora-python/LICENSE
+
+      - name: Copy LICENSE next to pyproject.toml (pwsh)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item LICENSE crates\lora-python\LICENSE
+
+      - name: Build abi3 wheel via maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: crates/lora-python
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist --interpreter python3.12
+          sccache: "true"
+
+      - name: List built wheel
+        shell: bash
+        run: ls -la crates/lora-python/dist
+
+      - name: Stage wheels at workspace root for clean artifact layout
+        shell: bash
+        run: |
+          mkdir -p wheelhouse
+          mv crates/lora-python/dist/*.whl wheelhouse/
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-python-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  build-python-sdist:
+    name: build sdist
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Copy LICENSE next to pyproject.toml
+        run: cp LICENSE crates/lora-python/LICENSE
+
+      - name: Build sdist via maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: crates/lora-python
+          command: sdist
+          args: --out dist
+
+      - name: Stage sdist at workspace root for clean artifact layout
+        run: |
+          mkdir -p wheelhouse
+          mv crates/lora-python/dist/*.tar.gz wheelhouse/
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-python-sdist
+          path: wheelhouse/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-python:
+    name: publish lora-python (PyPI)
+    needs: [verify-versions, build-python-wheels, build-python-sdist]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # PyPI trusted publishers bind to an exact environment name. Keep this
+    # name stable and set it in the corresponding PyPI publisher config.
+    environment: pypi-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Collect wheels + sdist into dist/
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lora-python-*
+          path: dist
+          merge-multiple: true
+
+      - name: List collected distributions
+        shell: bash
+        run: ls -lh dist
+
+      - name: Sanity-check no duplicate dist filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          dups=$(ls dist | sort | uniq -d || true)
+          if [ -n "$dups" ]; then
+            echo "::error::duplicate dist filenames detected:"
+            echo "$dups"
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          # `password` is only honoured if a trusted publisher is NOT
+          # configured on PyPI for this workflow + environment. With
+          # trusted publishing configured, OIDC is used and this value
+          # is ignored. Leave the secret unset once trusted publishing
+          # is live.
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Final gate. Fails if any dependency failed or (when not a dry-run) if
+  # any publish step didn't succeed. Makes branch protection / release
+  # checklists easy: just require this single job.
+  # ──────────────────────────────────────────────────────────────────────
+  summary:
+    name: packages-release summary
+    needs:
+      - verify-versions
+      - build-wasm
+      - build-node
+      - build-python-wheels
+      - build-python-sdist
+      - publish-wasm
+      - publish-node
+      - publish-python
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+          DRY: ${{ needs.verify-versions.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "dry_run=${DRY}"
+          echo "$NEEDS_JSON"
+          # Fail on any hard failure/cancellation upstream.
+          if echo "$NEEDS_JSON" | grep -Eq '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled)"'; then
+            echo "::error::one or more upstream jobs failed or were cancelled"
+            exit 1
+          fi
+          # In non-dry-run mode, publish jobs must have succeeded.
+          if [ "$DRY" != "true" ]; then
+            for pub in publish-wasm publish-node publish-python; do
+              result=$(echo "$NEEDS_JSON" | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(j['$pub'].result)")
+              if [ "$result" != "success" ]; then
+                echo "::error::${pub} did not succeed (result=${result})"
+                exit 1
+              fi
+            done
+          fi
+          echo "all good"

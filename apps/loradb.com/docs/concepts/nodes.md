@@ -3,7 +3,7 @@ title: Nodes and Labels
 sidebar_label: Nodes
 ---
 
-# Nodes
+# Nodes and Labels
 
 A **node** is a vertex in the graph. Every node has:
 
@@ -62,7 +62,7 @@ checks, move the predicate into [`WHERE`](../queries/where):
 MATCH (u:User)
 WHERE u.age BETWEEN 18 AND 65                     -- NOT supported
 MATCH (u:User)
-WHERE u.age >= 18 AND u.age <= 65                 -- idiomatic in loradb
+WHERE u.age >= 18 AND u.age <= 65                 -- idiomatic in LoraDB
 RETURN u
 ```
 

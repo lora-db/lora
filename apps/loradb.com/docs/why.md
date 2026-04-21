@@ -1,5 +1,6 @@
 ---
 title: Why LoraDB
+sidebar_label: Why LoraDB
 description: Why an embedded, Rust-native graph database with a Cypher-like engine — built for systems that reason over connected, evolving context.
 ---
 
@@ -159,10 +160,10 @@ let mut db = Database::new();
 db.execute("CREATE (:Person {name: 'Ada'})", None)?;
 ```
 
-Same story in [Node](/docs/getting-started/node),
-[Python](/docs/getting-started/python), and
-[WASM](/docs/getting-started/wasm). There's also an
-[HTTP server](/docs/getting-started/server) when you'd rather reach it
+Same story in [Node](./getting-started/node),
+[Python](./getting-started/python), and
+[WASM](./getting-started/wasm). There's also an
+[HTTP server](./getting-started/server) when you'd rather reach it
 over the wire.
 
 ### Stay small enough to understand
@@ -217,13 +218,12 @@ Near-term direction, not promises:
 - **Richer Cypher surface** — procedures,
   <CypherCode code="UNION" />, list comprehensions.
 
-See [**Limitations**](/docs/limitations) for what isn't supported yet,
-and the [**docs**](/docs) for what works today.
+See [**Limitations**](./limitations) for what isn't supported yet,
+and the [**docs**](./) for what works today.
 
 ## See also
 
-- [**What is LoraDB**](/docs) — short orientation.
-- [**Graph Model**](/docs/concepts/graph-model) — the data model in
+- [**What is LoraDB**](./) — introduction, audiences, and quick start.
+- [**Graph Model**](./concepts/graph-model) — the data model in
   four queries.
-- [**Cookbook**](/docs/cookbook) — scenario-driven recipes.
-- [**About**](/about) — who it's for, short form.
+- [**Cookbook**](./cookbook) — scenario-driven recipes.

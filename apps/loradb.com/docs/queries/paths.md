@@ -409,37 +409,6 @@ zero-hop "path". `nodes(p)` has one element, `relationships(p)` is
 empty. Useful when the answer may be "myself plus my neighbors within
 N".
 
-## Diagram (planned)
-
-**Type:** graph
-
-**Purpose:** Visualise the difference between a **fixed-hop** match,
-a **variable-length** match, and a **shortest-path** match over the
-same graph — a cluster of users connected by `FOLLOWS` edges with at
-least one triangle.
-
-**Elements:**
-- Five or six `:User` nodes (`A`, `B`, `C`, `D`, `E`)
-- `FOLLOWS` edges forming two paths from `A` to `E`: a short one
-  (`A → C → E`) and a longer one (`A → B → D → C → E`)
-- Three overlay colours showing:
-  1. A single fixed-hop match `(A)-[:FOLLOWS]->()-[:FOLLOWS]->(E)`
-  2. All paths produced by `(A)-[:FOLLOWS*1..3]->(E)`
-  3. The `shortestPath` result
-
-**Labels:**
-- Node ids (`A`, `B`, `C`, …)
-- Match colour key (fixed / variable / shortest)
-- Hop counts beside each traced path
-
-**Description:**
-A directed graph laid out roughly left-to-right. The three overlays
-use distinct line styles — dashed for fixed-hop, dotted for
-variable-length, solid thick for shortest. A legend maps each style
-back to the query it represents. The goal is to make the reader see
-that `shortestPath` picks **one** of the paths the variable-length
-match already exposes, not a new kind of result.
-
 ## What's not supported
 
 - **Weighted shortest paths** — `shortestPath` treats every relationship

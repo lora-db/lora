@@ -2,8 +2,27 @@
   "name": "@loradb/lora-node",
   "version": "0.1.0",
   "description": "Node.js / TypeScript bindings for the Lora in-memory graph database",
-  "private": true,
   "license": "BUSL-1.1",
+  "author": "LoraDB, Inc.",
+  "homepage": "https://github.com/lora-db/lora#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lora-db/lora.git",
+    "directory": "crates/lora-node"
+  },
+  "bugs": {
+    "url": "https://github.com/lora-db/lora/issues"
+  },
+  "keywords": [
+    "lora",
+    "loradb",
+    "graph",
+    "cypher",
+    "database",
+    "napi",
+    "n-api",
+    "neo4j"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -17,13 +36,28 @@
     "dist/",
     "ts/native.js",
     "ts/native.d.ts",
-    "*.node"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
   "napi": {
-    "name": "@loradb/lora-node",
+    "name": "lora-node",
+    "package": {
+      "name": "@loradb/lora-node"
+    },
     "triples": {
-      "defaults": true,
-      "additional": []
+      "defaults": false,
+      "additional": [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc"
+      ]
     }
   },
   "engines": {
@@ -42,7 +76,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepack": "npm run sync:types && npm run build",
+    "artifacts": "napi artifacts",
+    "create-npm-dirs": "napi create-npm-dir -t .",
+    "copy-license": "node -e \"const fs=require('fs'); try { fs.copyFileSync('../../LICENSE','LICENSE'); } catch (e) { if (e.code !== 'ENOENT') throw e; }\"",
+    "prepack": "npm run sync:types && npm run copy-license && npm run build",
     "pack:dry": "npm pack --dry-run"
   },
   "devDependencies": {

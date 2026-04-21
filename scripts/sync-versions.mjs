@@ -72,18 +72,37 @@ for (const target of targets) {
 
   if (currentVersion === version) {
     console.log(`ok       ${target.path} already at ${version}`);
-    continue;
-  }
-
-  if (checkOnly) {
+  } else if (checkOnly) {
     drift += 1;
     drifts.push(`  ${target.path}: has ${currentVersion}, expected ${version}`);
-    continue;
+  } else {
+    writeFileSync(absolute, updated);
+    console.log(`bumped   ${target.path}: ${currentVersion} -> ${version}`);
+    changed += 1;
   }
 
-  writeFileSync(absolute, updated);
-  console.log(`bumped   ${target.path}: ${currentVersion} -> ${version}`);
-  changed += 1;
+  // Cargo workspace has a second version surface to keep in lockstep:
+  // the pinned internal crate deps in [workspace.dependencies]. These use
+  // `version = "=X.Y.Z"` so a bump of the workspace version must rewrite
+  // each of them, otherwise `cargo publish` will fail on the first crate
+  // whose dep version drifted.
+  if (target.kind === 'cargo-workspace') {
+    const updatedAfterDeps = applyCargoWorkspaceInternalDeps(
+      checkOnly ? original : readFileSync(absolute, 'utf8'),
+      version,
+    );
+    for (const dep of updatedAfterDeps.drifts) {
+      if (checkOnly) {
+        drift += 1;
+        drifts.push(`  ${target.path} [workspace.dependencies.${dep.name}]: has ${dep.currentVersion}, expected =${version}`);
+      }
+    }
+    if (!checkOnly && updatedAfterDeps.changed > 0) {
+      writeFileSync(absolute, updatedAfterDeps.source);
+      console.log(`bumped   ${target.path} [workspace.dependencies]: ${updatedAfterDeps.changed} dep pin(s) updated to =${version}`);
+      changed += 1;
+    }
+  }
 }
 
 if (checkOnly && drift > 0) {
@@ -168,4 +187,53 @@ function applyPackageJson(source, next) {
   const current = match[2];
   const updated = source.replace(match[0], `${match[1]}"${next}"`);
   return { updated, currentVersion: current };
+}
+
+/**
+ * Rewrites every `<crate> = { ..., version = "=...", ... }` inside
+ * `[workspace.dependencies]` so their pin matches the workspace version.
+ *
+ * Only lines whose crate name starts with `lora-` are touched — external
+ * deps are untouched.
+ *
+ * @param {string} source
+ * @param {string} next
+ * @returns {{ source: string, changed: number, drifts: Array<{name: string, currentVersion: string}> }}
+ */
+function applyCargoWorkspaceInternalDeps(source, next) {
+  const lines = source.split('\n');
+  let inSection = false;
+  let changed = 0;
+  const drifts = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (sectionMatch) {
+      inSection = sectionMatch[1].trim() === 'workspace.dependencies';
+      continue;
+    }
+    if (!inSection) continue;
+
+    // Match e.g. `lora-ast = { path = "crates/lora-ast", version = "=0.1.0" }`.
+    const depMatch = line.match(/^(\s*)(lora-[A-Za-z0-9_-]+)\s*=\s*\{(.*)\}\s*$/);
+    if (!depMatch) continue;
+    const [full, indent, name, inner] = depMatch;
+    const versionMatch = inner.match(/(^|[,{\s])version\s*=\s*"(=?)([^"]+)"/);
+    if (!versionMatch) continue;
+    const currentPrefix = versionMatch[2]; // `=` or empty
+    const currentVersion = versionMatch[3];
+    const expected = `=${next}`;
+    const currentLiteral = `${currentPrefix}${currentVersion}`;
+    if (currentLiteral === expected) continue;
+    drifts.push({ name, currentVersion: currentLiteral });
+    const rewrittenInner = inner.replace(
+      /(^|[,{\s])version\s*=\s*"=?[^"]+"/,
+      (match, leading) => `${leading}version = "${expected}"`,
+    );
+    lines[i] = `${indent}${name} = {${rewrittenInner}}`;
+    changed += 1;
+  }
+
+  return { source: lines.join('\n'), changed, drifts };
 }

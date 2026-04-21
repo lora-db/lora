@@ -47,7 +47,13 @@ function BlogHero({ title, description }) {
           <p className="blog-hero__description">{description}</p>
         )}
         <div className="blog-hero__actions">
-          <Link to="/rss.xml" className="blog-hero__feed">
+          {/*
+            Feed URLs are static XML files emitted by the blog plugin at
+            build time — not SPA routes. Using <a> instead of <Link>
+            avoids Docusaurus' broken-link checker (which only sees SPA
+            routes) and gives browsers a real download target.
+          */}
+          <a href="/blog/rss.xml" className="blog-hero__feed">
             <svg
               width="14"
               height="14"
@@ -64,10 +70,10 @@ function BlogHero({ title, description }) {
               <circle cx="5" cy="19" r="1" />
             </svg>
             RSS
-          </Link>
-          <Link to="/atom.xml" className="blog-hero__feed">
+          </a>
+          <a href="/blog/atom.xml" className="blog-hero__feed">
             Atom
-          </Link>
+          </a>
           <Link to="/docs" className="blog-hero__feed blog-hero__feed--muted">
             Read the docs
             <svg

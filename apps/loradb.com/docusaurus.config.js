@@ -5,8 +5,9 @@ module.exports = {
   tagline: 'A graph database with a Cypher-like query engine.',
   url: 'https://loradb.com',
   baseUrl: '/',
-  onBrokenLinks: 'warn',
-  onBrokenMarkdownLinks: 'warn',
+  onBrokenLinks: 'throw',
+  onBrokenMarkdownLinks: 'throw',
+  onBrokenAnchors: 'throw',
   favicon: 'img/meta/favicon-96x96.png',
   organizationName: 'loradb',
   projectName: 'lora',
@@ -96,8 +97,6 @@ module.exports = {
         },
         { to: '/blog', label: 'Blog', position: 'left' },
         { to: '/features', label: 'Features', position: 'left' },
-        { to: '/about', label: 'About', position: 'left' },
-        { to: '/why', label: 'Why', position: 'left' },
         { type: 'search', position: 'right' },
         {
           href: 'https://discord.gg/vUgKb6C8Af',
@@ -145,8 +144,8 @@ module.exports = {
         {
           title: 'Product',
           items: [
-            { label: 'About', to: '/about' },
-            { label: 'Why LoraDB', to: '/why' },
+            { label: 'What is LoraDB', to: '/docs' },
+            { label: 'Why LoraDB', to: '/docs/why' },
             { label: 'Blog', to: '/blog' },
             { label: 'Contact', to: '/contact' },
           ],
@@ -227,7 +226,7 @@ module.exports = {
           // Anchor link (#) injected into each heading — invisible but noisy
           '.hash-link',
           // Body prose — scoped to <main> so it covers .markdown docs/blog,
-          // MDX pages (/about, /why), and custom React pages (/) alike.
+          // MDX pages (/contact), and custom React pages (/) alike.
           'main p',
           'main ul',
           'main ol',

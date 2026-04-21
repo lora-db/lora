@@ -700,7 +700,7 @@ export default function Features() {
                 Query examples
               </Link>
               <Link
-                to="/why"
+                to="/docs/why"
                 className={clsx(styles.btn, styles.btnGhost)}
               >
                 Why LoraDB

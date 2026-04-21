@@ -161,7 +161,7 @@ RETURN c
 
 Pass a literal `point(…)` call, or bind the tagged map shape from your
 host language (see [Node → typed helpers](../getting-started/node#typed-helpers),
-[Python → parameters](../getting-started/python#b-parameterised-query)).
+[Python → parameters](../getting-started/python#parameterised-query)).
 
 ```cypher
 MATCH (c:City)
