@@ -271,8 +271,9 @@ pub enum QueryResult {
 }
 ```
 
-Control which shape you get via `ExecuteOptions::format`. Default is
-`RowArrays` — lowest-overhead, column-indexed.
+Control which shape you get via `ExecuteOptions::format`. The engine
+default is `Graph`. See [Result formats](../concepts/result-formats)
+for how each shape looks and when to pick which.
 
 ### LoraValue at a glance
 

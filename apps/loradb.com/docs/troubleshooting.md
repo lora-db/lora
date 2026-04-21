@@ -18,6 +18,7 @@ sidebar_label: Troubleshooting
 | `DELETE` complains about edges | [DELETE fails](#delete-fails-with-still-has-relationships) |
 | Parameters seem ignored | [Parameters](#parameters) |
 | Server won't start | [Server](#server) |
+| Result JSON shape is wrong | [Result format](#result-json-looks-nothing-like-what-i-expected) |
 | Build fails | [Build](#build) |
 
 ## Build
@@ -70,6 +71,14 @@ curl -s http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
   -d '{"query": "MATCH (n) RETURN count(*)"}'
 ```
+
+### Result JSON looks nothing like what I expected
+
+Different `format` values return different shapes. The engine default
+is `graph`, which returns deduplicated nodes+edges — if you were
+expecting rows, pass `"format": "rows"` (or `"rowArrays"`). See
+[**Result formats**](./concepts/result-formats) for every shape and
+when to pick which.
 
 ## Queries
 
@@ -827,6 +836,10 @@ wrong, the bug may be in the **data model**, not the query. See the
 
 - [**Limitations**](./limitations) — what intentionally isn't supported.
 - [**Queries**](./queries/) — clause reference.
+- [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
+- [**Parameters**](./queries/parameters) — typed parameter binding.
+- [**Result formats**](./concepts/result-formats) — each response shape in detail.
+- [**Schema-free**](./concepts/schema-free) — strict reads, permissive writes.
 - [**WHERE**](./queries/where) — predicate reference.
 - [**RETURN / WITH**](./queries/return-with) — projection and HAVING.
 - [**Aggregation (queries)**](./queries/aggregation) — clause-level grouping.

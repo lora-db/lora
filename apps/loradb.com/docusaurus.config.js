@@ -95,13 +95,7 @@ module.exports = {
           position: 'left',
         },
         { to: '/blog', label: 'Blog', position: 'left' },
-        {
-          to: '/playground',
-          label: 'Playground',
-          position: 'left',
-          className: 'navbar-soon',
-          'aria-label': 'Playground (coming soon)',
-        },
+        { to: '/features', label: 'Features', position: 'left' },
         { to: '/about', label: 'About', position: 'left' },
         { to: '/why', label: 'Why', position: 'left' },
         { type: 'search', position: 'right' },
@@ -126,6 +120,13 @@ module.exports = {
           'aria-label': 'GitHub repository',
           target: '_blank',
         },
+        {
+          to: '/playground',
+          label: 'Playground',
+          position: 'left',
+          className: 'navbar-soon',
+          'aria-label': 'Playground (coming soon)',
+      },
       ],
     },
     footer: {

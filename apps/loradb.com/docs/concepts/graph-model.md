@@ -88,23 +88,14 @@ CREATE (c:Country {name: 'NL', iso: 'NLD'})
 ```
 
 The first time this runs, the label `Country` and properties `name`,
-`iso` come into existence. Read queries still validate label and type
-names against live graph state — a `MATCH (:Unknown)` on an empty graph
-succeeds, but on a populated graph it requires the label to exist. See
-[Troubleshooting → Semantic errors](../troubleshooting#semantic-errors).
+`iso` come into existence. Writes are permissive; reads validate
+labels and relationship types against the live graph. The full rules
+— and the trade-offs that come with "no schema" — live on their own
+page: [**Schema-free writes and soft validation**](./schema-free).
 
-### What "schema-free" costs
-
-- No constraints — nothing prevents two `:Person` nodes with different
-  property sets.
-- No property indexes — `MATCH (n {prop: v})` without a label is `O(n)`
-  full-scan. See [Limitations → Storage](../limitations#storage).
-- No type enforcement — a property can be `Integer` on one node and
-  `String` on another. Use [`valueType`](../functions/overview#type-conversion-and-checking)
-  at query time if uniformity matters.
-
-Handle it in application code, or by matching before writing, or with
-[`MERGE`](../queries/unwind-merge#merge) for idempotent writes.
+Handle the lack of constraints in application code, or by matching
+before writing, or with [`MERGE`](../queries/unwind-merge#merge) for
+idempotent writes.
 
 ## Relationship semantics
 
@@ -293,6 +284,9 @@ values churn or when you carry status metadata
 - [**Nodes**](./nodes) — labels, identity, match and mutate.
 - [**Relationships**](./relationships) — types, direction, properties.
 - [**Properties**](./properties) — per-entity key/value data.
+- [**Schema-free**](./schema-free) — what implicit schema means for
+  writes and reads.
+- [**Result formats**](./result-formats) — how queries come back.
 - [**Data Types**](../data-types/overview) — what property values can be.
 - [**Queries → Overview**](../queries/) — clause-by-clause reference.
 - [**Tutorial**](../getting-started/tutorial) — guided walkthrough.

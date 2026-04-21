@@ -52,7 +52,8 @@ sees the rows produced by the previous one.
 | [**Paths**](./paths) | Variable-length traversals and shortest paths |
 
 For copy-paste examples covering every clause, see
-[**Query Examples**](./examples).
+[**Query Examples**](./examples). For a single-page terse reference,
+see the [**Cheat sheet**](./cheat-sheet).
 
 ## Where common tasks live
 
@@ -93,7 +94,8 @@ For copy-paste examples covering every clause, see
 
 ## Parameters
 
-Any value that isn't a constant should use a parameter:
+Any value that isn't a constant should use a parameter. The short
+version follows; [**Parameters**](./parameters) has the full reference.
 
 ```cypher
 MATCH (p:Person) WHERE p.name = $name RETURN p
@@ -146,7 +148,11 @@ version: no `CALL`, no `FOREACH`, no `LOAD CSV`, no DDL
 ## See also
 
 - [**Ten-Minute Tour**](../getting-started/tutorial) — guided walkthrough.
+- [**Cheat sheet**](./cheat-sheet) — single-page quick reference.
+- [**Parameters**](./parameters) — typed parameter binding.
 - [**Query Examples**](./examples) — copy-paste recipes by shape.
+- [**Cookbook**](../cookbook) — scenario-driven recipes.
 - [**Functions**](../functions/overview) — every built-in.
 - [**Data types**](../data-types/overview) — value shapes for parameters and properties.
 - [**Graph model**](../concepts/graph-model) — the underlying data model.
+- [**Result formats**](../concepts/result-formats) — how results come back over the wire.

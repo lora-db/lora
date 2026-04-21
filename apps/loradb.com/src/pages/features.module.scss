@@ -1,0 +1,825 @@
+// Features page composition.
+//
+// Mirrors the homepage and playground vocabulary on purpose: same
+// eyebrow pill, gradient title accent, button trio, sectionInner /
+// sectionEyebrow / sectionTitle primitives, and card-hover treatment.
+// New patterns introduced here (pipeline flow, surface tabs, coverage
+// grid) sit on top of the same brand tokens — no new design system.
+
+.wrapper {
+  background: var(--token-primary-bg-c);
+}
+
+.page {
+  display: block;
+  color: var(--ifm-font-color-base);
+}
+
+// -------------------------------------------------------------------
+// Shared section primitives — kept identical to the homepage so the
+// site coheres across pages.
+// -------------------------------------------------------------------
+
+.sectionInner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.sectionEyebrow {
+  margin: 0 0 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+}
+
+.sectionTitle {
+  margin: 0 0 1.5rem;
+  font-size: clamp(1.75rem, 3.8vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.15;
+  color: var(--ifm-heading-color);
+  max-width: 32ch;
+}
+
+// -------------------------------------------------------------------
+// Hero
+// -------------------------------------------------------------------
+
+.hero {
+  position: relative;
+  padding: clamp(3rem, 8vh, 5.5rem) 1.5rem clamp(2.5rem, 6vh, 4rem);
+  overflow: hidden;
+  isolation: isolate;
+  border-bottom: 1px solid var(--brand-border-c);
+  text-align: center;
+}
+
+.heroInner {
+  position: relative;
+  z-index: 1;
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.4rem;
+}
+
+.eyebrow {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--brand-border-c);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-accent-a);
+  box-shadow: 0 0 0 3px var(--brand-accent-a-soft);
+  animation: ftPulse 2.8s ease-in-out infinite;
+}
+
+@keyframes ftPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.85); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot { animation: none; }
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(2.25rem, 5vw, 3.75rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--ifm-heading-color);
+  max-width: 18ch;
+}
+
+.titleAccent {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.tagline {
+  margin: 0;
+  max-width: 44rem;
+  font-size: clamp(1rem, 1.4vw, 1.125rem);
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
+}
+
+// Buttons — share visual contract with the homepage so primary,
+// secondary, and ghost feel the same on every page.
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.78rem 1.3rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9375rem;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition:
+    transform var(--t) var(--t-ease),
+    box-shadow var(--t) var(--t-ease),
+    background-color var(--t) var(--t-ease),
+    border-color var(--t) var(--t-ease),
+    color var(--t) var(--t-ease);
+
+  &:hover { text-decoration: none; transform: translateY(-1px); }
+  &:focus-visible { outline: 2px solid var(--brand-accent-a); outline-offset: 3px; }
+}
+
+.btnPrimary {
+  background: var(--brand-gradient);
+  color: #fff;
+  box-shadow: 0 10px 24px -10px color-mix(in srgb, var(--brand-accent-a) 70%, transparent);
+
+  &:hover,
+  &:focus-visible {
+    color: #fff;
+    box-shadow: 0 14px 28px -10px color-mix(in srgb, var(--brand-accent-a) 80%, transparent);
+  }
+}
+
+.btnSecondary {
+  background: var(--brand-accent-a-soft);
+  color: var(--brand-accent-a);
+  border: 1px solid var(--brand-border-c);
+
+  &:hover,
+  &:focus-visible {
+    background: color-mix(in srgb, var(--brand-accent-a) 15%, transparent);
+    border-color: var(--brand-border-strong-c);
+    color: var(--brand-accent-a);
+  }
+}
+
+.btnGhost {
+  background: transparent;
+  color: var(--ifm-heading-color);
+  border: 1px solid color-mix(in srgb, var(--ifm-heading-color) 20%, transparent);
+
+  &:hover,
+  &:focus-visible {
+    background: color-mix(in srgb, var(--ifm-heading-color) 6%, transparent);
+    border-color: color-mix(in srgb, var(--ifm-heading-color) 35%, transparent);
+    color: var(--ifm-heading-color);
+  }
+}
+
+.heroMeta {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--ifm-font-color-base);
+  opacity: 0.78;
+
+  li {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    text-align: left;
+  }
+}
+
+.heroMetaDot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--brand-accent-b);
+  flex-shrink: 0;
+}
+
+.heroGlow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(50% 60% at 50% 20%, var(--brand-accent-a-soft), transparent 70%),
+    radial-gradient(40% 60% at 85% 90%, var(--brand-accent-b-soft), transparent 70%),
+    radial-gradient(35% 40% at 10% 90%, color-mix(in srgb, var(--brand-accent-b) 10%, transparent), transparent 70%);
+  pointer-events: none;
+
+  html[data-theme='dark'] & {
+    background:
+      radial-gradient(50% 60% at 50% 20%, rgba(77, 141, 255, 0.16), transparent 70%),
+      radial-gradient(40% 60% at 85% 90%, rgba(132, 130, 251, 0.14), transparent 70%),
+      radial-gradient(35% 40% at 10% 90%, rgba(77, 141, 255, 0.1), transparent 70%);
+  }
+}
+
+// -------------------------------------------------------------------
+// Feature overview
+// -------------------------------------------------------------------
+
+.overview {
+  padding: clamp(4.5rem, 10vh, 7rem) 0 clamp(4rem, 9vh, 6rem);
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.featureGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.15rem;
+}
+
+// Feature cards reuse the homepage `useCase` treatment — including
+// the gradient top-border that lights up on hover — so the page feels
+// continuous with the home.
+.featureCard {
+  position: relative;
+  padding: 1.6rem;
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  transition:
+    transform var(--t) var(--t-ease),
+    border-color var(--t) var(--t-ease),
+    box-shadow var(--t) var(--t-ease);
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--brand-gradient);
+    border-radius: 14px 14px 0 0;
+    opacity: 0;
+    transition: opacity var(--t) var(--t-ease);
+  }
+
+  &:hover {
+    transform: translateY(-3px);
+    border-color: var(--brand-border-strong-c);
+    box-shadow: 0 16px 32px -18px color-mix(in srgb, var(--brand-accent-a) 40%, transparent);
+
+    &::before { opacity: 1; }
+  }
+
+  h3 {
+    margin: 0 0 0.45rem;
+    font-size: 1.0625rem;
+    font-weight: 600;
+    color: var(--ifm-heading-color);
+    letter-spacing: -0.01em;
+  }
+
+  p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--ifm-font-color-base);
+    opacity: 0.8;
+  }
+}
+
+.featureIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  margin-bottom: 1rem;
+  background: var(--brand-gradient-soft);
+  color: var(--brand-accent-a);
+  border: 1px solid var(--brand-border-c);
+}
+
+// -------------------------------------------------------------------
+// Cypher coverage
+// -------------------------------------------------------------------
+
+.coverage {
+  padding: clamp(5rem, 12vh, 7rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.coverageLede {
+  margin: 0 0 2.25rem;
+  max-width: 52rem;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+.coverageGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.15rem;
+}
+
+.coverageItem {
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: var(--token-secondary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  overflow: hidden;
+  transition:
+    transform var(--t) var(--t-ease),
+    border-color var(--t) var(--t-ease),
+    box-shadow var(--t) var(--t-ease);
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: var(--brand-border-strong-c);
+    box-shadow: 0 16px 30px -18px color-mix(in srgb, var(--brand-accent-a) 40%, transparent);
+  }
+
+  html[data-theme='dark'] & {
+    background: rgba(14, 20, 32, 0.85);
+  }
+}
+
+.coverageHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--brand-border-c);
+
+  h3 {
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--ifm-heading-color);
+    letter-spacing: 0.005em;
+  }
+}
+
+.coverageDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--brand-gradient);
+  box-shadow: 0 0 0 3px var(--brand-accent-a-soft);
+  flex-shrink: 0;
+}
+
+.coverageCode {
+  margin: 0;
+  padding: 1rem 1.1rem 1.15rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--ifm-font-color-base);
+  white-space: pre;
+  overflow-x: auto;
+
+  code {
+    font-family: inherit;
+    background: transparent;
+    padding: 0;
+    border: 0;
+    color: inherit;
+  }
+}
+
+.coverageFoot {
+  margin: 2rem 0 0;
+  max-width: 50rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+// -------------------------------------------------------------------
+// Surfaces (ways to use)
+// -------------------------------------------------------------------
+
+.surfaces {
+  padding: clamp(5rem, 12vh, 7rem) 0;
+  background:
+    radial-gradient(60% 80% at 10% 50%, var(--brand-accent-a-soft), transparent 70%),
+    radial-gradient(60% 80% at 90% 50%, var(--brand-accent-b-soft), transparent 70%);
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.surfacesLede {
+  margin: 0 0 2.25rem;
+  max-width: 52rem;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+// Two-column layout: vertical surface list on the left, code on the
+// right. Stacks on smaller screens with the list above the code.
+.surfaceLayout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: stretch;
+
+  @media (max-width: 820px) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+}
+
+.surfaceList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+
+  @media (max-width: 820px) {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    // Hide scrollbar visually but keep it functional for a11y.
+    scrollbar-width: thin;
+  }
+}
+
+.surfaceItem {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.85rem 0.95rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--brand-border-c);
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ifm-heading-color);
+  transition:
+    border-color var(--t) var(--t-ease),
+    background-color var(--t) var(--t-ease),
+    color var(--t) var(--t-ease);
+
+  &:hover {
+    border-left-color: var(--brand-accent-a);
+    background: color-mix(in srgb, var(--brand-accent-a) 4%, transparent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--brand-accent-a);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 820px) {
+    flex: 0 0 auto;
+    border-left: 0;
+    border: 1px solid var(--brand-border-c);
+    border-radius: 999px;
+    padding: 0.55rem 0.85rem;
+  }
+}
+
+.surfaceItemActive {
+  border-left-color: var(--brand-accent-a);
+  background: color-mix(in srgb, var(--brand-accent-a) 8%, transparent);
+  border-color: var(--brand-border-strong-c);
+
+  @media (max-width: 820px) {
+    background: var(--brand-accent-a-soft);
+    border-color: var(--brand-border-strong-c);
+  }
+}
+
+.surfaceItemIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--brand-gradient-soft);
+  color: var(--brand-accent-a);
+  border: 1px solid var(--brand-border-c);
+  flex-shrink: 0;
+
+  svg { width: 18px; height: 18px; }
+}
+
+.surfaceItemBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.surfaceItemLabel {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--ifm-heading-color);
+  letter-spacing: -0.005em;
+  line-height: 1.2;
+}
+
+.surfaceItemNote {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  color: var(--ifm-secondary-heading-color);
+  opacity: 0.85;
+  margin-top: 0.15rem;
+  letter-spacing: 0.01em;
+}
+
+.surfaceCode {
+  min-width: 0;
+}
+
+// Code card — visual contract matches the homepage's `codeCard` so
+// snippets feel like the same surface across pages.
+.codeCard {
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--token-secondary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  box-shadow:
+    0 24px 48px -28px rgba(10, 20, 60, 0.22),
+    0 1px 0 0 rgba(255, 255, 255, 0.04) inset;
+
+  html[data-theme='dark'] & {
+    background: rgba(14, 20, 32, 0.85);
+    border-color: rgba(77, 141, 255, 0.22);
+  }
+}
+
+.codeCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--brand-border-c);
+  font-size: 0.72rem;
+  color: var(--ifm-secondary-heading-color);
+  font-family: var(--ifm-font-family-monospace);
+  opacity: 0.92;
+}
+
+.codeDots {
+  display: inline-flex;
+  gap: 0.35rem;
+
+  span {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--ifm-font-color-base) 20%, transparent);
+  }
+  span:nth-child(1) { background: #ff6b6b; opacity: 0.65; }
+  span:nth-child(2) { background: #ffd66b; opacity: 0.65; }
+  span:nth-child(3) { background: #6bd48a; opacity: 0.65; }
+}
+
+.codeCardLabel {
+  color: var(--brand-accent-a);
+  letter-spacing: 0.02em;
+}
+
+.codeCardTitle {
+  margin-left: auto;
+  letter-spacing: 0.02em;
+}
+
+.codeCardBody {
+  margin: 0;
+  padding: 1rem 1.15rem 1.15rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  white-space: pre;
+  overflow-x: auto;
+
+  code {
+    font-family: inherit;
+    background: transparent;
+    padding: 0;
+    border: 0;
+    color: inherit;
+  }
+}
+
+// -------------------------------------------------------------------
+// Local-first workloads
+// -------------------------------------------------------------------
+
+.workloads {
+  padding: clamp(5rem, 12vh, 7rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.workloadGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.1rem;
+}
+
+// Same shape as homepage `valueCard`: numbered, gentle left-rail, no
+// nested cards.
+.workloadCard {
+  display: flex;
+  gap: 1rem;
+  padding: 1.4rem 1.4rem 1.4rem 1.15rem;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--brand-border-c);
+  transition:
+    border-color var(--t) var(--t-ease),
+    background-color var(--t) var(--t-ease);
+
+  &:hover {
+    border-left-color: var(--brand-accent-a);
+    background: color-mix(in srgb, var(--brand-accent-a) 4%, transparent);
+  }
+
+  h3 {
+    margin: 0 0 0.35rem;
+    font-size: 1.0625rem;
+    font-weight: 600;
+    color: var(--ifm-heading-color);
+    letter-spacing: -0.01em;
+  }
+
+  p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--ifm-font-color-base);
+    opacity: 0.8;
+  }
+}
+
+.workloadIndex {
+  flex-shrink: 0;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  padding-top: 0.15rem;
+  letter-spacing: 0.02em;
+}
+
+// -------------------------------------------------------------------
+// Boundary / honest limits
+// -------------------------------------------------------------------
+
+.boundary {
+  padding: clamp(5rem, 12vh, 7rem) 0;
+  background:
+    linear-gradient(180deg, var(--token-primary-bg-c) 0%, var(--brand-surface-c) 100%);
+  border-bottom: 1px solid var(--brand-border-c);
+
+  html[data-theme='dark'] & {
+    background: linear-gradient(180deg, var(--token-primary-bg-c) 0%, #070b13 100%);
+  }
+}
+
+.boundaryLede {
+  margin: 0 0 2.25rem;
+  max-width: 50rem;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+.boundaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.15rem;
+}
+
+.boundaryCard {
+  padding: 1.5rem 1.55rem;
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  // No "lift on hover" here — limitations should read calmly, not as
+  // another product surface to interact with.
+  transition: border-color var(--t) var(--t-ease);
+
+  &:hover {
+    border-color: var(--brand-border-strong-c);
+  }
+
+  h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.0625rem;
+    font-weight: 600;
+    color: var(--ifm-heading-color);
+    letter-spacing: -0.01em;
+  }
+
+  p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--ifm-font-color-base);
+    opacity: 0.8;
+  }
+}
+
+.boundaryFoot {
+  margin: 2rem 0 0;
+  max-width: 52rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}
+
+// -------------------------------------------------------------------
+// Final CTA
+// -------------------------------------------------------------------
+
+.cta {
+  padding: clamp(5rem, 14vh, 8rem) 0;
+  text-align: center;
+  background: var(--token-primary-bg-c);
+  position: relative;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(40% 60% at 50% 30%, var(--brand-accent-b-soft), transparent 70%),
+      radial-gradient(40% 60% at 50% 80%, var(--brand-accent-a-soft), transparent 70%);
+    pointer-events: none;
+  }
+
+  .sectionInner {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+}
+
+.ctaTitle {
+  margin: 0;
+  font-size: clamp(1.75rem, 3.6vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ifm-heading-color);
+  max-width: 22ch;
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.ctaBody {
+  margin: 0.25rem 0 1rem;
+  max-width: 40rem;
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+}

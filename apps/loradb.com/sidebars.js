@@ -36,6 +36,8 @@ module.exports = {
         'concepts/nodes',
         'concepts/relationships',
         'concepts/properties',
+        'concepts/schema-free',
+        'concepts/result-formats',
       ],
     },
     {
@@ -53,7 +55,9 @@ module.exports = {
         'queries/aggregation',
         'queries/ordering',
         'queries/paths',
+        'queries/parameters',
         'queries/examples',
+        'queries/cheat-sheet',
       ],
     },
     {
@@ -81,6 +85,12 @@ module.exports = {
         'data-types/temporal',
         'data-types/spatial',
       ],
+    },
+    {
+      type: 'category',
+      label: 'API',
+      collapsed: false,
+      items: ['api/http'],
     },
     {
       type: 'category',

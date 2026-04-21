@@ -6,58 +6,136 @@ slug: /
 
 # What is LoraDB
 
-LoraDB is an in-memory **graph database** with a **Cypher-like query
-engine**, written in Rust. Small, embeddable, easy to reason about.
+LoraDB is a **local-first, in-memory property-graph engine** written
+in Rust. You embed it in your Rust / Node / Python / WASM host, or
+talk to it over HTTP, and query it with a pragmatic subset of
+**Cypher**.
 
-## What you get
+It is:
 
-- **Labeled property graph** — nodes with labels, typed relationships,
-  properties on both. See [Graph Model](./concepts/graph-model).
-- **Cypher-like queries** — [`MATCH`](./queries/match),
-  [`CREATE`](./queries/create), [`WHERE`](./queries/where),
-  [`WITH`](./queries/return-with#with),
-  [`MERGE`](./queries/unwind-merge#merge),
-  [shortest paths](./queries/paths#shortest-paths),
-  [aggregation](./queries/aggregation).
-- **Three primary bindings over one Rust engine** — Node/TypeScript,
-  Python, WebAssembly.
-- **An HTTP server** if you'd rather hit it with `curl`.
+- **A query engine** — parser, analyzer, planner, optimizer, and
+  executor all in one crate.
+- **An in-process graph store** — nodes, relationships, properties,
+  all in RAM.
+- **A set of bindings** over one shared Rust core — Node, Python,
+  WebAssembly, plus an Axum-based HTTP server.
 
-## Pick your platform
+It is **not**:
 
-| Platform | Guide |
+- A durable, clustered production database. There's no persistence
+  today — state is lost on restart.
+- A multi-tenant server with auth or TLS. Bind to `127.0.0.1` or put
+  it behind a proxy.
+- A drop-in replacement for Neo4j. LoraDB speaks Cypher, but a
+  scoped subset — see [Limitations](./limitations) for the exact
+  shape.
+
+## Who it's for
+
+- Developers who want a graph database **embedded** in their process
+  rather than running one as a service.
+- Engineers prototyping or shipping a **local-first** app that
+  benefits from graph queries (Electron, browser worker, CLI, edge).
+- Teams evaluating graph data models who want a fast, zero-ops
+  starting point — write Cypher, read rows, keep moving.
+
+## From zero to first query
+
+Four steps. Pick your host language on step 2; everything else is
+identical.
+
+### 1. Install
+
+| Host | Command |
 |---|---|
-| **Node.js / TypeScript** — native binding | [Node →](./getting-started/node) |
-| **Python** — sync and asyncio | [Python →](./getting-started/python) |
-| **Browser / WASM** — in-process or Web Worker | [WASM →](./getting-started/wasm) |
+| [Node / TypeScript](./getting-started/node) | `npm install lora-node` |
+| [Python](./getting-started/python) | `pip install lora-python` |
+| [Browser / WASM](./getting-started/wasm) | `npm install lora-wasm` |
+| [Rust (embedded)](./getting-started/rust) | `cargo add lora-database` |
+| [HTTP server](./getting-started/server) | `cargo install --path crates/lora-server` |
 
-### Other runtimes
+:::note
 
-| Platform | Guide |
+Pre-release: packages aren't yet on npm / PyPI / crates.io. Each
+platform guide includes repo-local build steps.
+
+:::
+
+### 2. Create data
+
+```cypher
+CREATE (ada:Person   {name: 'Ada',   born: 1815})
+CREATE (grace:Person {name: 'Grace', born: 1906})
+CREATE (ada)-[:INFLUENCED {year: 1843}]->(grace)
+```
+
+One node per `CREATE (…)`. Relationships have a type, direction, and
+their own properties. See [Graph model](./concepts/graph-model).
+
+### 3. Query
+
+```cypher
+MATCH (a:Person)-[:INFLUENCED]->(b:Person)
+WHERE a.born < 1900
+RETURN a.name AS influencer, b.name AS influenced
+```
+
+Clauses stream rows: `MATCH` finds patterns, `WHERE` filters, `RETURN`
+projects. See [Queries → Overview](./queries/) or jump into the
+[**Cheat sheet**](./queries/cheat-sheet) for a single-page reference.
+
+### 4. Choose an API
+
+| If you… | Use |
 |---|---|
-| **Rust** — embed the crate directly | [Rust →](./getting-started/rust) |
-| **HTTP server** — `POST /query` | [Server →](./getting-started/server) |
+| Ship Node / TS code | [Node binding](./getting-started/node) |
+| Write Python (sync or asyncio) | [Python binding](./getting-started/python) |
+| Run in a browser / Web Worker / edge | [WASM binding](./getting-started/wasm) |
+| Embed inline in a Rust binary | [Rust crate](./getting-started/rust) |
+| Want a polyglot HTTP service | [HTTP server](./getting-started/server) + [HTTP API reference](./api/http) |
 
-## New here?
+All bindings share the same query language and result shapes — see
+[Result formats](./concepts/result-formats) for the four response
+shapes (`rows`, `rowArrays`, `graph`, `combined`).
 
-1. Skim the [**Graph model**](./concepts/graph-model) — 2 min.
-2. Follow your language's guide — 5 min.
-3. Run the [**Ten-Minute Tour**](./getting-started/tutorial) —
-   create → match → filter → aggregate → paths → CASE.
-4. Keep [**Query Examples**](./queries/examples) open as a cheatsheet.
+## What you'll read next
 
-## Documentation map
-
-| Section | Contents |
+| Section | What's inside |
 |---|---|
-| [**Concepts**](./concepts/graph-model) | Graph model, nodes, relationships, properties |
-| [**Getting Started**](./getting-started/installation) | Install, tutorial, per-language guides |
-| [**Queries**](./queries/) | Clause reference: MATCH, WHERE, RETURN, aggregation, paths |
-| [**Functions**](./functions/overview) | String, math, list, temporal, spatial, aggregation |
-| [**Data Types**](./data-types/overview) | Scalars, lists, maps, temporals, spatial points |
-| [**Cookbook**](./cookbook) | Scenario-driven recipes: social, e-commerce, events, geo |
-| [**Troubleshooting**](./troubleshooting) | Common errors and fixes |
-| [**Limitations**](./limitations) | What isn't supported yet |
+| [**Tutorial**](./getting-started/tutorial) | A ten-minute guided tour — create, match, filter, aggregate, paths, CASE. |
+| [**Concepts**](./concepts/graph-model) | Graph model, nodes, relationships, properties, [schema-free](./concepts/schema-free), [result formats](./concepts/result-formats). |
+| [**Queries**](./queries/) | Clause reference, [parameters](./queries/parameters), [cheat sheet](./queries/cheat-sheet). |
+| [**Functions**](./functions/overview) | String, math, list, temporal, spatial, aggregation. |
+| [**Data types**](./data-types/overview) | Scalars, lists, maps, temporals, spatial points — how each round-trips. |
+| [**HTTP API**](./api/http) | Endpoint reference for `lora-server`. |
+| [**Cookbook**](./cookbook) | Scenario-driven recipes: social graphs, e-commerce, events, geospatial. |
+| [**Limitations**](./limitations) | What isn't supported — no persistence, no indexes, no `CALL`, etc. |
+| [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 
-Stuck? See [**Troubleshooting**](./troubleshooting). For what isn't
-supported yet, see [**Limitations**](./limitations).
+## The engine's boundaries
+
+Honest up front:
+
+- **No persistence.** All state is in-memory; `kill -9` loses it.
+- **No property indexes.** `MATCH (n {prop: v})` without a label is
+  `O(n)`.
+- **No uniqueness constraints.** Use [`MERGE`](./queries/unwind-merge#merge)
+  on a key, or enforce in application code.
+- **Global mutex.** Queries serialise — concurrent reads don't
+  parallelise.
+- **No HTTP auth / TLS.** Run the server on localhost or behind a
+  reverse proxy.
+- **No HTTP-level parameters yet.** Bind via the embedded bindings;
+  see [Parameters](./queries/parameters#http-api-doesnt-forward-params).
+
+None of these are accidents — see [Why LoraDB](/why) for the
+positioning.
+
+## Help and community
+
+- [**Troubleshooting**](./troubleshooting) — first stop when something
+  breaks.
+- [**GitHub**](https://github.com/lora-db/lora) — source, issues,
+  discussions.
+- [**Discord**](https://discord.gg/vUgKb6C8Af) — ask a question or
+  lurk on updates.

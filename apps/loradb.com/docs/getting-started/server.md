@@ -184,7 +184,8 @@ Request body:
 
 - `query` — Cypher string (required).
 - `format` — one of `"rows"`, `"rowArrays"`, `"graph"`, `"combined"`
-  (optional; defaults to `"rowArrays"`).
+  (optional; defaults to `"graph"`). See
+  [Result formats](../concepts/result-formats) for the full shape of each.
 
 ## Common Patterns
 
@@ -263,6 +264,8 @@ isolation.
 
 ## See also
 
+- [**HTTP API reference**](../api/http) — endpoint-by-endpoint reference.
+- [**Result formats**](../concepts/result-formats) — the four response shapes.
 - [**Rust guide**](./rust) — native API (what the server wraps).
 - [**Queries**](../queries/) — the query language the server exposes.
 - [**Cookbook**](../cookbook) — scenario-based recipes.

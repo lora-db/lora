@@ -162,5 +162,8 @@ See [Why LoraDB](/why) for the project's intended direction.
 
 - [**Troubleshooting**](./troubleshooting) — what to do when a query errors.
 - [**Queries → Overview**](./queries/) — the supported subset.
+- [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
+- [**Parameters**](./queries/parameters) — typed parameter binding (Rust/Node/Python/WASM only for now).
+- [**Schema-free**](./concepts/schema-free) — strict reads, permissive writes.
 - [**Functions → Overview**](./functions/overview) — supported functions.
 - [**Concepts → Graph Model**](./concepts/graph-model) — the underlying data model.
