@@ -1,5 +1,5 @@
 {
-  "name": "lora-wasm",
+  "name": "@loradb/lora-wasm",
   "version": "0.1.0",
   "description": "WebAssembly bindings for the Lora in-memory graph database",
   "private": true,

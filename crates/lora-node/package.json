@@ -1,5 +1,5 @@
 {
-  "name": "lora-node",
+  "name": "@loradb/lora-node",
   "version": "0.1.0",
   "description": "Node.js / TypeScript bindings for the Lora in-memory graph database",
   "private": true,
@@ -20,7 +20,7 @@
     "*.node"
   ],
   "napi": {
-    "name": "lora-node",
+    "name": "@loradb/lora-node",
     "triples": {
       "defaults": true,
       "additional": []
