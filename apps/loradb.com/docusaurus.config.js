@@ -193,11 +193,11 @@ module.exports = {
           target: '_blank',
         },
         {
-          href: 'https://github.com/lora-db/lora',
+          type: 'custom-githubStars',
           position: 'right',
-          className: 'icon-link icon-link-mask icon-link-github',
-          'aria-label': 'GitHub repository',
-          target: '_blank',
+          href: 'https://github.com/lora-db/lora',
+          label: 'GitHub repository',
+          repo: 'lora-db/lora',
         },
         {
           to: '/playground',
@@ -265,6 +265,10 @@ module.exports = {
           'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
         },
       },
+    ],
+    [
+      require.resolve('./plugins/github-stars'),
+      { repo: 'lora-db/lora' },
     ],
   ],
   customFields: {},
