@@ -15,6 +15,8 @@ mutex-guarded.
 
 ## Installation / Setup
 
+[![crates.io](https://img.shields.io/crates/v/lora-database?label=crates.io&logo=rust)](https://crates.io/crates/lora-database)
+
 While pre-release, consume the crate as a workspace path or git
 dependency rather than from crates.io:
 

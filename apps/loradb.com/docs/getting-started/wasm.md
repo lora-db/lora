@@ -15,6 +15,8 @@ thread stays responsive.
 
 ## Installation / Setup
 
+[![npm (@loradb/lora-wasm)](https://img.shields.io/npm/v/@loradb/lora-wasm?label=%40loradb%2Flora-wasm&logo=npm)](https://www.npmjs.com/package/@loradb/lora-wasm)
+
 ### Targets
 
 `lora-wasm` ships three targets out of the same source:
@@ -42,7 +44,7 @@ npm run build      # wasm-pack for all 3 targets + tsc
 ### Install (after publish)
 
 ```bash
-npm install lora-wasm
+npm install @loradb/lora-wasm
 ```
 
 ## Creating a Client / Connection

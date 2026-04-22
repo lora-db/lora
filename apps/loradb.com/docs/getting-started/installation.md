@@ -18,16 +18,17 @@ connect, execute, and error handling end-to-end.
 
 ### Pick a platform
 
-| | Install | Import | Guide |
+| Platform | Package | Install | Guide |
 |---|---|---|---|
-| **Node / TS** | `npm install lora-node` | `import { Database } from 'lora-node'` | [Node →](./node) |
-| **Python** | `pip install lora-python` | `from lora_python import Database` | [Python →](./python) |
-| **Browser / WASM** | `npm install lora-wasm` | `import { Database } from 'lora-wasm'` | [WASM →](./wasm) |
+| **Node / TS** | [![npm](https://img.shields.io/npm/v/@loradb/lora-node?label=%40loradb%2Flora-node&logo=npm)](https://www.npmjs.com/package/@loradb/lora-node) | `npm install @loradb/lora-node` | [Node →](./node) |
+| **Python** | [![PyPI](https://img.shields.io/pypi/v/lora-python?label=pypi&logo=pypi&logoColor=white)](https://pypi.org/project/lora-python/) | `pip install lora-python` | [Python →](./python) |
+| **Browser / WASM** | [![npm](https://img.shields.io/npm/v/@loradb/lora-wasm?label=%40loradb%2Flora-wasm&logo=npm)](https://www.npmjs.com/package/@loradb/lora-wasm) | `npm install @loradb/lora-wasm` | [WASM →](./wasm) |
 
-:::note
+:::tip
 
-Pre-release — packages aren't on npm / PyPI yet. Each platform guide
-includes repo-local build steps.
+Click any badge to jump to its package-registry page. Each platform
+guide also documents repo-local build steps for contributors working
+from a clone.
 
 :::
 
@@ -51,6 +52,7 @@ same Cypher surface:
 
 - [**Rust crate**](./rust) — embed `lora-database` inline in your
   Rust binary for the lowest-overhead option.
+  [![crates.io](https://img.shields.io/crates/v/lora-database?label=crates.io&logo=rust)](https://crates.io/crates/lora-database)
 - [**HTTP server**](./server) — run `lora-server` and `POST /query`
   from any language.
 

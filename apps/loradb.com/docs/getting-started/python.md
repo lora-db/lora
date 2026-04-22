@@ -14,6 +14,8 @@ one-line import change.
 
 ## Installation / Setup
 
+[![PyPI](https://img.shields.io/pypi/v/lora-python?label=pypi&logo=pypi&logoColor=white)](https://pypi.org/project/lora-python/)
+
 ### Requirements
 
 - Python **3.8+**

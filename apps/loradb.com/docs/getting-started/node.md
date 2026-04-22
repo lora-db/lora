@@ -15,6 +15,8 @@ helpers, and type guards match the
 
 ## Installation / Setup
 
+[![npm (@loradb/lora-node)](https://img.shields.io/npm/v/@loradb/lora-node?label=%40loradb%2Flora-node&logo=npm)](https://www.npmjs.com/package/@loradb/lora-node)
+
 ### Requirements
 
 - Node.js **18+**
@@ -34,7 +36,7 @@ npm run build        # builds native .node artifact + TypeScript
 After publish:
 
 ```bash
-npm install lora-node
+npm install @loradb/lora-node
 ```
 
 ## Creating a Client / Connection

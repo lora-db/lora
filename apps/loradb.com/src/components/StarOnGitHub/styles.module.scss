@@ -1,0 +1,159 @@
+// Body-copy CTA — two-zone "Star on GitHub | ★ 1,247" pill. Sized to
+// sit inline with the hero's .btn primary/secondary/ghost buttons.
+// Visual language:
+//   • Left zone reads as a ghost button (brand-accent border, neutral fill)
+//   • Right zone is tinted warmer to highlight the live count as social proof
+//   • Hover lifts the whole pill and animates the star once (nudge, not loop)
+
+.root {
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+
+  border-radius: 10px;
+  border: 1px solid var(--brand-border-strong-c);
+  background: transparent;
+
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+  color: var(--ifm-heading-color);
+  white-space: nowrap;
+
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    color 0.18s ease;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--ifm-heading-color);
+    text-decoration: none;
+    transform: translateY(-1px);
+    border-color: var(--brand-accent-a);
+    box-shadow:
+      0 14px 28px -14px color-mix(in srgb, var(--brand-accent-a) 45%, transparent),
+      0 4px 12px -6px color-mix(in srgb, var(--brand-accent-b) 25%, transparent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--brand-accent-a);
+    outline-offset: 3px;
+  }
+
+  &:active {
+    transform: translateY(0);
+  }
+}
+
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.78rem 1rem 0.78rem 1rem;
+  font-size: 0.9375rem;
+}
+
+.gh {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--ifm-heading-color);
+  transition: color 0.18s ease, transform 0.18s ease;
+
+  .root:hover & {
+    color: var(--brand-accent-a);
+  }
+}
+
+.ctaLabel {
+  line-height: 1;
+}
+
+.divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--brand-border-c);
+  transition: background-color 0.18s ease;
+
+  .root:hover & {
+    background: var(--brand-accent-a);
+  }
+}
+
+.countZone {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.78rem 1rem;
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+
+  background: var(--brand-accent-a-soft);
+  color: var(--brand-accent-a);
+
+  transition: background-color 0.18s ease, color 0.18s ease;
+
+  .root:hover & {
+    background: color-mix(in srgb, var(--brand-accent-a) 18%, transparent);
+  }
+}
+
+.star {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: #f5b301; // warm gold — star metaphor, sits inside the blue tint without fighting it
+  filter: drop-shadow(0 0 6px color-mix(in srgb, #f5b301 35%, transparent));
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  .root:hover & {
+    animation: starNudge 0.55s ease both;
+  }
+}
+
+.countValue {
+  line-height: 1;
+}
+
+@keyframes starNudge {
+  0%   { transform: rotate(0) scale(1); }
+  35%  { transform: rotate(-12deg) scale(1.18); }
+  70%  { transform: rotate(8deg) scale(1.08); }
+  100% { transform: rotate(0) scale(1); }
+}
+
+// ───── Dark theme — lift the zone contrast on the dark surface ─────
+:global(html[data-theme='dark']) .root {
+  color: #fff;
+}
+:global(html[data-theme='dark']) .gh {
+  color: #fff;
+}
+:global(html[data-theme='dark']) .countZone {
+  background: color-mix(in srgb, var(--brand-accent-a) 18%, transparent);
+  color: #cfd7ff;
+}
+
+// ───── Size variants ─────
+.size-sm {
+  .cta, .countZone { padding-block: 0.55rem; font-size: 0.875rem; }
+  .gh, .star       { width: 14px; height: 14px; }
+}
+
+.size-lg {
+  border-radius: 12px;
+  .cta, .countZone { padding-block: 0.95rem; padding-inline: 1.25rem; font-size: 1rem; }
+  .gh, .star       { width: 18px; height: 18px; }
+}
+
+// ───── Reduced motion — skip the nudge ─────
+@media (prefers-reduced-motion: reduce) {
+  .star {
+    transition: none;
+    .root:hover & { animation: none; }
+  }
+  .root:hover, .root:focus-visible { transform: none; }
+}
