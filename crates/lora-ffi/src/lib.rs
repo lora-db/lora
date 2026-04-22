@@ -200,7 +200,7 @@ pub unsafe extern "C" fn lora_db_execute_json(
             None
         } else {
             match CStr::from_ptr(params_json).to_str() {
-                Ok(s) if s.is_empty() => None,
+                Ok("") => None,
                 Ok(s) => Some(s),
                 Err(_) => {
                     write_error(
