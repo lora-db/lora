@@ -1,0 +1,116 @@
+name: lora-ruby
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/lora-ruby/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
+      - "crates/lora-executor/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/lora-ruby.yml"
+  pull_request:
+    paths:
+      - "crates/lora-ruby/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
+      - "crates/lora-executor/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/lora-ruby.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: crates/lora-ruby
+
+jobs:
+  verify:
+    name: build, test, gem build (${{ matrix.os }} / ruby-${{ matrix.ruby-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ruby-version: ["3.1", "3.2", "3.3"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          # Isolate from other binding workflow caches to keep rb-sys
+          # build artefacts for each Ruby ABI separate. Cross-workflow
+          # cache reuse has previously masked ABI-mismatch loader
+          # failures in this kind of extension.
+          cache-key: lora-ruby-${{ matrix.os }}-ruby${{ matrix.ruby-version }}
+          workspaces: ". -> target"
+          cache-on-failure: "false"
+
+      - name: Set up Ruby ${{ matrix.ruby-version }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          # setup-ruby's bundler cache is aware of the gemspec and
+          # Gemfile at `working-directory`; scoping it here keeps the
+          # cache key stable across Ruby versions.
+          bundler-cache: true
+          working-directory: crates/lora-ruby
+
+      - name: cargo check (rlib target — no libruby link)
+        working-directory: .
+        # Package name is `lora_ruby` (underscored) — see Cargo.toml
+        # for why. Cargo also accepts the hyphenated form here, but the
+        # exact name is used so the invocation is unambiguous.
+        run: cargo check -p lora_ruby --locked
+
+      - name: bundle exec rake compile
+        # Drives cargo via rb_sys/extensiontask and installs the
+        # native library at lib/lora_ruby/lora_ruby.{so,bundle}.
+        run: bundle exec rake compile
+
+      - name: bundle exec rake test
+        # Minitest: basic queries, params, nested lists/maps, nodes,
+        # rels, paths, temporal/spatial, invalid params, query errors,
+        # counts/clear, and the GVL-release concurrency check.
+        run: bundle exec rake test
+
+      - name: Sanity-require the gem
+        run: bundle exec ruby -I lib -r lora_ruby -e "puts LoraRuby::VERSION"
+
+      - name: Run the basic example
+        run: bundle exec ruby -I lib examples/basic.rb
+
+      - name: bundle exec rake build (source gem)
+        # Produces pkg/lora-ruby-<version>.gem. Released source gem is
+        # identical to this artefact; precompiled platform gems are
+        # built in packages-release.yml.
+        run: bundle exec rake build
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-ruby-${{ matrix.os }}-ruby${{ matrix.ruby-version }}-gem
+          path: crates/lora-ruby/pkg/lora-ruby-*.gem
+          if-no-files-found: error
+          retention-days: 7

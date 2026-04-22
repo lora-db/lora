@@ -329,15 +329,15 @@ These would be reasonable next steps but are out of scope for now:
 
 ---
 
-# Releasing the client packages (`lora-node`, `lora-wasm`, `lora-python`)
+# Releasing the client packages (`lora-node`, `lora-wasm`, `lora-python`, `lora-ruby`)
 
 The client packages use the **same semver tag** as the server. One
 `git push origin vX.Y.Z` triggers two independent workflows:
 
 - `release.yml` — builds `lora-server` binaries and creates a draft GitHub
   Release (see above).
-- `packages-release.yml` — builds the three client packages and publishes
-  them to npm and PyPI.
+- `packages-release.yml` — builds the four client packages and publishes
+  them to npm, PyPI, and RubyGems.
 
 They run in parallel. Nothing the package workflow does depends on the
 server release draft, and vice versa.
@@ -349,6 +349,7 @@ server release draft, and vice versa.
 | `@loradb/lora-wasm`  | npm      | Single tarball with `dist/` + `pkg-node/` + `pkg-bundler/` + `pkg-web/`. |
 | `@loradb/lora-node`  | npm      | Root package + one optional platform subpackage per napi triple. |
 | `lora-python`        | PyPI     | abi3-py38 wheels (manylinux x64 + arm64, macOS x64 + arm64, Windows x64) plus an sdist. |
+| `lora-ruby`          | RubyGems | Source gem + precompiled platform gems (linux x64 + arm64, macOS x64 + arm64, Windows ucrt). |
 
 The `@loradb` npm scope is the **organization scope** on npmjs.com. The
 GitHub organization is a separate thing (`lora-db`) — the two names do
@@ -393,24 +394,65 @@ Python 3.8+ interpreter. That means:
 
 The sdist is built once and uploaded alongside the wheels.
 
+### `lora-ruby` platform gems
+
+rb-sys' cross-gem action builds one **fat** gem per platform that
+contains every supported Ruby ABI (3.1, 3.2, 3.3). This mirrors how
+popular Rust-backed gems (`wasmtime-rb`, `bootsnap`, `rustler`) ship.
+
+Shipped platforms (bumped in lockstep with the workspace version):
+
+| Platform          | Gem filename                              | Runner          |
+| ----------------- | ----------------------------------------- | --------------- |
+| `x86_64-linux`    | `lora-ruby-<v>-x86_64-linux.gem`          | `ubuntu-latest` |
+| `aarch64-linux`   | `lora-ruby-<v>-aarch64-linux.gem`         | `ubuntu-latest` + rb-sys cross image |
+| `x86_64-darwin`   | `lora-ruby-<v>-x86_64-darwin.gem`         | `ubuntu-latest` + rb-sys cross image |
+| `arm64-darwin`    | `lora-ruby-<v>-arm64-darwin.gem`          | `ubuntu-latest` + rb-sys cross image |
+| `x64-mingw-ucrt`  | `lora-ruby-<v>-x64-mingw-ucrt.gem`        | `ubuntu-latest` + rb-sys cross image |
+
+Musl Linux, freebsd, and Windows-arm64 are not built. On a platform
+without a precompiled gem, `gem install lora-ruby` falls back to the
+source gem and rebuilds locally — this requires a Rust toolchain
+(1.87+). The source gem is always published.
+
+To add a platform: extend `ext.cross_platform` in
+`crates/lora-ruby/Rakefile` AND the `build-ruby-platform` matrix in
+`.github/workflows/packages-release.yml`. Nothing else needs to change.
+
 ## One-time registry setup
 
 ### GitHub environments
 
-Both publish flows bind to GitHub environments, so branch protection can
-gate who is allowed to trigger a release and so secrets stay scoped:
+Every publish flow binds to a GitHub environment, so branch protection
+can gate who is allowed to trigger a release and secrets stay scoped
+to the job that uses them. See
+[`.github/workflows/README.md` → Environments & secrets](.github/workflows/README.md#environments--secrets)
+for the canonical table. The bootstrap details for each environment:
 
-- **`npm-publish`** — used by `publish-wasm` and `publish-node`.
+- **`npm-publish`** — used by `publish-wasm` and `publish-node` in
+  `packages-release.yml`.
   - Secret: `NPM_TOKEN` (automation token, `publish` permission). Only
     required until trusted publishing is live for every npm package
     below. After that, delete the secret.
-- **`pypi-publish`** — used by `publish-python`.
+- **`pypi-publish`** — used by `publish-python` in `packages-release.yml`.
   - Secret: `PYPI_API_TOKEN` — only required until a PyPI trusted
     publisher is configured. After that, delete the secret.
+- **`rubygems-publish`** — used by `publish-ruby` in `packages-release.yml`.
+  - Secret: `RUBYGEMS_API_KEY` — only required until a RubyGems
+    trusted publisher is configured. After that, delete the secret.
+- **`crates-io-publish`** — used by `publish` in `cargo-release.yml`.
+  - Secret: `CARGO_REGISTRY_TOKEN` (required; see "Trusted publishing
+    (OIDC) — current status" further down for why OIDC is not yet an
+    option on crates.io).
+- **`github-pages`** — used by `deploy` in `loradb-docs.yml`. Created
+  automatically by GitHub the first time Pages is enabled; no secret
+  is needed (authentication is OIDC via `actions/deploy-pages@v4`).
+  Add a required reviewer here if you want a manual approval gate on
+  docs deploys.
 
-Create both environments under **Settings → Environments** in this
-repository. Add at least one required reviewer if you want a manual
-approval gate before any publish runs.
+Create the first four environments under **Settings → Environments**
+in this repository. Add at least one required reviewer on each if
+you want a manual approval gate before any publish runs.
 
 ### npm: publish the `@loradb` scope
 
@@ -479,6 +521,41 @@ approval gate before any publish runs.
      `.whl` / `.tar.gz` / `.tgz` files are uploaded as workflow
      artifacts, but nothing is pushed to PyPI.
 
+### RubyGems: `lora-ruby`
+
+1. Register the gem name `lora-ruby` on RubyGems. Either:
+   - Visit <https://rubygems.org/profile/oidc/api_key_roles/new> and
+     configure a **trusted publisher** for a not-yet-existing gem.
+     Fill in: repository `lora-db/lora`, workflow file
+     `packages-release.yml`, environment `rubygems-publish`. RubyGems
+     released OIDC trusted publishing in 2024 and accepts
+     pending-trusted-publisher registrations (same model as PyPI).
+   - Or, bootstrap with an API key: create a scoped API key at
+     <https://rubygems.org/profile/api_keys> with `push_rubygem` scope
+     (scoped to `lora-ruby` once it exists, or global for the first
+     publish), store it as `RUBYGEMS_API_KEY` on the `rubygems-publish`
+     environment, cut one release, then configure a trusted publisher
+     and drop the secret.
+
+2. Once trusted publishing is active, leave `RUBYGEMS_API_KEY` unset.
+   `rubygems/configure-rubygems-credentials` will negotiate OIDC via
+   the `id-token: write` permission the `publish-ruby` job holds. With
+   the secret set, the action prefers it (fallback path — useful for
+   the first few releases before trusted publishing is live).
+
+3. There is no TestGems equivalent of TestPyPI. For a rehearsal:
+   - Run the workflow via `workflow_dispatch` with `dry_run: true`.
+     Every gem — source + each platform — is uploaded as a workflow
+     artifact. Nothing is pushed to RubyGems.
+   - Alternatively, push a pre-release tag (`vX.Y.Z-rc.1`). RubyGems
+     will accept it as a normal version; consumers have to opt in with
+     `gem install lora-ruby --pre`.
+
+4. RubyGems enforces 2FA on newly created gems by default. When
+   bootstrapping with an API key, generate a **scoped** key with 2FA
+   enabled on the account; otherwise the first `gem push` is rejected
+   with `You must enable MFA`.
+
 ## Release flow
 
 1. Bump every manifest (same checklist as the server release):
@@ -489,6 +566,7 @@ approval gate before any publish runs.
    (cd crates/lora-node && npm install --package-lock-only --ignore-scripts)
    (cd crates/lora-wasm && npm install --package-lock-only --ignore-scripts)
    (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
+   (cd crates/lora-ruby && bundle install)
    node scripts/sync-versions.mjs X.Y.Z --check
    git commit -am "chore(release): vX.Y.Z"
    ```
@@ -518,6 +596,10 @@ approval gate before any publish runs.
      at the same version.
    - <https://pypi.org/project/lora-python/> lists the new version with
      one sdist + every platform wheel.
+   - <https://rubygems.org/gems/lora-ruby> lists the new version with a
+     source gem and one precompiled gem per supported platform
+     (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `arm64-darwin`,
+     `x64-mingw-ucrt`).
 
 5. When `release.yml` is green: finish the server draft release as
    usual (see the top of this file).
@@ -561,6 +643,20 @@ subpackages are already public. Recovery rules:
   against the tag. The PyPI action's `skip-existing: true` handles the
   already-uploaded sdist, and only the missing wheel is pushed.
 
+- **If a platform gem failed to publish while the source gem is
+  live:** re-run the workflow against the tag. The `publish-ruby`
+  job's push loop treats "has already been pushed" as success, so
+  previously-published gems are skipped and only the missing ones are
+  pushed. If the failure is structural (bad triple, stale Rakefile
+  target list), fix + cut `vX.Y.(Z+1)`.
+
+- **If a platform gem is subtly wrong** (wrong Ruby ABI compiled in,
+  missing native library, etc.) — `gem yank lora-ruby -v X.Y.Z
+  --platform <platform>` removes just that platform gem from the index
+  without touching the source / other platforms. Then cut a patch
+  release with the fix. Yanks never free the version number for
+  reuse; a patch bump is the only forward path.
+
 - **Workflow artifacts are kept for 30 days.** If a build-matrix leg
   succeeded but the publish job crashed before its step ran, you can
   download the `.node` / `.whl` / `.tgz` directly from the failed run
@@ -590,9 +686,24 @@ subpackages are already public. Recovery rules:
   `verify-versions`, which re-runs `scripts/sync-versions.mjs --check`.
   If any of workspace `Cargo.toml` (including the internal-dep pins in
   `[workspace.dependencies]`), `crates/lora-node/package.json`,
-  `crates/lora-wasm/package.json`, `apps/loradb.com/package.json`, or
-  `crates/lora-python/pyproject.toml` disagrees with the tag, the build
-  never starts.
+  `crates/lora-wasm/package.json`, `apps/loradb.com/package.json`,
+  `crates/lora-python/pyproject.toml`, or
+  `crates/lora-ruby/lib/lora_ruby/version.rb` disagrees with the tag,
+  the build never starts.
+
+- **`Error fetching gem: You are rate limited.`** RubyGems throttles
+  pushes per-account (around 100/hour). Unlikely to hit with the
+  handful of gems in one release, but a flaky re-run of
+  `workflow_dispatch` can accumulate attempts. Wait ten minutes and
+  re-run.
+
+- **`gem push` rejects OIDC (`Trusted publishers are not configured`).**
+  The `rubygems-publish` environment name on the action must match
+  **exactly** what's configured on rubygems.org. Also: the environment
+  only has `id-token: write` on the publish job, not the builds — that
+  is intentional. If you split the builds to require OIDC, the trusted
+  publisher evaluation will still run in the publish job where the
+  token is minted.
 
 ---
 
@@ -830,3 +941,131 @@ through, some crates are live and some aren't.
   `scripts/sync-versions.mjs` rewrites them in lockstep with
   `[workspace.package].version`; both are checked by `--check`. If you
   edit `Cargo.toml` by hand, re-run `node scripts/sync-versions.mjs X.Y.Z`.
+
+---
+
+# Releasing the Go binding (`github.com/lora-db/lora/crates/lora-go`)
+
+The Go binding ships via Go's standard module/tag resolution: there is
+no registry upload. When a consumer runs
+`go get github.com/lora-db/lora/crates/lora-go@vX.Y.Z`, the Go module
+proxy (`proxy.golang.org`) walks the repo, finds the tag, and serves
+the source at that commit. The release pipeline therefore does not
+"push" anywhere; it verifies that the tagged tree builds, that the Go
+toolchain is happy with it, and that the module proxy has picked up
+the new tag.
+
+The Go binding is **not** listed in
+[`scripts/sync-versions.mjs`](scripts/sync-versions.mjs) on purpose:
+the module version is derived from the git tag at consume time
+(`runtime/debug.ReadBuildInfo`) and there is no `go.mod` version field
+to keep in lockstep. One fewer synced manifest.
+
+## Architecture
+
+Two crates in one release:
+
+- `crates/lora-ffi` — `publish = false` Rust crate with
+  `crate-type = ["staticlib", "cdylib", "rlib"]`. Exposes a stable C
+  ABI over `lora-database` (see `crates/lora-ffi/src/lib.rs` and
+  `crates/lora-go/include/lora_ffi.h`). Uses `catch_unwind` at every
+  entry point so a Rust panic never unwinds into the caller.
+- `crates/lora-go` — a Go module (`go.mod` with module path
+  `github.com/lora-db/lora/crates/lora-go`) that cgo-links against
+  `liblora_ffi.a`. Value model is the same tagged JSON used by the
+  other bindings (`lora-node`, `lora-wasm`, `lora-python`,
+  `lora-ruby`).
+
+The `#cgo` directives in `crates/lora-go/lora.go` pin the linker to
+`${SRCDIR}/../../target/release/liblora_ffi.a`, so building the FFI is
+a prerequisite for `go test` / `go build` on any consumer's machine.
+
+## Release flow
+
+`packages-release.yml` contains three Go-specific jobs that run on
+every tag push or dispatch:
+
+1. **`verify-go`** (matrix: ubuntu-latest, macos-latest). Checks out
+   the tag, builds `lora-ffi` (release), runs `go mod tidy` and fails
+   if the tree is now dirty, runs `gofmt -l` / `go vet ./...` /
+   `go test -race ./...`. If this job is green, the tag is a valid
+   Go module at that commit.
+2. **`build-go-archives`** (matrix: linux-x64, darwin-x64,
+   darwin-arm64). Builds `liblora_ffi.a` for each triple, stages it
+   alongside `lora_ffi.h` + `LICENSE` + `README.md`, and uploads
+   `lora-ffi-<tag>-<triple>.tar.gz` + `.sha256` as a workflow artifact
+   (30-day retention). These are **convenience** artifacts — the Go
+   toolchain itself resolves source from the tag, not from these
+   archives — but they are useful for downstream consumers who vendor
+   a prebuilt static lib.
+3. **`verify-go-module-resolvable`** (only on push, only in non-dry-run
+   mode). Polls `GOPROXY=https://proxy.golang.org go list -m
+   github.com/lora-db/lora/crates/lora-go@<tag>` every 30 seconds for
+   up to 5 minutes. Fails if the proxy never returns the tag. This is
+   the Go equivalent of checking an npm / PyPI / crates.io package
+   page.
+
+All three are in the `summary` job's `needs:` list, so the release
+checklist's "single green job" gate still reflects Go's state.
+
+## Recovery from a failed Go "publish"
+
+"Publish" is the git tag plus proxy resolution. There is nothing to
+re-upload.
+
+- **Re-run the workflow against the same tag.** Actions →
+  `packages-release` → Run workflow → `tag: vX.Y.Z`. `verify-go` and
+  `build-go-archives` are idempotent against the tag: they re-check
+  out, re-build, and re-upload artifacts. No registry has seen
+  anything, so there is no "already exists" state to clean up.
+
+- **If `verify-go-module-resolvable` fails** because the proxy has
+  not indexed the tag yet (very rare; usually sub-minute), wait a few
+  more minutes and re-run the workflow, or force a direct fetch once
+  from any machine:
+
+  ```bash
+  GOPROXY=direct go get github.com/lora-db/lora/crates/lora-go@vX.Y.Z
+  ```
+
+  which causes `proxy.golang.org` to index the tag on the next
+  subsequent `GOPROXY=https://proxy.golang.org` request. Never re-tag
+  just because the proxy is slow.
+
+- **If `verify-go` fails against a freshly pushed tag** (e.g. `gofmt`
+  drift was not caught before tagging), the Go module is still
+  resolvable at that tag, but consumers who run `go test ./...`
+  against it will see the same failure. Cut `vX.Y.(Z+1)` with the
+  fix; the bad tag stays out there and becomes "don't use this
+  version" — mirror the crates.io yank semantics (yank a tag by
+  convention, not by deletion).
+
+## Platform support
+
+Built and tested in CI: Linux x86_64, macOS x86_64, macOS ARM64.
+Windows and FreeBSD are **not** supported for v0.1. Adding a Windows
+target requires cgo + MinGW or MSVC tooling and a round-trip against
+the Windows cdylib's import-library conventions; it lives in the same
+bucket as "Windows wheels for `lora-python`" — easy enough to add,
+intentionally deferred.
+
+## Troubleshooting
+
+- **`could not import C` at build time.** The Rust FFI hasn't been
+  built yet, or was built in debug mode. Run
+  `cargo build --release -p lora-ffi` from the workspace root before
+  `go build` / `go test`. `make test` from `crates/lora-go/` does this
+  automatically.
+- **`ld: library not found for -llora_ffi`** when building the Go
+  module. The cgo linker is looking under
+  `crates/lora-go/../../target/release/liblora_ffi.a`. Either the
+  FFI was built for a different target directory (e.g. `CARGO_TARGET_DIR`
+  override) or the release build step was skipped. Rebuild with the
+  default target dir, or adjust the `#cgo LDFLAGS` line to point at
+  the override.
+- **`unknown directive: go 1.22` during `go mod tidy` in CI.** The
+  toolchain version is older than `go.mod`'s `go` directive. CI pins
+  to `go-version: "1.22"` via `actions/setup-go`; bump both in
+  lockstep.
+- **`ld: warning: ... has malformed LC_DYSYMTAB`** on macOS. Benign
+  Xcode 15 ld64 + cgo interaction; does not affect correctness.

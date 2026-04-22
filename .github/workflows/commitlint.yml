@@ -1,5 +1,9 @@
 name: commitlint
 
+# Conventional-Commits gate for PRs (title + every commit in the range)
+# and for pushes to main (the last commit on main). See CONTRIBUTING.md
+# for the allowed types/scopes — they come from commitlint.config.cjs.
+
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
@@ -18,6 +22,7 @@ jobs:
   commitlint:
     name: Validate conventional commits
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v5

@@ -1,0 +1,111 @@
+name: lora-go
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/lora-go/**"
+      - "crates/lora-ffi/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
+      - "crates/lora-executor/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/lora-go.yml"
+  pull_request:
+    paths:
+      - "crates/lora-go/**"
+      - "crates/lora-ffi/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "crates/lora-analyzer/**"
+      - "crates/lora-compiler/**"
+      - "crates/lora-executor/**"
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/lora-go.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: crates/lora-go
+
+jobs:
+  verify:
+    name: build, vet, test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-go-${{ matrix.os }}
+
+      - uses: actions/setup-go@v5
+        with:
+          # Any 1.22+ build works. Pinning to 1.22 gives us a predictable
+          # floor; tests pass on 1.22, 1.23, and 1.24.
+          go-version: "1.22"
+          cache-dependency-path: crates/lora-go/go.sum
+
+      - name: Build lora-ffi (release)
+        # Built from the workspace root so the output lands in
+        # target/release/ — the cgo #cgo LDFLAGS in lora.go resolve to
+        # ../../target/release/liblora_ffi.a relative to the Go module.
+        working-directory: .
+        run: cargo build --release -p lora-ffi --locked
+
+      - name: cargo check -p lora-ffi
+        working-directory: .
+        run: cargo check -p lora-ffi --locked
+
+      - name: gofmt -l (must be empty)
+        shell: bash
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then
+            echo "::error::gofmt drift detected:"
+            echo "$diff"
+            exit 1
+          fi
+
+      - name: go vet ./...
+        run: go vet ./...
+
+      - name: go test -race ./...
+        run: go test -race ./...
+
+      - name: go run examples/basic (smoke test)
+        run: go run ./examples/basic
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-ffi-${{ matrix.os }}-release
+          path: |
+            target/release/liblora_ffi.a
+            target/release/liblora_ffi.dylib
+            target/release/liblora_ffi.so
+          if-no-files-found: warn
+          retention-days: 7

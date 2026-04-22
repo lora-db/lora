@@ -1,0 +1,54 @@
+name: copy-license
+description: >-
+  Copy the repo-root LICENSE into a destination directory, cross-platform.
+  Every client package ships LICENSE next to its own manifest (so the
+  artefact on npm / PyPI / RubyGems / in a Go tarball carries the licence
+  without relying on the workspace root), but the raw copy step diverges
+  between Unix `cp` and Windows PowerShell `Copy-Item`. Encapsulating that
+  here keeps the branching in one place.
+
+inputs:
+  destination:
+    description: >-
+      Directory to copy LICENSE into, relative to `GITHUB_WORKSPACE` (the
+      repo checkout root) — this is deliberate so the action is invariant
+      to the caller job's `defaults.run.working-directory`. Must already
+      exist. The file is written as `<destination>/LICENSE`.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Copy LICENSE (unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        DEST: ${{ inputs.destination }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        if [ ! -f LICENSE ]; then
+          echo "::error::LICENSE not found at repository root"
+          exit 1
+        fi
+        if [ ! -d "$DEST" ]; then
+          echo "::error::destination directory '$DEST' does not exist (relative to GITHUB_WORKSPACE)"
+          exit 1
+        fi
+        cp LICENSE "$DEST/LICENSE"
+
+    - name: Copy LICENSE (windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        DEST: ${{ inputs.destination }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Set-Location $env:GITHUB_WORKSPACE
+        if (-not (Test-Path 'LICENSE')) {
+          Write-Error "LICENSE not found at repository root"
+        }
+        if (-not (Test-Path $env:DEST -PathType Container)) {
+          Write-Error "destination directory '$env:DEST' does not exist (relative to GITHUB_WORKSPACE)"
+        }
+        Copy-Item LICENSE (Join-Path $env:DEST 'LICENSE')
