@@ -89,35 +89,100 @@ html[data-theme='dark'] {
           }
         }
 
-        .icon-link,
-        [class*='toggle_'] {
-          padding: 0.5rem;
-          display: flex;
+        // Framed social icons (Discord, X, GitHub, …) AND the dark/light
+        // mode toggle. Rounded-square chiclets with a subtle border that
+        // fills with the brand tint on hover/focus. Keeps every right-side
+        // icon optically centered and the same size regardless of the
+        // underlying SVG's width.
+        [class*='colorModeToggle_'],
+        .icon-link {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
 
-          transition: opacity var(--t) var(--t-ease);
+          width: 34px;
+          height: 34px;
+          padding: 0;
+          margin-inline-start: 0.25rem;
+
           color: var(--navbar-icon-link-c);
+          background: transparent;
+          border: 1px solid var(--brand-border-c);
+          border-radius: 8px;
+
+          transition:
+            color var(--t) var(--t-ease),
+            background-color var(--t) var(--t-ease),
+            border-color var(--t) var(--t-ease),
+            transform var(--t) var(--t-ease),
+            box-shadow var(--t) var(--t-ease);
 
           &:hover,
-          &:focus,
+          &:focus-visible {
+            color: var(--brand-accent-a);
+            background: var(--brand-accent-a-soft);
+            border-color: var(--brand-accent-a);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px -6px var(--brand-accent-a-soft);
+            text-decoration: none;
+          }
+
           &:active {
-            opacity: 0.7;
+            transform: translateY(0);
+            box-shadow: none;
+          }
+
+          &:focus-visible {
+            outline: 2px solid var(--brand-accent-a);
+            outline-offset: 2px;
           }
         }
 
+        // The theme toggle is a <div class="colorModeToggle_"> wrapping
+        // a <button class="clean-btn toggleButton_"> with its own
+        // circular (border-radius: 50%) hover pill. Flatten the inner
+        // button so it fills the outer chiclet frame and shares the 8px
+        // radius — otherwise the circle clips inside a rounded square.
+        [class*='colorModeToggle_'] button {
+          width: 100%;
+          height: 100%;
+          padding: 0;
+          border-radius: inherit;
+          background: transparent;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: inherit;
+        }
+
+        // Mask-icon specifics — only `.icon-link` variants need the
+        // ::before treatment; the theme toggle renders its own SVG.
         .icon-link {
           &-mask {
             &::before {
               content: '';
+              display: block;
               height: 16px;
-              display: flex;
               background-color: currentColor;
               mask-repeat: no-repeat;
               mask-position: center;
-              mask-size: 100% 100%;
+              mask-size: contain;
+              transition: transform var(--t) var(--t-ease);
+            }
+
+            &:hover::before {
+              transform: scale(1.06);
             }
           }
 
           &-github {
+            // A soft tint and brand-accent glyph set GitHub apart from
+            // the ghost Discord/X chiclets without becoming a fully
+            // filled primary button — the border still matches the
+            // other two so the group reads as a set.
+            color: var(--brand-accent-a);
+            background: var(--brand-accent-a-soft);
+
             &::before {
               mask-image: url("../../static/logos/github.svg");
               width: 17px;
