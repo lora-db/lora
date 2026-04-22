@@ -1,6 +1,6 @@
 # Internal Documentation
 
-Technical documentation for **contributors** to `cypher-graph` (LoraDB).
+Technical documentation for **contributors** to the Lora (LoraDB) engine and its workspace.
 
 > ⚙️ **Note** — Looking for **user-facing documentation** (install, write queries, operate the server)? That lives at **<https://loradb.com/docs>** (source: `apps/loradb.com/docs/`). This directory is for people working on the engine itself.
 >
@@ -11,7 +11,7 @@ Technical documentation for **contributors** to `cypher-graph` (LoraDB).
 ## Architecture
 
 - [System Context](architecture/system-context.md) — what the system is, what it is not, external boundaries
-- [Architecture Overview](architecture/overview.md) — eight-crate pipeline and responsibilities
+- [Architecture Overview](architecture/overview.md) — the eight-crate core engine pipeline and its responsibilities (the workspace also contains FFI and language-binding crates that wrap this pipeline)
 - [Data Flow](architecture/data-flow.md) — end-to-end query execution pipeline
 - [Graph Engine](architecture/graph-engine.md) — in-memory storage internals
 

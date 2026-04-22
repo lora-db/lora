@@ -2,7 +2,12 @@
 
 ## How data enters the graph
 
-Lora has a single ingestion path: **Cypher `CREATE` statements over HTTP**.
+Lora has one logical ingestion mechanism — **writing Cypher statements (`CREATE`, `MERGE`, `SET`, …) through `Database::execute` / `execute_with_params`**. What varies is the surface the caller reaches it through:
+
+- **HTTP** — `POST /query` on `lora-server`
+- **Direct Rust** — depend on the `lora-database` crate and call `Database` directly
+- **C ABI** — `lora-ffi` exposes the same `Database` pipeline through a C-compatible surface (used by `lora-go`)
+- **Language bindings** — `lora-node`, `lora-wasm`, `lora-python`, `lora-go`, `lora-ruby` each wrap the same `Database` calls
 
 There are no:
 - Bulk import tools
@@ -10,13 +15,15 @@ There are no:
 - ETL pipelines
 - Streaming ingestion
 - Database migration scripts
-- Seed scripts (beyond the manual HTTP test file)
+- Seed scripts outside the test suite (see [Batch seeding](#batch-seeding))
 
 ## HTTP ingestion flow
 
 ```
 Client -> POST /query {"query": "CREATE ..."} -> lora-server -> Database::execute -> InMemoryGraph
 ```
+
+The same `Database::execute` / `execute_with_params` entry point handles writes from every other surface listed above.
 
 ### Creating nodes
 

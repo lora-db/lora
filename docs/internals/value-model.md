@@ -18,13 +18,13 @@ enum PropertyValue {
     String(String),
     List(Vec<PropertyValue>),
     Map(BTreeMap<String, PropertyValue>),
-    Date(CypherDate),
-    Time(CypherTime),
-    LocalTime(CypherLocalTime),
-    DateTime(CypherDateTime),
-    LocalDateTime(CypherLocalDateTime),
-    Duration(CypherDuration),
-    Point(CypherPoint),
+    Date(LoraDate),
+    Time(LoraTime),
+    LocalTime(LoraLocalTime),
+    DateTime(LoraDateTime),
+    LocalDateTime(LoraLocalDateTime),
+    Duration(LoraDuration),
+    Point(LoraPoint),
 }
 ```
 
@@ -45,7 +45,7 @@ enum LoraValue {
     // …all PropertyValue variants…
     Node(NodeId),
     Relationship(RelationshipId),
-    Path(CypherPath),
+    Path(LoraPath),
 }
 ```
 

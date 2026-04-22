@@ -238,7 +238,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | `point({latitude, longitude})` | **Supported** | WGS-84 geographic 2D |
 | `point.distance(a, b)` / `distance(a, b)` | **Supported** | Euclidean for Cartesian, Haversine for geographic (Earth radius 6,371 km) |
 | Component access: `p.x`, `p.y`, `p.latitude`, `p.longitude`, `p.srid` | **Supported** | Via property access on Point |
-| 3D points | **Not yet implemented** | No `z` dimension |
+| 3D points (Cartesian SRID 9157, WGS-84 SRID 4979) | **Supported** | `z` / `height` exposed via property access; `distance()` on WGS-84-3D ignores height and falls back to great-circle |
 
 ## 14. Data types
 

@@ -2,9 +2,16 @@
 
 ## System summary
 
-Lora is a Rust workspace implementing an **in-memory property graph database** with full **Cypher query language support**. The entire query pipeline and storage engine are implemented from scratch — there is no external graph database behind it.
+Lora is a Rust workspace implementing an **in-memory property graph database** with a **Cypher-like query language** (see the [Cypher support matrix](../reference/cypher-support-matrix.md) for the exact subset). The entire query pipeline and storage engine are implemented from scratch — there is no external graph database behind it.
 
-The system is structured as eight crates that form a compiler-style pipeline plus an orchestration layer:
+The **core engine** is structured as eight crates that form a compiler-style pipeline plus an orchestration layer (described below). The wider workspace additionally contains transport and binding surfaces that all wrap this same pipeline:
+
+- `crates/lora-ffi` — Rust crate exposing a C ABI over `Database`
+- `crates/lora-node`, `crates/lora-wasm`, `crates/lora-python`, `crates/lora-ruby` — Rust crates that are cargo workspace members and compile to native extensions for their respective runtimes
+- `crates/lora-go` — a Go module (not a cargo crate) that cgo-links against `lora-ffi`
+- `crates/shared-ts` — shared TypeScript type declarations consumed by `lora-node` and `lora-wasm` (source only, not a cargo crate)
+
+These are documented elsewhere and are not part of the eight-crate count here.
 
 ```
 Cypher text
@@ -49,13 +56,13 @@ Defines the Cypher grammar in PEG notation (pest) and lowers parse trees into th
 
 ### lora-store
 
-Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a BTreeMap-backed implementation with secondary indexes for labels, relationship types, and adjacency. Also defines the temporal and spatial value types (`CypherDate`, `CypherDateTime`, `CypherDuration`, `CypherPoint`, …) shared between the store and the executor.
+Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a BTreeMap-backed implementation with secondary indexes for labels, relationship types, and adjacency. Also defines the temporal and spatial value types (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`) shared between the store and the executor.
 
 **Key files**:
 - `src/graph.rs` — trait definitions, `NodeRecord`, `RelationshipRecord`, `PropertyValue`
 - `src/memory.rs` — `InMemoryGraph`
 - `src/temporal.rs` — temporal value types and parsing
-- `src/spatial.rs` — `CypherPoint` and distance functions
+- `src/spatial.rs` — `LoraPoint` and distance functions
 
 ### lora-analyzer
 

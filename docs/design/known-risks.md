@@ -24,7 +24,6 @@
 | `PROFILE` | Not in grammar | N/A | Low |
 | Quantified path patterns | Not in grammar | N/A | Low — future openCypher syntax |
 | Inline `WHERE` inside variable-length relationship | Parsed | Not evaluated | Low — 1 ignored test |
-| 3D points (`z` coordinate) | N/A | Not implemented | Low |
 | Type mismatch detection between comparable types | Accepted | Compared without error | Low — 1 ignored test |
 | Parameter as a label or relationship type | N/A | Not implemented | Low — not standard Cypher |
 | HTTP `POST /query` with a `params` field | N/A | Not wired up | **Medium** — Rust API supports parameters, HTTP layer does not |
@@ -36,7 +35,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Feature | Evidence |
 |---------|----------|
 | Temporal types (`Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration`) | 89 passing tests in `tests/temporal.rs` |
-| Spatial types (`Point`: Cartesian SRID 7203 and WGS-84 SRID 4326) | Tests in `tests/functions_extended.rs` and `tests/types_advanced.rs` |
+| Spatial types (`Point`: Cartesian 2D/3D and WGS-84 2D/3D — SRIDs 7203, 9157, 4326, 4979) | Tests in `tests/functions_extended.rs` and `tests/types_advanced.rs` |
 | `shortestPath()` / `allShortestPaths()` | Tests in `tests/paths.rs` |
 | Advanced aggregates: `stdev`, `stdevp`, `percentileCont`, `percentileDisc` | Tests in `tests/aggregation.rs` |
 | Trigonometry: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians` | Tests in `tests/functions_extended.rs` |
@@ -124,9 +123,8 @@ The following features were listed as gaps in earlier revisions of this document
 
 5. Replace `Mutex` with `RwLock` so reads can run concurrently
 6. Add authentication middleware to the HTTP server
-7. Add a CI pipeline (`cargo test --workspace`, `cargo clippy`, `cargo fmt --check`)
-8. Add property indexes for common filters
-9. Introduce borrowing iterators on `GraphStorage` to reduce clone overhead
+7. Add property indexes for common filters
+8. Introduce borrowing iterators on `GraphStorage` to reduce clone overhead
 
 ### Long term (capability)
 
@@ -134,8 +132,7 @@ The following features were listed as gaps in earlier revisions of this document
 11. Richer optimizer: join ordering, limit push-down, index selection
 12. `CALL` / procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`)
 13. `FOREACH`
-14. 3D `Point`
-15. Quantified path patterns
+14. Quantified path patterns
 
 ## Next steps
 
