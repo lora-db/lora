@@ -15,6 +15,8 @@ module.exports = {
         'getting-started/node',
         'getting-started/python',
         'getting-started/wasm',
+        'getting-started/go',
+        'getting-started/ruby',
         'getting-started/tutorial',
         {
           type: 'category',

@@ -24,7 +24,7 @@ An in-process graph store with a Cypher-like query engine — small enough to em
   <a href="https://loradb.com"><img alt="Docs" src="https://img.shields.io/badge/docs-loradb.com-5b8def"></a>
 </p>
 
-<sub>Embedded · Rust · Cypher-like &nbsp;·&nbsp; Zero daemons · runs in your process &nbsp;·&nbsp; Open source · readable end-to-end</sub>
+<sub>Embedded · Rust · Cypher-like &nbsp;·&nbsp; Rust · Node · Python · WASM · Go · Ruby · HTTP &nbsp;·&nbsp; Zero daemons · runs in your process &nbsp;·&nbsp; Open source · readable end-to-end</sub>
 
 </div>
 
@@ -42,11 +42,11 @@ The graph belongs inside your process. Reach for LoraDB when you're building:
 - **Real-time reasoning** — read/write Cypher without standing up a database server
 - **Embedded graph storage** — ship graph queries in a single static binary or WASM module
 
-Every stage of the pipeline — parser, analyzer, compiler, executor, store — is implemented in this workspace. No external query engine. Seven crates, readable end-to-end.
+Every stage of the pipeline — parser, analyzer, compiler, executor, store — is implemented in this workspace. No external query engine, readable end-to-end.
 
 ## Installation
 
-LoraDB ships across four ecosystems. Pick the one that matches your runtime.
+LoraDB ships a single Rust engine with bindings for the major application runtimes, plus a standalone HTTP server. Pick the surface that matches your host.
 
 ### Rust (crates.io)
 
@@ -82,6 +82,27 @@ npm install @loradb/lora-wasm
 
 &nbsp;→ [npmjs.com/package/@loradb/lora-wasm](https://www.npmjs.com/package/@loradb/lora-wasm)
 
+### Go (Go modules)
+
+```bash
+go get github.com/lora-db/lora/crates/lora-go
+```
+
+The Go binding is a thin cgo layer over `lora-ffi`; builds require the
+`liblora_ffi` static library on disk. See
+[`crates/lora-go/README.md`](crates/lora-go/README.md) for the local
+checkout path and the prebuilt-archive path.
+
+### Ruby (RubyGems)
+
+```bash
+gem install lora-ruby
+# or in a Gemfile
+gem "lora-ruby"
+```
+
+&nbsp;→ [rubygems.org/gems/lora-ruby](https://rubygems.org/gems/lora-ruby)
+
 ### Standalone server (GitHub Releases)
 
 Prebuilt `lora-server` binaries for Linux, macOS (Intel + Apple Silicon), and Windows are attached to every tagged release.
@@ -116,11 +137,52 @@ console.log(result.rows);
 ```python
 from lora_python import Database
 
-db = Database()
+db = Database.create()
 db.execute("CREATE (:User {name: 'Alice'})")
 
 result = db.execute("MATCH (n:User) RETURN n.name AS name")
-print(result.rows)
+print(result["rows"])
+```
+
+### Go
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    lora "github.com/lora-db/lora/crates/lora-go"
+)
+
+func main() {
+    db, err := lora.New()
+    if err != nil { log.Fatal(err) }
+    defer db.Close()
+
+    if _, err := db.Execute(
+        "CREATE (:User {name: $n})",
+        lora.Params{"n": "Alice"},
+    ); err != nil { log.Fatal(err) }
+
+    r, err := db.Execute("MATCH (n:User) RETURN n.name AS name", nil)
+    if err != nil { log.Fatal(err) }
+
+    fmt.Println(r.Columns, r.Rows)
+}
+```
+
+### Ruby
+
+```ruby
+require "lora_ruby"
+
+db = LoraRuby::Database.create
+db.execute("CREATE (:User {name: $n})", { n: "Alice" })
+
+result = db.execute("MATCH (n:User) RETURN n.name AS name")
+puts result["rows"]
 ```
 
 ### Rust
@@ -165,13 +227,15 @@ In-repo references:
 
 ## Development setup
 
-LoraDB is a Cargo workspace with Node, Python, and WASM bindings hanging off dedicated crates.
+LoraDB is a Cargo workspace with Node, Python, WASM, Go, and Ruby bindings hanging off dedicated crates, plus a shared `lora-ffi` C ABI that the Go binding links against.
 
 **Prerequisites**
 
 - Rust stable (pinned in [`rust-toolchain.toml`](rust-toolchain.toml) — `rustfmt` + `clippy` components)
 - Node.js 20+ (only for `lora-node`, `lora-wasm`, and the `loradb.com` site)
 - Python 3.8+ with `maturin` (only for `lora-python`)
+- Go 1.21+ and a C toolchain with cgo enabled (only for `lora-go`)
+- Ruby 3.1+ with `bundler` (only for `lora-ruby`)
 
 **Clone and bootstrap**
 
@@ -194,9 +258,12 @@ lora/
 │   ├── lora-store/       In-memory store, temporal/spatial types
 │   ├── lora-database/    Pipeline entry point
 │   ├── lora-server/      Axum HTTP server
+│   ├── lora-ffi/         C ABI over lora-database (used by lora-go)
 │   ├── lora-node/        Node.js bindings (napi-rs)
 │   ├── lora-python/      Python bindings (PyO3 / maturin)
 │   ├── lora-wasm/        WebAssembly bindings
+│   ├── lora-go/          Go bindings (cgo over lora-ffi)
+│   ├── lora-ruby/        Ruby bindings (Magnus / rb-sys)
 │   └── shared-ts/        Shared TypeScript types
 ├── apps/loradb.com/      Documentation site (Docusaurus)
 └── docs/                 Design docs and internals
@@ -219,6 +286,15 @@ cd crates/lora-python && maturin build --release
 
 # WebAssembly bindings
 cd crates/lora-wasm && npm run build
+
+# Shared FFI (static library consumed by lora-go)
+cargo build --release -p lora-ffi
+
+# Go bindings (requires lora-ffi built above)
+cd crates/lora-go && go test -race ./...
+
+# Ruby bindings (native extension via rb-sys)
+cd crates/lora-ruby && bundle install && bundle exec rake compile
 ```
 
 ## Testing
@@ -242,10 +318,12 @@ LoraDB ships via GitHub Actions. Every push and pull request runs the full quali
 | [`lora-node`](.github/workflows/lora-node.yml) | Build + test Node.js bindings across platforms |
 | [`lora-python`](.github/workflows/lora-python.yml) | Build + test Python wheels across platforms |
 | [`lora-wasm`](.github/workflows/lora-wasm.yml) | Build + test WebAssembly bindings |
+| [`lora-go`](.github/workflows/lora-go.yml) | Build `lora-ffi`, run `go vet` + `go test -race` on the Go binding |
+| [`lora-ruby`](.github/workflows/lora-ruby.yml) | Compile the Ruby native extension + run `rake test` across Ruby versions |
 | [`lora-server`](.github/workflows/lora-server.yml) | Build standalone server binaries |
 | [`benchmarks`](.github/workflows/benchmarks.yml) | Criterion performance regression tracking |
 | [`release`](.github/workflows/release.yml) | Tag-driven release of server binaries |
-| [`packages-release`](.github/workflows/packages-release.yml) | Tag-driven publish of crates.io / npm / PyPI |
+| [`packages-release`](.github/workflows/packages-release.yml) | Tag-driven publish of npm / PyPI / RubyGems + verify-only path for the Go module |
 | [`cargo-release`](.github/workflows/cargo-release.yml) | crates.io publish orchestration |
 | [`loradb-docs`](.github/workflows/loradb-docs.yml) | Deploys [loradb.com](https://loradb.com) |
 | [`commitlint`](.github/workflows/commitlint.yml) | Conventional-commit enforcement |

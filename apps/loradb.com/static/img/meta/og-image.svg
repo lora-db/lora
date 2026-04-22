@@ -99,6 +99,6 @@
           font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif"
           font-weight="500"
           font-size="22"
-          fill="#8d97b5">Node.js · Python · WASM</text>
+          fill="#8d97b5">Node · Python · WASM · Go · Ruby</text>
   </g>
 </svg>

@@ -34,7 +34,7 @@ If you don't care: `rows` is the most ergonomic default in host code.
 
 | Transport | How |
 |---|---|
-| Rust / Node / Python / WASM | `ExecuteOptions { format }` or per-call option |
+| Rust / Node / Python / WASM / Go / Ruby | `ExecuteOptions { format }` or per-call option |
 | HTTP | `"format": "rows"` in the `POST /query` body |
 
 If omitted, the engine-default is [`graph`](#graph). Bindings may
@@ -109,7 +109,7 @@ For `MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, r, b`:
       { "id": 2, "labels": ["Person"], "properties": { "name": "Grace" } }
     ],
     "relationships": [
-      { "id": 10, "src": 1, "dst": 2, "type": "KNOWS", "properties": {} }
+      { "id": 10, "startId": 1, "endId": 2, "type": "KNOWS", "properties": {} }
     ]
   }
 }

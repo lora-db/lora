@@ -140,7 +140,7 @@ graph TD
 6. **Transport-agnostic core** — `lora-database` exposes a `QueryRunner` trait so HTTP, benches, examples, and embedded callers share one pipeline
 7. **Zero external runtime dependencies** — no database, no JVM, pure Rust
 
-> 💡 **Tip** — The transport-agnostic `QueryRunner` trait means the same pipeline drives HTTP (`lora-server`), embedded Rust consumers (`lora-database`), and the language bindings (`lora-node`, `lora-python`, `lora-wasm`). If you need a custom transport, implement `QueryRunner` — you don't need to touch any pipeline crate.
+> 💡 **Tip** — The transport-agnostic `QueryRunner` trait means the same pipeline drives HTTP (`lora-server`), embedded Rust consumers (`lora-database`), the language bindings (`lora-node`, `lora-python`, `lora-wasm`, `lora-ruby`), and the `lora-ffi` C ABI that `lora-go` cgo-links against. If you need a custom transport, implement `QueryRunner` — you don't need to touch any pipeline crate.
 
 ## Next steps
 

@@ -183,7 +183,7 @@ const result = await db.execute(
     note: 'lora-python · prototype',
     code: `from lora_python import Database
 
-db = Database()
+db = Database.create()
 
 db.execute("CREATE (:User {name: 'Ada'})")
 
@@ -205,6 +205,37 @@ const result = await db.execute(
   "MATCH (u:User) RETURN u.name"
 );`,
   },
+  {
+    id: 'go',
+    label: 'Go',
+    file: 'main.go',
+    note: 'lora-go · prototype',
+    code: `import lora "github.com/lora-db/lora/crates/lora-go"
+
+db, _ := lora.New()
+defer db.Close()
+
+db.Execute("CREATE (:User {name: 'Ada'})", nil)
+
+r, _ := db.Execute(
+    "MATCH (u:User) RETURN u.name",
+    nil,
+)`,
+  },
+  {
+    id: 'ruby',
+    label: 'Ruby',
+    file: 'app.rb',
+    note: 'lora-ruby · prototype',
+    code: `require "lora_ruby"
+
+db = LoraRuby::Database.create
+db.execute("CREATE (:User {name: 'Ada'})")
+
+result = db.execute(
+  "MATCH (u:User) RETURN u.name"
+)`,
+  },
 ];
 
 const WORKLOADS = [
@@ -222,7 +253,7 @@ const WORKLOADS = [
   },
   {
     title: 'Notebooks',
-    body: 'Drive a graph from Python or WASM in a notebook. Inspect rows, the subgraph, or both.',
+    body: 'Drive a graph from Python, Ruby, or WASM in a notebook. Inspect rows, the subgraph, or both.',
   },
   {
     title: 'Embedded apps',
@@ -371,6 +402,22 @@ function Icon({ name }) {
           <path d="M7 10l1.5 4 1.5-3 1.5 3 1.5-4M16 10l1 4 1-4" />
         </svg>
       );
+    case 'go':
+      return (
+        <svg {...common}>
+          <ellipse cx="12" cy="12" rx="8" ry="6" />
+          <circle cx="9.5" cy="11" r="1" fill="currentColor" stroke="none" />
+          <circle cx="14.5" cy="11" r="1" fill="currentColor" stroke="none" />
+          <path d="M3 10h2M3 13h2M19 10h2M19 13h2" />
+        </svg>
+      );
+    case 'ruby':
+      return (
+        <svg {...common}>
+          <path d="M7 4h10l4 6-9 10-9-10 4-6z" />
+          <path d="M7 4l5 6M17 4l-5 6M3 10h18" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -400,6 +447,8 @@ const SURFACE_ICONS = {
   node: 'node',
   python: 'python',
   wasm: 'wasm',
+  go: 'go',
+  ruby: 'ruby',
 };
 
 // -------------------------------------------------------------------
@@ -467,7 +516,7 @@ export default function Features() {
             <ul className={styles.heroMeta}>
               <li>
                 <span className={styles.heroMetaDot} />
-                One Rust engine · five surfaces
+                One Rust engine · seven surfaces
               </li>
               <li>
                 <span className={styles.heroMetaDot} />
@@ -552,7 +601,7 @@ export default function Features() {
           <div className={styles.sectionInner}>
             <p className={styles.sectionEyebrow}>Ways to use it</p>
             <h2 id="features-surfaces-title" className={styles.sectionTitle}>
-              One engine, five places to reach it.
+              One engine, seven places to reach it.
             </h2>
             <p className={styles.surfacesLede}>
               Pick the surface that fits the host process. Cypher, parameters,

@@ -39,7 +39,10 @@ In scope:
 - `lora-server` HTTP endpoints (`POST /query`, `GET /health`).
 - The Cypher parser, analyzer, compiler, and executor (panics, denial of
   service, memory corruption, sandbox escapes from expression evaluation).
-- The `lora-node`, `lora-wasm`, and `lora-python` bindings.
+- The language bindings: `lora-node`, `lora-wasm`, `lora-python`,
+  `lora-go`, and `lora-ruby`.
+- The shared `lora-ffi` C ABI (consumed by `lora-go` and any
+  third-party cgo consumer).
 - The release artifacts and checksums published on the Releases page.
 
 Out of scope:

@@ -42,7 +42,10 @@ cargo fmt --all                # auto-format
 
 ## Code organization
 
-The workspace is split into seven crates that form a pipeline:
+The workspace has a **core engine pipeline** plus bindings that wrap
+it for other runtimes.
+
+Core engine crates (every Cypher query walks these in order):
 
 1. **lora-ast** -- AST type definitions only, no logic
 2. **lora-parser** -- PEG grammar (pest) + lowering to AST
@@ -50,9 +53,24 @@ The workspace is split into seven crates that form a pipeline:
 4. **lora-analyzer** -- semantic analysis (variable scoping, label validation)
 5. **lora-compiler** -- logical plan, optimizer, physical plan
 6. **lora-executor** -- physical plan execution, expression evaluation
-7. **lora-server** -- HTTP server (Axum), `QueryService` orchestrator
+7. **lora-database** -- orchestration layer; `Database::execute` drives the pipeline
+8. **lora-server** -- HTTP server (Axum), `QueryService` orchestrator
 
-Changes to Cypher language support typically touch crates 1-6 in order. See [docs/internals/cypher-development.md](docs/internals/cypher-development.md) for a step-by-step walkthrough.
+Binding / transport crates (each wraps `lora-database` for one host
+runtime):
+
+- **lora-ffi** -- C ABI (`catch_unwind` guards + release header) shared
+  by `lora-go` and any third-party cgo consumer
+- **lora-node** -- napi-rs binding for Node.js / TypeScript
+- **lora-wasm** -- wasm-pack binding for browser + Node (WASM target)
+- **lora-python** -- PyO3 binding built with maturin
+- **lora-go** -- cgo binding over `lora-ffi`
+- **lora-ruby** -- Magnus / rb-sys native extension
+- **shared-ts** -- shared TypeScript types for `lora-node` + `lora-wasm`
+
+Changes to Cypher language support typically touch crates 1-6 in
+order. See [docs/internals/cypher-development.md](docs/internals/cypher-development.md)
+for a step-by-step walkthrough.
 
 ## Adding a new Cypher feature
 
@@ -101,8 +119,8 @@ Allowed types:
 | `revert`   | Reverting a previous commit.                                          |
 
 Scopes are free-form, but prefer crate or area names: `parser`, `analyzer`,
-`compiler`, `executor`, `store`, `server`, `node`, `wasm`, `python`,
-`docs-site`, `release`, `repo`.
+`compiler`, `executor`, `store`, `server`, `ffi`, `node`, `wasm`, `python`,
+`go`, `ruby`, `docs-site`, `release`, `repo`.
 
 Mark breaking changes with either:
 

@@ -41,7 +41,7 @@ console.log(result.rows);`,
     file: 'quickstart.py',
     code: `from lora_python import Database
 
-db = Database()
+db = Database.create()
 
 db.execute(
     "CREATE (:Person {name: 'Ada'})-[:INFLUENCED]->(:Person {name: 'Grace'})"
@@ -51,7 +51,7 @@ result = db.execute(
     "MATCH (a)-[:INFLUENCED]->(b) RETURN a.name, b.name"
 )
 
-print(result.rows)`,
+print(result["rows"])`,
   },
   {
     id: 'wasm',
@@ -70,6 +70,45 @@ const result = await db.execute(
 );
 
 console.log(result.rows);`,
+  },
+  {
+    id: 'go',
+    label: 'Go',
+    file: 'quickstart.go',
+    code: `import lora "github.com/lora-db/lora/crates/lora-go"
+
+db, _ := lora.New()
+defer db.Close()
+
+db.Execute(
+    "CREATE (:Person {name: 'Ada'})-[:INFLUENCED]->(:Person {name: 'Grace'})",
+    nil,
+)
+
+r, _ := db.Execute(
+    "MATCH (a)-[:INFLUENCED]->(b) RETURN a.name, b.name",
+    nil,
+)
+
+fmt.Println(r.Rows)`,
+  },
+  {
+    id: 'ruby',
+    label: 'Ruby',
+    file: 'quickstart.rb',
+    code: `require "lora_ruby"
+
+db = LoraRuby::Database.create
+
+db.execute(
+  "CREATE (:Person {name: 'Ada'})-[:INFLUENCED]->(:Person {name: 'Grace'})"
+)
+
+result = db.execute(
+  "MATCH (a)-[:INFLUENCED]->(b) RETURN a.name, b.name"
+)
+
+puts result["rows"]`,
   },
 ];
 
@@ -121,7 +160,7 @@ const VALUE_PROPS = [
   },
   {
     title: 'Small enough to read',
-    body: 'Seven crates from parser to executor. If the database matters to your product, you should be able to read it.',
+    body: 'A compiler-style pipeline of focused crates from parser to executor. If the database matters to your product, you should be able to read it.',
   },
 ];
 
@@ -256,7 +295,7 @@ export default function Home() {
               <ul className={styles.heroMeta}>
                 <li>
                   <span className={styles.heroMetaDot} />
-                  Node.js · Python · WASM
+                  Node.js · Python · WASM · Go · Ruby
                 </li>
                 <li>
                   <span className={styles.heroMetaDot} />
@@ -393,8 +432,9 @@ export default function Home() {
                 </h2>
                 <p className={styles.startBody}>
                   There’s no server to stand up, no protocol to speak. Opening
-                  a LoraDB is a function call — in Node.js, Python, or WASM.
-                  Same Cypher, same result shape, across every binding.
+                  a LoraDB is a function call — in Node.js, Python, WASM, Go,
+                  or Ruby. Same Cypher, same result shape, across every
+                  binding.
                 </p>
                 <div className={styles.actions}>
                   <Link

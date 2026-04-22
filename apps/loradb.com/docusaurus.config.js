@@ -128,7 +128,7 @@ module.exports = {
     // twitter:description automatically on top of these.
     metadata: [
       { name: 'description', content: SITE_DESCRIPTION },
-      { name: 'keywords', content: 'graph database, cypher, embedded database, rust, wasm, node.js, python, knowledge graph, AI agents, LoraDB' },
+      { name: 'keywords', content: 'graph database, cypher, embedded database, rust, wasm, node.js, python, go, ruby, knowledge graph, AI agents, LoraDB' },
       { name: 'author', content: 'LoraDB' },
       { name: 'robots', content: 'index, follow, max-image-preview:large' },
       { property: 'og:type', content: 'website' },

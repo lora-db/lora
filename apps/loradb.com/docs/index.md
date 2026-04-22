@@ -9,9 +9,9 @@ slug: /
 LoraDB is a **local-first, in-memory property-graph engine** written
 in Rust, built for services, pipelines, and agents that model richly
 connected data and need to query it in-process without standing up a
-separate database. You embed it in your Rust, Node, Python, or WASM
-host — or talk to it over HTTP — and query it with a pragmatic subset
-of **Cypher**.
+separate database. You embed it in your Rust, Node, Python, WASM, Go,
+or Ruby host — or talk to it over HTTP — and query it with a pragmatic
+subset of **Cypher**.
 
 It is:
 
@@ -20,7 +20,8 @@ It is:
 - **An in-process graph store** — nodes, relationships, properties,
   all in RAM.
 - **A set of bindings** over one shared Rust core — Node, Python,
-  WebAssembly, plus an Axum-based HTTP server.
+  WebAssembly, Go (via a shared C ABI), and Ruby, plus an Axum-based
+  HTTP server.
 
 It is **not**:
 
@@ -95,9 +96,11 @@ identical.
 
 | Host | Command |
 |---|---|
-| [Node / TypeScript](./getting-started/node) | `npm install lora-node` |
+| [Node / TypeScript](./getting-started/node) | `npm install @loradb/lora-node` |
 | [Python](./getting-started/python) | `pip install lora-python` |
-| [Browser / WASM](./getting-started/wasm) | `npm install lora-wasm` |
+| [Browser / WASM](./getting-started/wasm) | `npm install @loradb/lora-wasm` |
+| [Go](./getting-started/go) | `go get github.com/lora-db/lora/crates/lora-go` |
+| [Ruby](./getting-started/ruby) | `gem install lora-ruby` |
 | [Rust (embedded)](./getting-started/rust) | `cargo add lora-database` |
 | [HTTP server](./getting-started/server) | `cargo install --path crates/lora-server` |
 
@@ -138,6 +141,8 @@ projects. See [Queries → Overview](./queries/) or jump into the
 | Ship Node / TS code | [Node binding](./getting-started/node) |
 | Write Python (sync or asyncio) | [Python binding](./getting-started/python) |
 | Run in a browser / Web Worker / edge | [WASM binding](./getting-started/wasm) |
+| Build a Go service or CLI (cgo) | [Go binding](./getting-started/go) |
+| Ship a Ruby app or Rails service | [Ruby binding](./getting-started/ruby) |
 | Embed inline in a Rust binary | [Rust crate](./getting-started/rust) |
 | Want a polyglot HTTP service | [HTTP server](./getting-started/server) + [HTTP API reference](./api/http) |
 

@@ -7,12 +7,13 @@ sidebar_label: Installation & Setup
 
 ## Overview
 
-LoraDB is one Rust engine with bindings for three primary runtimes —
-Node.js, Python, and WebAssembly. Pick whichever matches your host
-language; every binding shares the same parser, planner, executor,
-and result shape, so switching later is a mechanical translation.
-This page helps you pick; each platform guide covers install,
-connect, execute, and error handling end-to-end.
+LoraDB is one Rust engine with bindings for the major application
+runtimes — Node.js, Python, WebAssembly, Go, and Ruby — plus a
+standalone HTTP server and direct embedding from Rust. Pick whichever
+matches your host language; every binding shares the same parser,
+planner, executor, and result shape, so switching later is a
+mechanical translation. This page helps you pick; each platform guide
+covers install, connect, execute, and error handling end-to-end.
 
 ## Installation / Setup
 
@@ -23,6 +24,8 @@ connect, execute, and error handling end-to-end.
 | **Node / TS** | [![npm](https://img.shields.io/npm/v/@loradb/lora-node?label=%40loradb%2Flora-node&logo=npm)](https://www.npmjs.com/package/@loradb/lora-node) | `npm install @loradb/lora-node` | [Node →](./node) |
 | **Python** | [![PyPI](https://img.shields.io/pypi/v/lora-python?label=pypi&logo=pypi&logoColor=white)](https://pypi.org/project/lora-python/) | `pip install lora-python` | [Python →](./python) |
 | **Browser / WASM** | [![npm](https://img.shields.io/npm/v/@loradb/lora-wasm?label=%40loradb%2Flora-wasm&logo=npm)](https://www.npmjs.com/package/@loradb/lora-wasm) | `npm install @loradb/lora-wasm` | [WASM →](./wasm) |
+| **Go** | [pkg.go.dev](https://pkg.go.dev/github.com/lora-db/lora/crates/lora-go) | `go get github.com/lora-db/lora/crates/lora-go` | [Go →](./go) |
+| **Ruby** | [![Gem](https://img.shields.io/gem/v/lora-ruby?label=lora-ruby&logo=rubygems&logoColor=white)](https://rubygems.org/gems/lora-ruby) | `gem install lora-ruby` | [Ruby →](./ruby) |
 
 :::tip
 
@@ -39,6 +42,8 @@ from a clone.
 | Ship a Node server / CLI | Node.js |
 | Build in Python (sync or asyncio) | Python |
 | Run in the browser / Web Worker / edge | WASM |
+| Build a Go service or CLI (cgo) | Go |
+| Ship a Ruby app, worker, or Rails service | Ruby |
 
 All bindings share the same query surface and result shape, so
 switching later is a mechanical translation — the Cypher is

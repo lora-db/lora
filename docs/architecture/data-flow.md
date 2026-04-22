@@ -129,7 +129,7 @@ Shortest-path variants of `PathBuild` run the normal variable-length expand and 
 **Input**: `Vec<Row>` + `ExecuteOptions { format }`
 **Output**: `QueryResult`
 
-Before projection, rows are **hydrated**: `LoraValue::Node(id)` and `LoraValue::Relationship(id)` are expanded into maps containing `{id, labels, properties}` or `{kind, id, src, dst, type, properties}`. `LoraValue::Path(...)` expands into a sequence of hydrated nodes and relationships.
+Before projection, rows are **hydrated**: `LoraValue::Node(id)` and `LoraValue::Relationship(id)` are expanded into maps containing `{kind, id, labels, properties}` or `{kind, id, startId, endId, type, properties}` (the `startId` / `endId` JSON names come from `serde(rename)` on `HydratedRelationship`; the in-Rust `RelationshipRecord` fields are still called `src` / `dst`). `LoraValue::Path(...)` expands into a sequence of hydrated nodes and relationships.
 
 Four output formats:
 
