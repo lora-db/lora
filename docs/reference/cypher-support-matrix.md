@@ -252,7 +252,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | List | **Supported** | Heterogeneous, nested, indexing, slicing |
 | Map | **Supported** | Nested maps |
 | Node | **Supported** | Hydrated to `{id, labels, properties}` |
-| Relationship | **Supported** | Hydrated to `{kind, id, src, dst, type, properties}` |
+| Relationship | **Supported** | Hydrated to `{kind, id, startId, endId, type, properties}` |
 | Path | **Supported** | Alternating nodes and relationships |
 | Date / Time / LocalTime / DateTime / LocalDateTime / Duration | **Supported** | See §12 |
 | Point (Cartesian, WGS-84) | **Supported** | See §13 |

@@ -51,9 +51,14 @@ enum LoraValue {
 
 `Node`, `Relationship`, and `Path` are hydrated on the way out of the engine:
 
-- `Node`           → `{id, labels, properties}`
-- `Relationship`   → `{kind, id, src, dst, type, properties}`
+- `Node`           → `{kind, id, labels, properties}`
+- `Relationship`   → `{kind, id, startId, endId, type, properties}`
 - `Path`           → alternating sequence of hydrated nodes and relationships
+
+The JSON field names (`startId`, `endId`) come from `serde(rename)` on
+the internal `HydratedRelationship` struct — the in-Rust `NodeId`
+fields are still called `src` / `dst` on `RelationshipRecord`
+(see below).
 
 Hydration happens at the serialisation boundary (HTTP / FFI), so internal
 planner and executor code can cheaply hand around `Node(id)` references.

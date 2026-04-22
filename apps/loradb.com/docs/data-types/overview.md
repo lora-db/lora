@@ -55,7 +55,7 @@ Produced by queries; not storable as properties.
 | Type | Hydrated shape |
 |---|---|
 | `Node` | `{kind: "node", id, labels, properties}` |
-| `Relationship` | `{kind: "relationship", id, src, dst, type, properties}` |
+| `Relationship` | `{kind: "relationship", id, startId, endId, type, properties}` |
 | `Path` | `{kind: "path", nodes, rels}` — alternating sequence |
 
 ```cypher
@@ -65,9 +65,13 @@ RETURN a, r, b   -- a, b are Nodes; r is a Relationship
 
 Narrow graph-typed results in host code with `isNode` /
 `isRelationship` / `isPath` (JS —
-[Node](../getting-started/node#type-guards)) or `is_node` /
+[Node](../getting-started/node#type-guards)), `is_node` /
 `is_relationship` / `is_path` (Python —
-[guards](../getting-started/python#structured-result-handling)).
+[guards](../getting-started/python#structured-result-handling)),
+`IsNode` / `IsRelationship` / `IsPath` (Go —
+[guards](../getting-started/go#structured-result-handling)), or
+`LoraRuby.node?` / `relationship?` / `path?` (Ruby —
+[guards](../getting-started/ruby#structured-result-handling)).
 
 ## Runtime type checking
 
@@ -131,7 +135,9 @@ binding's "Parameters" section for specifics:
 Details: [Rust](../getting-started/rust#parameterised-query),
 [Node](../getting-started/node#parameterised-query),
 [Python](../getting-started/python#parameterised-query),
-[WASM](../getting-started/wasm#parameterised-query).
+[WASM](../getting-started/wasm#parameterised-query),
+[Go](../getting-started/go#parameterised-query),
+[Ruby](../getting-started/ruby#parameterised-query).
 
 ## Null across types
 

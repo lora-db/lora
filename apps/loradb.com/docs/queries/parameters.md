@@ -82,6 +82,28 @@ await db.execute(
 
 More detail: [WASM → Parameterised query](../getting-started/wasm#parameterised-query).
 
+### Go
+
+```go
+db.Execute(
+    "MATCH (u:User) WHERE u.handle = $handle RETURN u",
+    lora.Params{"handle": "alice"},
+)
+```
+
+More detail: [Go → Parameterised query](../getting-started/go#parameterised-query).
+
+### Ruby
+
+```ruby
+db.execute(
+  "MATCH (u:User) WHERE u.handle = $handle RETURN u",
+  { handle: "alice" },
+)
+```
+
+More detail: [Ruby → Parameterised query](../getting-started/ruby#parameterised-query).
+
 ## Host → LoraDB type mapping
 
 | Host value | LoraDB type |
@@ -177,10 +199,10 @@ await db.execute(
 
 :::caution
 
-`POST /query` currently ignores any `params` body field. Bind via the
-Rust / Node / Python / WASM bindings, or build the literal into the
-query string when values are trusted and encoded. Parameters over
-HTTP are on the roadmap — see
+`POST /query` currently ignores any `params` body field. Bind via one
+of the embedded bindings (Rust, Node, Python, WASM, Go, or Ruby), or
+build the literal into the query string when values are trusted and
+encoded. Parameters over HTTP are on the roadmap — see
 [Limitations → Parameters](../limitations#parameters).
 
 :::
