@@ -1,9 +1,17 @@
 name: packages-release
 
-# Publishes the three distributable packages when a semver tag is pushed:
-#   - @loradb/lora-wasm                → npm
-#   - @loradb/lora-node                → npm (root + per-triple subpackages)
-#   - lora-python                      → PyPI (manylinux + macOS + Windows wheels + sdist)
+# Tag-driven client-package release pipeline. Covers four distributable
+# packages plus a verify-only path for the Go binding:
+#   - @loradb/lora-wasm  → npm
+#   - @loradb/lora-node  → npm (root + per-triple optional subpackages)
+#   - lora-python        → PyPI (manylinux + macOS + Windows wheels + sdist)
+#   - lora-ruby          → RubyGems (source gem + precompiled platform gems)
+#   - lora-go            → no registry upload. Go resolves the module via
+#                          the git tag + proxy.golang.org. This workflow
+#                          only (1) verifies the tagged tree builds + tests,
+#                          (2) packages a convenience liblora_ffi archive,
+#                          (3) confirms the Go module proxy has indexed
+#                          the tag (real tag pushes only).
 #
 # Triggers:
 #   - `git push origin vX.Y.Z`  (or `vX.Y.Z-rc.1` etc.) starts the full flow.
@@ -15,16 +23,21 @@ name: packages-release
 # so a failed publish can be inspected or re-driven from the tag without
 # re-tagging. The lora-server binary release (release.yml) is intentionally
 # separate — that workflow creates a draft GitHub Release; this one pushes
-# to npm and PyPI which have no draft concept.
+# to npm, PyPI, and RubyGems, which have no draft concept.
 #
-# Trusted publishing (OIDC) is preferred for both registries:
-#   - npm:  configure a trusted publisher on npmjs.com for each package,
-#           bound to GitHub environment `npm-publish`.
-#   - PyPI: configure a trusted publisher at pypi.org, bound to GitHub
-#           environment `pypi-publish`.
+# Trusted publishing (OIDC) is preferred for all three registries:
+#   - npm:       configure a trusted publisher on npmjs.com for each package,
+#                bound to GitHub environment `npm-publish`.
+#   - PyPI:      configure a trusted publisher at pypi.org, bound to GitHub
+#                environment `pypi-publish`.
+#   - RubyGems:  configure a trusted publisher at rubygems.org, bound to
+#                GitHub environment `rubygems-publish`. Uses the
+#                `rubygems/configure-rubygems-credentials` + `release-gem`
+#                actions, which negotiate an OIDC token with rubygems.org.
 # If trusted publishing is unavailable (e.g. first-ever publish of a new
-# package name), the workflow falls back to `NPM_TOKEN` / `PYPI_API_TOKEN`
-# secrets when present. See RELEASING.md for the exact setup.
+# package name), the workflow falls back to `NPM_TOKEN` / `PYPI_API_TOKEN` /
+# `RUBYGEMS_API_KEY` secrets when present. See RELEASING.md for the exact
+# setup.
 
 on:
   push:
@@ -115,8 +128,9 @@ jobs:
       - name: npm install
         run: npm ci --no-audit --no-fund --ignore-scripts
 
-      - name: Copy LICENSE from repo root
-        run: cp ../../LICENSE LICENSE
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-wasm
 
       - name: Build (WASM + TS)
         run: npm run build
@@ -180,8 +194,9 @@ jobs:
       - name: npm install
         run: npm ci --no-audit --no-fund --ignore-scripts
 
-      - name: Copy LICENSE from repo root
-        run: cp ../../LICENSE LICENSE
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-wasm
 
       - name: Build (WASM + TS)
         run: npm run build
@@ -262,14 +277,9 @@ jobs:
       - name: Verify shared TS types are in sync
         run: npm run verify:types
 
-      - name: Copy LICENSE from repo root (unix)
-        if: runner.os != 'Windows'
-        run: cp ../../LICENSE LICENSE
-
-      - name: Copy LICENSE from repo root (pwsh)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Copy-Item ..\..\LICENSE LICENSE
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-node
 
       - name: Build native for target ${{ matrix.target }} (zig=${{ matrix.cross == 'zig' }})
         shell: bash
@@ -340,8 +350,9 @@ jobs:
           npm run typecheck
           npm run build:ts
 
-      - name: Copy LICENSE from repo root
-        run: cp ../../LICENSE LICENSE
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-node
 
       - name: Download every per-triple native artifact
         uses: actions/download-artifact@v4
@@ -451,14 +462,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Copy LICENSE next to pyproject.toml (unix)
-        if: runner.os != 'Windows'
-        run: cp LICENSE crates/lora-python/LICENSE
-
-      - name: Copy LICENSE next to pyproject.toml (pwsh)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Copy-Item LICENSE crates\lora-python\LICENSE
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-python
 
       - name: Build abi3 wheel via maturin
         uses: PyO3/maturin-action@v1
@@ -510,8 +516,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Copy LICENSE next to pyproject.toml
-        run: cp LICENSE crates/lora-python/LICENSE
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-python
 
       - name: Build sdist via maturin
         uses: PyO3/maturin-action@v1
@@ -580,6 +587,352 @@ jobs:
           skip-existing: true
 
   # ──────────────────────────────────────────────────────────────────────
+  # lora-ruby
+  # A source gem (always built) plus precompiled platform gems via
+  # rb-sys' cross-compile harness. Platform gems let `gem install
+  # lora-ruby` skip the local `cargo` build on common OS/arch pairs.
+  # ──────────────────────────────────────────────────────────────────────
+
+  build-ruby-source:
+    name: build lora-ruby (source gem)
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crates/lora-ruby
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-ruby-release-source
+
+      - name: Set up Ruby (latest stable)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: crates/lora-ruby
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-ruby
+
+      - name: Build source gem
+        run: bundle exec rake build
+
+      - name: Show built gem
+        run: ls -la pkg
+
+      - name: Stage gem at workspace root for clean artifact layout
+        run: mv pkg/lora-ruby-*.gem ../../
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-ruby-gem-source
+          path: lora-ruby-*.gem
+          if-no-files-found: error
+          retention-days: 30
+
+  build-ruby-platform:
+    name: build lora-ruby ${{ matrix.platform }}
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # rb-sys' ruby-builder image builds every supported Ruby ABI in
+        # one pass, so we only need one matrix job per platform (not per
+        # Ruby version). The platforms mirror the Rakefile's
+        # `ext.cross_platform` list — keep the two in lockstep.
+        include:
+          - platform: x86_64-linux
+          - platform: aarch64-linux
+          - platform: x86_64-darwin
+          - platform: arm64-darwin
+          - platform: x64-mingw-ucrt
+    defaults:
+      run:
+        working-directory: crates/lora-ruby
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Ruby (host)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: crates/lora-ruby
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: crates/lora-ruby
+
+      - name: Cross-build precompiled gem for ${{ matrix.platform }}
+        # `cross-gem-action` runs inside rb-sys' official toolchain
+        # image, which contains every target Ruby ABI and the Rust
+        # cross-compilation toolchains pre-installed. On success it
+        # writes the fat gem to pkg/lora-ruby-<version>-<platform>.gem.
+        uses: oxidize-rb/actions/cross-gem@v1
+        with:
+          platform: ${{ matrix.platform }}
+          ruby-versions: "3.1,3.2,3.3"
+          working-directory: crates/lora-ruby
+
+      - name: Show built gem
+        run: ls -la pkg
+
+      - name: Stage gem at workspace root for clean artifact layout
+        run: mv pkg/lora-ruby-*-${{ matrix.platform }}.gem ../../
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-ruby-gem-${{ matrix.platform }}
+          path: lora-ruby-*-${{ matrix.platform }}.gem
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-ruby:
+    name: publish lora-ruby (RubyGems)
+    needs: [verify-versions, build-ruby-source, build-ruby-platform]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # RubyGems trusted publishers bind to an exact environment name.
+    # Keep this stable and set the same string in the rubygems.org
+    # trusted publisher config.
+    environment: rubygems-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          # No bundler-cache — we only need the `gem` binary to push.
+
+      - name: Download every built gem (source + platforms) into pkg/
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lora-ruby-gem-*
+          path: crates/lora-ruby/pkg
+          merge-multiple: true
+
+      - name: Sanity-check collected gems
+        working-directory: crates/lora-ruby
+        run: |
+          set -euo pipefail
+          ls -la pkg
+          count=$(ls pkg/lora-ruby-*.gem 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$count" -lt 2 ]; then
+            echo "::error::expected source gem + at least one platform gem in pkg/"
+            exit 1
+          fi
+
+      - name: Configure RubyGems credentials (OIDC trusted publishing)
+        # No-op when `RUBYGEMS_API_KEY` is also set; the action prefers
+        # trusted publishing when the id-token: write permission is
+        # present and a trusted publisher is configured on rubygems.org.
+        # See RELEASING.md for the bootstrap flow.
+        uses: rubygems/configure-rubygems-credentials@v1.0.0
+        env:
+          RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+
+      - name: Push every gem to rubygems.org
+        working-directory: crates/lora-ruby
+        run: |
+          set -euo pipefail
+          for gem in pkg/lora-ruby-*.gem; do
+            echo "::group::push ${gem}"
+            # gem push exits non-zero if the version is already
+            # published; we treat "already uploaded" as success so a
+            # partial-publish re-run converges without manual surgery.
+            if out=$(gem push "${gem}" 2>&1); then
+              echo "$out"
+            else
+              echo "$out"
+              if echo "$out" | grep -Eqi "has already been pushed|repushing of gem versions is not allowed"; then
+                echo "already published — skipping"
+              else
+                exit 1
+              fi
+            fi
+            echo "::endgroup::"
+          done
+
+  # ──────────────────────────────────────────────────────────────────────
+  # lora-go (github.com/lora-db/lora/crates/lora-go)
+  # Go modules have no registry upload step — the module URL resolves to
+  # the git tag itself. The jobs below:
+  #   1. build + test the Go binding (+ the lora-ffi static lib it links)
+  #      on Linux and macOS so a bad tag never lands as "green";
+  #   2. package liblora_ffi as a convenience archive for downstream
+  #      vendors who prefer a prebuilt artifact;
+  #   3. verify proxy.golang.org has indexed the new tag once the push
+  #      is live, so a resolve failure surfaces here rather than the
+  #      first time a user runs `go get`.
+  # All of this runs on every tag, but only step (3) requires a real
+  # (non-dispatch, non-dry-run) tag push.
+  # ──────────────────────────────────────────────────────────────────────
+
+  verify-go:
+    name: verify lora-go (${{ matrix.os }})
+    needs: verify-versions
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: crates/lora-go
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-go-release-${{ matrix.os }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: crates/lora-go/go.sum
+
+      - name: Build lora-ffi (release)
+        working-directory: .
+        run: cargo build --release -p lora-ffi --locked
+
+      - name: go mod tidy (must not dirty the tree)
+        shell: bash
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "::error::go mod tidy produced diffs — commit them and re-tag"
+            exit 1
+          fi
+
+      - name: gofmt -l
+        shell: bash
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then
+            echo "::error::gofmt drift:"
+            echo "$diff"
+            exit 1
+          fi
+
+      - name: go vet ./...
+        run: go vet ./...
+
+      - name: go test -race ./...
+        run: go test -race ./...
+
+  build-go-archives:
+    name: package liblora_ffi (${{ matrix.triple }})
+    needs: verify-versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            triple: linux-x64-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            triple: darwin-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            triple: darwin-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-go-archive-${{ matrix.triple }}
+          targets: ${{ matrix.target }}
+
+      - name: Build lora-ffi (release) for ${{ matrix.target }}
+        run: cargo build --release -p lora-ffi --locked --target ${{ matrix.target }}
+
+      - name: Stage archive
+        shell: bash
+        env:
+          TAG: ${{ needs.verify-versions.outputs.tag }}
+          TRIPLE: ${{ matrix.triple }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          dir="lora-ffi-${TAG}-${TRIPLE}"
+          mkdir -p "${dir}"
+          cp "target/${TARGET}/release/liblora_ffi.a" "${dir}/"
+          cp crates/lora-go/include/lora_ffi.h         "${dir}/"
+          cp LICENSE README.md                          "${dir}/"
+          tar -czf "${dir}.tar.gz" "${dir}"
+          shasum -a 256 "${dir}.tar.gz" | awk '{print $1}' > "${dir}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-ffi-archive-${{ matrix.triple }}
+          path: |
+            lora-ffi-*.tar.gz
+            lora-ffi-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-go-module-resolvable:
+    name: verify go proxy serves the tag
+    needs: [verify-versions, verify-go]
+    if: needs.verify-versions.outputs.dry_run != 'true' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Poll proxy.golang.org for the tag
+        shell: bash
+        env:
+          MODULE: github.com/lora-db/lora/crates/lora-go
+          TAG: ${{ needs.verify-versions.outputs.tag }}
+          GOPROXY: https://proxy.golang.org
+          GOFLAGS: -mod=mod
+        run: |
+          set -euo pipefail
+          # proxy.golang.org usually indexes a new tag within ~1 minute,
+          # but we allow up to ~5. Poll in 30s increments; stop as soon
+          # as `go list -m` resolves.
+          for i in $(seq 1 10); do
+            if go list -m "${MODULE}@${TAG}"; then
+              echo "proxy.golang.org resolved ${MODULE}@${TAG}"
+              exit 0
+            fi
+            echo "attempt ${i}: not yet indexed; sleeping 30s"
+            sleep 30
+          done
+          echo "::error::${MODULE}@${TAG} was not indexed by proxy.golang.org within 5 minutes"
+          echo "manual retry: GOPROXY=direct go get ${MODULE}@${TAG}"
+          exit 1
+
+  # ──────────────────────────────────────────────────────────────────────
   # Final gate. Fails if any dependency failed or (when not a dry-run) if
   # any publish step didn't succeed. Makes branch protection / release
   # checklists easy: just require this single job.
@@ -592,9 +945,15 @@ jobs:
       - build-node
       - build-python-wheels
       - build-python-sdist
+      - build-ruby-source
+      - build-ruby-platform
       - publish-wasm
       - publish-node
       - publish-python
+      - publish-ruby
+      - verify-go
+      - build-go-archives
+      - verify-go-module-resolvable
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -614,7 +973,7 @@ jobs:
           fi
           # In non-dry-run mode, publish jobs must have succeeded.
           if [ "$DRY" != "true" ]; then
-            for pub in publish-wasm publish-node publish-python; do
+            for pub in publish-wasm publish-node publish-python publish-ruby; do
               result=$(echo "$NEEDS_JSON" | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(j['$pub'].result)")
               if [ "$result" != "success" ]; then
                 echo "::error::${pub} did not succeed (result=${result})"

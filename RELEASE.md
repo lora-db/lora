@@ -26,11 +26,13 @@ Operational checklist for cutting a LoraDB release. The technical workflow
   (cd crates/lora-node && npm install --package-lock-only --ignore-scripts)
   (cd crates/lora-wasm && npm install --package-lock-only --ignore-scripts)
   (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
+  (cd crates/lora-ruby && bundle install)                 # refreshes Gemfile.lock
   node scripts/sync-versions.mjs X.Y.Z --check           # sanity check
   ```
   Touches: workspace `Cargo.toml`, `crates/lora-node/package.json`,
   `crates/lora-wasm/package.json`, `apps/loradb.com/package.json`,
-  `crates/lora-python/pyproject.toml`, and the corresponding lockfiles.
+  `crates/lora-python/pyproject.toml`,
+  `crates/lora-ruby/lib/lora_ruby/version.rb`, and the corresponding lockfiles.
 - [ ] The commit that bumps versions is `chore(release): vX.Y.Z`.
 - [ ] The release workflow's `verify-versions` job will re-run this check on
       the pushed tag; if any manifest is out of sync with the tag, the release
@@ -64,8 +66,8 @@ Run before every tag that will end up on a public remote:
    - `release` — builds the `lora-server` binaries and creates a draft
      GitHub Release.
    - `packages-release` — builds and publishes `@loradb/lora-wasm`,
-     `@loradb/lora-node` (+ platform subpackages), and `lora-python` to
-     npm / PyPI.
+     `@loradb/lora-node` (+ platform subpackages), `lora-python`, and
+     `lora-ruby` (+ precompiled platform gems) to npm / PyPI / RubyGems.
    - `cargo-release` — publishes every public workspace crate to
      crates.io in dependency order.
 4. Review the draft GitHub Release:
@@ -79,10 +81,19 @@ Run before every tag that will end up on a public remote:
          subpackage.
    - [ ] <https://pypi.org/project/lora-python/X.Y.Z/> shows the sdist
          and every platform wheel.
+   - [ ] <https://rubygems.org/gems/lora-ruby/versions/X.Y.Z> lists the
+         source gem and every precompiled platform gem
+         (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
+         `arm64-darwin`, `x64-mingw-ucrt`).
    - [ ] <https://crates.io/crates/lora-database/X.Y.Z> exists, plus the
          other seven public crates (`lora-ast`, `lora-store`,
          `lora-parser`, `lora-analyzer`, `lora-compiler`,
          `lora-executor`, `lora-server`).
+   - [ ] The Go binding resolves via the proxy:
+         `GOPROXY=https://proxy.golang.org go list -m github.com/lora-db/lora/crates/lora-go@vX.Y.Z`
+         returns the expected version. The `verify-go-module-resolvable`
+         CI job also covers this, but re-running locally surfaces any
+         network flakiness that only shows up in your environment.
 6. Paste the release notes and **Publish** the server draft.
 
 ## Post-release
@@ -91,18 +102,29 @@ Run before every tag that will end up on a public remote:
 - [ ] `npm install @loradb/lora-wasm@X.Y.Z` in a throwaway dir and import once.
 - [ ] `npm install @loradb/lora-node@X.Y.Z` and run the `require()` smoke test.
 - [ ] `pip install lora-python==X.Y.Z` in a fresh venv and run `python examples/basic.py`.
+- [ ] `gem install lora-ruby -v X.Y.Z` in a throwaway dir and run
+      `ruby -r lora_ruby -e 'puts LoraRuby::VERSION'`, then
+      `ruby examples/basic.rb` from the checked-out crate.
 - [ ] `cargo add lora-database@X.Y.Z` in a throwaway crate and run the README snippet.
 - [ ] `cargo install lora-server --version X.Y.Z` and start the binary once.
+- [ ] `go get github.com/lora-db/lora/crates/lora-go@vX.Y.Z` in a
+      throwaway module, then `go run ./examples/basic` (or a tiny
+      `main.go` that opens a DB, runs `MATCH (n) RETURN count(n)`,
+      and prints the result) to confirm the module builds against a
+      freshly compiled `lora-ffi`.
 - [ ] Close / move the milestone.
 - [ ] Open the next iteration's milestone and bump `version` in workspace `Cargo.toml` to the next `-dev`/pre-release tag if desired.
 
 ## Emergency rollback
 
 - A published **server release** can be unpublished on GitHub (it becomes a draft).
-- **Published npm / PyPI versions cannot be overwritten.** npm's
-  `unpublish` window is 72 hours for packages with no dependents; after
-  that, ship a patch release. PyPI never allows re-uploading the same
-  version. For any publish mistake, cut `vX.Y.(Z+1)` with the fix.
+- **Published npm / PyPI / RubyGems versions cannot be overwritten.**
+  npm's `unpublish` window is 72 hours for packages with no dependents;
+  after that, ship a patch release. PyPI never allows re-uploading the
+  same version. RubyGems allows `gem yank X.Y.Z` (hides it from new
+  resolves while leaving existing `Gemfile.lock` files working) but not
+  a re-push of the same version. For any publish mistake, cut
+  `vX.Y.(Z+1)` with the fix.
 - **Published crates.io versions cannot be overwritten ever.** You can
   `cargo yank` a broken version (it stays resolvable for existing
   `Cargo.lock` files but is hidden from new dependency solves). Yank is
