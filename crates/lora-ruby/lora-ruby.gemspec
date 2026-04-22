@@ -51,7 +51,6 @@ Gem::Specification.new do |spec|
   # crate; it locates / builds the native extension at install time.
   spec.add_dependency "rb_sys", "~> 0.9"
 
-  spec.add_development_dependency "bundler", ">= 2.5"
   spec.add_development_dependency "rake", "~> 13.2"
   spec.add_development_dependency "rake-compiler", "~> 1.2"
   spec.add_development_dependency "minitest", "~> 5.20"
