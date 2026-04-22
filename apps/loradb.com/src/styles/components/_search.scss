@@ -65,6 +65,14 @@ html[data-theme='dark'] {
     }
   }
 
+  // <=576px: the plugin hides the CMD/K chiclet, so the 60px reserved for
+  // it on the right becomes dead space. Trim it back to a normal inset.
+  @media (max-width: 576px) {
+    .navbar__search-input {
+      padding-inline-end: 12px;
+    }
+  }
+
   // Search input — styled to match the framed social icons in _navbar.scss:
   // same radius, same brand-tinted border, same brand-accent hover/focus.
   .navbar__search-input {
@@ -187,6 +195,24 @@ html[data-theme='dark'] {
       0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
       0 12px 32px -16px rgba(15, 23, 42, 0.28),
       0 4px 12px -6px var(--brand-accent-a-soft);
+  }
+
+  // On mobile/tablet the plugin pins the dropdown with `position: absolute;
+  // right: 0` against its (narrow) searchBarContainer and fixes width to
+  // 340px/560px. When the container is narrower than the dropdown, the
+  // dropdown extends past the left viewport edge. Switch to fixed
+  // positioning so we can clamp it to the viewport with safe insets.
+  @media (max-width: 996px) {
+    [class^='dropdownMenu_'] {
+      position: fixed !important;
+      top: calc(var(--ifm-navbar-height) + 0.25rem) !important;
+      left: 0.5rem !important;
+      right: 0.5rem !important;
+      width: auto !important;
+      max-width: none !important;
+      max-height: calc(100dvh - var(--ifm-navbar-height) - 1rem);
+      overflow-y: auto;
+    }
   }
 
   [class^='suggestion_'] {

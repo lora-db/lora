@@ -278,7 +278,7 @@ module.exports = {
         indexBlog: true,
         docsRouteBasePath: '/docs',
         blogRouteBasePath: '/blog',
-        highlightSearchTermsOnTargetPage: true,
+        highlightSearchTermsOnTargetPage: false,
         searchResultLimits: 8,
         searchResultContextMaxLength: 50,
         explicitSearchResultPath: true,
