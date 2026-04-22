@@ -1,0 +1,23 @@
+[package]
+name = "lora-ffi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+description = "C ABI layer around lora-database for out-of-tree language bindings (Go, …)."
+
+[lib]
+# `staticlib` produces `liblora_ffi.a` — the default link target for cgo.
+# `cdylib` produces the matching `.so` / `.dylib` / `.dll` for callers that
+# prefer dynamic linking. `rlib` keeps the crate linkable from other Rust
+# code, which makes `cargo test -p lora-ffi` work without a cdylib rebuild.
+crate-type = ["staticlib", "cdylib", "rlib"]
+name = "lora_ffi"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+lora-database.workspace = true
+lora-store.workspace = true

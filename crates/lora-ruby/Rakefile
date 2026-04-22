@@ -1,0 +1,48 @@
+# frozen_string_literal: true
+
+require "bundler/gem_tasks"
+require "rake/testtask"
+
+# `rb_sys/extensiontask` wraps `Rake::ExtensionTask` so `rake compile`
+# invokes the rb-sys-generated Makefile (which calls cargo) instead of
+# the stock mkmf C flow. Same task name as rake-compiler (`:compile`)
+# so downstream CI can rely on it.
+require "rb_sys/extensiontask"
+
+GEMSPEC = Gem::Specification.load(File.expand_path("lora-ruby.gemspec", __dir__))
+
+RbSys::ExtensionTask.new("lora_ruby", GEMSPEC) do |ext|
+  # rb-sys' convention: Cargo.toml and extconf.rb sit side by side at
+  # the gem root. `RbSys::ExtensionTask` resolves both from the cargo
+  # manifest directory, so there is no `ext_dir` to override here. The
+  # built artefact is copied into `lib/lora_ruby/`, which matches the
+  # `require "lora_ruby/lora_ruby"` path used by `lib/lora_ruby.rb`.
+  ext.lib_dir = "lib/lora_ruby"
+
+  # Cross-compilation targets for the `rake native:<triple>` tasks
+  # invoked by the release workflow. Keep this list in sync with the
+  # matrix in `.github/workflows/packages-release.yml` (Ruby section)
+  # so a new triple is built AND shipped, never one or the other.
+  ext.cross_compile  = true
+  ext.cross_platform = %w[
+    x86_64-linux
+    aarch64-linux
+    x86_64-darwin
+    arm64-darwin
+    x64-mingw-ucrt
+  ]
+end
+
+Rake::TestTask.new(:test) do |t|
+  t.libs    << "lib" << "test"
+  t.pattern  = "test/**/test_*.rb"
+  t.verbose  = true
+  t.warning  = true
+end
+
+# Common local flow mirrors the one used for `lora-python`:
+#   bundle exec rake compile  # build the native extension
+#   bundle exec rake test     # run minitest
+#   bundle exec rake build    # produce pkg/lora-ruby-X.Y.Z.gem
+# `:default` composes the first two so `rake` with no arg is useful.
+task default: %i[compile test]

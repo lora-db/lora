@@ -1,0 +1,90 @@
+# frozen_string_literal: true
+
+require_relative "test_helper"
+
+class TestBasic < Minitest::Test
+  def setup
+    @db = LoraRuby::Database.create
+  end
+
+  def test_empty_match_returns_empty_rows
+    r = @db.execute("MATCH (n) RETURN n")
+    assert_equal [], r["rows"]
+    assert_equal [], r["columns"]
+  end
+
+  def test_version_exposed_both_as_native_constant_and_from_ruby
+    refute_nil LoraRuby::VERSION
+    # matches semver shape used by scripts/sync-versions.mjs
+    assert_match(/\A\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?\z/, LoraRuby::VERSION)
+  end
+
+  def test_create_and_return_node_with_properties
+    @db.execute("CREATE (:Person {name: 'Alice', age: 30})")
+    assert_equal 1, @db.node_count
+
+    r = @db.execute("MATCH (n:Person) RETURN n")
+    assert_equal 1, r["rows"].length
+    n = r["rows"][0]["n"]
+    assert LoraRuby.node?(n)
+    # Node labels/properties are populated when the engine wires
+    # richer node values through; the discriminator contract is the
+    # part we pin here (kind + id keys always present).
+    assert_equal "node", n["kind"]
+    assert_kind_of Integer, n["id"]
+  end
+
+  def test_relationship_has_discriminator
+    @db.execute("CREATE (:A {n:1})-[:R {w:2}]->(:B {n:3})")
+    r = @db.execute("MATCH ()-[r:R]->() RETURN r")
+    rel = r["rows"][0]["r"]
+    assert LoraRuby.relationship?(rel)
+    assert_equal "relationship", rel["kind"]
+    assert_kind_of Integer, rel["id"]
+  end
+
+  def test_clear_empties_graph
+    @db.execute("CREATE (:X), (:Y)-[:R]->(:Z)")
+    assert_equal 3, @db.node_count
+    assert_equal 1, @db.relationship_count
+
+    @db.clear
+    assert_equal 0, @db.node_count
+    assert_equal 0, @db.relationship_count
+  end
+
+  def test_inspect_includes_counts
+    @db.execute("CREATE (:X), (:Y)-[:R]->(:Z)")
+    assert_equal "#<LoraRuby::Database nodes=3 relationships=1>", @db.inspect
+  end
+
+  def test_both_constructors_work
+    a = LoraRuby::Database.create
+    b = LoraRuby::Database.new
+    assert_instance_of LoraRuby::Database, a
+    assert_instance_of LoraRuby::Database, b
+    assert_equal 0, a.node_count
+    assert_equal 0, b.node_count
+  end
+
+  def test_path_invariant
+    @db.execute("CREATE (:A {n:1})-[:R]->(:B {n:2})")
+    r = @db.execute("MATCH p = (:A)-[:R]->(:B) RETURN p")
+    p = r["rows"][0]["p"]
+    assert LoraRuby.path?(p)
+    assert_equal p["nodes"].length, p["rels"].length + 1
+  end
+
+  def test_temporal_now_functions_work
+    # date() / datetime() / ... no-arg forms use the wall clock; they
+    # must not raise inside the extension.
+    r = @db.execute(
+      "RETURN date() AS d, datetime() AS dt, time() AS t, localdatetime() AS ldt, localtime() AS lt",
+    )
+    row = r["rows"][0]
+    %w[d dt t ldt lt].each do |k|
+      assert LoraRuby.temporal?(row[k]), "#{k} should be a tagged temporal hash"
+    end
+    assert row["d"]["iso"][0, 4].to_i >= 2024
+  end
+end

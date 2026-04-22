@@ -1,0 +1,46 @@
+[package]
+# Underscored to match the Ruby extension name — rb-sys'
+# `RbSys::ExtensionTask` looks up the Cargo package by exactly the name
+# passed to it, which for a `require "lora_ruby/lora_ruby"` layout has
+# to be the underscored form. The crate directory stays `lora-ruby` for
+# readability and matches the `lora-<lang>` naming used by the other
+# bindings; cargo is happy with a directory name that doesn't match the
+# package name.
+name = "lora_ruby"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+description = "Ruby bindings for the Lora in-memory graph database"
+
+[lib]
+# `cdylib` produces the dynamic library that Ruby's extension loader (via
+# `rb-sys`'s generated Makefile) links into the process. `rlib` lets the
+# workspace `cargo check --workspace` exercise this crate as a regular
+# library without the rb-sys C shim being linked in.
+crate-type = ["cdylib", "rlib"]
+name = "lora_ruby"
+
+[dependencies]
+# Magnus is the safe high-level Rust → Ruby binding. It talks to libruby
+# through `rb-sys`; both must agree on the ABI, which the `rb-sys-env`
+# build-script helper arranges by reading the Ruby pointed at by the
+# surrounding `ruby/setup-ruby` action (or the caller's `ruby --version`).
+magnus = { version = "0.8", features = ["rb-sys"] }
+rb-sys = { version = "0.9", default-features = false, features = [
+    "stable-api-compiled-fallback",
+] }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow.workspace = true
+
+lora-database.workspace = true
+lora-store.workspace = true
+
+[build-dependencies]
+# Exports the Ruby ABI config discovered at build time — required so
+# cdylib link flags match the host interpreter (mac dynamic_lookup,
+# libruby search paths on Linux, etc.).
+rb-sys-env = "0.2"

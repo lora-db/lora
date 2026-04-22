@@ -1,0 +1,357 @@
+package lora
+
+/*
+#cgo CFLAGS: -I${SRCDIR}/include
+#cgo linux  LDFLAGS: -L${SRCDIR}/../../target/release -llora_ffi -lm -ldl -lpthread
+#cgo darwin LDFLAGS: -L${SRCDIR}/../../target/release -llora_ffi -framework Security -framework CoreFoundation
+
+#include <stdlib.h>
+#include "lora_ffi.h"
+*/
+import "C"
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"runtime"
+	"runtime/debug"
+	"sync"
+	"unsafe"
+)
+
+// Database is an in-memory Lora graph database backed by the Rust
+// engine. It is safe to share across goroutines; queries serialise on
+// an internal mutex.
+//
+// Always call [Database.Close] when the database is no longer needed.
+// A finalizer is installed as a safety net so a forgotten Close does
+// not leak the native handle, but relying on the finalizer means the
+// engine's memory can outlive its last Go reference arbitrarily long.
+type Database struct {
+	// mu serialises callers that need the native handle. Execute,
+	// NodeCount, RelationshipCount, and Clear take the read lock so
+	// they can proceed concurrently; Close takes the write lock
+	// exactly once before freeing the handle. The RWMutex provides
+	// the happens-before edge that keeps `handle` publication safe
+	// without an atomic.
+	mu     sync.RWMutex
+	handle *C.LoraDatabase
+}
+
+// New allocates a fresh, empty in-memory Lora graph database.
+func New() (*Database, error) { return NewDatabase() }
+
+// NewDatabase is an alias for [New] kept for idiomatic Go naming
+// parity with packages that expose Type-named constructors.
+func NewDatabase() (*Database, error) {
+	var handle *C.LoraDatabase
+	status := C.lora_db_new(&handle)
+	if status != C.LORA_STATUS_OK {
+		return nil, &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_new returned status %d", int(status))}
+	}
+	db := &Database{handle: handle}
+	// Safety net: if a caller forgets Close, the finalizer frees the
+	// handle. This does not replace Close — the finalizer may run
+	// arbitrarily late or not at all on process exit.
+	runtime.SetFinalizer(db, func(d *Database) {
+		_ = d.Close()
+	})
+	return db, nil
+}
+
+// Close releases the native database handle. Subsequent calls are
+// no-ops. Close is safe to call concurrently with an in-flight
+// Execute: the call will wait for the execute to finish before
+// freeing the handle.
+func (db *Database) Close() error {
+	// Serialise with any other mutating call and, more importantly,
+	// any goroutine that is currently inside an Execute and holding a
+	// live pointer. Execute takes the read lock, Close takes the
+	// write lock — they are mutually exclusive.
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.handle == nil {
+		return nil
+	}
+	runtime.SetFinalizer(db, nil)
+	C.lora_db_free(db.handle)
+	db.handle = nil
+	return nil
+}
+
+// Execute runs a Cypher query with optional parameters and returns
+// the result. See the package doc for the returned value model.
+func (db *Database) Execute(query string, params Params) (*Result, error) {
+	return db.ExecuteContext(context.Background(), query, params)
+}
+
+// ExecuteContext runs a Cypher query with optional parameters and
+// cooperates with ctx cancellation. See the package doc for the
+// caveat around mid-query cancellation — the native call cannot be
+// interrupted, so a cancelled context only unblocks the caller; the
+// query continues running and holds the database mutex until it
+// finishes.
+func (db *Database) ExecuteContext(ctx context.Context, query string, params Params) (*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	paramsJSON, err := encodeParams(params)
+	if err != nil {
+		return nil, &LoraError{Code: CodeInvalidParams, Message: err.Error()}
+	}
+
+	done := make(chan executeResult, 1)
+	go func() {
+		r, err := db.execute(query, paramsJSON)
+		done <- executeResult{r, err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		// The Rust call is still in flight; the goroutine above will
+		// publish to `done` (which is buffered) even after we return.
+		return nil, ctx.Err()
+	case out := <-done:
+		return out.result, out.err
+	}
+}
+
+type executeResult struct {
+	result *Result
+	err    error
+}
+
+func (db *Database) execute(query string, paramsJSON []byte) (*Result, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.handle == nil {
+		return nil, errClosed()
+	}
+
+	cQuery := C.CString(query)
+	defer C.free(unsafe.Pointer(cQuery))
+
+	var cParams *C.char
+	if len(paramsJSON) > 0 {
+		cParams = C.CString(string(paramsJSON))
+		defer C.free(unsafe.Pointer(cParams))
+	}
+
+	var outResult *C.char
+	var outError *C.char
+	status := C.lora_db_execute_json(db.handle, cQuery, cParams, &outResult, &outError)
+
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+			if outResult != nil {
+				C.lora_string_free(outResult)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+
+	defer C.lora_string_free(outResult)
+	return decodeResult(C.GoString(outResult))
+}
+
+// Clear drops every node and relationship. The call is constant-time
+// and blocks until in-flight queries release the internal mutex.
+func (db *Database) Clear() error {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.handle == nil {
+		return errClosed()
+	}
+	status := C.lora_db_clear(db.handle)
+	if status != C.LORA_STATUS_OK {
+		return &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_clear returned status %d", int(status))}
+	}
+	return nil
+}
+
+// NodeCount returns the number of nodes currently in the graph.
+func (db *Database) NodeCount() (uint64, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.handle == nil {
+		return 0, errClosed()
+	}
+	var n C.uint64_t
+	status := C.lora_db_node_count(db.handle, &n)
+	if status != C.LORA_STATUS_OK {
+		return 0, &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_node_count returned status %d", int(status))}
+	}
+	return uint64(n), nil
+}
+
+// RelationshipCount returns the number of relationships currently in
+// the graph.
+func (db *Database) RelationshipCount() (uint64, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.handle == nil {
+		return 0, errClosed()
+	}
+	var n C.uint64_t
+	status := C.lora_db_relationship_count(db.handle, &n)
+	if status != C.LORA_STATUS_OK {
+		return 0, &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_relationship_count returned status %d", int(status))}
+	}
+	return uint64(n), nil
+}
+
+func errClosed() error {
+	return &LoraError{Code: CodeLoraError, Message: "database is closed"}
+}
+
+// ---------------------------------------------------------------------------
+// Version
+// ---------------------------------------------------------------------------
+
+var (
+	versionOnce  sync.Once
+	versionValue string
+)
+
+// Version returns the version of the bundled lora-ffi library, read
+// from the Go module build info when available, and otherwise from
+// the lora_version() FFI call. The returned string is memoised.
+func Version() string {
+	versionOnce.Do(func() {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, dep := range info.Deps {
+				if dep.Path == "github.com/lora-db/lora/crates/lora-go" && dep.Version != "" {
+					versionValue = dep.Version
+					return
+				}
+			}
+		}
+		versionValue = C.GoString(C.lora_version())
+	})
+	return versionValue
+}
+
+// ---------------------------------------------------------------------------
+// Marshalling
+// ---------------------------------------------------------------------------
+
+func encodeParams(params Params) ([]byte, error) {
+	if len(params) == 0 {
+		return nil, nil
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	// Avoid JSON's default `<>& → <…` escaping; Cypher tolerates
+	// the real characters in string literals and the FFI is
+	// length-delimited, so the escaped form is just noise on the wire.
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(params); err != nil {
+		return nil, err
+	}
+	// `json.Encoder` trails a newline; the FFI accepts it but strip
+	// for cleanliness.
+	out := buf.Bytes()
+	if len(out) > 0 && out[len(out)-1] == '\n' {
+		out = out[:len(out)-1]
+	}
+	return out, nil
+}
+
+// decodeResult turns the FFI JSON payload into a Result. Uses
+// json.Number so int64 parameters round-trip through Cypher without
+// silently becoming float64.
+func decodeResult(raw string) (*Result, error) {
+	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	dec.UseNumber()
+	var wire struct {
+		Columns []string          `json:"columns"`
+		Rows    []json.RawMessage `json:"rows"`
+	}
+	if err := dec.Decode(&wire); err != nil {
+		return nil, fmt.Errorf("lora: decode result envelope: %w", err)
+	}
+
+	rows := make([]Row, 0, len(wire.Rows))
+	for i, rawRow := range wire.Rows {
+		rd := json.NewDecoder(bytes.NewReader(rawRow))
+		rd.UseNumber()
+		var raw map[string]any
+		if err := rd.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("lora: decode row %d: %w", i, err)
+		}
+		rows = append(rows, normalizeMap(raw))
+	}
+	return &Result{Columns: wire.Columns, Rows: rows}, nil
+}
+
+// normalizeMap / normalizeSlice / normalize walk the decoded structure
+// and convert json.Number values to int64 when possible, or float64
+// otherwise. This keeps the "primitives as Go natives" contract even
+// though UseNumber() hands back json.Number placeholders.
+func normalize(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return normalizeMap(x)
+	case []any:
+		return normalizeSlice(x)
+	case json.Number:
+		if i, err := x.Int64(); err == nil {
+			return i
+		}
+		if f, err := x.Float64(); err == nil {
+			return f
+		}
+		// Shouldn't happen given UseNumber() only emits numeric text.
+		return x.String()
+	default:
+		return v
+	}
+}
+
+func normalizeMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = normalize(v)
+	}
+	return out
+}
+
+func normalizeSlice(s []any) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = normalize(v)
+	}
+	return out
+}
+
+// statusToError maps a non-OK FFI status plus its error string into
+// a LoraError with the right Code.
+func statusToError(status int, outError *C.char) error {
+	payload := ""
+	if outError != nil {
+		payload = C.GoString(outError)
+	}
+	switch status {
+	case C.LORA_STATUS_LORA_ERROR:
+		return parseLoraError(payload, CodeLoraError)
+	case C.LORA_STATUS_INVALID_PARAMS:
+		return parseLoraError(payload, CodeInvalidParams)
+	case C.LORA_STATUS_NULL_POINTER:
+		return &LoraError{Code: CodePanic, Message: "null pointer passed to lora_db_execute_json"}
+	case C.LORA_STATUS_INVALID_UTF8:
+		return parseLoraError(payload, CodeInvalidParams)
+	case C.LORA_STATUS_PANIC:
+		return parseLoraError(payload, CodePanic)
+	default:
+		return &LoraError{Code: CodeUnknown, Message: fmt.Sprintf("unknown FFI status %d: %s", status, payload)}
+	}
+}
