@@ -1,0 +1,10 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gemspec
+
+# `rb_sys` gem is a runtime dep already, but we pull in `rake-compiler`
+# and the optional `rb_sys/cross` helper for building cross-compiled
+# platform gems (mac arm64, linux x64, …) in the release workflow.
+gem "rb_sys", "~> 0.9"

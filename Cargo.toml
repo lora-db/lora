@@ -11,6 +11,8 @@ members = [
     "crates/lora-node",
     "crates/lora-wasm",
     "crates/lora-python",
+    "crates/lora-ffi",
+    "crates/lora-ruby",
 ]
 resolver = "2"
 

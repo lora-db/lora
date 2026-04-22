@@ -1,0 +1,13 @@
+# Go build artefacts
+*.test
+*.out
+coverage.out
+
+# The native static library is produced by `cargo build --release -p
+# lora-ffi` into ../../target/release/ and should never be committed.
+# Keep this explicit so a stray copy under crates/lora-go/ does not
+# slip through.
+liblora_ffi.a
+liblora_ffi.dylib
+liblora_ffi.so
+liblora_ffi.dll

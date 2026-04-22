@@ -1,0 +1,19 @@
+# Native extension build artefacts — `rake compile` writes the
+# compiled library here; it MUST NOT be committed. Root .gitignore
+# already excludes `target/` and `*.node`, but an extension produces
+# `*.so` / `*.bundle` / `*.dll` which aren't globally ignored.
+/lib/lora_ruby/lora_ruby.so
+/lib/lora_ruby/lora_ruby.bundle
+/lib/lora_ruby/lora_ruby.dll
+/tmp/
+/pkg/
+/Gemfile.lock
+
+# `rake compile` writes the intermediate Makefile + object files
+# under tmp/. Keep them out of git.
+/Makefile
+/mkmf.log
+/*.o
+/*.so
+/*.bundle
+/*.dll
