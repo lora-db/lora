@@ -2,8 +2,8 @@ package lora
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/include
-#cgo linux  LDFLAGS: -L${SRCDIR}/../../target/release -llora_ffi -lm -ldl -lpthread
-#cgo darwin LDFLAGS: -L${SRCDIR}/../../target/release -llora_ffi -framework Security -framework CoreFoundation
+#cgo linux  LDFLAGS: ${SRCDIR}/../../target/release/liblora_ffi.a -lm -ldl -lpthread
+#cgo darwin LDFLAGS: ${SRCDIR}/../../target/release/liblora_ffi.a -framework Security -framework CoreFoundation
 
 #include <stdlib.h>
 #include "lora_ffi.h"
