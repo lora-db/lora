@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="LoraDB">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1b6dff"/>
+      <stop offset="1" stop-color="#6e5afd"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="256" cy="256" r="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Full-bleed for Android maskable spec. Mark sized to fit the center 80% safe circle (radius 204.8). -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <rect width="512" height="512" fill="url(#glow)"/>
+  <!-- Mark centered on bbox centroid (12,12), scaled 16x. Max visual radius from center = 11.8*16 = 188.8 < 204.8 safe. -->
+  <g transform="translate(256 256) scale(16) translate(-12 -12)" fill="none" stroke="#ffffff" stroke-width="1.1" stroke-linecap="round">
+    <path d="M4 6 12 13"/>
+    <path d="M12 4 12 13"/>
+    <path d="M20 8 12 13"/>
+    <path d="M6 18 12 13"/>
+    <path d="M18 20 12 13"/>
+    <path d="M4 6 12 4"/>
+    <path d="M12 4 20 8"/>
+    <path d="M6 18 18 20"/>
+  </g>
+  <g transform="translate(256 256) scale(16) translate(-12 -12)" fill="#ffffff">
+    <circle cx="4" cy="6" r="1.8"/>
+    <circle cx="12" cy="4" r="1.8"/>
+    <circle cx="20" cy="8" r="1.8"/>
+    <circle cx="6" cy="18" r="1.8"/>
+    <circle cx="18" cy="20" r="1.8"/>
+    <circle cx="12" cy="13" r="2.8"/>
+  </g>
+</svg>

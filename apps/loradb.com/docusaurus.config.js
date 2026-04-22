@@ -1,16 +1,72 @@
 const path = require('path');
 
+const SITE_URL = 'https://loradb.com';
+const SITE_DESCRIPTION =
+  'LoraDB is an embedded, Rust-native graph database with a Cypher-like query engine — built for AI agents, robotics, and context-rich systems that reason over connected data.';
+
 module.exports = {
   title: 'LoraDB',
-  tagline: 'A graph database with a Cypher-like query engine.',
-  url: 'https://loradb.com',
+  tagline: 'The embedded graph database for connected systems.',
+  url: SITE_URL,
   baseUrl: '/',
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'throw',
   onBrokenAnchors: 'throw',
-  favicon: 'img/meta/favicon-96x96.png',
+  favicon: 'img/meta/favicon.ico',
   organizationName: 'loradb',
   projectName: 'lora',
+  headTags: [
+    // Full favicon set — ordered so browsers pick the right one.
+    {
+      tagName: 'link',
+      attributes: { rel: 'icon', type: 'image/x-icon', href: '/img/meta/favicon.ico' },
+    },
+    {
+      tagName: 'link',
+      attributes: { rel: 'icon', type: 'image/svg+xml', href: '/img/meta/favicon.svg' },
+    },
+    {
+      tagName: 'link',
+      attributes: { rel: 'icon', type: 'image/png', sizes: '16x16', href: '/img/meta/favicon-16x16.png' },
+    },
+    {
+      tagName: 'link',
+      attributes: { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/img/meta/favicon-32x32.png' },
+    },
+    {
+      tagName: 'link',
+      attributes: { rel: 'icon', type: 'image/png', sizes: '48x48', href: '/img/meta/favicon-48x48.png' },
+    },
+    {
+      tagName: 'link',
+      attributes: { rel: 'icon', type: 'image/png', sizes: '96x96', href: '/img/meta/favicon-96x96.png' },
+    },
+    {
+      tagName: 'link',
+      attributes: { rel: 'apple-touch-icon', sizes: '180x180', href: '/img/meta/apple-touch-icon.png' },
+    },
+    // PWA manifest + theme colors
+    {
+      tagName: 'link',
+      attributes: { rel: 'manifest', href: '/site.webmanifest' },
+    },
+    {
+      tagName: 'meta',
+      attributes: { name: 'theme-color', content: '#1b6dff' },
+    },
+    {
+      tagName: 'meta',
+      attributes: { name: 'apple-mobile-web-app-title', content: 'LoraDB' },
+    },
+    {
+      tagName: 'meta',
+      attributes: { name: 'application-name', content: 'LoraDB' },
+    },
+    {
+      tagName: 'meta',
+      attributes: { name: 'msapplication-TileColor', content: '#0a0f1f' },
+    },
+  ],
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
@@ -67,11 +123,35 @@ module.exports = {
   ],
   /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
   themeConfig: {
+    // Global fallback metadata. Per-page <Layout title=... description=...>
+    // writes title / description / og:title / og:description / twitter:title /
+    // twitter:description automatically on top of these.
     metadata: [
-      { name: 'og:type', content: 'website' },
-      { name: 'og:site_name', content: 'LoraDB Docs' },
+      { name: 'description', content: SITE_DESCRIPTION },
+      { name: 'keywords', content: 'graph database, cypher, embedded database, rust, wasm, node.js, python, knowledge graph, AI agents, LoraDB' },
+      { name: 'author', content: 'LoraDB' },
+      { name: 'robots', content: 'index, follow, max-image-preview:large' },
+      { property: 'og:type', content: 'website' },
+      { property: 'og:site_name', content: 'LoraDB' },
+      { property: 'og:title', content: 'LoraDB — the embedded graph database for connected systems' },
+      { property: 'og:description', content: SITE_DESCRIPTION },
+      { property: 'og:url', content: SITE_URL },
+      { property: 'og:image', content: `${SITE_URL}/img/meta/og-image.png` },
+      { property: 'og:image:secure_url', content: `${SITE_URL}/img/meta/og-image.png` },
+      { property: 'og:image:type', content: 'image/png' },
+      { property: 'og:image:width', content: '1200' },
+      { property: 'og:image:height', content: '630' },
+      { property: 'og:image:alt', content: 'LoraDB — the embedded graph database for connected systems.' },
+      { property: 'og:locale', content: 'en_US' },
       { name: 'twitter:card', content: 'summary_large_image' },
+      { name: 'twitter:site', content: '@loradb' },
+      { name: 'twitter:creator', content: '@loradb' },
       { name: 'twitter:domain', content: 'loradb.com' },
+      { name: 'twitter:url', content: SITE_URL },
+      { name: 'twitter:title', content: 'LoraDB — the embedded graph database for connected systems' },
+      { name: 'twitter:description', content: SITE_DESCRIPTION },
+      { name: 'twitter:image', content: `${SITE_URL}/img/meta/og-image.png` },
+      { name: 'twitter:image:alt', content: 'LoraDB — the embedded graph database for connected systems.' },
     ],
     colorMode: {
       defaultMode: 'light',

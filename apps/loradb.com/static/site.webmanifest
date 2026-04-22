@@ -1,0 +1,30 @@
+{
+  "name": "LoraDB",
+  "short_name": "LoraDB",
+  "description": "LoraDB is an embedded, Rust-native graph database with a Cypher-like query engine — built for AI agents, robotics, and context-rich systems that reason over connected data.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0f1f",
+  "theme_color": "#1b6dff",
+  "icons": [
+    {
+      "src": "/img/meta/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/img/meta/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/img/meta/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
