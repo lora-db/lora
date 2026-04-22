@@ -473,6 +473,16 @@ jobs:
         shell: bash
         run: ls -la crates/lora-python/dist
 
+      # maturin-action runs inside a manylinux Docker container on Linux,
+      # so the wheel files in dist/ (and dist/ itself) are owned by root.
+      # mv needs write permission on the source directory, which the runner
+      # user doesn't have until we re-own it. No-op on macOS/Windows where
+      # the action runs directly on the host.
+      - name: Re-own container-written dist (manylinux docker)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo chown -R "$(id -u):$(id -g)" crates/lora-python/dist
+
       - name: Stage wheels at workspace root for clean artifact layout
         shell: bash
         run: |
