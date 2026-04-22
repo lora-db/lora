@@ -112,6 +112,6 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: lora-wasm-tarball
-          path: crates/lora-wasm/lora-wasm-*.tgz
+          path: crates/lora-wasm/loradb-lora-wasm-*.tgz
           if-no-files-found: error
           retention-days: 7
