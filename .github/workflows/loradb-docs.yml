@@ -4,19 +4,23 @@ name: loradb-docs
 # https://loradb.com (custom apex domain, CNAME committed in static/).
 #
 # Deploy policy:
-#   - Push to `main` (apps/loradb.com/** paths) → build + deploy.
-#   - `release.released` → build + deploy (keeps Pages in sync with tagged
-#     releases after the draft in .github/workflows/release.yml is published).
-#   - `workflow_dispatch` → build + deploy (manual rebuild / recovery).
-#   - PR → build only (verify the site still builds; artefact uploaded for
-#     inspection, no deploy).
+#   - Tag push matching `v[0-9]+.[0-9]+.[0-9]+` (incl. pre-releases) → build + deploy.
+#   - `release.released`                                              → build + deploy
+#     (keeps Pages in sync with tagged releases after the draft in
+#     .github/workflows/release.yml is published).
+#   - `workflow_dispatch`                                             → build + deploy
+#     (manual rebuild / recovery).
+#   - PR                                                              → build only
+#     (verify the site still builds; artefact uploaded for inspection, no deploy).
+#   - Push to `main`                                                  → NOT TRIGGERED.
+#     Docs only go live on a versioned release. For doc-only updates
+#     without a code release, cut a patch tag or use workflow_dispatch.
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "apps/loradb.com/**"
-      - ".github/workflows/loradb-docs.yml"
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
   pull_request:
     paths:
       - "apps/loradb.com/**"
@@ -31,9 +35,9 @@ permissions:
   id-token: write
 
 concurrency:
-  # Serialise Pages deploys across ref boundaries (release + dispatch can't
-  # race each other) but let PR validation runs cancel stale builds of
-  # themselves.
+  # Serialise Pages deploys across ref boundaries (release + dispatch + tag
+  # push can't race each other) but let PR validation runs cancel stale
+  # builds of themselves.
   group: pages-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -65,11 +69,11 @@ jobs:
         run: test -f build/CNAME && grep -qx loradb.com build/CNAME
 
       - name: Configure Pages
-        if: github.event_name == 'push' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
-        if: github.event_name == 'push' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: apps/loradb.com/build
@@ -85,9 +89,9 @@ jobs:
 
   deploy:
     name: deploy
-    # Deploys on push to main, published GitHub Release, or manual dispatch.
-    # PRs never deploy — they hit the `build` job only.
-    if: github.event_name == 'push' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # Deploys on tag push (v*.*.*), published GitHub Release, or manual
+    # dispatch. PRs and branch pushes never reach this job.
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
