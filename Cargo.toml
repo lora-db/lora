@@ -21,7 +21,7 @@ license = "BUSL-1.1"
 authors = ["LoraDB, Inc."]
 repository = "https://github.com/lora-db/lora"
 homepage = "https://github.com/lora-db/lora"
-rust-version = "1.75"
+rust-version = "1.87"
 
 [workspace.dependencies]
 # Internal crates — versions are kept in lockstep with [workspace.package].version

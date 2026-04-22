@@ -181,3 +181,5 @@ See [Limitations](../limitations#data-types) for the full list.
 - [**Functions → Overview**](../functions/overview) — `toString`, `coalesce`, `valueType`.
 - [**Properties**](../concepts/properties) — how types attach to entities.
 - [**Queries → Parameters**](../queries/#parameters) — binding typed values from the host.
+- [**Result formats**](../concepts/result-formats) — how these types
+  come back over the wire.

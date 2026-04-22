@@ -224,6 +224,13 @@ and the [**docs**](./) for what works today.
 ## See also
 
 - [**What is LoraDB**](./) — introduction, audiences, and quick start.
+- [**Installation**](./getting-started/installation) — pick your
+  platform and get running.
+- [**Ten-Minute Tour**](./getting-started/tutorial) — the case from
+  "why" to a working query.
 - [**Graph Model**](./concepts/graph-model) — the data model in
   four queries.
+- [**Queries → Overview**](./queries/) — the Cypher surface LoraDB
+  supports.
 - [**Cookbook**](./cookbook) — scenario-driven recipes.
+- [**Limitations**](./limitations) — what isn't supported yet.

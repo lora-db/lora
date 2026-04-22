@@ -503,9 +503,16 @@ ORDER BY shared_paths DESC
 LIMIT 10
 ```
 
----
+## See also
 
-Next: the [**clause reference**](../queries) for details on every
-clause, or [**Functions**](../functions/overview) for built-ins. For
-scenario-based recipes organised by domain (social, e-commerce,
-events, geo), see the [**Cookbook**](../cookbook).
+- [**Queries → Overview**](../queries) — clause-by-clause reference.
+- [**Cheat sheet**](./cheat-sheet) — single-page quick reference.
+- [**Tutorial**](../getting-started/tutorial) — same language, guided
+  top-to-bottom.
+- [**Cookbook**](../cookbook) — scenario-driven recipes by domain
+  (social, e-commerce, events, geo).
+- [**Parameters**](./parameters) — typed parameter binding (the `$id`
+  used above).
+- [**Functions**](../functions/overview) — every built-in.
+- [**Concepts → Graph Model**](../concepts/graph-model) — the data
+  model these queries run against.
