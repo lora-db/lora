@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  Database,
+  createDatabase,
+  type Database,
   LoraError,
   isNode,
   isRelationship,
@@ -22,7 +23,7 @@ describe("Database — basics", () => {
   let db: Database;
 
   beforeEach(async () => {
-    db = await Database.create();
+    db = await createDatabase();
   });
 
   it("returns typed empty result for empty graph MATCH", async () => {
@@ -87,14 +88,14 @@ describe("Database — basics", () => {
 
 describe("Database — value model", () => {
   it("roundtrips a list of mixed-scalar values", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:N {xs: $xs})", { xs: [1, "two", true, null] });
     const { rows } = await db.execute("MATCH (n:N) RETURN n.xs AS xs");
     expect(rows[0]!.xs).toEqual([1, "two", true, null]);
   });
 
   it("roundtrips a nested map", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:N {meta: $m})", {
       m: { a: 1, b: { c: "deep", d: [true, false] } },
     });
@@ -103,7 +104,7 @@ describe("Database — value model", () => {
   });
 
   it("returns tagged date values from stored properties", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:E {d: date('2025-03-14')})");
     const { rows } = await db.execute("MATCH (n:E) RETURN n.d AS d");
     const d = rows[0]!.d;
@@ -112,7 +113,7 @@ describe("Database — value model", () => {
   });
 
   it("accepts typed date + duration params", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:E {on: $d, span: $dur})", {
       d: date("2025-01-15"),
       dur: duration("P1M"),
@@ -125,7 +126,7 @@ describe("Database — value model", () => {
   });
 
   it("returns tagged point values (cartesian + wgs84)", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:P {c: $c, g: $g})", {
       c: cartesian(1.5, 2.5),
       g: wgs84(4.9, 52.37),
@@ -151,7 +152,7 @@ describe("Database — value model", () => {
   });
 
   it("returns 3D cartesian points with z", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:P3 {p: $p})", { p: cartesian3d(1.0, 2.0, 3.0) });
     const { rows } = await db.execute("MATCH (n:P3) RETURN n.p AS p");
     const p = rows[0]!.p;
@@ -163,7 +164,7 @@ describe("Database — value model", () => {
   });
 
   it("returns 3D WGS-84 points with height + geographic aliases", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:G3 {p: $p})", {
       p: wgs84_3d(4.89, 52.37, 15.0),
     });
@@ -180,7 +181,7 @@ describe("Database — value model", () => {
   });
 
   it("3D point constructed via point() Cypher round-trips unchanged", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     const { rows } = await db.execute(
       "RETURN point({x: 1.0, y: 2.0, z: 3.0}) AS p",
     );
@@ -200,14 +201,14 @@ describe("Database — value model", () => {
 
 describe("Database — errors", () => {
   it("throws LoraError for a parse error", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await expect(db.execute("THIS IS NOT CYPHER")).rejects.toSatisfy(
       (e) => e instanceof LoraError && e.code === "LORA_ERROR",
     );
   });
 
   it("throws INVALID_PARAMS for a malformed temporal param", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await expect(
       db.execute("RETURN $d AS d", { d: { kind: "date", iso: "not-a-date" } }),
     ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "INVALID_PARAMS");
@@ -222,7 +223,7 @@ describe("Database — non-blocking event loop", () => {
   // resolved. With the threadpool-backed implementation it ticks.
 
   it("lets setImmediate callbacks run while a query is in flight", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
 
     // Seed 2 000 nodes sequentially so the graph state is well-defined
     // before we run the non-blocking probe. The point of this test is the
@@ -261,7 +262,7 @@ describe("Database — non-blocking event loop", () => {
   });
 
   it("runs many queries in parallel without deadlock", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     const results = await Promise.all(
       Array.from({ length: 50 }, (_, i) =>
         db.execute<{ v: number }>("RETURN $v AS v", { v: i }),
@@ -275,7 +276,7 @@ describe("Database — non-blocking event loop", () => {
 
 describe("Database — path results", () => {
   it("returns a path object with node/rel id arrays", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:A {n:1})-[:R]->(:B {n:2})");
     const { rows } = await db.execute("MATCH p = (:A)-[:R]->(:B) RETURN p");
     const p = rows[0]!.p as LoraValue;

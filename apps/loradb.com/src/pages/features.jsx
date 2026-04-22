@@ -164,9 +164,9 @@ curl -s http://127.0.0.1:4747/query \\
     label: 'Node.js',
     file: 'app.ts',
     note: 'lora-node · prototype',
-    code: `import { Database } from 'lora-node';
+    code: `import { createDatabase } from 'lora-node';
 
-const db = new Database();
+const db = await createDatabase();
 
 await db.execute(
   "CREATE (:User {name: 'Ada'})"
@@ -196,14 +196,12 @@ result = db.execute(
     label: 'WebAssembly',
     file: 'main.ts',
     note: 'lora-wasm · prototype',
-    code: `import init, { Database } from 'lora-wasm';
+    code: `import { createDatabase } from 'lora-wasm';
 
-await init();
+const db = await createDatabase();
+await db.execute("CREATE (:User {name: 'Ada'})");
 
-const db = new Database();
-db.execute("CREATE (:User {name: 'Ada'})");
-
-const result = db.execute(
+const result = await db.execute(
   "MATCH (u:User) RETURN u.name"
 );`,
   },

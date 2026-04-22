@@ -39,22 +39,34 @@ npm install lora-node
 
 ## Creating a Client / Connection
 
-```ts
-import { Database } from 'lora-node';
+`lora-node` is **async-only**. The one supported initialization
+pattern is `createDatabase()`, which returns a `Promise<Database>`:
 
-const db = await Database.create();
+```ts
+import { createDatabase } from 'lora-node';
+
+const db = await createDatabase();
 ```
 
-`Database.create()` is an `async` factory — prefer it over the bare
-constructor for API symmetry with `lora-wasm`. Both do the same
-thing today.
+`createDatabase()` is the single entry point — there is no
+synchronous constructor and no `Database.create()` static. This
+keeps the Node and WASM surfaces identical (swap the import,
+nothing else changes) and lets the binding extend initialization
+later without breaking callers.
+
+:::caution Do not skip the `await`
+`createDatabase()` returns a `Promise`. Calling `execute()` on the
+unresolved promise will throw. Always `await` the factory before
+running queries, and never instantiate the `Database` type
+directly — it is exported as a **type only**.
+:::
 
 ## Running Your First Query
 
 ```ts
-import { Database } from 'lora-node';
+import { createDatabase } from 'lora-node';
 
-const db = await Database.create();
+const db = await createDatabase();
 
 await db.execute("CREATE (:Person {name: 'Ada', born: 1815})");
 
@@ -70,7 +82,8 @@ console.log(result.rows);
 
 ### Minimal working example
 
-Already shown above — `create` → `execute` → inspect `result.rows`.
+Already shown above — `await createDatabase()` → `execute` →
+inspect `result.rows`.
 
 ### Parameterised query
 
@@ -107,9 +120,9 @@ for (const row of res.rows) {
 
 ```ts
 import express from 'express';
-import { Database, LoraError } from 'lora-node';
+import { createDatabase, LoraError } from 'lora-node';
 
-const db = await Database.create();
+const db = await createDatabase();
 const app = express();
 app.use(express.json());
 
@@ -195,9 +208,9 @@ Build typed temporal / spatial values in JS and pass them as
 parameters:
 
 ```ts
-import { Database, date, duration, wgs84 } from 'lora-node';
+import { createDatabase, date, duration, wgs84 } from 'lora-node';
 
-const db = await Database.create();
+const db = await createDatabase();
 
 await db.execute(
   "CREATE (:Trip {when: $when, span: $span, origin: $origin})",
@@ -236,8 +249,11 @@ All return Promises for API symmetry; `clear` / `nodeCount` /
 
 ### Repository pattern
 
+`Database` is exported as a type-only symbol — use it to annotate
+the instance that `createDatabase()` returned:
+
 ```ts
-import { Database } from 'lora-node';
+import { createDatabase, type Database } from 'lora-node';
 
 export class UserRepo {
   constructor(private readonly db: Database) {}
@@ -259,7 +275,24 @@ export class UserRepo {
     return rows[0]?.user ?? null;
   }
 }
+
+// Wire it up — initialization stays async-first at module scope.
+const db = await createDatabase();
+const users = new UserRepo(db);
 ```
+
+## Common initialization mistakes
+
+| ❌ Wrong | ✅ Right |
+|---|---|
+| `const db = new Database()` | `const db = await createDatabase()` |
+| `const db = Database.create()` (missing `await`) | `const db = await createDatabase()` |
+| `Database.create()` (legacy name) | `createDatabase()` |
+| `import { Database } from 'lora-node'; new Database()` | `import { createDatabase } from 'lora-node'`; then `await createDatabase()` |
+
+`Database` is a **type-only** export. Importing it as a value and
+calling `new Database()` is a compile error — synchronous
+initialization has been removed on purpose.
 
 ## Error Handling
 

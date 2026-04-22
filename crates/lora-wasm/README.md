@@ -41,10 +41,15 @@ npm run pack:dry
 
 ### 1. In-process (Node / scripts)
 
-```ts
-import { Database, isNode } from "lora-wasm";
+`lora-wasm` is **async-only** — the sole initialization pattern is
+`createDatabase()`, which bootstraps the WASM module on first call.
+There is no synchronous constructor and no `Database.create()`
+static; `Database` is a type-only export.
 
-const db = await Database.create();
+```ts
+import { createDatabase, isNode } from "lora-wasm";
+
+const db = await createDatabase();
 await db.execute("CREATE (:Person {name: $n})", { n: "Alice" });
 
 const r = await db.execute("MATCH (n:Person) RETURN n");
@@ -106,7 +111,7 @@ Helper constructors: `date`, `time`, `datetime`, `localtime`, `localdatetime`,
 
 ## Errors
 
-`Database.execute` and the worker client throw `LoraError` with a narrowed
+`db.execute(...)` and the worker client throw `LoraError` with a narrowed
 `code`:
 
 - `LORA_ERROR` — parse / analyze / execute failure

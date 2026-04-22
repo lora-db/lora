@@ -93,17 +93,17 @@ Prebuilt `lora-server` binaries for Linux, macOS (Intel + Apple Silicon), and Wi
 ### Node.js
 
 ```js
-import { Database } from "@loradb/lora-node";
+import { createDatabase } from "@loradb/lora-node";
 
-const db = new Database();
+const db = await createDatabase();
 
-db.execute(`
+await db.execute(`
   CREATE (a:User {name: 'Alice'}),
          (b:User {name: 'Bob'}),
          (a)-[:FOLLOWS {since: 2024}]->(b)
 `);
 
-const result = db.execute(`
+const result = await db.execute(`
   MATCH (a:User)-[:FOLLOWS]->(b:User)
   RETURN a.name AS follower, b.name AS followee
 `);

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  Database,
+  createDatabase,
+  type Database,
   LoraError,
   isNode,
   isRelationship,
@@ -22,7 +23,7 @@ describe("Database — basics", () => {
   let db: Database;
 
   beforeEach(async () => {
-    db = await Database.create();
+    db = await createDatabase();
   });
 
   it("returns typed empty result for empty graph MATCH", async () => {
@@ -84,14 +85,14 @@ describe("Database — basics", () => {
 
 describe("Database — value model", () => {
   it("roundtrips a list of mixed-scalar values", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:N {xs: $xs})", { xs: [1, "two", true, null] });
     const { rows } = await db.execute("MATCH (n:N) RETURN n.xs AS xs");
     expect(rows[0]!.xs).toEqual([1, "two", true, null]);
   });
 
   it("roundtrips a nested map", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:N {meta: $m})", {
       m: { a: 1, b: { c: "deep", d: [true, false] } },
     });
@@ -100,7 +101,7 @@ describe("Database — value model", () => {
   });
 
   it("returns tagged date values from stored properties", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:E {d: date('2025-03-14')})");
     const { rows } = await db.execute("MATCH (n:E) RETURN n.d AS d");
     const d = rows[0]!.d;
@@ -109,7 +110,7 @@ describe("Database — value model", () => {
   });
 
   it("accepts typed date + duration params", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:E {on: $d, span: $dur})", {
       d: date("2025-01-15"),
       dur: duration("P1M"),
@@ -122,7 +123,7 @@ describe("Database — value model", () => {
   });
 
   it("returns tagged point values (cartesian + wgs84)", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:P {c: $c, g: $g})", {
       c: cartesian(1.5, 2.5),
       g: wgs84(4.9, 52.37),
@@ -146,7 +147,7 @@ describe("Database — value model", () => {
   });
 
   it("returns 3D cartesian points with z", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:P3 {p: $p})", { p: cartesian3d(1.0, 2.0, 3.0) });
     const { rows } = await db.execute("MATCH (n:P3) RETURN n.p AS p");
     const p = rows[0]!.p;
@@ -158,7 +159,7 @@ describe("Database — value model", () => {
   });
 
   it("returns 3D WGS-84 points with height + geographic aliases", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:G3 {p: $p})", {
       p: wgs84_3d(4.89, 52.37, 15.0),
     });
@@ -175,7 +176,7 @@ describe("Database — value model", () => {
   });
 
   it("3D point constructed via point() Cypher round-trips unchanged", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     const { rows } = await db.execute(
       "RETURN point({x: 1.0, y: 2.0, z: 3.0}) AS p",
     );
@@ -193,7 +194,7 @@ describe("Database — value model", () => {
   });
 
   it("returns a path with nodes/rels invariant", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await db.execute("CREATE (:A {n:1})-[:R]->(:B {n:2})");
     const { rows } = await db.execute("MATCH p = (:A)-[:R]->(:B) RETURN p");
     const p = rows[0]!.p as LoraValue;
@@ -209,7 +210,7 @@ describe("Database — temporal now() in wasm", () => {
   // now routes through `js_sys::Date::now()` on wasm32.
 
   it("evaluates date() / datetime() / time() no-arg forms", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     const { rows } = await db.execute(
       "RETURN date() AS d, datetime() AS dt, time() AS t, localdatetime() AS ldt, localtime() AS lt",
     );
@@ -230,14 +231,14 @@ describe("Database — temporal now() in wasm", () => {
 
 describe("Database — errors", () => {
   it("throws LoraError for a parse error", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await expect(db.execute("THIS IS NOT CYPHER")).rejects.toSatisfy(
       (e) => e instanceof LoraError && e.code === "LORA_ERROR",
     );
   });
 
   it("throws INVALID_PARAMS for a malformed temporal param", async () => {
-    const db = await Database.create();
+    const db = await createDatabase();
     await expect(
       db.execute("RETURN $d AS d", { d: { kind: "date", iso: "not-a-date" } }),
     ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "INVALID_PARAMS");

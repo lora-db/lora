@@ -21,9 +21,9 @@ thread stays responsive.
 
 | Target | Use in | Entry |
 |---|---|---|
-| Node | Server-side JS, tests, scripts | `import { Database } from 'lora-wasm'` |
-| Bundler | Vite / webpack / esbuild | `import { Database } from 'lora-wasm/bundler'` |
-| Web | Raw `<script type=module>` | `import { Database } from 'lora-wasm/web'` |
+| Node | Server-side JS, tests, scripts | `import { createDatabase } from 'lora-wasm'` |
+| Bundler | Vite / webpack / esbuild | `import { createDatabase } from 'lora-wasm/bundler'` |
+| Web | Raw `<script type=module>` | `import { createDatabase } from 'lora-wasm/web'` |
 
 ### Requirements
 
@@ -49,15 +49,28 @@ npm install lora-wasm
 
 ### In-process (Node or bundler)
 
-```ts
-import { Database } from 'lora-wasm';
+`lora-wasm` is **async-only**. The one supported initialization
+pattern is `createDatabase()`:
 
-const db = await Database.create();
+```ts
+import { createDatabase } from 'lora-wasm';
+
+const db = await createDatabase();
 ```
 
-`Database.create()` bootstraps the WASM module on first call. Every
-method returns a Promise for API symmetry with `lora-node` and the
-Worker variant.
+`createDatabase()` is the single entry point — there is no
+synchronous constructor and no `Database.create()` static. It
+bootstraps the WASM module on the first call, so the engine is
+guaranteed to be ready before the first query runs. Every method
+on the returned instance returns a Promise for API symmetry with
+`lora-node` and the Worker variant.
+
+:::caution Do not skip the `await`
+`createDatabase()` returns a `Promise`. Calling `execute()` on the
+unresolved promise will throw. Always `await` the factory before
+running queries, and never instantiate the `Database` type
+directly — it is exported as a **type only**.
+:::
 
 ### Browser Worker (recommended)
 
@@ -85,9 +98,9 @@ never blocks on the engine.
 ## Running Your First Query
 
 ```ts
-import { Database } from 'lora-wasm';
+import { createDatabase } from 'lora-wasm';
 
-const db = await Database.create();
+const db = await createDatabase();
 
 await db.execute("CREATE (:Person {name: 'Ada'})");
 
@@ -117,9 +130,9 @@ const res = await db.execute(
 ### Structured result handling (typed helpers)
 
 ```ts
-import { Database, wgs84 } from 'lora-wasm';
+import { createDatabase, wgs84 } from 'lora-wasm';
 
-const db = await Database.create();
+const db = await createDatabase();
 
 await db.execute(
   "CREATE (:City {name: $name, location: $loc})",
@@ -259,6 +272,20 @@ db.dispose();                           // release the WASM handle
 
 `dispose()` drops the underlying WASM reference. After calling it,
 further `execute` calls will throw.
+
+## Common initialization mistakes
+
+| ❌ Wrong | ✅ Right |
+|---|---|
+| `const db = new Database()` | `const db = await createDatabase()` |
+| `await init(); const db = new Database()` | `const db = await createDatabase()` (init is handled inside) |
+| `const db = Database.create()` (missing `await`) | `const db = await createDatabase()` |
+| `Database.create()` (legacy name) | `createDatabase()` |
+
+`Database` is a **type-only** export in `lora-wasm`. Importing it
+as a value and calling `new Database()` is a compile error —
+synchronous initialization has been removed so the WASM module
+can never be queried before it is bootstrapped.
 
 ## Error Handling
 

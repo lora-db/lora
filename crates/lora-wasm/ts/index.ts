@@ -5,7 +5,13 @@
  * `node:module` through. Browser consumers should prefer the Worker-backed
  * API exposed in `worker-client.ts` to keep the main thread responsive.
  *
- *   const db = await Database.create();
+ * **Initialization is async-only.** The one canonical entry point is
+ * `createDatabase()`; the WASM module is bootstrapped inside it before the
+ * first query runs. There is no synchronous constructor.
+ *
+ *   import { createDatabase } from "lora-wasm";
+ *
+ *   const db = await createDatabase();
  *   const res = await db.execute("CREATE (:N {n: $v}) RETURN 1 AS one", { v: 1 });
  */
 
@@ -28,23 +34,18 @@ function ensureBootstrapped(): void {
 }
 
 /**
- * Main-thread wrapper for the WASM engine. Construct via `Database.create()`
- * so WASM bootstrapping completes before the first query runs.
+ * In-memory Lora graph database running on the WASM engine.
  *
- * All methods return Promises for API symmetry and forward-compatibility with
- * the Worker-backed variant; queries still execute synchronously inside WASM,
- * so for heavy queries in the browser prefer `createWorkerDatabase()`.
+ * Obtained exclusively via `createDatabase()`. Queries still execute
+ * synchronously inside WASM, so for heavy queries in the browser prefer
+ * `createWorkerDatabase()`; every method returns a Promise for API symmetry
+ * with `lora-node` and the Worker variant.
  */
-export class Database {
+class DatabaseImpl {
   readonly #inner: InstanceType<typeof WasmDatabase>;
 
-  private constructor(inner: InstanceType<typeof WasmDatabase>) {
+  constructor(inner: InstanceType<typeof WasmDatabase>) {
     this.#inner = inner;
-  }
-
-  static async create(): Promise<Database> {
-    ensureBootstrapped();
-    return new Database(new WasmDatabase());
   }
 
   async execute<
@@ -74,4 +75,36 @@ export class Database {
   dispose(): void {
     this.#inner.free();
   }
+}
+
+/**
+ * Public type for a LoraDB instance backed by WASM.
+ *
+ * Exported as a type only — there is no runtime `Database` value. To obtain
+ * an instance, always use `createDatabase()`.
+ */
+export type Database = DatabaseImpl;
+
+/**
+ * Create and initialize a new in-memory LoraDB instance on the WASM engine.
+ *
+ * **This is the only supported initialization pattern** for `lora-wasm`.
+ * Synchronous construction is not available — the async factory bootstraps
+ * the WASM module on first call and guarantees the engine is ready before
+ * the first query.
+ *
+ * ```ts
+ * import { createDatabase } from "lora-wasm";
+ *
+ * const db = await createDatabase();
+ * const res = await db.execute("MATCH (n) RETURN count(n) AS n");
+ * ```
+ *
+ * For heavy browser workloads, use `createWorkerDatabase()` from
+ * `lora-wasm/worker-client` instead — it keeps the main thread responsive
+ * by running the engine in a Web Worker.
+ */
+export async function createDatabase(): Promise<Database> {
+  ensureBootstrapped();
+  return new DatabaseImpl(new WasmDatabase());
 }

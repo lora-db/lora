@@ -6,6 +6,10 @@
  * event loop stays responsive. This file only narrows the `unknown`-valued
  * native surface into the strongly-typed `QueryResult<T>` / `LoraParams`
  * shapes defined in the shared TS contract (`crates/shared-ts/types.ts`).
+ *
+ * **Initialization is async-only.** The one canonical entry point is
+ * `createDatabase()`; there is no synchronous constructor. See the docs at
+ * https://loradb.com/docs/getting-started/node for the full rationale.
  */
 
 import type {
@@ -24,37 +28,22 @@ const NativeDatabase: typeof import("./native.js").Database = native.Database;
 export * from "./types.js";
 
 /**
- * In-memory Lora graph database.
+ * In-memory Lora graph database instance.
  *
- * ```ts
- * const db = await Database.create();
- * const res = await db.execute(
- *   "CREATE (n:Person {name: $name}) RETURN n",
- *   { name: "Alice" },
- * );
- * for (const row of res.rows) {
- *   if (isNode(row.n)) console.log(row.n.properties.name);
- * }
- * ```
+ * Obtained exclusively via `createDatabase()`. There is no public constructor
+ * and no synchronous factory — the async entry point lets the binding
+ * extend initialization later (lazy native loading, warmup, schema
+ * preflight) without breaking callers.
  *
  * Instances are independent — each owns its own in-memory graph. Multiple
  * concurrent `execute()` calls against one instance run one at a time
  * (serialised on the store mutex) but none of them block the event loop.
  */
-export class Database {
+class DatabaseImpl {
   readonly #inner: InstanceType<typeof NativeDatabase>;
 
-  /** Synchronous constructor. Prefer `Database.create()` for API symmetry. */
-  constructor() {
-    this.#inner = new NativeDatabase();
-  }
-
-  /**
-   * Async factory. Matches the `lora-wasm` API shape so consumers can
-   * swap backends by changing only the import.
-   */
-  static async create(): Promise<Database> {
-    return new Database();
+  constructor(inner: InstanceType<typeof NativeDatabase>) {
+    this.#inner = inner;
   }
 
   /**
@@ -87,4 +76,42 @@ export class Database {
   async relationshipCount(): Promise<number> {
     return this.#inner.relationshipCount();
   }
+}
+
+/**
+ * Public type for a LoraDB instance.
+ *
+ * Exported as a type only — there is no runtime `Database` value. To obtain
+ * an instance, always use `createDatabase()`:
+ *
+ * ```ts
+ * import { createDatabase, type Database } from "lora-node";
+ *
+ * const db: Database = await createDatabase();
+ * ```
+ */
+export type Database = DatabaseImpl;
+
+/**
+ * Create and initialize a new in-memory LoraDB instance.
+ *
+ * **This is the only supported initialization pattern** for `lora-node`.
+ * Synchronous construction is not available — the async factory guarantees
+ * the native layer is ready before the first query dispatches and keeps
+ * the Node and WASM surfaces symmetric.
+ *
+ * ```ts
+ * import { createDatabase } from "lora-node";
+ *
+ * const db = await createDatabase();
+ * const res = await db.execute(
+ *   "CREATE (n:Person {name: $name}) RETURN n",
+ *   { name: "Alice" },
+ * );
+ * ```
+ *
+ * Each call returns an independent graph — no shared state between instances.
+ */
+export async function createDatabase(): Promise<Database> {
+  return new DatabaseImpl(new NativeDatabase());
 }

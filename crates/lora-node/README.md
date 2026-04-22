@@ -28,10 +28,14 @@ to `package.json`.
 
 ## Usage
 
-```ts
-import { Database, isNode, type LoraNode } from "lora-node";
+`lora-node` is **async-only** — the sole initialization pattern is
+`createDatabase()`. There is no synchronous constructor and no
+`Database.create()` static; `Database` is a type-only export.
 
-const db = await Database.create();
+```ts
+import { createDatabase, isNode, type LoraNode } from "lora-node";
+
+const db = await createDatabase();
 await db.execute("CREATE (:Person {name: $n, age: $a})", { n: "Alice", a: 30 });
 
 const res = await db.execute<{ n: LoraNode }>("MATCH (n:Person) RETURN n");
@@ -42,8 +46,9 @@ for (const row of res.rows) {
 }
 ```
 
-The API matches `lora-wasm` verbatim — same shared types, same async method
-signatures — so switching backends is a single import change.
+The API matches `lora-wasm` verbatim — same shared types, same
+`createDatabase()` entry point, same async method signatures — so
+switching backends is a single import change.
 
 ## Typed value model
 
@@ -104,7 +109,7 @@ identical to `lora-wasm`.
 
 ## Errors
 
-`Database.execute` throws `LoraError` with a narrowed `code`:
+`db.execute(...)` throws `LoraError` with a narrowed `code`:
 
 - `LORA_ERROR` — parse / analyze / execute failure
 - `INVALID_PARAMS` — a param value could not be mapped to a `LoraValue`

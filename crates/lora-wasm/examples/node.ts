@@ -3,10 +3,10 @@
  * Database class. Suitable for scripts, tests, and small server-side usage.
  */
 
-import { Database, isNode, type LoraNode } from "../ts/index.js";
+import { createDatabase, isNode, type LoraNode } from "../ts/index.js";
 
 async function main(): Promise<void> {
-  const db = await Database.create();
+  const db = await createDatabase();
 
   await db.execute(
     "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 28})",

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { Database, createWorkerDatabase, LoraError, type WorkerDatabase } from "../ts/index.js";
+import { createDatabase, createWorkerDatabase, LoraError, type Database, type WorkerDatabase } from "../ts/index.js";
 import type { Request, Response } from "../ts/worker-protocol.js";
 import type { LoraErrorCode } from "../ts/types.js";
 
@@ -54,7 +54,7 @@ class InProcessWorker {
     };
 
     try {
-      if (!this.#db) this.#db = await Database.create();
+      if (!this.#db) this.#db = await createDatabase();
       const db = this.#db;
 
       switch (msg.body.op) {

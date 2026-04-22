@@ -20,9 +20,9 @@ const QUICKSTART_TABS = [
     id: 'node',
     label: 'Node.js',
     file: 'quickstart.ts',
-    code: `import { Database } from 'lora-node';
+    code: `import { createDatabase } from 'lora-node';
 
-const db = new Database();
+const db = await createDatabase();
 
 await db.execute(
   "CREATE (:Person {name: 'Ada'})-[:INFLUENCED]->(:Person {name: 'Grace'})"
@@ -56,16 +56,15 @@ print(result.rows)`,
     id: 'wasm',
     label: 'WASM',
     file: 'quickstart.ts',
-    code: `import init, { Database } from 'lora-wasm';
+    code: `import { createDatabase } from 'lora-wasm';
 
-await init();
-const db = new Database();
+const db = await createDatabase();
 
-db.execute(
+await db.execute(
   "CREATE (:Person {name: 'Ada'})-[:INFLUENCED]->(:Person {name: 'Grace'})"
 );
 
-const result = db.execute(
+const result = await db.execute(
   "MATCH (a)-[:INFLUENCED]->(b) RETURN a.name, b.name"
 );
 
