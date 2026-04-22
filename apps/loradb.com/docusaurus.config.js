@@ -252,7 +252,7 @@ module.exports = {
     },
     prism: {
       theme: { plain: {}, styles: [] },
-      additionalLanguages: ['shell-session', 'http', 'diff', 'json', 'rust', 'cypher'],
+      additionalLanguages: ['shell-session', 'http', 'diff', 'json', 'rust', 'ruby', 'go', 'cypher'],
     },
   },
   plugins: [
