@@ -47,7 +47,7 @@ use lora_database::{
 };
 use lora_store::{
     GraphStorage, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime,
-    LoraPoint, LoraTime,
+    LoraPoint, LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -432,6 +432,9 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, String> {
                         let z = obj.get("z").and_then(|v| v.as_f64());
                         return Ok(LoraValue::Point(LoraPoint { x, y, z, srid }));
                     }
+                    "vector" => {
+                        return vector_from_json_map(&obj).map(LoraValue::Vector);
+                    }
                     _ => { /* fall through to generic map */ }
                 }
             }
@@ -451,6 +454,41 @@ fn require_iso<'a>(
     obj.get("iso")
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("{tag} value requires iso: string"))
+}
+
+fn vector_from_json_map(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<LoraVector, String> {
+    let dimension = obj
+        .get("dimension")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "vector.dimension must be an integer".to_string())?;
+    let coordinate_type_name = obj
+        .get("coordinateType")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "vector.coordinateType must be a string".to_string())?;
+    let coordinate_type = VectorCoordinateType::parse(coordinate_type_name)
+        .ok_or_else(|| format!("unknown vector coordinate type '{coordinate_type_name}'"))?;
+    let values = obj
+        .get("values")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "vector.values must be an array of numbers".to_string())?;
+    let mut raw = Vec::with_capacity(values.len());
+    for v in values {
+        match v {
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    raw.push(RawCoordinate::Int(i));
+                } else if let Some(f) = n.as_f64() {
+                    raw.push(RawCoordinate::Float(f));
+                } else {
+                    return Err("vector.values entries must be finite numbers".to_string());
+                }
+            }
+            _ => return Err("vector.values entries must be numbers".to_string()),
+        }
+    }
+    LoraVector::try_new(raw, dimension, coordinate_type).map_err(|e| e.to_string())
 }
 
 fn serialize_rows(columns: &[String], rows: &[Vec<LoraValue>]) -> serde_json::Value {
@@ -524,7 +562,49 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
             serde_json::json!({ "kind": "duration", "iso": d.to_string() })
         }
         LoraValue::Point(p) => point_to_json(p),
+        LoraValue::Vector(v) => vector_to_json(v),
     }
+}
+
+fn vector_to_json(v: &LoraVector) -> serde_json::Value {
+    let values: serde_json::Value = match &v.values {
+        VectorValues::Float64(vs) => serde_json::Value::Array(
+            vs.iter()
+                .map(|x| {
+                    serde_json::Number::from_f64(*x)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null)
+                })
+                .collect(),
+        ),
+        VectorValues::Float32(vs) => serde_json::Value::Array(
+            vs.iter()
+                .map(|x| {
+                    serde_json::Number::from_f64(*x as f64)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null)
+                })
+                .collect(),
+        ),
+        VectorValues::Integer64(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x)).collect())
+        }
+        VectorValues::Integer32(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x as i64)).collect())
+        }
+        VectorValues::Integer16(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x as i64)).collect())
+        }
+        VectorValues::Integer8(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x as i64)).collect())
+        }
+    };
+    serde_json::json!({
+        "kind": "vector",
+        "dimension": v.dimension,
+        "coordinateType": v.coordinate_type().as_str(),
+        "values": values,
+    })
 }
 
 fn point_to_json(p: &LoraPoint) -> serde_json::Value {
@@ -710,6 +790,172 @@ mod tests {
         assert_eq!(s, LoraStatus::InvalidParams as c_int);
         let e = e.unwrap();
         assert!(e.starts_with("INVALID_PARAMS: "), "got: {e}");
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_round_trip_via_json() {
+        let db = new_db();
+
+        // Construct a vector and read the resulting JSON.
+        let (s, r, _) = unsafe { exec(db, "RETURN vector([1,2,3], 3, INTEGER) AS v", None) };
+        assert_eq!(s, LoraStatus::Ok as c_int);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        let v = &payload["rows"][0]["v"];
+        assert_eq!(v["kind"], "vector");
+        assert_eq!(v["dimension"], 3);
+        assert_eq!(v["coordinateType"], "INTEGER");
+        assert_eq!(v["values"], serde_json::json!([1, 2, 3]));
+
+        // Pass a vector back in as a parameter and verify round-trip.
+        let params = r#"{"v":{"kind":"vector","dimension":3,"coordinateType":"FLOAT32","values":[0.1,0.2,0.3]}}"#;
+        let (s, r, _) = unsafe { exec(db, "RETURN $v AS v", Some(params)) };
+        assert_eq!(s, LoraStatus::Ok as c_int);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        let v = &payload["rows"][0]["v"];
+        assert_eq!(v["kind"], "vector");
+        assert_eq!(v["coordinateType"], "FLOAT32");
+
+        unsafe { lora_db_free(db) };
+    }
+
+    // ------------------------------------------------------------------
+    // Vector parameter validation
+    // ------------------------------------------------------------------
+
+    fn exec_params_err(db: *mut LoraDatabase, params_json: &str) -> String {
+        let (status, result, err) = unsafe { exec(db, "RETURN $v AS v", Some(params_json)) };
+        assert_eq!(
+            status,
+            LoraStatus::InvalidParams as c_int,
+            "result={result:?}"
+        );
+        assert!(result.is_none());
+        err.unwrap()
+    }
+
+    #[test]
+    fn vector_param_missing_dimension_errors() {
+        let db = new_db();
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","coordinateType":"FLOAT32","values":[1.0, 2.0]}}"#,
+        );
+        assert!(err.starts_with("INVALID_PARAMS:"), "got: {err}");
+        assert!(err.contains("dimension"), "got: {err}");
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_param_missing_values_errors() {
+        let db = new_db();
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","dimension":2,"coordinateType":"FLOAT32"}}"#,
+        );
+        assert!(err.contains("values"), "got: {err}");
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_param_unknown_coord_type_errors() {
+        let db = new_db();
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","dimension":2,"coordinateType":"BIGINT","values":[1,2]}}"#,
+        );
+        assert!(
+            err.contains("coordinate type") || err.contains("coordinateType"),
+            "got: {err}"
+        );
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_param_non_numeric_values_error() {
+        let db = new_db();
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","dimension":3,"coordinateType":"FLOAT32","values":[1.0,"oops",3.0]}}"#,
+        );
+        assert!(
+            err.contains("numeric") || err.contains("number"),
+            "got: {err}"
+        );
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_param_dimension_mismatch_errors() {
+        let db = new_db();
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","dimension":4,"coordinateType":"INTEGER","values":[1,2,3]}}"#,
+        );
+        assert!(err.contains("dimension"), "got: {err}");
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_param_int8_overflow_errors() {
+        let db = new_db();
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","dimension":1,"coordinateType":"INTEGER8","values":[999]}}"#,
+        );
+        assert!(
+            err.contains("range") || err.contains("INTEGER8"),
+            "got: {err}"
+        );
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_param_values_not_array_errors() {
+        let db = new_db();
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","dimension":3,"coordinateType":"FLOAT32","values":"[1,2,3]"}}"#,
+        );
+        assert!(err.contains("values"), "got: {err}");
+        unsafe { lora_db_free(db) };
+    }
+
+    // JSON literally allows NaN only as a non-standard extension; serde
+    // rejects it at the parser step. The closest we can drive from
+    // outside is a numeric value outside the FP range.
+    #[test]
+    fn vector_param_float32_overflow_errors() {
+        let db = new_db();
+        // f32::MAX * 10 — well above f32's range, still fits in f64.
+        let err = exec_params_err(
+            db,
+            r#"{"v":{"kind":"vector","dimension":1,"coordinateType":"FLOAT32","values":[1e100]}}"#,
+        );
+        assert!(
+            err.contains("range") || err.contains("FLOAT32"),
+            "got: {err}"
+        );
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn vector_json_shape_is_deterministic() {
+        // Every binding depends on this exact tagged shape — pin it down.
+        let db = new_db();
+        let (s, r, _) = unsafe { exec(db, "RETURN vector([1, 2, 3], 3, INTEGER16) AS v", None) };
+        assert_eq!(s, LoraStatus::Ok as c_int);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        let v = &payload["rows"][0]["v"];
+        assert_eq!(
+            v,
+            &serde_json::json!({
+                "kind": "vector",
+                "dimension": 3,
+                "coordinateType": "INTEGER16",
+                "values": [1, 2, 3],
+            })
+        );
         unsafe { lora_db_free(db) };
     }
 

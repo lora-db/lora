@@ -25,6 +25,8 @@ module LoraRuby
 
     TEMPORAL_KINDS = %w[date time localtime datetime localdatetime duration].freeze
 
+    VECTOR_COORD_TYPES = %w[FLOAT64 FLOAT32 INTEGER INTEGER32 INTEGER16 INTEGER8].freeze
+
     module_function
 
     # ------------------------------------------------------------------
@@ -39,6 +41,20 @@ module LoraRuby
     def datetime(iso)      = { "kind" => "datetime",      "iso" => iso }
     def localdatetime(iso) = { "kind" => "localdatetime", "iso" => iso }
     def duration(iso)      = { "kind" => "duration",      "iso" => iso }
+
+    # ------------------------------------------------------------------
+    # Vector constructor — returns the canonical tagged Hash that the
+    # engine accepts as a VECTOR parameter and emits on return.
+    # ------------------------------------------------------------------
+
+    def vector(values, dimension, coordinate_type)
+      {
+        "kind"           => "vector",
+        "dimension"      => dimension,
+        "coordinateType" => coordinate_type.to_s,
+        "values"         => values.dup,
+      }
+    end
 
     # ------------------------------------------------------------------
     # Spatial constructors — mirrors lora_python.cartesian / wgs84.
@@ -105,6 +121,7 @@ module LoraRuby
     def relationship?(v) = tagged?(v, "relationship")
     def path?(v)         = tagged?(v, "path")
     def point?(v)        = tagged?(v, "point")
+    def vector?(v)       = tagged?(v, "vector")
 
     def temporal?(v)
       return false unless v.is_a?(Hash)

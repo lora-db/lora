@@ -43,6 +43,7 @@ LoraValue = Union[
     "LoraLocalDateTime",
     "LoraDuration",
     "LoraPoint",
+    "LoraVector",
 ]
 
 LoraParam = Union[
@@ -60,6 +61,7 @@ LoraParam = Union[
     "LoraLocalDateTime",
     "LoraDuration",
     "LoraPoint",
+    "LoraVector",
 ]
 
 LoraParams = Mapping[str, LoraParam]
@@ -188,6 +190,23 @@ LoraPoint = Union[
 
 
 # ---------------------------------------------------------------------------
+# Vector
+# ---------------------------------------------------------------------------
+
+
+LoraVectorCoordinateType = Literal[
+    "FLOAT64", "FLOAT32", "INTEGER", "INTEGER32", "INTEGER16", "INTEGER8"
+]
+
+
+class LoraVector(TypedDict):
+    kind: Literal["vector"]
+    dimension: int
+    coordinateType: LoraVectorCoordinateType
+    values: List[float]
+
+
+# ---------------------------------------------------------------------------
 # Query result
 # ---------------------------------------------------------------------------
 
@@ -224,6 +243,20 @@ def localdatetime(iso: str) -> LoraLocalDateTime:
 
 def duration(iso: str) -> LoraDuration:
     return {"kind": "duration", "iso": iso}
+
+
+def vector(
+    values: List[float],
+    dimension: int,
+    coordinate_type: LoraVectorCoordinateType,
+) -> LoraVector:
+    """Build a LoraVector param/value in the canonical tagged shape."""
+    return {
+        "kind": "vector",
+        "dimension": dimension,
+        "coordinateType": coordinate_type,
+        "values": list(values),
+    }
 
 
 def cartesian(x: float, y: float) -> LoraCartesianPoint:
@@ -302,3 +335,8 @@ _TEMPORAL_KINDS = frozenset(
 
 def is_temporal(v: Any) -> bool:
     return isinstance(v, dict) and v.get("kind") in _TEMPORAL_KINDS
+
+
+def is_vector(v: Any) -> bool:
+    """Return True if ``v`` is a Lora VECTOR value."""
+    return _is_tagged(v, "vector")

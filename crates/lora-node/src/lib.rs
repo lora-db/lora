@@ -24,6 +24,7 @@ use lora_database::{
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
+    LoraVector, RawCoordinate, VectorCoordinateType,
 };
 
 const LORA_ERROR_CODE: &str = "LORA_ERROR";
@@ -229,7 +230,50 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
             serde_json::json!({ "kind": "duration", "iso": d.to_string() })
         }
         LoraValue::Point(p) => point_to_json(p),
+        LoraValue::Vector(v) => vector_to_json(v),
     }
+}
+
+/// Render a `LoraVector` into the canonical external tagged shape.
+fn vector_to_json(v: &LoraVector) -> serde_json::Value {
+    let values: serde_json::Value = match &v.values {
+        lora_store::VectorValues::Float64(vs) => serde_json::Value::Array(
+            vs.iter()
+                .map(|x| {
+                    serde_json::Number::from_f64(*x)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null)
+                })
+                .collect(),
+        ),
+        lora_store::VectorValues::Float32(vs) => serde_json::Value::Array(
+            vs.iter()
+                .map(|x| {
+                    serde_json::Number::from_f64(*x as f64)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null)
+                })
+                .collect(),
+        ),
+        lora_store::VectorValues::Integer64(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x)).collect())
+        }
+        lora_store::VectorValues::Integer32(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x as i64)).collect())
+        }
+        lora_store::VectorValues::Integer16(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x as i64)).collect())
+        }
+        lora_store::VectorValues::Integer8(vs) => {
+            serde_json::Value::Array(vs.iter().map(|x| serde_json::json!(*x as i64)).collect())
+        }
+    };
+    serde_json::json!({
+        "kind": "vector",
+        "dimension": v.dimension,
+        "coordinateType": v.coordinate_type().as_str(),
+        "values": values,
+    })
 }
 
 /// Render a `LoraPoint` into the canonical external point shape consumed
@@ -343,6 +387,10 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue> {
                         let z = obj.get("z").and_then(|v| v.as_f64());
                         return Ok(LoraValue::Point(LoraPoint { x, y, z, srid }));
                     }
+                    "vector" => {
+                        let v = vector_from_json_map(&obj).map_err(invalid_param)?;
+                        return Ok(LoraValue::Vector(v));
+                    }
                     _ => {}
                 }
             }
@@ -370,6 +418,46 @@ fn invalid_param(msg: impl Into<String>) -> NapiError {
         Status::InvalidArg,
         format!("{INVALID_PARAMS_CODE}: {}", msg.into()),
     )
+}
+
+/// Parse a tagged `{kind: "vector", dimension, coordinateType, values}`
+/// map into a `LoraVector`. Used by every binding that accepts a vector
+/// parameter — the validation rules are identical across bindings.
+pub(crate) fn vector_from_json_map(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> std::result::Result<LoraVector, String> {
+    let dimension = obj
+        .get("dimension")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "vector.dimension must be an integer".to_string())?;
+    let coordinate_type_name = obj
+        .get("coordinateType")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "vector.coordinateType must be a string".to_string())?;
+    let coordinate_type = VectorCoordinateType::parse(coordinate_type_name)
+        .ok_or_else(|| format!("unknown vector coordinate type '{coordinate_type_name}'"))?;
+    let values = obj
+        .get("values")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "vector.values must be an array of numbers".to_string())?;
+
+    let mut raw = Vec::with_capacity(values.len());
+    for v in values {
+        match v {
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    raw.push(RawCoordinate::Int(i));
+                } else if let Some(f) = n.as_f64() {
+                    raw.push(RawCoordinate::Float(f));
+                } else {
+                    return Err("vector.values entries must be finite numbers".to_string());
+                }
+            }
+            _ => return Err("vector.values entries must be numbers".to_string()),
+        }
+    }
+
+    LoraVector::try_new(raw, dimension, coordinate_type).map_err(|e| e.to_string())
 }
 
 fn format_error(err: &anyhow::Error) -> String {

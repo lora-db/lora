@@ -31,6 +31,7 @@ use lora_database::{
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
+    LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -247,7 +248,52 @@ fn lora_value_to_py<'py>(py: Python<'py>, value: &LoraValue) -> PyResult<Bound<'
         LoraValue::LocalDateTime(v) => tagged_iso(py, "localdatetime", v.to_string()),
         LoraValue::Duration(v) => tagged_iso(py, "duration", v.to_string()),
         LoraValue::Point(p) => point_to_py(py, p),
+        LoraValue::Vector(v) => vector_to_py(py, v),
     }
+}
+
+/// Convert a `LoraVector` to the canonical tagged Python dict shape.
+fn vector_to_py<'py>(py: Python<'py>, v: &LoraVector) -> PyResult<Bound<'py, PyAny>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("kind", "vector")?;
+    d.set_item("dimension", v.dimension as i64)?;
+    d.set_item("coordinateType", v.coordinate_type().as_str())?;
+
+    let values = PyList::empty_bound(py);
+    match &v.values {
+        VectorValues::Float64(vs) => {
+            for x in vs {
+                values.append(*x)?;
+            }
+        }
+        VectorValues::Float32(vs) => {
+            for x in vs {
+                values.append(*x as f64)?;
+            }
+        }
+        VectorValues::Integer64(vs) => {
+            for x in vs {
+                values.append(*x)?;
+            }
+        }
+        VectorValues::Integer32(vs) => {
+            for x in vs {
+                values.append(*x as i64)?;
+            }
+        }
+        VectorValues::Integer16(vs) => {
+            for x in vs {
+                values.append(*x as i64)?;
+            }
+        }
+        VectorValues::Integer8(vs) => {
+            for x in vs {
+                values.append(*x as i64)?;
+            }
+        }
+    }
+    d.set_item("values", values)?;
+    Ok(d.into_any())
 }
 
 fn tagged_iso<'py>(py: Python<'py>, kind: &str, iso: String) -> PyResult<Bound<'py, PyAny>> {
@@ -395,6 +441,9 @@ fn py_dict_to_cypher(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
                         .transpose()?;
                     return Ok(LoraValue::Point(LoraPoint { x, y, z, srid }));
                 }
+                "vector" => {
+                    return build_vector_from_dict(dict);
+                }
                 _ => { /* fall through to generic map */ }
             }
         }
@@ -421,6 +470,57 @@ fn parse_tagged(
         .extract::<String>()
         .map_err(|_| InvalidParamsError::new_err(format!("{tag}.iso must be str")))?;
     parse(&iso).map_err(|e| InvalidParamsError::new_err(format!("{tag}: {e}")))
+}
+
+fn build_vector_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
+    let dimension = dict
+        .get_item("dimension")?
+        .ok_or_else(|| InvalidParamsError::new_err("vector.dimension required"))?
+        .extract::<i64>()?;
+    let coordinate_type_name: String = dict
+        .get_item("coordinateType")?
+        .ok_or_else(|| InvalidParamsError::new_err("vector.coordinateType required"))?
+        .extract()?;
+    let coordinate_type = VectorCoordinateType::parse(&coordinate_type_name).ok_or_else(|| {
+        InvalidParamsError::new_err(format!(
+            "unknown vector coordinate type '{coordinate_type_name}'"
+        ))
+    })?;
+    let values_obj = dict
+        .get_item("values")?
+        .ok_or_else(|| InvalidParamsError::new_err("vector.values required"))?;
+    let values: Bound<'_, PyList> = values_obj
+        .downcast_into::<PyList>()
+        .map_err(|_| InvalidParamsError::new_err("vector.values must be a list"))?;
+
+    let mut raw = Vec::with_capacity(values.len());
+    for item in values.iter() {
+        // bool is a subclass of int in Python — reject it explicitly so
+        // `vector([True], 1, INTEGER)` doesn't silently become [1].
+        if item.downcast::<PyBool>().is_ok() {
+            return Err(InvalidParamsError::new_err(
+                "vector.values entries must be numeric",
+            ));
+        }
+        if let Ok(i) = item.extract::<i64>() {
+            raw.push(RawCoordinate::Int(i));
+        } else if let Ok(f) = item.extract::<f64>() {
+            if !f.is_finite() {
+                return Err(InvalidParamsError::new_err(
+                    "vector.values cannot be NaN or Infinity",
+                ));
+            }
+            raw.push(RawCoordinate::Float(f));
+        } else {
+            return Err(InvalidParamsError::new_err(
+                "vector.values entries must be numeric",
+            ));
+        }
+    }
+
+    let v = LoraVector::try_new(raw, dimension, coordinate_type)
+        .map_err(|e| InvalidParamsError::new_err(e.to_string()))?;
+    Ok(LoraValue::Vector(v))
 }
 
 // Make the PyValueError path discoverable for future extensions.

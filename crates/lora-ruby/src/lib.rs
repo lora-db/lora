@@ -28,7 +28,7 @@ use lora_database::{
 };
 use lora_store::{
     GraphStorage, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime,
-    LoraPoint, LoraTime,
+    LoraPoint, LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -301,7 +301,57 @@ fn lora_value_to_ruby(ruby: &Ruby, value: &LoraValue) -> Result<Value, MagnusErr
         LoraValue::LocalDateTime(v) => tagged_iso(ruby, "localdatetime", v.to_string()),
         LoraValue::Duration(v) => tagged_iso(ruby, "duration", v.to_string()),
         LoraValue::Point(p) => point_to_ruby(ruby, p),
+        LoraValue::Vector(v) => vector_to_ruby(ruby, v),
     }
+}
+
+fn vector_to_ruby(ruby: &Ruby, v: &LoraVector) -> Result<Value, MagnusError> {
+    let h = ruby.hash_new();
+    h.aset(ruby.str_new("kind"), ruby.str_new("vector"))?;
+    h.aset(
+        ruby.str_new("dimension"),
+        ruby.integer_from_i64(v.dimension as i64),
+    )?;
+    h.aset(
+        ruby.str_new("coordinateType"),
+        ruby.str_new(v.coordinate_type().as_str()),
+    )?;
+
+    let values = ruby.ary_new();
+    match &v.values {
+        VectorValues::Float64(vs) => {
+            for x in vs {
+                values.push(ruby.float_from_f64(*x))?;
+            }
+        }
+        VectorValues::Float32(vs) => {
+            for x in vs {
+                values.push(ruby.float_from_f64(*x as f64))?;
+            }
+        }
+        VectorValues::Integer64(vs) => {
+            for x in vs {
+                values.push(ruby.integer_from_i64(*x))?;
+            }
+        }
+        VectorValues::Integer32(vs) => {
+            for x in vs {
+                values.push(ruby.integer_from_i64(*x as i64))?;
+            }
+        }
+        VectorValues::Integer16(vs) => {
+            for x in vs {
+                values.push(ruby.integer_from_i64(*x as i64))?;
+            }
+        }
+        VectorValues::Integer8(vs) => {
+            for x in vs {
+                values.push(ruby.integer_from_i64(*x as i64))?;
+            }
+        }
+    }
+    h.aset(ruby.str_new("values"), values)?;
+    Ok(h.as_value())
 }
 
 fn tagged_iso(ruby: &Ruby, kind: &str, iso: String) -> Result<Value, MagnusError> {
@@ -484,6 +534,7 @@ fn ruby_hash_to_cypher(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusErro
                 });
             }
             "point" => return build_point(ruby, hash),
+            "vector" => return build_vector(ruby, hash),
             _ => { /* fall through to plain-map handling */ }
         }
     }
@@ -532,6 +583,65 @@ fn build_point(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
     let y = read_f64(ruby, hash, "y")?.ok_or_else(|| invalid_params(ruby, "point.y required"))?;
     let z = read_f64(ruby, hash, "z")?;
     Ok(LoraValue::Point(LoraPoint { x, y, z, srid }))
+}
+
+fn build_vector(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
+    let dimension = read_i64(ruby, hash, "dimension")?
+        .ok_or_else(|| invalid_params(ruby, "vector.dimension required"))?;
+    let coordinate_type_name = read_string(ruby, hash, "coordinateType")?
+        .ok_or_else(|| invalid_params(ruby, "vector.coordinateType required"))?;
+    let coordinate_type = VectorCoordinateType::parse(&coordinate_type_name).ok_or_else(|| {
+        invalid_params(
+            ruby,
+            format!("unknown vector coordinate type '{coordinate_type_name}'"),
+        )
+    })?;
+    let values_value = hash_get_either(ruby, hash, "values")
+        .ok_or_else(|| invalid_params(ruby, "vector.values required"))?;
+    let arr = RArray::try_convert(values_value)
+        .map_err(|_| invalid_params(ruby, "vector.values must be an Array"))?;
+
+    let mut raw = Vec::with_capacity(arr.len());
+    for item in arr.into_iter() {
+        if item.is_kind_of(ruby.class_true_class()) || item.is_kind_of(ruby.class_false_class()) {
+            return Err(invalid_params(
+                ruby,
+                "vector.values entries must be numeric",
+            ));
+        }
+        if let Ok(f) = Float::try_convert(item) {
+            let v = f.to_f64();
+            if !v.is_finite() {
+                return Err(invalid_params(
+                    ruby,
+                    "vector.values cannot be NaN or Infinity",
+                ));
+            }
+            raw.push(RawCoordinate::Float(v));
+            continue;
+        }
+        if let Ok(i) = Integer::try_convert(item) {
+            raw.push(RawCoordinate::Int(i.to_i64()?));
+            continue;
+        }
+        return Err(invalid_params(
+            ruby,
+            "vector.values entries must be numeric",
+        ));
+    }
+
+    let v = LoraVector::try_new(raw, dimension, coordinate_type)
+        .map_err(|e| invalid_params(ruby, e.to_string()))?;
+    Ok(LoraValue::Vector(v))
+}
+
+fn read_i64(ruby: &Ruby, hash: RHash, key: &str) -> Result<Option<i64>, MagnusError> {
+    let Some(v) = hash_get_either(ruby, hash, key) else {
+        return Ok(None);
+    };
+    Ok(Some(Integer::try_convert(v)?.to_i64().map_err(|_| {
+        invalid_params(ruby, format!("{key} out of i64 range"))
+    })?))
 }
 
 // ---- Hash accessors that accept either string or symbol keys ------------

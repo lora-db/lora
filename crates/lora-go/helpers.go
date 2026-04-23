@@ -53,6 +53,38 @@ func Duration(iso string) map[string]any {
 }
 
 // ---------------------------------------------------------------------------
+// Vector
+// ---------------------------------------------------------------------------
+
+// Canonical coordinate-type tags emitted by the engine. The `vector()`
+// constructor in Cypher also accepts aliases (FLOAT, INT, SIGNED INTEGER,
+// …) but every VECTOR returned to Go surfaces one of these six strings.
+const (
+	VectorCoordTypeFloat64   = "FLOAT64"
+	VectorCoordTypeFloat32   = "FLOAT32"
+	VectorCoordTypeInteger   = "INTEGER"
+	VectorCoordTypeInteger32 = "INTEGER32"
+	VectorCoordTypeInteger16 = "INTEGER16"
+	VectorCoordTypeInteger8  = "INTEGER8"
+)
+
+// Vector builds a VECTOR parameter value. Values may be `[]float64`,
+// `[]float32`, `[]int64`, `[]int`, `[]int32`, `[]int16`, `[]int8`, or
+// a pre-built `[]any` of numbers — whatever fits the call site. The
+// JSON bridge accepts any numeric-looking list element.
+func Vector(values []any, dimension int, coordinateType string) map[string]any {
+	return map[string]any{
+		"kind":           "vector",
+		"dimension":      dimension,
+		"coordinateType": coordinateType,
+		"values":         values,
+	}
+}
+
+// IsVector reports whether v is a VECTOR value.
+func IsVector(v any) bool { return kindOf(v) == "vector" }
+
+// ---------------------------------------------------------------------------
 // Spatial constructors
 // ---------------------------------------------------------------------------
 

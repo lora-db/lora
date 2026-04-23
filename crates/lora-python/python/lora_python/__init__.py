@@ -63,6 +63,8 @@ from .types import (
     LoraCartesianPoint3D,
     LoraWgs84Point,
     LoraWgs84Point3D,
+    LoraVector,
+    LoraVectorCoordinateType,
     date,
     time,
     localtime,
@@ -73,11 +75,13 @@ from .types import (
     cartesian_3d,
     wgs84,
     wgs84_3d,
+    vector,
     is_node,
     is_relationship,
     is_path,
     is_point,
     is_temporal,
+    is_vector,
 )
 
 __all__ = [
@@ -107,6 +111,8 @@ __all__ = [
     "LoraCartesianPoint3D",
     "LoraWgs84Point",
     "LoraWgs84Point3D",
+    "LoraVector",
+    "LoraVectorCoordinateType",
     "date",
     "time",
     "localtime",
@@ -117,9 +123,11 @@ __all__ = [
     "cartesian_3d",
     "wgs84",
     "wgs84_3d",
+    "vector",
     "is_node",
     "is_relationship",
     "is_path",
     "is_point",
     "is_temporal",
+    "is_vector",
 ]

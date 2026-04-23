@@ -32,7 +32,8 @@ module LoraRuby
   %i[
     date time localtime datetime localdatetime duration
     cartesian cartesian_3d wgs84 wgs84_3d
-    node? relationship? path? point? temporal?
+    vector
+    node? relationship? path? point? temporal? vector?
   ].each do |m|
     define_singleton_method(m) do |*args, **kwargs|
       if kwargs.empty?

@@ -35,7 +35,8 @@ export type LoraParam =
   | LoraDateTime
   | LoraLocalDateTime
   | LoraDuration
-  | LoraPoint;
+  | LoraPoint
+  | LoraVector;
 
 export type LoraParams = Record<string, LoraParam>;
 
@@ -213,6 +214,39 @@ export type LoraPoint =
   | LoraWgs84Point3D;
 
 // ---------------------------------------------------------------------------
+// Vector
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical coordinate type emitted for every VECTOR value returned by
+ * the engine. Aliases (`FLOAT`, `INT`, `SIGNED INTEGER`, …) are accepted
+ * by the `vector()` constructor on input but normalised to one of these
+ * six tags on the wire.
+ */
+export type LoraVectorCoordinateType =
+  | "FLOAT64"
+  | "FLOAT32"
+  | "INTEGER"
+  | "INTEGER32"
+  | "INTEGER16"
+  | "INTEGER8";
+
+/**
+ * Tagged VECTOR value.
+ *
+ * `values.length` always equals `dimension`. Values are rendered as JS
+ * numbers regardless of the underlying coordinate type — precision for
+ * small-integer vectors is preserved because INTEGER* types always fit
+ * in an `f64` mantissa.
+ */
+export interface LoraVector {
+  kind: "vector";
+  dimension: number;
+  coordinateType: LoraVectorCoordinateType;
+  values: number[];
+}
+
+// ---------------------------------------------------------------------------
 // Value union
 // ---------------------------------------------------------------------------
 
@@ -232,7 +266,8 @@ export type LoraValue =
   | LoraDateTime
   | LoraLocalDateTime
   | LoraDuration
-  | LoraPoint;
+  | LoraPoint
+  | LoraVector;
 
 export type QueryRow<T extends Record<string, LoraValue> = Record<string, LoraValue>> = T;
 
@@ -263,6 +298,10 @@ export function isPoint(v: LoraValue): v is LoraPoint {
   return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "point";
 }
 
+export function isVector(v: LoraValue): v is LoraVector {
+  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "vector";
+}
+
 export function isTemporal(v: LoraValue): v is LoraTemporal {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const kind = (v as { kind?: unknown }).kind;
@@ -286,6 +325,17 @@ export const localtime = (iso: string): LoraLocalTime => ({ kind: "localtime", i
 export const datetime = (iso: string): LoraDateTime => ({ kind: "datetime", iso });
 export const localdatetime = (iso: string): LoraLocalDateTime => ({ kind: "localdatetime", iso });
 export const duration = (iso: string): LoraDuration => ({ kind: "duration", iso });
+
+/**
+ * Build a `LoraVector` parameter value. Mirrors the on-wire tagged
+ * shape the engine emits, so round-trips (receive from a query, pass
+ * back into the next query) work without any conversion.
+ */
+export const vector = (
+  values: number[],
+  dimension: number,
+  coordinateType: LoraVectorCoordinateType,
+): LoraVector => ({ kind: "vector", dimension, coordinateType, values });
 
 export const cartesian = (x: number, y: number): LoraCartesianPoint => ({
   kind: "point",
