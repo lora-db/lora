@@ -2,6 +2,7 @@ use crate::spatial::LoraPoint;
 use crate::temporal::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraTime,
 };
+use crate::vector::LoraVector;
 use lora_ast::Direction;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +25,7 @@ pub enum PropertyValue {
     LocalDateTime(LoraLocalDateTime),
     Duration(LoraDuration),
     Point(LoraPoint),
+    Vector(LoraVector),
 }
 
 pub type Properties = BTreeMap<String, PropertyValue>;

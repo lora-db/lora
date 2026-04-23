@@ -110,5 +110,6 @@ pub fn value_kind(value: &LoraValue) -> String {
         LoraValue::LocalTime(_) => "localtime".into(),
         LoraValue::Duration(_) => "duration".into(),
         LoraValue::Point(_) => "point".into(),
+        LoraValue::Vector(_) => "vector".into(),
     }
 }

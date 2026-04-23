@@ -1,7 +1,7 @@
 use lora_analyzer::symbols::VarId;
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    NodeId, PropertyValue, RelationshipId,
+    LoraVector, NodeId, PropertyValue, RelationshipId, VectorValues,
 };
 
 /// A materialised path: alternating node/relationship IDs.
@@ -34,6 +34,7 @@ pub enum LoraValue {
     LocalDateTime(LoraLocalDateTime),
     Duration(LoraDuration),
     Point(LoraPoint),
+    Vector(LoraVector),
 }
 
 impl LoraValue {
@@ -129,8 +130,40 @@ impl Serialize for LoraValue {
                 }
                 m.end()
             }
+            LoraValue::Vector(v) => serialize_vector(serializer, v),
         }
     }
+}
+
+fn serialize_vector<S: Serializer>(serializer: S, v: &LoraVector) -> Result<S::Ok, S::Error> {
+    let mut m = serializer.serialize_map(Some(4))?;
+    m.serialize_entry("kind", "vector")?;
+    m.serialize_entry("dimension", &v.dimension)?;
+    m.serialize_entry("coordinateType", v.coordinate_type().as_str())?;
+    // Render values using the narrowest numeric type that fits the
+    // storage so downstream consumers (serde_json in particular) can
+    // surface integers vs. floats without losing information.
+    match &v.values {
+        VectorValues::Float64(values) => m.serialize_entry("values", values)?,
+        VectorValues::Float32(values) => {
+            let widened: Vec<f64> = values.iter().map(|x| *x as f64).collect();
+            m.serialize_entry("values", &widened)?;
+        }
+        VectorValues::Integer64(values) => m.serialize_entry("values", values)?,
+        VectorValues::Integer32(values) => {
+            let widened: Vec<i64> = values.iter().map(|x| *x as i64).collect();
+            m.serialize_entry("values", &widened)?;
+        }
+        VectorValues::Integer16(values) => {
+            let widened: Vec<i64> = values.iter().map(|x| *x as i64).collect();
+            m.serialize_entry("values", &widened)?;
+        }
+        VectorValues::Integer8(values) => {
+            let widened: Vec<i64> = values.iter().map(|x| *x as i64).collect();
+            m.serialize_entry("values", &widened)?;
+        }
+    }
+    m.end()
 }
 
 impl From<PropertyValue> for LoraValue {
@@ -156,6 +189,7 @@ impl From<PropertyValue> for LoraValue {
             PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(dt),
             PropertyValue::Duration(dur) => LoraValue::Duration(dur),
             PropertyValue::Point(p) => LoraValue::Point(p),
+            PropertyValue::Vector(v) => LoraValue::Vector(v),
         }
     }
 }
@@ -186,6 +220,7 @@ impl From<&PropertyValue> for LoraValue {
             PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(dt.clone()),
             PropertyValue::Duration(dur) => LoraValue::Duration(dur.clone()),
             PropertyValue::Point(p) => LoraValue::Point(p.clone()),
+            PropertyValue::Vector(v) => LoraValue::Vector(v.clone()),
         }
     }
 }
@@ -216,8 +251,73 @@ impl From<LoraValue> for PropertyValue {
             LoraValue::LocalDateTime(dt) => PropertyValue::LocalDateTime(dt),
             LoraValue::Duration(dur) => PropertyValue::Duration(dur),
             LoraValue::Point(p) => PropertyValue::Point(p),
+            LoraValue::Vector(v) => PropertyValue::Vector(v),
         }
     }
+}
+
+/// Errors that can arise when converting a `LoraValue` into a
+/// `PropertyValue` for storage on a node or relationship.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyConversionError {
+    /// A list entry contained a VECTOR value. Vectors are first-class
+    /// properties themselves but they cannot be nested inside lists.
+    NestedVectorInList,
+    /// Produced when something that cannot appear on disk (e.g. a `Path`
+    /// value captured by mistake) is asked to be converted — surfaced so
+    /// callers can reject it instead of silently stringifying.
+    #[allow(dead_code)]
+    UnsupportedKind(&'static str),
+}
+
+impl std::fmt::Display for PropertyConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropertyConversionError::NestedVectorInList => {
+                write!(f, "lists stored as properties cannot contain VECTOR values")
+            }
+            PropertyConversionError::UnsupportedKind(kind) => {
+                write!(f, "cannot store {kind} as a property")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PropertyConversionError {}
+
+/// Fallible conversion used on every write path
+/// (`set_property_from_expr`, `overwrite_entity_target`,
+/// `mutate_entity_target`, `eval_properties_expr`, plus CREATE /
+/// MERGE). Rejects VECTOR values nested inside lists at any depth —
+/// everything else falls through to the infallible `From`
+/// implementation above. A top-level VECTOR property is always fine;
+/// only LISTs that directly contain a VECTOR entry are rejected.
+pub fn lora_value_to_property(value: LoraValue) -> Result<PropertyValue, PropertyConversionError> {
+    /// Visit every nested value and, whenever we cross a `List`, flag the
+    /// `Vector` entries it directly contains. We still recurse through
+    /// `Map` and other `List` values so a vector buried under
+    /// `{inner: [vector(...)]}` is caught too.
+    fn visit(value: &LoraValue, inside_list: bool) -> Result<(), PropertyConversionError> {
+        match value {
+            LoraValue::Vector(_) if inside_list => Err(PropertyConversionError::NestedVectorInList),
+            LoraValue::List(items) => {
+                for item in items {
+                    visit(item, true)?;
+                }
+                Ok(())
+            }
+            LoraValue::Map(m) => {
+                for v in m.values() {
+                    visit(v, inside_list)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    visit(&value, false)?;
+    Ok(PropertyValue::from(value))
 }
 
 #[derive(Debug, Clone, PartialEq)]
