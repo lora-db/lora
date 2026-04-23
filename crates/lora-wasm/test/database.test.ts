@@ -244,3 +244,78 @@ describe("Database — errors", () => {
     ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "INVALID_PARAMS");
   });
 });
+
+describe("Database — vector values (wasm)", () => {
+  it("returns a vector value and accepts one as a parameter", async () => {
+    const db = await createDatabase();
+    const { vector, isVector } = await import("../ts/types.js");
+    const { rows } = await db.execute<{ v: LoraValue }>(
+      "RETURN vector([1,2,3], 3, FLOAT32) AS v",
+    );
+    const v = rows[0]!.v;
+    expect(isVector(v)).toBe(true);
+    if (!isVector(v)) throw new Error("expected vector");
+    expect(v.dimension).toBe(3);
+    expect(v.coordinateType).toBe("FLOAT32");
+
+    const param = vector([0.1, 0.2, 0.3], 3, "FLOAT32");
+    const { rows: rows2 } = await db.execute<{ v: LoraValue }>(
+      "RETURN $v AS v",
+      { v: param },
+    );
+    const v2 = rows2[0]!.v;
+    expect(isVector(v2)).toBe(true);
+  });
+
+  it("uses a vector() parameter inside vector.similarity.cosine (wasm)", async () => {
+    const db = await createDatabase();
+    const { vector } = await import("../ts/types.js");
+    const query = vector([1.0, 0.0, 0.0], 3, "FLOAT32");
+    const { rows } = await db.execute<{ s: number }>(
+      "RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+      { q: query },
+    );
+    expect(Math.abs((rows[0]!.s as number) - 1.0)).toBeLessThan(1e-6);
+  });
+
+  it("stores a vector parameter as a node property (wasm)", async () => {
+    const db = await createDatabase();
+    const { vector, isVector } = await import("../ts/types.js");
+    const param = vector([1, 2, 3], 3, "INTEGER8");
+    await db.execute("CREATE (:Doc {id: 1, embedding: $e})", { e: param });
+    const { rows } = await db.execute<{ e: LoraValue }>(
+      "MATCH (d:Doc) RETURN d.embedding AS e",
+    );
+    const stored = rows[0]!.e;
+    expect(isVector(stored)).toBe(true);
+    if (!isVector(stored)) throw new Error("expected vector");
+    expect(stored.coordinateType).toBe("INTEGER8");
+    expect(stored.values).toEqual([1, 2, 3]);
+  });
+
+  it("rejects a malformed vector parameter (wasm)", async () => {
+    const db = await createDatabase();
+    await expect(
+      db.execute("RETURN $v AS v", {
+        v: {
+          kind: "vector",
+          dimension: 2,
+          coordinateType: "FLOAT32",
+          values: [1.0, "oops"],
+        },
+      }),
+    ).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "INVALID_PARAMS",
+    );
+  });
+
+  it("isVector returns false for non-vector values (wasm)", async () => {
+    const { isVector } = await import("../ts/types.js");
+    expect(isVector(null)).toBe(false);
+    expect(isVector([1, 2, 3])).toBe(false);
+    expect(isVector({})).toBe(false);
+    expect(isVector({ kind: "node", id: 1 })).toBe(false);
+    expect(isVector(42)).toBe(false);
+    expect(isVector("vector")).toBe(false);
+  });
+});

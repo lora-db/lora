@@ -219,3 +219,99 @@ def test_repr_includes_counts() -> None:
     db = Database.create()
     db.execute("CREATE (:X), (:Y)-[:R]->(:Z)")
     assert repr(db) == "<lora_python.Database nodes=3 relationships=1>"
+
+
+def test_vector_return_has_tagged_shape() -> None:
+    from lora_python import is_vector
+
+    db = Database.create()
+    r = db.execute("RETURN vector([1, 2, 3], 3, INTEGER) AS v")
+    v = r["rows"][0]["v"]
+    assert is_vector(v)
+    assert v["dimension"] == 3
+    assert v["coordinateType"] == "INTEGER"
+    assert v["values"] == [1, 2, 3]
+
+
+def test_vector_parameter_round_trip() -> None:
+    from lora_python import is_vector, vector
+
+    db = Database.create()
+    r = db.execute(
+        "RETURN $v AS v",
+        {"v": vector([0.1, 0.2, 0.3], 3, "FLOAT32")},
+    )
+    v = r["rows"][0]["v"]
+    assert is_vector(v)
+    assert v["coordinateType"] == "FLOAT32"
+    assert v["dimension"] == 3
+
+
+def test_vector_parameter_used_in_similarity_function() -> None:
+    from lora_python import vector
+
+    db = Database.create()
+    query = vector([1.0, 0.0, 0.0], 3, "FLOAT32")
+    r = db.execute(
+        "RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+        {"q": query},
+    )
+    assert abs(r["rows"][0]["s"] - 1.0) < 1e-6
+
+
+def test_vector_parameter_stored_as_node_property() -> None:
+    from lora_python import is_vector, vector
+
+    db = Database.create()
+    db.execute(
+        "CREATE (:Doc {id: 1, embedding: $e})",
+        {"e": vector([1, 2, 3], 3, "INTEGER8")},
+    )
+    r = db.execute("MATCH (d:Doc) RETURN d.embedding AS e")
+    stored = r["rows"][0]["e"]
+    assert is_vector(stored)
+    assert stored["coordinateType"] == "INTEGER8"
+    assert stored["values"] == [1, 2, 3]
+
+
+def test_malformed_vector_param_raises_invalid_params() -> None:
+    db = Database.create()
+    with pytest.raises(InvalidParamsError):
+        db.execute(
+            "RETURN $v AS v",
+            {
+                "v": {
+                    "kind": "vector",
+                    "dimension": 2,
+                    "coordinateType": "FLOAT32",
+                    "values": [1.0, "oops"],
+                }
+            },
+        )
+
+
+def test_vector_param_with_unknown_coord_type_raises_invalid_params() -> None:
+    db = Database.create()
+    with pytest.raises(InvalidParamsError):
+        db.execute(
+            "RETURN $v AS v",
+            {
+                "v": {
+                    "kind": "vector",
+                    "dimension": 2,
+                    "coordinateType": "BIGINT",
+                    "values": [1, 2],
+                }
+            },
+        )
+
+
+def test_is_vector_returns_false_for_non_vectors() -> None:
+    from lora_python import is_vector
+
+    assert is_vector(None) is False
+    assert is_vector([1, 2, 3]) is False
+    assert is_vector({}) is False
+    assert is_vector({"kind": "node", "id": 1}) is False
+    assert is_vector(42) is False
+    assert is_vector("vector") is False

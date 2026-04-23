@@ -482,6 +482,158 @@ func errTestf(format string, args ...any) error {
 	return fmt.Errorf(format, args...)
 }
 
+// ---------------------------------------------------------------------------
+// Vector
+// ---------------------------------------------------------------------------
+
+func TestVectorReturnHasTaggedShape(t *testing.T) {
+	db := newDB(t)
+	r := mustExec(t, db, "RETURN vector([1,2,3], 3, INTEGER) AS v", nil)
+	v, ok := rowAt(t, r, 0)["v"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected vector map, got %T", rowAt(t, r, 0)["v"])
+	}
+	if !lora.IsVector(v) {
+		t.Fatalf("IsVector returned false")
+	}
+	dim := v["dimension"]
+	if dim != int64(3) && dim != float64(3) {
+		t.Fatalf("dimension = %v", dim)
+	}
+	if v["coordinateType"] != "INTEGER" {
+		t.Fatalf("coordinateType = %v", v["coordinateType"])
+	}
+}
+
+func TestVectorParameterRoundTrip(t *testing.T) {
+	db := newDB(t)
+	param := lora.Vector(
+		[]any{0.1, 0.2, 0.3},
+		3,
+		lora.VectorCoordTypeFloat32,
+	)
+	r := mustExec(t, db, "RETURN $v AS v", lora.Params{"v": param})
+	v, ok := rowAt(t, r, 0)["v"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected vector map, got %T", rowAt(t, r, 0)["v"])
+	}
+	if v["coordinateType"] != "FLOAT32" {
+		t.Fatalf("coordinateType = %v", v["coordinateType"])
+	}
+}
+
+// Vector() also works with a slice literal built from typed numbers (the
+// JSON bridge coerces any numeric-looking entry). Documents the public
+// API shape: only `[]any` is accepted today — typed slices must be
+// converted first.
+func TestVectorParameterAcceptsMixedNumericEntries(t *testing.T) {
+	db := newDB(t)
+	// float64, int64, and int32 all work because each encodes to a JSON
+	// number.
+	param := lora.Vector(
+		[]any{float64(1.5), int64(2), int32(3)},
+		3,
+		lora.VectorCoordTypeFloat64,
+	)
+	r := mustExec(t, db, "RETURN $v AS v", lora.Params{"v": param})
+	v := rowAt(t, r, 0)["v"].(map[string]any)
+	if v["coordinateType"] != "FLOAT64" {
+		t.Fatalf("coordinateType = %v", v["coordinateType"])
+	}
+}
+
+// A vector parameter flows into Cypher's vector.similarity.cosine and
+// produces the expected similarity score.
+func TestVectorParameterInSimilarityFunction(t *testing.T) {
+	db := newDB(t)
+	q := lora.Vector(
+		[]any{1.0, 0.0, 0.0},
+		3,
+		lora.VectorCoordTypeFloat32,
+	)
+	r := mustExec(t,
+		db,
+		"RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+		lora.Params{"q": q},
+	)
+	s := rowAt(t, r, 0)["s"]
+	if !approx(s, 1.0) {
+		t.Fatalf("cosine similarity = %v", s)
+	}
+}
+
+// A malformed vector param (string value instead of number) must return
+// the engine's InvalidParams code, matching every other binding.
+func TestMalformedVectorParameterReturnsError(t *testing.T) {
+	db := newDB(t)
+	bad := map[string]any{
+		"kind":           "vector",
+		"dimension":      2,
+		"coordinateType": "FLOAT32",
+		"values":         []any{1.0, "oops"},
+	}
+	_, err := db.Execute("RETURN $v AS v", lora.Params{"v": bad})
+	if err == nil {
+		t.Fatal("expected an error for malformed vector param")
+	}
+	var loraErr *lora.LoraError
+	if !errors.As(err, &loraErr) {
+		t.Fatalf("expected *lora.LoraError, got %T: %v", err, err)
+	}
+	if loraErr.Code != lora.CodeInvalidParams {
+		t.Fatalf("code = %v, want %v", loraErr.Code, lora.CodeInvalidParams)
+	}
+}
+
+// Missing `dimension` is also InvalidParams — guards the exact tag
+// shape clients expect.
+func TestMalformedVectorMissingDimensionReturnsError(t *testing.T) {
+	db := newDB(t)
+	bad := map[string]any{
+		"kind":           "vector",
+		"coordinateType": "FLOAT32",
+		"values":         []any{1.0, 2.0},
+	}
+	_, err := db.Execute("RETURN $v AS v", lora.Params{"v": bad})
+	if err == nil {
+		t.Fatal("expected an error for missing dimension")
+	}
+	var loraErr *lora.LoraError
+	if !errors.As(err, &loraErr) {
+		t.Fatalf("expected *lora.LoraError, got %T: %v", err, err)
+	}
+	if loraErr.Code != lora.CodeInvalidParams {
+		t.Fatalf("code = %v", loraErr.Code)
+	}
+}
+
+// IsVector must not accept plain maps, nil, or other tagged values.
+func TestIsVectorOnlyAcceptsVectorMaps(t *testing.T) {
+	cases := []any{
+		nil,
+		[]any{1, 2, 3},
+		map[string]any{},
+		map[string]any{"kind": "node", "id": 1},
+		42,
+		"vector",
+	}
+	for _, v := range cases {
+		if lora.IsVector(v) {
+			t.Errorf("IsVector(%v) should be false", v)
+		}
+	}
+	// Positive control.
+	good := map[string]any{
+		"kind":           "vector",
+		"dimension":      1,
+		"coordinateType": "INTEGER",
+		"values":         []any{1},
+	}
+	if !lora.IsVector(good) {
+		t.Errorf("IsVector on tagged vector map returned false")
+	}
+}
+
 // approx returns true when the two numbers are within 1e-9 of each
 // other. Used for comparing decoded JSON floats to constants.
 func approx(v any, want float64) bool {

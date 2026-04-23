@@ -72,4 +72,74 @@ class TestParams < Minitest::Test
       @db.execute("RETURN $x AS x", { x: Object.new })
     end
   end
+
+  def test_vector_return_has_tagged_shape
+    r = @db.execute("RETURN vector([1,2,3], 3, INTEGER) AS v")
+    v = r["rows"][0]["v"]
+    assert LoraRuby.vector?(v)
+    assert_equal 3, v["dimension"]
+    assert_equal "INTEGER", v["coordinateType"]
+    assert_equal [1, 2, 3], v["values"]
+  end
+
+  def test_vector_parameter_round_trip
+    vec = LoraRuby.vector([0.1, 0.2, 0.3], 3, "FLOAT32")
+    r = @db.execute("RETURN $v AS v", { v: vec })
+    v = r["rows"][0]["v"]
+    assert LoraRuby.vector?(v)
+    assert_equal "FLOAT32", v["coordinateType"]
+    assert_equal 3, v["dimension"]
+  end
+
+  def test_vector_parameter_in_similarity_function
+    q = LoraRuby.vector([1.0, 0.0, 0.0], 3, "FLOAT32")
+    r = @db.execute(
+      "RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+      { q: q },
+    )
+    assert_in_delta 1.0, r["rows"][0]["s"], 1e-6
+  end
+
+  def test_vector_parameter_stored_as_node_property
+    vec = LoraRuby.vector([1, 2, 3], 3, "INTEGER8")
+    @db.execute("CREATE (:Doc {id: 1, embedding: $e})", { e: vec })
+    r = @db.execute("MATCH (d:Doc) RETURN d.embedding AS e")
+    stored = r["rows"][0]["e"]
+    assert LoraRuby.vector?(stored)
+    assert_equal "INTEGER8", stored["coordinateType"]
+    assert_equal [1, 2, 3], stored["values"]
+  end
+
+  def test_malformed_vector_param_raises_invalid_params
+    bad = {
+      "kind" => "vector",
+      "dimension" => 2,
+      "coordinateType" => "FLOAT32",
+      "values" => [1.0, "oops"],
+    }
+    assert_raises(LoraRuby::InvalidParamsError) do
+      @db.execute("RETURN $v AS v", { v: bad })
+    end
+  end
+
+  def test_vector_param_unknown_coord_type_raises_invalid_params
+    bad = {
+      "kind" => "vector",
+      "dimension" => 2,
+      "coordinateType" => "BIGINT",
+      "values" => [1, 2],
+    }
+    assert_raises(LoraRuby::InvalidParamsError) do
+      @db.execute("RETURN $v AS v", { v: bad })
+    end
+  end
+
+  def test_vector_predicate_rejects_non_vectors
+    refute LoraRuby.vector?(nil)
+    refute LoraRuby.vector?([1, 2, 3])
+    refute LoraRuby.vector?({})
+    refute LoraRuby.vector?({ "kind" => "node", "id" => 1 })
+    refute LoraRuby.vector?(42)
+    refute LoraRuby.vector?("vector")
+  end
 end
