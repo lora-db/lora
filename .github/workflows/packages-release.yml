@@ -684,6 +684,14 @@ jobs:
           platform: ${{ matrix.platform }}
           ruby-versions: "3.1,3.2,3.3"
           working-directory: crates/lora-ruby
+          # rb-sys-dock does not forward LANG/LC_ALL from the host, so
+          # the container defaults to US-ASCII. `cargo metadata` emits
+          # UTF-8 (our Cargo.toml comments/descriptions contain em-dash
+          # and other multibyte chars); json 2.19's strict String#encode
+          # then raises Encoding::InvalidByteSequenceError during
+          # `bundle exec rake native:...`. Export a UTF-8 locale before
+          # the rake invocation so the JSON parse succeeds.
+          pre-script: "export LANG=C.UTF-8 LC_ALL=C.UTF-8"
 
       - name: Show built gem
         run: ls -la pkg
