@@ -19,9 +19,9 @@
     "graph",
     "cypher",
     "database",
+    "embedded",
     "wasm",
-    "webassembly",
-    "neo4j"
+    "webassembly"
   ],
   "type": "module",
   "main": "dist/index.js",

@@ -25,9 +25,9 @@ It is:
 
 It is **not**:
 
-- A drop-in replacement for Neo4j. LoraDB speaks Cypher, but a
-  scoped subset — see [Limitations](./limitations) for the exact
-  shape.
+- A drop-in replacement for other graph databases. LoraDB speaks a
+  Cypher-compatible query language, but a scoped subset — see
+  [Limitations](./limitations) for the exact shape.
 - A product suite. It's a crate you embed, not a service you operate.
 - A durable, clustered database tier — see
   [the engine's boundaries](#the-engines-boundaries) below for the
@@ -68,8 +68,8 @@ streams — done in memory, alongside the code that produces the events.
 ### Notebooks, CLIs, tests, research tooling
 
 A Cypher-capable graph you can open in one line of code. No Docker, no
-auth, no network hop. Useful any time reaching for Neo4j or Memgraph
-would be disproportionate to the task.
+auth, no network hop. Useful any time reaching for a full graph
+database service would be disproportionate to the task.
 
 ## Why it fits modern workloads
 

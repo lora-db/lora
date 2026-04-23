@@ -19,9 +19,9 @@
     "graph",
     "cypher",
     "database",
+    "embedded",
     "napi",
-    "n-api",
-    "neo4j"
+    "n-api"
   ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

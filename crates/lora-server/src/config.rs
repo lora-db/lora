@@ -6,12 +6,11 @@
 //! 2. Environment variables: `LORA_SERVER_HOST`, `LORA_SERVER_PORT`.
 //! 3. Built-in defaults: `127.0.0.1:4747`.
 //!
-//! The default port is picked to be short and memorable (a mirror of Neo4j's
-//! `7474`) while avoiding collisions with common services: well-known
-//! graph-DB ports (Neo4j 7474/7687, ArangoDB 8529, Dgraph 8080, JanusGraph
-//! 8182), common web-dev ports (3000/4000/5000/8000/8080/8443/9000), and
-//! standard databases (Postgres 5432, Redis 6379, MongoDB 27017,
-//! Elasticsearch 9200, MySQL 3306).
+//! The default HTTP port for the local LoraDB server is `4747` — short,
+//! memorable, and outside the most common local development ports
+//! (3000/4000/5000/8000/8080/8443/9000) and standard database ports
+//! (Postgres 5432, Redis 6379, MongoDB 27017, Elasticsearch 9200, MySQL
+//! 3306) so it does not collide with typical side projects.
 //!
 //! The parser also understands `--help` / `--version`, which return a
 //! [`ConfigOutcome`] variant instead of a [`ServerConfig`] so the binary

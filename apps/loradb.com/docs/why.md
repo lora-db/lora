@@ -38,7 +38,7 @@ application code.
 
 ### Graph platforms are often disproportionate
 
-Neo4j, Memgraph, and friends solve real problems — clustering,
+Established graph databases solve real problems — clustering,
 durability, multi-user isolation, huge graphs. They also come with a
 service to deploy, a protocol to speak, and a TCO that only pays off
 once your graph is big enough. For a service, agent, or pipeline that
