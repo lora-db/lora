@@ -1,6 +1,6 @@
 use crate::errors::{value_kind, ExecResult, ExecutorError};
 use crate::eval::{eval_expr, take_eval_error, EvalContext};
-use crate::value::{LoraPath, LoraValue, Row};
+use crate::value::{lora_value_to_property, LoraPath, LoraValue, Row};
 use crate::{project_rows, ExecuteOptions, QueryResult};
 
 use lora_analyzer::{
@@ -1752,19 +1752,19 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
 
         match owner {
             LoraValue::Node(node_id) => {
-                self.ctx.storage.set_node_property(
-                    node_id,
-                    property.clone(),
-                    PropertyValue::from(new_value),
-                );
+                let prop = lora_value_to_property(new_value)
+                    .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                self.ctx
+                    .storage
+                    .set_node_property(node_id, property.clone(), prop);
                 Ok(())
             }
             LoraValue::Relationship(rel_id) => {
-                self.ctx.storage.set_relationship_property(
-                    rel_id,
-                    property.clone(),
-                    PropertyValue::from(new_value),
-                );
+                let prop = lora_value_to_property(new_value)
+                    .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                self.ctx
+                    .storage
+                    .set_relationship_property(rel_id, property.clone(), prop);
                 Ok(())
             }
             other => Err(ExecutorError::InvalidSetTarget {
@@ -1818,10 +1818,12 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
             });
         };
 
-        let props: Properties = map
-            .into_iter()
-            .map(|(k, v)| (k, PropertyValue::from(v)))
-            .collect();
+        let mut props: Properties = Properties::new();
+        for (k, v) in map {
+            let prop = lora_value_to_property(v)
+                .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+            props.insert(k, prop);
+        }
 
         match target {
             EntityTarget::Node(node_id) => {
@@ -1850,16 +1852,16 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
         match target {
             EntityTarget::Node(node_id) => {
                 for (k, v) in map {
-                    self.ctx
-                        .storage
-                        .set_node_property(node_id, k, PropertyValue::from(v));
+                    let prop = lora_value_to_property(v)
+                        .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                    self.ctx.storage.set_node_property(node_id, k, prop);
                 }
             }
             EntityTarget::Relationship(rel_id) => {
                 for (k, v) in map {
-                    self.ctx
-                        .storage
-                        .set_relationship_property(rel_id, k, PropertyValue::from(v));
+                    let prop = lora_value_to_property(v)
+                        .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                    self.ctx.storage.set_relationship_property(rel_id, k, prop);
                 }
             }
         }
@@ -2129,10 +2131,15 @@ fn eval_properties_expr<S: GraphStorage + ?Sized>(
     let eval_ctx = EvalContext { storage, params };
 
     match eval_expr(expr, row, &eval_ctx) {
-        LoraValue::Map(map) => Ok(map
-            .into_iter()
-            .map(|(k, v)| (k, PropertyValue::from(v)))
-            .collect()),
+        LoraValue::Map(map) => {
+            let mut out = Properties::new();
+            for (k, v) in map {
+                let prop = lora_value_to_property(v)
+                    .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                out.insert(k, prop);
+            }
+            Ok(out)
+        }
         other => Err(ExecutorError::ExpectedPropertyMap {
             found: value_kind(&other),
         }),
@@ -2447,6 +2454,7 @@ fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
         (Date(x), Date(y)) => x.cmp(y),
         (DateTime(x), DateTime(y)) => x.cmp(y),
         (Duration(x), Duration(y)) => x.cmp(y),
+        (Vector(x), Vector(y)) => x.to_key_string().cmp(&y.to_key_string()),
         _ => type_rank(a)
             .cmp(&type_rank(b))
             .then_with(|| format!("{a:?}").cmp(&format!("{b:?}"))),
@@ -2484,6 +2492,7 @@ pub fn value_matches_property_value(expected: &LoraValue, actual: &PropertyValue
         (LoraValue::LocalTime(a), PropertyValue::LocalTime(b)) => a == b,
         (LoraValue::Duration(a), PropertyValue::Duration(b)) => a == b,
         (LoraValue::Point(a), PropertyValue::Point(b)) => a == b,
+        (LoraValue::Vector(a), PropertyValue::Vector(b)) => a == b,
 
         _ => false,
     }
@@ -2569,6 +2578,7 @@ fn type_rank(v: &LoraValue) -> u8 {
         LoraValue::LocalTime(_) => 8,
         LoraValue::Duration(_) => 9,
         LoraValue::Point(_) => 10,
+        LoraValue::Vector(_) => 11,
         LoraValue::List(_) => 12,
         LoraValue::Map(_) => 13,
         LoraValue::Node(_) => 14,
@@ -2691,6 +2701,7 @@ impl GroupValueKey {
             LoraValue::LocalTime(t) => Self::String(t.to_string()),
             LoraValue::Duration(dur) => Self::String(dur.to_string()),
             LoraValue::Point(p) => Self::String(p.to_string()),
+            LoraValue::Vector(v) => Self::String(format!("vector:{}", v.to_key_string())),
         }
     }
 }

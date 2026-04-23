@@ -610,7 +610,14 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
 
                 let args = args
                     .iter()
-                    .map(|a| self.analyze_expr_with_aliases(a, aliases))
+                    .enumerate()
+                    .map(|(idx, a)| {
+                        if let Some(lit) = try_vector_enum_literal(&fn_name, idx, a) {
+                            Ok(lit)
+                        } else {
+                            self.analyze_expr_with_aliases(a, aliases)
+                        }
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(ResolvedExpr::Function {
@@ -708,7 +715,14 @@ impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
 
                 let args = args
                     .iter()
-                    .map(|a| self.analyze_expr(a))
+                    .enumerate()
+                    .map(|(idx, a)| {
+                        if let Some(lit) = try_vector_enum_literal(&fn_name, idx, a) {
+                            Ok(lit)
+                        } else {
+                            self.analyze_expr(a)
+                        }
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(ResolvedExpr::Function {
@@ -1262,6 +1276,15 @@ const KNOWN_FUNCTIONS: &[&str] = &[
     // Spatial
     "point",
     "distance",
+    // Vector
+    "vector",
+    "tointegerlist",
+    "tofloatlist",
+    "vector_dimension_count",
+    "vector_distance",
+    "vector_norm",
+    "vector.similarity.cosine",
+    "vector.similarity.euclidean",
 ];
 
 const AGGREGATE_FUNCTIONS: &[&str] = &[
@@ -1331,8 +1354,39 @@ fn function_arity(name: &str) -> Option<(usize, Option<usize>)> {
         // Spatial
         "point" => Some((1, Some(1))),
         "distance" => Some((2, Some(2))),
+        // Vector
+        "vector" => Some((3, Some(3))),
+        "tointegerlist" | "tofloatlist" => Some((1, Some(1))),
+        "vector_dimension_count" => Some((1, Some(1))),
+        "vector_norm" => Some((2, Some(2))),
+        "vector_distance" => Some((3, Some(3))),
+        "vector.similarity.cosine" | "vector.similarity.euclidean" => Some((2, Some(2))),
         _ => None,
     }
+}
+
+/// Special-case the literal-enum arguments of vector construction and
+/// metric functions. Bare identifiers like `INTEGER` or `COSINE` parse
+/// as `Expr::Variable` today; for these specific slots we treat a bare
+/// identifier as a string literal rather than resolving it against the
+/// scope. Strings are passed through untouched, and any other expression
+/// shape falls through to the normal analyzer so runtime type errors
+/// still surface cleanly.
+fn try_vector_enum_literal(fn_name: &str, arg_idx: usize, expr: &Expr) -> Option<ResolvedExpr> {
+    let fn_lower = fn_name.to_ascii_lowercase();
+    let takes_enum_here = match fn_lower.as_str() {
+        "vector" => arg_idx == 2,
+        "vector_distance" => arg_idx == 2,
+        "vector_norm" => arg_idx == 1,
+        _ => false,
+    };
+    if !takes_enum_here {
+        return None;
+    }
+    if let Expr::Variable(v) = expr {
+        return Some(ResolvedExpr::Literal(LiteralValue::String(v.name.clone())));
+    }
+    None
 }
 
 fn is_aggregate_function(name: &str) -> bool {
@@ -1516,6 +1570,277 @@ mod tests {
         assert!(matches!(
             analyzer.analyze(&match_doc),
             Err(SemanticError::UnknownRelationshipType(rel_type)) if rel_type == "KNOWS"
+        ));
+    }
+
+    // --- Vector function analyzer tests ----------------------------------
+
+    #[test]
+    fn vector_rewrites_bare_coordinate_type_to_string_literal() {
+        // `vector([1,2,3], 3, INTEGER)` should not try to resolve INTEGER
+        // as a variable — the third argument is an enum-like type literal.
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("RETURN vector([1, 2, 3], 3, INTEGER) AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        let resolved = analyzer
+            .analyze(&doc)
+            .expect("INTEGER should be rewritten as a string literal, not a variable");
+        // Walk down into the function call's third arg and confirm it came
+        // through as a String literal.
+        let Some(ResolvedClause::Return(ret)) = resolved.clauses.last() else {
+            panic!("expected RETURN clause");
+        };
+        let ResolvedExpr::Function { args, .. } = &ret.items[0].expr else {
+            panic!("expected function call");
+        };
+        assert!(matches!(
+            args.get(2),
+            Some(ResolvedExpr::Literal(LiteralValue::String(s))) if s == "INTEGER"
+        ));
+    }
+
+    #[test]
+    fn vector_distance_rewrites_bare_metric_identifier() {
+        let graph = InMemoryGraph::new();
+        let doc = parse_query(
+            "RETURN vector_distance(vector([1,2], 2, INT), vector([3,4], 2, INT), EUCLIDEAN) AS d",
+        )
+        .unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        let resolved = analyzer
+            .analyze(&doc)
+            .expect("EUCLIDEAN should be rewritten as a string literal");
+        let Some(ResolvedClause::Return(ret)) = resolved.clauses.last() else {
+            panic!("expected RETURN clause");
+        };
+        let ResolvedExpr::Function { args, .. } = &ret.items[0].expr else {
+            panic!("expected function call");
+        };
+        assert!(matches!(
+            args.get(2),
+            Some(ResolvedExpr::Literal(LiteralValue::String(s))) if s == "EUCLIDEAN"
+        ));
+    }
+
+    #[test]
+    fn vector_norm_rewrites_bare_metric_identifier() {
+        let graph = InMemoryGraph::new();
+        let doc =
+            parse_query("RETURN vector_norm(vector([1,2,3], 3, FLOAT32), MANHATTAN) AS n").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(analyzer.analyze(&doc).is_ok());
+    }
+
+    #[test]
+    fn bare_identifier_outside_enum_slot_still_resolves_as_variable() {
+        // Outside the enum slot, INTEGER should still behave like a
+        // variable reference — this guards against the rewrite leaking.
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("RETURN INTEGER AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&doc),
+            Err(SemanticError::UnknownVariable(name)) if name == "INTEGER"
+        ));
+    }
+
+    #[test]
+    fn vector_function_arity_is_validated() {
+        let graph = InMemoryGraph::new();
+        // vector() requires exactly 3 arguments.
+        let doc = parse_query("RETURN vector([1, 2, 3], 3) AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&doc),
+            Err(SemanticError::WrongArity(name, _, 2)) if name == "vector"
+        ));
+    }
+
+    #[test]
+    fn unknown_vector_function_is_rejected() {
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("RETURN vector.bogus([1,2,3], 3, INTEGER) AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&doc),
+            Err(SemanticError::UnknownFunction(name, _, _)) if name == "vector.bogus"
+        ));
+    }
+
+    // --- Enum-literal rewrite scope --------------------------------------
+
+    /// Walk a ResolvedClause list, return the last RETURN's first item.
+    fn return_expr(clauses: &[ResolvedClause]) -> &ResolvedExpr {
+        let Some(ResolvedClause::Return(ret)) = clauses.last() else {
+            panic!("expected RETURN clause");
+        };
+        &ret.items[0].expr
+    }
+
+    #[test]
+    fn vector_does_not_rewrite_first_or_second_argument() {
+        // INTEGER in slot 0 or 1 should still attempt to resolve as a
+        // variable — only slot 2 is the enum-type slot.
+        let graph = InMemoryGraph::new();
+
+        let bad_first = parse_query("RETURN vector(INTEGER, 3, INTEGER) AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&bad_first),
+            Err(SemanticError::UnknownVariable(name)) if name == "INTEGER"
+        ));
+
+        let bad_second = parse_query("RETURN vector([1, 2, 3], INTEGER, INTEGER) AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&bad_second),
+            Err(SemanticError::UnknownVariable(name)) if name == "INTEGER"
+        ));
+    }
+
+    #[test]
+    fn vector_distance_does_not_rewrite_first_or_second_argument() {
+        let graph = InMemoryGraph::new();
+        let doc =
+            parse_query("RETURN vector_distance(EUCLIDEAN, vector([1,2], 2, INT), EUCLIDEAN) AS d")
+                .unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&doc),
+            Err(SemanticError::UnknownVariable(name)) if name == "EUCLIDEAN"
+        ));
+    }
+
+    #[test]
+    fn vector_norm_does_not_rewrite_first_argument() {
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("RETURN vector_norm(MANHATTAN, EUCLIDEAN) AS n").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&doc),
+            Err(SemanticError::UnknownVariable(name)) if name == "MANHATTAN"
+        ));
+    }
+
+    #[test]
+    fn parameter_in_enum_slot_is_preserved_as_parameter() {
+        // A $param in the enum slot must NOT be rewritten — callers need
+        // to pass coordinate/metric names dynamically.
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("RETURN vector([1, 2, 3], 3, $type) AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        let resolved = analyzer.analyze(&doc).expect("parameter should be kept");
+        let ResolvedExpr::Function { args, .. } = return_expr(&resolved.clauses) else {
+            panic!("expected function");
+        };
+        assert!(matches!(args.get(2), Some(ResolvedExpr::Parameter(p)) if p == "type"));
+    }
+
+    #[test]
+    fn parameter_in_vector_norm_metric_slot_is_preserved() {
+        let graph = InMemoryGraph::new();
+        let doc =
+            parse_query("RETURN vector_norm(vector([1,2,3], 3, FLOAT32), $metric) AS n").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        let resolved = analyzer.analyze(&doc).expect("parameter should be kept");
+        let ResolvedExpr::Function { args, .. } = return_expr(&resolved.clauses) else {
+            panic!("expected function");
+        };
+        assert!(matches!(args.get(1), Some(ResolvedExpr::Parameter(p)) if p == "metric"));
+    }
+
+    #[test]
+    fn variable_named_like_metric_outside_enum_slot_is_not_rewritten() {
+        // UNWIND exposes a variable literally called COSINE — which is a
+        // metric name. Using it outside the enum slot must bind normally.
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("UNWIND [1.0, 2.0, 3.0] AS COSINE RETURN COSINE AS val").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(analyzer.analyze(&doc).is_ok());
+    }
+
+    #[test]
+    fn string_literal_in_enum_slot_remains_string_literal() {
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("RETURN vector([1, 2, 3], 3, 'INTEGER32') AS v").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        let resolved = analyzer
+            .analyze(&doc)
+            .expect("string literal must be passed through");
+        let ResolvedExpr::Function { args, .. } = return_expr(&resolved.clauses) else {
+            panic!("expected function");
+        };
+        assert!(matches!(
+            args.get(2),
+            Some(ResolvedExpr::Literal(LiteralValue::String(s))) if s == "INTEGER32"
+        ));
+    }
+
+    // --- Arity coverage for every vector function ------------------------
+
+    #[test]
+    fn every_vector_function_has_arity_guard() {
+        // (function name, offending argument count, min–max hint)
+        let cases = &[
+            ("RETURN vector([1], 1) AS v", 2, "vector"),
+            ("RETURN vector([1], 1, INTEGER, INTEGER) AS v", 4, "vector"),
+            (
+                "RETURN vector.similarity.cosine([1]) AS s",
+                1,
+                "vector.similarity.cosine",
+            ),
+            (
+                "RETURN vector.similarity.cosine([1],[2],[3]) AS s",
+                3,
+                "vector.similarity.cosine",
+            ),
+            (
+                "RETURN vector.similarity.euclidean([1]) AS s",
+                1,
+                "vector.similarity.euclidean",
+            ),
+            (
+                "RETURN vector_distance(vector([1],1,INT)) AS d",
+                1,
+                "vector_distance",
+            ),
+            (
+                "RETURN vector_norm(vector([1],1,INT)) AS n",
+                1,
+                "vector_norm",
+            ),
+            (
+                "RETURN vector_dimension_count() AS n",
+                0,
+                "vector_dimension_count",
+            ),
+            ("RETURN toIntegerList() AS l", 0, "toIntegerList"),
+            ("RETURN toFloatList() AS l", 0, "toFloatList"),
+        ];
+        for (query, expected_args, name) in cases {
+            let graph = InMemoryGraph::new();
+            let doc = parse_query(query).unwrap();
+            let mut analyzer = Analyzer::new(&graph);
+            let result = analyzer.analyze(&doc);
+            match result {
+                Err(SemanticError::WrongArity(got_name, _, got_args)) => {
+                    assert_eq!(got_name.to_ascii_lowercase(), name.to_ascii_lowercase());
+                    assert_eq!(got_args, *expected_args, "query {query:?}");
+                }
+                other => panic!("query {query:?} expected WrongArity, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn dotted_similarity_typo_is_rejected() {
+        let graph = InMemoryGraph::new();
+        let doc = parse_query("RETURN vector.similarity.manhattan([1,2],[3,4]) AS s").unwrap();
+        let mut analyzer = Analyzer::new(&graph);
+        assert!(matches!(
+            analyzer.analyze(&doc),
+            Err(SemanticError::UnknownFunction(name, _, _))
+                if name == "vector.similarity.manhattan"
         ));
     }
 }
