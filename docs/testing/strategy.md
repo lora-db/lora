@@ -33,6 +33,7 @@
 | `paths.rs` | Variable-length traversal, fixed / unbounded ranges, zero-hop, direction, cycles, chains, diamonds, fan patterns, `shortestPath`, `allShortestPaths` |
 | `projection.rs` | `RETURN` expressions, aliases, star, distinct, literals, computed columns, map projection |
 | `temporal.rs` | `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration` — construction, component access, comparison, arithmetic |
+| `vectors.rs` | `VECTOR` construction, storage, `toIntegerList` / `toFloatList`, similarity / distance / norm functions, exhaustive kNN via `ORDER BY … LIMIT k` |
 | `types_advanced.rs` | List indexing / slicing / concatenation / equality, map operations, null semantics, type coercion, mixed types |
 | `union.rs` | `UNION`, `UNION ALL`, deduplication, multi-branch, `ORDER BY` on result |
 | `update.rs` | `SET` property / label / replace / merge, `REMOVE` property / label, `DELETE`, `DETACH DELETE` |

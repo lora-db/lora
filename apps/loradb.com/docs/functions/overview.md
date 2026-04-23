@@ -23,6 +23,7 @@ result `null`. The exceptions are the aggregates, `coalesce`,
 | **List** | <CypherCode code="size" />, <CypherCode code="head" />, <CypherCode code="range" />, <CypherCode code="reduce" /> | [List](./list) |
 | **Temporal** | <CypherCode code="date" />, <CypherCode code="datetime" />, <CypherCode code="duration.between" /> | [Temporal](./temporal) |
 | **Spatial** | <CypherCode code="point" />, <CypherCode code="distance" /> | [Spatial](./spatial) |
+| **Vector** | <CypherCode code="vector" />, <CypherCode code="vector.similarity.cosine" />, <CypherCode code="vector_distance" />, <CypherCode code="vector_norm" /> | [Vectors](../data-types/vectors) |
 | **Path** | <CypherCode code="length" />, <CypherCode code="nodes" />, <CypherCode code="relationships" /> | [Paths](../queries/paths) |
 
 ## Entity introspection

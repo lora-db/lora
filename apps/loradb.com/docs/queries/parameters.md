@@ -119,6 +119,7 @@ More detail: [Ruby → Parameterised query](../getting-started/ruby#parameterise
 | `datetime()` / `localdatetime()` helper | [`DateTime`](../data-types/temporal) / [`LocalDateTime`](../data-types/temporal) |
 | `duration()` helper | [`Duration`](../data-types/temporal) |
 | `wgs84()` / `cartesian()` helper | [`Point`](../data-types/spatial) |
+| `vector()` helper / tagged object | [`Vector`](../data-types/vectors) |
 
 Missing entries resolve to `null`. The engine doesn't raise on an
 unbound parameter — it silently filters everything out. Audit bindings
@@ -181,6 +182,26 @@ await db.execute(
   { here: wgs84(4.89, 52.37), span: duration('PT90M') }
 );
 ```
+
+### Semantic retrieval with a vector parameter
+
+```ts
+import { vector } from 'lora-node';
+
+const query = vector(embedding, 384, 'FLOAT32');
+
+await db.execute(
+  `MATCH (d:Doc)
+   RETURN d.id AS id
+   ORDER BY vector.similarity.cosine(d.embedding, $q) DESC
+   LIMIT 10`,
+  { q: query },
+);
+```
+
+Vector indexes are not implemented yet, so the query above is a linear
+scan over every matched `Doc` — fine for small datasets, not for
+production-scale retrieval until index support ships.
 
 ### Default a missing value host-side
 

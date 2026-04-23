@@ -240,6 +240,30 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | Component access: `p.x`, `p.y`, `p.latitude`, `p.longitude`, `p.srid` | **Supported** | Via property access on Point |
 | 3D points (Cartesian SRID 9157, WGS-84 SRID 4979) | **Supported** | `z` / `height` exposed via property access; `distance()` on WGS-84-3D ignores height and falls back to great-circle |
 
+## 13a. Vector types and functions
+
+| Type | Status | Notes |
+|------|--------|-------|
+| `VECTOR<FLOAT64>`  | **Supported** | Canonical tag `FLOAT64` (alias `FLOAT`) |
+| `VECTOR<FLOAT32>`  | **Supported** | |
+| `VECTOR<INTEGER>`  | **Supported** | 64-bit signed (aliases `INT`, `INT64`, `SIGNED INTEGER`) |
+| `VECTOR<INTEGER32>` | **Supported** | Aliases `INT32` |
+| `VECTOR<INTEGER16>` | **Supported** | Aliases `INT16` |
+| `VECTOR<INTEGER8>`  | **Supported** | Aliases `INT8` |
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `vector(list, dimension, coordinateType)` | **Supported** | Accepts `LIST<NUMBER>` or `STRING` like `"[1.0, 2.0]"` |
+| `vector.similarity.cosine(a, b)` | **Supported** | Accepts VECTOR or `LIST<NUMBER>`; f32 arithmetic; returns null for zero vectors |
+| `vector.similarity.euclidean(a, b)` | **Supported** | `1 / (1 + d²)` in f32 |
+| `vector_dimension_count(v)` | **Supported** | Equivalent to `size(v)` on a VECTOR |
+| `vector_distance(a, b, metric)` | **Supported** | `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `COSINE`, `DOT`, `HAMMING` |
+| `vector_norm(v, metric)` | **Supported** | `EUCLIDEAN`, `MANHATTAN` |
+| `toIntegerList(v)` / `toFloatList(v)` | **Supported** | Returns `LIST<INTEGER>` / `LIST<FLOAT>` |
+| `size(v)` on a VECTOR | **Supported** | Returns dimension |
+| Vector indexes / approximate kNN | **Not yet implemented** | Exhaustive kNN works today via `ORDER BY vector.similarity.* LIMIT k` |
+| Built-in embedding/plugin integration | **Not yet implemented** | LoraDB has no plugin system today |
+
 ## 14. Data types
 
 | Type | Status | Notes |
@@ -256,6 +280,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | Path | **Supported** | Alternating nodes and relationships |
 | Date / Time / LocalTime / DateTime / LocalDateTime / Duration | **Supported** | See §12 |
 | Point (Cartesian, WGS-84) | **Supported** | See §13 |
+| Vector (typed coordinates, dim ≤ 4096) | **Supported** | See §13a |
 
 ## 15. Parameter binding
 

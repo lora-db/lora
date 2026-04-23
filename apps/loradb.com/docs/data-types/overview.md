@@ -17,6 +17,7 @@ projected in a [`RETURN`](../queries/return-with), or bound as a
 | **Collections** (lists, maps) | [Lists & Maps](./lists-and-maps) |
 | **Temporal** (date, time, datetime, duration) | [Temporal](./temporal) |
 | **Spatial** (points) | [Spatial](./spatial) |
+| **Vectors** (typed fixed-dimension coordinates) | [Vectors](./vectors) |
 | **Graph** (node, relationship, path) | [below](#graph-types) |
 
 ## At-a-glance table
@@ -33,6 +34,7 @@ projected in a [`RETURN`](../queries/return-with), or bound as a
 | `Date`, `Time`, `DateTime`, `LocalTime`, `LocalDateTime` | via constructor | `"DATE"`, `"TIME"`, … |
 | `Duration` | `duration('P30D')` | `"DURATION"` |
 | `Point` | `point({x, y})` | `"POINT"` |
+| `Vector` | `vector([1,2,3], 3, INTEGER)` | `"VECTOR<INTEGER>(3)"` |
 | `Node`, `Relationship`, `Path` | produced by queries | `"NODE"`, … |
 
 ## Where each type shows up

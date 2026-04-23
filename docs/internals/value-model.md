@@ -25,6 +25,7 @@ enum PropertyValue {
     LocalDateTime(LoraLocalDateTime),
     Duration(LoraDuration),
     Point(LoraPoint),
+    Vector(LoraVector),
 }
 ```
 
@@ -106,6 +107,31 @@ Property filters without a label are `O(n)` full scans.
 `distance(a, b)` is Euclidean for Cartesian and Haversine (Earth radius
 6 371 km) for WGS-84. Cross-SRID `distance` returns `null`. WGS-84-3D
 `distance` ignores height today — great-circle only.
+
+## Vectors
+
+`LoraVector` is a first-class property and query value (`lora-store/src/vector.rs`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `dimension` | `usize` | `1..=4096` |
+| `values` | typed `Vec` | `Float64` / `Float32` / `Integer64` / `Integer32` / `Integer16` / `Integer8` |
+
+On the wire every vector is serialised as
+`{kind:"vector", dimension, coordinateType, values}`. Coordinate types on
+output always use the canonical tag (`FLOAT64`, `FLOAT32`, `INTEGER`,
+`INTEGER32`, `INTEGER16`, `INTEGER8`); input accepts aliases (`FLOAT`,
+`INT`, `INT64`, `INT32`, `INT16`, `INT8`, `SIGNED INTEGER`).
+
+Lists containing VECTOR values cannot be stored as properties — the
+write-path converts `LoraValue` → `PropertyValue` fallibly via
+`lora_value_to_property` and rejects nested vectors loudly.
+
+Vector indexes, approximate kNN, and built-in embedding/plugin
+integration are **not yet implemented**. Exhaustive kNN today is
+expressed with `ORDER BY vector.similarity.cosine(v, $q) DESC LIMIT k`
+— it scans every candidate linearly, so it's only suitable for small
+datasets until an index-backed variant lands.
 
 ## Schema validation
 
