@@ -130,3 +130,6 @@ mdbook/
 /apps/mantine.dev/
 
 .playwright-mcp/
+
+# Local release marketing drafts
+release-marketing/

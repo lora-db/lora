@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="LoraDB">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1b6dff"/>
-      <stop offset="1" stop-color="#6e5afd"/>
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="0.5" stop-color="#6254E6"/>
+      <stop offset="1" stop-color="#B144D6"/>
     </linearGradient>
     <radialGradient id="glow" cx="256" cy="256" r="256" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.15"/>
