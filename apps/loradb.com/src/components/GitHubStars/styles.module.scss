@@ -9,6 +9,11 @@
   align-items: center;
   justify-content: center;
 
+  // Match the flex order of the framed social chiclets in _navbar.scss
+  // (theme toggle 4, Discord 5, X 6) so this pill lands last in the row.
+  // Without this it inherits order: 0 and jumps ahead of the search box.
+  order: 7;
+
   height: 34px;
   width: 34px;
   padding: 0;
@@ -49,6 +54,15 @@
   &:focus-visible {
     outline: 2px solid var(--brand-accent-a);
     outline-offset: 2px;
+  }
+
+  // Hide inside the off-canvas mobile sidebar — it already appears in
+  // the top navbar, and Docusaurus renders it here as a bare <a> (no
+  // <li> wrapper, no .menu__link styling), mirroring how Discord and X
+  // are hidden by `.menu__list .icon-link { display: none }` in
+  // _navbar-sidebar.scss.
+  :global(.navbar-sidebar) & {
+    display: none;
   }
 }
 
