@@ -22,24 +22,7 @@ one-line import change.
 - Python **3.8+**
 - For building from source: Rust toolchain (`rustup`) + `maturin`
 
-### Install (from source, pre-release)
-
-```bash
-cd crates/lora-python
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U maturin
-maturin develop            # editable install into the active venv
-```
-
-### Install (release wheel)
-
-```bash
-maturin build --release
-pip install target/wheels/lora_python-*.whl
-```
-
-### Install (after publish)
+### Install
 
 ```bash
 pip install lora-python

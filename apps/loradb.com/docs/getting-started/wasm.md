@@ -34,15 +34,7 @@ thread stays responsive.
 - A bundler (Vite, webpack, esbuild, Rollup) for browser usage, _or_
   a host that serves `.wasm` with the correct MIME type.
 
-### Install (from source, pre-release)
-
-```bash
-cd crates/lora-wasm
-npm install
-npm run build      # wasm-pack for all 3 targets + tsc
-```
-
-### Install (after publish)
+### Install
 
 ```bash
 npm install @loradb/lora-wasm
