@@ -13,14 +13,8 @@ categories = ["database-implementations", "data-structures"]
 
 [dependencies]
 lora-ast.workspace = true
-
-# Snapshot / WAL serialization. `serde` derives on the record types;
-# `postcard` for the binary payload (bincode 1.x is unmaintained, and
-# bincode 2.x / wincode are less battle-tested; postcard has a documented
-# stable wire format and a varint encoding that keeps snapshots compact);
-# `crc32fast` for the file-trailer checksum.
 serde.workspace = true
-postcard.workspace = true
+bincode.workspace = true
 crc32fast.workspace = true
 thiserror.workspace = true
 
