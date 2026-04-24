@@ -27,8 +27,8 @@ use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime,
-    LoraPoint, LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
+    LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -71,6 +71,8 @@ fn init(ruby: &Ruby) -> Result<(), MagnusError> {
     )?;
     database.define_method("inspect", method!(database_inspect, 0))?;
     database.define_method("to_s", method!(database_inspect, 0))?;
+    database.define_method("save_snapshot", method!(database_save_snapshot, 1))?;
+    database.define_method("load_snapshot", method!(database_load_snapshot, 1))?;
 
     // `LoraRuby::VERSION` is owned by `lib/lora_ruby/version.rb` so the
     // gem can expose a version before the native extension compiles
@@ -159,6 +161,54 @@ fn database_inspect(rb_self: &Database) -> String {
         rb_self.db.node_count(),
         rb_self.db.relationship_count(),
     )
+}
+
+fn database_save_snapshot(
+    ruby: &Ruby,
+    rb_self: &Database,
+    path: RString,
+) -> Result<RHash, MagnusError> {
+    let path = path.to_string()?;
+    let db = Arc::clone(&rb_self.db);
+    let meta = without_gvl(move || db.save_snapshot_to(&path))
+        .map_err(|e| query_error(ruby, format!("{e}")))?;
+    snapshot_meta_to_rhash(ruby, meta)
+}
+
+fn database_load_snapshot(
+    ruby: &Ruby,
+    rb_self: &Database,
+    path: RString,
+) -> Result<RHash, MagnusError> {
+    let path = path.to_string()?;
+    let db = Arc::clone(&rb_self.db);
+    let meta = without_gvl(move || db.load_snapshot_from(&path))
+        .map_err(|e| query_error(ruby, format!("{e}")))?;
+    snapshot_meta_to_rhash(ruby, meta)
+}
+
+fn snapshot_meta_to_rhash(
+    ruby: &Ruby,
+    meta: lora_database::SnapshotMeta,
+) -> Result<RHash, MagnusError> {
+    let h = ruby.hash_new();
+    h.aset(
+        ruby.str_new("formatVersion"),
+        ruby.integer_from_i64(meta.format_version as i64),
+    )?;
+    h.aset(
+        ruby.str_new("nodeCount"),
+        ruby.integer_from_i64(meta.node_count as i64),
+    )?;
+    h.aset(
+        ruby.str_new("relationshipCount"),
+        ruby.integer_from_i64(meta.relationship_count as i64),
+    )?;
+    match meta.wal_lsn {
+        Some(lsn) => h.aset(ruby.str_new("walLsn"), ruby.integer_from_i64(lsn as i64))?,
+        None => h.aset(ruby.str_new("walLsn"), ruby.qnil())?,
+    }
+    Ok(h)
 }
 
 /// `execute(query, params = nil)` — `-1` arity so `params` is optional and

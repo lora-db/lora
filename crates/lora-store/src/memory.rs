@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use lora_ast::Direction;
 
+use crate::snapshot::{read_snapshot, write_snapshot};
 use crate::{
-    BorrowedGraphStorage, GraphStorage, GraphStorageMut, NodeId, NodeRecord, Properties,
-    PropertyValue, RelationshipId, RelationshipRecord,
+    BorrowedGraphStorage, GraphStorage, GraphStorageMut, MutationEvent, MutationRecorder, NodeId,
+    NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord, SnapshotError,
+    SnapshotMeta, SnapshotPayload, Snapshotable,
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct InMemoryGraph {
     next_node_id: NodeId,
     next_rel_id: RelationshipId,
@@ -22,6 +25,46 @@ pub struct InMemoryGraph {
     // secondary indexes
     nodes_by_label: BTreeMap<String, BTreeSet<NodeId>>,
     relationships_by_type: BTreeMap<String, BTreeSet<RelationshipId>>,
+
+    /// Optional mutation observer. When `Some`, every committed mutation
+    /// fans out to this recorder *after* the in-memory state has been
+    /// updated. The recorder is not part of the graph's identity, so Clone
+    /// and snapshot restore both reset it to `None`.
+    recorder: Option<Arc<dyn MutationRecorder>>,
+}
+
+impl std::fmt::Debug for InMemoryGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemoryGraph")
+            .field("next_node_id", &self.next_node_id)
+            .field("next_rel_id", &self.next_rel_id)
+            .field("nodes", &self.nodes)
+            .field("relationships", &self.relationships)
+            .field("outgoing", &self.outgoing)
+            .field("incoming", &self.incoming)
+            .field("nodes_by_label", &self.nodes_by_label)
+            .field("relationships_by_type", &self.relationships_by_type)
+            .field("recorder", &self.recorder.as_ref().map(|_| "installed"))
+            .finish()
+    }
+}
+
+impl Clone for InMemoryGraph {
+    fn clone(&self) -> Self {
+        // Deliberately drop the recorder on clone: a cloned store is a
+        // separate identity; it should not silently share the observer.
+        Self {
+            next_node_id: self.next_node_id,
+            next_rel_id: self.next_rel_id,
+            nodes: self.nodes.clone(),
+            relationships: self.relationships.clone(),
+            outgoing: self.outgoing.clone(),
+            incoming: self.incoming.clone(),
+            nodes_by_label: self.nodes_by_label.clone(),
+            relationships_by_type: self.relationships_by_type.clone(),
+            recorder: None,
+        }
+    }
 }
 
 impl InMemoryGraph {
@@ -40,6 +83,29 @@ impl InMemoryGraph {
 
     pub fn contains_relationship(&self, rel_id: RelationshipId) -> bool {
         self.relationships.contains_key(&rel_id)
+    }
+
+    /// Install (or clear) the mutation recorder. Passing `None` detaches any
+    /// currently-installed recorder. The recorder observes every committed
+    /// mutation *after* it has been applied.
+    pub fn set_mutation_recorder(&mut self, recorder: Option<Arc<dyn MutationRecorder>>) {
+        self.recorder = recorder;
+    }
+
+    /// Handle to the currently-installed recorder, if any.
+    pub fn mutation_recorder(&self) -> Option<&Arc<dyn MutationRecorder>> {
+        self.recorder.as_ref()
+    }
+
+    /// Emit a mutation event only if a recorder is installed. The event is
+    /// built lazily — callers pass a closure, so when no recorder is
+    /// attached we pay only a `None` check and the cost of constructing the
+    /// event (labels/properties clones) is avoided.
+    #[inline]
+    fn emit<F: FnOnce() -> MutationEvent>(&self, build: F) {
+        if let Some(rec) = &self.recorder {
+            rec.record(&build());
+        }
     }
 
     fn alloc_node_id(&mut self) -> NodeId {
@@ -499,6 +565,12 @@ impl GraphStorageMut for InMemoryGraph {
         self.outgoing.entry(id).or_default();
         self.incoming.entry(id).or_default();
 
+        self.emit(|| MutationEvent::CreateNode {
+            id,
+            labels: node.labels.clone(),
+            properties: node.properties.clone(),
+        });
+
         node
     }
 
@@ -530,24 +602,56 @@ impl GraphStorageMut for InMemoryGraph {
         self.attach_relationship(&rel);
         self.relationships.insert(id, rel.clone());
 
+        self.emit(|| MutationEvent::CreateRelationship {
+            id,
+            src,
+            dst,
+            rel_type: rel.rel_type.clone(),
+            properties: rel.properties.clone(),
+        });
+
         Some(rel)
     }
 
     fn set_node_property(&mut self, node_id: NodeId, key: String, value: PropertyValue) -> bool {
-        match self.nodes.get_mut(&node_id) {
+        // Hot path: the common case is `recorder = None`. Insert by value
+        // (no key/value clones); only clone when a recorder is attached.
+        let recorder_active = self.recorder.is_some();
+        let (stored_key, stored_value) = if recorder_active {
+            (Some(key.clone()), Some(value.clone()))
+        } else {
+            (None, None)
+        };
+
+        let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => {
                 node.properties.insert(key, value);
                 true
             }
             None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::SetNodeProperty {
+                node_id,
+                key: stored_key.unwrap(),
+                value: stored_value.unwrap(),
+            });
         }
+        applied
     }
 
     fn remove_node_property(&mut self, node_id: NodeId, key: &str) -> bool {
-        match self.nodes.get_mut(&node_id) {
+        let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => node.properties.remove(key).is_some(),
             None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::RemoveNodeProperty {
+                node_id,
+                key: key.to_string(),
+            });
         }
+        applied
     }
 
     fn add_node_label(&mut self, node_id: NodeId, label: &str) -> bool {
@@ -556,7 +660,7 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         }
 
-        match self.nodes.get_mut(&node_id) {
+        let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => {
                 if node.labels.iter().any(|l| l == label) {
                     return false;
@@ -567,11 +671,18 @@ impl GraphStorageMut for InMemoryGraph {
                 true
             }
             None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::AddNodeLabel {
+                node_id,
+                label: label.to_string(),
+            });
         }
+        applied
     }
 
     fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> bool {
-        match self.nodes.get_mut(&node_id) {
+        let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => {
                 let original_len = node.labels.len();
                 node.labels.retain(|l| l != label);
@@ -584,7 +695,14 @@ impl GraphStorageMut for InMemoryGraph {
                 }
             }
             None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::RemoveNodeLabel {
+                node_id,
+                label: label.to_string(),
+            });
         }
+        applied
     }
 
     fn set_relationship_property(
@@ -593,30 +711,56 @@ impl GraphStorageMut for InMemoryGraph {
         key: String,
         value: PropertyValue,
     ) -> bool {
-        match self.relationships.get_mut(&rel_id) {
+        let recorder_active = self.recorder.is_some();
+        let (stored_key, stored_value) = if recorder_active {
+            (Some(key.clone()), Some(value.clone()))
+        } else {
+            (None, None)
+        };
+
+        let applied = match self.relationships.get_mut(&rel_id) {
             Some(rel) => {
                 rel.properties.insert(key, value);
                 true
             }
             None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::SetRelationshipProperty {
+                rel_id,
+                key: stored_key.unwrap(),
+                value: stored_value.unwrap(),
+            });
         }
+        applied
     }
 
     fn remove_relationship_property(&mut self, rel_id: RelationshipId, key: &str) -> bool {
-        match self.relationships.get_mut(&rel_id) {
+        let applied = match self.relationships.get_mut(&rel_id) {
             Some(rel) => rel.properties.remove(key).is_some(),
             None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::RemoveRelationshipProperty {
+                rel_id,
+                key: key.to_string(),
+            });
         }
+        applied
     }
 
     fn delete_relationship(&mut self, rel_id: RelationshipId) -> bool {
-        match self.relationships.remove(&rel_id) {
+        let applied = match self.relationships.remove(&rel_id) {
             Some(rel) => {
                 self.detach_relationship_indexes(&rel);
                 true
             }
             None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::DeleteRelationship { rel_id });
         }
+        applied
     }
 
     fn delete_node(&mut self, node_id: NodeId) -> bool {
@@ -640,6 +784,8 @@ impl GraphStorageMut for InMemoryGraph {
         self.outgoing.remove(&node_id);
         self.incoming.remove(&node_id);
 
+        self.emit(|| MutationEvent::DeleteNode { node_id });
+
         true
     }
 
@@ -653,15 +799,93 @@ impl GraphStorageMut for InMemoryGraph {
             .into_iter()
             .collect();
 
+        // We deliberately fire per-relationship DeleteRelationship events
+        // here (via `delete_relationship`) and a DetachDeleteNode event at
+        // the end. A WAL replayer that sees DetachDeleteNode can ignore the
+        // preceding DeleteRelationship events — or, equivalently, replay
+        // them and the DetachDeleteNode becomes a no-op on the remaining
+        // (now-empty) node. The emit-before-delete choice costs one extra
+        // event per mutation but keeps the replay contract simple:
+        // "apply every event in order".
         for rel_id in rel_ids {
             let _ = self.delete_relationship(rel_id);
         }
 
-        self.delete_node(node_id)
+        if self.delete_node(node_id) {
+            self.emit(|| MutationEvent::DetachDeleteNode { node_id });
+            true
+        } else {
+            false
+        }
     }
 
     fn clear(&mut self) {
+        // Keep the recorder across clear so observers can see the Clear
+        // event plus whatever follows. Matches WAL semantics where the log
+        // is the source of truth across a truncation.
+        let recorder = self.recorder.take();
         *self = Self::default();
+        self.recorder = recorder;
+        self.emit(|| MutationEvent::Clear);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Snapshotable
+// ---------------------------------------------------------------------------
+
+impl Snapshotable for InMemoryGraph {
+    fn save_snapshot<W: std::io::Write>(&self, writer: W) -> Result<SnapshotMeta, SnapshotError> {
+        let payload = SnapshotPayload {
+            next_node_id: self.next_node_id,
+            next_rel_id: self.next_rel_id,
+            nodes: self.nodes.values().cloned().collect(),
+            relationships: self.relationships.values().cloned().collect(),
+        };
+        write_snapshot(writer, &payload, None)
+    }
+
+    fn load_snapshot<R: std::io::Read>(
+        &mut self,
+        reader: R,
+    ) -> Result<SnapshotMeta, SnapshotError> {
+        let (payload, meta) = read_snapshot(reader)?;
+
+        // Build the restored graph in a fresh local instance and only
+        // commit it into `self` at the very end. If a panic fires mid-
+        // rebuild (e.g. OOM on a HashMap grow) the caller's graph is
+        // untouched — we never observe a half-populated store.
+        let mut rebuilt = Self {
+            next_node_id: payload.next_node_id,
+            next_rel_id: payload.next_rel_id,
+            ..Self::default()
+        };
+
+        // Insert nodes + rebuild label index + seed adjacency slots.
+        for node in payload.nodes {
+            let id = node.id;
+            let labels = node.labels.clone();
+            rebuilt.nodes.insert(id, node);
+            for label in &labels {
+                rebuilt.insert_node_label_index(id, label);
+            }
+            rebuilt.outgoing.entry(id).or_default();
+            rebuilt.incoming.entry(id).or_default();
+        }
+
+        // Insert relationships + rebuild adjacency + type index.
+        for rel in payload.relationships {
+            rebuilt.attach_relationship(&rel);
+            rebuilt.relationships.insert(rel.id, rel);
+        }
+
+        // Preserve the existing recorder across the swap — observers of the
+        // store's identity should not be silently detached by a restore,
+        // same policy as `clear()`.
+        rebuilt.recorder = self.recorder.take();
+        *self = rebuilt;
+
+        Ok(meta)
     }
 }
 
@@ -900,5 +1124,159 @@ mod tests {
         assert_eq!(g.node_count(), 0);
         assert_eq!(g.relationship_count(), 0);
         assert_eq!(g.all_labels().len(), 0);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_graph_state() {
+        let mut original = InMemoryGraph::new();
+        let a = original.create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Alice".into()))]),
+        );
+        let b = original.create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Bob".into()))]),
+        );
+        let r = original
+            .create_relationship(
+                a.id,
+                b.id,
+                "KNOWS",
+                props(&[("since", PropertyValue::Int(2020))]),
+            )
+            .unwrap();
+
+        let mut buf = Vec::new();
+        let save_meta = original.save_snapshot(&mut buf).unwrap();
+        assert_eq!(save_meta.node_count, 2);
+        assert_eq!(save_meta.relationship_count, 1);
+        assert_eq!(save_meta.wal_lsn, None);
+
+        let mut restored = InMemoryGraph::new();
+        let load_meta = restored.load_snapshot(&buf[..]).unwrap();
+        assert_eq!(load_meta, save_meta);
+
+        assert_eq!(restored.node_count(), 2);
+        assert_eq!(restored.relationship_count(), 1);
+        assert_eq!(
+            restored.node_property(a.id, "name"),
+            Some(PropertyValue::String("Alice".into()))
+        );
+        assert_eq!(
+            restored.relationship_property(r.id, "since"),
+            Some(PropertyValue::Int(2020))
+        );
+
+        // Adjacency + label index were rebuilt on load.
+        assert_eq!(restored.outgoing_relationships(a.id).len(), 1);
+        assert_eq!(restored.nodes_by_label("Person").len(), 2);
+
+        // Counters carry over so new IDs don't collide with pre-snapshot IDs.
+        let c = restored.create_node(vec!["Person".into()], Properties::new());
+        assert_eq!(c.id, b.id + 1);
+    }
+
+    #[test]
+    fn mutation_recorder_observes_every_committed_mutation() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct CapturingRecorder {
+            events: Mutex<Vec<MutationEvent>>,
+        }
+
+        impl MutationRecorder for CapturingRecorder {
+            fn record(&self, event: &MutationEvent) {
+                self.events.lock().unwrap().push(event.clone());
+            }
+        }
+
+        let recorder = Arc::new(CapturingRecorder::default());
+        let mut g = InMemoryGraph::new();
+        g.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
+
+        let a = g.create_node(vec!["Person".into()], Properties::new());
+        let b = g.create_node(vec!["Person".into()], Properties::new());
+        let r = g
+            .create_relationship(a.id, b.id, "KNOWS", Properties::new())
+            .unwrap();
+        g.set_node_property(a.id, "name".into(), PropertyValue::String("Alice".into()));
+        g.remove_node_property(a.id, "name");
+        g.add_node_label(a.id, "Admin");
+        g.remove_node_label(a.id, "Admin");
+        g.set_relationship_property(r.id, "since".into(), PropertyValue::Int(2020));
+        g.remove_relationship_property(r.id, "since");
+        g.detach_delete_node(a.id);
+        g.clear();
+
+        let events = recorder.events.lock().unwrap().clone();
+        assert!(matches!(events[0], MutationEvent::CreateNode { .. }));
+        assert!(matches!(events[1], MutationEvent::CreateNode { .. }));
+        assert!(matches!(
+            events[2],
+            MutationEvent::CreateRelationship { .. }
+        ));
+        assert!(matches!(events[3], MutationEvent::SetNodeProperty { .. }));
+        assert!(matches!(
+            events[4],
+            MutationEvent::RemoveNodeProperty { .. }
+        ));
+        assert!(matches!(events[5], MutationEvent::AddNodeLabel { .. }));
+        assert!(matches!(events[6], MutationEvent::RemoveNodeLabel { .. }));
+        assert!(matches!(
+            events[7],
+            MutationEvent::SetRelationshipProperty { .. }
+        ));
+        assert!(matches!(
+            events[8],
+            MutationEvent::RemoveRelationshipProperty { .. }
+        ));
+        // detach_delete_node composes three kinds of events: one
+        // DeleteRelationship per incident edge, one DeleteNode for the node
+        // itself, and a final DetachDeleteNode marker. A WAL replayer can
+        // either apply every step or recognise the marker and skip forward.
+        assert!(matches!(
+            events[9],
+            MutationEvent::DeleteRelationship { .. }
+        ));
+        assert!(matches!(events[10], MutationEvent::DeleteNode { .. }));
+        assert!(matches!(events[11], MutationEvent::DetachDeleteNode { .. }));
+        assert!(matches!(events.last(), Some(MutationEvent::Clear)));
+
+        // Failed mutations (invalid id) do not emit events.
+        let before = recorder.events.lock().unwrap().len();
+        assert!(!g.set_node_property(9999, "x".into(), PropertyValue::Int(0)));
+        assert_eq!(recorder.events.lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn snapshot_load_resets_but_keeps_recorder() {
+        use std::sync::Mutex;
+
+        struct CountingRecorder(Mutex<usize>);
+        impl MutationRecorder for CountingRecorder {
+            fn record(&self, _: &MutationEvent) {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+
+        let counter: Arc<dyn MutationRecorder> = Arc::new(CountingRecorder(Mutex::new(0)));
+        let mut g = InMemoryGraph::new();
+        g.set_mutation_recorder(Some(counter));
+        g.create_node(vec!["A".into()], Properties::new());
+
+        let mut buf = Vec::new();
+        g.save_snapshot(&mut buf).unwrap();
+
+        // Load into the same graph — recorder should survive, store state
+        // should be replaced by the snapshot contents.
+        g.load_snapshot(&buf[..]).unwrap();
+        assert!(g.mutation_recorder().is_some());
+        assert_eq!(g.node_count(), 1);
+
+        // Subsequent mutations still feed the recorder.
+        g.create_node(vec!["B".into()], Properties::new());
+        // 1 for the initial A + 1 for the post-load B. The restore path
+        // itself does not emit events (that's a snapshot, not a mutation).
     }
 }

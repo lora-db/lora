@@ -93,6 +93,42 @@ impl Database {
     pub fn relationship_count(&self) -> u32 {
         self.db.relationship_count() as u32
     }
+
+    /// Save the graph to a snapshot file. Atomic: the target is only
+    /// replaced once the whole payload has been written + fsync'd.
+    /// Synchronous — snapshots are usually infrequent and running on the
+    /// event loop dodges the cost of a thread hop for small graphs.
+    #[napi(
+        ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
+    )]
+    pub fn save_snapshot(&self, path: String) -> Result<serde_json::Value> {
+        let meta = self
+            .db
+            .save_snapshot_to(&path)
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+        Ok(snapshot_meta_to_json(meta))
+    }
+
+    /// Replace the current graph state with a snapshot loaded from disk.
+    #[napi(
+        ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
+    )]
+    pub fn load_snapshot(&self, path: String) -> Result<serde_json::Value> {
+        let meta = self
+            .db
+            .load_snapshot_from(&path)
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+        Ok(snapshot_meta_to_json(meta))
+    }
+}
+
+fn snapshot_meta_to_json(meta: lora_database::SnapshotMeta) -> serde_json::Value {
+    serde_json::json!({
+        "formatVersion": meta.format_version,
+        "nodeCount": meta.node_count as u64,
+        "relationshipCount": meta.relationship_count as u64,
+        "walLsn": meta.wal_lsn,
+    })
 }
 
 impl Default for Database {

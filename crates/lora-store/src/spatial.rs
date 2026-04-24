@@ -10,7 +10,7 @@ use std::fmt;
 ///
 /// `z` is `Some` iff the point is 3D. For geographic 3D points `z` holds
 /// the `height` in metres.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LoraPoint {
     /// First coordinate: x (Cartesian) or longitude (Geographic)
     pub x: f64,

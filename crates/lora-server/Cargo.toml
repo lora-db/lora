@@ -20,3 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 tower.workspace = true
 lora-database.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"

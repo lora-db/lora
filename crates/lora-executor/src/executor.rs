@@ -220,11 +220,9 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                         .storage
                         .with_relationship(rel_id, |rel| rel.properties.clone());
                     let matches = match actual_props {
-                        Some(props) => self.relationship_matches_properties(
-                            &props,
-                            Some(expr),
-                            &row,
-                        )?,
+                        Some(props) => {
+                            self.relationship_matches_properties(&props, Some(expr), &row)?
+                        }
                         None => false,
                     };
                     if !matches {
@@ -909,11 +907,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         .storage
                         .with_relationship(rel_id, |rel| rel.properties.clone());
                     let matches = match actual_props {
-                        Some(props) => self.relationship_matches_properties(
-                            &props,
-                            Some(expr),
-                            &row,
-                        )?,
+                        Some(props) => {
+                            self.relationship_matches_properties(&props, Some(expr), &row)?
+                        }
                         None => false,
                     };
                     if !matches {

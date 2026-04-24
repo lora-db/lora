@@ -24,7 +24,9 @@ pub const MAX_VECTOR_DIMENSION: usize = 4096;
 /// binding. Aliases (`FLOAT`, `INT`, `INT64`, `INTEGER64`, `INT32`,
 /// `INT16`, `INT8`, `SIGNED INTEGER`) resolve to these canonical variants
 /// at construction time and are not reported back in output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum VectorCoordinateType {
     Float64,
     Float32,
@@ -90,7 +92,7 @@ impl VectorCoordinateType {
 
 /// Internal storage for a vector. One variant per supported coordinate
 /// type; dimension is implicit in the inner `Vec`'s length.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum VectorValues {
     Float64(Vec<f64>),
     Float32(Vec<f32>),
@@ -157,7 +159,7 @@ impl VectorValues {
 }
 
 /// A first-class VECTOR value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LoraVector {
     pub dimension: usize,
     pub values: VectorValues,

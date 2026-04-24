@@ -313,6 +313,150 @@ pub unsafe extern "C" fn lora_db_relationship_count(db: *mut LoraDatabase, out: 
 }
 
 // ============================================================================
+// Snapshots
+// ============================================================================
+
+/// Snapshot metadata. The FFI returns this by value from `lora_db_save_snapshot`
+/// and `lora_db_load_snapshot`; callers treat it as plain data.
+///
+/// `wal_lsn_set` is `1` iff the snapshot carries a meaningful WAL LSN; when
+/// `0`, the `wal_lsn` field is zero and should be ignored. Reserved for the
+/// future WAL/checkpoint hybrid — pure snapshots always write
+/// `wal_lsn_set = 0`.
+#[repr(C)]
+pub struct LoraSnapshotMeta {
+    pub format_version: u32,
+    pub wal_lsn_set: u32,
+    pub node_count: u64,
+    pub relationship_count: u64,
+    pub wal_lsn: u64,
+}
+
+impl LoraSnapshotMeta {
+    fn from_meta(meta: lora_database::SnapshotMeta) -> Self {
+        Self {
+            format_version: meta.format_version,
+            wal_lsn_set: if meta.wal_lsn.is_some() { 1 } else { 0 },
+            node_count: meta.node_count as u64,
+            relationship_count: meta.relationship_count as u64,
+            wal_lsn: meta.wal_lsn.unwrap_or(0),
+        }
+    }
+
+    fn zeroed() -> Self {
+        Self {
+            format_version: 0,
+            wal_lsn_set: 0,
+            node_count: 0,
+            relationship_count: 0,
+            wal_lsn: 0,
+        }
+    }
+}
+
+/// Save a snapshot to `path`. Atomic: the target is only replaced once the
+/// full payload has been written + fsync'd.
+///
+/// On success, `*out_meta` is populated and the return value is `Ok`. On
+/// failure, `*out_error` is set and `*out_meta` is left zeroed.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_save_snapshot(
+    db: *mut LoraDatabase,
+    path: *const c_char,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if db.is_null() || path.is_null() || out_meta.is_null() {
+            return LoraStatus::NullPointer;
+        }
+        *out_meta = LoraSnapshotMeta::zeroed();
+
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    LORA_ERROR_PREFIX,
+                    "snapshot path is not valid UTF-8",
+                );
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+
+        match (*db).inner.save_snapshot_to(path_str) {
+            Ok(meta) => {
+                *out_meta = LoraSnapshotMeta::from_meta(meta);
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Load a snapshot from `path` and replace the current graph state.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_load_snapshot(
+    db: *mut LoraDatabase,
+    path: *const c_char,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if db.is_null() || path.is_null() || out_meta.is_null() {
+            return LoraStatus::NullPointer;
+        }
+        *out_meta = LoraSnapshotMeta::zeroed();
+
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    LORA_ERROR_PREFIX,
+                    "snapshot path is not valid UTF-8",
+                );
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+
+        match (*db).inner.load_snapshot_from(path_str) {
+            Ok(meta) => {
+                *out_meta = LoraSnapshotMeta::from_meta(meta);
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+// ============================================================================
 // String release
 // ============================================================================
 

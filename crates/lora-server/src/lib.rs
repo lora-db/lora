@@ -7,5 +7,8 @@
 pub mod app;
 pub mod config;
 
-pub use app::{build_app, serve, ErrorResponse, HealthResponse, QueryFormat, QueryRequest};
+pub use app::{
+    build_app, build_app_with_admin, serve, serve_with_admin, AdminConfig, ErrorResponse,
+    HealthResponse, QueryFormat, QueryRequest, SnapshotRequest, SnapshotResponse,
+};
 pub use config::{ConfigError, ConfigOutcome, ServerConfig};

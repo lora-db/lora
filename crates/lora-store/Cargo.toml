@@ -14,6 +14,13 @@ categories = ["database-implementations", "data-structures"]
 [dependencies]
 lora-ast.workspace = true
 
+# Snapshot / WAL serialization. `serde` derives on the record types; `bincode`
+# for the binary payload; `crc32fast` for the file-trailer checksum.
+serde.workspace = true
+bincode.workspace = true
+crc32fast.workspace = true
+thiserror.workspace = true
+
 # Wall-clock reads go through the standard library on native targets and
 # through `js_sys::Date::now()` on wasm32-unknown-unknown, where
 # `SystemTime::now()` panics. See `temporal::unix_now`.

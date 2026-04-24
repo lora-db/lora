@@ -4,12 +4,13 @@ use crate::temporal::{
 };
 use crate::vector::LoraVector;
 use lora_ast::Direction;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type NodeId = u64;
 pub type RelationshipId = u64;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PropertyValue {
     Null,
     Bool(bool),
@@ -30,7 +31,7 @@ pub enum PropertyValue {
 
 pub type Properties = BTreeMap<String, PropertyValue>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeRecord {
     pub id: NodeId,
     pub labels: Vec<String>,
@@ -47,7 +48,7 @@ impl NodeRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RelationshipRecord {
     pub id: RelationshipId,
     pub src: NodeId,
@@ -441,7 +442,10 @@ pub trait GraphStorage {
         Self: Sized,
     {
         self.all_node_property_keys().iter().any(|k| k == key)
-            || self.all_relationship_property_keys().iter().any(|k| k == key)
+            || self
+                .all_relationship_property_keys()
+                .iter()
+                .any(|k| k == key)
     }
 
     fn label_property_keys(&self, label: &str) -> Vec<String>

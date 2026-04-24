@@ -57,7 +57,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 | Gap | Classification | Risk |
 |-----|---------------|------|
-| No persistence — all data is lost on process exit | Observed | **High** for any non-ephemeral use case |
+| No continuous persistence — data between snapshot saves is lost on crash | Observed | **Medium** — point-in-time snapshots via `Database::save_snapshot_to` exist; no WAL yet. See [Snapshots](../operations/snapshots.md) |
 | No uniqueness constraints | Observed | **Medium** — duplicate data can be created silently |
 | No property indexes | Observed | **Medium** — property filters are scans (filtered by label when possible) |
 | No transaction isolation beyond single-query atomicity | Observed | **Medium** — global mutex serializes everything |

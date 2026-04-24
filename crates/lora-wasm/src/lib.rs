@@ -10,11 +10,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
+    Snapshotable,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -116,6 +118,42 @@ impl WasmDatabase {
     pub fn relationship_count(&self) -> u32 {
         self.db.relationship_count() as u32
     }
+
+    /// Serialize the graph into a byte buffer. The caller is responsible for
+    /// writing it to disk, IndexedDB, localStorage, or wherever — WASM does
+    /// not have direct filesystem access. The returned bytes can later be
+    /// passed to `loadSnapshotFromBytes` on any `WasmDatabase` instance.
+    ///
+    /// Returns the serialized bytes as a `Uint8Array`.
+    #[wasm_bindgen(js_name = saveSnapshotToBytes)]
+    pub fn save_snapshot_to_bytes(&self) -> Result<Vec<u8>, JsError> {
+        let mut buf = Vec::new();
+        self.db
+            .with_store(|store| store.save_snapshot(&mut buf))
+            .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
+        Ok(buf)
+    }
+
+    /// Replace the graph state with a snapshot decoded from `bytes`.
+    ///
+    /// Returns a plain object matching the shape of `SnapshotMeta`:
+    /// `{ formatVersion, nodeCount, relationshipCount, walLsn }`.
+    #[wasm_bindgen(js_name = loadSnapshotFromBytes)]
+    pub fn load_snapshot_from_bytes(&self, bytes: Vec<u8>) -> Result<JsValue, JsError> {
+        let meta = self
+            .db
+            .with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+            .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
+
+        let out = serde_json::json!({
+            "formatVersion": meta.format_version,
+            "nodeCount": meta.node_count as u64,
+            "relationshipCount": meta.relationship_count as u64,
+            "walLsn": meta.wal_lsn,
+        });
+        out.serialize(&Serializer::json_compatible())
+            .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
+    }
 }
 
 impl Default for WasmDatabase {
@@ -125,8 +163,6 @@ impl Default for WasmDatabase {
 }
 
 // ===== serialization bridge =====
-
-use serde::Serialize;
 
 fn js_error(code: &str, message: &str) -> JsError {
     JsError::new(&format!("{code}: {message}"))

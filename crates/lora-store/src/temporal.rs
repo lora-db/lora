@@ -88,7 +88,7 @@ fn unix_now() -> (u64, u32) {
 
 // ===== LoraDate =====
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraDate {
     pub year: i32,
     pub month: u32,
@@ -204,7 +204,7 @@ impl fmt::Display for LoraDate {
 
 // ===== LoraTime =====
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraTime {
     pub hour: u32,
     pub minute: u32,
@@ -268,7 +268,7 @@ impl fmt::Display for LoraTime {
 
 // ===== LoraLocalTime =====
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraLocalTime {
     pub hour: u32,
     pub minute: u32,
@@ -321,7 +321,7 @@ impl fmt::Display for LoraLocalTime {
 
 // ===== LoraDateTime =====
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraDateTime {
     pub year: i32,
     pub month: u32,
@@ -497,7 +497,7 @@ impl fmt::Display for LoraDateTime {
 
 // ===== LoraLocalDateTime =====
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraLocalDateTime {
     pub year: i32,
     pub month: u32,
@@ -565,7 +565,7 @@ impl fmt::Display for LoraLocalDateTime {
 
 // ===== LoraDuration =====
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraDuration {
     pub months: i64,
     pub days: i64,

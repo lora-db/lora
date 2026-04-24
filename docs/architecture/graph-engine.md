@@ -247,9 +247,26 @@ hooks plus the bulk-scan methods for zero-clone access.
 
 > 🚀 **Production note** — These limits are fine for local development, tests, and modest embedded graphs. Property indexes, uniqueness constraints, and compaction are handled automatically in the [LoraDB managed platform](https://loradb.com) — reach for it once your workload outgrows a single in-memory process.
 
+## Durability
+
+`InMemoryGraph` implements the [`Snapshotable`] trait: it can serialize its
+full state (nodes, relationships, ID counters) to a byte stream and restore
+from one. The file format is a fixed-size header (magic + version + a
+reserved `wal_lsn` field) followed by a bincode-serialized payload and a
+CRC32 trailer. Adjacency and label/type indexes are rebuilt on load rather
+than stored.
+
+Alongside snapshots, every mutation fires a `MutationEvent` at an optional
+`MutationRecorder`. The recorder is `None` by default, so zero-WAL
+workloads pay only a null-pointer check per mutation. The enum covers every
+`GraphStorageMut` method and is the vocabulary a future WAL will use. See
+[Snapshots](../operations/snapshots.md) for the operator-facing
+documentation.
+
 ## Next steps
 
 - How reads and writes flow through the engine: [Data Flow](data-flow.md)
 - Value representation and property types: [Value Model](../internals/value-model.md)
 - Known performance trade-offs: [Performance Notes](../performance/notes.md)
 - Broader limitations and mitigations: [Known Risks](../design/known-risks.md)
+- Durability, snapshots, and the admin surface: [Snapshots](../operations/snapshots.md)

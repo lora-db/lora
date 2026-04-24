@@ -172,6 +172,46 @@ impl Database {
         self.db.relationship_count() as u64
     }
 
+    /// Save the graph to a snapshot file. Atomic — the target path is only
+    /// replaced once the whole payload has been written + fsync'd.
+    ///
+    /// Returns a dict with the snapshot metadata (format version, node /
+    /// relationship count, WAL LSN).
+    fn save_snapshot<'py>(&self, py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
+        let db = Arc::clone(&self.db);
+        let meta = py
+            .allow_threads(move || db.save_snapshot_to(&path))
+            .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+
+        let out = PyDict::new_bound(py);
+        out.set_item("formatVersion", meta.format_version)?;
+        out.set_item("nodeCount", meta.node_count as u64)?;
+        out.set_item("relationshipCount", meta.relationship_count as u64)?;
+        match meta.wal_lsn {
+            Some(lsn) => out.set_item("walLsn", lsn)?,
+            None => out.set_item("walLsn", py.None())?,
+        }
+        Ok(out)
+    }
+
+    /// Replace the current graph state with a snapshot loaded from disk.
+    fn load_snapshot<'py>(&self, py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
+        let db = Arc::clone(&self.db);
+        let meta = py
+            .allow_threads(move || db.load_snapshot_from(&path))
+            .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+
+        let out = PyDict::new_bound(py);
+        out.set_item("formatVersion", meta.format_version)?;
+        out.set_item("nodeCount", meta.node_count as u64)?;
+        out.set_item("relationshipCount", meta.relationship_count as u64)?;
+        match meta.wal_lsn {
+            Some(lsn) => out.set_item("walLsn", lsn)?,
+            None => out.set_item("walLsn", py.None())?,
+        }
+        Ok(out)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "<lora_python.Database nodes={} relationships={}>",
