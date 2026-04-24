@@ -45,3 +45,7 @@ harness = false
 [[bench]]
 name = "scale_benchmarks"
 harness = false
+
+[[bench]]
+name = "perf_smoke_benchmarks"
+harness = false

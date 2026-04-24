@@ -1,0 +1,87 @@
+name: perf-smoke
+
+# Performance-regression smoke benchmark.
+#
+# Purpose:
+#   Catch obvious, large (>=3x) regressions in core engine paths — scan,
+#   filter, traversal, write — before they land on `main`. This is NOT a
+#   source of truth for performance numbers; it's a canary. See
+#   `docs/performance/perf-smoke.md` for scope and limits. For authoritative
+#   numbers use the manual `benchmarks` workflow against a tagged release.
+#
+# Trigger:
+#   - PR + push to `main`, path-filtered to code that can plausibly move
+#     engine performance.
+#   - Manual dispatch for ad-hoc runs.
+#
+# Kept separate from `workspace-quality` because:
+#   - bench builds use a different profile (release) and cache partition
+#   - a failure here reads as "perf canary died", not "tests/clippy broke"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/lora-database/benches/perf_smoke_benchmarks.rs"
+      - "crates/lora-database/benches/perf_smoke_baseline.json"
+      - "scripts/check-perf-smoke.mjs"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/perf-smoke.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/lora-database/benches/perf_smoke_benchmarks.rs"
+      - "crates/lora-database/benches/perf_smoke_baseline.json"
+      - "scripts/check-perf-smoke.mjs"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/perf-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  smoke:
+    name: perf smoke (>=3x regression gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: perf-smoke
+
+      - name: Run perf_smoke_benchmarks
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p perf-smoke-out
+          cargo bench --locked -p lora-database --bench perf_smoke_benchmarks \
+              -- --output-format bencher \
+            | tee perf-smoke-out/bencher.log
+
+      - name: Check against baseline
+        shell: bash
+        run: |
+          node scripts/check-perf-smoke.mjs --input perf-smoke-out/bencher.log
+
+      - name: Upload bencher log
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-smoke-bencher-log
+          path: perf-smoke-out/bencher.log
+          if-no-files-found: warn
+          retention-days: 14

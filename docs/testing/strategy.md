@@ -97,9 +97,16 @@ Located under `crates/lora-database/benches/`:
 | `scale_benchmarks.rs` | Scalability across tiny / small / medium graphs |
 | `advanced_benchmarks.rs` | Complex queries: joins, sub-patterns, deeply nested paths |
 | `temporal_spatial_benchmarks.rs` | Temporal and spatial type operations |
+| `perf_smoke_benchmarks.rs` | 4-bench CI canary for ≥3× regressions — see [perf-smoke docs](../performance/perf-smoke.md) |
 | `fixtures.rs` | Shared graph patterns (chains, social, org, dependency) |
 
 Run with `cargo bench --package lora-database`.
+
+The `perf_smoke_benchmarks` suite also runs automatically on every PR
+via [`.github/workflows/perf-smoke.yml`](../../.github/workflows/perf-smoke.yml),
+comparing against `crates/lora-database/benches/perf_smoke_baseline.json`
+using `scripts/check-perf-smoke.mjs`. It is intentionally a canary, not
+authoritative performance tooling.
 
 ## Test organization conventions
 

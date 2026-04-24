@@ -31,7 +31,7 @@ it needs a tag resolver.
 | **Server binary release**    | `release`                                                        | Tag-driven. Builds `lora-server` archives and creates a **draft** GitHub Release.                |
 | **Client package release**   | `packages-release`                                               | Tag-driven. Publishes `@loradb/lora-wasm`, `@loradb/lora-node`, `lora-python`, `lora-ruby`; verifies + archives the Go binding. |
 | **Crates.io release**        | `cargo-release`                                                  | Tag-driven. Publishes every public Rust crate to crates.io in dependency order.                  |
-| **Benchmark / maintenance**  | `benchmarks`                                                     | Manual dispatch only. Runs criterion for an existing tag and (optionally) attaches to its Release. |
+| **Benchmark / maintenance**  | `benchmarks`, `perf-smoke`                                       | `benchmarks` runs the full criterion suite on manual dispatch only. `perf-smoke` runs a 4-bench canary on every PR + push to `main` and fails only on ≥3× regressions. |
 
 The three tag-driven release workflows (`release`, `packages-release`,
 `cargo-release`) fire off the same `vX.Y.Z[-pre]` tag push and run in
@@ -92,6 +92,7 @@ the workflow file itself. Bindings that share TS types
 | Workflow             | Trigger                                    | What it does                                                                                                                                                                                                    |
 | -------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `benchmarks.yml`     | Dispatch only (`tag` + `attach_to_release`) | `verify-versions` → `bench` runs `cargo bench -p lora-database` for the tagged commit and packages a criterion snapshot. Optional `attach-to-release` step uploads the archive as a GitHub Release asset.       |
+| `perf-smoke.yml`     | PR + push `main` (path-filtered to engine crates, bench sources, baseline, script, own yml), dispatch | Runs the 4-bench `perf_smoke_benchmarks` suite and pipes the bencher output into `scripts/check-perf-smoke.mjs`. Fails only when a bench is ≥3× slower than its checked-in baseline. See [`docs/performance/perf-smoke.md`](../../docs/performance/perf-smoke.md). |
 
 ## Shared composite actions
 

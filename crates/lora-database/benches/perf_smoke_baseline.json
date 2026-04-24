@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "purpose": "Baseline ns/iter for the perf_smoke_benchmarks suite. Used by scripts/check-perf-smoke.mjs to detect major (>=3x) regressions. NOT an authoritative performance record. See docs/performance/perf-smoke.md.",
+    "refresh": "node scripts/check-perf-smoke.mjs --update <bencher-output>",
+    "default_threshold": 3.0,
+    "seeded_on": "2026-04-24",
+    "seeded_from": "Rough scaling of docs/performance/benchmarks.md numbers to allow for ubuntu-latest CI being slower and noisier than the reference Apple Silicon run. Replace with real CI-measured values on first green run."
+  },
+  "benchmarks": {
+    "perf_smoke/scan_1k": {
+      "ns": 500000
+    },
+    "perf_smoke/filter_1k": {
+      "ns": 700000
+    },
+    "perf_smoke/traversal_chain_500": {
+      "ns": 500000
+    },
+    "perf_smoke/write_batch_100": {
+      "ns": 300000
+    }
+  }
+}
