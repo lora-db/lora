@@ -1,19 +1,27 @@
 ---
-title: What's Not Supported Yet
+title: Limitations
 sidebar_label: Limitations
 description: Every Cypher feature and operational capability LoraDB does not support today — persistence, indexes, constraints, procedures, clustering — and what to reach for instead.
 ---
 
-# What's Not Supported Yet
+# Limitations
 
-This page lists every Cypher feature and operational capability LoraDB
-does **not** support today, so you can decide whether LoraDB fits your
-use case and know what to reach for instead. Every unsupported feature
-below raises a clear error (a parse error,
-`SemanticError::UnsupportedFeature`, or `UnknownFunction`) — nothing
-silently misbehaves.
+A single page for every Cypher feature and operational capability
+LoraDB does not support today, so you can decide whether LoraDB fits
+your use case and know what to reach for instead. Every unsupported
+feature below raises a clear error (a parse error,
+`SemanticError::UnsupportedFeature`, or `UnknownFunction`) —
+nothing silently misbehaves.
 
-For the full, machine-checkable feature list see the
+Wording convention used below:
+
+- **Not supported** — hard absence with no near-term plan.
+- **Not yet supported** — absence the docs intentionally signal as
+  future capability.
+- **Not implemented** — the grammar accepts it but the analyzer or
+  executor rejects it today.
+
+For the machine-checkable feature list see the
 [Cypher support matrix](https://github.com/lora-db/lora/blob/main/docs/reference/cypher-support-matrix.md)
 in the internal documentation.
 
@@ -30,107 +38,120 @@ in the internal documentation.
 | Functions | No APOC; ASCII-only case ops |
 | Parameters | No HTTP-level params; no parse-time type check |
 | Spatial | No WKT I/O, no CRS transforms, no bbox predicate |
+| Vectors | No indexes / ANN; no embedding generation; no list-of-vectors properties |
 
 ## Clauses
 
 | Feature | Status |
 |---|---|
-| `CALL` (standalone) | Parsed; analyzer rejects with `UnsupportedFeature` |
-| `CALL … YIELD` | Parsed; analyzer rejects with `UnsupportedFeature` |
-| `FOREACH` | Not in grammar |
-| `CREATE INDEX` / `DROP INDEX` | Not in grammar |
-| `CREATE CONSTRAINT` / `DROP CONSTRAINT` | Not in grammar |
-| `LOAD CSV` | Not in grammar |
-| `USE <graph>` (multi-database) | Not in grammar |
-| `PROFILE` | Not in grammar (`EXPLAIN` is supported) |
+| `CALL` (standalone) | Not supported — parses, analyzer rejects with `UnsupportedFeature` |
+| `CALL … YIELD` | Not supported — parses, analyzer rejects with `UnsupportedFeature` |
+| `FOREACH` | Not supported |
+| `CREATE INDEX` / `DROP INDEX` | Not supported |
+| `CREATE CONSTRAINT` / `DROP CONSTRAINT` | Not supported |
+| `LOAD CSV` | Not supported |
+| `USE <graph>` (multi-database) | Not supported |
+| `PROFILE` | Not supported (`EXPLAIN` is supported) |
 
 ## Patterns
 
 | Feature | Status |
 |---|---|
-| Quantified path patterns `((:X)-[:R]->(:Y)){1,3}` | Not in grammar |
-| Inline `WHERE` inside variable-length relationships | Parsed, not evaluated |
+| Quantified path patterns `((:X)-[:R]->(:Y)){1,3}` | Not supported |
+| Inline `WHERE` inside variable-length relationships | Not implemented — parses but is not evaluated |
 
 ## Operators and expressions
 
 | Feature | Status |
 |---|---|
 | `BETWEEN a AND b` | Not supported — use `x >= a AND x <= b` |
-| Type-mismatch detection in comparisons | Not implemented — cross-type `<` / `>` returns `null` rather than erroring |
-| Aggregates inside [`WHERE`](./queries/where) | Rejected — use [`WITH … WHERE`](./queries/return-with#with) instead |
+| Type-mismatch detection in comparisons | Not implemented — cross-type `<` / `>` returns `null` instead of erroring |
+| Aggregates inside [`WHERE`](./queries/where) | Not supported — use [`WITH … WHERE`](./queries/return-with#with) instead |
 
 ## Aggregates
 
 | Feature | Status |
 |---|---|
 | `DISTINCT` on `stdev`, `stdevp`, `percentileCont`, `percentileDisc` | Not supported — use `collect(DISTINCT x)` and aggregate the unwound list |
-| `GROUP BY` keyword | Not available — non-aggregated columns are the implicit group key |
-| `HAVING` keyword | Not available — filter post-aggregate through `WITH … WHERE` |
+| `GROUP BY` keyword | Not supported — non-aggregated columns are the implicit group key |
+| `HAVING` keyword | Not supported — filter post-aggregate through `WITH … WHERE` |
 
 ## Functions
 
 | Feature | Status |
 |---|---|
-| APOC-style utilities (`apoc.*`) | No compatibility layer |
-| User-defined functions | No registration surface |
-| [`date.truncate`](./functions/temporal#truncation) units | Only `"year"` and `"month"` |
-| [`datetime.truncate`](./functions/temporal#truncation) units | Only `"day"`, `"hour"`, and `"month"` |
-| [`toLower` / `toUpper`](./functions/string#tolower--toupper) | ASCII-only — non-ASCII letters pass through unchanged |
-| [`normalize(str)`](./functions/string#normalize) | Placeholder — does not apply Unicode NFC |
+| APOC-style utilities (`apoc.*`) | Not supported — no compatibility layer |
+| User-defined functions | Not supported — no registration surface |
+| [`date.truncate`](./functions/temporal#truncation) units | Only `"year"` and `"month"`; `"quarter"` / `"week"` / `"day"` not yet supported |
+| [`datetime.truncate`](./functions/temporal#truncation) units | Only `"day"`, `"hour"`, and `"month"`; sub-hour units not yet supported |
+| [`toLower` / `toUpper`](./functions/string#tolower--toupper) | ASCII-only — Unicode case folding not yet supported |
+| [`normalize(str)`](./functions/string#normalize) | Not yet implemented — placeholder returns its input unchanged |
 
 ## Data types
 
 | Feature | Status |
 |---|---|
-| Binary / byte arrays | Not a type — store base64 strings |
-| Fixed-precision decimals | Not a type — use scaled integers or strings |
+| Binary / byte arrays | Not supported — store base64 strings |
+| Fixed-precision decimals | Not supported — use scaled integers or strings |
 | User-defined types | Not supported |
-| Numeric overflow guarding | Not guarded — Rust panics in debug, wraps in release |
+| Numeric overflow guarding | Not supported — Rust panics in debug, wraps in release |
 
 ## Spatial
 
 | Feature | Status |
 |---|---|
-| WGS-84 3D [`distance`](./functions/spatial#distance) honouring `height` | Not implemented — computes surface great-circle only |
-| `point.withinBBox()` | Not implemented |
-| `point.fromWKT()` / WKT output | Not implemented |
-| CRS transformation between SRIDs | Not implemented — cross-SRID `distance` returns `null` |
+| WGS-84 3D [`distance`](./functions/spatial#distance) honouring `height` | Not yet supported — computes surface great-circle only |
+| `point.withinBBox()` | Not yet supported |
+| `point.fromWKT()` / WKT output | Not yet supported |
+| CRS transformation between SRIDs | Not yet supported — cross-SRID `distance` returns `null` |
 | Custom SRIDs | Not supported — only `7203`, `9157`, `4326`, `4979` |
+
+## Vectors
+
+| Feature | Status |
+|---|---|
+| Vector indexes / approximate nearest neighbour | Not yet supported — every similarity / distance call is a linear scan over matched candidates |
+| Built-in embedding generation | Not supported — no plugin surface; generate embeddings in host code |
+| [List-of-vectors as a property](./data-types/vectors#restriction-no-list-of-vectors-as-a-property) | Not supported — rejected at write time; hang many embeddings off separate nodes |
+| Dimension > 4096 | Not supported — rejected at construction time |
+| `ORDER BY` on a `VECTOR` column | Not implemented — runs without panicking, but ordering is unspecified; order by a scalar score instead |
+| Metric extensions (e.g. Minkowski, Chebyshev) | Not yet supported — current metrics are listed in [Vectors → Signed distance metrics](./data-types/vectors#signed-distance-metrics) |
+| Passing a `VECTOR` parameter over HTTP | Blocked by the HTTP parameters limitation below — build the vector with `vector(...)` in the query string or use an in-process binding |
 
 ## Parameters
 
 | Feature | Status |
 |---|---|
 | Parameter as a label or relationship type | Not supported |
-| Parameter type checking at parse time | Not implemented |
-| Parameters over HTTP | The `/query` body does not accept `params` — Rust API only |
+| Parameter type checking at parse time | Not yet supported |
+| Parameters over HTTP | Not yet supported — the `/query` body ignores `params`; use an in-process binding |
 
 ## Storage
 
 | Gap | Impact |
 |---|---|
-| **No persistence** | All data is lost on process exit — LoraDB is in-memory only today |
-| No uniqueness constraints | Duplicates can be created silently — enforce in application code or by matching before creating |
-| No property indexes | Property filters without a label are `O(n)` full scans |
-| No explicit transactions | Each query is atomic; no multi-query transaction boundary |
-| IDs are never reused | Deleting an entity doesn't free its `u64` id |
+| Persistence — not yet supported | All data is lost on process exit; LoraDB is in-memory only today |
+| Uniqueness constraints — not supported | Duplicates can be created silently; enforce in application code or match before creating |
+| Property indexes — not yet supported | Property filters without a label are `O(n)` full scans |
+| Explicit transactions — not supported | Each query is atomic; no multi-query transaction boundary |
+| ID reuse — not supported | Deleting an entity does not free its `u64` id |
 
 ## Concurrency
 
-- A single global lock serialises all queries. Concurrent **reads** do
-  not parallelise.
-- No query timeout — a pathological query can hold the lock indefinitely.
-- No rate limiting on the HTTP server.
+- A single global lock serialises every query. Concurrent **reads**
+  do not parallelise.
+- Query timeouts — not supported; a pathological query can hold the
+  lock indefinitely.
+- HTTP rate limiting — not supported.
 
 ## HTTP server
 
-- No authentication. No TLS. Bind `127.0.0.1` only in production until
-  this changes — see the security notes in the
-  [Contact](/contact#security) page.
-- `POST /query` does not accept a `params` body field (see Parameters
-  above).
-- One server process serves exactly one in-memory graph. Run multiple
-  processes for isolation.
+- Authentication — not supported. TLS — not supported. Bind to
+  `127.0.0.1` only in production until this changes; see the
+  security notes on the [Contact](/contact#security) page.
+- Parameters over HTTP — not yet supported (see Parameters above).
+- Multi-database — not supported. One process serves exactly one
+  in-memory graph; run multiple processes for isolation.
 
 ## Workarounds cheatsheet
 

@@ -9,7 +9,7 @@ description: Spatial functions in LoraDB — point() constructors for 2D/3D Cart
 LoraDB has a `Point` [type](../data-types/spatial) with 2D and 3D
 variants in both Cartesian and WGS-84 (geographic) coordinate reference
 systems. Points round-trip through [property](../concepts/properties)
-storage, [parameters](../queries/#parameters), and results.
+storage, [parameters](../queries/parameters), and results.
 
 ## Overview
 
@@ -173,7 +173,7 @@ RETURN c
 From Node/WASM:
 
 ```ts
-import { wgs84 } from 'lora-node';
+import { wgs84 } from '@loradb/lora-node';
 await db.execute(query, { here: wgs84(4.89, 52.37) });
 ```
 

@@ -8,8 +8,9 @@ description: The UNWIND and MERGE clauses in LoraDB — UNWIND turns a list into
 
 Two clauses that don't fit neatly into read or write:
 
-- [`UNWIND`](#unwind) turns a list into rows — one row per element.
-- [`MERGE`](#merge) finds a pattern in the graph, or creates it if missing.
+- [`UNWIND`](#unwind) turns a list into rows, one per element.
+- [`MERGE`](#merge) finds a pattern in the graph, or creates it
+  if missing (the Cypher upsert).
 
 ## Overview
 
@@ -349,6 +350,6 @@ stray empty list.
 - [**CREATE**](./create) — write-only alternative.
 - [**SET / REMOVE / DELETE**](./set-delete) — mutations applied after `MERGE`.
 - [**MATCH**](./match) — look up endpoints before `MERGE (a)-[…]->(b)`.
-- [**Parameters**](./#parameters) — bind `$rows`, `$patch`, …
+- [**Parameters**](./parameters) — bind `$rows`, `$patch`, …
 - [**Lists & Maps**](../data-types/lists-and-maps) — list input for `UNWIND`.
 - [**Aggregation → collect**](./aggregation#collect) — produce lists you can later unwind.

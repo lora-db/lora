@@ -6,10 +6,10 @@ description: The four result shapes LoraDB returns — rows, rowArrays, graph, a
 
 # Query Result Formats
 
-Every query returns the **same data**, but the engine can shape it into
-one of four wire formats. The choice is a trade-off between payload
-size, ease of access in your host code, and whether you want a row view
-or a graph view.
+Every query returns the same data; the engine can shape it into one
+of four wire formats. The choice is a trade-off between payload size,
+ease of access in host code, and whether you want a row view or a
+graph view.
 
 ## The four formats
 

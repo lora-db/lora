@@ -14,8 +14,8 @@ A **node** is a vertex in the graph. Every node has:
 - A stable internal **id** — see
   [Graph Model → Identity](./graph-model#identity).
 
-Nodes are stored once; multiple references to the same node (via
-different matches) bind to the same identity.
+Each node is stored once. Multiple references to the same node via
+different matches bind to the same identity.
 
 ## Create
 

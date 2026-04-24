@@ -9,7 +9,7 @@ description: Install and use LoraDB in Python via the PyO3 lora-python binding �
 ## Overview
 
 `lora-python` is a PyO3 binding built with `maturin`. It ships two
-classes with identical shapes: a synchronous `Database` and an
+classes with identical surfaces: a synchronous `Database` and an
 asyncio-friendly `AsyncDatabase`. Switching between them is a
 one-line import change.
 
@@ -302,7 +302,7 @@ Engine-level causes live in [Troubleshooting](../troubleshooting).
 ## See also
 
 - [**Ten-Minute Tour**](./tutorial) — guided walkthrough.
-- [**Queries → Parameters**](../queries/#parameters) — binding typed values.
+- [**Queries → Parameters**](../queries/parameters) — binding typed values.
 - [**Cookbook**](../cookbook) — scenario-based recipes.
 - [**Data Types**](../data-types/overview) — Python ↔ engine mapping.
 - [**Temporal Functions**](../functions/temporal) /

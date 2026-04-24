@@ -6,9 +6,10 @@ description: The five scalar types in LoraDB — Null, Boolean, Integer, Float, 
 
 # Scalar Types
 
-The five scalar types — `Null`, `Boolean`, `Integer`, `Float`, `String`
-— are the atoms of every value in LoraDB. Lists, maps, temporals,
-spatials, and graph types are all compositions over these.
+The five scalar types — `Null`, `Boolean`, `Integer`, `Float`,
+`String` — are the atoms of every value in LoraDB. Lists, maps,
+temporal values, spatial points, and graph types are compositions
+over these.
 
 ## Null
 
@@ -246,7 +247,7 @@ prefer `size`.
 
 ## Parameters
 
-Scalar [parameters](../queries/#parameters) bind transparently from
+Scalar [parameters](../queries/parameters) bind transparently from
 host-language values — Rust primitives, JS numbers / strings /
 booleans, Python `int` / `float` / `str` / `None`. See the per-platform
 [Getting Started](../getting-started/installation) guide for your

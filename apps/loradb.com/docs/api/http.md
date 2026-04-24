@@ -6,14 +6,14 @@ description: Endpoint reference for lora-server — the Axum-based HTTP wrapper 
 
 # HTTP API Reference
 
-Endpoint-by-endpoint reference for `lora-server` — the Axum-based HTTP
-wrapper around the engine. Use this page when you're calling LoraDB
-over the wire from a non-Rust/Node/Python stack, or when you want to
-poke at the engine from `curl`. One process serves exactly one
-in-memory graph.
+Endpoint-by-endpoint reference for `lora-server` — the Axum-based
+HTTP wrapper around the engine. Reach for this page when you're
+calling LoraDB over the wire from a stack without an in-process
+binding, or when you want to poke at the engine from `curl`. One
+process serves exactly one in-memory graph.
 
-For an install-and-run walkthrough (how to start the server, set host
-and port, embed it in a larger Axum app), see the
+For an install-and-run walkthrough (how to start the server, set
+host and port, embed it in a larger Axum app), see the
 [HTTP server quickstart](../getting-started/server).
 
 ## Endpoints at a glance
@@ -115,6 +115,13 @@ curl -s http://127.0.0.1:4747/query \
   -d '{"query": "MATCH (p:Person) RETURN p.name AS name", "format": "rows"}'
 ```
 
+The first call writes a node; its body is
+`{"graph": {"nodes": [...], "relationships": []}}` because the
+engine default is `graph` and `CREATE` contributes the new node.
+The second call asks for `rows` explicitly and returns
+`{"rows": [{"name": "Ada"}]}` — one row per match, keyed by the
+`AS` alias.
+
 ### Choose a result format
 
 ```bash
@@ -131,7 +138,13 @@ curl -s http://127.0.0.1:4747/query \
        "format": "graph"}'
 ```
 
-See [Result formats](../concepts/result-formats) for how to choose.
+`rowArrays` comes back as `{"columns": [...], "rows": [[...], ...]}`
+— one `columns` list plus one tuple per row, so the column keys
+aren't repeated. `graph` returns
+`{"graph": {"nodes": [...], "relationships": [...]}}` with each
+entity listed once even when many rows reference it — ideal for
+visualisers. See [Result formats](../concepts/result-formats) for
+the full shape of each.
 
 ### Node client
 
@@ -167,20 +180,21 @@ Full walkthrough in the [HTTP server quickstart](../getting-started/server#confi
 
 ## What isn't here
 
-- **Authentication** — none. Bind to `127.0.0.1` or put the server
-  behind a reverse proxy.
-- **TLS** — none. Terminate at a proxy.
-- **Rate limiting** — none.
-- **Parameters** — not yet. See
+- **Authentication — not supported.** Bind to `127.0.0.1` or put the
+  server behind a reverse proxy.
+- **TLS — not supported.** Terminate at a proxy.
+- **Rate limiting — not supported.**
+- **Parameters — not yet supported.** See
   [Limitations → Parameters](../limitations#parameters).
-- **Multi-database** — one process, one graph. Run multiple processes
-  on different ports for isolation.
-- **Persistence** — all state is in-memory; lost on restart.
+- **Multi-database — not supported.** One process, one graph. Run
+  multiple processes on different ports for isolation.
+- **Persistence — not supported.** All state is in-memory; lost on
+  restart.
 
 ## See also
 
 - [HTTP server quickstart](../getting-started/server) — install, run, embed.
 - [Result formats](../concepts/result-formats) — what each `format` looks like.
-- [Queries → Parameters](../queries/parameters) — typed parameter binding (via embedded bindings today).
+- [Queries → Parameters](../queries/parameters) — typed parameter binding (via in-process bindings today).
 - [Troubleshooting → Server](../troubleshooting#server) — port conflicts, 400s.
 - [Limitations → HTTP server](../limitations#http-server).

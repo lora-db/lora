@@ -7,8 +7,8 @@ description: Bind host-side values into Cypher queries with parameters — how e
 # Query Parameters
 
 Parameters are the **only** safe way to mix host-side values into a
-query. Every binding accepts them; the HTTP transport does not yet
-forward them (see [caveat](#http-api-doesnt-forward-params)).
+query. Every in-process binding accepts them; the HTTP transport does
+not yet (see [caveat](#http-api-doesnt-forward-params)).
 
 ```cypher
 MATCH (u:User) WHERE u.id = $id RETURN u
@@ -141,6 +141,7 @@ when a query returns no rows. See
 The unsupported positions would let a parameter rewrite the query
 shape. If you genuinely need a dynamic label, compose the query
 string host-side from a trusted allow-list — never from raw input.
+See [Limitations → Parameters](../limitations#parameters).
 
 ## Common patterns
 
@@ -176,7 +177,7 @@ db.execute(
 ### Pass-through typed values
 
 ```ts
-import { wgs84, duration } from 'lora-node';
+import { wgs84, duration } from '@loradb/lora-node';
 
 await db.execute(
   "CREATE (:Trip {origin: $here, span: $span})",
@@ -186,19 +187,34 @@ await db.execute(
 
 ### Semantic retrieval with a vector parameter
 
-```ts
-import { vector } from 'lora-node';
+Build a tagged `VECTOR` with the helper for your language, pass it as
+an ordinary parameter, and score it against stored embeddings:
 
-const query = vector(embedding, 384, 'FLOAT32');
+```ts
+import { vector } from '@loradb/lora-node';
+
+const q = vector(embedding, 384, 'FLOAT32');
 
 await db.execute(
   `MATCH (d:Doc)
    RETURN d.id AS id
    ORDER BY vector.similarity.cosine(d.embedding, $q) DESC
    LIMIT 10`,
-  { q: query },
+  { q },
 );
 ```
+
+The same helper exists in every in-process binding — see the
+[Vectors → Passing vectors as parameters](../data-types/vectors#passing-vectors-as-parameters)
+table for Python, Go, Ruby, and Rust shapes.
+
+`vector.similarity.cosine` and `vector.similarity.euclidean` also
+accept a plain `LIST<NUMBER>` on either side, so for a one-off query
+you can skip the helper and pass `{ q: [0.1, 0.2, 0.3] }` — the list
+is coerced to a `FLOAT32` vector whose dimension equals its length.
+The full tagged helper is required only when the vector will be
+**stored** as a property, because property storage needs the complete
+`{kind, dimension, coordinateType, values}` shape.
 
 Vector indexes are not implemented yet, so the query above is a linear
 scan over every matched `Doc` — fine for small datasets, not for
@@ -222,7 +238,7 @@ await db.execute(
 :::caution
 
 `POST /query` currently ignores any `params` body field. Bind via one
-of the embedded bindings (Rust, Node, Python, WASM, Go, or Ruby), or
+of the in-process bindings (Rust, Node, Python, WASM, Go, or Ruby), or
 build the literal into the query string when values are trusted and
 encoded. Parameters over HTTP are on the roadmap — see
 [Limitations → Parameters](../limitations#parameters).

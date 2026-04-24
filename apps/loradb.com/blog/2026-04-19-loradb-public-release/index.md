@@ -172,14 +172,14 @@ and execution model visible to contributors.
 
 The documentation site includes:
 
-- getting started guides;
-- query language pages;
-- function references;
-- data type references;
-- architecture notes;
-- performance notes;
-- troubleshooting;
-- known limitations.
+- [getting started guides](/docs/getting-started/installation) for every binding;
+- [query language pages](/docs/queries) covering each supported clause;
+- [function references](/docs/functions/overview) — string, math, list, aggregation, temporal, spatial;
+- [data type references](/docs/data-types/overview) — scalars, lists, maps, temporal, spatial, vectors;
+- [concept docs](/docs/concepts/graph-model) for the graph model and schema-free behaviour;
+- [cookbook recipes](/docs/cookbook) by domain;
+- [troubleshooting](/docs/troubleshooting);
+- [known limitations](/docs/limitations).
 
 The root repository also includes architecture, testing, operations, and
 release documentation for contributors who want to understand or improve the
@@ -233,6 +233,10 @@ server.
 Those limitations are not hidden. They are the roadmap.
 
 ## Who Should Try It
+
+Start with the [**installation guide**](/docs/getting-started/installation)
+and the [**ten-minute tour**](/docs/getting-started/tutorial) to walk
+through the Cypher surface.
 
 Try LoraDB if you are:
 

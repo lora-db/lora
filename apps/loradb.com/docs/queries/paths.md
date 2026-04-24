@@ -6,9 +6,9 @@ description: Path traversals in LoraDB — variable-length patterns, bounded and
 
 # Paths and Graph Traversals
 
-Paths describe traversals through the graph. Beyond fixed-hop
-[`MATCH`](./match) patterns, LoraDB supports variable-length traversals,
-path binding, and shortest-path search.
+Paths describe traversals through the graph. On top of fixed-hop
+[`MATCH`](./match) patterns, LoraDB supports variable-length
+traversals, path binding, and shortest-path search.
 
 > For an intuition-first walkthrough, see the
 > [**Ten-Minute Tour → Walk multi-step patterns**](../getting-started/tutorial#step-6--walk-multi-step-patterns).
@@ -55,10 +55,17 @@ MATCH (a)-[:FOLLOWS*]->(b) RETURN a, b
 MATCH (a)-[:FOLLOWS*0..1]->(b) RETURN b
 ```
 
+Each match produces one row per distinct traversal, so a single `a`
+reached via two separate paths appears twice. Use
+[`DISTINCT`](./return-with#distinct) on the `RETURN` when you only
+care about which nodes are reachable, not how many ways.
+
 ### Cycle avoidance
 
 Within a single matched path, **no relationship is traversed twice**.
 This makes `*..N` safe on cyclic graphs without explicit guard logic.
+Nodes can still repeat on a single path — see
+[Unique nodes on path](#unique-nodes-on-path) for the distinction.
 
 ### Traverse any type
 
@@ -114,8 +121,12 @@ MATCH p = shortestPath(
 RETURN p, length(p)
 ```
 
-Ties are broken arbitrarily — if you need every minimum-length path,
-use [`allShortestPaths`](#all-shortest-paths).
+Hop count here is the number of `:ROUTE` relationships traversed —
+every relationship has cost 1, regardless of any weight property.
+Ties are broken arbitrarily: if two paths have the same minimum
+length you get one of them, not both — use
+[`allShortestPaths`](#all-shortest-paths) when you need every
+minimum-length path.
 
 ### All shortest paths
 
@@ -135,7 +146,11 @@ MATCH p = shortestPath((a:Node {id: $src})-[*]-(b:Node {id: $dst}))
 RETURN length(p) AS hops
 ```
 
-`hops` is `null` if no path connects the two (the `MATCH` finds nothing).
+One row back when a path exists; **zero rows** when nothing connects
+`a` and `b` — the outer `MATCH` emits nothing, so the `RETURN` never
+runs. Wrap with [`OPTIONAL MATCH`](./match#optional-match) (see
+[Disconnected nodes](#disconnected-nodes) below) if you want a row
+back with `hops = null` for the unreachable case.
 
 ### Shortest path with type filter
 
@@ -190,8 +205,10 @@ WHERE fof <> me
 RETURN DISTINCT fof.name
 ```
 
-`DISTINCT` removes duplicates when multiple 2-hop paths reach the same
-person.
+`*2..2` forces exactly two hops — direct follows don't count. A
+given `fof` can be reached through multiple mutual friends, so
+`DISTINCT` collapses those duplicates to one row per person. The
+`fof <> me` guard drops cycles back to the starting user.
 
 ### Reachable set
 
@@ -200,7 +217,11 @@ MATCH (start:Node {id: $id})-[*0..5]-(n)
 RETURN DISTINCT n
 ```
 
-Every node within 5 hops, in any direction.
+Every node within 5 hops, in any direction. `*0..5` includes the
+start node itself (via the zero-hop interpretation), so `n` covers
+`start` plus everything reachable within five relationships.
+Unbounded range (`*0..`) works but will expand the entire connected
+component — keep a cap.
 
 ### Shortest route length
 
@@ -412,16 +433,17 @@ N".
 
 ## What's not supported
 
-- **Weighted shortest paths** — `shortestPath` treats every relationship
-  as cost 1. No cost argument, no Dijkstra-style weighting. Implement
-  in the host language for now.
-- **Quantified path patterns** (`((:X)-[:R]->(:Y)){1,3}`) — not in the
-  grammar.
-- **Procedures** like `apoc.path.*` — no CALL surface. See
-  [Limitations](../limitations).
+- **Weighted shortest paths.** `shortestPath` treats every relationship
+  as cost 1 — no cost argument, no Dijkstra-style weighting. Compute
+  weighted paths in host code (or via `reduce` over `relationships(p)`).
+- **Quantified path patterns** (`((:X)-[:R]->(:Y)){1,3}`) — not in
+  the grammar.
+- **Procedures** like `apoc.path.*` — no `CALL` surface.
 - **Inline `WHERE` inside `*` patterns** — parsed but not evaluated.
-  Move the predicate out into a standalone `WHERE` using `nodes(p)` /
+  Move the predicate into a standalone `WHERE` using `nodes(p)` /
   `relationships(p)`.
+
+See [Limitations](../limitations) for the full list.
 
 ## See also
 

@@ -6,9 +6,9 @@ description: The built-in function library — string, math, list, aggregation, 
 
 # Built-in Functions in LoraDB
 
-Function names are **case-insensitive**. Canonical camelCase is shown on
-each page. Unknown names are rejected at analysis time
-(`Unknown function 'foo'`); wrong arity is rejected the same way.
+Function names are **case-insensitive**; canonical camelCase is
+shown on each page. Unknown names and wrong arity are rejected at
+analysis time (`Unknown function 'foo'`, `WrongArity`).
 
 Most functions **propagate `null`** — any `null` argument makes the
 result `null`. The exceptions are the aggregates, `coalesce`,
@@ -24,7 +24,7 @@ result `null`. The exceptions are the aggregates, `coalesce`,
 | **List** | <CypherCode code="size" />, <CypherCode code="head" />, <CypherCode code="range" />, <CypherCode code="reduce" /> | [List](./list) |
 | **Temporal** | <CypherCode code="date" />, <CypherCode code="datetime" />, <CypherCode code="duration.between" /> | [Temporal](./temporal) |
 | **Spatial** | <CypherCode code="point" />, <CypherCode code="distance" /> | [Spatial](./spatial) |
-| **Vector** | <CypherCode code="vector" />, <CypherCode code="vector.similarity.cosine" />, <CypherCode code="vector_distance" />, <CypherCode code="vector_norm" /> | [Vectors](../data-types/vectors) |
+| **Vector** | <CypherCode code="vector" />, <CypherCode code="vector.similarity.cosine" />, <CypherCode code="vector.similarity.euclidean" />, <CypherCode code="vector_distance" />, <CypherCode code="vector_norm" />, <CypherCode code="vector_dimension_count" />, <CypherCode code="toIntegerList" />, <CypherCode code="toFloatList" /> | [Vector](./vectors) |
 | **Path** | <CypherCode code="length" />, <CypherCode code="nodes" />, <CypherCode code="relationships" /> | [Paths](../queries/paths) |
 
 ## Entity introspection
@@ -158,8 +158,13 @@ Finding the right function for a task:
 | Internal id of a node / rel | [<CypherCode code="id(x)" />](#entity-introspection) |
 | Total order over temporal values | <CypherCode code="<" />, <CypherCode code="<=" />, <CypherCode code=">" />, <CypherCode code=">=" /> — see [Ordering](../queries/ordering) |
 | Cartesian or geodesic distance | [<CypherCode code="distance(a, b)" />](./spatial#distance) |
+| Score a VECTOR against a query vector | [<CypherCode code="vector.similarity.cosine(v, $q)" />](../data-types/vectors#bounded-similarity-in-0-1) |
+| Signed distance under a metric | [<CypherCode code="vector_distance(a, b, EUCLIDEAN)" />](../data-types/vectors#signed-distance-metrics) |
+| Magnitude of a VECTOR | [<CypherCode code="vector_norm(v, EUCLIDEAN)" />](../data-types/vectors#vector-norms) |
+| Dimension of a VECTOR | [<CypherCode code="vector_dimension_count(v)" />](../data-types/vectors#introspection) or <CypherCode code="size(v)" /> |
+| Convert VECTOR coordinates back to a LIST | [<CypherCode code="toIntegerList(v)" /> / <CypherCode code="toFloatList(v)" />](../data-types/vectors#introspection) |
 
-## Not implemented
+## Not supported
 
 - **APOC-style utilities** (`apoc.*`) — no compatibility layer.
 - **Procedures** (`CALL db.labels()` etc.) — rejected at analysis time.
@@ -173,4 +178,4 @@ Full list in [Limitations](../limitations).
 - [**String**](./string), [**Math**](./math), [**List**](./list) — everyday helpers.
 - [**Temporal**](./temporal), [**Spatial**](./spatial) — typed domains.
 - [**Data Types Overview**](../data-types/overview) — value shapes.
-- [**Queries → Parameters**](../queries/#parameters) — binding typed values from the host.
+- [**Queries → Parameters**](../queries/parameters) — binding typed values from the host.

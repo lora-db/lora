@@ -8,9 +8,9 @@ description: Run LoraDB as an HTTP service with lora-server — a small Axum wra
 
 ## Overview
 
-`lora-server` wraps the Rust engine in a small Axum HTTP server.
-Useful for probing the engine with `curl`, embedding in a polyglot
-stack, or demos. One process serves exactly one in-memory graph.
+`lora-server` wraps the Rust engine in a small Axum HTTP server —
+useful for probing the engine with `curl`, serving a polyglot stack,
+or running demos. One process serves exactly one in-memory graph.
 
 ## Installation / Setup
 

@@ -2,7 +2,7 @@ const path = require('path');
 
 const SITE_URL = 'https://loradb.com';
 const SITE_DESCRIPTION =
-  'LoraDB is an embedded, Rust-native graph database with a Cypher-like query engine — built for AI agents, robotics, and context-rich systems that reason over connected data.';
+  'LoraDB is a local-first, in-memory property-graph engine written in Rust that speaks a pragmatic subset of Cypher — built for AI agents, robotics, and context-rich systems that reason over connected data.';
 
 module.exports = {
   title: 'LoraDB',

@@ -6,9 +6,9 @@ description: Temporal functions in LoraDB — constructors, now/current, compone
 
 # Temporal Functions (Dates, Times, Durations)
 
-LoraDB supports the full Cypher temporal model — see
+LoraDB supports the Cypher temporal model end-to-end — see
 [Temporal Data Types](../data-types/temporal) for the type details.
-Every value is first-class: store it on a
+Each value is first-class: store it as a
 [property](../concepts/properties), compare it, do arithmetic on it.
 
 ## Overview
@@ -374,16 +374,16 @@ See [WASM → gotchas](../getting-started/wasm#performance--best-practices).
 
 ## Limitations
 
-- **`date.truncate`** supports only `"year"` and `"month"` today — no
-  `"quarter"`, `"week"`, or `"day"`.
-- **`datetime.truncate`** supports `"day"`, `"hour"`, and `"month"` —
-  no sub-hour units.
-- Temporal arithmetic between values of **different** temporal types
+- **`date.truncate`** supports only `"year"` and `"month"` today —
+  `"quarter"`, `"week"`, and `"day"` are not supported.
+- **`datetime.truncate`** supports `"day"`, `"hour"`, and `"month"`
+  — no sub-hour units.
+- Arithmetic between values of **different** temporal types
   (e.g. `Date - Time`) is not supported. Convert first.
 - Parsing is strict ISO 8601 — non-ISO shapes (`MM/DD/YYYY`,
   RFC-2822) are rejected.
-- No `hour-minute-second-offset` component-access shortcuts on
-  `Duration` beyond the listed fields.
+- No component-access shortcuts on `Duration` beyond the listed
+  fields.
 
 ## See also
 

@@ -9,10 +9,11 @@ description: Install and use LoraDB in Node.js or TypeScript via the lora-node N
 ## Overview
 
 `lora-node` is a native N-API binding. Queries run on the libuv
-threadpool, so they don't block the event loop — but parallel calls
-on a single `Database` still serialise on the engine mutex. Shape,
-helpers, and type guards match the
-[WASM binding](./wasm) exactly.
+threadpool so they don't block the event loop, though parallel calls
+on a single `Database` still serialise on the engine mutex. The
+surface, helpers, and type guards match the
+[WASM binding](./wasm) exactly — the same code ports with an import
+swap.
 
 ## Installation / Setup
 
@@ -46,7 +47,7 @@ npm install @loradb/lora-node
 pattern is `createDatabase()`, which returns a `Promise<Database>`:
 
 ```ts
-import { createDatabase } from 'lora-node';
+import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();
 ```
@@ -67,7 +68,7 @@ directly — it is exported as a **type only**.
 ## Running Your First Query
 
 ```ts
-import { createDatabase } from 'lora-node';
+import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();
 
@@ -105,8 +106,8 @@ objects → `Map`. Dates and spatial points use helper factories — see
 ### Structured result handling
 
 ```ts
-import type { LoraNode } from 'lora-node';
-import { isNode } from 'lora-node';
+import type { LoraNode } from '@loradb/lora-node';
+import { isNode } from '@loradb/lora-node';
 
 const res = await db.execute<{ n: LoraNode }>(
   "MATCH (n:Person) RETURN n"
@@ -123,7 +124,7 @@ for (const row of res.rows) {
 
 ```ts
 import express from 'express';
-import { createDatabase, LoraError } from 'lora-node';
+import { createDatabase, LoraError } from '@loradb/lora-node';
 
 const db = await createDatabase();
 const app = express();
@@ -155,7 +156,7 @@ handlers — the `Database` instance lives at module scope.
 ### Handle errors
 
 ```ts
-import { LoraError } from 'lora-node';
+import { LoraError } from '@loradb/lora-node';
 
 try {
   await db.execute("BAD QUERY");
@@ -211,7 +212,7 @@ Build typed temporal / spatial values in JS and pass them as
 parameters:
 
 ```ts
-import { createDatabase, date, duration, wgs84 } from 'lora-node';
+import { createDatabase, date, duration, wgs84 } from '@loradb/lora-node';
 
 const db = await createDatabase();
 
@@ -256,7 +257,7 @@ All return Promises for API symmetry; `clear` / `nodeCount` /
 the instance that `createDatabase()` returned:
 
 ```ts
-import { createDatabase, type Database } from 'lora-node';
+import { createDatabase, type Database } from '@loradb/lora-node';
 
 export class UserRepo {
   constructor(private readonly db: Database) {}
@@ -291,7 +292,7 @@ const users = new UserRepo(db);
 | `const db = new Database()` | `const db = await createDatabase()` |
 | `const db = Database.create()` (missing `await`) | `const db = await createDatabase()` |
 | `Database.create()` (legacy name) | `createDatabase()` |
-| `import { Database } from 'lora-node'; new Database()` | `import { createDatabase } from 'lora-node'`; then `await createDatabase()` |
+| `import { Database } from '@loradb/lora-node'; new Database()` | `import { createDatabase } from 'lora-node'`; then `await createDatabase()` |
 
 `Database` is a **type-only** export. Importing it as a value and
 calling `new Database()` is a compile error — synchronous
@@ -328,7 +329,7 @@ For the engine-level cases see the
 ## See also
 
 - [**Ten-Minute Tour**](./tutorial) — same queries in Node.
-- [**Queries → Parameters**](../queries/#parameters) — binding typed values.
+- [**Queries → Parameters**](../queries/parameters) — binding typed values.
 - [**Cookbook**](../cookbook) — scenario-based recipes.
 - [**Data Types**](../data-types/overview) — host-value mapping.
 - [**WASM guide**](./wasm) — same API, browser target.

@@ -242,27 +242,51 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 
 ## 13a. Vector types and functions
 
-| Type | Status | Notes |
-|------|--------|-------|
-| `VECTOR<FLOAT64>`  | **Supported** | Canonical tag `FLOAT64` (alias `FLOAT`) |
-| `VECTOR<FLOAT32>`  | **Supported** | |
-| `VECTOR<INTEGER>`  | **Supported** | 64-bit signed (aliases `INT`, `INT64`, `SIGNED INTEGER`) |
-| `VECTOR<INTEGER32>` | **Supported** | Aliases `INT32` |
-| `VECTOR<INTEGER16>` | **Supported** | Aliases `INT16` |
-| `VECTOR<INTEGER8>`  | **Supported** | Aliases `INT8` |
+### Coordinate types
 
-| Function | Status | Notes |
-|----------|--------|-------|
-| `vector(list, dimension, coordinateType)` | **Supported** | Accepts `LIST<NUMBER>` or `STRING` like `"[1.0, 2.0]"` |
-| `vector.similarity.cosine(a, b)` | **Supported** | Accepts VECTOR or `LIST<NUMBER>`; f32 arithmetic; returns null for zero vectors |
-| `vector.similarity.euclidean(a, b)` | **Supported** | `1 / (1 + d²)` in f32 |
-| `vector_dimension_count(v)` | **Supported** | Equivalent to `size(v)` on a VECTOR |
-| `vector_distance(a, b, metric)` | **Supported** | `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `COSINE`, `DOT`, `HAMMING` |
-| `vector_norm(v, metric)` | **Supported** | `EUCLIDEAN`, `MANHATTAN` |
-| `toIntegerList(v)` / `toFloatList(v)` | **Supported** | Returns `LIST<INTEGER>` / `LIST<FLOAT>` |
-| `size(v)` on a VECTOR | **Supported** | Returns dimension |
-| Vector indexes / approximate kNN | **Not yet implemented** | Exhaustive kNN works today via `ORDER BY vector.similarity.* LIMIT k` |
-| Built-in embedding/plugin integration | **Not yet implemented** | LoraDB has no plugin system today |
+| Type | Status | Storage | Aliases accepted on input |
+|------|--------|---------|---------------------------|
+| `VECTOR<FLOAT64>`   | **Supported** | `Vec<f64>` | `FLOAT`, `FLOAT64` |
+| `VECTOR<FLOAT32>`   | **Supported** | `Vec<f32>` | `FLOAT32` |
+| `VECTOR<INTEGER>`   | **Supported** | `Vec<i64>` | `INTEGER`, `INT`, `INT64`, `INTEGER64`, `SIGNED INTEGER` |
+| `VECTOR<INTEGER32>` | **Supported** | `Vec<i32>` | `INTEGER32`, `INT32` |
+| `VECTOR<INTEGER16>` | **Supported** | `Vec<i16>` | `INTEGER16`, `INT16` |
+| `VECTOR<INTEGER8>`  | **Supported** | `Vec<i8>`  | `INTEGER8`, `INT8` |
+
+Alias matching is case-insensitive and collapses runs of whitespace.
+`DOUBLE` is **rejected** explicitly so typos surface as a clear
+"unknown coordinate type" error rather than silently mapping to
+`FLOAT64`. Dimension is capped at `1..=4096`.
+
+### Functions
+
+| Function | Arity | Status | Notes |
+|----------|-------|--------|-------|
+| `vector(value, dimension, coordinateType)` | 3 | **Supported** | `value`: `LIST<NUMBER>` or `STRING` like `"[1.0, 2.0]"`. `dimension`: integer or whole-number float. `coordinateType`: bare identifier (rewritten to string in analysis), quoted string, or `$param` (passed through). Null `value` / `dimension` → `null`; null `coordinateType` → error. |
+| `vector.similarity.cosine(a, b)` | 2 | **Supported** | Accepts `VECTOR` or `LIST<NUMBER>`; list coerced to `FLOAT32` vector. Bounded to `[0, 1]` as `(1 + raw_cosine)/2`. Zero-norm vector → `null`. `f32` arithmetic. |
+| `vector.similarity.euclidean(a, b)` | 2 | **Supported** | Same input acceptance; returns `1 / (1 + d²)`. |
+| `vector_distance(a, b, metric)` | 3 | **Supported** | Both operands must be `VECTOR` (plain list rejected). Metrics: `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `COSINE` (= `1 - raw_cosine`), `DOT` (= `-(a·b)`), `HAMMING` (f32 comparison). Case-insensitive; identifier or string. |
+| `vector_norm(v, metric)` | 2 | **Supported** | `EUCLIDEAN` or `MANHATTAN`. Case-insensitive. |
+| `vector_dimension_count(v)` | 1 | **Supported** | Returns `dimension`. |
+| `size(v)` / `length(v)` on a `VECTOR` | 1 | **Supported** | Returns `dimension` — identical to `vector_dimension_count`. |
+| `valueType(vector(...))` | 1 | **Supported** | Returns `"VECTOR<COORD>(N)"`. |
+| `toIntegerList(v)` | 1 | **Supported** | Rejects non-vector; float coordinates truncate toward zero. |
+| `toFloatList(v)` | 1 | **Supported** | Rejects non-vector. |
+| Vector indexes / approximate kNN | — | **Not yet implemented** | Exhaustive kNN works today via `ORDER BY vector.similarity.* LIMIT k`. |
+| Built-in embedding / plugin integration | — | **Not yet implemented** | LoraDB has no plugin surface — produce embeddings host-side. |
+
+### Storage semantics
+
+| Behaviour | Status |
+|---|---|
+| `VECTOR` as node property | **Supported** |
+| `VECTOR` as relationship property | **Supported** |
+| `VECTOR` as a value inside a `Map` property | **Supported** |
+| `VECTOR` inside a `List` stored as property (at any depth, including via nested `Map`) | **Rejected at write time** (`PropertyConversionError::NestedVectorInList`) |
+| List / `collect(...)` of vectors inside a query (RETURN / WITH / UNWIND) | **Supported** — only the write path enforces the no-list-of-vectors rule |
+| Equality across coord types with equal values | `false` — coord type is part of identity |
+| `DISTINCT` key | Coord type + dimension + stringified values |
+| `ORDER BY` on a `VECTOR` column | Deterministic but unspecified ordering — use a scalar score for intent |
 
 ## 14. Data types
 

@@ -6,15 +6,15 @@ description: Aggregation functions in LoraDB — count, sum, avg, min, max, coll
 
 # Aggregation Functions
 
-Aggregation clauses group rows and collapse them into a single value per
-group. For the clause-level semantics (implicit `GROUP BY`,
+Aggregation collapses a group of input rows into a single value per
+group. For clause-level semantics (implicit `GROUP BY`,
 `HAVING`-style filtering via [`WITH`](../queries/return-with#with),
 where aggregates are legal) see the
 [Aggregation query page](../queries/aggregation).
 
-> All aggregates **skip `null` inputs** except `count(*)` (counts rows)
-> and `collect(expr)` (keeps nulls). Empty-input semantics vary per
-> function — see the [summary table](#summary-table).
+> All aggregates **skip `null` inputs** except `count(*)` (counts
+> rows) and `collect(expr)` (keeps nulls). Empty-input semantics
+> vary per function — see the [summary table](#summary-table).
 
 ## Summary table
 
@@ -350,14 +350,16 @@ RETURN u.handle, collect(p.title)[..3] AS latest_three
 - **Aggregates are rejected inside [`WHERE`](../queries/where).** Use
   [`WITH … WHERE`](../queries/return-with#having-style-filtering-with)
   instead.
-- **`stdev`, `stdevp`, `percentileCont`, `percentileDisc` don't support
-  `DISTINCT`**. For percentile-of-distinct-values, first
-  `collect(DISTINCT x)`, then
-  [`UNWIND`](../queries/unwind-merge#unwind) and aggregate.
-- **`count(*)` counts rows, not non-null values.** Use `count(expr)` if
-  you want nulls skipped.
-- There is **no `GROUP BY`** keyword — non-aggregated columns in the
-  same projection stage form the group key implicitly.
+- **`stdev`, `stdevp`, `percentileCont`, `percentileDisc` don't
+  support `DISTINCT`.** For a percentile of distinct values, first
+  `collect(DISTINCT x)`, then [`UNWIND`](../queries/unwind-merge#unwind)
+  and aggregate.
+- **`count(*)` counts rows, not non-null values.** Use `count(expr)`
+  when you want nulls skipped.
+- **No `GROUP BY` keyword** — non-aggregated columns in the same
+  projection stage form the group key implicitly.
+
+See [Limitations](../limitations#aggregates) for the full list.
 
 ## See also
 

@@ -20,7 +20,7 @@ const QUICKSTART_TABS = [
     id: 'node',
     label: 'Node.js',
     file: 'quickstart.ts',
-    code: `import { createDatabase } from 'lora-node';
+    code: `import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();
 
@@ -56,7 +56,7 @@ print(result["rows"])`,
     id: 'wasm',
     label: 'WASM',
     file: 'quickstart.ts',
-    code: `import { createDatabase } from 'lora-wasm';
+    code: `import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
 

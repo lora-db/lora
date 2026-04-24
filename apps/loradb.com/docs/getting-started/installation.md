@@ -10,11 +10,11 @@ description: Pick a LoraDB installation — Node.js, Python, WebAssembly, Go, Ru
 
 LoraDB is one Rust engine with bindings for the major application
 runtimes — Node.js, Python, WebAssembly, Go, and Ruby — plus a
-standalone HTTP server and direct embedding from Rust. Pick whichever
-matches your host language; every binding shares the same parser,
-planner, executor, and result shape, so switching later is a
-mechanical translation. This page helps you pick; each platform guide
-covers install, connect, execute, and error handling end-to-end.
+standalone HTTP server and direct embedding from Rust. Every binding
+shares the same parser, planner, executor, and result shape, so
+switching hosts later is a mechanical translation. This page helps
+you pick; each binding guide covers install, connect, execute, and
+error handling end-to-end.
 
 ## Installation / Setup
 
@@ -46,17 +46,14 @@ from a clone.
 | Build a Go service or CLI (cgo) | Go |
 | Ship a Ruby app, worker, or Rails service | Ruby |
 
-All bindings share the same query surface and result shape, so
-switching later is a mechanical translation — the Cypher is
-identical.
+All bindings share the same query surface and result shape — the
+Cypher is identical, only the host-language wrapper differs.
 
 ### Other runtimes
 
-If you're building the engine into Rust directly, or prefer to reach
-it over the wire, those paths are documented separately and share the
-same Cypher surface:
+Two more paths share the same Cypher surface:
 
-- [**Rust crate**](./rust) — embed `lora-database` inline in your
+- [**Rust crate**](./rust) — embed `lora-database` directly in a
   Rust binary for the lowest-overhead option.
   [![crates.io](https://img.shields.io/crates/v/lora-database?label=crates.io&logo=rust)](https://crates.io/crates/lora-database)
 - [**HTTP server**](./server) — run `lora-server` and `POST /query`
@@ -101,7 +98,7 @@ map in.
 
 ## Common Patterns
 
-### Embed one database
+### One process, one graph
 
 Each binding defaults to **one process, one in-memory graph**.
 Parallel queries on the same handle serialise on a mutex — spawn

@@ -6,9 +6,9 @@ description: Math functions in LoraDB — abs, sign, sqrt, exp, log, trigonometr
 
 # Math Functions
 
-All math functions return `null` on `null` input. Functions with a
-restricted domain (e.g. `sqrt` of a negative number) return `null`
-rather than raising.
+Every math function returns `null` on `null` input. Functions with
+a restricted domain (e.g. `sqrt` of a negative number) return
+`null` rather than raising.
 
 ## Overview
 

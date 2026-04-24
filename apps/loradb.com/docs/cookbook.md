@@ -7,18 +7,19 @@ description: Scenario-driven Cypher recipes for LoraDB — social graphs, e-comm
 # LoraDB Query Cookbook
 
 A scenario-driven companion to the clause-by-clause
-[**Queries reference**](./queries/). Use this page when you know the
-question you want to ask ("who are my mutual follows?", "which orders
-are late?") but aren't sure how to shape the Cypher. Where the
-reference answers *"what does this clause do"*, the cookbook answers
-*"how do I ask this question"*.
+[**Queries reference**](./queries/). Reach for this page when you
+know the question ("who are my mutual follows?", "which orders are
+late?") but aren't sure how to shape the Cypher. Where the reference
+answers *"what does this clause do"*, the cookbook answers *"how do
+I ask this question"*.
 
-Each recipe names a real problem, states the assumed data model, gives
-a query, and explains why it works — then lists useful variations and
-related concepts. Recipes are grouped by domain: social, e-commerce,
-events, geospatial. Every query is idiomatic LoraDB — no APOC, no
-`CALL`, no window functions — and when a SQL idiom doesn't translate,
-the recipe shows the Cypher-native shape.
+Each recipe names a real problem, states its assumed data model,
+gives a query, and explains why it works — then lists useful
+variations and related concepts. Recipes are grouped by domain:
+social, e-commerce, events, geospatial, vector retrieval. Every
+query is idiomatic LoraDB — no APOC, no `CALL`, no window functions
+— and when a SQL idiom doesn't translate, the recipe shows the
+Cypher-native shape.
 
 ## On this page
 
@@ -26,6 +27,7 @@ the recipe shows the Cypher-native shape.
 - [E-commerce patterns](#e-commerce-patterns)
 - [Event / time-based patterns](#event--time-based-patterns)
 - [Geospatial patterns](#geospatial-patterns)
+- [Vector-retrieval patterns](#vector-retrieval-patterns)
 - [See also](#see-also)
 
 ---
@@ -753,6 +755,104 @@ pair duplicates.
 
 - [Cartesian products in MATCH](./queries/match#multiple-patterns-cross-product)
 - [Performance notes](./queries/paths#performance)
+
+---
+
+## Vector-retrieval patterns
+
+### Recipe: Top-k by similarity
+
+#### Problem
+
+"Return the ten documents most similar to `$query`, exhaustive scan."
+
+#### Assumed data model
+
+- `:Doc {id, title, embedding}` — `embedding` is a `VECTOR<FLOAT32>`
+  of fixed dimension (e.g. 384 for a small sentence-transformer).
+
+#### Query
+
+```cypher
+MATCH (d:Doc)
+RETURN d.id AS id, d.title AS title
+ORDER BY vector.similarity.cosine(d.embedding, $query) DESC
+LIMIT 10
+```
+
+Pass `$query` either as a tagged vector (`vector([...], 384, FLOAT32)`
+on the host) or as a plain numeric list — both are accepted by the
+similarity function. See
+[Vectors → Passing vectors as parameters](./data-types/vectors#passing-vectors-as-parameters).
+
+#### Explanation
+
+Vector indexes are not implemented yet, so every matched node is
+scored linearly. Keep the `MATCH` as narrow as possible (label,
+property filter) to shrink the candidate set before similarity runs.
+
+#### Variations
+
+- **Score in a `WITH` stage** if the score is reused downstream:
+  `WITH d, vector.similarity.cosine(d.embedding, $query) AS score`.
+- **Swap the metric** for Euclidean-bounded similarity
+  (`vector.similarity.euclidean`) or a signed distance
+  (`vector_distance(d.embedding, $query, EUCLIDEAN)`, then
+  `ORDER BY … ASC`).
+
+#### Related concepts
+
+- [Vectors](./data-types/vectors)
+- [Limitations → Vectors](./limitations#vectors)
+
+---
+
+### Recipe: Graph-filtered retrieval
+
+#### Problem
+
+"Return the five documents most similar to `$query`, but only those
+that mention an entity of a given type — and include the matched
+entity names in the result."
+
+#### Assumed data model
+
+- `:Doc {id, title, embedding}` with a `VECTOR` embedding.
+- `(:Doc)-[:MENTIONS]->(:Entity {name, type})`.
+
+#### Query
+
+```cypher
+MATCH (d:Doc)
+WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+MATCH (d)-[:MENTIONS]->(e:Entity)
+WHERE e.type = $entity_type
+RETURN d.id, d.title, score, collect(e.name) AS entities
+ORDER BY score DESC
+LIMIT 5
+```
+
+#### Explanation
+
+Similarity supplies candidates; the graph explains and constrains
+them. The score is captured once in the first `WITH`, then the
+pipeline walks `MENTIONS` edges for filtering and returns the entity
+list alongside the ranking. This is the shape that motivated putting
+`VECTOR` next to the graph.
+
+#### Variations
+
+- **Filter before scoring** if the entity constraint is selective —
+  move the `MATCH (d)-[:MENTIONS]->(e:Entity {type: $entity_type})`
+  above the similarity `WITH` so similarity only scores documents that
+  already passed the entity filter.
+- **Rerank by recency** as a tie-breaker:
+  `ORDER BY score DESC, d.updated_at DESC`.
+
+#### Related concepts
+
+- [Vectors → Exhaustive kNN](./data-types/vectors#exhaustive-knn)
+- [Queries → Parameters](./queries/parameters#semantic-retrieval-with-a-vector-parameter)
 
 ---
 

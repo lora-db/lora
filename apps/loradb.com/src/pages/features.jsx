@@ -164,7 +164,7 @@ curl -s http://127.0.0.1:4747/query \\
     label: 'Node.js',
     file: 'app.ts',
     note: 'lora-node · prototype',
-    code: `import { createDatabase } from 'lora-node';
+    code: `import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();
 
@@ -196,7 +196,7 @@ result = db.execute(
     label: 'WebAssembly',
     file: 'main.ts',
     note: 'lora-wasm · prototype',
-    code: `import { createDatabase } from 'lora-wasm';
+    code: `import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
 await db.execute("CREATE (:User {name: 'Ada'})");

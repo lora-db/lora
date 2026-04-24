@@ -1,21 +1,21 @@
 ---
 title: Why LoraDB
 sidebar_label: Why LoraDB
-description: Why an embedded, Rust-native graph database with a Cypher-like engine — built for systems that reason over connected, evolving context.
+description: Why a local-first, in-memory property-graph engine in Rust that speaks a pragmatic subset of Cypher — built for systems that reason over connected, evolving context.
 ---
 
 # Why LoraDB
 
-Most systems end up modeling relationships. Users follow users, agents
-reference entities, scenes contain objects, events depend on other
-events. When the questions you care about are _"everything reachable
-from here"_ or _"what connects these two"_, the shape of your data is
-a graph — even when the store is a table.
+Most systems end up modelling relationships. Users follow users,
+agents reference entities, scenes contain objects, events depend on
+other events. When the questions you care about are _"everything
+reachable from here"_ or _"what connects these two"_, the shape of
+your data is a graph — even when the store is a table.
 
-LoraDB is a small, in-process graph database that treats relationships
-as first-class and speaks a pragmatic subset of Cypher. It's built for
-code paths where that model needs to live next to the code that uses
-it.
+LoraDB is a local-first, in-memory property-graph engine written in
+Rust that speaks a pragmatic subset of Cypher. It's built for code
+paths where the graph needs to live next to the code that uses it,
+not behind a network boundary.
 
 ## The problem with traditional approaches
 
@@ -41,7 +41,7 @@ application code.
 Established graph databases solve real problems — clustering,
 durability, multi-user isolation, huge graphs. They also come with a
 service to deploy, a protocol to speak, and a TCO that only pays off
-once your graph is big enough. For a service, agent, or pipeline that
+once the graph is big enough. For a service, agent, or pipeline that
 wants a graph _data structure_ inside its own process, they're too
 much.
 
@@ -64,7 +64,7 @@ optimise.
 
 Agents, robots, and real-time pipelines all end up building the same
 thing by accident: an in-memory structure of entities and relations
-with typed keys and evolving shape. LoraDB is that structure, on
+with typed keys and an evolving shape. LoraDB is that structure, on
 purpose.
 
 ### AI agents and LLM pipelines
@@ -146,10 +146,10 @@ Filter, aggregate, filter again — one expression, no temp tables.
 
 ### Keep evolving context cheap
 
-LoraDB is schema-free. Adding a new label, a new edge type, or a new
-property means _writing_ it — there's no migration, no `ALTER`, no
-restart. That fits systems that keep discovering new categories of
-thing.
+LoraDB is schema-free. Adding a new label, a new relationship type,
+or a new property means _writing_ it — there's no migration, no
+`ALTER`, no restart. That fits systems that keep discovering new
+categories of thing.
 
 ### Run in-process
 
@@ -179,11 +179,11 @@ constraint, not a marketing line.
 |---|---|---|---|---|
 | Deployment | A crate / binding | A service | Existing DB | Existing DB |
 | Relationship model | First-class | First-class | Join tables | Nested or foreign-keyed |
-| Query language | Cypher subset | Full Cypher / GQL | SQL | Proprietary |
+| Query language | Pragmatic subset of Cypher | Full Cypher / GQL | SQL | Proprietary |
 | Schema | Free | Typed / free | Strict | Free |
 | Latency to query | Function call | Network hop | Network hop | Network hop |
 | Scale | Single process | Horizontal | Horizontal | Horizontal |
-| Fit for embedded / agent loops | Direct | Indirect | Indirect | Indirect |
+| Fit for in-process / agent loops | Direct | Indirect | Indirect | Indirect |
 
 LoraDB is **not** a replacement for a full graph platform when you
 need durability, multi-tenant isolation, or horizontal scale. It's
@@ -218,7 +218,7 @@ Near-term direction, not promises:
 - **Richer Cypher surface** — procedures,
   <CypherCode code="UNION" />, list comprehensions.
 
-See [**Limitations**](./limitations) for what isn't supported yet,
+See [**Limitations**](./limitations) for what's not yet supported,
 and the [**docs**](./) for what works today.
 
 ## See also
@@ -233,4 +233,13 @@ and the [**docs**](./) for what works today.
 - [**Queries → Overview**](./queries/) — the Cypher surface LoraDB
   supports.
 - [**Cookbook**](./cookbook) — scenario-driven recipes.
-- [**Limitations**](./limitations) — what isn't supported yet.
+- [**Limitations**](./limitations) — what's not yet supported.
+
+### Background reading
+
+- [**Why I started LoraDB**](/blog/why-i-started-loradb) — the
+  original motivation.
+- [**In-memory or it does not work**](/blog/in-memory-or-it-does-not-work)
+  — why the engine starts in RAM.
+- [**Vectors belong next to relationships**](/blog/vectors-belong-next-to-relationships)
+  — why `VECTOR` lives as a first-class value type.

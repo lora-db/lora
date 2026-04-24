@@ -1,6 +1,6 @@
 //! VECTOR value tests: construction, persistence, vector math, and
 //! ordering/grouping behaviour. Covers the public surface documented in
-//! `apps/loradb.com/docs/data-types/vector.md` plus edge cases for
+//! `apps/loradb.com/docs/data-types/vectors.md` plus edge cases for
 //! coordinate-type coercion.
 
 mod test_helpers;

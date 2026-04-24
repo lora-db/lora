@@ -6,11 +6,12 @@ description: The Point type in LoraDB — 2D and 3D, Cartesian and WGS-84 — it
 
 # Spatial Data Types
 
-LoraDB has a `Point` type with 2D and 3D variants in Cartesian and
-WGS-84 (geographic) coordinate systems. For the
+LoraDB has a `Point` type in four shapes: 2D and 3D, Cartesian and
+WGS-84 (geographic). For the
 [constructors](../functions/spatial#constructors) and the
 [`distance`](../functions/spatial#distance) function, see
-[Spatial Functions](../functions/spatial); this page covers the *type*.
+[Spatial Functions](../functions/spatial). This page covers the type
+itself.
 
 ## SRIDs
 

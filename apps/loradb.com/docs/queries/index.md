@@ -7,7 +7,7 @@ description: An index of every Cypher clause LoraDB supports — MATCH, WHERE, R
 # Querying LoraDB with Cypher
 
 LoraDB speaks a pragmatic subset of Cypher. Queries are strings that
-chain _clauses_ — see the [clause reference](#clause-reference) table
+chain _clauses_ — see the [clause reference](#clause-reference)
 below, or jump into the [**Ten-Minute Tour**](../getting-started/tutorial)
 for a guided run-through.
 
@@ -142,7 +142,7 @@ query. They also let the query planner cache plans across invocations.
 
 ## What's not supported
 
-See [**Limitations**](../limitations) for the full list. The short
+See [**Limitations**](../limitations) for the full list. Short
 version: no `CALL`, no `FOREACH`, no `LOAD CSV`, no DDL
 (`CREATE INDEX`, constraints), no multi-database (`USE`).
 

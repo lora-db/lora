@@ -6,9 +6,10 @@ description: Typed key/value properties on nodes and relationships in LoraDB —
 
 # Properties on Nodes and Relationships
 
-**Properties** are typed key/value pairs on [nodes](./nodes) and
-[relationships](./relationships). Keys are strings; values are any of
-the [supported data types](../data-types/overview).
+**Properties** are typed key/value pairs attached to
+[nodes](./nodes) and [relationships](./relationships). Keys are
+case-sensitive strings; values are any of the
+[supported data types](../data-types/overview).
 
 ## At a glance
 
@@ -139,9 +140,16 @@ Properties accept every [LoraDB data type](../data-types/overview):
 | Collections (`List`, `Map`) | [Lists & Maps](../data-types/lists-and-maps) |
 | Temporals (`Date`, `Time`, `DateTime`, `Duration`, …) | [Temporal](../data-types/temporal) |
 | Spatial (`Point`) | [Spatial](../data-types/spatial) |
+| `Vector` (typed fixed-dimension coordinates) | [Vectors](../data-types/vectors) |
 
 Graph types (`Node`, `Relationship`, `Path`) are **not** storable as
 properties — they only appear in query results.
+
+A `VECTOR` can be a property value and can appear as a value inside a
+`Map` property, but a **list that contains a `VECTOR` is rejected at
+write time** — store many embeddings as separate nodes, not as a list.
+See [Vectors → Storage](../data-types/vectors#storage) for the exact
+rule.
 
 ## Common patterns
 
@@ -151,6 +159,10 @@ properties — they only appear in query results.
 MATCH (u:User)
 RETURN u.name, coalesce(u.nickname, u.name) AS display
 ```
+
+`coalesce` returns the first non-null argument, so users with a
+nickname get it under `display` and everyone else falls back to
+`name`. No extra row work — this is a per-row projection.
 
 ### Touch a timestamp on write
 
@@ -168,6 +180,11 @@ SET u.name = u.full_name
 REMOVE u.full_name
 ```
 
+Moves values from `full_name` to `name` on every matched row.
+Because the predicate filters out rows that already have a `name`,
+this is safe to re-run — users who are already migrated are
+skipped.
+
 ### Conditional add
 
 ```cypher
@@ -182,6 +199,12 @@ MERGE (u:User {id: $id})
 MATCH (src:Template {id: $src}), (dst:Record {id: $dst})
 SET dst += properties(src)
 ```
+
+[`properties(src)`](../functions/overview#entity-introspection)
+returns every key on `src` as a map; `+=` merges that map into
+`dst`, overwriting matching keys and leaving anything unique to
+`dst` untouched. Useful for applying a template over an existing
+record without nuking custom fields.
 
 ### Bulk patch via UNWIND
 
@@ -224,7 +247,10 @@ WHERE all(k IN ['email', 'name', 'created_at'] WHERE k IN keys(u))
 RETURN u
 ```
 
-Users who carry all three required keys.
+One row per user who carries all three required keys — the list
+predicate [`all`](../functions/list#predicates-in-where) holds only
+when every element of the input list passes the inner `WHERE`. Swap
+`all` for `none` to find users *missing* a required key.
 
 ### Nullable property check
 

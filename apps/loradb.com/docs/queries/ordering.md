@@ -6,9 +6,10 @@ description: Order and paginate LoraDB query results with ORDER BY, SKIP, and LI
 
 # ORDER BY, SKIP, LIMIT — Ordering and Pagination
 
-`ORDER BY`, `SKIP`, and `LIMIT` shape the final result set of a query
-or of a [`WITH`](./return-with#with) stage. They are **evaluated after**
-projection and [aggregation](./aggregation).
+`ORDER BY`, `SKIP`, and `LIMIT` shape the final result set of a
+query, or the output of a [`WITH`](./return-with#with) stage. They
+are **evaluated after** projection and
+[aggregation](./aggregation).
 
 ## Overview
 

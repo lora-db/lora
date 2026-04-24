@@ -6,9 +6,9 @@ description: A copy-paste tour of Cypher against LoraDB — create, match, filte
 
 # Cypher Query Examples for LoraDB
 
-A copy-paste tour of LoraDB's Cypher-like syntax, organised by shape.
-Each section is a standalone recipe — read top-to-bottom to pick up the
-language, or jump straight to what you need.
+A copy-paste tour of LoraDB's Cypher surface, organised by query
+shape. Each section is a standalone recipe — read top-to-bottom to
+pick up the language, or jump straight to what you need.
 
 > Working through this for the first time? Try the guided version at
 > [**A Ten-Minute Tour**](../getting-started/tutorial) first.
@@ -171,7 +171,7 @@ RETURN count(*)   AS people,
 
 ## Parameters
 
-[Parameters](./#parameters) are the only way to safely mix untrusted
+[Parameters](./parameters) are the only way to safely mix untrusted
 input into a query. Unbound parameters resolve to `null`, which usually
 filters everything out — worth validating on the host side before you
 call `execute`.
@@ -423,8 +423,8 @@ LIMIT 10
 // Users who haven't posted in 30 days
 MATCH (u:User)
 WHERE NOT EXISTS {
-  (u)-[:WROTE]->(:Post)
-  WHERE Post.published_at >= datetime() - duration('P30D')
+  (u)-[:WROTE]->(p:Post)
+  WHERE p.published_at >= datetime() - duration('P30D')
 }
 RETURN u.handle
 ```

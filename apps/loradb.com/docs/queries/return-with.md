@@ -6,13 +6,13 @@ description: The RETURN and WITH clauses in LoraDB — RETURN ends a query and h
 
 # RETURN and WITH — Projecting and Piping Results
 
-Both clauses project rows forward. [`WITH`](#with) hands the projected
-rows to the next clause; [`RETURN`](#return) ends the query and hands
-them back to the caller. Rows typically come from a preceding
-[`MATCH`](./match) or [`UNWIND`](./unwind-merge#unwind).
+Both clauses project rows forward. [`WITH`](#with) hands the
+projected rows to the next clause; [`RETURN`](#return) ends the
+query and hands them back to the caller. Rows typically come from a
+preceding [`MATCH`](./match) or [`UNWIND`](./unwind-merge#unwind).
 
-> Think of `WITH` as a pipe between stages, and `RETURN` as the output of
-> the final stage.
+> Think of `WITH` as a pipe between stages, and `RETURN` as the
+> output of the final stage.
 
 ## Overview
 

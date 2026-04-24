@@ -7,12 +7,13 @@ description: The WHERE clause in LoraDB — boolean filters after MATCH, WITH, o
 # WHERE — Filtering Rows
 
 `WHERE` filters rows produced by the preceding [`MATCH`](./match),
-[`WITH`](./return-with#with), or [`OPTIONAL MATCH`](./match#optional-match).
-Any boolean expression is valid.
+[`WITH`](./return-with#with), or
+[`OPTIONAL MATCH`](./match#optional-match). Any boolean expression
+is valid.
 
 > `WHERE` runs **before** [`RETURN`](./return-with) and
-> [aggregation](./aggregation). For filtering _after_ an aggregate (SQL
-> `HAVING`), pipe through [`WITH`](./return-with#with) first.
+> [aggregation](./aggregation). For filtering _after_ an aggregate
+> (SQL `HAVING`), pipe through [`WITH`](./return-with#with).
 
 ## Overview
 

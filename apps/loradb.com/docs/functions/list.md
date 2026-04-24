@@ -99,6 +99,12 @@ RETURN reduce(
 -- {red: 2, blue: 1, green: 1}
 ```
 
+`acc` starts as an empty map. Each element rebuilds `acc` by
+merging in the updated count for `x` — `coalesce(acc[x], 0)`
+falls back to zero on the first occurrence of a key. The
+dynamic-key form `{[x]: …}` is what makes this a real histogram
+rather than a single `x` column.
+
 ### Nested / layered lists
 
 ```cypher
@@ -305,12 +311,17 @@ RETURN reduce(
 -- [10, 30, 60, 100]
 ```
 
-The trailing `.running` picks one field off the accumulator map.
+The accumulator is a map with two fields: `total` keeps the running
+sum between steps, `running` appends the new total on each step.
+The trailing `.running` picks that second field off the final map
+so the caller gets the sequence of totals, not the map wrapper.
+`reduce` has no short-circuit, so the full list is always visited —
+use it when you genuinely need every step.
 
 ### Min-by on objects
 
-`min()` is an aggregate — for "pick the list element with the smallest
-key" in a single row, use `reduce`:
+`min()` is an aggregate — for "pick the list element with the
+smallest key" within a single row, use `reduce`:
 
 ```cypher
 WITH [{name: 'a', score: 9},
@@ -324,8 +335,11 @@ RETURN reduce(
 -- {name: 'b', score: 3}
 ```
 
-Uses [`CASE`](../queries/return-with#case-expressions) in the
-reducer.
+Start with the first element as `best`, walk `tail(rows)`, and on
+each step keep whichever of `best` vs. `r` has the smaller `score`.
+The [`CASE`](../queries/return-with#case-expressions) expression
+returns a whole map — the same shape as `best` — so the accumulator
+type is stable. Swap `<` for `>` to turn this into a max-by.
 
 ### Bucket counts
 

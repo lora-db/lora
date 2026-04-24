@@ -6,11 +6,12 @@ description: The MATCH clause in LoraDB — fixed and variable-length patterns, 
 
 # MATCH — Finding Patterns in the Graph
 
-`MATCH` describes a pattern to find in the graph. Every successful match
-produces one row with variables bound to concrete
-[nodes](../concepts/nodes) / [relationships](../concepts/relationships). A
-query can use many `MATCH` clauses in sequence — each reads the rows
-produced by the previous one.
+`MATCH` describes a pattern to find in the graph. Every successful
+match produces one row, with variables bound to concrete
+[nodes](../concepts/nodes) or
+[relationships](../concepts/relationships). A query can chain many
+`MATCH` clauses in sequence — each reads the rows produced by the
+previous one.
 
 > New to pattern matching? Start with the
 > [**Ten-Minute Tour → Find something**](../getting-started/tutorial#step-2--find-something),

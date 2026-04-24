@@ -24,9 +24,9 @@ thread stays responsive.
 
 | Target | Use in | Entry |
 |---|---|---|
-| Node | Server-side JS, tests, scripts | `import { createDatabase } from 'lora-wasm'` |
-| Bundler | Vite / webpack / esbuild | `import { createDatabase } from 'lora-wasm/bundler'` |
-| Web | Raw `<script type=module>` | `import { createDatabase } from 'lora-wasm/web'` |
+| Node | Server-side JS, tests, scripts | `import { createDatabase } from '@loradb/lora-wasm'` |
+| Bundler | Vite / webpack / esbuild | `import { createDatabase } from '@loradb/lora-wasm/bundler'` |
+| Web | Raw `<script type=module>` | `import { createDatabase } from '@loradb/lora-wasm/web'` |
 
 ### Requirements
 
@@ -56,7 +56,7 @@ npm install @loradb/lora-wasm
 pattern is `createDatabase()`:
 
 ```ts
-import { createDatabase } from 'lora-wasm';
+import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
 ```
@@ -84,7 +84,7 @@ import 'lora-wasm/worker';
 
 ```ts
 // src/main.ts
-import { createWorkerDatabase } from 'lora-wasm/worker-client';
+import { createWorkerDatabase } from '@loradb/lora-wasm/worker-client';
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), {
   type: 'module',
@@ -101,7 +101,7 @@ never blocks on the engine.
 ## Running Your First Query
 
 ```ts
-import { createDatabase } from 'lora-wasm';
+import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
 
@@ -133,7 +133,7 @@ const res = await db.execute(
 ### Structured result handling (typed helpers)
 
 ```ts
-import { createDatabase, wgs84 } from 'lora-wasm';
+import { createDatabase, wgs84 } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
 
@@ -154,7 +154,7 @@ packages with identical signatures.
 import 'lora-wasm/worker';
 
 // src/useDb.ts
-import { createWorkerDatabase, type WorkerDatabase } from 'lora-wasm/worker-client';
+import { createWorkerDatabase, type WorkerDatabase } from '@loradb/lora-wasm/worker-client';
 import { useEffect, useState } from 'react';
 
 let dbPromise: Promise<WorkerDatabase> | null = null;
@@ -313,7 +313,7 @@ bubble to a generic handler.
 ## See also
 
 - [**Node guide**](./node) — shared surface, helpers, type guards.
-- [**Queries → Parameters**](../queries/#parameters).
+- [**Queries → Parameters**](../queries/parameters) — typed parameter binding.
 - [**Cookbook**](../cookbook) — scenario-based recipes.
 - [**Data Types**](../data-types/overview) — host-value mapping.
 - [**Limitations**](../limitations) — persistence caveat.

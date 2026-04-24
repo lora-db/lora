@@ -56,13 +56,14 @@ Defines the Cypher grammar in PEG notation (pest) and lowers parse trees into th
 
 ### lora-store
 
-Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a BTreeMap-backed implementation with secondary indexes for labels, relationship types, and adjacency. Also defines the temporal and spatial value types (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`) shared between the store and the executor.
+Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a BTreeMap-backed implementation with secondary indexes for labels, relationship types, and adjacency. Also defines the temporal, spatial, and vector value types (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`) shared between the store and the executor.
 
 **Key files**:
 - `src/graph.rs` — trait definitions, `NodeRecord`, `RelationshipRecord`, `PropertyValue`
 - `src/memory.rs` — `InMemoryGraph`
 - `src/temporal.rs` — temporal value types and parsing
 - `src/spatial.rs` — `LoraPoint` and distance functions
+- `src/vector.rs` — `LoraVector`, coordinate-type enum, construction + math helpers
 
 ### lora-analyzer
 

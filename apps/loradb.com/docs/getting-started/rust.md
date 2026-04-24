@@ -12,7 +12,7 @@ The Rust API is the reference surface — every other binding wraps
 the same `lora_database::Database` type. Results map to a strongly
 typed `LoraValue` enum; errors propagate through `Result`. The
 handle is `Send + Sync` and cheap to clone; the underlying store is
-mutex-guarded.
+guarded by a mutex.
 
 ## Installation / Setup
 
@@ -101,7 +101,7 @@ fn main() -> anyhow::Result<()> {
 ```
 
 Missing parameters resolve to `null`. Always bind every `$name` used
-in the query. See [Queries → Parameters](../queries/#parameters).
+in the query. See [Queries → Parameters](../queries/parameters).
 
 ### Structured result handling
 
@@ -331,7 +331,7 @@ if let Err(e) = db.execute("BAD QUERY", None) {
 - [**Functions**](../functions/overview) — every built-in.
 - [**Data types**](../data-types/overview) — host ↔ engine mapping.
 - [**Troubleshooting**](../troubleshooting) — common errors.
-- [**Limitations**](../limitations) — what isn't supported.
+- [**Limitations**](../limitations) — what's not supported.
 - [**Node guide**](./node) / [**Python guide**](./python) /
   [**WASM guide**](./wasm) / [**HTTP server**](./server) — same
   surface, different host.

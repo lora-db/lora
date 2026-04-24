@@ -27,6 +27,8 @@
 | Type mismatch detection between comparable types | Accepted | Compared without error | Low — 1 ignored test |
 | Parameter as a label or relationship type | N/A | Not implemented | Low — not standard Cypher |
 | HTTP `POST /query` with a `params` field | N/A | Not wired up | **Medium** — Rust API supports parameters, HTTP layer does not |
+| Vector indexes / approximate kNN | N/A | Not implemented — `vector.similarity.*` / `vector_distance` run as exhaustive scans | **Medium** — fine for demos and small corpora; blocks production-scale semantic retrieval |
+| List-of-`VECTOR` as a property | Parsed | Rejected at write time (`PropertyConversionError::NestedVectorInList`) | Low — loud error; shape decision to keep future indexing viable |
 
 ### Implemented since initial audit
 
@@ -36,6 +38,7 @@ The following features were listed as gaps in earlier revisions of this document
 |---------|----------|
 | Temporal types (`Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration`) | 89 passing tests in `tests/temporal.rs` |
 | Spatial types (`Point`: Cartesian 2D/3D and WGS-84 2D/3D — SRIDs 7203, 9157, 4326, 4979) | Tests in `tests/functions_extended.rs` and `tests/types_advanced.rs` |
+| `VECTOR` value type (six coordinate tags; `vector()` constructor; property storage on nodes and relationships; similarity / distance / norm functions; exhaustive kNN via `ORDER BY … LIMIT k`) | Tests in `tests/vectors.rs` |
 | `shortestPath()` / `allShortestPaths()` | Tests in `tests/paths.rs` |
 | Advanced aggregates: `stdev`, `stdevp`, `percentileCont`, `percentileDisc` | Tests in `tests/aggregation.rs` |
 | Trigonometry: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians` | Tests in `tests/functions_extended.rs` |

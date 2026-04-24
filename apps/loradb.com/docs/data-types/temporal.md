@@ -6,9 +6,9 @@ description: LoraDB's six temporal types — Date, Time, LocalTime, DateTime, Lo
 
 # Temporal Data Types
 
-LoraDB has six first-class temporal types. They can be stored as
-[node](../concepts/nodes) / [relationship](../concepts/relationships)
-[properties](../concepts/properties), compared,
+LoraDB has six first-class temporal types. Each can be stored as a
+[node](../concepts/nodes) or [relationship](../concepts/relationships)
+[property](../concepts/properties), compared,
 [ordered](../queries/ordering), and used in arithmetic with `Duration`.
 
 | Type | Components | Timezone |

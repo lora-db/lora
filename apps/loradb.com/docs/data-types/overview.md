@@ -6,9 +6,10 @@ description: An index of every value type LoraDB supports — scalars, lists, ma
 
 # Supported Data Types in LoraDB
 
-Every value in LoraDB — stored as a [property](../concepts/properties),
-projected in a [`RETURN`](../queries/return-with), or bound as a
-[parameter](../queries/#parameters) — has one of the types below.
+Every value in LoraDB — stored as a
+[property](../concepts/properties), projected in a
+[`RETURN`](../queries/return-with), or bound as a
+[parameter](../queries/parameters) — has one of the types below.
 
 ## Category pages
 
@@ -82,11 +83,16 @@ Use [`valueType(x)`](../functions/overview#type-conversion-and-checking)
 to discover a value's type at query time.
 
 ```cypher
-RETURN valueType(1),                    -- 'INTEGER'
-       valueType([1, 2, 3]),            -- 'LIST<INTEGER>'
-       valueType(date('2024-01-15')),   -- 'DATE'
-       valueType(point({x: 1, y: 2}))   -- 'POINT'
+RETURN valueType(1),                                -- 'INTEGER'
+       valueType([1, 2, 3]),                        -- 'LIST<INTEGER>'
+       valueType(date('2024-01-15')),               -- 'DATE'
+       valueType(point({x: 1, y: 2})),              -- 'POINT'
+       valueType(vector([1,2,3], 3, INTEGER))       -- 'VECTOR<INTEGER>(3)'
 ```
+
+`VECTOR` is the only built-in type whose `valueType` tag encodes
+structural detail (coordinate type + dimension). Everything else
+returns a plain tag like `INTEGER` or `LIST<INTEGER>`.
 
 ### Filter by runtime type
 
@@ -134,6 +140,7 @@ binding's "Parameters" section for specifics:
 | `list` / `array` / `Vec` | `List` |
 | `dict` / `object` / `BTreeMap` | `Map` |
 | helpers (`date()`, `wgs84()`, …) | `Date`, `Point`, etc. |
+| `vector()` helper / tagged `{kind: "vector", …}` object | `Vector` |
 
 Details: [Rust](../getting-started/rust#parameterised-query),
 [Node](../getting-started/node#parameterised-query),
@@ -167,6 +174,7 @@ Every type has a single sentinel `Null` value — there's no
 | `Map` | Key/value set equal | — (not ordered) |
 | `Point` | All components + SRID | — (not ordered) |
 | Temporals | Same type, same instant | Per-type chronological |
+| `Vector` | Coord type + dimension + every value — differs across coord types even with equal values | Deterministic but unspecified — order by a scalar score instead |
 | `Node` / `Relationship` | By internal `id()` | — |
 | `Path` | Structural equality | — |
 
@@ -176,10 +184,13 @@ raise, but the sort is effectively a no-op.
 
 ## What isn't a type
 
-- **Binary / byte arrays** — store base64 strings in `String`.
-- **Fixed-precision decimals** — use scaled integers or strings.
+- **Binary / byte arrays** — not supported; store base64 strings
+  in `String`.
+- **Fixed-precision decimals** — not supported; use scaled integers
+  or strings.
 - **User-defined types** — not supported.
-- **Enums** — use a string or integer by convention.
+- **Enums** — not a native type; use a string or integer by
+  convention.
 
 See [Limitations](../limitations#data-types) for the full list.
 
@@ -189,6 +200,6 @@ See [Limitations](../limitations#data-types) for the full list.
   [**Temporal**](./temporal), [**Spatial**](./spatial) — per-type reference.
 - [**Functions → Overview**](../functions/overview) — `toString`, `coalesce`, `valueType`.
 - [**Properties**](../concepts/properties) — how types attach to entities.
-- [**Queries → Parameters**](../queries/#parameters) — binding typed values from the host.
+- [**Queries → Parameters**](../queries/parameters) — binding typed values from the host.
 - [**Result formats**](../concepts/result-formats) — how these types
   come back over the wire.

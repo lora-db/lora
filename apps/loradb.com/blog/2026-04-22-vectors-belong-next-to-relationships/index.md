@@ -20,11 +20,11 @@ candidates by similarity, then explain and filter those candidates by
 relationships. Splitting that into two products splits the query path,
 the data model, and eventually the team.
 
-LoraDB v0.2 adds `VECTOR` as a first-class value type. Vectors live
-directly on nodes and relationships, next to labels, properties, and
-edges. The argument is not that a graph database should replace a
-vector database. The argument is that similarity belongs next to the
-relationships that give it meaning.
+LoraDB v0.2 adds [`VECTOR`](/docs/data-types/vectors) as a first-class
+value type. Vectors live directly on nodes and relationships, next to
+labels, properties, and edges. The argument is not that a graph
+database should replace a vector database. The argument is that
+similarity belongs next to the relationships that give it meaning.
 
 <!-- truncate -->
 
@@ -255,3 +255,18 @@ If you try it, the feedback I want is concrete:
   guarantee?
 
 That is what will shape the next release.
+
+---
+
+Canonical references:
+
+- [Data Types → Vectors](/docs/data-types/vectors) — construction, storage,
+  and the list-of-vectors property restriction.
+- [Functions → Overview](/docs/functions/overview) — the vector similarity
+  and distance functions used above.
+- [Queries → Parameters](/docs/queries/parameters#semantic-retrieval-with-a-vector-parameter)
+  — how each binding passes a `VECTOR` in.
+- [Cookbook → Vector-retrieval patterns](/docs/cookbook#vector-retrieval-patterns)
+  — top-k and graph-filtered retrieval recipes.
+- [Limitations → Vectors](/docs/limitations#vectors) — no indexes, no ANN,
+  no embedding generation today.

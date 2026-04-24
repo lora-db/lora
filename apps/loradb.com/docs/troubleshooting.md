@@ -7,9 +7,9 @@ description: A symptom-indexed guide to common LoraDB errors — parse failures,
 # Troubleshooting LoraDB Errors
 
 When a query fails, returns no rows, or the server refuses to start,
-find the symptom in the lookup table below and jump straight to the
-fix. Each section explains the cause, shows the failure mode, and
-gives the shortest way out.
+find the symptom in the lookup table below and jump to the fix.
+Each section names the cause, shows the failure mode, and gives the
+shortest way out.
 
 ## Quick lookup
 
@@ -132,7 +132,7 @@ Common mistakes:
    string `"1"`. See [Data Types](./data-types/overview).
 4. **A parameter is unbound** — missing parameters resolve to `null`,
    which usually filters everything out. See
-   [Parameters](./queries/#parameters).
+   [Parameters](./queries/parameters).
 5. **`= null`** — never matches. Use
    [`IS NULL` / `IS NOT NULL`](./queries/where#null-checks).
 6. **Regex anchoring** — `=~ 'foo'` matches only the full string
@@ -229,7 +229,7 @@ RETURN a, b, length(p) AS hops
 
 ### Why are my queries returning nothing?
 
-Missing [parameters](./queries/#parameters) resolve to `null`, which
+Missing [parameters](./queries/parameters) resolve to `null`, which
 usually filters everything out. Verify every `$name` in your query has
 a corresponding entry in the params map passed to
 `execute_with_params`.
@@ -840,7 +840,7 @@ wrong, the bug may be in the **data model**, not the query. See the
 
 ## See also
 
-- [**Limitations**](./limitations) — what intentionally isn't supported.
+- [**Limitations**](./limitations) — what's intentionally not supported.
 - [**Queries**](./queries/) — clause reference.
 - [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
 - [**Parameters**](./queries/parameters) — typed parameter binding.

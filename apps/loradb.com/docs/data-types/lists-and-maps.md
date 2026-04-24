@@ -6,9 +6,9 @@ description: LoraDB's two composite value types — ordered nestable lists and s
 
 # Lists and Maps
 
-Lists and maps are LoraDB's two composite types. Both can nest and
-both can store any supported value — including other lists, maps, and
-[typed values](./overview) like temporals and points.
+Lists and maps are LoraDB's two composite types. Both nest, and both
+hold any supported value — including other lists, maps, and
+[typed values](./overview) such as temporal values and spatial points.
 
 ## Lists
 

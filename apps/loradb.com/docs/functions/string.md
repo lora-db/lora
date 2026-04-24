@@ -6,7 +6,7 @@ description: String functions in LoraDB — substring, replace, split, trim, cas
 
 # String Functions
 
-Every function on this page returns `null` when any of its arguments is
+Every function on this page returns `null` when any argument is
 `null`. Case operations are **ASCII-only**; `normalize` is a no-op
 placeholder.
 
@@ -342,8 +342,9 @@ expression — LoraDB's ternary. See that page for the full reference.
 ## Limitations
 
 - `toLower` / `toUpper` are **ASCII-only**. For Unicode case folding,
-  normalise inputs host-side before passing them into LoraDB.
-- `normalize` is a placeholder — it does not apply Unicode NFC today.
+  normalise host-side before passing the string to LoraDB.
+- `normalize` is not yet implemented — it's a placeholder that
+  returns its input unchanged.
 - String indexing is byte-based inside `size` and `length`. Use
   `charLength` when you need Unicode code-point counts.
 

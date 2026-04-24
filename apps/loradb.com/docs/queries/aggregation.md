@@ -6,13 +6,13 @@ description: How aggregation works as a clause in LoraDB — implicit GROUP BY f
 
 # Aggregating Query Results
 
-Aggregations collapse multiple input rows into fewer rows. Non-aggregated
-columns in the same [`RETURN`](./return-with) / [`WITH`](./return-with#with)
-act as an **implicit group-by** — there is no explicit `GROUP BY` keyword
-in Cypher.
+Aggregations collapse input rows into fewer rows. Non-aggregated
+columns in the same [`RETURN`](./return-with) or
+[`WITH`](./return-with#with) act as an **implicit group-by** —
+Cypher has no explicit `GROUP BY` keyword.
 
-> This page covers the clause-level semantics. For each function's exact
-> behavior (empty input, null handling, return type) see
+> This page covers clause-level semantics. For each function's exact
+> behaviour (empty input, null handling, return type) see
 > [Aggregation Functions](../functions/aggregation).
 
 ## Overview
@@ -495,14 +495,17 @@ slice picks the first element of the sort-ordered `collect`.
 
 ## Limitations
 
-- **No `GROUP BY` keyword** — grouping is always implicit on non-aggregated
-  columns.
-- **No `HAVING` keyword** — filter post-aggregate through `WITH … WHERE`.
-- **Aggregates rejected in `WHERE`** — analysis-time error.
+- **No `GROUP BY` keyword.** Grouping is always implicit on
+  non-aggregated columns.
+- **No `HAVING` keyword.** Filter post-aggregate through
+  `WITH … WHERE`.
+- **Aggregates rejected in `WHERE`.** Analysis-time error.
 - `stdev`, `stdevp`, `percentileCont`, `percentileDisc` do **not**
   support `DISTINCT`. Use `collect(DISTINCT x)` +
   [`UNWIND`](./unwind-merge#unwind) + aggregate if you need percentile
   of distinct values.
+
+See [Limitations](../limitations#aggregates) for the full list.
 
 ## See also
 

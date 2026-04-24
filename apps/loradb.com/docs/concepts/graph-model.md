@@ -6,9 +6,8 @@ description: The labeled property graph model LoraDB uses — nodes, typed direc
 
 # The LoraDB Graph Data Model
 
-LoraDB uses the **labeled property graph** model.
-
-Three things live in the graph:
+LoraDB uses the **labelled property graph** model. Three things live
+in the graph:
 
 | | Purpose | Example |
 |---|---|---|
@@ -16,9 +15,9 @@ Three things live in the graph:
 | [**Relationship**](./relationships) | A typed, directed link between two nodes | `(a)-[:KNOWS]->(b)` |
 | [**Property**](./properties) | A typed key/value attached to a node or relationship | `{name: 'Ada', born: 1815}` |
 
-Both nodes and relationships can carry any number of properties.
-Relationships always have exactly one **type** and exactly one
-**direction**; they always connect two (possibly equal) nodes.
+Both nodes and relationships can carry any number of properties. Every
+relationship has exactly one **type** and exactly one **direction**,
+and always connects two (possibly equal) nodes.
 
 ## See it in four queries
 
@@ -163,7 +162,8 @@ Otherwise you'd get both `(alice, bob)` and `(bob, alice)` rows.
 ## Storage model (at a glance)
 
 - **In-memory only.** All data lives in the process; nothing persists
-  across restarts. See [Limitations → Storage](../limitations#storage).
+  across restarts. See [Limitations](../limitations#storage) for the
+  full storage shape.
 - **Single mutex.** Queries serialise. No per-row locking, no isolation
   levels.
 - **Adjacency on both ends.** Each relationship is reachable from both

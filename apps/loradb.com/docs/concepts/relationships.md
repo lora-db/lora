@@ -7,12 +7,10 @@ description: How LoraDB represents relationships — typed, directed edges betwe
 # Relationships Between Nodes
 
 A **relationship** is a directed, typed edge between two nodes. Like
-nodes, it can carry properties.
+nodes, it can carry properties. Every relationship has:
 
-A relationship always has:
-
-- exactly one **type** (e.g. `KNOWS`, `ACTED_IN`),
-- exactly one **direction** — start node `→` end node,
+- exactly one **type** (e.g. `KNOWS`, `ACTED_IN`);
+- exactly one **direction** — start node `→` end node;
 - any number of [**properties**](./properties).
 
 ## Quick reference

@@ -74,6 +74,7 @@ module.exports = {
         'functions/list',
         'functions/temporal',
         'functions/spatial',
+        'functions/vectors',
       ],
     },
     {
@@ -86,6 +87,7 @@ module.exports = {
         'data-types/lists-and-maps',
         'data-types/temporal',
         'data-types/spatial',
+        'data-types/vectors',
       ],
     },
     {

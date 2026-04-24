@@ -6,24 +6,23 @@ description: How LoraDB handles schema — labels, relationship types, and prope
 
 # Schema-Free Writes and Soft Validation
 
-LoraDB has no `CREATE TABLE` step. Labels, relationship types, and
-property keys are created the first time you use them in a write —
-and the engine keeps two different sets of rules for writes and
-reads.
+**Writes are permissive, reads are strict.** `CREATE` / `MERGE` /
+`SET` accept any label, relationship type, or property key without a
+`CREATE TABLE` step — names come into existence the first time they're
+written. `MATCH` refuses labels and relationship types the live graph
+has never seen. Property keys on `MATCH` stay lenient (missing key →
+`null`).
 
-In one sentence:
-
-> **Writes are permissive, reads are strict.** `CREATE` / `MERGE` /
-> `SET` accept any label, type, or property key you throw at them.
-> `MATCH` refuses labels and types it has never seen.
+That split is deliberate: permissive writes keep iteration fast, and
+strict reads catch typos before they silently return zero rows.
 
 ## What "schema-free" actually means
 
-The graph stores:
+The graph tracks three things as the process runs:
 
-- A set of **labels** seen on any node since process start.
-- A set of **relationship types** seen on any edge.
-- The **property keys** seen on any node or edge.
+- The set of **labels** seen on any node since process start.
+- The set of **relationship types** seen on any relationship.
+- The **property keys** seen on any node or relationship.
 
 No declaration, no `ALTER TABLE`, no migration. The first write that
 mentions a new name brings it into existence; subsequent writes reuse

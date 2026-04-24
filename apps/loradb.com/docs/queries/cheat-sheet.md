@@ -7,8 +7,8 @@ description: A one-page reference for the Cypher features LoraDB supports — re
 # Cypher Cheat Sheet
 
 A one-page reference for the Cypher features LoraDB supports. For
-scenarios, see the [**Cookbook**](../cookbook); for clause-by-clause
-detail, follow the links below.
+scenario-driven recipes, see the [**Cookbook**](../cookbook); for
+clause-by-clause detail, follow the links below.
 
 ## Read
 

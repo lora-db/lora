@@ -246,7 +246,7 @@ Engine-level causes live in [Troubleshooting](../troubleshooting).
 ## See also
 
 - [**Ten-Minute Tour**](./tutorial) — guided walkthrough.
-- [**Queries → Parameters**](../queries/#parameters) — binding typed values.
+- [**Queries → Parameters**](../queries/parameters) — binding typed values.
 - [**Data Types**](../data-types/overview) — Go ↔ engine mapping.
 - [**Binding README**](https://github.com/lora-db/lora/tree/main/crates/lora-go) — the source-of-truth install and build guide.
 - [**Troubleshooting**](../troubleshooting).

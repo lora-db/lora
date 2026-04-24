@@ -6,8 +6,8 @@ description: A ten-minute guided tour of LoraDB in Cypher — create nodes and r
 
 # A Ten-Minute Tour of LoraDB
 
-This page is a guided walkthrough. Run each block in order and you'll
-end up with a populated graph, the Cypher basics that shape it, and the
+A guided walkthrough. Run each block in order and you'll end up with
+a populated graph, the Cypher basics that shape it, and the
 aggregation patterns you'll reach for most often.
 
 > Already installed LoraDB? Good — use whichever binding you picked.
@@ -312,7 +312,7 @@ You've now touched every common clause: `CREATE`, `MATCH`, `WHERE`,
 - **[Functions](../functions/overview)** — string, math, list, temporal,
   spatial.
 - **[Data Types](../data-types/overview)** — the complete value catalogue.
-- **[Limitations](../limitations)** — what intentionally isn't supported today.
+- **[Limitations](../limitations)** — what's intentionally not supported today.
 
 ## See also
 

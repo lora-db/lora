@@ -7,9 +7,9 @@ description: The CREATE clause in LoraDB — always inserts new nodes and relati
 # CREATE — Writing Nodes and Relationships
 
 `CREATE` writes new [nodes](../concepts/nodes) and
-[relationships](../concepts/relationships) into the graph. Every pattern
-element on the create side becomes a new entity — `CREATE` never
-deduplicates. For create-if-not-exists semantics use
+[relationships](../concepts/relationships) into the graph. Every
+pattern element on the create side becomes a new entity — `CREATE`
+never deduplicates. For upsert semantics use
 [`MERGE`](./unwind-merge#merge).
 
 > A quick guided walkthrough lives in the

@@ -6,9 +6,9 @@ description: The mutating clauses in LoraDB — SET for updating properties and 
 
 # SET, REMOVE, DELETE — Mutating the Graph
 
-Mutating clauses always act on rows produced by a preceding
-[`MATCH`](./match). They never run without a binding — a `SET` that
-matched nothing is a silent no-op.
+Mutating clauses act on rows produced by a preceding
+[`MATCH`](./match). They never run without a binding — a `SET`
+whose `MATCH` found nothing is a silent no-op.
 
 ## Overview
 
@@ -242,7 +242,10 @@ SET u.name = u.full_name
 REMOVE u.full_name
 ```
 
-Two-step rewrite in a single query — `SET` runs first, then `REMOVE`.
+Moves the value from `full_name` to `name`, then drops the old
+key — two mutations per matched row, in order. The `WHERE` is
+important: without the `u.name IS NULL` guard, users who already
+have both keys would lose their existing `name`.
 
 ### Conditional label
 
@@ -251,6 +254,10 @@ MATCH (u:User)
 WHERE u.score >= 100
 SET u:Pro
 ```
+
+Adds the `:Pro` label to every qualifying user. The node keeps its
+existing labels — `SET n:Label` never replaces, only adds. Running
+it again is a no-op for users already labelled `:Pro`.
 
 ### Conditional value via CASE
 
@@ -287,7 +294,10 @@ MATCH (u:User {id: patch.id})
 SET u += patch.fields
 ```
 
-Where `$patches = [{id: 1, fields: {name: '…'}}, …]`.
+Where `$patches = [{id: 1, fields: {name: '…'}}, …]`. One
+parse, one plan, N updates — per-row `MATCH` resolves the target,
+`+=` merges the patch. Rows whose id doesn't match an existing
+`:User` produce no update; the query doesn't error.
 
 ## Edge cases
 

@@ -32,11 +32,11 @@ An in-process graph store with a Cypher-like query engine — small enough to em
 
 ## Overview
 
-LoraDB is an embeddable property-graph database written in Rust. It parses, analyzes, compiles, and executes a Cypher-like query language against an in-process graph store — with no daemons, no clusters, and no schema migrations.
+LoraDB is an embeddable property-graph database written in Rust. It parses, analyzes, compiles, and executes a Cypher-like query language against an in-process graph store — with no daemons, no clusters, and no schema migrations. `VECTOR` is a first-class value type, so embeddings live next to the graph they describe.
 
 The graph belongs inside your process. Reach for LoraDB when you're building:
 
-- **AI agents & LLM pipelines** — context, memory, and tool graphs that live with the agent
+- **AI agents & LLM pipelines** — context, memory, and tool graphs that live with the agent, with embeddings and similarity search on the same nodes
 - **Robotics & scene graphs** — local reasoning over typed relationships
 - **Event pipelines & streams** — graph-shaped state inside a stream processor
 - **Real-time reasoning** — read/write Cypher without standing up a database server
