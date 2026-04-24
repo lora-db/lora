@@ -11,6 +11,13 @@ export interface NativeQueryResult {
   rows: Array<Record<string, unknown>>;
 }
 
+export interface NativeSnapshotMeta {
+  formatVersion: number;
+  nodeCount: number;
+  relationshipCount: number;
+  walLsn: number | null;
+}
+
 export declare class Database {
   constructor();
   /** Non-blocking: runs on the libuv threadpool, returns a Promise. */
@@ -21,4 +28,8 @@ export declare class Database {
   clear(): void;
   nodeCount(): number;
   relationshipCount(): number;
+  /** Atomic save. Synchronous under the store mutex. */
+  saveSnapshot(path: string): NativeSnapshotMeta;
+  /** Replace the current graph with the snapshot at `path`. */
+  loadSnapshot(path: string): NativeSnapshotMeta;
 }

@@ -186,6 +186,35 @@ The event loop stays responsive, but the five queries execute in
 series inside the native layer. For read parallelism, spin up
 multiple `Database` instances (each with its own graph).
 
+### Persisting your graph
+
+LoraDB can save the in-memory graph to a single file and restore it
+later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+
+```ts
+import { createDatabase, type SnapshotMeta } from '@loradb/lora-node';
+
+const db = await createDatabase();
+await db.execute("CREATE (:Person {name: 'Ada'})");
+
+// Save everything to disk.
+const meta: SnapshotMeta = await db.saveSnapshot('graph.bin');
+console.log(meta.nodeCount, meta.relationshipCount);
+
+// Restore into a fresh handle (in a new process, for example).
+const db2 = await createDatabase();
+await db2.loadSnapshot('graph.bin');
+```
+
+`saveSnapshot` / `loadSnapshot` are `async` like every other
+`@loradb/lora-node` call, but the underlying engine call is synchronous
+and holds the store mutex for the duration — concurrent `execute()`
+calls block until the snapshot operation finishes. A crash between
+saves loses every mutation since the last save.
+
+See the canonical [Snapshots guide](../snapshot) for the full
+metadata shape, atomic-rename guarantees, and boundaries.
+
 ## Common Patterns
 
 ### Bulk insert from a JS array

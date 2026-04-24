@@ -180,6 +180,51 @@ asyncio.run(main())
 don't block the event loop. The surface is identical — switching is
 a one-line import change.
 
+### Persisting your graph
+
+LoraDB can save the in-memory graph to a single file and restore it
+later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+
+```python
+from lora_python import Database
+
+db = Database.create()
+db.execute("CREATE (:Person {name: 'Ada'})")
+
+# Save everything to disk.
+meta = db.save_snapshot("graph.bin")
+print(meta["nodeCount"], meta["relationshipCount"])
+
+# Restore into a fresh handle (in a new process, for example).
+db = Database.create()
+db.load_snapshot("graph.bin")
+```
+
+`AsyncDatabase` exposes the same two methods as coroutines — the sync
+call runs on a worker thread via `asyncio.to_thread`, so large saves
+do not block the event loop:
+
+```python
+import asyncio
+from lora_python import AsyncDatabase
+
+async def main():
+    db = await AsyncDatabase.create()
+    await db.execute("CREATE (:Person {name: 'Ada'})")
+    await db.save_snapshot("graph.bin")
+
+    db2 = await AsyncDatabase.create()
+    await db2.load_snapshot("graph.bin")
+
+asyncio.run(main())
+```
+
+Both save and load serialise against every query on the handle. A
+crash between saves loses every mutation since the last save.
+
+See the canonical [Snapshots guide](../snapshot) for the full
+metadata shape, atomic-rename guarantees, and boundaries.
+
 ## Common Patterns
 
 ### Bulk insert from a list

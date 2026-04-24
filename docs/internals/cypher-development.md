@@ -129,9 +129,19 @@ fn exec_foreach(&mut self, plan: &PhysicalPlan, op: &ForEachExec) -> ExecResult<
 }
 ```
 
+### Step 8a: Mutation event (write-only features)
+
+If the new feature adds or changes a `GraphStorageMut` method, it must also extend the `MutationEvent` enum. Without this the durability, CDC, and future WAL layer silently drop the mutation.
+
+1. Add or extend a variant in `crates/lora-store/src/mutation.rs::MutationEvent`. The variant must carry exactly the information needed to replay the mutation against an empty store (node IDs, labels, properties, relationship endpoints, etc.) — no references back into the source store.
+2. Update the `InMemoryGraph` implementation of the `GraphStorageMut` method to emit the event through the optional recorder **before** returning success. The null-recorder fast path is one pointer check; do not construct the event eagerly.
+3. Add a test in `crates/lora-database/tests/snapshot.rs` (or a neighbouring file) that installs a recording `MutationRecorder`, runs the new clause, and asserts the expected event sequence and payload shape.
+
+See [../operations/snapshots.md#mutation-events](../operations/snapshots.md#mutation-events) for the recorder contract and the existing variant list, and [../architecture/graph-engine.md#durability](../architecture/graph-engine.md#durability) for where the trait sits.
+
 ### Step 9: Tests
 
-Add integration tests in `crates/lora-database/tests/` (one file per feature area — pick the best fit or create a new one) and unit tests in the relevant crates. For HTTP-layer behavior, extend `crates/lora-server/tests/http.rs`.
+Add integration tests in `crates/lora-database/tests/` (one file per feature area — pick the best fit or create a new one) and unit tests in the relevant crates. For HTTP-layer behavior, extend `crates/lora-server/tests/http.rs`. If the feature is a write, confirm Step 8a's event shape is covered by a recorder test.
 
 ## Walkthrough: Adding a new function
 

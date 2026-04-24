@@ -25,6 +25,8 @@ Client -> POST /query {"query": "CREATE ..."} -> lora-server -> Database::execut
 
 The same `Database::execute` / `execute_with_params` entry point handles writes from every other surface listed above.
 
+Every write (`CREATE` / `MERGE` / `SET` / `SET +=` / `DELETE` / `DETACH DELETE` / `REMOVE`) maps to exactly one `GraphStorageMut` method call, and each method fires a `MutationEvent` at the store's optional `MutationRecorder`. The recorder is `None` by default — no event is constructed, so the hot path is a single null-pointer check. Install one via `InMemoryGraph::set_mutation_recorder` for audit streams, change-data-capture, or the future WAL. See [../operations/snapshots.md#mutation-events](../operations/snapshots.md#mutation-events) for the recorder contract and variant list.
+
 ### Creating nodes
 
 ```bash
@@ -80,9 +82,12 @@ If bulk loading is needed, potential approaches:
 3. **CSV import command** -- parse a CSV and map rows to `CREATE` statements
 4. **Snapshot restore** -- serialize/deserialize the `InMemoryGraph` struct
 
-### Persistence (not implemented)
+### Persistence (point-in-time snapshots)
 
-Currently the graph is entirely ephemeral. Adding persistence would require:
-- Write-ahead log (WAL) or snapshot mechanism
-- Startup recovery from disk
-- This is noted as a known gap in [../design/known-risks.md](../design/known-risks.md)
+Point-in-time snapshots are implemented. `Database::save_snapshot_to` / `load_snapshot_from` / `in_memory_from_snapshot` persist and restore the full in-memory graph to a single file:
+
+- The on-disk format, atomic-write protocol, and admin surface are documented in [../operations/snapshots.md](../operations/snapshots.md).
+- The trait (`Snapshotable`) and wire format live in `crates/lora-store/src/snapshot.rs`.
+- The `wal_lsn` field in the snapshot header is reserved for a future WAL / checkpoint hybrid; `MutationEvent` is the vocabulary that WAL will append. Neither ships in the core today.
+
+Continuous durability (a WAL with recovery semantics) is still future work — see [../design/known-risks.md](../design/known-risks.md) and [../decisions/0003-snapshot-format.md](../decisions/0003-snapshot-format.md).

@@ -22,6 +22,8 @@ host and port, embed it in a larger Axum app), see the
 |---|---|---|
 | `GET` | [`/health`](#get-health) | Liveness probe |
 | `POST` | [`/query`](#post-query) | Run a Cypher query |
+| `POST` | [`/admin/snapshot/save`](#admin-endpoints-opt-in) | Save a snapshot (opt-in; only when `--snapshot-path` is set) |
+| `POST` | [`/admin/snapshot/load`](#admin-endpoints-opt-in) | Restore a snapshot (opt-in; only when `--snapshot-path` is set) |
 
 Anything else returns `404`.
 
@@ -100,6 +102,76 @@ The `error` string is the engine's underlying message. Parse,
 semantic, and runtime errors all return `400` — distinguish by the
 text if you need to, or treat "any non-2xx is a query error" and log
 the message.
+
+## Admin endpoints (opt-in)
+
+`POST /admin/snapshot/save` and `POST /admin/snapshot/load` let a client persist the live graph to disk and restore it later. They are **opt-in**: both endpoints return `404` unless `lora-server` is started with `--snapshot-path <PATH>` (or the `LORA_SERVER_SNAPSHOT_PATH` env var). See the [HTTP server quickstart → Snapshots and restore](../getting-started/server#snapshots-and-restore) and the canonical [Snapshots guide](../snapshot) for the feature overview and every binding's equivalent API.
+
+:::caution Security
+
+The admin endpoints have **no authentication**, and the optional `path` body field is passed straight to the OS — any client that can reach the admin port can write files anywhere the server UID can write, or swap the live graph by pointing `load` at an attacker-staged file. Do not expose them on an untrusted network. See [Limitations → HTTP server](../limitations#http-server).
+
+:::
+
+### Request body
+
+Both endpoints accept the same optional JSON body:
+
+```json
+{ "path": "/custom/location/snapshot.bin" }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | no | Override the server's default `--snapshot-path` for this request only. Omit the body (or omit `path`) to use the configured default. |
+
+`content-type: application/json` is required when sending a body.
+
+### Response (success)
+
+`200 OK`, body is a `SnapshotMeta`:
+
+```json
+{
+  "formatVersion": 1,
+  "nodeCount": 1024,
+  "relationshipCount": 4096,
+  "walLsn": null
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `formatVersion` | number | The snapshot file format version (currently `1`). |
+| `nodeCount` | number | Nodes in the saved / loaded graph. |
+| `relationshipCount` | number | Relationships in the saved / loaded graph. |
+| `walLsn` | number or null | Reserved for a future WAL / checkpoint hybrid. Always `null` today. |
+
+### Response (error)
+
+- `400 Bad Request` — malformed JSON, or the path cannot be read/written (permissions, missing parent directory, corrupt file for `load`).
+- `404 Not Found` — the server was not started with `--snapshot-path`, so the admin routes are not mounted.
+
+Error bodies match `/query`'s shape:
+
+```json
+{ "error": "snapshot load failed: bad magic" }
+```
+
+### Examples
+
+```bash
+# Save to the configured default path
+curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
+
+# Save to an override path
+curl -sX POST http://127.0.0.1:4747/admin/snapshot/save \
+  -H 'content-type: application/json' \
+  -d '{"path": "/var/backups/lora/2026-04-24.bin"}'
+
+# Load from the configured default path
+curl -sX POST http://127.0.0.1:4747/admin/snapshot/load
+```
 
 ## Examples
 
@@ -188,13 +260,16 @@ Full walkthrough in the [HTTP server quickstart](../getting-started/server#confi
   [Limitations → Parameters](../limitations#parameters).
 - **Multi-database — not supported.** One process, one graph. Run
   multiple processes on different ports for isolation.
-- **Persistence — not supported.** All state is in-memory; lost on
-  restart.
+- **WAL / continuous persistence — not supported.** Point-in-time
+  snapshots are available through the [admin endpoints](#admin-endpoints-opt-in)
+  when opt-in; data between saves is lost on crash.
 
 ## See also
 
 - [HTTP server quickstart](../getting-started/server) — install, run, embed.
+- [HTTP server quickstart → Snapshots and restore](../getting-started/server#snapshots-and-restore) — flag reference for the admin endpoints.
 - [Result formats](../concepts/result-formats) — what each `format` looks like.
 - [Queries → Parameters](../queries/parameters) — typed parameter binding (via in-process bindings today).
+- [Troubleshooting → Snapshots](../troubleshooting#snapshots) — 404 on admin routes, malformed files, version mismatches.
 - [Troubleshooting → Server](../troubleshooting#server) — port conflicts, 400s.
 - [Limitations → HTTP server](../limitations#http-server).

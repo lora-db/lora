@@ -56,7 +56,7 @@ Defines the Cypher grammar in PEG notation (pest) and lowers parse trees into th
 
 ### lora-store
 
-Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a BTreeMap-backed implementation with secondary indexes for labels, relationship types, and adjacency. Also defines the temporal, spatial, and vector value types (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`) shared between the store and the executor.
+Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a BTreeMap-backed implementation with secondary indexes for labels, relationship types, and adjacency. Also defines the temporal, spatial, and vector value types (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`) shared between the store and the executor. Owns the `Snapshotable` trait plus wire format, and the `MutationEvent` / `MutationRecorder` surface that the durability layer builds on.
 
 **Key files**:
 - `src/graph.rs` — trait definitions, `NodeRecord`, `RelationshipRecord`, `PropertyValue`
@@ -64,6 +64,8 @@ Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provi
 - `src/temporal.rs` — temporal value types and parsing
 - `src/spatial.rs` — `LoraPoint` and distance functions
 - `src/vector.rs` — `LoraVector`, coordinate-type enum, construction + math helpers
+- `src/snapshot.rs` — `Snapshotable` trait, wire format, `SnapshotMeta`, format-version constants
+- `src/mutation.rs` — `MutationEvent` enum, `MutationRecorder` trait
 
 ### lora-analyzer
 
@@ -103,11 +105,11 @@ Interprets a `PhysicalPlan` against a `GraphStorage` (read-only) or `GraphStorag
 
 ### lora-database
 
-Orchestration layer. Owns `Arc<Mutex<S: GraphStorage + GraphStorageMut>>` and exposes a single `Database` entry point with `execute` / `execute_with_params`. Drives the full parse → analyze → compile → execute pipeline so callers (HTTP server, benchmarks, examples, embedded consumers) don't depend on the individual pipeline crates.
+Orchestration layer. Owns `Arc<Mutex<S: GraphStorage + GraphStorageMut>>` and exposes a single `Database` entry point with `execute` / `execute_with_params`. Drives the full parse → analyze → compile → execute pipeline so callers (HTTP server, benchmarks, examples, embedded consumers) don't depend on the individual pipeline crates. Also exposes the public snapshot API: `save_snapshot_to`, `load_snapshot_from`, and `in_memory_from_snapshot`, driving the atomic-write protocol.
 
 **Key files**:
-- `src/database.rs` — `Database` struct, `QueryRunner` trait
-- `src/lib.rs` — re-exports `Database`, `QueryRunner`, `InMemoryGraph`, `LoraValue`, `ExecuteOptions`, `QueryResult`, `ResultFormat`, `parse_query`
+- `src/database.rs` — `Database` struct, `QueryRunner` trait, snapshot API
+- `src/lib.rs` — re-exports `Database`, `QueryRunner`, `InMemoryGraph`, `LoraValue`, `ExecuteOptions`, `QueryResult`, `ResultFormat`, `parse_query`, `SnapshotMeta`
 
 The integration test suite for the full pipeline lives here under `tests/`.
 
@@ -116,9 +118,9 @@ The integration test suite for the full pipeline lives here under `tests/`.
 Thin Axum-based HTTP transport. Wraps any `QueryRunner` implementation — by default `Arc<Database<InMemoryGraph>>`. No pipeline logic of its own.
 
 **Key files**:
-- `src/main.rs` — entry point; parses `--host`/`--port` (with `LORA_SERVER_HOST`/`LORA_SERVER_PORT` env fallbacks, default `127.0.0.1:4747`) and serves a `Database::in_memory()` instance
-- `src/config.rs` — CLI/env parser for bind address and port
-- `src/app.rs` — `build_app`, route handlers, request / response types
+- `src/main.rs` — entry point; parses `--host`/`--port`/`--snapshot-path`/`--restore-from` (with `LORA_SERVER_HOST`/`LORA_SERVER_PORT`/`LORA_SERVER_SNAPSHOT_PATH` env fallbacks) and serves a `Database::in_memory()` instance, optionally restored from a snapshot at boot
+- `src/config.rs` — CLI/env parser for bind address, port, and snapshot paths
+- `src/app.rs` — `build_app`, route handlers, request / response types. Mounts the opt-in `/admin/snapshot/{save,load}` routes only when `--snapshot-path` is configured.
 
 ## Architecture diagram
 
@@ -154,6 +156,7 @@ graph TD
 
 - Walk through a query in detail: [Data Flow](data-flow.md)
 - Understand the storage internals: [Graph Engine](graph-engine.md)
+- Durability, snapshot wire format, admin surface: [Snapshots](../operations/snapshots.md)
 - Add a new clause or function: [Cypher Development](../internals/cypher-development.md)
 - Run and operate the server: [Deployment](../operations/deployment.md)
 - For managed, multi-node deployments with persistence and replication: [LoraDB platform](https://loradb.com)

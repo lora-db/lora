@@ -37,6 +37,34 @@ Notes:
 - Temporal and spatial types are defined in `lora-store/src/temporal.rs` and
   `lora-store/src/spatial.rs` respectively.
 
+## Serialization stability
+
+Snapshots (see [../operations/snapshots.md](../operations/snapshots.md)) bincode-serialize `NodeRecord`, `RelationshipRecord`, and every `PropertyValue` variant — including the temporal, spatial, and vector types below. The value model is therefore a **wire-format contract**: any change to these types must consider backward compatibility with existing snapshot files.
+
+### What is a wire-incompatible change
+
+- **Adding a `PropertyValue` variant.** New variants shift the discriminant layout bincode emits.
+- **Removing, reordering, or renaming existing `PropertyValue` variants.** Same reason.
+- **Adding a field to `NodeRecord`, `RelationshipRecord`, `LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`, or `VectorValues`.** Bincode serializes structs positionally — any new field changes the layout of every encoded instance.
+- **Changing the `VectorCoordinateType` discriminant layout** (reordering variants, adding one before an existing one, deleting one). The tag is serialized by ordinal.
+- **Changing the `SnapshotPayload` struct** (auxiliary state beside the record vectors).
+
+Each of the above requires a bump of `SNAPSHOT_FORMAT_VERSION` and a reader path that still accepts the prior version. See [../design/change-management.md](../design/change-management.md#snapshot-format-compatibility) for the full policy.
+
+### What is a wire-compatible change (rare)
+
+- Implementing a new method, trait, or `Display` on any of these types — pure Rust-side additions.
+- Internal refactors that do not touch serialized struct fields or enum variant order.
+- Relaxing a validation rule in a constructor (e.g., allowing a broader input range in `LoraVector::try_new`). Older files still load; newer files that exploit the relaxation simply cannot be read by older binaries — which is why dropping support via `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION` is a separate, deliberate release-note event.
+
+### Checklist when touching any of these types
+
+- [ ] Does the change add, remove, reorder, or rename a `PropertyValue` variant? → bump `SNAPSHOT_FORMAT_VERSION`.
+- [ ] Does the change add or remove a struct field on any record or temporal/spatial/vector type? → bump `SNAPSHOT_FORMAT_VERSION`.
+- [ ] Did you add a reader path for the prior version? (`crates/lora-store/src/snapshot.rs` migration handling)
+- [ ] Did you add an integration test that loads a frozen file from the prior version?
+- [ ] Did you update the file-format table in [../operations/snapshots.md](../operations/snapshots.md#file-format) if the header changed?
+
 ## Executor value type
 
 `LoraValue` extends `PropertyValue` with three graph references:

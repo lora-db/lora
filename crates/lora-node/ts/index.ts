@@ -28,6 +28,19 @@ const NativeDatabase: typeof import("./native.js").Database = native.Database;
 export * from "./types.js";
 
 /**
+ * Metadata returned by `saveSnapshot` / `loadSnapshot`. Mirrors the Rust
+ * `SnapshotMeta` struct and matches the shape used by every other binding
+ * (Python, WASM, Go, FFI) so snapshots can be described in the same way
+ * regardless of language.
+ */
+export interface SnapshotMeta {
+  formatVersion: number;
+  nodeCount: number;
+  relationshipCount: number;
+  walLsn: number | null;
+}
+
+/**
  * In-memory Lora graph database instance.
  *
  * Obtained exclusively via `createDatabase()`. There is no public constructor
@@ -75,6 +88,36 @@ class DatabaseImpl {
   /** Number of relationships currently in the graph. */
   async relationshipCount(): Promise<number> {
     return this.#inner.relationshipCount();
+  }
+
+  /**
+   * Save the graph to a snapshot file. Writes atomically via a `.tmp` +
+   * rename dance — the target path is only replaced once the full payload
+   * has been written and fsync'd.
+   *
+   * Synchronous in the native layer (point-in-time consistency requires
+   * holding the store mutex for the duration of the save); the returned
+   * Promise resolves immediately once the save returns.
+   */
+  async saveSnapshot(path: string): Promise<SnapshotMeta> {
+    try {
+      return this.#inner.saveSnapshot(path) as SnapshotMeta;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Replace the current graph state with a snapshot loaded from `path`.
+   * Concurrent `execute()` calls block on the store mutex until the load
+   * completes.
+   */
+  async loadSnapshot(path: string): Promise<SnapshotMeta> {
+    try {
+      return this.#inner.loadSnapshot(path) as SnapshotMeta;
+    } catch (err) {
+      throw wrapError(err);
+    }
   }
 }
 

@@ -32,6 +32,7 @@ Architectural Decision Records for non-trivial design choices.
 
 - [ADR-0001: Graph Architecture](decisions/0001-graph-architecture.md) — BTreeMap-backed in-memory storage
 - [ADR-0002: Cypher Query Conventions](decisions/0002-cypher-query-conventions.md) — grammar and pipeline design
+- [ADR-0003: Snapshot Format](decisions/0003-snapshot-format.md) — bincode payload + CRC + reserved `wal_lsn`, point-in-time snapshots vs WAL
 
 ## Performance
 
@@ -46,6 +47,7 @@ Architectural Decision Records for non-trivial design choices.
 
 - [Deployment](operations/deployment.md) — how to build, run, and deploy
 - [Security](operations/security.md) — security posture and data-handling risks
+- [Snapshots](operations/snapshots.md) — durable save/load, admin endpoints, atomic rename, mutation events
 
 ## Reference
 
@@ -78,8 +80,8 @@ the website.
 Most contributors start here with a local `cargo run --bin lora-server`. As workloads grow, the single-node, in-memory design hits predictable edges:
 
 - **Scale** — queries serialize on a single mutex, data lives in RAM only
-- **Reliability** — no persistence, WAL, or replication
-- **Operations** — no authentication, TLS, backups, or metrics in the core
+- **Reliability** — point-in-time snapshots only (no WAL, no replication)
+- **Operations** — no authentication, TLS, or metrics in the core; snapshot backups are manual
 
 For those needs, developers typically move to the managed platform at **<https://loradb.com>**, which handles persistence, scaling, and operational concerns on top of the same Cypher surface. The core engine in this repo remains the right choice for embedded, local, and development use cases.
 

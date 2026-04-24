@@ -205,22 +205,71 @@ try {
 
 ## Common Patterns
 
-### Persist across reloads with IndexedDB
+### Persisting your graph
 
-LoraDB itself is in-memory (see
-[Limitations → Storage](../limitations#storage)). Dump and re-seed:
+The browser WASM binding has no filesystem, so the snapshot API is
+**byte-in / byte-out**. Save produces a `Uint8Array`; load consumes
+one. Store the bytes wherever your app already stores state —
+IndexedDB, the fetch API, OPFS, a backend:
 
 ```ts
-// Dump every node + edge
-const nodes = await db.execute(
-  "MATCH (n) RETURN labels(n) AS labels, properties(n) AS props"
-);
-const edges = await db.execute(
-  "MATCH (a)-[r]->(b) RETURN id(a) AS from, id(b) AS to, type(r) AS type, properties(r) AS props"
-);
-// Store nodes.rows + edges.rows in IndexedDB
+// Dump the full graph to bytes.
+const bytes: Uint8Array = await db.saveSnapshotToBytes();
 
-// On next load, UNWIND back in via CREATE + MERGE
+// Later (same or next session), restore from bytes.
+await db.loadSnapshotFromBytes(bytes);
+```
+
+The Node target of `@loradb/lora-wasm` exposes the same byte API for
+parity, so host code ports unchanged between targets (use the
+filesystem-backed `saveSnapshot(path)` on `@loradb/lora-node` only
+when you want a path-based API).
+
+The Worker-backed surface (`createWorkerDatabase`) does not yet plumb
+snapshots through the worker protocol. To snapshot from a worker
+today, call `saveSnapshotToBytes` inside the worker and post the bytes
+back to the main thread yourself.
+
+See the canonical [Snapshots guide](../snapshot) for the full metadata
+shape and atomic-rename guarantees (the latter apply to path-based
+writes in the other bindings; byte-based persistence is atomic only as
+far as the surrounding storage layer allows).
+
+### Persist across reloads with IndexedDB
+
+```ts
+const DB = 'loradb-snapshots', STORE = 'graph', KEY = 'main';
+
+async function idb(): Promise<IDBDatabase> {
+  return await new Promise((ok, err) => {
+    const r = indexedDB.open(DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(STORE);
+    r.onsuccess = () => ok(r.result);
+    r.onerror   = () => err(r.error);
+  });
+}
+
+async function saveToIdb(db: Database) {
+  const bytes = await db.saveSnapshotToBytes();
+  const idbDb = await idb();
+  await new Promise<void>((ok, err) => {
+    const tx = idbDb.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(bytes, KEY);
+    tx.oncomplete = () => ok();
+    tx.onerror    = () => err(tx.error);
+  });
+}
+
+async function loadFromIdb(db: Database) {
+  const idbDb = await idb();
+  const bytes = await new Promise<Uint8Array | undefined>((ok, err) => {
+    const tx = idbDb.transaction(STORE, 'readonly');
+    const r  = tx.objectStore(STORE).get(KEY);
+    r.onsuccess = () => ok(r.result);
+    r.onerror   = () => err(r.error);
+  });
+  if (bytes) await db.loadSnapshotFromBytes(bytes);
+}
 ```
 
 ### Run heavy queries without blocking the UI

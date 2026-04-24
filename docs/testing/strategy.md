@@ -11,8 +11,8 @@
 | `lora-store` | Unit tests | `src/memory.rs` (`#[cfg(test)]`) | Node / relationship CRUD, label normalization, adjacency, property mutation, delete semantics, schema helpers |
 | `lora-analyzer` | Unit tests | `src/analyzer.rs` (`#[cfg(test)]`) | Semantic validation (for example, unknown rel type in MATCH vs CREATE) |
 | `lora-parser` | Unit tests | `tests/parser.rs` *(plus the file in lora-database)* | Grammar rules: match, where, return, create, delete, set, remove, merge, unwind, union, call, with, case, literals, parameters, relationships, ranges, star, order / skip / limit, string escapes, operators |
-| `lora-database` | Integration tests | `tests/*.rs` | Full pipeline (parse → analyze → compile → execute) for all Cypher features |
-| `lora-server` | HTTP tests | `tests/http.rs` | Axum routing, health, query endpoint, parse-error response, create-then-match flow |
+| `lora-database` | Integration tests | `tests/*.rs` | Full pipeline (parse → analyze → compile → execute) for all Cypher features, plus snapshot save / load / format-version compatibility |
+| `lora-server` | HTTP tests | `tests/{http,admin}.rs` | Axum routing, health, query endpoint, parse-error response, create-then-match flow, opt-in admin snapshot endpoints |
 | `lora-go` | Go tests | `crates/lora-go/*_test.go` | cgo round-trip over `lora-ffi`, execute + params, typed value shapes, error codes, context cancellation semantics. CI: `.github/workflows/lora-go.yml` (`go vet` + `go test -race` + `go run ./examples/basic`) |
 | `lora-ruby` | Ruby tests | `crates/lora-ruby/test/` (minitest) | rb-sys / Magnus round-trip, execute + params, typed value shapes, error classes, GVL release. CI: `.github/workflows/lora-ruby.yml` (`rake compile` + `rake test` across Ruby 3.1/3.2/3.3) |
 
@@ -39,10 +39,18 @@
 | `update.rs` | `SET` property / label / replace / merge, `REMOVE` property / label, `DELETE`, `DETACH DELETE` |
 | `where_clause.rs` | Comparison, boolean, string predicates, null checks, `IN`, regex, list predicates, arithmetic, relationship properties |
 | `with.rs` | Variable piping, renaming, filtering, aggregation, star, ordering, pagination |
+| `snapshot.rs` | `Snapshotable` round-trip, atomic rename + `.tmp` cleanup, format-version gating, CRC failure, `MutationRecorder` replay shape |
 | `seeds.rs` | Shared seed-graph builders (social, org, transport, knowledge, …) |
 | `test_helpers.rs` | `TestDb` helper with `run` / `assert` / `column` / `scalar` utilities |
 | `advanced_queries.rs` | Complex multi-clause queries and forward-looking features (most are `#[ignore]`) |
 | `parser.rs` | Parse-to-AST coverage exercised via `Database::parse` |
+
+## Server integration test files (`lora-server/tests/`)
+
+| File | Coverage area |
+|------|--------------|
+| `http.rs` | Core HTTP surface — routing, `/health`, `/query` happy / parse-error paths, create-then-match |
+| `admin.rs` | `POST /admin/snapshot/{save,load}` — body handling, default-path behavior, `path` override, opt-in 404 when `--snapshot-path` is unset, round-trip against a live server |
 
 ## Ignored tests (58)
 
@@ -121,5 +129,6 @@ authoritative performance tooling.
 1. **Optimizer tests** — verify plan transformations (filter push-down has no dedicated test)
 2. **Concurrency tests** — exercise mutex behavior under parallel requests
 3. **Property-based testing** — generate random Cypher queries to stress the parser / executor
-4. **HTTP parameter tests** — parameters work through the Rust API but the HTTP server does not yet forward them
-5. **Temporal / spatial edge cases** — leap years, UTC offsets at boundaries, antipodal Haversine, cross-SRID comparisons
+4. **Property-based snapshot round-trips** — generate random graphs, save, load, assert structural equality
+5. **HTTP parameter tests** — parameters work through the Rust API but the HTTP server does not yet forward them
+6. **Temporal / spatial edge cases** — leap years, UTC offsets at boundaries, antipodal Haversine, cross-SRID comparisons

@@ -24,6 +24,56 @@ Since the analyzer validates labels and types against the live graph for `MATCH`
 
 This means removing the last instance of a label/type/property is a breaking change for existing queries. On an empty graph, all names are accepted.
 
+### Snapshot format compatibility
+
+Snapshots (see [../operations/snapshots.md](../operations/snapshots.md)) are a durable on-disk contract. Two constants in `crates/lora-store/src/snapshot.rs` govern compatibility:
+
+| Constant | Meaning |
+|---|---|
+| `SNAPSHOT_FORMAT_VERSION` | The format the current writer always emits. Currently `1`. |
+| `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION` | The oldest format the current reader will accept. Older files fail with `SnapshotError::UnsupportedVersion`. |
+
+The reader accepts any version in `[MIN..=CURRENT]` and migrates legacy payloads to the current in-memory shape on load. This is the only place the engine supports backward-compatible file reads.
+
+#### When to bump `SNAPSHOT_FORMAT_VERSION`
+
+**Required** for any change to:
+
+- `SnapshotPayload` struct layout (fields added, removed, reordered, renamed).
+- Any `PropertyValue` variant (added, removed, reordered, renamed).
+- Any field on `NodeRecord` or `RelationshipRecord`.
+- Any temporal type (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`).
+- Any spatial type (`LoraPoint`, SRID handling).
+- Any vector-related type (`LoraVector`, `VectorValues`, `VectorCoordinateType` discriminant order).
+- The on-disk header layout beyond the reserved fields.
+
+Every bump **must** come with a reader path that accepts the prior version — deserialize into the legacy shape, then migrate to current. See the checklist below.
+
+#### When to raise `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION`
+
+Reserved for dropping support for genuinely obsolete files. Requires:
+
+- A release-notes warning on the major version that raises the floor.
+- A migration recipe (typically: use the last release that accepted the old version to export via Cypher, then re-import on the new release).
+- An explicit contract: any user holding files below the new floor must migrate before upgrading.
+
+Raise this rarely. The cost of maintaining a reader path for old versions is low; the cost of breaking operator backups is high.
+
+#### Forward-compatible changes (safe, no version bump)
+
+- The snapshot header has a `header_flags: u32` field. Bit 0 (`has_wal_lsn`) gates the reserved `wal_lsn` slot. Future writers may set additional bits; current readers **must** ignore unknown bits. Adding a new bit is forward-compatible provided its semantics leave the payload itself unchanged.
+- The CRC32 trailer is validated on every load — a truncated or bit-flipped file must fail loudly with `SnapshotError::BadCrc` or `SnapshotError::BadMagic`. Never silently accept a partially-read file.
+- Indexes (label, relationship-type, adjacency) are rebuilt on load and are **not** serialized. Changing the in-memory index layout is therefore not a wire change.
+
+#### Checklist for bumping `SNAPSHOT_FORMAT_VERSION`
+
+- [ ] Update `SNAPSHOT_FORMAT_VERSION` in `crates/lora-store/src/snapshot.rs`.
+- [ ] Add a reader branch for the prior version that deserializes the legacy shape and converts it to current.
+- [ ] Add an integration test in `crates/lora-database/tests/snapshot.rs` that loads a frozen file produced by the prior version and verifies the migrated in-memory state.
+- [ ] Update the file-format table in [../operations/snapshots.md](../operations/snapshots.md#file-format).
+- [ ] Update the serialization-stability rules in [../internals/value-model.md](../internals/value-model.md#serialization-stability) if a new value-level invariant applies.
+- [ ] Note the change in [../decisions/0003-snapshot-format.md](../decisions/0003-snapshot-format.md) if the decision space shifted (new header flag semantics, new WAL interplay, etc.).
+
 ### Adding new Cypher features
 
 Follow the pipeline described in [../internals/cypher-development.md](../internals/cypher-development.md):

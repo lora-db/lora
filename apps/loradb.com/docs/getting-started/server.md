@@ -37,6 +37,80 @@ LORA_SERVER_HOST=0.0.0.0 LORA_SERVER_PORT=8080 lora-server
 Precedence (first match wins): CLI flags → environment variables →
 built-in defaults (`127.0.0.1:4747`).
 
+Every flag also has an env-var equivalent:
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--host <ADDR>` | `LORA_SERVER_HOST` | `127.0.0.1` | Bind address. |
+| `--port <PORT>` | `LORA_SERVER_PORT` | `4747` | Bind port. |
+| `--snapshot-path <PATH>` | `LORA_SERVER_SNAPSHOT_PATH` | unset | Default file for the admin snapshot endpoints. **Also gates whether they are mounted** — unset = 404. |
+| `--restore-from <PATH>` | — | unset | Load a snapshot at boot, before accepting queries. |
+
+### Snapshots and restore
+
+LoraDB can save the live graph to a single file and restore it at
+boot or on demand:
+
+- **`--snapshot-path <PATH>`** (or `LORA_SERVER_SNAPSHOT_PATH`)
+  enables the admin endpoints
+  [`POST /admin/snapshot/save`](../api/http#admin-endpoints-opt-in)
+  and `POST /admin/snapshot/load`, and supplies the default file
+  they operate on. If unset, the admin routes return `404`.
+- **`--restore-from <PATH>`** loads a snapshot at startup. A missing
+  file is fine — the server starts with an empty graph and logs a
+  message. A malformed file is fatal.
+
+Typical cron-friendly setup — boot from, and save back to, the same
+file:
+
+```bash
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --snapshot-path /var/lib/lora/db.bin \
+  --restore-from  /var/lib/lora/db.bin
+```
+
+Save on demand:
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
+# => {"formatVersion":1,"nodeCount":1024,"relationshipCount":4096,"walLsn":null}
+```
+
+Or save to an ad-hoc override path for a single call:
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/snapshot/save \
+  -H 'content-type: application/json' \
+  -d '{"path":"/var/backups/lora/2026-04-24.bin"}'
+```
+
+Load (restores on top of the live graph — serialises against every
+other query):
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/snapshot/load
+```
+
+`--restore-from` is independent of `--snapshot-path`. You can restore
+from a read-only seed (`/var/lib/lora/seed.bin`) and snapshot to a
+writable path (`/var/lib/lora/runtime.bin`).
+
+:::caution Security
+
+The admin endpoints have **no authentication** and the optional `path`
+body field is passed straight to the OS — anyone who can reach the
+admin port can write files anywhere the server UID can write, or swap
+the live graph by pointing `load` at an attacker-staged file. See
+[Limitations → HTTP server](../limitations#http-server) and the
+[HTTP API reference](../api/http#admin-endpoints-opt-in) before
+exposing them.
+
+:::
+
+See also the canonical [Snapshots guide](../snapshot) for the
+metadata shape, file format, and every binding's save / load API.
+
 ## Creating a Client / Connection
 
 The client is any HTTP client. Verify the server is alive before
@@ -188,6 +262,16 @@ Request body:
   (optional; defaults to `"graph"`). See
   [Result formats](../concepts/result-formats) for the full shape of each.
 
+### `POST /admin/snapshot/save` (opt-in)
+
+### `POST /admin/snapshot/load` (opt-in)
+
+Both are mounted only when the server is started with
+`--snapshot-path <PATH>` (or `LORA_SERVER_SNAPSHOT_PATH`). Otherwise
+they return `404`. See [Snapshots and restore](#snapshots-and-restore)
+above, and the full reference in
+[HTTP API → Admin endpoints (opt-in)](../api/http#admin-endpoints-opt-in).
+
 ## Common Patterns
 
 ### Seed via stdin
@@ -245,13 +329,16 @@ isolation.
 ## What's _not_ here
 
 - **Authentication, TLS, rate limiting** — none. Bind to
-  `127.0.0.1` or put it behind a reverse proxy.
+  `127.0.0.1` or put it behind a reverse proxy. The admin snapshot
+  endpoints also ship without auth — see
+  [Snapshots and restore](#snapshots-and-restore).
 - **Parameter binding over HTTP** — the `/query` body does **not**
   currently accept a `params` field. Bind via the Rust API today;
   HTTP params are on the roadmap. See
   [Limitations](../limitations).
-- **Persistence** — server holds a single in-memory database; data
-  is lost on restart.
+- **WAL / continuous persistence** — not supported. Point-in-time
+  snapshots are available via [Snapshots and restore](#snapshots-and-restore);
+  data between saves is lost on crash.
 - **Multiple databases** — one process serves exactly one graph.
   Run multiple processes on different ports if you need isolation.
 
@@ -266,11 +353,14 @@ isolation.
 ## See also
 
 - [**HTTP API reference**](../api/http) — endpoint-by-endpoint reference.
+- [**HTTP API → Admin endpoints (opt-in)**](../api/http#admin-endpoints-opt-in) — full reference for the snapshot endpoints.
+- [**Snapshots guide**](../snapshot) — canonical feature page: metadata shape, file format, every binding's API.
 - [**Result formats**](../concepts/result-formats) — the four response shapes.
 - [**Rust guide**](./rust) — native API (what the server wraps).
 - [**Queries**](../queries/) — the query language the server exposes.
-- [**Cookbook**](../cookbook) — scenario-based recipes.
+- [**Cookbook**](../cookbook) — scenario-based recipes, including backup-and-restore.
 - [**Limitations → HTTP server**](../limitations#http-server) —
   auth, TLS, parameters.
+- [**Troubleshooting → Snapshots**](../troubleshooting#snapshots) — 404, malformed file, version mismatch.
 - [**Troubleshooting → Server**](../troubleshooting#server) — port
   conflicts, connection issues.

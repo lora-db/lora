@@ -227,6 +227,38 @@ fn main() -> anyhow::Result<()> {
 Calls serialise on the inner mutex; no data races, but no parallel
 execution either.
 
+### Persisting your graph
+
+LoraDB can save the in-memory graph to a single file and restore it
+later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+
+```rust
+use lora_database::{Database, SnapshotMeta};
+
+let db = Database::in_memory();
+db.execute("CREATE (:Person {name: 'Ada'})", None)?;
+
+// Save everything to disk.
+let meta: SnapshotMeta = db.save_snapshot_to("graph.bin")?;
+println!(
+    "{} nodes, {} relationships",
+    meta.node_count, meta.relationship_count,
+);
+
+// Boot a fresh Database from the saved file.
+let db2 = Database::in_memory_from_snapshot("graph.bin")?;
+
+// Or overlay a snapshot onto an existing handle.
+db.load_snapshot_from("graph.bin")?;
+```
+
+Both save and load serialise against every query on the handle — the
+snapshot holds the same mutex as `execute`. A crash between saves
+loses every mutation since the last save.
+
+See the canonical [Snapshots guide](../snapshot) for the full
+metadata shape, file format, atomic-rename guarantees, and boundaries.
+
 ## Common Patterns
 
 ### Bulk insert from a `Vec`

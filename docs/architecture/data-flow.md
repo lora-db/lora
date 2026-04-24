@@ -124,6 +124,8 @@ Expression evaluation is handled by `eval_expr` in `lora-executor/src/eval.rs`, 
 
 Shortest-path variants of `PathBuild` run the normal variable-length expand and then pass the results through `filter_shortest_paths`, which retains either one minimum-hop path (`shortestPath`) or every minimum-hop path (`allShortestPaths`).
 
+**Mutation events.** `MutableExecutor` writes go through `GraphStorageMut`. Every mutation fires a `MutationEvent` at an optional `MutationRecorder` on the store (none by default). The emit path is a single null-pointer check when no recorder is installed, so read-only and no-durability workloads pay zero cost. See [graph-engine.md#durability](graph-engine.md#durability) for the trait, [../internals/ingestion.md](../internals/ingestion.md) for the write path, and [../operations/snapshots.md#mutation-events](../operations/snapshots.md#mutation-events) for the recorder contract.
+
 ### Stage 5: Result projection
 
 **Input**: `Vec<Row>` + `ExecuteOptions { format }`
@@ -145,6 +147,7 @@ Four output formats:
 - Queries are serialized
 - Write queries block reads
 - No transaction isolation beyond single-query atomicity
+- `save_snapshot_to` holds the mutex for the serialize step (bincode of every node and relationship); the `fsync` + rename happen on the tmp file, but the mutex-held window is still `O(n + r)`. `load_snapshot_from` holds the mutex for the full deserialize + index-rebuild. Both serialize against every query — see [../performance/notes.md](../performance/notes.md#snapshot-save--load).
 
 > 🚀 **Production note** — The single-mutex model is a deliberate simplification for the in-memory core. If you're running read-heavy workloads or need concurrent transactions, the [LoraDB managed platform](https://loradb.com) uses a different concurrency strategy suitable for production traffic.
 
@@ -172,5 +175,6 @@ sequenceDiagram
 
 - Storage internals the executor reads from: [Graph Engine](graph-engine.md)
 - Add support for a new Cypher construct: [Cypher Development](../internals/cypher-development.md)
+- Durability and the mutation-event surface: [Snapshots](../operations/snapshots.md)
 - Understand performance characteristics of each stage: [Performance Notes](../performance/notes.md)
 - Benchmarks for the full pipeline: [Benchmarks](../performance/benchmarks.md)

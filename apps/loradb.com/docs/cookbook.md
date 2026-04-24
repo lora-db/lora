@@ -28,6 +28,7 @@ Cypher-native shape.
 - [Event / time-based patterns](#event--time-based-patterns)
 - [Geospatial patterns](#geospatial-patterns)
 - [Vector-retrieval patterns](#vector-retrieval-patterns)
+- [Backup and restore](#backup-and-restore)
 - [See also](#see-also)
 
 ---
@@ -856,12 +857,159 @@ list alongside the ranking. This is the shape that motivated putting
 
 ---
 
+## Backup and restore
+
+LoraDB's snapshot API lets you persist the full graph to a single
+file and restore it later. It's a point-in-time dump — atomic on
+rename, no WAL, no background persistence. These recipes cover the
+two common operational shapes.
+
+### Recipe: Periodic snapshot from host code
+
+#### Problem
+
+"Persist the live graph every N minutes from the same process that
+owns the `Database` handle."
+
+#### Assumed setup
+
+- Any binding with a `save_snapshot` / `saveSnapshot` method (Rust,
+  Python, Node, WASM, Go, Ruby) — see the
+  [language-specific quickstarts](./getting-started/installation) or
+  the canonical [Snapshots guide](./snapshot).
+- A writable target path on a local disk.
+
+#### Code (Rust)
+
+```rust
+use std::time::Duration;
+use std::sync::Arc;
+use lora_database::Database;
+
+fn snapshot_loop(db: Arc<Database>, path: &'static str) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(300));
+        match db.save_snapshot_to(path) {
+            Ok(meta) => tracing::info!(
+                nodes = meta.node_count,
+                rels  = meta.relationship_count,
+                "snapshot saved"
+            ),
+            Err(e) => tracing::error!(error = %e, "snapshot failed"),
+        }
+    });
+}
+```
+
+#### Explanation
+
+- `save_snapshot_to` writes to `<path>.tmp`, `fsync`s, and renames
+  over the target — a crashed save never leaves a half-written file
+  at `<path>`.
+- The call serialises against every query on the handle. The mutex
+  is held for the serialize step (`O(n + r)` in nodes and
+  relationships). Pick an interval larger than the measured save
+  wall-time so successive saves don't stack.
+- You can safely overwrite the same path on every tick. For
+  versioned backups, rotate the filename (`graph-2026-04-24.bin`)
+  and garbage-collect outside the process.
+
+#### Variations
+
+- **Rotating filenames.** Append a date stamp and prune on a cron.
+- **HTTP from a cron job.** If the server runs with
+  `--snapshot-path`, call `POST /admin/snapshot/save` from an
+  external cron instead of a thread inside the process. See
+  [HTTP API → Admin endpoints](./api/http#admin-endpoints-opt-in).
+- **Python / Node / WASM / Go / Ruby.** Same shape — see each
+  quickstart's _Persisting your graph_ section:
+  [Rust](./getting-started/rust#persisting-your-graph),
+  [Python](./getting-started/python#persisting-your-graph),
+  [Node](./getting-started/node#persisting-your-graph),
+  [WASM](./getting-started/wasm#persisting-your-graph),
+  [Go](./getting-started/go#persisting-your-graph),
+  [Ruby](./getting-started/ruby#persisting-your-graph).
+
+### Recipe: Boot from snapshot, save on shutdown (server setup)
+
+#### Problem
+
+"Self-hosted `lora-server` should load state at start-up and
+persist it on graceful shutdown."
+
+#### Assumed setup
+
+- A host running `lora-server` as a long-lived process (systemd, Docker,
+  plain `nohup`, …).
+- A writable path for the snapshot file.
+
+#### Configuration
+
+```bash
+# start-up — restore from, and default-save to, the same file
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --snapshot-path /var/lib/lora/db.bin \
+  --restore-from  /var/lib/lora/db.bin
+```
+
+`--restore-from` at boot: missing file is fine (empty graph, logged);
+malformed file is fatal.
+
+#### Save on shutdown (systemd sketch)
+
+```ini
+# /etc/systemd/system/lora-server.service
+[Service]
+ExecStart=/usr/local/bin/lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --snapshot-path /var/lib/lora/db.bin \
+  --restore-from  /var/lib/lora/db.bin
+ExecStop=/usr/bin/curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
+TimeoutStopSec=30
+```
+
+The `ExecStop` call saves the current state before the process is
+killed. `TimeoutStopSec` needs to comfortably cover your measured
+save duration.
+
+#### Explanation
+
+- The admin endpoints are opt-in — they're mounted **only** because
+  `--snapshot-path` is set. On any other host they return `404`.
+- The admin surface has **no authentication**, so the bind address
+  must be privileged (here: `127.0.0.1` only). See
+  [HTTP API → Admin endpoints (opt-in)](./api/http#admin-endpoints-opt-in)
+  for the security warning.
+- The save runs as the server UID, which must have write access to
+  the target path and its parent directory.
+
+#### Variations
+
+- **Scheduled cron-driven saves.** Combine the boot-from-snapshot
+  setup above with a systemd `.timer` unit or an ordinary cron that
+  curls `POST /admin/snapshot/save` every N minutes. The endpoint
+  returns a `SnapshotMeta` you can log for observability.
+- **Immutable seed + writable runtime.** Pass `--restore-from
+  /var/lib/lora/seed.bin` and `--snapshot-path /var/lib/lora/runtime.bin`
+  to boot from a shared seed and save to a host-local file.
+
+See the canonical [Snapshots guide](./snapshot) for the file format,
+the full admin-surface security profile, and every binding's save /
+load API.
+
+---
+
 ## See also
 
 - [**Queries → Examples**](./queries/examples) — copy-paste recipes
   grouped by clause.
 - [**Queries → Aggregation**](./queries/aggregation) — clause-level
   grouping, HAVING, percentiles.
+- [**HTTP server → Snapshots and restore**](./getting-started/server#snapshots-and-restore)
+  — flag reference for the admin endpoints.
+- [**HTTP API → Admin endpoints (opt-in)**](./api/http#admin-endpoints-opt-in)
+  — full wire reference.
 - [**Tutorial**](./getting-started/tutorial) — guided from-zero walkthrough.
 - [**Troubleshooting**](./troubleshooting) — what to do when a
   recipe returns fewer rows than you expected.

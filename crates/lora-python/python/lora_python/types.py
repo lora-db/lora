@@ -217,6 +217,24 @@ class QueryResult(TypedDict):
 
 
 # ---------------------------------------------------------------------------
+# Snapshot metadata
+# ---------------------------------------------------------------------------
+
+
+class SnapshotMeta(TypedDict):
+    """Result of a snapshot save / load.
+
+    Mirrors the Rust ``SnapshotMeta`` struct. ``walLsn`` is reserved for
+    the future WAL/checkpoint hybrid and is ``None`` for pure snapshots.
+    """
+
+    formatVersion: int
+    nodeCount: int
+    relationshipCount: int
+    walLsn: "int | None"
+
+
+# ---------------------------------------------------------------------------
 # Constructors for param-side temporal/spatial values.
 # ---------------------------------------------------------------------------
 

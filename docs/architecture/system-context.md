@@ -16,11 +16,11 @@ An in-memory property graph database with a Cypher-like query language (a broad,
 
 - **Not a client for another graph database** -- it is a standalone engine, not a driver
 - **Not a distributed system** -- single-process, single-thread execution
-- **Not a persistent database** -- all data lives in memory and is lost on restart
+- **Not continuously durable** -- point-in-time snapshots exist (`save_snapshot_to` / `load_snapshot_from`; see [operations/snapshots.md](../operations/snapshots.md)); no WAL, no replication. Data between saves is lost on crash.
 - **Not openCypher-complete** -- implements a working subset of Cypher (see the support matrix for the specific clauses and functions that are covered, partial, or not yet implemented)
-- **Not production-grade** -- no authentication, no persistence, no replication
+- **Not production-grade** -- no authentication, only point-in-time persistence, no replication
 
-> 🚀 **Production note** — The core engine is deliberately scoped to local and embedded use. Production concerns (persistence, replication, authentication, backups, multi-tenant isolation) are handled by the managed LoraDB platform at **<https://loradb.com>**, which runs the same Cypher surface on top.
+> 🚀 **Production note** — The core engine is deliberately scoped to local and embedded use. Production concerns (continuous durability, replication, authentication, backups, multi-tenant isolation) are handled by the managed LoraDB platform at **<https://loradb.com>**, which runs the same Cypher surface on top.
 
 ## System boundary diagram
 

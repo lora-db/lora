@@ -147,6 +147,32 @@ rescue LoraRuby::QueryError => e
 end
 ```
 
+### Persisting your graph
+
+LoraDB can save the in-memory graph to a single file and restore it
+later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+
+```ruby
+require 'lora_ruby'
+
+db = LoraRuby::Database.new
+db.execute("CREATE (:Person {name: 'Ada'})")
+
+# Save everything to disk.
+meta = db.save_snapshot("graph.bin")
+puts "#{meta['nodeCount']} nodes, #{meta['relationshipCount']} relationships"
+
+# Restore into a fresh handle (in a new process, for example).
+db = LoraRuby::Database.new
+db.load_snapshot("graph.bin")
+```
+
+Both save and load serialise against every query on the handle. A
+crash between saves loses every mutation since the last save. See
+the
+[Snapshots operator doc (internal)](https://github.com/lora-db/lora/blob/main/docs/operations/snapshots.md)
+for the wire format and atomic-rename guarantees.
+
 ## Common Patterns
 
 ### Bulk insert from a Ruby array

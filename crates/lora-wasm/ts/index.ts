@@ -26,6 +26,19 @@ import { WasmDatabase, init as wasmInit } from "./loader-node.js";
 export * from "./types.js";
 export { createWorkerDatabase, type WorkerDatabase } from "./worker-client.js";
 
+/**
+ * Metadata returned by `saveSnapshotToBytes` / `loadSnapshotFromBytes`.
+ * Mirrors the Rust `SnapshotMeta` struct and matches the shape used by
+ * every other binding — `walLsn` is reserved for the future
+ * WAL/checkpoint hybrid and is `null` for pure snapshots.
+ */
+export interface SnapshotMeta {
+  formatVersion: number;
+  nodeCount: number;
+  relationshipCount: number;
+  walLsn: number | null;
+}
+
 let bootstrapped = false;
 function ensureBootstrapped(): void {
   if (bootstrapped) return;
@@ -69,6 +82,32 @@ class DatabaseImpl {
 
   async relationshipCount(): Promise<number> {
     return this.#inner.relationshipCount();
+  }
+
+  /**
+   * Serialize the current graph to a `Uint8Array`. WASM has no filesystem
+   * access — the caller is responsible for persisting the bytes (IndexedDB,
+   * localStorage, fetch POST, `fs.writeFileSync` in Node, etc.) and passing
+   * them back to `loadSnapshotFromBytes` on a future database instance.
+   */
+  async saveSnapshotToBytes(): Promise<Uint8Array> {
+    try {
+      return this.#inner.saveSnapshotToBytes();
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Replace the current graph state with a snapshot decoded from `bytes`.
+   * Returns metadata describing the restored snapshot.
+   */
+  async loadSnapshotFromBytes(bytes: Uint8Array): Promise<SnapshotMeta> {
+    try {
+      return this.#inner.loadSnapshotFromBytes(bytes) as SnapshotMeta;
+    } catch (err) {
+      throw wrapError(err);
+    }
   }
 
   /** Release the underlying wasm handle. Subsequent calls will throw. */

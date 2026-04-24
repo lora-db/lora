@@ -24,6 +24,10 @@ shortest way out.
 | `DELETE` complains about edges | [DELETE fails](#delete-fails-with-still-has-relationships) |
 | Parameters seem ignored | [Parameters](#parameters) |
 | Server won't start | [Server](#server) |
+| Admin snapshot endpoint returns 404 | [Snapshots → `/admin/snapshot/*` returns 404](#admin-snapshot-returns-404) |
+| A `.tmp` file is left beside the snapshot | [Snapshots → leftover `.tmp` file](#leftover-tmp-file-beside-the-snapshot) |
+| Snapshot load fails with "bad magic" or "bad CRC" | [Snapshots → load fails with bad magic / CRC](#snapshot-load-fails-with-bad-magic-or-crc) |
+| Snapshot load reports unsupported version | [Snapshots → unsupported format version](#snapshot-load-reports-unsupported-format-version) |
 | Result JSON shape is wrong | [Result format](#result-json-looks-nothing-like-what-i-expected) |
 | Build fails | [Build](#build) |
 
@@ -224,6 +228,96 @@ MATCH (a:User {id: $from}), (b:User {id: $to})
 OPTIONAL MATCH p = shortestPath((a)-[:FOLLOWS*]->(b))
 RETURN a, b, length(p) AS hops
 ```
+
+## Snapshots
+
+### `/admin/snapshot/*` returns 404
+
+**Symptom:** `POST /admin/snapshot/save` or `/admin/snapshot/load`
+returns `404 Not Found`.
+
+**Likely cause:** The server was not started with
+`--snapshot-path <PATH>` (or the `LORA_SERVER_SNAPSHOT_PATH` env
+var). The admin routes are **opt-in** — they are not mounted at all
+when that flag is unset.
+
+**Fix:** Restart with the flag, or use a per-binding
+`save_snapshot` call instead.
+
+```bash
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --snapshot-path /var/lib/lora/db.bin
+```
+
+See [HTTP server → Snapshots and restore](./getting-started/server#snapshots-and-restore)
+and the [HTTP API reference](./api/http#admin-endpoints-opt-in).
+
+### Leftover `.tmp` file beside the snapshot
+
+**Symptom:** A file named `<path>.tmp` sits next to the target
+snapshot file.
+
+**Likely cause:** A save was interrupted — `SIGKILL`, a power loss,
+or `ENOSPC` on the target disk. The save writes to `<path>.tmp`,
+`fsync`s, and renames over the target in one atomic step. If the
+process died between the write and the rename, the tmp remains.
+
+**Fix:** If the target `<path>` still exists, it is valid and loads
+cleanly — the last successful save. Delete the `<path>.tmp` and
+investigate whatever killed the process (disk space? OOM? operator
+error?). If the target does **not** exist, the tmp is your most
+recent attempt but has not been atomically committed — rename it
+and try loading; if CRC validation fails, restore from an earlier
+backup.
+
+### Snapshot load fails with "bad magic" or "bad CRC"
+
+**Symptom:** `SnapshotError::BadMagic` or `SnapshotError::BadCrc`
+on load.
+
+**Likely cause:**
+- **Bad magic** — the file is not a LoraDB snapshot. The first 8
+  bytes should be `LORASNAP`.
+- **Bad CRC** — the file is corrupt (truncated, bit-flipped, or an
+  unrelated file matching the magic by accident).
+
+**Fix:**
+
+```bash
+# Confirm it looks like a snapshot at all.
+head -c 8 path/to/snapshot.bin
+# => LORASNAP
+```
+
+If the magic is wrong, check you pointed at the right path. If the
+magic is right but CRC fails, restore from a known-good copy — a
+corrupt snapshot never loads partially on purpose, to prevent
+silently accepting half a graph. See the [Snapshots operator
+doc (internal)](https://github.com/lora-db/lora/blob/main/docs/operations/snapshots.md#file-format)
+for the on-disk layout.
+
+### Snapshot load reports unsupported format version
+
+**Symptom:** `SnapshotError::UnsupportedVersion` on load.
+
+**Likely cause:**
+- The file was written by a **newer** LoraDB than the reader — the
+  reader is older than the writer.
+- The file was written by an **obsolete** LoraDB whose format has
+  since been retired (the reader's `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION`
+  has been raised above the file's version).
+
+**Fix:**
+- If the reader is older: upgrade the reader to a release that
+  understands the file's format.
+- If the file is from a retired format: use the last LoraDB release
+  that accepted that version, export via Cypher (`MATCH (n) RETURN n`
+  and `MATCH (a)-[r]->(b) RETURN id(a), id(b), type(r), properties(r)`),
+  and re-import on the new release.
+
+Version / compatibility policy (internal):
+[Change management → Snapshot format compatibility](https://github.com/lora-db/lora/blob/main/docs/design/change-management.md#snapshot-format-compatibility).
 
 ## Parameters
 

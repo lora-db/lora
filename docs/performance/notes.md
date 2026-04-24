@@ -54,6 +54,19 @@ The executor pulls rows one-at-a-time through recursive calls. Each operator pro
 - Large intermediate result sets are fully materialized in memory
 - Sorts and aggregations must buffer all input
 
+### Snapshot save / load
+
+Snapshot operations serialize against every query through the same global mutex.
+
+- **Save.** `Database::save_snapshot_to` acquires the mutex, bincode-serializes every `NodeRecord` and `RelationshipRecord`, writes the result to `<path>.tmp`, then `fsync`s and renames. The mutex-held window covers the serialize step — it is `O(n + r)` in nodes and relationships. The `fsync` and rename happen against the tmp file but the mutex is still held until the write path completes.
+- **Load.** `Database::load_snapshot_from` acquires the mutex for the entire deserialize + index-rebuild. Adjacency and label / type indexes are reconstructed from the deserialized records, which is also `O(n + r)`.
+
+Practical rule: do not schedule a save at a cadence smaller than the measured save duration — overlapping saves means the second one waits behind the first and amplifies the stall. For large graphs, prefer a cron that calls `POST /admin/snapshot/save` at an interval larger than the measured save wall-time.
+
+**Source**: `crates/lora-store/src/snapshot.rs`, `crates/lora-database/src/database.rs`. Round-trip coverage lives in `crates/lora-database/tests/snapshot.rs`; there is no dedicated benchmark file yet (potential future slot: `crates/lora-database/benches/snapshot_benchmarks.rs`).
+
+See also [Snapshots (operator doc)](../operations/snapshots.md) and [Data Flow → Concurrency model](../architecture/data-flow.md#concurrency-model).
+
 ### Cross-product in multi-pattern MATCH
 
 ```cypher

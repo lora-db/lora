@@ -192,6 +192,50 @@ if err != nil {
 }
 ```
 
+### Persisting your graph
+
+LoraDB can save the in-memory graph to a single file and restore it
+later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+
+```go
+import lora "github.com/lora-db/lora/crates/lora-go"
+
+db, err := lora.New()
+if err != nil { log.Fatal(err) }
+defer db.Close()
+
+if _, err := db.Execute("CREATE (:Person {name: 'Ada'})", nil); err != nil {
+    log.Fatal(err)
+}
+
+meta, err := db.SaveSnapshot("graph.bin")
+if err != nil { log.Fatal(err) }
+fmt.Printf("nodes=%d rels=%d\n", meta.NodeCount, meta.RelationshipCount)
+
+db2, err := lora.New()
+if err != nil { log.Fatal(err) }
+defer db2.Close()
+
+if _, err := db2.LoadSnapshot("graph.bin"); err != nil {
+    log.Fatal(err)
+}
+```
+
+`SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for pure (non-
+checkpoint) snapshots and will become non-`nil` once the future WAL /
+checkpoint hybrid starts emitting a log position. Both save and load
+hold the store mutex for the duration of the call — concurrent
+`Execute` calls block until the snapshot operation finishes. A crash
+between saves loses every mutation since the last save.
+
+If you run `lora-server` alongside a Go client, you can also drive the
+admin surface as an ordinary HTTP request — see
+[`lora-server` → Snapshots and restore](./server#snapshots-and-restore)
+and [`POST /admin/snapshot/save`](../api/http#admin-endpoints-opt-in).
+
+See the canonical [Snapshots guide](../snapshot) for the full metadata
+shape, atomic-rename guarantees, and boundaries.
+
 ## Common Patterns
 
 ### Bulk insert from a Go slice

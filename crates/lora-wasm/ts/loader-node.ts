@@ -11,6 +11,17 @@ export interface NativeModule {
   init: () => void;
 }
 
+/**
+ * Shape of the snapshot metadata emitted by `loadSnapshotFromBytes`. The
+ * native Rust layer returns this as a plain JS object via `serde-wasm-bindgen`.
+ */
+export interface NativeSnapshotMeta {
+  formatVersion: number;
+  nodeCount: number;
+  relationshipCount: number;
+  walLsn: number | null;
+}
+
 const require = createRequire(import.meta.url);
 // The pkg-node path is stable because `wasm-pack build --out-dir pkg-node`
 // writes it next to this file's parent.

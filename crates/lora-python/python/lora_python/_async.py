@@ -24,7 +24,7 @@ import sys
 from typing import Any, Callable, Mapping, Optional, TypeVar
 
 from ._native import Database as _Database
-from .types import LoraParams, QueryResult
+from .types import LoraParams, QueryResult, SnapshotMeta
 
 _T = TypeVar("_T")
 
@@ -96,6 +96,25 @@ class AsyncDatabase:
     async def clear(self) -> None:
         """Drop every node and relationship."""
         await _to_thread(self._inner.clear)
+
+    async def save_snapshot(self, path: str) -> SnapshotMeta:
+        """Save the graph to a snapshot file.
+
+        The save is atomic — the target path is only replaced once the
+        full payload has been written and fsync'd. Runs on a worker
+        thread so the event loop stays free; concurrent ``execute``
+        coroutines serialise on the store mutex for the duration of the
+        save.
+        """
+        return await _to_thread(self._inner.save_snapshot, path)
+
+    async def load_snapshot(self, path: str) -> SnapshotMeta:
+        """Replace the current graph state with the snapshot at ``path``.
+
+        Concurrent ``execute`` coroutines block on the store mutex until
+        the load completes.
+        """
+        return await _to_thread(self._inner.load_snapshot, path)
 
     @property
     def node_count(self) -> int:

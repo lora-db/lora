@@ -134,21 +134,27 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**Functions**](./functions/overview) | String, math, list, temporal, spatial, aggregation. |
 | [**Data types**](./data-types/overview) | Scalars, lists, maps, temporals, spatial points, [vectors](./data-types/vectors) — how each round-trips. |
 | [**HTTP API**](./api/http) | Endpoint reference for `lora-server`. |
-| [**Cookbook**](./cookbook) | Scenario-driven recipes: social graphs, e-commerce, events, geospatial. |
-| [**Limitations**](./limitations) | What's not supported — no persistence, no indexes, no `CALL`, etc. |
+| [**Cookbook**](./cookbook) | Scenario-driven recipes: social graphs, e-commerce, events, geospatial, [backup and restore](./cookbook#backup-and-restore). |
+| [**Snapshots**](./snapshot) | Save / load the full graph as a single file — every binding, plus the opt-in HTTP admin surface. |
+| [**Limitations**](./limitations) | What's not supported — no continuous durability, no indexes, no `CALL`, etc. |
 | [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 
 ## The engine's boundaries
 
 Every item below is a deliberate trade-off, not an oversight:
 
-- **No persistence.** All state is in-memory; `kill -9` loses it.
+- **Only point-in-time persistence.** [Snapshots](./snapshot) save and restore
+  the full graph as a single file — atomic on rename, exposed on every
+  binding and as an opt-in HTTP admin surface. Between saves, data is RAM-only
+  and a crash loses the window. No WAL yet — see
+  [Limitations → Storage](./limitations#storage).
 - **No property indexes.** `MATCH (n {prop: v})` without a label is `O(n)`.
 - **No uniqueness constraints.** Use [`MERGE`](./queries/unwind-merge#merge)
   on a key, or enforce in application code.
 - **Global mutex.** Queries serialise — concurrent reads don't parallelise.
 - **No HTTP auth / TLS.** Bind the server to localhost or put it behind
-  a reverse proxy.
+  a reverse proxy. The opt-in admin snapshot endpoints also ship without auth —
+  see [Limitations → HTTP server](./limitations#http-server).
 - **No HTTP-level parameters yet.** Bind via the in-process bindings;
   see [Parameters](./queries/parameters#http-api-doesnt-forward-params).
 

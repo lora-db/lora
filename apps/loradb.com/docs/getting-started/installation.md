@@ -129,7 +129,9 @@ Every binding exposes two error layers:
 
 ## Performance / Best Practices
 
-- **No persistence.** Data lives in memory; see
+- **Point-in-time persistence only.** Point-in-time snapshots via
+  `save_snapshot` / `load_snapshot` on every binding (byte-based on
+  WASM); no WAL. A crash between saves loses the window. See
   [Limitations → Storage](../limitations#storage).
 - **No query cancellation.** Once dispatched, queries run to
   completion. Keep queries bounded (`LIMIT`, `*..N` caps).

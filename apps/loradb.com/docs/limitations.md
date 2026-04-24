@@ -29,7 +29,7 @@ in the internal documentation.
 
 | Theme | Biggest gaps |
 |---|---|
-| Storage | No persistence, no indexes, no constraints |
+| Storage | Point-in-time snapshots only (no WAL); no indexes; no constraints |
 | Concurrency | Single global lock, no timeouts |
 | Clauses | No `CALL`, `FOREACH`, `LOAD CSV`, DDL |
 | Patterns | No quantified path patterns |
@@ -130,7 +130,7 @@ in the internal documentation.
 
 | Gap | Impact |
 |---|---|
-| Persistence — not yet supported | All data is lost on process exit; LoraDB is in-memory only today |
+| Continuous durability (WAL) — not yet supported | Point-in-time [snapshots](./snapshot) exist (`save_snapshot` / `load_snapshot` on every binding; `POST /admin/snapshot/save` on HTTP when opt-in). A crash between saves loses every mutation since the last save. |
 | Uniqueness constraints — not supported | Duplicates can be created silently; enforce in application code or match before creating |
 | Property indexes — not yet supported | Property filters without a label are `O(n)` full scans |
 | Explicit transactions — not supported | Each query is atomic; no multi-query transaction boundary |
@@ -149,6 +149,11 @@ in the internal documentation.
 - Authentication — not supported. TLS — not supported. Bind to
   `127.0.0.1` only in production until this changes; see the
   security notes on the [Contact](/contact#security) page.
+- Admin endpoints ([`POST /admin/snapshot/save`](./api/http#admin-endpoints-opt-in)
+  and `/admin/snapshot/load`) are opt-in via `--snapshot-path` and
+  have **no authentication**. The optional `path` body field is
+  passed straight to the OS. Do not enable them on a network-reachable
+  host without authenticated ingress in front.
 - Parameters over HTTP — not yet supported (see Parameters above).
 - Multi-database — not supported. One process serves exactly one
   in-memory graph; run multiple processes for isolation.
@@ -186,6 +191,7 @@ See [Why LoraDB](./why) for the project's intended direction.
 ## See also
 
 - [**Troubleshooting**](./troubleshooting) — what to do when a query errors.
+- [**HTTP API → Admin endpoints (opt-in)**](./api/http#admin-endpoints-opt-in) — how snapshots are exposed over HTTP.
 - [**Queries → Overview**](./queries/) — the supported subset.
 - [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
 - [**Parameters**](./queries/parameters) — typed parameter binding (Rust, Node, Python, WASM, Go, and Ruby bindings; HTTP does not yet forward params).
