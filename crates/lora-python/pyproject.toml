@@ -43,6 +43,12 @@ python-source = "python"
 features = ["pyo3/extension-module"]
 # Build a stable-ABI wheel so one build serves 3.8+.
 bindings = "pyo3"
+# LICENSE is copied into this directory at CI time (copy-license action)
+# rather than committed, so cargo's git-tracked file list excludes it from
+# the sdist. Force-include it here — without this, maturin still emits
+# `License-File: LICENSE` in PKG-INFO and PyPI rejects the upload with
+# "License-File LICENSE does not exist in distribution file" (PEP 639).
+include = [{ path = "LICENSE", format = "sdist" }]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
