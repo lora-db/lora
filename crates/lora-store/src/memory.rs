@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use lora_ast::Direction;
 
 use crate::{
-    GraphStorage, GraphStorageMut, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId,
-    RelationshipRecord,
+    BorrowedGraphStorage, GraphStorage, GraphStorageMut, NodeId, NodeRecord, Properties,
+    PropertyValue, RelationshipId, RelationshipRecord,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -32,10 +32,6 @@ impl InMemoryGraph {
     pub fn with_capacity_hint(_nodes: usize, _relationships: usize) -> Self {
         // BTreeMap/BTreeSet do not support capacity reservation.
         Self::default()
-    }
-
-    pub fn clear(&mut self) {
-        *self = Self::default();
     }
 
     pub fn contains_node(&self, node_id: NodeId) -> bool {
@@ -195,21 +191,14 @@ impl InMemoryGraph {
 }
 
 impl GraphStorage for InMemoryGraph {
-    fn all_nodes(&self) -> Vec<NodeRecord> {
-        self.nodes.values().cloned().collect()
+    // ---------- Required primitives ----------
+
+    fn contains_node(&self, id: NodeId) -> bool {
+        self.nodes.contains_key(&id)
     }
 
-    fn nodes_by_label(&self, label: &str) -> Vec<NodeRecord> {
-        self.nodes_by_label
-            .get(label)
-            .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.nodes.get(id).cloned())
-            .collect()
-    }
-
-    fn node_ref(&self, id: NodeId) -> Option<&NodeRecord> {
-        self.nodes.get(&id)
+    fn node(&self, id: NodeId) -> Option<NodeRecord> {
+        self.nodes.get(&id).cloned()
     }
 
     fn all_node_ids(&self) -> Vec<NodeId> {
@@ -223,12 +212,125 @@ impl GraphStorage for InMemoryGraph {
         }
     }
 
+    fn contains_relationship(&self, id: RelationshipId) -> bool {
+        self.relationships.contains_key(&id)
+    }
+
+    fn relationship(&self, id: RelationshipId) -> Option<RelationshipRecord> {
+        self.relationships.get(&id).cloned()
+    }
+
+    fn all_rel_ids(&self) -> Vec<RelationshipId> {
+        self.relationships.keys().copied().collect()
+    }
+
+    fn rel_ids_by_type(&self, rel_type: &str) -> Vec<RelationshipId> {
+        match self.relationships_by_type.get(rel_type) {
+            Some(ids) => ids.iter().copied().collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn relationship_endpoints(&self, id: RelationshipId) -> Option<(NodeId, NodeId)> {
+        self.relationships.get(&id).map(|r| (r.src, r.dst))
+    }
+
+    fn expand_ids(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+        types: &[String],
+    ) -> Vec<(RelationshipId, NodeId)> {
+        if !self.nodes.contains_key(&node_id) {
+            return Vec::new();
+        }
+
+        // Fast path: no type filter — just join adjacency + rel endpoints.
+        if types.is_empty() {
+            return self
+                .relationship_ids_for_direction(node_id, direction)
+                .into_iter()
+                .filter_map(|rel_id| {
+                    let rel = self.relationships.get(&rel_id)?;
+                    let other_id = Self::other_endpoint(rel, node_id)?;
+                    Some((rel_id, other_id))
+                })
+                .collect();
+        }
+
+        // Type-filtered: borrow rel_type straight from the stored record.
+        // For small type lists (the common case) the linear scan beats a
+        // BTreeSet; we keep it allocation-free.
+        self.relationship_ids_for_direction(node_id, direction)
+            .into_iter()
+            .filter_map(|rel_id| {
+                let rel = self.relationships.get(&rel_id)?;
+                if !types.iter().any(|t| t == &rel.rel_type) {
+                    return None;
+                }
+                let other_id = Self::other_endpoint(rel, node_id)?;
+                Some((rel_id, other_id))
+            })
+            .collect()
+    }
+
+    fn all_labels(&self) -> Vec<String> {
+        self.nodes_by_label.keys().cloned().collect()
+    }
+
+    fn all_relationship_types(&self) -> Vec<String> {
+        self.relationships_by_type.keys().cloned().collect()
+    }
+
+    // ---------- Optimization hooks: zero-clone borrow access ----------
+
+    fn with_node<F, R>(&self, id: NodeId, f: F) -> Option<R>
+    where
+        F: FnOnce(&NodeRecord) -> R,
+        Self: Sized,
+    {
+        self.nodes.get(&id).map(f)
+    }
+
+    fn with_relationship<F, R>(&self, id: RelationshipId, f: F) -> Option<R>
+    where
+        F: FnOnce(&RelationshipRecord) -> R,
+        Self: Sized,
+    {
+        self.relationships.get(&id).map(f)
+    }
+
+    // ---------- Overrides: counts + existence ----------
+
     fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
+    fn relationship_count(&self) -> usize {
+        self.relationships.len()
+    }
+
     fn has_node(&self, id: NodeId) -> bool {
         self.nodes.contains_key(&id)
+    }
+
+    fn has_relationship(&self, id: RelationshipId) -> bool {
+        self.relationships.contains_key(&id)
+    }
+
+    // ---------- Overrides: record-returning scans (direct iteration) ----------
+
+    fn all_nodes(&self) -> Vec<NodeRecord> {
+        self.nodes.values().cloned().collect()
+    }
+
+    fn nodes_by_label(&self, label: &str) -> Vec<NodeRecord> {
+        self.nodes_by_label
+            .get(label)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|id| self.nodes.get(id).cloned())
+            .collect()
     }
 
     fn all_relationships(&self) -> Vec<RelationshipRecord> {
@@ -244,36 +346,75 @@ impl GraphStorage for InMemoryGraph {
             .collect()
     }
 
-    fn relationship_ref(&self, id: RelationshipId) -> Option<&RelationshipRecord> {
-        self.relationships.get(&id)
+    // ---------- Overrides: traversal (direct adjacency) ----------
+
+    fn relationship_ids_of(&self, node_id: NodeId, direction: Direction) -> Vec<RelationshipId> {
+        self.relationship_ids_for_direction(node_id, direction)
     }
 
-    fn all_rel_ids(&self) -> Vec<RelationshipId> {
-        self.relationships.keys().copied().collect()
+    fn outgoing_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
+        self.outgoing
+            .get(&node_id)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|id| self.relationships.get(id).cloned())
+            .collect()
     }
 
-    fn rel_ids_by_type(&self, rel_type: &str) -> Vec<RelationshipId> {
-        match self.relationships_by_type.get(rel_type) {
-            Some(ids) => ids.iter().copied().collect(),
-            None => Vec::new(),
+    fn incoming_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
+        self.incoming
+            .get(&node_id)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|id| self.relationships.get(id).cloned())
+            .collect()
+    }
+
+    fn degree(&self, node_id: NodeId, direction: Direction) -> usize {
+        match direction {
+            Direction::Right => self.outgoing.get(&node_id).map(|s| s.len()).unwrap_or(0),
+            Direction::Left => self.incoming.get(&node_id).map(|s| s.len()).unwrap_or(0),
+            Direction::Undirected => {
+                self.outgoing.get(&node_id).map(|s| s.len()).unwrap_or(0)
+                    + self.incoming.get(&node_id).map(|s| s.len()).unwrap_or(0)
+            }
         }
     }
 
-    fn relationship_count(&self) -> usize {
-        self.relationships.len()
+    fn expand(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+        types: &[String],
+    ) -> Vec<(RelationshipRecord, NodeRecord)> {
+        if !self.nodes.contains_key(&node_id) {
+            return Vec::new();
+        }
+
+        let type_filter: Option<BTreeSet<&str>> = if types.is_empty() {
+            None
+        } else {
+            Some(types.iter().map(String::as_str).collect())
+        };
+
+        self.relationship_ids_for_direction(node_id, direction)
+            .into_iter()
+            .filter_map(|rel_id| self.relationships.get(&rel_id))
+            .filter(|rel| {
+                type_filter
+                    .as_ref()
+                    .map(|allowed| allowed.contains(rel.rel_type.as_str()))
+                    .unwrap_or(true)
+            })
+            .filter_map(|rel| {
+                let other_id = Self::other_endpoint(rel, node_id)?;
+                let other = self.nodes.get(&other_id)?;
+                Some((rel.clone(), other.clone()))
+            })
+            .collect()
     }
 
-    fn has_relationship(&self, id: RelationshipId) -> bool {
-        self.relationships.contains_key(&id)
-    }
-
-    fn all_labels(&self) -> Vec<String> {
-        self.nodes_by_label.keys().cloned().collect()
-    }
-
-    fn all_relationship_types(&self) -> Vec<String> {
-        self.relationships_by_type.keys().cloned().collect()
-    }
+    // ---------- Overrides: schema introspection ----------
 
     fn all_node_property_keys(&self) -> Vec<String> {
         let mut keys = BTreeSet::new();
@@ -326,129 +467,15 @@ impl GraphStorage for InMemoryGraph {
 
         keys.into_iter().collect()
     }
+}
 
-    fn node_has_label(&self, node_id: NodeId, label: &str) -> bool {
-        self.nodes
-            .get(&node_id)
-            .map(|n| n.labels.iter().any(|l| l == label))
-            .unwrap_or(false)
+impl BorrowedGraphStorage for InMemoryGraph {
+    fn node_ref(&self, id: NodeId) -> Option<&NodeRecord> {
+        self.nodes.get(&id)
     }
 
-    fn node_property(&self, node_id: NodeId, key: &str) -> Option<PropertyValue> {
-        self.nodes
-            .get(&node_id)
-            .and_then(|n| n.properties.get(key).cloned())
-    }
-
-    fn relationship_property(&self, rel_id: RelationshipId, key: &str) -> Option<PropertyValue> {
-        self.relationships
-            .get(&rel_id)
-            .and_then(|r| r.properties.get(key).cloned())
-    }
-
-    fn expand(
-        &self,
-        node_id: NodeId,
-        direction: Direction,
-        types: &[String],
-    ) -> Vec<(RelationshipRecord, NodeRecord)> {
-        if !self.nodes.contains_key(&node_id) {
-            return Vec::new();
-        }
-
-        let type_filter: Option<BTreeSet<&str>> = if types.is_empty() {
-            None
-        } else {
-            Some(types.iter().map(String::as_str).collect())
-        };
-
-        self.relationship_ids_for_direction(node_id, direction)
-            .into_iter()
-            .filter_map(|rel_id| self.relationships.get(&rel_id))
-            .filter(|rel| {
-                type_filter
-                    .as_ref()
-                    .map(|allowed| allowed.contains(rel.rel_type.as_str()))
-                    .unwrap_or(true)
-            })
-            .filter_map(|rel| {
-                let other_id = Self::other_endpoint(rel, node_id)?;
-                let other = self.nodes.get(&other_id)?;
-                Some((rel.clone(), other.clone()))
-            })
-            .collect()
-    }
-
-    fn expand_ids(
-        &self,
-        node_id: NodeId,
-        direction: Direction,
-        types: &[String],
-    ) -> Vec<(RelationshipId, NodeId)> {
-        if !self.nodes.contains_key(&node_id) {
-            return Vec::new();
-        }
-
-        // Fast path: no type filter — just join adjacency + rel endpoints.
-        if types.is_empty() {
-            return self
-                .relationship_ids_for_direction(node_id, direction)
-                .into_iter()
-                .filter_map(|rel_id| {
-                    let rel = self.relationships.get(&rel_id)?;
-                    let other_id = Self::other_endpoint(rel, node_id)?;
-                    Some((rel_id, other_id))
-                })
-                .collect();
-        }
-
-        // Type-filtered: borrow rel_type straight from the stored record.
-        // For small type lists (the common case) the linear scan beats a
-        // BTreeSet; we keep it allocation-free.
-        self.relationship_ids_for_direction(node_id, direction)
-            .into_iter()
-            .filter_map(|rel_id| {
-                let rel = self.relationships.get(&rel_id)?;
-                if !types.iter().any(|t| t == &rel.rel_type) {
-                    return None;
-                }
-                let other_id = Self::other_endpoint(rel, node_id)?;
-                Some((rel_id, other_id))
-            })
-            .collect()
-    }
-
-    fn outgoing_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
-        self.outgoing
-            .get(&node_id)
-            .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.relationships.get(id).cloned())
-            .collect()
-    }
-
-    fn incoming_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
-        self.incoming
-            .get(&node_id)
-            .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.relationships.get(id).cloned())
-            .collect()
-    }
-
-    fn relationship_ids_of(&self, node_id: NodeId, direction: Direction) -> Vec<RelationshipId> {
-        self.relationship_ids_for_direction(node_id, direction)
-    }
-
-    fn degree(&self, node_id: NodeId, direction: Direction) -> usize {
-        match direction {
-            Direction::Right => self.outgoing.get(&node_id).map(|s| s.len()).unwrap_or(0),
-            Direction::Left => self.incoming.get(&node_id).map(|s| s.len()).unwrap_or(0),
-            Direction::Undirected => {
-                self.outgoing.get(&node_id).map(|s| s.len()).unwrap_or(0)
-                    + self.incoming.get(&node_id).map(|s| s.len()).unwrap_or(0)
-            }
-        }
+    fn relationship_ref(&self, id: RelationshipId) -> Option<&RelationshipRecord> {
+        self.relationships.get(&id)
     }
 }
 
@@ -631,6 +658,10 @@ impl GraphStorageMut for InMemoryGraph {
         }
 
         self.delete_node(node_id)
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -851,5 +882,23 @@ mod tests {
         assert!(g.has_property_key("since"));
         assert!(g.label_has_property_key("Person", "name"));
         assert!(g.rel_type_has_property_key("WORKS_AT", "since"));
+    }
+
+    #[test]
+    fn clear_resets_the_graph() {
+        let mut g = InMemoryGraph::new();
+        let a = g.create_node(vec!["Person".into()], Properties::new());
+        let b = g.create_node(vec!["Person".into()], Properties::new());
+        g.create_relationship(a.id, b.id, "KNOWS", Properties::new())
+            .unwrap();
+
+        assert_eq!(g.node_count(), 2);
+        assert_eq!(g.relationship_count(), 1);
+
+        g.clear();
+
+        assert_eq!(g.node_count(), 0);
+        assert_eq!(g.relationship_count(), 0);
+        assert_eq!(g.all_labels().len(), 0);
     }
 }

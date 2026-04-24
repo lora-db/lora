@@ -16,16 +16,16 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use tracing::{debug, error, trace};
 
-pub struct ExecutionContext<'a, S: GraphStorage + ?Sized> {
+pub struct ExecutionContext<'a, S: GraphStorage> {
     pub storage: &'a S,
     pub params: std::collections::BTreeMap<String, LoraValue>,
 }
 
-pub struct Executor<'a, S: GraphStorage + ?Sized> {
+pub struct Executor<'a, S: GraphStorage> {
     ctx: ExecutionContext<'a, S>,
 }
 
-impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
+impl<'a, S: GraphStorage> Executor<'a, S> {
     pub fn new(ctx: ExecutionContext<'a, S>) -> Self {
         Self { ctx }
     }
@@ -152,8 +152,9 @@ impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
                         let labels_ok = self
                             .ctx
                             .storage
-                            .node_ref(*existing_id)
-                            .map(|n| node_matches_label_groups(&n.labels, &op.labels))
+                            .with_node(*existing_id, |n| {
+                                node_matches_label_groups(&n.labels, &op.labels)
+                            })
                             .unwrap_or(false);
                         if labels_ok {
                             out.push(row);
@@ -173,8 +174,7 @@ impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
                 let labels_ok = self
                     .ctx
                     .storage
-                    .node_ref(id)
-                    .map(|n| node_matches_label_groups(&n.labels, &op.labels))
+                    .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
                     .unwrap_or(false);
                 if !labels_ok {
                     continue;
@@ -215,10 +215,16 @@ impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
                     .expand_ids(src_node_id, op.direction, &op.types)
             {
                 if let Some(expr) = op.rel_properties.as_ref() {
-                    let matches = match self.ctx.storage.relationship_ref(rel_id) {
-                        Some(rel) => {
-                            self.relationship_matches_properties(&rel.properties, Some(expr), &row)?
-                        }
+                    let actual_props = self
+                        .ctx
+                        .storage
+                        .with_relationship(rel_id, |rel| rel.properties.clone());
+                    let matches = match actual_props {
+                        Some(props) => self.relationship_matches_properties(
+                            &props,
+                            Some(expr),
+                            &row,
+                        )?,
                         None => false,
                     };
                     if !matches {
@@ -432,17 +438,17 @@ impl<'a, S: GraphStorage + ?Sized> Executor<'a, S> {
     }
 
     fn hydrate_node(&self, id: u64) -> LoraValue {
-        match self.ctx.storage.node_ref(id) {
-            Some(node) => hydrate_node_record(node),
-            None => LoraValue::Null,
-        }
+        self.ctx
+            .storage
+            .with_node(id, hydrate_node_record)
+            .unwrap_or(LoraValue::Null)
     }
 
     fn hydrate_relationship(&self, id: u64) -> LoraValue {
-        match self.ctx.storage.relationship_ref(id) {
-            Some(rel) => hydrate_relationship_record(rel),
-            None => LoraValue::Null,
-        }
+        self.ctx
+            .storage
+            .with_relationship(id, hydrate_relationship_record)
+            .unwrap_or(LoraValue::Null)
     }
 
     fn exec_unwind(&self, plan: &PhysicalPlan, op: &UnwindExec) -> ExecResult<Vec<Row>> {
@@ -655,16 +661,16 @@ fn properties_to_value_map(props: &Properties) -> LoraValue {
     LoraValue::Map(map)
 }
 
-pub struct MutableExecutionContext<'a, S: GraphStorageMut + ?Sized> {
+pub struct MutableExecutionContext<'a, S: GraphStorageMut> {
     pub storage: &'a mut S,
     pub params: std::collections::BTreeMap<String, LoraValue>,
 }
 
-pub struct MutableExecutor<'a, S: GraphStorageMut + ?Sized> {
+pub struct MutableExecutor<'a, S: GraphStorageMut> {
     ctx: MutableExecutionContext<'a, S>,
 }
 
-impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
+impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     pub fn new(ctx: MutableExecutionContext<'a, S>) -> Self {
         Self { ctx }
     }
@@ -835,8 +841,9 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                         let labels_ok = self
                             .ctx
                             .storage
-                            .node_ref(*existing_id)
-                            .map(|n| node_matches_label_groups(&n.labels, &op.labels))
+                            .with_node(*existing_id, |n| {
+                                node_matches_label_groups(&n.labels, &op.labels)
+                            })
                             .unwrap_or(false);
                         if labels_ok {
                             out.push(row);
@@ -856,8 +863,7 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                 let labels_ok = self
                     .ctx
                     .storage
-                    .node_ref(id)
-                    .map(|n| node_matches_label_groups(&n.labels, &op.labels))
+                    .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
                     .unwrap_or(false);
                 if !labels_ok {
                     continue;
@@ -898,10 +904,16 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                     .expand_ids(src_node_id, op.direction, &op.types)
             {
                 if let Some(expr) = op.rel_properties.as_ref() {
-                    let matches = match self.ctx.storage.relationship_ref(rel_id) {
-                        Some(rel) => {
-                            self.relationship_matches_properties(&rel.properties, Some(expr), &row)?
-                        }
+                    let actual_props = self
+                        .ctx
+                        .storage
+                        .with_relationship(rel_id, |rel| rel.properties.clone());
+                    let matches = match actual_props {
+                        Some(props) => self.relationship_matches_properties(
+                            &props,
+                            Some(expr),
+                            &row,
+                        )?,
                         None => false,
                     };
                     if !matches {
@@ -1115,17 +1127,17 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
     }
 
     fn hydrate_node(&self, id: u64) -> LoraValue {
-        match self.ctx.storage.node_ref(id) {
-            Some(node) => hydrate_node_record(node),
-            None => LoraValue::Null,
-        }
+        self.ctx
+            .storage
+            .with_node(id, hydrate_node_record)
+            .unwrap_or(LoraValue::Null)
     }
 
     fn hydrate_relationship(&self, id: u64) -> LoraValue {
-        match self.ctx.storage.relationship_ref(id) {
-            Some(rel) => hydrate_relationship_record(rel),
-            None => LoraValue::Null,
-        }
+        self.ctx
+            .storage
+            .with_relationship(id, hydrate_relationship_record)
+            .unwrap_or(LoraValue::Null)
     }
 
     fn exec_unwind(&mut self, plan: &PhysicalPlan, op: &UnwindExec) -> ExecResult<Vec<Row>> {
@@ -1461,27 +1473,37 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                 let expected_props = properties.as_ref().map(|e| eval_expr(e, row, &eval_ctx));
 
                 for id in candidate_ids {
-                    let Some(node) = self.ctx.storage.node_ref(id) else {
+                    let matched = self
+                        .ctx
+                        .storage
+                        .with_node(id, |node| {
+                            if !node_matches_label_groups(&node.labels, labels) {
+                                return false;
+                            }
+                            if let Some(LoraValue::Map(expected)) = &expected_props {
+                                let all_match = expected.iter().all(|(key, expected_value)| {
+                                    node.properties
+                                        .get(key)
+                                        .map(|actual| {
+                                            value_matches_property_value(expected_value, actual)
+                                        })
+                                        .unwrap_or(false)
+                                });
+                                if !all_match {
+                                    return false;
+                                }
+                            }
+                            true
+                        })
+                        .unwrap_or(false);
+
+                    if !matched {
                         continue;
-                    };
-                    if !node_matches_label_groups(&node.labels, labels) {
-                        continue;
-                    }
-                    if let Some(LoraValue::Map(expected)) = &expected_props {
-                        let all_match = expected.iter().all(|(key, expected_value)| {
-                            node.properties
-                                .get(key)
-                                .map(|actual| value_matches_property_value(expected_value, actual))
-                                .unwrap_or(false)
-                        });
-                        if !all_match {
-                            continue;
-                        }
                     }
 
                     // Found a match — bind the variable
                     if let Some(var_id) = var {
-                        row.insert(*var_id, LoraValue::Node(node.id));
+                        row.insert(*var_id, LoraValue::Node(id));
                     }
                     return Ok(true);
                 }
@@ -1545,54 +1567,73 @@ impl<'a, S: GraphStorageMut + ?Sized> MutableExecutor<'a, S> {
                     // Try to find a matching edge + target node
                     let mut found = false;
                     for (rel_id, node_id) in edges {
-                        let Some(node_rec) = self.ctx.storage.node_ref(node_id) else {
-                            continue;
-                        };
-                        let Some(rel_rec) = self.ctx.storage.relationship_ref(rel_id) else {
-                            continue;
-                        };
-
-                        // Check target node labels
-                        if !node_matches_label_groups(&node_rec.labels, &step.node.labels) {
+                        // Check target node labels and (optional) properties.
+                        let node_ok = self
+                            .ctx
+                            .storage
+                            .with_node(node_id, |node_rec| {
+                                if !node_matches_label_groups(&node_rec.labels, &step.node.labels) {
+                                    return false;
+                                }
+                                if let Some(props_expr) = &step.node.properties {
+                                    let expected = eval_expr(props_expr, row, &eval_ctx);
+                                    if let LoraValue::Map(expected_map) = &expected {
+                                        let all_match =
+                                            expected_map.iter().all(|(key, expected_val)| {
+                                                node_rec
+                                                    .properties
+                                                    .get(key)
+                                                    .map(|actual| {
+                                                        value_matches_property_value(
+                                                            expected_val,
+                                                            actual,
+                                                        )
+                                                    })
+                                                    .unwrap_or(false)
+                                            });
+                                        if !all_match {
+                                            return false;
+                                        }
+                                    }
+                                }
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !node_ok {
                             continue;
                         }
 
-                        // Check target node properties
-                        if let Some(props_expr) = &step.node.properties {
-                            let expected = eval_expr(props_expr, row, &eval_ctx);
-                            if let LoraValue::Map(expected_map) = &expected {
-                                let all_match = expected_map.iter().all(|(key, expected_val)| {
-                                    node_rec
-                                        .properties
-                                        .get(key)
-                                        .map(|actual| {
-                                            value_matches_property_value(expected_val, actual)
-                                        })
-                                        .unwrap_or(false)
-                                });
-                                if !all_match {
-                                    continue;
+                        // Check relationship properties.
+                        let rel_ok = self
+                            .ctx
+                            .storage
+                            .with_relationship(rel_id, |rel_rec| {
+                                if let Some(rel_props_expr) = &step.rel.properties {
+                                    let expected = eval_expr(rel_props_expr, row, &eval_ctx);
+                                    if let LoraValue::Map(expected_map) = &expected {
+                                        let all_match =
+                                            expected_map.iter().all(|(key, expected_val)| {
+                                                rel_rec
+                                                    .properties
+                                                    .get(key)
+                                                    .map(|actual| {
+                                                        value_matches_property_value(
+                                                            expected_val,
+                                                            actual,
+                                                        )
+                                                    })
+                                                    .unwrap_or(false)
+                                            });
+                                        if !all_match {
+                                            return false;
+                                        }
+                                    }
                                 }
-                            }
-                        }
-
-                        // Check relationship properties
-                        if let Some(rel_props_expr) = &step.rel.properties {
-                            let expected = eval_expr(rel_props_expr, row, &eval_ctx);
-                            if let LoraValue::Map(expected_map) = &expected {
-                                let all_match = expected_map.iter().all(|(key, expected_val)| {
-                                    rel_rec
-                                        .properties
-                                        .get(key)
-                                        .map(|actual| {
-                                            value_matches_property_value(expected_val, actual)
-                                        })
-                                        .unwrap_or(false)
-                                });
-                                if !all_match {
-                                    continue;
-                                }
-                            }
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !rel_ok {
+                            continue;
                         }
 
                         // Match found — bind variables
@@ -2122,7 +2163,7 @@ fn dedup_rows(rows: Vec<Row>) -> Vec<Row> {
     out
 }
 
-fn eval_properties_expr<S: GraphStorage + ?Sized>(
+fn eval_properties_expr<S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &Row,
     storage: &S,
@@ -2146,7 +2187,7 @@ fn eval_properties_expr<S: GraphStorage + ?Sized>(
     }
 }
 
-fn compute_aggregate_expr<S: GraphStorage + ?Sized>(
+fn compute_aggregate_expr<S: GraphStorage>(
     expr: &ResolvedExpr,
     rows: &[Row],
     eval_ctx: &EvalContext<'_, S>,
@@ -2389,7 +2430,7 @@ fn compute_aggregate_expr<S: GraphStorage + ?Sized>(
     }
 }
 
-fn compare_sort_item<S: GraphStorage + ?Sized>(
+fn compare_sort_item<S: GraphStorage>(
     item: &ResolvedSortItem,
     a: &Row,
     b: &Row,
@@ -2503,7 +2544,7 @@ pub fn value_matches_property_value(expected: &LoraValue, actual: &PropertyValue
 /// For variable-length relationships (stored as a List of Relationship values),
 /// intermediate nodes are reconstructed from the storage by walking the
 /// relationship chain.
-fn build_path_value<S: GraphStorage + ?Sized>(
+fn build_path_value<S: GraphStorage>(
     row: &Row,
     node_vars: &[VarId],
     rel_vars: &[VarId],
@@ -2598,7 +2639,7 @@ fn node_matches_label_groups(node_labels: &[String], groups: &[Vec<String>]) -> 
 
 /// Scan the graph for candidate node IDs matching the label groups. Uses the
 /// label index for the pick-first-label phase and avoids cloning NodeRecords.
-fn scan_node_ids_for_label_groups<S: GraphStorage + ?Sized>(
+fn scan_node_ids_for_label_groups<S: GraphStorage>(
     storage: &S,
     groups: &[Vec<String>],
 ) -> Vec<lora_store::NodeId> {
@@ -2739,7 +2780,7 @@ struct VarLenResult {
 ///
 /// Uses BFS with relationship-uniqueness per path (each path does not
 /// reuse the same relationship, but may revisit nodes).
-fn variable_length_expand<S: GraphStorage + ?Sized>(
+fn variable_length_expand<S: GraphStorage>(
     storage: &S,
     start_node_id: NodeId,
     direction: Direction,

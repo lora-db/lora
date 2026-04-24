@@ -93,6 +93,46 @@ where
 
         Ok(executor.execute_compiled(&compiled, options)?)
     }
+
+    // ---------- Storage-agnostic utility helpers ----------
+    //
+    // Bindings previously reached into `Arc<Mutex<InMemoryGraph>>` to answer
+    // stat / admin calls; these helpers let them depend on `Database<S>`
+    // instead, so swapping in a new backend only requires changing one type
+    // parameter.
+
+    /// Drop every node and relationship.
+    pub fn clear(&self) {
+        let mut guard = self.lock_store();
+        guard.clear();
+    }
+
+    /// Number of nodes currently in the graph.
+    pub fn node_count(&self) -> usize {
+        let guard = self.lock_store();
+        guard.node_count()
+    }
+
+    /// Number of relationships currently in the graph.
+    pub fn relationship_count(&self) -> usize {
+        let guard = self.lock_store();
+        guard.relationship_count()
+    }
+
+    /// Run a closure with a shared borrow of the underlying store. Used by
+    /// bindings to answer ad-hoc queries without locking the mutex themselves.
+    pub fn with_store<R>(&self, f: impl FnOnce(&S) -> R) -> R {
+        let guard = self.lock_store();
+        f(&*guard)
+    }
+
+    /// Run a closure with an exclusive borrow of the underlying store. Reserved
+    /// for admin paths (restore, bulk load); regular mutation goes through
+    /// `execute_with_params`.
+    pub fn with_store_mut<R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
+        let mut guard = self.lock_store();
+        f(&mut *guard)
+    }
 }
 
 impl<S> QueryRunner for Database<S>

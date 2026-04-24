@@ -42,7 +42,7 @@ The pest PEG grammar (`cypher.pest`) defines the syntax. The parser produces a p
 
 ### Stage 2: Semantic analysis
 
-**Input**: `Document` + `&dyn GraphStorage`
+**Input**: `Document` + `&S where S: GraphCatalog`
 **Output**: `ResolvedQuery`
 **Crate**: `lora-analyzer`
 

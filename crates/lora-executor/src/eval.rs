@@ -13,12 +13,12 @@ use lora_store::{
 };
 use std::collections::BTreeMap;
 
-pub struct EvalContext<'a, S: GraphStorage + ?Sized> {
+pub struct EvalContext<'a, S: GraphStorage> {
     pub storage: &'a S,
     pub params: &'a BTreeMap<String, LoraValue>,
 }
 
-pub fn eval_expr<S: GraphStorage + ?Sized>(
+pub fn eval_expr<S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &Row,
     ctx: &EvalContext<'_, S>,
@@ -219,22 +219,23 @@ pub fn eval_expr<S: GraphStorage + ?Sized>(
                         result.insert(key.clone(), val);
                     }
                     ResolvedMapSelector::AllProperties => {
-                        // Borrow the stored record and convert properties in a
-                        // single walk (no intermediate PropertyValue clone).
+                        // Borrow the stored record (when the backend supports it)
+                        // via `with_node` / `with_relationship`; otherwise the
+                        // closure still runs against an owned fetch.
                         match &base_val {
                             LoraValue::Node(id) => {
-                                if let Some(node) = ctx.storage.node_ref(*id) {
+                                ctx.storage.with_node(*id, |node| {
                                     for (k, v) in &node.properties {
                                         result.insert(k.clone(), LoraValue::from(v));
                                     }
-                                }
+                                });
                             }
                             LoraValue::Relationship(id) => {
-                                if let Some(rel) = ctx.storage.relationship_ref(*id) {
+                                ctx.storage.with_relationship(*id, |rel| {
                                     for (k, v) in &rel.properties {
                                         result.insert(k.clone(), LoraValue::from(v));
                                     }
-                                }
+                                });
                             }
                             LoraValue::Map(m) => {
                                 for (k, v) in m {
@@ -300,7 +301,7 @@ pub fn eval_expr<S: GraphStorage + ?Sized>(
     }
 }
 
-fn eval_exists_subquery<S: GraphStorage + ?Sized>(
+fn eval_exists_subquery<S: GraphStorage>(
     pattern: &lora_analyzer::ResolvedPattern,
     where_: Option<&ResolvedExpr>,
     row: &Row,
@@ -342,18 +343,19 @@ fn eval_exists_subquery<S: GraphStorage + ?Sized>(
                                         step.rel.direction,
                                         &step.rel.types,
                                     ) {
-                                        let Some(dst) = ctx.storage.node_ref(dst_id) else {
-                                            continue;
-                                        };
-                                        if !node_matches_labels(&dst.labels, &step.node.labels) {
-                                            continue;
-                                        }
-                                        if !node_matches_properties(
-                                            &dst.properties,
-                                            &step.node.properties,
-                                            fr,
-                                            ctx,
-                                        ) {
+                                        let matched = ctx
+                                            .storage
+                                            .with_node(dst_id, |dst| {
+                                                node_matches_labels(&dst.labels, &step.node.labels)
+                                                    && node_matches_properties(
+                                                        &dst.properties,
+                                                        &step.node.properties,
+                                                        fr,
+                                                        ctx,
+                                                    )
+                                            })
+                                            .unwrap_or(false);
+                                        if !matched {
                                             continue;
                                         }
                                         let mut r = fr.clone();
@@ -385,7 +387,7 @@ fn eval_exists_subquery<S: GraphStorage + ?Sized>(
     LoraValue::Bool(!candidate_rows.is_empty())
 }
 
-fn eval_pattern_comprehension<S: GraphStorage + ?Sized>(
+fn eval_pattern_comprehension<S: GraphStorage>(
     pattern: &lora_analyzer::ResolvedPattern,
     where_: Option<&ResolvedExpr>,
     map_expr: &ResolvedExpr,
@@ -426,18 +428,19 @@ fn eval_pattern_comprehension<S: GraphStorage + ?Sized>(
                                         step.rel.direction,
                                         &step.rel.types,
                                     ) {
-                                        let Some(dst) = ctx.storage.node_ref(dst_id) else {
-                                            continue;
-                                        };
-                                        if !node_matches_labels(&dst.labels, &step.node.labels) {
-                                            continue;
-                                        }
-                                        if !node_matches_properties(
-                                            &dst.properties,
-                                            &step.node.properties,
-                                            fr,
-                                            ctx,
-                                        ) {
+                                        let matched = ctx
+                                            .storage
+                                            .with_node(dst_id, |dst| {
+                                                node_matches_labels(&dst.labels, &step.node.labels)
+                                                    && node_matches_properties(
+                                                        &dst.properties,
+                                                        &step.node.properties,
+                                                        fr,
+                                                        ctx,
+                                                    )
+                                            })
+                                            .unwrap_or(false);
+                                        if !matched {
                                             continue;
                                         }
                                         let mut r = fr.clone();
@@ -474,21 +477,24 @@ fn eval_pattern_comprehension<S: GraphStorage + ?Sized>(
     )
 }
 
-fn match_node_pattern<S: GraphStorage + ?Sized>(
+fn match_node_pattern<S: GraphStorage>(
     node: &lora_analyzer::ResolvedNode,
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> Vec<Row> {
-    // If the variable is already bound in the row, use that binding — borrow
-    // instead of cloning the whole record.
+    // If the variable is already bound in the row, check the existing binding
+    // without cloning the whole record.
     if let Some(var) = node.var {
         if let Some(LoraValue::Node(id)) = row.get(var) {
-            if let Some(n) = ctx.storage.node_ref(*id) {
-                if node_matches_labels(&n.labels, &node.labels)
-                    && node_matches_properties(&n.properties, &node.properties, row, ctx)
-                {
-                    return vec![row.clone()];
-                }
+            let matched = ctx
+                .storage
+                .with_node(*id, |n| {
+                    node_matches_labels(&n.labels, &node.labels)
+                        && node_matches_properties(&n.properties, &node.properties, row, ctx)
+                })
+                .unwrap_or(false);
+            if matched {
+                return vec![row.clone()];
             }
             return Vec::new();
         }
@@ -504,13 +510,14 @@ fn match_node_pattern<S: GraphStorage + ?Sized>(
 
     let mut out = Vec::new();
     for id in candidate_ids {
-        let Some(n) = ctx.storage.node_ref(id) else {
-            continue;
-        };
-        if !node_matches_labels(&n.labels, &node.labels) {
-            continue;
-        }
-        if !node_matches_properties(&n.properties, &node.properties, row, ctx) {
+        let matched = ctx
+            .storage
+            .with_node(id, |n| {
+                node_matches_labels(&n.labels, &node.labels)
+                    && node_matches_properties(&n.properties, &node.properties, row, ctx)
+            })
+            .unwrap_or(false);
+        if !matched {
             continue;
         }
         let mut r = row.clone();
@@ -549,7 +556,7 @@ fn node_matches_labels(node_labels: &[String], groups: &[Vec<String>]) -> bool {
         .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))
 }
 
-fn node_matches_properties<S: GraphStorage + ?Sized>(
+fn node_matches_properties<S: GraphStorage>(
     props: &std::collections::BTreeMap<String, lora_store::PropertyValue>,
     expected: &Option<ResolvedExpr>,
     row: &Row,
@@ -581,7 +588,7 @@ fn eval_literal(lit: &LiteralValue) -> LoraValue {
     }
 }
 
-fn eval_property<S: GraphStorage + ?Sized>(
+fn eval_property<S: GraphStorage>(
     base: &LoraValue,
     key: &str,
     ctx: &EvalContext<'_, S>,
@@ -601,25 +608,25 @@ fn eval_property<S: GraphStorage + ?Sized>(
             LoraValue::Null
         }
 
-        LoraValue::Node(id) => {
-            let Some(node) = ctx.storage.node_ref(*id) else {
-                return LoraValue::Null;
-            };
-            node.properties
-                .get(key)
-                .map(LoraValue::from)
-                .unwrap_or(LoraValue::Null)
-        }
+        LoraValue::Node(id) => ctx
+            .storage
+            .with_node(*id, |node| {
+                node.properties
+                    .get(key)
+                    .map(LoraValue::from)
+                    .unwrap_or(LoraValue::Null)
+            })
+            .unwrap_or(LoraValue::Null),
 
-        LoraValue::Relationship(id) => {
-            let Some(rel) = ctx.storage.relationship_ref(*id) else {
-                return LoraValue::Null;
-            };
-            rel.properties
-                .get(key)
-                .map(LoraValue::from)
-                .unwrap_or(LoraValue::Null)
-        }
+        LoraValue::Relationship(id) => ctx
+            .storage
+            .with_relationship(*id, |rel| {
+                rel.properties
+                    .get(key)
+                    .map(LoraValue::from)
+                    .unwrap_or(LoraValue::Null)
+            })
+            .unwrap_or(LoraValue::Null),
 
         LoraValue::Date(d) => match key {
             "year" => LoraValue::Int(d.year as i64),
@@ -852,7 +859,7 @@ fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     }
 }
 
-fn eval_function<S: GraphStorage + ?Sized>(
+fn eval_function<S: GraphStorage>(
     name: &str,
     args: &[LoraValue],
     ctx: &EvalContext<'_, S>,
@@ -892,8 +899,7 @@ fn eval_function<S: GraphStorage + ?Sized>(
         "type" => match args.first() {
             Some(LoraValue::Relationship(id)) => ctx
                 .storage
-                .relationship_ref(*id)
-                .map(|r| LoraValue::String(r.rel_type.clone()))
+                .with_relationship(*id, |r| LoraValue::String(r.rel_type.clone()))
                 .unwrap_or(LoraValue::Null),
             _ => LoraValue::Null,
         },
@@ -901,8 +907,7 @@ fn eval_function<S: GraphStorage + ?Sized>(
         "labels" => match args.first() {
             Some(LoraValue::Node(id)) => ctx
                 .storage
-                .node_ref(*id)
-                .map(|n| {
+                .with_node(*id, |n| {
                     LoraValue::List(
                         n.labels
                             .iter()
@@ -917,8 +922,7 @@ fn eval_function<S: GraphStorage + ?Sized>(
         "keys" => match args.first() {
             Some(LoraValue::Node(id)) => ctx
                 .storage
-                .node_ref(*id)
-                .map(|n| {
+                .with_node(*id, |n| {
                     LoraValue::List(
                         n.properties
                             .keys()
@@ -929,8 +933,7 @@ fn eval_function<S: GraphStorage + ?Sized>(
                 .unwrap_or(LoraValue::Null),
             Some(LoraValue::Relationship(id)) => ctx
                 .storage
-                .relationship_ref(*id)
-                .map(|r| {
+                .with_relationship(*id, |r| {
                     LoraValue::List(
                         r.properties
                             .keys()
@@ -1162,8 +1165,7 @@ fn eval_function<S: GraphStorage + ?Sized>(
         "properties" => match args.first() {
             Some(LoraValue::Node(id)) => ctx
                 .storage
-                .node_ref(*id)
-                .map(|n| {
+                .with_node(*id, |n| {
                     LoraValue::Map(
                         n.properties
                             .iter()
@@ -1174,8 +1176,7 @@ fn eval_function<S: GraphStorage + ?Sized>(
                 .unwrap_or(LoraValue::Null),
             Some(LoraValue::Relationship(id)) => ctx
                 .storage
-                .relationship_ref(*id)
-                .map(|r| {
+                .with_relationship(*id, |r| {
                     LoraValue::Map(
                         r.properties
                             .iter()

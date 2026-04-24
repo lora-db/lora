@@ -62,7 +62,7 @@ The following features were listed as gaps in earlier revisions of this document
 | No property indexes | Observed | **Medium** — property filters are scans (filtered by label when possible) |
 | No transaction isolation beyond single-query atomicity | Observed | **Medium** — global mutex serializes everything |
 | Node / relationship IDs are never reused | Observed | Low — `u64` counter will not overflow in practice |
-| `BTreeMap` cloning on reads | Observed | **Medium** — `all_nodes()` etc. clone every record into a `Vec` |
+| `BTreeMap` cloning on bulk reads | Observed | **Low–Medium** — hot executor paths now go through `with_node` / `with_relationship` closures (zero-clone on in-memory); `all_nodes()` and other record-returning scans still allocate |
 
 ---
 
@@ -127,7 +127,7 @@ The following features were listed as gaps in earlier revisions of this document
 5. Replace `Mutex` with `RwLock` so reads can run concurrently
 6. Add authentication middleware to the HTTP server
 7. Add property indexes for common filters
-8. Introduce borrowing iterators on `GraphStorage` to reduce clone overhead
+8. ~~Introduce borrowing iterators on `GraphStorage`~~ — partially addressed: `with_node` / `with_relationship` closures now cover the executor's hot paths without requiring `&NodeRecord` access from every backend. Still open: streaming iterators for bulk scans
 
 ### Long term (capability)
 

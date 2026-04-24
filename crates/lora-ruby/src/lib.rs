@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use magnus::{
     function, method, prelude::*, r_hash::ForEach, value::ReprValue, Error as MagnusError,
@@ -27,7 +27,7 @@ use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
 };
 use lora_store::{
-    GraphStorage, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime,
     LoraPoint, LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
@@ -114,18 +114,18 @@ fn invalid_params(ruby: &Ruby, msg: impl Into<String>) -> MagnusError {
 
 /// In-memory Lora graph database handle exposed to Ruby.
 ///
-/// `Arc<Mutex<InMemoryGraph>>` gives us cheap cloning so the mutex guard
-/// can be sent across the GVL-release boundary without borrowing any Ruby
-/// state.
+/// Wraps an `Arc<Database<InMemoryGraph>>`; the same handle is cloned
+/// across the GVL-release boundary for query execution without borrowing
+/// any Ruby state.
 #[magnus::wrap(class = "LoraRuby::Database", free_immediately, size)]
 struct Database {
-    store: Arc<Mutex<InMemoryGraph>>,
+    db: Arc<InnerDatabase<InMemoryGraph>>,
 }
 
 impl Database {
     fn empty() -> Self {
         Self {
-            store: Arc::new(Mutex::new(InMemoryGraph::new())),
+            db: Arc::new(InnerDatabase::in_memory()),
         }
     }
 }
@@ -142,26 +142,22 @@ fn database_create() -> Database {
 }
 
 fn database_clear(rb_self: &Database) {
-    let mut guard = rb_self.store.lock().unwrap_or_else(|p| p.into_inner());
-    *guard = InMemoryGraph::new();
+    rb_self.db.clear();
 }
 
 fn database_node_count(rb_self: &Database) -> u64 {
-    let guard = rb_self.store.lock().unwrap_or_else(|p| p.into_inner());
-    guard.node_count() as u64
+    rb_self.db.node_count() as u64
 }
 
 fn database_relationship_count(rb_self: &Database) -> u64 {
-    let guard = rb_self.store.lock().unwrap_or_else(|p| p.into_inner());
-    guard.relationship_count() as u64
+    rb_self.db.relationship_count() as u64
 }
 
 fn database_inspect(rb_self: &Database) -> String {
-    let guard = rb_self.store.lock().unwrap_or_else(|p| p.into_inner());
     format!(
         "#<LoraRuby::Database nodes={} relationships={}>",
-        guard.node_count(),
-        guard.relationship_count(),
+        rb_self.db.node_count(),
+        rb_self.db.relationship_count(),
     )
 }
 
@@ -202,9 +198,8 @@ fn database_execute(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<R
     // Run the engine with the GVL released. Everything inside the closure
     // is pure Rust — no Ruby values cross the boundary — which keeps this
     // sound.
-    let store = Arc::clone(&rb_self.store);
+    let db = Arc::clone(&rb_self.db);
     let exec_result = without_gvl(move || {
-        let db = InnerDatabase::new(store);
         let options = ExecuteOptions {
             format: ResultFormat::RowArrays,
         };

@@ -5,8 +5,8 @@
 //! mirrors the execution model used by `lora-node`, `lora-wasm`, and
 //! `lora-python`:
 //!
-//! - A `Database` handle wraps `Arc<Mutex<InMemoryGraph>>` and a real
-//!   `lora_database::Database` built on top of it.
+//! - A `Database` handle wraps `lora_database::Database` (which in turn
+//!   owns the `Arc<Mutex<InMemoryGraph>>`).
 //! - Queries run via `execute_with_params` with
 //!   `ExecuteOptions { format: ResultFormat::RowArrays }`.
 //! - Parameters come in as JSON (tagged value model); results are
@@ -40,14 +40,13 @@ use std::collections::BTreeMap;
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::{Arc, Mutex};
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
 };
 use lora_store::{
-    GraphStorage, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime,
-    LoraPoint, LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
+    LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -83,19 +82,17 @@ const INVALID_PARAMS_PREFIX: &str = "INVALID_PARAMS";
 // Opaque handle
 // ============================================================================
 
-/// Opaque database handle. Holds the same `Arc<Mutex<InMemoryGraph>>` +
-/// `lora_database::Database` pair that the Node / WASM / Python bindings
-/// build, so execution semantics are identical across bindings.
+/// Opaque database handle. Wraps a single `lora_database::Database<InMemoryGraph>`
+/// so execution semantics are identical across bindings.
 pub struct LoraDatabase {
-    store: Arc<Mutex<InMemoryGraph>>,
     inner: InnerDatabase<InMemoryGraph>,
 }
 
 impl LoraDatabase {
     fn new() -> Self {
-        let store = Arc::new(Mutex::new(InMemoryGraph::new()));
-        let inner = InnerDatabase::new(Arc::clone(&store));
-        Self { store, inner }
+        Self {
+            inner: InnerDatabase::in_memory(),
+        }
     }
 }
 
@@ -274,9 +271,7 @@ pub unsafe extern "C" fn lora_db_clear(db: *mut LoraDatabase) -> c_int {
         if db.is_null() {
             return LoraStatus::NullPointer;
         }
-        let store = &(*db).store;
-        let mut guard = store.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = InMemoryGraph::new();
+        (*db).inner.clear();
         LoraStatus::Ok
     }));
     match result {
@@ -292,9 +287,7 @@ pub unsafe extern "C" fn lora_db_node_count(db: *mut LoraDatabase, out: *mut u64
         if db.is_null() || out.is_null() {
             return LoraStatus::NullPointer;
         }
-        let store = &(*db).store;
-        let guard = store.lock().unwrap_or_else(|p| p.into_inner());
-        *out = guard.node_count() as u64;
+        *out = (*db).inner.node_count() as u64;
         LoraStatus::Ok
     }));
     match result {
@@ -310,9 +303,7 @@ pub unsafe extern "C" fn lora_db_relationship_count(db: *mut LoraDatabase, out: 
         if db.is_null() || out.is_null() {
             return LoraStatus::NullPointer;
         }
-        let store = &(*db).store;
-        let guard = store.lock().unwrap_or_else(|p| p.into_inner());
-        *out = guard.relationship_count() as u64;
+        *out = (*db).inner.relationship_count() as u64;
         LoraStatus::Ok
     }));
     match result {

@@ -5,10 +5,10 @@ use lora_ast::{
     ReadingClause, RelationshipPattern, Remove, RemoveItem, Return, Set, SetItem, SinglePartQuery,
     SingleQuery, Statement, Unwind, UpdatingClause, With,
 };
-use lora_store::GraphStorage;
+use lora_store::GraphCatalog;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub struct Analyzer<'a, S: GraphStorage + ?Sized> {
+pub struct Analyzer<'a, S: GraphCatalog + ?Sized> {
     storage: &'a S,
     scopes: ScopeStack,
     symbols: SymbolTable,
@@ -22,7 +22,7 @@ enum PatternContext {
     Write,
 }
 
-impl<'a, S: GraphStorage + ?Sized> Analyzer<'a, S> {
+impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     pub fn new(storage: &'a S) -> Self {
         Self {
             storage,

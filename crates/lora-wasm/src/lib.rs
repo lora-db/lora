@@ -8,7 +8,7 @@
 //! provides that architecture.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
@@ -35,7 +35,7 @@ pub fn init() {
 /// In-memory Lora graph database handle.
 #[wasm_bindgen(js_name = WasmDatabase)]
 pub struct WasmDatabase {
-    store: Arc<Mutex<InMemoryGraph>>,
+    db: Arc<InnerDatabase<InMemoryGraph>>,
 }
 
 #[wasm_bindgen(js_class = WasmDatabase)]
@@ -43,7 +43,7 @@ impl WasmDatabase {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
-            store: Arc::new(Mutex::new(InMemoryGraph::new())),
+            db: Arc::new(InnerDatabase::in_memory()),
         }
     }
 
@@ -61,12 +61,12 @@ impl WasmDatabase {
             json_value_to_params(json_value)?
         };
 
-        let db = InnerDatabase::new(Arc::clone(&self.store));
         let options = ExecuteOptions {
             format: ResultFormat::RowArrays,
         };
 
-        let result = db
+        let result = self
+            .db
             .execute_with_params(query, Some(options), params_map)
             .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
 
@@ -104,22 +104,17 @@ impl WasmDatabase {
     }
 
     pub fn clear(&self) {
-        let mut guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = InMemoryGraph::new();
+        self.db.clear();
     }
 
     #[wasm_bindgen(js_name = nodeCount)]
     pub fn node_count(&self) -> u32 {
-        use lora_store::GraphStorage;
-        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        guard.node_count() as u32
+        self.db.node_count() as u32
     }
 
     #[wasm_bindgen(js_name = relationshipCount)]
     pub fn relationship_count(&self) -> u32 {
-        use lora_store::GraphStorage;
-        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        guard.relationship_count() as u32
+        self.db.relationship_count() as u32
     }
 }
 

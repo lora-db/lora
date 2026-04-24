@@ -160,29 +160,89 @@ Direction::Undirected -> union of both
 
 ## Storage trait hierarchy
 
+The storage API is split into a small set of required primitives plus a large
+defaulted helper surface. A new backend only has to implement the required
+primitives; everything else is derived.
+
 ```rust
 trait GraphStorage {
-    // Read operations: all_nodes, node, nodes_by_label, expand, ...
-    // Schema introspection: all_labels, all_relationship_types, ...
-    // Property lookups, degree, isolation check, ...
+    // --- Required primitives (backend-neutral) ---
+    fn contains_node(&self, id) -> bool;
+    fn node(&self, id) -> Option<NodeRecord>;      // owned point lookup
+    fn all_node_ids(&self) -> Vec<NodeId>;
+    fn node_ids_by_label(&self, label) -> Vec<NodeId>;
+
+    fn contains_relationship(&self, id) -> bool;
+    fn relationship(&self, id) -> Option<RelationshipRecord>;
+    fn all_rel_ids(&self) -> Vec<RelationshipId>;
+    fn rel_ids_by_type(&self, rel_type) -> Vec<RelationshipId>;
+    fn relationship_endpoints(&self, id) -> Option<(NodeId, NodeId)>;
+
+    fn expand_ids(&self, node, direction, types) -> Vec<(RelationshipId, NodeId)>;
+
+    fn all_labels(&self) -> Vec<String>;
+    fn all_relationship_types(&self) -> Vec<String>;
+
+    // --- Optional optimization hooks (default: clone through `node` / `relationship`) ---
+    fn with_node<F, R>(&self, id, f: F) -> Option<R>           where F: FnOnce(&NodeRecord) -> R;
+    fn with_relationship<F, R>(&self, id, f: F) -> Option<R>   where F: FnOnce(&RelationshipRecord) -> R;
+
+    // --- Defaulted helpers (override for perf) ---
+    //   all_nodes / nodes_by_label / all_relationships / relationships_by_type
+    //   outgoing_relationships / incoming_relationships / expand / degree / ...
+    //   node_has_label / node_labels / node_property / relationship_type / ...
+    //   has_label_name / has_property_key / find_nodes_by_property / ...
+}
+
+trait GraphCatalog {
+    // Narrow schema slice. Blanket-implemented for every `GraphStorage`.
+    // The analyzer bounds on this, not on the full `GraphStorage` surface.
+    fn node_count(&self) -> usize;
+    fn relationship_count(&self) -> usize;
+    fn has_label_name(&self, label) -> bool;
+    fn has_relationship_type_name(&self, rel_type) -> bool;
+    fn has_property_key(&self, key) -> bool;
+}
+
+trait BorrowedGraphStorage: GraphStorage {
+    // Optional capability for backends that keep owned records in
+    // long-lived, addressable storage (e.g. `InMemoryGraph`). Exposes
+    // `&NodeRecord` / `&RelationshipRecord`. The executor does not require
+    // this trait — it uses `with_node` / `with_relationship` on hot paths so
+    // a non-borrow backend is a first-class citizen.
+    fn node_ref(&self, id) -> Option<&NodeRecord>;
+    fn relationship_ref(&self, id) -> Option<&RelationshipRecord>;
 }
 
 trait GraphStorageMut: GraphStorage {
-    // Create: create_node, create_relationship
-    // Mutate: set_*, remove_*, replace_*, merge_*, add_node_label, ...
-    // Delete: delete_node, detach_delete_node, delete_relationship
-    // Convenience: get_or_create_node
+    // Create / mutate / delete plus an admin `clear()` hook for resets.
+    // Snapshot / WAL / restore entry points will land here next.
 }
 ```
 
-This separation allows read-only access (used by the analyzer and read-only executor) without requiring mutable references.
+**Why the layering:**
+
+1. `GraphStorage` is the single umbrella a backend implements. All
+   record-returning scans (`all_nodes` etc.) default through the id-scan +
+   point-lookup primitives, so a minimal backend only needs the required ones.
+2. `GraphCatalog` lets the analyzer depend on a ~5-method slice instead of the
+   full storage surface. Every `GraphStorage` gets `GraphCatalog` for free.
+3. `BorrowedGraphStorage` is opt-in. The executor pivots on `with_node` /
+   `with_relationship` closures, so backends that cannot hand out `&NodeRecord`
+   (disk-backed, column-oriented, remote) are not forced to fake it.
+4. `GraphStorageMut` adds write + lifecycle hooks. `clear()` is the first
+   admin method — future snapshot/restore/WAL work will land here without a
+   second round of restructuring.
+
+`InMemoryGraph` implements all four traits and overrides the optimization
+hooks plus the bulk-scan methods for zero-clone access.
 
 ## Limitations (observed)
 
 - **No property indexes** -- equality lookups on properties require full scans (filtered by label when possible via `find_nodes_by_property`)
 - **No uniqueness constraints** -- nothing prevents duplicate nodes with identical labels and properties
 - **BTreeMap overhead** -- ordered maps are used everywhere, which has higher constant factors than `HashMap` for unordered access; provides deterministic iteration order
-- **Full cloning on reads** -- `all_nodes()`, `nodes_by_label()`, etc. clone records into `Vec`; no borrowing iterator API
+- **Full cloning on bulk reads** -- `all_nodes()`, `nodes_by_label()`, and the other record-returning scans still allocate a `Vec<NodeRecord>`. Hot-path executor code has been migrated to `with_node` / `with_relationship` closures, which avoid the clone on `InMemoryGraph`; bulk-scan APIs remain clone-based
 - **No compaction** -- deleted IDs leave gaps in the ID space, adjacency maps may retain empty entries
 
 > 🚀 **Production note** — These limits are fine for local development, tests, and modest embedded graphs. Property indexes, uniqueness constraints, and compaction are handled automatically in the [LoraDB managed platform](https://loradb.com) — reach for it once your workload outgrows a single in-memory process.

@@ -19,7 +19,7 @@
 //! `dict`s with a `kind` discriminator.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyTypeError, PyValueError};
@@ -84,7 +84,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// not hold the GIL.
 #[pyclass(module = "lora_python._native")]
 pub struct Database {
-    store: Arc<Mutex<InMemoryGraph>>,
+    db: Arc<InnerDatabase<InMemoryGraph>>,
 }
 
 #[pymethods]
@@ -92,7 +92,7 @@ impl Database {
     #[new]
     fn py_new() -> Self {
         Self {
-            store: Arc::new(Mutex::new(InMemoryGraph::new())),
+            db: Arc::new(InnerDatabase::in_memory()),
         }
     }
 
@@ -120,10 +120,9 @@ impl Database {
             _ => BTreeMap::new(),
         };
 
-        let store = Arc::clone(&self.store);
+        let db = Arc::clone(&self.db);
         // Release the GIL for the duration of engine work.
         let exec_result = py.allow_threads(move || {
-            let db = InnerDatabase::new(store);
             let options = ExecuteOptions {
                 format: ResultFormat::RowArrays,
             };
@@ -158,33 +157,26 @@ impl Database {
 
     /// Drop every node and relationship. Constant-time.
     fn clear(&self) {
-        let mut guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = InMemoryGraph::new();
+        self.db.clear();
     }
 
     /// Number of nodes currently in the graph.
     #[getter]
     fn node_count(&self) -> u64 {
-        use lora_store::GraphStorage;
-        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        guard.node_count() as u64
+        self.db.node_count() as u64
     }
 
     /// Number of relationships currently in the graph.
     #[getter]
     fn relationship_count(&self) -> u64 {
-        use lora_store::GraphStorage;
-        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        guard.relationship_count() as u64
+        self.db.relationship_count() as u64
     }
 
     fn __repr__(&self) -> String {
-        use lora_store::GraphStorage;
-        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
         format!(
             "<lora_python.Database nodes={} relationships={}>",
-            guard.node_count(),
-            guard.relationship_count(),
+            self.db.node_count(),
+            self.db.relationship_count(),
         )
     }
 }

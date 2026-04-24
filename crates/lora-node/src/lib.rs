@@ -13,7 +13,7 @@
 //! thread hop would dominate the useful work.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
@@ -32,13 +32,13 @@ const INVALID_PARAMS_CODE: &str = "INVALID_PARAMS";
 
 /// In-memory Lora graph database handle exposed to Node.
 ///
-/// Holds an `Arc<Mutex<InMemoryGraph>>`; the inner store is moved onto the
-/// libuv threadpool for each `execute()` call. Multiple concurrent queries
-/// against the same `Database` serialise on the mutex but do not block the
-/// JS event loop.
+/// Wraps an `Arc<Database<InMemoryGraph>>`; the same handle is cloned onto
+/// the libuv threadpool for each `execute()` call. Multiple concurrent
+/// queries against the same `Database` serialise on the inner store's mutex
+/// but do not block the JS event loop.
 #[napi]
 pub struct Database {
-    store: Arc<Mutex<InMemoryGraph>>,
+    db: Arc<InnerDatabase<InMemoryGraph>>,
 }
 
 #[napi]
@@ -47,7 +47,7 @@ impl Database {
     #[napi(constructor)]
     pub fn new() -> Self {
         Self {
-            store: Arc::new(Mutex::new(InMemoryGraph::new())),
+            db: Arc::new(InnerDatabase::in_memory()),
         }
     }
 
@@ -69,7 +69,7 @@ impl Database {
         >,
     ) -> AsyncTask<ExecuteTask> {
         AsyncTask::new(ExecuteTask {
-            store: Arc::clone(&self.store),
+            db: Arc::clone(&self.db),
             query,
             params,
         })
@@ -79,24 +79,19 @@ impl Database {
     /// state. Useful for test isolation. Synchronous — constant-time.
     #[napi]
     pub fn clear(&self) {
-        let mut guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = InMemoryGraph::new();
+        self.db.clear();
     }
 
     /// Number of nodes in the graph. Synchronous.
     #[napi]
     pub fn node_count(&self) -> u32 {
-        use lora_store::GraphStorage;
-        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        guard.node_count() as u32
+        self.db.node_count() as u32
     }
 
     /// Number of relationships in the graph. Synchronous.
     #[napi]
     pub fn relationship_count(&self) -> u32 {
-        use lora_store::GraphStorage;
-        let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
-        guard.relationship_count() as u32
+        self.db.relationship_count() as u32
     }
 }
 
@@ -114,7 +109,7 @@ impl Default for Database {
 /// libuv worker pool and run without touching the JS main thread until it
 /// resolves the Promise with the serialised `{columns, rows}` payload.
 pub struct ExecuteTask {
-    store: Arc<Mutex<InMemoryGraph>>,
+    db: Arc<InnerDatabase<InMemoryGraph>>,
     query: String,
     params: Option<serde_json::Value>,
 }
@@ -132,12 +127,12 @@ impl Task for ExecuteTask {
             Some(other) => json_value_to_params(other)?,
         };
 
-        let db = InnerDatabase::new(Arc::clone(&self.store));
         let options = ExecuteOptions {
             format: ResultFormat::RowArrays,
         };
 
-        let result = db
+        let result = self
+            .db
             .execute_with_params(&self.query, Some(options), params_map)
             .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
 
