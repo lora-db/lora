@@ -748,14 +748,22 @@ jobs:
             exit 1
           fi
 
-      - name: Configure RubyGems credentials (OIDC trusted publishing)
-        # No-op when `RUBYGEMS_API_KEY` is also set; the action prefers
-        # trusted publishing when the id-token: write permission is
-        # present and a trusted publisher is configured on rubygems.org.
-        # See RELEASING.md for the bootstrap flow.
+      - name: Configure RubyGems credentials (static API key fallback)
+        if: ${{ secrets.RUBYGEMS_API_KEY != '' }}
+        # Bootstrap path for the first publish before a trusted publisher
+        # is registered on rubygems.org. The official action accepts the
+        # token via `api-token`; wiring it explicitly keeps the fallback
+        # unambiguous and avoids relying on undocumented env handling.
         uses: rubygems/configure-rubygems-credentials@v1.0.0
-        env:
-          RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+        with:
+          api-token: ${{ secrets.RUBYGEMS_API_KEY }}
+
+      - name: Configure RubyGems credentials (OIDC trusted publishing)
+        if: ${{ secrets.RUBYGEMS_API_KEY == '' }}
+        # Preferred steady-state path once the `rubygems-publish`
+        # environment is registered as a trusted publisher on
+        # rubygems.org. See RELEASING.md for the one-time setup.
+        uses: rubygems/configure-rubygems-credentials@v1.0.0
 
       - name: Push every gem to rubygems.org
         working-directory: crates/lora-ruby
