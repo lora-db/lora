@@ -753,27 +753,31 @@ jobs:
             exit 1
           fi
 
-      - name: Configure RubyGems credentials (static API key fallback)
-        if: ${{ env.RUBYGEMS_API_KEY != '' }}
-        # Bootstrap path for the first publish before a trusted publisher
-        # is registered on rubygems.org. The official action accepts the
-        # token via `api-token`; wiring it explicitly keeps the fallback
-        # unambiguous and avoids relying on undocumented env handling.
-        uses: rubygems/configure-rubygems-credentials@v1.0.0
-        with:
-          api-token: ${{ secrets.RUBYGEMS_API_KEY }}
-
       - name: Configure RubyGems credentials (OIDC trusted publishing)
         if: ${{ env.RUBYGEMS_API_KEY == '' }}
         # Preferred steady-state path once the `rubygems-publish`
         # environment is registered as a trusted publisher on
         # rubygems.org. See RELEASING.md for the one-time setup.
+        #
+        # The static-API-key fallback does NOT use this action:
+        # rubygems/configure-rubygems-credentials@v1.0.0 has a default
+        # `audience` input and rejects the combination with `api-token`
+        # ("Cannot specify audience when using api-token"). For the
+        # bootstrap path we just export GEM_HOST_API_KEY on the push
+        # step below — `gem push` reads it natively.
         uses: rubygems/configure-rubygems-credentials@v1.0.0
 
       - name: Push every gem to rubygems.org
         working-directory: crates/lora-ruby
         run: |
           set -euo pipefail
+          # Static-token fallback: export GEM_HOST_API_KEY only when the
+          # secret is actually set, so we don't clobber the credentials
+          # file written by configure-rubygems-credentials on the OIDC
+          # path (empty env would still take precedence over the file).
+          if [ -n "${RUBYGEMS_API_KEY:-}" ]; then
+            export GEM_HOST_API_KEY="${RUBYGEMS_API_KEY}"
+          fi
           for gem in pkg/lora-ruby-*.gem; do
             echo "::group::push ${gem}"
             # gem push exits non-zero if the version is already
