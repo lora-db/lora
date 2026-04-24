@@ -231,7 +231,7 @@ RETURN a, b, length(p) AS hops
 
 ## Snapshots
 
-### `/admin/snapshot/*` returns 404
+### `/admin/snapshot/*` returns 404 {#admin-snapshot-returns-404}
 
 **Symptom:** `POST /admin/snapshot/save` or `/admin/snapshot/load`
 returns `404 Not Found`.
@@ -271,7 +271,7 @@ recent attempt but has not been atomically committed — rename it
 and try loading; if CRC validation fails, restore from an earlier
 backup.
 
-### Snapshot load fails with "bad magic" or "bad CRC"
+### Snapshot load fails with "bad magic" or "bad CRC" {#snapshot-load-fails-with-bad-magic-or-crc}
 
 **Symptom:** `SnapshotError::BadMagic` or `SnapshotError::BadCrc`
 on load.

@@ -42,3 +42,13 @@ founder-notes:
   label: Founder notes
   permalink: /founder-notes
   description: Why LoraDB exists, who it is for, and how the product is shaped.
+
+persistence:
+  label: Persistence
+  permalink: /persistence
+  description: Snapshots, durability, and saving graph state.
+
+operations:
+  label: Operations
+  permalink: /operations
+  description: Running LoraDB in production — admin endpoints, deployment, ops.
