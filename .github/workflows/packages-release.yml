@@ -719,6 +719,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # `secrets.*` is not allowed in step-level `if:` expressions, so expose
+    # the optional API key via `env` and branch on `env.RUBYGEMS_API_KEY`
+    # below. Empty string when the secret is unset.
+    env:
+      RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -749,7 +754,7 @@ jobs:
           fi
 
       - name: Configure RubyGems credentials (static API key fallback)
-        if: ${{ secrets.RUBYGEMS_API_KEY != '' }}
+        if: ${{ env.RUBYGEMS_API_KEY != '' }}
         # Bootstrap path for the first publish before a trusted publisher
         # is registered on rubygems.org. The official action accepts the
         # token via `api-token`; wiring it explicitly keeps the fallback
@@ -759,7 +764,7 @@ jobs:
           api-token: ${{ secrets.RUBYGEMS_API_KEY }}
 
       - name: Configure RubyGems credentials (OIDC trusted publishing)
-        if: ${{ secrets.RUBYGEMS_API_KEY == '' }}
+        if: ${{ env.RUBYGEMS_API_KEY == '' }}
         # Preferred steady-state path once the `rubygems-publish`
         # environment is registered as a trusted publisher on
         # rubygems.org. See RELEASING.md for the one-time setup.
