@@ -1,6 +1,7 @@
 ---
 title: Troubleshooting LoraDB Errors
 sidebar_label: Troubleshooting
+description: A symptom-indexed guide to common LoraDB errors — parse failures, semantic errors, unexpected results, server startup issues — with the shortest fix for each.
 ---
 
 # Troubleshooting LoraDB Errors

@@ -1,6 +1,7 @@
 ---
 title: Spatial Functions (Points, Distance)
 sidebar_label: Spatial
+description: Spatial functions in LoraDB — point() constructors for 2D/3D Cartesian and WGS-84, Euclidean and Haversine distance — plus property round-tripping and parameter binding.
 ---
 
 # Spatial Functions (Points, Distance)

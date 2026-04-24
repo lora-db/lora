@@ -1,6 +1,7 @@
 ---
 title: Temporal Data Types
 sidebar_label: Temporal
+description: LoraDB's six temporal types — Date, Time, LocalTime, DateTime, LocalDateTime, and Duration — with component access, arithmetic, truncation, and ordering semantics.
 ---
 
 # Temporal Data Types

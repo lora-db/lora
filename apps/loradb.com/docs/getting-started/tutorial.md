@@ -1,6 +1,7 @@
 ---
 title: A Ten-Minute Tour of LoraDB
 sidebar_label: Tutorial
+description: A ten-minute guided tour of LoraDB in Cypher — create nodes and relationships, match patterns, filter, aggregate, walk paths, and use CASE — to learn the engine by doing.
 ---
 
 # A Ten-Minute Tour of LoraDB

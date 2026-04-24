@@ -66,6 +66,49 @@ module.exports = {
       tagName: 'meta',
       attributes: { name: 'msapplication-TileColor', content: '#0a0f1f' },
     },
+    // JSON-LD: Organization + WebSite. Emitted on every route — truthful
+    // and stable facts only (legal name, site URL, logo, social profiles,
+    // search action for the site's built-in search UI).
+    {
+      tagName: 'script',
+      attributes: { type: 'application/ld+json' },
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@graph': [
+          {
+            '@type': 'Organization',
+            '@id': `${SITE_URL}/#organization`,
+            name: 'LoraDB',
+            url: SITE_URL,
+            logo: `${SITE_URL}/img/meta/icon-512.png`,
+            sameAs: [
+              'https://github.com/lora-db/lora',
+              'https://x.com/loradb',
+              'https://discord.gg/vUgKb6C8Af',
+              'https://linkedin.com/company/loradb',
+              'https://medium.com/loradb',
+            ],
+          },
+          {
+            '@type': 'WebSite',
+            '@id': `${SITE_URL}/#website`,
+            url: SITE_URL,
+            name: 'LoraDB',
+            description: SITE_DESCRIPTION,
+            publisher: { '@id': `${SITE_URL}/#organization` },
+            inLanguage: 'en',
+            potentialAction: {
+              '@type': 'SearchAction',
+              target: {
+                '@type': 'EntryPoint',
+                urlTemplate: `${SITE_URL}/search?q={search_term_string}`,
+              },
+              'query-input': 'required name=search_term_string',
+            },
+          },
+        ],
+      }),
+    },
   ],
   i18n: {
     defaultLocale: 'en',
@@ -109,7 +152,22 @@ module.exports = {
         sitemap: {
           changefreq: 'weekly',
           priority: 0.5,
-          ignorePatterns: ['/tags/**'],
+          // Exclude low-value or auto-generated routes:
+          //   - /tags/**            blog/doc tag listings
+          //   - /blog/archive       chronological archive (duplicates /blog)
+          //   - /blog/authors/**    author index pages (thin content)
+          //   - /blog/page/**       paginator pages (duplicate /blog)
+          //   - /search             local search UI (needs JS + query string)
+          //   - /404(.html)         error page
+          ignorePatterns: [
+            '/tags/**',
+            '/blog/archive',
+            '/blog/authors/**',
+            '/blog/page/**',
+            '/search',
+            '/404',
+            '/404.html',
+          ],
         },
         theme: {
           customCss: [
@@ -127,6 +185,13 @@ module.exports = {
     // writes title / description / og:title / og:description / twitter:title /
     // twitter:description automatically on top of these.
     metadata: [
+      // Global fallbacks. Per-page metadata from <Layout title description>
+      // or frontmatter overrides title / description / og:title /
+      // og:description / twitter:title / twitter:description automatically.
+      // Intentionally omitted here: og:url / twitter:url — we do NOT set a
+      // single site-root URL sitewide, because the canonical link is
+      // per-page and og:url pointing at the site root on a deep page is
+      // misleading to crawlers that use og:url for deduplication.
       { name: 'description', content: SITE_DESCRIPTION },
       { name: 'keywords', content: 'graph database, cypher, embedded database, rust, wasm, node.js, python, go, ruby, knowledge graph, AI agents, LoraDB' },
       { name: 'author', content: 'LoraDB' },
@@ -135,7 +200,6 @@ module.exports = {
       { property: 'og:site_name', content: 'LoraDB' },
       { property: 'og:title', content: 'LoraDB — the embedded graph database for connected systems' },
       { property: 'og:description', content: SITE_DESCRIPTION },
-      { property: 'og:url', content: SITE_URL },
       { property: 'og:image', content: `${SITE_URL}/img/meta/og-image.png` },
       { property: 'og:image:secure_url', content: `${SITE_URL}/img/meta/og-image.png` },
       { property: 'og:image:type', content: 'image/png' },
@@ -147,7 +211,6 @@ module.exports = {
       { name: 'twitter:site', content: '@loradb' },
       { name: 'twitter:creator', content: '@loradb' },
       { name: 'twitter:domain', content: 'loradb.com' },
-      { name: 'twitter:url', content: SITE_URL },
       { name: 'twitter:title', content: 'LoraDB — the embedded graph database for connected systems' },
       { name: 'twitter:description', content: SITE_DESCRIPTION },
       { name: 'twitter:image', content: `${SITE_URL}/img/meta/og-image.png` },

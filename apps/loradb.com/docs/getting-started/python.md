@@ -1,6 +1,7 @@
 ---
 title: Using LoraDB in Python
 sidebar_label: Python
+description: Install and use LoraDB in Python via the PyO3 lora-python binding — synchronous Database and asyncio-friendly AsyncDatabase with identical shapes, installed through pip.
 ---
 
 # Using LoraDB in Python

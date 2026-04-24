@@ -1,6 +1,7 @@
 ---
 title: Query Parameters
 sidebar_label: Parameters
+description: Bind host-side values into Cypher queries with parameters — how each binding forwards them, the HTTP transport caveat, and why parameters are the only safe alternative to string interpolation.
 ---
 
 # Query Parameters

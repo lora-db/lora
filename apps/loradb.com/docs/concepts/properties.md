@@ -1,6 +1,7 @@
 ---
 title: Properties on Nodes and Relationships
 sidebar_label: Properties
+description: Typed key/value properties on nodes and relationships in LoraDB — reading, setting, removing, and the type rules that apply to each supported data type.
 ---
 
 # Properties on Nodes and Relationships

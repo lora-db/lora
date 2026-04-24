@@ -1,6 +1,7 @@
 ---
 title: UNWIND and MERGE — Iterating and Upserting
 sidebar_label: UNWIND / MERGE
+description: The UNWIND and MERGE clauses in LoraDB — UNWIND turns a list into rows for batch processing, MERGE finds a pattern or creates it, with ON MATCH and ON CREATE upsert semantics.
 ---
 
 # UNWIND and MERGE — Iterating and Upserting

@@ -1,6 +1,7 @@
 ---
 title: Built-in Functions in LoraDB
 sidebar_label: Overview
+description: The built-in function library — string, math, list, aggregation, temporal, and spatial — with naming rules, null propagation, arity checking, and links to each per-category reference.
 ---
 
 # Built-in Functions in LoraDB

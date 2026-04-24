@@ -1,6 +1,7 @@
 ---
 title: List Functions
 sidebar_label: List
+description: List functions in LoraDB — size, head, tail, last, range, reverse, reduce, and friends — with 0-based indexing, negative indices, and null-propagation semantics.
 ---
 
 # List Functions

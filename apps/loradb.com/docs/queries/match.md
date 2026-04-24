@@ -1,6 +1,7 @@
 ---
 title: MATCH — Finding Patterns in the Graph
 sidebar_label: MATCH
+description: The MATCH clause in LoraDB — fixed and variable-length patterns, OPTIONAL MATCH, labels, directions, chained matches, and how it produces the row stream Cypher queries build on.
 ---
 
 # MATCH — Finding Patterns in the Graph

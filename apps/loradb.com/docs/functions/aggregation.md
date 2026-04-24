@@ -1,6 +1,7 @@
 ---
 title: Aggregation Functions
 sidebar_label: Aggregation
+description: Aggregation functions in LoraDB — count, sum, avg, min, max, collect, stdev, and percentile family — including null handling, empty-input semantics, and implicit grouping rules.
 ---
 
 # Aggregation Functions

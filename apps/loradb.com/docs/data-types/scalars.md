@@ -1,6 +1,7 @@
 ---
 title: Scalar Types — Null, Boolean, Integer, Float, String
 sidebar_label: Scalars
+description: The five scalar types in LoraDB — Null, Boolean, Integer, Float, String — their literals, comparison rules, three-valued logic, and how each round-trips to host languages.
 ---
 
 # Scalar Types

@@ -1,6 +1,7 @@
 ---
 title: Supported Data Types in LoraDB
 sidebar_label: Overview
+description: An index of every value type LoraDB supports — scalars, lists, maps, temporal types, spatial points, and vectors — with links to the per-type reference.
 ---
 
 # Supported Data Types in LoraDB

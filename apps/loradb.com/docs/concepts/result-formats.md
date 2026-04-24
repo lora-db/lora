@@ -1,6 +1,7 @@
 ---
 title: Query Result Formats
 sidebar_label: Result Formats
+description: The four result shapes LoraDB returns — rows, rowArrays, graph, and combined — with the trade-offs between payload size, client ergonomics, and graph versus tabular access.
 ---
 
 # Query Result Formats

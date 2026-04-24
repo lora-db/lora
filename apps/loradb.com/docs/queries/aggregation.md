@@ -1,6 +1,7 @@
 ---
 title: Aggregating Query Results
 sidebar_label: Aggregation
+description: How aggregation works as a clause in LoraDB — implicit GROUP BY from non-aggregated columns, HAVING-style filtering via WITH, and distinct aggregation.
 ---
 
 # Aggregating Query Results

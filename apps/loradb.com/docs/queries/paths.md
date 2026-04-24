@@ -1,6 +1,7 @@
 ---
 title: Paths and Graph Traversals
 sidebar_label: Paths
+description: Path traversals in LoraDB — variable-length patterns, bounded and unbounded quantifiers, zero-hop matches, path binding, shortestPath, and allShortestPaths.
 ---
 
 # Paths and Graph Traversals

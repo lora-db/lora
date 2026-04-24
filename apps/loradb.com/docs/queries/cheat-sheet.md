@@ -1,6 +1,7 @@
 ---
 title: Cypher Cheat Sheet
 sidebar_label: Cheat Sheet
+description: A one-page reference for the Cypher features LoraDB supports — read, write, path, aggregation, and expression forms — each with a minimal working example.
 ---
 
 # Cypher Cheat Sheet

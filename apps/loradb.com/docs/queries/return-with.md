@@ -1,6 +1,7 @@
 ---
 title: RETURN and WITH — Projecting and Piping Results
 sidebar_label: RETURN / WITH
+description: The RETURN and WITH clauses in LoraDB — RETURN ends a query and hands rows back to the caller, WITH pipes them into the next stage. Projections, aliasing, and DISTINCT semantics.
 ---
 
 # RETURN and WITH — Projecting and Piping Results

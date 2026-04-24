@@ -1,6 +1,7 @@
 ---
 title: WHERE — Filtering Rows
 sidebar_label: WHERE
+description: The WHERE clause in LoraDB — boolean filters after MATCH, WITH, or OPTIONAL MATCH — including comparisons, regex, list predicates, EXISTS subqueries, and when to filter after aggregation.
 ---
 
 # WHERE — Filtering Rows

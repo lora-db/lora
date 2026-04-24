@@ -1,6 +1,7 @@
 ---
 title: Math Functions
 sidebar_label: Math
+description: Math functions in LoraDB — abs, sign, sqrt, exp, log, trigonometry, rounding, and constants — with domain-safe fallbacks to null rather than errors.
 ---
 
 # Math Functions

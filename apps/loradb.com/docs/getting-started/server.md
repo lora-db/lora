@@ -1,6 +1,7 @@
 ---
 title: Running LoraDB as an HTTP Server
 sidebar_label: HTTP Server
+description: Run LoraDB as an HTTP service with lora-server — a small Axum wrapper around the engine for curl probing, polyglot stacks, and demos. One process, one in-memory graph.
 ---
 
 # Running LoraDB as an HTTP Server

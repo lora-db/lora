@@ -1,6 +1,7 @@
 ---
 title: Vector Values
 sidebar_label: Vectors
+description: First-class VECTOR values in LoraDB — construction in Cypher, property storage, binding round-trips, and the built-in vector math functions for exhaustive kNN retrieval.
 ---
 
 # Vector Values

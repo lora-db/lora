@@ -1,6 +1,7 @@
 ---
 title: Querying LoraDB with Cypher
 sidebar_label: Overview
+description: An index of every Cypher clause LoraDB supports — MATCH, WHERE, RETURN, WITH, CREATE, MERGE, SET, DELETE, UNWIND, paths, and aggregation — with links to each clause reference.
 ---
 
 # Querying LoraDB with Cypher

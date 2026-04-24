@@ -1,6 +1,7 @@
 ---
 title: Install and Set Up LoraDB
 sidebar_label: Installation & Setup
+description: Pick a LoraDB installation — Node.js, Python, WebAssembly, Go, Ruby, embedded Rust, or the HTTP server — with a short side-by-side of what each runtime is best for.
 ---
 
 # Install and Set Up LoraDB

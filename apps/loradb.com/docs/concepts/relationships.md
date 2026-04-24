@@ -1,6 +1,7 @@
 ---
 title: Relationships Between Nodes
 sidebar_label: Relationships
+description: How LoraDB represents relationships — typed, directed edges between nodes with their own properties — and how to create, traverse, and constrain them in Cypher.
 ---
 
 # Relationships Between Nodes

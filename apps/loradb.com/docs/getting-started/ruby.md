@@ -1,6 +1,7 @@
 ---
 title: Using LoraDB in Ruby
 sidebar_label: Ruby
+description: Install and use LoraDB in Ruby via the lora-ruby native extension built with Magnus and rb-sys — in-process execution with the same tagged value model as the other bindings.
 ---
 
 # Using LoraDB in Ruby

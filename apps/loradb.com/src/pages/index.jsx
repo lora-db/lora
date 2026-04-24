@@ -2,7 +2,6 @@ import React from 'react';
 import clsx from 'clsx';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
 import BrandGraph from '@site/src/components/BrandGraph';
 import StarOnGitHub from '@site/src/components/StarOnGitHub';
@@ -234,14 +233,13 @@ function Icon({ name }) {
 }
 
 export default function Home() {
-  const { siteConfig } = useDocusaurusContext();
   const [activeTab, setActiveTab] = React.useState(QUICKSTART_TABS[0].id);
   const activeSnippet =
     QUICKSTART_TABS.find((t) => t.id === activeTab) ?? QUICKSTART_TABS[0];
 
   return (
     <Layout
-      title={siteConfig.title}
+      title="The embedded graph database for connected systems"
       description="LoraDB is an embedded, Rust-native graph database with a Cypher-like engine — built for AI agents, robotics, and context-rich systems that reason over connected data."
       wrapperClassName={styles.homeWrapper}
     >

@@ -1,6 +1,7 @@
 ---
 title: Using LoraDB in Rust
 sidebar_label: Rust
+description: Embed LoraDB directly in a Rust binary via the lora-database crate — the reference API with a strongly typed LoraValue enum, Result-based errors, and a cheap Send + Sync handle.
 ---
 
 # Using LoraDB in Rust

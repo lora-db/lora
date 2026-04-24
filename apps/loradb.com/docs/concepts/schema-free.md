@@ -1,6 +1,7 @@
 ---
 title: Schema-Free Writes and Soft Validation
 sidebar_label: Schema-Free
+description: How LoraDB handles schema — labels, relationship types, and property keys spring into existence on write, while reads stay strict — and where validation still applies.
 ---
 
 # Schema-Free Writes and Soft Validation

@@ -1,6 +1,7 @@
 ---
 title: CREATE — Writing Nodes and Relationships
 sidebar_label: CREATE
+description: The CREATE clause in LoraDB — always inserts new nodes and relationships, with property literals, multi-pattern writes, and the difference from MERGE's upsert semantics.
 ---
 
 # CREATE — Writing Nodes and Relationships

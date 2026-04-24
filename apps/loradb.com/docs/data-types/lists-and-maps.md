@@ -1,6 +1,7 @@
 ---
 title: Lists and Maps
 sidebar_label: Lists & Maps
+description: LoraDB's two composite value types — ordered nestable lists and string-keyed maps — including literals, indexing, slicing, nesting rules, and Cypher operations.
 ---
 
 # Lists and Maps

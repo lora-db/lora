@@ -1,0 +1,10 @@
+# LoraDB — https://loradb.com
+# Published via GitHub Pages from apps/loradb.com.
+
+User-agent: *
+Allow: /
+
+# Local search page is a client-side index, not useful as a search result.
+Disallow: /search
+
+Sitemap: https://loradb.com/sitemap.xml

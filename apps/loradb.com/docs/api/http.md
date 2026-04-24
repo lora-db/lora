@@ -1,6 +1,7 @@
 ---
 title: HTTP API Reference
 sidebar_label: HTTP API
+description: Endpoint reference for lora-server — the Axum-based HTTP wrapper around the LoraDB engine. Query shapes, response formats, health checks, and error codes.
 ---
 
 # HTTP API Reference

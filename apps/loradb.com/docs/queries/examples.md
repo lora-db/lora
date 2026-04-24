@@ -1,6 +1,7 @@
 ---
 title: Cypher Query Examples for LoraDB
 sidebar_label: Examples
+description: A copy-paste tour of Cypher against LoraDB — create, match, filter, project, aggregate, path traversal, and mutation — organised by query shape rather than clause.
 ---
 
 # Cypher Query Examples for LoraDB

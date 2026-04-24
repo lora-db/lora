@@ -1,6 +1,7 @@
 ---
 title: SET, REMOVE, DELETE — Mutating the Graph
 sidebar_label: SET / REMOVE / DELETE
+description: The mutating clauses in LoraDB — SET for updating properties and labels, REMOVE for clearing them, DELETE and DETACH DELETE for removing nodes and relationships.
 ---
 
 # SET, REMOVE, DELETE — Mutating the Graph

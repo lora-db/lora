@@ -1,6 +1,7 @@
 ---
 title: LoraDB Query Cookbook
 sidebar_label: Cookbook
+description: Scenario-driven Cypher recipes for LoraDB — social graphs, e-commerce, event streams, and geospatial queries — each with a concrete data model and working query.
 ---
 
 # LoraDB Query Cookbook

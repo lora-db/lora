@@ -1,6 +1,7 @@
 ---
 title: What's Not Supported Yet
 sidebar_label: Limitations
+description: Every Cypher feature and operational capability LoraDB does not support today — persistence, indexes, constraints, procedures, clustering — and what to reach for instead.
 ---
 
 # What's Not Supported Yet

@@ -1,6 +1,7 @@
 ---
 title: String Functions
 sidebar_label: String
+description: String functions in LoraDB — substring, replace, split, trim, case conversion, numeric parsing — with null propagation and ASCII case semantics.
 ---
 
 # String Functions

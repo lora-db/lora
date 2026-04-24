@@ -1,6 +1,7 @@
 ---
 title: Spatial Data Types (Points)
 sidebar_label: Spatial
+description: The Point type in LoraDB — 2D and 3D, Cartesian and WGS-84 — its SRIDs, equality rules, property storage behaviour, and links to the spatial function library.
 ---
 
 # Spatial Data Types

@@ -1,6 +1,7 @@
 ---
 title: Temporal Functions (Dates, Times, Durations)
 sidebar_label: Temporal
+description: Temporal functions in LoraDB — constructors, now/current, component accessors, truncation, and Duration arithmetic for the full Cypher temporal model.
 ---
 
 # Temporal Functions (Dates, Times, Durations)

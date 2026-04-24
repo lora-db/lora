@@ -2,6 +2,7 @@
 title: What is LoraDB
 sidebar_label: What is LoraDB
 slug: /
+description: LoraDB is a local-first, in-memory property-graph engine in Rust with a Cypher-like query language, Node.js / Python / WASM / Go / Ruby bindings, and an optional HTTP server.
 ---
 
 # What is LoraDB

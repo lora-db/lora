@@ -1,6 +1,7 @@
 ---
 title: Using LoraDB in Go
 sidebar_label: Go
+description: Install and use LoraDB in Go via the lora-go cgo wrapper over the shared lora-ffi C ABI — in-process execution with the same tagged value model as the other bindings.
 ---
 
 # Using LoraDB in Go

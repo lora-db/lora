@@ -1,6 +1,7 @@
 ---
 title: ORDER BY, SKIP, LIMIT — Ordering and Pagination
 sidebar_label: Ordering & Pagination
+description: Order and paginate LoraDB query results with ORDER BY, SKIP, and LIMIT — evaluation order, stable sorting rules, and their interaction with projection and aggregation.
 ---
 
 # ORDER BY, SKIP, LIMIT — Ordering and Pagination

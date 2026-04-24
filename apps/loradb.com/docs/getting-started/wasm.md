@@ -1,6 +1,7 @@
 ---
 title: Running LoraDB in the Browser with WebAssembly
 sidebar_label: Browser (WASM)
+description: Run LoraDB in the browser via WebAssembly with lora-wasm — including the Worker variant for keeping the main thread responsive and the same API as the Node binding.
 ---
 
 # Running LoraDB in the Browser with WebAssembly

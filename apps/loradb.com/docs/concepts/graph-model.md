@@ -1,6 +1,7 @@
 ---
 title: The LoraDB Graph Data Model
 sidebar_label: Graph Data Model
+description: The labeled property graph model LoraDB uses — nodes, typed directed relationships, properties, and internal identity — and how each piece maps to Cypher.
 ---
 
 # The LoraDB Graph Data Model

@@ -1,6 +1,7 @@
 ---
 title: Nodes and Labels
 sidebar_label: Nodes
+description: How LoraDB represents nodes — vertices with zero or more labels, properties, and a stable internal id — and how to create, match, and label them with Cypher.
 ---
 
 # Nodes and Labels

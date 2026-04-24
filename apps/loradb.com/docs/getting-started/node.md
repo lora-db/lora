@@ -1,6 +1,7 @@
 ---
 title: Using LoraDB in Node.js and TypeScript
 sidebar_label: Node.js
+description: Install and use LoraDB in Node.js or TypeScript via the lora-node N-API binding — async queries on libuv, helpers, type guards, and the shared result shapes.
 ---
 
 # Using LoraDB in Node.js and TypeScript
