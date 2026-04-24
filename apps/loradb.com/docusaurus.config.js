@@ -271,6 +271,13 @@ module.exports = {
       { repo: 'lora-db/lora' },
     ],
   ],
+  scripts: [
+    {
+      src: 'https://cloud.umami.is/script.js',
+      defer: true,
+      'data-website-id': '077ddb23-aded-457c-9f48-f67f39779873',
+    },
+  ],
   customFields: {},
   themes: [
     [
