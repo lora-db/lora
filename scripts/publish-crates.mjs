@@ -51,8 +51,9 @@ const ROOT = resolve(HERE, '..');
 //   lora-analyzer : lora-ast, lora-store, lora-parser
 //   lora-compiler : lora-analyzer, lora-ast
 //   lora-executor : lora-compiler, lora-store, lora-analyzer, lora-ast
+//   lora-wal      : lora-store
 //   lora-database : lora-ast, lora-parser, lora-analyzer, lora-compiler,
-//                   lora-executor, lora-store
+//                   lora-executor, lora-store, lora-wal
 //   lora-server   : lora-database
 // Any linear extension of that DAG works. This one is leaf-first and
 // minimises the number of edges each step introduces.
@@ -63,6 +64,7 @@ const PUBLISH_ORDER = [
   'lora-analyzer',
   'lora-compiler',
   'lora-executor',
+  'lora-wal',
   'lora-database',
   'lora-server',
 ];

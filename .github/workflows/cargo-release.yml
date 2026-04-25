@@ -17,10 +17,11 @@ name: cargo-release
 #
 # Published crates (in order):
 #   lora-ast -> lora-store -> lora-parser -> lora-analyzer -> lora-compiler
-#     -> lora-executor -> lora-database -> lora-server
+#     -> lora-executor -> lora-wal -> lora-database -> lora-server
 #
 # Not published:
-#   lora-node, lora-wasm, lora-python  (ship via npm / PyPI instead).
+#   lora-node, lora-wasm, lora-python, lora-ffi, lora-ruby
+#     (ship via npm / PyPI / RubyGems instead).
 #
 # Runs in parallel with release.yml (lora-server binary draft) and
 # packages-release.yml (npm + PyPI). All three keyed off the same tag.
