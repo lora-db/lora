@@ -1,6 +1,6 @@
 {
   "name": "@loradb/lora-node",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Node.js / TypeScript bindings for the Lora in-memory graph database",
   "license": "BUSL-1.1",
   "author": "LoraDB, Inc.",
