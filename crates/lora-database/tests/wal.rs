@@ -9,7 +9,8 @@
 use std::path::{Path, PathBuf};
 
 use lora_database::{Database, ExecuteOptions, ResultFormat};
-use lora_wal::{SyncMode, WalConfig};
+use lora_store::{MutationEvent, Properties, PropertyValue};
+use lora_wal::{Lsn, SyncMode, Wal, WalConfig};
 
 // ---------------------------------------------------------------------------
 // Test scaffolding
@@ -58,6 +59,16 @@ fn enabled(dir: &Path) -> WalConfig {
     WalConfig::Enabled {
         dir: dir.to_path_buf(),
         sync_mode: SyncMode::PerCommit,
+        segment_target_bytes: 8 * 1024 * 1024,
+    }
+}
+
+fn group_enabled(dir: &Path) -> WalConfig {
+    WalConfig::Enabled {
+        dir: dir.to_path_buf(),
+        sync_mode: SyncMode::Group {
+            interval_ms: 60_000,
+        },
         segment_target_bytes: 8 * 1024 * 1024,
     }
 }
@@ -212,6 +223,134 @@ fn aborted_query_does_not_persist_partial_mutation() {
 }
 
 #[test]
+fn failed_mutating_query_poisons_live_wal_handle_until_restart() {
+    let dir = TmpDir::new("abort-poisons-live");
+
+    {
+        let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+        let err = db
+            .execute("CREATE (a)-[:R]->(b) WITH a DELETE a", rows())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("WAL poisoned"),
+            "expected the failed mutating query to poison the live handle, got {err}"
+        );
+
+        let next = db.execute("RETURN 1 AS ok", rows()).unwrap_err();
+        assert!(
+            next.to_string().contains("WAL arm failed"),
+            "expected future queries on the live handle to fail, got {next}"
+        );
+    }
+
+    let recovered = Database::open_with_wal(enabled(dir.path())).unwrap();
+    assert_eq!(
+        recovered.node_count(),
+        0,
+        "recovery should discard the aborted create/delete transaction"
+    );
+}
+
+#[test]
+fn replay_preserves_ids_after_aborted_create_gap() {
+    let dir = TmpDir::new("id-gap");
+
+    {
+        let (wal, replay) =
+            Wal::open(dir.path(), SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+        assert!(replay.is_empty());
+
+        let aborted = wal.begin().unwrap();
+        wal.append(
+            aborted,
+            &MutationEvent::CreateNode {
+                id: 0,
+                labels: vec!["Discarded".into()],
+                properties: Properties::new(),
+            },
+        )
+        .unwrap();
+        wal.abort(aborted).unwrap();
+        wal.flush().unwrap();
+
+        let create = wal.begin().unwrap();
+        wal.append(
+            create,
+            &MutationEvent::CreateNode {
+                id: 1,
+                labels: vec!["Kept".into()],
+                properties: Properties::new(),
+            },
+        )
+        .unwrap();
+        wal.commit(create).unwrap();
+        wal.flush().unwrap();
+
+        let set_name = wal.begin().unwrap();
+        wal.append(
+            set_name,
+            &MutationEvent::SetNodeProperty {
+                node_id: 1,
+                key: "name".into(),
+                value: PropertyValue::String("survivor".into()),
+            },
+        )
+        .unwrap();
+        wal.commit(set_name).unwrap();
+        wal.flush().unwrap();
+    }
+
+    let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+    assert_eq!(db.node_count(), 1);
+
+    let result = db
+        .execute(
+            "MATCH (n:Kept {name: 'survivor'}) RETURN n.name AS name",
+            rows(),
+        )
+        .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    let row_array = json["rows"].as_array().expect("rows array");
+    assert_eq!(row_array.len(), 1);
+    assert_eq!(row_array[0]["name"], serde_json::json!("survivor"));
+}
+
+#[test]
+fn replay_rejects_relationship_with_missing_endpoint() {
+    let dir = TmpDir::new("missing-endpoint");
+
+    {
+        let (wal, replay) =
+            Wal::open(dir.path(), SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+        assert!(replay.is_empty());
+
+        let tx = wal.begin().unwrap();
+        wal.append(
+            tx,
+            &MutationEvent::CreateRelationship {
+                id: 0,
+                src: 10,
+                dst: 11,
+                rel_type: "BROKEN".into(),
+                properties: Properties::new(),
+            },
+        )
+        .unwrap();
+        wal.commit(tx).unwrap();
+        wal.flush().unwrap();
+    }
+
+    let err = match Database::open_with_wal(enabled(dir.path())) {
+        Ok(_) => panic!("recovery should reject the malformed relationship"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("missing source node 10"),
+        "unexpected recovery error: {err}"
+    );
+}
+
+#[test]
 fn checkpoint_truncates_segments_and_recovery_uses_snapshot() {
     let wal_dir = TmpDir::new("ckpt-wal");
     let snap_dir = TmpDir::new("ckpt-snap");
@@ -239,6 +378,26 @@ fn checkpoint_truncates_segments_and_recovery_uses_snapshot() {
     // 0..=9; the WAL contributes 100, 101.
     let recovered = Database::recover(&snap_path, enabled(wal_dir.path())).unwrap();
     assert_eq!(recovered.node_count(), 12);
+}
+
+#[test]
+fn group_mode_checkpoint_uses_fsynced_fence() {
+    let wal_dir = TmpDir::new("group-ckpt-wal");
+    let snap_dir = TmpDir::new("group-ckpt-snap");
+    let snap_path = snap_dir.path().join("snapshot.bin");
+
+    {
+        let db = Database::open_with_wal(group_enabled(wal_dir.path())).unwrap();
+        db.execute("CREATE (:N {i: 1})", rows()).unwrap();
+        let meta = db.checkpoint_to(&snap_path).unwrap();
+        assert!(
+            meta.wal_lsn.unwrap_or_default() > 0,
+            "checkpoint should stamp a non-zero WAL fence"
+        );
+    }
+
+    let recovered = Database::recover(&snap_path, group_enabled(wal_dir.path())).unwrap();
+    assert_eq!(recovered.node_count(), 1);
 }
 
 #[test]

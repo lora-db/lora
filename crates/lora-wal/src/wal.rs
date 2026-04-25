@@ -16,11 +16,10 @@
 //! the file names already encode their ordering, and segment headers
 //! are self-describing.
 //!
-//! Lifecycle is `[`Wal::open`] → drain replay events into the store →
-//! resume normal `begin` / `append` / `commit` traffic. Multi-process
-//! exclusion is **out of scope** for v1; running two `Wal::open` calls
-//! on the same directory is undefined behaviour. The plan calls this
-//! out as a deferred concern.
+//! Lifecycle is `[`Wal::open`] → acquire the directory lock → drain replay
+//! events into the store → resume normal `begin` / `append` / `commit`
+//! traffic. The directory lock is held until the `Wal` drops; a second
+//! live `Wal::open` on the same directory returns [`WalError::AlreadyOpen`].
 //!
 //! All public methods take `&self` and serialise through an internal
 //! [`Mutex`]. The engine mutex already serialises us in production
@@ -41,6 +40,7 @@ use lora_store::MutationEvent;
 use crate::config::SyncMode;
 use crate::dir::{SegmentDir, SegmentId};
 use crate::error::WalError;
+use crate::lock::DirLock;
 use crate::lsn::Lsn;
 use crate::record::WalRecord;
 use crate::replay::{replay_segments, ReplayOutcome};
@@ -103,6 +103,9 @@ pub struct Wal {
     /// thread, so a `Wal` going out of scope is a clean shutdown
     /// signal.
     _flusher: Mutex<Option<GroupFlusherHandle>>,
+    /// Held for the lifetime of the WAL so a second handle cannot append
+    /// to the same active segment concurrently.
+    _dir_lock: DirLock,
 }
 
 impl Wal {
@@ -124,6 +127,7 @@ impl Wal {
     ) -> Result<(Arc<Self>, Vec<MutationEvent>), WalError> {
         let segments = SegmentDir::new(dir);
         fs::create_dir_all(segments.root())?;
+        let dir_lock = DirLock::acquire(segments.root())?;
 
         let entries = segments.list()?;
         let (active_id, active_writer, replay) = if entries.is_empty() {
@@ -137,10 +141,11 @@ impl Wal {
         } else {
             replay.max_lsn.next()
         };
-        // Treat everything in the segments at open time as durable —
-        // the kernel may not have flushed it yet, but there is no way
-        // for a future append to interleave with bytes already on
-        // disk, so reporting it as durable is conservative-correct.
+        // Treat everything readable at open time as the recovered
+        // durability fence. This does not prove the bytes were
+        // fsync-confirmed before the previous process died; it means
+        // they survived to this open and future appends must start
+        // after them.
         let durable_lsn = replay.max_lsn;
 
         let oldest_segment_id = entries.first().map(|e| e.id).unwrap_or(active_id);
@@ -160,6 +165,7 @@ impl Wal {
             state: Mutex::new(state),
             bg_failure: Arc::new(Mutex::new(None)),
             _flusher: Mutex::new(None),
+            _dir_lock: dir_lock,
         });
 
         // Spawn the Group flusher *after* the Arc exists so it can
@@ -182,6 +188,7 @@ impl Wal {
     ) -> Result<(SegmentId, SegmentWriter, ReplayOutcome), WalError> {
         let id = SegmentId::FIRST;
         let writer = SegmentWriter::create(segments.path_for(id), Lsn::new(1))?;
+        segments.sync_dir()?;
         let replay = ReplayOutcome {
             committed_events: Vec::new(),
             max_lsn: Lsn::ZERO,
@@ -215,6 +222,11 @@ impl Wal {
         if let Some(t) = &replay.torn_tail {
             if t.segment_path == active.path {
                 writer.truncate_to(t.last_good_offset)?;
+            } else {
+                return Err(WalError::Malformed(format!(
+                    "torn tail found in sealed segment {}",
+                    t.segment_path.display()
+                )));
             }
         }
 
@@ -436,6 +448,9 @@ impl Wal {
                 state.oldest_segment_id = entry.id.next();
             }
         }
+        if state.oldest_segment_id != entries.first().map(|e| e.id).unwrap_or(active_id) {
+            self.segments.sync_dir()?;
+        }
         Ok(())
     }
 
@@ -454,9 +469,21 @@ impl Wal {
 
         let next_id = state.active_segment_id.next();
         let writer = SegmentWriter::create(self.segments.path_for(next_id), state.next_lsn)?;
+        self.segments.sync_dir()?;
         state.active_writer = writer;
         state.active_segment_id = next_id;
         Ok(())
+    }
+}
+
+impl Drop for Wal {
+    fn drop(&mut self) {
+        // Join the group flusher, if any, before the directory lock is
+        // released. That keeps the "one live append owner" boundary intact
+        // through shutdown.
+        if let Ok(slot) = self._flusher.get_mut() {
+            let _ = slot.take();
+        }
     }
 }
 
@@ -572,9 +599,34 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert!(
-            entries.iter().all(|n| n.ends_with(".wal")),
-            "WAL dir should contain only segment files, found: {entries:?}"
+            entries.iter().any(|n| n == ".lora-wal.lock"),
+            "WAL dir should contain the live directory lock, found: {entries:?}"
         );
+        assert!(
+            entries
+                .iter()
+                .filter(|n| n.as_str() != ".lora-wal.lock")
+                .all(|n| n.ends_with(".wal")),
+            "WAL dir should contain only segment files plus the lock, found: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn opening_same_directory_twice_fails_until_first_handle_drops() {
+        let dir = TmpDir::new("exclusive");
+        let (wal, _) = open_default(&dir.path);
+
+        match Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO) {
+            Err(WalError::AlreadyOpen { dir: locked_dir }) => {
+                assert_eq!(locked_dir, dir.path);
+            }
+            Err(err) => panic!("expected AlreadyOpen, got {err:?}"),
+            Ok(_) => panic!("second WAL open on same directory should fail"),
+        }
+
+        drop(wal);
+        let (reopened, _) = open_default(&dir.path);
+        drop(reopened);
     }
 
     #[test]
@@ -712,6 +764,46 @@ mod tests {
         let (_, replay) =
             Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, commit_a).unwrap();
         assert_eq!(replay, vec![ev(3)]);
+    }
+
+    #[test]
+    fn replay_rejects_commit_without_begin() {
+        let dir = TmpDir::new("commit-without-begin");
+
+        {
+            let (wal, _) = open_default(&dir.path);
+            wal.commit(Lsn::new(99)).unwrap();
+            wal.flush().unwrap();
+        }
+
+        let err = match Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO) {
+            Ok(_) => panic!("malformed WAL should not open"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, WalError::Malformed(ref msg) if msg.contains("missing tx begin")),
+            "expected malformed missing-begin error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn replay_rejects_mutation_without_begin() {
+        let dir = TmpDir::new("mutation-without-begin");
+
+        {
+            let (wal, _) = open_default(&dir.path);
+            wal.append(Lsn::new(99), &ev(1)).unwrap();
+            wal.flush().unwrap();
+        }
+
+        let err = match Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO) {
+            Ok(_) => panic!("malformed WAL should not open"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, WalError::Malformed(ref msg) if msg.contains("missing tx begin")),
+            "expected malformed missing-begin error, got {err:?}"
+        );
     }
 
     #[test]

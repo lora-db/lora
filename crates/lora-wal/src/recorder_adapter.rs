@@ -201,6 +201,20 @@ impl WalRecorder {
         })
     }
 
+    /// Force the underlying WAL to write, `fsync`, and advance its
+    /// durable fence regardless of the configured sync mode. Admin
+    /// paths use this when they need a durability point immediately.
+    pub fn force_fsync(&self) -> Result<(), WalError> {
+        let mut state = self.state.lock().unwrap();
+        if state.poisoned.is_some() {
+            return Err(WalError::Poisoned);
+        }
+        self.wal.force_fsync().map_err(|e| {
+            state.poisoned = Some(e.to_string());
+            e
+        })
+    }
+
     /// Append a `Checkpoint` marker. Used by the checkpoint admin
     /// path after a successful snapshot rename — the marker doubles
     /// as the log-side fence the next replay will trust.
@@ -229,6 +243,17 @@ impl WalRecorder {
             return true;
         }
         self.wal.bg_failure().is_some()
+    }
+
+    /// Quarantine the recorder after the host detects that the live
+    /// in-memory graph may no longer match durable state. Once poisoned,
+    /// future query arms fail until the database is restarted from a
+    /// snapshot + WAL.
+    pub fn poison(&self, reason: impl Into<String>) {
+        let mut state = self.state.lock().unwrap();
+        state.poisoned.get_or_insert_with(|| reason.into());
+        state.active_tx = None;
+        state.armed = false;
     }
 
     /// Test helper: clear the poisoned flag and reset the active
@@ -341,8 +366,9 @@ mod tests {
 
         assert!(!recorder.is_poisoned());
 
-        // Drop the recorder + wal handles before re-opening the
-        // directory, otherwise we'd race with our own open.
+        // Drop every recorder clone before re-opening the directory,
+        // otherwise we'd race with our own live WAL handle.
+        g.set_mutation_recorder(None);
         drop(recorder);
 
         let (_wal, events) =
@@ -393,6 +419,7 @@ mod tests {
         assert!(aborted, "abort with active tx should write a TxAbort");
         recorder.flush().unwrap();
 
+        g.set_mutation_recorder(None);
         drop(recorder);
 
         let (_wal, events) =
@@ -439,15 +466,19 @@ mod tests {
         let dir = TmpDir::new("ckpt");
         let recorder = WalRecorder::new(open_wal(&dir.path));
 
-        // Read-only commits no longer allocate LSNs, so we exercise
-        // the marker path directly: it goes via the recorder's
-        // `checkpoint_marker` shim and does not need an active query
-        // around it.
-        let marker_lsn = recorder.checkpoint_marker(Lsn::new(2)).unwrap();
-        recorder.flush().unwrap();
+        recorder.arm().unwrap();
+        recorder.record(&MutationEvent::Clear);
+        assert_eq!(recorder.commit().unwrap(), WroteCommit::Yes);
+        recorder.force_fsync().unwrap();
+        let snapshot_lsn = recorder.wal().durable_lsn();
+
+        // Exercise the marker path via the recorder's shim after a
+        // real durable fence exists.
+        let marker_lsn = recorder.checkpoint_marker(snapshot_lsn).unwrap();
+        recorder.force_fsync().unwrap();
         assert!(marker_lsn >= Lsn::new(1));
 
         let outcome = crate::replay::replay_dir(&dir.path, Lsn::ZERO).unwrap();
-        assert_eq!(outcome.checkpoint_lsn_observed, Some(Lsn::new(2)));
+        assert_eq!(outcome.checkpoint_lsn_observed, Some(snapshot_lsn));
     }
 }

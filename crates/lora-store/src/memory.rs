@@ -120,6 +120,22 @@ impl InMemoryGraph {
         id
     }
 
+    fn bump_next_node_id_past(&mut self, id: NodeId) -> Result<(), String> {
+        let next = id
+            .checked_add(1)
+            .ok_or_else(|| format!("node id {id} leaves no valid next node id"))?;
+        self.next_node_id = self.next_node_id.max(next);
+        Ok(())
+    }
+
+    fn bump_next_rel_id_past(&mut self, id: RelationshipId) -> Result<(), String> {
+        let next = id
+            .checked_add(1)
+            .ok_or_else(|| format!("relationship id {id} leaves no valid next relationship id"))?;
+        self.next_rel_id = self.next_rel_id.max(next);
+        Ok(())
+    }
+
     fn normalize_labels(labels: Vec<String>) -> Vec<String> {
         let mut seen = BTreeSet::new();
 
@@ -253,6 +269,94 @@ impl InMemoryGraph {
         }
 
         rel_ids
+    }
+
+    /// Replay a node creation using the id captured in a durable mutation
+    /// event. This intentionally does not emit a new mutation event: callers
+    /// must invoke it before installing a recorder on the graph.
+    #[doc(hidden)]
+    pub fn replay_create_node(
+        &mut self,
+        id: NodeId,
+        labels: Vec<String>,
+        properties: Properties,
+    ) -> Result<NodeRecord, String> {
+        if self.recorder.is_some() {
+            return Err(
+                "cannot replay node creation while a mutation recorder is installed".into(),
+            );
+        }
+        if self.nodes.contains_key(&id) {
+            return Err(format!("node id {id} already exists"));
+        }
+
+        let labels = Self::normalize_labels(labels);
+        let node = NodeRecord {
+            id,
+            labels: labels.clone(),
+            properties,
+        };
+
+        self.nodes.insert(id, node.clone());
+        for label in &labels {
+            self.insert_node_label_index(id, label);
+        }
+        self.outgoing.entry(id).or_default();
+        self.incoming.entry(id).or_default();
+        self.bump_next_node_id_past(id)?;
+
+        Ok(node)
+    }
+
+    /// Replay a relationship creation using the id captured in a durable
+    /// mutation event. This intentionally does not emit a new mutation event:
+    /// callers must invoke it before installing a recorder on the graph.
+    #[doc(hidden)]
+    pub fn replay_create_relationship(
+        &mut self,
+        id: RelationshipId,
+        src: NodeId,
+        dst: NodeId,
+        rel_type: &str,
+        properties: Properties,
+    ) -> Result<RelationshipRecord, String> {
+        if self.recorder.is_some() {
+            return Err(
+                "cannot replay relationship creation while a mutation recorder is installed".into(),
+            );
+        }
+        if self.relationships.contains_key(&id) {
+            return Err(format!("relationship id {id} already exists"));
+        }
+        if !self.nodes.contains_key(&src) {
+            return Err(format!(
+                "relationship {id} references missing source node {src}"
+            ));
+        }
+        if !self.nodes.contains_key(&dst) {
+            return Err(format!(
+                "relationship {id} references missing target node {dst}"
+            ));
+        }
+
+        let trimmed = rel_type.trim();
+        if trimmed.is_empty() {
+            return Err(format!("relationship {id} has an empty type"));
+        }
+
+        let rel = RelationshipRecord {
+            id,
+            src,
+            dst,
+            rel_type: trimmed.to_string(),
+            properties,
+        };
+
+        self.attach_relationship(&rel);
+        self.relationships.insert(id, rel.clone());
+        self.bump_next_rel_id_past(id)?;
+
+        Ok(rel)
     }
 }
 

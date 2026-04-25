@@ -86,11 +86,34 @@ pub(crate) fn replay_segments(
     let mut pending: BTreeMap<Lsn, Vec<MutationEvent>> = BTreeMap::new();
     let mut committed: Vec<MutationEvent> = Vec::new();
     let mut max_lsn = Lsn::ZERO;
+    let mut last_lsn = Lsn::ZERO;
+    let mut last_segment_base: Option<Lsn> = None;
     let mut torn_tail: Option<TornTailInfo> = None;
     let mut checkpoint_lsn_observed: Option<Lsn> = None;
 
     'outer: for path in paths {
         let mut reader = SegmentReader::open(path)?;
+        let segment_base = reader.header().base_lsn;
+        if let Some(prev_base) = last_segment_base {
+            if segment_base <= prev_base {
+                return Err(WalError::Malformed(format!(
+                    "segment base_lsn {} is not greater than previous base_lsn {} ({})",
+                    segment_base.raw(),
+                    prev_base.raw(),
+                    path.display()
+                )));
+            }
+        }
+        if !last_lsn.is_zero() && segment_base <= last_lsn {
+            return Err(WalError::Malformed(format!(
+                "segment base_lsn {} is not greater than previous record lsn {} ({})",
+                segment_base.raw(),
+                last_lsn.raw(),
+                path.display()
+            )));
+        }
+        last_segment_base = Some(segment_base);
+
         loop {
             // Capture position before the read so we can report the
             // start-of-bad-record offset on torn tail.
@@ -98,6 +121,23 @@ pub(crate) fn replay_segments(
             match reader.read_record() {
                 Ok(Some(record)) => {
                     let lsn = record.lsn();
+                    if lsn < segment_base {
+                        return Err(WalError::Malformed(format!(
+                            "record lsn {} is below segment base_lsn {} ({})",
+                            lsn.raw(),
+                            segment_base.raw(),
+                            path.display()
+                        )));
+                    }
+                    if !last_lsn.is_zero() && lsn <= last_lsn {
+                        return Err(WalError::Malformed(format!(
+                            "record lsn {} is not greater than previous lsn {} ({})",
+                            lsn.raw(),
+                            last_lsn.raw(),
+                            path.display()
+                        )));
+                    }
+                    last_lsn = lsn;
                     if lsn > max_lsn {
                         max_lsn = lsn;
                     }
@@ -121,27 +161,62 @@ pub(crate) fn replay_segments(
                             event,
                             ..
                         } => {
-                            pending.entry(tx_begin_lsn).or_default().push(event);
+                            let events = pending.get_mut(&tx_begin_lsn).ok_or_else(|| {
+                                WalError::Malformed(format!(
+                                    "mutation at lsn {} references missing tx begin {}",
+                                    lsn.raw(),
+                                    tx_begin_lsn.raw()
+                                ))
+                            })?;
+                            events.push(event);
                         }
                         WalRecord::TxBegin { lsn } => {
                             // Materialise the bucket eagerly so
                             // begin-without-mutations transactions
                             // still get a deterministic commit/abort.
-                            pending.entry(lsn).or_default();
+                            if pending.insert(lsn, Vec::new()).is_some() {
+                                return Err(WalError::Malformed(format!(
+                                    "duplicate tx begin at lsn {}",
+                                    lsn.raw()
+                                )));
+                            }
                         }
                         WalRecord::TxCommit { tx_begin_lsn, .. } => {
-                            if let Some(events) = pending.remove(&tx_begin_lsn) {
-                                committed.extend(events);
-                            }
-                            // A commit with no matching begin is a
-                            // bug in the writer — we tolerate it
-                            // here and let the next layer up
-                            // surface it.
+                            let events = pending.remove(&tx_begin_lsn).ok_or_else(|| {
+                                WalError::Malformed(format!(
+                                    "commit at lsn {} references missing tx begin {}",
+                                    lsn.raw(),
+                                    tx_begin_lsn.raw()
+                                ))
+                            })?;
+                            committed.extend(events);
                         }
                         WalRecord::TxAbort { tx_begin_lsn, .. } => {
-                            pending.remove(&tx_begin_lsn);
+                            pending.remove(&tx_begin_lsn).ok_or_else(|| {
+                                WalError::Malformed(format!(
+                                    "abort at lsn {} references missing tx begin {}",
+                                    lsn.raw(),
+                                    tx_begin_lsn.raw()
+                                ))
+                            })?;
                         }
                         WalRecord::Checkpoint { snapshot_lsn, .. } => {
+                            if snapshot_lsn > lsn {
+                                return Err(WalError::Malformed(format!(
+                                    "checkpoint at lsn {} points to future snapshot lsn {}",
+                                    lsn.raw(),
+                                    snapshot_lsn.raw()
+                                )));
+                            }
+                            if let Some(prev) = checkpoint_lsn_observed {
+                                if snapshot_lsn < prev {
+                                    return Err(WalError::Malformed(format!(
+                                        "checkpoint snapshot lsn {} regressed below previous checkpoint {}",
+                                        snapshot_lsn.raw(),
+                                        prev.raw()
+                                    )));
+                                }
+                            }
                             checkpoint_lsn_observed = Some(snapshot_lsn);
                         }
                     }

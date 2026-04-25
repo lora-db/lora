@@ -1,4 +1,5 @@
 use std::io;
+use std::path::PathBuf;
 
 use thiserror::Error;
 
@@ -38,6 +39,12 @@ pub enum WalError {
 
     #[error("WAL segment header is malformed: {0}")]
     BadSegmentHeader(&'static str),
+
+    #[error("WAL structure is malformed: {0}")]
+    Malformed(String),
+
+    #[error("WAL directory is already open by another live handle: {dir}")]
+    AlreadyOpen { dir: PathBuf },
 
     #[error("WAL is poisoned: a previous append failed and the log is no longer durable")]
     Poisoned,

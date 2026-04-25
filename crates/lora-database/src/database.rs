@@ -64,7 +64,7 @@ impl Database<InMemoryGraph> {
             } => {
                 let mut graph = InMemoryGraph::new();
                 let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, Lsn::ZERO)?;
-                replay_into(&mut graph, events);
+                replay_into(&mut graph, events)?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
@@ -137,7 +137,7 @@ impl Database<InMemoryGraph> {
                 }
 
                 let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
-                replay_into(&mut graph, events);
+                replay_into(&mut graph, events)?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
@@ -270,9 +270,16 @@ where
                     Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
                 },
                 Err(_) => {
-                    // Best-effort abort. If it fails the recorder is
-                    // poisoned and the next branch surfaces the error.
-                    let _ = rec.abort();
+                    // Best-effort abort. If the WAL saw mutations, durable
+                    // recovery will discard them but the live in-memory store
+                    // may already be ahead of durable state. Quarantine this
+                    // handle so callers restart instead of serving from a
+                    // potentially divergent graph.
+                    if matches!(rec.abort(), Ok(true)) {
+                        rec.poison(
+                            "query mutated the live graph before failing; restart from snapshot + WAL required",
+                        );
+                    }
                 }
             }
             if let Some(reason) = rec.poisoned() {
@@ -459,8 +466,8 @@ impl Database<InMemoryGraph> {
         // Make every record appended so far durable, then capture
         // the LSN that becomes the snapshot fence.
         recorder
-            .flush()
-            .map_err(|e| anyhow!("WAL flush before checkpoint failed: {e}"))?;
+            .force_fsync()
+            .map_err(|e| anyhow!("WAL fsync before checkpoint failed: {e}"))?;
         let snapshot_lsn = recorder.wal().durable_lsn();
 
         let file = OpenOptions::new()
@@ -494,8 +501,8 @@ impl Database<InMemoryGraph> {
             .checkpoint_marker(snapshot_lsn)
             .map_err(|e| anyhow!("WAL checkpoint marker failed: {e}"))?;
         recorder
-            .flush()
-            .map_err(|e| anyhow!("WAL flush after checkpoint marker failed: {e}"))?;
+            .force_fsync()
+            .map_err(|e| anyhow!("WAL fsync after checkpoint marker failed: {e}"))?;
 
         // Best-effort segment truncation. Failure here doesn't undo
         // the checkpoint — the next call will retry.
@@ -651,66 +658,101 @@ where
 // Replay
 // ---------------------------------------------------------------------------
 
-/// Apply a `MutationEvent` stream to a graph by dispatching each
-/// variant to the matching `GraphStorageMut` method.
+/// Apply a `MutationEvent` stream to an in-memory graph by dispatching
+/// each variant to the matching store operation.
 ///
-/// IDs are preserved because every `CreateNode` / `CreateRelationship`
-/// event captures the id that was originally allocated and the engine
-/// allocates from the same monotonic counter — replaying creations in
-/// order against a graph at the right starting `next_*_id` reproduces
-/// the same id assignment, which is exactly what the `MutationEvent`
-/// docstring promises.
+/// Creation events are replayed through id-preserving paths, not the
+/// normal allocator-backed mutation methods. That matters after aborted
+/// transactions: an aborted create can consume id `N` in the original
+/// process, be dropped by replay, and leave the next committed create at
+/// id `N + 1`. Reusing the regular allocator would shift ids downward.
 ///
 /// Replay must be invoked **before** the `WalRecorder` is installed
 /// on the graph. Otherwise the replay's own mutations would fire the
 /// recorder and re-write the same events to the WAL, doubling them on
 /// the next recovery.
-fn replay_into<G: GraphStorageMut>(graph: &mut G, events: Vec<MutationEvent>) {
-    for event in events {
+fn replay_into(graph: &mut InMemoryGraph, events: Vec<MutationEvent>) -> Result<()> {
+    for (idx, event) in events.into_iter().enumerate() {
         match event {
             MutationEvent::CreateNode {
-                id: _,
+                id,
                 labels,
                 properties,
             } => {
-                graph.create_node(labels, properties);
+                graph
+                    .replay_create_node(id, labels, properties)
+                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
             }
             MutationEvent::CreateRelationship {
-                id: _,
+                id,
                 src,
                 dst,
                 rel_type,
                 properties,
             } => {
-                graph.create_relationship(src, dst, &rel_type, properties);
+                graph
+                    .replay_create_relationship(id, src, dst, &rel_type, properties)
+                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
             }
             MutationEvent::SetNodeProperty {
                 node_id,
                 key,
                 value,
             } => {
-                graph.set_node_property(node_id, key, value);
+                if !graph.set_node_property(node_id, key, value) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing node {node_id} for property set"
+                    ));
+                }
             }
             MutationEvent::RemoveNodeProperty { node_id, key } => {
-                graph.remove_node_property(node_id, &key);
+                if !graph.remove_node_property(node_id, &key) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing node {node_id} for property removal"
+                    ));
+                }
             }
             MutationEvent::AddNodeLabel { node_id, label } => {
-                graph.add_node_label(node_id, &label);
+                if !graph.add_node_label(node_id, &label) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing node {node_id} for label add"
+                    ));
+                }
             }
             MutationEvent::RemoveNodeLabel { node_id, label } => {
-                graph.remove_node_label(node_id, &label);
+                if !graph.remove_node_label(node_id, &label) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing node {node_id} for label removal"
+                    ));
+                }
             }
             MutationEvent::SetRelationshipProperty { rel_id, key, value } => {
-                graph.set_relationship_property(rel_id, key, value);
+                if !graph.set_relationship_property(rel_id, key, value) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing relationship {rel_id} for property set"
+                    ));
+                }
             }
             MutationEvent::RemoveRelationshipProperty { rel_id, key } => {
-                graph.remove_relationship_property(rel_id, &key);
+                if !graph.remove_relationship_property(rel_id, &key) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing relationship {rel_id} for property removal"
+                    ));
+                }
             }
             MutationEvent::DeleteRelationship { rel_id } => {
-                graph.delete_relationship(rel_id);
+                if !graph.delete_relationship(rel_id) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing relationship {rel_id} for delete"
+                    ));
+                }
             }
             MutationEvent::DeleteNode { node_id } => {
-                graph.delete_node(node_id);
+                if !graph.delete_node(node_id) {
+                    return Err(anyhow!(
+                        "WAL replay failed at event {idx}: missing or attached node {node_id} for delete"
+                    ));
+                }
             }
             MutationEvent::DetachDeleteNode { node_id } => {
                 // After the cascading DeleteRelationship +
@@ -724,4 +766,5 @@ fn replay_into<G: GraphStorageMut>(graph: &mut G, events: Vec<MutationEvent>) {
             }
         }
     }
+    Ok(())
 }

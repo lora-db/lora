@@ -22,6 +22,7 @@
 mod config;
 mod dir;
 mod error;
+mod lock;
 mod lsn;
 mod record;
 mod recorder_adapter;

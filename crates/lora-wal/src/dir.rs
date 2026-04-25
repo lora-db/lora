@@ -21,6 +21,8 @@
 
 use std::fmt;
 use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use crate::error::WalError;
@@ -97,6 +99,21 @@ impl SegmentDir {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Best-effort portability boundary for directory-entry durability.
+    /// Unix targets can fsync directories directly; other targets keep
+    /// the existing file-level guarantees until a platform-specific
+    /// directory sync implementation is added.
+    #[cfg(unix)]
+    pub fn sync_dir(&self) -> Result<(), WalError> {
+        File::open(&self.root)?.sync_all()?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub fn sync_dir(&self) -> Result<(), WalError> {
+        Ok(())
     }
 
     /// Canonical path for the segment with id `id`.
