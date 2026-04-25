@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 sidebar_label: Snapshots
-description: Manual point-in-time snapshots — save and restore the full in-memory LoraDB graph as a single file, through every binding and the opt-in HTTP admin surface. No WAL, no background loop; simple, explicit, operator-controlled.
+description: Manual point-in-time snapshots — save and restore the full in-memory LoraDB graph as a single file, through every binding and the opt-in HTTP admin surface. Standalone for backups, or paired with WAL-backed recovery on every filesystem-backed surface.
 ---
 
 # Snapshots
@@ -12,10 +12,11 @@ took the store mutex — taken on demand, atomic on rename, readable
 from any binding.
 
 Snapshots are shipped as of v0.3. They close the "no persistence at
-all" gap for workloads that only need occasional checkpoints (seeded
-services, notebooks, graceful-shutdown saves, scheduled backups).
-Continuous durability is a separate concern and is not yet solved —
-see [What snapshots are not](#what-snapshots-are-not).
+all" gap for workloads that only need occasional save / restore
+operations (seeded services, notebooks, graceful-shutdown saves,
+scheduled backups). Continuous durability is now available through the
+[WAL](./wal) on every filesystem-backed surface, but snapshots are
+still the portable file primitive those surfaces checkpoint to.
 
 ## What a snapshot is
 
@@ -37,7 +38,8 @@ see [What snapshots are not](#what-snapshots-are-not).
 The bright line, stated explicitly so it cannot be missed:
 
 - **Not continuous durability.** A crash between two saves loses every
-  mutation in the window. There is no WAL.
+  mutation in the window unless you pair snapshots with the WAL on a
+  filesystem-backed surface.
 - **Not a background checkpoint loop.** Nothing schedules saves for
   you. The host process, an external cron, or a call to the HTTP admin
   endpoint decides when a save happens.
@@ -68,8 +70,8 @@ Good fits:
 Bad fits:
 
 - **Hard-durability workloads.** If losing even a minute of mutations
-  on crash is unacceptable, snapshots alone are not enough — wait for
-  the WAL work.
+  on crash is unacceptable, snapshots alone are not enough — use one
+  of the [WAL-enabled surfaces](./wal).
 - **Very large graphs where save time exceeds your query window.** The
   mutex is held for the save; latency-sensitive reads stall.
 
@@ -91,7 +93,7 @@ Every save and every load returns a small metadata record:
 | `formatVersion` | integer | On-disk file format the payload is written in. Currently `1`. |
 | `nodeCount` | integer | Nodes in the saved / restored graph. |
 | `relationshipCount` | integer | Relationships in the saved / restored graph. |
-| `walLsn` | integer or null | Reserved for the future WAL / checkpoint hybrid. Always `null` for a pure snapshot. |
+| `walLsn` | integer or null | `null` for a pure snapshot; non-`null` for a checkpoint snapshot written with WAL enabled. |
 
 Every binding returns the same four fields; the spelling of the field
 names matches the wire shape (camelCase).
@@ -182,7 +184,8 @@ needs the underlying store mutex.
 ```ts
 import { createDatabase, type SnapshotMeta } from '@loradb/lora-node';
 
-const db = await createDatabase();
+const db = await createDatabase(); // in-memory by default
+// const db = await createDatabase('./app'); // persistent + snapshots
 await db.execute("CREATE (:Person {name: 'Ada'})");
 
 const meta: SnapshotMeta = await db.saveSnapshot('graph.bin');
@@ -292,8 +295,8 @@ if _, err := db2.LoadSnapshot("graph.bin"); err != nil {
 ```
 
 `SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for pure snapshots
-and will become non-`nil` once the future WAL/checkpoint hybrid starts
-emitting a log position.
+and non-`nil` when you load or save a checkpoint snapshot stamped by a
+WAL-enabled surface.
 
 ## HTTP admin surface
 
@@ -338,6 +341,10 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/save \
 
 The response includes the same four metadata fields as every other
 binding, plus the `path` that was actually used.
+
+When WAL is enabled, `POST /admin/checkpoint` writes the same snapshot
+format but stamps `walLsn` with the durable WAL fence. See
+[WAL and checkpoints](./wal).
 
 ### Restoring at boot
 
@@ -414,8 +421,9 @@ succeeds.
 Worth restating, because the failure modes are where snapshots bite:
 
 - **Manual save and restore only.** Nothing runs them for you.
-- **No WAL, no automatic durability.** A crash between saves loses
-  every mutation in the window.
+- **Snapshots alone are not continuous durability.** A crash between
+  saves loses every mutation in the window unless you pair snapshots
+  with the [WAL](./wal).
 - **Blocking.** Both save and load hold the store mutex for the full
   call; concurrent queries wait.
 - **One process, one graph.** Each process you run needs its own
@@ -438,8 +446,9 @@ parent-dir fsync), see the internal
 - [**Node guide → Persisting your graph**](./getting-started/node#persisting-your-graph)
 - [**WASM guide → Persisting your graph**](./getting-started/wasm#persisting-your-graph)
 - [**Go guide → Persisting your graph**](./getting-started/go#persisting-your-graph)
-- [**HTTP server → Snapshots and restore**](./getting-started/server#snapshots-and-restore)
+- [**HTTP server → Snapshots, WAL, and restore**](./getting-started/server#snapshots-wal-and-restore)
 - [**HTTP API → Admin endpoints (opt-in)**](./api/http#admin-endpoints-opt-in)
+- [**WAL and checkpoints**](./wal)
 - [**Cookbook → Backup and restore**](./cookbook#backup-and-restore)
 - [**Limitations → Storage**](./limitations#storage)
 - [**Troubleshooting → Snapshots**](./troubleshooting#snapshots)

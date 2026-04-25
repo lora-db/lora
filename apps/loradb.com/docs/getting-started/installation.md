@@ -104,6 +104,12 @@ Each binding defaults to **one process, one in-memory graph**.
 Parallel queries on the same handle serialise on a mutex — spawn
 multiple `Database` instances for read parallelism.
 
+If you want persistence, opt into it explicitly:
+
+- on `lora-node`, pass a directory string to `createDatabase('./app')`;
+- on Rust / `lora-server`, configure a WAL directory;
+- on the other bindings, use snapshots.
+
 ### Bulk-load from the host
 
 The idiomatic large-write shape across every binding is
@@ -129,10 +135,12 @@ Every binding exposes two error layers:
 
 ## Performance / Best Practices
 
-- **Point-in-time persistence only.** Point-in-time snapshots via
-  `save_snapshot` / `load_snapshot` on every binding (byte-based on
-  WASM); no WAL. A crash between saves loses the window. See
-  [Limitations → Storage](../limitations#storage).
+- **Persistence depends on the binding.** Point-in-time snapshots via
+  `save_snapshot` / `load_snapshot` exist on every binding
+  (byte-based on WASM). Continuous durability via WAL exists on every
+  filesystem-backed binding: Rust, `lora-node`, Python, Go, Ruby, and
+  `lora-server`. WASM remains snapshot-only.
+  See [Limitations → Storage](../limitations#storage).
 - **No query cancellation.** Once dispatched, queries run to
   completion. Keep queries bounded (`LIMIT`, `*..N` caps).
 - **Parameters, not string interpolation.** The only safe way to

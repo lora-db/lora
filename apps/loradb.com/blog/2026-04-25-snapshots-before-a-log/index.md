@@ -212,10 +212,10 @@ a contract.
 
 Canonical references:
 
-- [Snapshots](/docs/operations/snapshots) — file format, atomic-rename
+- [Snapshots](/docs/snapshot) — file format, atomic-rename
   protocol, binding examples, and the security warning on the admin
   surface.
-- [HTTP server quickstart → Snapshots and restore](/docs/getting-started/server#snapshots-and-restore)
+- [HTTP server quickstart → Snapshots, WAL, and restore](/docs/getting-started/server#snapshots-wal-and-restore)
   — `--snapshot-path` and `--restore-from` in context.
 - [v0.3 release notes](/blog/loradb-v0-3-snapshots) — the team-side
   announcement, the full binding table, and the explicit list of what

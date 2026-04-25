@@ -193,7 +193,8 @@ curl -s http://127.0.0.1:4747/query \\
     guideLabel: 'Node.js guide',
     code: `import { createDatabase } from '@loradb/lora-node';
 
-const db = await createDatabase();
+const db = await createDatabase();           // in-memory
+// const db = await createDatabase('./app'); // persistent: directory string
 
 await db.execute(
   "CREATE (:User {name: 'Ada'})"
@@ -275,8 +276,8 @@ result = db.execute(
 
 const BOUNDARIES = [
   {
-    title: 'In-memory only',
-    body: 'The store is BTreeMap-backed and lives in process memory. Manual snapshots exist; continuous durability does not.',
+    title: 'In-memory engine',
+    body: 'The graph lives in process memory. Durability is optional via snapshots and WAL, not a separate persistent storage backend.',
   },
   {
     title: 'No property indexes',
@@ -945,13 +946,13 @@ export default function Features() {
                 own ingress.
               </LinkCard>
               <LinkCard
-                to="/docs/snapshot"
-                eyebrow="Snapshots"
-                title="Manual point-in-time saves"
+                to="/docs/wal"
+                eyebrow="Durability"
+                title="Snapshots, WAL, and checkpoints"
               >
-                Dump the full graph to a single file and load it back later.
-                Operator-controlled, atomic on rename — not a WAL, not
-                continuous durability.
+                Save a portable snapshot, recover committed writes from
+                a WAL, and checkpoint the two together when you need a
+                tighter local durability story.
               </LinkCard>
             </div>
           </div>

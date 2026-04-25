@@ -195,12 +195,17 @@ if err != nil {
 ### Persisting your graph
 
 LoraDB can save the in-memory graph to a single file and restore it
-later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+later. Go now supports the same simple initialization rule as the other
+filesystem-backed bindings:
+
+- `lora.New()` / `lora.NewDatabase()` => in-memory
+- `lora.New("./app")` / `lora.NewDatabase("./app")` => persistent
 
 ```go
 import lora "github.com/lora-db/lora/crates/lora-go"
 
-db, err := lora.New()
+db, err := lora.New() // in-memory
+// db, err := lora.New("./app") // persistent: directory string
 if err != nil { log.Fatal(err) }
 defer db.Close()
 
@@ -221,20 +226,28 @@ if _, err := db2.LoadSnapshot("graph.bin"); err != nil {
 }
 ```
 
-`SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for pure (non-
-checkpoint) snapshots and will become non-`nil` once the future WAL /
-checkpoint hybrid starts emitting a log position. Both save and load
-hold the store mutex for the duration of the call — concurrent
+`SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for a pure snapshot
+and non-`nil` when you load a checkpoint snapshot written by a
+WAL-enabled Rust or `lora-server` deployment. Both save and load hold
+the store mutex for the duration of the call — concurrent
 `Execute` calls block until the snapshot operation finishes. A crash
 between saves loses every mutation since the last save.
 
+Passing a directory string opens or creates a WAL-backed persistent
+database rooted at that path. Reopening the same path replays committed
+writes before the handle is returned. This first Go persistence slice
+intentionally stays small: the binding exposes WAL-backed
+initialization plus snapshots, but not checkpoint, truncate, status, or
+sync-mode controls.
+
 If you run `lora-server` alongside a Go client, you can also drive the
 admin surface as an ordinary HTTP request — see
-[`lora-server` → Snapshots and restore](./server#snapshots-and-restore)
+[`lora-server` → Snapshots, WAL, and restore](./server#snapshots-wal-and-restore)
 and [`POST /admin/snapshot/save`](../api/http#admin-endpoints-opt-in).
 
 See the canonical [Snapshots guide](../snapshot) for the full metadata
-shape, atomic-rename guarantees, and boundaries.
+shape, atomic-rename guarantees, and boundaries, and
+[WAL and checkpoints](../wal) for the recovery model.
 
 ## Common Patterns
 

@@ -29,7 +29,7 @@ in the internal documentation.
 
 | Theme | Biggest gaps |
 |---|---|
-| Storage | Point-in-time snapshots only (no WAL); no indexes; no constraints |
+| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; no indexes; no constraints |
 | Concurrency | Single global lock, no timeouts |
 | Clauses | No `CALL`, `FOREACH`, `LOAD CSV`, DDL |
 | Patterns | No quantified path patterns |
@@ -130,7 +130,8 @@ in the internal documentation.
 
 | Gap | Impact |
 |---|---|
-| Continuous durability (WAL) — not yet supported | Point-in-time [snapshots](./snapshot) exist (`save_snapshot` / `load_snapshot` on every binding; `POST /admin/snapshot/save` on HTTP when opt-in). A crash between saves loses every mutation since the last save. |
+| WAL controls are not uniform across bindings | Rust and `lora-server` expose the full [WAL](./wal) surface. Node, Python, Go, and Ruby expose simple WAL-backed initialization only. WASM remains snapshot-only. |
+| Automatic checkpoint loop — not yet supported | Checkpoints are explicit (`checkpoint_to(...)`, `POST /admin/checkpoint`, or host-driven snapshot saves). Nothing schedules them in the background for you. |
 | Uniqueness constraints — not supported | Duplicates can be created silently; enforce in application code or match before creating |
 | Property indexes — not yet supported | Property filters without a label are `O(n)` full scans |
 | Explicit transactions — not supported | Each query is atomic; no multi-query transaction boundary |
@@ -150,10 +151,12 @@ in the internal documentation.
   `127.0.0.1` only in production until this changes; see the
   security notes on the [Contact](/contact#security) page.
 - Admin endpoints ([`POST /admin/snapshot/save`](./api/http#admin-endpoints-opt-in)
-  and `/admin/snapshot/load`) are opt-in via `--snapshot-path` and
-  have **no authentication**. The optional `path` body field is
-  passed straight to the OS. Do not enable them on a network-reachable
-  host without authenticated ingress in front.
+  and `/admin/snapshot/load`, plus `/admin/checkpoint`,
+  `/admin/wal/status`, and `/admin/wal/truncate` when WAL is enabled)
+  are opt-in via `--snapshot-path` / `--wal-dir` and have **no
+  authentication**. The optional `path` body field is passed straight
+  to the OS. Do not enable them on a network-reachable host without
+  authenticated ingress in front.
 - Parameters over HTTP — not yet supported (see Parameters above).
 - Multi-database — not supported. One process serves exactly one
   in-memory graph; run multiple processes for isolation.
@@ -191,7 +194,8 @@ See [Why LoraDB](./why) for the project's intended direction.
 ## See also
 
 - [**Troubleshooting**](./troubleshooting) — what to do when a query errors.
-- [**HTTP API → Admin endpoints (opt-in)**](./api/http#admin-endpoints-opt-in) — how snapshots are exposed over HTTP.
+- [**HTTP API → Admin endpoints (opt-in)**](./api/http#admin-endpoints-opt-in) — how snapshot and WAL admin routes are exposed over HTTP.
+- [**WAL and checkpoints**](./wal) — recovery, sync modes, and admin semantics.
 - [**Queries → Overview**](./queries/) — the supported subset.
 - [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
 - [**Parameters**](./queries/parameters) — typed parameter binding (Rust, Node, Python, WASM, Go, and Ruby bindings; HTTP does not yet forward params).

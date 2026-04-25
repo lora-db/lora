@@ -1,0 +1,187 @@
+---
+slug: loradb-v0-4-0-wal
+title: "LoraDB v0.4.0: WAL, checkpoints, and crash recovery"
+description: "LoraDB v0.4.0 adds continuous durability on every filesystem-backed surface via a write-ahead log, plus checkpoints, recovery, WAL admin routes, and simple directory-based persistent startup for embedded bindings."
+authors: [loradb]
+tags: [release-notes, announcement, persistence, operations]
+---
+
+LoraDB v0.4.0 adds a write-ahead log.
+
+The engine is still in-memory and local-first. What changes in this
+release is the durability boundary: on the surfaces that own a
+filesystem and process lifecycle, committed writes no longer have to
+live entirely in RAM between two manual snapshots.
+
+The shortest mental model:
+
+- `createDatabase()` in Node is still a fresh in-memory graph.
+- `createDatabase("application")` opens a persistent WAL-backed graph
+  rooted at that directory.
+- `Database.create("./app")`, `lora.New("./app")`, and
+  `LoraRuby::Database.create("./app")` do the same thing on Python,
+  Go, and Ruby.
+- `lora-server --wal-dir /var/lib/lora/wal` turns the HTTP server into
+  a WAL-backed process.
+- Rust gets the full open, recover, checkpoint, and sync-mode surface.
+
+Snapshots do not go away. They stay the portable file you can back up,
+ship, and restore elsewhere. v0.4.0 makes them stronger by giving them
+something to checkpoint against.
+
+<!-- truncate -->
+
+## What ships in v0.4.0
+
+| Surface | New durability surface |
+|---|---|
+| Rust (`lora-database`) | `Database::open_with_wal(...)`, `Database::recover(...)`, `Database::checkpoint_to(...)`, `WalConfig`, `SyncMode` |
+| Node (`@loradb/lora-node`) | `await createDatabase(dir)` for simple persistent embedded graphs with automatic replay on reopen |
+| Python (`lora_python`) | `Database.create(dir)`, `Database(dir)`, and `await AsyncDatabase.create(dir)` for simple persistent embedded graphs with automatic replay on reopen |
+| Go (`lora-go`) | `lora.New(dir)` and `lora.NewDatabase(dir)` for simple persistent embedded graphs with automatic replay on reopen |
+| Ruby (`lora-ruby`) | `LoraRuby::Database.create(dir)` and `LoraRuby::Database.new(dir)` for simple persistent embedded graphs with automatic replay on reopen |
+| HTTP server (`lora-server`) | `--wal-dir`, `--wal-sync-mode`, `--restore-from`, `POST /admin/checkpoint`, `POST /admin/wal/status`, `POST /admin/wal/truncate` |
+| Every binding | Snapshot save / load stays available exactly as before |
+
+That split is intentional. Rust and `lora-server` expose the full
+operator surface. The embedded bindings get the smallest ergonomic
+thing that is useful for local apps: pass a directory string when you
+want persistence, omit it when you want a fresh in-memory graph.
+
+## The Node shape is deliberately simple
+
+The new Node API is meant to read like the difference between a scratch
+database and a durable one:
+
+```ts
+import { createDatabase } from '@loradb/lora-node';
+
+const scratch = await createDatabase();            // in-memory
+const db = await createDatabase("application");    // persistent: directory string
+
+await db.execute("CREATE (:Person {name: 'Ada'})");
+```
+
+Reopen the same directory later:
+
+```ts
+import { createDatabase } from '@loradb/lora-node';
+
+const db = await createDatabase("application");
+const { rows } = await db.execute(
+  "MATCH (p:Person) RETURN p.name AS name",
+);
+```
+
+The string is treated as a WAL directory path verbatim. Relative paths
+resolve from the current working directory. The first slice uses the
+engine defaults:
+
+- `SyncMode::PerCommit`
+- `8 MiB` target segment size
+
+Node does **not** expose WAL status, checkpoint, truncate, or sync-mode
+knobs yet. If you need that operator surface today, use Rust directly
+or run `lora-server`.
+
+## What the WAL actually guarantees
+
+This is not "marketing durability." The contract is concrete:
+
+- Every mutating query is logged before the call returns.
+- Read-only queries write nothing to the WAL.
+- Recovery replays only committed writes, in commit order.
+- A torn tail on the active segment is truncated back to the last
+  valid record.
+- A checkpoint writes a snapshot stamped with `walLsn`, appends a
+  checkpoint marker, and truncates safe WAL history up to that fence.
+
+That means the engine now has a clean recovery staircase:
+
+1. pure in-memory,
+2. snapshot-only,
+3. WAL-only,
+4. snapshot + WAL checkpointing.
+
+The important part is that each step is readable. The release does not
+blur "we can save a file" together with "we can recover committed
+writes." Those are different guarantees, and the docs now say so.
+
+## `lora-server` grows into an operator surface
+
+The HTTP server picks up the real production-adjacent durability knobs:
+
+```bash
+# Fresh boot with a WAL.
+lora-server --wal-dir /var/lib/lora/wal
+
+# Snapshot + WAL recovery.
+lora-server \
+  --wal-dir /var/lib/lora/wal \
+  --snapshot-path /var/lib/lora/graph.bin \
+  --restore-from /var/lib/lora/graph.bin
+```
+
+And the admin routes that make the log inspectable and manageable:
+
+- `POST /admin/wal/status`
+- `POST /admin/wal/truncate`
+- `POST /admin/checkpoint`
+
+There are also sync modes now:
+
+| Mode | Meaning |
+|---|---|
+| `per-commit` | `fsync` before each commit returns |
+| `group` | buffer commits and flush in the background |
+| `none` | no `fsync`; rely on the OS or external durability |
+
+The server is still honest about its boundary: one process, one graph,
+no auth, no TLS, no multi-database routing. The durability story is
+stronger, but it is still a small local system, not a hosted graph
+service in disguise.
+
+## What did not change
+
+v0.4.0 is a durability release, not a reinvention of the product:
+
+- LoraDB is still an in-memory engine.
+- Snapshots are still manual and explicit.
+- There is still no automatic checkpoint loop.
+- Node, Python, Go, and Ruby still expose the simple WAL-backed open
+  path only; full checkpoint, truncate, status, and sync-mode controls
+  still live on Rust and `lora-server`.
+- WASM stays snapshot-only for now.
+- The HTTP admin surface is still unauthenticated and meant to live
+  behind your own ingress.
+
+That last point matters. The new admin routes are useful, but only when
+deployed behind a boundary you control.
+
+## The docs changed with the product
+
+This release also forced a documentation cleanup across the website.
+The main fixes:
+
+- the embedded-binding docs now state the initialization rule
+  explicitly: no argument means in-memory, a directory string means
+  persistent;
+- the HTTP server and API docs no longer describe a pre-WAL world;
+- snapshots are now documented as a standalone primitive that can also
+  act as a checkpoint target;
+- there is a dedicated WAL page instead of scattering durability
+  details across unrelated guides.
+
+The result is that the website now answers the operational questions in
+the same place the release introduces them.
+
+## Read next
+
+- [WAL and checkpoints](/docs/wal)
+- [Snapshots](/docs/snapshot)
+- [Node guide](/docs/getting-started/node)
+- [HTTP server quickstart](/docs/getting-started/server)
+- [HTTP API reference](/docs/api/http)
+
+v0.3 made "save the graph to one file" real. v0.4.0 makes "reopen the
+process and keep committed writes" real. That is the release.

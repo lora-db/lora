@@ -861,8 +861,8 @@ list alongside the ranking. This is the shape that motivated putting
 
 LoraDB's snapshot API lets you persist the full graph to a single
 file and restore it later. It's a point-in-time dump — atomic on
-rename, no WAL, no background persistence. These recipes cover the
-two common operational shapes.
+rename and still useful when you also enable WAL-backed recovery.
+These recipes cover the common snapshot and checkpoint shapes.
 
 ### Recipe: Periodic snapshot from host code
 
@@ -994,9 +994,67 @@ save duration.
   /var/lib/lora/seed.bin` and `--snapshot-path /var/lib/lora/runtime.bin`
   to boot from a shared seed and save to a host-local file.
 
-See the canonical [Snapshots guide](./snapshot) for the file format,
-the full admin-surface security profile, and every binding's save /
-load API.
+### Recipe: WAL-backed server with explicit checkpoints
+
+#### Problem
+
+"Recover committed writes after a crash, but keep replay time bounded
+with operator-driven checkpoints."
+
+#### Assumed setup
+
+- `lora-server` owns a writable WAL directory.
+- A writable snapshot path where checkpoints should land.
+- Admin endpoints are reachable only through trusted local transport
+  or authenticated ingress.
+
+#### Configuration
+
+```bash
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --wal-dir /var/lib/lora/wal \
+  --snapshot-path /var/lib/lora/db.bin \
+  --restore-from /var/lib/lora/db.bin
+```
+
+#### Checkpoint cadence
+
+```bash
+# Inspect the WAL before deciding whether to checkpoint.
+curl -sX POST http://127.0.0.1:4747/admin/wal/status
+
+# Write a checkpoint snapshot to --snapshot-path and truncate safe history.
+curl -sX POST http://127.0.0.1:4747/admin/checkpoint
+```
+
+If you run WAL-only without `--snapshot-path`, pass the checkpoint
+target explicitly:
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/checkpoint \
+  -H 'content-type: application/json' \
+  -d '{"path":"/var/lib/lora/checkpoint.bin"}'
+```
+
+#### Explanation
+
+- Normal writes are logged to `/var/lib/lora/wal`. Restarting with the
+  same `--wal-dir` replays committed records automatically.
+- `POST /admin/checkpoint` writes a snapshot stamped with `walLsn`,
+  appends a checkpoint marker, then drops sealed WAL segments that are
+  safe to remove.
+- `--restore-from` and `--snapshot-path` are independent. They can be
+  the same file for a simple single-host setup, or different files for
+  an immutable seed plus writable runtime checkpoint.
+- There is no automatic checkpoint loop yet. Trigger the endpoint from
+  a systemd timer, cron, deployment hook, or host process after you
+  measure acceptable replay time.
+
+See the canonical [Snapshots guide](./snapshot) for the file format
+and every binding's save / load API, and
+[WAL and checkpoints](./wal) for recovery, sync modes, and admin
+semantics.
 
 ---
 
@@ -1006,7 +1064,7 @@ load API.
   grouped by clause.
 - [**Queries → Aggregation**](./queries/aggregation) — clause-level
   grouping, HAVING, percentiles.
-- [**HTTP server → Snapshots and restore**](./getting-started/server#snapshots-and-restore)
+- [**HTTP server → Snapshots, WAL, and restore**](./getting-started/server#snapshots-wal-and-restore)
   — flag reference for the admin endpoints.
 - [**HTTP API → Admin endpoints (opt-in)**](./api/http#admin-endpoints-opt-in)
   — full wire reference.

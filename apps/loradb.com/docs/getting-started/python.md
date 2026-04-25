@@ -183,12 +183,22 @@ a one-line import change.
 ### Persisting your graph
 
 LoraDB can save the in-memory graph to a single file and restore it
-later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+later. Python now supports the same simple initialization rule as
+Node:
+
+- `Database.create()` / `Database()` => in-memory
+- `Database.create("./app")` / `Database("./app")` => persistent
+
+Async follows the same rule:
+
+- `await AsyncDatabase.create()` => in-memory
+- `await AsyncDatabase.create("./app")` => persistent
 
 ```python
 from lora_python import Database
 
-db = Database.create()
+db = Database.create()         # in-memory
+# db = Database.create("./app")  # persistent: directory string
 db.execute("CREATE (:Person {name: 'Ada'})")
 
 # Save everything to disk.
@@ -209,7 +219,8 @@ import asyncio
 from lora_python import AsyncDatabase
 
 async def main():
-    db = await AsyncDatabase.create()
+    db = await AsyncDatabase.create()  # in-memory
+    # db = await AsyncDatabase.create("./app")  # persistent: directory string
     await db.execute("CREATE (:Person {name: 'Ada'})")
     await db.save_snapshot("graph.bin")
 
@@ -222,8 +233,17 @@ asyncio.run(main())
 Both save and load serialise against every query on the handle. A
 crash between saves loses every mutation since the last save.
 
+Passing a directory string opens or creates a WAL-backed persistent
+database rooted at that path. Reopening the same path replays committed
+writes before the handle is returned. This first Python persistence
+slice intentionally stays small: the binding exposes WAL-backed
+initialization plus snapshots, but not checkpoint, truncate, status, or
+sync-mode controls. Call `db.close()` / `await db.close()` before
+reopening the same WAL directory inside one process.
+
 See the canonical [Snapshots guide](../snapshot) for the full
-metadata shape, atomic-rename guarantees, and boundaries.
+metadata shape, atomic-rename guarantees, and boundaries, and
+[WAL and checkpoints](../wal) for the recovery model.
 
 ## Common Patterns
 
@@ -293,13 +313,14 @@ class UserRepo:
 
 ```python
 db.clear()                        # drop all nodes + relationships
+db.close()                        # release the native handle
 db.node_count                     # int — property, not a method
 db.relationship_count             # int — property
 ```
 
 `node_count` and `relationship_count` are read-only properties.
-`AsyncDatabase` exposes `node_count()` and `relationship_count()` as
-awaitables.
+`AsyncDatabase` exposes the same count properties and an async
+`close()` method.
 
 ## Error Handling
 

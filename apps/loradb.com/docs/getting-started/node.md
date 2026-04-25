@@ -12,8 +12,10 @@ description: Install and use LoraDB in Node.js or TypeScript via the lora-node N
 threadpool so they don't block the event loop, though parallel calls
 on a single `Database` still serialise on the engine mutex. The
 surface, helpers, and type guards match the
-[WASM binding](./wasm) exactly — the same code ports with an import
-swap.
+[WASM binding](./wasm) for query execution and result handling — the
+same code largely ports with an import swap. Node also adds one
+embedded-only convenience the WASM build cannot: optional WAL-backed
+initialization from a filesystem path.
 
 ## Installation / Setup
 
@@ -44,19 +46,45 @@ npm install @loradb/lora-node
 ## Creating a Client / Connection
 
 `lora-node` is **async-only**. The one supported initialization
-pattern is `createDatabase()`, which returns a `Promise<Database>`:
+pattern is `createDatabase(...)`, which returns a
+`Promise<Database>`:
 
 ```ts
 import { createDatabase } from '@loradb/lora-node';
 
-const db = await createDatabase();
+const db = await createDatabase(); // in-memory by default
 ```
 
-`createDatabase()` is the single entry point — there is no
+`createDatabase(...)` is the single entry point — there is no
 synchronous constructor and no `Database.create()` static. This
-keeps the Node and WASM surfaces identical (swap the import,
-nothing else changes) and lets the binding extend initialization
-later without breaking callers.
+lets the binding extend initialization later without breaking
+callers.
+
+Rule of thumb:
+
+```ts
+import { createDatabase } from '@loradb/lora-node';
+
+const inMemory = await createDatabase();           // in-memory database
+const persistent = await createDatabase('./app'); // persistent database: pass a directory string
+```
+
+If you want persistence, pass a **directory string** to
+`createDatabase(...)`.
+
+To open a WAL-backed embedded database instead of a fresh in-memory
+one, pass a directory path:
+
+```ts
+import { createDatabase } from '@loradb/lora-node';
+
+const db = await createDatabase('./.lora-wal'); // persistent: directory string
+```
+
+The string is treated as a WAL directory path verbatim. Relative
+paths resolve from the current working directory. On boot, committed
+WAL records in that directory are replayed automatically before the
+handle is returned.
 
 :::caution Do not skip the `await`
 `createDatabase()` returns a `Promise`. Calling `execute()` on the
@@ -188,8 +216,13 @@ multiple `Database` instances (each with its own graph).
 
 ### Persisting your graph
 
-LoraDB can save the in-memory graph to a single file and restore it
-later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+LoraDB can save the graph to a single file and restore it later. In
+Node you now have two persistence shapes:
+
+- `createDatabase('./.lora-wal')` for WAL-backed recovery between
+  process restarts.
+- `saveSnapshot` / `loadSnapshot` for point-in-time files that you can
+  move, back up, or load into a fresh handle.
 
 ```ts
 import { createDatabase, type SnapshotMeta } from '@loradb/lora-node';
@@ -209,8 +242,9 @@ await db2.loadSnapshot('graph.bin');
 `saveSnapshot` / `loadSnapshot` are `async` like every other
 `@loradb/lora-node` call, but the underlying engine call is synchronous
 and holds the store mutex for the duration — concurrent `execute()`
-calls block until the snapshot operation finishes. A crash between
-saves loses every mutation since the last save.
+calls block until the snapshot operation finishes. When you are using
+plain `createDatabase()` with no WAL path, a crash between saves loses
+every mutation since the last save.
 
 See the canonical [Snapshots guide](../snapshot) for the full
 metadata shape, atomic-rename guarantees, and boundaries.
@@ -275,10 +309,13 @@ Available factories: `date`, `time`, `localtime`, `datetime`,
 await db.clear();                    // drop all nodes + relationships
 await db.nodeCount();                // number of nodes
 await db.relationshipCount();        // number of relationships
+db.dispose();                        // release the native handle
 ```
 
-All return Promises for API symmetry; `clear` / `nodeCount` /
-`relationshipCount` run synchronously inside the native layer.
+`clear` / `nodeCount` / `relationshipCount` return Promises for API
+symmetry but run synchronously inside the native layer. `dispose()` is
+synchronous and idempotent; call it when you need to reopen the same WAL
+directory inside the same process.
 
 ### Repository pattern
 
@@ -349,11 +386,12 @@ For the engine-level cases see the
   guarded by a mutex. Parallel `execute()` calls against one
   instance serialise in the native layer — the event loop stays
   free, but execution is one-at-a-time. For read parallelism, spawn
-  multiple instances.
+  multiple instances with separate graphs / WAL directories.
 - **No cancellation.** Once dispatched, a query runs to completion.
   Bound variable-length patterns and `UNWIND` list sizes.
 - **Dispose explicitly** only when you need to release the native
-  handle eagerly; otherwise GC cleans up.
+  handle eagerly, especially before reopening the same WAL directory in
+  one process; otherwise GC eventually cleans up.
 
 ## See also
 

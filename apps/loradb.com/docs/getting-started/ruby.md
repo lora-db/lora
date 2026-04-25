@@ -150,12 +150,17 @@ end
 ### Persisting your graph
 
 LoraDB can save the in-memory graph to a single file and restore it
-later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+later. Ruby now supports the same simple initialization rule as the
+other filesystem-backed bindings:
+
+- `LoraRuby::Database.create` / `LoraRuby::Database.new` => in-memory
+- `LoraRuby::Database.create("./app")` / `LoraRuby::Database.new("./app")` => persistent
 
 ```ruby
 require 'lora_ruby'
 
-db = LoraRuby::Database.new
+db = LoraRuby::Database.new # in-memory
+# db = LoraRuby::Database.new("./app") # persistent: directory string
 db.execute("CREATE (:Person {name: 'Ada'})")
 
 # Save everything to disk.
@@ -172,6 +177,14 @@ crash between saves loses every mutation since the last save. See
 the
 [Snapshots operator doc (internal)](https://github.com/lora-db/lora/blob/main/docs/operations/snapshots.md)
 for the wire format and atomic-rename guarantees.
+
+Passing a directory string opens or creates a WAL-backed persistent
+database rooted at that path. Reopening the same path replays committed
+writes before the handle is returned. This first Ruby persistence slice
+intentionally stays small: the binding exposes WAL-backed
+initialization plus snapshots, but not checkpoint, truncate, status, or
+sync-mode controls. Call `db.close` before reopening the same WAL
+directory inside one process.
 
 ## Common Patterns
 
@@ -192,6 +205,7 @@ See [`UNWIND`](../queries/unwind-merge#bulk-load-from-parameter).
 
 ```ruby
 db.clear                   # drop all nodes + relationships → nil
+db.close                   # release the native handle
 db.node_count              # Integer
 db.relationship_count      # Integer
 LoraRuby::VERSION          # gem version

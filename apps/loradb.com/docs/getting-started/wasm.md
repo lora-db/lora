@@ -60,6 +60,11 @@ guaranteed to be ready before the first query runs. Every method
 on the returned instance returns a Promise for API symmetry with
 `lora-node` and the Worker variant.
 
+Unlike `lora-node`, the WASM binding does **not** accept a directory
+string for persistent initialization. `createDatabase()` is always an
+in-memory database; persistency in WASM is byte-based through
+`saveSnapshotToBytes` / `loadSnapshotFromBytes`.
+
 :::caution Do not skip the `await`
 `createDatabase()` returns a `Promise`. Calling `execute()` on the
 unresolved promise will throw. Always `await` the factory before

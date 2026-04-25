@@ -2,7 +2,7 @@
 title: What is LoraDB
 sidebar_label: What is LoraDB
 slug: /
-description: LoraDB is a local-first, in-memory property-graph engine in Rust that speaks a pragmatic subset of Cypher, with Node.js / Python / WASM / Go / Ruby bindings and an optional HTTP server.
+description: LoraDB is a local-first, in-memory property-graph engine in Rust that speaks a pragmatic subset of Cypher, with Node.js / Python / WASM / Go / Ruby bindings, snapshots on every binding, and optional WAL-backed durability on every filesystem-backed surface.
 ---
 
 # What is LoraDB
@@ -28,8 +28,10 @@ It is **not**:
   is a scoped subset — see [Limitations](./limitations) for what's
   in and out.
 - A product suite. It's a crate you embed, not a service you operate.
-- A durable, clustered database tier — see
-  [the engine's boundaries](#the-engines-boundaries) below.
+- A durable, clustered database tier — local WAL-backed durability
+  exists on some surfaces, but the engine is still single-process and
+  intentionally small. See [the engine's boundaries](#the-engines-boundaries)
+  below.
 
 For the longer-form positioning — why an embedded graph at all, and
 how LoraDB compares against managed graph DBs, SQL, and document
@@ -136,25 +138,27 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**HTTP API**](./api/http) | Endpoint reference for `lora-server`. |
 | [**Cookbook**](./cookbook) | Scenario-driven recipes: social graphs, e-commerce, events, geospatial, [backup and restore](./cookbook#backup-and-restore). |
 | [**Snapshots**](./snapshot) | Save / load the full graph as a single file — every binding, plus the opt-in HTTP admin surface. |
-| [**Limitations**](./limitations) | What's not supported — no continuous durability, no indexes, no `CALL`, etc. |
+| [**WAL & checkpoints**](./wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — plus full operator controls on Rust and the server. |
+| [**Limitations**](./limitations) | What's not supported — binding-level WAL-control asymmetry, no indexes, no `CALL`, etc. |
 | [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 
 ## The engine's boundaries
 
 Every item below is a deliberate trade-off, not an oversight:
 
-- **Only point-in-time persistence.** [Snapshots](./snapshot) save and restore
-  the full graph as a single file — atomic on rename, exposed on every
-  binding and as an opt-in HTTP admin surface. Between saves, data is RAM-only
-  and a crash loses the window. No WAL yet — see
-  [Limitations → Storage](./limitations#storage).
+- **Durability depends on the surface.** Every binding can
+  [save / load snapshots](./snapshot). Every filesystem-backed
+  surface can also attach a [WAL](./wal) for continuous durability
+  between checkpoints. WASM remains snapshot-only. The engine is
+  still an in-memory, single-process system — not a separate
+  persistent storage tier.
 - **No property indexes.** `MATCH (n {prop: v})` without a label is `O(n)`.
 - **No uniqueness constraints.** Use [`MERGE`](./queries/unwind-merge#merge)
   on a key, or enforce in application code.
 - **Global mutex.** Queries serialise — concurrent reads don't parallelise.
 - **No HTTP auth / TLS.** Bind the server to localhost or put it behind
-  a reverse proxy. The opt-in admin snapshot endpoints also ship without auth —
-  see [Limitations → HTTP server](./limitations#http-server).
+  a reverse proxy. The opt-in admin snapshot and WAL endpoints also ship
+  without auth — see [Limitations → HTTP server](./limitations#http-server).
 - **No HTTP-level parameters yet.** Bind via the in-process bindings;
   see [Parameters](./queries/parameters#http-api-doesnt-forward-params).
 

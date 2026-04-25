@@ -1,7 +1,7 @@
 ---
 title: Running LoraDB as an HTTP Server
 sidebar_label: HTTP Server
-description: Run LoraDB as an HTTP service with lora-server — a small Axum wrapper around the engine for curl probing, polyglot stacks, and demos. One process, one in-memory graph.
+description: Run LoraDB as an HTTP service with lora-server — a small Axum wrapper around the engine for curl probing, polyglot stacks, demos, and optional WAL-backed recovery.
 ---
 
 # Running LoraDB as an HTTP Server
@@ -10,7 +10,9 @@ description: Run LoraDB as an HTTP service with lora-server — a small Axum wra
 
 `lora-server` wraps the Rust engine in a small Axum HTTP server —
 useful for probing the engine with `curl`, serving a polyglot stack,
-or running demos. One process serves exactly one in-memory graph.
+or running demos. One process serves exactly one graph. The graph
+lives in memory while the process runs, and can optionally be paired
+with snapshots and a WAL for recovery across restarts.
 
 ## Installation / Setup
 
@@ -37,7 +39,7 @@ LORA_SERVER_HOST=0.0.0.0 LORA_SERVER_PORT=8080 lora-server
 Precedence (first match wins): CLI flags → environment variables →
 built-in defaults (`127.0.0.1:4747`).
 
-Every flag also has an env-var equivalent:
+Most runtime flags also have an env-var equivalent:
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
@@ -45,20 +47,33 @@ Every flag also has an env-var equivalent:
 | `--port <PORT>` | `LORA_SERVER_PORT` | `4747` | Bind port. |
 | `--snapshot-path <PATH>` | `LORA_SERVER_SNAPSHOT_PATH` | unset | Default file for the admin snapshot endpoints. **Also gates whether they are mounted** — unset = 404. |
 | `--restore-from <PATH>` | — | unset | Load a snapshot at boot, before accepting queries. |
+| `--wal-dir <DIR>` | `LORA_SERVER_WAL_DIR` | unset | Attach a write-ahead log at this directory and enable the WAL admin routes. |
+| `--wal-sync-mode <MODE>` | `LORA_SERVER_WAL_SYNC_MODE` | `per-commit` | WAL durability cadence: `per-commit`, `group`, or `none`. |
 
-### Snapshots and restore
+### Snapshots, WAL, and restore
 
-LoraDB can save the live graph to a single file and restore it at
-boot or on demand:
+LoraDB can persist the live graph in two complementary ways:
+
+- **Snapshots** for explicit point-in-time save / load.
+- **WAL** for replaying committed writes after a crash or restart.
 
 - **`--snapshot-path <PATH>`** (or `LORA_SERVER_SNAPSHOT_PATH`)
   enables the admin endpoints
   [`POST /admin/snapshot/save`](../api/http#admin-endpoints-opt-in)
   and `POST /admin/snapshot/load`, and supplies the default file
   they operate on. If unset, the admin routes return `404`.
+- **`--wal-dir <DIR>`** (or `LORA_SERVER_WAL_DIR`) attaches a
+  write-ahead log at that directory and enables
+  [`POST /admin/checkpoint`](../api/http#post-admincheckpoint-opt-in),
+  [`POST /admin/wal/status`](../api/http#post-adminwalstatus-opt-in),
+  and [`POST /admin/wal/truncate`](../api/http#post-adminwaltruncate-opt-in).
+- **`--wal-sync-mode <MODE>`** chooses when the WAL `fsync`s:
+  `per-commit` (default), `group`, or `none`.
 - **`--restore-from <PATH>`** loads a snapshot at startup. A missing
   file is fine — the server starts with an empty graph and logs a
-  message. A malformed file is fatal.
+  message. A malformed file is fatal. When `--wal-dir` is also set,
+  committed WAL records newer than the snapshot fence are replayed
+  before the server begins accepting queries.
 
 Typical cron-friendly setup — boot from, and save back to, the same
 file:
@@ -70,11 +85,51 @@ lora-server \
   --restore-from  /var/lib/lora/db.bin
 ```
 
+WAL-only setup:
+
+```bash
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --wal-dir /var/lib/lora/wal
+```
+
+With only `--wal-dir`, WAL recovery works and the WAL admin routes are
+mounted. Checkpoints need an explicit path in the request body because
+there is no configured snapshot default:
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/checkpoint \
+  -H 'content-type: application/json' \
+  -d '{"path":"/var/lib/lora/checkpoint.bin"}'
+```
+
+WAL plus checkpoint default path:
+
+```bash
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --wal-dir /var/lib/lora/wal \
+  --snapshot-path /var/lib/lora/db.bin \
+  --restore-from /var/lib/lora/db.bin
+```
+
+Now a body-less checkpoint writes to `--snapshot-path`:
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/checkpoint
+```
+
+Inspect WAL state:
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/wal/status
+```
+
 Save on demand:
 
 ```bash
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
-# => {"formatVersion":1,"nodeCount":1024,"relationshipCount":4096,"walLsn":null}
+# => {"formatVersion":1,"nodeCount":1024,"relationshipCount":4096,"walLsn":null,"path":"/var/lib/lora/db.bin"}
 ```
 
 Or save to an ad-hoc override path for a single call:
@@ -101,7 +156,8 @@ writable path (`/var/lib/lora/runtime.bin`).
 The admin endpoints have **no authentication** and the optional `path`
 body field is passed straight to the OS — anyone who can reach the
 admin port can write files anywhere the server UID can write, or swap
-the live graph by pointing `load` at an attacker-staged file. See
+the live graph by pointing `load` at an attacker-staged file. The same
+warning applies to `/admin/checkpoint`. See
 [Limitations → HTTP server](../limitations#http-server) and the
 [HTTP API reference](../api/http#admin-endpoints-opt-in) before
 exposing them.
@@ -109,7 +165,8 @@ exposing them.
 :::
 
 See also the canonical [Snapshots guide](../snapshot) for the
-metadata shape, file format, and every binding's save / load API.
+metadata shape, file format, and every binding's save / load API, and
+[WAL and checkpoints](../wal) for recovery and checkpoint semantics.
 
 ## Creating a Client / Connection
 
@@ -268,9 +325,27 @@ Request body:
 
 Both are mounted only when the server is started with
 `--snapshot-path <PATH>` (or `LORA_SERVER_SNAPSHOT_PATH`). Otherwise
-they return `404`. See [Snapshots and restore](#snapshots-and-restore)
+they return `404`. See [Snapshots, WAL, and restore](#snapshots-wal-and-restore)
 above, and the full reference in
 [HTTP API → Admin endpoints (opt-in)](../api/http#admin-endpoints-opt-in).
+
+### `POST /admin/checkpoint` (opt-in)
+
+Mounted when the server is started with `--wal-dir <DIR>`. Uses
+`--snapshot-path` as the default target when configured; otherwise the
+request body must supply `{ "path": "..." }`.
+
+### `POST /admin/wal/status` (opt-in)
+
+Mounted when the server is started with `--wal-dir <DIR>`. Returns the
+current durable LSN, next LSN, active and oldest segment ids, and any
+latched background fsync failure.
+
+### `POST /admin/wal/truncate` (opt-in)
+
+Mounted when the server is started with `--wal-dir <DIR>`. Drops sealed
+WAL segments up to a fence LSN. With no body, the server truncates up
+to the current durable LSN.
 
 ## Common Patterns
 
@@ -329,16 +404,13 @@ isolation.
 ## What's _not_ here
 
 - **Authentication, TLS, rate limiting** — none. Bind to
-  `127.0.0.1` or put it behind a reverse proxy. The admin snapshot
-  endpoints also ship without auth — see
-  [Snapshots and restore](#snapshots-and-restore).
+  `127.0.0.1` or put it behind a reverse proxy. The admin snapshot and
+  WAL endpoints also ship without auth — see
+  [Snapshots, WAL, and restore](#snapshots-wal-and-restore).
 - **Parameter binding over HTTP** — the `/query` body does **not**
   currently accept a `params` field. Bind via the Rust API today;
   HTTP params are on the roadmap. See
   [Limitations](../limitations).
-- **WAL / continuous persistence** — not supported. Point-in-time
-  snapshots are available via [Snapshots and restore](#snapshots-and-restore);
-  data between saves is lost on crash.
 - **Multiple databases** — one process serves exactly one graph.
   Run multiple processes on different ports if you need isolation.
 
@@ -353,8 +425,9 @@ isolation.
 ## See also
 
 - [**HTTP API reference**](../api/http) — endpoint-by-endpoint reference.
-- [**HTTP API → Admin endpoints (opt-in)**](../api/http#admin-endpoints-opt-in) — full reference for the snapshot endpoints.
+- [**HTTP API → Admin endpoints (opt-in)**](../api/http#admin-endpoints-opt-in) — full reference for snapshot and WAL admin routes.
 - [**Snapshots guide**](../snapshot) — canonical feature page: metadata shape, file format, every binding's API.
+- [**WAL and checkpoints**](../wal) — recovery model, sync modes, and admin routes.
 - [**Result formats**](../concepts/result-formats) — the four response shapes.
 - [**Rust guide**](./rust) — native API (what the server wraps).
 - [**Queries**](../queries/) — the query language the server exposes.
@@ -362,5 +435,7 @@ isolation.
 - [**Limitations → HTTP server**](../limitations#http-server) —
   auth, TLS, parameters.
 - [**Troubleshooting → Snapshots**](../troubleshooting#snapshots) — 404, malformed file, version mismatch.
+- [**Troubleshooting → WAL and checkpoints**](../troubleshooting#wal-and-checkpoints) —
+  missing WAL routes, checkpoint path errors, poisoned WALs.
 - [**Troubleshooting → Server**](../troubleshooting#server) — port
   conflicts, connection issues.

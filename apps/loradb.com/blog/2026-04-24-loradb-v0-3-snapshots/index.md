@@ -407,7 +407,7 @@ atomicity guarantees, binding examples, and the full HTTP admin
 surface:
 
 - [Snapshots](/docs/snapshot)
-- [HTTP server quickstart → Snapshots and restore](/docs/getting-started/server#snapshots-and-restore)
+- [HTTP server quickstart → Snapshots, WAL, and restore](/docs/getting-started/server#snapshots-wal-and-restore)
 - [HTTP API → Admin endpoints (opt-in)](/docs/api/http#admin-endpoints-opt-in)
 
 ## What Comes Next

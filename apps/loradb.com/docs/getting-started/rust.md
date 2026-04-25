@@ -230,7 +230,9 @@ execution either.
 ### Persisting your graph
 
 LoraDB can save the in-memory graph to a single file and restore it
-later. It's a point-in-time dump — simple, atomic on rename, no WAL.
+later. Snapshots are a point-in-time dump — simple and atomic on
+rename — and Rust also exposes the WAL-backed open / recover path
+when you need continuous durability between snapshots.
 
 ```rust
 use lora_database::{Database, SnapshotMeta};
@@ -256,8 +258,22 @@ Both save and load serialise against every query on the handle — the
 snapshot holds the same mutex as `execute`. A crash between saves
 loses every mutation since the last save.
 
+WAL-backed open / recover:
+
+```rust
+use lora_database::{Database, WalConfig};
+
+let db = Database::open_with_wal(WalConfig::enabled("./app"))?;
+db.execute("CREATE (:Person {name: 'Ada'})", None)?;
+
+// Later, reload a snapshot and replay WAL above its fence.
+let recovered = Database::recover("graph.bin", WalConfig::enabled("./app"))?;
+```
+
 See the canonical [Snapshots guide](../snapshot) for the full
 metadata shape, file format, atomic-rename guarantees, and boundaries.
+For the recovery model, sync modes, and checkpoint semantics, see
+[WAL and checkpoints](../wal).
 
 ## Common Patterns
 

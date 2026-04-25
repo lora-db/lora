@@ -127,9 +127,11 @@ Common mistakes:
 
 ### Queries return empty results
 
-1. **Data was created in a previous process.** LoraDB is in-memory, so
-   nothing persists across runs. See
-   [Limitations → Storage](./limitations#storage).
+1. **Data was created on a different non-persistent handle.** Plain
+   in-memory databases start empty on each process run. Use a
+   WAL-backed open (`createDatabase("./app")`, `Database.create("./app")`,
+   `lora.New("./app")`, etc.) or load a snapshot if you expect data to
+   survive restarts. See [Limitations → Storage](./limitations#storage).
 2. **Label case mismatch** — `:user` ≠ `:User`. Labels and types are
    case-sensitive. See [Nodes](./concepts/nodes).
 3. **Property type mismatch** — `{id: 1}` matches integer `1`, not the
@@ -250,7 +252,7 @@ lora-server \
   --snapshot-path /var/lib/lora/db.bin
 ```
 
-See [HTTP server → Snapshots and restore](./getting-started/server#snapshots-and-restore)
+See [HTTP server → Snapshots, WAL, and restore](./getting-started/server#snapshots-wal-and-restore)
 and the [HTTP API reference](./api/http#admin-endpoints-opt-in).
 
 ### Leftover `.tmp` file beside the snapshot
@@ -318,6 +320,91 @@ for the on-disk layout.
 
 Version / compatibility policy (internal):
 [Change management → Snapshot format compatibility](https://github.com/lora-db/lora/blob/main/docs/design/change-management.md#snapshot-format-compatibility).
+
+## WAL and checkpoints
+
+### `/admin/wal/*` or `/admin/checkpoint` returns 404
+
+**Symptom:** `POST /admin/wal/status`,
+`POST /admin/wal/truncate`, or `POST /admin/checkpoint` returns
+`404 Not Found`.
+
+**Likely cause:** The server was not started with `--wal-dir <DIR>`
+(or the `LORA_SERVER_WAL_DIR` env var). WAL admin routes are mounted
+only when a WAL directory is attached.
+
+**Fix:** Restart with a WAL directory:
+
+```bash
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --wal-dir /var/lib/lora/wal
+```
+
+See [WAL and checkpoints](./wal) and
+[HTTP API → Admin endpoints](./api/http#admin-endpoints-opt-in).
+
+### `/admin/checkpoint` returns 400
+
+**Symptom:** `POST /admin/checkpoint` returns
+`400 Bad Request` with a message about no checkpoint path.
+
+**Likely cause:** The server has `--wal-dir` but no
+`--snapshot-path`, and the request body did not provide a `path`.
+WAL-only deployments can checkpoint, but the target snapshot path must
+come from the request body.
+
+**Fix:** Either pass `path` in the request:
+
+```bash
+curl -sX POST http://127.0.0.1:4747/admin/checkpoint \
+  -H 'content-type: application/json' \
+  -d '{"path":"/var/lib/lora/checkpoint.bin"}'
+```
+
+or start the server with `--snapshot-path` so body-less checkpoints
+have a default target.
+
+### WAL directory is already open
+
+**Symptom:** Opening a WAL-backed database fails with
+`WAL directory is already open by another live handle`.
+
+**Likely cause:** Another live process or database handle already owns
+that WAL directory. LoraDB takes a directory lock so two appenders
+cannot write to the same log at once.
+
+**Fix:** Use one WAL directory per live database, or close the first
+handle before reopening the same directory in the same process:
+`db.dispose()` in Node, `db.close()` / `await db.close()` in Python,
+`db.Close()` in Go, or `db.close` in Ruby.
+
+### WAL is poisoned or `bgFailure` is set
+
+**Symptom:** Queries fail with `WAL poisoned`, `WAL flush failed`, or
+`/admin/wal/status` returns a non-null `bgFailure`.
+
+**Likely cause:** A WAL append or fsync failed. In `group` sync mode,
+the background flusher latches the first fsync failure so later writes
+fail loudly instead of pretending they are durable.
+
+**Fix:** Stop accepting writes, fix the underlying disk or permission
+problem, then restart from the last consistent snapshot + WAL. Inspect
+`/admin/wal/status` before restart if you need the latched error text
+for logs.
+
+### Recovery warns about an older snapshot
+
+**Symptom:** Startup prints a warning that the snapshot LSN is older
+than the newest checkpoint marker in the WAL.
+
+**Likely cause:** The WAL contains evidence of a newer checkpoint than
+the snapshot passed to `--restore-from` or `Database::recover(...)`.
+
+**Fix:** If you have the newer checkpoint snapshot, restore from that
+file instead. If not, the current recovery is still safe: LoraDB
+replays every committed WAL record above the snapshot's own `walLsn`,
+which may take longer but preserves correctness.
 
 ## Parameters
 
