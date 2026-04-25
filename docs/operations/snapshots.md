@@ -2,9 +2,13 @@
 
 LoraDB can durably persist its in-memory graph to a single file and restore
 it later. Snapshots are deliberately simple: one file on disk, taken
-on-demand, atomic on rename. There is no background snapshot loop, no WAL,
-no incremental persistence in the open-source core today — a snapshot is a
-point-in-time dump of everything the database knows.
+on-demand, atomic on rename — a snapshot is a point-in-time dump of
+everything the database knows.
+
+For continuous durability between snapshots, the v0.3.x core also ships a
+write-ahead log: see [WAL](wal.md). When the WAL is enabled, snapshots
+double as **checkpoints** — they record the WAL position they cover so
+recovery replays only the records past the fence.
 
 ## File format
 
@@ -18,22 +22,31 @@ point-in-time dump of everything the database knows.
 last 4B   crc32         IEEE CRC over header + payload
 ```
 
-The `wal_lsn` field is reserved for a future WAL/checkpoint hybrid — a
-checkpoint is simply a snapshot with `has_wal_lsn = 1`. Readers written
-against format v1 today will transparently tolerate checkpoints produced by
-that future code.
+The `wal_lsn` field marks a checkpoint produced by `Database::checkpoint_to`
+(or HTTP `POST /admin/checkpoint`) — it carries the WAL's `durable_lsn` at
+the time the snapshot was taken so recovery knows which records the
+snapshot already covers. Pure (non-checkpoint) snapshots leave
+`has_wal_lsn = 0`. Readers written against format v1 transparently load
+both shapes.
 
 ## API surfaces
 
 | Context | Entry point |
 |---|---|
-| Rust | `Database::save_snapshot_to(path)` / `load_snapshot_from(path)` / `in_memory_from_snapshot(path)` |
+| Rust | `Database::save_snapshot_to(path)` / `load_snapshot_from(path)` / `in_memory_from_snapshot(path)` / `checkpoint_to(path)` |
 | Python | `db.save_snapshot(path)` / `db.load_snapshot(path)` |
 | Node.js | `db.saveSnapshot(path)` / `db.loadSnapshot(path)` |
 | Ruby | `db.save_snapshot(path)` / `db.load_snapshot(path)` |
 | WASM | `db.saveSnapshotToBytes()` / `db.loadSnapshotFromBytes(bytes)` — no filesystem |
 | FFI | `lora_db_save_snapshot(path)` / `lora_db_load_snapshot(path)` |
-| HTTP | `POST /admin/snapshot/save` / `POST /admin/snapshot/load` (opt-in) |
+| HTTP | `POST /admin/snapshot/save` / `POST /admin/snapshot/load` / `POST /admin/checkpoint` (opt-in) |
+
+`checkpoint_to(path)` (Rust) and `POST /admin/checkpoint` (HTTP) are
+**WAL-only** entry points — they require `Database::open_with_wal` /
+`--wal-dir` because they stamp the WAL's `durable_lsn` into the
+snapshot header. Bindings (Python/Node.js/Ruby/WASM/FFI) do not expose
+WAL or checkpoint APIs in v0.3.x; they remain snapshot-only. See
+[wal.md](wal.md) for the WAL surface.
 
 All API surfaces return a `SnapshotMeta` describing the file:
 
@@ -115,17 +128,20 @@ pub enum MutationEvent {
 }
 ```
 
-This is the vocabulary a future WAL implementation will append to a log
-file. Today the recorder is `None` by default and the emit path is one
-null-pointer check per mutation (no event construction, no clone). Install
-a recorder via `InMemoryGraph::set_mutation_recorder` for use cases like
-audit streams, change-data-capture, or replication.
+This is the vocabulary the [WAL](wal.md) appends to its segment files.
+Today the recorder is `None` by default and the emit path is one
+null-pointer check per mutation (no event construction, no clone) —
+operators who don't enable the WAL pay nothing for it. Other use cases
+that benefit from the same hook (audit streams, change-data-capture,
+replication) install a recorder via
+`InMemoryGraph::set_mutation_recorder`.
 
 ## What snapshots do not solve
 
 - **Continuous durability.** A crash between snapshot saves loses every
-  mutation in the window. Operators should either snapshot frequently
-  enough to tolerate the gap or (once it ships) enable WAL.
+  mutation in the window. Enable the [WAL](wal.md) (`--wal-dir`) for
+  that — the WAL fills the gap between snapshots, and `checkpoint_to`
+  / `POST /admin/checkpoint` pairs the two together.
 - **Multi-tenant isolation.** Each server process holds one graph; if you
   run several, each has its own snapshot file.
 - **Schema migration.** Snapshots are versioned (format v1 today), but

@@ -273,15 +273,35 @@ module.exports = {
     },
     footer: {
       style: 'light',
+      // Footer columns mirror the homepage's intent router: Get started,
+      // Reference, Operate, Product. Same buckets the marketing pages
+      // route into, so the footer is the third copy of the same map.
       links: [
         {
-          title: 'Docs',
+          title: 'Get started',
           items: [
-            { label: 'Introduction', to: '/docs' },
             { label: 'Installation', to: '/docs/getting-started/installation' },
+            { label: 'Ten-minute tour', to: '/docs/getting-started/tutorial' },
+            { label: 'Cheat sheet', to: '/docs/queries/cheat-sheet' },
+            { label: 'Cookbook', to: '/docs/cookbook' },
+          ],
+        },
+        {
+          title: 'Reference',
+          items: [
             { label: 'Queries', to: '/docs/queries' },
             { label: 'Functions', to: '/docs/functions/overview' },
+            { label: 'Data types', to: '/docs/data-types/overview' },
+            { label: 'Concepts', to: '/docs/concepts/graph-model' },
+          ],
+        },
+        {
+          title: 'Operate',
+          items: [
+            { label: 'HTTP API', to: '/docs/api/http' },
+            { label: 'Snapshots', to: '/docs/snapshot' },
             { label: 'Limitations', to: '/docs/limitations' },
+            { label: 'Troubleshooting', to: '/docs/troubleshooting' },
           ],
         },
         {
@@ -289,6 +309,7 @@ module.exports = {
           items: [
             { label: 'What is LoraDB', to: '/docs' },
             { label: 'Why LoraDB', to: '/docs/why' },
+            { label: 'Features', to: '/features' },
             { label: 'Blog', to: '/blog' },
             { label: 'Contact', to: '/contact' },
           ],
@@ -301,12 +322,6 @@ module.exports = {
             { label: 'X', href: 'https://x.com/loradb' },
             { label: 'LinkedIn', href: 'https://linkedin.com/company/loradb' },
             { label: 'Medium', href: 'https://medium.com/loradb' },
-          ],
-        },
-        {
-          title: 'More',
-          items: [
-            { label: 'loradb.com', href: 'https://loradb.com' },
             { label: 'Security', to: '/contact#security' },
           ],
         },

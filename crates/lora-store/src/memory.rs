@@ -845,6 +845,20 @@ impl Snapshotable for InMemoryGraph {
         write_snapshot(writer, &payload, None)
     }
 
+    fn save_checkpoint<W: std::io::Write>(
+        &self,
+        writer: W,
+        wal_lsn: u64,
+    ) -> Result<SnapshotMeta, SnapshotError> {
+        let payload = SnapshotPayload {
+            next_node_id: self.next_node_id,
+            next_rel_id: self.next_rel_id,
+            nodes: self.nodes.values().cloned().collect(),
+            relationships: self.relationships.values().cloned().collect(),
+        };
+        write_snapshot(writer, &payload, Some(wal_lsn))
+    }
+
     fn load_snapshot<R: std::io::Read>(
         &mut self,
         reader: R,

@@ -1,0 +1,19 @@
+[package]
+name = "lora-wal"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Write-ahead log and replay engine for LoraDB."
+keywords = ["loradb", "wal", "graph", "durability", "database"]
+categories = ["database-implementations"]
+
+[dependencies]
+lora-store.workspace = true
+serde.workspace = true
+bincode.workspace = true
+crc32fast.workspace = true
+thiserror.workspace = true

@@ -5,6 +5,7 @@ members = [
     "crates/lora-analyzer",
     "crates/lora-compiler",
     "crates/lora-store",
+    "crates/lora-wal",
     "crates/lora-executor",
     "crates/lora-database",
     "crates/lora-server",
@@ -34,6 +35,7 @@ lora-parser = { path = "crates/lora-parser", version = "=0.3.0" }
 lora-analyzer = { path = "crates/lora-analyzer", version = "=0.3.0" }
 lora-compiler = { path = "crates/lora-compiler", version = "=0.3.0" }
 lora-store = { path = "crates/lora-store", version = "=0.3.0" }
+lora-wal = { path = "crates/lora-wal", version = "=0.3.0" }
 lora-executor = { path = "crates/lora-executor", version = "=0.3.0" }
 lora-database = { path = "crates/lora-database", version = "=0.3.0" }
 

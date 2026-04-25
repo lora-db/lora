@@ -4,6 +4,7 @@ import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 
 import BrandGraph from '@site/src/components/BrandGraph';
+import LinkCard from '@site/src/components/LinkCard';
 import StarOnGitHub from '@site/src/components/StarOnGitHub';
 import styles from './index.module.scss';
 
@@ -111,55 +112,88 @@ puts result["rows"]`,
   },
 ];
 
+// Intent router — three faces of LoraDB, each routing to the docs
+// section that answers "show me this".
+const INTENTS = [
+  {
+    eyebrow: 'Engine',
+    title: 'A Cypher pipeline you can read',
+    body: 'A pragmatic subset — MATCH, WITH, WHERE, paths, aggregation — composed top to bottom in short, readable queries.',
+    to: '/docs/queries',
+  },
+  {
+    eyebrow: 'Store',
+    title: 'Labelled property graph, in process',
+    body: 'Nodes, typed directed relationships, and properties — held in RAM, next to the code that uses them.',
+    to: '/docs/concepts/graph-model',
+  },
+  {
+    eyebrow: 'Surfaces',
+    title: 'Rust, Node, Python, WASM, Go, Ruby, HTTP',
+    body: 'Pick the binding that fits the host process. Same Cypher, same result shape, same engine underneath.',
+    to: '/docs/getting-started/installation',
+  },
+];
+
+// Audience cards — trimmed to four. Each one ends in a cookbook
+// recipe so curious readers have a concrete next click.
 const USE_CASES = [
   {
     title: 'AI agents & LLM pipelines',
     body: 'Tools, entities, observations and decisions as a live graph. Retrieval becomes a pattern match, not a similarity score.',
     icon: 'agent',
+    to: '/docs/cookbook#vector-retrieval-patterns',
+    linkLabel: 'Vector retrieval recipes',
   },
   {
     title: 'Context & memory systems',
-    body: 'Model claims, evidence, citations, and contradictions as typed edges. Ask “why do we believe this?” as a traversal.',
+    body: 'Model claims, evidence, citations, and contradictions as typed edges. Ask "why do we believe this?" as a traversal.',
     icon: 'memory',
-  },
-  {
-    title: 'Robotics & scene graphs',
-    body: 'Objects, rooms, and affordances as nodes. Plan queries run inside the controller — no network hop, no migration.',
-    icon: 'robot',
+    to: '/docs/cookbook#social-graph-patterns',
+    linkLabel: 'Graph patterns',
   },
   {
     title: 'Event pipelines & streams',
     body: 'Resolve entities, infer relationships, and enrich events in-process with Cypher rules that read top-to-bottom.',
     icon: 'stream',
-  },
-  {
-    title: 'Real-time reasoning',
-    body: 'Fraud signals, lineage, access inference, recommendations — decisions that look across entities in one query.',
-    icon: 'spark',
+    to: '/docs/cookbook#event--time-based-patterns',
+    linkLabel: 'Event recipes',
   },
   {
     title: 'Embedded graph storage',
     body: 'A graph data structure inside your own process. No service to deploy, no protocol to speak, no daemon to babysit.',
     icon: 'cube',
+    to: '/docs/getting-started/installation',
+    linkLabel: 'Pick a binding',
   },
 ];
 
-const VALUE_PROPS = [
+// Where-next router — the four reader intents the homepage explicitly
+// hands off to the docs.
+const WHERE_NEXT = [
   {
-    title: 'Relationships are first-class',
-    body: 'Edges are typed, directed, and property-bearing. Traversal is O(degree), not a stack of self-joins.',
+    eyebrow: 'Install',
+    title: 'I just want to get started',
+    body: 'Pick a binding, install, and ship a hello-world in a minute.',
+    to: '/docs/getting-started/installation',
   },
   {
-    title: 'Cypher where it counts',
-    body: 'A pragmatic subset of Cypher — MATCH, WITH, WHERE, CREATE, RETURN. Short queries, readable intent.',
+    eyebrow: 'Concepts',
+    title: 'I want to understand the model',
+    body: 'Nodes, relationships, properties, and how the engine sees them.',
+    to: '/docs/concepts/graph-model',
   },
   {
-    title: 'Schema-free by design',
-    body: 'Add a label, an edge type, or a property by writing it. No ALTER, no migration, no restart.',
+    eyebrow: 'Examples',
+    title: 'I want query examples',
+    body: 'A copy-paste tour of the Cypher LoraDB supports.',
+    to: '/docs/queries/examples',
   },
   {
-    title: 'Small enough to read',
-    body: 'A compiler-style pipeline of focused crates from parser to executor. If the database matters to your product, you should be able to read it.',
+    eyebrow: 'Evaluate',
+    title: 'What does it support — and not?',
+    body: 'The full capability surface, plus the lines we won’t pretend to cross.',
+    to: '/features',
   },
 ];
 
@@ -195,14 +229,6 @@ function Icon({ name }) {
           <path d="M4 12v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5" />
         </svg>
       );
-    case 'robot':
-      return (
-        <svg {...common}>
-          <rect x="5" y="8" width="14" height="11" rx="2.5" />
-          <path d="M12 4v4M9 13h.01M15 13h.01M9 17h6" />
-          <path d="M3 13v2M21 13v2" />
-        </svg>
-      );
     case 'stream':
       return (
         <svg {...common}>
@@ -210,14 +236,6 @@ function Icon({ name }) {
           <circle cx="13" cy="7" r="1.5" />
           <circle cx="19" cy="12" r="1.5" />
           <circle cx="15" cy="17" r="1.5" />
-        </svg>
-      );
-    case 'spark':
-      return (
-        <svg {...common}>
-          <path d="M12 3v5M12 16v5M3 12h5M16 12h5" />
-          <path d="M6.2 6.2l3 3M14.8 14.8l3 3M6.2 17.8l3-3M14.8 9.2l3-3" />
-          <circle cx="12" cy="12" r="2" />
         </svg>
       );
     case 'cube':
@@ -230,6 +248,24 @@ function Icon({ name }) {
     default:
       return null;
   }
+}
+
+function ArrowGlyph() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 12h14M13 5l7 7-7 7" />
+    </svg>
+  );
 }
 
 export default function Home() {
@@ -268,25 +304,13 @@ export default function Home() {
                   className={clsx(styles.btn, styles.btnPrimary)}
                 >
                   Quickstart
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M5 12h14M13 5l7 7-7 7" />
-                  </svg>
+                  <ArrowGlyph />
                 </Link>
                 <Link
-                  to="/docs"
+                  to="/docs/why"
                   className={clsx(styles.btn, styles.btnSecondary)}
                 >
-                  Read the docs
+                  Why LoraDB
                 </Link>
                 <StarOnGitHub />
               </div>
@@ -331,47 +355,61 @@ export default function Home() {
           <div className={styles.heroGlow} aria-hidden="true" />
         </section>
 
-        {/* ---------- WHY NOW ---------- */}
-        <section className={styles.whyNow}>
+        {/* ---------- THE SHAPE OF THE PROBLEM ---------- */}
+        <section className={styles.problem}>
           <div className={styles.sectionInner}>
-            <p className={styles.sectionEyebrow}>Why now</p>
+            <p className={styles.sectionEyebrow}>The shape of the problem</p>
             <h2 className={styles.sectionTitle}>
               Modern systems are graphs.{' '}
               <span className={styles.mutedHeading}>
                 Most databases aren’t.
               </span>
             </h2>
-            <div className={styles.whyNowGrid}>
-              <article className={styles.whyNowCard}>
-                <h3>Relational stores fight relational questions</h3>
-                <p>
-                  “Everything reachable from here” turns into self-joins
-                  stacked on self-joins. The planner guesses how to walk a
-                  graph it doesn’t know is a graph.
-                </p>
-              </article>
-              <article className={styles.whyNowCard}>
-                <h3>Document stores fight evolving relationships</h3>
-                <p>
-                  Nesting works until ownership isn’t strict. Bidirectional
-                  edges and many-to-many links push consistency into
-                  application code.
-                </p>
-              </article>
-              <article className={styles.whyNowCard}>
-                <h3>Graph platforms are often disproportionate</h3>
-                <p>
-                  A service, a protocol, and a TCO that only pays off at
-                  scale — when all you wanted was a graph data structure
-                  next to the code that uses it.
-                </p>
-              </article>
+            <div className={styles.problemBody}>
+              <p className={styles.problemLede}>
+                Relational stores fight relational questions. Document stores
+                fight evolving relationships. Graph platforms are often
+                disproportionate — a service, a protocol, and a TCO that only
+                pays off at scale, when all you wanted was a graph data
+                structure next to the code that uses it. LoraDB is the option
+                that was missing in the other direction: the one you reach for
+                when the graph belongs <em>inside</em> your process.
+              </p>
+              <LinkCard
+                to="/docs/why"
+                eyebrow="Long form"
+                title="Why an embedded graph at all"
+                variant="accent"
+              >
+                The argument in full — vs. SQL, vs. document stores, vs.
+                managed graph platforms.
+              </LinkCard>
             </div>
-            <p className={styles.whyNowFooter}>
-              LoraDB is the option that was missing in the other direction —
-              the one you reach for when the graph belongs{' '}
-              <em>inside</em> your process.
+          </div>
+        </section>
+
+        {/* ---------- WHAT LORADB IS · INTENT ROUTER ---------- */}
+        <section className={styles.intent}>
+          <div className={styles.sectionInner}>
+            <p className={styles.sectionEyebrow}>What LoraDB is</p>
+            <h2 className={styles.sectionTitle}>
+              An engine, a store, and the surfaces that reach them.
+            </h2>
+            <p className={styles.intentLede}>
+              Three places to start, depending on what you want to see first.
             </p>
+            <div className={styles.intentGrid}>
+              {INTENTS.map((i) => (
+                <LinkCard
+                  key={i.title}
+                  to={i.to}
+                  eyebrow={i.eyebrow}
+                  title={i.title}
+                >
+                  {i.body}
+                </LinkCard>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -390,31 +428,18 @@ export default function Home() {
                   </div>
                   <h3>{c.title}</h3>
                   <p>{c.body}</p>
+                  <Link to={c.to} className={styles.useCaseLink}>
+                    {c.linkLabel}
+                    <ArrowGlyph />
+                  </Link>
                 </article>
               ))}
             </div>
-          </div>
-        </section>
-
-        {/* ---------- VALUE PROPS ---------- */}
-        <section className={styles.values}>
-          <div className={styles.sectionInner}>
-            <p className={styles.sectionEyebrow}>Developer value</p>
-            <h2 className={styles.sectionTitle}>
-              A graph model that matches the shape of your code.
-            </h2>
-            <div className={styles.valueGrid}>
-              {VALUE_PROPS.map((v, i) => (
-                <article key={v.title} className={styles.valueCard}>
-                  <span className={styles.valueIndex}>
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <div>
-                    <h3>{v.title}</h3>
-                    <p>{v.body}</p>
-                  </div>
-                </article>
-              ))}
+            <div className={styles.useCasesFooter}>
+              <Link to="/docs/cookbook" className={styles.cookbookLink}>
+                Browse the full cookbook
+                <ArrowGlyph />
+              </Link>
             </div>
           </div>
         </section>
@@ -426,13 +451,13 @@ export default function Home() {
               <div className={styles.startCopy}>
                 <p className={styles.sectionEyebrow}>Start in a minute</p>
                 <h2 className={styles.sectionTitle}>
-                  Add the crate. Open a database. Write a query.
+                  Add the package. Open a database. Write a query.
                 </h2>
                 <p className={styles.startBody}>
-                  There’s no server to stand up, no protocol to speak. Opening
-                  a LoraDB is a function call — in Node.js, Python, WASM, Go,
-                  or Ruby. Same Cypher, same result shape, across every
-                  binding.
+                  There’s no server to stand up, no protocol to speak.
+                  Opening a LoraDB is a function call — in Node.js, Python,
+                  WASM, Go, or Ruby. Same Cypher, same result shape, across
+                  every binding.
                 </p>
                 <div className={styles.actions}>
                   <Link
@@ -442,16 +467,16 @@ export default function Home() {
                     Install
                   </Link>
                   <Link
-                    to="/docs/cookbook"
+                    to="/docs/queries/cheat-sheet"
                     className={clsx(styles.btn, styles.btnSecondary)}
                   >
-                    Cookbook
+                    Cheat sheet
                   </Link>
                   <Link
-                    to="/docs/why"
+                    to="/docs/getting-started/tutorial"
                     className={clsx(styles.btn, styles.btnGhost)}
                   >
-                    Why LoraDB
+                    Ten-minute tour
                   </Link>
                 </div>
               </div>
@@ -510,25 +535,29 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ---------- FINAL CTA ---------- */}
-        <section className={styles.finalCta}>
+        {/* ---------- WHERE TO NEXT · DOCS ROUTER ---------- */}
+        <section className={styles.whereNext}>
           <div className={styles.sectionInner}>
-            <h2 className={styles.finalCtaTitle}>
-              The graph belongs inside your process.
-            </h2>
-            <p className={styles.finalCtaBody}>
-              Build on a graph database that was designed for agents,
-              memory pipelines, and event-driven systems — not retrofitted for
-              them.
-            </p>
-            <div className={styles.actions}>
-              <Link
-                to="/docs"
-                className={clsx(styles.btn, styles.btnPrimary)}
-              >
-                Start reading the docs
+            <p className={styles.sectionEyebrow}>Where to next</p>
+            <h2 className={styles.sectionTitle}>Pick a path into the docs.</h2>
+            <div className={styles.whereNextGrid}>
+              {WHERE_NEXT.map((w) => (
+                <LinkCard
+                  key={w.title}
+                  to={w.to}
+                  eyebrow={w.eyebrow}
+                  title={w.title}
+                >
+                  {w.body}
+                </LinkCard>
+              ))}
+            </div>
+            <div className={styles.whereNextFooter}>
+              <Link to="/docs" className={styles.whereNextDocs}>
+                Or read the docs from the top
+                <ArrowGlyph />
               </Link>
-              <StarOnGitHub size="lg" />
+              <StarOnGitHub />
             </div>
           </div>
         </section>

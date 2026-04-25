@@ -23,6 +23,7 @@ lora-analyzer.workspace = true
 lora-compiler.workspace = true
 lora-executor.workspace = true
 lora-store.workspace = true
+lora-wal.workspace = true
 
 serde_json.workspace = true
 tower.workspace = true
@@ -48,4 +49,8 @@ harness = false
 
 [[bench]]
 name = "perf_smoke_benchmarks"
+harness = false
+
+[[bench]]
+name = "wal_benchmarks"
 harness = false

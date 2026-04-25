@@ -25,7 +25,7 @@ Client -> POST /query {"query": "CREATE ..."} -> lora-server -> Database::execut
 
 The same `Database::execute` / `execute_with_params` entry point handles writes from every other surface listed above.
 
-Every write (`CREATE` / `MERGE` / `SET` / `SET +=` / `DELETE` / `DETACH DELETE` / `REMOVE`) maps to exactly one `GraphStorageMut` method call, and each method fires a `MutationEvent` at the store's optional `MutationRecorder`. The recorder is `None` by default — no event is constructed, so the hot path is a single null-pointer check. Install one via `InMemoryGraph::set_mutation_recorder` for audit streams, change-data-capture, or the future WAL. See [../operations/snapshots.md#mutation-events](../operations/snapshots.md#mutation-events) for the recorder contract and variant list.
+Every write (`CREATE` / `MERGE` / `SET` / `SET +=` / `DELETE` / `DETACH DELETE` / `REMOVE`) maps to exactly one `GraphStorageMut` method call, and each method fires a `MutationEvent` at the store's optional `MutationRecorder`. The recorder is `None` by default — no event is constructed, so the hot path is a single null-pointer check. The shipping consumer of the recorder is the WAL (`lora-wal::WalRecorder`); install your own via `InMemoryGraph::set_mutation_recorder` for audit streams, change-data-capture, or replication. See [../operations/snapshots.md#mutation-events](../operations/snapshots.md#mutation-events) for the recorder contract and variant list, and [../operations/wal.md](../operations/wal.md) for how the WAL drives it.
 
 ### Creating nodes
 
@@ -82,12 +82,26 @@ If bulk loading is needed, potential approaches:
 3. **CSV import command** -- parse a CSV and map rows to `CREATE` statements
 4. **Snapshot restore** -- serialize/deserialize the `InMemoryGraph` struct
 
-### Persistence (point-in-time snapshots)
+### Persistence (snapshots and WAL)
 
-Point-in-time snapshots are implemented. `Database::save_snapshot_to` / `load_snapshot_from` / `in_memory_from_snapshot` persist and restore the full in-memory graph to a single file:
+LoraDB ships two persistence primitives:
 
-- The on-disk format, atomic-write protocol, and admin surface are documented in [../operations/snapshots.md](../operations/snapshots.md).
-- The trait (`Snapshotable`) and wire format live in `crates/lora-store/src/snapshot.rs`.
-- The `wal_lsn` field in the snapshot header is reserved for a future WAL / checkpoint hybrid; `MutationEvent` is the vocabulary that WAL will append. Neither ships in the core today.
+1. **Point-in-time snapshots** — `Database::save_snapshot_to` /
+   `load_snapshot_from` / `in_memory_from_snapshot` persist and
+   restore the full in-memory graph to a single file. On-disk
+   format, atomic-write protocol, and admin surface are documented in
+   [../operations/snapshots.md](../operations/snapshots.md). The trait
+   (`Snapshotable`) and wire format live in `crates/lora-store/src/snapshot.rs`.
 
-Continuous durability (a WAL with recovery semantics) is still future work — see [../design/known-risks.md](../design/known-risks.md) and [../decisions/0003-snapshot-format.md](../decisions/0003-snapshot-format.md).
+2. **Write-ahead log** (v0.3.x, Rust + `lora-server` only) —
+   `Database::open_with_wal` / `Database::recover` /
+   `Database::checkpoint_to`. The WAL appends `MutationEvent` records
+   to durable segment files and replays committed transactions on
+   boot. See [../operations/wal.md](../operations/wal.md) for the
+   operator-facing reference and
+   [../decisions/0004-wal.md](../decisions/0004-wal.md) for the
+   design.
+
+Bindings (Python / Node.js / Ruby / WASM / Go FFI) currently expose the
+snapshot surface only. WAL is intentionally Rust + HTTP server in this
+release; binding parity is a separate decision.

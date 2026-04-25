@@ -664,6 +664,7 @@ dependencies = [
  "lora-executor",
  "lora-parser",
  "lora-store",
+ "lora-wal",
  "serde_json",
  "tower",
 ]
@@ -751,6 +752,17 @@ dependencies = [
  "crc32fast",
  "js-sys",
  "lora-ast",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "lora-wal"
+version = "0.3.0"
+dependencies = [
+ "bincode",
+ "crc32fast",
+ "lora-store",
  "serde",
  "thiserror",
 ]

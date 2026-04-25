@@ -394,58 +394,33 @@
 }
 
 // -------------------------------------------------------------------
-// Why now
+// Shape of the problem (compact, editorial — replaces 3-card "why now")
 // -------------------------------------------------------------------
 
-.whyNow {
-  padding: clamp(5rem, 12vh, 8rem) 0 clamp(4rem, 10vh, 6rem);
+.problem {
+  padding: clamp(3.5rem, 8vh, 5.5rem) 0;
   border-bottom: 1px solid var(--brand-border-c);
 }
 
-.whyNowGrid {
+.problemBody {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 1.25rem;
-  margin-bottom: 2.25rem;
-}
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: clamp(1.5rem, 4vw, 3rem);
+  align-items: center;
 
-.whyNowCard {
-  padding: 1.6rem 1.65rem;
-  border-radius: 14px;
-  background: var(--token-secondary-bg-c);
-  border: 1px solid var(--brand-border-c);
-  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
-
-  &:hover {
-    transform: translateY(-2px);
-    border-color: var(--brand-border-strong-c);
-    box-shadow: 0 12px 28px -16px color-mix(in srgb, var(--brand-accent-a) 45%, transparent);
-  }
-
-  h3 {
-    margin: 0 0 0.5rem;
-    font-size: 1.0625rem;
-    font-weight: 600;
-    color: var(--ifm-heading-color);
-    letter-spacing: -0.01em;
-  }
-
-  p {
-    margin: 0;
-    font-size: 0.9375rem;
-    line-height: 1.6;
-    color: var(--ifm-font-color-base);
-    opacity: 0.8;
+  @media (max-width: 880px) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.5rem;
   }
 }
 
-.whyNowFooter {
+.problemLede {
   margin: 0;
   max-width: 48rem;
   font-size: 1.0625rem;
-  line-height: 1.6;
+  line-height: 1.65;
   color: var(--ifm-font-color-base);
-  opacity: 0.9;
+  opacity: 0.88;
 
   em {
     font-style: normal;
@@ -455,11 +430,11 @@
 }
 
 // -------------------------------------------------------------------
-// Use cases
+// Intent router (NEW — engine / store / surfaces)
 // -------------------------------------------------------------------
 
-.useCases {
-  padding: clamp(5rem, 12vh, 8rem) 0;
+.intent {
+  padding: clamp(5rem, 11vh, 7rem) 0;
   background:
     linear-gradient(180deg, var(--token-primary-bg-c) 0%, var(--brand-surface-c) 100%);
   border-bottom: 1px solid var(--brand-border-c);
@@ -467,6 +442,34 @@
   html[data-theme='dark'] & {
     background: linear-gradient(180deg, var(--token-primary-bg-c) 0%, #070b13 100%);
   }
+}
+
+.intentLede {
+  margin: -1.5rem 0 2rem;
+  max-width: 48rem;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.78;
+}
+
+.intentGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.15rem;
+
+  @media (max-width: 880px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+// -------------------------------------------------------------------
+// Use cases
+// -------------------------------------------------------------------
+
+.useCases {
+  padding: clamp(5rem, 12vh, 8rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
 }
 
 .useCaseGrid {
@@ -477,6 +480,8 @@
 
 .useCase {
   position: relative;
+  display: flex;
+  flex-direction: column;
   padding: 1.6rem;
   border-radius: 14px;
   background: var(--token-primary-bg-c);
@@ -515,7 +520,7 @@
   }
 
   p {
-    margin: 0;
+    margin: 0 0 1rem;
     font-size: 0.925rem;
     line-height: 1.6;
     color: var(--ifm-font-color-base);
@@ -536,61 +541,66 @@
   border: 1px solid var(--brand-border-c);
 }
 
-// -------------------------------------------------------------------
-// Value props
-// -------------------------------------------------------------------
-
-.values {
-  padding: clamp(5rem, 12vh, 8rem) 0;
-  border-bottom: 1px solid var(--brand-border-c);
-}
-
-.valueGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1.2rem;
-}
-
-.valueCard {
-  display: flex;
-  gap: 1rem;
-  padding: 1.5rem 1.5rem 1.5rem 1.25rem;
-  border-radius: 12px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-left: 2px solid var(--brand-border-c);
-  transition: border-color 0.2s ease, background-color 0.2s ease;
-
-  &:hover {
-    border-left-color: var(--brand-accent-a);
-    background: color-mix(in srgb, var(--brand-accent-a) 4%, transparent);
-  }
-
-  h3 {
-    margin: 0 0 0.35rem;
-    font-size: 1.0625rem;
-    font-weight: 600;
-    color: var(--ifm-heading-color);
-    letter-spacing: -0.01em;
-  }
-
-  p {
-    margin: 0;
-    font-size: 0.9375rem;
-    line-height: 1.6;
-    color: var(--ifm-font-color-base);
-    opacity: 0.8;
-  }
-}
-
-.valueIndex {
-  flex-shrink: 0;
-  font-family: var(--ifm-font-family-monospace);
-  font-size: 0.8125rem;
+.useCaseLink {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--brand-accent-a);
-  padding-top: 0.15rem;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.005em;
+  text-decoration: none;
+  transition: color 0.18s ease, transform 0.18s ease;
+
+  svg {
+    transition: transform 0.18s ease;
+  }
+
+  &:hover {
+    color: var(--brand-accent-a);
+    text-decoration: none;
+
+    svg {
+      transform: translateX(3px);
+    }
+  }
+}
+
+.useCasesFooter {
+  margin-top: 2rem;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.cookbookLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--brand-border-c);
+  text-decoration: none;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+
+  svg {
+    transition: transform 0.18s ease;
+  }
+
+  &:hover {
+    text-decoration: none;
+    background: color-mix(in srgb, var(--brand-accent-a) 15%, transparent);
+    border-color: var(--brand-border-strong-c);
+    color: var(--brand-accent-a);
+
+    svg {
+      transform: translateX(3px);
+    }
+  }
 }
 
 // -------------------------------------------------------------------
@@ -637,12 +647,11 @@
 }
 
 // -------------------------------------------------------------------
-// Final CTA
+// Where to next (NEW — replaces final mega-CTA)
 // -------------------------------------------------------------------
 
-.finalCta {
-  padding: clamp(5rem, 14vh, 9rem) 0;
-  text-align: center;
+.whereNext {
+  padding: clamp(4.5rem, 10vh, 7rem) 0;
   background: var(--token-primary-bg-c);
   position: relative;
   overflow: hidden;
@@ -652,41 +661,53 @@
     position: absolute;
     inset: 0;
     background:
-      radial-gradient(40% 60% at 50% 20%, var(--brand-accent-b-soft), transparent 70%),
-      radial-gradient(40% 60% at 50% 80%, var(--brand-accent-a-soft), transparent 70%);
+      radial-gradient(50% 60% at 90% 0%, var(--brand-accent-b-soft), transparent 70%),
+      radial-gradient(50% 60% at 10% 100%, var(--brand-accent-a-soft), transparent 70%);
     pointer-events: none;
+    z-index: 0;
   }
 
   .sectionInner {
     position: relative;
     z-index: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1rem;
   }
 }
 
-.finalCtaTitle {
-  margin: 0;
-  font-size: clamp(1.875rem, 4vw, 2.75rem);
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  line-height: 1.1;
-  color: var(--ifm-heading-color);
-  max-width: 22ch;
-  background: var(--brand-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+.whereNextGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.1rem;
 }
 
-.finalCtaBody {
-  margin: 0.25rem 0 1rem;
-  max-width: 40rem;
-  font-size: 1.0625rem;
-  line-height: 1.6;
-  color: var(--ifm-font-color-base);
-  opacity: 0.82;
+.whereNextFooter {
+  margin-top: 2.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+
+.whereNextDocs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ifm-heading-color);
+  text-decoration: none;
+  transition: color 0.18s ease;
+
+  svg {
+    transition: transform 0.18s ease;
+    color: var(--brand-accent-a);
+  }
+
+  &:hover {
+    color: var(--brand-accent-a);
+    text-decoration: none;
+
+    svg {
+      transform: translateX(3px);
+    }
+  }
 }

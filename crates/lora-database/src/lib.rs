@@ -16,7 +16,12 @@
 
 mod database;
 
-pub use database::{Database, QueryRunner, SnapshotAdmin};
+pub use database::{Database, QueryRunner, SnapshotAdmin, WalAdmin, WalStatus};
+
+// Re-export the WAL configuration types so transports / operators can
+// build a `Database::open_with_wal` argument without taking a direct
+// `lora-wal` dependency.
+pub use lora_wal::{SyncMode, WalConfig};
 
 // Re-export the core execution types so callers don't need a direct
 // dependency on `lora-executor`.

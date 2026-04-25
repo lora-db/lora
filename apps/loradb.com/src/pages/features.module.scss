@@ -3,8 +3,9 @@
 // Mirrors the homepage and playground vocabulary on purpose: same
 // eyebrow pill, gradient title accent, button trio, sectionInner /
 // sectionEyebrow / sectionTitle primitives, and card-hover treatment.
-// New patterns introduced here (pipeline flow, surface tabs, coverage
-// grid) sit on top of the same brand tokens — no new design system.
+// New patterns introduced here (anchor nav, architecture pipeline,
+// surface tabs, coverage grid) sit on top of the same brand tokens —
+// no new design system.
 
 .wrapper {
   background: var(--token-primary-bg-c);
@@ -43,6 +44,15 @@
   line-height: 1.15;
   color: var(--ifm-heading-color);
   max-width: 32ch;
+}
+
+.miniEyebrow {
+  margin: 0 0 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
 }
 
 // -------------------------------------------------------------------
@@ -109,7 +119,7 @@
   line-height: 1.05;
   letter-spacing: -0.03em;
   color: var(--ifm-heading-color);
-  max-width: 18ch;
+  max-width: 22ch;
 }
 
 .titleAccent {
@@ -248,57 +258,150 @@
 }
 
 // -------------------------------------------------------------------
-// Feature overview
+// Anchor nav strip (NEW — sticky horizontal in-page TOC)
 // -------------------------------------------------------------------
 
-.overview {
-  padding: clamp(4.5rem, 10vh, 7rem) 0 clamp(4rem, 9vh, 6rem);
+.anchorNav {
+  position: sticky;
+  // Sits directly below the Docusaurus navbar at rest. When the navbar
+  // slides away on scroll-down (hideOnScroll), the strip translates up
+  // by the same distance — see `.anchorNavLifted` — so it tracks the
+  // navbar's animation and stays visible without leaving an empty band.
+  top: var(--ifm-navbar-height, 60px);
+  z-index: 5;
+  background: color-mix(in srgb, var(--token-primary-bg-c) 92%, transparent);
+  border-bottom: 1px solid var(--brand-border-c);
+  backdrop-filter: blur(10px);
+  // Match the Docusaurus navbar's hide animation so the two surfaces
+  // move as one. ifm-transition-fast = 200ms.
+  transition: transform var(--ifm-transition-fast, 200ms)
+    var(--ifm-transition-timing-default, ease-in-out);
+  will-change: transform;
+
+  // On mobile, sticky in-page TOCs eat scarce vertical space and
+  // double up with the navbar. Let the strip scroll away with the
+  // page; the anchor links still work, they just don't pin.
+  @media (max-width: 820px) {
+    position: static;
+    backdrop-filter: none;
+    transform: none !important;
+    transition: none;
+  }
+}
+
+// When the main navbar has been hidden by hideOnScroll, lift the strip
+// by the navbar height so it slides into the navbar's now-empty slot.
+// The end state: strip's visible top is 0, looking like the strip
+// "took over" the top edge of the viewport.
+.anchorNavLifted {
+  transform: translateY(calc(-1 * var(--ifm-navbar-height, 60px)));
+}
+
+.anchorNavInner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0.65rem 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.anchorNavLabel {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+  opacity: 0.72;
+
+  @media (max-width: 640px) {
+    display: none;
+  }
+}
+
+.anchorNavList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+}
+
+.anchorNavLink {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--ifm-secondary-heading-color);
+  text-decoration: none;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--brand-accent-a-soft);
+    color: var(--brand-accent-a);
+    text-decoration: none;
+  }
+}
+
+.anchorNavLinkActive {
+  background: var(--brand-accent-a-soft);
+  color: var(--brand-accent-a);
+  border-color: var(--brand-border-strong-c);
+  font-weight: 600;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--brand-accent-a);
+  }
+}
+
+// -------------------------------------------------------------------
+// Design principles (was VALUE_PROPS on homepage)
+// -------------------------------------------------------------------
+
+.principles {
+  padding: clamp(4.5rem, 10vh, 6.5rem) 0;
   border-bottom: 1px solid var(--brand-border-c);
 }
 
-.featureGrid {
+.principlesGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 1.15rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.2rem;
 }
 
-// Feature cards reuse the homepage `useCase` treatment — including
-// the gradient top-border that lights up on hover — so the page feels
-// continuous with the home.
-.featureCard {
-  position: relative;
-  padding: 1.6rem;
-  border-radius: 14px;
-  background: var(--token-primary-bg-c);
-  border: 1px solid var(--brand-border-c);
-  transition:
-    transform var(--t) var(--t-ease),
-    border-color var(--t) var(--t-ease),
-    box-shadow var(--t) var(--t-ease);
-
-  &::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: var(--brand-gradient);
-    border-radius: 14px 14px 0 0;
-    opacity: 0;
-    transition: opacity var(--t) var(--t-ease);
-  }
+.principleCard {
+  display: flex;
+  gap: 1rem;
+  padding: 1.5rem 1.5rem 1.5rem 1.25rem;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--brand-border-c);
+  transition: border-color 0.2s ease, background-color 0.2s ease;
 
   &:hover {
-    transform: translateY(-3px);
-    border-color: var(--brand-border-strong-c);
-    box-shadow: 0 16px 32px -18px color-mix(in srgb, var(--brand-accent-a) 40%, transparent);
-
-    &::before { opacity: 1; }
+    border-left-color: var(--brand-accent-a);
+    background: color-mix(in srgb, var(--brand-accent-a) 4%, transparent);
   }
 
   h3 {
-    margin: 0 0 0.45rem;
+    margin: 0 0 0.35rem;
     font-size: 1.0625rem;
     font-weight: 600;
     color: var(--ifm-heading-color);
@@ -314,17 +417,14 @@
   }
 }
 
-.featureIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  margin-bottom: 1rem;
-  background: var(--brand-gradient-soft);
+.principleIndex {
+  flex-shrink: 0;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  font-weight: 600;
   color: var(--brand-accent-a);
-  border: 1px solid var(--brand-border-c);
+  padding-top: 0.15rem;
+  letter-spacing: 0.02em;
 }
 
 // -------------------------------------------------------------------
@@ -418,13 +518,358 @@
   }
 }
 
-.coverageFoot {
-  margin: 2rem 0 0;
-  max-width: 50rem;
-  font-size: 0.9375rem;
+.coverageLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 1.1rem 1rem;
+  padding: 0.45rem 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  text-decoration: none;
+  border-top: 1px solid var(--brand-border-c);
+  padding-top: 0.7rem;
+
+  svg { transition: transform 0.18s ease; }
+
+  &:hover {
+    text-decoration: none;
+    color: var(--brand-accent-a);
+    svg { transform: translateX(3px); }
+  }
+}
+
+.coverageFooter {
+  margin-top: 2rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.85rem;
+}
+
+// -------------------------------------------------------------------
+// Functions & data types (NEW)
+// -------------------------------------------------------------------
+
+.functions {
+  padding: clamp(5rem, 12vh, 7rem) 0;
+  background:
+    linear-gradient(180deg, var(--token-primary-bg-c) 0%, var(--brand-surface-c) 100%);
+  border-bottom: 1px solid var(--brand-border-c);
+
+  html[data-theme='dark'] & {
+    background: linear-gradient(180deg, var(--token-primary-bg-c) 0%, #070b13 100%);
+  }
+}
+
+.functionsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+
+  @media (max-width: 880px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.catalogue {
+  padding: 1.75rem;
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+
+  header {
+    h3 {
+      margin: 0 0 0.45rem;
+      font-size: 1.125rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--ifm-heading-color);
+    }
+
+    p {
+      margin: 0;
+      font-size: 0.925rem;
+      line-height: 1.55;
+      color: var(--ifm-font-color-base);
+      opacity: 0.78;
+    }
+  }
+}
+
+.catalogueHeader { /* placeholder for selector specificity */ }
+
+.chipList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--brand-border-c);
+  text-decoration: none;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+
+  &:hover {
+    text-decoration: none;
+    background: color-mix(in srgb, var(--brand-accent-a) 16%, transparent);
+    border-color: var(--brand-border-strong-c);
+    color: var(--brand-accent-a);
+  }
+}
+
+.catalogueLink {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  text-decoration: none;
+
+  svg { transition: transform 0.18s ease; }
+
+  &:hover {
+    text-decoration: none;
+    svg { transform: translateX(3px); }
+  }
+}
+
+// -------------------------------------------------------------------
+// Architecture (NEW — renders PIPELINE_STAGES)
+// -------------------------------------------------------------------
+
+.architecture {
+  padding: clamp(5rem, 13vh, 8rem) 0;
+  background: var(--token-secondary-bg-c);
+  border-bottom: 1px solid var(--brand-border-c);
+  position: relative;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(50% 60% at 0% 0%, var(--brand-accent-a-soft), transparent 70%),
+      radial-gradient(50% 60% at 100% 100%, var(--brand-accent-b-soft), transparent 70%);
+    pointer-events: none;
+    opacity: 0.7;
+  }
+
+  .sectionInner {
+    position: relative;
+    z-index: 1;
+  }
+
+  html[data-theme='dark'] & {
+    background: #060a13;
+  }
+}
+
+.architectureLede {
+  margin: -0.5rem 0 2.5rem;
+  max-width: 56rem;
+  font-size: 1rem;
   line-height: 1.6;
   color: var(--ifm-font-color-base);
   opacity: 0.82;
+}
+
+.archStages {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: stretch;
+
+  @media (max-width: 980px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.archStage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 1.4rem 1.45rem;
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  position: relative;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--brand-gradient);
+    opacity: 0.55;
+  }
+}
+
+.archStep {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--brand-accent-a);
+}
+
+.archStageName {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ifm-heading-color);
+}
+
+.archCrate {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  color: var(--ifm-secondary-heading-color);
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--brand-border-c);
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  align-self: flex-start;
+  margin-top: 0.1rem;
+}
+
+.archStageBody {
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--ifm-font-color-base);
+  opacity: 0.78;
+}
+
+.archConnector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-accent-a);
+  opacity: 0.55;
+
+  @media (max-width: 980px) {
+    display: none;
+  }
+}
+
+.archArrow {
+  width: 22px;
+  height: 14px;
+}
+
+.archFooter {
+  margin-top: 2.25rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: stretch;
+
+  @media (max-width: 880px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.archFormats {
+  padding: 1.4rem 1.45rem;
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+
+  header {
+    h3 {
+      margin: 0;
+      font-size: 1.0625rem;
+      font-weight: 600;
+      color: var(--ifm-heading-color);
+      letter-spacing: -0.01em;
+    }
+  }
+}
+
+.formatChips {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+
+  li code {
+    display: inline-block;
+    padding: 0.32rem 0.65rem;
+    border-radius: 999px;
+    font-family: var(--ifm-font-family-monospace);
+    font-size: 0.78rem;
+    color: var(--brand-accent-a);
+    background: var(--brand-accent-a-soft);
+    border: 1px solid var(--brand-border-c);
+  }
+}
+
+.archSourceLink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.4rem 1.45rem;
+  border-radius: 14px;
+  background: var(--brand-gradient-soft);
+  border: 1px solid var(--brand-border-strong-c);
+  color: var(--ifm-heading-color);
+  text-decoration: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+
+  > span {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--ifm-heading-color);
+  }
+
+  svg {
+    color: var(--brand-accent-a);
+    transition: transform 0.18s ease;
+    flex-shrink: 0;
+  }
+
+  &:hover {
+    transform: translateY(-2px);
+    text-decoration: none;
+    color: var(--ifm-heading-color);
+    box-shadow: 0 16px 32px -18px color-mix(in srgb, var(--brand-accent-a) 40%, transparent);
+    svg { transform: translateX(3px); }
+  }
 }
 
 // -------------------------------------------------------------------
@@ -471,7 +916,6 @@
     flex-direction: row;
     overflow-x: auto;
     padding-bottom: 0.25rem;
-    // Hide scrollbar visually but keep it functional for a11y.
     scrollbar-width: thin;
   }
 }
@@ -564,6 +1008,28 @@
 
 .surfaceCode {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.surfaceGuideLink {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--brand-accent-a);
+  text-decoration: none;
+
+  svg { transition: transform 0.18s ease; }
+
+  &:hover {
+    text-decoration: none;
+    color: var(--brand-accent-a);
+    svg { transform: translateX(3px); }
+  }
 }
 
 // Code card — visual contract matches the homepage's `codeCard` so
@@ -640,64 +1106,18 @@
 }
 
 // -------------------------------------------------------------------
-// Local-first workloads
+// Operations — HTTP & Snapshots (NEW compact block)
 // -------------------------------------------------------------------
 
-.workloads {
-  padding: clamp(5rem, 12vh, 7rem) 0;
+.operations {
+  padding: clamp(4rem, 9vh, 5.5rem) 0;
   border-bottom: 1px solid var(--brand-border-c);
 }
 
-.workloadGrid {
+.opsGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 1.1rem;
-}
-
-// Same shape as homepage `valueCard`: numbered, gentle left-rail, no
-// nested cards.
-.workloadCard {
-  display: flex;
-  gap: 1rem;
-  padding: 1.4rem 1.4rem 1.4rem 1.15rem;
-  border-radius: 12px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-left: 2px solid var(--brand-border-c);
-  transition:
-    border-color var(--t) var(--t-ease),
-    background-color var(--t) var(--t-ease);
-
-  &:hover {
-    border-left-color: var(--brand-accent-a);
-    background: color-mix(in srgb, var(--brand-accent-a) 4%, transparent);
-  }
-
-  h3 {
-    margin: 0 0 0.35rem;
-    font-size: 1.0625rem;
-    font-weight: 600;
-    color: var(--ifm-heading-color);
-    letter-spacing: -0.01em;
-  }
-
-  p {
-    margin: 0;
-    font-size: 0.9375rem;
-    line-height: 1.6;
-    color: var(--ifm-font-color-base);
-    opacity: 0.8;
-  }
-}
-
-.workloadIndex {
-  flex-shrink: 0;
-  font-family: var(--ifm-font-family-monospace);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--brand-accent-a);
-  padding-top: 0.15rem;
-  letter-spacing: 0.02em;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.15rem;
 }
 
 // -------------------------------------------------------------------
@@ -760,13 +1180,15 @@
   }
 }
 
-.boundaryFoot {
-  margin: 2rem 0 0;
-  max-width: 52rem;
-  font-size: 0.9375rem;
-  line-height: 1.6;
-  color: var(--ifm-font-color-base);
-  opacity: 0.82;
+.boundaryFooter {
+  margin-top: 2rem;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 1rem;
+
+  @media (max-width: 880px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 // -------------------------------------------------------------------

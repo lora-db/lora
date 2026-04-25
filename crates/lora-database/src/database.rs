@@ -4,7 +4,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use lora_analyzer::Analyzer;
 use lora_ast::Document;
 use lora_compiler::{CompiledQuery, Compiler};
@@ -12,7 +12,11 @@ use lora_executor::{
     ExecuteOptions, LoraValue, MutableExecutionContext, MutableExecutor, QueryResult,
 };
 use lora_parser::parse_query;
-use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, SnapshotMeta, Snapshotable};
+use lora_store::{
+    GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder, SnapshotMeta,
+    Snapshotable,
+};
+use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalRecorder, WroteCommit};
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
 pub trait QueryRunner: Send + Sync + 'static {
@@ -20,14 +24,137 @@ pub trait QueryRunner: Send + Sync + 'static {
 }
 
 /// Owns the graph store and orchestrates parse → analyze → compile → execute.
+///
+/// Optionally drives a write-ahead log: when constructed via
+/// [`Database::open_with_wal`] or [`Database::recover`] the database
+/// holds an [`Arc<WalRecorder>`] that brackets every query with
+/// `begin → mutations → commit/abort → flush` while the engine mutex
+/// is held, so the WAL order is exactly the in-memory commit order.
+/// When constructed via [`Database::in_memory`] / [`Database::from_graph`]
+/// the WAL handle is `None` and the engine pays only the existing
+/// `MutationRecorder::record` null-pointer check per mutation.
 pub struct Database<S> {
     store: Arc<Mutex<S>>,
+    wal: Option<Arc<WalRecorder>>,
 }
 
 impl Database<InMemoryGraph> {
     /// Convenience constructor: a fresh, empty in-memory graph database.
     pub fn in_memory() -> Self {
         Self::from_graph(InMemoryGraph::new())
+    }
+
+    /// Open or create a WAL-enabled in-memory database from a fresh
+    /// graph.
+    ///
+    /// `WalConfig::Disabled` falls back to [`Database::in_memory`].
+    /// Otherwise, opens the WAL directory, replays any committed
+    /// events into a fresh graph, installs a [`WalRecorder`] on the
+    /// graph, and returns a database ready to serve queries.
+    ///
+    /// To restore from a snapshot in addition to the WAL, use
+    /// [`Database::recover`] instead.
+    pub fn open_with_wal(wal_config: WalConfig) -> Result<Self> {
+        match wal_config {
+            WalConfig::Disabled => Ok(Self::in_memory()),
+            WalConfig::Enabled {
+                dir,
+                sync_mode,
+                segment_target_bytes,
+            } => {
+                let mut graph = InMemoryGraph::new();
+                let (wal, events) =
+                    Wal::open(dir, sync_mode, segment_target_bytes, Lsn::ZERO)?;
+                replay_into(&mut graph, events);
+                let recorder = Arc::new(WalRecorder::new(wal));
+                graph.set_mutation_recorder(Some(
+                    recorder.clone() as Arc<dyn MutationRecorder>,
+                ));
+                Ok(Self {
+                    store: Arc::new(Mutex::new(graph)),
+                    wal: Some(recorder),
+                })
+            }
+        }
+    }
+
+    /// Restore from a snapshot file then replay any WAL records past
+    /// it.
+    ///
+    /// The snapshot's `wal_lsn` (when set) becomes the replay fence —
+    /// events at or below that LSN are already represented in the
+    /// loaded snapshot and are skipped. A missing snapshot file is
+    /// treated as "fresh start" so operators can pass the same path
+    /// on every boot.
+    ///
+    /// If the WAL contains a checkpoint marker newer than the
+    /// snapshot's `wal_lsn`, a one-line warning is printed to stderr
+    /// — the snapshot is stale relative to a more recent checkpoint
+    /// the operator is presumably aware of. Recovery still proceeds
+    /// from the snapshot's fence (replay re-applies every record
+    /// above it, which is conservative-correct); a tighter contract
+    /// is deferred to v2 because verifying that the marker's
+    /// snapshot file actually exists and is loadable is a separate
+    /// observability concern.
+    pub fn recover(
+        snapshot_path: impl AsRef<Path>,
+        wal_config: WalConfig,
+    ) -> Result<Self> {
+        let snapshot_path = snapshot_path.as_ref();
+        let mut graph = InMemoryGraph::new();
+        let snapshot_lsn = match File::open(snapshot_path) {
+            Ok(f) => {
+                let reader = BufReader::new(f);
+                let meta = graph.load_snapshot(reader)?;
+                meta.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Lsn::ZERO,
+            Err(e) => return Err(e.into()),
+        };
+
+        match wal_config {
+            WalConfig::Disabled => Ok(Self::from_graph(graph)),
+            WalConfig::Enabled {
+                dir,
+                sync_mode,
+                segment_target_bytes,
+            } => {
+                // Diagnostic peek at the WAL's newest checkpoint
+                // marker so we can warn the operator about a stale
+                // snapshot before we start replaying. Treat any error
+                // as "no marker" — the subsequent `Wal::open` will
+                // surface the real failure if there is one.
+                if dir.exists() {
+                    if let Ok(outcome) = replay_dir(&dir, Lsn::ZERO) {
+                        if let Some(marker) = outcome.checkpoint_lsn_observed {
+                            if marker > snapshot_lsn {
+                                eprintln!(
+                                    "lora-wal: snapshot at LSN {} is older than the newest \
+                                     checkpoint marker on disk (LSN {}). Replaying every WAL \
+                                     record above LSN {}; consider passing the more recent \
+                                     snapshot to --restore-from.",
+                                    snapshot_lsn.raw(),
+                                    marker.raw(),
+                                    snapshot_lsn.raw()
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let (wal, events) =
+                    Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
+                replay_into(&mut graph, events);
+                let recorder = Arc::new(WalRecorder::new(wal));
+                graph.set_mutation_recorder(Some(
+                    recorder.clone() as Arc<dyn MutationRecorder>,
+                ));
+                Ok(Self {
+                    store: Arc::new(Mutex::new(graph)),
+                    wal: Some(recorder),
+                })
+            }
+        }
     }
 }
 
@@ -37,12 +164,22 @@ where
 {
     /// Build a database from a pre-wrapped, shared store.
     pub fn new(store: Arc<Mutex<S>>) -> Self {
-        Self { store }
+        Self {
+            store,
+            wal: None,
+        }
     }
 
     /// Build a database by taking ownership of a bare graph store.
     pub fn from_graph(graph: S) -> Self {
         Self::new(Arc::new(Mutex::new(graph)))
+    }
+
+    /// Handle to the installed WAL recorder, if any. Exposed for
+    /// admin paths (checkpoint, truncate, observability) that need
+    /// to drive the WAL outside the standard query lifecycle.
+    pub fn wal(&self) -> Option<&Arc<WalRecorder>> {
+        self.wal.as_ref()
     }
 
     /// Handle to the underlying shared store — useful for callers that need
@@ -81,6 +218,35 @@ where
     }
 
     /// Execute a query with bound parameters.
+    ///
+    /// When a WAL is attached the call is bracketed by a transaction:
+    ///
+    /// 1. `recorder.arm()` after analyze + compile (so a parse /
+    ///    semantic / compile error never opens a tx that has to be
+    ///    immediately aborted). Arming is *cheap*: no record is
+    ///    appended to the WAL yet, so a pure read query that
+    ///    completes here pays nothing for the WAL hot path.
+    /// 2. The executor runs; every primitive mutation fires
+    ///    `MutationRecorder::record`, which on its first call
+    ///    lazily issues `Wal::begin` and from then on forwards
+    ///    every event to `Wal::append`.
+    /// 3. On Ok, `recorder.commit()` writes a `TxCommit` only when a
+    ///    `TxBegin` was actually allocated; the surrounding
+    ///    `recorder.flush()` runs only in that case so a read-only
+    ///    query never pays an `fsync`.
+    /// 4. On Err, `recorder.abort()` marks the (lazily-issued) tx
+    ///    for replay-time discard; if no `TxBegin` was issued,
+    ///    abort is a no-op on the WAL. The engine has no rollback,
+    ///    so the in-memory state may already be partially mutated;
+    ///    the abort marker is what gives the *durable* layer
+    ///    per-query atomicity.
+    /// 5. The recorder's poisoned flag is polled once (it also
+    ///    surfaces background-flusher fsync failures from
+    ///    `SyncMode::Group`). If set, the query fails loudly with the
+    ///    durability error so the caller can act on it; the WAL
+    ///    refuses further appends until the operator restarts the
+    ///    database, which recovers from the last consistent
+    ///    snapshot + WAL.
     pub fn execute_with_params(
         &self,
         query: &str,
@@ -89,12 +255,44 @@ where
     ) -> Result<QueryResult> {
         let (mut store, compiled) = self.compile_query(query)?;
 
-        let mut executor = MutableExecutor::new(MutableExecutionContext {
-            storage: &mut *store,
-            params,
-        });
+        if let Some(rec) = &self.wal {
+            rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
+        }
 
-        Ok(executor.execute_compiled(&compiled, options)?)
+        let exec_result: Result<QueryResult> = (|| {
+            let mut executor = MutableExecutor::new(MutableExecutionContext {
+                storage: &mut *store,
+                params,
+            });
+            Ok(executor.execute_compiled(&compiled, options)?)
+        })();
+
+        if let Some(rec) = &self.wal {
+            match &exec_result {
+                Ok(_) => match rec.commit() {
+                    Ok(WroteCommit::Yes) => {
+                        rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
+                    }
+                    Ok(WroteCommit::No) => {
+                        // Read-only query: no records were written
+                        // and there is nothing to fsync. Skip flush
+                        // entirely so PerCommit pays zero fsyncs on
+                        // pure reads.
+                    }
+                    Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
+                },
+                Err(_) => {
+                    // Best-effort abort. If it fails the recorder is
+                    // poisoned and the next branch surfaces the error.
+                    let _ = rec.abort();
+                }
+            }
+            if let Some(reason) = rec.poisoned() {
+                return Err(anyhow!("WAL poisoned: {reason}"));
+            }
+        }
+
+        exec_result
     }
 
     // ---------- Storage-agnostic utility helpers ----------
@@ -105,9 +303,31 @@ where
     // parameter.
 
     /// Drop every node and relationship.
+    ///
+    /// When a WAL is attached, `clear()` is wrapped in `arm`/`commit`
+    /// so the `MutationEvent::Clear` fired by the store reaches the
+    /// log inside a transaction (without arming, the recorder would
+    /// poison itself on the first event). WAL failures here are
+    /// best-effort: the in-memory state is still cleared so the
+    /// caller's contract holds, but the recorder's poisoned flag
+    /// will surface to the next query.
     pub fn clear(&self) {
         let mut guard = self.lock_store();
-        guard.clear();
+        match &self.wal {
+            None => guard.clear(),
+            Some(rec) => {
+                let armed = rec.arm();
+                guard.clear();
+                if armed.is_ok() {
+                    // `clear()` always emits a `MutationEvent::Clear`,
+                    // so commit returns `WroteCommit::Yes` and we
+                    // flush. If that order ever changes, the worst
+                    // case is one redundant flush call.
+                    let _ = rec.commit();
+                    let _ = rec.flush();
+                }
+            }
+        }
     }
 
     /// Number of nodes currently in the graph.
@@ -224,6 +444,77 @@ impl Database<InMemoryGraph> {
         db.load_snapshot_from(path)?;
         Ok(db)
     }
+
+    /// Take a checkpoint: snapshot the current state with the WAL's
+    /// `durable_lsn` stamped into the header, append a `Checkpoint`
+    /// marker to the WAL, then drop sealed segments at or below the
+    /// fence.
+    ///
+    /// Errors with "checkpoint requires WAL enabled" when called on a
+    /// database constructed without a WAL — operators that just want
+    /// a fence-less dump should use [`save_snapshot_to`] instead.
+    ///
+    /// The mutex-held window covers snapshot serialization plus the
+    /// checkpoint marker append. Truncation runs after the rename
+    /// but still under the mutex; making it concurrent with queries
+    /// is a v2 concern (see `docs/decisions/0004-wal.md`).
+    pub fn checkpoint_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta> {
+        let recorder = self
+            .wal
+            .as_ref()
+            .ok_or_else(|| anyhow!("checkpoint requires WAL enabled"))?;
+        let path = path.as_ref();
+        let tmp = snapshot_tmp_path(path);
+
+        let guard = self.lock_store();
+
+        // Make every record appended so far durable, then capture
+        // the LSN that becomes the snapshot fence.
+        recorder
+            .flush()
+            .map_err(|e| anyhow!("WAL flush before checkpoint failed: {e}"))?;
+        let snapshot_lsn = recorder.wal().durable_lsn();
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        let tmp_guard = TempFileGuard::new(tmp.clone());
+        let mut writer = BufWriter::new(file);
+        let meta = guard.save_checkpoint(&mut writer, snapshot_lsn.raw())?;
+
+        use std::io::Write;
+        writer.flush()?;
+        let file = writer.into_inner().map_err(|e| e.into_error())?;
+        file.sync_all()?;
+        drop(file);
+
+        std::fs::rename(&tmp, path)?;
+        tmp_guard.commit();
+
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+
+        // Append the checkpoint marker AFTER the rename succeeds —
+        // this preserves the invariant that a `Checkpoint` record
+        // in the WAL implies the snapshot it points at exists.
+        recorder
+            .checkpoint_marker(snapshot_lsn)
+            .map_err(|e| anyhow!("WAL checkpoint marker failed: {e}"))?;
+        recorder
+            .flush()
+            .map_err(|e| anyhow!("WAL flush after checkpoint marker failed: {e}"))?;
+
+        // Best-effort segment truncation. Failure here doesn't undo
+        // the checkpoint — the next call will retry.
+        let _ = recorder.truncate_up_to(snapshot_lsn);
+
+        Ok(meta)
+    }
 }
 
 fn snapshot_tmp_path(target: &Path) -> PathBuf {
@@ -291,11 +582,162 @@ where
     }
 }
 
+/// Storage-agnostic admin surface for the WAL.
+///
+/// `Database<InMemoryGraph>` picks up the blanket impl below when a
+/// WAL is attached. Transports (e.g. `lora-server`) type-erase on
+/// `Arc<dyn WalAdmin>` so they don't need to name the backend type
+/// parameter.
+///
+/// All LSNs cross the trait boundary as raw `u64` so callers don't
+/// need a dependency on `lora-wal`.
+pub trait WalAdmin: Send + Sync + 'static {
+    /// Take a checkpoint at `path`. The snapshot's header is stamped
+    /// with the WAL's `durable_lsn`; older sealed segments are then
+    /// dropped.
+    fn checkpoint(&self, path: &Path) -> Result<SnapshotMeta>;
+
+    /// Snapshot of the WAL's current state — durable / next LSN,
+    /// active / oldest segment id. Cheap; a single mutex acquisition.
+    fn wal_status(&self) -> Result<WalStatus>;
+
+    /// Drop sealed segments at or below `fence_lsn`. Idempotent.
+    fn wal_truncate(&self, fence_lsn: u64) -> Result<()>;
+}
+
+/// Snapshot of WAL state returned by [`WalAdmin::wal_status`].
+///
+/// `bg_failure` is the latched fsync error from the background flusher
+/// (only meaningful under `SyncMode::Group`). When `Some`, the WAL is
+/// poisoned and every subsequent commit will fail loudly until the
+/// operator restarts from the last consistent snapshot + WAL.
+#[derive(Debug, Clone)]
+pub struct WalStatus {
+    pub durable_lsn: u64,
+    pub next_lsn: u64,
+    pub active_segment_id: u64,
+    pub oldest_segment_id: u64,
+    pub bg_failure: Option<String>,
+}
+
+impl WalAdmin for Database<InMemoryGraph> {
+    fn checkpoint(&self, path: &Path) -> Result<SnapshotMeta> {
+        self.checkpoint_to(path)
+    }
+
+    fn wal_status(&self) -> Result<WalStatus> {
+        let recorder = self
+            .wal
+            .as_ref()
+            .ok_or_else(|| anyhow!("WAL not enabled"))?;
+        let wal = recorder.wal();
+        Ok(WalStatus {
+            durable_lsn: wal.durable_lsn().raw(),
+            next_lsn: wal.next_lsn().raw(),
+            active_segment_id: wal.active_segment_id(),
+            oldest_segment_id: wal.oldest_segment_id(),
+            bg_failure: wal.bg_failure(),
+        })
+    }
+
+    fn wal_truncate(&self, fence_lsn: u64) -> Result<()> {
+        let recorder = self
+            .wal
+            .as_ref()
+            .ok_or_else(|| anyhow!("WAL not enabled"))?;
+        recorder.truncate_up_to(Lsn::new(fence_lsn))?;
+        Ok(())
+    }
+}
+
 impl<S> QueryRunner for Database<S>
 where
     S: GraphStorage + GraphStorageMut + Send + 'static,
 {
     fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
         Database::execute(self, query, options)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replay
+// ---------------------------------------------------------------------------
+
+/// Apply a `MutationEvent` stream to a graph by dispatching each
+/// variant to the matching `GraphStorageMut` method.
+///
+/// IDs are preserved because every `CreateNode` / `CreateRelationship`
+/// event captures the id that was originally allocated and the engine
+/// allocates from the same monotonic counter — replaying creations in
+/// order against a graph at the right starting `next_*_id` reproduces
+/// the same id assignment, which is exactly what the `MutationEvent`
+/// docstring promises.
+///
+/// Replay must be invoked **before** the `WalRecorder` is installed
+/// on the graph. Otherwise the replay's own mutations would fire the
+/// recorder and re-write the same events to the WAL, doubling them on
+/// the next recovery.
+fn replay_into<G: GraphStorageMut>(graph: &mut G, events: Vec<MutationEvent>) {
+    for event in events {
+        match event {
+            MutationEvent::CreateNode {
+                id: _,
+                labels,
+                properties,
+            } => {
+                graph.create_node(labels, properties);
+            }
+            MutationEvent::CreateRelationship {
+                id: _,
+                src,
+                dst,
+                rel_type,
+                properties,
+            } => {
+                graph.create_relationship(src, dst, &rel_type, properties);
+            }
+            MutationEvent::SetNodeProperty {
+                node_id,
+                key,
+                value,
+            } => {
+                graph.set_node_property(node_id, key, value);
+            }
+            MutationEvent::RemoveNodeProperty { node_id, key } => {
+                graph.remove_node_property(node_id, &key);
+            }
+            MutationEvent::AddNodeLabel { node_id, label } => {
+                graph.add_node_label(node_id, &label);
+            }
+            MutationEvent::RemoveNodeLabel { node_id, label } => {
+                graph.remove_node_label(node_id, &label);
+            }
+            MutationEvent::SetRelationshipProperty {
+                rel_id,
+                key,
+                value,
+            } => {
+                graph.set_relationship_property(rel_id, key, value);
+            }
+            MutationEvent::RemoveRelationshipProperty { rel_id, key } => {
+                graph.remove_relationship_property(rel_id, &key);
+            }
+            MutationEvent::DeleteRelationship { rel_id } => {
+                graph.delete_relationship(rel_id);
+            }
+            MutationEvent::DeleteNode { node_id } => {
+                graph.delete_node(node_id);
+            }
+            MutationEvent::DetachDeleteNode { node_id } => {
+                // After the cascading DeleteRelationship +
+                // DeleteNode events have already replayed, the node
+                // is gone and this becomes a no-op. Calling it
+                // anyway is harmless.
+                graph.detach_delete_node(node_id);
+            }
+            MutationEvent::Clear => {
+                graph.clear();
+            }
+        }
     }
 }

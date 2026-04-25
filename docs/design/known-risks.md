@@ -57,7 +57,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 | Gap | Classification | Risk |
 |-----|---------------|------|
-| No continuous persistence — data between snapshot saves is lost on crash | Observed | **Medium** — point-in-time snapshots via `Database::save_snapshot_to` exist; no WAL yet. See [Snapshots](../operations/snapshots.md) |
+| WAL surface is Rust + `lora-server` only — bindings (Python / Node.js / Ruby / WASM / Go FFI) remain snapshot-only in v0.3.x | Observed | **Low–Medium** — Continuous durability is available via `Database::open_with_wal` / `--wal-dir`. See [WAL](../operations/wal.md). Binding parity is a separate decision tracked in [0004-wal.md](../decisions/0004-wal.md). |
 | No uniqueness constraints | Observed | **Medium** — duplicate data can be created silently |
 | No property indexes | Observed | **Medium** — property filters are scans (filtered by label when possible) |
 | No transaction isolation beyond single-query atomicity | Observed | **Medium** — global mutex serializes everything |
@@ -131,7 +131,11 @@ The following features were listed as gaps in earlier revisions of this document
 
 ### Long term (capability)
 
-10. Persistence (WAL and/or snapshots)
+10. ~~Persistence (WAL and/or snapshots)~~ — partially addressed:
+    snapshots ship as part of the in-memory core, the WAL ships in
+    v0.3.x for the Rust API + `lora-server`. Binding parity for the
+    WAL surface (Python / Node.js / Ruby / WASM / Go FFI) and
+    multi-process WAL exclusion remain open.
 11. Richer optimizer: join ordering, limit push-down, index selection
 12. `CALL` / procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`)
 13. `FOREACH`

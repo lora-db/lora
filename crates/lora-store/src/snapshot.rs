@@ -143,6 +143,23 @@ pub trait Snapshotable {
     fn save_snapshot<W: Write>(&self, writer: W) -> Result<SnapshotMeta, SnapshotError>;
 
     fn load_snapshot<R: Read>(&mut self, reader: R) -> Result<SnapshotMeta, SnapshotError>;
+
+    /// Save a snapshot stamped with a WAL log position, suitable as a
+    /// checkpoint fence. The fence is the LSN past which the WAL is
+    /// the source of truth on recovery; replay skips records at or
+    /// below it.
+    ///
+    /// Required (no default) because a fence-less default would
+    /// silently break recovery for any backend that opted into a
+    /// WAL — every backend that implements `Snapshotable` must be
+    /// able to produce a checkpoint. The only in-tree impl
+    /// (`InMemoryGraph`) just calls `write_snapshot` with
+    /// `Some(wal_lsn)`.
+    fn save_checkpoint<W: Write>(
+        &self,
+        writer: W,
+        wal_lsn: u64,
+    ) -> Result<SnapshotMeta, SnapshotError>;
 }
 
 // ---------------------------------------------------------------------------

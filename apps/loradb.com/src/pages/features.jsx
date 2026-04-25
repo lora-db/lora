@@ -4,61 +4,113 @@ import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 
 import CypherCode from '@site/src/components/CypherCode';
+import LinkCard from '@site/src/components/LinkCard';
 import styles from './features.module.scss';
 
 // -------------------------------------------------------------------
 // Static content
 // -------------------------------------------------------------------
 
-const FEATURE_GROUPS = [
+// Anchor strip below the hero. Each entry maps to a section id below.
+const ANCHORS = [
+  { id: 'principles', label: 'Principles' },
+  { id: 'coverage', label: 'Cypher coverage' },
+  { id: 'functions', label: 'Functions & types' },
+  { id: 'architecture', label: 'Architecture' },
+  { id: 'surfaces', label: 'Surfaces' },
+  { id: 'operations', label: 'Operations' },
+  { id: 'limits', label: 'Limits' },
+];
+
+// Design principles — moved from the homepage's "value props" block
+// so the features page leads with the bets the engine made before
+// listing what it supports.
+const PRINCIPLES = [
   {
-    icon: 'pipeline',
-    title: 'Compiler-style query engine',
-    body:
-      'Every query walks a real pipeline — PEG parser, semantic analyzer, logical and physical plans, executor — written from scratch in Rust and inspectable end-to-end.',
+    title: 'Relationships are first-class',
+    body: 'Edges are typed, directed, and property-bearing. Traversal is O(degree), not a stack of self-joins.',
   },
   {
-    icon: 'graph',
-    title: 'Property graph model',
-    body:
-      'Nodes carry zero or more labels. Relationships are typed, directed, and property-bearing. Properties on either side hold scalars, lists, maps, temporals, or spatial points.',
+    title: 'Cypher where it counts',
+    body: 'A pragmatic subset of Cypher — MATCH, WITH, WHERE, CREATE, RETURN. Short queries, readable intent.',
   },
   {
-    icon: 'cypher',
-    title: 'Read and write Cypher',
-    body:
-      'MATCH, OPTIONAL MATCH, WHERE, RETURN, WITH, ORDER BY, SKIP, LIMIT, DISTINCT, UNWIND, UNION — alongside CREATE, MERGE (with ON MATCH / ON CREATE), SET, REMOVE, DELETE, DETACH DELETE.',
+    title: 'Schema-free by design',
+    body: 'Add a label, an edge type, or a property by writing it. No ALTER, no migration, no restart.',
   },
   {
-    icon: 'paths',
-    title: 'Variable-length paths',
-    body:
-      'Bounded and unbounded path quantifiers, zero-hop matches, cycle avoidance, path binding, shortestPath() and allShortestPaths() — without bolting on a separate traversal API.',
+    title: 'Small enough to read',
+    body: 'A compiler-style pipeline of focused crates from parser to executor. If the database matters to your product, you should be able to read it.',
+  },
+];
+
+// Each Cypher coverage block uses CypherCode for the snippet so the
+// tokens render with the same colours as fenced code blocks elsewhere
+// on the site. Each card now carries an explicit "→ reference" route
+// so the page is a router, not just a brochure.
+const CYPHER_COVERAGE = [
+  {
+    label: 'Pattern matching',
+    snippet:
+      "MATCH (a:Person)-[:KNOWS]->(b:Person)\nWHERE a.city = 'Berlin'\nRETURN a.name, collect(b.name) AS friends",
+    to: '/docs/queries/match',
+    linkLabel: 'MATCH reference',
   },
   {
-    icon: 'agg',
-    title: 'Aggregation and expressions',
-    body:
-      'count, sum, avg, min, max, collect, stdev, percentileCont and friends. Plus arithmetic, regex (=~), CASE, list and pattern comprehension, REDUCE, EXISTS subqueries, and map projection.',
+    label: 'Writing data',
+    snippet:
+      "MERGE (u:User {email: $email})\nON CREATE SET u.created = datetime()\nON MATCH  SET u.last_seen = datetime()",
+    to: '/docs/queries/unwind-merge',
+    linkLabel: 'MERGE reference',
   },
   {
-    icon: 'temporal',
-    title: 'Temporal and spatial types',
-    body:
-      'Date, Time, LocalTime, DateTime, LocalDateTime, Duration with arithmetic and truncation. 2D and 3D Points in Cartesian and WGS-84, with Euclidean and Haversine distance.',
+    label: 'Variable-length paths',
+    snippet:
+      'MATCH p = shortestPath(\n  (a:Stop {code: $from})-[:CONNECTS*..6]->(b:Stop {code: $to})\n)\nRETURN length(p) AS hops, [n IN nodes(p) | n.code] AS via',
+    to: '/docs/queries/paths',
+    linkLabel: 'Paths reference',
   },
   {
-    icon: 'functions',
-    title: '60+ built-in functions',
-    body:
-      'String, math (full trigonometry), list, type conversion, entity introspection, path, temporal, and spatial. No procedure plugins to install — they ship in the engine.',
+    label: 'Aggregation pipelines',
+    snippet:
+      "MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})\nWITH u, count(o) AS orders, sum(o.total) AS spend\nWHERE orders >= 3\nRETURN u.email, orders, spend ORDER BY spend DESC",
+    to: '/docs/queries/aggregation',
+    linkLabel: 'Aggregation reference',
   },
   {
-    icon: 'formats',
-    title: 'Multiple result shapes',
-    body:
-      'Choose rows, rowArrays, graph, or combined output per query. The same engine speaks the format that fits your client — table view, raw arrays, or the actual subgraph.',
+    label: 'Temporal predicates',
+    snippet:
+      "MATCH (e:Event)\nWHERE e.at >= datetime() - duration('P7D')\nRETURN date(e.at) AS day, count(*) AS events\nORDER BY day",
+    to: '/docs/data-types/temporal',
+    linkLabel: 'Temporal types',
   },
+  {
+    label: 'Spatial distance',
+    snippet:
+      "WITH point({latitude: 52.52, longitude: 13.405}) AS origin\nMATCH (s:Store)\nWHERE distance(s.loc, origin) < 5000\nRETURN s.name, distance(s.loc, origin) AS metres\nORDER BY metres",
+    to: '/docs/data-types/spatial',
+    linkLabel: 'Spatial types',
+  },
+];
+
+// Function categories. Mirrors the categories table in
+// docs/functions/overview.md so links resolve cleanly.
+const FUNCTION_CATEGORIES = [
+  { label: 'Aggregation', to: '/docs/functions/aggregation' },
+  { label: 'String', to: '/docs/functions/string' },
+  { label: 'Math', to: '/docs/functions/math' },
+  { label: 'List', to: '/docs/functions/list' },
+  { label: 'Temporal', to: '/docs/functions/temporal' },
+  { label: 'Spatial', to: '/docs/functions/spatial' },
+  { label: 'Vector', to: '/docs/functions/vectors' },
+];
+
+const TYPE_CATEGORIES = [
+  { label: 'Scalars', to: '/docs/data-types/scalars' },
+  { label: 'Lists & Maps', to: '/docs/data-types/lists-and-maps' },
+  { label: 'Temporal', to: '/docs/data-types/temporal' },
+  { label: 'Spatial', to: '/docs/data-types/spatial' },
+  { label: 'Vectors', to: '/docs/data-types/vectors' },
 ];
 
 // Pipeline stages. Each one corresponds to a real crate in the
@@ -91,41 +143,10 @@ const PIPELINE_STAGES = [
   },
 ];
 
-// Each Cypher coverage block uses CypherCode for the snippet so the
-// tokens render with the same colours as fenced code blocks elsewhere
-// on the site.
-const CYPHER_COVERAGE = [
-  {
-    label: 'Pattern matching',
-    snippet:
-      "MATCH (a:Person)-[:KNOWS]->(b:Person)\nWHERE a.city = 'Berlin'\nRETURN a.name, collect(b.name) AS friends",
-  },
-  {
-    label: 'Writing data',
-    snippet:
-      "MERGE (u:User {email: $email})\nON CREATE SET u.created = datetime()\nON MATCH  SET u.last_seen = datetime()",
-  },
-  {
-    label: 'Variable-length paths',
-    snippet:
-      'MATCH p = shortestPath(\n  (a:Stop {code: $from})-[:CONNECTS*..6]->(b:Stop {code: $to})\n)\nRETURN length(p) AS hops, [n IN nodes(p) | n.code] AS via',
-  },
-  {
-    label: 'Aggregation pipelines',
-    snippet:
-      "MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})\nWITH u, count(o) AS orders, sum(o.total) AS spend\nWHERE orders >= 3\nRETURN u.email, orders, spend ORDER BY spend DESC",
-  },
-  {
-    label: 'Temporal predicates',
-    snippet:
-      "MATCH (e:Event)\nWHERE e.at >= datetime() - duration('P7D')\nRETURN date(e.at) AS day, count(*) AS events\nORDER BY day",
-  },
-  {
-    label: 'Spatial distance',
-    snippet:
-      "WITH point({latitude: 52.52, longitude: 13.405}) AS origin\nMATCH (s:Store)\nWHERE distance(s.loc, origin) < 5000\nRETURN s.name, distance(s.loc, origin) AS metres\nORDER BY metres",
-  },
-];
+// Result-format chips shown alongside the architecture pipeline so
+// readers see that "format" is a per-query knob, not a binding-level
+// decision.
+const RESULT_FORMATS = ['rows', 'rowArrays', 'graph', 'combined'];
 
 const SURFACES = [
   {
@@ -133,6 +154,8 @@ const SURFACES = [
     label: 'Rust crate',
     file: 'main.rs',
     note: 'lora-database',
+    guideTo: '/docs/getting-started/rust',
+    guideLabel: 'Rust guide',
     code: `use lora_database::Database;
 
 let db = Database::in_memory();
@@ -148,6 +171,8 @@ let result = db.execute(
     label: 'HTTP server',
     file: 'shell',
     note: 'lora-server',
+    guideTo: '/docs/getting-started/server',
+    guideLabel: 'Server guide',
     code: `# Health check
 curl http://127.0.0.1:4747/health
 
@@ -164,6 +189,8 @@ curl -s http://127.0.0.1:4747/query \\
     label: 'Node.js',
     file: 'app.ts',
     note: 'lora-node · prototype',
+    guideTo: '/docs/getting-started/node',
+    guideLabel: 'Node.js guide',
     code: `import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();
@@ -181,6 +208,8 @@ const result = await db.execute(
     label: 'Python',
     file: 'app.py',
     note: 'lora-python · prototype',
+    guideTo: '/docs/getting-started/python',
+    guideLabel: 'Python guide',
     code: `from lora_python import Database
 
 db = Database.create()
@@ -196,6 +225,8 @@ result = db.execute(
     label: 'WebAssembly',
     file: 'main.ts',
     note: 'lora-wasm · prototype',
+    guideTo: '/docs/getting-started/wasm',
+    guideLabel: 'WASM guide',
     code: `import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
@@ -210,6 +241,8 @@ const result = await db.execute(
     label: 'Go',
     file: 'main.go',
     note: 'lora-go · prototype',
+    guideTo: '/docs/getting-started/go',
+    guideLabel: 'Go guide',
     code: `import lora "github.com/lora-db/lora/crates/lora-go"
 
 db, _ := lora.New()
@@ -227,6 +260,8 @@ r, _ := db.Execute(
     label: 'Ruby',
     file: 'app.rb',
     note: 'lora-ruby · prototype',
+    guideTo: '/docs/getting-started/ruby',
+    guideLabel: 'Ruby guide',
     code: `require "lora_ruby"
 
 db = LoraRuby::Database.create
@@ -238,37 +273,10 @@ result = db.execute(
   },
 ];
 
-const WORKLOADS = [
-  {
-    title: 'Local development',
-    body: 'Spin up a graph in a function call. No daemon to babysit, no docker-compose to maintain.',
-  },
-  {
-    title: 'Test fixtures',
-    body: 'Seed a graph per test, run assertions, drop it. Each test gets a clean database in microseconds.',
-  },
-  {
-    title: 'Prototypes',
-    body: 'Model a domain in Cypher before committing to a schema. Add labels and edge types by writing them.',
-  },
-  {
-    title: 'Notebooks',
-    body: 'Drive a graph from Python, Ruby, or WASM in a notebook. Inspect rows, the subgraph, or both.',
-  },
-  {
-    title: 'Embedded apps',
-    body: 'Ship a graph alongside the binary. Plan queries, scene graphs, and rules live next to the code.',
-  },
-  {
-    title: 'Browser & edge',
-    body: 'Compile to WebAssembly and run a graph in the same context as the UI or the request handler.',
-  },
-];
-
 const BOUNDARIES = [
   {
     title: 'In-memory only',
-    body: 'The store is BTreeMap-backed and lives in process memory. No persistence yet — restart, fresh graph.',
+    body: 'The store is BTreeMap-backed and lives in process memory. Manual snapshots exist; continuous durability does not.',
   },
   {
     title: 'No property indexes',
@@ -300,71 +308,6 @@ function Icon({ name }) {
     'aria-hidden': true,
   };
   switch (name) {
-    case 'pipeline':
-      return (
-        <svg {...common}>
-          <circle cx="4" cy="12" r="2" />
-          <circle cx="12" cy="12" r="2" />
-          <circle cx="20" cy="12" r="2" />
-          <path d="M6 12h4M14 12h4" />
-        </svg>
-      );
-    case 'graph':
-      return (
-        <svg {...common}>
-          <circle cx="6" cy="6" r="2" />
-          <circle cx="18" cy="6" r="2" />
-          <circle cx="6" cy="18" r="2" />
-          <circle cx="18" cy="18" r="2" />
-          <circle cx="12" cy="12" r="2" />
-          <path d="M7.5 7.5l3 3M16.5 7.5l-3 3M7.5 16.5l3-3M16.5 16.5l-3-3" />
-        </svg>
-      );
-    case 'cypher':
-      return (
-        <svg {...common}>
-          <path d="M4 6h16M4 12h10M4 18h16" />
-          <path d="M17 11l3 1.5L17 14" />
-        </svg>
-      );
-    case 'paths':
-      return (
-        <svg {...common}>
-          <circle cx="5" cy="6" r="1.6" />
-          <circle cx="12" cy="12" r="1.6" />
-          <circle cx="19" cy="6" r="1.6" />
-          <circle cx="19" cy="18" r="1.6" />
-          <path d="M6.4 6.6L10.6 11.4M13.4 12.6L17.6 16.6M13 11l5-4" />
-        </svg>
-      );
-    case 'agg':
-      return (
-        <svg {...common}>
-          <path d="M4 20V8M10 20v-6M16 20v-9M22 20v-4" />
-          <path d="M3 20h20" />
-        </svg>
-      );
-    case 'temporal':
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="13" r="7" />
-          <path d="M12 9v4l2.5 2M9 3h6" />
-        </svg>
-      );
-    case 'functions':
-      return (
-        <svg {...common}>
-          <path d="M9 4c-2 0-3 1-3 4v2H4M9 4c2 0 3 1 3 4v8c0 3 1 4 3 4M15 10h5" />
-        </svg>
-      );
-    case 'formats':
-      return (
-        <svg {...common}>
-          <rect x="3" y="4" width="8" height="16" rx="1.5" />
-          <rect x="13" y="4" width="8" height="7" rx="1.5" />
-          <rect x="13" y="13" width="8" height="7" rx="1.5" />
-        </svg>
-      );
     case 'rust':
       return (
         <svg {...common}>
@@ -441,6 +384,26 @@ function ArrowIcon() {
   );
 }
 
+// Architecture pipeline arrow drawn between stages.
+function StageArrow() {
+  return (
+    <svg
+      className={styles.archArrow}
+      width="22"
+      height="14"
+      viewBox="0 0 24 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 7h18M14 1l6 6-6 6" />
+    </svg>
+  );
+}
+
 const SURFACE_ICONS = {
   rust: 'rust',
   http: 'http',
@@ -459,10 +422,102 @@ export default function Features() {
   const [activeSurface, setActiveSurface] = React.useState(SURFACES[0].id);
   const surface = SURFACES.find((s) => s.id === activeSurface) ?? SURFACES[0];
 
+  // Scroll-spy for the "On this page" strip. The active section is the
+  // last one whose top has crossed the nav line (NAV_OFFSET pixels from
+  // the viewport top). This matches reader intuition: "I'm parked in
+  // whichever section last scrolled past the bar."
+  //
+  // We also mirror the Docusaurus navbar's hideOnScroll state so the
+  // strip can slide up with the navbar (instead of leaving an empty
+  // band above itself when the navbar is hidden).
+  const [activeAnchor, setActiveAnchor] = React.useState(ANCHORS[0]?.id);
+  const [navbarHidden, setNavbarHidden] = React.useState(false);
+  const anchorNavRef = React.useRef(null);
+  React.useEffect(() => {
+    const els = ANCHORS.map((a) => document.getElementById(a.id)).filter(
+      Boolean,
+    );
+    if (els.length === 0) return undefined;
+
+    // Active threshold = navbar height + anchor-strip height + small
+    // buffer. A section becomes active once its top has crossed that
+    // line — i.e. once it sits visually under the strip.
+    const NAV_OFFSET = 130;
+    let frame = 0;
+
+    // Walk offsetParents to get the strip's absolute document Y.
+    // Layout-based, transform-independent — safe to call while the
+    // strip is currently lifted.
+    const getAbsTop = (el) => {
+      let y = 0;
+      let cur = el;
+      while (cur) {
+        y += cur.offsetTop;
+        cur = cur.offsetParent;
+      }
+      return y;
+    };
+
+    // Track scroll direction so the strip's hide/reveal animation
+    // triggers at the *same* scroll event as the Docusaurus navbar's,
+    // not midway through the navbar's transition.
+    let lastY = window.scrollY;
+    let lifted = false;
+    const TOP_REVEAL_THRESHOLD = 60; // matches Docusaurus's "always show near top"
+
+    const update = () => {
+      frame = 0;
+      let current = els[0].id;
+      for (const el of els) {
+        if (el.getBoundingClientRect().top - NAV_OFFSET <= 0) current = el.id;
+      }
+      setActiveAnchor(current);
+
+      const navbar = document.querySelector('.navbar');
+      const strip = anchorNavRef.current;
+      if (!navbar || !strip) {
+        setNavbarHidden(false);
+        return;
+      }
+
+      const y = window.scrollY;
+      const navHeight = navbar.offsetHeight || 60;
+      const stripIsPinned = y >= getAbsTop(strip) - navHeight;
+      const goingUp = y < lastY;
+      const goingDown = y > lastY;
+
+      // Reveal: scrolling up, or near the top of the page. Hide: only
+      // once the strip is sticky-pinned AND the user is scrolling
+      // down. Below the pin threshold, the strip lives inside the
+      // hero in normal flow — never lift it then.
+      if (goingUp || y < TOP_REVEAL_THRESHOLD) {
+        lifted = false;
+      } else if (goingDown && stripIsPinned) {
+        lifted = true;
+      }
+      setNavbarHidden(lifted);
+      lastY = y;
+    };
+
+    const onScroll = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(update);
+    };
+
+    update();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, []);
+
   return (
     <Layout
       title="Features"
-      description="LoraDB is an in-memory graph database with a full Cypher engine, written in Rust. Explore the query pipeline, language coverage, runtime surfaces, and the workloads it's built for."
+      description="LoraDB is an in-memory graph database with a full Cypher engine, written in Rust. Explore the query pipeline, language coverage, runtime surfaces, and the lines we won't pretend to cross."
       wrapperClassName={styles.wrapper}
     >
       <main className={styles.page}>
@@ -474,27 +529,27 @@ export default function Features() {
               In-memory · Cypher · Rust
             </p>
             <h1 id="features-hero-title" className={styles.title}>
-              <span className={styles.titleAccent}>LoraDB</span> features.
+              Everything <span className={styles.titleAccent}>LoraDB</span>{' '}
+              supports — and what it doesn’t.
             </h1>
             <p className={styles.tagline}>
-              An in-memory property graph database with a full Cypher engine,
-              written from scratch in Rust. Parser, analyzer, compiler,
-              executor and store — small enough to embed, transparent enough
-              to read.
+              A complete map of the engine — Cypher coverage, surfaces,
+              architecture, and the lines we won’t pretend to cross. Pick what
+              you came here to verify.
             </p>
             <div className={styles.actions}>
               <Link
-                to="/docs/getting-started/installation"
+                to="/docs/queries/cheat-sheet"
                 className={clsx(styles.btn, styles.btnPrimary)}
               >
-                Get started
+                Cheat sheet
                 <ArrowIcon />
               </Link>
               <Link
-                to="/playground"
+                to="/docs/limitations"
                 className={clsx(styles.btn, styles.btnSecondary)}
               >
-                Try the playground
+                Limitations
               </Link>
               <Link
                 to="https://github.com/lora-db/lora"
@@ -531,24 +586,60 @@ export default function Features() {
           <div className={styles.heroGlow} aria-hidden="true" />
         </section>
 
-        {/* ---------- FEATURE OVERVIEW ---------- */}
+        {/* ---------- ANCHOR NAV ---------- */}
+        <nav
+          ref={anchorNavRef}
+          className={clsx(
+            styles.anchorNav,
+            navbarHidden && styles.anchorNavLifted,
+          )}
+          aria-label="On this page"
+        >
+          <div className={styles.anchorNavInner}>
+            <span className={styles.anchorNavLabel}>On this page</span>
+            <ul className={styles.anchorNavList}>
+              {ANCHORS.map((a) => (
+                <li key={a.id}>
+                  <a
+                    href={`#${a.id}`}
+                    className={clsx(
+                      styles.anchorNavLink,
+                      activeAnchor === a.id && styles.anchorNavLinkActive,
+                    )}
+                    aria-current={activeAnchor === a.id ? 'true' : undefined}
+                  >
+                    {a.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </nav>
+
+        {/* ---------- DESIGN PRINCIPLES ---------- */}
         <section
-          className={styles.overview}
-          aria-labelledby="features-overview-title"
+          id="principles"
+          className={styles.principles}
+          aria-labelledby="features-principles-title"
         >
           <div className={styles.sectionInner}>
-            <p className={styles.sectionEyebrow}>What you get</p>
-            <h2 id="features-overview-title" className={styles.sectionTitle}>
-              A graph engine you can hold in your head.
+            <p className={styles.sectionEyebrow}>Design principles</p>
+            <h2
+              id="features-principles-title"
+              className={styles.sectionTitle}
+            >
+              The bets the engine took.
             </h2>
-            <div className={styles.featureGrid}>
-              {FEATURE_GROUPS.map((f) => (
-                <article key={f.title} className={styles.featureCard}>
-                  <div className={styles.featureIcon} aria-hidden="true">
-                    <Icon name={f.icon} />
+            <div className={styles.principlesGrid}>
+              {PRINCIPLES.map((p, i) => (
+                <article key={p.title} className={styles.principleCard}>
+                  <span className={styles.principleIndex}>
+                    {String(i + 1).padStart(2, '0')}
+                  </span>
+                  <div>
+                    <h3>{p.title}</h3>
+                    <p>{p.body}</p>
                   </div>
-                  <h3>{f.title}</h3>
-                  <p>{f.body}</p>
                 </article>
               ))}
             </div>
@@ -557,6 +648,7 @@ export default function Features() {
 
         {/* ---------- CYPHER COVERAGE ---------- */}
         <section
+          id="coverage"
           className={styles.coverage}
           aria-labelledby="features-coverage-title"
         >
@@ -580,21 +672,181 @@ export default function Features() {
                   <pre className={styles.coverageCode}>
                     <code>{c.snippet}</code>
                   </pre>
+                  <Link to={c.to} className={styles.coverageLink}>
+                    {c.linkLabel}
+                    <ArrowIcon />
+                  </Link>
                 </article>
               ))}
             </div>
-            <p className={styles.coverageFoot}>
-              See the{' '}
-              <Link to="/docs/queries">queries reference</Link> for the full
-              clause list, or browse the{' '}
-              <Link to="/docs/functions/overview">functions catalogue</Link>{' '}
-              for the 60+ built-ins.
+            <div className={styles.coverageFooter}>
+              <LinkCard
+                to="/docs/queries/cheat-sheet"
+                eyebrow="One-pager"
+                title="Cypher cheat sheet"
+                variant="compact"
+              />
+              <LinkCard
+                to="/docs/queries/examples"
+                eyebrow="Tour"
+                title="Copy-paste examples"
+                variant="compact"
+              />
+              <LinkCard
+                to="/docs/queries"
+                eyebrow="Reference"
+                title="Every clause, indexed"
+                variant="compact"
+              />
+            </div>
+          </div>
+        </section>
+
+        {/* ---------- FUNCTIONS & DATA TYPES ---------- */}
+        <section
+          id="functions"
+          className={styles.functions}
+          aria-labelledby="features-functions-title"
+        >
+          <div className={styles.sectionInner}>
+            <p className={styles.sectionEyebrow}>Functions & types</p>
+            <h2 id="features-functions-title" className={styles.sectionTitle}>
+              60+ built-ins. Every value typed.
+            </h2>
+            <div className={styles.functionsGrid}>
+              <article className={styles.catalogue}>
+                <header className={styles.catalogueHeader}>
+                  <h3>Functions</h3>
+                  <p>
+                    String, math, list, aggregation, temporal, spatial, vector
+                    — shipped with the engine. No procedure plugins to install.
+                  </p>
+                </header>
+                <ul className={styles.chipList}>
+                  {FUNCTION_CATEGORIES.map((c) => (
+                    <li key={c.label}>
+                      <Link to={c.to} className={styles.chip}>
+                        {c.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+                <Link
+                  to="/docs/functions/overview"
+                  className={styles.catalogueLink}
+                >
+                  All functions
+                  <ArrowIcon />
+                </Link>
+              </article>
+
+              <article className={styles.catalogue}>
+                <header className={styles.catalogueHeader}>
+                  <h3>Data types</h3>
+                  <p>
+                    Every value — stored as a property, projected in a RETURN,
+                    or bound as a parameter — has one of these types.
+                  </p>
+                </header>
+                <ul className={styles.chipList}>
+                  {TYPE_CATEGORIES.map((c) => (
+                    <li key={c.label}>
+                      <Link to={c.to} className={styles.chip}>
+                        {c.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+                <Link
+                  to="/docs/data-types/overview"
+                  className={styles.catalogueLink}
+                >
+                  All data types
+                  <ArrowIcon />
+                </Link>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        {/* ---------- ARCHITECTURE (NEW — renders the pipeline) ---------- */}
+        <section
+          id="architecture"
+          className={styles.architecture}
+          aria-labelledby="features-architecture-title"
+        >
+          <div className={styles.sectionInner}>
+            <p className={styles.sectionEyebrow}>Architecture</p>
+            <h2
+              id="features-architecture-title"
+              className={styles.sectionTitle}
+            >
+              A compiler-style pipeline you can read.
+            </h2>
+            <p className={styles.architectureLede}>
+              Every query walks a real pipeline — parser, analyzer, compiler,
+              executor — written from scratch in Rust. Each stage is one crate;
+              the names line up with the source tree.
             </p>
+            <ol className={styles.archStages}>
+              {PIPELINE_STAGES.map((s, i) => (
+                <React.Fragment key={s.name}>
+                  <li className={styles.archStage}>
+                    <span className={styles.archStep}>{s.step}</span>
+                    <h3 className={styles.archStageName}>{s.name}</h3>
+                    <code className={styles.archCrate}>{s.crate}</code>
+                    <p className={styles.archStageBody}>{s.body}</p>
+                  </li>
+                  {i < PIPELINE_STAGES.length - 1 ? (
+                    <li
+                      className={styles.archConnector}
+                      aria-hidden="true"
+                    >
+                      <StageArrow />
+                    </li>
+                  ) : null}
+                </React.Fragment>
+              ))}
+            </ol>
+
+            <div className={styles.archFooter}>
+              <article className={styles.archFormats}>
+                <header>
+                  <p className={styles.miniEyebrow}>Result formats</p>
+                  <h3>Pick a shape per query</h3>
+                </header>
+                <ul className={styles.formatChips}>
+                  {RESULT_FORMATS.map((f) => (
+                    <li key={f}>
+                      <code>{f}</code>
+                    </li>
+                  ))}
+                </ul>
+                <Link
+                  to="/docs/concepts/result-formats"
+                  className={styles.catalogueLink}
+                >
+                  Result formats reference
+                  <ArrowIcon />
+                </Link>
+              </article>
+              <Link
+                to="https://github.com/lora-db/lora"
+                className={styles.archSourceLink}
+              >
+                <span>
+                  <span className={styles.miniEyebrow}>Open the source</span>
+                  Read the engine on GitHub
+                </span>
+                <ArrowIcon />
+              </Link>
+            </div>
           </div>
         </section>
 
         {/* ---------- SURFACES ---------- */}
         <section
+          id="surfaces"
           className={styles.surfaces}
           aria-labelledby="features-surfaces-title"
         >
@@ -659,39 +911,55 @@ export default function Features() {
                     <code>{surface.code}</code>
                   </pre>
                 </div>
+                <Link to={surface.guideTo} className={styles.surfaceGuideLink}>
+                  {surface.guideLabel}
+                  <ArrowIcon />
+                </Link>
               </div>
             </div>
           </div>
         </section>
 
-        {/* ---------- LOCAL-FIRST WORKLOADS ---------- */}
+        {/* ---------- OPERATIONS — HTTP & SNAPSHOTS ---------- */}
         <section
-          className={styles.workloads}
-          aria-labelledby="features-workloads-title"
+          id="operations"
+          className={styles.operations}
+          aria-labelledby="features-operations-title"
         >
           <div className={styles.sectionInner}>
-            <p className={styles.sectionEyebrow}>Built for</p>
-            <h2 id="features-workloads-title" className={styles.sectionTitle}>
-              Local-first graph workloads.
+            <p className={styles.sectionEyebrow}>Operations</p>
+            <h2
+              id="features-operations-title"
+              className={styles.sectionTitle}
+            >
+              Run it as a server. Save it to a file.
             </h2>
-            <div className={styles.workloadGrid}>
-              {WORKLOADS.map((w, i) => (
-                <article key={w.title} className={styles.workloadCard}>
-                  <span className={styles.workloadIndex}>
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <div>
-                    <h3>{w.title}</h3>
-                    <p>{w.body}</p>
-                  </div>
-                </article>
-              ))}
+            <div className={styles.opsGrid}>
+              <LinkCard
+                to="/docs/api/http"
+                eyebrow="HTTP API"
+                title="Run LoraDB as a server"
+              >
+                One Axum process serves exactly one in-memory graph. Health,
+                query, and opt-in admin endpoints — meant to live behind your
+                own ingress.
+              </LinkCard>
+              <LinkCard
+                to="/docs/snapshot"
+                eyebrow="Snapshots"
+                title="Manual point-in-time saves"
+              >
+                Dump the full graph to a single file and load it back later.
+                Operator-controlled, atomic on rename — not a WAL, not
+                continuous durability.
+              </LinkCard>
             </div>
           </div>
         </section>
 
         {/* ---------- BOUNDARIES ---------- */}
         <section
+          id="limits"
           className={styles.boundary}
           aria-labelledby="features-boundary-title"
         >
@@ -713,12 +981,23 @@ export default function Features() {
                 </article>
               ))}
             </div>
-            <p className={styles.boundaryFoot}>
-              Read the full{' '}
-              <Link to="/docs/limitations">limitations reference</Link> for an
-              exhaustive list of unsupported clauses, operators, and runtime
-              features.
-            </p>
+            <div className={styles.boundaryFooter}>
+              <LinkCard
+                to="/docs/limitations"
+                eyebrow="Reference"
+                title="The full limitations list"
+                variant="accent"
+              >
+                Every unsupported clause, operator, function, and runtime
+                feature — with what to reach for instead.
+              </LinkCard>
+              <LinkCard
+                to="/docs/troubleshooting"
+                eyebrow="Errors"
+                title="Troubleshooting"
+                variant="compact"
+              />
+            </div>
           </div>
         </section>
 
@@ -741,16 +1020,10 @@ export default function Features() {
                 <ArrowIcon />
               </Link>
               <Link
-                to="/docs/queries/examples"
+                to="/docs/queries/cheat-sheet"
                 className={clsx(styles.btn, styles.btnSecondary)}
               >
-                Query examples
-              </Link>
-              <Link
-                to="/docs/why"
-                className={clsx(styles.btn, styles.btnGhost)}
-              >
-                Why LoraDB
+                Cheat sheet
               </Link>
             </div>
           </div>
