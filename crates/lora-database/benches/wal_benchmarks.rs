@@ -3,15 +3,14 @@
 //! These exercise the four durability profiles end-to-end through
 //! `Database::execute_with_params`:
 //!
-//! - **`no_wal`**         — `Database::in_memory()` (the existing fast
-//!                          path; serves as the baseline the others are
-//!                          compared against).
-//! - **`per_commit`**     — `WalConfig::Enabled` with `SyncMode::PerCommit`
-//!                          (fsync before every commit returns).
-//! - **`group`**          — `WalConfig::Enabled` with `SyncMode::Group`
-//!                          (write-only on commit, bg flusher fsyncs).
-//! - **`none`**           — `WalConfig::Enabled` with `SyncMode::None`
-//!                          (no fsync at all, OS-buffered).
+//! - **`no_wal`** — `Database::in_memory()` (the existing fast path;
+//!   serves as the baseline the others are compared against).
+//! - **`per_commit`** — `WalConfig::Enabled` with `SyncMode::PerCommit`
+//!   (fsync before every commit returns).
+//! - **`group`** — `WalConfig::Enabled` with `SyncMode::Group`
+//!   (write-only on commit, bg flusher fsyncs).
+//! - **`none`** — `WalConfig::Enabled` with `SyncMode::None`
+//!   (no fsync at all, OS-buffered).
 //!
 //! The shape that matters is *commit latency* — every iteration runs a
 //! single tiny `CREATE` statement so the engine work is negligible and

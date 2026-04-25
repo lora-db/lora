@@ -29,6 +29,7 @@ impl DirLock {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(false)
                 .open(&lock_path)?;
             lock_exclusive_nonblocking(&file).map_err(|err| {
                 if err.kind() == io::ErrorKind::WouldBlock {

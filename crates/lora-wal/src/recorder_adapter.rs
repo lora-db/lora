@@ -154,9 +154,8 @@ impl WalRecorder {
         state.armed = false;
         match state.active_tx.take() {
             Some(tx) => {
-                self.wal.commit(tx).map_err(|e| {
+                self.wal.commit(tx).inspect_err(|e| {
                     state.poisoned = Some(e.to_string());
-                    e
                 })?;
                 Ok(WroteCommit::Yes)
             }
@@ -178,9 +177,8 @@ impl WalRecorder {
         state.armed = false;
         match state.active_tx.take() {
             Some(tx) => {
-                self.wal.abort(tx).map_err(|e| {
+                self.wal.abort(tx).inspect_err(|e| {
                     state.poisoned = Some(e.to_string());
-                    e
                 })?;
                 Ok(true)
             }
@@ -195,9 +193,8 @@ impl WalRecorder {
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
-        self.wal.flush().map_err(|e| {
+        self.wal.flush().inspect_err(|e| {
             state.poisoned = Some(e.to_string());
-            e
         })
     }
 
@@ -209,9 +206,8 @@ impl WalRecorder {
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
-        self.wal.force_fsync().map_err(|e| {
+        self.wal.force_fsync().inspect_err(|e| {
             state.poisoned = Some(e.to_string());
-            e
         })
     }
 
@@ -223,9 +219,8 @@ impl WalRecorder {
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
-        self.wal.checkpoint_marker(snapshot_lsn).map_err(|e| {
+        self.wal.checkpoint_marker(snapshot_lsn).inspect_err(|e| {
             state.poisoned = Some(e.to_string());
-            e
         })
     }
 

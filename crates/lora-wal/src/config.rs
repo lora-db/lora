@@ -6,11 +6,12 @@ use std::path::PathBuf;
 /// so the classical group-commit win — overlapping fsyncs across many
 /// committers — does not apply here. [`SyncMode::PerCommit`] is the
 /// default. The other two modes exist for narrow operational profiles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncMode {
     /// `fsync` the active segment before the committing thread releases
     /// the engine mutex. The strongest durability guarantee the WAL
     /// offers; every observed query result is fully durable.
+    #[default]
     PerCommit,
 
     /// Buffer commits and `fsync` on a fixed cadence on a background
@@ -31,19 +32,14 @@ pub enum SyncMode {
     None,
 }
 
-impl Default for SyncMode {
-    fn default() -> Self {
-        Self::PerCommit
-    }
-}
-
 /// Configuration for opening a [`Wal`](crate::wal::Wal).
 ///
 /// `Disabled` is the zero-overhead variant `lora-database` falls back to
 /// when the operator has not configured a WAL directory; it does not
 /// install a recorder or open any files.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum WalConfig {
+    #[default]
     Disabled,
     Enabled {
         dir: PathBuf,
@@ -64,11 +60,5 @@ impl WalConfig {
             sync_mode: SyncMode::PerCommit,
             segment_target_bytes: 8 * 1024 * 1024,
         }
-    }
-}
-
-impl Default for WalConfig {
-    fn default() -> Self {
-        Self::Disabled
     }
 }
