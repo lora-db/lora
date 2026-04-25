@@ -117,7 +117,9 @@ pub(crate) fn replay_segments(
                     }
                     match record {
                         WalRecord::Mutation {
-                            tx_begin_lsn, event, ..
+                            tx_begin_lsn,
+                            event,
+                            ..
                         } => {
                             pending.entry(tx_begin_lsn).or_default().push(event);
                         }

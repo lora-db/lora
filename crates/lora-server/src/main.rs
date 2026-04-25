@@ -118,13 +118,10 @@ async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     // /admin/checkpoint (the latter requires `path` in the body without
     // a configured --snapshot-path). When neither is set, no /admin
     // routes exist.
-    let snapshot_admin =
-        cfg.snapshot_path
-            .as_ref()
-            .map(|path| SnapshotAdminConfig {
-                path: path.clone(),
-                admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
-            });
+    let snapshot_admin = cfg.snapshot_path.as_ref().map(|path| SnapshotAdminConfig {
+        path: path.clone(),
+        admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
+    });
     let wal_admin: Option<Arc<dyn WalAdmin>> = if cfg.wal_dir.is_some() {
         Some(Arc::clone(&db) as Arc<dyn WalAdmin>)
     } else {

@@ -297,9 +297,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use lora_store::{
-        GraphStorageMut, InMemoryGraph, MutationEvent, Properties, PropertyValue,
-    };
+    use lora_store::{GraphStorageMut, InMemoryGraph, MutationEvent, Properties, PropertyValue};
 
     use crate::config::SyncMode;
     use crate::testing::TmpDir;
@@ -348,8 +346,7 @@ mod tests {
         drop(recorder);
 
         let (_wal, events) =
-            Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO)
-                .unwrap();
+            Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], MutationEvent::CreateNode { id: 0, .. }));
         assert!(matches!(events[1], MutationEvent::CreateNode { id: 1, .. }));
@@ -399,8 +396,7 @@ mod tests {
         drop(recorder);
 
         let (_wal, events) =
-            Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO)
-                .unwrap();
+            Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
         assert_eq!(events.len(), 1);
         if let MutationEvent::CreateNode { labels, .. } = &events[0] {
             assert_eq!(labels, &vec!["A".to_string()]);

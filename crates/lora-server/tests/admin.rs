@@ -224,13 +224,15 @@ async fn wal_routes_absent_without_wal_admin() {
     let snapshot_path = dir.join("snap.bin");
 
     let db = Arc::new(Database::in_memory());
-    let admin = AdminConfig::snapshot_only(
-        snapshot_path,
-        Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
-    );
+    let admin =
+        AdminConfig::snapshot_only(snapshot_path, Arc::clone(&db) as Arc<dyn SnapshotAdmin>);
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
-    for path in ["/admin/checkpoint", "/admin/wal/status", "/admin/wal/truncate"] {
+    for path in [
+        "/admin/checkpoint",
+        "/admin/wal/status",
+        "/admin/wal/truncate",
+    ] {
         let response = app
             .clone()
             .oneshot(
@@ -300,7 +302,10 @@ async fn wal_status_and_checkpoint_endpoints() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let durable = json["durableLsn"].as_u64().unwrap();
-    assert!(durable > 0, "durableLsn should advance with committed writes");
+    assert!(
+        durable > 0,
+        "durableLsn should advance with committed writes"
+    );
 
     // Checkpoint writes a snapshot at the configured path with a
     // non-null walLsn.
@@ -405,16 +410,12 @@ async fn wal_admin_routes_mount_without_snapshot_path() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(
-        json["error"]
-            .as_str()
-            .unwrap()
-            .contains("--snapshot-path"),
+        json["error"].as_str().unwrap().contains("--snapshot-path"),
         "error should mention --snapshot-path or `path` body"
     );
 
     // /admin/checkpoint WITH a body path works.
-    let body = serde_json::json!({ "path": dir.join("ckpt.bin").to_str().unwrap() })
-        .to_string();
+    let body = serde_json::json!({ "path": dir.join("ckpt.bin").to_str().unwrap() }).to_string();
     let response = app
         .clone()
         .oneshot(

@@ -98,9 +98,7 @@ fn bench_commit_latency(c: &mut Criterion) {
             b.iter_batched(
                 Database::in_memory,
                 |db| {
-                    black_box(
-                        db.execute("CREATE (:N {v: 1})", opts()).unwrap(),
-                    );
+                    black_box(db.execute("CREATE (:N {v: 1})", opts()).unwrap());
                 },
                 BatchSize::SmallInput,
             );
@@ -113,14 +111,12 @@ fn bench_commit_latency(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let dir = ScratchDir::new("per-commit");
-                    let db = Database::open_with_wal(enabled(&dir.path, SyncMode::PerCommit))
-                        .unwrap();
+                    let db =
+                        Database::open_with_wal(enabled(&dir.path, SyncMode::PerCommit)).unwrap();
                     (dir, db)
                 },
                 |(_dir, db)| {
-                    black_box(
-                        db.execute("CREATE (:N {v: 1})", opts()).unwrap(),
-                    );
+                    black_box(db.execute("CREATE (:N {v: 1})", opts()).unwrap());
                 },
                 BatchSize::SmallInput,
             );
@@ -141,9 +137,7 @@ fn bench_commit_latency(c: &mut Criterion) {
                     (dir, db)
                 },
                 |(_dir, db)| {
-                    black_box(
-                        db.execute("CREATE (:N {v: 1})", opts()).unwrap(),
-                    );
+                    black_box(db.execute("CREATE (:N {v: 1})", opts()).unwrap());
                 },
                 BatchSize::SmallInput,
             );
@@ -156,14 +150,11 @@ fn bench_commit_latency(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let dir = ScratchDir::new("none");
-                    let db =
-                        Database::open_with_wal(enabled(&dir.path, SyncMode::None)).unwrap();
+                    let db = Database::open_with_wal(enabled(&dir.path, SyncMode::None)).unwrap();
                     (dir, db)
                 },
                 |(_dir, db)| {
-                    black_box(
-                        db.execute("CREATE (:N {v: 1})", opts()).unwrap(),
-                    );
+                    black_box(db.execute("CREATE (:N {v: 1})", opts()).unwrap());
                 },
                 BatchSize::SmallInput,
             );

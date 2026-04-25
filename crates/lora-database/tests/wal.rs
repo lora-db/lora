@@ -161,7 +161,8 @@ fn read_only_queries_do_not_grow_wal_or_advance_lsn() {
     let lsn_after = db.wal().unwrap().wal().next_lsn();
 
     assert_eq!(
-        bytes_before, bytes_after,
+        bytes_before,
+        bytes_after,
         "200 read-only queries grew the WAL by {} bytes",
         bytes_after.saturating_sub(bytes_before)
     );
@@ -187,10 +188,7 @@ fn aborted_query_does_not_persist_partial_mutation() {
         // Creating a relationship with an unknown variable surfaces
         // a runtime error; specifics are less important than the
         // fact that the resulting Err triggers the abort branch.
-        let bad = db.execute(
-            "MATCH (u:User) CREATE (u)-[:KNOWS]->(missing)",
-            rows(),
-        );
+        let bad = db.execute("MATCH (u:User) CREATE (u)-[:KNOWS]->(missing)", rows());
         // The query may either reject at semantic-analysis time
         // (Err) or succeed by creating the missing node implicitly,
         // depending on planner specifics. We tolerate both — the
@@ -221,11 +219,8 @@ fn checkpoint_truncates_segments_and_recovery_uses_snapshot() {
 
     let db = Database::open_with_wal(enabled(wal_dir.path())).unwrap();
     for i in 0..10 {
-        db.execute(
-            &format!("CREATE (:N {{i: {}}})", i),
-            rows(),
-        )
-        .unwrap();
+        db.execute(&format!("CREATE (:N {{i: {}}})", i), rows())
+            .unwrap();
     }
 
     let meta = db.checkpoint_to(&snap_path).unwrap();
@@ -242,8 +237,7 @@ fn checkpoint_truncates_segments_and_recovery_uses_snapshot() {
 
     // Recover from snapshot + WAL. The snapshot covers events
     // 0..=9; the WAL contributes 100, 101.
-    let recovered =
-        Database::recover(&snap_path, enabled(wal_dir.path())).unwrap();
+    let recovered = Database::recover(&snap_path, enabled(wal_dir.path())).unwrap();
     assert_eq!(recovered.node_count(), 12);
 }
 

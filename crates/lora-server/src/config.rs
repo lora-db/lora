@@ -293,7 +293,9 @@ where
         None => DEFAULT_PORT,
     };
 
-    let snapshot_path = cli_snapshot_path.or(env.snapshot_path).and_then(non_empty_path);
+    let snapshot_path = cli_snapshot_path
+        .or(env.snapshot_path)
+        .and_then(non_empty_path);
     let restore_from = cli_restore_from.and_then(non_empty_path);
     let wal_dir = cli_wal_dir.or(env.wal_dir).and_then(non_empty_path);
     let wal_sync_mode = match cli_wal_sync_mode.or(env.wal_sync_mode) {
@@ -421,9 +423,8 @@ mod tests {
 
     #[test]
     fn cli_equals_form_works() {
-        let cfg = run_cfg(
-            resolve(args(&["--host=::1", "--port=7000"]), EnvInputs::default()).unwrap(),
-        );
+        let cfg =
+            run_cfg(resolve(args(&["--host=::1", "--port=7000"]), EnvInputs::default()).unwrap());
         assert_eq!(cfg.host, "::1");
         assert_eq!(cfg.port, 7000);
     }
@@ -481,9 +482,7 @@ mod tests {
 
     #[test]
     fn wal_dir_from_cli_and_env() {
-        let cfg = run_cfg(
-            resolve(args(&["--wal-dir", "/tmp/wal"]), EnvInputs::default()).unwrap(),
-        );
+        let cfg = run_cfg(resolve(args(&["--wal-dir", "/tmp/wal"]), EnvInputs::default()).unwrap());
         assert_eq!(cfg.wal_dir, Some(std::path::PathBuf::from("/tmp/wal")));
 
         let cfg = run_cfg(
@@ -520,26 +519,20 @@ mod tests {
             ("none", SyncMode::None),
             ("OFF", SyncMode::None),
         ] {
-            let cfg = run_cfg(
-                resolve(args(&["--wal-sync-mode", raw]), EnvInputs::default()).unwrap(),
-            );
+            let cfg =
+                run_cfg(resolve(args(&["--wal-sync-mode", raw]), EnvInputs::default()).unwrap());
             assert_eq!(cfg.wal_sync_mode, expected, "raw={raw}");
         }
 
         // group parses to Group { .. } with v1 defaults.
-        let cfg = run_cfg(
-            resolve(args(&["--wal-sync-mode", "group"]), EnvInputs::default()).unwrap(),
-        );
+        let cfg =
+            run_cfg(resolve(args(&["--wal-sync-mode", "group"]), EnvInputs::default()).unwrap());
         assert!(matches!(cfg.wal_sync_mode, SyncMode::Group { .. }));
     }
 
     #[test]
     fn invalid_wal_sync_mode_rejected() {
-        let err = resolve(
-            args(&["--wal-sync-mode", "yolo"]),
-            EnvInputs::default(),
-        )
-        .unwrap_err();
+        let err = resolve(args(&["--wal-sync-mode", "yolo"]), EnvInputs::default()).unwrap_err();
         assert!(matches!(err, ConfigError::InvalidSyncMode(_)));
     }
 

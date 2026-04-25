@@ -130,8 +130,9 @@ impl WalRecord {
 
     fn encode_payload(&self) -> Result<Vec<u8>, WalError> {
         match self {
-            Self::Mutation { event, .. } => bincode::serialize(event)
-                .map_err(|e| WalError::Encode(e.to_string())),
+            Self::Mutation { event, .. } => {
+                bincode::serialize(event).map_err(|e| WalError::Encode(e.to_string()))
+            }
             // Marker records carry no payload; the LSN + tx_begin_lsn in
             // the fixed header is the entire record.
             Self::TxBegin { .. }
@@ -234,8 +235,8 @@ impl WalRecord {
 
         Ok(Some(match kind {
             RecordKind::Mutation => {
-                let event: MutationEvent = bincode::deserialize(payload)
-                    .map_err(|e| WalError::Decode(e.to_string()))?;
+                let event: MutationEvent =
+                    bincode::deserialize(payload).map_err(|e| WalError::Decode(e.to_string()))?;
                 WalRecord::Mutation {
                     lsn,
                     tx_begin_lsn,

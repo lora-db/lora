@@ -428,7 +428,9 @@ mod tests {
         let path = dir.path().join("000000000001.wal");
         let mut writer = SegmentWriter::create(path.clone(), Lsn::new(1)).unwrap();
 
-        writer.append(&WalRecord::TxBegin { lsn: Lsn::new(1) }).unwrap();
+        writer
+            .append(&WalRecord::TxBegin { lsn: Lsn::new(1) })
+            .unwrap();
         writer.append(&mutation(2, 1)).unwrap();
         writer
             .append(&WalRecord::TxCommit {
@@ -454,7 +456,9 @@ mod tests {
         let dir = tmpdir("seg");
         let path = dir.path().join("000000000001.wal");
         let mut writer = SegmentWriter::create(path.clone(), Lsn::new(1)).unwrap();
-        writer.append(&WalRecord::TxBegin { lsn: Lsn::new(1) }).unwrap();
+        writer
+            .append(&WalRecord::TxBegin { lsn: Lsn::new(1) })
+            .unwrap();
         writer.flush_and_sync().unwrap();
         writer.seal().unwrap();
         drop(writer);
@@ -480,7 +484,9 @@ mod tests {
         let dir = tmpdir("seg");
         let path = dir.path().join("000000000001.wal");
         let mut writer = SegmentWriter::create(path.clone(), Lsn::new(1)).unwrap();
-        writer.append(&WalRecord::TxBegin { lsn: Lsn::new(1) }).unwrap();
+        writer
+            .append(&WalRecord::TxBegin { lsn: Lsn::new(1) })
+            .unwrap();
         writer.append(&mutation(2, 1)).unwrap();
         writer
             .append(&WalRecord::TxCommit {

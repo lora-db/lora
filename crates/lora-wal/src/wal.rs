@@ -143,10 +143,7 @@ impl Wal {
         // disk, so reporting it as durable is conservative-correct.
         let durable_lsn = replay.max_lsn;
 
-        let oldest_segment_id = entries
-            .first()
-            .map(|e| e.id)
-            .unwrap_or(active_id);
+        let oldest_segment_id = entries.first().map(|e| e.id).unwrap_or(active_id);
 
         let state = WalState {
             next_lsn,
@@ -302,10 +299,7 @@ impl Wal {
     pub fn commit(&self, tx_begin_lsn: Lsn) -> Result<Lsn, WalError> {
         self.check_healthy()?;
         let mut state = self.state.lock().unwrap();
-        Self::alloc_and_append(&mut state, |lsn| WalRecord::TxCommit {
-            lsn,
-            tx_begin_lsn,
-        })
+        Self::alloc_and_append(&mut state, |lsn| WalRecord::TxCommit { lsn, tx_begin_lsn })
     }
 
     /// Append a `TxAbort` marker. Replay drops the events keyed by
@@ -313,10 +307,7 @@ impl Wal {
     pub fn abort(&self, tx_begin_lsn: Lsn) -> Result<Lsn, WalError> {
         self.check_healthy()?;
         let mut state = self.state.lock().unwrap();
-        Self::alloc_and_append(&mut state, |lsn| WalRecord::TxAbort {
-            lsn,
-            tx_begin_lsn,
-        })
+        Self::alloc_and_append(&mut state, |lsn| WalRecord::TxAbort { lsn, tx_begin_lsn })
     }
 
     /// Append a `Checkpoint` marker. `snapshot_lsn` should equal the
@@ -393,9 +384,7 @@ impl Wal {
         );
         let advance_durable = matches!(
             (kind, self.sync_mode),
-            (FlushKind::ForceFsync, _)
-                | (_, SyncMode::PerCommit)
-                | (_, SyncMode::None)
+            (FlushKind::ForceFsync, _) | (_, SyncMode::PerCommit) | (_, SyncMode::None)
         );
 
         if do_fsync {
@@ -669,8 +658,7 @@ mod tests {
 
         // Tiny segment target so we trip rotation on the second
         // transaction.
-        let (wal, _) =
-            Wal::open(&dir.path, SyncMode::PerCommit, 256, Lsn::ZERO).unwrap();
+        let (wal, _) = Wal::open(&dir.path, SyncMode::PerCommit, 256, Lsn::ZERO).unwrap();
 
         // First tx: a few events, takes us past 256 bytes.
         let b1 = wal.begin().unwrap();
@@ -721,13 +709,8 @@ mod tests {
 
         // Re-open with checkpoint_lsn = commit_a so tx A is treated
         // as already-applied.
-        let (_, replay) = Wal::open(
-            &dir.path,
-            SyncMode::PerCommit,
-            8 * 1024 * 1024,
-            commit_a,
-        )
-        .unwrap();
+        let (_, replay) =
+            Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, commit_a).unwrap();
         assert_eq!(replay, vec![ev(3)]);
     }
 
@@ -819,8 +802,7 @@ mod tests {
         );
 
         // Wait up to ~500 ms for the bg flusher to advance the LSN.
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
         loop {
             if wal.durable_lsn() > Lsn::ZERO {
                 break;
@@ -841,8 +823,7 @@ mod tests {
     #[test]
     fn none_mode_advances_durable_lsn_on_flush() {
         let dir = TmpDir::new("none");
-        let (wal, _) =
-            Wal::open(&dir.path, SyncMode::None, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+        let (wal, _) = Wal::open(&dir.path, SyncMode::None, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
 
         let begin = wal.begin().unwrap();
         wal.append(begin, &ev(1)).unwrap();
@@ -859,7 +840,9 @@ mod tests {
         let dir = TmpDir::new("force-fsync");
         let (wal, _) = Wal::open(
             &dir.path,
-            SyncMode::Group { interval_ms: 60_000 },
+            SyncMode::Group {
+                interval_ms: 60_000,
+            },
             8 * 1024 * 1024,
             Lsn::ZERO,
         )
@@ -882,8 +865,7 @@ mod tests {
         let dir = TmpDir::new("truncate");
 
         // Tiny target so each tx forces a rotation on the next begin.
-        let (wal, _) =
-            Wal::open(&dir.path, SyncMode::PerCommit, 64, Lsn::ZERO).unwrap();
+        let (wal, _) = Wal::open(&dir.path, SyncMode::PerCommit, 64, Lsn::ZERO).unwrap();
 
         let mut last_commit = Lsn::ZERO;
         for i in 0..5 {
@@ -921,8 +903,7 @@ mod tests {
         // already at or below `last_commit`, which we feed back as
         // the checkpoint fence on reopen.
         drop(wal);
-        let (_, replay) =
-            Wal::open(&dir.path, SyncMode::PerCommit, 64, last_commit).unwrap();
+        let (_, replay) = Wal::open(&dir.path, SyncMode::PerCommit, 64, last_commit).unwrap();
         // Everything was at or below the fence, so replay is empty.
         assert!(replay.is_empty());
     }

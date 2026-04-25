@@ -63,13 +63,10 @@ impl Database<InMemoryGraph> {
                 segment_target_bytes,
             } => {
                 let mut graph = InMemoryGraph::new();
-                let (wal, events) =
-                    Wal::open(dir, sync_mode, segment_target_bytes, Lsn::ZERO)?;
+                let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, Lsn::ZERO)?;
                 replay_into(&mut graph, events);
                 let recorder = Arc::new(WalRecorder::new(wal));
-                graph.set_mutation_recorder(Some(
-                    recorder.clone() as Arc<dyn MutationRecorder>,
-                ));
+                graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
                     store: Arc::new(Mutex::new(graph)),
                     wal: Some(recorder),
@@ -96,10 +93,7 @@ impl Database<InMemoryGraph> {
     /// is deferred to v2 because verifying that the marker's
     /// snapshot file actually exists and is loadable is a separate
     /// observability concern.
-    pub fn recover(
-        snapshot_path: impl AsRef<Path>,
-        wal_config: WalConfig,
-    ) -> Result<Self> {
+    pub fn recover(snapshot_path: impl AsRef<Path>, wal_config: WalConfig) -> Result<Self> {
         let snapshot_path = snapshot_path.as_ref();
         let mut graph = InMemoryGraph::new();
         let snapshot_lsn = match File::open(snapshot_path) {
@@ -142,13 +136,10 @@ impl Database<InMemoryGraph> {
                     }
                 }
 
-                let (wal, events) =
-                    Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
+                let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
                 replay_into(&mut graph, events);
                 let recorder = Arc::new(WalRecorder::new(wal));
-                graph.set_mutation_recorder(Some(
-                    recorder.clone() as Arc<dyn MutationRecorder>,
-                ));
+                graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
                     store: Arc::new(Mutex::new(graph)),
                     wal: Some(recorder),
@@ -164,10 +155,7 @@ where
 {
     /// Build a database from a pre-wrapped, shared store.
     pub fn new(store: Arc<Mutex<S>>) -> Self {
-        Self {
-            store,
-            wal: None,
-        }
+        Self { store, wal: None }
     }
 
     /// Build a database by taking ownership of a bare graph store.
@@ -712,11 +700,7 @@ fn replay_into<G: GraphStorageMut>(graph: &mut G, events: Vec<MutationEvent>) {
             MutationEvent::RemoveNodeLabel { node_id, label } => {
                 graph.remove_node_label(node_id, &label);
             }
-            MutationEvent::SetRelationshipProperty {
-                rel_id,
-                key,
-                value,
-            } => {
+            MutationEvent::SetRelationshipProperty { rel_id, key, value } => {
                 graph.set_relationship_property(rel_id, key, value);
             }
             MutationEvent::RemoveRelationshipProperty { rel_id, key } => {
