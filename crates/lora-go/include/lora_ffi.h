@@ -7,9 +7,9 @@
  *
  * Ownership
  * ---------
- * - `LoraDatabase *` is opaque. Allocate with `lora_db_new`; release
- *   with `lora_db_free`. Passing the same handle after `lora_db_free`
- *   is undefined behaviour.
+ * - `LoraDatabase *` is opaque. Allocate with `lora_db_new` or
+ *   `lora_db_new_with_wal`; release with `lora_db_free`. Passing the
+ *   same handle after `lora_db_free` is undefined behaviour.
  * - Heap strings (`char *` out-parameters) are Rust-allocated and must
  *   be released via `lora_string_free`. Do not call `free()`.
  * - `lora_version()` returns a process-lifetime static string and must
@@ -65,6 +65,15 @@ const char *lora_version(void);
  * lora_db_free. */
 int lora_db_new(LoraDatabase **out_db);
 
+/* Allocates a WAL-backed database rooted at `wal_dir`. On success writes
+ * a handle into `*out_db`. On failure populates `*out_error` with a
+ * `LORA_ERROR: ...` payload that the caller must release via
+ * lora_string_free. */
+int lora_db_new_with_wal(
+    LoraDatabase **out_db,
+    const char *wal_dir,
+    char **out_error);
+
 /* Frees a handle returned by lora_db_new. Null is a no-op. */
 void lora_db_free(LoraDatabase *db);
 
@@ -100,8 +109,8 @@ int lora_db_relationship_count(LoraDatabase *db, uint64_t *out);
 
 /* Plain-data snapshot metadata returned by lora_db_save_snapshot and
  * lora_db_load_snapshot. `wal_lsn_set` is 1 iff `wal_lsn` carries a
- * meaningful value; pure (non-checkpoint) snapshots always write
- * `wal_lsn_set = 0`. Reserved for the future WAL/checkpoint hybrid. */
+ * meaningful value; pure snapshots always write `wal_lsn_set = 0`,
+ * while checkpoint snapshots carry a fence LSN. */
 typedef struct LoraSnapshotMeta {
     uint32_t format_version;
     uint32_t wal_lsn_set;

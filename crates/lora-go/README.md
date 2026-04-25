@@ -1,7 +1,7 @@
 # `github.com/lora-db/lora/crates/lora-go`
 
 Go bindings for [LoraDB](https://github.com/lora-db/lora) — an
-embeddable, in-memory graph database with Cypher. The binding is a
+embeddable graph database with Cypher. The binding is a
 thin cgo layer over `crates/lora-ffi` (a C ABI around
 `lora-database`) and ships the same typed value model as the
 `lora-node`, `lora-wasm`, and `lora-python` bindings.
@@ -91,6 +91,16 @@ Run the canned example:
 make example   # builds lora-ffi, then runs `go run ./examples/basic`
 ```
 
+Initialization rule:
+
+```go
+db, err := lora.New()        // in-memory
+db, err := lora.New("./app") // persistent: directory string
+```
+
+If you want persistence, pass one directory string to `New(...)` or
+`NewDatabase(...)`.
+
 ## Value model
 
 Every value follows the **shared tagged model** used by the other
@@ -168,6 +178,16 @@ if err != nil {
     }
 }
 ```
+
+## Persistence
+
+`lora.New("./app")` and `lora.NewDatabase("./app")` open or create a
+WAL-backed persistent database rooted at that directory. Reopening the
+same path replays committed writes before returning the handle.
+
+This first Go persistence slice intentionally stays small: the binding
+exposes WAL-backed initialization plus the existing snapshot APIs, but
+not checkpoint, truncate, status, or sync-mode controls.
 
 ## Platform support
 

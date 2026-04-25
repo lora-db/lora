@@ -48,7 +48,7 @@ else:  # pragma: no cover — exercised in the 3.8 CI leg
 
 
 class AsyncDatabase:
-    """asyncio-compatible handle to an in-memory Lora database.
+    """asyncio-compatible handle to a Lora database.
 
     All methods delegate to the sync ``Database`` on a worker thread so
     the event loop is never blocked by engine work. Methods are coroutines
@@ -68,10 +68,20 @@ class AsyncDatabase:
         self._inner = inner
 
     @classmethod
-    async def create(cls) -> "AsyncDatabase":
-        """Construct a fresh in-memory database. Async for API symmetry."""
-        # Construction is cheap (Arc::new + Mutex::new) so we stay on-thread.
-        return cls(_Database())
+    async def create(cls, wal_dir: Optional[str] = None) -> "AsyncDatabase":
+        """Construct a database.
+
+        ``wal_dir=None`` creates a fresh in-memory database.
+        Passing a directory string opens or creates a WAL-backed
+        persistent database rooted at that path.
+        """
+        if wal_dir is None:
+            return cls(_Database())
+        return cls(await _to_thread(_Database.create, wal_dir))
+
+    async def close(self) -> None:
+        """Release the native database handle."""
+        await _to_thread(self._inner.close)
 
     async def execute(
         self,

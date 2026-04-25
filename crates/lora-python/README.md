@@ -1,6 +1,6 @@
 # lora-python
 
-Python bindings for the [Lora](../../README.md) in-memory graph
+Python bindings for the [Lora](../../README.md) graph
 engine. Ships both a synchronous PyO3 `Database` class and an
 asyncio-compatible `AsyncDatabase` wrapper that never blocks the event loop.
 
@@ -34,6 +34,18 @@ for row in res["rows"]:
         print(n["properties"]["name"])
 ```
 
+Initialization rule:
+
+```python
+from lora_python import Database
+
+scratch = Database.create()            # in-memory
+persistent = Database.create("./app")  # persistent: directory string
+```
+
+If you want persistence, pass a directory string to `Database.create(...)`
+or `Database(...)`.
+
 ## Async usage (non-blocking)
 
 ```python
@@ -47,6 +59,13 @@ async def main():
     print(r["rows"])
 
 asyncio.run(main())
+```
+
+Async initialization follows the same rule:
+
+```python
+db = await AsyncDatabase.create()            # in-memory
+db = await AsyncDatabase.create("./app")     # persistent: directory string
 ```
 
 `AsyncDatabase.execute` dispatches the query onto the default asyncio
@@ -94,6 +113,21 @@ Constructors and guards are exported from `lora_python.types`:
 - `InvalidParamsError` — a parameter value couldn't be mapped
 
 All three are available as `lora_python.LoraError`, etc.
+
+## Persistence
+
+`Database.create("./app")`, `Database("./app")`, and
+`await AsyncDatabase.create("./app")` open or create a WAL-backed
+persistent database rooted at that directory. Reopening the same path
+replays committed writes before returning the handle.
+
+Call `db.close()` / `await db.close()` before reopening the same WAL
+directory inside one process.
+
+This first Python persistence slice intentionally stays small: the
+binding exposes WAL-backed initialization plus the existing
+`save_snapshot` / `load_snapshot` APIs, but not checkpoint, truncate,
+status, or sync-mode controls.
 
 ## Architecture
 

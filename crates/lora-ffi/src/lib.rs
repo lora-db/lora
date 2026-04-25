@@ -23,7 +23,7 @@
 //!
 //! | Symbol                        | Ownership                                                        |
 //! | ----------------------------- | ---------------------------------------------------------------- |
-//! | `LoraDatabase *`              | Allocated by `lora_db_new`, freed by `lora_db_free`.             |
+//! | `LoraDatabase *`              | Allocated by `lora_db_new` / `lora_db_new_with_wal`, freed by `lora_db_free`. |
 //! | `char *` (out strings)        | Allocated by Rust, freed by the caller via `lora_string_free`.   |
 //! | `const char *` (in strings)   | Borrowed; Rust copies what it needs before returning.            |
 //!
@@ -43,6 +43,7 @@ use std::ptr;
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
+    WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -94,6 +95,12 @@ impl LoraDatabase {
             inner: InnerDatabase::in_memory(),
         }
     }
+
+    fn new_with_wal(wal_dir: &str) -> Result<Self, String> {
+        let inner =
+            InnerDatabase::open_with_wal(WalConfig::enabled(wal_dir)).map_err(|e| e.to_string())?;
+        Ok(Self { inner })
+    }
 }
 
 // ============================================================================
@@ -132,6 +139,63 @@ pub unsafe extern "C" fn lora_db_new(out_db: *mut *mut LoraDatabase) -> c_int {
     match result {
         Ok(status) => status as c_int,
         Err(_) => LoraStatus::Panic as c_int,
+    }
+}
+
+/// Allocate a new WAL-backed Lora database rooted at `wal_dir`.
+///
+/// On success writes a handle into `*out_db`. On failure writes an
+/// error string into `*out_error`. The returned handle must be freed
+/// with `lora_db_free`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_new_with_wal(
+    out_db: *mut *mut LoraDatabase,
+    wal_dir: *const c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if !out_db.is_null() {
+            *out_db = ptr::null_mut();
+        }
+        if out_db.is_null() || wal_dir.is_null() {
+            return LoraStatus::NullPointer;
+        }
+
+        let wal_dir = match CStr::from_ptr(wal_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    LORA_ERROR_PREFIX,
+                    "wal directory is not valid UTF-8",
+                );
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+
+        match LoraDatabase::new_with_wal(wal_dir) {
+            Ok(db) => {
+                *out_db = Box::into_raw(Box::new(db));
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &e);
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
     }
 }
 
@@ -320,9 +384,8 @@ pub unsafe extern "C" fn lora_db_relationship_count(db: *mut LoraDatabase, out: 
 /// and `lora_db_load_snapshot`; callers treat it as plain data.
 ///
 /// `wal_lsn_set` is `1` iff the snapshot carries a meaningful WAL LSN; when
-/// `0`, the `wal_lsn` field is zero and should be ignored. Reserved for the
-/// future WAL/checkpoint hybrid — pure snapshots always write
-/// `wal_lsn_set = 0`.
+/// `0`, the `wal_lsn` field is zero and should be ignored. Pure snapshots
+/// write `wal_lsn_set = 0`; checkpoint snapshots write a fence value.
 #[repr(C)]
 pub struct LoraSnapshotMeta {
     pub format_version: u32,
@@ -803,10 +866,42 @@ fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn new_db() -> *mut LoraDatabase {
         let mut db: *mut LoraDatabase = ptr::null_mut();
         let s = unsafe { lora_db_new(&mut db) };
+        assert_eq!(s, LoraStatus::Ok as c_int);
+        assert!(!db.is_null());
+        db
+    }
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "lora-ffi-test-{}-{}-{}",
+            tag,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn new_db_with_wal(wal_dir: &Path) -> *mut LoraDatabase {
+        let mut db: *mut LoraDatabase = ptr::null_mut();
+        let wal_dir = CString::new(wal_dir.to_str().unwrap()).unwrap();
+        let mut out_error: *mut c_char = ptr::null_mut();
+        let s = unsafe { lora_db_new_with_wal(&mut db, wal_dir.as_ptr(), &mut out_error) };
+        if !out_error.is_null() {
+            let e = unsafe { CStr::from_ptr(out_error).to_str().unwrap().to_owned() };
+            unsafe { lora_string_free(out_error) };
+            panic!("lora_db_new_with_wal failed: status={s} err={e}");
+        }
         assert_eq!(s, LoraStatus::Ok as c_int);
         assert!(!db.is_null());
         db
@@ -850,6 +945,41 @@ mod tests {
     fn new_and_free_roundtrip() {
         let db = new_db();
         unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn wal_constructor_replays_committed_writes() {
+        let dir = tempdir("wal-replay");
+        let db = new_db_with_wal(&dir);
+        let (s, _, e) = unsafe {
+            exec(
+                db,
+                "CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Grace'})",
+                None,
+            )
+        };
+        assert_eq!(s, LoraStatus::Ok as c_int, "err={:?}", e);
+        unsafe { lora_db_free(db) };
+
+        let reopened = new_db_with_wal(&dir);
+        let (s, r, e) = unsafe {
+            exec(
+                reopened,
+                "MATCH (p:Person) RETURN p.name AS name ORDER BY name",
+                None,
+            )
+        };
+        assert_eq!(s, LoraStatus::Ok as c_int, "err={:?}", e);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        assert_eq!(
+            payload["rows"],
+            serde_json::json!([
+                { "name": "Ada" },
+                { "name": "Grace" }
+            ])
+        );
+        unsafe { lora_db_free(reopened) };
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

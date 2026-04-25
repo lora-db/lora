@@ -2,7 +2,7 @@
 
 Two public classes:
 
-- ``Database``     : synchronous, PyO3-backed. Holds an in-memory graph and
+- ``Database``     : synchronous, PyO3-backed. Holds a Lora graph and
                      runs queries with the GIL released.
 - ``AsyncDatabase``: pure-Python asyncio wrapper. Delegates to a
                      background thread via ``asyncio.to_thread`` so the
@@ -20,6 +20,10 @@ Example
     >>> r = db.execute("MATCH (n:Person) RETURN n.name AS name")
     >>> r["rows"]
     [{'name': 'Alice'}]
+
+Persistent:
+
+    >>> db = Database.create("./app")  # WAL-backed persistent database
 
 Async:
 

@@ -7,8 +7,9 @@
  * native surface into the strongly-typed `QueryResult<T>` / `LoraParams`
  * shapes defined in the shared TS contract (`crates/shared-ts/types.ts`).
  *
- * **Initialization is async-only.** The one canonical entry point is
- * `createDatabase()`; there is no synchronous constructor. See the docs at
+ * **Initialization is async-only.** The canonical entry point is
+ * `createDatabase(...)`, optionally with a WAL directory path. There is no
+ * synchronous constructor. See the docs at
  * https://loradb.com/docs/getting-started/node for the full rationale.
  */
 
@@ -41,12 +42,12 @@ export interface SnapshotMeta {
 }
 
 /**
- * In-memory Lora graph database instance.
+ * Lora graph database instance.
  *
- * Obtained exclusively via `createDatabase()`. There is no public constructor
- * and no synchronous factory — the async entry point lets the binding
- * extend initialization later (lazy native loading, warmup, schema
- * preflight) without breaking callers.
+ * Obtained exclusively via `createDatabase()`. There is no public
+ * constructor and no synchronous factory. With no args the instance is
+ * purely in-memory; with a WAL directory path it replays committed WAL
+ * state from disk before serving queries.
  *
  * Instances are independent — each owns its own in-memory graph. Multiple
  * concurrent `execute()` calls against one instance run one at a time
@@ -77,17 +78,43 @@ class DatabaseImpl {
 
   /** Drop every node and relationship. Constant-time under the hood. */
   async clear(): Promise<void> {
-    this.#inner.clear();
+    try {
+      this.#inner.clear();
+    } catch (err) {
+      throw wrapError(err);
+    }
   }
 
   /** Number of nodes currently in the graph. */
   async nodeCount(): Promise<number> {
-    return this.#inner.nodeCount();
+    try {
+      return this.#inner.nodeCount();
+    } catch (err) {
+      throw wrapError(err);
+    }
   }
 
   /** Number of relationships currently in the graph. */
   async relationshipCount(): Promise<number> {
-    return this.#inner.relationshipCount();
+    try {
+      return this.#inner.relationshipCount();
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Release the native database handle. Idempotent.
+   *
+   * Call this when a WAL-backed database needs to be reopened in the same
+   * process. New operations after disposal reject with `database is closed`.
+   */
+  dispose(): void {
+    try {
+      this.#inner.dispose();
+    } catch (err) {
+      throw wrapError(err);
+    }
   }
 
   /**
@@ -136,25 +163,43 @@ class DatabaseImpl {
 export type Database = DatabaseImpl;
 
 /**
- * Create and initialize a new in-memory LoraDB instance.
+ * Create and initialize a new LoraDB instance.
  *
  * **This is the only supported initialization pattern** for `lora-node`.
  * Synchronous construction is not available — the async factory guarantees
- * the native layer is ready before the first query dispatches and keeps
- * the Node and WASM surfaces symmetric.
+ * the native layer is ready before the first query dispatches.
  *
  * ```ts
  * import { createDatabase } from "lora-node";
  *
- * const db = await createDatabase();
+ * const db = await createDatabase(); // in-memory by default
  * const res = await db.execute(
  *   "CREATE (n:Person {name: $name}) RETURN n",
  *   { name: "Alice" },
  * );
  * ```
  *
+ * Optional Node-only persistence convenience:
+ *
+ * ```ts
+ * import { createDatabase } from "lora-node";
+ *
+ * const inMemory = await createDatabase();            // in-memory
+ * const persistent = await createDatabase("./app");  // persistent: pass a directory string
+ * ```
+ *
+ * If you want persistence, pass a directory string. The string is treated
+ * as a WAL directory path verbatim. Relative paths resolve from the
+ * current working directory.
+ *
  * Each call returns an independent graph — no shared state between instances.
  */
-export async function createDatabase(): Promise<Database> {
-  return new DatabaseImpl(new NativeDatabase());
+export async function createDatabase(walDir?: string): Promise<Database> {
+  try {
+    return new DatabaseImpl(
+      walDir === undefined ? new NativeDatabase() : new NativeDatabase(walDir),
+    );
+  } catch (err) {
+    throw wrapError(err);
+  }
 }

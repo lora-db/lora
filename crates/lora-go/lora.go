@@ -21,9 +21,9 @@ import (
 	"unsafe"
 )
 
-// Database is an in-memory Lora graph database backed by the Rust
-// engine. It is safe to share across goroutines; queries serialise on
-// an internal mutex.
+// Database is a Lora graph database backed by the Rust engine. It is
+// safe to share across goroutines; queries serialise on an internal
+// mutex.
 //
 // Always call [Database.Close] when the database is no longer needed.
 // A finalizer is installed as a safety net so a forgotten Close does
@@ -40,16 +40,47 @@ type Database struct {
 	handle *C.LoraDatabase
 }
 
-// New allocates a fresh, empty in-memory Lora graph database.
-func New() (*Database, error) { return NewDatabase() }
+// New allocates a Lora graph database.
+//
+// With no argument it returns a fresh in-memory database:
+//
+//	db, err := lora.New()
+//
+// Passing one directory string opens or creates a WAL-backed
+// persistent database rooted at that path:
+//
+//	db, err := lora.New("./app")
+func New(walDir ...string) (*Database, error) { return NewDatabase(walDir...) }
 
 // NewDatabase is an alias for [New] kept for idiomatic Go naming
 // parity with packages that expose Type-named constructors.
-func NewDatabase() (*Database, error) {
+func NewDatabase(walDir ...string) (*Database, error) {
 	var handle *C.LoraDatabase
-	status := C.lora_db_new(&handle)
-	if status != C.LORA_STATUS_OK {
-		return nil, &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_new returned status %d", int(status))}
+	switch len(walDir) {
+	case 0:
+		status := C.lora_db_new(&handle)
+		if status != C.LORA_STATUS_OK {
+			return nil, &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_new returned status %d", int(status))}
+		}
+	case 1:
+		cWalDir := C.CString(walDir[0])
+		defer C.free(unsafe.Pointer(cWalDir))
+
+		var outError *C.char
+		status := C.lora_db_new_with_wal(&handle, cWalDir, &outError)
+		if status != C.LORA_STATUS_OK {
+			defer func() {
+				if outError != nil {
+					C.lora_string_free(outError)
+				}
+			}()
+			return nil, statusToError(int(status), outError)
+		}
+	default:
+		return nil, &LoraError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("expected at most one WAL directory argument, got %d", len(walDir)),
+		}
 	}
 	db := &Database{handle: handle}
 	// Safety net: if a caller forgets Close, the finalizer frees the
@@ -346,7 +377,7 @@ func statusToError(status int, outError *C.char) error {
 	case C.LORA_STATUS_INVALID_PARAMS:
 		return parseLoraError(payload, CodeInvalidParams)
 	case C.LORA_STATUS_NULL_POINTER:
-		return &LoraError{Code: CodePanic, Message: "null pointer passed to lora_db_execute_json"}
+		return &LoraError{Code: CodePanic, Message: "null pointer passed to Lora FFI"}
 	case C.LORA_STATUS_INVALID_UTF8:
 		return parseLoraError(payload, CodeInvalidParams)
 	case C.LORA_STATUS_PANIC:

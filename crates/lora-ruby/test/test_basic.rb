@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "fileutils"
+require "tmpdir"
 
 class TestBasic < Minitest::Test
   def setup
@@ -65,6 +67,59 @@ class TestBasic < Minitest::Test
     assert_instance_of LoraRuby::Database, b
     assert_equal 0, a.node_count
     assert_equal 0, b.node_count
+  end
+
+  def test_wal_dir_persists_across_reopen
+    dir = Dir.mktmpdir("lora-ruby-wal-")
+    first = LoraRuby::Database.create(dir)
+    first.execute(
+      "CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Grace'})",
+    )
+    first.close
+
+    second = LoraRuby::Database.new(dir)
+    assert_equal 2, second.node_count
+    assert_equal 1, second.relationship_count
+    assert_equal(
+      [
+        { "name" => "Ada" },
+        { "name" => "Grace" },
+      ],
+      second.execute("MATCH (p:Person) RETURN p.name AS name ORDER BY name")["rows"],
+    )
+    second.close
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.exist?(dir)
+  end
+
+  def test_relative_wal_dir_path_works
+    dir = Dir.mktmpdir("lora-ruby-relative-")
+    Dir.chdir(dir) do
+      first = LoraRuby::Database.create("relative-wal")
+      first.execute("CREATE (:Session {value: 'ok'})")
+      first.close
+
+      second = LoraRuby::Database.create("relative-wal")
+      assert_equal(
+        [{ "value" => "ok" }],
+        second.execute("MATCH (s:Session) RETURN s.value AS value")["rows"],
+      )
+      second.close
+    end
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.exist?(dir)
+  end
+
+  def test_invalid_wal_dir_raises_query_error
+    dir = Dir.mktmpdir("lora-ruby-invalid-")
+    path = File.join(dir, "wal-file")
+    File.write(path, "not a directory")
+
+    assert_raises(LoraRuby::QueryError) do
+      LoraRuby::Database.create(path)
+    end
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.exist?(dir)
   end
 
   def test_path_invariant

@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use magnus::{
     function, method, prelude::*, r_hash::ForEach, value::ReprValue, Error as MagnusError,
@@ -25,6 +25,7 @@ use magnus::{
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
+    WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -60,10 +61,11 @@ fn init(ruby: &Ruby) -> Result<(), MagnusError> {
     lora_ruby.define_class("InvalidParamsError", error)?;
 
     let database = lora_ruby.define_class("Database", ruby.class_object())?;
-    database.define_singleton_method("create", function!(database_create, 0))?;
-    database.define_singleton_method("new", function!(database_new, 0))?;
+    database.define_singleton_method("create", function!(database_create, -1))?;
+    database.define_singleton_method("new", function!(database_new, -1))?;
     database.define_method("execute", method!(database_execute, -1))?;
     database.define_method("clear", method!(database_clear, 0))?;
+    database.define_method("close", method!(database_close, 0))?;
     database.define_method("node_count", method!(database_node_count, 0))?;
     database.define_method(
         "relationship_count",
@@ -114,20 +116,20 @@ fn invalid_params(ruby: &Ruby, msg: impl Into<String>) -> MagnusError {
 // Database
 // ============================================================================
 
-/// In-memory Lora graph database handle exposed to Ruby.
+/// Lora graph database handle exposed to Ruby.
 ///
 /// Wraps an `Arc<Database<InMemoryGraph>>`; the same handle is cloned
 /// across the GVL-release boundary for query execution without borrowing
 /// any Ruby state.
 #[magnus::wrap(class = "LoraRuby::Database", free_immediately, size)]
 struct Database {
-    db: Arc<InnerDatabase<InMemoryGraph>>,
+    db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
 }
 
 impl Database {
-    fn empty() -> Self {
+    fn from_db(db: Arc<InnerDatabase<InMemoryGraph>>) -> Self {
         Self {
-            db: Arc::new(InnerDatabase::in_memory()),
+            db: Mutex::new(Some(db)),
         }
     }
 }
@@ -135,32 +137,52 @@ impl Database {
 // Constructors — we expose `Database.create` and `Database.new` as
 // singletons so callers can use whichever idiom they prefer; both are
 // cost-equivalent.
-fn database_new() -> Database {
-    Database::empty()
+fn database_new(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
+    let wal_dir = optional_wal_dir_arg(ruby, args)?;
+    let db = without_gvl(move || open_database(wal_dir)).map_err(|e| query_error(ruby, e))?;
+    Ok(Database::from_db(db))
 }
 
-fn database_create() -> Database {
-    Database::empty()
+fn database_create(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
+    database_new(ruby, args)
 }
 
-fn database_clear(rb_self: &Database) {
-    rb_self.db.clear();
+fn database_clear(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
+    database_inner(ruby, rb_self)?.clear();
+    Ok(())
 }
 
-fn database_node_count(rb_self: &Database) -> u64 {
-    rb_self.db.node_count() as u64
+fn database_close(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
+    let mut slot = rb_self
+        .db
+        .lock()
+        .map_err(|_| query_error(ruby, "database lock poisoned"))?;
+    slot.take();
+    Ok(())
 }
 
-fn database_relationship_count(rb_self: &Database) -> u64 {
-    rb_self.db.relationship_count() as u64
+fn database_node_count(ruby: &Ruby, rb_self: &Database) -> Result<u64, MagnusError> {
+    Ok(database_inner(ruby, rb_self)?.node_count() as u64)
+}
+
+fn database_relationship_count(ruby: &Ruby, rb_self: &Database) -> Result<u64, MagnusError> {
+    Ok(database_inner(ruby, rb_self)?.relationship_count() as u64)
 }
 
 fn database_inspect(rb_self: &Database) -> String {
-    format!(
-        "#<LoraRuby::Database nodes={} relationships={}>",
-        rb_self.db.node_count(),
-        rb_self.db.relationship_count(),
-    )
+    match rb_self
+        .db
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().cloned())
+    {
+        Some(db) => format!(
+            "#<LoraRuby::Database nodes={} relationships={}>",
+            db.node_count(),
+            db.relationship_count(),
+        ),
+        None => "#<LoraRuby::Database closed>".to_string(),
+    }
 }
 
 fn database_save_snapshot(
@@ -169,7 +191,7 @@ fn database_save_snapshot(
     path: RString,
 ) -> Result<RHash, MagnusError> {
     let path = path.to_string()?;
-    let db = Arc::clone(&rb_self.db);
+    let db = database_inner(ruby, rb_self)?;
     let meta = without_gvl(move || db.save_snapshot_to(&path))
         .map_err(|e| query_error(ruby, format!("{e}")))?;
     snapshot_meta_to_rhash(ruby, meta)
@@ -181,7 +203,7 @@ fn database_load_snapshot(
     path: RString,
 ) -> Result<RHash, MagnusError> {
     let path = path.to_string()?;
-    let db = Arc::clone(&rb_self.db);
+    let db = database_inner(ruby, rb_self)?;
     let meta = without_gvl(move || db.load_snapshot_from(&path))
         .map_err(|e| query_error(ruby, format!("{e}")))?;
     snapshot_meta_to_rhash(ruby, meta)
@@ -209,6 +231,46 @@ fn snapshot_meta_to_rhash(
         None => h.aset(ruby.str_new("walLsn"), ruby.qnil())?,
     }
     Ok(h)
+}
+
+fn optional_wal_dir_arg(ruby: &Ruby, args: &[Value]) -> Result<Option<String>, MagnusError> {
+    match args.len() {
+        0 => Ok(None),
+        1 => {
+            if args[0].is_nil() {
+                Ok(None)
+            } else {
+                Ok(Some(RString::try_convert(args[0])?.to_string()?))
+            }
+        }
+        n => Err(MagnusError::new(
+            ruby.exception_arg_error(),
+            format!("wrong number of arguments (given {n}, expected 0..1)"),
+        )),
+    }
+}
+
+fn open_database(wal_dir: Option<String>) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    let db = match wal_dir {
+        Some(dir) => {
+            InnerDatabase::open_with_wal(WalConfig::enabled(dir)).map_err(|e| e.to_string())?
+        }
+        None => InnerDatabase::in_memory(),
+    };
+    Ok(Arc::new(db))
+}
+
+fn database_inner(
+    ruby: &Ruby,
+    rb_self: &Database,
+) -> Result<Arc<InnerDatabase<InMemoryGraph>>, MagnusError> {
+    let slot = rb_self
+        .db
+        .lock()
+        .map_err(|_| query_error(ruby, "database lock poisoned"))?;
+    slot.as_ref()
+        .cloned()
+        .ok_or_else(|| query_error(ruby, "database is closed"))
 }
 
 /// `execute(query, params = nil)` — `-1` arity so `params` is optional and
@@ -248,7 +310,7 @@ fn database_execute(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<R
     // Run the engine with the GVL released. Everything inside the closure
     // is pure Rust — no Ruby values cross the boundary — which keeps this
     // sound.
-    let db = Arc::clone(&rb_self.db);
+    let db = database_inner(ruby, rb_self)?;
     let exec_result = without_gvl(move || {
         let options = ExecuteOptions {
             format: ResultFormat::RowArrays,

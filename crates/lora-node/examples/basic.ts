@@ -12,6 +12,8 @@ import { createDatabase, isNode, type LoraNode } from "../ts/index.js";
 
 async function main() {
   const db = await createDatabase();
+  // `createDatabase()` => in-memory.
+  // `createDatabase("./app")` => persistent via a WAL directory.
 
   await db.execute(
     "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 28})",

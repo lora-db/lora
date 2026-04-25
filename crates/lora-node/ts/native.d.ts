@@ -19,7 +19,7 @@ export interface NativeSnapshotMeta {
 }
 
 export declare class Database {
-  constructor();
+  constructor(walDir?: string | null);
   /** Non-blocking: runs on the libuv threadpool, returns a Promise. */
   execute(
     query: string,
@@ -28,6 +28,7 @@ export declare class Database {
   clear(): void;
   nodeCount(): number;
   relationshipCount(): number;
+  dispose(): void;
   /** Atomic save. Synchronous under the store mutex. */
   saveSnapshot(path: string): NativeSnapshotMeta;
   /** Replace the current graph with the snapshot at `path`. */

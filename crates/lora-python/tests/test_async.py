@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
@@ -37,6 +38,23 @@ async def test_params_pass_through() -> None:
     assert r["rows"] == [{"name": "widget", "qty": 7}]
 
 
+async def test_create_accepts_wal_dir_and_replays(tmp_path: Path) -> None:
+    wal_dir = tmp_path / "wal"
+
+    first = await AsyncDatabase.create(str(wal_dir))
+    await first.execute(
+        "CREATE (:User {id: 1})-[:FOLLOWS]->(:User {id: 2}) RETURN 1"
+    )
+    await first.close()
+
+    second = await AsyncDatabase.create(str(wal_dir))
+    assert second.node_count == 2
+    assert second.relationship_count == 1
+    r = await second.execute("MATCH (u:User) RETURN u.id AS id ORDER BY id")
+    assert r["rows"] == [{"id": 1}, {"id": 2}]
+    await second.close()
+
+
 async def test_lora_error_propagates_through_await() -> None:
     db = await AsyncDatabase.create()
     with pytest.raises(LoraQueryError):
@@ -47,6 +65,14 @@ async def test_invalid_params_error_propagates_through_await() -> None:
     db = await AsyncDatabase.create()
     with pytest.raises(InvalidParamsError):
         await db.execute("RETURN $d AS d", {"d": {"kind": "date", "iso": "not-a-date"}})
+
+
+async def test_invalid_wal_dir_error_propagates_through_await(tmp_path: Path) -> None:
+    not_a_dir = tmp_path / "wal-file"
+    not_a_dir.write_text("not a directory")
+
+    with pytest.raises(LoraQueryError):
+        await AsyncDatabase.create(str(not_a_dir))
 
 
 async def test_many_concurrent_queries() -> None:

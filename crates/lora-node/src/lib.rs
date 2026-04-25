@@ -13,7 +13,7 @@
 //! thread hop would dominate the useful work.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use napi::bindgen_prelude::*;
 use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
@@ -21,6 +21,7 @@ use napi_derive::napi;
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
+    WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -30,25 +31,40 @@ use lora_store::{
 const LORA_ERROR_CODE: &str = "LORA_ERROR";
 const INVALID_PARAMS_CODE: &str = "INVALID_PARAMS";
 
-/// In-memory Lora graph database handle exposed to Node.
+/// Lora graph database handle exposed to Node.
 ///
-/// Wraps an `Arc<Database<InMemoryGraph>>`; the same handle is cloned onto
-/// the libuv threadpool for each `execute()` call. Multiple concurrent
-/// queries against the same `Database` serialise on the inner store's mutex
-/// but do not block the JS event loop.
+/// Wraps an `Arc<Database<InMemoryGraph>>`; the same handle is cloned
+/// onto the libuv threadpool for each `execute()` call. Multiple
+/// concurrent queries against the same `Database` serialise on the
+/// inner store's mutex but do not block the JS event loop.
+///
+/// With no constructor arg the database is purely in-memory. Passing a
+/// WAL directory path enables write-ahead logging: the binding opens or
+/// creates the WAL there, replays committed writes on boot, and then
+/// serves queries against the recovered graph.
 #[napi]
 pub struct Database {
-    db: Arc<InnerDatabase<InMemoryGraph>>,
+    db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
 }
 
 #[napi]
 impl Database {
-    /// Construct an empty in-memory database.
+    /// Construct a database.
+    ///
+    /// - `undefined` / `null` => fresh in-memory graph.
+    /// - `string` => WAL-backed graph rooted at that directory.
     #[napi(constructor)]
-    pub fn new() -> Self {
-        Self {
-            db: Arc::new(InnerDatabase::in_memory()),
-        }
+    pub fn new(
+        #[napi(ts_arg_type = "string | null | undefined")] wal_dir: Option<String>,
+    ) -> Result<Self> {
+        let db = match wal_dir {
+            None => InnerDatabase::in_memory(),
+            Some(dir) => InnerDatabase::open_with_wal(WalConfig::enabled(dir))
+                .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?,
+        };
+        Ok(Self {
+            db: Mutex::new(Some(Arc::new(db))),
+        })
     }
 
     /// Execute a Lora query on the libuv threadpool.
@@ -67,31 +83,46 @@ impl Database {
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
             serde_json::Value,
         >,
-    ) -> AsyncTask<ExecuteTask> {
-        AsyncTask::new(ExecuteTask {
-            db: Arc::clone(&self.db),
+    ) -> Result<AsyncTask<ExecuteTask>> {
+        Ok(AsyncTask::new(ExecuteTask {
+            db: self.inner()?,
             query,
             params,
-        })
+        }))
     }
 
     /// Drop every node and relationship, returning the database to an empty
     /// state. Useful for test isolation. Synchronous — constant-time.
     #[napi]
-    pub fn clear(&self) {
-        self.db.clear();
+    pub fn clear(&self) -> Result<()> {
+        self.inner()?.clear();
+        Ok(())
     }
 
     /// Number of nodes in the graph. Synchronous.
     #[napi]
-    pub fn node_count(&self) -> u32 {
-        self.db.node_count() as u32
+    pub fn node_count(&self) -> Result<u32> {
+        Ok(self.inner()?.node_count() as u32)
     }
 
     /// Number of relationships in the graph. Synchronous.
     #[napi]
-    pub fn relationship_count(&self) -> u32 {
-        self.db.relationship_count() as u32
+    pub fn relationship_count(&self) -> Result<u32> {
+        Ok(self.inner()?.relationship_count() as u32)
+    }
+
+    /// Release the native database handle. Idempotent.
+    ///
+    /// Any query already dispatched to the libuv threadpool keeps its cloned
+    /// handle until it finishes; new operations fail with `database is closed`.
+    #[napi]
+    pub fn dispose(&self) -> Result<()> {
+        let mut slot = self
+            .db
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, closed_error_message()))?;
+        slot.take();
+        Ok(())
     }
 
     /// Save the graph to a snapshot file. Atomic: the target is only
@@ -103,7 +134,7 @@ impl Database {
     )]
     pub fn save_snapshot(&self, path: String) -> Result<serde_json::Value> {
         let meta = self
-            .db
+            .inner()?
             .save_snapshot_to(&path)
             .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
@@ -115,10 +146,20 @@ impl Database {
     )]
     pub fn load_snapshot(&self, path: String) -> Result<serde_json::Value> {
         let meta = self
-            .db
+            .inner()?
             .load_snapshot_from(&path)
             .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
+    }
+
+    fn inner(&self) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
+        let slot = self
+            .db
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, closed_error_message()))?;
+        slot.as_ref()
+            .cloned()
+            .ok_or_else(|| NapiError::new(Status::GenericFailure, closed_error_message()))
     }
 }
 
@@ -133,7 +174,7 @@ fn snapshot_meta_to_json(meta: lora_database::SnapshotMeta) -> serde_json::Value
 
 impl Default for Database {
     fn default() -> Self {
-        Self::new()
+        Self::new(None).expect("in-memory Database::default should not fail")
     }
 }
 
@@ -493,4 +534,8 @@ pub(crate) fn vector_from_json_map(
 
 fn format_error(err: &anyhow::Error) -> String {
     format!("{LORA_ERROR_CODE}: {err}")
+}
+
+fn closed_error_message() -> String {
+    format!("{LORA_ERROR_CODE}: database is closed")
 }

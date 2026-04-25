@@ -19,7 +19,7 @@
 //! `dict`s with a `kind` discriminator.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyTypeError, PyValueError};
@@ -28,6 +28,7 @@ use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
+    WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -76,7 +77,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 // Database
 // ============================================================================
 
-/// Synchronous in-memory Lora graph database handle.
+/// Synchronous Lora graph database handle.
 ///
 /// Query execution runs with the GIL released so other Python threads —
 /// notably `asyncio.to_thread` workers — can progress in parallel. Concurrent
@@ -84,23 +85,28 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// not hold the GIL.
 #[pyclass(module = "lora_python._native")]
 pub struct Database {
-    db: Arc<InnerDatabase<InMemoryGraph>>,
+    db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
 }
 
 #[pymethods]
 impl Database {
     #[new]
-    fn py_new() -> Self {
-        Self {
-            db: Arc::new(InnerDatabase::in_memory()),
-        }
+    #[pyo3(signature = (wal_dir=None))]
+    fn py_new(py: Python<'_>, wal_dir: Option<String>) -> PyResult<Self> {
+        let db = py
+            .allow_threads(move || open_database(wal_dir))
+            .map_err(LoraQueryError::new_err)?;
+        Ok(Self {
+            db: Mutex::new(Some(db)),
+        })
     }
 
     /// Factory mirroring the async API shape. Returns `self` for symmetry
     /// with `AsyncDatabase.create()`.
     #[staticmethod]
-    fn create() -> Self {
-        Self::py_new()
+    #[pyo3(signature = (wal_dir=None))]
+    fn create(py: Python<'_>, wal_dir: Option<String>) -> PyResult<Self> {
+        Self::py_new(py, wal_dir)
     }
 
     /// Execute a Lora query.
@@ -120,7 +126,7 @@ impl Database {
             _ => BTreeMap::new(),
         };
 
-        let db = Arc::clone(&self.db);
+        let db = self.inner()?;
         // Release the GIL for the duration of engine work.
         let exec_result = py.allow_threads(move || {
             let options = ExecuteOptions {
@@ -156,20 +162,31 @@ impl Database {
     }
 
     /// Drop every node and relationship. Constant-time.
-    fn clear(&self) {
-        self.db.clear();
+    fn clear(&self) -> PyResult<()> {
+        self.inner()?.clear();
+        Ok(())
+    }
+
+    /// Release the native database handle. Idempotent.
+    fn close(&self) -> PyResult<()> {
+        let mut slot = self
+            .db
+            .lock()
+            .map_err(|_| LoraQueryError::new_err("database lock poisoned"))?;
+        slot.take();
+        Ok(())
     }
 
     /// Number of nodes currently in the graph.
     #[getter]
-    fn node_count(&self) -> u64 {
-        self.db.node_count() as u64
+    fn node_count(&self) -> PyResult<u64> {
+        Ok(self.inner()?.node_count() as u64)
     }
 
     /// Number of relationships currently in the graph.
     #[getter]
-    fn relationship_count(&self) -> u64 {
-        self.db.relationship_count() as u64
+    fn relationship_count(&self) -> PyResult<u64> {
+        Ok(self.inner()?.relationship_count() as u64)
     }
 
     /// Save the graph to a snapshot file. Atomic — the target path is only
@@ -178,7 +195,7 @@ impl Database {
     /// Returns a dict with the snapshot metadata (format version, node /
     /// relationship count, WAL LSN).
     fn save_snapshot<'py>(&self, py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
-        let db = Arc::clone(&self.db);
+        let db = self.inner()?;
         let meta = py
             .allow_threads(move || db.save_snapshot_to(&path))
             .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
@@ -196,7 +213,7 @@ impl Database {
 
     /// Replace the current graph state with a snapshot loaded from disk.
     fn load_snapshot<'py>(&self, py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
-        let db = Arc::clone(&self.db);
+        let db = self.inner()?;
         let meta = py
             .allow_threads(move || db.load_snapshot_from(&path))
             .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
@@ -213,12 +230,37 @@ impl Database {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "<lora_python.Database nodes={} relationships={}>",
-            self.db.node_count(),
-            self.db.relationship_count(),
-        )
+        match self.db.lock().ok().and_then(|slot| slot.as_ref().cloned()) {
+            Some(db) => format!(
+                "<lora_python.Database nodes={} relationships={}>",
+                db.node_count(),
+                db.relationship_count(),
+            ),
+            None => "<lora_python.Database closed>".to_string(),
+        }
     }
+}
+
+impl Database {
+    fn inner(&self) -> PyResult<Arc<InnerDatabase<InMemoryGraph>>> {
+        let slot = self
+            .db
+            .lock()
+            .map_err(|_| LoraQueryError::new_err("database lock poisoned"))?;
+        slot.as_ref()
+            .cloned()
+            .ok_or_else(|| LoraQueryError::new_err("database is closed"))
+    }
+}
+
+fn open_database(wal_dir: Option<String>) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    let db = match wal_dir {
+        Some(dir) => {
+            InnerDatabase::open_with_wal(WalConfig::enabled(dir)).map_err(|e| e.to_string())?
+        }
+        None => InnerDatabase::in_memory(),
+    };
+    Ok(Arc::new(db))
 }
 
 // ============================================================================

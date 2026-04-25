@@ -1,5 +1,4 @@
-// Package lora provides Go bindings for the LoraDB in-memory graph
-// database.
+// Package lora provides Go bindings for the LoraDB graph database.
 //
 // The binding links statically against the lora-ffi Rust crate and
 // exposes the same execution model as the Node, WASM, and Python
@@ -10,7 +9,8 @@
 //
 // # Quick start
 //
-//	db, err := lora.New()
+//	db, err := lora.New()        // in-memory
+//	db, err := lora.New("./app") // persistent: directory string
 //	if err != nil {
 //	    log.Fatal(err)
 //	}

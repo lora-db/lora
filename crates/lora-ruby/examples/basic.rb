@@ -4,7 +4,8 @@
 
 require "lora_ruby"
 
-db = LoraRuby::Database.create
+db = LoraRuby::Database.create # in-memory
+# db = LoraRuby::Database.create("./app") # persistent: directory string
 
 db.execute(
   "CREATE (:Person {name: 'Alice', age: 30}), " \

@@ -1,7 +1,7 @@
 # lora-node
 
-Node.js / TypeScript bindings for the [Lora](../../README.md) in-memory
-graph engine. The package exposes a first-class typed API: query results are
+Node.js / TypeScript bindings for the [Lora](../../README.md) graph
+engine. The package exposes a first-class typed API: query results are
 modelled as discriminated unions, temporal values carry `kind` tags, and the
 `Database` class is strongly typed in both directions (params and rows).
 
@@ -29,13 +29,13 @@ to `package.json`.
 ## Usage
 
 `lora-node` is **async-only** — the sole initialization pattern is
-`createDatabase()`. There is no synchronous constructor and no
+`createDatabase(...)`. There is no synchronous constructor and no
 `Database.create()` static; `Database` is a type-only export.
 
 ```ts
 import { createDatabase, isNode, type LoraNode } from "lora-node";
 
-const db = await createDatabase();
+const db = await createDatabase(); // in-memory by default
 await db.execute("CREATE (:Person {name: $n, age: $a})", { n: "Alice", a: 30 });
 
 const res = await db.execute<{ n: LoraNode }>("MATCH (n:Person) RETURN n");
@@ -46,9 +46,32 @@ for (const row of res.rows) {
 }
 ```
 
-The API matches `lora-wasm` verbatim — same shared types, same
-`createDatabase()` entry point, same async method signatures — so
-switching backends is a single import change.
+The initialization rule is:
+
+```ts
+import { createDatabase } from "lora-node";
+
+const inMemory = await createDatabase();            // in-memory only
+const persistent = await createDatabase("./app");  // persistent: pass a directory string
+```
+
+If you want persistence, pass a **directory string** to `createDatabase(...)`.
+
+Node also has a WAL-backed convenience overload:
+
+```ts
+import { createDatabase } from "lora-node";
+
+const db = await createDatabase("./.lora-wal"); // persistent: directory string
+```
+
+The string is treated as the WAL directory path verbatim. Relative
+paths resolve from the current working directory. This is a Node-only
+initialization convenience; the query surface, shared types, and async
+method signatures still match `lora-wasm`.
+
+Call `db.dispose()` when you need to release the native handle eagerly,
+especially before reopening the same WAL directory in the same process.
 
 ## Typed value model
 
@@ -128,3 +151,9 @@ identical to `lora-wasm`.
   path would require extending the value serializer.
 - **Cancellation.** The napi `Task` abstraction does not support
   cancellation once dispatched; a runaway query runs to completion.
+- **WAL surface.** This first Node persistence slice only exposes
+  WAL-backed initialization via `createDatabase(walDir)`. Checkpoint,
+  truncate, status, and sync-mode controls are not exposed yet.
+- **WAL directory ownership.** A WAL directory can only be open by one
+  live handle at a time. Dispose the first handle before reopening the
+  same directory.

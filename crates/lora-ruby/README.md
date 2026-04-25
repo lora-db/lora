@@ -1,6 +1,6 @@
 # lora-ruby
 
-Ruby bindings for the [Lora](../../README.md) in-memory graph engine.
+Ruby bindings for the [Lora](../../README.md) graph engine.
 Ships a native extension built with [Magnus](https://github.com/matsadler/magnus)
 on top of [`rb-sys`](https://github.com/oxidize-rb/rb-sys) so the Rust
 engine runs in-process — no separate server, no socket hop.
@@ -39,6 +39,16 @@ result["rows"].each do |row|
 end
 ```
 
+Initialization rule:
+
+```ruby
+scratch = LoraRuby::Database.create         # in-memory
+persistent = LoraRuby::Database.create("./app") # persistent: directory string
+```
+
+If you want persistence, pass a directory string to
+`LoraRuby::Database.create(...)` or `LoraRuby::Database.new(...)`.
+
 ### Params
 
 `execute` accepts a second argument — either `nil` or a `Hash` keyed by
@@ -66,8 +76,8 @@ binding's `lora_python.Database` and because it mirrors the
 ## Public API
 
 ```ruby
-LoraRuby::Database.create            # -> Database
-LoraRuby::Database.new               # -> Database  (alias of .create)
+LoraRuby::Database.create(wal_dir = nil)  # -> Database
+LoraRuby::Database.new(wal_dir = nil)     # -> Database  (alias of .create)
 
 db.execute(query, params = nil)       # -> { "columns" => [...], "rows" => [...] }
 db.clear                              # -> nil
@@ -135,6 +145,20 @@ db.execute(
 - `LoraRuby::Error` — base class (extends `StandardError`).
 - `LoraRuby::QueryError` — parse / analyze / execute failure.
 - `LoraRuby::InvalidParamsError` — a parameter value couldn't be mapped.
+
+## Persistence
+
+`LoraRuby::Database.create("./app")` and
+`LoraRuby::Database.new("./app")` open or create a WAL-backed
+persistent database rooted at that directory. Reopening the same path
+replays committed writes before returning the handle.
+
+Call `db.close` before reopening the same WAL directory inside one
+process.
+
+This first Ruby persistence slice intentionally stays small: the
+binding exposes WAL-backed initialization plus the existing snapshot
+APIs, but not checkpoint, truncate, status, or sync-mode controls.
 
 ## Concurrency (GVL release)
 

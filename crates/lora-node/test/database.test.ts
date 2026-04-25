@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDatabase,
   type Database,
@@ -18,6 +22,23 @@ import {
   type LoraRelationship,
   type LoraValue,
 } from "../ts/index.js";
+
+const cleanupPaths = new Set<string>();
+
+async function makeTempDir(prefix = "lora-node-wal-"): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  cleanupPaths.add(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  await Promise.all(
+    Array.from(cleanupPaths, (path) =>
+      rm(path, { recursive: true, force: true }),
+    ),
+  );
+  cleanupPaths.clear();
+});
 
 describe("Database — basics", () => {
   let db: Database;
@@ -83,6 +104,80 @@ describe("Database — basics", () => {
     await db.clear();
     expect(await db.nodeCount()).toBe(0);
     expect(await db.relationshipCount()).toBe(0);
+  });
+});
+
+describe("Database — WAL-backed initialization", () => {
+  it("createDatabase() still creates an empty in-memory database", async () => {
+    const db = await createDatabase();
+    expect(await db.nodeCount()).toBe(0);
+    expect(await db.relationshipCount()).toBe(0);
+  });
+
+  it("persists committed writes across reopen with the same WAL directory", async () => {
+    const walDir = await makeTempDir();
+
+    const first = await createDatabase(walDir);
+    await first.execute(
+      "CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Grace'})",
+    );
+    first.dispose();
+
+    const second = await createDatabase(walDir);
+    expect(await second.nodeCount()).toBe(2);
+    expect(await second.relationshipCount()).toBe(1);
+
+    const { rows } = await second.execute<{ name: string }>(
+      "MATCH (p:Person) RETURN p.name AS name ORDER BY name",
+    );
+    expect(rows).toEqual([{ name: "Ada" }, { name: "Grace" }]);
+    second.dispose();
+  });
+
+  it("restores existing data on a read-only reopen", async () => {
+    const walDir = await makeTempDir();
+
+    const writer = await createDatabase(walDir);
+    await writer.execute(
+      "CREATE (:User {id: 1})-[:FOLLOWS]->(:User {id: 2}) RETURN 1",
+    );
+    writer.dispose();
+
+    const reader = await createDatabase(walDir);
+    expect(await reader.nodeCount()).toBe(2);
+    expect(await reader.relationshipCount()).toBe(1);
+
+    const result = await reader.execute<{ id: number }>(
+      "MATCH (u:User) RETURN u.id AS id ORDER BY id",
+    );
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }]);
+    reader.dispose();
+  });
+
+  it("accepts a relative WAL directory path", async () => {
+    const relativeWalDir = `.tmp-lora-node-wal-${process.pid}-${Date.now()}`;
+    cleanupPaths.add(resolve(relativeWalDir));
+
+    const first = await createDatabase(relativeWalDir);
+    await first.execute("CREATE (:Session {value: 'ok'})");
+    first.dispose();
+
+    const second = await createDatabase(relativeWalDir);
+    const { rows } = await second.execute<{ value: string }>(
+      "MATCH (s:Session) RETURN s.value AS value",
+    );
+    expect(rows).toEqual([{ value: "ok" }]);
+    second.dispose();
+  });
+
+  it("normalizes WAL open failures through wrapError", async () => {
+    const dir = await makeTempDir();
+    const notADir = join(dir, "wal-file");
+    await writeFile(notADir, "not a directory");
+
+    await expect(createDatabase(notADir)).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+    );
   });
 });
 

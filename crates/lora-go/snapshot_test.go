@@ -70,6 +70,107 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWalBackedNewPersistsAcrossReopen(t *testing.T) {
+	walDir := filepath.Join(t.TempDir(), "wal")
+
+	db, err := New(walDir)
+	if err != nil {
+		t.Fatalf("New(wal): %v", err)
+	}
+	if _, err := db.Execute("CREATE (:Person {name: 'Ada'}), (:Person {name: 'Grace'})", nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := db.Execute("MATCH (a:Person {name:'Ada'}), (g:Person {name:'Grace'}) CREATE (a)-[:KNOWS]->(g)", nil); err != nil {
+		t.Fatalf("edge: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db2, err := New(walDir)
+	if err != nil {
+		t.Fatalf("New(reopen): %v", err)
+	}
+	defer db2.Close()
+
+	n, err := db2.NodeCount()
+	if err != nil {
+		t.Fatalf("NodeCount: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("NodeCount = %d; want 2", n)
+	}
+	r, err := db2.Execute("MATCH (p:Person) RETURN p.name AS name ORDER BY name", nil)
+	if err != nil {
+		t.Fatalf("Execute(reopen): %v", err)
+	}
+	if got, want := r.Rows, []map[string]any{{"name": "Ada"}, {"name": "Grace"}}; len(got) != len(want) {
+		t.Fatalf("rows len = %d; want %d", len(got), len(want))
+	} else {
+		for i := range want {
+			if got[i]["name"] != want[i]["name"] {
+				t.Fatalf("rows[%d][name] = %v; want %v", i, got[i]["name"], want[i]["name"])
+			}
+		}
+	}
+}
+
+func TestWalBackedNewAcceptsRelativePath(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("Chdir(tmp): %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	db, err := New("relative-wal")
+	if err != nil {
+		t.Fatalf("New(relative): %v", err)
+	}
+	if _, err := db.Execute("CREATE (:Session {value: 'ok'})", nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db2, err := New("relative-wal")
+	if err != nil {
+		t.Fatalf("New(relative reopen): %v", err)
+	}
+	defer db2.Close()
+
+	r, err := db2.Execute("MATCH (s:Session) RETURN s.value AS value", nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(r.Rows) != 1 || r.Rows[0]["value"] != "ok" {
+		t.Fatalf("rows = %#v; want value ok", r.Rows)
+	}
+}
+
+func TestWalBackedNewInvalidPathSurfacesLoraError(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "wal-file")
+	if err := os.WriteFile(notADir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := New(notADir)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var lerr *LoraError
+	if !errors.As(err, &lerr) {
+		t.Fatalf("expected *LoraError, got %T: %v", err, err)
+	}
+	if lerr.Code != CodeLoraError {
+		t.Fatalf("error code = %s; want %s", lerr.Code, CodeLoraError)
+	}
+}
+
 func TestLoadSnapshotMissingFileSurfacesLoraError(t *testing.T) {
 	db, err := New()
 	if err != nil {
