@@ -3101,10 +3101,13 @@ fn property_lookup_values(expected: &LoraValue) -> Option<Vec<PropertyValue>> {
         PropertyValue::Int(i) => {
             values.push(PropertyValue::Float(i as f64));
         }
-        PropertyValue::Float(f) if f.is_finite() && f.fract() == 0.0 => {
-            if f >= i64::MIN as f64 && f <= i64::MAX as f64 {
-                values.push(PropertyValue::Int(f as i64));
-            }
+        PropertyValue::Float(f)
+            if f.is_finite()
+                && f.fract() == 0.0
+                && f >= i64::MIN as f64
+                && f <= i64::MAX as f64 =>
+        {
+            values.push(PropertyValue::Int(f as i64));
         }
         _ => {}
     }
