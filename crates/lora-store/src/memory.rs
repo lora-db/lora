@@ -16,21 +16,21 @@ type PropertyIndex = HashMap<String, PropertyValueBuckets>;
 type ScopedPropertyIndex = HashMap<String, PropertyIndex>;
 
 #[derive(Default)]
-struct LazyIndexRegistry {
-    node_properties: LazyPropertyIndex,
-    relationship_properties: LazyPropertyIndex,
+struct PropertyIndexRegistry {
+    node_properties: PropertyIndexState,
+    relationship_properties: PropertyIndexState,
 }
 
-impl std::fmt::Debug for LazyIndexRegistry {
+impl std::fmt::Debug for PropertyIndexRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LazyIndexRegistry")
+        f.debug_struct("PropertyIndexRegistry")
             .field("node_properties", &self.node_properties)
             .field("relationship_properties", &self.relationship_properties)
             .finish()
     }
 }
 
-impl Clone for LazyIndexRegistry {
+impl Clone for PropertyIndexRegistry {
     fn clone(&self) -> Self {
         Self {
             node_properties: self.node_properties.clone(),
@@ -40,19 +40,19 @@ impl Clone for LazyIndexRegistry {
 }
 
 #[derive(Debug, Default, Clone)]
-struct LazyPropertyIndex {
+struct PropertyIndexState {
     active_keys: BTreeSet<String>,
     values: PropertyIndex,
     scoped_values: ScopedPropertyIndex,
 }
 
-impl LazyPropertyIndex {
+impl PropertyIndexState {
     fn is_active(&self, key: &str) -> bool {
         self.active_keys.contains(key)
     }
 
-    fn activate(&mut self, key: &str) {
-        self.active_keys.insert(key.to_string());
+    fn activate(&mut self, key: &str) -> bool {
+        self.active_keys.insert(key.to_string())
     }
 
     fn insert_value(
@@ -252,7 +252,7 @@ pub struct InMemoryGraph {
     // secondary indexes
     nodes_by_label: BTreeMap<String, BTreeSet<NodeId>>,
     relationships_by_type: BTreeMap<String, BTreeSet<RelationshipId>>,
-    indexes: RwLock<LazyIndexRegistry>,
+    indexes: RwLock<PropertyIndexRegistry>,
     active_node_property_indexes: AtomicUsize,
     active_relationship_property_indexes: AtomicUsize,
 
@@ -304,7 +304,7 @@ impl Clone for InMemoryGraph {
             indexes: RwLock::new(if self.has_active_property_indexes() {
                 self.indexes_read().clone()
             } else {
-                LazyIndexRegistry::default()
+                PropertyIndexRegistry::default()
             }),
             active_node_property_indexes: AtomicUsize::new(self.active_node_property_index_count()),
             active_relationship_property_indexes: AtomicUsize::new(
@@ -427,19 +427,19 @@ impl InMemoryGraph {
         }
     }
 
-    fn indexes_read(&self) -> std::sync::RwLockReadGuard<'_, LazyIndexRegistry> {
+    fn indexes_read(&self) -> std::sync::RwLockReadGuard<'_, PropertyIndexRegistry> {
         self.indexes
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn indexes_write(&self) -> RwLockWriteGuard<'_, LazyIndexRegistry> {
+    fn indexes_write(&self) -> RwLockWriteGuard<'_, PropertyIndexRegistry> {
         self.indexes
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn indexes_mut(&mut self) -> &mut LazyIndexRegistry {
+    fn indexes_mut(&mut self) -> &mut PropertyIndexRegistry {
         self.indexes
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -485,9 +485,10 @@ impl InMemoryGraph {
                 );
             }
         }
-        indexes.node_properties.activate(key);
-        self.active_node_property_indexes
-            .fetch_add(1, Ordering::Relaxed);
+        if indexes.node_properties.activate(key) {
+            self.active_node_property_indexes
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn ensure_relationship_property_index(&self, key: &str) {
@@ -513,9 +514,122 @@ impl InMemoryGraph {
                 );
             }
         }
-        indexes.relationship_properties.activate(key);
+        if indexes.relationship_properties.activate(key) {
+            self.active_relationship_property_indexes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn rebuild_property_indexes(&mut self) {
+        let mut indexes = PropertyIndexRegistry::default();
+
+        for (id, node) in &self.nodes {
+            for (key, value) in &node.properties {
+                if PropertyIndexKey::from_value(value).is_some() {
+                    indexes.node_properties.activate(key);
+                    indexes.node_properties.insert_with_scopes(
+                        *id,
+                        node.labels.iter().map(String::as_str),
+                        key,
+                        value,
+                    );
+                }
+            }
+        }
+
+        for (id, rel) in &self.relationships {
+            for (key, value) in &rel.properties {
+                if PropertyIndexKey::from_value(value).is_some() {
+                    indexes.relationship_properties.activate(key);
+                    indexes.relationship_properties.insert_with_scopes(
+                        *id,
+                        [rel.rel_type.as_str()],
+                        key,
+                        value,
+                    );
+                }
+            }
+        }
+
+        let node_index_count = indexes.node_properties.active_keys.len();
+        let relationship_index_count = indexes.relationship_properties.active_keys.len();
+        *self.indexes_mut() = indexes;
+        self.active_node_property_indexes
+            .store(node_index_count, Ordering::Relaxed);
         self.active_relationship_property_indexes
-            .fetch_add(1, Ordering::Relaxed);
+            .store(relationship_index_count, Ordering::Relaxed);
+    }
+
+    fn index_node_property_eager<'a>(
+        &mut self,
+        node_id: NodeId,
+        labels: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return;
+        }
+
+        let activated = {
+            let indexes = self.indexes_mut();
+            let activated = indexes.node_properties.activate(key);
+            indexes
+                .node_properties
+                .insert_with_scopes(node_id, labels, key, value);
+            activated
+        };
+        if activated {
+            self.active_node_property_indexes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn index_relationship_property_eager<'a>(
+        &mut self,
+        rel_id: RelationshipId,
+        scopes: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return;
+        }
+
+        let activated = {
+            let indexes = self.indexes_mut();
+            let activated = indexes.relationship_properties.activate(key);
+            indexes
+                .relationship_properties
+                .insert_with_scopes(rel_id, scopes, key, value);
+            activated
+        };
+        if activated {
+            self.active_relationship_property_indexes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn index_node_properties_eager<'a>(
+        &mut self,
+        node_id: NodeId,
+        labels: impl IntoIterator<Item = &'a str> + Clone,
+        properties: &Properties,
+    ) {
+        for (key, value) in properties {
+            self.index_node_property_eager(node_id, labels.clone(), key, value);
+        }
+    }
+
+    fn index_relationship_properties_eager<'a>(
+        &mut self,
+        rel_id: RelationshipId,
+        scopes: impl IntoIterator<Item = &'a str> + Clone,
+        properties: &Properties,
+    ) {
+        for (key, value) in properties {
+            self.index_relationship_property_eager(rel_id, scopes.clone(), key, value);
+        }
     }
 
     fn index_node_property_if_active<'a>(
@@ -533,6 +647,25 @@ impl InMemoryGraph {
             indexes
                 .node_properties
                 .insert_with_scopes(node_id, labels, key, value);
+        }
+    }
+
+    fn index_node_properties_if_active<'a>(
+        &mut self,
+        node_id: NodeId,
+        labels: impl IntoIterator<Item = &'a str> + Clone,
+        properties: &Properties,
+    ) {
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        for (key, value) in properties {
+            if indexes.node_properties.is_active(key) {
+                indexes
+                    .node_properties
+                    .insert_with_scopes(node_id, labels.clone(), key, value);
+            }
         }
     }
 
@@ -592,25 +725,6 @@ impl InMemoryGraph {
         }
     }
 
-    fn index_active_node_properties<'a>(
-        &mut self,
-        node_id: NodeId,
-        labels: impl IntoIterator<Item = &'a str> + Clone,
-        properties: &Properties,
-    ) {
-        if self.active_node_property_index_count() == 0 {
-            return;
-        }
-        let indexes = self.indexes_mut();
-        for (key, value) in properties {
-            if indexes.node_properties.is_active(key) {
-                indexes
-                    .node_properties
-                    .insert_with_scopes(node_id, labels.clone(), key, value);
-            }
-        }
-    }
-
     fn unindex_active_node_properties<'a>(
         &mut self,
         node_id: NodeId,
@@ -648,25 +762,7 @@ impl InMemoryGraph {
         }
     }
 
-    fn unindex_relationship_property_if_active<'a>(
-        &mut self,
-        rel_id: RelationshipId,
-        scopes: impl IntoIterator<Item = &'a str>,
-        key: &str,
-        value: &PropertyValue,
-    ) {
-        if self.active_relationship_property_index_count() == 0 {
-            return;
-        }
-        let indexes = self.indexes_mut();
-        if indexes.relationship_properties.is_active(key) {
-            indexes
-                .relationship_properties
-                .remove_with_scopes(rel_id, scopes, key, value);
-        }
-    }
-
-    fn index_active_relationship_properties<'a>(
+    fn index_relationship_properties_if_active<'a>(
         &mut self,
         rel_id: RelationshipId,
         scopes: impl IntoIterator<Item = &'a str> + Clone,
@@ -685,6 +781,24 @@ impl InMemoryGraph {
                     value,
                 );
             }
+        }
+    }
+
+    fn unindex_relationship_property_if_active<'a>(
+        &mut self,
+        rel_id: RelationshipId,
+        scopes: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        if self.active_relationship_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        if indexes.relationship_properties.is_active(key) {
+            indexes
+                .relationship_properties
+                .remove_with_scopes(rel_id, scopes, key, value);
         }
     }
 
@@ -877,13 +991,11 @@ impl InMemoryGraph {
         for label in &labels {
             self.insert_node_label_index(id, label);
         }
-        if self.active_node_property_index_count() != 0 {
-            self.index_active_node_properties(
-                id,
-                node.labels.iter().map(String::as_str),
-                &node.properties,
-            );
-        }
+        self.index_node_properties_eager(
+            id,
+            node.labels.iter().map(String::as_str),
+            &node.properties,
+        );
         self.nodes.insert(id, node.clone());
         self.outgoing.entry(id).or_default();
         self.incoming.entry(id).or_default();
@@ -937,9 +1049,7 @@ impl InMemoryGraph {
         };
 
         self.attach_relationship(&rel);
-        if self.active_relationship_property_index_count() != 0 {
-            self.index_active_relationship_properties(id, [rel.rel_type.as_str()], &rel.properties);
-        }
+        self.index_relationship_properties_eager(id, [rel.rel_type.as_str()], &rel.properties);
         self.relationships.insert(id, rel.clone());
         self.bump_next_rel_id_past(id)?;
 
@@ -1472,7 +1582,7 @@ impl GraphStorageMut for InMemoryGraph {
             self.insert_node_label_index(id, label);
         }
         if self.active_node_property_index_count() != 0 {
-            self.index_active_node_properties(
+            self.index_node_properties_if_active(
                 id,
                 node.labels.iter().map(String::as_str),
                 &node.properties,
@@ -1520,7 +1630,11 @@ impl GraphStorageMut for InMemoryGraph {
 
         self.attach_relationship(&rel);
         if self.active_relationship_property_index_count() != 0 {
-            self.index_active_relationship_properties(id, [rel.rel_type.as_str()], &rel.properties);
+            self.index_relationship_properties_if_active(
+                id,
+                [rel.rel_type.as_str()],
+                &rel.properties,
+            );
         }
         self.relationships.insert(id, rel.clone());
 
@@ -1536,6 +1650,10 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn set_node_property(&mut self, node_id: NodeId, key: String, value: PropertyValue) -> bool {
+        if !self.nodes.contains_key(&node_id) {
+            return false;
+        }
+
         let recorder_active = self.recorder.is_some();
         let (stored_key, stored_value) = if recorder_active {
             (Some(key.clone()), Some(value.clone()))
@@ -1689,6 +1807,10 @@ impl GraphStorageMut for InMemoryGraph {
         key: String,
         value: PropertyValue,
     ) -> bool {
+        if !self.relationships.contains_key(&rel_id) {
+            return false;
+        }
+
         let recorder_active = self.recorder.is_some();
         let (stored_key, stored_value) = if recorder_active {
             (Some(key.clone()), Some(value.clone()))
@@ -1909,6 +2031,7 @@ impl Snapshotable for InMemoryGraph {
             rebuilt.attach_relationship(&rel);
             rebuilt.relationships.insert(rel.id, rel);
         }
+        rebuilt.rebuild_property_indexes();
 
         // Preserve the existing recorder across the swap — observers of the
         // store's identity should not be silently detached by a restore,
@@ -2095,15 +2218,14 @@ mod tests {
     }
 
     #[test]
-    fn node_property_index_activates_lazily() {
+    fn node_property_index_activates_on_lookup_and_tracks_later_create() {
         let mut g = InMemoryGraph::new();
         let first = g.create_node(
             vec!["Person".into()],
             props(&[("name", PropertyValue::String("Alice".into()))]),
         );
 
-        assert!(g.indexes_read().node_properties.active_keys.is_empty());
-        assert!(g.indexes_read().node_properties.values.is_empty());
+        assert!(!g.indexes_read().node_properties.is_active("name"));
 
         let alice = PropertyValue::String("Alice".into());
         assert_eq!(
@@ -2125,6 +2247,87 @@ mod tests {
                 .map(|node| node.id)
                 .collect::<Vec<_>>(),
             vec![first.id, second.id]
+        );
+    }
+
+    #[test]
+    fn property_indexes_activate_on_lookup_after_set_for_new_keys() {
+        let mut g = InMemoryGraph::new();
+        let node = g.create_node(vec!["Person".into()], Properties::new());
+
+        assert!(!g.indexes_read().node_properties.is_active("name"));
+        assert!(g.set_node_property(
+            node.id,
+            "name".into(),
+            PropertyValue::String("Alice".into())
+        ));
+        assert!(!g.indexes_read().node_properties.is_active("name"));
+        assert_eq!(
+            g.find_node_ids_by_property(
+                Some("Person"),
+                "name",
+                &PropertyValue::String("Alice".into())
+            ),
+            vec![node.id]
+        );
+        assert!(g.indexes_read().node_properties.is_active("name"));
+
+        let other = g.create_node(vec!["Person".into()], Properties::new());
+        let rel = g
+            .create_relationship(node.id, other.id, "KNOWS", Properties::new())
+            .unwrap();
+        assert!(!g.indexes_read().relationship_properties.is_active("since"));
+        assert!(g.set_relationship_property(rel.id, "since".into(), PropertyValue::Int(2020)));
+        assert!(!g.indexes_read().relationship_properties.is_active("since"));
+        assert_eq!(
+            g.find_relationship_ids_by_property(Some("KNOWS"), "since", &PropertyValue::Int(2020)),
+            vec![rel.id]
+        );
+        assert!(g.indexes_read().relationship_properties.is_active("since"));
+    }
+
+    #[test]
+    fn replay_create_eagerly_activates_property_indexes() {
+        let mut g = InMemoryGraph::new();
+        let alice = g
+            .replay_create_node(
+                0,
+                vec!["Person".into()],
+                props(&[("name", PropertyValue::String("Alice".into()))]),
+            )
+            .unwrap();
+        let bob = g
+            .replay_create_node(
+                1,
+                vec!["Person".into()],
+                props(&[("name", PropertyValue::String("Bob".into()))]),
+            )
+            .unwrap();
+
+        assert!(g.indexes_read().node_properties.is_active("name"));
+        assert_eq!(
+            g.find_node_ids_by_property(
+                Some("Person"),
+                "name",
+                &PropertyValue::String("Alice".into())
+            ),
+            vec![alice.id]
+        );
+
+        let rel = g
+            .replay_create_relationship(
+                0,
+                alice.id,
+                bob.id,
+                "KNOWS",
+                props(&[("since", PropertyValue::Int(2020))]),
+            )
+            .unwrap();
+
+        assert!(g.indexes_read().relationship_properties.is_active("since"));
+        assert_eq!(
+            g.find_relationship_ids_by_property(Some("KNOWS"), "since", &PropertyValue::Int(2020)),
+            vec![rel.id]
         );
     }
 
@@ -2394,6 +2597,11 @@ mod tests {
         let mut restored = InMemoryGraph::new();
         let load_meta = restored.load_snapshot(&buf[..]).unwrap();
         assert_eq!(load_meta, save_meta);
+        assert!(restored.indexes_read().node_properties.is_active("name"));
+        assert!(restored
+            .indexes_read()
+            .relationship_properties
+            .is_active("since"));
 
         assert_eq!(restored.node_count(), 2);
         assert_eq!(restored.relationship_count(), 1);
