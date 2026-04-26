@@ -657,7 +657,7 @@ mod pull_shape {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    fn compile<'a>(store: &lora_store::InMemoryGraph, query: &str) -> lora_compiler::CompiledQuery {
+    fn compile(store: &lora_store::InMemoryGraph, query: &str) -> lora_compiler::CompiledQuery {
         let document = parse_query(query).unwrap();
         let resolved = {
             let mut analyzer = lora_analyzer::Analyzer::new(store);
