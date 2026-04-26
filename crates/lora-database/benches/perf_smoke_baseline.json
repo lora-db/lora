@@ -2,22 +2,44 @@
   "_meta": {
     "purpose": "Baseline ns/iter for the perf_smoke_benchmarks suite. Used by scripts/check-perf-smoke.mjs to detect major (>=3x) regressions. NOT an authoritative performance record. See docs/performance/perf-smoke.md.",
     "refresh": "node scripts/check-perf-smoke.mjs --update <bencher-output>",
-    "default_threshold": 3.0,
+    "default_threshold": 3,
     "seeded_on": "2026-04-24",
-    "seeded_from": "Rough scaling of docs/performance/benchmarks.md numbers to allow for ubuntu-latest CI being slower and noisier than the reference Apple Silicon run. Replace with real CI-measured values on first green run."
+    "seeded_from": "Rough scaling of docs/performance/benchmarks.md numbers to allow for ubuntu-latest CI being slower and noisier than the reference Apple Silicon run. Replace with real CI-measured values on first green run.",
+    "last_updated": "2026-04-26"
   },
   "benchmarks": {
     "perf_smoke/scan_1k": {
-      "ns": 500000
+      "ns": 293999
     },
     "perf_smoke/filter_1k": {
-      "ns": 700000
+      "ns": 383337
     },
     "perf_smoke/traversal_chain_500": {
-      "ns": 500000
+      "ns": 262341
     },
     "perf_smoke/write_batch_100": {
-      "ns": 300000
+      "ns": 132457
+    },
+    "perf_smoke/stream_scan_1k": {
+      "ns": 281758
+    },
+    "perf_smoke/stream_pull_one": {
+      "ns": 100948
+    },
+    "perf_smoke/stream_write_100": {
+      "ns": 85205
+    },
+    "perf_smoke/stream_write_sort_100": {
+      "ns": 252797
+    },
+    "perf_smoke/tx_roundtrip_empty": {
+      "ns": 182
+    },
+    "perf_smoke/tx_read_1k": {
+      "ns": 294197
+    },
+    "perf_smoke/tx_write_100": {
+      "ns": 114336
     }
   }
 }
