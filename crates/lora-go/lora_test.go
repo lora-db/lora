@@ -432,7 +432,7 @@ func TestExecuteContextCancellation(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Basic concurrency — correctness, not parallelism.
 //
-// Queries serialise on the Rust-side mutex, so we aren't claiming
+// Writes serialize on the Rust-side store lock, so we aren't claiming
 // parallel speedup here; we are claiming it is safe to share a single
 // *Database across many goroutines and that the results remain
 // consistent under `-race`.

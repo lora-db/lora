@@ -6,7 +6,7 @@
 //! `lora-python`:
 //!
 //! - A `Database` handle wraps `lora_database::Database` (which in turn
-//!   owns the `Arc<Mutex<InMemoryGraph>>`).
+//!   owns the `Arc<RwLock<InMemoryGraph>>`).
 //! - Queries run via `execute_with_params` with
 //!   `ExecuteOptions { format: ResultFormat::RowArrays }`.
 //! - Parameters come in as JSON (tagged value model); results are

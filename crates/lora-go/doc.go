@@ -51,15 +51,14 @@
 // [Database.ExecuteContext] cooperates with a context.Context by
 // running the native call in a helper goroutine and returning
 // ctx.Err() immediately when the context fires. Important caveat:
-// the LoraDB executor does not currently support mid-query
-// cancellation, so the native call continues running in the
-// background and will release the database's internal mutex only
-// once it finishes. Follow-up calls that need that mutex will block
-// until then.
+// this binding does not pass a deadline into Rust, so the native call
+// continues running in the background and will release its Rust-side
+// store lock only once it finishes. Follow-up calls that need that
+// lock will block until then.
 //
 // # Thread safety
 //
-// A single *Database is safe to share across goroutines. Queries
-// serialise on an internal mutex — concurrent executes are correct
-// but not parallel. Close must not race with any in-flight call.
+// A single *Database is safe to share across goroutines. Read-only
+// queries can share the Rust store read lock, while writes serialize
+// on the store write lock. Close must not race with any in-flight call.
 package lora

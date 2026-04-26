@@ -20,8 +20,9 @@
  * Threading
  * ---------
  * A single `LoraDatabase` is safe to use from multiple threads;
- * concurrent queries serialise on an internal mutex. `lora_db_free`
- * must not race with any other call on the same handle.
+ * read-only queries can share the store read lock, while writes serialize
+ * on the store write lock. `lora_db_free` must not race with any other
+ * call on the same handle.
  *
  * Panics
  * ------
@@ -131,7 +132,7 @@ int lora_db_save_snapshot(
     char **out_error);
 
 /* Replace the current graph state with the snapshot at `path`. Holds the
- * store mutex for the duration of the load; concurrent queries block
+ * store write lock for the duration of the load; concurrent queries block
  * until the restore completes. */
 int lora_db_load_snapshot(
     LoraDatabase *db,

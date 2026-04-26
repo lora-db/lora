@@ -8,8 +8,9 @@
  *
  * Wraps an `Arc<Database<InMemoryGraph>>`; the same handle is cloned
  * onto the libuv threadpool for each `execute()` call. Multiple
- * concurrent queries against the same `Database` serialise on the
- * inner store's mutex but do not block the JS event loop.
+ * concurrent queries against the same `Database` can share read-only
+ * work; writes serialize on the inner store's write lock without
+ * blocking the JS event loop.
  *
  * With no constructor arg the database is purely in-memory. Passing a
  * WAL directory path enables write-ahead logging: the binding opens or

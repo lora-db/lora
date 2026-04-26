@@ -58,8 +58,8 @@ class AsyncDatabase:
         result = await db.execute("MATCH (n) RETURN n")
 
     Concurrency: a single ``AsyncDatabase`` wraps a single ``Database``;
-    concurrent ``execute`` coroutines serialise on the underlying engine's
-    mutex but do not block the event loop while waiting.
+    concurrent read-only ``execute`` coroutines can share the underlying
+    store read lock, while writes serialise without blocking the event loop.
     """
 
     __slots__ = ("_inner",)
@@ -113,16 +113,16 @@ class AsyncDatabase:
         The save is atomic — the target path is only replaced once the
         full payload has been written and fsync'd. Runs on a worker
         thread so the event loop stays free; concurrent ``execute``
-        coroutines serialise on the store mutex for the duration of the
-        save.
+        read-only coroutines can share the store read lock while writes wait
+        for the duration of the save.
         """
         return await _to_thread(self._inner.save_snapshot, path)
 
     async def load_snapshot(self, path: str) -> SnapshotMeta:
         """Replace the current graph state with the snapshot at ``path``.
 
-        Concurrent ``execute`` coroutines block on the store mutex until
-        the load completes.
+        Concurrent ``execute`` coroutines block on the store write lock
+        until the load completes.
         """
         return await _to_thread(self._inner.load_snapshot, path)
 

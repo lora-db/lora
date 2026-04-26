@@ -29,7 +29,7 @@ export declare class Database {
   nodeCount(): number;
   relationshipCount(): number;
   dispose(): void;
-  /** Atomic save. Synchronous under the store mutex. */
+  /** Atomic save. Synchronous under the store read lock. */
   saveSnapshot(path: string): NativeSnapshotMeta;
   /** Replace the current graph with the snapshot at `path`. */
   loadSnapshot(path: string): NativeSnapshotMeta;

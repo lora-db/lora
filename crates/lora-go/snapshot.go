@@ -30,9 +30,9 @@ type SnapshotMeta struct {
 // renamed over the target. A crashed save can leave a `.tmp` file
 // behind but can never leave a half-written file at `path`.
 //
-// SaveSnapshot holds the store mutex for the duration of the write, so
-// concurrent Execute calls block until the save completes. This matches
-// the semantics of the Rust core.
+// SaveSnapshot holds the store read lock for the duration of the write,
+// so concurrent writes block until the save completes. This matches the
+// semantics of the Rust core.
 func (db *Database) SaveSnapshot(path string) (*SnapshotMeta, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -58,8 +58,8 @@ func (db *Database) SaveSnapshot(path string) (*SnapshotMeta, error) {
 }
 
 // LoadSnapshot replaces the current graph state with the snapshot at
-// `path`. Concurrent Execute calls block on the store mutex until the
-// load completes.
+// `path`. Concurrent Execute calls block on the store write lock until
+// the load completes.
 //
 // A missing file is reported as a LoraError; callers who want the
 // "optional restore" behaviour used by `lora-server --restore-from`

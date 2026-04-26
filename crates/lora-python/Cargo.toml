@@ -13,6 +13,12 @@ description = "Python bindings for the Lora in-memory graph database"
 # this crate as a normal library.
 crate-type = ["cdylib", "rlib"]
 name = "lora_python"
+# The lib has no benchmarks, and the bench harness binary would crash at
+# startup on macOS: pyo3's `extension-module` feature leaves libpython
+# unlinked (symbols are resolved by the interpreter that loads the cdylib),
+# so a standalone bench executable hits `_PyBaseObject_Type not found` in
+# dyld. Skipping the bench target avoids building/running it.
+bench = false
 
 [lints.rust]
 # pyo3 0.22's `create_exception!` macro expands `#[cfg(feature = "gil-refs")]`

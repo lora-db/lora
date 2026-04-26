@@ -22,8 +22,9 @@ import (
 )
 
 // Database is a Lora graph database backed by the Rust engine. It is
-// safe to share across goroutines; queries serialise on an internal
-// mutex.
+// safe to share across goroutines; native handle access is protected
+// by an internal RWMutex, while the Rust engine separately shares
+// read-only work and serializes writes.
 //
 // Always call [Database.Close] when the database is no longer needed.
 // A finalizer is installed as a safety net so a forgotten Close does
@@ -122,9 +123,9 @@ func (db *Database) Execute(query string, params Params) (*Result, error) {
 // ExecuteContext runs a Cypher query with optional parameters and
 // cooperates with ctx cancellation. See the package doc for the
 // caveat around mid-query cancellation — the native call cannot be
-// interrupted, so a cancelled context only unblocks the caller; the
-// query continues running and holds the database mutex until it
-// finishes.
+// interrupted through this binding, so a cancelled context only
+// unblocks the caller; the query continues running and holds its Rust
+// store lock until it finishes.
 func (db *Database) ExecuteContext(ctx context.Context, query string, params Params) (*Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -194,7 +195,7 @@ func (db *Database) execute(query string, paramsJSON []byte) (*Result, error) {
 }
 
 // Clear drops every node and relationship. The call is constant-time
-// and blocks until in-flight queries release the internal mutex.
+// and blocks until in-flight queries release their Rust store locks.
 func (db *Database) Clear() error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()

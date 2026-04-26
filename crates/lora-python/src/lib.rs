@@ -81,8 +81,8 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///
 /// Query execution runs with the GIL released so other Python threads —
 /// notably `asyncio.to_thread` workers — can progress in parallel. Concurrent
-/// calls against the same `Database` serialise on an internal mutex but do
-/// not hold the GIL.
+/// read-only calls against the same `Database` can share the store read lock,
+/// while writes serialize without holding the GIL.
 #[pyclass(module = "lora_python._native")]
 pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,

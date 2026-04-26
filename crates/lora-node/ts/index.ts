@@ -50,8 +50,8 @@ export interface SnapshotMeta {
  * state from disk before serving queries.
  *
  * Instances are independent — each owns its own in-memory graph. Multiple
- * concurrent `execute()` calls against one instance run one at a time
- * (serialised on the store mutex) but none of them block the event loop.
+ * concurrent read-only `execute()` calls against one instance can share
+ * the store read lock; writes serialize without blocking the event loop.
  */
 class DatabaseImpl {
   readonly #inner: InstanceType<typeof NativeDatabase>;
@@ -123,7 +123,7 @@ class DatabaseImpl {
    * has been written and fsync'd.
    *
    * Synchronous in the native layer (point-in-time consistency requires
-   * holding the store mutex for the duration of the save); the returned
+   * holding the store read lock for the duration of the save); the returned
    * Promise resolves immediately once the save returns.
    */
   async saveSnapshot(path: string): Promise<SnapshotMeta> {
@@ -136,8 +136,8 @@ class DatabaseImpl {
 
   /**
    * Replace the current graph state with a snapshot loaded from `path`.
-   * Concurrent `execute()` calls block on the store mutex until the load
-   * completes.
+   * Concurrent `execute()` calls block on the store write lock until the
+   * load completes.
    */
   async loadSnapshot(path: string): Promise<SnapshotMeta> {
     try {

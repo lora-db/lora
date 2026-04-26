@@ -139,13 +139,12 @@ identical to `lora-wasm`.
 
 ## Known limitations
 
-- **Concurrent writes.** Each `execute()` hops through the threadpool and
-  serialises on the store mutex inside Rust, so concurrent read/read and
-  read/write traffic works. Firing many concurrent write queries against
-  the same `Database` (e.g. 2 000 parallel `CREATE`s via `Promise.all`)
-  can expose races in the underlying engine — treat the mutex as
-  per-operation, not per-query. Prefer `await`-in-a-loop or a single
-  batched query for heavy write workloads.
+- **Concurrent writes.** Each `execute()` hops through the threadpool; read
+  queries can share the store read lock, while writes serialize on the store
+  write lock. Firing many concurrent write queries against the same
+  `Database` (e.g. 2 000 parallel `CREATE`s via `Promise.all`) works but
+  queues behind that write lock. Prefer `await`-in-a-loop or a single batched
+  query for heavy write workloads.
 - **I64 precision.** Integer values above `Number.MAX_SAFE_INTEGER`
   (2^53) are returned as JS `number` and lose precision. A `bigint`-aware
   path would require extending the value serializer.

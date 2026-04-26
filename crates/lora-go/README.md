@@ -149,10 +149,10 @@ if lora.IsNode(row["n"]) {
 
 `ExecuteContext` honours `context.Context` deadlines in the Go sense
 — the function returns `ctx.Err()` as soon as the context fires. But
-the LoraDB executor does not yet support mid-query cancellation, so
-the native call continues running in a helper goroutine and will
-release the database's internal mutex only once it completes. Any
-follow-up call that needs that mutex blocks until then.
+this binding does not pass a deadline into Rust, so the native call
+continues running in a helper goroutine and will release its Rust-side
+store lock only once it completes. Any follow-up call that needs that
+lock blocks until then.
 
 If you rely on a hard deadline, either (a) ensure the query is small
 enough that the worst-case latency is acceptable even if it can't be
