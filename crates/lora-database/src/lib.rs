@@ -15,8 +15,12 @@
 //! ```
 
 mod database;
+mod stream;
+mod transaction;
 
 pub use database::{Database, QueryRunner, SnapshotAdmin, WalAdmin, WalStatus};
+pub use stream::QueryStream;
+pub use transaction::{Transaction, TransactionMode};
 
 // Re-export the WAL configuration types so transports / operators can
 // build a `Database::open_with_wal` argument without taking a direct
@@ -25,7 +29,7 @@ pub use lora_wal::{SyncMode, WalConfig};
 
 // Re-export the core execution types so callers don't need a direct
 // dependency on `lora-executor`.
-pub use lora_executor::{ExecuteOptions, LoraValue, QueryResult, ResultFormat};
+pub use lora_executor::{ExecuteOptions, LoraValue, QueryResult, ResultFormat, Row};
 
 // Re-export the default in-memory backing store so callers only need to
 // depend on `lora-database` for the happy path.

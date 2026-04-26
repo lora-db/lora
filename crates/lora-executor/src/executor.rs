@@ -35,16 +35,55 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         plan: &PhysicalPlan,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let rows = self.execute_rows(plan)?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
+    pub fn execute_compiled(
+        &self,
+        compiled: &CompiledQuery,
+        options: Option<ExecuteOptions>,
+    ) -> ExecResult<QueryResult> {
+        let rows = self.execute_compiled_rows(compiled)?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
+    pub fn execute_compiled_rows(&self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
+        if compiled.unions.is_empty() {
+            return self.execute_rows(&compiled.physical);
+        }
+
+        let _ = take_eval_error();
+
+        let mut all_rows = self.execute_rows(&compiled.physical)?;
+        let mut needs_dedup = false;
+
+        for branch in &compiled.unions {
+            let branch_rows = self.execute_rows(&branch.physical)?;
+            all_rows.extend(branch_rows);
+
+            if !branch.all {
+                needs_dedup = true;
+            }
+        }
+
+        if needs_dedup {
+            all_rows = dedup_rows(all_rows);
+        }
+
+        Ok(all_rows)
+    }
+
+    pub fn execute_rows(&self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
         let _ = take_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
-        let rows = rows
+        Ok(rows
             .into_iter()
             .map(|row| self.hydrate_row(row))
-            .collect::<Vec<_>>();
-        Ok(project_rows(rows, options.unwrap_or_default()))
+            .collect::<Vec<_>>())
     }
 
     fn hydrate_row(&self, row: Row) -> Row {
@@ -55,6 +94,17 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         }
 
         out
+    }
+
+    /// Buffered execution of an arbitrary subplan. Public to the
+    /// crate so the pull pipeline can fall back to materialized
+    /// execution for operators that have no streaming source yet.
+    pub(crate) fn execute_subtree(
+        &self,
+        plan: &PhysicalPlan,
+        node_id: PhysicalNodeId,
+    ) -> ExecResult<Vec<Row>> {
+        self.execute_node(plan, node_id)
     }
 
     fn execute_node(&self, plan: &PhysicalPlan, node_id: PhysicalNodeId) -> ExecResult<Vec<Row>> {
@@ -678,16 +728,20 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         plan: &PhysicalPlan,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let rows = self.execute_rows(plan)?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
+    pub fn execute_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
         let _ = take_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
-        let rows = rows
+        Ok(rows
             .into_iter()
             .map(|row| self.hydrate_row(row))
-            .collect::<Vec<_>>();
-        Ok(project_rows(rows, options.unwrap_or_default()))
+            .collect::<Vec<_>>())
     }
 
     /// Execute a compiled query that may include UNION branches.
@@ -696,8 +750,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         compiled: &CompiledQuery,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let rows = self.execute_compiled_rows(compiled)?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
+    pub fn execute_compiled_rows(&mut self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
         if compiled.unions.is_empty() {
-            return self.execute(&compiled.physical, options);
+            return self.execute_rows(&compiled.physical);
         }
 
         let _ = take_eval_error();
@@ -722,7 +781,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             all_rows = dedup_rows(all_rows);
         }
 
-        Ok(project_rows(all_rows, options.unwrap_or_default()))
+        Ok(all_rows)
     }
 
     fn execute_and_hydrate(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
@@ -2627,7 +2686,7 @@ fn type_rank(v: &LoraValue) -> u8 {
 /// Check whether a node's labels satisfy all label groups.
 /// Each group is a disjunction (OR): the node must have at least one label
 /// from the group.  Groups are conjunctive (AND): all groups must be satisfied.
-fn node_matches_label_groups(node_labels: &[String], groups: &[Vec<String>]) -> bool {
+pub(crate) fn node_matches_label_groups(node_labels: &[String], groups: &[Vec<String>]) -> bool {
     groups
         .iter()
         .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))
@@ -2635,7 +2694,7 @@ fn node_matches_label_groups(node_labels: &[String], groups: &[Vec<String>]) -> 
 
 /// Scan the graph for candidate node IDs matching the label groups. Uses the
 /// label index for the pick-first-label phase and avoids cloning NodeRecords.
-fn scan_node_ids_for_label_groups<S: GraphStorage>(
+pub(crate) fn scan_node_ids_for_label_groups<S: GraphStorage>(
     storage: &S,
     groups: &[Vec<String>],
 ) -> Vec<lora_store::NodeId> {
@@ -2657,7 +2716,7 @@ fn scan_node_ids_for_label_groups<S: GraphStorage>(
     }
 }
 
-fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
+pub(crate) fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
     let mut map = BTreeMap::new();
     map.insert("kind".to_string(), LoraValue::String("node".to_string()));
     map.insert("id".to_string(), LoraValue::Int(node.id as i64));
@@ -2677,7 +2736,7 @@ fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
     LoraValue::Map(map)
 }
 
-fn hydrate_relationship_record(rel: &lora_store::RelationshipRecord) -> LoraValue {
+pub(crate) fn hydrate_relationship_record(rel: &lora_store::RelationshipRecord) -> LoraValue {
     let mut map = BTreeMap::new();
     map.insert(
         "kind".to_string(),

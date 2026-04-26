@@ -9,7 +9,8 @@ use lora_analyzer::Analyzer;
 use lora_ast::Document;
 use lora_compiler::{CompiledQuery, Compiler};
 use lora_executor::{
-    ExecuteOptions, LoraValue, MutableExecutionContext, MutableExecutor, QueryResult,
+    classify_stream, compiled_result_columns, project_rows, ExecuteOptions, LoraValue,
+    MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
 };
 use lora_parser::parse_query;
 use lora_store::{
@@ -17,6 +18,9 @@ use lora_store::{
     Snapshotable,
 };
 use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalRecorder, WroteCommit};
+
+use crate::stream::{AutoCommitGuard, LiveCursor, QueryStream};
+use crate::transaction::{Transaction, TransactionMode};
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
 pub trait QueryRunner: Send + Sync + 'static {
@@ -34,8 +38,8 @@ pub trait QueryRunner: Send + Sync + 'static {
 /// the WAL handle is `None` and the engine pays only the existing
 /// `MutationRecorder::record` null-pointer check per mutation.
 pub struct Database<S> {
-    store: Arc<Mutex<S>>,
-    wal: Option<Arc<WalRecorder>>,
+    pub(crate) store: Arc<Mutex<S>>,
+    pub(crate) wal: Option<Arc<WalRecorder>>,
 }
 
 impl Database<InMemoryGraph> {
@@ -73,6 +77,19 @@ impl Database<InMemoryGraph> {
                 })
             }
         }
+    }
+
+    /// Start an explicit transaction.
+    ///
+    /// Both modes hold the live mutex for the transaction's
+    /// lifetime; the staging clone is **lazy** — it only happens
+    /// when a [`TransactionMode::ReadWrite`] transaction sees its
+    /// first mutating statement. Read-only transactions never
+    /// clone, and ReadWrite transactions that perform only reads
+    /// (or commit empty) pay nothing for staging.
+    pub fn begin_transaction(&self, mode: TransactionMode) -> Result<Transaction<'_>> {
+        let live = self.lock_store();
+        Ok(Transaction::new(live, self.wal.clone(), mode))
     }
 
     /// Restore from a snapshot file then replay any WAL records past
@@ -147,6 +164,86 @@ impl Database<InMemoryGraph> {
             }
         }
     }
+
+    /// Execute a query and return an owning row stream.
+    pub fn stream(&self, query: &str) -> Result<QueryStream<'_>> {
+        self.stream_with_params(query, BTreeMap::new())
+    }
+
+    /// Execute a parameterised query and return an owning row stream.
+    ///
+    /// The compiled plan is classified at open time. Read-only
+    /// queries run directly off the live store and yield a
+    /// buffered cursor with plan-derived columns. Mutating queries
+    /// are routed through a hidden read-write [`Transaction`]:
+    /// full cursor exhaustion calls `tx.commit` (publishing staged
+    /// changes and replaying the tx-local WAL buffer); a premature
+    /// drop or any error from `next_row` calls `tx.rollback` so
+    /// the live store and the WAL stay untouched.
+    pub fn stream_with_params(
+        &self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<QueryStream<'_>> {
+        // Classify by compiling once against the live store. The
+        // mutating branch then re-compiles inside the hidden
+        // transaction (against a staged graph that's identical to
+        // live at clone time, so the second plan matches the
+        // first); the cost is one extra parse+analyze+compile per
+        // mutating stream, paid in exchange for a tiny
+        // classify-stream surface.
+        let document = parse_query(query)?;
+        let store_guard = self.lock_store();
+        let resolved = {
+            let mut analyzer = Analyzer::new(&*store_guard);
+            analyzer.analyze(&document)?
+        };
+        let compiled = Compiler::compile(&resolved);
+        let columns = compiled_result_columns(&compiled);
+        let shape = classify_stream(&compiled);
+        // Release the analyzer's lock before either branch
+        // re-acquires (read-only path keeps it; mutating path
+        // delegates to begin_transaction which takes its own).
+        drop(store_guard);
+
+        match shape {
+            StreamShape::ReadOnly => {
+                // True pull-shaped streaming. `LiveCursor` holds
+                // the live store lock and the cursor that
+                // borrows from it; its `Drop` releases them in
+                // the right order so the caller observes pure
+                // pull semantics with no intermediate
+                // materialization.
+                let live = LiveCursor::open(self.store.clone(), compiled, params)?;
+                Ok(QueryStream::live(live, columns))
+            }
+            StreamShape::Mutating => {
+                // Hidden auto-commit transaction. The transaction
+                // owns staging, the buffering recorder, savepoint
+                // management, and the WAL replay-on-commit logic;
+                // we just pick commit-on-exhaustion vs
+                // rollback-on-drop based on cursor state. We
+                // hand the pre-compiled plan straight in so the
+                // tx doesn't re-compile what we just classified.
+                // Since this hidden tx is single-statement, it can
+                // skip the explicit transaction savepoint clone:
+                // rollback discards the whole hidden tx.
+                let mut tx = self.begin_transaction(TransactionMode::ReadWrite)?;
+                let rows = match tx.execute_rows_compiled_autocommit(&compiled, params) {
+                    Ok(rows) => rows,
+                    Err(err) => {
+                        // Tx rolls back implicitly on drop here.
+                        return Err(err);
+                    }
+                };
+                let guard = AutoCommitGuard {
+                    tx: Some(tx),
+                    finalized: false,
+                };
+                Ok(QueryStream::auto_commit(rows, columns, guard))
+            }
+        }
+    }
 }
 
 impl<S> Database<S>
@@ -181,22 +278,25 @@ where
         Ok(parse_query(query)?)
     }
 
-    fn lock_store(&self) -> MutexGuard<'_, S> {
+    pub(crate) fn lock_store(&self) -> MutexGuard<'_, S> {
         self.store
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn compile_document_against(&self, document: &Document, store: &S) -> Result<CompiledQuery> {
+        let resolved = {
+            let mut analyzer = Analyzer::new(store);
+            analyzer.analyze(document)?
+        };
+
+        Ok(Compiler::compile(&resolved))
+    }
+
     fn compile_query(&self, query: &str) -> Result<(MutexGuard<'_, S>, CompiledQuery)> {
         let document = self.parse(query)?;
         let store = self.lock_store();
-
-        let resolved = {
-            let mut analyzer = Analyzer::new(&*store);
-            analyzer.analyze(&document)?
-        };
-
-        let compiled = Compiler::compile(&resolved);
+        let compiled = self.compile_document_against(&document, &*store)?;
         Ok((store, compiled))
     }
 
@@ -241,18 +341,35 @@ where
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryResult> {
+        let rows = self.execute_rows_with_params(query, params)?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
+    /// Execute a query and return hydrated rows before final result-format
+    /// projection.
+    pub fn execute_rows(&self, query: &str) -> Result<Vec<Row>> {
+        self.execute_rows_with_params(query, BTreeMap::new())
+    }
+
+    /// Execute a query with parameters and return hydrated rows before final
+    /// result-format projection.
+    pub fn execute_rows_with_params(
+        &self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<Vec<Row>> {
         let (mut store, compiled) = self.compile_query(query)?;
 
         if let Some(rec) = &self.wal {
             rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
         }
 
-        let exec_result: Result<QueryResult> = (|| {
+        let exec_result: Result<Vec<Row>> = (|| {
             let mut executor = MutableExecutor::new(MutableExecutionContext {
                 storage: &mut *store,
                 params,
             });
-            Ok(executor.execute_compiled(&compiled, options)?)
+            Ok(executor.execute_compiled_rows(&compiled)?)
         })();
 
         if let Some(rec) = &self.wal {

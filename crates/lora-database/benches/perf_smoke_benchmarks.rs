@@ -22,7 +22,7 @@ mod fixtures;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use fixtures::*;
-use lora_database::{ExecuteOptions, ResultFormat};
+use lora_database::{ExecuteOptions, ResultFormat, TransactionMode};
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -106,6 +106,123 @@ fn bench_perf_smoke(c: &mut Criterion) {
                         )
                         .unwrap(),
                 );
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // --- 5. streaming read: full drain via Database::stream ----------------
+    //
+    // Exercises the live pull cursor (`StreamInner::Live`). Same workload
+    // as `scan_1k` but goes through the streaming pipeline instead of
+    // `execute_compiled_rows`. A regression here means the per-operator
+    // pull pipeline got slower (or the LiveCursor mutex/guard wrapper did).
+    {
+        let db = build_node_graph(Scale::SMALL);
+        group.bench_function("stream_scan_1k", |b| {
+            b.iter(|| {
+                let stream = db.service.stream("MATCH (n:Node) RETURN n.id").unwrap();
+                let mut count = 0usize;
+                for row in stream {
+                    black_box(row);
+                    count += 1;
+                }
+                black_box(count);
+            });
+        });
+    }
+
+    // --- 6. streaming read: pull-and-drop --------------------------------
+    //
+    // Pulls a single row then drops the stream. Should be O(1)-ish
+    // regardless of underlying graph size — the test guards that the
+    // pull pipeline stays lazy and the LiveCursor's Drop releases
+    // promptly.
+    {
+        let db = build_node_graph(Scale::SMALL);
+        group.bench_function("stream_pull_one", |b| {
+            b.iter(|| {
+                let mut stream = db.service.stream("MATCH (n:Node) RETURN n.id").unwrap();
+                black_box(stream.next_row().unwrap());
+                drop(stream);
+            });
+        });
+    }
+
+    // --- 7. streaming write: auto-commit drain ---------------------------
+    //
+    // Auto-commit write stream — exercises classify-stream → hidden tx
+    // → mutable executor → AutoCommitGuard (delegating to
+    // Transaction::commit). Fresh DB per iteration since the writes
+    // commit on exhaustion.
+    group.bench_function("stream_write_100", |b| {
+        b.iter_batched(
+            BenchDb::new,
+            |db| {
+                let stream = db
+                    .service
+                    .stream("UNWIND range(1, 100) AS i CREATE (:B {id: i}) RETURN i")
+                    .unwrap();
+                let mut count = 0usize;
+                for row in stream {
+                    black_box(row);
+                    count += 1;
+                }
+                black_box(count);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // --- 8. transaction round-trip: empty begin → commit -----------------
+    //
+    // Measures the fixed cost of opening + committing an explicit
+    // read-write transaction with zero statements. Staging is lazy, so this
+    // should not clone the graph.
+    group.bench_function("tx_roundtrip_empty", |b| {
+        let db = build_node_graph(Scale::SMALL);
+        b.iter(|| {
+            let tx = db
+                .service
+                .begin_transaction(TransactionMode::ReadWrite)
+                .unwrap();
+            tx.commit().unwrap();
+        });
+    });
+
+    // --- 9. transaction with one read statement --------------------------
+    //
+    // Single-statement read-only transaction: no staging clone, just the
+    // transaction wrapper plus executor + commit.
+    group.bench_function("tx_read_1k", |b| {
+        let db = build_node_graph(Scale::SMALL);
+        b.iter(|| {
+            let mut tx = db
+                .service
+                .begin_transaction(TransactionMode::ReadOnly)
+                .unwrap();
+            black_box(tx.execute("MATCH (n:Node) RETURN n.id", opts()).unwrap());
+            tx.commit().unwrap();
+        });
+    });
+
+    // --- 10. transaction with one write statement ------------------------
+    //
+    // Single-statement read-write transaction. Fresh DB per
+    // iteration because the writes get published on commit.
+    group.bench_function("tx_write_100", |b| {
+        b.iter_batched(
+            BenchDb::new,
+            |db| {
+                let mut tx = db
+                    .service
+                    .begin_transaction(TransactionMode::ReadWrite)
+                    .unwrap();
+                black_box(
+                    tx.execute("UNWIND range(1, 100) AS i CREATE (:B {id: i})", opts())
+                        .unwrap(),
+                );
+                tx.commit().unwrap();
             },
             BatchSize::SmallInput,
         );
