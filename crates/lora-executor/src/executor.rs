@@ -384,8 +384,8 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 indexed_node_property_candidates(self.ctx.storage, &op.labels, &op.key, &expected);
             for id in candidates.ids {
                 Self::check_loop_deadline(deadline)?;
-                if !candidates.prefiltered {
-                    if !node_matches_property_filter(
+                if !candidates.prefiltered
+                    && !node_matches_property_filter(
                         self.ctx.storage,
                         id,
                         &op.labels,
@@ -394,7 +394,6 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                     ) {
                         continue;
                     }
-                }
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
                 out.push(new_row);
@@ -1195,8 +1194,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             );
             for id in candidates.ids {
                 Self::check_loop_deadline(deadline)?;
-                if !candidates.prefiltered {
-                    if !node_matches_property_filter(
+                if !candidates.prefiltered
+                    && !node_matches_property_filter(
                         &*self.ctx.storage,
                         id,
                         &op.labels,
@@ -1205,7 +1204,6 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                     ) {
                         continue;
                     }
-                }
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
                 out.push(new_row);

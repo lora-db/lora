@@ -1364,10 +1364,8 @@ impl GraphStorage for InMemoryGraph {
         Self: Sized,
     {
         if PropertyIndexKey::from_value(value).is_none() {
-            return self
-                .scan_nodes_by_property(Some(label), key, value)
-                .first()
-                .is_some();
+            return !self
+                .scan_nodes_by_property(Some(label), key, value).is_empty();
         }
 
         self.ensure_node_property_index(key);
@@ -1389,10 +1387,8 @@ impl GraphStorage for InMemoryGraph {
         Self: Sized,
     {
         if PropertyIndexKey::from_value(value).is_none() {
-            return self
-                .scan_relationships_by_property(Some(rel_type), key, value)
-                .first()
-                .is_some();
+            return !self
+                .scan_relationships_by_property(Some(rel_type), key, value).is_empty();
         }
 
         self.ensure_relationship_property_index(key);

@@ -488,8 +488,8 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
             while self.cur_idx < self.cur_ids.len() {
                 let id = self.cur_ids[self.cur_idx];
                 self.cur_idx += 1;
-                if !self.cur_prefiltered {
-                    if !node_matches_property_filter(
+                if !self.cur_prefiltered
+                    && !node_matches_property_filter(
                         self.ctx.storage,
                         id,
                         self.labels,
@@ -498,7 +498,6 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                     ) {
                         continue;
                     }
-                }
                 let mut new_row = row_ref.clone();
                 new_row.insert(self.var, LoraValue::Node(id));
                 return Ok(Some(new_row));

@@ -265,7 +265,7 @@ impl<'db> Transaction<'db> {
 
         // ReadWrite tx, lazy-clone aware.
         let mut inner = self.begin_statement()?;
-        let is_mutating = classify_stream(&compiled).is_mutating();
+        let is_mutating = classify_stream(compiled).is_mutating();
 
         if !is_mutating {
             // Read-only statement in a ReadWrite tx. Run against
