@@ -127,7 +127,7 @@ authoritative performance tooling.
 ## Recommended testing improvements
 
 1. **Optimizer tests** — verify plan transformations (filter push-down has no dedicated test)
-2. **Concurrency tests** — exercise mutex behavior under parallel requests
+2. **Concurrency tests** — exercise store lock behavior under parallel requests
 3. **Property-based testing** — generate random Cypher queries to stress the parser / executor
 4. **Property-based snapshot round-trips** — generate random graphs, save, load, assert structural equality
 5. **HTTP parameter tests** — parameters work through the Rust API but the HTTP server does not yet forward them

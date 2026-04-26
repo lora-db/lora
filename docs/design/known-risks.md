@@ -59,8 +59,8 @@ The following features were listed as gaps in earlier revisions of this document
 |-----|---------------|------|
 | WAL surface is Rust + `lora-server` only — bindings (Python / Node.js / Ruby / WASM / Go FFI) remain snapshot-only in v0.3.x | Observed | **Low–Medium** — Continuous durability is available via `Database::open_with_wal` / `--wal-dir`. See [WAL](../operations/wal.md). Binding parity is a separate decision tracked in [0004-wal.md](../decisions/0004-wal.md). |
 | No uniqueness constraints | Observed | **Medium** — duplicate data can be created silently |
-| No property indexes | Observed | **Medium** — property filters are scans (filtered by label when possible) |
-| No transaction isolation beyond single-query atomicity | Observed | **Medium** — global mutex serializes everything |
+| Property indexes are exact-match only | Observed | **Medium** — equality filters can use the in-memory property index; range/prefix predicates still scan |
+| Transaction isolation is conservative | Observed | **Medium** — read-write transactions serialize on the store write lock; read-only work can share the read lock |
 | Node / relationship IDs are never reused | Observed | Low — `u64` counter will not overflow in practice |
 | `BTreeMap` cloning on bulk reads | Observed | **Low–Medium** — hot executor paths now go through `with_node` / `with_relationship` closures (zero-clone on in-memory); `all_nodes()` and other record-returning scans still allocate |
 
@@ -94,10 +94,10 @@ The following features were listed as gaps in earlier revisions of this document
 
 | Issue | Classification | Impact |
 |-------|---------------|--------|
-| Global `Mutex` held for the whole query | Observed | No concurrent reads; writes block everything |
-| Full scans for property filters without a label | Observed | `O(n)` per property-filtered MATCH |
+| Store `RwLock` held for query execution | Observed | Read-only queries can overlap; writes and long live read streams still contend |
+| Property indexes do not cover range/prefix predicates | Observed | Non-equality property filters still scan candidate records |
 | Clone-heavy read API | Observed | Allocation overhead proportional to result set |
-| No query timeout | Inferred | A pathological query can block the mutex indefinitely |
+| Query timeout coverage is partial | Observed | Rust materialized execute paths have cooperative deadlines; streaming and language bindings still need surfaces |
 | Optimizer has only filter push-down | Observed | No join ordering, no index selection, no cardinality estimation |
 
 ---
@@ -124,9 +124,9 @@ The following features were listed as gaps in earlier revisions of this document
 
 ### Medium term (robustness)
 
-5. Replace `Mutex` with `RwLock` so reads can run concurrently
+5. Expand timeout coverage to streaming APIs, HTTP, and language bindings
 6. Add authentication middleware to the HTTP server
-7. Add property indexes for common filters
+7. Add richer index support for range and prefix filters
 8. ~~Introduce borrowing iterators on `GraphStorage`~~ — partially addressed: `with_node` / `with_relationship` closures now cover the executor's hot paths without requiring `&NodeRecord` access from every backend. Still open: streaming iterators for bulk scans
 
 ### Long term (capability)

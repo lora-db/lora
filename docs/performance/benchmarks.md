@@ -2,7 +2,7 @@
 
 All numbers below come from `cargo bench` (Criterion) on the `engine_benchmarks`, `advanced_benchmarks`, and `scale_benchmarks` binaries under `crates/lora-database/benches/`. Run on Apple Silicon (`aarch64-apple-darwin`) in release mode on 2026-04-17. Throughput has been converted from Criterion's `Kelem/s` / `Melem/s` output into fully expanded numbers.
 
-> ⚙️ **Note** — These numbers characterise the single-process, in-memory core. They are per-core (executor holds a global mutex) and assume the whole graph fits in RAM. For distributed throughput, read-heavy concurrency, or multi-tenant isolation, see the [LoraDB managed platform](https://loradb.com).
+> ⚙️ **Note** — These numbers characterise the single-process, in-memory core. They are single-query measurements and assume the whole graph fits in RAM. For distributed throughput, write-heavy concurrency, or multi-tenant isolation, see the [LoraDB managed platform](https://loradb.com).
 
 Reproduce with:
 
@@ -363,9 +363,9 @@ One query per iteration; throughput reads as *queries per second*.
 
 ### Notes & caveats
 
-- **All benches are in-memory.** The store is a `BTreeMap`-backed graph held behind an `Arc<Mutex>`. Numbers will not translate directly to any persistent engine — there is no I/O, no buffer pool, no WAL.
-- **No indexes.** Every `WHERE` predicate scans the label set linearly. `property_eq` and `starts_with` are O(N); an index layer would shift these to O(log N).
-- **Single-threaded executor.** Each query holds the store mutex for its duration; all numbers are per-core and not a measurement of concurrent throughput.
+- **All benches are in-memory.** The store is a `BTreeMap`-backed graph held behind an `Arc<RwLock>`. Numbers will not translate directly to any persistent engine — there is no I/O, no buffer pool, no WAL.
+- **Partial indexes.** Equality lookups on indexable stored properties use the in-memory property index. Other predicates, string operators, temporal/spatial/vector values, and planner-selected filters still scan.
+- **Single-query measurements.** Benchmarks report one query at a time; they are not a measurement of concurrent read throughput.
 - **Microbenchmark vs. workload.** The *functions*, *parse_compile*, *temporal_creation*, and *spatial_creation* tables are microbenchmarks that stabilise in a few µs; they measure constant-factor cost of the evaluator and planner. The *realistic*, *recommendation*, *scale_social*, and *shortest_path* tables are representative whole-query workloads.
 - **Variable-length path hop cap.** Unbounded `*` paths are capped at `MAX_VAR_LEN_HOPS = 100`; the `varlen_unbounded_chain/500` number reflects that cap.
 - **Regex is the slow outlier.** `regex/regex_filter_1k` runs at ~30 000 nodes/sec — two orders of magnitude below a boolean predicate. Regex compilation happens per query.
@@ -374,4 +374,4 @@ One query per iteration; throughput reads as *queries per second*.
 
 - Understand the current bottlenecks: [Performance Notes](notes.md)
 - See how the executor and storage fit together: [Data Flow](../architecture/data-flow.md), [Graph Engine](../architecture/graph-engine.md)
-- If you're hitting the single-mutex ceiling or need persistent scale, check the [LoraDB managed platform](https://loradb.com)
+- If you're hitting write-lock contention or need persistent scale, check the [LoraDB managed platform](https://loradb.com)

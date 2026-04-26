@@ -124,7 +124,7 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 |--------|--------|
 | Persistence | Point-in-time snapshots (`save_snapshot_to` / `--restore-from`); no WAL. See [Snapshots](snapshots.md) |
 | Backups | Manual or scheduled via `POST /admin/snapshot/save` or a host-side loop over `save_snapshot_to` |
-| Scaling | Single process, single mutex |
+| Scaling | Single process; reads can share the store `RwLock`, writes serialize |
 | Authentication | None |
 | TLS | None |
 | Rate limiting | None |
@@ -135,7 +135,7 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 ## Known operational risks
 
 1. **Memory growth** -- no eviction policy; the graph grows without bound
-2. **Mutex contention** -- all queries serialize on a single mutex; `save_snapshot` and `load_snapshot` also hold it
+2. **Write-lock contention** -- writes, snapshots, and restores take the store write lock; long-running read streams can delay writers
 3. **No continuous durability** -- only point-in-time snapshots; data between saves is lost on crash. See [Snapshots](snapshots.md)
 4. **No auth** -- anyone who can reach the server's bind address (default `127.0.0.1:4747`) can execute arbitrary queries including `DETACH DELETE`. Bind to `0.0.0.0` only in trusted networks.
 5. **Admin surface has no auth** -- when `--snapshot-path` is set, `POST /admin/snapshot/{save,load}` is reachable by anyone who can hit the bind address. Treat it as privileged. See [Security → Admin surface](security.md#admin-surface).

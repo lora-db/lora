@@ -2,21 +2,29 @@
 
 ## Current bottlenecks
 
-### Global mutex serialization
+### Store lock contention
 
-All query execution holds `Arc<Mutex<InMemoryGraph>>` for the duration of analyze + compile + execute (parsing runs outside the lock). This means:
+The database stores the graph in `Arc<RwLock<InMemoryGraph>>`.
+Auto-commit read-only queries analyze, compile, and execute under a shared read
+lock, so multiple reads can overlap. Writes, explicit transactions, snapshot
+loads, and WAL checkpoints still take the exclusive write side. This means:
 
-- No concurrent reads
-- Write queries block all other queries
-- A long-running `MATCH (n) RETURN n` on a large graph blocks everything
+- Concurrent read-only queries are allowed
+- Write queries block reads and writes while they hold the write lock
+- A long-running read stream can still delay writers until the stream is dropped
 
 **Source**: `crates/lora-database/src/database.rs` (`Database::execute_with_params`)
 
-> 🚀 **Production note** — If your workload depends on concurrent read throughput, the self-hosted core is not a fit — the mutex is a hard architectural ceiling. The [LoraDB managed platform](https://loradb.com) runs a different concurrency model designed for production traffic.
+`execute_with_timeout` / `execute_with_params_timeout` add cooperative
+deadline checks during lock acquisition and executor work. The checks are not
+preemptive; very large single operator steps can still run until they reach the
+next check.
 
 ### Clone-heavy read API
 
-The `GraphStorage` trait returns owned `Vec<NodeRecord>` and `Vec<RelationshipRecord>`. Every scan clones all matching records:
+The compatibility surface on `GraphStorage` still returns owned
+`Vec<NodeRecord>` and `Vec<RelationshipRecord>`. Callers using those helpers
+clone all matching records:
 
 ```rust
 fn all_nodes(&self) -> Vec<NodeRecord>;           // clones all nodes
@@ -24,44 +32,66 @@ fn nodes_by_label(&self, label: &str) -> Vec<NodeRecord>;  // clones matching no
 ```
 
 For a graph with 1M nodes, `MATCH (n) RETURN n` allocates and clones all 1M records.
+Borrow-capable backends can now implement `BorrowedGraphStorage` iterator hooks
+(`node_refs`, `node_refs_by_label`, `relationship_refs`,
+`relationship_refs_by_type`) to expose borrowed scans, but more executor paths
+still need to move onto those hooks before the owned helpers can be retired.
 
 **Source**: `crates/lora-store/src/graph.rs` (`GraphStorage::all_nodes`, `nodes_by_label`) and `crates/lora-store/src/memory.rs` (`InMemoryGraph` overrides)
 
-### No property indexes
+### Property index coverage
 
-Property-based filters require full scans:
+`InMemoryGraph` now keeps hash-based secondary indexes for equality lookups on
+node and relationship properties:
 
 ```cypher
 MATCH (n:User {email: 'alice@example.com'}) RETURN n
 ```
 
-This scans all `:User` nodes and checks each one's `email` property. The `find_nodes_by_property` helper uses this strategy:
+For indexable values, `find_nodes_by_property` and
+`find_relationships_by_property` go directly through the property index and then
+intersect with the label / relationship-type index when one is present. The
+index currently covers `null`, booleans, integers, non-NaN floats, strings, and
+nested lists/maps that contain only those values.
 
-```rust
-fn find_nodes_by_property(&self, label: Option<&str>, key: &str, value: &PropertyValue) -> Vec<NodeRecord> {
-    let candidates = match label { ... };
-    candidates.into_iter().filter(|n| n.properties.get(key) == Some(value)).collect()
-}
-```
+Temporal, spatial, vector, and NaN float values deliberately fall back to the
+old scan path until the storage crate has a stable hash representation that
+matches their equality semantics.
 
-**Source**: `crates/lora-store/src/graph.rs` (`GraphStorage::find_nodes_by_property`)
+**Source**: `crates/lora-store/src/memory.rs` (`InMemoryGraph::find_nodes_by_property`, `InMemoryGraph::find_relationships_by_property`)
 
-### Volcano model overhead
+### Partially streaming execution
 
-The executor pulls rows one-at-a-time through recursive calls. Each operator processes its full input before returning. This is simple but:
+The executor now has a pull-based row pipeline for the common read path and
+for auto-commit streaming writes. `MATCH`, single-hop expansion, `WHERE`,
+projection, `UNWIND`, `LIMIT`, and write roots such as `CREATE`, `SET`,
+`DELETE`, `REMOVE`, and `MERGE` can compose through row cursors.
 
-- No pipelining / streaming
-- Large intermediate result sets are fully materialized in memory
-- Sorts and aggregations must buffer all input
+Some operators still have blocking internals because their semantics require a
+whole input set:
+
+- `ORDER BY`, `DISTINCT`, `UNION`, and aggregations buffer internally, then
+  yield rows lazily to downstream consumers.
+- `OPTIONAL MATCH` streams its outer input but materializes the inner plan once.
+- Shortest-path filtering and variable-length expansion still allocate traversal
+  state.
+
+The practical win is reduced peak memory for downstream writes: a query such as
+`MATCH ... WITH ... ORDER BY ... CREATE ... RETURN ...` no longer has to hold
+both the blocking operator's full output and the write operator's full output at
+the same time.
 
 ### Snapshot save / load
 
-Snapshot operations serialize against every query through the same global mutex.
+Snapshot operations coordinate through the store lock.
 
-- **Save.** `Database::save_snapshot_to` acquires the mutex, bincode-serializes every `NodeRecord` and `RelationshipRecord`, writes the result to `<path>.tmp`, then `fsync`s and renames. The mutex-held window covers the serialize step — it is `O(n + r)` in nodes and relationships. The `fsync` and rename happen against the tmp file but the mutex is still held until the write path completes.
-- **Load.** `Database::load_snapshot_from` acquires the mutex for the entire deserialize + index-rebuild. Adjacency and label / type indexes are reconstructed from the deserialized records, which is also `O(n + r)`.
+- **Save.** `Database::save_snapshot_to` acquires a read lock, bincode-serializes every `NodeRecord` and `RelationshipRecord`, writes the result to `<path>.tmp`, then `fsync`s and renames. The read-lock-held window covers the serialize step — it is `O(n + r)` in nodes and relationships. Other readers may proceed; writers wait.
+- **Load.** `Database::load_snapshot_from` acquires the write lock for the entire deserialize + index-rebuild. Adjacency and label / type indexes are reconstructed from the deserialized records, which is also `O(n + r)`.
 
-Practical rule: do not schedule a save at a cadence smaller than the measured save duration — overlapping saves means the second one waits behind the first and amplifies the stall. For large graphs, prefer a cron that calls `POST /admin/snapshot/save` at an interval larger than the measured save wall-time.
+Practical rule: do not schedule a save at a cadence smaller than the measured
+save duration — overlapping saves can amplify writer stalls. For large graphs,
+prefer a cron that calls `POST /admin/snapshot/save` at an interval larger than
+the measured save wall-time.
 
 **Source**: `crates/lora-store/src/snapshot.rs`, `crates/lora-database/src/database.rs`. Round-trip coverage lives in `crates/lora-database/tests/snapshot.rs`; there is no dedicated benchmark file yet (potential future slot: `crates/lora-database/benches/snapshot_benchmarks.rs`).
 
@@ -118,7 +148,7 @@ Conditions for push-down:
 | Optimization | Description |
 |-------------|-------------|
 | Join ordering | No cost-based optimization for multi-pattern queries |
-| Index selection | No property index to select |
+| Index selection | Equality lookups can use in-memory property indexes; the compiler still has no cost-based index selection |
 | Predicate decomposition | Compound `AND` predicates are not split for selective push-down |
 | Limit push-down | `LIMIT` is not pushed to scan operators |
 | Redundant scan elimination | Rescanning the same label is not detected |
@@ -151,16 +181,21 @@ The in-memory graph stores:
 - Two adjacency entries per relationship (outgoing + incoming)
 - One label index entry per (label, node) pair
 - One type index entry per (type, relationship) pair
+- One property index entry per indexable (property key, property value, node/relationship) tuple
 
-Rough estimate: a node with 1 label and 5 string properties ≈ 200-400 bytes. A relationship with 2 properties ≈ 150-300 bytes. Adjacency indexes add ~50 bytes per relationship.
+Rough estimate: a node with 1 label and 5 string properties ≈ 200-400 bytes before
+secondary index overhead. A relationship with 2 properties ≈ 150-300 bytes before
+secondary index overhead. Adjacency indexes add ~50 bytes per relationship.
+Property indexes trade additional memory for faster equality filtering on common
+scalar and scalar-container properties.
 
 ## Recommendations for improvement
 
-1. **Read/write lock** -- replace `Mutex` with `RwLock` to allow concurrent reads
-2. **Borrowing iterators** -- change `GraphStorage` to return iterators instead of owned Vecs
-3. **Property indexes** -- add hash-based indexes for commonly-filtered properties
-4. **Streaming execution** -- replace materialized `Vec<Row>` with iterator-based execution
-5. **Query timeout** -- add deadline-based cancellation to prevent mutex starvation
+1. **Read/write lock coverage** -- continue shrinking exclusive write-lock windows for admin and write-heavy paths
+2. **Borrowing iterators** -- migrate more executor internals from owned `GraphStorage` helpers onto the new `BorrowedGraphStorage` iterator hooks
+3. **Property indexes** -- extend the current hash indexes to temporal / spatial / vector values once canonical hash keys are available
+4. **Streaming coverage** -- keep moving remaining blocking internals toward cursor-shaped sources where semantics allow it
+5. **Query timeout coverage** -- extend deadline cancellation into streaming APIs and more fine-grained executor loops
 6. **HashMap option** -- consider `HashMap` for primary storage when ordering is not needed
 
 ## Next steps

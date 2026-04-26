@@ -10,7 +10,7 @@ LoraDB needed a way to survive process restarts without blocking on a full write
 
 1. No dependency on a third-party durability crate (sled, redb, sqlite, …).
 2. Atomic against crashes — a killed save can never produce a half-written target file.
-3. Compatible with the existing single-mutex concurrency model of `InMemoryGraph`.
+3. Compatible with the existing single-lock concurrency model of `InMemoryGraph`.
 4. Forward-compatible with a future WAL / checkpoint hybrid without a second file-format migration.
 5. Cheap enough to run as a cron-driven admin call against a live server.
 
@@ -81,7 +81,7 @@ Alongside the snapshot surface, `lora-store` defines a `MutationEvent` enum — 
 ## Consequences
 
 - A crash between saves loses every mutation since the last save. Operators must either snapshot frequently enough to tolerate the gap or (when it ships) enable the WAL.
-- `save_snapshot_to` acquires the global store mutex while bincode serializes the payload; `load_snapshot_from` holds it for the full deserialize + index-rebuild window. Both serialize against every query. See [performance/notes.md](../performance/notes.md) for the practical implications.
+- `save_snapshot_to` acquires the store read lock while bincode serializes the payload; `load_snapshot_from` holds the write lock for the full deserialize + index-rebuild window. Loads block other queries, and long saves can delay writers. See [performance/notes.md](../performance/notes.md) for the practical implications.
 - Any change to `PropertyValue`, the record types, or the temporal / spatial / vector layouts is a wire-format change. The format-version / compatibility policy lives in [../design/change-management.md](../design/change-management.md#snapshot-format-compatibility), and the value-level stability rules in [../internals/value-model.md](../internals/value-model.md#serialization-stability).
 - The HTTP admin surface (`POST /admin/snapshot/{save,load}`) ships with no authentication today. The canonical warning lives in [../operations/security.md](../operations/security.md#admin-surface); see also [../operations/snapshots.md](../operations/snapshots.md#the-http-admin-surface).
 - Adding a new `GraphStorageMut` method requires adding a matching `MutationEvent` variant or the durability layer silently drops the mutation. Checklisted in [../internals/cypher-development.md](../internals/cypher-development.md).

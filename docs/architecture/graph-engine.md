@@ -84,6 +84,14 @@ Maps type names to the set of relationship IDs with that type. Updated on relati
 "KNOWS"    -> {3, 4}
 ```
 
+### Property indexes
+
+Exact-match property indexes map `(property key, property value)` pairs to
+matching node or relationship IDs. They are maintained on create, set,
+remove, delete, snapshot load, and WAL replay. Equality filters can use
+these indexes directly; range and string-prefix predicates still scan their
+candidate records.
+
 ### Adjacency indexes
 
 Two separate indexes for directed traversal:
@@ -239,13 +247,13 @@ hooks plus the bulk-scan methods for zero-clone access.
 
 ## Limitations (observed)
 
-- **No property indexes** -- equality lookups on properties require full scans (filtered by label when possible via `find_nodes_by_property`)
+- **Exact-match property indexes only** -- equality lookups can use the property index; range and prefix filters still scan
 - **No uniqueness constraints** -- nothing prevents duplicate nodes with identical labels and properties
 - **BTreeMap overhead** -- ordered maps are used everywhere, which has higher constant factors than `HashMap` for unordered access; provides deterministic iteration order
 - **Full cloning on bulk reads** -- `all_nodes()`, `nodes_by_label()`, and the other record-returning scans still allocate a `Vec<NodeRecord>`. Hot-path executor code has been migrated to `with_node` / `with_relationship` closures, which avoid the clone on `InMemoryGraph`; bulk-scan APIs remain clone-based
 - **No compaction** -- deleted IDs leave gaps in the ID space, adjacency maps may retain empty entries
 
-> 🚀 **Production note** — These limits are fine for local development, tests, and modest embedded graphs. Property indexes, uniqueness constraints, and compaction are handled automatically in the [LoraDB managed platform](https://loradb.com) — reach for it once your workload outgrows a single in-memory process.
+> 🚀 **Production note** — These limits are fine for local development, tests, and modest embedded graphs. Richer indexing, uniqueness constraints, and compaction are handled automatically in the [LoraDB managed platform](https://loradb.com) — reach for it once your workload outgrows a single in-memory process.
 
 ## Durability
 
@@ -253,8 +261,8 @@ hooks plus the bulk-scan methods for zero-clone access.
 full state (nodes, relationships, ID counters) to a byte stream and restore
 from one. The file format is a fixed-size header (magic + version + a
 reserved `wal_lsn` field) followed by a bincode-serialized payload and a
-CRC32 trailer. Adjacency and label/type indexes are rebuilt on load rather
-than stored.
+CRC32 trailer. Adjacency, label/type, and property indexes are rebuilt on
+load rather than stored.
 
 Alongside snapshots, every mutation fires a `MutationEvent` at an optional
 `MutationRecorder`. The recorder is `None` by default, so zero-WAL

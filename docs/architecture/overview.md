@@ -105,7 +105,7 @@ Interprets a `PhysicalPlan` against a `GraphStorage` (read-only) or `GraphStorag
 
 ### lora-database
 
-Orchestration layer. Owns `Arc<Mutex<S: GraphStorage + GraphStorageMut>>` and exposes a single `Database` entry point with `execute` / `execute_with_params`. Drives the full parse → analyze → compile → execute pipeline so callers (HTTP server, benchmarks, examples, embedded consumers) don't depend on the individual pipeline crates. Also exposes the public snapshot API: `save_snapshot_to`, `load_snapshot_from`, and `in_memory_from_snapshot`, driving the atomic-write protocol.
+Orchestration layer. Owns `Arc<RwLock<S: GraphStorage + GraphStorageMut>>` and exposes a single `Database` entry point with `execute` / `execute_with_params`. Drives the full parse → analyze → compile → execute pipeline so callers (HTTP server, benchmarks, examples, embedded consumers) don't depend on the individual pipeline crates. Also exposes the public snapshot API: `save_snapshot_to`, `load_snapshot_from`, and `in_memory_from_snapshot`, driving the atomic-write protocol.
 
 **Key files**:
 - `src/database.rs` — `Database` struct, `QueryRunner` trait, snapshot API

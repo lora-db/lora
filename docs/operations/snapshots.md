@@ -67,9 +67,9 @@ behind but can never leave a half-written file at the target path. The
 parent directory is also `fsync`ed on best-effort, so the rename itself is
 durable on power loss.
 
-`load_snapshot_from` holds the database mutex for the duration of the
-restore. Concurrent queries block until the restore completes — this
-matches the single-mutex concurrency model of the rest of the engine.
+`load_snapshot_from` holds the store write lock for the duration of the
+restore. Concurrent queries block until the restore completes; normal
+read-only queries can otherwise share the store read lock.
 
 ## The HTTP admin surface
 

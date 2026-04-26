@@ -142,27 +142,33 @@ Four output formats:
 
 ## Concurrency model
 
-`Database` holds the graph in `Arc<Mutex<S>>`. Each query acquires the mutex once at the top of `execute_with_params` and holds it across analyze + compile + execute. Parsing is done before locking.
+`Database` holds the graph in `Arc<RwLock<S>>`. Auto-commit read-only queries
+analyze, compile, and execute under a shared read lock. Mutating queries compile
+under a read lock for classification, then recompile and execute under the
+exclusive write lock so the plan matches the write view. Parsing is done before
+locking.
 
-- Queries are serialized
-- Write queries block reads
+- Read-only queries can overlap
+- Write queries block reads and writes while they hold the write lock
 - No transaction isolation beyond single-query atomicity
-- `save_snapshot_to` holds the mutex for the serialize step (bincode of every node and relationship); the `fsync` + rename happen on the tmp file, but the mutex-held window is still `O(n + r)`. `load_snapshot_from` holds the mutex for the full deserialize + index-rebuild. Both serialize against every query — see [../performance/notes.md](../performance/notes.md#snapshot-save--load).
+- `save_snapshot_to` holds a read lock for the serialize step (bincode of every node and relationship); the `fsync` + rename happen on the tmp file, but the read-lock-held window is still `O(n + r)`. `load_snapshot_from` holds the write lock for the full deserialize + index-rebuild. See [../performance/notes.md](../performance/notes.md#snapshot-save--load).
 
-> 🚀 **Production note** — The single-mutex model is a deliberate simplification for the in-memory core. If you're running read-heavy workloads or need concurrent transactions, the [LoraDB managed platform](https://loradb.com) uses a different concurrency strategy suitable for production traffic.
+`execute_with_timeout` and `execute_with_params_timeout` add cooperative
+deadline checks during lock acquisition and executor work; they are cancellation
+points, not preemptive thread interruption.
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant S as lora-server
     participant D as Database
-    participant M as Mutex<InMemoryGraph>
+    participant M as RwLock<InMemoryGraph>
 
     C->>S: POST /query
     S->>D: QueryRunner::execute(query)
     D->>D: parse_query(query)
-    D->>M: lock()
-    M-->>D: MutexGuard
+    D->>M: read() or write()
+    M-->>D: RwLock guard
     D->>D: Analyzer::analyze(doc, &graph)
     D->>D: Compiler::compile(resolved)
     D->>D: MutableExecutor::execute_compiled(plan, &mut graph)

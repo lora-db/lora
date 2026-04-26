@@ -23,6 +23,7 @@ The graph is stored entirely in memory using `BTreeMap` collections:
 - `BTreeMap<NodeId, BTreeSet<RelationshipId>>` for outgoing and incoming adjacency
 - `BTreeMap<String, BTreeSet<NodeId>>` for label indexes
 - `BTreeMap<String, BTreeSet<RelationshipId>>` for relationship type indexes
+- exact-match property indexes for `(property key, property value)` lookups
 
 ### Trait-based abstraction
 
@@ -47,9 +48,9 @@ Node and relationship IDs are sequential `u64` values that are never reused.
 ## Consequences
 
 - Data is lost on process exit
-- No concurrent reads (could be mitigated with `RwLock`)
-- Clone-heavy API (methods return `Vec<Record>` rather than iterators)
-- No property indexes (property-based queries require scans)
+- Concurrent reads are now supported through the database-level `RwLock`
+- Clone-heavy bulk APIs remain (methods return `Vec<Record>` rather than iterators), though executor hot paths use borrowed closures
+- Property equality lookups can use exact-match indexes; range/prefix predicates still scan
 - `BTreeMap` is slightly slower than `HashMap` for point lookups but provides ordered iteration
 
 ## Alternatives considered (inferred)

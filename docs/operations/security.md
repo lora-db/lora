@@ -44,7 +44,7 @@ This surface gives any client that can reach the admin port three attack primiti
 
 1. **Arbitrary write.** The optional `path` body field is passed straight to the OS. Any client can write files anywhere the server UID can write — including overwriting unrelated files on the host if the server runs with broad filesystem access.
 2. **Arbitrary read-as-restore.** Pointing `load` at an attacker-controlled file replaces the live graph. If the attacker can stage a file on disk, they can swap the entire database state.
-3. **Denial of service.** `load` holds the global store mutex for the full restore duration, serializing every other query. Repeated calls turn the server unresponsive.
+3. **Denial of service.** `load` holds the store write lock for the full restore duration, blocking other queries. Repeated calls turn the server unresponsive.
 
 LoraDB's mitigation posture today:
 

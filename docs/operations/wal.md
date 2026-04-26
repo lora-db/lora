@@ -94,7 +94,7 @@ transaction never spans segments.
 
 ## Records
 
-Every record carries `lsn` (monotonic, allocated under the engine mutex)
+Every record carries `lsn` (monotonic, allocated under the WAL's internal lock)
 and most carry `tx_begin_lsn` to associate per-mutation entries with
 their owning query.
 

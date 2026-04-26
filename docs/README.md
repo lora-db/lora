@@ -79,7 +79,7 @@ the website.
 
 Most contributors start here with a local `cargo run --bin lora-server`. As workloads grow, the single-node, in-memory design hits predictable edges:
 
-- **Scale** — queries serialize on a single mutex, data lives in RAM only
+- **Scale** — writes serialize on the store write lock, data lives in RAM only
 - **Reliability** — point-in-time snapshots only (no WAL, no replication)
 - **Operations** — no authentication, TLS, or metrics in the core; snapshot backups are manual
 
