@@ -94,7 +94,7 @@ pub enum MutationEvent {
 /// classic write-ahead-log convention of logging committed changes only.
 ///
 /// Implementations must be `Send + Sync` so a shared recorder can be driven
-/// from any thread holding the store's mutex.
+/// from any thread holding the store's write lock.
 pub trait MutationRecorder: Send + Sync + 'static {
     fn record(&self, event: &MutationEvent);
 
@@ -106,7 +106,7 @@ pub trait MutationRecorder: Send + Sync + 'static {
     /// durability — most importantly the WAL adapter — flip a flag when
     /// an append fails and surface it here. The host (typically
     /// `Database::execute_with_params`) polls this once per critical
-    /// section while still holding the engine mutex; if poisoned, the
+    /// section while still holding the store write lock; if poisoned, the
     /// query fails loudly and the caller observes the durability error
     /// rather than a silently-lost write.
     ///

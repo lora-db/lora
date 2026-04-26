@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 use lora_ast::Direction;
 
@@ -9,6 +10,232 @@ use crate::{
     NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord, SnapshotError,
     SnapshotMeta, SnapshotPayload, Snapshotable,
 };
+
+type PropertyValueBuckets = HashMap<PropertyIndexKey, BTreeSet<u64>>;
+type PropertyIndex = HashMap<String, PropertyValueBuckets>;
+type ScopedPropertyIndex = HashMap<String, PropertyIndex>;
+
+#[derive(Default)]
+struct LazyIndexRegistry {
+    node_properties: LazyPropertyIndex,
+    relationship_properties: LazyPropertyIndex,
+}
+
+impl std::fmt::Debug for LazyIndexRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LazyIndexRegistry")
+            .field("node_properties", &self.node_properties)
+            .field("relationship_properties", &self.relationship_properties)
+            .finish()
+    }
+}
+
+impl Clone for LazyIndexRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            node_properties: self.node_properties.clone(),
+            relationship_properties: self.relationship_properties.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct LazyPropertyIndex {
+    active_keys: BTreeSet<String>,
+    values: PropertyIndex,
+    scoped_values: ScopedPropertyIndex,
+}
+
+impl LazyPropertyIndex {
+    fn is_active(&self, key: &str) -> bool {
+        self.active_keys.contains(key)
+    }
+
+    fn activate(&mut self, key: &str) {
+        self.active_keys.insert(key.to_string());
+    }
+
+    fn insert_value(
+        values: &mut PropertyIndex,
+        entity_id: u64,
+        key: &str,
+        value: PropertyIndexKey,
+    ) {
+        values
+            .entry(key.to_string())
+            .or_default()
+            .entry(value)
+            .or_default()
+            .insert(entity_id);
+    }
+
+    fn remove_value(
+        values: &mut PropertyIndex,
+        entity_id: u64,
+        key: &str,
+        value: &PropertyIndexKey,
+    ) {
+        let mut remove_key = false;
+        if let Some(buckets) = values.get_mut(key) {
+            if let Some(ids) = buckets.get_mut(value) {
+                ids.remove(&entity_id);
+                if ids.is_empty() {
+                    buckets.remove(value);
+                }
+            }
+            remove_key = buckets.is_empty();
+        }
+        if remove_key {
+            values.remove(key);
+        }
+    }
+
+    fn insert_scoped(&mut self, entity_id: u64, scope: &str, key: &str, value: &PropertyValue) {
+        let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
+            return;
+        };
+
+        Self::insert_value(
+            self.scoped_values.entry(scope.to_string()).or_default(),
+            entity_id,
+            key,
+            indexed_value,
+        );
+    }
+
+    fn insert_with_scopes<'a>(
+        &mut self,
+        entity_id: u64,
+        scopes: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
+            return;
+        };
+
+        Self::insert_value(&mut self.values, entity_id, key, indexed_value.clone());
+        for scope in scopes {
+            Self::insert_value(
+                self.scoped_values.entry(scope.to_string()).or_default(),
+                entity_id,
+                key,
+                indexed_value.clone(),
+            );
+        }
+    }
+
+    fn remove_scoped(&mut self, entity_id: u64, scope: &str, key: &str, value: &PropertyValue) {
+        let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
+            return;
+        };
+
+        let mut remove_scope = false;
+        if let Some(values) = self.scoped_values.get_mut(scope) {
+            Self::remove_value(values, entity_id, key, &indexed_value);
+            remove_scope = values.is_empty();
+        }
+        if remove_scope {
+            self.scoped_values.remove(scope);
+        }
+    }
+
+    fn remove_with_scopes<'a>(
+        &mut self,
+        entity_id: u64,
+        scopes: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
+            return;
+        };
+
+        Self::remove_value(&mut self.values, entity_id, key, &indexed_value);
+        for scope in scopes {
+            let mut remove_scope = false;
+            if let Some(values) = self.scoped_values.get_mut(scope) {
+                Self::remove_value(values, entity_id, key, &indexed_value);
+                remove_scope = values.is_empty();
+            }
+            if remove_scope {
+                self.scoped_values.remove(scope);
+            }
+        }
+    }
+
+    fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&BTreeSet<u64>> {
+        let indexed_value = PropertyIndexKey::from_value(value)?;
+        self.values
+            .get(key)
+            .and_then(|values| values.get(&indexed_value))
+    }
+
+    fn scoped_ids_for(
+        &self,
+        scope: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Option<&BTreeSet<u64>> {
+        let indexed_value = PropertyIndexKey::from_value(value)?;
+        self.scoped_values
+            .get(scope)
+            .and_then(|values| values.get(key))
+            .and_then(|values| values.get(&indexed_value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum PropertyIndexKey {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(u64),
+    String(String),
+    List(Vec<PropertyIndexKey>),
+    Map(BTreeMap<String, PropertyIndexKey>),
+}
+
+impl PropertyIndexKey {
+    fn from_value(value: &PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Null => Some(Self::Null),
+            PropertyValue::Bool(v) => Some(Self::Bool(*v)),
+            PropertyValue::Int(v) => Some(Self::Int(*v)),
+            PropertyValue::Float(v) => {
+                if v.is_nan() {
+                    None
+                } else if *v == 0.0 {
+                    Some(Self::Float(0.0f64.to_bits()))
+                } else {
+                    Some(Self::Float(v.to_bits()))
+                }
+            }
+            PropertyValue::String(v) => Some(Self::String(v.clone())),
+            PropertyValue::List(values) => values
+                .iter()
+                .map(Self::from_value)
+                .collect::<Option<Vec<_>>>()
+                .map(Self::List),
+            PropertyValue::Map(values) => values
+                .iter()
+                .map(|(k, v)| Self::from_value(v).map(|indexed| (k.clone(), indexed)))
+                .collect::<Option<BTreeMap<_, _>>>()
+                .map(Self::Map),
+            // Temporal, spatial, and vector values have richer equality
+            // semantics and/or no stable hash representation in the storage
+            // crate today. Those continue to use the scan fallback.
+            PropertyValue::Date(_)
+            | PropertyValue::Time(_)
+            | PropertyValue::LocalTime(_)
+            | PropertyValue::DateTime(_)
+            | PropertyValue::LocalDateTime(_)
+            | PropertyValue::Duration(_)
+            | PropertyValue::Point(_)
+            | PropertyValue::Vector(_) => None,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct InMemoryGraph {
@@ -25,6 +252,9 @@ pub struct InMemoryGraph {
     // secondary indexes
     nodes_by_label: BTreeMap<String, BTreeSet<NodeId>>,
     relationships_by_type: BTreeMap<String, BTreeSet<RelationshipId>>,
+    indexes: RwLock<LazyIndexRegistry>,
+    active_node_property_indexes: AtomicUsize,
+    active_relationship_property_indexes: AtomicUsize,
 
     /// Optional mutation observer. When `Some`, every committed mutation
     /// fans out to this recorder *after* the in-memory state has been
@@ -44,6 +274,15 @@ impl std::fmt::Debug for InMemoryGraph {
             .field("incoming", &self.incoming)
             .field("nodes_by_label", &self.nodes_by_label)
             .field("relationships_by_type", &self.relationships_by_type)
+            .field("indexes", &self.indexes)
+            .field(
+                "active_node_property_indexes",
+                &self.active_node_property_index_count(),
+            )
+            .field(
+                "active_relationship_property_indexes",
+                &self.active_relationship_property_index_count(),
+            )
             .field("recorder", &self.recorder.as_ref().map(|_| "installed"))
             .finish()
     }
@@ -62,6 +301,15 @@ impl Clone for InMemoryGraph {
             incoming: self.incoming.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
             relationships_by_type: self.relationships_by_type.clone(),
+            indexes: RwLock::new(if self.has_active_property_indexes() {
+                self.indexes_read().clone()
+            } else {
+                LazyIndexRegistry::default()
+            }),
+            active_node_property_indexes: AtomicUsize::new(self.active_node_property_index_count()),
+            active_relationship_property_indexes: AtomicUsize::new(
+                self.active_relationship_property_index_count(),
+            ),
             recorder: None,
         }
     }
@@ -177,6 +425,335 @@ impl InMemoryGraph {
                 self.relationships_by_type.remove(rel_type);
             }
         }
+    }
+
+    fn indexes_read(&self) -> std::sync::RwLockReadGuard<'_, LazyIndexRegistry> {
+        self.indexes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn indexes_write(&self) -> RwLockWriteGuard<'_, LazyIndexRegistry> {
+        self.indexes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn indexes_mut(&mut self) -> &mut LazyIndexRegistry {
+        self.indexes
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[inline]
+    fn active_node_property_index_count(&self) -> usize {
+        self.active_node_property_indexes.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn active_relationship_property_index_count(&self) -> usize {
+        self.active_relationship_property_indexes
+            .load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn has_active_property_indexes(&self) -> bool {
+        self.active_node_property_index_count() != 0
+            || self.active_relationship_property_index_count() != 0
+    }
+
+    fn ensure_node_property_index(&self, key: &str) {
+        {
+            let indexes = self.indexes_read();
+            if indexes.node_properties.is_active(key) {
+                return;
+            }
+        }
+
+        let mut indexes = self.indexes_write();
+        if indexes.node_properties.is_active(key) {
+            return;
+        }
+
+        for (id, node) in &self.nodes {
+            if let Some(value) = node.properties.get(key) {
+                indexes.node_properties.insert_with_scopes(
+                    *id,
+                    node.labels.iter().map(String::as_str),
+                    key,
+                    value,
+                );
+            }
+        }
+        indexes.node_properties.activate(key);
+        self.active_node_property_indexes
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn ensure_relationship_property_index(&self, key: &str) {
+        {
+            let indexes = self.indexes_read();
+            if indexes.relationship_properties.is_active(key) {
+                return;
+            }
+        }
+
+        let mut indexes = self.indexes_write();
+        if indexes.relationship_properties.is_active(key) {
+            return;
+        }
+
+        for (id, rel) in &self.relationships {
+            if let Some(value) = rel.properties.get(key) {
+                indexes.relationship_properties.insert_with_scopes(
+                    *id,
+                    [rel.rel_type.as_str()],
+                    key,
+                    value,
+                );
+            }
+        }
+        indexes.relationship_properties.activate(key);
+        self.active_relationship_property_indexes
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn index_node_property_if_active<'a>(
+        &mut self,
+        node_id: NodeId,
+        labels: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        if indexes.node_properties.is_active(key) {
+            indexes
+                .node_properties
+                .insert_with_scopes(node_id, labels, key, value);
+        }
+    }
+
+    fn unindex_node_property_if_active<'a>(
+        &mut self,
+        node_id: NodeId,
+        labels: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        if indexes.node_properties.is_active(key) {
+            indexes
+                .node_properties
+                .remove_with_scopes(node_id, labels, key, value);
+        }
+    }
+
+    fn index_node_scope_properties_if_active(
+        &mut self,
+        node_id: NodeId,
+        scope: &str,
+        properties: &Properties,
+    ) {
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        for (key, value) in properties {
+            if indexes.node_properties.is_active(key) {
+                indexes
+                    .node_properties
+                    .insert_scoped(node_id, scope, key, value);
+            }
+        }
+    }
+
+    fn unindex_node_scope_properties_if_active(
+        &mut self,
+        node_id: NodeId,
+        scope: &str,
+        properties: &Properties,
+    ) {
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        for (key, value) in properties {
+            if indexes.node_properties.is_active(key) {
+                indexes
+                    .node_properties
+                    .remove_scoped(node_id, scope, key, value);
+            }
+        }
+    }
+
+    fn index_active_node_properties<'a>(
+        &mut self,
+        node_id: NodeId,
+        labels: impl IntoIterator<Item = &'a str> + Clone,
+        properties: &Properties,
+    ) {
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        for (key, value) in properties {
+            if indexes.node_properties.is_active(key) {
+                indexes
+                    .node_properties
+                    .insert_with_scopes(node_id, labels.clone(), key, value);
+            }
+        }
+    }
+
+    fn unindex_active_node_properties<'a>(
+        &mut self,
+        node_id: NodeId,
+        labels: impl IntoIterator<Item = &'a str> + Clone,
+        properties: &Properties,
+    ) {
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        for (key, value) in properties {
+            if indexes.node_properties.is_active(key) {
+                indexes
+                    .node_properties
+                    .remove_with_scopes(node_id, labels.clone(), key, value);
+            }
+        }
+    }
+
+    fn index_relationship_property_if_active<'a>(
+        &mut self,
+        rel_id: RelationshipId,
+        scopes: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        if self.active_relationship_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        if indexes.relationship_properties.is_active(key) {
+            indexes
+                .relationship_properties
+                .insert_with_scopes(rel_id, scopes, key, value);
+        }
+    }
+
+    fn unindex_relationship_property_if_active<'a>(
+        &mut self,
+        rel_id: RelationshipId,
+        scopes: impl IntoIterator<Item = &'a str>,
+        key: &str,
+        value: &PropertyValue,
+    ) {
+        if self.active_relationship_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        if indexes.relationship_properties.is_active(key) {
+            indexes
+                .relationship_properties
+                .remove_with_scopes(rel_id, scopes, key, value);
+        }
+    }
+
+    fn index_active_relationship_properties<'a>(
+        &mut self,
+        rel_id: RelationshipId,
+        scopes: impl IntoIterator<Item = &'a str> + Clone,
+        properties: &Properties,
+    ) {
+        if self.active_relationship_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        for (key, value) in properties {
+            if indexes.relationship_properties.is_active(key) {
+                indexes.relationship_properties.insert_with_scopes(
+                    rel_id,
+                    scopes.clone(),
+                    key,
+                    value,
+                );
+            }
+        }
+    }
+
+    fn unindex_active_relationship_properties<'a>(
+        &mut self,
+        rel_id: RelationshipId,
+        scopes: impl IntoIterator<Item = &'a str> + Clone,
+        properties: &Properties,
+    ) {
+        if self.active_relationship_property_index_count() == 0 {
+            return;
+        }
+        let indexes = self.indexes_mut();
+        for (key, value) in properties {
+            if indexes.relationship_properties.is_active(key) {
+                indexes.relationship_properties.remove_with_scopes(
+                    rel_id,
+                    scopes.clone(),
+                    key,
+                    value,
+                );
+            }
+        }
+    }
+
+    fn scan_nodes_by_property(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<NodeRecord> {
+        let candidates: Box<dyn Iterator<Item = &NodeRecord> + '_> = match label {
+            Some(label) => Box::new(
+                self.nodes_by_label
+                    .get(label)
+                    .into_iter()
+                    .flat_map(|ids| ids.iter())
+                    .filter_map(|id| self.nodes.get(id)),
+            ),
+            None => Box::new(self.nodes.values()),
+        };
+
+        candidates
+            .filter(|node| node.properties.get(key) == Some(value))
+            .cloned()
+            .collect()
+    }
+
+    fn scan_relationships_by_property(
+        &self,
+        rel_type: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<RelationshipRecord> {
+        let candidates: Box<dyn Iterator<Item = &RelationshipRecord> + '_> = match rel_type {
+            Some(rel_type) => Box::new(
+                self.relationships_by_type
+                    .get(rel_type)
+                    .into_iter()
+                    .flat_map(|ids| ids.iter())
+                    .filter_map(|id| self.relationships.get(id)),
+            ),
+            None => Box::new(self.relationships.values()),
+        };
+
+        candidates
+            .filter(|rel| rel.properties.get(key) == Some(value))
+            .cloned()
+            .collect()
     }
 
     fn attach_relationship(&mut self, rel: &RelationshipRecord) {
@@ -297,10 +874,17 @@ impl InMemoryGraph {
             properties,
         };
 
-        self.nodes.insert(id, node.clone());
         for label in &labels {
             self.insert_node_label_index(id, label);
         }
+        if self.active_node_property_index_count() != 0 {
+            self.index_active_node_properties(
+                id,
+                node.labels.iter().map(String::as_str),
+                &node.properties,
+            );
+        }
+        self.nodes.insert(id, node.clone());
         self.outgoing.entry(id).or_default();
         self.incoming.entry(id).or_default();
         self.bump_next_node_id_past(id)?;
@@ -353,6 +937,9 @@ impl InMemoryGraph {
         };
 
         self.attach_relationship(&rel);
+        if self.active_relationship_property_index_count() != 0 {
+            self.index_active_relationship_properties(id, [rel.rel_type.as_str()], &rel.properties);
+        }
         self.relationships.insert(id, rel.clone());
         self.bump_next_rel_id_past(id)?;
 
@@ -516,6 +1103,197 @@ impl GraphStorage for InMemoryGraph {
             .collect()
     }
 
+    fn find_nodes_by_property(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<NodeRecord>
+    where
+        Self: Sized,
+    {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return self.scan_nodes_by_property(label, key, value);
+        }
+
+        self.ensure_node_property_index(key);
+        let indexes = self.indexes_read();
+
+        match label {
+            Some(label) => {
+                let Some(ids) = indexes.node_properties.scoped_ids_for(label, key, value) else {
+                    return Vec::new();
+                };
+                ids.iter()
+                    .filter_map(|id| self.nodes.get(id).cloned())
+                    .collect()
+            }
+            None => indexes
+                .node_properties
+                .ids_for(key, value)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| self.nodes.get(id).cloned())
+                .collect(),
+        }
+    }
+
+    fn find_node_ids_by_property(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<NodeId>
+    where
+        Self: Sized,
+    {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return self
+                .scan_nodes_by_property(label, key, value)
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+        }
+
+        self.ensure_node_property_index(key);
+        let indexes = self.indexes_read();
+
+        match label {
+            Some(label) => indexes
+                .node_properties
+                .scoped_ids_for(label, key, value)
+                .map(|ids| ids.iter().copied().collect())
+                .unwrap_or_default(),
+            None => indexes
+                .node_properties
+                .ids_for(key, value)
+                .map(|ids| ids.iter().copied().collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn find_relationships_by_property(
+        &self,
+        rel_type: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<RelationshipRecord>
+    where
+        Self: Sized,
+    {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return self.scan_relationships_by_property(rel_type, key, value);
+        }
+
+        self.ensure_relationship_property_index(key);
+        let indexes = self.indexes_read();
+
+        match rel_type {
+            Some(rel_type) => {
+                let Some(ids) = indexes
+                    .relationship_properties
+                    .scoped_ids_for(rel_type, key, value)
+                else {
+                    return Vec::new();
+                };
+                ids.iter()
+                    .filter_map(|id| self.relationships.get(id).cloned())
+                    .collect()
+            }
+            None => indexes
+                .relationship_properties
+                .ids_for(key, value)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| self.relationships.get(id).cloned())
+                .collect(),
+        }
+    }
+
+    fn find_relationship_ids_by_property(
+        &self,
+        rel_type: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<RelationshipId>
+    where
+        Self: Sized,
+    {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return self
+                .scan_relationships_by_property(rel_type, key, value)
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
+        }
+
+        self.ensure_relationship_property_index(key);
+        let indexes = self.indexes_read();
+
+        match rel_type {
+            Some(rel_type) => indexes
+                .relationship_properties
+                .scoped_ids_for(rel_type, key, value)
+                .map(|ids| ids.iter().copied().collect())
+                .unwrap_or_default(),
+            None => indexes
+                .relationship_properties
+                .ids_for(key, value)
+                .map(|ids| ids.iter().copied().collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn node_exists_with_label_and_property(
+        &self,
+        label: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> bool
+    where
+        Self: Sized,
+    {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return self
+                .scan_nodes_by_property(Some(label), key, value)
+                .first()
+                .is_some();
+        }
+
+        self.ensure_node_property_index(key);
+        let indexes = self.indexes_read();
+        indexes
+            .node_properties
+            .scoped_ids_for(label, key, value)
+            .map(|ids| !ids.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn relationship_exists_with_type_and_property(
+        &self,
+        rel_type: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> bool
+    where
+        Self: Sized,
+    {
+        if PropertyIndexKey::from_value(value).is_none() {
+            return self
+                .scan_relationships_by_property(Some(rel_type), key, value)
+                .first()
+                .is_some();
+        }
+
+        self.ensure_relationship_property_index(key);
+        let indexes = self.indexes_read();
+        indexes
+            .relationship_properties
+            .scoped_ids_for(rel_type, key, value)
+            .map(|ids| !ids.is_empty())
+            .unwrap_or(false)
+    }
+
     // ---------- Overrides: traversal (direct adjacency) ----------
 
     fn relationship_ids_of(&self, node_id: NodeId, direction: Direction) -> Vec<RelationshipId> {
@@ -583,7 +1361,6 @@ impl GraphStorage for InMemoryGraph {
             })
             .collect()
     }
-
     // ---------- Overrides: schema introspection ----------
 
     fn all_node_property_keys(&self) -> Vec<String> {
@@ -647,6 +1424,37 @@ impl BorrowedGraphStorage for InMemoryGraph {
     fn relationship_ref(&self, id: RelationshipId) -> Option<&RelationshipRecord> {
         self.relationships.get(&id)
     }
+
+    fn node_refs(&self) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
+        Box::new(self.nodes.values())
+    }
+
+    fn node_refs_by_label(&self, label: &str) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
+        Box::new(
+            self.nodes_by_label
+                .get(label)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| self.nodes.get(id)),
+        )
+    }
+
+    fn relationship_refs(&self) -> Box<dyn Iterator<Item = &RelationshipRecord> + '_> {
+        Box::new(self.relationships.values())
+    }
+
+    fn relationship_refs_by_type(
+        &self,
+        rel_type: &str,
+    ) -> Box<dyn Iterator<Item = &RelationshipRecord> + '_> {
+        Box::new(
+            self.relationships_by_type
+                .get(rel_type)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| self.relationships.get(id)),
+        )
+    }
 }
 
 impl GraphStorageMut for InMemoryGraph {
@@ -660,11 +1468,18 @@ impl GraphStorageMut for InMemoryGraph {
             properties,
         };
 
-        self.nodes.insert(id, node.clone());
-
         for label in &labels {
             self.insert_node_label_index(id, label);
         }
+        if self.active_node_property_index_count() != 0 {
+            self.index_active_node_properties(
+                id,
+                node.labels.iter().map(String::as_str),
+                &node.properties,
+            );
+        }
+
+        self.nodes.insert(id, node.clone());
 
         self.outgoing.entry(id).or_default();
         self.incoming.entry(id).or_default();
@@ -704,6 +1519,9 @@ impl GraphStorageMut for InMemoryGraph {
         };
 
         self.attach_relationship(&rel);
+        if self.active_relationship_property_index_count() != 0 {
+            self.index_active_relationship_properties(id, [rel.rel_type.as_str()], &rel.properties);
+        }
         self.relationships.insert(id, rel.clone());
 
         self.emit(|| MutationEvent::CreateRelationship {
@@ -718,8 +1536,6 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn set_node_property(&mut self, node_id: NodeId, key: String, value: PropertyValue) -> bool {
-        // Hot path: the common case is `recorder = None`. Insert by value
-        // (no key/value clones); only clone when a recorder is attached.
         let recorder_active = self.recorder.is_some();
         let (stored_key, stored_value) = if recorder_active {
             (Some(key.clone()), Some(value.clone()))
@@ -727,35 +1543,77 @@ impl GraphStorageMut for InMemoryGraph {
             (None, None)
         };
 
-        let applied = match self.nodes.get_mut(&node_id) {
+        let index_active = self.active_node_property_index_count() != 0
+            && self.indexes_mut().node_properties.is_active(&key);
+        let (old, labels) = match self.nodes.get_mut(&node_id) {
             Some(node) => {
-                node.properties.insert(key, value);
-                true
+                let labels = if index_active {
+                    Some(node.labels.clone())
+                } else {
+                    None
+                };
+                (node.properties.insert(key.clone(), value.clone()), labels)
             }
-            None => false,
+            None => return false,
         };
-        if applied {
-            self.emit(|| MutationEvent::SetNodeProperty {
+        if let Some(labels) = labels.as_ref() {
+            if let Some(old) = old.as_ref() {
+                self.unindex_node_property_if_active(
+                    node_id,
+                    labels.iter().map(String::as_str),
+                    &key,
+                    old,
+                );
+            }
+            self.index_node_property_if_active(
                 node_id,
-                key: stored_key.unwrap(),
-                value: stored_value.unwrap(),
-            });
+                labels.iter().map(String::as_str),
+                &key,
+                &value,
+            );
         }
-        applied
+
+        self.emit(|| MutationEvent::SetNodeProperty {
+            node_id,
+            key: stored_key.unwrap(),
+            value: stored_value.unwrap(),
+        });
+
+        true
     }
 
     fn remove_node_property(&mut self, node_id: NodeId, key: &str) -> bool {
-        let applied = match self.nodes.get_mut(&node_id) {
-            Some(node) => node.properties.remove(key).is_some(),
-            None => false,
+        let removed = match self.nodes.get_mut(&node_id) {
+            Some(node) => node.properties.remove(key),
+            None => return false,
         };
-        if applied {
-            self.emit(|| MutationEvent::RemoveNodeProperty {
+        let Some(removed) = removed else {
+            return false;
+        };
+
+        let labels = if self.active_node_property_index_count() != 0
+            && self.indexes_mut().node_properties.is_active(key)
+        {
+            self.nodes.get(&node_id).map(|node| node.labels.clone())
+        } else {
+            None
+        };
+
+        if let Some(labels) = labels.as_ref() {
+            self.unindex_node_property_if_active(
                 node_id,
-                key: key.to_string(),
-            });
+                labels.iter().map(String::as_str),
+                key,
+                &removed,
+            );
         }
-        applied
+
+        self.emit(|| MutationEvent::RemoveNodeProperty {
+            node_id,
+            key: key.to_string(),
+        });
+
+        true
     }
 
     fn add_node_label(&mut self, node_id: NodeId, label: &str) -> bool {
@@ -764,6 +1622,8 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         }
 
+        let index_has_active_keys = self.active_node_property_index_count() != 0;
+        let mut scoped_properties = None;
         let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => {
                 if node.labels.iter().any(|l| l == label) {
@@ -771,12 +1631,18 @@ impl GraphStorageMut for InMemoryGraph {
                 }
 
                 node.labels.push(label.to_string());
+                if index_has_active_keys {
+                    scoped_properties = Some(node.properties.clone());
+                }
                 self.insert_node_label_index(node_id, label);
                 true
             }
             None => false,
         };
         if applied {
+            if let Some(properties) = scoped_properties.as_ref() {
+                self.index_node_scope_properties_if_active(node_id, label, properties);
+            }
             self.emit(|| MutationEvent::AddNodeLabel {
                 node_id,
                 label: label.to_string(),
@@ -786,12 +1652,17 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> bool {
+        let index_has_active_keys = self.active_node_property_index_count() != 0;
+        let mut scoped_properties = None;
         let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => {
                 let original_len = node.labels.len();
                 node.labels.retain(|l| l != label);
 
                 if node.labels.len() != original_len {
+                    if index_has_active_keys {
+                        scoped_properties = Some(node.properties.clone());
+                    }
                     self.remove_node_label_index(node_id, label);
                     true
                 } else {
@@ -801,6 +1672,9 @@ impl GraphStorageMut for InMemoryGraph {
             None => false,
         };
         if applied {
+            if let Some(properties) = scoped_properties.as_ref() {
+                self.unindex_node_scope_properties_if_active(node_id, label, properties);
+            }
             self.emit(|| MutationEvent::RemoveNodeLabel {
                 node_id,
                 label: label.to_string(),
@@ -822,41 +1696,75 @@ impl GraphStorageMut for InMemoryGraph {
             (None, None)
         };
 
-        let applied = match self.relationships.get_mut(&rel_id) {
+        let index_active = self.active_relationship_property_index_count() != 0
+            && self.indexes_mut().relationship_properties.is_active(&key);
+        let (old, rel_type) = match self.relationships.get_mut(&rel_id) {
             Some(rel) => {
-                rel.properties.insert(key, value);
-                true
+                let rel_type = if index_active {
+                    Some(rel.rel_type.clone())
+                } else {
+                    None
+                };
+                (rel.properties.insert(key.clone(), value.clone()), rel_type)
             }
-            None => false,
+            None => return false,
         };
-        if applied {
-            self.emit(|| MutationEvent::SetRelationshipProperty {
-                rel_id,
-                key: stored_key.unwrap(),
-                value: stored_value.unwrap(),
-            });
+        if let Some(rel_type) = rel_type.as_deref() {
+            if let Some(old) = old.as_ref() {
+                self.unindex_relationship_property_if_active(rel_id, [rel_type], &key, old);
+            }
+            self.index_relationship_property_if_active(rel_id, [rel_type], &key, &value);
         }
-        applied
+
+        self.emit(|| MutationEvent::SetRelationshipProperty {
+            rel_id,
+            key: stored_key.unwrap(),
+            value: stored_value.unwrap(),
+        });
+
+        true
     }
 
     fn remove_relationship_property(&mut self, rel_id: RelationshipId, key: &str) -> bool {
-        let applied = match self.relationships.get_mut(&rel_id) {
-            Some(rel) => rel.properties.remove(key).is_some(),
-            None => false,
+        let removed = match self.relationships.get_mut(&rel_id) {
+            Some(rel) => rel.properties.remove(key),
+            None => return false,
         };
-        if applied {
-            self.emit(|| MutationEvent::RemoveRelationshipProperty {
-                rel_id,
-                key: key.to_string(),
-            });
+        let Some(removed) = removed else {
+            return false;
+        };
+
+        let rel_type = if self.active_relationship_property_index_count() != 0
+            && self.indexes_mut().relationship_properties.is_active(key)
+        {
+            self.relationships
+                .get(&rel_id)
+                .map(|rel| rel.rel_type.clone())
+        } else {
+            None
+        };
+
+        if let Some(rel_type) = rel_type.as_deref() {
+            self.unindex_relationship_property_if_active(rel_id, [rel_type], key, &removed);
         }
-        applied
+
+        self.emit(|| MutationEvent::RemoveRelationshipProperty {
+            rel_id,
+            key: key.to_string(),
+        });
+
+        true
     }
 
     fn delete_relationship(&mut self, rel_id: RelationshipId) -> bool {
         let applied = match self.relationships.remove(&rel_id) {
             Some(rel) => {
                 self.detach_relationship_indexes(&rel);
+                self.unindex_active_relationship_properties(
+                    rel_id,
+                    [rel.rel_type.as_str()],
+                    &rel.properties,
+                );
                 true
             }
             None => false,
@@ -884,6 +1792,11 @@ impl GraphStorageMut for InMemoryGraph {
         for label in &node.labels {
             self.remove_node_label_index(node_id, label);
         }
+        self.unindex_active_node_properties(
+            node_id,
+            node.labels.iter().map(String::as_str),
+            &node.properties,
+        );
 
         self.outgoing.remove(&node_id);
         self.incoming.remove(&node_id);
@@ -1037,6 +1950,11 @@ mod tests {
         assert_eq!(g.all_nodes().len(), 2);
         assert_eq!(g.nodes_by_label("Person").len(), 2);
         assert_eq!(g.nodes_by_label("Employee").len(), 1);
+        assert_eq!(BorrowedGraphStorage::node_refs(&g).count(), 2);
+        assert_eq!(
+            BorrowedGraphStorage::node_refs_by_label(&g, "Person").count(),
+            2
+        );
         assert!(g.node_has_label(a.id, "Person"));
         assert_eq!(
             g.node_property(a.id, "name"),
@@ -1061,6 +1979,11 @@ mod tests {
 
         assert_eq!(g.all_relationships().len(), 2);
         assert_eq!(g.relationships_by_type("KNOWS").len(), 1);
+        assert_eq!(BorrowedGraphStorage::relationship_refs(&g).count(), 2);
+        assert_eq!(
+            BorrowedGraphStorage::relationship_refs_by_type(&g, "KNOWS").count(),
+            1
+        );
         assert_eq!(g.outgoing_relationships(a.id).len(), 2);
         assert_eq!(g.incoming_relationships(b.id).len(), 1);
 
@@ -1119,6 +2042,204 @@ mod tests {
         );
         assert!(g.remove_relationship_property(r.id, "since"));
         assert_eq!(g.relationship_property(r.id, "since"), None);
+    }
+
+    #[test]
+    fn node_property_index_tracks_create_set_remove_and_delete() {
+        let mut g = InMemoryGraph::new();
+        let alice = g.create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Alice".into()))]),
+        );
+        let other_alice = g.create_node(
+            vec!["Robot".into()],
+            props(&[("name", PropertyValue::String("Alice".into()))]),
+        );
+        let bob = g.create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Bob".into()))]),
+        );
+
+        let alice_value = PropertyValue::String("Alice".into());
+        assert_eq!(
+            g.find_nodes_by_property(Some("Person"), "name", &alice_value)
+                .into_iter()
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+            vec![alice.id]
+        );
+        assert!(g.node_exists_with_label_and_property("Robot", "name", &alice_value));
+
+        assert!(g.set_node_property(
+            other_alice.id,
+            "name".into(),
+            PropertyValue::String("Alicia".into())
+        ));
+        assert_eq!(
+            g.find_nodes_by_property(None, "name", &alice_value)
+                .into_iter()
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+            vec![alice.id]
+        );
+
+        assert!(g.remove_node_property(alice.id, "name"));
+        assert!(!g.node_exists_with_label_and_property("Person", "name", &alice_value));
+
+        assert!(g.delete_node(bob.id));
+        assert!(!g.node_exists_with_label_and_property(
+            "Person",
+            "name",
+            &PropertyValue::String("Bob".into())
+        ));
+    }
+
+    #[test]
+    fn node_property_index_activates_lazily() {
+        let mut g = InMemoryGraph::new();
+        let first = g.create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Alice".into()))]),
+        );
+
+        assert!(g.indexes_read().node_properties.active_keys.is_empty());
+        assert!(g.indexes_read().node_properties.values.is_empty());
+
+        let alice = PropertyValue::String("Alice".into());
+        assert_eq!(
+            g.find_nodes_by_property(Some("Person"), "name", &alice)
+                .into_iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>(),
+            vec![first.id]
+        );
+        assert!(g.indexes_read().node_properties.is_active("name"));
+
+        let second = g.create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Alice".into()))]),
+        );
+        assert_eq!(
+            g.find_nodes_by_property(Some("Person"), "name", &alice)
+                .into_iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+    }
+
+    #[test]
+    fn node_property_index_tracks_scoped_label_buckets() {
+        let mut g = InMemoryGraph::new();
+        let alice = g.create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Alice".into()))]),
+        );
+        let robot = g.create_node(
+            vec!["Robot".into()],
+            props(&[("name", PropertyValue::String("Alice".into()))]),
+        );
+        let alice_value = PropertyValue::String("Alice".into());
+
+        assert_eq!(
+            g.find_node_ids_by_property(Some("Person"), "name", &alice_value),
+            vec![alice.id]
+        );
+        assert_eq!(
+            g.indexes_read()
+                .node_properties
+                .scoped_ids_for("Person", "name", &alice_value)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![alice.id]
+        );
+
+        assert!(g.add_node_label(robot.id, "Employee"));
+        assert_eq!(
+            g.find_node_ids_by_property(Some("Employee"), "name", &alice_value),
+            vec![robot.id]
+        );
+
+        assert!(g.remove_node_label(alice.id, "Person"));
+        assert!(g
+            .find_node_ids_by_property(Some("Person"), "name", &alice_value)
+            .is_empty());
+        assert_eq!(
+            g.find_node_ids_by_property(None, "name", &alice_value),
+            vec![alice.id, robot.id]
+        );
+    }
+
+    #[test]
+    fn relationship_property_index_tracks_create_set_remove_and_delete() {
+        let mut g = InMemoryGraph::new();
+        let a = g.create_node(vec!["Person".into()], Properties::new());
+        let b = g.create_node(vec!["Person".into()], Properties::new());
+        let c = g.create_node(vec!["Person".into()], Properties::new());
+        let first = g
+            .create_relationship(
+                a.id,
+                b.id,
+                "KNOWS",
+                props(&[("since", PropertyValue::Int(2020))]),
+            )
+            .unwrap();
+        let second = g
+            .create_relationship(
+                b.id,
+                c.id,
+                "LIKES",
+                props(&[("since", PropertyValue::Int(2020))]),
+            )
+            .unwrap();
+
+        let year = PropertyValue::Int(2020);
+        assert_eq!(
+            g.find_relationships_by_property(Some("KNOWS"), "since", &year)
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            vec![first.id]
+        );
+        assert!(g.relationship_exists_with_type_and_property("LIKES", "since", &year));
+
+        assert!(g.set_relationship_property(second.id, "since".into(), PropertyValue::Int(2021)));
+        assert_eq!(
+            g.find_relationships_by_property(None, "since", &year)
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            vec![first.id]
+        );
+
+        assert!(g.remove_relationship_property(first.id, "since"));
+        assert!(!g.relationship_exists_with_type_and_property("KNOWS", "since", &year));
+
+        assert!(g.delete_relationship(second.id));
+        assert!(!g.relationship_exists_with_type_and_property(
+            "LIKES",
+            "since",
+            &PropertyValue::Int(2021)
+        ));
+    }
+
+    #[test]
+    fn property_index_falls_back_for_unhashed_values() {
+        let mut g = InMemoryGraph::new();
+        let date = PropertyValue::Date(crate::temporal::LoraDate::new(2026, 4, 26).unwrap());
+        let n = g.create_node(vec!["Event".into()], props(&[("day", date.clone())]));
+
+        // Dates are intentionally not hash-indexed yet, so this exercises the
+        // scan fallback path rather than the secondary index.
+        assert_eq!(
+            g.find_nodes_by_property(Some("Event"), "day", &date)
+                .into_iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>(),
+            vec![n.id]
+        );
     }
 
     #[test]
@@ -1288,6 +2409,16 @@ mod tests {
         // Adjacency + label index were rebuilt on load.
         assert_eq!(restored.outgoing_relationships(a.id).len(), 1);
         assert_eq!(restored.nodes_by_label("Person").len(), 2);
+        assert!(restored.node_exists_with_label_and_property(
+            "Person",
+            "name",
+            &PropertyValue::String("Alice".into())
+        ));
+        assert!(restored.relationship_exists_with_type_and_property(
+            "KNOWS",
+            "since",
+            &PropertyValue::Int(2020)
+        ));
 
         // Counters carry over so new IDs don't collide with pre-snapshot IDs.
         let c = restored.create_node(vec!["Person".into()], Properties::new());

@@ -528,6 +528,21 @@ pub trait GraphStorage {
             .collect()
     }
 
+    fn find_node_ids_by_property(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<NodeId>
+    where
+        Self: Sized,
+    {
+        self.find_nodes_by_property(label, key, value)
+            .into_iter()
+            .map(|n| n.id)
+            .collect()
+    }
+
     fn find_relationships_by_property(
         &self,
         rel_type: Option<&str>,
@@ -553,6 +568,21 @@ pub trait GraphStorage {
                     None
                 }
             })
+            .collect()
+    }
+
+    fn find_relationship_ids_by_property(
+        &self,
+        rel_type: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<RelationshipId>
+    where
+        Self: Sized,
+    {
+        self.find_relationships_by_property(rel_type, key, value)
+            .into_iter()
+            .map(|r| r.id)
             .collect()
     }
 
@@ -633,6 +663,41 @@ impl<T: GraphStorage> GraphCatalog for T {
 pub trait BorrowedGraphStorage: GraphStorage {
     fn node_ref(&self, id: NodeId) -> Option<&NodeRecord>;
     fn relationship_ref(&self, id: RelationshipId) -> Option<&RelationshipRecord>;
+
+    fn node_refs(&self) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
+        Box::new(
+            self.all_node_ids()
+                .into_iter()
+                .filter_map(|id| self.node_ref(id)),
+        )
+    }
+
+    fn node_refs_by_label(&self, label: &str) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
+        Box::new(
+            self.node_ids_by_label(label)
+                .into_iter()
+                .filter_map(|id| self.node_ref(id)),
+        )
+    }
+
+    fn relationship_refs(&self) -> Box<dyn Iterator<Item = &RelationshipRecord> + '_> {
+        Box::new(
+            self.all_rel_ids()
+                .into_iter()
+                .filter_map(|id| self.relationship_ref(id)),
+        )
+    }
+
+    fn relationship_refs_by_type(
+        &self,
+        rel_type: &str,
+    ) -> Box<dyn Iterator<Item = &RelationshipRecord> + '_> {
+        Box::new(
+            self.rel_ids_by_type(rel_type)
+                .into_iter()
+                .filter_map(|id| self.relationship_ref(id)),
+        )
+    }
 }
 
 // ============================================================================
