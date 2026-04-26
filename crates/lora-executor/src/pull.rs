@@ -495,9 +495,10 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                         self.labels,
                         self.key,
                         expected,
-                    ) {
-                        continue;
-                    }
+                    )
+                {
+                    continue;
+                }
                 let mut new_row = row_ref.clone();
                 new_row.insert(self.var, LoraValue::Node(id));
                 return Ok(Some(new_row));

@@ -391,9 +391,10 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                         &op.labels,
                         &op.key,
                         &expected,
-                    ) {
-                        continue;
-                    }
+                    )
+                {
+                    continue;
+                }
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
                 out.push(new_row);
@@ -1201,9 +1202,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         &op.labels,
                         &op.key,
                         &expected,
-                    ) {
-                        continue;
-                    }
+                    )
+                {
+                    continue;
+                }
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
                 out.push(new_row);
