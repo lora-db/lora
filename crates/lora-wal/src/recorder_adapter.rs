@@ -3,7 +3,7 @@
 //!
 //! Lifecycle, viewed from `lora-database::Database::execute_with_params`:
 //!
-//! 1. Acquire the engine mutex.
+//! 1. Acquire the store write lock.
 //! 2. `recorder.arm()` — marks the recorder as inside-a-query but
 //!    appends nothing to the WAL yet. A pure read query that fires
 //!    no `MutationEvent` therefore touches the WAL zero times: no
@@ -32,7 +32,7 @@
 //!
 //! `record` is called once per primitive mutation. The adapter holds
 //! exactly one `Mutex<RecorderState>` and one `Arc<Wal>`; both are
-//! uncontested in production because the engine mutex serialises us.
+//! uncontested in production because the store write lock serialises writes.
 //! The cost is two atomic-ish lock acquisitions plus one `Wal::append`
 //! (which itself takes one more mutex internally).
 //!
@@ -232,7 +232,7 @@ impl WalRecorder {
 
     /// True iff the recorder has already failed an append, **or** the
     /// background flusher has latched a failure. Cheap to poll under
-    /// the engine mutex.
+    /// the store lock.
     pub fn is_poisoned(&self) -> bool {
         if self.state.lock().unwrap().poisoned.is_some() {
             return true;
@@ -269,8 +269,8 @@ impl MutationRecorder for WalRecorder {
         // Hold the lock for the whole record path: we may need to
         // lazily issue `Wal::begin` on the first event and then
         // append, both under the same critical section so a racing
-        // commit can't observe a half-initialised state. The engine
-        // mutex already serialises queries, so this lock is
+        // commit can't observe a half-initialised state. The store
+        // write lock already serialises commits, so this lock is
         // uncontested.
         let mut state = self.state.lock().unwrap();
         if state.poisoned.is_some() {

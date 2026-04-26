@@ -22,9 +22,8 @@
 //! live `Wal::open` on the same directory returns [`WalError::AlreadyOpen`].
 //!
 //! All public methods take `&self` and serialise through an internal
-//! [`Mutex`]. The engine mutex already serialises us in production
-//! (one query per critical section), so the inner mutex is uncontested
-//! and effectively free.
+//! [`Mutex`]. The store write lock already serialises query commits in
+//! production, so the inner mutex is uncontested and effectively free.
 
 use std::fs;
 #[cfg(test)]

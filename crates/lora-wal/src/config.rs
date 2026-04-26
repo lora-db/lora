@@ -2,14 +2,14 @@ use std::path::PathBuf;
 
 /// Durability mode for committed transactions.
 ///
-/// The single-mutex engine has at most one concurrent committer at a time,
-/// so the classical group-commit win — overlapping fsyncs across many
-/// committers — does not apply here. [`SyncMode::PerCommit`] is the
-/// default. The other two modes exist for narrow operational profiles.
+/// The engine has at most one concurrent committer at a time, so the
+/// classical group-commit win — overlapping fsyncs across many committers —
+/// does not apply here. [`SyncMode::PerCommit`] is the default. The other two
+/// modes exist for narrow operational profiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncMode {
     /// `fsync` the active segment before the committing thread releases
-    /// the engine mutex. The strongest durability guarantee the WAL
+    /// the store write lock. The strongest durability guarantee the WAL
     /// offers; every observed query result is fully durable.
     #[default]
     PerCommit,

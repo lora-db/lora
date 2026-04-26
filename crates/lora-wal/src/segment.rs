@@ -119,7 +119,7 @@ impl SegmentHeader {
 ///
 /// - `SyncMode::PerCommit` calls `flush()` (write_all + fsync) at the
 ///   end of every committed transaction, while still holding the
-///   engine mutex.
+///   store write lock.
 /// - `SyncMode::Group` calls `flush_buffer()` per commit and `fsync()`
 ///   on a background timer.
 /// - `SyncMode::None` calls only `flush_buffer()`; durability is

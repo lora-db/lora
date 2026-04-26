@@ -11,7 +11,7 @@ use crate::lsn::Lsn;
 /// [`WalSink::commit`] / [`WalSink::flush`] (defined in `wal.rs`, not yet
 /// implemented). Errors from replay are surfaced through `WalReplay`. The
 /// distinction matters because a recorder error needs to *poison* the
-/// engine's mutex critical section, whereas a replay error happens at
+/// engine's write critical section, whereas a replay error happens at
 /// boot, before queries are accepted.
 #[derive(Debug, Error)]
 pub enum WalError {

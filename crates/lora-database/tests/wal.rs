@@ -2,7 +2,7 @@
 //!
 //! These exercise the seam between `Database<InMemoryGraph>` and
 //! `lora-wal::Wal` end-to-end: a real query path drives mutations
-//! through the engine, the WAL captures them under the engine mutex,
+//! through the engine, the WAL captures them under the store write lock,
 //! and a fresh process (modelled by dropping + re-opening the
 //! database) recovers them via replay.
 

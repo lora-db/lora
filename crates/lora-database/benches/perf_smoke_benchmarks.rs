@@ -116,7 +116,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
     // Exercises the live pull cursor (`StreamInner::Live`). Same workload
     // as `scan_1k` but goes through the streaming pipeline instead of
     // `execute_compiled_rows`. A regression here means the per-operator
-    // pull pipeline got slower (or the LiveCursor mutex/guard wrapper did).
+    // pull pipeline got slower (or the LiveCursor RwLock guard wrapper did).
     {
         let db = build_node_graph(Scale::SMALL);
         group.bench_function("stream_scan_1k", |b| {
@@ -162,6 +162,41 @@ fn bench_perf_smoke(c: &mut Criterion) {
                 let stream = db
                     .service
                     .stream("UNWIND range(1, 100) AS i CREATE (:B {id: i}) RETURN i")
+                    .unwrap();
+                let mut count = 0usize;
+                for row in stream {
+                    black_box(row);
+                    count += 1;
+                }
+                black_box(count);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // --- 7b. streaming write through Sort (M4 wave-1 regression gate) -----
+    //
+    // `MATCH ... ORDER BY ... CREATE` exercises `SortSource` inside the
+    // streaming chain: Sort buffers internally (inherent), then yields
+    // sorted rows lazily into the per-row CREATE. Pre-M4 this fell back
+    // to the buffered path (~2N peak memory); post-M4 the chain holds
+    // ~N (Sort's buffer only). This bench locks in that regression
+    // surface — a refactor that re-routes ORDER BY → CREATE through the
+    // buffered path would show up as a notable slowdown here.
+    group.bench_function("stream_write_sort_100", |b| {
+        b.iter_batched(
+            BenchDb::new,
+            |db| {
+                // Pre-seed 100 source nodes so the MATCH has work to do.
+                db.service
+                    .execute("UNWIND range(1, 100) AS i CREATE (:Src {i: i})", opts())
+                    .unwrap();
+                let stream = db
+                    .service
+                    .stream(
+                        "MATCH (s:Src) WITH s ORDER BY s.i DESC \
+                         CREATE (:Top {origin: s.i}) RETURN s.i AS i",
+                    )
                     .unwrap();
                 let mut count = 0usize;
                 for row in stream {

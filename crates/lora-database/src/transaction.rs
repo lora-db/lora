@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use lora_analyzer::Analyzer;
 use lora_compiler::{CompiledQuery, Compiler};
 use lora_executor::{
     classify_stream, compiled_result_columns, project_rows, ExecuteOptions, ExecutionContext,
-    Executor, LoraValue, MutableExecutionContext, MutableExecutor, QueryResult, Row,
+    Executor, LoraValue, MutableExecutionContext, MutableExecutor, MutablePullExecutor,
+    PullExecutor, QueryResult, Row, RowSource,
 };
 use lora_parser::parse_query;
 use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
@@ -23,12 +25,33 @@ pub enum TransactionMode {
     ReadWrite,
 }
 
+pub(crate) enum LiveStoreGuard<'db> {
+    Read(RwLockReadGuard<'db, InMemoryGraph>),
+    Write(RwLockWriteGuard<'db, InMemoryGraph>),
+}
+
+impl LiveStoreGuard<'_> {
+    fn as_graph(&self) -> &InMemoryGraph {
+        match self {
+            Self::Read(guard) => guard,
+            Self::Write(guard) => guard,
+        }
+    }
+
+    fn as_graph_mut(&mut self) -> Option<&mut InMemoryGraph> {
+        match self {
+            Self::Read(_) => None,
+            Self::Write(guard) => Some(guard),
+        }
+    }
+}
+
 /// Captures the staged graph and tx-local mutation buffer at the point
 /// a statement is opened, so a failed/dropped statement can be rolled
 /// back to that point without affecting earlier work in the same
 /// transaction.
 pub(crate) struct Savepoint {
-    staged: InMemoryGraph,
+    staged: Option<InMemoryGraph>,
     buffer_len: usize,
 }
 
@@ -87,15 +110,20 @@ pub(crate) struct TxInner {
     pub(crate) closed: bool,
     /// Transaction execution mode chosen at `begin_transaction` time.
     pub(crate) mode: TransactionMode,
+    /// Whether this transaction needs a mutation buffer for durable WAL
+    /// replay. Databases without a WAL can skip recorder installation and
+    /// avoid cloning mutation payloads into an unused buffer.
+    pub(crate) buffer_mutations: bool,
 }
 
 /// Explicit transaction over the in-memory graph.
 ///
-/// The implementation is conservative: it holds the database mutex
-/// for the lifetime of the transaction, lazily creates a cloned
-/// staging graph on the first mutating statement, and either swaps
-/// that graph into place on commit (ReadWrite) or drops it on
-/// rollback. Explicit mutating statements capture a graph +
+/// The implementation is conservative: read-only transactions hold a
+/// database read lock, and read-write transactions hold the database
+/// write lock. Read-write transactions lazily create a cloned staging
+/// graph on the first mutating statement, then either swap that graph
+/// into place on commit or drop it on rollback. Explicit mutating
+/// statements capture a graph +
 /// WAL-buffer savepoint so a failed or dropped streaming statement
 /// only rolls back its own effects, not the transaction as a whole.
 ///
@@ -104,18 +132,20 @@ pub(crate) struct TxInner {
 /// the WAL exactly once at commit, so recovery never observes
 /// partial / aborted / dropped statements.
 pub struct Transaction<'db> {
-    pub(crate) live: Option<MutexGuard<'db, InMemoryGraph>>,
+    pub(crate) live: Option<LiveStoreGuard<'db>>,
     pub(crate) inner: Arc<Mutex<TxInner>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
+    mode: TransactionMode,
 }
 
 impl<'db> Transaction<'db> {
     /// Build a fresh transaction. Used by `Database::begin_transaction`.
     pub(crate) fn new(
-        live: MutexGuard<'db, InMemoryGraph>,
+        live: LiveStoreGuard<'db>,
         wal: Option<Arc<WalRecorder>>,
         mode: TransactionMode,
     ) -> Self {
+        let buffer_mutations = wal.is_some();
         let inner = TxInner {
             staged: None,
             buffer: Arc::new(Mutex::new(Vec::new())),
@@ -124,23 +154,40 @@ impl<'db> Transaction<'db> {
             cursor_dropped_dirty: false,
             closed: false,
             mode,
+            buffer_mutations,
         };
         Self {
             live: Some(live),
             inner: Arc::new(Mutex::new(inner)),
             wal,
+            mode,
         }
     }
 
     /// Transaction mode chosen at begin time.
     pub fn mode(&self) -> TransactionMode {
-        self.lock_inner_unchecked().mode
+        self.mode
     }
 
     /// Execute a query inside the transaction and return a materialized
     /// `QueryResult`.
     pub fn execute(&mut self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
         self.execute_with_params(query, options, BTreeMap::new())
+    }
+
+    /// Execute a query inside the transaction with a cooperative deadline.
+    pub fn execute_with_timeout(
+        &mut self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        timeout: Duration,
+    ) -> Result<QueryResult> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let rows =
+            self.execute_rows_with_params_deadline(query, BTreeMap::new(), Some(deadline))?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
     /// Execute a parameterised query inside the transaction.
@@ -150,7 +197,23 @@ impl<'db> Transaction<'db> {
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryResult> {
-        let rows = self.execute_rows_with_params(query, params)?;
+        let rows = self.execute_rows_with_params_deadline(query, params, None)?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
+    /// Execute a parameterised query inside the transaction with a cooperative
+    /// deadline.
+    pub fn execute_with_params_timeout(
+        &mut self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        timeout: Duration,
+    ) -> Result<QueryResult> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
@@ -167,17 +230,24 @@ impl<'db> Transaction<'db> {
         query: &str,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<Vec<Row>> {
-        let compiled = self.compile_in_tx(query)?;
-        self.execute_rows_compiled(&compiled, params)
+        self.execute_rows_with_params_deadline(query, params, None)
     }
 
-    /// Execute a pre-compiled query inside the transaction. Used by
-    /// `Database::stream_with_params`'s auto-commit branch to avoid
-    /// re-compiling a plan it already has.
-    pub(crate) fn execute_rows_compiled(
+    fn execute_rows_with_params_deadline(
+        &mut self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<Row>> {
+        let compiled = self.compile_in_tx(query)?;
+        self.execute_rows_compiled_deadline(&compiled, params, deadline)
+    }
+
+    fn execute_rows_compiled_deadline(
         &mut self,
         compiled: &CompiledQuery,
         params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
         // ReadOnly tx: never clones, runs straight against live.
         if self.is_read_only_unchecked() {
@@ -186,8 +256,8 @@ impl<'db> Transaction<'db> {
                 .live
                 .as_ref()
                 .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-            let storage: &InMemoryGraph = live;
-            let executor = Executor::new(ExecutionContext { storage, params });
+            let storage = live.as_graph();
+            let executor = Executor::with_deadline(ExecutionContext { storage, params }, deadline);
             return executor
                 .execute_compiled_rows(compiled)
                 .map_err(|e| anyhow!(e));
@@ -195,7 +265,7 @@ impl<'db> Transaction<'db> {
 
         // ReadWrite tx, lazy-clone aware.
         let mut inner = self.begin_statement()?;
-        let is_mutating = classify_stream(compiled).is_mutating();
+        let is_mutating = classify_stream(&compiled).is_mutating();
 
         if !is_mutating {
             // Read-only statement in a ReadWrite tx. Run against
@@ -205,10 +275,13 @@ impl<'db> Transaction<'db> {
             // because no writes have happened yet.
             return match inner.staged.as_ref() {
                 Some(staged) => {
-                    let executor = Executor::new(ExecutionContext {
-                        storage: staged,
-                        params,
-                    });
+                    let executor = Executor::with_deadline(
+                        ExecutionContext {
+                            storage: staged,
+                            params,
+                        },
+                        deadline,
+                    );
                     executor
                         .execute_compiled_rows(compiled)
                         .map_err(|e| anyhow!(e))
@@ -219,8 +292,9 @@ impl<'db> Transaction<'db> {
                         .live
                         .as_ref()
                         .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-                    let storage: &InMemoryGraph = live;
-                    let executor = Executor::new(ExecutionContext { storage, params });
+                    let storage = live.as_graph();
+                    let executor =
+                        Executor::with_deadline(ExecutionContext { storage, params }, deadline);
                     executor
                         .execute_compiled_rows(compiled)
                         .map_err(|e| anyhow!(e))
@@ -231,15 +305,19 @@ impl<'db> Transaction<'db> {
         // Mutating statement: lazy-clone the live graph if this
         // is the first write in the tx, then capture a savepoint
         // and run the mutable executor.
+        let clone_savepoint_graph = inner.staged.is_some();
         self.ensure_staged_locked(&mut inner)?;
-        let savepoint = take_savepoint(&inner);
+        let savepoint = Some(take_savepoint(&inner, clone_savepoint_graph));
 
         let exec_result: ExecResultRows = {
             let staged = inner.staged_mut()?;
-            let mut executor = MutableExecutor::new(MutableExecutionContext {
-                storage: staged,
-                params,
-            });
+            let mut executor = MutableExecutor::with_deadline(
+                MutableExecutionContext {
+                    storage: staged,
+                    params,
+                },
+                deadline,
+            );
             executor
                 .execute_compiled_rows(compiled)
                 .map_err(|e| anyhow!(e))
@@ -254,47 +332,93 @@ impl<'db> Transaction<'db> {
         }
     }
 
-    /// Execute a compiled query for a hidden auto-commit write stream.
+    /// Open a streaming write cursor over the staged graph for a
+    /// pre-compiled mutating plan, used by the hidden auto-commit
+    /// stream path in `Database::stream_with_params`.
     ///
-    /// Auto-commit streams are single-statement transactions: if execution
-    /// fails, or the returned stream is dropped before exhaustion, the whole
-    /// hidden transaction is discarded. That means we do not need the
-    /// per-statement savepoint clone used by explicit multi-statement
-    /// transactions.
-    pub(crate) fn execute_rows_compiled_autocommit(
+    /// The returned `Box<dyn RowSource + 'static>` may be either a
+    /// real per-row [`StreamingWriteCursor`][lora_executor::StreamingWriteCursor],
+    /// a mutable UNION cursor, or a [`BufferedRowSource`][lora_executor::BufferedRowSource]
+    /// for the remaining materialized leaves. Either way:
+    ///
+    /// * The cursor mutates the *staged* graph, never the live store.
+    /// * Mutations fire the [`BufferingRecorder`] installed on staged
+    ///   by [`Self::ensure_staged_locked`], which accumulates into
+    ///   `inner.buffer` and is replayed into the WAL on commit.
+    /// * `cursor_active` is set to `true` here. The caller MUST clear
+    ///   it before invoking [`Self::commit`] or [`Self::rollback`] —
+    ///   the cursor itself does not.
+    ///
+    /// # Safety
+    ///
+    /// The cursor is `'static` because it owns its compiled query (via
+    /// the supplied `Arc`) and aliases the staged graph through a raw
+    /// pointer. Soundness depends on the invariant that
+    /// `inner.staged` remains `Some(_)` at a stable address for the
+    /// cursor's lifetime. That invariant holds while
+    /// `cursor_active = true` blocks every other path that could
+    /// move or drop staged: explicit statements (`begin_statement`
+    /// rejects), `commit` and `rollback` (rejected until the caller
+    /// clears `cursor_active`).
+    pub(crate) fn open_streaming_compiled_autocommit(
         &mut self,
-        compiled: &CompiledQuery,
+        compiled: Arc<CompiledQuery>,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<Vec<Row>> {
-        if self.is_read_only_unchecked() || !classify_stream(compiled).is_mutating() {
-            return self.execute_rows_compiled(compiled, params);
+    ) -> Result<Box<dyn RowSource + 'static>> {
+        if self.is_read_only_unchecked() {
+            return Err(anyhow!(
+                "streaming write cursor requires a ReadWrite transaction"
+            ));
         }
 
         let mut inner = self.begin_statement()?;
         self.ensure_staged_locked(&mut inner)?;
+        inner.cursor_active = true;
 
-        let exec_result: ExecResultRows = {
-            let staged = inner.staged_mut()?;
-            let mut executor = MutableExecutor::new(MutableExecutionContext {
-                storage: staged,
-                params,
-            });
-            executor
-                .execute_compiled_rows(compiled)
-                .map_err(|e| anyhow!(e))
-        };
+        // SAFETY: `inner.staged` is `Some` after `ensure_staged_locked`,
+        // and stays at the same address while `cursor_active = true`
+        // (see method-level safety note).
+        let staged_ptr: *mut InMemoryGraph = inner
+            .staged
+            .as_mut()
+            .expect("ensure_staged_locked guarantees Some")
+            as *mut _;
+        drop(inner);
 
-        match exec_result {
-            Ok(rows) => Ok(rows),
-            Err(err) => {
-                // No savepoint was taken. The only correct recovery is to
-                // abandon the entire hidden auto-commit transaction.
-                discard_transaction_state(&mut inner);
-                drop(inner);
+        // SAFETY: `compiled` (Arc held by the caller / AutoCommit guard)
+        // keeps the plan alive; `staged_ptr` is valid for the cursor's
+        // lifetime per the invariant above. We extend both lifetimes
+        // to `'static` so the resulting cursor can sit inside the
+        // `'static`-shaped AutoCommit variant of `QueryStream`.
+        let storage_static: &'static mut InMemoryGraph = unsafe { &mut *staged_ptr };
+        let compiled_static: &'static CompiledQuery =
+            unsafe { std::mem::transmute::<&CompiledQuery, _>(compiled.as_ref()) };
+
+        // `MutablePullExecutor::open_compiled` picks the narrowest
+        // cursor shape it can: per-row write cursor, branch-wise
+        // mutable UNION cursor, or a buffered materialized leaf.
+        let cursor = MutablePullExecutor::new(storage_static, params)
+            .open_compiled(compiled_static)
+            .map_err(|e| {
+                // Roll back: the cursor build never happened, so the
+                // tx is in a clean-but-poisoned state. Discard
+                // everything and let the caller bubble the error.
+                if let Ok(mut inner) = self.inner.lock() {
+                    discard_transaction_state(&mut inner);
+                }
                 self.live.take();
-                Err(err)
-            }
-        }
+                anyhow!(e)
+            })?;
+
+        // The Arc<CompiledQuery> is the safety anchor for the
+        // `'static` plan reference. Keep it alive for the cursor's
+        // lifetime by leaking a clone into the cursor's owned data.
+        // We can't store it on the cursor itself (it's a Box<dyn>),
+        // so we wrap the cursor in a guard that owns the Arc.
+        Ok(Box::new(StreamingCursorWithArc {
+            cursor,
+            _compiled: compiled,
+        }))
     }
 
     /// Compile a query in this transaction's view of the world:
@@ -315,7 +439,7 @@ impl<'db> Transaction<'db> {
                     .live
                     .as_ref()
                     .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-                let mut analyzer = Analyzer::new(&**live);
+                let mut analyzer = Analyzer::new(live.as_graph());
                 analyzer.analyze(&document)?
             }
         };
@@ -333,10 +457,12 @@ impl<'db> Transaction<'db> {
             .live
             .as_ref()
             .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-        let mut staged: InMemoryGraph = (**live).clone();
-        staged.set_mutation_recorder(Some(
-            Arc::new(BufferingRecorder::new(inner.buffer.clone())) as Arc<dyn MutationRecorder>
-        ));
+        let mut staged: InMemoryGraph = live.as_graph().clone();
+        if matches!(inner.mode, TransactionMode::ReadWrite) && inner.buffer_mutations {
+            staged.set_mutation_recorder(Some(
+                Arc::new(BufferingRecorder::new(inner.buffer.clone())) as Arc<dyn MutationRecorder>,
+            ));
+        }
         inner.staged = Some(staged);
         Ok(())
     }
@@ -353,9 +479,9 @@ impl<'db> Transaction<'db> {
         query: &str,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryStream<'static>> {
-        let compiled = self.compile_in_tx(query)?;
+        let compiled = Arc::new(self.compile_in_tx(query)?);
         let columns = compiled_result_columns(&compiled);
-        self.stream_compiled(&compiled, columns, params)
+        self.stream_compiled(compiled, columns, params)
     }
 
     /// Open a tx-bound stream for an already-compiled plan. Lets
@@ -363,124 +489,75 @@ impl<'db> Transaction<'db> {
     /// classification.
     pub(crate) fn stream_compiled(
         &mut self,
-        compiled: &CompiledQuery,
+        compiled: Arc<CompiledQuery>,
         columns: Vec<String>,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryStream<'static>> {
-        if self.is_read_only_unchecked() {
-            return self.stream_read_only_compiled(compiled, columns, params);
-        }
-
         let mut inner = self.begin_statement()?;
-        let is_mutating = classify_stream(compiled).is_mutating();
-
-        // Read-only statement in a ReadWrite tx: no savepoint, no
-        // staged-graph requirement. Run against staged if it
-        // exists (sees in-tx writes), otherwise live.
-        if !is_mutating {
-            let exec_result: ExecResultRows = match inner.staged.as_ref() {
-                Some(staged) => {
-                    let executor = Executor::new(ExecutionContext {
-                        storage: staged,
-                        params,
-                    });
-                    executor
-                        .execute_compiled_rows(compiled)
-                        .map_err(|e| anyhow!(e))
-                }
-                None => {
-                    let live = self
-                        .live
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-                    let storage: &InMemoryGraph = live;
-                    let executor = Executor::new(ExecutionContext { storage, params });
-                    executor
-                        .execute_compiled_rows(compiled)
-                        .map_err(|e| anyhow!(e))
-                }
-            };
-            let rows = exec_result?;
-            inner.cursor_active = true;
-            drop(inner);
-            return Ok(QueryStream::for_tx(rows, columns, self.inner.clone()));
+        let is_mutating = classify_stream(&compiled).is_mutating();
+        if matches!(inner.mode, TransactionMode::ReadOnly) && is_mutating {
+            return Err(anyhow!(
+                "cannot execute mutating query in read-only transaction"
+            ));
         }
 
-        // Mutating statement: lazy-clone, capture savepoint, run.
+        // Transaction streams borrow from the staged graph. Even
+        // read-only streams materialize staging when needed so the
+        // cursor can outlive the `&mut Transaction` borrow without
+        // borrowing from the transaction-owned live write guard.
+        let clone_savepoint_graph = inner.staged.is_some();
         self.ensure_staged_locked(&mut inner)?;
-        let savepoint = take_savepoint(&inner);
-
-        let exec_result: ExecResultRows = {
-            let staged = inner.staged_mut()?;
-            let mut executor = MutableExecutor::new(MutableExecutionContext {
-                storage: staged,
-                params,
-            });
-            executor
-                .execute_compiled_rows(compiled)
-                .map_err(|e| anyhow!(e))
-        };
-
-        let rows = match exec_result {
-            Ok(rows) => rows,
-            Err(err) => {
-                restore_savepoint(&mut inner, savepoint);
-                return Err(err);
-            }
-        };
-
-        // Park the savepoint on the tx so the cursor's Drop can
-        // signal "rollback this statement" without owning the
-        // savepoint itself.
-        inner.pending_savepoint = savepoint;
         inner.cursor_active = true;
+
+        let rollback_on_drop = is_mutating;
+        if rollback_on_drop {
+            inner.pending_savepoint = Some(take_savepoint(&inner, clone_savepoint_graph));
+        } else {
+            inner.pending_savepoint = None;
+        }
+
+        let staged_ptr: *mut InMemoryGraph = inner
+            .staged
+            .as_mut()
+            .expect("ensure_staged_locked guarantees Some")
+            as *mut _;
         drop(inner);
 
-        Ok(QueryStream::for_tx(rows, columns, self.inner.clone()))
-    }
-
-    /// ReadOnly fast path for `stream_compiled`. Materializes
-    /// rows against live and returns a tx-bound `QueryStream`.
-    fn stream_read_only_compiled(
-        &mut self,
-        compiled: &CompiledQuery,
-        columns: Vec<String>,
-        params: BTreeMap<String, LoraValue>,
-    ) -> Result<QueryStream<'static>> {
-        // Take the cursor token first so a concurrent commit
-        // attempt can't slip in between the precheck and the
-        // QueryStream construction.
-        {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.closed {
-                return Err(anyhow!("transaction is already closed"));
-            }
-            if inner.cursor_active {
-                return Err(anyhow!(
-                    "cannot start a new statement while a streaming cursor is still active"
-                ));
-            }
-            inner.cursor_active = true;
-        }
-
-        let result: Result<Vec<Row>> = (|| {
-            let live = self
-                .live
-                .as_ref()
-                .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-            let storage: &InMemoryGraph = live;
-            let executor = Executor::new(ExecutionContext { storage, params });
-            executor
-                .execute_compiled_rows(compiled)
+        let compiled_static: &'static CompiledQuery =
+            unsafe { std::mem::transmute::<&CompiledQuery, _>(compiled.as_ref()) };
+        let cursor: Result<Box<dyn RowSource + 'static>> = if is_mutating {
+            let storage_static: &'static mut InMemoryGraph = unsafe { &mut *staged_ptr };
+            MutablePullExecutor::new(storage_static, params)
+                .open_compiled(compiled_static)
+                .map(|cursor| {
+                    Box::new(StreamingCursorWithArc {
+                        cursor,
+                        _compiled: compiled.clone(),
+                    }) as Box<dyn RowSource + 'static>
+                })
                 .map_err(|e| anyhow!(e))
-        })();
+        } else {
+            let storage_static: &'static InMemoryGraph = unsafe { &*staged_ptr };
+            PullExecutor::new(storage_static, params)
+                .open_compiled(compiled_static)
+                .map(|cursor| {
+                    Box::new(StreamingCursorWithArc {
+                        cursor,
+                        _compiled: compiled.clone(),
+                    }) as Box<dyn RowSource + 'static>
+                })
+                .map_err(|e| anyhow!(e))
+        };
 
-        match result {
-            Ok(rows) => Ok(QueryStream::for_tx(rows, columns, self.inner.clone())),
+        match cursor {
+            Ok(cursor) => Ok(QueryStream::for_tx_cursor(
+                cursor,
+                columns,
+                self.inner.clone(),
+                rollback_on_drop,
+            )),
             Err(err) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.cursor_active = false;
-                }
+                finalize_tx_stream(&self.inner, false, rollback_on_drop);
                 Err(err)
             }
         }
@@ -549,20 +626,25 @@ impl<'db> Transaction<'db> {
             }
         }
 
-        if let Some(mut staged) = staged {
-            // Strip the buffering recorder from the staged graph
-            // before publishing it as the live store; the live store
-            // either has the durable WAL recorder reinstalled below
-            // or no recorder at all (for non-WAL databases).
-            staged.set_mutation_recorder(None);
-            if let Some(rec) = &self.wal {
-                staged.set_mutation_recorder(Some(rec.clone() as Arc<dyn MutationRecorder>));
+        if matches!(mode, TransactionMode::ReadWrite) {
+            if let Some(mut staged) = staged {
+                // Strip the buffering recorder from the staged graph
+                // before publishing it as the live store; the live store
+                // either has the durable WAL recorder reinstalled below
+                // or no recorder at all (for non-WAL databases).
+                staged.set_mutation_recorder(None);
+                if let Some(rec) = &self.wal {
+                    staged.set_mutation_recorder(Some(rec.clone() as Arc<dyn MutationRecorder>));
+                }
+                let live = self
+                    .live
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
+                let live = live
+                    .as_graph_mut()
+                    .ok_or_else(|| anyhow!("read-only transaction cannot publish staged graph"))?;
+                *live = staged;
             }
-            let live = self
-                .live
-                .as_mut()
-                .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-            **live = staged;
         }
 
         self.live.take();
@@ -625,9 +707,9 @@ impl<'db> Transaction<'db> {
 
     /// True if the transaction was begun in `ReadOnly` mode. Cheap
     /// — `mode` doesn't change after `begin_transaction`, so we
-    /// pay one mutex acquisition.
+    /// pay one small state-lock acquisition.
     fn is_read_only_unchecked(&self) -> bool {
-        matches!(self.lock_inner_unchecked().mode, TransactionMode::ReadOnly)
+        matches!(self.mode, TransactionMode::ReadOnly)
     }
 
     fn lock_inner_unchecked(&self) -> MutexGuard<'_, TxInner> {
@@ -647,6 +729,47 @@ impl TxInner {
     }
 }
 
+/// `RowSource` adapter that owns an `Arc<CompiledQuery>` so the
+/// inner cursor's `'static` borrows into the plan stay valid for the
+/// life of the wrapper. The inner cursor is stored first so it drops
+/// before the Arc, releasing any borrows back into the plan.
+struct StreamingCursorWithArc {
+    cursor: Box<dyn RowSource + 'static>,
+    _compiled: Arc<CompiledQuery>,
+}
+
+impl RowSource for StreamingCursorWithArc {
+    fn next_row(&mut self) -> lora_executor::ExecResult<Option<Row>> {
+        self.cursor.next_row()
+    }
+}
+
+pub(crate) fn finalize_tx_stream(
+    handle: &Arc<Mutex<TxInner>>,
+    exhausted: bool,
+    rollback_on_drop: bool,
+) {
+    if let Ok(mut inner) = handle.lock() {
+        inner.cursor_active = false;
+
+        if inner.closed {
+            discard_transaction_state(&mut inner);
+            return;
+        }
+
+        if exhausted || !rollback_on_drop {
+            inner.pending_savepoint = None;
+            inner.cursor_dropped_dirty = false;
+            return;
+        }
+
+        if let Some(sp) = inner.pending_savepoint.take() {
+            apply_savepoint(&mut inner, sp);
+        }
+        inner.cursor_dropped_dirty = false;
+    }
+}
+
 fn discard_transaction_state(inner: &mut TxInner) {
     // A full transaction rollback supersedes any pending cursor savepoint.
     inner.pending_savepoint = None;
@@ -659,13 +782,16 @@ fn discard_transaction_state(inner: &mut TxInner) {
     inner.closed = true;
 }
 
-fn take_savepoint(inner: &TxInner) -> Option<Savepoint> {
-    let staged = inner.staged.as_ref()?;
+fn take_savepoint(inner: &TxInner, clone_staged: bool) -> Savepoint {
     let buffer_len = inner.buffer.lock().ok().map(|b| b.len()).unwrap_or(0);
-    Some(Savepoint {
-        staged: staged.clone(),
+    Savepoint {
+        staged: if clone_staged {
+            inner.staged.as_ref().cloned()
+        } else {
+            None
+        },
         buffer_len,
-    })
+    }
 }
 
 fn restore_savepoint(inner: &mut TxInner, savepoint: Option<Savepoint>) {
@@ -675,30 +801,43 @@ fn restore_savepoint(inner: &mut TxInner, savepoint: Option<Savepoint>) {
 }
 
 fn apply_savepoint(inner: &mut TxInner, sp: Savepoint) {
+    if let Ok(mut buf) = inner.buffer.lock() {
+        buf.truncate(sp.buffer_len);
+    }
+
+    let Some(mut graph) = sp.staged else {
+        inner.staged = None;
+        return;
+    };
+
     // Rebuild the staged graph from the snapshot and re-install the
     // buffering recorder. `InMemoryGraph::clone` deliberately drops
     // recorders, so the snapshot has none until we put it back.
-    let mut graph = sp.staged;
-    if matches!(inner.mode, TransactionMode::ReadWrite) {
+    if matches!(inner.mode, TransactionMode::ReadWrite) && inner.buffer_mutations {
         graph.set_mutation_recorder(Some(
             Arc::new(BufferingRecorder::new(inner.buffer.clone())) as Arc<dyn MutationRecorder>
         ));
     }
     inner.staged = Some(graph);
-    if let Ok(mut buf) = inner.buffer.lock() {
-        buf.truncate(sp.buffer_len);
-    }
 }
 
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
         // If the user never called commit/rollback, treat it as a
         // rollback: drop staged changes and the buffered mutations.
-        // The live MutexGuard is released as part of dropping
-        // `self.live`.
+        // The live RwLock guard is released as part of dropping `self.live`.
         if let Ok(mut inner) = self.inner.lock() {
             if !inner.closed {
-                discard_transaction_state(&mut inner);
+                if inner.cursor_active {
+                    // A tx-bound stream may still be borrowing the
+                    // staged graph through `inner`. Leave that graph
+                    // in place until the stream drops, but mark the
+                    // transaction closed so finalization discards it
+                    // instead of making it commit-eligible.
+                    inner.closed = true;
+                } else {
+                    discard_transaction_state(&mut inner);
+                }
             }
         }
     }

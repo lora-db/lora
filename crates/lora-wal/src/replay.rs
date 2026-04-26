@@ -13,8 +13,8 @@
 //!
 //! Replay walks past `checkpoint_lsn`: any record whose LSN is at or
 //! below it is already represented in the loaded snapshot and is
-//! skipped. Because checkpoints are taken with the engine mutex held,
-//! no transaction can straddle the fence — `tx_begin_lsn <=
+//! skipped. Because checkpoints are taken with the store write lock
+//! held, no transaction can straddle the fence — `tx_begin_lsn <=
 //! checkpoint_lsn` implies the matching commit (if any) is also at or
 //! below it.
 
@@ -145,8 +145,8 @@ pub(crate) fn replay_segments(
                         // Already in the snapshot. Markers below the
                         // fence still need to keep their pending
                         // bucket clean, but no checkpoint can split
-                        // a transaction (mutex is held during
-                        // checkpoint), so dropping events outright
+                        // a transaction (the store write lock is held
+                        // during checkpoint), so dropping events outright
                         // is safe.
                         if let WalRecord::TxCommit { tx_begin_lsn, .. }
                         | WalRecord::TxAbort { tx_begin_lsn, .. } = &record

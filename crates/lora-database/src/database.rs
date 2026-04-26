@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use lora_analyzer::Analyzer;
@@ -20,7 +21,7 @@ use lora_store::{
 use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalRecorder, WroteCommit};
 
 use crate::stream::{AutoCommitGuard, LiveCursor, QueryStream};
-use crate::transaction::{Transaction, TransactionMode};
+use crate::transaction::{LiveStoreGuard, Transaction, TransactionMode};
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
 pub trait QueryRunner: Send + Sync + 'static {
@@ -32,13 +33,13 @@ pub trait QueryRunner: Send + Sync + 'static {
 /// Optionally drives a write-ahead log: when constructed via
 /// [`Database::open_with_wal`] or [`Database::recover`] the database
 /// holds an [`Arc<WalRecorder>`] that brackets every query with
-/// `begin → mutations → commit/abort → flush` while the engine mutex
-/// is held, so the WAL order is exactly the in-memory commit order.
+/// `begin → mutations → commit/abort → flush` while the store write
+/// lock is held, so the WAL order is exactly the in-memory commit order.
 /// When constructed via [`Database::in_memory`] / [`Database::from_graph`]
 /// the WAL handle is `None` and the engine pays only the existing
 /// `MutationRecorder::record` null-pointer check per mutation.
 pub struct Database<S> {
-    pub(crate) store: Arc<Mutex<S>>,
+    pub(crate) store: Arc<RwLock<S>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
 }
 
@@ -72,7 +73,7 @@ impl Database<InMemoryGraph> {
                 let recorder = Arc::new(WalRecorder::new(wal));
                 graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
-                    store: Arc::new(Mutex::new(graph)),
+                    store: Arc::new(RwLock::new(graph)),
                     wal: Some(recorder),
                 })
             }
@@ -81,14 +82,20 @@ impl Database<InMemoryGraph> {
 
     /// Start an explicit transaction.
     ///
-    /// Both modes hold the live mutex for the transaction's
-    /// lifetime; the staging clone is **lazy** — it only happens
-    /// when a [`TransactionMode::ReadWrite`] transaction sees its
-    /// first mutating statement. Read-only transactions never
-    /// clone, and ReadWrite transactions that perform only reads
-    /// (or commit empty) pay nothing for staging.
+    /// Read-only transactions hold a shared read lock for their
+    /// lifetime; read-write transactions hold the write lock. The
+    /// staging clone is **lazy** — it only happens when a
+    /// [`TransactionMode::ReadWrite`] transaction sees its first
+    /// mutating statement. Materialized read-only statements run
+    /// straight against the live graph; tx-bound streams may still
+    /// clone so their cursors can own a stable view. ReadWrite
+    /// transactions that perform only materialized reads (or commit
+    /// empty) pay nothing for staging.
     pub fn begin_transaction(&self, mode: TransactionMode) -> Result<Transaction<'_>> {
-        let live = self.lock_store();
+        let live = match mode {
+            TransactionMode::ReadOnly => LiveStoreGuard::Read(self.read_store()),
+            TransactionMode::ReadWrite => LiveStoreGuard::Write(self.write_store()),
+        };
         Ok(Transaction::new(live, self.wal.clone(), mode))
     }
 
@@ -158,7 +165,7 @@ impl Database<InMemoryGraph> {
                 let recorder = Arc::new(WalRecorder::new(wal));
                 graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
-                    store: Arc::new(Mutex::new(graph)),
+                    store: Arc::new(RwLock::new(graph)),
                     wal: Some(recorder),
                 })
             }
@@ -193,7 +200,7 @@ impl Database<InMemoryGraph> {
         // mutating stream, paid in exchange for a tiny
         // classify-stream surface.
         let document = parse_query(query)?;
-        let store_guard = self.lock_store();
+        let store_guard = self.read_store();
         let resolved = {
             let mut analyzer = Analyzer::new(&*store_guard);
             analyzer.analyze(&document)?
@@ -222,25 +229,32 @@ impl Database<InMemoryGraph> {
                 // owns staging, the buffering recorder, savepoint
                 // management, and the WAL replay-on-commit logic;
                 // we just pick commit-on-exhaustion vs
-                // rollback-on-drop based on cursor state. We
-                // hand the pre-compiled plan straight in so the
-                // tx doesn't re-compile what we just classified.
-                // Since this hidden tx is single-statement, it can
-                // skip the explicit transaction savepoint clone:
-                // rollback discards the whole hidden tx.
+                // rollback-on-drop based on cursor state.
+                //
+                // The cursor returned by `open_streaming_compiled_autocommit`
+                // may be a real per-row `StreamingWriteCursor`,
+                // a mutable UNION cursor, or a buffered leaf for
+                // operators that still need full materialization.
+                // Either way the AutoCommit guard's
+                // drop/exhaustion semantics are identical. The
+                // compiled plan is wrapped in an `Arc` so the
+                // cursor's `'static` borrows into it remain valid
+                // for the cursor's lifetime.
                 let mut tx = self.begin_transaction(TransactionMode::ReadWrite)?;
-                let rows = match tx.execute_rows_compiled_autocommit(&compiled, params) {
-                    Ok(rows) => rows,
-                    Err(err) => {
-                        // Tx rolls back implicitly on drop here.
-                        return Err(err);
-                    }
-                };
+                let compiled_arc = Arc::new(compiled);
+                let cursor =
+                    match tx.open_streaming_compiled_autocommit(compiled_arc.clone(), params) {
+                        Ok(c) => c,
+                        Err(err) => {
+                            // Tx rolls back implicitly on drop here.
+                            return Err(err);
+                        }
+                    };
                 let guard = AutoCommitGuard {
                     tx: Some(tx),
                     finalized: false,
                 };
-                Ok(QueryStream::auto_commit(rows, columns, guard))
+                Ok(QueryStream::auto_commit(cursor, columns, guard))
             }
         }
     }
@@ -251,13 +265,13 @@ where
     S: GraphStorage + GraphStorageMut,
 {
     /// Build a database from a pre-wrapped, shared store.
-    pub fn new(store: Arc<Mutex<S>>) -> Self {
+    pub fn new(store: Arc<RwLock<S>>) -> Self {
         Self { store, wal: None }
     }
 
     /// Build a database by taking ownership of a bare graph store.
     pub fn from_graph(graph: S) -> Self {
-        Self::new(Arc::new(Mutex::new(graph)))
+        Self::new(Arc::new(RwLock::new(graph)))
     }
 
     /// Handle to the installed WAL recorder, if any. Exposed for
@@ -269,7 +283,7 @@ where
 
     /// Handle to the underlying shared store — useful for callers that need
     /// to snapshot or share the graph across multiple databases.
-    pub fn store(&self) -> &Arc<Mutex<S>> {
+    pub fn store(&self) -> &Arc<RwLock<S>> {
         &self.store
     }
 
@@ -278,10 +292,54 @@ where
         Ok(parse_query(query)?)
     }
 
-    pub(crate) fn lock_store(&self) -> MutexGuard<'_, S> {
+    pub(crate) fn read_store(&self) -> RwLockReadGuard<'_, S> {
         self.store
-            .lock()
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) fn write_store(&self) -> RwLockWriteGuard<'_, S> {
+        self.store
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn read_store_deadline(&self, deadline: Option<Instant>) -> Result<RwLockReadGuard<'_, S>> {
+        let Some(deadline) = deadline else {
+            return Ok(self.read_store());
+        };
+
+        loop {
+            match self.store.try_read() {
+                Ok(guard) => return Ok(guard),
+                Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                    return Err(anyhow!("query deadline exceeded"));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    fn write_store_deadline(&self, deadline: Option<Instant>) -> Result<RwLockWriteGuard<'_, S>> {
+        let Some(deadline) = deadline else {
+            return Ok(self.write_store());
+        };
+
+        loop {
+            match self.store.try_write() {
+                Ok(guard) => return Ok(guard),
+                Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                    return Err(anyhow!("query deadline exceeded"));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
     }
 
     fn compile_document_against(&self, document: &Document, store: &S) -> Result<CompiledQuery> {
@@ -293,16 +351,27 @@ where
         Ok(Compiler::compile(&resolved))
     }
 
-    fn compile_query(&self, query: &str) -> Result<(MutexGuard<'_, S>, CompiledQuery)> {
-        let document = self.parse(query)?;
-        let store = self.lock_store();
-        let compiled = self.compile_document_against(&document, &*store)?;
-        Ok((store, compiled))
-    }
-
     /// Execute a query and return its result.
     pub fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
         self.execute_with_params(query, options, BTreeMap::new())
+    }
+
+    /// Execute a query with a cooperative deadline. The timeout is checked at
+    /// executor operator boundaries and hot scan loops; if it fires, the query
+    /// returns an error and any WAL-backed mutating query is aborted through
+    /// the existing failure path.
+    pub fn execute_with_timeout(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        timeout: Duration,
+    ) -> Result<QueryResult> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let rows =
+            self.execute_rows_with_params_deadline(query, BTreeMap::new(), Some(deadline))?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
     /// Execute a query with bound parameters.
@@ -341,7 +410,22 @@ where
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryResult> {
-        let rows = self.execute_rows_with_params(query, params)?;
+        let rows = self.execute_rows_with_params_deadline(query, params, None)?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
+    /// Execute a parameterised query with a cooperative deadline.
+    pub fn execute_with_params_timeout(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        timeout: Duration,
+    ) -> Result<QueryResult> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
@@ -358,17 +442,58 @@ where
         query: &str,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<Vec<Row>> {
-        let (mut store, compiled) = self.compile_query(query)?;
+        self.execute_rows_with_params_deadline(query, params, None)
+    }
+
+    fn execute_rows_with_params_deadline(
+        &self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<Row>> {
+        let document = self.parse(query)?;
+        let shape = {
+            let store = self.read_store_deadline(deadline)?;
+            let compiled = self.compile_document_against(&document, &*store)?;
+
+            if matches!(classify_stream(&compiled), StreamShape::ReadOnly) {
+                if let Some(rec) = &self.wal {
+                    if let Some(reason) = rec.poisoned() {
+                        return Err(anyhow!("WAL arm failed: WAL poisoned: {reason}"));
+                    }
+                }
+                let executor = lora_executor::Executor::with_deadline(
+                    lora_executor::ExecutionContext {
+                        storage: &*store,
+                        params,
+                    },
+                    deadline,
+                );
+                return executor
+                    .execute_compiled_rows(&compiled)
+                    .map_err(|e| anyhow!(e));
+            }
+
+            classify_stream(&compiled)
+        };
+
+        debug_assert!(shape.is_mutating());
+
+        let mut store = self.write_store_deadline(deadline)?;
+        let compiled = self.compile_document_against(&document, &*store)?;
 
         if let Some(rec) = &self.wal {
             rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
         }
 
         let exec_result: Result<Vec<Row>> = (|| {
-            let mut executor = MutableExecutor::new(MutableExecutionContext {
-                storage: &mut *store,
-                params,
-            });
+            let mut executor = MutableExecutor::with_deadline(
+                MutableExecutionContext {
+                    storage: &mut *store,
+                    params,
+                },
+                deadline,
+            );
             Ok(executor.execute_compiled_rows(&compiled)?)
         })();
 
@@ -409,7 +534,7 @@ where
 
     // ---------- Storage-agnostic utility helpers ----------
     //
-    // Bindings previously reached into `Arc<Mutex<InMemoryGraph>>` to answer
+    // Bindings previously reached into the shared store lock to answer
     // stat / admin calls; these helpers let them depend on `Database<S>`
     // instead, so swapping in a new backend only requires changing one type
     // parameter.
@@ -424,7 +549,7 @@ where
     /// caller's contract holds, but the recorder's poisoned flag
     /// will surface to the next query.
     pub fn clear(&self) {
-        let mut guard = self.lock_store();
+        let mut guard = self.write_store();
         match &self.wal {
             None => guard.clear(),
             Some(rec) => {
@@ -444,20 +569,20 @@ where
 
     /// Number of nodes currently in the graph.
     pub fn node_count(&self) -> usize {
-        let guard = self.lock_store();
+        let guard = self.read_store();
         guard.node_count()
     }
 
     /// Number of relationships currently in the graph.
     pub fn relationship_count(&self) -> usize {
-        let guard = self.lock_store();
+        let guard = self.read_store();
         guard.relationship_count()
     }
 
     /// Run a closure with a shared borrow of the underlying store. Used by
-    /// bindings to answer ad-hoc queries without locking the mutex themselves.
+    /// bindings to answer ad-hoc queries without locking the RwLock themselves.
     pub fn with_store<R>(&self, f: impl FnOnce(&S) -> R) -> R {
-        let guard = self.lock_store();
+        let guard = self.read_store();
         f(&*guard)
     }
 
@@ -465,7 +590,7 @@ where
     /// for admin paths (restore, bulk load); regular mutation goes through
     /// `execute_with_params`.
     pub fn with_store_mut<R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
-        let mut guard = self.lock_store();
+        let mut guard = self.write_store();
         f(&mut *guard)
     }
 }
@@ -489,14 +614,14 @@ where
     /// file at `path`. If any step before the rename fails, the stale
     /// `<path>.tmp` is removed so a crashed save never leaks scratch files.
     ///
-    /// Holds the store mutex for the duration of the save so concurrent
-    /// queries see a consistent point-in-time snapshot.
+    /// Holds a store read lock for the duration of the save so concurrent
+    /// readers can proceed and writers wait behind a consistent snapshot.
     pub fn save_snapshot_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta> {
         let path = path.as_ref();
         let tmp = snapshot_tmp_path(path);
 
         // Acquire the lock once so the snapshot is point-in-time consistent.
-        let guard = self.lock_store();
+        let guard = self.read_store();
 
         let file = OpenOptions::new()
             .write(true)
@@ -536,13 +661,13 @@ where
     }
 
     /// Replace the current graph state with a snapshot loaded from `path`.
-    /// Holds the store mutex for the duration of the load; concurrent
+    /// Holds the store write lock for the duration of the load; concurrent
     /// queries block until restore completes.
     pub fn load_snapshot_from(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta> {
         let file = File::open(path.as_ref())?;
         let reader = BufReader::new(file);
 
-        let mut guard = self.lock_store();
+        let mut guard = self.write_store();
         Ok(guard.load_snapshot(reader)?)
     }
 }
@@ -566,9 +691,9 @@ impl Database<InMemoryGraph> {
     /// database constructed without a WAL — operators that just want
     /// a fence-less dump should use [`save_snapshot_to`] instead.
     ///
-    /// The mutex-held window covers snapshot serialization plus the
+    /// The write-lock-held window covers snapshot serialization plus the
     /// checkpoint marker append. Truncation runs after the rename
-    /// but still under the mutex; making it concurrent with queries
+    /// but still under the write lock; making it concurrent with queries
     /// is a v2 concern (see `docs/decisions/0004-wal.md`).
     pub fn checkpoint_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta> {
         let recorder = self
@@ -578,7 +703,7 @@ impl Database<InMemoryGraph> {
         let path = path.as_ref();
         let tmp = snapshot_tmp_path(path);
 
-        let guard = self.lock_store();
+        let guard = self.write_store();
 
         // Make every record appended so far durable, then capture
         // the LSN that becomes the snapshot fence.
@@ -683,7 +808,7 @@ pub trait SnapshotAdmin: Send + Sync + 'static {
 
 impl<S> SnapshotAdmin for Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Snapshotable + Send + 'static,
+    S: GraphStorage + GraphStorageMut + Snapshotable + Send + Sync + 'static,
 {
     fn save_snapshot(&self, path: &Path) -> Result<SnapshotMeta> {
         self.save_snapshot_to(path)
@@ -710,7 +835,7 @@ pub trait WalAdmin: Send + Sync + 'static {
     fn checkpoint(&self, path: &Path) -> Result<SnapshotMeta>;
 
     /// Snapshot of the WAL's current state — durable / next LSN,
-    /// active / oldest segment id. Cheap; a single mutex acquisition.
+    /// active / oldest segment id. Cheap; a single WAL mutex acquisition.
     fn wal_status(&self) -> Result<WalStatus>;
 
     /// Drop sealed segments at or below `fence_lsn`. Idempotent.
@@ -764,7 +889,7 @@ impl WalAdmin for Database<InMemoryGraph> {
 
 impl<S> QueryRunner for Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Send + 'static,
+    S: GraphStorage + GraphStorageMut + Send + Sync + 'static,
 {
     fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
         Database::execute(self, query, options)

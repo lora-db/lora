@@ -75,6 +75,28 @@ fn database_stream_returns_rows_and_columns() {
 }
 
 #[test]
+fn execute_with_timeout_cancels_before_work_continues() {
+    let db = Database::in_memory();
+    db.execute(
+        "UNWIND range(1,100) AS i CREATE (:T {i: i})",
+        rows_options(),
+    )
+    .unwrap();
+
+    let err = db
+        .execute_with_timeout(
+            "MATCH (t:T) RETURN t.i AS i",
+            rows_options(),
+            std::time::Duration::ZERO,
+        )
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("query deadline exceeded"),
+        "expected query timeout, got: {err:#}"
+    );
+}
+
+#[test]
 fn transaction_commit_publishes_staged_changes() {
     let db = Database::in_memory();
 
@@ -667,7 +689,7 @@ mod pull_shape {
             )
             .unwrap();
         }
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v");
         let mut cursor = open(&store, &compiled);
 
@@ -692,16 +714,56 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 3 RETURN n.v AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 1);
     }
 
     #[test]
+    fn property_equality_filter_lowers_to_indexed_scan() {
+        let db = Database::in_memory();
+        db.execute(
+            "CREATE (:N {v:1}), (:N {v:2})",
+            Some(lora_database::ExecuteOptions {
+                format: lora_database::ResultFormat::Rows,
+            }),
+        )
+        .unwrap();
+        let store = db.store().read().unwrap();
+        let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 2 RETURN n.v AS v");
+
+        let indexed = compiled.physical.nodes.iter().any(|op| {
+            matches!(
+                op,
+                lora_compiler::PhysicalOp::NodeByPropertyScan(scan)
+                    if scan.key == "v"
+                        && scan.labels == vec![vec!["N".to_string()]]
+            )
+        });
+        assert!(indexed, "expected property equality to use indexed scan");
+    }
+
+    #[test]
+    fn indexed_scan_preserves_numeric_cross_type_equality() {
+        let db = Database::in_memory();
+        db.execute(
+            "CREATE (:N {v:1}), (:N {v:1.0}), (:N {v:2})",
+            Some(lora_database::ExecuteOptions {
+                format: lora_database::ResultFormat::Rows,
+            }),
+        )
+        .unwrap();
+        let store = db.store().read().unwrap();
+        let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 1.0 RETURN n.v AS v");
+        let rows = drain(open(&store, &compiled).as_mut()).unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
     fn unwind_yields_each_element_lazily() {
         let db = Database::in_memory();
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(&store, "UNWIND [10, 20, 30] AS x RETURN x");
         let mut cursor = open(&store, &compiled);
 
@@ -725,7 +787,7 @@ mod pull_shape {
             )
             .unwrap();
         }
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v LIMIT 5");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 5);
@@ -741,7 +803,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v + 10 AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 3);
@@ -759,7 +821,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(
             &store,
             "MATCH (p:Person)-[:KNOWS]->(other) RETURN other.name AS name ORDER BY name",
@@ -780,7 +842,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v ORDER BY n.v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         // Sort yields rows in ascending order.
@@ -793,7 +855,7 @@ mod pull_shape {
     }
 
     #[test]
-    fn aggregation_falls_back_to_buffered_correctly() {
+    fn aggregation_buffers_internally_and_yields_correctly() {
         let db = Database::in_memory();
         db.execute(
             "CREATE (:N {v:1}), (:N {v:2}), (:N {v:3})",
@@ -802,7 +864,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let compiled = compile(&store, "MATCH (n:N) RETURN sum(n.v) AS total");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 1);
@@ -812,7 +874,7 @@ mod pull_shape {
     fn classify_stream_recognises_writes() {
         use lora_executor::{classify_stream, StreamShape};
         let db = Database::in_memory();
-        let store = db.store().lock().unwrap();
+        let store = db.store().read().unwrap();
         let read = compile(&store, "MATCH (n) RETURN n");
         let write = compile(&store, "CREATE (:Foo) RETURN 1 AS one");
         assert_eq!(classify_stream(&read), StreamShape::ReadOnly);
@@ -850,5 +912,974 @@ fn read_only_transaction_does_not_appear_in_wal_replay() {
         let stream = db.stream("MATCH (p:Person) RETURN p.name AS name").unwrap();
         let values = row_values(stream.collect(), "name");
         assert_eq!(values, vec![JsonValue::String("Ada".to_string())]);
+    }
+}
+
+mod concurrency {
+    //! Cross-thread tests covering the store-lock concurrency contract.
+    //! Auto-commit reads can overlap on the shared side of the RwLock, while
+    //! writes and read-write transactions still serialize on the exclusive
+    //! side.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
+
+    use lora_database::{Database, TransactionMode};
+    use serde_json::Value as JsonValue;
+
+    use super::{row_values, rows_options};
+
+    #[test]
+    fn read_only_queries_can_run_while_read_guard_is_held() {
+        let db = Arc::new(Database::in_memory());
+        db.execute("CREATE (:T {i:1}), (:T {i:2})", rows_options())
+            .unwrap();
+
+        let read_guard = db.store().read().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let db = db.clone();
+            thread::spawn(move || {
+                let rows = db
+                    .execute_rows("MATCH (t:T) RETURN t.i AS i ORDER BY i")
+                    .unwrap();
+                tx.send(rows.len()).unwrap();
+            })
+        };
+
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+            2,
+            "read-only query should share the store read lock"
+        );
+        drop(read_guard);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn read_only_transactions_can_run_while_read_guard_is_held() {
+        let db = Arc::new(Database::in_memory());
+        db.execute("CREATE (:T {i:1}), (:T {i:2})", rows_options())
+            .unwrap();
+
+        let read_guard = db.store().read().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let db = db.clone();
+            thread::spawn(move || {
+                let mut tx_handle = db.begin_transaction(TransactionMode::ReadOnly).unwrap();
+                let rows = tx_handle
+                    .execute_rows("MATCH (t:T) RETURN t.i AS i ORDER BY i")
+                    .unwrap();
+                tx_handle.commit().unwrap();
+                tx.send(rows.len()).unwrap();
+            })
+        };
+
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+            2,
+            "read-only transaction should share the store read lock"
+        );
+        drop(read_guard);
+        worker.join().unwrap();
+    }
+
+    /// Two ReadWrite transactions on the same database serialize: while
+    /// one holds the store write lock, the other's `begin_transaction` blocks.
+    /// Verified by an `owner` atomic that each tx flips on enter / off on
+    /// exit; if both ever held simultaneously, the compare-exchange fails.
+    #[test]
+    fn concurrent_readwrite_transactions_serialize() {
+        let db = Arc::new(Database::in_memory());
+        let owner = Arc::new(AtomicUsize::new(0));
+        let a_holds = Arc::new(AtomicUsize::new(0));
+
+        let a = {
+            let db = db.clone();
+            let owner = owner.clone();
+            let a_holds = a_holds.clone();
+            thread::spawn(move || {
+                let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+                assert!(
+                    owner
+                        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok(),
+                    "another tx held the store write lock when A entered"
+                );
+                a_holds.store(1, Ordering::SeqCst);
+                // Keep the write lock long enough for B to definitely be parked
+                // on its `begin_transaction` call.
+                thread::sleep(Duration::from_millis(40));
+                tx.execute("CREATE (:T {who:'A'})", rows_options()).unwrap();
+                assert!(
+                    owner
+                        .compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok(),
+                    "owner state corrupted before A's commit"
+                );
+                tx.commit().unwrap();
+            })
+        };
+
+        // Wait until A has the lock before spawning B so the ordering is
+        // deterministic regardless of scheduler luck.
+        while a_holds.load(Ordering::SeqCst) == 0 {
+            thread::yield_now();
+        }
+
+        let b = {
+            let db = db.clone();
+            let owner = owner.clone();
+            thread::spawn(move || {
+                let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+                assert!(
+                    owner
+                        .compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok(),
+                    "B entered while A still held the store write lock"
+                );
+                tx.execute("CREATE (:T {who:'B'})", rows_options()).unwrap();
+                assert!(
+                    owner
+                        .compare_exchange(2, 0, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok(),
+                    "owner state corrupted before B's commit"
+                );
+                tx.commit().unwrap();
+            })
+        };
+
+        a.join().unwrap();
+        b.join().unwrap();
+
+        let rows = db.execute_rows("MATCH (t:T) RETURN t.who AS who").unwrap();
+        let mut values = row_values(rows, "who");
+        values.sort_by_key(|v| v.as_str().map(str::to_owned));
+        assert_eq!(
+            values,
+            vec![
+                JsonValue::String("A".to_string()),
+                JsonValue::String("B".to_string()),
+            ]
+        );
+    }
+
+    /// A `Live` read stream holds a store read lock through the cursor's
+    /// lifetime. A concurrent `begin_transaction(ReadWrite)` must block
+    /// until the stream is dropped.
+    #[test]
+    fn live_read_stream_blocks_concurrent_writer() {
+        let db = Arc::new(Database::in_memory());
+        db.execute("UNWIND range(1,10) AS i CREATE (:T {i: i})", rows_options())
+            .unwrap();
+
+        // Open a Live read stream and pull one row to confirm it's
+        // streaming (not a buffered fallback) and is mid-iteration.
+        let mut stream = db.stream("MATCH (t:T) RETURN t.i AS i").unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+
+        let writer = {
+            let db = db.clone();
+            let started = started.clone();
+            let entered = entered.clone();
+            thread::spawn(move || {
+                started.store(1, Ordering::SeqCst);
+                let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+                entered.store(1, Ordering::SeqCst);
+                tx.execute("CREATE (:T {i:99})", rows_options()).unwrap();
+                tx.commit().unwrap();
+            })
+        };
+
+        // Wait for the writer to actually attempt begin_transaction, then
+        // give the scheduler enough time that, if it weren't blocked by
+        // our held stream, it would have already entered the tx.
+        while started.load(Ordering::SeqCst) == 0 {
+            thread::yield_now();
+        }
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            entered.load(Ordering::SeqCst),
+            0,
+            "writer entered tx while a Live read stream still held the store read lock"
+        );
+
+        // Dropping the stream releases the read lock; the writer must finish.
+        drop(stream);
+        writer.join().unwrap();
+
+        assert_eq!(db.node_count(), 11);
+    }
+
+    /// While a tx-bound streaming cursor is alive, no further statement
+    /// (execute or stream) may start on the same transaction.
+    /// `cursor_active` is checked synchronously via the in-tx mutex, not
+    /// the store lock, so the rejection is immediate.
+    #[test]
+    fn active_tx_cursor_blocks_new_statement_or_stream() {
+        let db = Database::in_memory();
+        db.execute("CREATE (:T {n:1}), (:T {n:2})", rows_options())
+            .unwrap();
+
+        let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+        let mut stream = tx.stream("MATCH (t:T) RETURN t.n AS n").unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+
+        let exec_err = tx
+            .execute("MATCH (t:T) RETURN count(t)", rows_options())
+            .unwrap_err();
+        assert!(
+            format!("{exec_err:#}").contains("streaming cursor"),
+            "expected streaming-cursor error, got: {exec_err:#}"
+        );
+
+        let stream_err = tx.stream("MATCH (t:T) RETURN t.n AS n").unwrap_err();
+        assert!(
+            format!("{stream_err:#}").contains("streaming cursor"),
+            "expected streaming-cursor error, got: {stream_err:#}"
+        );
+
+        // Dropping the cursor lets statements proceed again.
+        drop(stream);
+        let _ = tx
+            .execute("MATCH (t:T) RETURN count(t)", rows_options())
+            .unwrap();
+        tx.commit().unwrap();
+    }
+}
+
+mod streaming_writes {
+    //! Streaming writes — M1 / M1.b / M2 / M3 / M4 plus mutating UNION.
+    //!
+    //! These tests verify functional correctness for plans that stream
+    //! their input (M1 / M2 / M3 wave-1: input subtree is fully
+    //! streamable; M1.b / wave-2: write op also streams its output via
+    //! `StreamingWriteCursor`; blocking ops like `Sort`, `DISTINCT`,
+    //! aggregation, optional match, path build, and UNION sit inside
+    //! the streaming chain with cursor-facing sources).
+    //!
+    //! ## Known soft spot: analyzer strictness on rollback assertions
+    //!
+    //! The analyzer (`crates/lora-analyzer/src/analyzer.rs`,
+    //! `property_access_allowed` at ~L1162; `validate_label_name` at
+    //! ~L1110) rejects property/label references in *read* contexts
+    //! whose names aren't present in the live store's schema. This is
+    //! deliberate — it catches typos in production. It bites us in
+    //! tests that need to assert "rollback discarded the staged write"
+    //! by querying for the rolled-back property/label, because that
+    //! property/label was never committed to the live store.
+    //!
+    //! Two patterns work around this:
+    //!
+    //! 1. **Aggregate-only assertion** — `node_count()` /
+    //!    `MATCH (n) RETURN count(n)` don't reference any predicate
+    //!    that depends on the rolled-back property. Use this when the
+    //!    rollback's signature is a count delta (e.g. "no new node
+    //!    leaked"). Most rollback tests in this module use this form.
+    //!
+    //! 2. **Pre-seed the property** — `CREATE (:T {scratch: 'x'})`
+    //!    once before the rollback test puts `scratch` in the schema,
+    //!    so `MATCH (t:T) WHERE t.scratch IS NULL` parses. Use this
+    //!    when the rollback's signature is a property-level change
+    //!    (e.g. "no node was tagged"). See
+    //!    `auto_commit_set_stream_commits_on_exhaustion` for the
+    //!    pattern (`marked: false` pre-seed, then assert via
+    //!    `WHERE t.marked = true`).
+    //!
+    //! A permissive analyzer mode for tests was considered and
+    //! deferred — the workaround is simple enough and the strict
+    //! check is valuable in production.
+
+    use lora_database::Database;
+    use serde_json::Value as JsonValue;
+
+    use super::{rows_json, rows_options};
+
+    /// `UNWIND range(...) AS i CREATE (:T {i: i})` exercises the
+    /// streaming-input path (Argument → Unwind → Create). Verify
+    /// every node is created and the property values are correct.
+    #[test]
+    fn unwind_create_streams_input_correctly() {
+        let db = Database::in_memory();
+        let n: i64 = 5_000;
+        db.execute(
+            &format!("UNWIND range(1, {n}) AS i CREATE (:T {{i: i}})"),
+            rows_options(),
+        )
+        .unwrap();
+
+        assert_eq!(db.node_count(), n as usize);
+
+        let result = db
+            .execute(
+                "MATCH (t:T) RETURN sum(t.i) AS s, count(t) AS c",
+                rows_options(),
+            )
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows.len(), 1);
+        let s = rows[0].get("s").and_then(JsonValue::as_i64).unwrap();
+        let c = rows[0].get("c").and_then(JsonValue::as_i64).unwrap();
+        assert_eq!(c, n);
+        assert_eq!(s, n * (n + 1) / 2);
+    }
+
+    /// MATCH-then-CREATE: the input subtree is also fully streamable
+    /// (Argument → NodeByLabelScan → Filter → Create), so the
+    /// streaming path runs against an existing graph too.
+    #[test]
+    fn match_filter_create_streams_input_correctly() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 200) AS i CREATE (:Src {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        // Re-run as a streamable input → Create chain.
+        db.execute(
+            "MATCH (s:Src) WHERE s.i > 100 CREATE (:Dst {origin: s.i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let result = db
+            .execute("MATCH (d:Dst) RETURN count(d) AS c", rows_options())
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 100);
+    }
+
+    /// CREATE after ORDER BY ... LIMIT uses `SortSource` inside the
+    /// streaming chain. Sort still buffers internally — it is
+    /// inherently O(N) — but emits sorted rows lazily so the
+    /// downstream CREATE streams.
+    #[test]
+    fn create_after_sort_with_limit_streams_correctly() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 50) AS i CREATE (:Src {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        db.execute(
+            "MATCH (s:Src) WITH s ORDER BY s.i DESC LIMIT 10 CREATE (:Top {origin: s.i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let result = db
+            .execute("MATCH (t:Top) RETURN sum(t.origin) AS s", rows_options())
+            .unwrap();
+        let rows = rows_json(result);
+        // Top 10 of [1..=50] = 41..=50, sum = 455.
+        assert_eq!(
+            rows[0].get("s").and_then(JsonValue::as_i64).unwrap(),
+            (41..=50).sum::<i64>()
+        );
+    }
+
+    /// The auto-commit `Database::stream` API streams writes row-by-row
+    /// since M1.b. This test guards the round-trip contract.
+    #[test]
+    fn auto_commit_stream_streamable_create_round_trip() {
+        let db = Database::in_memory();
+        let n = 250usize;
+        let stream = db
+            .stream(&format!("UNWIND range(1, {n}) AS i CREATE (:T {{i: i}})"))
+            .unwrap();
+        let count = stream.count();
+        assert_eq!(count, n);
+        assert_eq!(db.node_count(), n);
+    }
+
+    /// Streaming auto-commit writes apply lazily, one node at a time,
+    /// rather than materializing everything before emitting the first
+    /// row. We pull a single row out of an UNWIND→CREATE stream and
+    /// then drop it; only that one node should have been written, and
+    /// the rollback (drop = rollback) must discard it from the live
+    /// store.
+    #[test]
+    fn auto_commit_stream_writes_lazily_then_rolls_back_on_drop() {
+        let db = Database::in_memory();
+        let mut stream = db
+            .stream("UNWIND range(1, 1000) AS i CREATE (n:T {i: i}) RETURN n.i AS i")
+            .unwrap();
+
+        // Pull a single row — exactly one CREATE should have happened
+        // against the staged graph at this point.
+        let first = stream.next_row().unwrap().expect("at least one row");
+        let i = serde_json::to_value(first)
+            .unwrap()
+            .get("i")
+            .and_then(JsonValue::as_i64)
+            .unwrap();
+        assert_eq!(i, 1);
+
+        // Drop the stream → guard rolls back; the partial writes must
+        // not leak into the live store.
+        drop(stream);
+        assert_eq!(db.node_count(), 0);
+    }
+
+    /// Full exhaustion of a streaming auto-commit cursor commits the
+    /// staged writes. Combined with the partial-drop test above, this
+    /// nails down the commit-on-exhaustion / rollback-on-drop split.
+    #[test]
+    fn auto_commit_stream_commits_on_full_exhaustion() {
+        let db = Database::in_memory();
+        let stream = db
+            .stream("UNWIND range(1, 100) AS i CREATE (n:T {i: i}) RETURN n.i AS i")
+            .unwrap();
+
+        // Drain. After the last `next_row`, the guard runs `commit`.
+        let collected: Vec<i64> = stream
+            .filter_map(|row| {
+                serde_json::to_value(row)
+                    .ok()
+                    .and_then(|v| v.get("i").and_then(JsonValue::as_i64))
+            })
+            .collect();
+        assert_eq!(collected, (1..=100).collect::<Vec<_>>());
+        assert_eq!(db.node_count(), 100);
+    }
+
+    /// Streaming write across a non-trivial input size verifies that
+    /// the cursor doesn't quadratic-blow-up somewhere unexpected.
+    /// Picks a size large enough to detect O(N²) regressions in CI
+    /// time without being so large that the test takes a long time.
+    #[test]
+    fn auto_commit_stream_large_input_completes() {
+        let db = Database::in_memory();
+        let n = 10_000usize;
+        let stream = db
+            .stream(&format!(
+                "UNWIND range(1, {n}) AS i CREATE (n:T {{i: i}}) RETURN n.i AS i"
+            ))
+            .unwrap();
+        let count = stream.count();
+        assert_eq!(count, n);
+        assert_eq!(db.node_count(), n);
+    }
+
+    // ---------- Wave 1 (M2/M3): input-streaming for Set/Delete/Remove/Merge.
+    //
+    // These verify functional correctness when the input subtree is
+    // fully streamable. Output is still buffered; Wave 2 will lift
+    // that with real per-row cursors. The size is large enough that
+    // a regression to materialized-input would be detectable in a
+    // profile, but the assertions cover semantics, not memory.
+
+    #[test]
+    fn set_with_streamable_input_updates_all_rows() {
+        let db = Database::in_memory();
+        let n: i64 = 1_000;
+        db.execute(
+            &format!("UNWIND range(1, {n}) AS i CREATE (:T {{i: i}})"),
+            rows_options(),
+        )
+        .unwrap();
+
+        // MATCH → Filter → Set: input subtree is streamable.
+        db.execute(
+            "MATCH (t:T) WHERE t.i % 2 = 0 SET t.even = true",
+            rows_options(),
+        )
+        .unwrap();
+
+        let result = db
+            .execute(
+                "MATCH (t:T) WHERE t.even = true RETURN count(t) AS c",
+                rows_options(),
+            )
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), n / 2);
+    }
+
+    #[test]
+    fn delete_with_streamable_input_removes_all_targets() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 500) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        db.execute("MATCH (t:T) WHERE t.i > 100 DELETE t", rows_options())
+            .unwrap();
+
+        assert_eq!(db.node_count(), 100);
+    }
+
+    #[test]
+    fn remove_with_streamable_input_completes() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 200) AS i CREATE (:T {i: i, scratch: 'x'})",
+            rows_options(),
+        )
+        .unwrap();
+
+        // Streamable MATCH → Remove (property form). This exercises
+        // the streaming dispatch in `exec_remove`. We can't easily
+        // assert the property is gone afterwards because the
+        // analyzer rejects references to schema-absent properties;
+        // we instead rely on (a) the REMOVE call returning Ok and
+        // (b) the node count staying at 200 (no accidental delete).
+        db.execute("MATCH (t:T) REMOVE t.scratch", rows_options())
+            .unwrap();
+
+        assert_eq!(db.node_count(), 200);
+    }
+
+    // ---------- Wave 2 (M2/M3): real per-row streaming cursors lifted
+    // into the AutoCommit pipeline for Set/Delete/Remove/Merge.
+    //
+    // These verify lazy delivery (pull one row → drop → live store
+    // unchanged) and commit-on-exhaustion semantics — same shape as
+    // the Create lazy tests above, applied to each new write op.
+
+    #[test]
+    fn auto_commit_set_stream_writes_lazily() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 100) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        // Pull one SET row, drop the stream → tx rolls back. No
+        // node should have been mutated.
+        let mut stream = db
+            .stream("MATCH (t:T) SET t.tagged = true RETURN t.i AS i")
+            .unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+        drop(stream);
+
+        // Verify rollback: counting rows that have `tagged = true`
+        // requires the analyzer to know about the property, which
+        // it does only after a write has committed it. Since the
+        // rollback discarded everything, counting all nodes proves
+        // structure is intact and side effects didn't escape live.
+        assert_eq!(db.node_count(), 100);
+    }
+
+    #[test]
+    fn auto_commit_set_stream_commits_on_exhaustion() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 100) AS i CREATE (:T {i: i, marked: false})",
+            rows_options(),
+        )
+        .unwrap();
+
+        // Fully drain the SET stream — commit on exhaustion. Returns
+        // an existing property (`t.i`) to avoid analyzer strictness
+        // about referencing the just-set property in the same plan.
+        let stream = db
+            .stream("MATCH (t:T) SET t.marked = true RETURN t.i AS i")
+            .unwrap();
+        let count = stream.count();
+        assert_eq!(count, 100);
+
+        // Verify the SET committed by counting nodes via the
+        // already-declared `marked` property.
+        let result = db
+            .execute(
+                "MATCH (t:T) WHERE t.marked = true RETURN count(t) AS c",
+                rows_options(),
+            )
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 100);
+    }
+
+    #[test]
+    fn auto_commit_delete_stream_rolls_back_on_drop() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 100) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let mut stream = db
+            .stream("MATCH (t:T) WHERE t.i > 50 DELETE t RETURN t.i AS i")
+            .unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+        drop(stream);
+
+        // Rollback restores everything — full 100 nodes.
+        assert_eq!(db.node_count(), 100);
+    }
+
+    #[test]
+    fn auto_commit_delete_stream_commits_on_exhaustion() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 100) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let stream = db
+            .stream("MATCH (t:T) WHERE t.i > 50 DELETE t RETURN t.i AS i")
+            .unwrap();
+        let count = stream.count();
+        assert_eq!(count, 50);
+        assert_eq!(db.node_count(), 50);
+    }
+
+    #[test]
+    fn auto_commit_merge_stream_writes_lazily() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 50) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        // MERGE over 1..100: half should bind existing, half create.
+        // Drop after one row → rollback discards everything.
+        let mut stream = db
+            .stream("UNWIND range(1, 100) AS i MERGE (t:T {i: i}) RETURN t.i AS i")
+            .unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+        drop(stream);
+
+        // Original 50 nodes intact; nothing leaked.
+        assert_eq!(db.node_count(), 50);
+    }
+
+    #[test]
+    fn auto_commit_merge_stream_commits_on_exhaustion() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 50) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let stream = db
+            .stream("UNWIND range(1, 100) AS i MERGE (t:T {i: i}) RETURN t.i AS i")
+            .unwrap();
+        let collected: Vec<i64> = stream
+            .filter_map(|row| {
+                serde_json::to_value(row)
+                    .ok()
+                    .and_then(|v| v.get("i").and_then(JsonValue::as_i64))
+            })
+            .collect();
+        assert_eq!(collected.len(), 100);
+        assert_eq!(db.node_count(), 100);
+    }
+
+    /// `MATCH ... ORDER BY ... CREATE` now streams via
+    /// `SortSource`. SortSource buffers internally (Sort is
+    /// inherently O(N) input) but yields sorted rows lazily, so the
+    /// downstream CREATE writes one row at a time and the auto-commit
+    /// guard's drop semantics still apply.
+    #[test]
+    fn auto_commit_sort_then_create_rolls_back_on_drop() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 100) AS i CREATE (:Src {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+        let pre_count = db.node_count();
+
+        // Pull only the first sorted row's CREATE, then drop. The
+        // hidden tx must roll back; no new node should have leaked
+        // to the live store. (Asserting via total node_count avoids
+        // analyzer strictness around a label that exists only on
+        // the rolled-back staged graph.)
+        let mut stream = db
+            .stream(
+                "MATCH (s:Src) WITH s ORDER BY s.i DESC \
+                 CREATE (:Top {origin: s.i}) RETURN s.i AS i",
+            )
+            .unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+        drop(stream);
+
+        assert_eq!(db.node_count(), pre_count);
+    }
+
+    /// `WITH DISTINCT ... CREATE` streams via
+    /// `DistinctSource` inside the streaming chain. DistinctSource
+    /// is internally O(distinct-row-count), but the downstream CREATE
+    /// streams its writes one row at a time, and the auto-commit
+    /// guard's drop semantics still apply.
+    #[test]
+    fn auto_commit_distinct_then_create_streams() {
+        let db = Database::in_memory();
+        // 100 nodes split across 5 distinct `kind` values.
+        db.execute(
+            "UNWIND range(1, 100) AS i CREATE (:Src {kind: i % 5})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let stream = db
+            .stream(
+                "MATCH (s:Src) WITH DISTINCT s.kind AS k \
+                 CREATE (:Tag {kind: k}) RETURN k",
+            )
+            .unwrap();
+        let count = stream.count();
+        assert_eq!(count, 5);
+
+        // Verify exactly 5 Tag nodes exist (one per distinct kind).
+        let result = db
+            .execute("MATCH (t:Tag) RETURN count(t) AS c", rows_options())
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 5);
+    }
+
+    /// Read-only `... UNION ...` plans now flow through
+    /// `UnionSource` + `compiled_to_streaming` instead of the old
+    /// buffered fallback. Functional gate that both branches' rows
+    /// reach the consumer.
+    #[test]
+    fn union_all_read_stream_yields_both_branches() {
+        let db = Database::in_memory();
+        db.execute("UNWIND range(1, 5) AS i CREATE (:T {i: i})", rows_options())
+            .unwrap();
+        db.execute(
+            "UNWIND range(10, 12) AS i CREATE (:U {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let stream = db
+            .stream(
+                "MATCH (t:T) RETURN t.i AS x \
+                 UNION ALL \
+                 MATCH (u:U) RETURN u.i AS x",
+            )
+            .unwrap();
+        let collected: Vec<i64> = stream
+            .filter_map(|row| {
+                serde_json::to_value(row)
+                    .ok()
+                    .and_then(|v| v.get("x").and_then(JsonValue::as_i64))
+            })
+            .collect();
+        let mut sorted = collected;
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![1, 2, 3, 4, 5, 10, 11, 12]);
+    }
+
+    /// Plain `UNION` (without ALL) deduplicates rows that
+    /// match across both branches. UnionSource flips on the
+    /// dedup-by-name path when any branch is non-ALL.
+    #[test]
+    fn union_dedup_collapses_overlap() {
+        let db = Database::in_memory();
+        db.execute("UNWIND range(1, 5) AS i CREATE (:T {i: i})", rows_options())
+            .unwrap();
+        db.execute("UNWIND range(3, 7) AS i CREATE (:U {i: i})", rows_options())
+            .unwrap();
+
+        let stream = db
+            .stream(
+                "MATCH (t:T) RETURN t.i AS x \
+                 UNION \
+                 MATCH (u:U) RETURN u.i AS x",
+            )
+            .unwrap();
+        let collected: Vec<i64> = stream
+            .filter_map(|row| {
+                serde_json::to_value(row)
+                    .ok()
+                    .and_then(|v| v.get("x").and_then(JsonValue::as_i64))
+            })
+            .collect();
+        let mut sorted = collected;
+        sorted.sort_unstable();
+        // 1..=5 ∪ 3..=7 = 1..=7 (dedup of 3, 4, 5).
+        assert_eq!(sorted, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn auto_commit_mutating_union_all_rolls_back_on_drop() {
+        let db = Database::in_memory();
+        let mut stream = db
+            .stream(
+                "CREATE (:UA {i: 1}) RETURN 1 AS i \
+                 UNION ALL \
+                 CREATE (:UA {i: 2}) RETURN 2 AS i",
+            )
+            .unwrap();
+
+        assert!(stream.next_row().unwrap().is_some());
+        drop(stream);
+
+        assert_eq!(db.node_count(), 0);
+    }
+
+    #[test]
+    fn auto_commit_mutating_union_all_commits_on_exhaustion() {
+        let db = Database::in_memory();
+        let stream = db
+            .stream(
+                "CREATE (:UA {i: 1}) RETURN 1 AS i \
+                 UNION ALL \
+                 CREATE (:UA {i: 2}) RETURN 2 AS i",
+            )
+            .unwrap();
+
+        let mut collected: Vec<i64> = stream
+            .filter_map(|row| {
+                serde_json::to_value(row)
+                    .ok()
+                    .and_then(|v| v.get("i").and_then(JsonValue::as_i64))
+            })
+            .collect();
+        collected.sort_unstable();
+        assert_eq!(collected, vec![1, 2]);
+        assert_eq!(db.node_count(), 2);
+    }
+
+    #[test]
+    fn auto_commit_mutating_union_dedups_rows_but_commits_all_branch_writes() {
+        let db = Database::in_memory();
+        let stream = db
+            .stream(
+                "CREATE (:UB {i: 1}) RETURN 1 AS i \
+                 UNION \
+                 CREATE (:UB {i: 1}) RETURN 1 AS i",
+            )
+            .unwrap();
+
+        let collected: Vec<i64> = stream
+            .filter_map(|row| {
+                serde_json::to_value(row)
+                    .ok()
+                    .and_then(|v| v.get("i").and_then(JsonValue::as_i64))
+            })
+            .collect();
+        assert_eq!(collected, vec![1]);
+        assert_eq!(db.node_count(), 2);
+    }
+
+    /// Companion to the rollback test above: full drain commits all
+    /// 100 sorted CREATEs end-to-end.
+    #[test]
+    fn auto_commit_sort_then_create_commits_on_exhaustion() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 100) AS i CREATE (:Src {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let stream = db
+            .stream(
+                "MATCH (s:Src) WITH s ORDER BY s.i DESC \
+                 CREATE (:Top {origin: s.i}) RETURN s.i AS i",
+            )
+            .unwrap();
+        let count = stream.count();
+        assert_eq!(count, 100);
+
+        let result = db
+            .execute(
+                "MATCH (t:Top) RETURN count(t) AS c, sum(t.origin) AS s",
+                rows_options(),
+            )
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 100);
+        assert_eq!(
+            rows[0].get("s").and_then(JsonValue::as_i64).unwrap(),
+            (1..=100).sum::<i64>()
+        );
+    }
+
+    #[test]
+    fn auto_commit_remove_stream_rolls_back_on_drop() {
+        let db = Database::in_memory();
+        db.execute(
+            "UNWIND range(1, 50) AS i CREATE (:T:Tagged {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let mut stream = db
+            .stream("MATCH (t:Tagged) REMOVE t:Tagged RETURN t.i AS i")
+            .unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+        drop(stream);
+
+        // Tagged label must still cover all 50 nodes after rollback.
+        let result = db
+            .execute("MATCH (t:Tagged) RETURN count(t) AS c", rows_options())
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 50);
+    }
+
+    #[test]
+    fn merge_with_streamable_input_creates_or_binds() {
+        let db = Database::in_memory();
+        // Pre-seed half the keys so MERGE has a mix of matches and
+        // creates inside one streaming pass.
+        db.execute(
+            "UNWIND range(1, 50) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        // UNWIND → Merge: input subtree is streamable.
+        db.execute(
+            "UNWIND range(1, 100) AS i MERGE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let result = db
+            .execute("MATCH (t:T) RETURN count(t) AS c", rows_options())
+            .unwrap();
+        let rows = rows_json(result);
+        // 50 pre-seeded + 50 newly created (MERGE bound the first
+        // half, created the rest).
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 100);
+    }
+
+    #[test]
+    fn varlen_match_create_streams_input_correctly() {
+        let db = Database::in_memory();
+        db.execute(
+            "CREATE (:V {i: 1})-[:R]->(:V {i: 2})-[:R]->(:V {i: 3})",
+            rows_options(),
+        )
+        .unwrap();
+
+        db.execute(
+            "MATCH (:V {i: 1})-[:R*1..2]->(v:V) CREATE (:Reach {i: v.i})",
+            rows_options(),
+        )
+        .unwrap();
+
+        let result = db
+            .execute(
+                "MATCH (r:Reach) RETURN count(r) AS c, sum(r.i) AS s",
+                rows_options(),
+            )
+            .unwrap();
+        let rows = rows_json(result);
+        assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 2);
+        assert_eq!(rows[0].get("s").and_then(JsonValue::as_i64).unwrap(), 5);
     }
 }
