@@ -14,6 +14,7 @@ use lora_store::{GraphStorage, GraphStorageMut, NodeId, Properties, PropertyValu
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 use tracing::{debug, error, trace};
 
 pub struct ExecutionContext<'a, S: GraphStorage> {
@@ -23,13 +24,50 @@ pub struct ExecutionContext<'a, S: GraphStorage> {
 
 pub struct Executor<'a, S: GraphStorage> {
     ctx: ExecutionContext<'a, S>,
+    deadline: Option<Instant>,
 }
 
 impl<'a, S: GraphStorage> Executor<'a, S> {
     pub fn new(ctx: ExecutionContext<'a, S>) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            deadline: None,
+        }
     }
 
+    pub fn with_deadline(ctx: ExecutionContext<'a, S>, deadline: Option<Instant>) -> Self {
+        Self { ctx, deadline }
+    }
+
+    #[inline]
+    fn check_deadline(&self) -> ExecResult<()> {
+        if let Some(deadline) = self.deadline {
+            check_deadline_at(deadline)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn check_loop_deadline(deadline: Option<Instant>) -> ExecResult<()> {
+        if let Some(deadline) = deadline {
+            check_deadline_at(deadline)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[inline]
+fn check_deadline_at(deadline: Instant) -> ExecResult<()> {
+    if Instant::now() >= deadline {
+        Err(ExecutorError::QueryTimeout)
+    } else {
+        Ok(())
+    }
+}
+
+impl<'a, S: GraphStorage> Executor<'a, S> {
     pub fn execute(
         &self,
         plan: &PhysicalPlan,
@@ -49,6 +87,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     }
 
     pub fn execute_compiled_rows(&self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
+        self.check_deadline()?;
         if compiled.unions.is_empty() {
             return self.execute_rows(&compiled.physical);
         }
@@ -59,6 +98,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let mut needs_dedup = false;
 
         for branch in &compiled.unions {
+            self.check_deadline()?;
             let branch_rows = self.execute_rows(&branch.physical)?;
             all_rows.extend(branch_rows);
 
@@ -75,6 +115,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     }
 
     pub fn execute_rows(&self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
         let _ = take_eval_error();
@@ -108,12 +149,14 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     }
 
     fn execute_node(&self, plan: &PhysicalPlan, node_id: PhysicalNodeId) -> ExecResult<Vec<Row>> {
+        self.check_deadline()?;
         trace!("read-only execute_node start: node_id={node_id:?}");
 
         let result = match &plan.nodes[node_id] {
             PhysicalOp::Argument(op) => self.exec_argument(op),
             PhysicalOp::NodeScan(op) => self.exec_node_scan(plan, op),
             PhysicalOp::NodeByLabelScan(op) => self.exec_node_by_label_scan(plan, op),
+            PhysicalOp::NodeByPropertyScan(op) => self.exec_node_by_property_scan(plan, op),
             PhysicalOp::Expand(op) => self.exec_expand(plan, op),
             PhysicalOp::Filter(op) => self.exec_filter(plan, op),
             PhysicalOp::Projection(op) => self.exec_projection(plan, op),
@@ -154,7 +197,9 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let node_ids = self.ctx.storage.all_node_ids();
         let mut out = Vec::new();
 
+        let deadline = self.deadline;
         for row in base_rows {
+            Self::check_loop_deadline(deadline)?;
             if let Some(existing) = row.get(op.var) {
                 match existing {
                     LoraValue::Node(existing_id) => {
@@ -173,6 +218,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             }
 
             for &id in &node_ids {
+                Self::check_loop_deadline(deadline)?;
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
                 out.push(new_row);
@@ -193,20 +239,134 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         };
 
         let candidate_ids = scan_node_ids_for_label_groups(self.ctx.storage, &op.labels);
+        let candidates_prefiltered = label_group_candidates_prefiltered(&op.labels);
         let mut out = Vec::new();
 
+        match self.deadline {
+            Some(deadline) => {
+                for row in base_rows {
+                    check_deadline_at(deadline)?;
+                    if let Some(existing) = row.get(op.var) {
+                        match existing {
+                            LoraValue::Node(existing_id) => {
+                                let labels_ok = self
+                                    .ctx
+                                    .storage
+                                    .with_node(*existing_id, |n| {
+                                        node_matches_label_groups(&n.labels, &op.labels)
+                                    })
+                                    .unwrap_or(false);
+                                if labels_ok {
+                                    out.push(row);
+                                }
+                            }
+                            other => {
+                                return Err(ExecutorError::ExpectedNodeForExpand {
+                                    var: format!("{:?}", op.var),
+                                    found: value_kind(other),
+                                });
+                            }
+                        }
+                        continue;
+                    }
+
+                    for &id in &candidate_ids {
+                        check_deadline_at(deadline)?;
+                        if !candidates_prefiltered {
+                            let labels_ok = self
+                                .ctx
+                                .storage
+                                .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                                .unwrap_or(false);
+                            if !labels_ok {
+                                continue;
+                            }
+                        }
+                        let mut new_row = row.clone();
+                        new_row.insert(op.var, LoraValue::Node(id));
+                        out.push(new_row);
+                    }
+                }
+            }
+            None => {
+                for row in base_rows {
+                    if let Some(existing) = row.get(op.var) {
+                        match existing {
+                            LoraValue::Node(existing_id) => {
+                                let labels_ok = self
+                                    .ctx
+                                    .storage
+                                    .with_node(*existing_id, |n| {
+                                        node_matches_label_groups(&n.labels, &op.labels)
+                                    })
+                                    .unwrap_or(false);
+                                if labels_ok {
+                                    out.push(row);
+                                }
+                            }
+                            other => {
+                                return Err(ExecutorError::ExpectedNodeForExpand {
+                                    var: format!("{:?}", op.var),
+                                    found: value_kind(other),
+                                });
+                            }
+                        }
+                        continue;
+                    }
+
+                    for &id in &candidate_ids {
+                        if !candidates_prefiltered {
+                            let labels_ok = self
+                                .ctx
+                                .storage
+                                .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                                .unwrap_or(false);
+                            if !labels_ok {
+                                continue;
+                            }
+                        }
+                        let mut new_row = row.clone();
+                        new_row.insert(op.var, LoraValue::Node(id));
+                        out.push(new_row);
+                    }
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
+    fn exec_node_by_property_scan(
+        &self,
+        plan: &PhysicalPlan,
+        op: &NodeByPropertyScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+
+        let eval_ctx = EvalContext {
+            storage: self.ctx.storage,
+            params: &self.ctx.params,
+        };
+        let mut out = Vec::new();
+
+        let deadline = self.deadline;
         for row in base_rows {
+            Self::check_loop_deadline(deadline)?;
+            let expected = eval_expr(&op.value, &row, &eval_ctx);
+
             if let Some(existing) = row.get(op.var) {
                 match existing {
                     LoraValue::Node(existing_id) => {
-                        let labels_ok = self
-                            .ctx
-                            .storage
-                            .with_node(*existing_id, |n| {
-                                node_matches_label_groups(&n.labels, &op.labels)
-                            })
-                            .unwrap_or(false);
-                        if labels_ok {
+                        if node_matches_property_filter(
+                            self.ctx.storage,
+                            *existing_id,
+                            &op.labels,
+                            &op.key,
+                            &expected,
+                        ) {
                             out.push(row);
                         }
                     }
@@ -220,14 +380,20 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 continue;
             }
 
-            for &id in &candidate_ids {
-                let labels_ok = self
-                    .ctx
-                    .storage
-                    .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
-                    .unwrap_or(false);
-                if !labels_ok {
-                    continue;
+            let candidates =
+                indexed_node_property_candidates(self.ctx.storage, &op.labels, &op.key, &expected);
+            for id in candidates.ids {
+                Self::check_loop_deadline(deadline)?;
+                if !candidates.prefiltered {
+                    if !node_matches_property_filter(
+                        self.ctx.storage,
+                        id,
+                        &op.labels,
+                        &op.key,
+                        &expected,
+                    ) {
+                        continue;
+                    }
                 }
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
@@ -716,11 +882,37 @@ pub struct MutableExecutionContext<'a, S: GraphStorageMut> {
 
 pub struct MutableExecutor<'a, S: GraphStorageMut> {
     ctx: MutableExecutionContext<'a, S>,
+    deadline: Option<Instant>,
 }
 
 impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     pub fn new(ctx: MutableExecutionContext<'a, S>) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            deadline: None,
+        }
+    }
+
+    pub fn with_deadline(ctx: MutableExecutionContext<'a, S>, deadline: Option<Instant>) -> Self {
+        Self { ctx, deadline }
+    }
+
+    #[inline]
+    fn check_deadline(&self) -> ExecResult<()> {
+        if let Some(deadline) = self.deadline {
+            check_deadline_at(deadline)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn check_loop_deadline(deadline: Option<Instant>) -> ExecResult<()> {
+        if let Some(deadline) = deadline {
+            check_deadline_at(deadline)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn execute(
@@ -733,6 +925,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     pub fn execute_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
         let _ = take_eval_error();
@@ -755,6 +948,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     pub fn execute_compiled_rows(&mut self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
+        self.check_deadline()?;
         if compiled.unions.is_empty() {
             return self.execute_rows(&compiled.physical);
         }
@@ -769,6 +963,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         let mut needs_dedup = false;
 
         for branch in &compiled.unions {
+            self.check_deadline()?;
             let branch_rows = self.execute_and_hydrate(&branch.physical)?;
             all_rows.extend(branch_rows);
 
@@ -785,11 +980,12 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn execute_and_hydrate(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        self.check_deadline()?;
         let rows = self.execute_node(plan, plan.root)?;
         Ok(rows.into_iter().map(|row| self.hydrate_row(row)).collect())
     }
 
-    fn hydrate_row(&self, row: Row) -> Row {
+    pub(crate) fn hydrate_row(&self, row: Row) -> Row {
         let mut out = Row::new();
 
         for (var, name, value) in row.into_iter_named() {
@@ -804,12 +1000,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         plan: &PhysicalPlan,
         node_id: PhysicalNodeId,
     ) -> ExecResult<Vec<Row>> {
+        self.check_deadline()?;
         trace!("mutable execute_node start: node_id={node_id:?}");
 
         let result = match &plan.nodes[node_id] {
             PhysicalOp::Argument(op) => self.exec_argument(op),
             PhysicalOp::NodeScan(op) => self.exec_node_scan(plan, op),
             PhysicalOp::NodeByLabelScan(op) => self.exec_node_by_label_scan(plan, op),
+            PhysicalOp::NodeByPropertyScan(op) => self.exec_node_by_property_scan(plan, op),
             PhysicalOp::Expand(op) => self.exec_expand(plan, op),
             PhysicalOp::Filter(op) => self.exec_filter(plan, op),
             PhysicalOp::Projection(op) => self.exec_projection(plan, op),
@@ -850,7 +1048,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         let node_ids = self.ctx.storage.all_node_ids();
         let mut out = Vec::new();
 
+        let deadline = self.deadline;
         for row in base_rows {
+            Self::check_loop_deadline(deadline)?;
             if let Some(existing) = row.get(op.var) {
                 match existing {
                     LoraValue::Node(existing_id) => {
@@ -869,6 +1069,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             }
 
             for &id in &node_ids {
+                Self::check_loop_deadline(deadline)?;
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
                 out.push(new_row);
@@ -889,9 +1090,12 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         };
 
         let candidate_ids = scan_node_ids_for_label_groups(&*self.ctx.storage, &op.labels);
+        let candidates_prefiltered = label_group_candidates_prefiltered(&op.labels);
         let mut out = Vec::new();
 
+        let deadline = self.deadline;
         for row in base_rows {
+            Self::check_loop_deadline(deadline)?;
             if let Some(existing) = row.get(op.var) {
                 match existing {
                     LoraValue::Node(existing_id) => {
@@ -917,13 +1121,90 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             }
 
             for &id in &candidate_ids {
-                let labels_ok = self
-                    .ctx
-                    .storage
-                    .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
-                    .unwrap_or(false);
-                if !labels_ok {
-                    continue;
+                Self::check_loop_deadline(deadline)?;
+                if !candidates_prefiltered {
+                    let labels_ok = self
+                        .ctx
+                        .storage
+                        .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                        .unwrap_or(false);
+                    if !labels_ok {
+                        continue;
+                    }
+                }
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+
+        Ok(out)
+    }
+
+    fn exec_node_by_property_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &NodeByPropertyScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+
+        let mut out = Vec::new();
+
+        let deadline = self.deadline;
+        for row in base_rows {
+            Self::check_loop_deadline(deadline)?;
+            let expected = {
+                let eval_ctx = EvalContext {
+                    storage: &*self.ctx.storage,
+                    params: &self.ctx.params,
+                };
+                eval_expr(&op.value, &row, &eval_ctx)
+            };
+
+            if let Some(existing) = row.get(op.var) {
+                match existing {
+                    LoraValue::Node(existing_id) => {
+                        if node_matches_property_filter(
+                            &*self.ctx.storage,
+                            *existing_id,
+                            &op.labels,
+                            &op.key,
+                            &expected,
+                        ) {
+                            out.push(row);
+                        }
+                    }
+                    other => {
+                        return Err(ExecutorError::ExpectedNodeForExpand {
+                            var: format!("{:?}", op.var),
+                            found: value_kind(other),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let candidates = indexed_node_property_candidates(
+                &*self.ctx.storage,
+                &op.labels,
+                &op.key,
+                &expected,
+            );
+            for id in candidates.ids {
+                Self::check_loop_deadline(deadline)?;
+                if !candidates.prefiltered {
+                    if !node_matches_property_filter(
+                        &*self.ctx.storage,
+                        id,
+                        &op.labels,
+                        &op.key,
+                        &expected,
+                    ) {
+                        continue;
+                    }
                 }
                 let mut new_row = row.clone();
                 new_row.insert(op.var, LoraValue::Node(id));
@@ -1393,6 +1674,15 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_create(&mut self, plan: &PhysicalPlan, op: &CreateExec) -> ExecResult<Vec<Row>> {
+        // Fast path: if the input subtree is fully streamable (no
+        // nested writes, no blocking operators), pull rows one at a
+        // time and apply the create pattern per row, instead of
+        // materializing the whole input. The output Vec still
+        // accumulates — auto-commit-side output streaming is M1.b.
+        if crate::pull::subtree_is_fully_streaming(plan, op.input) {
+            return self.exec_create_streaming_input(plan, op);
+        }
+
         let input_rows = self.execute_node(plan, op.input)?;
         let mut out = Vec::with_capacity(input_rows.len());
 
@@ -1402,6 +1692,64 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         }
 
         Ok(out)
+    }
+
+    /// Generic streaming-input loop for write operators whose input
+    /// subtree is fully streamable. Opens a pull-based read cursor
+    /// over the input subtree, calls `apply` per row, and accumulates
+    /// the resulting rows.
+    ///
+    /// # Safety
+    ///
+    /// The upstream [`crate::pull::RowSource`] needs `&S` while it
+    /// lives; the per-row `apply` callback needs `&mut S` (via
+    /// `&mut self`). The existing read-side `RowSource` impls
+    /// materialize their iteration state into owned `Vec`s at
+    /// construction time (see `NodeScanSource::cur_ids`,
+    /// `ExpandSource::cur_edges`, etc. in `pull.rs`), so no live
+    /// `&S` borrow into storage persists across `next_row` calls.
+    /// We exploit that by deriving the read borrow from a raw
+    /// pointer — Rust then doesn't see the shared/mutable conflict
+    /// at compile time, and the dynamic access pattern is
+    /// non-aliasing: read-only inside `next_row`, then mutable
+    /// inside `apply`, never both at the same instant.
+    fn streaming_apply<F>(
+        &mut self,
+        plan: &PhysicalPlan,
+        input: PhysicalNodeId,
+        mut apply: F,
+    ) -> ExecResult<Vec<Row>>
+    where
+        F: FnMut(&mut Self, &mut Row) -> ExecResult<()>,
+    {
+        use std::sync::Arc;
+
+        let storage_ptr: *mut S = self.ctx.storage as *mut S;
+        let params = Arc::new(self.ctx.params.clone());
+
+        // SAFETY: see method-level comment.
+        let storage_ref: &S = unsafe { &*storage_ptr };
+        let mut upstream = crate::pull::build_streaming(plan, input, storage_ref, params)?;
+
+        let mut out = Vec::new();
+        while let Some(mut row) = upstream.next_row()? {
+            apply(self, &mut row)?;
+            out.push(row);
+        }
+
+        Ok(out)
+    }
+
+    /// Streaming-input variant of [`Self::exec_create`]. Delegates
+    /// to [`Self::streaming_apply`].
+    fn exec_create_streaming_input(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &CreateExec,
+    ) -> ExecResult<Vec<Row>> {
+        self.streaming_apply(plan, op.input, |this, row| {
+            this.apply_create_pattern(row, &op.pattern)
+        })
     }
 
     fn apply_remove_item(&mut self, row: &Row, item: &ResolvedRemoveItem) -> ExecResult<()> {
@@ -1467,6 +1815,32 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_merge(&mut self, plan: &PhysicalPlan, op: &MergeExec) -> ExecResult<Vec<Row>> {
+        // Streaming-input fast path when the input subtree is fully
+        // streamable. Per-row work (probe → optionally create →
+        // ON MATCH / ON CREATE actions) is identical to the
+        // materialized branch below.
+        if crate::pull::subtree_is_fully_streaming(plan, op.input) {
+            return self.streaming_apply(plan, op.input, |this, row| {
+                let already_bound = this.pattern_part_is_bound(row, &op.pattern_part);
+                let matched = if already_bound {
+                    true
+                } else {
+                    this.try_match_merge_pattern(row, &op.pattern_part)?
+                };
+                if !matched {
+                    this.apply_create_pattern_part(row, &op.pattern_part)?;
+                }
+                for action in &op.actions {
+                    if action.on_match == matched {
+                        for item in &action.set.items {
+                            this.apply_set_item(row, item)?;
+                        }
+                    }
+                }
+                Ok(())
+            });
+        }
+
         let input_rows = self.execute_node(plan, op.input)?;
         let mut out = Vec::with_capacity(input_rows.len());
 
@@ -1714,6 +2088,23 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_delete(&mut self, plan: &PhysicalPlan, op: &DeleteExec) -> ExecResult<Vec<Row>> {
+        if crate::pull::subtree_is_fully_streaming(plan, op.input) {
+            let detach = op.detach;
+            return self.streaming_apply(plan, op.input, |this, row| {
+                for expr in &op.expressions {
+                    let value = {
+                        let eval_ctx = EvalContext {
+                            storage: &*this.ctx.storage,
+                            params: &this.ctx.params,
+                        };
+                        eval_expr(expr, row, &eval_ctx)
+                    };
+                    this.delete_value(value, detach)?;
+                }
+                Ok(())
+            });
+        }
+
         let input_rows = self.execute_node(plan, op.input)?;
 
         for row in &input_rows {
@@ -1734,6 +2125,15 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_set(&mut self, plan: &PhysicalPlan, op: &SetExec) -> ExecResult<Vec<Row>> {
+        if crate::pull::subtree_is_fully_streaming(plan, op.input) {
+            return self.streaming_apply(plan, op.input, |this, row| {
+                for item in &op.items {
+                    this.apply_set_item(row, item)?;
+                }
+                Ok(())
+            });
+        }
+
         let input_rows = self.execute_node(plan, op.input)?;
 
         for row in &input_rows {
@@ -1746,6 +2146,15 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_remove(&mut self, plan: &PhysicalPlan, op: &RemoveExec) -> ExecResult<Vec<Row>> {
+        if crate::pull::subtree_is_fully_streaming(plan, op.input) {
+            return self.streaming_apply(plan, op.input, |this, row| {
+                for item in &op.items {
+                    this.apply_remove_item(row, item)?;
+                }
+                Ok(())
+            });
+        }
+
         let input_rows = self.execute_node(plan, op.input)?;
 
         for row in &input_rows {
@@ -1964,11 +2373,74 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         Ok(())
     }
 
-    fn apply_create_pattern(&mut self, row: &mut Row, pattern: &ResolvedPattern) -> ExecResult<()> {
+    pub(crate) fn apply_create_pattern(
+        &mut self,
+        row: &mut Row,
+        pattern: &ResolvedPattern,
+    ) -> ExecResult<()> {
         for part in &pattern.parts {
             self.apply_create_pattern_part(row, part)?;
         }
         Ok(())
+    }
+
+    /// Apply a single per-row write for any of the streamable write
+    /// operators (Create / Set / Delete / Remove / Merge). Used by
+    /// the [`crate::pull::StreamingWriteCursor`] auto-commit fast
+    /// path: the cursor pulls one input row from a read upstream,
+    /// hands it here for the side effect, and emits the row back.
+    pub(crate) fn apply_write_op(&mut self, op: &PhysicalOp, row: &mut Row) -> ExecResult<()> {
+        match op {
+            PhysicalOp::Create(c) => self.apply_create_pattern(row, &c.pattern),
+            PhysicalOp::Set(s) => {
+                for item in &s.items {
+                    self.apply_set_item(row, item)?;
+                }
+                Ok(())
+            }
+            PhysicalOp::Delete(d) => {
+                let detach = d.detach;
+                for expr in &d.expressions {
+                    let value = {
+                        let eval_ctx = EvalContext {
+                            storage: &*self.ctx.storage,
+                            params: &self.ctx.params,
+                        };
+                        eval_expr(expr, row, &eval_ctx)
+                    };
+                    self.delete_value(value, detach)?;
+                }
+                Ok(())
+            }
+            PhysicalOp::Remove(r) => {
+                for item in &r.items {
+                    self.apply_remove_item(row, item)?;
+                }
+                Ok(())
+            }
+            PhysicalOp::Merge(m) => {
+                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part);
+                let matched = if already_bound {
+                    true
+                } else {
+                    self.try_match_merge_pattern(row, &m.pattern_part)?
+                };
+                if !matched {
+                    self.apply_create_pattern_part(row, &m.pattern_part)?;
+                }
+                for action in &m.actions {
+                    if action.on_match == matched {
+                        for item in &action.set.items {
+                            self.apply_set_item(row, item)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            other => Err(ExecutorError::RuntimeError(format!(
+                "apply_write_op called on non-write op: {other:?}"
+            ))),
+        }
     }
 
     fn apply_create_pattern_part(
@@ -2181,7 +2653,7 @@ fn entity_target_from_value(value: &LoraValue) -> ExecResult<EntityTarget> {
 /// Dedup rows that share the same schema (same VarId set). Compares rows by
 /// a Vec<GroupValueKey> keyed on VarId iteration order — avoids the per-row
 /// column-name String clones of `dedup_rows`. Used by DISTINCT projection.
-fn dedup_rows_by_vars(rows: Vec<Row>) -> Vec<Row> {
+pub(crate) fn dedup_rows_by_vars(rows: Vec<Row>) -> Vec<Row> {
     let mut seen: BTreeSet<Vec<GroupValueKey>> = BTreeSet::new();
     let mut out = Vec::new();
 
@@ -2201,7 +2673,7 @@ fn dedup_rows_by_vars(rows: Vec<Row>) -> Vec<Row> {
 /// Dedup rows using named entries so rows with different VarIds but the same
 /// column name + value are collapsed. Needed for UNION where each branch has
 /// its own VarIds.
-fn dedup_rows(rows: Vec<Row>) -> Vec<Row> {
+pub(crate) fn dedup_rows(rows: Vec<Row>) -> Vec<Row> {
     let mut seen: BTreeSet<Vec<(String, GroupValueKey)>> = BTreeSet::new();
     let mut out = Vec::new();
 
@@ -2242,7 +2714,7 @@ fn eval_properties_expr<S: GraphStorage>(
     }
 }
 
-fn compute_aggregate_expr<S: GraphStorage>(
+pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
     expr: &ResolvedExpr,
     rows: &[Row],
     eval_ctx: &EvalContext<'_, S>,
@@ -2485,7 +2957,7 @@ fn compute_aggregate_expr<S: GraphStorage>(
     }
 }
 
-fn compare_sort_item<S: GraphStorage>(
+pub(crate) fn compare_sort_item<S: GraphStorage>(
     item: &ResolvedSortItem,
     a: &Row,
     b: &Row,
@@ -2594,12 +3066,92 @@ pub fn value_matches_property_value(expected: &LoraValue, actual: &PropertyValue
     }
 }
 
+pub(crate) fn node_matches_property_filter<S: GraphStorage>(
+    storage: &S,
+    node_id: NodeId,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+) -> bool {
+    storage
+        .with_node(node_id, |node| {
+            node_matches_label_groups(&node.labels, labels)
+                && node
+                    .properties
+                    .get(key)
+                    .map(|actual| value_matches_property_value(expected, actual))
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn single_label_hint(labels: &[Vec<String>]) -> Option<&str> {
+    if labels.len() == 1 && labels[0].len() == 1 {
+        Some(labels[0][0].as_str())
+    } else {
+        None
+    }
+}
+
+fn property_lookup_values(expected: &LoraValue) -> Option<Vec<PropertyValue>> {
+    let property = lora_value_to_property(expected.clone()).ok()?;
+    let mut values = vec![property.clone()];
+
+    match property {
+        PropertyValue::Int(i) => {
+            values.push(PropertyValue::Float(i as f64));
+        }
+        PropertyValue::Float(f) if f.is_finite() && f.fract() == 0.0 => {
+            if f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+                values.push(PropertyValue::Int(f as i64));
+            }
+        }
+        _ => {}
+    }
+
+    Some(values)
+}
+
+pub(crate) struct NodePropertyCandidates {
+    pub(crate) ids: Vec<NodeId>,
+    pub(crate) prefiltered: bool,
+}
+
+pub(crate) fn indexed_node_property_candidates<S: GraphStorage>(
+    storage: &S,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+) -> NodePropertyCandidates {
+    let Some(values) = property_lookup_values(expected) else {
+        return NodePropertyCandidates {
+            ids: scan_node_ids_for_label_groups(storage, labels),
+            prefiltered: false,
+        };
+    };
+
+    let label_hint = single_label_hint(labels);
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        for id in storage.find_node_ids_by_property(label_hint, key, &value) {
+            if seen.insert(id) {
+                out.push(id);
+            }
+        }
+    }
+    NodePropertyCandidates {
+        ids: out,
+        prefiltered: labels.is_empty() || label_hint.is_some(),
+    }
+}
+
 /// Build a LoraPath from the node and relationship variables currently in a row.
 ///
 /// For variable-length relationships (stored as a List of Relationship values),
 /// intermediate nodes are reconstructed from the storage by walking the
 /// relationship chain.
-fn build_path_value<S: GraphStorage>(
+pub(crate) fn build_path_value<S: GraphStorage>(
     row: &Row,
     node_vars: &[VarId],
     rel_vars: &[VarId],
@@ -2698,7 +3250,9 @@ pub(crate) fn scan_node_ids_for_label_groups<S: GraphStorage>(
     storage: &S,
     groups: &[Vec<String>],
 ) -> Vec<lora_store::NodeId> {
-    if groups.len() == 1 && groups[0].len() == 1 {
+    if groups.is_empty() {
+        storage.all_node_ids()
+    } else if groups.len() == 1 && groups[0].len() == 1 {
         storage.node_ids_by_label(&groups[0][0])
     } else if groups.len() == 1 && groups[0].len() > 1 {
         let mut seen = std::collections::BTreeSet::new();
@@ -2714,6 +3268,10 @@ pub(crate) fn scan_node_ids_for_label_groups<S: GraphStorage>(
     } else {
         storage.node_ids_by_label(&groups[0][0])
     }
+}
+
+pub(crate) fn label_group_candidates_prefiltered(groups: &[Vec<String>]) -> bool {
+    groups.len() <= 1
 }
 
 pub(crate) fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
@@ -2760,7 +3318,7 @@ fn flatten_label_groups(groups: &[Vec<String>]) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum GroupValueKey {
+pub(crate) enum GroupValueKey {
     Null,
     Bool(bool),
     Int(i64),
@@ -2773,7 +3331,7 @@ enum GroupValueKey {
 }
 
 impl GroupValueKey {
-    fn from_value(v: &LoraValue) -> Self {
+    pub(crate) fn from_value(v: &LoraValue) -> Self {
         match v {
             LoraValue::Null => Self::Null,
             LoraValue::Bool(x) => Self::Bool(*x),
@@ -2815,18 +3373,18 @@ impl GroupValueKey {
 /// For unbounded upper, we cap at `MAX_VAR_LEN_HOPS` to prevent runaway.
 const MAX_VAR_LEN_HOPS: u64 = 100;
 
-fn resolve_range(range: &RangeLiteral) -> (u64, u64) {
+pub(crate) fn resolve_range(range: &RangeLiteral) -> (u64, u64) {
     let min_hops = range.start.unwrap_or(1);
     let max_hops = range.end.unwrap_or(MAX_VAR_LEN_HOPS);
     (min_hops, max_hops)
 }
 
 /// An entry produced during BFS variable-length expansion.
-struct VarLenResult {
+pub(crate) struct VarLenResult {
     /// The destination node at the end of this path.
-    dst_node_id: NodeId,
+    pub(crate) dst_node_id: NodeId,
     /// The relationship IDs traversed (in order).
-    rel_ids: Vec<u64>,
+    pub(crate) rel_ids: Vec<u64>,
 }
 
 /// Perform variable-length expansion from `start_node_id` following
@@ -2835,7 +3393,7 @@ struct VarLenResult {
 ///
 /// Uses BFS with relationship-uniqueness per path (each path does not
 /// reuse the same relationship, but may revisit nodes).
-fn variable_length_expand<S: GraphStorage>(
+pub(crate) fn variable_length_expand<S: GraphStorage>(
     storage: &S,
     start_node_id: NodeId,
     direction: Direction,
@@ -2918,7 +3476,7 @@ fn variable_length_expand<S: GraphStorage>(
 
 /// Filter rows to keep only shortest paths.
 /// `all` = false → keep one shortest path; `all` = true → keep all shortest.
-fn filter_shortest_paths(rows: Vec<Row>, path_var: VarId, all: bool) -> Vec<Row> {
+pub(crate) fn filter_shortest_paths(rows: Vec<Row>, path_var: VarId, all: bool) -> Vec<Row> {
     if rows.is_empty() {
         return rows;
     }

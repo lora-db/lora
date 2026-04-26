@@ -85,6 +85,9 @@ pub enum ExecutorError {
     #[error("expected variable {var} to contain a relationship during EXPAND, but found {found}")]
     ExpectedRelationshipForExpand { var: String, found: String },
 
+    #[error("query deadline exceeded")]
+    QueryTimeout,
+
     #[error("{0}")]
     RuntimeError(String),
 }

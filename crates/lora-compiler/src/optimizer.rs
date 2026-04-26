@@ -1,6 +1,7 @@
 use crate::logical::*;
 use crate::physical::*;
 use lora_analyzer::{symbols::VarId, ResolvedExpr};
+use lora_ast::BinaryOp;
 use std::collections::BTreeSet;
 
 pub struct Optimizer;
@@ -18,6 +19,7 @@ impl Optimizer {
 
     pub fn optimize(&mut self, mut plan: LogicalPlan) -> LogicalPlan {
         self.push_filter_below_projection(&mut plan);
+        self.use_property_indexed_node_scans(&mut plan);
         self.remove_redundant_limit(&mut plan);
         plan
     }
@@ -79,6 +81,41 @@ impl Optimizer {
         // placeholder for future rules
     }
 
+    fn use_property_indexed_node_scans(&self, plan: &mut LogicalPlan) {
+        let len = plan.nodes.len();
+
+        for i in 0..len {
+            let (input_id, predicate) = match &plan.nodes[i] {
+                LogicalOp::Filter(f) => (f.input, &f.predicate),
+                _ => continue,
+            };
+
+            let (var, key, value) =
+                match property_equality_candidate(predicate, &plan.nodes[input_id]) {
+                    Some(candidate) => candidate,
+                    None => continue,
+                };
+
+            let replacement = match &plan.nodes[input_id] {
+                LogicalOp::NodeScan(scan) => {
+                    Some(LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
+                        input: scan.input,
+                        var,
+                        labels: scan.labels.clone(),
+                        key,
+                        value,
+                    }))
+                }
+                LogicalOp::NodeByPropertyScan(_) => None,
+                _ => None,
+            };
+
+            if let Some(replacement) = replacement {
+                plan.nodes[input_id] = replacement;
+            }
+        }
+    }
+
     /// Lower a logical plan by consuming it — each op's owned payload
     /// (expressions, patterns, items) is moved into the physical op rather
     /// than cloned. Callers should not need the logical plan after this.
@@ -103,6 +140,16 @@ impl Optimizer {
                             labels: scan.labels,
                         })
                     }
+                }
+
+                LogicalOp::NodeByPropertyScan(scan) => {
+                    PhysicalOp::NodeByPropertyScan(NodeByPropertyScanExec {
+                        input: scan.input,
+                        var: scan.var,
+                        labels: scan.labels,
+                        key: scan.key,
+                        value: scan.value,
+                    })
                 }
 
                 LogicalOp::Expand(expand) => PhysicalOp::Expand(ExpandExec {
@@ -202,6 +249,53 @@ fn collect_vars(expr: &ResolvedExpr) -> BTreeSet<VarId> {
     let mut vars = BTreeSet::new();
     collect_vars_inner(expr, &mut vars);
     vars
+}
+
+fn property_equality_candidate(
+    predicate: &ResolvedExpr,
+    input: &LogicalOp,
+) -> Option<(VarId, String, ResolvedExpr)> {
+    let LogicalOp::NodeScan(scan) = input else {
+        return None;
+    };
+
+    property_equality_for_var(predicate, scan.var)
+}
+
+fn property_equality_for_var(
+    predicate: &ResolvedExpr,
+    var: VarId,
+) -> Option<(VarId, String, ResolvedExpr)> {
+    let ResolvedExpr::Binary { lhs, op, rhs } = predicate else {
+        return None;
+    };
+
+    if matches!(op, BinaryOp::And) {
+        return property_equality_for_var(lhs, var).or_else(|| property_equality_for_var(rhs, var));
+    }
+
+    if !matches!(op, BinaryOp::Eq) {
+        return None;
+    }
+
+    property_access_for_var(lhs, var)
+        .filter(|_| !collect_vars(rhs).contains(&var))
+        .map(|key| (var, key, (**rhs).clone()))
+        .or_else(|| {
+            property_access_for_var(rhs, var)
+                .filter(|_| !collect_vars(lhs).contains(&var))
+                .map(|key| (var, key, (**lhs).clone()))
+        })
+}
+
+fn property_access_for_var(expr: &ResolvedExpr, var: VarId) -> Option<String> {
+    match expr {
+        ResolvedExpr::Property { expr, property } => match &**expr {
+            ResolvedExpr::Variable(v) if *v == var => Some(property.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn collect_vars_inner(expr: &ResolvedExpr, out: &mut BTreeSet<VarId>) {

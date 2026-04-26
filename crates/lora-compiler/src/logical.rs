@@ -17,6 +17,7 @@ pub struct LogicalPlan {
 pub enum LogicalOp {
     Argument(Argument),
     NodeScan(NodeScan),
+    NodeByPropertyScan(NodeByPropertyScan),
     Expand(Expand),
     Filter(Filter),
     Projection(Projection),
@@ -68,6 +69,16 @@ pub struct NodeScan {
     pub var: VarId,
     /// Each inner Vec is a disjunctive group (OR). Outer Vec is conjunctive (AND).
     pub labels: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeByPropertyScan {
+    pub input: Option<PlanNodeId>,
+    pub var: VarId,
+    /// Each inner Vec is a disjunctive group (OR). Outer Vec is conjunctive (AND).
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub value: ResolvedExpr,
 }
 
 #[derive(Debug, Clone)]

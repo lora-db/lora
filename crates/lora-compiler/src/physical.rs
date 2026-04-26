@@ -18,6 +18,7 @@ pub enum PhysicalOp {
     Argument(ArgumentExec),
     NodeScan(NodeScanExec),
     NodeByLabelScan(NodeByLabelScanExec),
+    NodeByPropertyScan(NodeByPropertyScanExec),
     Expand(ExpandExec),
     Filter(FilterExec),
     Projection(ProjectionExec),
@@ -67,6 +68,16 @@ pub struct NodeByLabelScanExec {
     pub var: VarId,
     /// Each inner Vec is a disjunctive group (OR). Outer Vec is conjunctive (AND).
     pub labels: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeByPropertyScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub var: VarId,
+    /// Each inner Vec is a disjunctive group (OR). Outer Vec is conjunctive (AND).
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub value: ResolvedExpr,
 }
 
 #[derive(Debug, Clone)]
