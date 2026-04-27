@@ -94,6 +94,76 @@ func TestCreateAndReturnNodeWithProperties(t *testing.T) {
 	}
 }
 
+func TestStreamAndTransactionHelpers(t *testing.T) {
+	db := newDB(t)
+	results, err := db.Transaction([]lora.TransactionStatement{
+		{Query: "UNWIND range(1, 3) AS i CREATE (:S {i: i})"},
+		{Query: "MATCH (n:S) RETURN n.i AS i ORDER BY i"},
+	}, lora.TransactionReadWrite)
+	if err != nil {
+		t.Fatalf("Transaction: %v", err)
+	}
+	if got := results[1].Rows[0]["i"]; got != int64(1) {
+		t.Fatalf("transaction row = %#v", got)
+	}
+
+	it, err := db.Stream("MATCH (n:S) RETURN n.i AS i ORDER BY i", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer it.Close()
+	cols, err := it.Columns()
+	if err != nil {
+		t.Fatalf("Columns: %v", err)
+	}
+	if fmt.Sprint(cols) != "[i]" {
+		t.Fatalf("columns = %v", cols)
+	}
+	var seen []int64
+	for it.Next() {
+		seen = append(seen, it.Row()["i"].(int64))
+	}
+	if err := it.Err(); err != nil {
+		t.Fatalf("stream err: %v", err)
+	}
+	if fmt.Sprint(seen) != "[1 2 3]" {
+		t.Fatalf("stream rows = %v", seen)
+	}
+
+	early, err := db.Stream("UNWIND range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i", nil)
+	if err != nil {
+		t.Fatalf("early Stream: %v", err)
+	}
+	if !early.Next() {
+		t.Fatalf("expected first early row, err=%v", early.Err())
+	}
+	if got := early.Row()["i"]; got != int64(1) {
+		t.Fatalf("early row = %#v", got)
+	}
+	if err := early.Close(); err != nil {
+		t.Fatalf("early Close: %v", err)
+	}
+	nc, err := db.NodeCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nc != 3 {
+		t.Fatalf("early close did not rollback; node count = %d", nc)
+	}
+
+	_, err = db.Transaction([]lora.TransactionStatement{
+		{Query: "CREATE (:S {i: 99})"},
+		{Query: "THIS IS NOT CYPHER"},
+	}, lora.TransactionReadWrite)
+	if err == nil {
+		t.Fatal("expected transaction error")
+	}
+	r := mustExec(t, db, "MATCH (n:S) RETURN n.i AS i ORDER BY i", nil)
+	if len(r.Rows) != 3 {
+		t.Fatalf("rollback failed; rows = %#v", r.Rows)
+	}
+}
+
 func TestClearEmptiesGraphAndCounts(t *testing.T) {
 	db := newDB(t)
 	mustExec(t, db, "CREATE (:X), (:Y)-[:R]->(:Z)", nil)

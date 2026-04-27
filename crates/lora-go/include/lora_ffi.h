@@ -53,6 +53,7 @@ extern "C" {
 /* --- Types ------------------------------------------------------------ */
 
 typedef struct LoraDatabase LoraDatabase;
+typedef struct LoraQueryStream LoraQueryStream;
 
 /* --- Version ---------------------------------------------------------- */
 
@@ -100,6 +101,53 @@ int lora_db_execute_json(
     char **out_result,
     char **out_error);
 
+/* Executes a JSON array of statement objects inside one native transaction.
+ *
+ * statements_json must be:
+ *   [
+ *     {"query": "CREATE (:A)", "params": {"k": "v"}},
+ *     {"query": "MATCH (n) RETURN n"}
+ *   ]
+ *
+ * mode may be NULL for read_write, or one of:
+ *   read_write, readwrite, rw, read_only, readonly, ro
+ *
+ * On LORA_STATUS_OK, `*out_result` is set to a JSON array of normal query
+ * result envelopes, one per statement. Any non-OK status sets `*out_error`.
+ */
+int lora_db_transaction_json(
+    LoraDatabase *db,
+    const char *statements_json,
+    const char *mode,
+    char **out_result,
+    char **out_error);
+
+/* Opens a true native row stream. The returned LoraQueryStream owns the
+ * underlying Rust cursor; callers must release it with lora_stream_free.
+ * Prematurely freeing a mutating stream rolls the query back. */
+int lora_db_stream_open_json(
+    LoraDatabase *db,
+    const char *query,
+    const char *params_json,
+    LoraQueryStream **out_stream,
+    char **out_error);
+
+/* Returns the stream column names as a JSON string array. */
+int lora_stream_columns_json(
+    LoraQueryStream *stream,
+    char **out_result,
+    char **out_error);
+
+/* Pulls one row as a JSON object. End-of-stream is reported as
+ * LORA_STATUS_OK with *out_result == NULL. */
+int lora_stream_next_json(
+    LoraQueryStream *stream,
+    char **out_result,
+    char **out_error);
+
+/* Frees a stream handle. Null is a no-op. */
+void lora_stream_free(LoraQueryStream *stream);
+
 /* --- Clear / counts --------------------------------------------------- */
 
 int lora_db_clear(LoraDatabase *db);
@@ -139,6 +187,27 @@ int lora_db_load_snapshot(
     const char *path,
     LoraSnapshotMeta *out_meta,
     char **out_error);
+
+/* Serialize the current graph into an owned byte buffer. On success,
+ * `*out_bytes` and `*out_len` are populated; callers must release the
+ * buffer with lora_bytes_free. */
+int lora_db_save_snapshot_to_bytes(
+    LoraDatabase *db,
+    uint8_t **out_bytes,
+    size_t *out_len,
+    LoraSnapshotMeta *out_meta,
+    char **out_error);
+
+/* Replace the current graph state from borrowed snapshot bytes. */
+int lora_db_load_snapshot_from_bytes(
+    LoraDatabase *db,
+    const uint8_t *bytes,
+    size_t len,
+    LoraSnapshotMeta *out_meta,
+    char **out_error);
+
+/* Frees a byte buffer returned by lora_db_save_snapshot_to_bytes. */
+void lora_bytes_free(uint8_t *bytes, size_t len);
 
 /* --- String release --------------------------------------------------- */
 

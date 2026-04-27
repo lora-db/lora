@@ -189,6 +189,20 @@ This first Go persistence slice intentionally stays small: the binding
 exposes WAL-backed initialization plus the existing snapshot APIs, but
 not checkpoint, truncate, status, or sync-mode controls.
 
+Snapshot helpers cover files, bytes, base64, and Go readers/writers:
+
+```go
+meta, err := db.SaveSnapshot("./graph.lorasnap")
+bytes, meta, err := db.SaveSnapshotBytes()
+encoded, meta, err := db.SaveSnapshotBase64()
+meta, err = db.SaveSnapshotTo(writer)
+
+meta, err = db.LoadSnapshot("./graph.lorasnap")
+meta, err = db.LoadSnapshotBytes(bytes)
+meta, err = db.LoadSnapshotBase64(encoded)
+meta, err = db.LoadSnapshotFrom(reader)
+```
+
 ## Platform support
 
 - Linux (x86_64, arm64) — supported

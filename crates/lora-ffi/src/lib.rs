@@ -38,12 +38,14 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{c_char, c_int, CStr, CString};
+use std::os::raw::c_uchar;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    WalConfig,
+    Row, Snapshotable, TransactionMode, WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -86,21 +88,29 @@ const INVALID_PARAMS_PREFIX: &str = "INVALID_PARAMS";
 /// Opaque database handle. Wraps a single `lora_database::Database<InMemoryGraph>`
 /// so execution semantics are identical across bindings.
 pub struct LoraDatabase {
-    inner: InnerDatabase<InMemoryGraph>,
+    inner: Arc<InnerDatabase<InMemoryGraph>>,
 }
 
 impl LoraDatabase {
     fn new() -> Self {
         Self {
-            inner: InnerDatabase::in_memory(),
+            inner: Arc::new(InnerDatabase::in_memory()),
         }
     }
 
     fn new_with_wal(wal_dir: &str) -> Result<Self, String> {
         let inner =
             InnerDatabase::open_with_wal(WalConfig::enabled(wal_dir)).map_err(|e| e.to_string())?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
     }
+}
+
+/// Opaque native row stream handle.
+pub struct LoraQueryStream {
+    _db: Arc<InnerDatabase<InMemoryGraph>>,
+    stream: Mutex<Option<lora_database::QueryStream<'static>>>,
 }
 
 // ============================================================================
@@ -282,33 +292,136 @@ pub unsafe extern "C" fn lora_db_execute_json(
             }
         };
 
-        let inner = &(*db).inner;
-        let options = ExecuteOptions {
-            format: ResultFormat::RowArrays,
-        };
-        let exec = inner.execute_with_params(query, Some(options), params_map);
-
-        let row_arrays = match exec {
-            Ok(QueryResult::RowArrays(r)) => r,
-            Ok(_) => {
-                write_error(out_error, LORA_ERROR_PREFIX, "expected RowArrays result");
+        match execute_json_payload(&(*db).inner, query, params_map) {
+            Ok(json) => *out_result = to_c_string(json),
+            Err(msg) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
                 return LoraStatus::LoraError;
             }
+        }
+        LoraStatus::Ok
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Execute a JSON-encoded statement array inside one native transaction.
+///
+/// `statements_json` must be an array of `{ "query": string, "params"?: object }`.
+/// `mode` may be null for read-write, or one of read_write/read_only/rw/ro.
+/// On success `*out_result` receives a JSON array of normal query result
+/// envelopes in statement order.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_transaction_json(
+    db: *mut LoraDatabase,
+    statements_json: *const c_char,
+    mode: *const c_char,
+    out_result: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_result.is_null() {
+            *out_result = ptr::null_mut();
+        }
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if db.is_null() || statements_json.is_null() || out_result.is_null() || out_error.is_null()
+        {
+            return LoraStatus::NullPointer;
+        }
+
+        let statements_raw = match CStr::from_ptr(statements_json).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    INVALID_PARAMS_PREFIX,
+                    "statements JSON is not valid UTF-8",
+                );
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+        let mode_raw = if mode.is_null() {
+            None
+        } else {
+            match CStr::from_ptr(mode).to_str() {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    write_error(out_error, INVALID_PARAMS_PREFIX, "mode is not valid UTF-8");
+                    return LoraStatus::InvalidUtf8;
+                }
+            }
+        };
+
+        let mode = match parse_transaction_mode(mode_raw) {
+            Ok(mode) => mode,
+            Err(msg) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
+                return LoraStatus::InvalidParams;
+            }
+        };
+        let statements_value = match serde_json::from_str(statements_raw) {
+            Ok(value) => value,
+            Err(e) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, &format!("{e}"));
+                return LoraStatus::InvalidParams;
+            }
+        };
+        let statements = match parse_transaction_statements(statements_value) {
+            Ok(statements) => statements,
+            Err(msg) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
+                return LoraStatus::InvalidParams;
+            }
+        };
+
+        let mut tx = match (*db).inner.begin_transaction(mode) {
+            Ok(tx) => tx,
             Err(e) => {
                 write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
                 return LoraStatus::LoraError;
             }
         };
+        let mut results = Vec::with_capacity(statements.len());
+        for statement in statements {
+            let options = ExecuteOptions {
+                format: ResultFormat::RowArrays,
+            };
+            let exec = tx.execute_with_params(&statement.query, Some(options), statement.params);
+            let row_arrays = match exec {
+                Ok(QueryResult::RowArrays(r)) => r,
+                Ok(_) => {
+                    write_error(out_error, LORA_ERROR_PREFIX, "expected RowArrays result");
+                    return LoraStatus::LoraError;
+                }
+                Err(e) => {
+                    write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                    return LoraStatus::LoraError;
+                }
+            };
+            results.push(serialize_rows(&row_arrays.columns, &row_arrays.rows));
+        }
+        if let Err(e) = tx.commit() {
+            write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+            return LoraStatus::LoraError;
+        }
 
-        let payload = serialize_rows(&row_arrays.columns, &row_arrays.rows);
-        let json = match serde_json::to_string(&payload) {
+        let json = match serde_json::to_string(&serde_json::Value::Array(results)) {
             Ok(s) => s,
             Err(e) => {
                 write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
                 return LoraStatus::LoraError;
             }
         };
-
         *out_result = to_c_string(json);
         LoraStatus::Ok
     }));
@@ -322,6 +435,211 @@ pub unsafe extern "C" fn lora_db_execute_json(
             LoraStatus::Panic as c_int
         }
     }
+}
+
+/// Open a true native row stream for `query`.
+///
+/// On success writes a stream handle into `*out_stream`. The handle owns the
+/// Rust cursor and must be freed with `lora_stream_free`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_stream_open_json(
+    db: *mut LoraDatabase,
+    query: *const c_char,
+    params_json: *const c_char,
+    out_stream: *mut *mut LoraQueryStream,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_stream.is_null() {
+            *out_stream = ptr::null_mut();
+        }
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if db.is_null() || query.is_null() || out_stream.is_null() || out_error.is_null() {
+            return LoraStatus::NullPointer;
+        }
+
+        let query = match CStr::from_ptr(query).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(out_error, LORA_ERROR_PREFIX, "query is not valid UTF-8");
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+        let params_str = if params_json.is_null() {
+            None
+        } else {
+            match CStr::from_ptr(params_json).to_str() {
+                Ok("") => None,
+                Ok(s) => Some(s),
+                Err(_) => {
+                    write_error(
+                        out_error,
+                        INVALID_PARAMS_PREFIX,
+                        "params JSON is not valid UTF-8",
+                    );
+                    return LoraStatus::InvalidParams;
+                }
+            }
+        };
+        let params_map = match parse_params(params_str) {
+            Ok(map) => map,
+            Err(msg) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
+                return LoraStatus::InvalidParams;
+            }
+        };
+
+        let inner = (*db).inner.clone();
+        let stream = match unsafe { inner.stream_with_params_owned(query, params_map) } {
+            Ok(stream) => stream,
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                return LoraStatus::LoraError;
+            }
+        };
+        *out_stream = Box::into_raw(Box::new(LoraQueryStream {
+            _db: inner,
+            stream: Mutex::new(Some(stream)),
+        }));
+        LoraStatus::Ok
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Return the stream's column names as a JSON array.
+#[no_mangle]
+pub unsafe extern "C" fn lora_stream_columns_json(
+    stream: *mut LoraQueryStream,
+    out_result: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_result.is_null() {
+            *out_result = ptr::null_mut();
+        }
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if stream.is_null() || out_result.is_null() || out_error.is_null() {
+            return LoraStatus::NullPointer;
+        }
+        let guard = match (*stream).stream.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                write_error(out_error, LORA_ERROR_PREFIX, "stream lock poisoned");
+                return LoraStatus::LoraError;
+            }
+        };
+        let Some(stream) = guard.as_ref() else {
+            write_error(out_error, LORA_ERROR_PREFIX, "query stream is closed");
+            return LoraStatus::LoraError;
+        };
+        let json = match serde_json::to_string(stream.columns()) {
+            Ok(json) => json,
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                return LoraStatus::LoraError;
+            }
+        };
+        *out_result = to_c_string(json);
+        LoraStatus::Ok
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Pull one row from a stream as a JSON object.
+///
+/// On end-of-stream this returns OK with `*out_result == NULL`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_stream_next_json(
+    stream: *mut LoraQueryStream,
+    out_result: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_result.is_null() {
+            *out_result = ptr::null_mut();
+        }
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if stream.is_null() || out_result.is_null() || out_error.is_null() {
+            return LoraStatus::NullPointer;
+        }
+        let mut guard = match (*stream).stream.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                write_error(out_error, LORA_ERROR_PREFIX, "stream lock poisoned");
+                return LoraStatus::LoraError;
+            }
+        };
+        let Some(stream) = guard.as_mut() else {
+            return LoraStatus::Ok;
+        };
+        match stream.next_row() {
+            Ok(Some(row)) => {
+                let json = match serde_json::to_string(&row_to_json(&row)) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                        return LoraStatus::LoraError;
+                    }
+                };
+                *out_result = to_c_string(json);
+                LoraStatus::Ok
+            }
+            Ok(None) => {
+                guard.take();
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                guard.take();
+                write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Free a stream handle. A non-exhausted mutating stream rolls back on drop.
+#[no_mangle]
+pub unsafe extern "C" fn lora_stream_free(stream: *mut LoraQueryStream) {
+    if stream.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        drop(Box::from_raw(stream));
+    }));
 }
 
 // ============================================================================
@@ -470,6 +788,55 @@ pub unsafe extern "C" fn lora_db_save_snapshot(
     }
 }
 
+/// Serialize the current graph into snapshot bytes. The caller owns
+/// `*out_bytes` on success and must release it with `lora_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_save_snapshot_to_bytes(
+    db: *mut LoraDatabase,
+    out_bytes: *mut *mut c_uchar,
+    out_len: *mut usize,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if db.is_null() || out_bytes.is_null() || out_len.is_null() || out_meta.is_null() {
+            return LoraStatus::NullPointer;
+        }
+        *out_bytes = ptr::null_mut();
+        *out_len = 0;
+        *out_meta = LoraSnapshotMeta::zeroed();
+
+        let mut bytes = Vec::new();
+        match (*db)
+            .inner
+            .with_store(|store| store.save_snapshot(&mut bytes))
+        {
+            Ok(meta) => {
+                let mut boxed = bytes.into_boxed_slice();
+                *out_len = boxed.len();
+                *out_bytes = boxed.as_mut_ptr();
+                std::mem::forget(boxed);
+                *out_meta = LoraSnapshotMeta::from_meta(meta);
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
 /// Load a snapshot from `path` and replace the current graph state.
 #[no_mangle]
 pub unsafe extern "C" fn lora_db_load_snapshot(
@@ -519,9 +886,60 @@ pub unsafe extern "C" fn lora_db_load_snapshot(
     }
 }
 
+/// Load a snapshot from borrowed bytes and replace the current graph state.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_load_snapshot_from_bytes(
+    db: *mut LoraDatabase,
+    bytes: *const c_uchar,
+    len: usize,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if db.is_null() || bytes.is_null() || out_meta.is_null() {
+            return LoraStatus::NullPointer;
+        }
+        *out_meta = LoraSnapshotMeta::zeroed();
+
+        let bytes = std::slice::from_raw_parts(bytes, len);
+        match (*db)
+            .inner
+            .with_store_mut(|store| store.load_snapshot(bytes))
+        {
+            Ok(meta) => {
+                *out_meta = LoraSnapshotMeta::from_meta(meta);
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &format!("{e}"));
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
 // ============================================================================
 // String release
 // ============================================================================
+
+/// Free a byte buffer returned by `lora_db_save_snapshot_to_bytes`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_bytes_free(bytes: *mut c_uchar, len: usize) {
+    if bytes.is_null() {
+        return;
+    }
+    drop(Vec::from_raw_parts(bytes, len, len));
+}
 
 /// Free a `char*` previously returned by one of the `*_out_*` parameters.
 /// Passing null is a no-op. Passing anything not returned by this crate
@@ -546,6 +964,65 @@ fn parse_params(raw: Option<&str>) -> Result<BTreeMap<String, LoraValue>, String
     };
     let value: serde_json::Value = serde_json::from_str(s).map_err(|e| format!("{e}"))?;
     json_value_to_params(value)
+}
+
+struct TransactionStatement {
+    query: String,
+    params: BTreeMap<String, LoraValue>,
+}
+
+fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode, String> {
+    match mode.unwrap_or("read_write") {
+        "read_write" | "readwrite" | "rw" => Ok(TransactionMode::ReadWrite),
+        "read_only" | "readonly" | "ro" => Ok(TransactionMode::ReadOnly),
+        other => Err(format!("unknown transaction mode '{other}'")),
+    }
+}
+
+fn parse_transaction_statements(
+    value: serde_json::Value,
+) -> Result<Vec<TransactionStatement>, String> {
+    let serde_json::Value::Array(items) = value else {
+        return Err("transaction statements must be an array".to_string());
+    };
+
+    items
+        .into_iter()
+        .map(|item| {
+            let serde_json::Value::Object(mut obj) = item else {
+                return Err("transaction statement must be an object".to_string());
+            };
+            let query = match obj.remove("query") {
+                Some(serde_json::Value::String(query)) => query,
+                _ => return Err("transaction statement requires query: string".to_string()),
+            };
+            let params = match obj.remove("params") {
+                None | Some(serde_json::Value::Null) => BTreeMap::new(),
+                Some(other) => json_value_to_params(other)?,
+            };
+            Ok(TransactionStatement { query, params })
+        })
+        .collect()
+}
+
+fn execute_json_payload(
+    inner: &InnerDatabase<InMemoryGraph>,
+    query: &str,
+    params_map: BTreeMap<String, LoraValue>,
+) -> Result<String, String> {
+    let options = ExecuteOptions {
+        format: ResultFormat::RowArrays,
+    };
+    let exec = inner.execute_with_params(query, Some(options), params_map);
+
+    let row_arrays = match exec {
+        Ok(QueryResult::RowArrays(r)) => r,
+        Ok(_) => return Err("expected RowArrays result".to_string()),
+        Err(e) => return Err(format!("{e}")),
+    };
+
+    let payload = serialize_rows(&row_arrays.columns, &row_arrays.rows);
+    serde_json::to_string(&payload).map_err(|e| format!("{e}"))
 }
 
 fn json_value_to_params(value: serde_json::Value) -> Result<BTreeMap<String, LoraValue>, String> {
@@ -710,6 +1187,14 @@ fn serialize_rows(columns: &[String], rows: &[Vec<LoraValue>]) -> serde_json::Va
         "columns": serde_json::Value::Array(cols_json),
         "rows": serde_json::Value::Array(rows_json),
     })
+}
+
+fn row_to_json(row: &Row) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (_, name, value) in row.iter_named() {
+        obj.insert(name.into_owned(), lora_value_to_json(value));
+    }
+    serde_json::Value::Object(obj)
 }
 
 fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
@@ -935,6 +1420,34 @@ mod tests {
         (s, result, error)
     }
 
+    unsafe fn tx(
+        db: *mut LoraDatabase,
+        statements: &str,
+        mode: Option<&str>,
+    ) -> (c_int, Option<String>, Option<String>) {
+        let sc = CString::new(statements).unwrap();
+        let mc = mode.map(|s| CString::new(s).unwrap());
+        let mc_ptr = mc.as_ref().map_or(ptr::null(), |c| c.as_ptr());
+        let mut out_result: *mut c_char = ptr::null_mut();
+        let mut out_error: *mut c_char = ptr::null_mut();
+        let s = lora_db_transaction_json(db, sc.as_ptr(), mc_ptr, &mut out_result, &mut out_error);
+        let result = if out_result.is_null() {
+            None
+        } else {
+            let r = CStr::from_ptr(out_result).to_str().unwrap().to_owned();
+            lora_string_free(out_result);
+            Some(r)
+        };
+        let error = if out_error.is_null() {
+            None
+        } else {
+            let e = CStr::from_ptr(out_error).to_str().unwrap().to_owned();
+            lora_string_free(out_error);
+            Some(e)
+        };
+        (s, result, error)
+    }
+
     #[test]
     fn version_is_crate_version() {
         let v = unsafe { CStr::from_ptr(lora_version()).to_str().unwrap() };
@@ -1006,6 +1519,43 @@ mod tests {
         assert_eq!(unsafe { lora_db_clear(db) }, 0);
         unsafe { lora_db_node_count(db, &mut nc) };
         assert_eq!(nc, 0);
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn transaction_json_commits_and_rolls_back() {
+        let db = new_db();
+        let (s, r, e) = unsafe {
+            tx(
+                db,
+                r#"[
+                    {"query":"CREATE (:T {id: $id})","params":{"id":1}},
+                    {"query":"MATCH (n:T) RETURN n.id AS id"}
+                ]"#,
+                None,
+            )
+        };
+        assert_eq!(s, LoraStatus::Ok as c_int, "err={:?}", e);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        assert_eq!(payload[1]["rows"], serde_json::json!([{ "id": 1 }]));
+
+        let (s, _, e) = unsafe {
+            tx(
+                db,
+                r#"[
+                    {"query":"CREATE (:T {id: 2})"},
+                    {"query":"THIS IS NOT CYPHER"}
+                ]"#,
+                None,
+            )
+        };
+        assert_eq!(s, LoraStatus::LoraError as c_int);
+        assert!(e.unwrap().starts_with("LORA_ERROR:"));
+
+        let (s, r, e) = unsafe { exec(db, "MATCH (n:T) RETURN n.id AS id ORDER BY id", None) };
+        assert_eq!(s, LoraStatus::Ok as c_int, "err={:?}", e);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        assert_eq!(payload["rows"], serde_json::json!([{ "id": 1 }]));
         unsafe { lora_db_free(db) };
     }
 

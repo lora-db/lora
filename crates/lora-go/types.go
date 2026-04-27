@@ -20,3 +20,18 @@ type Result struct {
 	Columns []string
 	Rows    []Row
 }
+
+// TransactionStatement is one query in a native transaction batch.
+// Results are returned in the same order as the statement slice.
+type TransactionStatement struct {
+	Query  string `json:"query"`
+	Params Params `json:"params,omitempty"`
+}
+
+// TransactionMode selects the native transaction mode.
+type TransactionMode string
+
+const (
+	TransactionReadWrite TransactionMode = "read_write"
+	TransactionReadOnly  TransactionMode = "read_only"
+)

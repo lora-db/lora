@@ -120,6 +120,25 @@ func (db *Database) Execute(query string, params Params) (*Result, error) {
 	return db.ExecuteContext(context.Background(), query, params)
 }
 
+// Stream runs a query and returns an iterator over its rows. The current
+// binding materializes the native result first, then exposes row-by-row
+// consumption to Go callers.
+func (db *Database) Stream(query string, params Params) (*RowIterator, error) {
+	return db.StreamContext(context.Background(), query, params)
+}
+
+// StreamContext is the context-aware variant of [Database.Stream].
+func (db *Database) StreamContext(ctx context.Context, query string, params Params) (*RowIterator, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	paramsJSON, err := encodeParams(params)
+	if err != nil {
+		return nil, &LoraError{Code: CodeInvalidParams, Message: err.Error()}
+	}
+	return db.stream(query, paramsJSON)
+}
+
 // ExecuteContext runs a Cypher query with optional parameters and
 // cooperates with ctx cancellation. See the package doc for the
 // caveat around mid-query cancellation — the native call cannot be
@@ -192,6 +211,218 @@ func (db *Database) execute(query string, paramsJSON []byte) (*Result, error) {
 
 	defer C.lora_string_free(outResult)
 	return decodeResult(C.GoString(outResult))
+}
+
+func (db *Database) stream(query string, paramsJSON []byte) (*RowIterator, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.handle == nil {
+		return nil, errClosed()
+	}
+
+	cQuery := C.CString(query)
+	defer C.free(unsafe.Pointer(cQuery))
+
+	var cParams *C.char
+	if len(paramsJSON) > 0 {
+		cParams = C.CString(string(paramsJSON))
+		defer C.free(unsafe.Pointer(cParams))
+	}
+
+	var outStream *C.LoraQueryStream
+	var outError *C.char
+	status := C.lora_db_stream_open_json(db.handle, cQuery, cParams, &outStream, &outError)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+
+	it := &RowIterator{handle: outStream}
+	runtime.SetFinalizer(it, func(it *RowIterator) {
+		_ = it.Close()
+	})
+	return it, nil
+}
+
+// RowIterator pulls rows from a native Lora query stream.
+type RowIterator struct {
+	mu      sync.Mutex
+	handle  *C.LoraQueryStream
+	current Row
+	err     error
+}
+
+// Columns returns the stream's projection columns.
+func (it *RowIterator) Columns() ([]string, error) {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	if it.handle == nil {
+		if it.err != nil {
+			return nil, it.err
+		}
+		return nil, nil
+	}
+	var outResult *C.char
+	var outError *C.char
+	status := C.lora_stream_columns_json(it.handle, &outResult, &outError)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+	defer C.lora_string_free(outResult)
+	var columns []string
+	if err := json.Unmarshal([]byte(C.GoString(outResult)), &columns); err != nil {
+		return nil, err
+	}
+	return columns, nil
+}
+
+// Next advances the stream by one row.
+func (it *RowIterator) Next() bool {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	if it.handle == nil {
+		return false
+	}
+	var outResult *C.char
+	var outError *C.char
+	status := C.lora_stream_next_json(it.handle, &outResult, &outError)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+		}()
+		it.err = statusToError(int(status), outError)
+		C.lora_stream_free(it.handle)
+		it.handle = nil
+		return false
+	}
+	if outResult == nil {
+		C.lora_stream_free(it.handle)
+		it.handle = nil
+		runtime.SetFinalizer(it, nil)
+		return false
+	}
+	defer C.lora_string_free(outResult)
+	row, err := decodeRow(C.GoString(outResult))
+	if err != nil {
+		it.err = err
+		C.lora_stream_free(it.handle)
+		it.handle = nil
+		return false
+	}
+	it.current = row
+	return true
+}
+
+// Row returns the current row. Call after Next returns true.
+func (it *RowIterator) Row() Row {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	return it.current
+}
+
+// Err returns the first error observed while streaming.
+func (it *RowIterator) Err() error {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	return it.err
+}
+
+// Close releases the native stream. Closing before exhaustion rolls back a
+// mutating stream.
+func (it *RowIterator) Close() error {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	if it.handle != nil {
+		C.lora_stream_free(it.handle)
+		it.handle = nil
+	}
+	runtime.SetFinalizer(it, nil)
+	return nil
+}
+
+// Transaction executes a statement batch inside one native transaction.
+// Results are returned in statement order. If any statement fails, the
+// native transaction rolls back all earlier writes in the batch.
+func (db *Database) Transaction(statements []TransactionStatement, mode TransactionMode) ([]*Result, error) {
+	return db.TransactionContext(context.Background(), statements, mode)
+}
+
+// TransactionContext is the context-aware variant of [Database.Transaction].
+func (db *Database) TransactionContext(ctx context.Context, statements []TransactionStatement, mode TransactionMode) ([]*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	statementsJSON, err := encodeStatements(statements)
+	if err != nil {
+		return nil, &LoraError{Code: CodeInvalidParams, Message: err.Error()}
+	}
+
+	done := make(chan transactionResult, 1)
+	go func() {
+		r, err := db.transaction(statementsJSON, mode)
+		done <- transactionResult{r, err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case out := <-done:
+		return out.results, out.err
+	}
+}
+
+type transactionResult struct {
+	results []*Result
+	err     error
+}
+
+func (db *Database) transaction(statementsJSON []byte, mode TransactionMode) ([]*Result, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.handle == nil {
+		return nil, errClosed()
+	}
+
+	cStatements := C.CString(string(statementsJSON))
+	defer C.free(unsafe.Pointer(cStatements))
+
+	var cMode *C.char
+	if mode != "" {
+		cMode = C.CString(string(mode))
+		defer C.free(unsafe.Pointer(cMode))
+	}
+
+	var outResult *C.char
+	var outError *C.char
+	status := C.lora_db_transaction_json(db.handle, cStatements, cMode, &outResult, &outError)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+			if outResult != nil {
+				C.lora_string_free(outResult)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+
+	defer C.lora_string_free(outResult)
+	return decodeTransactionResults(C.GoString(outResult))
 }
 
 // Clear drops every node and relationship. The call is constant-time
@@ -298,6 +529,23 @@ func encodeParams(params Params) ([]byte, error) {
 	return out, nil
 }
 
+func encodeStatements(statements []TransactionStatement) ([]byte, error) {
+	if len(statements) == 0 {
+		return []byte("[]"), nil
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(statements); err != nil {
+		return nil, err
+	}
+	out := buf.Bytes()
+	if len(out) > 0 && out[len(out)-1] == '\n' {
+		out = out[:len(out)-1]
+	}
+	return out, nil
+}
+
 // decodeResult turns the FFI JSON payload into a Result. Uses
 // json.Number so int64 parameters round-trip through Cypher without
 // silently becoming float64.
@@ -323,6 +571,34 @@ func decodeResult(raw string) (*Result, error) {
 		rows = append(rows, normalizeMap(raw))
 	}
 	return &Result{Columns: wire.Columns, Rows: rows}, nil
+}
+
+func decodeTransactionResults(raw string) ([]*Result, error) {
+	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	dec.UseNumber()
+	var envelopes []json.RawMessage
+	if err := dec.Decode(&envelopes); err != nil {
+		return nil, fmt.Errorf("lora: decode transaction result array: %w", err)
+	}
+	results := make([]*Result, 0, len(envelopes))
+	for i, envelope := range envelopes {
+		result, err := decodeResult(string(envelope))
+		if err != nil {
+			return nil, fmt.Errorf("lora: decode transaction result %d: %w", i, err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func decodeRow(raw string) (Row, error) {
+	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	dec.UseNumber()
+	var row map[string]any
+	if err := dec.Decode(&row); err != nil {
+		return nil, fmt.Errorf("lora: decode stream row: %w", err)
+	}
+	return normalizeMap(row), nil
 }
 
 // normalizeMap / normalizeSlice / normalize walk the decoded structure

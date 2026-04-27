@@ -1,6 +1,7 @@
 package lora
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -67,6 +68,78 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("graph NodeCount = %d; want 2", n)
+	}
+}
+
+func TestSnapshotBytesBase64AndReaders(t *testing.T) {
+	db, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Execute("CREATE (:Snapshot {name: 'Ada'})", nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	snapshotBytes, meta, err := db.SaveSnapshotBytes()
+	if err != nil {
+		t.Fatalf("SaveSnapshotBytes: %v", err)
+	}
+	if len(snapshotBytes) == 0 {
+		t.Fatal("expected snapshot bytes")
+	}
+	if meta.NodeCount != 1 {
+		t.Fatalf("SaveSnapshotBytes NodeCount = %d; want 1", meta.NodeCount)
+	}
+
+	var buf bytes.Buffer
+	meta, err = db.SaveSnapshotTo(&buf)
+	if err != nil {
+		t.Fatalf("SaveSnapshotTo: %v", err)
+	}
+	if meta.NodeCount != 1 || buf.Len() == 0 {
+		t.Fatalf("SaveSnapshotTo meta=%+v len=%d; want node and bytes", meta, buf.Len())
+	}
+
+	encoded, meta, err := db.SaveSnapshotBase64()
+	if err != nil {
+		t.Fatalf("SaveSnapshotBase64: %v", err)
+	}
+	if encoded == "" || meta.NodeCount != 1 {
+		t.Fatalf("SaveSnapshotBase64 encoded=%q meta=%+v", encoded, meta)
+	}
+
+	for name, load := range map[string]func(*Database) (*SnapshotMeta, error){
+		"bytes": func(target *Database) (*SnapshotMeta, error) {
+			return target.LoadSnapshotBytes(snapshotBytes)
+		},
+		"reader": func(target *Database) (*SnapshotMeta, error) {
+			return target.LoadSnapshotFrom(bytes.NewReader(buf.Bytes()))
+		},
+		"base64": func(target *Database) (*SnapshotMeta, error) {
+			return target.LoadSnapshotBase64(encoded)
+		},
+	} {
+		target, err := New()
+		if err != nil {
+			t.Fatalf("%s New: %v", name, err)
+		}
+		meta, err := load(target)
+		if err != nil {
+			t.Fatalf("%s load: %v", name, err)
+		}
+		if meta.NodeCount != 1 {
+			t.Fatalf("%s NodeCount = %d; want 1", name, meta.NodeCount)
+		}
+		result, err := target.Execute("MATCH (n:Snapshot) RETURN n.name AS name", nil)
+		if err != nil {
+			t.Fatalf("%s Execute: %v", name, err)
+		}
+		if len(result.Rows) != 1 || result.Rows[0]["name"] != "Ada" {
+			t.Fatalf("%s rows = %#v; want Ada", name, result.Rows)
+		}
+		target.Close()
 	}
 }
 
