@@ -6,6 +6,7 @@
 //! and a fresh process (modelled by dropping + re-opening the
 //! database) recovers them via replay.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use lora_database::{
@@ -64,6 +65,17 @@ fn copy_dir_all(from: &Path, to: &Path) {
             std::fs::copy(&from_path, &to_path).unwrap();
         }
     }
+}
+
+fn write_archive_without_manifest(path: &Path) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .unix_permissions(0o644);
+    zip.start_file("wal/0000000001.wal", options).unwrap();
+    zip.write_all(b"not-a-real-wal").unwrap();
+    zip.finish().unwrap();
 }
 
 fn rows() -> Option<ExecuteOptions> {
@@ -236,6 +248,30 @@ fn named_database_recovers_from_durable_sidecar_when_archive_lags() {
     assert!(
         !sidecar_path.exists(),
         "clean recovery shutdown should archive and remove the sidecar"
+    );
+}
+
+#[test]
+fn named_database_rejects_invalid_archive_without_publishing_partial_sidecar() {
+    let dir = TmpDir::new("named-invalid-archive");
+    let archive_path = dir.path().join("app.loradb");
+    let sidecar_path = dir.path().join("app.loradb.wal");
+    write_archive_without_manifest(&archive_path);
+
+    let err = match Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    ) {
+        Ok(_) => panic!("invalid archive should fail to open"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("manifest"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        !sidecar_path.exists(),
+        "failed archive extraction must not leave a partial sidecar"
     );
 }
 

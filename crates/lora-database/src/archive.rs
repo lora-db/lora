@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -51,29 +51,9 @@ impl WalArchive {
         }
 
         let archive_lock = ArchiveLock::acquire(&archive_path)?;
+        cleanup_stale_temp_paths(&archive_path)?;
         let work_dir = make_work_dir(&archive_path);
-        if has_wal_files(&work_dir)? {
-            // A durable sidecar means the previous process stopped before the
-            // final archive flush/cleanup completed. Trust it over the archive,
-            // which may intentionally lag behind the live WAL for throughput.
-        } else {
-            if work_dir.exists() {
-                fs::remove_dir_all(&work_dir)?;
-            }
-            fs::create_dir_all(&work_dir)?;
-        }
-        if archive_path.exists() && !has_wal_files(&work_dir)? {
-            let existing_len = fs::metadata(&archive_path)?.len();
-            if existing_len > max_archive_bytes {
-                return Err(WalError::Malformed(format!(
-                    "database archive {} is {} bytes, above configured limit {}",
-                    archive_path.display(),
-                    existing_len,
-                    max_archive_bytes
-                )));
-            }
-            extract_archive(&archive_path, &work_dir)?;
-        }
+        prepare_work_dir(&archive_path, &work_dir, max_archive_bytes)?;
 
         let state = Arc::new((Mutex::new(ArchiveState::default()), Condvar::new()));
         let worker = Some(spawn_archive_worker(
@@ -190,6 +170,58 @@ fn make_work_dir(archive_path: &Path) -> PathBuf {
     archive_path.with_extension("loradb.wal")
 }
 
+fn prepare_work_dir(
+    archive_path: &Path,
+    work_dir: &Path,
+    max_archive_bytes: u64,
+) -> Result<(), WalError> {
+    if has_wal_files(work_dir)? {
+        // A durable sidecar means the previous process stopped before the
+        // final archive flush/cleanup completed. Trust it over the archive,
+        // which may intentionally lag behind the live WAL for throughput.
+        return Ok(());
+    }
+
+    if work_dir.exists() {
+        fs::remove_dir_all(work_dir)?;
+    }
+
+    if archive_path.exists() {
+        let existing_len = fs::metadata(archive_path)?.len();
+        if existing_len > max_archive_bytes {
+            return Err(WalError::Malformed(format!(
+                "database archive {} is {} bytes, above configured limit {}",
+                archive_path.display(),
+                existing_len,
+                max_archive_bytes
+            )));
+        }
+        extract_archive_into_work_dir(archive_path, work_dir)?;
+    } else {
+        fs::create_dir_all(work_dir)?;
+    }
+    Ok(())
+}
+
+fn extract_archive_into_work_dir(archive_path: &Path, work_dir: &Path) -> Result<(), WalError> {
+    let tmp_dir = make_extract_tmp_path(work_dir);
+    let result = (|| {
+        fs::create_dir_all(&tmp_dir)?;
+        extract_archive(archive_path, &tmp_dir)?;
+        sync_dir(&tmp_dir)?;
+        fs::rename(&tmp_dir, work_dir)?;
+        if let Some(parent) = work_dir.parent() {
+            sync_dir(parent)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        let _ = fs::remove_dir_all(work_dir);
+    }
+    result
+}
+
 fn sanitize_for_temp(value: &str) -> String {
     value
         .bytes()
@@ -296,6 +328,68 @@ fn make_archive_tmp_path(archive_path: &Path) -> PathBuf {
     ))
 }
 
+fn make_extract_tmp_path(work_dir: &Path) -> PathBuf {
+    let dir_name = work_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("database.loradb.wal");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = ARCHIVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    work_dir.with_file_name(format!(
+        "{}.extract.{}.{}.{}",
+        sanitize_for_temp(dir_name),
+        std::process::id(),
+        nanos,
+        sequence
+    ))
+}
+
+fn cleanup_stale_temp_paths(archive_path: &Path) -> Result<(), WalError> {
+    let parent = archive_path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.exists() {
+        return Ok(());
+    }
+    let archive_name = archive_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("database.loradb");
+    let archive_tmp_prefix = format!("{}.", sanitize_for_temp(archive_name));
+    let extract_tmp_prefix = format!(
+        "{}.extract.",
+        sanitize_for_temp(
+            make_work_dir(archive_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("database.loradb.wal")
+        )
+    );
+
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let is_archive_tmp =
+            file_name.starts_with(&archive_tmp_prefix) && file_name.ends_with(".tmp");
+        let is_extract_tmp = file_name.starts_with(&extract_tmp_prefix);
+        if !is_archive_tmp && !is_extract_tmp {
+            continue;
+        }
+
+        let path = entry.path();
+        if path.is_dir() {
+            fs::remove_dir_all(path)?;
+        } else {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
 fn sorted_wal_files(wal_dir: &Path) -> Result<Vec<PathBuf>, WalError> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(wal_dir)? {
@@ -318,10 +412,27 @@ fn has_wal_files(wal_dir: &Path) -> Result<bool, WalError> {
 fn extract_archive(archive_path: &Path, work_dir: &Path) -> Result<(), WalError> {
     let file = File::open(archive_path)?;
     let mut zip = ZipArchive::new(file).map_err(zip_error)?;
+    let mut manifest_seen = false;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index).map_err(zip_error)?;
         let name = entry.name().to_string();
-        if name == MANIFEST_NAME || name.ends_with('/') {
+        if name == MANIFEST_NAME {
+            if manifest_seen {
+                return Err(WalError::Malformed(
+                    "database archive has duplicate manifest".into(),
+                ));
+            }
+            let mut manifest = String::new();
+            entry.read_to_string(&mut manifest)?;
+            if manifest != MANIFEST_JSON {
+                return Err(WalError::Malformed(
+                    "database archive manifest is not supported".into(),
+                ));
+            }
+            manifest_seen = true;
+            continue;
+        }
+        if name.ends_with('/') {
             continue;
         }
         let Some(wal_name) = name.strip_prefix(WAL_PREFIX) else {
@@ -335,9 +446,14 @@ fn extract_archive(archive_path: &Path, work_dir: &Path) -> Result<(), WalError>
             )));
         }
         let path = work_dir.join(wal_name);
-        let mut out = File::create(path)?;
+        let mut out = OpenOptions::new().write(true).create_new(true).open(path)?;
         io::copy(&mut entry, &mut out)?;
         out.sync_all()?;
+    }
+    if !manifest_seen {
+        return Err(WalError::Malformed(
+            "database archive manifest is missing".into(),
+        ));
     }
     Ok(())
 }
@@ -358,7 +474,7 @@ fn zip_error(err: zip::result::ZipError) -> WalError {
 
 struct ArchiveLock {
     _file: File,
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     path: PathBuf,
 }
 
@@ -386,7 +502,27 @@ impl ArchiveLock {
             Ok(Self { _file: file })
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)?;
+            lock_exclusive_nonblocking(&file).map_err(|err| {
+                if is_windows_lock_conflict(&err) {
+                    WalError::AlreadyOpen {
+                        dir: archive_path.to_path_buf(),
+                    }
+                } else {
+                    WalError::Io(err)
+                }
+            })?;
+            Ok(Self { _file: file })
+        }
+
+        #[cfg(not(any(unix, windows)))]
         {
             match OpenOptions::new()
                 .read(true)
@@ -409,7 +545,14 @@ impl ArchiveLock {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+impl Drop for ArchiveLock {
+    fn drop(&mut self) {
+        let _ = unlock_file(&self._file);
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 impl Drop for ArchiveLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -437,6 +580,95 @@ fn lock_exclusive_nonblocking(file: &File) -> io::Result<()> {
         let err = io::Error::last_os_error();
         if err.kind() != io::ErrorKind::Interrupted {
             return Err(err);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn lock_exclusive_nonblocking(file: &File) -> io::Result<()> {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+
+    const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x1;
+    const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x2;
+
+    unsafe extern "system" {
+        fn LockFileEx(
+            hFile: *mut c_void,
+            dwFlags: u32,
+            dwReserved: u32,
+            nNumberOfBytesToLockLow: u32,
+            nNumberOfBytesToLockHigh: u32,
+            lpOverlapped: *mut WindowsOverlapped,
+        ) -> i32;
+    }
+
+    let mut overlapped = WindowsOverlapped::zeroed();
+    let rc = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if rc == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn unlock_file(file: &File) -> io::Result<()> {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+
+    unsafe extern "system" {
+        fn UnlockFileEx(
+            hFile: *mut c_void,
+            dwReserved: u32,
+            nNumberOfBytesToUnlockLow: u32,
+            nNumberOfBytesToUnlockHigh: u32,
+            lpOverlapped: *mut WindowsOverlapped,
+        ) -> i32;
+    }
+
+    let mut overlapped = WindowsOverlapped::zeroed();
+    let rc = unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) };
+    if rc == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn is_windows_lock_conflict(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::WouldBlock || matches!(err.raw_os_error(), Some(32 | 33))
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsOverlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    h_event: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+impl WindowsOverlapped {
+    fn zeroed() -> Self {
+        Self {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            h_event: std::ptr::null_mut(),
         }
     }
 }
