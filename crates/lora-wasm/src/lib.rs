@@ -219,6 +219,7 @@ impl WasmQueryStream {
             .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<JsValue, JsError> {
         let stream = self
             .stream
