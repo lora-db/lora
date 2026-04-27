@@ -34,11 +34,11 @@ both shapes.
 | Context | Entry point |
 |---|---|
 | Rust | `Database::save_snapshot_to(path)` / `load_snapshot_from(path)` / `in_memory_from_snapshot(path)` / `checkpoint_to(path)` |
-| Python | `db.save_snapshot(path)` / `db.load_snapshot(path)` |
-| Node.js | `db.saveSnapshot(path)` / `db.loadSnapshot(path)` |
+| Python | `db.save_snapshot(path \| "binary" \| "base64" \| writer)` / `db.load_snapshot(source)` where `source` can be a path, bytes-like object, base64 string, or binary reader |
+| Node.js | `db.saveSnapshot(path \| "binary" \| "base64" \| options)` / `db.loadSnapshot(source)` where `source` can be a path, `file:`/HTTP(S)/`data:` URL, `Buffer`, `Uint8Array`, `ArrayBuffer`, Node `Readable`, web `ReadableStream`, or async iterable of byte chunks |
 | Ruby | `db.save_snapshot(path)` / `db.load_snapshot(path)` |
-| WASM | `db.saveSnapshotToBytes()` / `db.loadSnapshotFromBytes(bytes)` — no filesystem |
-| FFI | `lora_db_save_snapshot(path)` / `lora_db_load_snapshot(path)` |
+| WASM | `db.saveSnapshot("binary" \| "base64" \| "blob" \| "download" \| options)` / `db.loadSnapshot(source)` where `source` can be `Uint8Array`, `ArrayBuffer`, `Blob`/`File`, `Response`, web `ReadableStream`, string URL, or `URL` — no filesystem or Node `Buffer` |
+| FFI | `lora_db_save_snapshot(path)` / `lora_db_save_snapshot_to_bytes()` / `lora_db_load_snapshot(path)` / `lora_db_load_snapshot_from_bytes()` |
 | HTTP | `POST /admin/snapshot/save` / `POST /admin/snapshot/load` / `POST /admin/checkpoint` (opt-in) |
 
 `checkpoint_to(path)` (Rust) and `POST /admin/checkpoint` (HTTP) are
@@ -58,6 +58,22 @@ All API surfaces return a `SnapshotMeta` describing the file:
   "walLsn": null
 }
 ```
+
+The TypeScript bindings expose two deliberately different source types:
+`NodeSnapshotSource` for `lora-node`, which includes filesystem paths,
+Node `Buffer`, Node streams, web streams, and async iterables, and
+`WasmSnapshotSource` for `lora-wasm`, which accepts web binary objects,
+web streams, and fetchable URLs but does not include `Buffer`.
+
+The save side is typed separately as well. Node's `saveSnapshot("binary")`
+returns a `Buffer`, `saveSnapshot("base64")` returns a string, and path saves
+return `SnapshotMeta`. WASM's `saveSnapshot()`/`"binary"` returns
+`Uint8Array`, `"base64"` returns a string, `"blob"` returns a `Blob`, and
+`"download"` creates a browser download when a document is available.
+Python mirrors the shape with `bytes`, base64 `str`, and binary file-like
+objects. Go exposes explicit helpers: `SaveSnapshotBytes`,
+`SaveSnapshotBase64`, `SaveSnapshotTo`, `LoadSnapshotBytes`,
+`LoadSnapshotBase64`, and `LoadSnapshotFrom`.
 
 ## Atomicity
 
