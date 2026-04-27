@@ -16,9 +16,9 @@
 //! check and replay stops cleanly at that boundary. The first failing
 //! record is treated as the new tail of the log.
 //!
-//! Records are written by `Wal::append` (forthcoming) and read back by
-//! `WalReplay`. Both paths funnel through [`WalRecord::encode`] and
-//! [`WalRecord::decode`] so the framing only lives in one place.
+//! Records are written by the append paths on `Wal` and read back by replay.
+//! Both paths funnel through [`WalRecord::encode`] and [`WalRecord::decode`] so
+//! the framing only lives in one place.
 
 use std::io::{self, Read, Write};
 
@@ -36,9 +36,10 @@ pub const RECORD_TRAILER_LEN: usize = 4;
 
 /// Discriminant byte for the record kind.
 ///
-/// `Mutation` carries a `MutationEvent` payload; the marker variants carry
-/// no payload. The numbering is deliberately stable — bumping it would
-/// orphan existing on-disk WALs, so additions go at the end.
+/// `Mutation` carries one `MutationEvent`, `MutationBatch` carries a vector of
+/// events, and the marker variants carry no payload. The numbering is
+/// deliberately stable — bumping it would orphan existing on-disk WALs, so
+/// additions go at the end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RecordKind {
@@ -47,6 +48,7 @@ pub enum RecordKind {
     TxCommit = 3,
     TxAbort = 4,
     Checkpoint = 5,
+    MutationBatch = 6,
 }
 
 impl RecordKind {
@@ -57,6 +59,7 @@ impl RecordKind {
             3 => Ok(Self::TxCommit),
             4 => Ok(Self::TxAbort),
             5 => Ok(Self::Checkpoint),
+            6 => Ok(Self::MutationBatch),
             other => Err(WalError::UnknownKind(other)),
         }
     }
@@ -73,6 +76,11 @@ pub enum WalRecord {
         lsn: Lsn,
         tx_begin_lsn: Lsn,
         event: MutationEvent,
+    },
+    MutationBatch {
+        lsn: Lsn,
+        tx_begin_lsn: Lsn,
+        events: Vec<MutationEvent>,
     },
     TxBegin {
         lsn: Lsn,
@@ -98,6 +106,7 @@ impl WalRecord {
     pub fn lsn(&self) -> Lsn {
         match self {
             Self::Mutation { lsn, .. }
+            | Self::MutationBatch { lsn, .. }
             | Self::TxBegin { lsn }
             | Self::TxCommit { lsn, .. }
             | Self::TxAbort { lsn, .. }
@@ -108,6 +117,7 @@ impl WalRecord {
     fn kind(&self) -> RecordKind {
         match self {
             Self::Mutation { .. } => RecordKind::Mutation,
+            Self::MutationBatch { .. } => RecordKind::MutationBatch,
             Self::TxBegin { .. } => RecordKind::TxBegin,
             Self::TxCommit { .. } => RecordKind::TxCommit,
             Self::TxAbort { .. } => RecordKind::TxAbort,
@@ -118,6 +128,7 @@ impl WalRecord {
     fn tx_begin_lsn(&self) -> Lsn {
         match self {
             Self::Mutation { tx_begin_lsn, .. }
+            | Self::MutationBatch { tx_begin_lsn, .. }
             | Self::TxCommit { tx_begin_lsn, .. }
             | Self::TxAbort { tx_begin_lsn, .. } => *tx_begin_lsn,
             // `TxBegin` has no parent; `Checkpoint` reuses the slot to
@@ -132,6 +143,9 @@ impl WalRecord {
         match self {
             Self::Mutation { event, .. } => {
                 bincode::serialize(event).map_err(|e| WalError::Encode(e.to_string()))
+            }
+            Self::MutationBatch { events, .. } => {
+                bincode::serialize(events).map_err(|e| WalError::Encode(e.to_string()))
             }
             // Marker records carry no payload; the LSN + tx_begin_lsn in
             // the fixed header is the entire record.
@@ -243,6 +257,15 @@ impl WalRecord {
                     event,
                 }
             }
+            RecordKind::MutationBatch => {
+                let events: Vec<MutationEvent> =
+                    bincode::deserialize(payload).map_err(|e| WalError::Decode(e.to_string()))?;
+                WalRecord::MutationBatch {
+                    lsn,
+                    tx_begin_lsn,
+                    events,
+                }
+            }
             RecordKind::TxBegin => {
                 if !payload.is_empty() {
                     return Err(WalError::Decode("TxBegin has unexpected payload".into()));
@@ -327,6 +350,15 @@ mod tests {
             lsn: Lsn::new(42),
             tx_begin_lsn: Lsn::new(40),
             event: sample_event(),
+        });
+    }
+
+    #[test]
+    fn mutation_batch_round_trip() {
+        round_trip(WalRecord::MutationBatch {
+            lsn: Lsn::new(43),
+            tx_begin_lsn: Lsn::new(40),
+            events: vec![sample_event(), sample_event()],
         });
     }
 

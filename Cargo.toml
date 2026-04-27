@@ -55,3 +55,4 @@ tower = "0.5.3"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 bincode = "1.3"
 crc32fast = "1.4"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }

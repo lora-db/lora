@@ -30,7 +30,9 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use lora_database::{Database, ExecuteOptions, ResultFormat, SyncMode, WalConfig};
+use lora_database::{
+    Database, DatabaseOpenOptions, ExecuteOptions, ResultFormat, SyncMode, WalConfig,
+};
 use std::hint::black_box;
 
 fn opts() -> Option<ExecuteOptions> {
@@ -197,9 +199,165 @@ fn bench_recovery(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_named_archive_write_heavy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("named_archive/write_heavy");
+
+    // One timed iteration performs a realistic write burst. For the
+    // persistent variant, dropping the DB at the end joins the archive writer
+    // and includes the final `.lora` ZIP flush, so the result measures more
+    // than just "enqueue dirty flag".
+    const WRITES: usize = 1_000;
+
+    group.bench_function("memory_only_1000_creates", |b| {
+        b.iter_batched(
+            Database::in_memory,
+            |db| {
+                for i in 0..WRITES {
+                    black_box(
+                        db.execute(&format!("CREATE (:N {{v: {i}}})"), opts())
+                            .unwrap(),
+                    );
+                }
+                black_box(db.node_count());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("lora_archive_1000_creates", |b| {
+        b.iter_batched(
+            || {
+                let dir = ScratchDir::new("named-archive");
+                let db = Database::open_named(
+                    "bench",
+                    DatabaseOpenOptions::default().with_database_dir(&dir.path),
+                )
+                .unwrap();
+                (dir, db)
+            },
+            |(_dir, db)| {
+                for i in 0..WRITES {
+                    black_box(
+                        db.execute(&format!("CREATE (:N {{v: {i}}})"), opts())
+                            .unwrap(),
+                    );
+                }
+                black_box(db.node_count());
+                drop(db);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("memory_only_batch_1000", |b| {
+        b.iter_batched(
+            Database::in_memory,
+            |db| {
+                black_box(
+                    db.execute("UNWIND range(1, 1000) AS i CREATE (:N {v: i})", opts())
+                        .unwrap(),
+                );
+                black_box(db.node_count());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("lora_archive_batch_1000", |b| {
+        b.iter_batched(
+            || {
+                let dir = ScratchDir::new("named-archive-batch");
+                let db = Database::open_named(
+                    "bench",
+                    DatabaseOpenOptions::default().with_database_dir(&dir.path),
+                )
+                .unwrap();
+                (dir, db)
+            },
+            |(_dir, db)| {
+                black_box(
+                    db.execute("UNWIND range(1, 1000) AS i CREATE (:N {v: i})", opts())
+                        .unwrap(),
+                );
+                black_box(db.node_count());
+                drop(db);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn bench_named_archive_steady_state(c: &mut Criterion) {
+    let mut group = c.benchmark_group("named_archive/steady_state");
+
+    group.bench_function("memory_only_create_delete", |b| {
+        let db = Database::in_memory();
+        b.iter(|| {
+            black_box(
+                db.execute("CREATE (n:Tmp {v: 1}) DELETE n", opts())
+                    .unwrap(),
+            );
+            black_box(db.node_count());
+        });
+    });
+
+    group.bench_function("lora_archive_create_delete", |b| {
+        let dir = ScratchDir::new("named-archive-steady");
+        let db = Database::open_named(
+            "bench",
+            DatabaseOpenOptions::default().with_database_dir(&dir.path),
+        )
+        .unwrap();
+        b.iter(|| {
+            black_box(
+                db.execute("CREATE (n:Tmp {v: 1}) DELETE n", opts())
+                    .unwrap(),
+            );
+            black_box(db.node_count());
+        });
+    });
+
+    group.bench_function("memory_only_batch_create_delete_1000", |b| {
+        let db = Database::in_memory();
+        b.iter(|| {
+            black_box(
+                db.execute(
+                    "UNWIND range(1, 1000) AS i CREATE (n:Tmp {v: i}) DELETE n",
+                    opts(),
+                )
+                .unwrap(),
+            );
+            black_box(db.node_count());
+        });
+    });
+
+    group.bench_function("lora_archive_batch_create_delete_1000", |b| {
+        let dir = ScratchDir::new("named-archive-steady-batch");
+        let db = Database::open_named(
+            "bench",
+            DatabaseOpenOptions::default().with_database_dir(&dir.path),
+        )
+        .unwrap();
+        b.iter(|| {
+            black_box(
+                db.execute(
+                    "UNWIND range(1, 1000) AS i CREATE (n:Tmp {v: i}) DELETE n",
+                    opts(),
+                )
+                .unwrap(),
+            );
+            black_box(db.node_count());
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = smoke_config();
-    targets = bench_commit_latency, bench_recovery,
+    targets = bench_commit_latency, bench_recovery, bench_named_archive_write_heavy, bench_named_archive_steady_state,
 }
 criterion_main!(benches);

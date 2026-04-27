@@ -16,6 +16,7 @@ bench = false
 
 [dependencies]
 anyhow.workspace = true
+zip.workspace = true
 
 lora-ast.workspace = true
 lora-parser.workspace = true

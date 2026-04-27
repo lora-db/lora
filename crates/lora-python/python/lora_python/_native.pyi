@@ -28,9 +28,16 @@ class InvalidParamsError(LoraError):
 class Database:
     """Lora graph database (sync, PyO3)."""
 
-    def __init__(self, wal_dir: Optional[str] = None) -> None: ...
+    def __init__(
+        self,
+        database_name: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> None: ...
     @staticmethod
-    def create(wal_dir: Optional[str] = None) -> "Database": ...
+    def create(
+        database_name: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> "Database": ...
     def execute(
         self,
         query: str,

@@ -69,15 +69,15 @@ class TestBasic < Minitest::Test
     assert_equal 0, b.node_count
   end
 
-  def test_wal_dir_persists_across_reopen
+  def test_named_database_persists_across_reopen
     dir = Dir.mktmpdir("lora-ruby-wal-")
-    first = LoraRuby::Database.create(dir)
+    first = LoraRuby::Database.create("app", { database_dir: dir })
     first.execute(
       "CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Grace'})",
     )
     first.close
 
-    second = LoraRuby::Database.new(dir)
+    second = LoraRuby::Database.new("app", { database_dir: dir })
     assert_equal 2, second.node_count
     assert_equal 1, second.relationship_count
     assert_equal(
@@ -92,14 +92,14 @@ class TestBasic < Minitest::Test
     FileUtils.remove_entry(dir) if dir && File.exist?(dir)
   end
 
-  def test_relative_wal_dir_path_works
+  def test_relative_database_dir_path_works
     dir = Dir.mktmpdir("lora-ruby-relative-")
     Dir.chdir(dir) do
-      first = LoraRuby::Database.create("relative-wal")
+      first = LoraRuby::Database.create("app", { database_dir: "relative-wal" })
       first.execute("CREATE (:Session {value: 'ok'})")
       first.close
 
-      second = LoraRuby::Database.create("relative-wal")
+      second = LoraRuby::Database.create("app", { database_dir: "relative-wal" })
       assert_equal(
         [{ "value" => "ok" }],
         second.execute("MATCH (s:Session) RETURN s.value AS value")["rows"],
@@ -116,10 +116,16 @@ class TestBasic < Minitest::Test
     File.write(path, "not a directory")
 
     assert_raises(LoraRuby::QueryError) do
-      LoraRuby::Database.create(path)
+      LoraRuby::Database.create("app", { database_dir: path })
     end
   ensure
     FileUtils.remove_entry(dir) if dir && File.exist?(dir)
+  end
+
+  def test_invalid_database_name_raises_query_error
+    assert_raises(LoraRuby::QueryError) do
+      LoraRuby::Database.create("../bad")
+    end
   end
 
   def test_path_invariant

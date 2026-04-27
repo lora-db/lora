@@ -170,6 +170,20 @@ pub(crate) fn replay_segments(
                             })?;
                             events.push(event);
                         }
+                        WalRecord::MutationBatch {
+                            tx_begin_lsn,
+                            events: batch,
+                            ..
+                        } => {
+                            let events = pending.get_mut(&tx_begin_lsn).ok_or_else(|| {
+                                WalError::Malformed(format!(
+                                    "mutation batch at lsn {} references missing tx begin {}",
+                                    lsn.raw(),
+                                    tx_begin_lsn.raw()
+                                ))
+                            })?;
+                            events.extend(batch);
+                        }
                         WalRecord::TxBegin { lsn } => {
                             // Materialise the bucket eagerly so
                             // begin-without-mutations transactions

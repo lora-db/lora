@@ -68,16 +68,19 @@ class AsyncDatabase:
         self._inner = inner
 
     @classmethod
-    async def create(cls, wal_dir: Optional[str] = None) -> "AsyncDatabase":
+    async def create(
+        cls,
+        database_name: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> "AsyncDatabase":
         """Construct a database.
 
-        ``wal_dir=None`` creates a fresh in-memory database.
-        Passing a directory string opens or creates a WAL-backed
-        persistent database rooted at that path.
+        ``database_name=None`` creates a fresh in-memory database.
+        Passing a name opens or creates ``<database_dir>/<name>.lora``.
         """
-        if wal_dir is None:
+        if database_name is None:
             return cls(_Database())
-        return cls(await _to_thread(_Database.create, wal_dir))
+        return cls(await _to_thread(_Database.create, database_name, dict(options or {})))
 
     async def close(self) -> None:
         """Release the native database handle."""

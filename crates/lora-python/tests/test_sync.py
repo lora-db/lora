@@ -78,16 +78,16 @@ def test_clear_empties_graph() -> None:
     assert db.relationship_count == 0
 
 
-def test_wal_dir_persists_across_reopen(tmp_path: Path) -> None:
-    wal_dir = tmp_path / "wal"
+def test_named_database_persists_across_reopen(tmp_path: Path) -> None:
+    database_dir = tmp_path / "data"
 
-    first = Database.create(str(wal_dir))
+    first = Database.create("app", {"database_dir": str(database_dir)})
     first.execute(
         "CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Grace'})"
     )
     first.close()
 
-    second = Database.create(str(wal_dir))
+    second = Database.create("app", {"database_dir": str(database_dir)})
     assert second.node_count == 2
     assert second.relationship_count == 1
     assert second.execute(
@@ -96,30 +96,30 @@ def test_wal_dir_persists_across_reopen(tmp_path: Path) -> None:
     second.close()
 
 
-def test_constructor_accepts_wal_dir(tmp_path: Path) -> None:
-    wal_dir = tmp_path / "ctor-wal"
+def test_constructor_accepts_database_name_and_options(tmp_path: Path) -> None:
+    database_dir = tmp_path / "ctor-data"
 
-    first = Database(str(wal_dir))
+    first = Database("app", {"database_dir": str(database_dir)})
     first.execute("CREATE (:Session {value: 'ok'})")
     first.close()
 
-    second = Database(str(wal_dir))
+    second = Database("app", {"database_dir": str(database_dir)})
     assert second.execute(
         "MATCH (s:Session) RETURN s.value AS value"
     )["rows"] == [{"value": "ok"}]
     second.close()
 
 
-def test_wal_dir_accepts_relative_path(
+def test_database_dir_accepts_relative_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    first = Database.create("relative-wal")
+    first = Database.create("app", {"database_dir": "relative-wal"})
     first.execute("CREATE (:Cache {status: 'warm'})")
     first.close()
 
-    second = Database.create("relative-wal")
+    second = Database.create("app", {"database_dir": "relative-wal"})
     assert second.execute(
         "MATCH (c:Cache) RETURN c.status AS status"
     )["rows"] == [{"status": "warm"}]
@@ -131,7 +131,12 @@ def test_wal_open_failure_raises_query_error(tmp_path: Path) -> None:
     not_a_dir.write_text("not a directory")
 
     with pytest.raises(LoraQueryError):
-        Database.create(str(not_a_dir))
+        Database.create("app", {"database_dir": str(not_a_dir)})
+
+
+def test_invalid_database_name_raises_query_error() -> None:
+    with pytest.raises(LoraQueryError):
+        Database.create("../bad")
 
 def test_snapshot_bytes_base64_pathlike_and_streams(tmp_path: Path) -> None:
     source = Database.create()

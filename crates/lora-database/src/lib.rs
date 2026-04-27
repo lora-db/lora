@@ -14,11 +14,17 @@
 //! db.execute("CREATE (:User {name: 'alice'})", None).unwrap();
 //! ```
 
+mod archive;
 mod database;
+mod named;
 mod stream;
 mod transaction;
 
 pub use database::{Database, QueryRunner, SnapshotAdmin, WalAdmin, WalStatus};
+pub use named::{
+    resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
+    DEFAULT_DATABASE_MAX_BYTES,
+};
 pub use stream::QueryStream;
 pub use transaction::{Transaction, TransactionMode};
 

@@ -19,7 +19,7 @@ export interface NativeSnapshotMeta {
 }
 
 export declare class Database {
-  constructor(walDir?: string | null);
+  constructor(databaseName?: string | null, databaseDir?: string | null);
   /** Non-blocking: runs on the libuv threadpool, returns a Promise. */
   execute(
     query: string,

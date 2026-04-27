@@ -144,9 +144,9 @@ func TestSnapshotBytesBase64AndReaders(t *testing.T) {
 }
 
 func TestWalBackedNewPersistsAcrossReopen(t *testing.T) {
-	walDir := filepath.Join(t.TempDir(), "wal")
+	databaseDir := filepath.Join(t.TempDir(), "data")
 
-	db, err := New(walDir)
+	db, err := New("app", Options{DatabaseDir: databaseDir})
 	if err != nil {
 		t.Fatalf("New(wal): %v", err)
 	}
@@ -160,7 +160,7 @@ func TestWalBackedNewPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	db2, err := New(walDir)
+	db2, err := New("app", Options{DatabaseDir: databaseDir})
 	if err != nil {
 		t.Fatalf("New(reopen): %v", err)
 	}
@@ -188,7 +188,7 @@ func TestWalBackedNewPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-func TestWalBackedNewAcceptsRelativePath(t *testing.T) {
+func TestWalBackedNewAcceptsRelativeDatabaseDir(t *testing.T) {
 	oldWd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
@@ -199,7 +199,7 @@ func TestWalBackedNewAcceptsRelativePath(t *testing.T) {
 	}
 	defer os.Chdir(oldWd)
 
-	db, err := New("relative-wal")
+	db, err := New("app", Options{DatabaseDir: "relative-wal"})
 	if err != nil {
 		t.Fatalf("New(relative): %v", err)
 	}
@@ -210,7 +210,7 @@ func TestWalBackedNewAcceptsRelativePath(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	db2, err := New("relative-wal")
+	db2, err := New("app", Options{DatabaseDir: "relative-wal"})
 	if err != nil {
 		t.Fatalf("New(relative reopen): %v", err)
 	}
@@ -231,7 +231,21 @@ func TestWalBackedNewInvalidPathSurfacesLoraError(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err := New(notADir)
+	_, err := New("app", Options{DatabaseDir: notADir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var lerr *LoraError
+	if !errors.As(err, &lerr) {
+		t.Fatalf("expected *LoraError, got %T: %v", err, err)
+	}
+	if lerr.Code != CodeLoraError {
+		t.Fatalf("error code = %s; want %s", lerr.Code, CodeLoraError)
+	}
+}
+
+func TestWalBackedNewInvalidNameSurfacesLoraError(t *testing.T) {
+	_, err := New("../bad")
 	if err == nil {
 		t.Fatal("expected an error")
 	}

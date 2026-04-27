@@ -44,8 +44,8 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    Row, Snapshotable, TransactionMode, WalConfig,
+    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
+    QueryResult, ResultFormat, Row, Snapshotable, TransactionMode, WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -101,6 +101,17 @@ impl LoraDatabase {
     fn new_with_wal(wal_dir: &str) -> Result<Self, String> {
         let inner =
             InnerDatabase::open_with_wal(WalConfig::enabled(wal_dir)).map_err(|e| e.to_string())?;
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
+    }
+
+    fn new_named(database_name: &str, database_dir: Option<&str>) -> Result<Self, String> {
+        let mut options = DatabaseOpenOptions::default();
+        if let Some(database_dir) = database_dir {
+            options.database_dir = database_dir.into();
+        }
+        let inner = InnerDatabase::open_named(database_name, options).map_err(|e| e.to_string())?;
         Ok(Self {
             inner: Arc::new(inner),
         })
@@ -187,6 +198,80 @@ pub unsafe extern "C" fn lora_db_new_with_wal(
         };
 
         match LoraDatabase::new_with_wal(wal_dir) {
+            Ok(db) => {
+                *out_db = Box::into_raw(Box::new(db));
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &e);
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Allocate a new named WAL-backed Lora database.
+///
+/// `database_name` is a logical name, not a path. It must contain only
+/// letters, digits, `_`, `-`, and `.`. `database_dir` may be null to use the
+/// current working directory. On success the WAL root is
+/// `<database_dir>/<database_name>.lora`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_new_named(
+    out_db: *mut *mut LoraDatabase,
+    database_name: *const c_char,
+    database_dir: *const c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if !out_db.is_null() {
+            *out_db = ptr::null_mut();
+        }
+        if out_db.is_null() || database_name.is_null() {
+            return LoraStatus::NullPointer;
+        }
+
+        let database_name = match CStr::from_ptr(database_name).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    LORA_ERROR_PREFIX,
+                    "database name is not valid UTF-8",
+                );
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+        let database_dir = if database_dir.is_null() {
+            None
+        } else {
+            match CStr::from_ptr(database_dir).to_str() {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    write_error(
+                        out_error,
+                        LORA_ERROR_PREFIX,
+                        "database directory is not valid UTF-8",
+                    );
+                    return LoraStatus::InvalidUtf8;
+                }
+            }
+        };
+
+        match LoraDatabase::new_named(database_name, database_dir) {
             Ok(db) => {
                 *out_db = Box::into_raw(Box::new(db));
                 LoraStatus::Ok

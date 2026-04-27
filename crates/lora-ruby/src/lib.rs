@@ -24,8 +24,8 @@ use magnus::{
 };
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    WalConfig,
+    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
+    QueryResult, ResultFormat,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -138,8 +138,9 @@ impl Database {
 // singletons so callers can use whichever idiom they prefer; both are
 // cost-equivalent.
 fn database_new(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
-    let wal_dir = optional_wal_dir_arg(ruby, args)?;
-    let db = without_gvl(move || open_database(wal_dir)).map_err(|e| query_error(ruby, e))?;
+    let (database_name, options) = database_open_args(ruby, args)?;
+    let db = without_gvl(move || open_database(database_name, options))
+        .map_err(|e| query_error(ruby, e))?;
     Ok(Database::from_db(db))
 }
 
@@ -233,28 +234,50 @@ fn snapshot_meta_to_rhash(
     Ok(h)
 }
 
-fn optional_wal_dir_arg(ruby: &Ruby, args: &[Value]) -> Result<Option<String>, MagnusError> {
+fn database_open_args(
+    ruby: &Ruby,
+    args: &[Value],
+) -> Result<(Option<String>, DatabaseOpenOptions), MagnusError> {
     match args.len() {
-        0 => Ok(None),
+        0 => Ok((None, DatabaseOpenOptions::default())),
         1 => {
             if args[0].is_nil() {
-                Ok(None)
+                Ok((None, DatabaseOpenOptions::default()))
             } else {
-                Ok(Some(RString::try_convert(args[0])?.to_string()?))
+                Ok((
+                    Some(RString::try_convert(args[0])?.to_string()?),
+                    DatabaseOpenOptions::default(),
+                ))
             }
+        }
+        2 => {
+            let database_name = if args[0].is_nil() {
+                None
+            } else {
+                Some(RString::try_convert(args[0])?.to_string()?)
+            };
+            let mut options = DatabaseOpenOptions::default();
+            let hash = RHash::try_convert(args[1])?;
+            if let Some(dir) = hash_get_either(ruby, hash, "database_dir")
+                .or_else(|| hash_get_either(ruby, hash, "databaseDir"))
+            {
+                options.database_dir = RString::try_convert(dir)?.to_string()?.into();
+            }
+            Ok((database_name, options))
         }
         n => Err(MagnusError::new(
             ruby.exception_arg_error(),
-            format!("wrong number of arguments (given {n}, expected 0..1)"),
+            format!("wrong number of arguments (given {n}, expected 0..2)"),
         )),
     }
 }
 
-fn open_database(wal_dir: Option<String>) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
-    let db = match wal_dir {
-        Some(dir) => {
-            InnerDatabase::open_with_wal(WalConfig::enabled(dir)).map_err(|e| e.to_string())?
-        }
+fn open_database(
+    database_name: Option<String>,
+    options: DatabaseOpenOptions,
+) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    let db = match database_name {
+        Some(name) => InnerDatabase::open_named(name, options).map_err(|e| e.to_string())?,
         None => InnerDatabase::in_memory(),
     };
     Ok(Arc::new(db))

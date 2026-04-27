@@ -304,6 +304,28 @@ impl Wal {
         })
     }
 
+    /// Append many mutations as one framed record. This keeps the replay
+    /// contract identical to repeated `append` calls while avoiding per-event
+    /// length/CRC/framing overhead for write-heavy statements.
+    pub fn append_batch(
+        &self,
+        tx_begin_lsn: Lsn,
+        events: Vec<MutationEvent>,
+    ) -> Result<Lsn, WalError> {
+        self.check_healthy()?;
+        if events.is_empty() {
+            return Err(WalError::Encode(
+                "mutation batch must contain at least one event".into(),
+            ));
+        }
+        let mut state = self.state.lock().unwrap();
+        Self::alloc_and_append(&mut state, |lsn| WalRecord::MutationBatch {
+            lsn,
+            tx_begin_lsn,
+            events,
+        })
+    }
+
     /// Append a `TxCommit` marker. Caller is expected to subsequently
     /// call `flush()` (under `SyncMode::PerCommit`) to make the
     /// commit durable before returning to its caller.
@@ -356,9 +378,8 @@ impl Wal {
     /// - `PerCommit` — write the buffer to the OS, `fsync`, and
     ///   advance `durable_lsn`. The strongest contract: every
     ///   record up to `next_lsn - 1` is on disk.
-    /// - `Group` — write the buffer to the OS only. `durable_lsn`
-    ///   is NOT advanced; the background flusher does that on its
-    ///   own cadence.
+    /// - `Group` — leave the buffer in memory. The background flusher
+    ///   writes, fsyncs, and advances `durable_lsn` on its cadence.
     /// - `None` — write the buffer to the OS only, but advance
     ///   `durable_lsn` anyway. The mode opts out of crash
     ///   durability, so the checkpoint fence reports
@@ -398,7 +419,14 @@ impl Wal {
             (FlushKind::ForceFsync, _) | (_, SyncMode::PerCommit) | (_, SyncMode::None)
         );
 
-        if do_fsync {
+        if matches!(
+            (kind, self.sync_mode),
+            (FlushKind::PerConfiguredMode, SyncMode::Group { .. })
+        ) {
+            // Group mode batches both the write syscall and the fsync. This
+            // keeps the write-heavy hot path close to in-memory execution; the
+            // background flusher (or Drop) will force the buffer out.
+        } else if do_fsync {
             state.active_writer.flush_and_sync()?;
         } else {
             state.active_writer.flush_buffer()?;
@@ -477,6 +505,9 @@ impl Wal {
 
 impl Drop for Wal {
     fn drop(&mut self) {
+        if matches!(self.sync_mode, SyncMode::Group { .. }) {
+            let _ = self.flush_inner(FlushKind::ForceFsync);
+        }
         // Join the group flusher, if any, before the directory lock is
         // released. That keeps the "one live append owner" boundary intact
         // through shutdown.

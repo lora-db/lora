@@ -22,9 +22,10 @@ export declare class Database {
    * Construct a database.
    *
    * - `undefined` / `null` => fresh in-memory graph.
-   * - `string` => WAL-backed graph rooted at that directory.
+   * - `database_name` => WAL-backed graph rooted at
+   *   `<database_dir>/<database_name>.lora`.
    */
-  constructor(walDir?: string | null | undefined)
+  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined)
   /**
    * Execute a Lora query on the libuv threadpool.
    *

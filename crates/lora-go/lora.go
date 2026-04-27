@@ -21,6 +21,13 @@ import (
 	"unsafe"
 )
 
+// Options controls how a named database is opened.
+type Options struct {
+	// DatabaseDir is the directory that contains <databaseName>.lora.
+	// Empty means the current working directory.
+	DatabaseDir string
+}
+
 // Database is a Lora graph database backed by the Rust engine. It is
 // safe to share across goroutines; native handle access is protected
 // by an internal RWMutex, while the Rust engine separately shares
@@ -47,28 +54,45 @@ type Database struct {
 //
 //	db, err := lora.New()
 //
-// Passing one directory string opens or creates a WAL-backed
-// persistent database rooted at that path:
+// Passing a database name opens or creates a WAL-backed persistent
+// database at <DatabaseDir>/<name>.lora:
 //
-//	db, err := lora.New("./app")
-func New(walDir ...string) (*Database, error) { return NewDatabase(walDir...) }
+//	db, err := lora.New("app", lora.Options{DatabaseDir: "./data"})
+func New(args ...any) (*Database, error) { return NewDatabase(args...) }
 
 // NewDatabase is an alias for [New] kept for idiomatic Go naming
 // parity with packages that expose Type-named constructors.
-func NewDatabase(walDir ...string) (*Database, error) {
+func NewDatabase(args ...any) (*Database, error) {
 	var handle *C.LoraDatabase
-	switch len(walDir) {
+	switch len(args) {
 	case 0:
 		status := C.lora_db_new(&handle)
 		if status != C.LORA_STATUS_OK {
 			return nil, &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_new returned status %d", int(status))}
 		}
-	case 1:
-		cWalDir := C.CString(walDir[0])
-		defer C.free(unsafe.Pointer(cWalDir))
+	case 1, 2:
+		databaseName, ok := args[0].(string)
+		if !ok {
+			return nil, &LoraError{Code: CodeInvalidParams, Message: "database name must be a string"}
+		}
+		var options Options
+		if len(args) == 2 {
+			var ok bool
+			options, ok = args[1].(Options)
+			if !ok {
+				return nil, &LoraError{Code: CodeInvalidParams, Message: "options must be lora.Options"}
+			}
+		}
 
+		cDatabaseName := C.CString(databaseName)
+		defer C.free(unsafe.Pointer(cDatabaseName))
+		var cDatabaseDir *C.char
+		if options.DatabaseDir != "" {
+			cDatabaseDir = C.CString(options.DatabaseDir)
+			defer C.free(unsafe.Pointer(cDatabaseDir))
+		}
 		var outError *C.char
-		status := C.lora_db_new_with_wal(&handle, cWalDir, &outError)
+		status := C.lora_db_new_named(&handle, cDatabaseName, cDatabaseDir, &outError)
 		if status != C.LORA_STATUS_OK {
 			defer func() {
 				if outError != nil {
@@ -80,7 +104,7 @@ func NewDatabase(walDir ...string) (*Database, error) {
 	default:
 		return nil, &LoraError{
 			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("expected at most one WAL directory argument, got %d", len(walDir)),
+			Message: fmt.Sprintf("expected database name and optional lora.Options, got %d arguments", len(args)),
 		}
 	}
 	db := &Database{handle: handle}

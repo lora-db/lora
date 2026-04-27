@@ -119,13 +119,13 @@ describe("Database — WAL-backed initialization", () => {
   it("persists committed writes across reopen with the same WAL directory", async () => {
     const walDir = await makeTempDir();
 
-    const first = await createDatabase(walDir);
+    const first = await createDatabase("app", { databaseDir: walDir });
     await first.execute(
       "CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Grace'})",
     );
     first.dispose();
 
-    const second = await createDatabase(walDir);
+    const second = await createDatabase("app", { databaseDir: walDir });
     expect(await second.nodeCount()).toBe(2);
     expect(await second.relationshipCount()).toBe(1);
 
@@ -139,13 +139,13 @@ describe("Database — WAL-backed initialization", () => {
   it("restores existing data on a read-only reopen", async () => {
     const walDir = await makeTempDir();
 
-    const writer = await createDatabase(walDir);
+    const writer = await createDatabase("app", { databaseDir: walDir });
     await writer.execute(
       "CREATE (:User {id: 1})-[:FOLLOWS]->(:User {id: 2}) RETURN 1",
     );
     writer.dispose();
 
-    const reader = await createDatabase(walDir);
+    const reader = await createDatabase("app", { databaseDir: walDir });
     expect(await reader.nodeCount()).toBe(2);
     expect(await reader.relationshipCount()).toBe(1);
 
@@ -160,11 +160,11 @@ describe("Database — WAL-backed initialization", () => {
     const relativeWalDir = `.tmp-lora-node-wal-${process.pid}-${Date.now()}`;
     cleanupPaths.add(resolve(relativeWalDir));
 
-    const first = await createDatabase(relativeWalDir);
+    const first = await createDatabase("app", { databaseDir: relativeWalDir });
     await first.execute("CREATE (:Session {value: 'ok'})");
     first.dispose();
 
-    const second = await createDatabase(relativeWalDir);
+    const second = await createDatabase("app", { databaseDir: relativeWalDir });
     const { rows } = await second.execute<{ value: string }>(
       "MATCH (s:Session) RETURN s.value AS value",
     );
@@ -177,7 +177,13 @@ describe("Database — WAL-backed initialization", () => {
     const notADir = join(dir, "wal-file");
     await writeFile(notADir, "not a directory");
 
-    await expect(createDatabase(notADir)).rejects.toSatisfy(
+    await expect(createDatabase("app", { databaseDir: notADir })).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+    );
+  });
+
+  it("rejects invalid database names before creating storage", async () => {
+    await expect(createDatabase("../bad")).rejects.toSatisfy(
       (e) => e instanceof LoraError && e.code === "LORA_ERROR",
     );
   });

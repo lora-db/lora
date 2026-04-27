@@ -18,8 +18,10 @@ use lora_store::{
     GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder, SnapshotMeta,
     Snapshotable,
 };
-use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalRecorder, WroteCommit};
+use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder, WroteCommit};
 
+use crate::archive::WalArchive;
+use crate::named::{DatabaseName, DatabaseOpenOptions};
 use crate::stream::{AutoCommitGuard, LiveCursor, QueryStream};
 use crate::transaction::{LiveStoreGuard, Transaction, TransactionMode};
 
@@ -78,6 +80,45 @@ impl Database<InMemoryGraph> {
                 })
             }
         }
+    }
+
+    /// Open or create a named portable database rooted under
+    /// `options.database_dir`.
+    ///
+    /// The database name is a logical identifier, not a path. It must contain
+    /// only ASCII letters, digits, `_`, `-`, and `.`, and is resolved to
+    /// `<database_dir>/<database_name>.lora` before the WAL backend opens.
+    pub fn open_named(
+        database_name: impl AsRef<str>,
+        options: DatabaseOpenOptions,
+    ) -> Result<Self> {
+        let name = DatabaseName::parse(database_name.as_ref())?;
+        let archive = Arc::new(WalArchive::open(
+            options.database_path_for(&name),
+            options.max_database_bytes,
+        )?);
+        let mut graph = InMemoryGraph::new();
+        let (wal, events) = Wal::open(
+            archive.work_dir(),
+            options.sync_mode,
+            options.segment_target_bytes,
+            Lsn::ZERO,
+        )?;
+        replay_into(&mut graph, events)?;
+        let mirror: Arc<dyn WalMirror> = archive;
+        let recorder = Arc::new(WalRecorder::new_with_mirror(wal, Some(mirror)));
+        graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
+        // Mark the archive dirty so a fresh named database is materialized as
+        // a portable ZIP. The archive writer coalesces this with any immediate
+        // follow-up writes and flushes it in the background, with a final flush
+        // on database drop.
+        recorder
+            .flush()
+            .map_err(|e| anyhow!("initial database archive persist failed: {e}"))?;
+        Ok(Self {
+            store: Arc::new(RwLock::new(graph)),
+            wal: Some(recorder),
+        })
     }
 
     /// Start an explicit transaction.
@@ -403,19 +444,16 @@ where
     ///    appended to the WAL yet, so a pure read query that
     ///    completes here pays nothing for the WAL hot path.
     /// 2. The executor runs; every primitive mutation fires
-    ///    `MutationRecorder::record`, which on its first call
-    ///    lazily issues `Wal::begin` and from then on forwards
-    ///    every event to `Wal::append`.
-    /// 3. On Ok, `recorder.commit()` writes a `TxCommit` only when a
-    ///    `TxBegin` was actually allocated; the surrounding
-    ///    `recorder.flush()` runs only in that case so a read-only
-    ///    query never pays an `fsync`.
-    /// 4. On Err, `recorder.abort()` marks the (lazily-issued) tx
-    ///    for replay-time discard; if no `TxBegin` was issued,
-    ///    abort is a no-op on the WAL. The engine has no rollback,
-    ///    so the in-memory state may already be partially mutated;
-    ///    the abort marker is what gives the *durable* layer
-    ///    per-query atomicity.
+    ///    `MutationRecorder::record`, which buffers events in memory.
+    /// 3. On Ok, `recorder.commit()` writes `TxBegin`, one batched
+    ///    mutation record, and `TxCommit` only when mutations occurred;
+    ///    the surrounding `recorder.flush()` runs only in that case so
+    ///    a read-only query never pays an `fsync`.
+    /// 4. On Err, `recorder.abort()` clears the pending batch. The
+    ///    engine has no rollback, so the in-memory state may already
+    ///    be partially mutated; the live handle is quarantined while
+    ///    durable recovery stays atomic because no committed batch was
+    ///    written.
     /// 5. The recorder's poisoned flag is polled once (it also
     ///    surfaces background-flusher fsync failures from
     ///    `SyncMode::Group`). If set, the query fails loudly with the

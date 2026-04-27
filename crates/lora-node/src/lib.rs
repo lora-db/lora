@@ -21,8 +21,8 @@ use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
 use napi_derive::napi;
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    Row, Snapshotable, TransactionMode, WalConfig,
+    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
+    QueryResult, ResultFormat, Row, Snapshotable, TransactionMode,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -56,15 +56,23 @@ impl Database {
     /// Construct a database.
     ///
     /// - `undefined` / `null` => fresh in-memory graph.
-    /// - `string` => WAL-backed graph rooted at that directory.
+    /// - `database_name` => WAL-backed graph rooted at
+    ///   `<database_dir>/<database_name>.lora`.
     #[napi(constructor)]
     pub fn new(
-        #[napi(ts_arg_type = "string | null | undefined")] wal_dir: Option<String>,
+        #[napi(ts_arg_type = "string | null | undefined")] database_name: Option<String>,
+        #[napi(ts_arg_type = "string | null | undefined")] database_dir: Option<String>,
     ) -> Result<Self> {
-        let db = match wal_dir {
+        let db = match database_name {
             None => InnerDatabase::in_memory(),
-            Some(dir) => InnerDatabase::open_with_wal(WalConfig::enabled(dir))
-                .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?,
+            Some(name) => {
+                let options = DatabaseOpenOptions {
+                    database_dir: database_dir.unwrap_or_else(|| ".".to_string()).into(),
+                    ..DatabaseOpenOptions::default()
+                };
+                InnerDatabase::open_named(name, options)
+                    .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?
+            }
         };
         Ok(Self {
             db: Mutex::new(Some(Arc::new(db))),
@@ -309,7 +317,7 @@ fn snapshot_meta_to_json(meta: lora_database::SnapshotMeta) -> serde_json::Value
 
 impl Default for Database {
     fn default() -> Self {
-        Self::new(None).expect("in-memory Database::default should not fail")
+        Self::new(None, None).expect("in-memory Database::default should not fail")
     }
 }
 

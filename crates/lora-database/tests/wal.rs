@@ -8,7 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use lora_database::{Database, ExecuteOptions, ResultFormat};
+use lora_database::{
+    resolve_database_path, Database, DatabaseName, DatabaseOpenOptions, ExecuteOptions,
+    ResultFormat,
+};
 use lora_store::{MutationEvent, Properties, PropertyValue};
 use lora_wal::{Lsn, SyncMode, Wal, WalConfig};
 
@@ -83,6 +86,101 @@ fn disabled_config_behaves_like_in_memory() {
     db.execute("CREATE (:User {id: 1})", rows()).unwrap();
     assert_eq!(db.node_count(), 1);
     assert!(db.wal().is_none());
+}
+
+#[test]
+fn database_name_validation_accepts_only_portable_names() {
+    for valid in ["app", "tenant_01", "a-b.c", "A123"] {
+        assert!(
+            DatabaseName::parse(valid).is_ok(),
+            "{valid} should be valid"
+        );
+    }
+
+    for invalid in ["", ".", "..", "../x", "x/y", "has space", "ümlaut"] {
+        assert!(
+            DatabaseName::parse(invalid).is_err(),
+            "{invalid:?} should be invalid"
+        );
+    }
+}
+
+#[test]
+fn named_database_resolves_to_lora_root_under_database_dir() {
+    let dir = TmpDir::new("named-path");
+    let path = resolve_database_path("app_01", dir.path()).unwrap();
+    assert_eq!(path, dir.path().join("app_01.lora"));
+}
+
+#[test]
+fn named_database_persists_under_lora_root() {
+    let dir = TmpDir::new("named-recover");
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        db.execute("CREATE (:User {id: 1})", rows()).unwrap();
+    }
+
+    assert!(
+        dir.path().join("app.lora").is_file(),
+        "named databases should persist as a portable .lora archive file"
+    );
+    let bytes = std::fs::read(dir.path().join("app.lora")).unwrap();
+    assert_eq!(&bytes[..4], b"PK\x03\x04");
+    let file = std::fs::File::open(dir.path().join("app.lora")).unwrap();
+    let mut zip = zip::ZipArchive::new(file).unwrap();
+    assert!(zip.by_name("manifest.json").is_ok());
+    assert!(zip.by_name("wal/0000000001.wal").is_ok());
+
+    let db = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(db.node_count(), 1);
+}
+
+#[test]
+fn named_database_recovers_write_burst_from_zip_archive() {
+    let dir = TmpDir::new("named-burst");
+
+    {
+        let db = Database::open_named(
+            "burst",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        for i in 0..250 {
+            db.execute(&format!("CREATE (:Burst {{id: {i}}})"), rows())
+                .unwrap();
+        }
+        assert_eq!(db.node_count(), 250);
+    }
+
+    let archive_path = dir.path().join("burst.lora");
+    assert!(archive_path.is_file());
+    let file = std::fs::File::open(&archive_path).unwrap();
+    let mut zip = zip::ZipArchive::new(file).unwrap();
+    assert!(zip.by_name("manifest.json").is_ok());
+    assert!(zip.by_name("wal/0000000001.wal").is_ok());
+
+    let db = Database::open_named(
+        "burst",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(db.node_count(), 250);
+    let result = db
+        .execute("MATCH (n:Burst) RETURN n.id AS id ORDER BY id", rows())
+        .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    let row_array = json["rows"].as_array().expect("rows array");
+    assert_eq!(row_array.first().unwrap()["id"], serde_json::json!(0));
+    assert_eq!(row_array.last().unwrap()["id"], serde_json::json!(249));
 }
 
 #[test]

@@ -39,16 +39,16 @@ async def test_params_pass_through() -> None:
     assert r["rows"] == [{"name": "widget", "qty": 7}]
 
 
-async def test_create_accepts_wal_dir_and_replays(tmp_path: Path) -> None:
-    wal_dir = tmp_path / "wal"
+async def test_create_accepts_database_name_and_replays(tmp_path: Path) -> None:
+    database_dir = tmp_path / "data"
 
-    first = await AsyncDatabase.create(str(wal_dir))
+    first = await AsyncDatabase.create("app", {"database_dir": str(database_dir)})
     await first.execute(
         "CREATE (:User {id: 1})-[:FOLLOWS]->(:User {id: 2}) RETURN 1"
     )
     await first.close()
 
-    second = await AsyncDatabase.create(str(wal_dir))
+    second = await AsyncDatabase.create("app", {"database_dir": str(database_dir)})
     assert second.node_count == 2
     assert second.relationship_count == 1
     r = await second.execute("MATCH (u:User) RETURN u.id AS id ORDER BY id")
@@ -73,7 +73,12 @@ async def test_invalid_wal_dir_error_propagates_through_await(tmp_path: Path) ->
     not_a_dir.write_text("not a directory")
 
     with pytest.raises(LoraQueryError):
-        await AsyncDatabase.create(str(not_a_dir))
+        await AsyncDatabase.create("app", {"database_dir": str(not_a_dir)})
+
+
+async def test_invalid_database_name_error_propagates_through_await() -> None:
+    with pytest.raises(LoraQueryError):
+        await AsyncDatabase.create("../bad")
 
 
 async def test_many_concurrent_queries() -> None:

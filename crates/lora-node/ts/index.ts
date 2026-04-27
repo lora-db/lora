@@ -65,6 +65,10 @@ export type NodeSnapshotSaveTarget =
   | NodeSnapshotSaveFormat
   | NodeSnapshotSaveOptions;
 
+export interface CreateDatabaseOptions {
+  databaseDir?: string;
+}
+
 export type TransactionMode =
   | "read_write"
   | "read_only"
@@ -527,10 +531,15 @@ export type Database = DatabaseImpl;
  *
  * Each call returns an independent graph — no shared state between instances.
  */
-export async function createDatabase(walDir?: string): Promise<Database> {
+export async function createDatabase(
+  databaseName?: string,
+  options: CreateDatabaseOptions = {},
+): Promise<Database> {
   try {
     return new DatabaseImpl(
-      walDir === undefined ? new NativeDatabase() : new NativeDatabase(walDir),
+      databaseName === undefined
+        ? new NativeDatabase()
+        : new NativeDatabase(databaseName, options.databaseDir ?? null),
     );
   } catch (err) {
     throw wrapError(err);

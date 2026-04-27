@@ -10,18 +10,16 @@
 //!    `TxBegin`, no `TxCommit`, no `flush`, no `fsync`.
 //! 3. Run analyze + compile + execute. The executor mutates the
 //!    in-memory store, which fires `MutationRecorder::record` for each
-//!    primitive mutation. On the *first* such call the adapter lazily
-//!    issues `Wal::begin()` and from then on forwards every event to
-//!    `Wal::append(active_tx, event)`.
-//! 4. On Ok: `recorder.commit()` writes a `TxCommit` and the host
-//!    runs `recorder.flush()` (per the configured `SyncMode`) **only**
-//!    when `commit()` returned `WroteCommit::Yes`. A read-only query
-//!    returns `WroteCommit::No` and the host skips the flush entirely.
-//! 5. On Err / panic: `recorder.abort()`. If a `TxBegin` was lazily
-//!    issued, replay drops every mutation between begin and abort,
-//!    restoring per-query atomicity even though the engine has no
-//!    rollback. If no `TxBegin` was issued (read-only query that
-//!    errored out), abort is a no-op on the WAL.
+//!    primitive mutation. The adapter buffers those events in memory.
+//! 4. On Ok: `recorder.commit()` writes `TxBegin`, one `MutationBatch`,
+//!    and `TxCommit`, then the host runs `recorder.flush()` (per the
+//!    configured `SyncMode`) **only** when `commit()` returned
+//!    `WroteCommit::Yes`. A read-only query returns `WroteCommit::No`
+//!    and the host skips the flush entirely.
+//! 5. On Err / panic: `recorder.abort()`. If any mutation events were
+//!    buffered, the host quarantines the live handle because the engine
+//!    has no rollback. Durable recovery stays atomic because the failed
+//!    query never writes a committed batch to the WAL.
 //! 6. Before returning, the host inspects `recorder.poisoned()` once.
 //!    If `Some`, the query fails loudly with a durability error so
 //!    the caller can act on it; the WAL is now refusing further
@@ -30,11 +28,9 @@
 //!
 //! ### Hot-path cost
 //!
-//! `record` is called once per primitive mutation. The adapter holds
-//! exactly one `Mutex<RecorderState>` and one `Arc<Wal>`; both are
-//! uncontested in production because the store write lock serialises writes.
-//! The cost is two atomic-ish lock acquisitions plus one `Wal::append`
-//! (which itself takes one more mutex internally).
+//! `record` is called once per primitive mutation. It now takes only the
+//! recorder mutex and pushes a clone into a query-local buffer; the WAL mutex,
+//! framing, checksum, and segment append work happen once at commit time.
 //!
 //! ### When `record` fires after a failed in-memory mutation
 //!
@@ -48,6 +44,7 @@
 //! process is wrong until the next restart"; the gain is that the
 //! storage trait does not need to learn about durability.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use lora_store::{MutationEvent, MutationRecorder};
@@ -71,6 +68,16 @@ pub enum WroteCommit {
     No,
 }
 
+/// Optional side-effect after the WAL has successfully flushed.
+///
+/// The core WAL stays directory/segment based for append performance. Higher
+/// layers can install a mirror to copy that durable directory into another
+/// representation, such as the portable `.lora` archive file used by named
+/// databases.
+pub trait WalMirror: Send + Sync {
+    fn persist(&self, wal_dir: &Path) -> Result<(), WalError>;
+}
+
 #[derive(Default)]
 struct RecorderState {
     /// True between `arm()` and the matching `commit()` / `abort()`.
@@ -78,10 +85,12 @@ struct RecorderState {
     /// to a transaction yet — the actual `Wal::begin` happens lazily
     /// on the first mutation event.
     armed: bool,
-    /// LSN of the currently-open WAL transaction, if any. Set by the
-    /// first `record()` (or by an explicit `begin_now()`) and cleared
-    /// by `commit` / `abort`.
+    /// LSN of the currently-open WAL transaction, if any. Normally this is
+    /// only set inside `commit()` while the buffered batch is being written.
     active_tx: Option<Lsn>,
+    /// Query-local mutation buffer. This lets write-heavy statements commit
+    /// as one `MutationBatch` record instead of one framed record per event.
+    buffer: Vec<MutationEvent>,
     /// Sticky failure flag. Once set, [`MutationRecorder::record`]
     /// becomes a no-op (we cannot append safely) and `poisoned`
     /// surfaces the message.
@@ -92,13 +101,19 @@ struct RecorderState {
 /// [`lora_store::InMemoryGraph::set_mutation_recorder`].
 pub struct WalRecorder {
     wal: Arc<Wal>,
+    mirror: Option<Arc<dyn WalMirror>>,
     state: Mutex<RecorderState>,
 }
 
 impl WalRecorder {
     pub fn new(wal: Arc<Wal>) -> Self {
+        Self::new_with_mirror(wal, None)
+    }
+
+    pub fn new_with_mirror(wal: Arc<Wal>, mirror: Option<Arc<dyn WalMirror>>) -> Self {
         Self {
             wal,
+            mirror,
             state: Mutex::new(RecorderState::default()),
         }
     }
@@ -130,6 +145,7 @@ impl WalRecorder {
             return Err(WalError::Poisoned);
         }
         state.armed = true;
+        state.buffer.clear();
         Ok(())
     }
 
@@ -152,21 +168,33 @@ impl WalRecorder {
             return Err(WalError::Poisoned);
         }
         state.armed = false;
-        match state.active_tx.take() {
-            Some(tx) => {
-                self.wal.commit(tx).inspect_err(|e| {
-                    state.poisoned = Some(e.to_string());
-                })?;
-                Ok(WroteCommit::Yes)
-            }
-            None => Ok(WroteCommit::No),
+        if state.buffer.is_empty() && state.active_tx.is_none() {
+            return Ok(WroteCommit::No);
         }
+
+        let events = std::mem::take(&mut state.buffer);
+        let tx = match state.active_tx {
+            Some(tx) => tx,
+            None => self.wal.begin().inspect_err(|e| {
+                state.poisoned = Some(e.to_string());
+            })?,
+        };
+        state.active_tx = Some(tx);
+
+        self.wal.append_batch(tx, events).inspect_err(|e| {
+            state.poisoned = Some(e.to_string());
+        })?;
+        self.wal.commit(tx).inspect_err(|e| {
+            state.poisoned = Some(e.to_string());
+        })?;
+        state.active_tx = None;
+        Ok(WroteCommit::Yes)
     }
 
     /// Append a `TxAbort` for the active transaction (if any) and
-    /// clear the armed/active state. Returns `Ok(true)` when an abort
-    /// record was actually written, `Ok(false)` when the query never
-    /// got far enough to issue a `TxBegin`.
+    /// clear the armed/active state. Returns `Ok(true)` when the live graph
+    /// may have observed mutations and should be quarantined, `Ok(false)` when
+    /// the query never mutated anything.
     pub fn abort(&self) -> Result<bool, WalError> {
         let mut state = self.state.lock().unwrap();
         if state.poisoned.is_some() {
@@ -175,6 +203,8 @@ impl WalRecorder {
         // Tolerate "abort without arm" — the host calls abort in
         // unwind paths and we'd rather no-op than poison.
         state.armed = false;
+        let had_buffered_events = !state.buffer.is_empty();
+        state.buffer.clear();
         match state.active_tx.take() {
             Some(tx) => {
                 self.wal.abort(tx).inspect_err(|e| {
@@ -182,7 +212,7 @@ impl WalRecorder {
                 })?;
                 Ok(true)
             }
-            None => Ok(false),
+            None => Ok(had_buffered_events),
         }
     }
 
@@ -195,7 +225,13 @@ impl WalRecorder {
         }
         self.wal.flush().inspect_err(|e| {
             state.poisoned = Some(e.to_string());
-        })
+        })?;
+        if let Some(mirror) = &self.mirror {
+            mirror.persist(self.wal.dir()).inspect_err(|e| {
+                state.poisoned = Some(e.to_string());
+            })?;
+        }
+        Ok(())
     }
 
     /// Force the underlying WAL to write, `fsync`, and advance its
@@ -208,7 +244,13 @@ impl WalRecorder {
         }
         self.wal.force_fsync().inspect_err(|e| {
             state.poisoned = Some(e.to_string());
-        })
+        })?;
+        if let Some(mirror) = &self.mirror {
+            mirror.persist(self.wal.dir()).inspect_err(|e| {
+                state.poisoned = Some(e.to_string());
+            })?;
+        }
+        Ok(())
     }
 
     /// Append a `Checkpoint` marker. Used by the checkpoint admin
@@ -227,7 +269,16 @@ impl WalRecorder {
     /// Drop sealed segments at or below `fence_lsn`. Forwards to
     /// [`Wal::truncate_up_to`].
     pub fn truncate_up_to(&self, fence_lsn: Lsn) -> Result<(), WalError> {
-        self.wal.truncate_up_to(fence_lsn)
+        // Archive-backed databases must stay self-contained. Until snapshot
+        // checkpoint payloads are stored inside the archive too, preserving the
+        // full WAL history is the only safe way to let the archive recover by
+        // itself after a checkpoint marker.
+        if let Some(mirror) = &self.mirror {
+            mirror.persist(self.wal.dir())?;
+            return Ok(());
+        }
+        self.wal.truncate_up_to(fence_lsn)?;
+        Ok(())
     }
 
     /// True iff the recorder has already failed an append, **or** the
@@ -249,6 +300,7 @@ impl WalRecorder {
         state.poisoned.get_or_insert_with(|| reason.into());
         state.active_tx = None;
         state.armed = false;
+        state.buffer.clear();
     }
 
     /// Test helper: clear the poisoned flag and reset the active
@@ -261,17 +313,12 @@ impl WalRecorder {
         state.poisoned = None;
         state.active_tx = None;
         state.armed = false;
+        state.buffer.clear();
     }
 }
 
 impl MutationRecorder for WalRecorder {
     fn record(&self, event: &MutationEvent) {
-        // Hold the lock for the whole record path: we may need to
-        // lazily issue `Wal::begin` on the first event and then
-        // append, both under the same critical section so a racing
-        // commit can't observe a half-initialised state. The store
-        // write lock already serialises commits, so this lock is
-        // uncontested.
         let mut state = self.state.lock().unwrap();
         if state.poisoned.is_some() {
             return;
@@ -282,22 +329,7 @@ impl MutationRecorder for WalRecorder {
             });
             return;
         }
-        let tx = match state.active_tx {
-            Some(lsn) => lsn,
-            None => match self.wal.begin() {
-                Ok(lsn) => {
-                    state.active_tx = Some(lsn);
-                    lsn
-                }
-                Err(e) => {
-                    state.poisoned.get_or_insert_with(|| e.to_string());
-                    return;
-                }
-            },
-        };
-        if let Err(e) = self.wal.append(tx, event) {
-            state.poisoned.get_or_insert_with(|| e.to_string());
-        }
+        state.buffer.push(event.clone());
     }
 
     fn poisoned(&self) -> Option<String> {
@@ -411,7 +443,7 @@ mod tests {
         recorder.arm().unwrap();
         g.create_node(vec!["B".into()], Properties::new());
         let aborted = recorder.abort().unwrap();
-        assert!(aborted, "abort with active tx should write a TxAbort");
+        assert!(aborted, "abort after buffered mutations should quarantine");
         recorder.flush().unwrap();
 
         g.set_mutation_recorder(None);

@@ -11,7 +11,7 @@ import (
 
 func main() {
 	db, err := lora.New() // in-memory
-	// db, err := lora.New("./app") // persistent: directory string
+	// db, err := lora.New("app", lora.Options{DatabaseDir: "./data"}) // persistent
 	if err != nil {
 		log.Fatalf("new: %v", err)
 	}

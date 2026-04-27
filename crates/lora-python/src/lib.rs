@@ -28,8 +28,8 @@ use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    Row, Snapshotable, TransactionMode, WalConfig,
+    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
+    QueryResult, ResultFormat, Row, Snapshotable, TransactionMode,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -93,10 +93,15 @@ pub struct Database {
 #[pymethods]
 impl Database {
     #[new]
-    #[pyo3(signature = (wal_dir=None))]
-    fn py_new(py: Python<'_>, wal_dir: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (database_name=None, options=None))]
+    fn py_new(
+        py: Python<'_>,
+        database_name: Option<String>,
+        options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
+        let options = py_database_open_options(options)?;
         let db = py
-            .allow_threads(move || open_database(wal_dir))
+            .allow_threads(move || open_database(database_name, options))
             .map_err(LoraQueryError::new_err)?;
         Ok(Self {
             db: Mutex::new(Some(db)),
@@ -106,9 +111,13 @@ impl Database {
     /// Factory mirroring the async API shape. Returns `self` for symmetry
     /// with `AsyncDatabase.create()`.
     #[staticmethod]
-    #[pyo3(signature = (wal_dir=None))]
-    fn create(py: Python<'_>, wal_dir: Option<String>) -> PyResult<Self> {
-        Self::py_new(py, wal_dir)
+    #[pyo3(signature = (database_name=None, options=None))]
+    fn create(
+        py: Python<'_>,
+        database_name: Option<String>,
+        options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
+        Self::py_new(py, database_name, options)
     }
 
     /// Execute a Lora query.
@@ -492,11 +501,27 @@ impl Database {
     }
 }
 
-fn open_database(wal_dir: Option<String>) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
-    let db = match wal_dir {
-        Some(dir) => {
-            InnerDatabase::open_with_wal(WalConfig::enabled(dir)).map_err(|e| e.to_string())?
-        }
+fn py_database_open_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<DatabaseOpenOptions> {
+    let Some(options) = options else {
+        return Ok(DatabaseOpenOptions::default());
+    };
+    let mut out = DatabaseOpenOptions::default();
+    let value = match options.get_item("database_dir")? {
+        Some(value) => Some(value),
+        None => options.get_item("databaseDir")?,
+    };
+    if let Some(value) = value {
+        out.database_dir = value.extract::<String>()?.into();
+    }
+    Ok(out)
+}
+
+fn open_database(
+    database_name: Option<String>,
+    options: DatabaseOpenOptions,
+) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    let db = match database_name {
+        Some(name) => InnerDatabase::open_named(name, options).map_err(|e| e.to_string())?,
         None => InnerDatabase::in_memory(),
     };
     Ok(Arc::new(db))
