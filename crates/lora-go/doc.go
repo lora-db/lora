@@ -10,7 +10,7 @@
 // # Quick start
 //
 //	db, err := lora.New()        // in-memory
-//	db, err := lora.New("./app") // persistent: directory string
+//	db, err := lora.New("app", lora.Options{DatabaseDir: "./data"}) // persistent: ./data/app.loradb
 //	if err != nil {
 //	    log.Fatal(err)
 //	}

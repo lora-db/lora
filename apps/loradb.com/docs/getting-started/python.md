@@ -187,18 +187,18 @@ later. Python now supports the same simple initialization rule as
 Node:
 
 - `Database.create()` / `Database()` => in-memory
-- `Database.create("./app")` / `Database("./app")` => persistent
+- `Database.create("app", {"database_dir": "./data"})` / `Database("app", {"database_dir": "./data"})` => persistent
 
 Async follows the same rule:
 
 - `await AsyncDatabase.create()` => in-memory
-- `await AsyncDatabase.create("./app")` => persistent
+- `await AsyncDatabase.create("app", {"database_dir": "./data"})` => persistent
 
 ```python
 from lora_python import Database
 
 db = Database.create()         # in-memory
-# db = Database.create("./app")  # persistent: directory string
+# db = Database.create("app", {"database_dir": "./data"})  # persistent: ./data/app.loradb
 db.execute("CREATE (:Person {name: 'Ada'})")
 
 # Save everything to disk.
@@ -220,7 +220,7 @@ from lora_python import AsyncDatabase
 
 async def main():
     db = await AsyncDatabase.create()  # in-memory
-    # db = await AsyncDatabase.create("./app")  # persistent: directory string
+    # db = await AsyncDatabase.create("app", {"database_dir": "./data"})  # persistent: ./data/app.loradb
     await db.execute("CREATE (:Person {name: 'Ada'})")
     await db.save_snapshot("graph.bin")
 
@@ -233,13 +233,13 @@ asyncio.run(main())
 Both save and load serialise against every query on the handle. A
 crash between saves loses every mutation since the last save.
 
-Passing a directory string opens or creates a WAL-backed persistent
-database rooted at that path. Reopening the same path replays committed
+Passing a database name and directory opens or creates an archive-backed persistent
+database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. This first Python persistence
-slice intentionally stays small: the binding exposes WAL-backed
+slice intentionally stays small: the binding exposes archive-backed
 initialization plus snapshots, but not checkpoint, truncate, status, or
 sync-mode controls. Call `db.close()` / `await db.close()` before
-reopening the same WAL directory inside one process.
+reopening the same archive inside one process.
 
 See the canonical [Snapshots guide](../snapshot) for the full
 metadata shape, atomic-rename guarantees, and boundaries, and

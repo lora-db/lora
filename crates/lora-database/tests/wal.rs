@@ -90,14 +90,34 @@ fn disabled_config_behaves_like_in_memory() {
 
 #[test]
 fn database_name_validation_accepts_only_portable_names() {
-    for valid in ["app", "tenant_01", "a-b.c", "A123"] {
+    for valid in [
+        "app",
+        "app.loradb",
+        "tenant_01",
+        "tenant+01",
+        "a-b",
+        "A123",
+        "./database-dir/application",
+        "database_dir/app.loradb",
+    ] {
         assert!(
             DatabaseName::parse(valid).is_ok(),
             "{valid} should be valid"
         );
     }
 
-    for invalid in ["", ".", "..", "../x", "x/y", "has space", "ümlaut"] {
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "../x",
+        "/absolute/app",
+        "x//y",
+        "a-b.c",
+        "app.txt",
+        "has space",
+        "ümlaut",
+    ] {
         assert!(
             DatabaseName::parse(invalid).is_err(),
             "{invalid:?} should be invalid"
@@ -109,7 +129,13 @@ fn database_name_validation_accepts_only_portable_names() {
 fn named_database_resolves_to_lora_root_under_database_dir() {
     let dir = TmpDir::new("named-path");
     let path = resolve_database_path("app_01", dir.path()).unwrap();
-    assert_eq!(path, dir.path().join("app_01.lora"));
+    assert_eq!(path, dir.path().join("app_01.loradb"));
+
+    let path = resolve_database_path("./tenant-a/application", dir.path()).unwrap();
+    assert_eq!(path, dir.path().join("tenant-a").join("application.loradb"));
+
+    let path = resolve_database_path("tenant_b/app.loradb", dir.path()).unwrap();
+    assert_eq!(path, dir.path().join("tenant_b").join("app.loradb"));
 }
 
 #[test]
@@ -126,12 +152,12 @@ fn named_database_persists_under_lora_root() {
     }
 
     assert!(
-        dir.path().join("app.lora").is_file(),
-        "named databases should persist as a portable .lora archive file"
+        dir.path().join("app.loradb").is_file(),
+        "named databases should persist as a portable .loradb archive file"
     );
-    let bytes = std::fs::read(dir.path().join("app.lora")).unwrap();
+    let bytes = std::fs::read(dir.path().join("app.loradb")).unwrap();
     assert_eq!(&bytes[..4], b"PK\x03\x04");
-    let file = std::fs::File::open(dir.path().join("app.lora")).unwrap();
+    let file = std::fs::File::open(dir.path().join("app.loradb")).unwrap();
     let mut zip = zip::ZipArchive::new(file).unwrap();
     assert!(zip.by_name("manifest.json").is_ok());
     assert!(zip.by_name("wal/0000000001.wal").is_ok());
@@ -161,7 +187,7 @@ fn named_database_recovers_write_burst_from_zip_archive() {
         assert_eq!(db.node_count(), 250);
     }
 
-    let archive_path = dir.path().join("burst.lora");
+    let archive_path = dir.path().join("burst.loradb");
     assert!(archive_path.is_file());
     let file = std::fs::File::open(&archive_path).unwrap();
     let mut zip = zip::ZipArchive::new(file).unwrap();

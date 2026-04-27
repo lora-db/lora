@@ -222,10 +222,10 @@ pub unsafe extern "C" fn lora_db_new_with_wal(
 
 /// Allocate a new named WAL-backed Lora database.
 ///
-/// `database_name` is a logical name, not a path. It must contain only
-/// letters, digits, `_`, `-`, and `.`. `database_dir` may be null to use the
-/// current working directory. On success the WAL root is
-/// `<database_dir>/<database_name>.lora`.
+/// `database_name` may be a portable basename (`app`, `app.loradb`) or a safe
+/// relative path (`tenant/app`). `database_dir` may be null to use the current
+/// working directory. On success the archive root is resolved under
+/// `database_dir` and uses a `.loradb` basename.
 #[no_mangle]
 pub unsafe extern "C" fn lora_db_new_named(
     out_db: *mut *mut LoraDatabase,

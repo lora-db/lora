@@ -21,8 +21,8 @@ use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
 use napi_derive::napi;
 
 use lora_database::{
-    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
-    QueryResult, ResultFormat, Row, Snapshotable, TransactionMode,
+    Database as InnerDatabase, DatabaseName, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph,
+    LoraValue, QueryResult, ResultFormat, Row, Snapshotable, TransactionMode,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -41,9 +41,10 @@ const INVALID_PARAMS_CODE: &str = "INVALID_PARAMS";
 /// blocking the JS event loop.
 ///
 /// With no constructor arg the database is purely in-memory. Passing a
-/// WAL directory path enables write-ahead logging: the binding opens or
-/// creates the WAL there, replays committed writes on boot, and then
-/// serves queries against the recovered graph.
+/// database name plus `database_dir` enables archive-backed persistence: the
+/// binding opens or creates the serialized `.loradb` path under
+/// `database_dir`, replays committed writes on boot, and then serves queries
+/// against the recovered graph.
 #[napi]
 pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
@@ -55,9 +56,11 @@ pub struct Database {
 impl Database {
     /// Construct a database.
     ///
-    /// - `undefined` / `null` => fresh in-memory graph.
-    /// - `database_name` => WAL-backed graph rooted at
-    ///   `<database_dir>/<database_name>.lora`.
+    /// - no args => fresh in-memory graph.
+    /// - `database_name` without `database_dir` => fresh named in-memory graph
+    ///   (the name is validated, but no `.loradb` file is opened).
+    /// - `database_name` with `database_dir` => archive-backed graph rooted at
+    ///   the serialized `.loradb` path under `database_dir`.
     #[napi(constructor)]
     pub fn new(
         #[napi(ts_arg_type = "string | null | undefined")] database_name: Option<String>,
@@ -65,9 +68,15 @@ impl Database {
     ) -> Result<Self> {
         let db = match database_name {
             None => InnerDatabase::in_memory(),
+            Some(name) if database_dir.is_none() => {
+                DatabaseName::parse(&name).map_err(|e| {
+                    NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}"))
+                })?;
+                InnerDatabase::in_memory()
+            }
             Some(name) => {
                 let options = DatabaseOpenOptions {
-                    database_dir: database_dir.unwrap_or_else(|| ".".to_string()).into(),
+                    database_dir: database_dir.expect("checked is_some").into(),
                     ..DatabaseOpenOptions::default()
                 };
                 InnerDatabase::open_named(name, options)

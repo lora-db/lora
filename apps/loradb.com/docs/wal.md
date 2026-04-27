@@ -22,10 +22,10 @@ together.
 | Surface | How to enable it | What you get |
 |---|---|---|
 | Rust (`lora-database`) | `Database::open_with_wal(...)`, `Database::recover(...)` | Full WAL config, recovery, checkpoints, status, truncation |
-| Node (`@loradb/lora-node`) | `await createDatabase("./app")` | WAL-backed embedded database with default settings |
-| Python (`lora_python`) | `Database.create("./app")`, `Database("./app")`, `await AsyncDatabase.create("./app")` | WAL-backed embedded database with default settings |
-| Go (`lora-go`) | `lora.New("./app")`, `lora.NewDatabase("./app")` | WAL-backed embedded database with default settings |
-| Ruby (`lora-ruby`) | `LoraRuby::Database.create("./app")`, `LoraRuby::Database.new("./app")` | WAL-backed embedded database with default settings |
+| Node (`@loradb/lora-node`) | `await createDatabase("app", { databaseDir: "./data" })` | Archive-backed embedded database at `./data/app.loradb` |
+| Python (`lora_python`) | `Database.create("app", {"database_dir": "./data"})`, `Database("app", {"database_dir": "./data"})`, `await AsyncDatabase.create("app", {"database_dir": "./data"})` | Archive-backed embedded database at `./data/app.loradb` |
+| Go (`lora-go`) | `lora.New("app", lora.Options{DatabaseDir: "./data"})`, `lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` | Archive-backed embedded database at `./data/app.loradb` |
+| Ruby (`lora-ruby`) | `LoraRuby::Database.create("app", { database_dir: "./data" })`, `LoraRuby::Database.new("app", { database_dir: "./data" })` | Archive-backed embedded database at `./data/app.loradb` |
 | HTTP server (`lora-server`) | `--wal-dir`, `--wal-sync-mode`, `--restore-from` | Recovery, sync-mode control, `/admin/checkpoint`, `/admin/wal/status`, `/admin/wal/truncate` |
 | WASM (`@loradb/lora-wasm`) | Not exposed | Snapshot-only today |
 
@@ -40,8 +40,8 @@ and an 8 MiB segment target. Rust can override both through
 |---|---|---|
 | In-memory only | `createDatabase()`, `Database::in_memory()`, or `lora-server` with no durability flags | Restart starts from an empty graph |
 | Snapshot only | Save with `save_snapshot` / `POST /admin/snapshot/save`, restore with `load_snapshot` / `--restore-from` | Restart returns to the last snapshot only |
-| WAL only | Open the same WAL directory again | Replays committed writes from the WAL into an empty graph |
-| Snapshot + WAL | Restore a snapshot and open the same WAL directory | Loads the snapshot, reads its `walLsn` fence, then replays committed WAL records newer than that fence |
+| WAL only | Open the same WAL directory or `.loradb` archive again | Replays committed writes from the WAL into an empty graph |
+| Snapshot + WAL | Restore a snapshot and open the same WAL directory or `.loradb` archive | Loads the snapshot, reads its `walLsn` fence, then replays committed WAL records newer than that fence |
 
 Use WAL-only when the log is small enough to replay from scratch. Add
 checkpoints when replay time or log size starts to matter.
@@ -53,13 +53,14 @@ checkpoints when replay time or log size starts to matter.
 ```ts
 import { createDatabase } from '@loradb/lora-node';
 
-const scratch = await createDatabase();        // in-memory
-const db = await createDatabase('./app');      // WAL-backed
+const scratch = await createDatabase();                       // in-memory
+const db = await createDatabase('app', { databaseDir: './data' }); // ./data/app.loradb
 ```
 
-The string is a WAL directory path, not a snapshot file. Relative paths
-resolve from the current working directory. Reopening the same path
-replays committed WAL records before the handle is returned.
+The name is validated and resolved under `databaseDir` as a `.loradb`
+archive. Relative paths resolve from the current working directory.
+Reopening the same name and directory replays committed WAL records before
+the handle is returned.
 
 This first Node WAL surface intentionally stays small: it does not yet
 expose checkpoint, truncate, status, or sync-mode controls.
@@ -70,24 +71,24 @@ expose checkpoint, truncate, status, or sync-mode controls.
 from lora_python import Database, AsyncDatabase
 
 scratch = Database.create()            # in-memory
-db = Database.create("./app")          # WAL-backed
-also_db = Database("./app")            # equivalent
+db = Database.create("app", {"database_dir": "./data"})          # archive-backed
+also_db = Database("app", {"database_dir": "./data"})            # equivalent
 
-async_db = await AsyncDatabase.create("./app")
+async_db = await AsyncDatabase.create("app", {"database_dir": "./data"})
 ```
 
 ### Go
 
 ```go
 scratch, err := lora.New()        // in-memory
-db, err := lora.New("./app")      // WAL-backed
+db, err := lora.New("app", lora.Options{DatabaseDir: "./data"})      // archive-backed
 ```
 
 ### Ruby
 
 ```ruby
 scratch = LoraRuby::Database.create          # in-memory
-db = LoraRuby::Database.create("./app")      # WAL-backed
+db = LoraRuby::Database.create("app", {"database_dir": "./data"})      # archive-backed
 ```
 
 ### Rust
@@ -167,7 +168,7 @@ Recovery follows the same steps in Rust and `lora-server`:
 1. Load the snapshot if one was supplied. Its `walLsn` becomes the
    replay fence. A pure snapshot has `walLsn: null`, which is treated as
    fence `0`.
-2. Open the WAL directory and replay every committed transaction above
+2. Open the WAL directory or `.loradb` archive and replay every committed transaction above
    the fence.
 3. Install the live WAL recorder, then accept new queries.
 
@@ -250,8 +251,8 @@ to the WAL's current `durableLsn`.
 - **No auth on the admin surface.** Snapshot and WAL admin routes are
   off by default but unauthenticated when enabled. Put them behind
   authenticated ingress only.
-- **No shared WAL directory.** One live handle owns one WAL directory.
-  Opening the same directory from another process, or from a second live
+- **No shared WAL/archive root.** One live handle owns one WAL directory or
+  `.loradb` archive. Opening the same root from another process, or from a second live
   handle in the same process, fails until the first handle is closed.
 - **Binding support is asymmetric.** The filesystem-backed bindings can
   open WAL-backed databases, but only Rust and `lora-server` expose full
@@ -272,6 +273,6 @@ to the WAL's current `durableLsn`.
 - [**Troubleshooting**](./troubleshooting#wal-and-checkpoints) - common
   WAL setup and recovery errors.
 - [**Node guide**](./getting-started/node#persisting-your-graph) -
-  `createDatabase("./app")` in context.
+  `createDatabase("app", { databaseDir: "./data" })` in context.
 - [**Rust guide**](./getting-started/rust#persisting-your-graph) -
   embedding the engine directly.

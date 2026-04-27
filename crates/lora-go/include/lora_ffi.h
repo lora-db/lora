@@ -76,9 +76,10 @@ int lora_db_new_with_wal(
     const char *wal_dir,
     char **out_error);
 
-/* Allocates a named WAL-backed database rooted at
- * `<database_dir>/<database_name>.lora`. database_dir may be NULL to use
- * the current working directory. */
+/* Allocates a named archive-backed database under database_dir. database_name
+ * may be a portable basename (`app`, `app.loradb`) or safe relative path
+ * (`tenant/app`). database_dir may be NULL to use the current working
+ * directory. */
 int lora_db_new_named(
     LoraDatabase **out_db,
     const char *database_name,

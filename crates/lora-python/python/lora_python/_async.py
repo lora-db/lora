@@ -76,7 +76,7 @@ class AsyncDatabase:
         """Construct a database.
 
         ``database_name=None`` creates a fresh in-memory database.
-        Passing a name opens or creates ``<database_dir>/<name>.lora``.
+        Passing a name opens or creates ``<database_dir>/<name>.loradb``.
         """
         if database_name is None:
             return cls(_Database())

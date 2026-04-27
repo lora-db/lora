@@ -13,17 +13,20 @@
  * blocking the JS event loop.
  *
  * With no constructor arg the database is purely in-memory. Passing a
- * WAL directory path enables write-ahead logging: the binding opens or
- * creates the WAL there, replays committed writes on boot, and then
- * serves queries against the recovered graph.
+ * database name plus `database_dir` enables archive-backed persistence: the
+ * binding opens or creates the serialized `.loradb` path under
+ * `database_dir`, replays committed writes on boot, and then serves queries
+ * against the recovered graph.
  */
 export declare class Database {
   /**
    * Construct a database.
    *
-   * - `undefined` / `null` => fresh in-memory graph.
-   * - `database_name` => WAL-backed graph rooted at
-   *   `<database_dir>/<database_name>.lora`.
+   * - no args => fresh in-memory graph.
+   * - `database_name` without `database_dir` => fresh named in-memory graph
+   *   (the name is validated, but no `.loradb` file is opened).
+   * - `database_name` with `database_dir` => archive-backed graph rooted at
+   *   the serialized `.loradb` path under `database_dir`.
    */
   constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined)
   /**

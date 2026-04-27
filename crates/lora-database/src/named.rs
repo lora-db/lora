@@ -6,7 +6,7 @@ use lora_wal::{SyncMode, WalConfig};
 /// Hard ceiling for one portable database archive/root.
 ///
 /// The current WAL backend still stores segment files under this root, but
-/// callers should treat the resolved `.lora` path as the database artifact.
+/// callers should treat the resolved `.loradb` path as the database artifact.
 /// The archive backend will use the same limit when it starts writing framed
 /// compressed chunks directly into portable files.
 pub const DEFAULT_DATABASE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -46,13 +46,27 @@ impl DatabaseOpenOptions {
     }
 
     pub fn database_path_for(&self, name: &DatabaseName) -> PathBuf {
-        self.database_dir.join(format!("{}.lora", name.as_str()))
+        self.database_dir.join(name.relative_path())
     }
 }
 
-/// Validated logical database name.
+/// Validated logical database name/path.
+///
+/// The input is serialized as a safe relative path under
+/// [`DatabaseOpenOptions::database_dir`]. For example:
+///
+/// - `app` -> `app.loradb`
+/// - `app.loradb` -> `app.loradb`
+/// - `./tenant-a/app` -> `tenant-a/app.loradb`
+///
+/// Absolute paths, parent-directory traversal, empty components, and characters
+/// outside ASCII letters/digits plus `+`, `_`, `-` are rejected. The final path
+/// component may additionally end in `.loradb`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DatabaseName(String);
+pub struct DatabaseName {
+    raw: String,
+    relative_path: PathBuf,
+}
 
 impl DatabaseName {
     pub fn parse(value: impl AsRef<str>) -> Result<Self, DatabaseNameError> {
@@ -60,26 +74,59 @@ impl DatabaseName {
         if value.is_empty() {
             return Err(DatabaseNameError::Empty);
         }
-        if value == "." || value == ".." {
-            return Err(DatabaseNameError::Reserved(value.to_string()));
+
+        if value.starts_with('/') || value.starts_with('\\') || looks_like_windows_absolute(value) {
+            return Err(DatabaseNameError::AbsolutePath(value.to_string()));
         }
-        if !value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-        {
+
+        let mut parts: Vec<&str> = value.split(['/', '\\']).collect();
+        if parts.iter().any(|part| part.is_empty()) {
             return Err(DatabaseNameError::InvalidCharacters(value.to_string()));
         }
-        Ok(Self(value.to_string()))
+        while parts.first() == Some(&".") {
+            parts.remove(0);
+        }
+        while parts.last() == Some(&".") {
+            parts.pop();
+        }
+        if parts.is_empty() {
+            return Err(DatabaseNameError::Reserved(value.to_string()));
+        }
+
+        let mut path = PathBuf::new();
+        for (idx, part) in parts.iter().enumerate() {
+            if *part == "." {
+                continue;
+            }
+            if *part == ".." {
+                return Err(DatabaseNameError::Reserved(value.to_string()));
+            }
+            let is_basename = idx == parts.len() - 1;
+            let serialized = serialize_component(part, is_basename)
+                .ok_or_else(|| DatabaseNameError::InvalidCharacters(value.to_string()))?;
+            path.push(serialized);
+        }
+        if path.as_os_str().is_empty() {
+            return Err(DatabaseNameError::Reserved(value.to_string()));
+        }
+        Ok(Self {
+            raw: value.to_string(),
+            relative_path: path,
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.raw
+    }
+
+    pub fn relative_path(&self) -> &Path {
+        &self.relative_path
     }
 }
 
 impl fmt::Display for DatabaseName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.raw.fmt(f)
     }
 }
 
@@ -95,6 +142,7 @@ impl TryFrom<&str> for DatabaseName {
 pub enum DatabaseNameError {
     Empty,
     Reserved(String),
+    AbsolutePath(String),
     InvalidCharacters(String),
 }
 
@@ -103,9 +151,13 @@ impl fmt::Display for DatabaseNameError {
         match self {
             Self::Empty => write!(f, "database name must not be empty"),
             Self::Reserved(name) => write!(f, "database name '{name}' is reserved"),
+            Self::AbsolutePath(name) => write!(
+                f,
+                "invalid database name '{name}': use a relative path under database_dir"
+            ),
             Self::InvalidCharacters(name) => write!(
                 f,
-                "invalid database name '{name}': use only letters, digits, '_', '-', and '.'"
+                "invalid database name '{name}': use relative path components containing only letters, digits, '+', '_', '-', with an optional .loradb suffix on the basename"
             ),
         }
     }
@@ -118,7 +170,35 @@ pub fn resolve_database_path(
     database_dir: impl AsRef<Path>,
 ) -> Result<PathBuf, DatabaseNameError> {
     let name = DatabaseName::parse(database_name)?;
-    Ok(database_dir
-        .as_ref()
-        .join(format!("{}.lora", name.as_str())))
+    Ok(database_dir.as_ref().join(name.relative_path()))
+}
+
+fn serialize_component(component: &str, is_basename: bool) -> Option<String> {
+    if component.is_empty() {
+        return None;
+    }
+
+    if is_basename {
+        if let Some(stem) = component.strip_suffix(".loradb") {
+            return (!stem.is_empty() && is_portable_component(stem))
+                .then(|| component.to_string());
+        }
+        return is_portable_component(component).then(|| format!("{component}.loradb"));
+    }
+
+    is_portable_component(component).then(|| component.to_string())
+}
+
+fn is_portable_component(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'_' | b'-'))
+}
+
+fn looks_like_windows_absolute(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
 }

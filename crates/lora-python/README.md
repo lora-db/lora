@@ -40,11 +40,11 @@ Initialization rule:
 from lora_python import Database
 
 scratch = Database.create()            # in-memory
-persistent = Database.create("./app")  # persistent: directory string
+persistent = Database.create("app", {"database_dir": "./data"})  # persistent: ./data/app.loradb
 ```
 
-If you want persistence, pass a directory string to `Database.create(...)`
-or `Database(...)`.
+If you want persistence, pass a database name and `database_dir` to
+`Database.create(...)` or `Database(...)`.
 
 ## Async usage (non-blocking)
 
@@ -65,7 +65,7 @@ Async initialization follows the same rule:
 
 ```python
 db = await AsyncDatabase.create()            # in-memory
-db = await AsyncDatabase.create("./app")     # persistent: directory string
+db = await AsyncDatabase.create("app", {"database_dir": "./data"})  # persistent: ./data/app.loradb
 ```
 
 `AsyncDatabase.execute` dispatches the query onto the default asyncio
@@ -116,16 +116,16 @@ All three are available as `lora_python.LoraError`, etc.
 
 ## Persistence
 
-`Database.create("./app")`, `Database("./app")`, and
-`await AsyncDatabase.create("./app")` open or create a WAL-backed
-persistent database rooted at that directory. Reopening the same path
+`Database.create("app", {"database_dir": "./data"})`, `Database("app", {"database_dir": "./data"})`, and
+`await AsyncDatabase.create("app", {"database_dir": "./data"})` open or create
+an archive-backed persistent database at `./data/app.loradb`. Reopening the same path
 replays committed writes before returning the handle.
 
-Call `db.close()` / `await db.close()` before reopening the same WAL
-directory inside one process.
+Call `db.close()` / `await db.close()` before reopening the same archive
+inside one process.
 
 This first Python persistence slice intentionally stays small: the
-binding exposes WAL-backed initialization plus the existing
+binding exposes archive-backed initialization plus the existing
 `save_snapshot` / `load_snapshot` APIs, but not checkpoint, truncate,
 status, or sync-mode controls.
 

@@ -15,11 +15,11 @@ const MANIFEST_JSON: &str = r#"{"format":"lora.archive","version":1}"#;
 const WAL_PREFIX: &str = "wal/";
 const ARCHIVE_FLUSH_DEBOUNCE: Duration = Duration::from_secs(1);
 
-/// ZIP-backed `.lora` database file.
+/// ZIP-backed `.loradb` database file.
 ///
 /// Every persist rewrites a complete ZIP archive from the current WAL work
 /// directory to a temp file, fsyncs it, and atomically renames it over the
-/// `.lora` target. Any ZIP-compatible tool (WinRAR, Explorer, unzip, 7-Zip)
+/// `.loradb` target. Any ZIP-compatible tool (WinRAR, Explorer, unzip, 7-Zip)
 /// can inspect the resulting database file.
 pub(crate) struct WalArchive {
     work_dir: PathBuf,
@@ -197,7 +197,7 @@ fn write_archive_atomic(
     archive_path: &Path,
     max_archive_bytes: u64,
 ) -> Result<(), WalError> {
-    let tmp_path = archive_path.with_extension("lora.tmp");
+    let tmp_path = archive_path.with_extension("loradb.tmp");
     {
         let file = OpenOptions::new()
             .create(true)

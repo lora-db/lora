@@ -199,13 +199,13 @@ later. Go now supports the same simple initialization rule as the other
 filesystem-backed bindings:
 
 - `lora.New()` / `lora.NewDatabase()` => in-memory
-- `lora.New("./app")` / `lora.NewDatabase("./app")` => persistent
+- `lora.New("app", lora.Options{DatabaseDir: "./data"})` / `lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` => persistent
 
 ```go
 import lora "github.com/lora-db/lora/crates/lora-go"
 
 db, err := lora.New() // in-memory
-// db, err := lora.New("./app") // persistent: directory string
+// db, err := lora.New("app", lora.Options{DatabaseDir: "./data"}) // persistent: ./data/app.loradb
 if err != nil { log.Fatal(err) }
 defer db.Close()
 
@@ -233,10 +233,10 @@ the store mutex for the duration of the call — concurrent
 `Execute` calls block until the snapshot operation finishes. A crash
 between saves loses every mutation since the last save.
 
-Passing a directory string opens or creates a WAL-backed persistent
-database rooted at that path. Reopening the same path replays committed
+Passing a database name and directory opens or creates an archive-backed persistent
+database at `<databaseDir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. This first Go persistence slice
-intentionally stays small: the binding exposes WAL-backed
+intentionally stays small: the binding exposes archive-backed
 initialization plus snapshots, but not checkpoint, truncate, status, or
 sync-mode controls.
 

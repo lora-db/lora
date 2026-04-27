@@ -204,7 +204,7 @@ fn bench_named_archive_write_heavy(c: &mut Criterion) {
 
     // One timed iteration performs a realistic write burst. For the
     // persistent variant, dropping the DB at the end joins the archive writer
-    // and includes the final `.lora` ZIP flush, so the result measures more
+    // and includes the final `.loradb` ZIP flush, so the result measures more
     // than just "enqueue dirty flag".
     const WRITES: usize = 1_000;
 

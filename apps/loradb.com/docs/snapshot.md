@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 sidebar_label: Snapshots
-description: Manual point-in-time snapshots — save and restore the full in-memory LoraDB graph as a single file, through every binding and the opt-in HTTP admin surface. Standalone for backups, or paired with WAL-backed recovery on every filesystem-backed surface.
+description: Manual point-in-time snapshots — save and restore the full in-memory LoraDB graph as a single file, through every binding and the opt-in HTTP admin surface. Standalone for backups, or paired with archive-backed recovery on every filesystem-backed surface.
 ---
 
 # Snapshots
@@ -185,7 +185,7 @@ needs the underlying store mutex.
 import { createDatabase, type SnapshotMeta } from '@loradb/lora-node';
 
 const db = await createDatabase(); // in-memory by default
-// const db = await createDatabase('./app'); // persistent + snapshots
+// const db = await createDatabase('app', { databaseDir: './data' }); // persistent + snapshots
 await db.execute("CREATE (:Person {name: 'Ada'})");
 
 const meta: SnapshotMeta = await db.saveSnapshot('graph.bin');

@@ -23,7 +23,7 @@ Example
 
 Persistent:
 
-    >>> db = Database.create("./app")  # WAL-backed persistent database
+    >>> db = Database.create("app", {"database_dir": "./data"})  # archive-backed persistent database
 
 Async:
 

@@ -154,13 +154,13 @@ later. Ruby now supports the same simple initialization rule as the
 other filesystem-backed bindings:
 
 - `LoraRuby::Database.create` / `LoraRuby::Database.new` => in-memory
-- `LoraRuby::Database.create("./app")` / `LoraRuby::Database.new("./app")` => persistent
+- `LoraRuby::Database.create("app", {"database_dir": "./data"})` / `LoraRuby::Database.new("app", { database_dir: "./data" })` => persistent
 
 ```ruby
 require 'lora_ruby'
 
 db = LoraRuby::Database.new # in-memory
-# db = LoraRuby::Database.new("./app") # persistent: directory string
+# db = LoraRuby::Database.new("app", { database_dir: "./data" }) # persistent: ./data/app.loradb
 db.execute("CREATE (:Person {name: 'Ada'})")
 
 # Save everything to disk.
@@ -178,12 +178,12 @@ the
 [Snapshots operator doc (internal)](https://github.com/lora-db/lora/blob/main/docs/operations/snapshots.md)
 for the wire format and atomic-rename guarantees.
 
-Passing a directory string opens or creates a WAL-backed persistent
-database rooted at that path. Reopening the same path replays committed
+Passing a database name and directory opens or creates an archive-backed persistent
+database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. This first Ruby persistence slice
-intentionally stays small: the binding exposes WAL-backed
+intentionally stays small: the binding exposes archive-backed
 initialization plus snapshots, but not checkpoint, truncate, status, or
-sync-mode controls. Call `db.close` before reopening the same WAL
+sync-mode controls. Call `db.close` before reopening the same archive
 directory inside one process.
 
 ## Common Patterns

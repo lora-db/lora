@@ -7,7 +7,7 @@ from lora_python import Database, is_node
 
 def main() -> None:
     db = Database.create()  # in-memory
-    # db = Database.create("./app")  # persistent: directory string
+    # db = Database.create("app", {"database_dir": "./data"})  # persistent: ./data/app.loradb
 
     db.execute(
         "CREATE (:Person {name: 'Alice', age: 30}), "

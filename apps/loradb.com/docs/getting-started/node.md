@@ -14,8 +14,8 @@ on a single `Database` still serialise on the engine mutex. The
 surface, helpers, and type guards match the
 [WASM binding](./wasm) for query execution and result handling — the
 same code largely ports with an import swap. Node also adds one
-embedded-only convenience the WASM build cannot: optional WAL-backed
-initialization from a filesystem path.
+embedded-only convenience the WASM build cannot: optional archive-backed
+initialization with `.loradb` files.
 
 ## Installation / Setup
 
@@ -66,25 +66,25 @@ Rule of thumb:
 import { createDatabase } from '@loradb/lora-node';
 
 const inMemory = await createDatabase();           // in-memory database
-const persistent = await createDatabase('./app'); // persistent database: pass a directory string
+const persistent = await createDatabase('app', { databaseDir: './data' }); // ./data/app.loradb
 ```
 
-If you want persistence, pass a **directory string** to
+If you want persistence, pass a database name and `databaseDir` to
 `createDatabase(...)`.
 
-To open a WAL-backed embedded database instead of a fresh in-memory
-one, pass a directory path:
+To open an archive-backed embedded database instead of a fresh in-memory
+one, pass a database name and `databaseDir`:
 
 ```ts
 import { createDatabase } from '@loradb/lora-node';
 
-const db = await createDatabase('./.lora-wal'); // persistent: directory string
+const db = await createDatabase('app', { databaseDir: './data' }); // ./data/app.loradb
 ```
 
-The string is treated as a WAL directory path verbatim. Relative
-paths resolve from the current working directory. On boot, committed
-WAL records in that directory are replayed automatically before the
-handle is returned.
+The name is validated and resolved to `<databaseDir>/<name>.loradb`.
+Relative paths resolve from the current working directory. On boot,
+committed WAL records inside that archive are replayed automatically before
+the handle is returned.
 
 :::caution Do not skip the `await`
 `createDatabase()` returns a `Promise`. Calling `execute()` on the
@@ -219,8 +219,8 @@ multiple `Database` instances (each with its own graph).
 LoraDB can save the graph to a single file and restore it later. In
 Node you now have two persistence shapes:
 
-- `createDatabase('./.lora-wal')` for WAL-backed recovery between
-  process restarts.
+- `createDatabase('app', { databaseDir: './data' })` for archive-backed
+  recovery between process restarts.
 - `saveSnapshot` / `loadSnapshot` for point-in-time files that you can
   move, back up, or load into a fresh handle.
 
@@ -386,11 +386,11 @@ For the engine-level cases see the
   guarded by a mutex. Parallel `execute()` calls against one
   instance serialise in the native layer — the event loop stays
   free, but execution is one-at-a-time. For read parallelism, spawn
-  multiple instances with separate graphs / WAL directories.
+  multiple instances with separate graphs / archives.
 - **No cancellation.** Once dispatched, a query runs to completion.
   Bound variable-length patterns and `UNWIND` list sizes.
 - **Dispose explicitly** only when you need to release the native
-  handle eagerly, especially before reopening the same WAL directory in
+  handle eagerly, especially before reopening the same archive in
   one process; otherwise GC eventually cleans up.
 
 ## See also

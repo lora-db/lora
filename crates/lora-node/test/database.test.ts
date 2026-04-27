@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -116,6 +116,18 @@ describe("Database — WAL-backed initialization", () => {
     expect(await db.relationshipCount()).toBe(0);
   });
 
+  it("createDatabase(name) creates independent named in-memory databases", async () => {
+    const first = await createDatabase("scratch");
+    await first.execute("CREATE (:Scratch)");
+    expect(await first.nodeCount()).toBe(1);
+
+    const second = await createDatabase("scratch");
+    expect(await second.nodeCount()).toBe(0);
+
+    first.dispose();
+    second.dispose();
+  });
+
   it("persists committed writes across reopen with the same WAL directory", async () => {
     const walDir = await makeTempDir();
 
@@ -167,6 +179,29 @@ describe("Database — WAL-backed initialization", () => {
     const second = await createDatabase("app", { databaseDir: relativeWalDir });
     const { rows } = await second.execute<{ value: string }>(
       "MATCH (s:Session) RETURN s.value AS value",
+    );
+    expect(rows).toEqual([{ value: "ok" }]);
+    second.dispose();
+  });
+
+  it("accepts safe relative database paths and .loradb basenames", async () => {
+    const walDir = await makeTempDir();
+
+    const first = await createDatabase("./tenant-a/application", {
+      databaseDir: walDir,
+    });
+    await first.execute("CREATE (:Scoped {value: 'ok'})");
+    first.dispose();
+
+    await expect(
+      stat(join(walDir, "tenant-a", "application.loradb")),
+    ).resolves.toSatisfy((entry) => entry.isFile());
+
+    const second = await createDatabase("tenant-a/application.loradb", {
+      databaseDir: walDir,
+    });
+    const { rows } = await second.execute<{ value: string }>(
+      "MATCH (s:Scoped) RETURN s.value AS value",
     );
     expect(rows).toEqual([{ value: "ok" }]);
     second.dispose();

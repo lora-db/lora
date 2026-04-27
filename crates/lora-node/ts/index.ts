@@ -8,7 +8,7 @@
  * shapes defined in the shared TS contract (`crates/shared-ts/types.ts`).
  *
  * **Initialization is async-only.** The canonical entry point is
- * `createDatabase(...)`, optionally with a WAL directory path. There is no
+ * `createDatabase(...)`, optionally with archive-backed persistence. There is no
  * synchronous constructor. See the docs at
  * https://loradb.com/docs/getting-started/node for the full rationale.
  */
@@ -284,8 +284,9 @@ async function resolveNodeSnapshotSource(
  *
  * Obtained exclusively via `createDatabase()`. There is no public
  * constructor and no synchronous factory. With no args the instance is
- * purely in-memory; with a WAL directory path it replays committed WAL
- * state from disk before serving queries.
+ * purely in-memory; with a database name and `databaseDir` it replays committed
+ * WAL state from the serialized `.loradb` path under `databaseDir` before
+ * serving queries.
  *
  * Instances are independent — each owns its own in-memory graph. Multiple
  * concurrent read-only `execute()` calls against one instance can share
@@ -391,7 +392,7 @@ class DatabaseImpl {
   /**
    * Release the native database handle. Idempotent.
    *
-   * Call this when a WAL-backed database needs to be reopened in the same
+   * Call this when an archive-backed database needs to be reopened in the same
    * process. New operations after disposal reject with `database is closed`.
    */
   dispose(): void {
@@ -521,13 +522,16 @@ export type Database = DatabaseImpl;
  * ```ts
  * import { createDatabase } from "lora-node";
  *
- * const inMemory = await createDatabase();            // in-memory
- * const persistent = await createDatabase("./app");  // persistent: pass a directory string
+ * const inMemory = await createDatabase();          // in-memory
+ * const named = await createDatabase("app");        // named in-memory
+ * const persistent = await createDatabase("app", {
+ *   databaseDir: "./data",
+ * });                                               // ./data/app.loradb
  * ```
  *
- * If you want persistence, pass a directory string. The string is treated
- * as a WAL directory path verbatim. Relative paths resolve from the
- * current working directory.
+ * If you want persistence, pass `databaseDir`. The database name is validated
+ * and resolved under `databaseDir`, appending `.loradb` to the basename when
+ * needed. Relative paths resolve from the current working directory.
  *
  * Each call returns an independent graph — no shared state between instances.
  */

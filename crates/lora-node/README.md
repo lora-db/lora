@@ -51,27 +51,30 @@ The initialization rule is:
 ```ts
 import { createDatabase } from "lora-node";
 
-const inMemory = await createDatabase();            // in-memory only
-const persistent = await createDatabase("./app");  // persistent: pass a directory string
+const inMemory = await createDatabase();           // in-memory only
+const named = await createDatabase("app");         // named in-memory
+const persistent = await createDatabase("app", {
+  databaseDir: "./data",
+});                                                // ./data/app.loradb
 ```
 
-If you want persistence, pass a **directory string** to `createDatabase(...)`.
+If you want persistence, pass a `databaseDir` option to `createDatabase(...)`.
 
-Node also has a WAL-backed convenience overload:
+Node also has an archive-backed convenience overload:
 
 ```ts
 import { createDatabase } from "lora-node";
 
-const db = await createDatabase("./.lora-wal"); // persistent: directory string
+const db = await createDatabase("app", { databaseDir: "./data" });
 ```
 
-The string is treated as the WAL directory path verbatim. Relative
-paths resolve from the current working directory. This is a Node-only
-initialization convenience; the query surface, shared types, and async
+The database name is validated and resolved under `databaseDir`, appending
+`.loradb` to the basename when needed. Relative paths resolve from the current
+working directory. This is a Node-only initialization convenience; the query surface, shared types, and async
 method signatures still match `lora-wasm`.
 
 Call `db.dispose()` when you need to release the native handle eagerly,
-especially before reopening the same WAL directory in the same process.
+especially before reopening the same archive in the same process.
 
 ## Snapshots
 
@@ -185,8 +188,7 @@ identical to `lora-wasm`.
 - **Cancellation.** The napi `Task` abstraction does not support
   cancellation once dispatched; a runaway query runs to completion.
 - **WAL surface.** This first Node persistence slice only exposes
-  WAL-backed initialization via `createDatabase(walDir)`. Checkpoint,
+  archive-backed initialization via `createDatabase(name, { databaseDir })`. Checkpoint,
   truncate, status, and sync-mode controls are not exposed yet.
-- **WAL directory ownership.** A WAL directory can only be open by one
-  live handle at a time. Dispose the first handle before reopening the
-  same directory.
+- **Archive ownership.** One archive can only be open by one live handle at a
+  time. Dispose the first handle before reopening the same database.

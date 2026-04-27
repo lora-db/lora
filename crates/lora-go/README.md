@@ -95,11 +95,11 @@ Initialization rule:
 
 ```go
 db, err := lora.New()        // in-memory
-db, err := lora.New("./app") // persistent: directory string
+db, err := lora.New("app", lora.Options{DatabaseDir: "./data"}) // persistent: ./data/app.loradb
 ```
 
-If you want persistence, pass one directory string to `New(...)` or
-`NewDatabase(...)`.
+If you want persistence, pass a database name and `Options{DatabaseDir: ...}`
+to `New(...)` or `NewDatabase(...)`.
 
 ## Value model
 
@@ -181,12 +181,13 @@ if err != nil {
 
 ## Persistence
 
-`lora.New("./app")` and `lora.NewDatabase("./app")` open or create a
-WAL-backed persistent database rooted at that directory. Reopening the
+`lora.New("app", lora.Options{DatabaseDir: "./data"})` and
+`lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` open or create
+an archive-backed persistent database at `./data/app.loradb`. Reopening the
 same path replays committed writes before returning the handle.
 
 This first Go persistence slice intentionally stays small: the binding
-exposes WAL-backed initialization plus the existing snapshot APIs, but
+exposes archive-backed initialization plus the existing snapshot APIs, but
 not checkpoint, truncate, status, or sync-mode controls.
 
 Snapshot helpers cover files, bytes, base64, and Go readers/writers:

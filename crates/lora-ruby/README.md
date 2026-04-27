@@ -43,10 +43,10 @@ Initialization rule:
 
 ```ruby
 scratch = LoraRuby::Database.create         # in-memory
-persistent = LoraRuby::Database.create("./app") # persistent: directory string
+persistent = LoraRuby::Database.create("app", {"database_dir": "./data"}) # persistent: ./data/app.loradb
 ```
 
-If you want persistence, pass a directory string to
+If you want persistence, pass a database name and `database_dir` to
 `LoraRuby::Database.create(...)` or `LoraRuby::Database.new(...)`.
 
 ### Params
@@ -148,16 +148,16 @@ db.execute(
 
 ## Persistence
 
-`LoraRuby::Database.create("./app")` and
-`LoraRuby::Database.new("./app")` open or create a WAL-backed
-persistent database rooted at that directory. Reopening the same path
+`LoraRuby::Database.create("app", {"database_dir": "./data"})` and
+`LoraRuby::Database.new("app", { database_dir: "./data" })` open or create
+an archive-backed persistent database at `./data/app.loradb`. Reopening the same path
 replays committed writes before returning the handle.
 
-Call `db.close` before reopening the same WAL directory inside one
+Call `db.close` before reopening the same archive inside one
 process.
 
 This first Ruby persistence slice intentionally stays small: the
-binding exposes WAL-backed initialization plus the existing snapshot
+binding exposes archive-backed initialization plus the existing snapshot
 APIs, but not checkpoint, truncate, status, or sync-mode controls.
 
 ## Concurrency (GVL release)

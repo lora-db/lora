@@ -16,10 +16,10 @@ live entirely in RAM between two manual snapshots.
 The shortest mental model:
 
 - `createDatabase()` in Node is still a fresh in-memory graph.
-- `createDatabase("application")` opens a persistent WAL-backed graph
-  rooted at that directory.
-- `Database.create("./app")`, `lora.New("./app")`, and
-  `LoraRuby::Database.create("./app")` do the same thing on Python,
+- `createDatabase("application", { databaseDir: "./data" })` opens a
+  persistent archive-backed graph at `./data/application.loradb`.
+- `Database.create("app", {"database_dir": "./data"})`, `lora.New("app", lora.Options{DatabaseDir: "./data"})`, and
+  `LoraRuby::Database.create("app", {"database_dir": "./data"})` do the same thing on Python,
   Go, and Ruby.
 - `lora-server --wal-dir /var/lib/lora/wal` turns the HTTP server into
   a WAL-backed process.
@@ -36,17 +36,18 @@ something to checkpoint against.
 | Surface | New durability surface |
 |---|---|
 | Rust (`lora-database`) | `Database::open_with_wal(...)`, `Database::recover(...)`, `Database::checkpoint_to(...)`, `WalConfig`, `SyncMode` |
-| Node (`@loradb/lora-node`) | `await createDatabase(dir)` for simple persistent embedded graphs with automatic replay on reopen |
-| Python (`lora_python`) | `Database.create(dir)`, `Database(dir)`, and `await AsyncDatabase.create(dir)` for simple persistent embedded graphs with automatic replay on reopen |
-| Go (`lora-go`) | `lora.New(dir)` and `lora.NewDatabase(dir)` for simple persistent embedded graphs with automatic replay on reopen |
-| Ruby (`lora-ruby`) | `LoraRuby::Database.create(dir)` and `LoraRuby::Database.new(dir)` for simple persistent embedded graphs with automatic replay on reopen |
+| Node (`@loradb/lora-node`) | `await createDatabase(name, { databaseDir })` for simple persistent embedded graphs with automatic replay on reopen |
+| Python (`lora_python`) | `Database.create(name, {"database_dir": dir})`, `Database(name, {"database_dir": dir})`, and `await AsyncDatabase.create(name, {"database_dir": dir})` for simple persistent embedded graphs with automatic replay on reopen |
+| Go (`lora-go`) | `lora.New(name, lora.Options{DatabaseDir: dir})` and `lora.NewDatabase(name, lora.Options{DatabaseDir: dir})` for simple persistent embedded graphs with automatic replay on reopen |
+| Ruby (`lora-ruby`) | `LoraRuby::Database.create(name, { database_dir: dir })` and `LoraRuby::Database.new(name, { database_dir: dir })` for simple persistent embedded graphs with automatic replay on reopen |
 | HTTP server (`lora-server`) | `--wal-dir`, `--wal-sync-mode`, `--restore-from`, `POST /admin/checkpoint`, `POST /admin/wal/status`, `POST /admin/wal/truncate` |
 | Every binding | Snapshot save / load stays available exactly as before |
 
 That split is intentional. Rust and `lora-server` expose the full
 operator surface. The embedded bindings get the smallest ergonomic
-thing that is useful for local apps: pass a directory string when you
-want persistence, omit it when you want a fresh in-memory graph.
+thing that is useful for local apps: pass a database name plus a directory
+when you want persistence, omit the directory when you want a fresh
+in-memory graph.
 
 ## The Node shape is deliberately simple
 
@@ -56,8 +57,10 @@ database and a durable one:
 ```ts
 import { createDatabase } from '@loradb/lora-node';
 
-const scratch = await createDatabase();            // in-memory
-const db = await createDatabase("application");    // persistent: directory string
+const scratch = await createDatabase();                         // in-memory
+const db = await createDatabase("application", {
+  databaseDir: "./data",
+});                                                            // ./data/application.loradb
 
 await db.execute("CREATE (:Person {name: 'Ada'})");
 ```
@@ -67,14 +70,14 @@ Reopen the same directory later:
 ```ts
 import { createDatabase } from '@loradb/lora-node';
 
-const db = await createDatabase("application");
+const db = await createDatabase("application", { databaseDir: "./data" });
 const { rows } = await db.execute(
   "MATCH (p:Person) RETURN p.name AS name",
 );
 ```
 
-The string is treated as a WAL directory path verbatim. Relative paths
-resolve from the current working directory. The first slice uses the
+The name is resolved inside `databaseDir` as a `.loradb` archive. Relative
+paths resolve from the current working directory. The first slice uses the
 engine defaults:
 
 - `SyncMode::PerCommit`
@@ -148,7 +151,7 @@ v0.4.0 is a durability release, not a reinvention of the product:
 - LoraDB is still an in-memory engine.
 - Snapshots are still manual and explicit.
 - There is still no automatic checkpoint loop.
-- Node, Python, Go, and Ruby still expose the simple WAL-backed open
+- Node, Python, Go, and Ruby still expose the simple archive-backed open
   path only; full checkpoint, truncate, status, and sync-mode controls
   still live on Rust and `lora-server`.
 - WASM stays snapshot-only for now.
@@ -164,7 +167,7 @@ This release also forced a documentation cleanup across the website.
 The main fixes:
 
 - the embedded-binding docs now state the initialization rule
-  explicitly: no argument means in-memory, a directory string means
+  explicitly: no argument means in-memory, and name plus directory means
   persistent;
 - the HTTP server and API docs no longer describe a pre-WAL world;
 - snapshots are now documented as a standalone primitive that can also

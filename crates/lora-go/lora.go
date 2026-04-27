@@ -23,7 +23,7 @@ import (
 
 // Options controls how a named database is opened.
 type Options struct {
-	// DatabaseDir is the directory that contains <databaseName>.lora.
+	// DatabaseDir is the directory that contains <databaseName>.loradb.
 	// Empty means the current working directory.
 	DatabaseDir string
 }
@@ -54,8 +54,8 @@ type Database struct {
 //
 //	db, err := lora.New()
 //
-// Passing a database name opens or creates a WAL-backed persistent
-// database at <DatabaseDir>/<name>.lora:
+// Passing a database name opens or creates an archive-backed persistent
+// database at <DatabaseDir>/<name>.loradb:
 //
 //	db, err := lora.New("app", lora.Options{DatabaseDir: "./data"})
 func New(args ...any) (*Database, error) { return NewDatabase(args...) }

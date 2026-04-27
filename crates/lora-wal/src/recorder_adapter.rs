@@ -72,7 +72,7 @@ pub enum WroteCommit {
 ///
 /// The core WAL stays directory/segment based for append performance. Higher
 /// layers can install a mirror to copy that durable directory into another
-/// representation, such as the portable `.lora` archive file used by named
+/// representation, such as the portable `.loradb` archive file used by named
 /// databases.
 pub trait WalMirror: Send + Sync {
     fn persist(&self, wal_dir: &Path) -> Result<(), WalError>;

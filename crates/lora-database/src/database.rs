@@ -85,9 +85,9 @@ impl Database<InMemoryGraph> {
     /// Open or create a named portable database rooted under
     /// `options.database_dir`.
     ///
-    /// The database name is a logical identifier, not a path. It must contain
-    /// only ASCII letters, digits, `_`, `-`, and `.`, and is resolved to
-    /// `<database_dir>/<database_name>.lora` before the WAL backend opens.
+    /// The database name may be either a portable basename (`app` or
+    /// `app.loradb`) or a safe relative path (`tenant/app`). It is resolved
+    /// under `options.database_dir` before the WAL archive backend opens.
     pub fn open_named(
         database_name: impl AsRef<str>,
         options: DatabaseOpenOptions,
