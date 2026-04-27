@@ -89,11 +89,13 @@ export interface RowStream<
 class NativeRowStream<
   T extends Record<string, LoraValue> = Record<string, LoraValue>,
 > implements RowStream<T> {
-  readonly #inner: import("./native.js").QueryStream;
+  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #streamId: number;
   #closed = false;
 
-  constructor(inner: import("./native.js").QueryStream) {
+  constructor(inner: InstanceType<typeof NativeDatabase>, streamId: number) {
     this.#inner = inner;
+    this.#streamId = streamId;
   }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
@@ -102,7 +104,7 @@ class NativeRowStream<
 
   columns(): string[] {
     try {
-      return this.#inner.columns();
+      return this.#inner.streamColumns(this.#streamId);
     } catch (err) {
       throw wrapError(err);
     }
@@ -113,7 +115,7 @@ class NativeRowStream<
       return { done: true, value: undefined };
     }
     try {
-      const row = this.#inner.next() as T | null;
+      const row = this.#inner.streamNext(this.#streamId) as T | null;
       if (row === null) {
         this.#closed = true;
         return { done: true, value: undefined };
@@ -145,7 +147,7 @@ class NativeRowStream<
     if (this.#closed) return;
     this.#closed = true;
     try {
-      this.#inner.close();
+      this.#inner.streamClose(this.#streamId);
     } catch (err) {
       throw wrapError(err);
     }
@@ -320,7 +322,8 @@ class DatabaseImpl {
     params?: LoraParams,
   ): RowStream<T> {
     try {
-      return new NativeRowStream<T>(this.#inner.openStream(query, params ?? null));
+      const streamId = this.#inner.openStream(query, params ?? null);
+      return new NativeRowStream<T>(this.#inner, streamId);
     } catch (err) {
       throw wrapError(err);
     }

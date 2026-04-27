@@ -28,7 +28,10 @@ export declare class Database {
   openStream(
     query: string,
     params?: Record<string, unknown> | null,
-  ): QueryStream;
+  ): number;
+  streamColumns(streamId: number): string[];
+  streamNext(streamId: number): Record<string, unknown> | null;
+  streamClose(streamId: number): void;
   transaction(
     statements: Array<{ query: string; params?: Record<string, unknown> | null }>,
     mode?: "read_write" | "read_only" | "readwrite" | "readonly" | "rw" | "ro" | null,
@@ -45,10 +48,4 @@ export declare class Database {
   loadSnapshot(path: string): NativeSnapshotMeta;
   /** Replace the current graph with snapshot bytes. */
   loadSnapshotFromBytes(bytes: Uint8Array | Buffer): NativeSnapshotMeta;
-}
-
-export declare class QueryStream {
-  columns(): string[];
-  next(): Record<string, unknown> | null;
-  close(): void;
 }

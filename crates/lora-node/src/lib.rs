@@ -13,6 +13,7 @@
 //! thread hop would dominate the useful work.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use napi::bindgen_prelude::*;
@@ -46,6 +47,8 @@ const INVALID_PARAMS_CODE: &str = "INVALID_PARAMS";
 #[napi]
 pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
+    streams: Mutex<BTreeMap<u32, NativeQueryStream>>,
+    next_stream_id: AtomicU32,
 }
 
 #[napi]
@@ -65,6 +68,8 @@ impl Database {
         };
         Ok(Self {
             db: Mutex::new(Some(Arc::new(db))),
+            streams: Mutex::new(BTreeMap::new()),
+            next_stream_id: AtomicU32::new(1),
         })
     }
 
@@ -97,14 +102,14 @@ impl Database {
     /// The returned handle owns the Rust `QueryStream`, so rows are pulled
     /// from the executor one `next()` call at a time instead of materializing
     /// the whole result up front.
-    #[napi(ts_return_type = "QueryStream")]
+    #[napi(ts_return_type = "number")]
     pub fn open_stream(
         &self,
         query: String,
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
             serde_json::Value,
         >,
-    ) -> Result<NativeQueryStream> {
+    ) -> Result<u32> {
         let params_map = match params {
             None | Some(serde_json::Value::Null) => BTreeMap::new(),
             Some(other) => json_value_to_params(other)?,
@@ -112,10 +117,60 @@ impl Database {
         let db = self.inner()?;
         let stream = unsafe { db.stream_with_params_owned(&query, params_map) }
             .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
-        Ok(NativeQueryStream {
-            _db: db,
-            stream: Mutex::new(Some(stream)),
-        })
+        let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
+        let mut streams = self
+            .streams
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
+        streams.insert(stream_id, NativeQueryStream { _db: db, stream });
+        Ok(stream_id)
+    }
+
+    #[napi(ts_return_type = "string[]")]
+    pub fn stream_columns(&self, stream_id: u32) -> Result<Vec<String>> {
+        let streams = self
+            .streams
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
+        let stream = streams
+            .get(&stream_id)
+            .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
+        Ok(stream.stream.columns().to_vec())
+    }
+
+    #[napi(ts_return_type = "Record<string, any> | null")]
+    pub fn stream_next(&self, stream_id: u32) -> Result<Option<serde_json::Value>> {
+        let mut streams = self
+            .streams
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
+        let stream = streams
+            .get_mut(&stream_id)
+            .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
+        match stream.stream.next_row() {
+            Ok(Some(row)) => Ok(Some(row_to_json(&row))),
+            Ok(None) => {
+                streams.remove(&stream_id);
+                Ok(None)
+            }
+            Err(e) => {
+                streams.remove(&stream_id);
+                Err(NapiError::new(
+                    Status::GenericFailure,
+                    format!("{LORA_ERROR_CODE}: {e}"),
+                ))
+            }
+        }
+    }
+
+    #[napi]
+    pub fn stream_close(&self, stream_id: u32) -> Result<()> {
+        let mut streams = self
+            .streams
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
+        streams.remove(&stream_id);
+        Ok(())
     }
 
     /// Execute multiple statements inside one core transaction.
@@ -168,6 +223,10 @@ impl Database {
     /// handle until it finishes; new operations fail with `database is closed`.
     #[napi]
     pub fn dispose(&self) -> Result<()> {
+        self.streams
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?
+            .clear();
         let mut slot = self
             .db
             .lock()
@@ -254,60 +313,9 @@ impl Default for Database {
     }
 }
 
-#[napi(js_name = "QueryStream")]
 pub struct NativeQueryStream {
     _db: Arc<InnerDatabase<InMemoryGraph>>,
-    stream: Mutex<Option<lora_database::QueryStream<'static>>>,
-}
-
-#[napi]
-impl NativeQueryStream {
-    #[napi(ts_return_type = "string[]")]
-    pub fn columns(&self) -> Result<Vec<String>> {
-        let guard = self
-            .stream
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream lock poisoned"))?;
-        let stream = guard
-            .as_ref()
-            .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
-        Ok(stream.columns().to_vec())
-    }
-
-    #[napi(ts_return_type = "Record<string, any> | null")]
-    pub fn next(&self) -> Result<Option<serde_json::Value>> {
-        let mut guard = self
-            .stream
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream lock poisoned"))?;
-        let stream = guard
-            .as_mut()
-            .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
-        match stream.next_row() {
-            Ok(Some(row)) => Ok(Some(row_to_json(&row))),
-            Ok(None) => {
-                guard.take();
-                Ok(None)
-            }
-            Err(e) => {
-                guard.take();
-                Err(NapiError::new(
-                    Status::GenericFailure,
-                    format!("{LORA_ERROR_CODE}: {e}"),
-                ))
-            }
-        }
-    }
-
-    #[napi]
-    pub fn close(&self) -> Result<()> {
-        let mut guard = self
-            .stream
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream lock poisoned"))?;
-        guard.take();
-        Ok(())
-    }
+    stream: lora_database::QueryStream<'static>,
 }
 
 // ============================================================================

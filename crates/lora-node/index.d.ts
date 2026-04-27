@@ -44,7 +44,10 @@ export declare class Database {
    * from the executor one `next()` call at a time instead of materializing
    * the whole result up front.
    */
-  openStream(query: string, params?: Record<string, any> | null | undefined): QueryStream
+  openStream(query: string, params?: Record<string, any> | null | undefined): number
+  streamColumns(streamId: number): string[]
+  streamNext(streamId: number): Record<string, any> | null
+  streamClose(streamId: number): void
   /**
    * Execute multiple statements inside one core transaction.
    *
@@ -83,5 +86,3 @@ export declare class Database {
   /** Replace the current graph state with a snapshot loaded from bytes. */
   loadSnapshotFromBytes(bytes: Uint8Array | Buffer): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
 }
-export type NativeQueryStream = QueryStream
-export declare class QueryStream { }
