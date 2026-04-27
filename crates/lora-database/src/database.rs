@@ -258,6 +258,25 @@ impl Database<InMemoryGraph> {
             }
         }
     }
+
+    /// Open a stream whose lifetime can be carried by an outer owner that
+    /// also retains an `Arc<Database>`.
+    ///
+    /// # Safety
+    ///
+    /// The returned stream may contain lock guards that borrow from the
+    /// database's internal `RwLock`. The caller must keep this exact `Arc`
+    /// alive until the stream is dropped. This is intended for language
+    /// bindings that store both the `Arc<Database>` and the `QueryStream` in
+    /// the same opaque stream handle.
+    pub unsafe fn stream_with_params_owned(
+        self: &Arc<Self>,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<QueryStream<'static>> {
+        let stream = self.stream_with_params(query, params)?;
+        Ok(std::mem::transmute::<QueryStream<'_>, QueryStream<'static>>(stream))
+    }
 }
 
 impl<S> Database<S>
