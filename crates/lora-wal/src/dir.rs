@@ -136,19 +136,17 @@ impl SegmentDir {
     }
 
     /// List every `*.wal` file in the directory in ascending id order.
-    /// Files whose names do not match the canonical pattern are
-    /// silently dropped — that mirrors the pre-refactor behaviour and
-    /// matches the operator's expectation that a stray `.tmp` is
-    /// ignored on the next boot.
+    /// Files whose names do not match the canonical pattern are ignored
+    /// so a stray `.tmp` does not block boot. Directory entry I/O errors
+    /// still abort the listing rather than risking an incomplete replay.
     pub fn list(&self) -> Result<Vec<SegmentEntry>, WalError> {
-        let mut out: Vec<SegmentEntry> = fs::read_dir(&self.root)?
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let path = e.path();
-                let id = Self::id_of(&path)?;
-                Some(SegmentEntry { id, path })
-            })
-            .collect();
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let path = entry?.path();
+            if let Some(id) = Self::id_of(&path) {
+                out.push(SegmentEntry { id, path });
+            }
+        }
         out.sort_by_key(|e| e.id);
         Ok(out)
     }

@@ -52,6 +52,20 @@ impl Drop for TmpDir {
     }
 }
 
+fn copy_dir_all(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let from_path = entry.path();
+        let to_path = to.join(entry.file_name());
+        if from_path.is_dir() {
+            copy_dir_all(&from_path, &to_path);
+        } else {
+            std::fs::copy(&from_path, &to_path).unwrap();
+        }
+    }
+}
+
 fn rows() -> Option<ExecuteOptions> {
     Some(ExecuteOptions {
         format: ResultFormat::Rows,
@@ -155,6 +169,10 @@ fn named_database_persists_under_lora_root() {
         dir.path().join("app.loradb").is_file(),
         "named databases should persist as a portable .loradb archive file"
     );
+    assert!(
+        !dir.path().join("app.loradb.wal").exists(),
+        "clean shutdown should remove the durable sidecar after archiving"
+    );
     let bytes = std::fs::read(dir.path().join("app.loradb")).unwrap();
     assert_eq!(&bytes[..4], b"PK\x03\x04");
     let file = std::fs::File::open(dir.path().join("app.loradb")).unwrap();
@@ -168,6 +186,88 @@ fn named_database_persists_under_lora_root() {
     )
     .unwrap();
     assert_eq!(db.node_count(), 1);
+}
+
+#[test]
+fn named_database_recovers_from_durable_sidecar_when_archive_lags() {
+    let dir = TmpDir::new("named-sidecar-recover");
+    let archive_path = dir.path().join("app.loradb");
+    let sidecar_path = dir.path().join("app.loradb.wal");
+    let saved_sidecar = dir.path().join("saved-sidecar");
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions {
+                sync_mode: SyncMode::PerCommit,
+                ..DatabaseOpenOptions::default().with_database_dir(dir.path())
+            },
+        )
+        .unwrap();
+        db.execute("CREATE (:N {id: 1})", rows()).unwrap();
+    }
+    let stale_archive = std::fs::read(&archive_path).unwrap();
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions {
+                sync_mode: SyncMode::PerCommit,
+                ..DatabaseOpenOptions::default().with_database_dir(dir.path())
+            },
+        )
+        .unwrap();
+        db.execute("CREATE (:N {id: 2})", rows()).unwrap();
+        copy_dir_all(&sidecar_path, &saved_sidecar);
+    }
+
+    std::fs::write(&archive_path, stale_archive).unwrap();
+    copy_dir_all(&saved_sidecar, &sidecar_path);
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        assert_eq!(db.node_count(), 2);
+    }
+
+    assert!(
+        !sidecar_path.exists(),
+        "clean recovery shutdown should archive and remove the sidecar"
+    );
+}
+
+#[test]
+fn named_database_rejects_concurrent_archive_open() {
+    let dir = TmpDir::new("named-concurrent-open");
+
+    let first = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+
+    let err = match Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    ) {
+        Ok(_) => panic!("second archive open should fail"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("already open"),
+        "unexpected error: {err}"
+    );
+
+    drop(first);
+    let reopened = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(reopened.node_count(), 0);
 }
 
 #[test]

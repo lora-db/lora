@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -14,6 +15,7 @@ const MANIFEST_NAME: &str = "manifest.json";
 const MANIFEST_JSON: &str = r#"{"format":"lora.archive","version":1}"#;
 const WAL_PREFIX: &str = "wal/";
 const ARCHIVE_FLUSH_DEBOUNCE: Duration = Duration::from_secs(1);
+static ARCHIVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// ZIP-backed `.loradb` database file.
 ///
@@ -25,6 +27,7 @@ pub(crate) struct WalArchive {
     work_dir: PathBuf,
     state: Arc<(Mutex<ArchiveState>, Condvar)>,
     worker: Option<JoinHandle<()>>,
+    _archive_lock: ArchiveLock,
 }
 
 #[derive(Debug, Default)]
@@ -47,9 +50,19 @@ impl WalArchive {
             fs::create_dir_all(parent)?;
         }
 
+        let archive_lock = ArchiveLock::acquire(&archive_path)?;
         let work_dir = make_work_dir(&archive_path);
-        fs::create_dir_all(&work_dir)?;
-        if archive_path.exists() {
+        if has_wal_files(&work_dir)? {
+            // A durable sidecar means the previous process stopped before the
+            // final archive flush/cleanup completed. Trust it over the archive,
+            // which may intentionally lag behind the live WAL for throughput.
+        } else {
+            if work_dir.exists() {
+                fs::remove_dir_all(&work_dir)?;
+            }
+            fs::create_dir_all(&work_dir)?;
+        }
+        if archive_path.exists() && !has_wal_files(&work_dir)? {
             let existing_len = fs::metadata(&archive_path)?.len();
             if existing_len > max_archive_bytes {
                 return Err(WalError::Malformed(format!(
@@ -74,6 +87,7 @@ impl WalArchive {
             work_dir,
             state,
             worker,
+            _archive_lock: archive_lock,
         })
     }
 
@@ -118,10 +132,21 @@ impl Drop for WalArchive {
             state.force = true;
             cv.notify_one();
         }
+        let mut shutdown_cleanly = true;
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            shutdown_cleanly = worker.join().is_ok();
         }
-        let _ = fs::remove_dir_all(&self.work_dir);
+        {
+            let (lock, _) = &*self.state;
+            let state = lock.lock().unwrap();
+            shutdown_cleanly &= state.failure.is_none();
+        }
+        if shutdown_cleanly {
+            let _ = fs::remove_dir_all(&self.work_dir);
+            if let Some(parent) = self.work_dir.parent() {
+                let _ = sync_dir(parent);
+            }
+        }
     }
 }
 
@@ -162,21 +187,7 @@ fn spawn_archive_worker(
 }
 
 fn make_work_dir(archive_path: &Path) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let stem = archive_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("database");
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    dir.push(format!(
-        "lora-archive-{}-{}-{nanos}",
-        std::process::id(),
-        sanitize_for_temp(stem)
-    ));
-    dir
+    archive_path.with_extension("loradb.wal")
 }
 
 fn sanitize_for_temp(value: &str) -> String {
@@ -197,12 +208,35 @@ fn write_archive_atomic(
     archive_path: &Path,
     max_archive_bytes: u64,
 ) -> Result<(), WalError> {
-    let tmp_path = archive_path.with_extension("loradb.tmp");
+    let tmp_path = make_archive_tmp_path(archive_path);
+    let result = write_archive_tmp(wal_dir, &tmp_path).and_then(|_| {
+        let len = fs::metadata(&tmp_path)?.len();
+        if len > max_archive_bytes {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(WalError::Malformed(format!(
+                "database archive {} would be {} bytes, above configured limit {}",
+                archive_path.display(),
+                len,
+                max_archive_bytes
+            )));
+        }
+        replace_file_atomic(&tmp_path, archive_path)?;
+        if let Some(parent) = archive_path.parent() {
+            sync_dir(parent)?;
+        }
+        Ok(())
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    result
+}
+
+fn write_archive_tmp(wal_dir: &Path, tmp_path: &Path) -> Result<(), WalError> {
     {
         let file = OpenOptions::new()
-            .create(true)
             .write(true)
-            .truncate(true)
+            .create_new(true)
             .open(&tmp_path)?;
         let writer = BufWriter::new(file);
         let mut zip = ZipWriter::new(writer);
@@ -240,31 +274,45 @@ fn write_archive_atomic(
             .map_err(|e| WalError::Io(e.into_error()))?;
         file.sync_all()?;
     }
-    let len = fs::metadata(&tmp_path)?.len();
-    if len > max_archive_bytes {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(WalError::Malformed(format!(
-            "database archive {} would be {} bytes, above configured limit {}",
-            archive_path.display(),
-            len,
-            max_archive_bytes
-        )));
-    }
-    fs::rename(&tmp_path, archive_path)?;
-    if let Some(parent) = archive_path.parent() {
-        sync_dir(parent)?;
-    }
     Ok(())
 }
 
+fn make_archive_tmp_path(archive_path: &Path) -> PathBuf {
+    let archive_name = archive_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("database.loradb");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = ARCHIVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    archive_path.with_file_name(format!(
+        "{}.{}.{}.{}.tmp",
+        sanitize_for_temp(archive_name),
+        std::process::id(),
+        nanos,
+        sequence
+    ))
+}
+
 fn sorted_wal_files(wal_dir: &Path) -> Result<Vec<PathBuf>, WalError> {
-    let mut entries: Vec<_> = fs::read_dir(wal_dir)?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("wal"))
-        .collect();
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(wal_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("wal") {
+            entries.push(path);
+        }
+    }
     entries.sort();
     Ok(entries)
+}
+
+fn has_wal_files(wal_dir: &Path) -> Result<bool, WalError> {
+    if !wal_dir.exists() {
+        return Ok(false);
+    }
+    Ok(sorted_wal_files(wal_dir)?.into_iter().next().is_some())
 }
 
 fn extract_archive(archive_path: &Path, work_dir: &Path) -> Result<(), WalError> {
@@ -295,11 +343,10 @@ fn extract_archive(archive_path: &Path, work_dir: &Path) -> Result<(), WalError>
 }
 
 fn is_safe_wal_file_name(name: &str) -> bool {
-    name.ends_with(".wal")
-        && !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b == b'.' || b == b'w' || b == b'a' || b == b'l')
+    let Some(stem) = name.strip_suffix(".wal") else {
+        return false;
+    };
+    !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn zip_error(err: zip::result::ZipError) -> WalError {
@@ -307,6 +354,127 @@ fn zip_error(err: zip::result::ZipError) -> WalError {
         zip::result::ZipError::Io(e) => WalError::Io(e),
         other => WalError::Malformed(format!("database archive ZIP error: {other}")),
     }
+}
+
+struct ArchiveLock {
+    _file: File,
+    #[cfg(not(unix))]
+    path: PathBuf,
+}
+
+impl ArchiveLock {
+    fn acquire(archive_path: &Path) -> Result<Self, WalError> {
+        let lock_path = archive_path.with_extension("loradb.lock");
+
+        #[cfg(unix)]
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)?;
+            lock_exclusive_nonblocking(&file).map_err(|err| {
+                if err.kind() == io::ErrorKind::WouldBlock {
+                    WalError::AlreadyOpen {
+                        dir: archive_path.to_path_buf(),
+                    }
+                } else {
+                    WalError::Io(err)
+                }
+            })?;
+            Ok(Self { _file: file })
+        }
+
+        #[cfg(not(unix))]
+        {
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(file) => Ok(Self {
+                    _file: file,
+                    path: lock_path,
+                }),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    Err(WalError::AlreadyOpen {
+                        dir: archive_path.to_path_buf(),
+                    })
+                }
+                Err(err) => Err(WalError::Io(err)),
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for ArchiveLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(unix)]
+fn lock_exclusive_nonblocking(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::raw::c_int;
+
+    const LOCK_EX: c_int = 2;
+    const LOCK_NB: c_int = 4;
+
+    unsafe extern "C" {
+        fn flock(fd: c_int, operation: c_int) -> c_int;
+    }
+
+    loop {
+        let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+        if rc == 0 {
+            return Ok(());
+        }
+
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_atomic(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let src = wide(src);
+    let dst = wide(dst);
+    let rc = unsafe {
+        MoveFileExW(
+            src.as_ptr(),
+            dst.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if rc == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomic(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::rename(src, dst)
 }
 
 #[cfg(unix)]
