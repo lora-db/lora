@@ -10,5 +10,5 @@ module LoraRuby
   # Guard against redefinition so re-requiring this file (or loading
   # both paths) doesn't emit a "warning: already initialized constant"
   # when the native extension loads second with the identical value.
-  VERSION = "0.5.4" unless const_defined?(:VERSION)
+  VERSION = "0.5.5" unless const_defined?(:VERSION)
 end
