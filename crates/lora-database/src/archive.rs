@@ -108,6 +108,12 @@ impl Drop for WalArchive {
         {
             let (lock, cv) = &*self.state;
             let mut state = lock.lock().unwrap();
+            // The async archive worker may have already consumed the dirty flag
+            // before Group-mode WAL bytes were forced out of the in-memory
+            // segment buffer. Drop runs after the WAL handle is dropped, so
+            // always take one final archive snapshot from the now-flushed work
+            // directory.
+            state.dirty = true;
             state.shutdown = true;
             state.force = true;
             cv.notify_one();

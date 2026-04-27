@@ -184,6 +184,44 @@ fn named_database_recovers_write_burst_from_zip_archive() {
 }
 
 #[test]
+fn named_database_final_archive_flush_captures_group_buffer() {
+    let dir = TmpDir::new("named-group-final-flush");
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions {
+                database_dir: dir.path().to_path_buf(),
+                sync_mode: SyncMode::Group {
+                    interval_ms: 60_000,
+                },
+                ..DatabaseOpenOptions::default()
+            },
+        )
+        .unwrap();
+        db.execute(
+            "CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Grace'})",
+            rows(),
+        )
+        .unwrap();
+
+        // Let the archive debounce worker observe the dirty flag before the
+        // Group-mode WAL flusher runs. The final archive flush on drop must
+        // still snapshot the force-flushed WAL bytes, not the earlier empty
+        // segment file.
+        std::thread::sleep(std::time::Duration::from_millis(1_200));
+    }
+
+    let db = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(db.node_count(), 2);
+    assert_eq!(db.relationship_count(), 1);
+}
+
+#[test]
 fn fresh_open_then_crash_recover_replays_committed_writes() {
     let dir = TmpDir::new("recover");
 
