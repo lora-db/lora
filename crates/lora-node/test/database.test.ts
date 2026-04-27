@@ -1,6 +1,8 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -178,6 +180,64 @@ describe("Database — WAL-backed initialization", () => {
     await expect(createDatabase(notADir)).rejects.toSatisfy(
       (e) => e instanceof LoraError && e.code === "LORA_ERROR",
     );
+  });
+
+  it("loads snapshots from paths, file URLs, buffers, array buffers, and URLs", async () => {
+    const dir = await makeTempDir("lora-node-snapshot-");
+    const snapshotPath = join(dir, "graph.bin");
+
+    const source = await createDatabase();
+    await source.execute("CREATE (:Snapshot {name: 'Ada'})");
+    await source.saveSnapshot(snapshotPath);
+    const optionPath = join(dir, "graph-option.bin");
+    const pathMeta = await source.saveSnapshot({
+      format: "path",
+      path: pathToFileURL(optionPath),
+    });
+    expect(pathMeta.nodeCount).toBe(1);
+    const binary = await source.saveSnapshot("binary");
+    expect(Buffer.isBuffer(binary)).toBe(true);
+    const base64 = await source.saveSnapshot({ format: "base64" });
+    source.dispose();
+
+    const bytes = await readFile(snapshotPath);
+    const arrayBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    );
+    const dataUrl = new URL(
+      `data:application/octet-stream;base64,${bytes.toString("base64")}`,
+    );
+
+    const fileUrl = pathToFileURL(snapshotPath);
+
+    for (const input of [
+      snapshotPath,
+      fileUrl,
+      fileUrl.toString(),
+      bytes,
+      arrayBuffer,
+      binary,
+      Buffer.from(base64, "base64"),
+      Readable.from([bytes]),
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+      dataUrl,
+      dataUrl.toString(),
+    ]) {
+      const db = await createDatabase();
+      const meta = await db.loadSnapshot(input);
+      expect(meta.nodeCount).toBe(1);
+      const { rows } = await db.execute<{ name: string }>(
+        "MATCH (n:Snapshot) RETURN n.name AS name",
+      );
+      expect(rows).toEqual([{ name: "Ada" }]);
+      db.dispose();
+    }
   });
 });
 
@@ -470,6 +530,57 @@ describe("Database — vector values", () => {
     ).rejects.toSatisfy(
       (e) => e instanceof LoraError && e.code === "INVALID_PARAMS",
     );
+  });
+
+  it("streams rows with async iteration and toArray", async () => {
+    const db = await createDatabase();
+    await db.execute("UNWIND range(1, 3) AS i CREATE (:S {i: i})");
+
+    const seen: number[] = [];
+    for await (const row of db.stream<{ i: number }>(
+      "MATCH (n:S) RETURN n.i AS i ORDER BY i",
+    )) {
+      seen.push(row.i);
+    }
+    expect(seen).toEqual([1, 2, 3]);
+
+    const rows = await db
+      .rows<{ i: number }>("MATCH (n:S) RETURN n.i AS i ORDER BY i")
+      .toArray();
+    expect(rows.map((row) => row.i)).toEqual([1, 2, 3]);
+  });
+
+  it("rolls back a mutating stream when closed before exhaustion", async () => {
+    const db = await createDatabase();
+    const stream = db.stream<{ i: number }>(
+      "UNWIND range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i",
+    );
+    expect((await stream.next()).value?.i).toBe(1);
+    stream.close();
+
+    expect(await db.nodeCount()).toBe(0);
+  });
+
+  it("executes statement batches inside one transaction", async () => {
+    const db = await createDatabase();
+    const results = await db.transaction<{ v: number }>([
+      { query: "CREATE (:Tx {id: $id})", params: { id: 1 } },
+      { query: "MATCH (n:Tx) RETURN n.id AS v" },
+    ]);
+    expect(results[1]!.rows[0]!.v).toBe(1);
+
+    await expect(
+      db.transaction([
+        { query: "CREATE (:Tx {id: 2})" },
+        { query: "THIS IS NOT CYPHER" },
+      ]),
+    ).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+    );
+    const after = await db.execute<{ v: number }>(
+      "MATCH (n:Tx) RETURN n.id AS v ORDER BY v",
+    );
+    expect(after.rows.map((row) => row.v)).toEqual([1]);
   });
 
   it("isVector returns false for non-vector values", async () => {

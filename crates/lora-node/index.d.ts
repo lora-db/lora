@@ -38,6 +38,22 @@ export declare class Database {
    */
   execute(query: string, params?: Record<string, any> | null | undefined): Promise<{ columns: string[]; rows: Array<Record<string, any>> }>
   /**
+   * Open a true native row stream.
+   *
+   * The returned handle owns the Rust `QueryStream`, so rows are pulled
+   * from the executor one `next()` call at a time instead of materializing
+   * the whole result up front.
+   */
+  openStream(query: string, params?: Record<string, any> | null | undefined): QueryStream
+  /**
+   * Execute multiple statements inside one core transaction.
+   *
+   * `statements` is an array of `{ query, params? }` objects. Results are
+   * returned in statement order. If any statement fails, the transaction is
+   * rolled back by dropping the native transaction before commit.
+   */
+  transaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<Array<{ columns: string[]; rows: Array<Record<string, any>> }>>
+  /**
    * Drop every node and relationship, returning the database to an empty
    * state. Useful for test isolation. Synchronous — constant-time.
    */
@@ -60,6 +76,12 @@ export declare class Database {
    * event loop dodges the cost of a thread hop for small graphs.
    */
   saveSnapshot(path: string): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
+  /** Serialize the current graph into snapshot bytes. */
+  saveSnapshotToBytes(): Buffer
   /** Replace the current graph state with a snapshot loaded from disk. */
   loadSnapshot(path: string): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
+  /** Replace the current graph state with a snapshot loaded from bytes. */
+  loadSnapshotFromBytes(bytes: Uint8Array | Buffer): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
 }
+export type NativeQueryStream = QueryStream
+export declare class QueryStream { }

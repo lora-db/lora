@@ -21,7 +21,7 @@ use napi_derive::napi;
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    WalConfig,
+    Row, Snapshotable, TransactionMode, WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -92,6 +92,56 @@ impl Database {
         }))
     }
 
+    /// Open a true native row stream.
+    ///
+    /// The returned handle owns the Rust `QueryStream`, so rows are pulled
+    /// from the executor one `next()` call at a time instead of materializing
+    /// the whole result up front.
+    #[napi(ts_return_type = "QueryStream")]
+    pub fn open_stream(
+        &self,
+        query: String,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
+            serde_json::Value,
+        >,
+    ) -> Result<NativeQueryStream> {
+        let params_map = match params {
+            None | Some(serde_json::Value::Null) => BTreeMap::new(),
+            Some(other) => json_value_to_params(other)?,
+        };
+        let db = self.inner()?;
+        let stream = unsafe { db.stream_with_params_owned(&query, params_map) }
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+        Ok(NativeQueryStream {
+            _db: db,
+            stream: Mutex::new(Some(stream)),
+        })
+    }
+
+    /// Execute multiple statements inside one core transaction.
+    ///
+    /// `statements` is an array of `{ query, params? }` objects. Results are
+    /// returned in statement order. If any statement fails, the transaction is
+    /// rolled back by dropping the native transaction before commit.
+    #[napi(
+        ts_return_type = "Promise<Array<{ columns: string[]; rows: Array<Record<string, any>> }>>"
+    )]
+    pub fn transaction(
+        &self,
+        #[napi(ts_arg_type = "Array<{ query: string; params?: Record<string, any> | null }>")]
+        statements: serde_json::Value,
+        #[napi(
+            ts_arg_type = "\"read_write\" | \"read_only\" | \"readwrite\" | \"readonly\" | null | undefined"
+        )]
+        mode: Option<String>,
+    ) -> Result<AsyncTask<TransactionTask>> {
+        Ok(AsyncTask::new(TransactionTask {
+            db: self.inner()?,
+            statements,
+            mode,
+        }))
+    }
+
     /// Drop every node and relationship, returning the database to an empty
     /// state. Useful for test isolation. Synchronous — constant-time.
     #[napi]
@@ -141,6 +191,16 @@ impl Database {
         Ok(snapshot_meta_to_json(meta))
     }
 
+    /// Serialize the current graph into snapshot bytes.
+    #[napi(ts_return_type = "Buffer")]
+    pub fn save_snapshot_to_bytes(&self) -> Result<Buffer> {
+        let mut buf = Vec::new();
+        self.inner()?
+            .with_store(|store| store.save_snapshot(&mut buf))
+            .map_err(|e| NapiError::new(Status::GenericFailure, e.to_string()))?;
+        Ok(Buffer::from(buf))
+    }
+
     /// Replace the current graph state with a snapshot loaded from disk.
     #[napi(
         ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
@@ -150,6 +210,21 @@ impl Database {
             .inner()?
             .load_snapshot_from(&path)
             .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+        Ok(snapshot_meta_to_json(meta))
+    }
+
+    /// Replace the current graph state with a snapshot loaded from bytes.
+    #[napi(
+        ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
+    )]
+    pub fn load_snapshot_from_bytes(
+        &self,
+        #[napi(ts_arg_type = "Uint8Array | Buffer")] bytes: Buffer,
+    ) -> Result<serde_json::Value> {
+        let meta = self
+            .inner()?
+            .with_store_mut(|store| store.load_snapshot(bytes.as_ref()))
+            .map_err(|e| NapiError::new(Status::GenericFailure, e.to_string()))?;
         Ok(snapshot_meta_to_json(meta))
     }
 
@@ -176,6 +251,62 @@ fn snapshot_meta_to_json(meta: lora_database::SnapshotMeta) -> serde_json::Value
 impl Default for Database {
     fn default() -> Self {
         Self::new(None).expect("in-memory Database::default should not fail")
+    }
+}
+
+#[napi(js_name = "QueryStream")]
+pub struct NativeQueryStream {
+    _db: Arc<InnerDatabase<InMemoryGraph>>,
+    stream: Mutex<Option<lora_database::QueryStream<'static>>>,
+}
+
+#[napi]
+impl NativeQueryStream {
+    #[napi(ts_return_type = "string[]")]
+    pub fn columns(&self) -> Result<Vec<String>> {
+        let guard = self
+            .stream
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream lock poisoned"))?;
+        let stream = guard
+            .as_ref()
+            .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
+        Ok(stream.columns().to_vec())
+    }
+
+    #[napi(ts_return_type = "Record<string, any> | null")]
+    pub fn next(&self) -> Result<Option<serde_json::Value>> {
+        let mut guard = self
+            .stream
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream lock poisoned"))?;
+        let stream = guard
+            .as_mut()
+            .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
+        match stream.next_row() {
+            Ok(Some(row)) => Ok(Some(row_to_json(&row))),
+            Ok(None) => {
+                guard.take();
+                Ok(None)
+            }
+            Err(e) => {
+                guard.take();
+                Err(NapiError::new(
+                    Status::GenericFailure,
+                    format!("{LORA_ERROR_CODE}: {e}"),
+                ))
+            }
+        }
+    }
+
+    #[napi]
+    pub fn close(&self) -> Result<()> {
+        let mut guard = self
+            .stream
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "stream lock poisoned"))?;
+        guard.take();
+        Ok(())
     }
 }
 
@@ -221,34 +352,143 @@ impl Task for ExecuteTask {
             ));
         };
 
-        let columns_json: Vec<serde_json::Value> = row_arrays
-            .columns
-            .iter()
-            .map(|c| serde_json::Value::String(c.clone()))
-            .collect();
-
-        let rows_json: Vec<serde_json::Value> = row_arrays
-            .rows
-            .iter()
-            .map(|row| {
-                let mut obj = serde_json::Map::with_capacity(row_arrays.columns.len());
-                for (col, val) in row_arrays.columns.iter().zip(row.iter()) {
-                    obj.insert(col.clone(), lora_value_to_json(val));
-                }
-                serde_json::Value::Object(obj)
-            })
-            .collect();
-
-        Ok(serde_json::json!({
-            "columns": serde_json::Value::Array(columns_json),
-            "rows": serde_json::Value::Array(rows_json),
-        }))
+        Ok(serialize_rows(&row_arrays.columns, &row_arrays.rows))
     }
 
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
         // `serde-json` feature on napi bridges serde_json::Value → JS objects.
         env.to_js_value(&output)
     }
+}
+
+pub struct TransactionTask {
+    db: Arc<InnerDatabase<InMemoryGraph>>,
+    statements: serde_json::Value,
+    mode: Option<String>,
+}
+
+impl Task for TransactionTask {
+    type Output = serde_json::Value;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let mode = parse_transaction_mode(self.mode.as_deref())?;
+        let statements = parse_transaction_statements(std::mem::take(&mut self.statements))?;
+        let options = ExecuteOptions {
+            format: ResultFormat::RowArrays,
+        };
+        let mut tx = self
+            .db
+            .begin_transaction(mode)
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+
+        let mut results = Vec::with_capacity(statements.len());
+        for statement in statements {
+            let result = tx
+                .execute_with_params(&statement.query, Some(options), statement.params)
+                .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            let QueryResult::RowArrays(row_arrays) = result else {
+                return Err(NapiError::new(
+                    Status::GenericFailure,
+                    "expected RowArrays result".to_string(),
+                ));
+            };
+            results.push(serialize_rows(&row_arrays.columns, &row_arrays.rows));
+        }
+
+        tx.commit()
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+
+        Ok(serde_json::Value::Array(results))
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        env.to_js_value(&output)
+    }
+}
+
+struct TransactionStatement {
+    query: String,
+    params: BTreeMap<String, LoraValue>,
+}
+
+fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode> {
+    match mode.unwrap_or("read_write") {
+        "read_write" | "readwrite" | "rw" => Ok(TransactionMode::ReadWrite),
+        "read_only" | "readonly" | "ro" => Ok(TransactionMode::ReadOnly),
+        other => Err(NapiError::new(
+            Status::InvalidArg,
+            format!("{INVALID_PARAMS_CODE}: unknown transaction mode '{other}'"),
+        )),
+    }
+}
+
+fn parse_transaction_statements(value: serde_json::Value) -> Result<Vec<TransactionStatement>> {
+    let serde_json::Value::Array(items) = value else {
+        return Err(NapiError::new(
+            Status::InvalidArg,
+            format!("{INVALID_PARAMS_CODE}: transaction statements must be an array"),
+        ));
+    };
+
+    items
+        .into_iter()
+        .map(|item| {
+            let serde_json::Value::Object(mut obj) = item else {
+                return Err(NapiError::new(
+                    Status::InvalidArg,
+                    format!("{INVALID_PARAMS_CODE}: transaction statement must be an object"),
+                ));
+            };
+            let query = match obj.remove("query") {
+                Some(serde_json::Value::String(query)) => query,
+                _ => {
+                    return Err(NapiError::new(
+                        Status::InvalidArg,
+                        format!(
+                            "{INVALID_PARAMS_CODE}: transaction statement requires query: string"
+                        ),
+                    ));
+                }
+            };
+            let params = match obj.remove("params") {
+                None | Some(serde_json::Value::Null) => BTreeMap::new(),
+                Some(other) => json_value_to_params(other)?,
+            };
+            Ok(TransactionStatement { query, params })
+        })
+        .collect()
+}
+
+fn serialize_rows(columns: &[String], rows: &[Vec<LoraValue>]) -> serde_json::Value {
+    let columns_json: Vec<serde_json::Value> = columns
+        .iter()
+        .map(|c| serde_json::Value::String(c.clone()))
+        .collect();
+
+    let rows_json: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let mut obj = serde_json::Map::with_capacity(columns.len());
+            for (col, val) in columns.iter().zip(row.iter()) {
+                obj.insert(col.clone(), lora_value_to_json(val));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+
+    serde_json::json!({
+        "columns": serde_json::Value::Array(columns_json),
+        "rows": serde_json::Value::Array(rows_json),
+    })
+}
+
+fn row_to_json(row: &Row) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (_, name, value) in row.iter_named() {
+        obj.insert(name.into_owned(), lora_value_to_json(value));
+    }
+    serde_json::Value::Object(obj)
 }
 
 // ============================================================================

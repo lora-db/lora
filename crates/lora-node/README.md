@@ -73,6 +73,40 @@ method signatures still match `lora-wasm`.
 Call `db.dispose()` when you need to release the native handle eagerly,
 especially before reopening the same WAL directory in the same process.
 
+## Snapshots
+
+`saveSnapshot(path)` writes the current graph to a local file. It also accepts
+typed formats: `"binary"` returns a Node `Buffer`, `"base64"` returns base64
+text, and `{ format: "path", path }` accepts either a path string or `file:`
+URL.
+
+`loadSnapshot` accepts a `NodeSnapshotSource`: a filesystem path, `file:` URL,
+HTTP(S) or `data:` URL, `Buffer`, `Uint8Array`, `ArrayBuffer`, Node
+`Readable`, web `ReadableStream`, or async iterable of byte chunks.
+
+```ts
+import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { createDatabase } from "lora-node";
+
+const db = await createDatabase();
+await db.execute("CREATE (:Person {name: 'Alice'})");
+await db.saveSnapshot("./graph.lorasnap");
+const bytes = await db.saveSnapshot("binary");
+const base64 = await db.saveSnapshot({ format: "base64" });
+
+await db.loadSnapshot("./graph.lorasnap");
+await db.loadSnapshot(pathToFileURL("./graph.lorasnap"));
+await db.loadSnapshot(await readFile("./graph.lorasnap"));
+await db.loadSnapshot(createReadStream("./graph.lorasnap"));
+await db.loadSnapshot(bytes);
+await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
+```
+
+Use `loadSnapshotFromBytes(bytes)` when you already have in-memory bytes and
+want to make that intent explicit.
+
 ## Typed value model
 
 | TS type                 | Runtime shape                                                                 |

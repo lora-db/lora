@@ -25,12 +25,30 @@ export declare class Database {
     query: string,
     params?: Record<string, unknown> | null,
   ): Promise<NativeQueryResult>;
+  openStream(
+    query: string,
+    params?: Record<string, unknown> | null,
+  ): QueryStream;
+  transaction(
+    statements: Array<{ query: string; params?: Record<string, unknown> | null }>,
+    mode?: "read_write" | "read_only" | "readwrite" | "readonly" | "rw" | "ro" | null,
+  ): Promise<NativeQueryResult[]>;
   clear(): void;
   nodeCount(): number;
   relationshipCount(): number;
   dispose(): void;
   /** Atomic save. Synchronous under the store read lock. */
   saveSnapshot(path: string): NativeSnapshotMeta;
+  /** Serialize the current graph into snapshot bytes. */
+  saveSnapshotToBytes(): Buffer;
   /** Replace the current graph with the snapshot at `path`. */
   loadSnapshot(path: string): NativeSnapshotMeta;
+  /** Replace the current graph with snapshot bytes. */
+  loadSnapshotFromBytes(bytes: Uint8Array | Buffer): NativeSnapshotMeta;
+}
+
+export declare class QueryStream {
+  columns(): string[];
+  next(): Record<string, unknown> | null;
+  close(): void;
 }
