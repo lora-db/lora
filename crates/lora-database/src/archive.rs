@@ -269,7 +269,7 @@ fn write_archive_tmp(wal_dir: &Path, tmp_path: &Path) -> Result<(), WalError> {
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&tmp_path)?;
+            .open(tmp_path)?;
         let writer = BufWriter::new(file);
         let mut zip = ZipWriter::new(writer);
         // Fast deflate keeps the ZIP broadly compatible (WinRAR, Explorer,
