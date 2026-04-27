@@ -7,9 +7,16 @@
  */
 
 import type { LoraParams, QueryResult, LoraErrorCode } from "./types.js";
+import type { TransactionMode, TransactionStatement } from "./index.js";
 
 export type RequestBody =
   | { op: "execute"; query: string; params?: LoraParams | null }
+  | { op: "streamOpen"; query: string; params?: LoraParams | null }
+  | { op: "streamNext"; streamId: number }
+  | { op: "streamClose"; streamId: number }
+  | { op: "transaction"; statements: TransactionStatement[]; mode?: TransactionMode }
+  | { op: "saveSnapshotToBytes" }
+  | { op: "loadSnapshotFromBytes"; bytes: Uint8Array }
   | { op: "clear" }
   | { op: "nodeCount" }
   | { op: "relationshipCount" }
@@ -21,7 +28,17 @@ export interface Request {
 }
 
 export type ResponseBody =
-  | { ok: true; result: QueryResult | number | null }
+  | {
+      ok: true;
+      result:
+        | QueryResult
+        | QueryResult[]
+        | number
+        | Uint8Array
+        | null
+        | { streamId: number; columns: string[] }
+        | Record<string, unknown>;
+    }
   | { ok: false; error: { message: string; code: LoraErrorCode } };
 
 export interface Response {

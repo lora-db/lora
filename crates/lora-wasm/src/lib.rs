@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    Snapshotable,
+    Row, Snapshotable, TransactionMode,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -76,32 +76,69 @@ impl WasmDatabase {
             return Err(js_error(LORA_ERROR_CODE, "expected RowArrays result"));
         };
 
-        let columns_json: Vec<serde_json::Value> = row_arrays
-            .columns
-            .iter()
-            .map(|c| serde_json::Value::String(c.clone()))
-            .collect();
-
-        let rows_json: Vec<serde_json::Value> = row_arrays
-            .rows
-            .iter()
-            .map(|row| {
-                let mut obj = serde_json::Map::with_capacity(row_arrays.columns.len());
-                for (col, val) in row_arrays.columns.iter().zip(row.iter()) {
-                    obj.insert(col.clone(), lora_value_to_json(val));
-                }
-                serde_json::Value::Object(obj)
-            })
-            .collect();
-
-        let out = serde_json::json!({
-            "columns": serde_json::Value::Array(columns_json),
-            "rows": serde_json::Value::Array(rows_json),
-        });
+        let out = serialize_rows(&row_arrays.columns, &row_arrays.rows);
 
         // `json_compatible` emits plain JS objects (not Maps) so the result
         // survives `structuredClone` across the worker boundary.
         out.serialize(&Serializer::json_compatible())
+            .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
+    }
+
+    /// Open a true native row stream. Rows are pulled from the Rust executor
+    /// one `next()` call at a time.
+    #[wasm_bindgen(js_name = openStream)]
+    pub fn open_stream(&self, query: &str, params: JsValue) -> Result<WasmQueryStream, JsError> {
+        let params_map = if params.is_undefined() || params.is_null() {
+            BTreeMap::new()
+        } else {
+            let json_value: serde_json::Value = serde_wasm_bindgen::from_value(params)
+                .map_err(|e| js_error(INVALID_PARAMS_CODE, &e.to_string()))?;
+            json_value_to_params(json_value)?
+        };
+        let stream = unsafe { self.db.stream_with_params_owned(query, params_map) }
+            .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
+        Ok(WasmQueryStream {
+            _db: self.db.clone(),
+            stream: Some(stream),
+        })
+    }
+
+    /// Execute an array of `{ query, params? }` statements inside one native
+    /// transaction. Returns an array of query results in statement order.
+    #[wasm_bindgen(js_name = transaction)]
+    pub fn transaction(
+        &self,
+        statements: JsValue,
+        mode: Option<String>,
+    ) -> Result<JsValue, JsError> {
+        let json_value: serde_json::Value = serde_wasm_bindgen::from_value(statements)
+            .map_err(|e| js_error(INVALID_PARAMS_CODE, &e.to_string()))?;
+        let statements = parse_transaction_statements(json_value)?;
+        let mode = parse_transaction_mode(mode.as_deref())?;
+        let options = ExecuteOptions {
+            format: ResultFormat::RowArrays,
+        };
+        let mut tx = self
+            .db
+            .begin_transaction(mode)
+            .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
+
+        let mut results = Vec::with_capacity(statements.len());
+        for statement in statements {
+            let result = tx
+                .execute_with_params(&statement.query, Some(options), statement.params)
+                .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
+            let QueryResult::RowArrays(row_arrays) = result else {
+                return Err(js_error(LORA_ERROR_CODE, "expected RowArrays result"));
+            };
+            results.push(serialize_rows(&row_arrays.columns, &row_arrays.rows));
+        }
+
+        tx.commit()
+            .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
+
+        serde_json::Value::Array(results)
+            .serialize(&Serializer::json_compatible())
             .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
     }
 
@@ -162,10 +199,139 @@ impl Default for WasmDatabase {
     }
 }
 
+#[wasm_bindgen(js_name = WasmQueryStream)]
+pub struct WasmQueryStream {
+    _db: Arc<InnerDatabase<InMemoryGraph>>,
+    stream: Option<lora_database::QueryStream<'static>>,
+}
+
+#[wasm_bindgen(js_class = WasmQueryStream)]
+impl WasmQueryStream {
+    pub fn columns(&self) -> Result<JsValue, JsError> {
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| js_error(LORA_ERROR_CODE, "query stream is closed"))?;
+        stream
+            .columns()
+            .to_vec()
+            .serialize(&Serializer::json_compatible())
+            .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
+    }
+
+    pub fn next(&mut self) -> Result<JsValue, JsError> {
+        let stream = self
+            .stream
+            .as_mut()
+            .ok_or_else(|| js_error(LORA_ERROR_CODE, "query stream is closed"))?;
+        match stream.next_row() {
+            Ok(Some(row)) => row_to_json(&row)
+                .serialize(&Serializer::json_compatible())
+                .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string())),
+            Ok(None) => {
+                self.stream.take();
+                Ok(JsValue::NULL)
+            }
+            Err(e) => {
+                self.stream.take();
+                Err(js_error(LORA_ERROR_CODE, &format!("{e}")))
+            }
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.stream.take();
+    }
+}
+
 // ===== serialization bridge =====
 
 fn js_error(code: &str, message: &str) -> JsError {
     JsError::new(&format!("{code}: {message}"))
+}
+
+struct TransactionStatement {
+    query: String,
+    params: BTreeMap<String, LoraValue>,
+}
+
+fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode, JsError> {
+    match mode.unwrap_or("read_write") {
+        "read_write" | "readwrite" | "rw" => Ok(TransactionMode::ReadWrite),
+        "read_only" | "readonly" | "ro" => Ok(TransactionMode::ReadOnly),
+        other => Err(js_error(
+            INVALID_PARAMS_CODE,
+            &format!("unknown transaction mode '{other}'"),
+        )),
+    }
+}
+
+fn parse_transaction_statements(
+    value: serde_json::Value,
+) -> Result<Vec<TransactionStatement>, JsError> {
+    let serde_json::Value::Array(items) = value else {
+        return Err(js_error(
+            INVALID_PARAMS_CODE,
+            "transaction statements must be an array",
+        ));
+    };
+
+    items
+        .into_iter()
+        .map(|item| {
+            let serde_json::Value::Object(mut obj) = item else {
+                return Err(js_error(
+                    INVALID_PARAMS_CODE,
+                    "transaction statement must be an object",
+                ));
+            };
+            let query = match obj.remove("query") {
+                Some(serde_json::Value::String(query)) => query,
+                _ => {
+                    return Err(js_error(
+                        INVALID_PARAMS_CODE,
+                        "transaction statement requires query: string",
+                    ));
+                }
+            };
+            let params = match obj.remove("params") {
+                None | Some(serde_json::Value::Null) => BTreeMap::new(),
+                Some(other) => json_value_to_params(other)?,
+            };
+            Ok(TransactionStatement { query, params })
+        })
+        .collect()
+}
+
+fn serialize_rows(columns: &[String], rows: &[Vec<LoraValue>]) -> serde_json::Value {
+    let columns_json: Vec<serde_json::Value> = columns
+        .iter()
+        .map(|c| serde_json::Value::String(c.clone()))
+        .collect();
+
+    let rows_json: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let mut obj = serde_json::Map::with_capacity(columns.len());
+            for (col, val) in columns.iter().zip(row.iter()) {
+                obj.insert(col.clone(), lora_value_to_json(val));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+
+    serde_json::json!({
+        "columns": serde_json::Value::Array(columns_json),
+        "rows": serde_json::Value::Array(rows_json),
+    })
+}
+
+fn row_to_json(row: &Row) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (_, name, value) in row.iter_named() {
+        obj.insert(name.into_owned(), lora_value_to_json(value));
+    }
+    serde_json::Value::Object(obj)
 }
 
 fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {

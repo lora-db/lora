@@ -1,9 +1,10 @@
 /**
  * lora-wasm — typed WebAssembly bindings for the Lora graph engine.
  *
- * This entry targets Node.js (ESM) and any bundler host whose resolver maps
- * `node:module` through. Browser consumers should prefer the Worker-backed
- * API exposed in `worker-client.ts` to keep the main thread responsive.
+ * This entry targets Node.js (ESM) and browser bundlers. In browser-like
+ * hosts, `createDatabase()` tries to start the packaged Web Worker first so
+ * query work stays off the main thread. If that fails, it warns once and
+ * falls back to the in-process WASM engine.
  *
  * **Initialization is async-only.** The one canonical entry point is
  * `createDatabase()`; the WASM module is bootstrapped inside it before the
@@ -22,9 +23,31 @@ import type {
 } from "./types.js";
 import { wrapError } from "./types.js";
 import { WasmDatabase, init as wasmInit } from "./loader-node.js";
+import { createWorkerDatabase } from "./worker-client.js";
+import type { WorkerDatabase, WorkerLike } from "./worker-client.js";
+import {
+  downloadSnapshotBytes,
+  resolveSnapshotSaveFormat,
+  snapshotBytesToBase64,
+  snapshotBytesToBlob,
+  snapshotSourceToBytes,
+} from "./snapshot.js";
+import type {
+  WasmSnapshotSaveOptions,
+  WasmSnapshotSource,
+} from "./snapshot.js";
 
 export * from "./types.js";
-export { createWorkerDatabase, type WorkerDatabase } from "./worker-client.js";
+export {
+  createWorkerDatabase,
+  type WorkerDatabase,
+  type WorkerLike,
+} from "./worker-client.js";
+export type {
+  WasmSnapshotSaveFormat,
+  WasmSnapshotSaveOptions,
+  WasmSnapshotSource,
+} from "./snapshot.js";
 
 /**
  * Metadata returned by `saveSnapshotToBytes` / `loadSnapshotFromBytes`.
@@ -37,6 +60,118 @@ export interface SnapshotMeta {
   nodeCount: number;
   relationshipCount: number;
   walLsn: number | null;
+}
+
+export interface CreateDatabaseOptions {
+  /**
+   * Select where the WASM engine runs.
+   *
+   * - `"auto"` tries a Web Worker first when available, then falls back to
+   *   the main thread.
+   * - `"worker"` requires a Web Worker and rejects if startup fails.
+   * - `"main-thread"` skips Worker startup and runs the engine in-process.
+   *
+   * Defaults to `"auto"`.
+   */
+  runtime?: "auto" | "worker" | "main-thread";
+  /**
+   * Emit `console.warn` if worker startup fails and the factory falls back to
+   * the main-thread WASM engine in `"auto"` mode. Defaults to `true`.
+   */
+  warnOnFallback?: boolean;
+}
+
+export type TransactionMode =
+  | "read_write"
+  | "read_only"
+  | "readwrite"
+  | "readonly"
+  | "rw"
+  | "ro";
+
+export interface TransactionStatement {
+  query: string;
+  params?: LoraParams | null;
+}
+
+export interface RowStream<
+  T extends Record<string, LoraValue> = Record<string, LoraValue>,
+> extends AsyncIterableIterator<T> {
+  columns(): string[] | Promise<string[]>;
+  toArray(): Promise<T[]>;
+  close(): void;
+}
+
+interface NativeQueryStream {
+  columns(): unknown;
+  next(): unknown;
+  close(): void;
+}
+
+class NativeRowStream<
+  T extends Record<string, LoraValue> = Record<string, LoraValue>,
+> implements RowStream<T> {
+  readonly #inner: NativeQueryStream;
+  #closed = false;
+
+  constructor(inner: NativeQueryStream) {
+    this.#inner = inner;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<T> {
+    return this;
+  }
+
+  columns(): string[] {
+    try {
+      return this.#inner.columns() as string[];
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  async next(): Promise<IteratorResult<T>> {
+    if (this.#closed) {
+      return { done: true, value: undefined };
+    }
+    try {
+      const row = this.#inner.next() as T | null;
+      if (row === null) {
+        this.#closed = true;
+        return { done: true, value: undefined };
+      }
+      return { done: false, value: row };
+    } catch (err) {
+      this.#closed = true;
+      throw wrapError(err);
+    }
+  }
+
+  async return(): Promise<IteratorResult<T>> {
+    this.close();
+    return { done: true, value: undefined };
+  }
+
+  async toArray(): Promise<T[]> {
+    const rows: T[] = [];
+    for (;;) {
+      const next = await this.next();
+      if (next.done) {
+        return rows;
+      }
+      rows.push(next.value);
+    }
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      this.#inner.close();
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
 }
 
 let bootstrapped = false;
@@ -72,6 +207,43 @@ class DatabaseImpl {
     }
   }
 
+  stream<T extends Record<string, LoraValue> = Record<string, LoraValue>>(
+    query: string,
+    params?: LoraParams,
+  ): RowStream<T> {
+    try {
+      const native = this.#inner as unknown as {
+        openStream(query: string, params: unknown): NativeQueryStream;
+      };
+      return new NativeRowStream<T>(native.openStream(query, params ?? null));
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  rows<T extends Record<string, LoraValue> = Record<string, LoraValue>>(
+    query: string,
+    params?: LoraParams,
+  ): RowStream<T> {
+    return this.stream<T>(query, params);
+  }
+
+  async transaction<
+    T extends Record<string, LoraValue> = Record<string, LoraValue>,
+  >(
+    statements: TransactionStatement[],
+    mode: TransactionMode = "read_write",
+  ): Promise<Array<QueryResult<T>>> {
+    try {
+      const native = this.#inner as unknown as {
+        transaction(statements: unknown, mode: TransactionMode): unknown;
+      };
+      return native.transaction(statements, mode) as Array<QueryResult<T>>;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
   async clear(): Promise<void> {
     this.#inner.clear();
   }
@@ -98,6 +270,33 @@ class DatabaseImpl {
     }
   }
 
+  saveSnapshot(): Promise<Uint8Array>;
+  saveSnapshot(format: "binary"): Promise<Uint8Array>;
+  saveSnapshot(format: "base64"): Promise<string>;
+  saveSnapshot(format: "blob"): Promise<Blob>;
+  saveSnapshot(format: "download"): Promise<void>;
+  saveSnapshot(options: { format: "binary" }): Promise<Uint8Array>;
+  saveSnapshot(options: { format: "base64" }): Promise<string>;
+  saveSnapshot(options: { format: "blob"; mimeType?: string }): Promise<Blob>;
+  saveSnapshot(options: { format: "download"; filename?: string; mimeType?: string }): Promise<void>;
+  async saveSnapshot(
+    target?: WasmSnapshotSaveOptions["format"] | WasmSnapshotSaveOptions,
+  ): Promise<Uint8Array | string | Blob | void> {
+    const options = resolveSnapshotSaveFormat(target);
+    const bytes = await this.saveSnapshotToBytes();
+
+    switch (options.format) {
+      case "binary":
+        return bytes;
+      case "base64":
+        return snapshotBytesToBase64(bytes);
+      case "blob":
+        return snapshotBytesToBlob(bytes, options.mimeType);
+      case "download":
+        return downloadSnapshotBytes(bytes, options.filename, options.mimeType);
+    }
+  }
+
   /**
    * Replace the current graph state with a snapshot decoded from `bytes`.
    * Returns metadata describing the restored snapshot.
@@ -105,6 +304,16 @@ class DatabaseImpl {
   async loadSnapshotFromBytes(bytes: Uint8Array): Promise<SnapshotMeta> {
     try {
       return this.#inner.loadSnapshotFromBytes(bytes) as SnapshotMeta;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  async loadSnapshot(source: WasmSnapshotSource): Promise<SnapshotMeta> {
+    try {
+      return this.#inner.loadSnapshotFromBytes(
+        await snapshotSourceToBytes(source),
+      ) as SnapshotMeta;
     } catch (err) {
       throw wrapError(err);
     }
@@ -122,15 +331,46 @@ class DatabaseImpl {
  * Exported as a type only — there is no runtime `Database` value. To obtain
  * an instance, always use `createDatabase()`.
  */
-export type Database = DatabaseImpl;
+export type Database = DatabaseImpl | WorkerDatabase;
+
+let warnedWorkerFallback = false;
+
+function requestedRuntime(options?: CreateDatabaseOptions): "auto" | "worker" | "main-thread" {
+  return options?.runtime ?? "auto";
+}
+
+function shouldTryDefaultWorker(options?: CreateDatabaseOptions): boolean {
+  const runtime = requestedRuntime(options);
+  return runtime !== "main-thread" && typeof Worker !== "undefined";
+}
+
+function shouldFallbackToMainThread(options?: CreateDatabaseOptions): boolean {
+  return requestedRuntime(options) === "auto";
+}
+
+function warnWorkerFallback(err: unknown, options?: CreateDatabaseOptions): void {
+  if (options?.warnOnFallback === false || warnedWorkerFallback) return;
+  warnedWorkerFallback = true;
+  const detail = err instanceof Error ? err.message : String(err);
+  console.warn(
+    `[lora-wasm] Web Worker startup failed; falling back to main-thread WASM. ${detail}`,
+  );
+}
+
+function createDefaultWorker(): WorkerLike {
+  return new Worker(new URL("./worker.js", import.meta.url), {
+    type: "module",
+  }) as WorkerLike;
+}
 
 /**
  * Create and initialize a new in-memory LoraDB instance on the WASM engine.
  *
- * **This is the only supported initialization pattern** for `lora-wasm`.
- * Synchronous construction is not available — the async factory bootstraps
- * the WASM module on first call and guarantees the engine is ready before
- * the first query.
+ * In browser-like hosts this factory tries the packaged Web Worker first,
+ * pings it, and returns the worker-backed database when startup succeeds.
+ * If worker construction or bootstrap fails it warns once and falls back to
+ * the main-thread WASM engine. Pass `{ runtime: "main-thread" }` to force the
+ * in-process engine, or `{ runtime: "worker" }` to require a Worker.
  *
  * ```ts
  * import { createDatabase } from "lora-wasm";
@@ -139,11 +379,39 @@ export type Database = DatabaseImpl;
  * const res = await db.execute("MATCH (n) RETURN count(n) AS n");
  * ```
  *
- * For heavy browser workloads, use `createWorkerDatabase()` from
- * `lora-wasm/worker-client` instead — it keeps the main thread responsive
- * by running the engine in a Web Worker.
+ * Use `createMainThreadDatabase()` when you explicitly want the in-process
+ * WASM engine, or `createWorkerDatabase(worker)` when you need to supply a
+ * custom Worker instance.
  */
-export async function createDatabase(): Promise<Database> {
+export async function createMainThreadDatabase(): Promise<DatabaseImpl> {
   ensureBootstrapped();
   return new DatabaseImpl(new WasmDatabase());
+}
+
+export async function createDatabase(
+  options: CreateDatabaseOptions = {},
+): Promise<Database> {
+  if (shouldTryDefaultWorker(options)) {
+    let worker: WorkerLike | null = null;
+    try {
+      worker = createDefaultWorker();
+      const db = createWorkerDatabase(worker);
+      await db.nodeCount();
+      return db;
+    } catch (err) {
+      try {
+        worker?.terminate();
+      } catch {
+        // best-effort cleanup after a failed worker startup
+      }
+      if (!shouldFallbackToMainThread(options)) {
+        throw wrapError(err);
+      }
+      warnWorkerFallback(err, options);
+    }
+  }
+  if (requestedRuntime(options) === "worker") {
+    throw wrapError(new Error("WORKER_ERROR: Web Worker is not available"));
+  }
+  return createMainThreadDatabase();
 }

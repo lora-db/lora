@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { Buffer } from "node:buffer";
 import {
   createDatabase,
   type Database,
@@ -80,6 +81,131 @@ describe("Database — basics", () => {
     await db.clear();
     expect(await db.nodeCount()).toBe(0);
     expect(await db.relationshipCount()).toBe(0);
+  });
+
+  it("warns and falls back when default worker startup fails", async () => {
+    const originalWorker = (globalThis as { Worker?: unknown }).Worker;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      value: class {
+        constructor() {
+          throw new Error("worker disabled");
+        }
+      },
+    });
+
+    try {
+      const fallback = await createDatabase();
+      expect(await fallback.nodeCount()).toBe(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("falling back to main-thread WASM"),
+      );
+      await fallback.dispose();
+    } finally {
+      warn.mockRestore();
+      if (originalWorker === undefined) {
+        Reflect.deleteProperty(globalThis, "Worker");
+      } else {
+        Object.defineProperty(globalThis, "Worker", {
+          configurable: true,
+          value: originalWorker,
+        });
+      }
+    }
+  });
+
+  it("loads snapshots from bytes, web binary objects, and URLs", async () => {
+    const source = await createDatabase();
+    await source.execute("CREATE (:Snapshot {name: 'Ada'})");
+    const bytes = await source.saveSnapshot("binary");
+    const base64 = await source.saveSnapshot({ format: "base64" });
+    const blob = await source.saveSnapshot({ format: "blob" });
+
+    const originalDocument = (globalThis as { document?: unknown }).document;
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    let clickedDownload = false;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        body: { appendChild() {} },
+        createElement() {
+          return {
+            href: "",
+            download: "",
+            style: {},
+            click() {
+              clickedDownload = true;
+            },
+            remove() {},
+          };
+        },
+      },
+    });
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: () => "blob:lora-snapshot",
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: () => {},
+    });
+    try {
+      await source.saveSnapshot({ format: "download", filename: "graph.bin" });
+      expect(clickedDownload).toBe(true);
+    } finally {
+      if (originalDocument === undefined) {
+        Reflect.deleteProperty(globalThis, "document");
+      } else {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          value: originalDocument,
+        });
+      }
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        value: originalRevokeObjectURL,
+      });
+    }
+    source.dispose();
+
+    const arrayBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    );
+    const dataUrl = `data:application/octet-stream;base64,${base64}`;
+
+    const inputs = [
+      bytes,
+      arrayBuffer,
+      blob,
+      new Blob([bytes]),
+      new Response(bytes),
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+      dataUrl,
+      new URL(dataUrl),
+    ];
+
+    for (const input of inputs) {
+      const db = await createDatabase();
+      const meta = await db.loadSnapshot(input);
+      expect(meta.nodeCount).toBe(1);
+      const { rows } = await db.execute<{ name: string }>(
+        "MATCH (n:Snapshot) RETURN n.name AS name",
+      );
+      expect(rows).toEqual([{ name: "Ada" }]);
+      await db.dispose();
+    }
   });
 });
 
@@ -307,6 +433,57 @@ describe("Database — vector values (wasm)", () => {
     ).rejects.toSatisfy(
       (e) => e instanceof LoraError && e.code === "INVALID_PARAMS",
     );
+  });
+
+  it("streams rows with async iteration and toArray (wasm)", async () => {
+    const db = await createDatabase();
+    await db.execute("UNWIND range(1, 3) AS i CREATE (:S {i: i})");
+
+    const seen: number[] = [];
+    for await (const row of db.stream<{ i: number }>(
+      "MATCH (n:S) RETURN n.i AS i ORDER BY i",
+    )) {
+      seen.push(row.i);
+    }
+    expect(seen).toEqual([1, 2, 3]);
+
+    const rows = await db
+      .rows<{ i: number }>("MATCH (n:S) RETURN n.i AS i ORDER BY i")
+      .toArray();
+    expect(rows.map((row) => row.i)).toEqual([1, 2, 3]);
+  });
+
+  it("rolls back a mutating stream when closed before exhaustion (wasm)", async () => {
+    const db = await createDatabase();
+    const stream = db.stream<{ i: number }>(
+      "UNWIND range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i",
+    );
+    expect((await stream.next()).value?.i).toBe(1);
+    stream.close();
+
+    expect(await db.nodeCount()).toBe(0);
+  });
+
+  it("executes statement batches inside one transaction (wasm)", async () => {
+    const db = await createDatabase();
+    const results = await db.transaction<{ v: number }>([
+      { query: "CREATE (:Tx {id: $id})", params: { id: 1 } },
+      { query: "MATCH (n:Tx) RETURN n.id AS v" },
+    ]);
+    expect(results[1]!.rows[0]!.v).toBe(1);
+
+    await expect(
+      db.transaction([
+        { query: "CREATE (:Tx {id: 2})" },
+        { query: "THIS IS NOT CYPHER" },
+      ]),
+    ).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+    );
+    const after = await db.execute<{ v: number }>(
+      "MATCH (n:Tx) RETURN n.id AS v ORDER BY v",
+    );
+    expect(after.rows.map((row) => row.v)).toEqual([1]);
   });
 
   it("isVector returns false for non-vector values (wasm)", async () => {

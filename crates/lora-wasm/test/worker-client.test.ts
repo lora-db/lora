@@ -16,6 +16,11 @@ class InProcessWorker {
     error: Array<(e: { message?: string }) => void>;
   } = { message: [], error: [] };
   #db: Database | null = null;
+  #nextStreamId = 1;
+  #streams = new Map<number, AsyncIterableIterator<Record<string, unknown>> & {
+    columns?: () => string[] | Promise<string[]>;
+    close?: () => void;
+  }>();
 
   addEventListener(
     type: "message" | "error",
@@ -63,6 +68,43 @@ class InProcessWorker {
           respond({ ok: true, result });
           break;
         }
+        case "transaction": {
+          const result = await db.transaction(
+            msg.body.statements,
+            msg.body.mode ?? "read_write",
+          );
+          respond({ ok: true, result });
+          break;
+        }
+        case "streamOpen": {
+          const stream = db.stream(msg.body.query, msg.body.params ?? undefined);
+          const streamId = this.#nextStreamId++;
+          this.#streams.set(streamId, stream);
+          respond({
+            ok: true,
+            result: { streamId, columns: await stream.columns() },
+          });
+          break;
+        }
+        case "streamNext": {
+          const stream = this.#streams.get(msg.body.streamId);
+          if (!stream) throw new Error("LORA_ERROR: query stream is closed");
+          const next = await stream.next();
+          if (next.done) {
+            this.#streams.delete(msg.body.streamId);
+            respond({ ok: true, result: null });
+          } else {
+            respond({ ok: true, result: next.value });
+          }
+          break;
+        }
+        case "streamClose": {
+          const stream = this.#streams.get(msg.body.streamId);
+          stream?.close?.();
+          this.#streams.delete(msg.body.streamId);
+          respond({ ok: true, result: null });
+          break;
+        }
         case "clear": {
           await db.clear();
           respond({ ok: true, result: null });
@@ -77,6 +119,8 @@ class InProcessWorker {
           break;
         }
         case "dispose": {
+          for (const stream of this.#streams.values()) stream.close?.();
+          this.#streams.clear();
           db.dispose();
           this.#db = null;
           respond({ ok: true, result: null });
@@ -119,6 +163,20 @@ describe("WorkerDatabase — message protocol", () => {
       "MATCH (n:P) RETURN n.name AS name",
     );
     expect(result.rows[0]!.name).toBe("Bob");
+  });
+
+  it("supports stream and transaction helpers over the worker protocol", async () => {
+    await db.transaction([
+      { query: "UNWIND range(1, 3) AS i CREATE (:W {i: i})" },
+    ]);
+
+    const seen: number[] = [];
+    for await (const row of db.stream<{ i: number }>(
+      "MATCH (n:W) RETURN n.i AS i ORDER BY i",
+    )) {
+      seen.push(row.i);
+    }
+    expect(seen).toEqual([1, 2, 3]);
   });
 
   it("surfaces LORA_ERROR from the worker", async () => {

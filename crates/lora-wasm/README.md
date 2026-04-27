@@ -37,19 +37,24 @@ npm run test:browser
 npm run pack:dry
 ```
 
-## Two execution modes
+## Execution modes
 
-### 1. In-process (Node / scripts)
+### 1. Default: Worker first, main-thread fallback
 
 `lora-wasm` is **async-only** — the sole initialization pattern is
 `createDatabase()`, which bootstraps the WASM module on first call.
 There is no synchronous constructor and no `Database.create()`
 static; `Database` is a type-only export.
 
+In browser-like hosts, `createDatabase()` tries to spawn the packaged module
+Worker first and pings it before returning. If the Worker cannot be created or
+fails during startup, the package emits one `console.warn` and falls back to
+the in-process WASM engine so the app can still run.
+
 ```ts
 import { createDatabase, isNode } from "lora-wasm";
 
-const db = await createDatabase();
+const db = await createDatabase(); // Worker-backed in browsers when possible
 await db.execute("CREATE (:Person {name: $n})", { n: "Alice" });
 
 const r = await db.execute("MATCH (n:Person) RETURN n");
@@ -58,7 +63,36 @@ for (const row of r.rows) {
 }
 ```
 
-### 2. Non-blocking Web Worker (browser)
+To force the in-process engine:
+
+```ts
+const db = await createDatabase({ runtime: "main-thread" });
+```
+
+To require Worker startup instead of falling back:
+
+```ts
+const db = await createDatabase({ runtime: "worker" });
+```
+
+To disable the fallback warning:
+
+```ts
+const db = await createDatabase({ warnOnFallback: false });
+```
+
+### 2. Explicit main-thread WASM
+
+```ts
+import { createMainThreadDatabase } from "lora-wasm";
+
+const db = await createMainThreadDatabase();
+```
+
+### 3. Custom Web Worker
+
+Use this when you need to control the Worker URL, lifecycle, bundler entry, or
+pooling strategy.
 
 ```ts
 import { createWorkerDatabase } from "lora-wasm/worker-client";
@@ -75,10 +109,41 @@ const { rows } = await db.execute("MATCH (n) RETURN n.n AS n");
 The worker entry (`ts/worker.ts`) hosts the WASM module. The main thread only
 posts messages, so long-running queries never block the event loop / UI.
 
-### 3. In-process but typed like the worker (advanced)
+### 4. In-process but typed like the worker (advanced)
 
 The same `createWorkerDatabase` signature accepts any `WorkerLike` object —
 useful for tests and for swapping execution backends behind the same API.
+
+## Snapshots
+
+WASM has no filesystem access, so `saveSnapshot()` defaults to a `Uint8Array`.
+It also accepts typed formats: `"base64"` returns base64 text, `"blob"` returns
+a `Blob`, and `"download"` triggers a browser download from the main thread.
+
+`loadSnapshot` accepts a `WasmSnapshotSource`: `Uint8Array`, `ArrayBuffer`,
+`Blob`/`File`, `Response`, web `ReadableStream`, string URL, or `URL`. It does
+not include Node `Buffer`; use `Uint8Array` bytes when running the WASM package
+from Node.
+
+```ts
+import { createDatabase } from "lora-wasm";
+
+const db = await createDatabase();
+await db.execute("CREATE (:Person {name: 'Alice'})");
+
+const bytes = await db.saveSnapshotToBytes();
+const sameBytes = await db.saveSnapshot("binary");
+const blob = await db.saveSnapshot({ format: "blob" });
+await db.saveSnapshot({ format: "download", filename: "graph.lorasnap" });
+
+await db.loadSnapshot(bytes);
+await db.loadSnapshot(blob);
+await db.loadSnapshot(new Response(bytes).body!);
+await db.loadSnapshot(new URL("/graph.lorasnap", location.href));
+```
+
+`loadSnapshotFromBytes(bytes)` remains available for the narrow
+`Uint8Array`-only path.
 
 ## Typed value model
 
@@ -140,8 +205,7 @@ public surface — consumers can swap backends without rewriting types.
   millisecond-granular, so the nanosecond field on returned values is
   zero below the millisecond boundary.
 - Engine errors cross the worker boundary as `LoraError` with a
-  narrowed `code`; the engine does not currently stream query progress
-  or offer cancellation.
+  narrowed `code`; the engine does not currently offer query cancellation.
 
 ## Feasibility assessment
 
