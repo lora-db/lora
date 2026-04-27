@@ -10,6 +10,7 @@ and asserts that the loop kept ticking while the engine worked.
 from __future__ import annotations
 
 import asyncio
+import io
 import time
 from pathlib import Path
 
@@ -129,3 +130,43 @@ async def test_node_result_shape_is_typed() -> None:
     n = r["rows"][0]["n"]
     assert is_node(n)
     assert n["properties"]["name"] == "Bob"
+
+
+async def test_async_stream_and_transaction_helpers() -> None:
+    db = await AsyncDatabase.create()
+    results = await db.transaction(
+        [
+            {"query": "UNWIND range(1, 3) AS i CREATE (:S {i: i})"},
+            {"query": "MATCH (n:S) RETURN n.i AS i ORDER BY i"},
+        ]
+    )
+    assert [row["i"] for row in results[1]["rows"]] == [1, 2, 3]
+
+    seen = []
+    async for row in db.stream("MATCH (n:S) RETURN n.i AS i ORDER BY i"):
+        seen.append(row["i"])
+    assert seen == [1, 2, 3]
+
+
+async def test_async_snapshot_bytes_and_readers() -> None:
+    source = await AsyncDatabase.create()
+    await source.execute("CREATE (:Snapshot {name: 'Ada'})")
+
+    binary = await source.save_snapshot("binary")
+    assert isinstance(binary, bytes)
+    encoded = await source.save_snapshot("base64")
+    assert isinstance(encoded, str)
+
+    writer = io.BytesIO()
+    meta = await source.save_snapshot(writer)
+    assert meta["nodeCount"] == 1
+
+    for item in [binary, io.BytesIO(writer.getvalue()), (encoded, "base64")]:
+        target = await AsyncDatabase.create()
+        if isinstance(item, tuple):
+            meta = await target.load_snapshot(item[0], format=item[1])
+        else:
+            meta = await target.load_snapshot(item)
+        assert meta["nodeCount"] == 1
+        rows = (await target.execute("MATCH (n:Snapshot) RETURN n.name AS name"))["rows"]
+        assert rows == [{"name": "Ada"}]

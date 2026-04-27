@@ -129,6 +129,27 @@ binding exposes WAL-backed initialization plus the existing
 `save_snapshot` / `load_snapshot` APIs, but not checkpoint, truncate,
 status, or sync-mode controls.
 
+Snapshots accept the same broad shapes in sync and async APIs:
+
+```python
+import io
+from lora_python import Database
+
+db = Database.create()
+db.execute("CREATE (:Person {name: 'Alice'})")
+
+meta = db.save_snapshot("./graph.lorasnap")   # path / PathLike
+raw = db.save_snapshot("binary")              # bytes
+text = db.save_snapshot("base64")             # base64 str
+buf = io.BytesIO()
+meta = db.save_snapshot(buf)                  # binary writer
+
+db.load_snapshot("./graph.lorasnap")
+db.load_snapshot(raw)
+db.load_snapshot(io.BytesIO(buf.getvalue()))
+db.load_snapshot(text, format="base64")
+```
+
 ## Architecture
 
 ```

@@ -21,7 +21,7 @@ import asyncio
 import contextvars
 import functools
 import sys
-from typing import Any, Callable, Mapping, Optional, TypeVar
+from typing import Any, AsyncIterator, Callable, Iterable, Mapping, Optional, TypeVar
 
 from ._native import Database as _Database
 from .types import LoraParams, QueryResult, SnapshotMeta
@@ -103,28 +103,63 @@ class AsyncDatabase:
             dict(params) if params is not None else None,
         )
 
+    async def stream(
+        self,
+        query: str,
+        params: Optional[Mapping[str, Any]] = None,
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Yield query rows asynchronously.
+
+        The native binding keeps a Rust ``QueryStream`` open and pulls one
+        row for each async iteration step.
+        """
+        stream = self._inner.stream(query, dict(params) if params is not None else None)
+        for row in stream:
+            yield row
+            await asyncio.sleep(0)
+
+    async def transaction(
+        self,
+        statements: Iterable[Mapping[str, Any]],
+        mode: str = "read_write",
+    ) -> list[QueryResult]:
+        """Execute a statement batch inside one native transaction."""
+        normalized = []
+        for statement in statements:
+            item = dict(statement)
+            if "params" in item and item["params"] is not None:
+                item["params"] = dict(item["params"])
+            normalized.append(item)
+        return await _to_thread(self._inner.transaction, normalized, mode)
+
     async def clear(self) -> None:
         """Drop every node and relationship."""
         await _to_thread(self._inner.clear)
 
-    async def save_snapshot(self, path: str) -> SnapshotMeta:
-        """Save the graph to a snapshot file.
+    async def save_snapshot(
+        self,
+        target: Any = None,
+        format: Optional[str] = None,
+    ) -> SnapshotMeta | bytes | str:
+        """Save the graph to a snapshot path, bytes, base64, or writer.
 
-        The save is atomic — the target path is only replaced once the
-        full payload has been written and fsync'd. Runs on a worker
-        thread so the event loop stays free; concurrent ``execute``
-        read-only coroutines can share the store read lock while writes wait
-        for the duration of the save.
+        Path saves return ``SnapshotMeta``. ``"binary"`` / ``"bytes"`` return
+        ``bytes``. ``"base64"`` returns text. A file-like writer receives the
+        snapshot bytes and returns ``SnapshotMeta``.
         """
-        return await _to_thread(self._inner.save_snapshot, path)
+        return await _to_thread(self._inner.save_snapshot, target, format)
 
-    async def load_snapshot(self, path: str) -> SnapshotMeta:
-        """Replace the current graph state with the snapshot at ``path``.
+    async def load_snapshot(
+        self,
+        source: Any,
+        format: Optional[str] = None,
+    ) -> SnapshotMeta:
+        """Replace the current graph state from a path, bytes, base64, or reader.
 
         Concurrent ``execute`` coroutines block on the store write lock
         until the load completes.
         """
-        return await _to_thread(self._inner.load_snapshot, path)
+        return await _to_thread(self._inner.load_snapshot, source, format)
 
     @property
     def node_count(self) -> int:

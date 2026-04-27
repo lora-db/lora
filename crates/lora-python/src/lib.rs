@@ -24,11 +24,12 @@ use std::sync::{Arc, Mutex};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::pybacked::PyBackedBytes;
+use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    WalConfig,
+    Row, Snapshotable, TransactionMode, WalConfig,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -63,6 +64,7 @@ create_exception!(
 #[pymodule]
 fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
+    m.add_class::<PyQueryStream>()?;
     m.add("LoraError", py.get_type_bound::<LoraError>())?;
     m.add("LoraQueryError", py.get_type_bound::<LoraQueryError>())?;
     m.add(
@@ -161,6 +163,72 @@ impl Database {
         Ok(out)
     }
 
+    /// Return an iterator over result rows. The query is materialized by
+    /// `execute()` first, then Python consumes the row list lazily.
+    #[pyo3(signature = (query, params=None))]
+    fn stream<'py>(
+        &self,
+        _py: Python<'py>,
+        query: String,
+        params: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<PyQueryStream> {
+        let params_map = match params {
+            Some(p) if !p.is_none() => py_object_to_params(p)?,
+            _ => BTreeMap::new(),
+        };
+        let db = self.inner()?;
+        let stream = unsafe { db.stream_with_params_owned(&query, params_map) }
+            .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+        Ok(PyQueryStream {
+            _db: db,
+            stream: Some(stream),
+        })
+    }
+
+    /// Execute statement objects inside one native transaction.
+    ///
+    /// `statements` is an iterable of mappings with `query` and optional
+    /// `params` keys. Results are returned in statement order; if any
+    /// statement fails the transaction is dropped before commit.
+    #[pyo3(signature = (statements, mode="read_write"))]
+    fn transaction<'py>(
+        &self,
+        py: Python<'py>,
+        statements: &Bound<'py, PyAny>,
+        mode: &str,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let parsed_mode = parse_transaction_mode(mode)?;
+        let parsed_statements = py_statements_to_transaction(statements)?;
+        let db = self.inner()?;
+
+        let exec_results = py.allow_threads(move || {
+            let mut tx = db.begin_transaction(parsed_mode)?;
+            let mut results = Vec::with_capacity(parsed_statements.len());
+            for statement in parsed_statements {
+                let options = ExecuteOptions {
+                    format: ResultFormat::RowArrays,
+                };
+                let result =
+                    tx.execute_with_params(&statement.query, Some(options), statement.params)?;
+                results.push(result);
+            }
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(results)
+        });
+
+        let exec_results = exec_results.map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+        let out = PyList::empty_bound(py);
+        for result in exec_results {
+            let QueryResult::RowArrays(row_arrays) = result else {
+                return Err(LoraQueryError::new_err(
+                    "expected RowArrays result".to_string(),
+                ));
+            };
+            out.append(row_arrays_to_py(py, &row_arrays.columns, &row_arrays.rows)?)?;
+        }
+        Ok(out)
+    }
+
     /// Drop every node and relationship. Constant-time.
     fn clear(&self) -> PyResult<()> {
         self.inner()?.clear();
@@ -189,44 +257,115 @@ impl Database {
         Ok(self.inner()?.relationship_count() as u64)
     }
 
-    /// Save the graph to a snapshot file. Atomic — the target path is only
-    /// replaced once the whole payload has been written + fsync'd.
-    ///
-    /// Returns a dict with the snapshot metadata (format version, node /
-    /// relationship count, WAL LSN).
-    fn save_snapshot<'py>(&self, py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
+    /// Save the graph to a snapshot file, byte string, base64 string, or
+    /// file-like writer.
+    #[pyo3(signature = (target=None, format=None))]
+    fn save_snapshot<'py>(
+        &self,
+        py: Python<'py>,
+        target: Option<&Bound<'py, PyAny>>,
+        format: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
         let db = self.inner()?;
+        let requested = format.map(str::to_string).or_else(|| {
+            target
+                .and_then(|value| value.extract::<String>().ok())
+                .filter(|value| matches!(value.as_str(), "binary" | "bytes" | "base64"))
+                .map(|value| match value.as_str() {
+                    "bytes" => "binary".to_string(),
+                    other => other.to_string(),
+                })
+        });
+
+        if matches!(requested.as_deref(), Some("binary" | "base64")) || target.is_none() {
+            let (bytes, _meta) = save_snapshot_to_vec(py, db)?;
+            return match requested.as_deref().unwrap_or("binary") {
+                "base64" => py_base64_encode(py, &bytes),
+                _ => Ok(PyBytes::new_bound(py, &bytes).into_any().unbind()),
+            };
+        }
+
+        let Some(target) = target else {
+            return Err(PyTypeError::new_err("snapshot target is required"));
+        };
+
+        if has_attr(target, "write")? {
+            let (bytes, meta) = save_snapshot_to_vec(py, db)?;
+            target.call_method1("write", (PyBytes::new_bound(py, &bytes),))?;
+            return Ok(snapshot_meta_to_py(py, meta)?.into_any().unbind());
+        }
+
+        let path = py_fspath(target)?;
         let meta = py
             .allow_threads(move || db.save_snapshot_to(&path))
             .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
-
-        let out = PyDict::new_bound(py);
-        out.set_item("formatVersion", meta.format_version)?;
-        out.set_item("nodeCount", meta.node_count as u64)?;
-        out.set_item("relationshipCount", meta.relationship_count as u64)?;
-        match meta.wal_lsn {
-            Some(lsn) => out.set_item("walLsn", lsn)?,
-            None => out.set_item("walLsn", py.None())?,
-        }
-        Ok(out)
+        Ok(snapshot_meta_to_py(py, meta)?.into_any().unbind())
     }
 
-    /// Replace the current graph state with a snapshot loaded from disk.
-    fn load_snapshot<'py>(&self, py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
+    /// Replace the current graph state from a path, bytes-like object,
+    /// base64 string, or file-like reader.
+    #[pyo3(signature = (source, format=None))]
+    fn load_snapshot<'py>(
+        &self,
+        py: Python<'py>,
+        source: &Bound<'py, PyAny>,
+        format: Option<&str>,
+    ) -> PyResult<Bound<'py, PyDict>> {
         let db = self.inner()?;
+
+        if matches!(format, Some("base64")) {
+            let bytes = py_base64_decode(py, source)?;
+            let meta = py
+                .allow_threads(move || {
+                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                })
+                .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+            return snapshot_meta_to_py(py, meta);
+        }
+
+        if let Ok(bytes) = source.extract::<PyBackedBytes>() {
+            let bytes = bytes.as_ref().to_vec();
+            let meta = py
+                .allow_threads(move || {
+                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                })
+                .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+            return snapshot_meta_to_py(py, meta);
+        }
+
+        if has_attr(source, "read")? {
+            let bytes_obj = source.call_method0("read")?;
+            let bytes = bytes_obj.extract::<PyBackedBytes>().map_err(|_| {
+                PyTypeError::new_err("snapshot reader.read() must return bytes or bytearray")
+            })?;
+            let bytes = bytes.as_ref().to_vec();
+            let meta = py
+                .allow_threads(move || {
+                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                })
+                .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+            return snapshot_meta_to_py(py, meta);
+        }
+
+        if has_attr(source, "tobytes")? {
+            let bytes_obj = source.call_method0("tobytes")?;
+            let bytes = bytes_obj.extract::<PyBackedBytes>().map_err(|_| {
+                PyTypeError::new_err("snapshot source.tobytes() must return bytes or bytearray")
+            })?;
+            let bytes = bytes.as_ref().to_vec();
+            let meta = py
+                .allow_threads(move || {
+                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                })
+                .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
+            return snapshot_meta_to_py(py, meta);
+        }
+
+        let path = py_fspath(source)?;
         let meta = py
             .allow_threads(move || db.load_snapshot_from(&path))
             .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
-
-        let out = PyDict::new_bound(py);
-        out.set_item("formatVersion", meta.format_version)?;
-        out.set_item("nodeCount", meta.node_count as u64)?;
-        out.set_item("relationshipCount", meta.relationship_count as u64)?;
-        match meta.wal_lsn {
-            Some(lsn) => out.set_item("walLsn", lsn)?,
-            None => out.set_item("walLsn", py.None())?,
-        }
-        Ok(out)
+        snapshot_meta_to_py(py, meta)
     }
 
     fn __repr__(&self) -> String {
@@ -237,6 +376,106 @@ impl Database {
                 db.relationship_count(),
             ),
             None => "<lora_python.Database closed>".to_string(),
+        }
+    }
+}
+
+fn save_snapshot_to_vec(
+    py: Python<'_>,
+    db: Arc<InnerDatabase<InMemoryGraph>>,
+) -> PyResult<(Vec<u8>, lora_database::SnapshotMeta)> {
+    let result = py.allow_threads(move || {
+        let mut bytes = Vec::new();
+        let meta = db.with_store(|store| store.save_snapshot(&mut bytes))?;
+        Ok::<_, lora_store::SnapshotError>((bytes, meta))
+    });
+    result.map_err(|e| LoraQueryError::new_err(format!("{e}")))
+}
+
+fn snapshot_meta_to_py<'py>(
+    py: Python<'py>,
+    meta: lora_database::SnapshotMeta,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new_bound(py);
+    out.set_item("formatVersion", meta.format_version)?;
+    out.set_item("nodeCount", meta.node_count as u64)?;
+    out.set_item("relationshipCount", meta.relationship_count as u64)?;
+    match meta.wal_lsn {
+        Some(lsn) => out.set_item("walLsn", lsn)?,
+        None => out.set_item("walLsn", py.None())?,
+    }
+    Ok(out)
+}
+
+fn has_attr(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<bool> {
+    obj.hasattr(name)
+}
+
+fn py_fspath(obj: &Bound<'_, PyAny>) -> PyResult<String> {
+    let os = obj.py().import_bound("os")?;
+    let path = os.getattr("fspath")?.call1((obj,))?;
+    path.extract::<String>().map_err(|_| {
+        PyTypeError::new_err("snapshot path must be str, os.PathLike[str], bytes, or a stream")
+    })
+}
+
+fn py_base64_encode(py: Python<'_>, bytes: &[u8]) -> PyResult<Py<PyAny>> {
+    let base64 = py.import_bound("base64")?;
+    let encoded = base64
+        .getattr("b64encode")?
+        .call1((PyBytes::new_bound(py, bytes),))?;
+    let text = encoded.call_method1("decode", ("ascii",))?;
+    Ok(text.unbind())
+}
+
+fn py_base64_decode(py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    let base64 = py.import_bound("base64")?;
+    let decoded = base64.getattr("b64decode")?.call1((source,))?;
+    decoded
+        .extract::<PyBackedBytes>()
+        .map(|bytes| bytes.as_ref().to_vec())
+        .map_err(|e| PyTypeError::new_err(format!("invalid base64 snapshot: {e}")))
+}
+
+#[pyclass(name = "QueryStream", module = "lora_python._native", unsendable)]
+pub struct PyQueryStream {
+    _db: Arc<InnerDatabase<InMemoryGraph>>,
+    stream: Option<lora_database::QueryStream<'static>>,
+}
+
+#[pymethods]
+impl PyQueryStream {
+    fn columns(&self) -> PyResult<Vec<String>> {
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| LoraQueryError::new_err("query stream is closed"))?;
+        Ok(stream.columns().to_vec())
+    }
+
+    fn close(&mut self) {
+        self.stream.take();
+    }
+
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let stream = match self.stream.as_mut() {
+            Some(stream) => stream,
+            None => return Ok(None),
+        };
+        match stream.next_row() {
+            Ok(Some(row)) => Ok(Some(row_to_py_dict(py, &row)?)),
+            Ok(None) => {
+                self.stream.take();
+                Ok(None)
+            }
+            Err(e) => {
+                self.stream.take();
+                Err(LoraQueryError::new_err(format!("{e}")))
+            }
         }
     }
 }
@@ -261,6 +500,77 @@ fn open_database(wal_dir: Option<String>) -> Result<Arc<InnerDatabase<InMemoryGr
         None => InnerDatabase::in_memory(),
     };
     Ok(Arc::new(db))
+}
+
+struct TransactionStatement {
+    query: String,
+    params: BTreeMap<String, LoraValue>,
+}
+
+fn parse_transaction_mode(mode: &str) -> PyResult<TransactionMode> {
+    match mode {
+        "read_write" | "readwrite" | "rw" => Ok(TransactionMode::ReadWrite),
+        "read_only" | "readonly" | "ro" => Ok(TransactionMode::ReadOnly),
+        other => Err(InvalidParamsError::new_err(format!(
+            "unknown transaction mode '{other}'"
+        ))),
+    }
+}
+
+fn py_statements_to_transaction(
+    statements: &Bound<'_, PyAny>,
+) -> PyResult<Vec<TransactionStatement>> {
+    let iter = statements
+        .iter()
+        .map_err(|_| InvalidParamsError::new_err("transaction statements must be an iterable"))?;
+    let mut out = Vec::new();
+    for item in iter {
+        let item = item?;
+        let mapping = item
+            .downcast::<PyDict>()
+            .map_err(|_| InvalidParamsError::new_err("transaction statement must be a mapping"))?;
+        let query_any = mapping
+            .get_item("query")?
+            .ok_or_else(|| InvalidParamsError::new_err("transaction statement requires query"))?;
+        let query = query_any.extract::<String>().map_err(|_| {
+            InvalidParamsError::new_err("transaction statement query must be a string")
+        })?;
+        let params = match mapping.get_item("params")? {
+            Some(params) if !params.is_none() => py_object_to_params(&params)?,
+            _ => BTreeMap::new(),
+        };
+        out.push(TransactionStatement { query, params });
+    }
+    Ok(out)
+}
+
+fn row_arrays_to_py<'py>(
+    py: Python<'py>,
+    columns: &[String],
+    rows: &[Vec<LoraValue>],
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new_bound(py);
+    let columns_py = PyList::new_bound(py, columns.iter().map(|c| c.as_str()));
+    out.set_item("columns", columns_py)?;
+
+    let rows_py = PyList::empty_bound(py);
+    for row in rows {
+        let py_row = PyDict::new_bound(py);
+        for (col, val) in columns.iter().zip(row.iter()) {
+            py_row.set_item(col, lora_value_to_py(py, val)?)?;
+        }
+        rows_py.append(py_row)?;
+    }
+    out.set_item("rows", rows_py)?;
+    Ok(out)
+}
+
+fn row_to_py_dict<'py>(py: Python<'py>, row: &Row) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new_bound(py);
+    for (_, name, value) in row.iter_named() {
+        out.set_item(name.as_ref(), lora_value_to_py(py, value)?)?;
+    }
+    Ok(out)
 }
 
 // ============================================================================

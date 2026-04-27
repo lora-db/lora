@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,45 @@ def test_wal_open_failure_raises_query_error(tmp_path: Path) -> None:
 
     with pytest.raises(LoraQueryError):
         Database.create(str(not_a_dir))
+
+def test_snapshot_bytes_base64_pathlike_and_streams(tmp_path: Path) -> None:
+    source = Database.create()
+    source.execute("CREATE (:Snapshot {name: 'Ada'})")
+
+    path = tmp_path / "graph.bin"
+    meta = source.save_snapshot(path)
+    assert meta["nodeCount"] == 1
+    assert path.exists()
+
+    binary = source.save_snapshot("binary")
+    assert isinstance(binary, bytes)
+    assert len(binary) > 0
+
+    encoded = source.save_snapshot("base64")
+    assert isinstance(encoded, str)
+    assert len(encoded) > 0
+
+    writer = io.BytesIO()
+    meta = source.save_snapshot(writer)
+    assert meta["nodeCount"] == 1
+    assert writer.getvalue()
+
+    for item in [
+        path,
+        binary,
+        bytearray(binary),
+        memoryview(binary),
+        io.BytesIO(writer.getvalue()),
+        (encoded, "base64"),
+    ]:
+        target = Database.create()
+        if isinstance(item, tuple):
+            meta = target.load_snapshot(item[0], format=item[1])
+        else:
+            meta = target.load_snapshot(item)
+        assert meta["nodeCount"] == 1
+        rows = target.execute("MATCH (n:Snapshot) RETURN n.name AS name")["rows"]
+        assert rows == [{"name": "Ada"}]
 
 
 def test_roundtrips_mixed_list() -> None:
@@ -362,6 +402,39 @@ def test_vector_param_with_unknown_coord_type_raises_invalid_params() -> None:
                 }
             },
         )
+
+
+def test_stream_and_transaction_helpers() -> None:
+    db = Database.create()
+    results = db.transaction(
+        [
+            {"query": "UNWIND range(1, 3) AS i CREATE (:S {i: i})"},
+            {"query": "MATCH (n:S) RETURN n.i AS i ORDER BY i"},
+        ]
+    )
+    assert [row["i"] for row in results[1]["rows"]] == [1, 2, 3]
+    assert [row["i"] for row in db.stream("MATCH (n:S) RETURN n.i AS i ORDER BY i")] == [
+        1,
+        2,
+        3,
+    ]
+    stream = db.stream("UNWIND range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i")
+    assert next(stream)["i"] == 1
+    stream.close()
+    assert db.node_count == 3
+
+    with pytest.raises(LoraQueryError):
+        db.transaction(
+            [
+                {"query": "CREATE (:S {i: 99})"},
+                {"query": "THIS IS NOT CYPHER"},
+            ]
+        )
+    assert [row["i"] for row in db.execute("MATCH (n:S) RETURN n.i AS i ORDER BY i")["rows"]] == [
+        1,
+        2,
+        3,
+    ]
 
 
 def test_is_vector_returns_false_for_non_vectors() -> None:
