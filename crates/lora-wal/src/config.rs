@@ -14,9 +14,11 @@ pub enum SyncMode {
     #[default]
     PerCommit,
 
-    /// Buffer commits and `fsync` on a fixed cadence on a background
-    /// thread. Trades the last `interval_ms` of commits for higher
-    /// throughput on bulk-load workloads.
+    /// Write commit bytes to the OS immediately, then `fsync` on a fixed
+    /// cadence on a background thread. This survives ordinary process death
+    /// after `flush()` returns, but can still trade the last `interval_ms` of
+    /// commits on power loss or kernel crash for higher throughput on
+    /// bulk-load workloads.
     ///
     /// A background fsync failure poisons the WAL: the next `commit` /
     /// `flush` / `force_fsync` returns [`crate::WalError::Poisoned`] and

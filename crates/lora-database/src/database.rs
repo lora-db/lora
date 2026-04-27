@@ -140,6 +140,15 @@ impl Database<InMemoryGraph> {
         Ok(Transaction::new(live, self.wal.clone(), mode))
     }
 
+    /// Force any pending WAL bytes to durable storage and, for archive-backed
+    /// databases, refresh the portable `.loradb` file before returning.
+    pub fn sync(&self) -> Result<()> {
+        if let Some(wal) = &self.wal {
+            wal.force_fsync()?;
+        }
+        Ok(())
+    }
+
     /// Restore from a snapshot file then replay any WAL records past
     /// it.
     ///
@@ -596,32 +605,42 @@ where
     // instead, so swapping in a new backend only requires changing one type
     // parameter.
 
+    /// Drop every node and relationship, returning WAL/archive errors to the
+    /// caller.
+    ///
+    /// When a WAL is attached, the clear is wrapped in `arm`/`commit` so the
+    /// `MutationEvent::Clear` fired by the store reaches the log inside a
+    /// transaction. If a failure happens after the in-memory graph has been
+    /// cleared, the recorder is poisoned by the failing WAL path and future
+    /// writes fail until the database is reopened from durable state.
+    pub fn try_clear(&self) -> Result<()> {
+        let mut guard = self.write_store();
+        let Some(rec) = &self.wal else {
+            guard.clear();
+            return Ok(());
+        };
+
+        rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
+        guard.clear();
+        match rec.commit() {
+            Ok(WroteCommit::Yes) => {
+                rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
+            }
+            Ok(WroteCommit::No) => {}
+            Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
+        }
+        if let Some(reason) = rec.poisoned() {
+            return Err(anyhow!("WAL poisoned: {reason}"));
+        }
+        Ok(())
+    }
+
     /// Drop every node and relationship.
     ///
-    /// When a WAL is attached, `clear()` is wrapped in `arm`/`commit`
-    /// so the `MutationEvent::Clear` fired by the store reaches the
-    /// log inside a transaction (without arming, the recorder would
-    /// poison itself on the first event). WAL failures here are
-    /// best-effort: the in-memory state is still cleared so the
-    /// caller's contract holds, but the recorder's poisoned flag
-    /// will surface to the next query.
+    /// This compatibility helper keeps the historical infallible Rust API.
+    /// Bindings that can report errors should call [`Self::try_clear`].
     pub fn clear(&self) {
-        let mut guard = self.write_store();
-        match &self.wal {
-            None => guard.clear(),
-            Some(rec) => {
-                let armed = rec.arm();
-                guard.clear();
-                if armed.is_ok() {
-                    // `clear()` always emits a `MutationEvent::Clear`,
-                    // so commit returns `WroteCommit::Yes` and we
-                    // flush. If that order ever changes, the worst
-                    // case is one redundant flush call.
-                    let _ = rec.commit();
-                    let _ = rec.flush();
-                }
-            }
-        }
+        let _ = self.try_clear();
     }
 
     /// Number of nodes currently in the graph.

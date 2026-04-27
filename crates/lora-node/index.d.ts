@@ -13,22 +13,21 @@
  * blocking the JS event loop.
  *
  * With no constructor arg the database is purely in-memory. Passing a
- * database name plus `database_dir` enables archive-backed persistence: the
- * binding opens or creates the serialized `.loradb` path under
- * `database_dir`, replays committed writes on boot, and then serves queries
- * against the recovered graph.
+ * database name enables archive-backed persistence: the binding opens or
+ * creates the serialized `.loradb` path under `database_dir` when supplied,
+ * or the current directory otherwise. It replays committed writes on boot
+ * and then serves queries against the recovered graph.
  */
 export declare class Database {
   /**
    * Construct a database.
    *
    * - no args => fresh in-memory graph.
-   * - `database_name` without `database_dir` => fresh named in-memory graph
-   *   (the name is validated, but no `.loradb` file is opened).
-   * - `database_name` with `database_dir` => archive-backed graph rooted at
-   *   the serialized `.loradb` path under `database_dir`.
+   * - `database_name` => archive-backed graph rooted at the serialized
+   *   `.loradb` path under `database_dir`, or the current directory when no
+   *   directory is provided.
    */
-  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined)
+  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "group" | "perCommit" | "per_commit" | null | undefined, groupSyncIntervalMs?: number | null | undefined)
   /**
    * Execute a Lora query on the libuv threadpool.
    *
@@ -60,11 +59,13 @@ export declare class Database {
    * rolled back by dropping the native transaction before commit.
    */
   transaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<Array<{ columns: string[]; rows: Array<Record<string, any>> }>>
+  /** Force pending WAL bytes and the portable archive mirror to disk. */
+  sync(): Promise<void>
   /**
    * Drop every node and relationship, returning the database to an empty
-   * state. Useful for test isolation. Synchronous — constant-time.
+   * state.
    */
-  clear(): void
+  clear(): Promise<void>
   /** Number of nodes in the graph. Synchronous. */
   nodeCount(): number
   /** Number of relationships in the graph. Synchronous. */

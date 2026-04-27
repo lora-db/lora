@@ -252,6 +252,92 @@ fn named_database_recovers_from_durable_sidecar_when_archive_lags() {
 }
 
 #[test]
+fn named_database_sync_makes_archive_immediately_portable() {
+    let dir = TmpDir::new("named-sync-source");
+    let portable_dir = TmpDir::new("named-sync-copy");
+
+    let db = Database::open_named(
+        "app",
+        DatabaseOpenOptions {
+            sync_mode: SyncMode::Group {
+                interval_ms: 60_000,
+            },
+            ..DatabaseOpenOptions::default().with_database_dir(dir.path())
+        },
+    )
+    .unwrap();
+    db.execute("CREATE (:Synced {id: 1})", rows()).unwrap();
+    db.sync().unwrap();
+
+    std::fs::copy(
+        dir.path().join("app.loradb"),
+        portable_dir.path().join("app.loradb"),
+    )
+    .unwrap();
+
+    let recovered = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(portable_dir.path()),
+    )
+    .unwrap();
+    assert_eq!(recovered.node_count(), 1);
+}
+
+#[test]
+fn named_database_clear_persists_through_archive() {
+    let dir = TmpDir::new("named-clear");
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        db.execute("CREATE (:A {id: 1})-[:R]->(:B {id: 2})", rows())
+            .unwrap();
+        db.try_clear().unwrap();
+        assert_eq!(db.node_count(), 0);
+        assert_eq!(db.relationship_count(), 0);
+    }
+
+    let recovered = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(recovered.node_count(), 0);
+    assert_eq!(recovered.relationship_count(), 0);
+}
+
+#[test]
+fn named_database_cleanup_only_removes_generated_temp_paths() {
+    let dir = TmpDir::new("named-temp-cleanup");
+    let unrelated_file = dir.path().join("app.loradb.user.tmp");
+    let unrelated_dir = dir.path().join("app.loradb.wal.extract.user");
+    let generated_file = dir.path().join("app.loradb.1.2.3.tmp");
+    let generated_dir = dir.path().join("app.loradb.wal.extract.1.2.3");
+
+    std::fs::write(&unrelated_file, b"keep").unwrap();
+    std::fs::create_dir(&unrelated_dir).unwrap();
+    std::fs::write(&generated_file, b"delete").unwrap();
+    std::fs::create_dir(&generated_dir).unwrap();
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        db.sync().unwrap();
+    }
+
+    assert!(unrelated_file.exists());
+    assert!(unrelated_dir.exists());
+    assert!(!generated_file.exists());
+    assert!(!generated_dir.exists());
+}
+
+#[test]
 fn named_database_rejects_invalid_archive_without_publishing_partial_sidecar() {
     let dir = TmpDir::new("named-invalid-archive");
     let archive_path = dir.path().join("app.loradb");
@@ -367,10 +453,9 @@ fn named_database_final_archive_flush_captures_group_buffer() {
         )
         .unwrap();
 
-        // Let the archive debounce worker observe the dirty flag before the
-        // Group-mode WAL flusher runs. The final archive flush on drop must
-        // still snapshot the force-flushed WAL bytes, not the earlier empty
-        // segment file.
+        // Let the archive debounce worker run before the clean shutdown path.
+        // The final archive flush on drop must still publish a complete,
+        // reopenable archive.
         std::thread::sleep(std::time::Duration::from_millis(1_200));
     }
 

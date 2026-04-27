@@ -24,8 +24,11 @@ static ARCHIVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// `.loradb` target. Any ZIP-compatible tool (WinRAR, Explorer, unzip, 7-Zip)
 /// can inspect the resulting database file.
 pub(crate) struct WalArchive {
+    archive_path: PathBuf,
     work_dir: PathBuf,
+    max_archive_bytes: u64,
     state: Arc<(Mutex<ArchiveState>, Condvar)>,
+    write_lock: Arc<Mutex<()>>,
     worker: Option<JoinHandle<()>>,
     _archive_lock: ArchiveLock,
 }
@@ -56,16 +59,21 @@ impl WalArchive {
         prepare_work_dir(&archive_path, &work_dir, max_archive_bytes)?;
 
         let state = Arc::new((Mutex::new(ArchiveState::default()), Condvar::new()));
+        let write_lock = Arc::new(Mutex::new(()));
         let worker = Some(spawn_archive_worker(
             state.clone(),
+            write_lock.clone(),
             work_dir.clone(),
             archive_path.clone(),
             max_archive_bytes,
         ));
 
         Ok(Self {
+            archive_path,
             work_dir,
+            max_archive_bytes,
             state,
+            write_lock,
             worker,
             _archive_lock: archive_lock,
         })
@@ -95,6 +103,50 @@ impl WalMirror for WalArchive {
         cv.notify_one();
         Ok(())
     }
+
+    fn persist_force(&self, wal_dir: &Path) -> Result<(), WalError> {
+        if wal_dir != self.work_dir {
+            return Err(WalError::Malformed(format!(
+                "archive mirror received unexpected WAL dir: {}",
+                wal_dir.display()
+            )));
+        }
+        {
+            let (lock, _) = &*self.state;
+            let state = lock.lock().unwrap();
+            if let Some(failure) = &state.failure {
+                return Err(WalError::Malformed(format!(
+                    "database archive writer failed: {failure}"
+                )));
+            }
+        }
+
+        let _write_guard = self.write_lock.lock().unwrap();
+        {
+            let (lock, _) = &*self.state;
+            let state = lock.lock().unwrap();
+            if let Some(failure) = &state.failure {
+                return Err(WalError::Malformed(format!(
+                    "database archive writer failed: {failure}"
+                )));
+            }
+        }
+        let result =
+            write_archive_atomic(&self.work_dir, &self.archive_path, self.max_archive_bytes);
+        let (lock, _) = &*self.state;
+        let mut state = lock.lock().unwrap();
+        match result {
+            Ok(()) => {
+                state.dirty = false;
+                state.force = false;
+                Ok(())
+            }
+            Err(err) => {
+                state.failure = Some(err.to_string());
+                Err(err)
+            }
+        }
+    }
 }
 
 impl Drop for WalArchive {
@@ -102,10 +154,9 @@ impl Drop for WalArchive {
         {
             let (lock, cv) = &*self.state;
             let mut state = lock.lock().unwrap();
-            // The async archive worker may have already consumed the dirty flag
-            // before Group-mode WAL bytes were forced out of the in-memory
-            // segment buffer. Drop runs after the WAL handle is dropped, so
-            // always take one final archive snapshot from the now-flushed work
+            // The async archive worker may not have observed the latest dirty
+            // flag yet. Drop runs after the WAL handle is dropped, so always
+            // take one final archive snapshot from the fully flushed work
             // directory.
             state.dirty = true;
             state.shutdown = true;
@@ -132,6 +183,7 @@ impl Drop for WalArchive {
 
 fn spawn_archive_worker(
     state: Arc<(Mutex<ArchiveState>, Condvar)>,
+    write_lock: Arc<Mutex<()>>,
     work_dir: PathBuf,
     archive_path: PathBuf,
     max_archive_bytes: u64,
@@ -157,6 +209,7 @@ fn spawn_archive_worker(
         };
 
         if should_flush {
+            let _write_guard = write_lock.lock().unwrap();
             if let Err(err) = write_archive_atomic(&work_dir, &archive_path, max_archive_bytes) {
                 let (lock, _) = &*state;
                 let mut guard = lock.lock().unwrap();
@@ -373,9 +426,8 @@ fn cleanup_stale_temp_paths(archive_path: &Path) -> Result<(), WalError> {
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        let is_archive_tmp =
-            file_name.starts_with(&archive_tmp_prefix) && file_name.ends_with(".tmp");
-        let is_extract_tmp = file_name.starts_with(&extract_tmp_prefix);
+        let is_archive_tmp = is_generated_archive_tmp_name(file_name, &archive_tmp_prefix);
+        let is_extract_tmp = is_generated_extract_tmp_name(file_name, &extract_tmp_prefix);
         if !is_archive_tmp && !is_extract_tmp {
             continue;
         }
@@ -388,6 +440,37 @@ fn cleanup_stale_temp_paths(archive_path: &Path) -> Result<(), WalError> {
         }
     }
     Ok(())
+}
+
+fn is_generated_archive_tmp_name(file_name: &str, prefix: &str) -> bool {
+    let Some(rest) = file_name.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(".tmp") else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(pid), Some(nanos), Some(sequence), None)
+            if is_ascii_digits(pid) && is_ascii_digits(nanos) && is_ascii_digits(sequence)
+    )
+}
+
+fn is_generated_extract_tmp_name(file_name: &str, prefix: &str) -> bool {
+    let Some(rest) = file_name.strip_prefix(prefix) else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(pid), Some(nanos), Some(sequence), None)
+            if is_ascii_digits(pid) && is_ascii_digits(nanos) && is_ascii_digits(sequence)
+    )
+}
+
+fn is_ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn sorted_wal_files(wal_dir: &Path) -> Result<Vec<PathBuf>, WalError> {

@@ -22,7 +22,7 @@ import type {
   LoraValue,
   QueryResult,
 } from "./types.js";
-import { wrapError } from "./types.js";
+import { LoraError, wrapError } from "./types.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore - resolved at runtime via native.js loader
@@ -67,6 +67,20 @@ export type NodeSnapshotSaveTarget =
 
 export interface CreateDatabaseOptions {
   databaseDir?: string;
+  /**
+   * Durability mode for archive-backed databases.
+   *
+   * - `group` writes WAL bytes before `execute()` resolves and batches fsyncs
+   *   on a short background cadence. This is the default.
+   * - `perCommit` fsyncs every committed write before `execute()` resolves.
+   */
+  syncMode?: "group" | "perCommit";
+  /**
+   * Background fsync cadence for `syncMode: "group"`, in milliseconds.
+   *
+   * Defaults to 1000. Must be greater than zero.
+   */
+  groupSyncIntervalMs?: number;
 }
 
 export type TransactionMode =
@@ -362,10 +376,27 @@ class DatabaseImpl {
     }
   }
 
-  /** Drop every node and relationship. Constant-time under the hood. */
+  /**
+   * Force pending WAL bytes and archive updates to disk.
+   *
+   * `syncMode: "perCommit"` fsyncs each committed write before `execute()`
+   * resolves. The default `group` mode writes WAL bytes before `execute()`
+   * resolves and batches fsyncs for speed; call `sync()` when you need an
+   * immediate fsync point and a current portable `.loradb` archive, for example
+   * before copying it elsewhere.
+   */
+  async sync(): Promise<void> {
+    try {
+      await this.#inner.sync();
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /** Drop every node and relationship and persist the clear when WAL-backed. */
   async clear(): Promise<void> {
     try {
-      this.#inner.clear();
+      await this.#inner.clear();
     } catch (err) {
       throw wrapError(err);
     }
@@ -523,27 +554,47 @@ export type Database = DatabaseImpl;
  * import { createDatabase } from "lora-node";
  *
  * const inMemory = await createDatabase();          // in-memory
- * const named = await createDatabase("app");        // named in-memory
- * const persistent = await createDatabase("app", {
+ * const defaultPersistent = await createDatabase("app"); // ./app.loradb
+ * const nestedPersistent = await createDatabase("app", {
  *   databaseDir: "./data",
  * });                                               // ./data/app.loradb
  * ```
  *
- * If you want persistence, pass `databaseDir`. The database name is validated
- * and resolved under `databaseDir`, appending `.loradb` to the basename when
- * needed. Relative paths resolve from the current working directory.
+ * Passing a database name enables persistence. The database name is validated
+ * and resolved under `databaseDir`, or the current working directory when no
+ * directory is supplied, appending `.loradb` to the basename when needed.
+ * Relative paths resolve from the current working directory.
  *
- * Each call returns an independent graph — no shared state between instances.
+ * Persistent opens for the same resolved archive path in one Node process share
+ * a single live native engine. Cross-process opens are blocked by the archive
+ * lock to prevent split-brain writers.
  */
 export async function createDatabase(
   databaseName?: string,
   options: CreateDatabaseOptions = {},
 ): Promise<Database> {
   try {
+    const hasPersistenceOptions =
+      options.databaseDir !== undefined ||
+      options.syncMode !== undefined ||
+      options.groupSyncIntervalMs !== undefined;
+    if (databaseName == null && hasPersistenceOptions) {
+      throw new LoraError(
+        "databaseName is required when persistence options are provided",
+        "INVALID_PARAMS",
+      );
+    }
+    const syncMode = options.syncMode ?? null;
+    const groupSyncIntervalMs = options.groupSyncIntervalMs ?? null;
     return new DatabaseImpl(
-      databaseName === undefined
+      databaseName == null
         ? new NativeDatabase()
-        : new NativeDatabase(databaseName, options.databaseDir ?? null),
+        : new NativeDatabase(
+            databaseName,
+            options.databaseDir ?? null,
+            syncMode,
+            groupSyncIntervalMs,
+          ),
     );
   } catch (err) {
     throw wrapError(err);

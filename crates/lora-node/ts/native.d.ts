@@ -19,7 +19,12 @@ export interface NativeSnapshotMeta {
 }
 
 export declare class Database {
-  constructor(databaseName?: string | null, databaseDir?: string | null);
+  constructor(
+    databaseName?: string | null,
+    databaseDir?: string | null,
+    syncMode?: "group" | "perCommit" | "per_commit" | null,
+    groupSyncIntervalMs?: number | null,
+  );
   /** Non-blocking: runs on the libuv threadpool, returns a Promise. */
   execute(
     query: string,
@@ -36,7 +41,9 @@ export declare class Database {
     statements: Array<{ query: string; params?: Record<string, unknown> | null }>,
     mode?: "read_write" | "read_only" | "readwrite" | "readonly" | "rw" | "ro" | null,
   ): Promise<NativeQueryResult[]>;
-  clear(): void;
+  /** Force pending WAL bytes and the portable archive mirror to disk. */
+  sync(): Promise<void>;
+  clear(): Promise<void>;
   nodeCount(): number;
   relationshipCount(): number;
   dispose(): void;

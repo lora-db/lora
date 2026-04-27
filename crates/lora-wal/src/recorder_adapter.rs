@@ -76,6 +76,10 @@ pub enum WroteCommit {
 /// databases.
 pub trait WalMirror: Send + Sync {
     fn persist(&self, wal_dir: &Path) -> Result<(), WalError>;
+
+    fn persist_force(&self, wal_dir: &Path) -> Result<(), WalError> {
+        self.persist(wal_dir)
+    }
 }
 
 #[derive(Default)]
@@ -246,7 +250,7 @@ impl WalRecorder {
             state.poisoned = Some(e.to_string());
         })?;
         if let Some(mirror) = &self.mirror {
-            mirror.persist(self.wal.dir()).inspect_err(|e| {
+            mirror.persist_force(self.wal.dir()).inspect_err(|e| {
                 state.poisoned = Some(e.to_string());
             })?;
         }
@@ -274,7 +278,7 @@ impl WalRecorder {
         // full WAL history is the only safe way to let the archive recover by
         // itself after a checkpoint marker.
         if let Some(mirror) = &self.mirror {
-            mirror.persist(self.wal.dir())?;
+            mirror.persist_force(self.wal.dir())?;
             return Ok(());
         }
         self.wal.truncate_up_to(fence_lsn)?;

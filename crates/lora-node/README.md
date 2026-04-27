@@ -52,13 +52,20 @@ The initialization rule is:
 import { createDatabase } from "lora-node";
 
 const inMemory = await createDatabase();           // in-memory only
-const named = await createDatabase("app");         // named in-memory
-const persistent = await createDatabase("app", {
+const defaultPersistent = await createDatabase("app"); // ./app.loradb
+const nestedPersistent = await createDatabase("app", {
   databaseDir: "./data",
+  syncMode: "group",                              // default
 });                                                // ./data/app.loradb
 ```
 
-If you want persistence, pass a `databaseDir` option to `createDatabase(...)`.
+Passing a database name enables persistence. Use `databaseDir` when you want a
+directory other than the current working directory.
+The default `syncMode: "group"` writes WAL bytes before `execute()` resolves
+and batches fsyncs for write-heavy workloads. That recovers from ordinary
+process death, while `syncMode: "perCommit"` also protects each committed write
+against power loss before `execute()` resolves. Call `await db.sync()` before
+copying the portable `.loradb` archive while the database is still open.
 
 Node also has an archive-backed convenience overload:
 
@@ -68,13 +75,16 @@ import { createDatabase } from "lora-node";
 const db = await createDatabase("app", { databaseDir: "./data" });
 ```
 
-The database name is validated and resolved under `databaseDir`, appending
-`.loradb` to the basename when needed. Relative paths resolve from the current
-working directory. This is a Node-only initialization convenience; the query surface, shared types, and async
-method signatures still match `lora-wasm`.
+The database name is validated and resolved under `databaseDir`, or under the
+current working directory when no directory is supplied, appending `.loradb` to
+the basename when needed. Relative paths resolve from the current working
+directory. This is a Node-only initialization convenience; the query surface,
+shared types, and async method signatures still match `lora-wasm`.
 
-Call `db.dispose()` when you need to release the native handle eagerly,
-especially before reopening the same archive in the same process.
+Persistent opens for the same resolved archive path in one Node process share a
+single live native engine. Call `db.dispose()` when you need to release a handle
+eagerly; cross-process opens of the same archive are blocked to prevent
+split-brain writers.
 
 ## Snapshots
 
@@ -187,8 +197,9 @@ identical to `lora-wasm`.
   path would require extending the value serializer.
 - **Cancellation.** The napi `Task` abstraction does not support
   cancellation once dispatched; a runaway query runs to completion.
-- **WAL surface.** This first Node persistence slice only exposes
-  archive-backed initialization via `createDatabase(name, { databaseDir })`. Checkpoint,
-  truncate, status, and sync-mode controls are not exposed yet.
-- **Archive ownership.** One archive can only be open by one live handle at a
-  time. Dispose the first handle before reopening the same database.
+- **WAL surface.** Node persistence exposes archive-backed initialization,
+  `syncMode: "group" | "perCommit"`, and `db.sync()`. Checkpoint, truncate,
+  and status controls are not exposed yet.
+- **Archive ownership.** One archive can only be open by one writer process at a
+  time. Multiple Node handles in the same process share the same live engine;
+  a second process is rejected while the first holds the archive lock.

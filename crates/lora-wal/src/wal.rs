@@ -378,8 +378,8 @@ impl Wal {
     /// - `PerCommit` — write the buffer to the OS, `fsync`, and
     ///   advance `durable_lsn`. The strongest contract: every
     ///   record up to `next_lsn - 1` is on disk.
-    /// - `Group` — leave the buffer in memory. The background flusher
-    ///   writes, fsyncs, and advances `durable_lsn` on its cadence.
+    /// - `Group` — write the buffer to the OS, but let the background
+    ///   flusher fsync and advance `durable_lsn` on its cadence.
     /// - `None` — write the buffer to the OS only, but advance
     ///   `durable_lsn` anyway. The mode opts out of crash
     ///   durability, so the checkpoint fence reports
@@ -407,9 +407,9 @@ impl Wal {
         let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
 
         // Decide whether this call is allowed to advance
-        // `durable_lsn`. The bg flusher's job in Group mode is
-        // exactly to do that "out of band"; PerCommit and None do it
-        // inline; Group's user-driven `flush()` does not.
+        // `durable_lsn`. The bg flusher's job in Group mode is to advance
+        // that fence after fsync; PerCommit and None do it inline; Group's
+        // user-driven `flush()` only pushes bytes to the OS.
         let do_fsync = matches!(
             (kind, self.sync_mode),
             (FlushKind::ForceFsync, _) | (_, SyncMode::PerCommit)
@@ -419,14 +419,7 @@ impl Wal {
             (FlushKind::ForceFsync, _) | (_, SyncMode::PerCommit) | (_, SyncMode::None)
         );
 
-        if matches!(
-            (kind, self.sync_mode),
-            (FlushKind::PerConfiguredMode, SyncMode::Group { .. })
-        ) {
-            // Group mode batches both the write syscall and the fsync. This
-            // keeps the write-heavy hot path close to in-memory execution; the
-            // background flusher (or Drop) will force the buffer out.
-        } else if do_fsync {
+        if do_fsync {
             state.active_writer.flush_and_sync()?;
         } else {
             state.active_writer.flush_buffer()?;

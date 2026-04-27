@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,6 +32,88 @@ async function makeTempDir(prefix = "lora-node-wal-"): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
   cleanupPaths.add(dir);
   return dir;
+}
+
+async function withTempCwd<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await makeTempDir("lora-node-cwd-");
+  const previous = process.cwd();
+  process.chdir(dir);
+  try {
+    return await fn(dir);
+  } finally {
+    process.chdir(previous);
+  }
+}
+
+async function runKilledNativeWriter(options: {
+  databaseDir: string;
+  syncMode?: "group" | "perCommit";
+  callSync?: boolean;
+  clearAfterWrite?: boolean;
+}): Promise<void> {
+  const nativePath = join(process.cwd(), "ts", "native.js");
+  const script = `
+    const native = require(${JSON.stringify(nativePath)});
+    (async () => {
+      const db = new native.Database(
+        "app",
+        ${JSON.stringify(options.databaseDir)},
+        ${JSON.stringify(options.syncMode ?? "group")},
+        60000
+      );
+      await db.execute("CREATE (:Crash {id: 1})");
+      ${options.clearAfterWrite ? "await db.clear();" : ""}
+      ${options.callSync ? "await db.sync();" : ""}
+      process.stdout.write("READY\\n");
+      setInterval(() => {}, 1000);
+    })().catch((err) => {
+      console.error(err && err.stack ? err.stack : err);
+      process.exit(1);
+    });
+  `;
+
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(process.execPath, ["-e", script], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let sawReady = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`timed out waiting for child writer\n${stderr}`));
+    }, 10_000);
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (!sawReady && stdout.includes("READY\n")) {
+        sawReady = true;
+        child.kill("SIGKILL");
+      }
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (sawReady && (signal !== null || code !== 0)) {
+        resolvePromise();
+        return;
+      }
+      reject(
+        new Error(
+          `child writer exited before kill; code=${code} signal=${signal}\n${stderr}`,
+        ),
+      );
+    });
+  });
 }
 
 afterEach(async () => {
@@ -116,16 +199,21 @@ describe("Database — WAL-backed initialization", () => {
     expect(await db.relationshipCount()).toBe(0);
   });
 
-  it("createDatabase(name) creates independent named in-memory databases", async () => {
-    const first = await createDatabase("scratch");
-    await first.execute("CREATE (:Scratch)");
-    expect(await first.nodeCount()).toBe(1);
+  it("createDatabase(name) persists in the current directory by default", async () => {
+    await withTempCwd(async (dir) => {
+      const first = await createDatabase("scratch");
+      await first.execute("CREATE (:Scratch)");
+      expect(await first.nodeCount()).toBe(1);
+      first.dispose();
 
-    const second = await createDatabase("scratch");
-    expect(await second.nodeCount()).toBe(0);
+      await expect(stat(join(dir, "scratch.loradb"))).resolves.toSatisfy(
+        (entry) => entry.isFile(),
+      );
 
-    first.dispose();
-    second.dispose();
+      const second = await createDatabase("scratch");
+      expect(await second.nodeCount()).toBe(1);
+      second.dispose();
+    });
   });
 
   it("persists committed writes across reopen with the same WAL directory", async () => {
@@ -146,6 +234,176 @@ describe("Database — WAL-backed initialization", () => {
     );
     expect(rows).toEqual([{ name: "Ada" }, { name: "Grace" }]);
     second.dispose();
+  });
+
+  it("shares one live persistent engine for the same name and directory", async () => {
+    const walDir = await makeTempDir();
+
+    const first = await createDatabase("app", { databaseDir: walDir });
+    const second = await createDatabase("app", { databaseDir: walDir });
+
+    await first.execute("CREATE (:Shared {id: 1})");
+    expect(await second.nodeCount()).toBe(1);
+
+    await second.execute("CREATE (:Shared {id: 2})");
+    expect(await first.nodeCount()).toBe(2);
+
+    first.dispose();
+    await second.execute("CREATE (:Shared {id: 3})");
+    expect(await second.nodeCount()).toBe(3);
+    second.dispose();
+
+    const reopened = await createDatabase("app", { databaseDir: walDir });
+    expect(await reopened.nodeCount()).toBe(3);
+    reopened.dispose();
+  });
+
+  it("rejects conflicting live persistence options for the same archive", async () => {
+    const walDir = await makeTempDir();
+    const first = await createDatabase("app", {
+      databaseDir: walDir,
+      syncMode: "group",
+    });
+
+    await expect(
+      createDatabase("app", {
+        databaseDir: walDir,
+        syncMode: "perCommit",
+      }),
+    ).rejects.toSatisfy((err) =>
+      String(err).includes("already open with different persistence options"),
+    );
+
+    first.dispose();
+  });
+
+  it("validates persistence sync options", async () => {
+    const walDir = await makeTempDir();
+
+    await expect(
+      createDatabase(undefined, {
+        databaseDir: walDir,
+      }),
+    ).rejects.toSatisfy((err) =>
+      String(err).includes("databaseName is required"),
+    );
+
+    await expect(
+      createDatabase(null as unknown as string, {
+        databaseDir: walDir,
+      }),
+    ).rejects.toSatisfy((err) =>
+      String(err).includes("databaseName is required"),
+    );
+
+    await withTempCwd(async () => {
+      const db = await createDatabase("app", {
+        syncMode: "perCommit",
+      });
+      db.dispose();
+    });
+
+    await expect(
+      createDatabase("app", {
+        databaseDir: walDir,
+        groupSyncIntervalMs: 0,
+      }),
+    ).rejects.toSatisfy((err) =>
+      String(err).includes("groupSyncIntervalMs must be greater than 0"),
+    );
+
+    await expect(
+      createDatabase("app", {
+        databaseDir: walDir,
+        syncMode: "instant" as "group",
+      }),
+    ).rejects.toSatisfy((err) =>
+      String(err).includes("expected 'group' or 'perCommit'"),
+    );
+  });
+
+  it("sync() makes the archive file visible before dispose", async () => {
+    const walDir = await makeTempDir();
+    const db = await createDatabase("app", { databaseDir: walDir });
+
+    await db.execute("CREATE (:Synced {id: 1})");
+    await db.sync();
+
+    await expect(stat(join(walDir, "app.loradb"))).resolves.toSatisfy(
+      (entry) => entry.isFile(),
+    );
+    db.dispose();
+  });
+
+  it("persists clear() across reopen", async () => {
+    const walDir = await makeTempDir();
+
+    const first = await createDatabase("app", { databaseDir: walDir });
+    await first.execute(
+      "CREATE (:A {id: 1})-[:REL]->(:B {id: 2}), (:C {id: 3})",
+    );
+    expect(await first.nodeCount()).toBe(3);
+    expect(await first.relationshipCount()).toBe(1);
+    await first.clear();
+    expect(await first.nodeCount()).toBe(0);
+    expect(await first.relationshipCount()).toBe(0);
+    first.dispose();
+
+    const second = await createDatabase("app", { databaseDir: walDir });
+    expect(await second.nodeCount()).toBe(0);
+    expect(await second.relationshipCount()).toBe(0);
+    second.dispose();
+  });
+
+  it("recovers default group-mode writes after a killed writer process", async () => {
+    const walDir = await makeTempDir();
+
+    await runKilledNativeWriter({ databaseDir: walDir });
+
+    const db = await createDatabase("app", { databaseDir: walDir });
+    expect(await db.nodeCount()).toBe(1);
+    db.dispose();
+  });
+
+  it("recovers synced group-mode writes after a killed writer process", async () => {
+    const walDir = await makeTempDir();
+
+    await runKilledNativeWriter({
+      databaseDir: walDir,
+      syncMode: "group",
+      callSync: true,
+    });
+
+    const db = await createDatabase("app", { databaseDir: walDir });
+    expect(await db.nodeCount()).toBe(1);
+    db.dispose();
+  });
+
+  it("recovers clear() after a killed writer process", async () => {
+    const walDir = await makeTempDir();
+
+    await runKilledNativeWriter({
+      databaseDir: walDir,
+      clearAfterWrite: true,
+    });
+
+    const db = await createDatabase("app", { databaseDir: walDir });
+    expect(await db.nodeCount()).toBe(0);
+    expect(await db.relationshipCount()).toBe(0);
+    db.dispose();
+  });
+
+  it("recovers per-commit writes after a killed writer process", async () => {
+    const walDir = await makeTempDir();
+
+    await runKilledNativeWriter({
+      databaseDir: walDir,
+      syncMode: "perCommit",
+    });
+
+    const db = await createDatabase("app", { databaseDir: walDir });
+    expect(await db.nodeCount()).toBe(1);
+    db.dispose();
   });
 
   it("restores existing data on a read-only reopen", async () => {

@@ -13,8 +13,9 @@
 //! thread hop would dominate the useful work.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use napi::bindgen_prelude::*;
 use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
@@ -22,7 +23,7 @@ use napi_derive::napi;
 
 use lora_database::{
     Database as InnerDatabase, DatabaseName, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph,
-    LoraValue, QueryResult, ResultFormat, Row, Snapshotable, TransactionMode,
+    LoraValue, QueryResult, ResultFormat, Row, Snapshotable, SyncMode, TransactionMode,
 };
 use lora_store::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
@@ -31,6 +32,20 @@ use lora_store::{
 
 const LORA_ERROR_CODE: &str = "LORA_ERROR";
 const INVALID_PARAMS_CODE: &str = "INVALID_PARAMS";
+static PERSISTENT_DATABASES: OnceLock<Mutex<BTreeMap<PathBuf, PersistentDatabaseEntry>>> =
+    OnceLock::new();
+
+struct PersistentDatabaseEntry {
+    db: Weak<InnerDatabase<InMemoryGraph>>,
+    options: PersistentOpenOptions,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PersistentOpenOptions {
+    sync_mode: SyncMode,
+    segment_target_bytes: u64,
+    max_database_bytes: u64,
+}
 
 /// Lora graph database handle exposed to Node.
 ///
@@ -41,10 +56,10 @@ const INVALID_PARAMS_CODE: &str = "INVALID_PARAMS";
 /// blocking the JS event loop.
 ///
 /// With no constructor arg the database is purely in-memory. Passing a
-/// database name plus `database_dir` enables archive-backed persistence: the
-/// binding opens or creates the serialized `.loradb` path under
-/// `database_dir`, replays committed writes on boot, and then serves queries
-/// against the recovered graph.
+/// database name enables archive-backed persistence: the binding opens or
+/// creates the serialized `.loradb` path under `database_dir` when supplied,
+/// or the current directory otherwise. It replays committed writes on boot
+/// and then serves queries against the recovered graph.
 #[napi]
 pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
@@ -57,34 +72,25 @@ impl Database {
     /// Construct a database.
     ///
     /// - no args => fresh in-memory graph.
-    /// - `database_name` without `database_dir` => fresh named in-memory graph
-    ///   (the name is validated, but no `.loradb` file is opened).
-    /// - `database_name` with `database_dir` => archive-backed graph rooted at
-    ///   the serialized `.loradb` path under `database_dir`.
+    /// - `database_name` => archive-backed graph rooted at the serialized
+    ///   `.loradb` path under `database_dir`, or the current directory when no
+    ///   directory is provided.
     #[napi(constructor)]
     pub fn new(
         #[napi(ts_arg_type = "string | null | undefined")] database_name: Option<String>,
         #[napi(ts_arg_type = "string | null | undefined")] database_dir: Option<String>,
+        #[napi(ts_arg_type = "\"group\" | \"perCommit\" | \"per_commit\" | null | undefined")]
+        sync_mode: Option<String>,
+        #[napi(ts_arg_type = "number | null | undefined")] group_sync_interval_ms: Option<u32>,
     ) -> Result<Self> {
         let db = match database_name {
-            None => InnerDatabase::in_memory(),
-            Some(name) if database_dir.is_none() => {
-                DatabaseName::parse(&name).map_err(|e| {
-                    NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}"))
-                })?;
-                InnerDatabase::in_memory()
-            }
+            None => Arc::new(InnerDatabase::in_memory()),
             Some(name) => {
-                let options = DatabaseOpenOptions {
-                    database_dir: database_dir.expect("checked is_some").into(),
-                    ..DatabaseOpenOptions::default()
-                };
-                InnerDatabase::open_named(name, options)
-                    .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?
+                open_persistent_database(name, database_dir, sync_mode, group_sync_interval_ms)?
             }
         };
         Ok(Self {
-            db: Mutex::new(Some(Arc::new(db))),
+            db: Mutex::new(Some(db)),
             streams: Mutex::new(BTreeMap::new()),
             next_stream_id: AtomicU32::new(1),
         })
@@ -214,12 +220,17 @@ impl Database {
         }))
     }
 
+    /// Force pending WAL bytes and the portable archive mirror to disk.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn sync(&self) -> Result<AsyncTask<SyncTask>> {
+        Ok(AsyncTask::new(SyncTask { db: self.inner()? }))
+    }
+
     /// Drop every node and relationship, returning the database to an empty
-    /// state. Useful for test isolation. Synchronous — constant-time.
-    #[napi]
-    pub fn clear(&self) -> Result<()> {
-        self.inner()?.clear();
-        Ok(())
+    /// state.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn clear(&self) -> Result<AsyncTask<ClearTask>> {
+        Ok(AsyncTask::new(ClearTask { db: self.inner()? }))
     }
 
     /// Number of nodes in the graph. Synchronous.
@@ -324,9 +335,99 @@ fn snapshot_meta_to_json(meta: lora_database::SnapshotMeta) -> serde_json::Value
     })
 }
 
+fn persistent_database_registry() -> &'static Mutex<BTreeMap<PathBuf, PersistentDatabaseEntry>> {
+    PERSISTENT_DATABASES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn open_persistent_database(
+    database_name: String,
+    database_dir: Option<String>,
+    sync_mode: Option<String>,
+    group_sync_interval_ms: Option<u32>,
+) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
+    let name = DatabaseName::parse(&database_name)
+        .map_err(|e| NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}")))?;
+    let sync_mode = parse_sync_mode(sync_mode, group_sync_interval_ms)?;
+    let mut options = DatabaseOpenOptions::default();
+    if let Some(database_dir) = database_dir {
+        options.database_dir = PathBuf::from(database_dir);
+    }
+    options.sync_mode = sync_mode;
+
+    std::fs::create_dir_all(&options.database_dir)
+        .map_err(|e| NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}")))?;
+    options.database_dir = std::fs::canonicalize(&options.database_dir)
+        .map_err(|e| NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}")))?;
+    let key = options.database_path_for(&name);
+    let open_options = PersistentOpenOptions {
+        sync_mode: options.sync_mode,
+        segment_target_bytes: options.segment_target_bytes,
+        max_database_bytes: options.max_database_bytes,
+    };
+
+    let registry = persistent_database_registry();
+    let mut registry = registry.lock().map_err(|_| {
+        NapiError::new(
+            Status::GenericFailure,
+            format!("{LORA_ERROR_CODE}: persistent database registry poisoned"),
+        )
+    })?;
+    if let Some(entry) = registry.get(&key) {
+        if let Some(existing) = entry.db.upgrade() {
+            if entry.options != open_options {
+                return Err(NapiError::new(
+                    Status::GenericFailure,
+                    format!(
+                        "{LORA_ERROR_CODE}: database '{}' is already open with different persistence options",
+                        key.display()
+                    ),
+                ));
+            }
+            return Ok(existing);
+        }
+    }
+    registry.retain(|_, entry| entry.db.strong_count() > 0);
+
+    let db = InnerDatabase::open_named(name.as_str(), options)
+        .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+    let db = Arc::new(db);
+    registry.insert(
+        key,
+        PersistentDatabaseEntry {
+            db: Arc::downgrade(&db),
+            options: open_options,
+        },
+    );
+    Ok(db)
+}
+
+fn parse_sync_mode(
+    sync_mode: Option<String>,
+    group_sync_interval_ms: Option<u32>,
+) -> Result<SyncMode> {
+    let interval_ms = group_sync_interval_ms.unwrap_or(1_000);
+    if interval_ms == 0 {
+        return Err(NapiError::new(
+            Status::InvalidArg,
+            format!("{INVALID_PARAMS_CODE}: groupSyncIntervalMs must be greater than 0"),
+        ));
+    }
+
+    match sync_mode.as_deref().unwrap_or("group") {
+        "group" => Ok(SyncMode::Group { interval_ms }),
+        "perCommit" | "per_commit" => Ok(SyncMode::PerCommit),
+        other => Err(NapiError::new(
+            Status::InvalidArg,
+            format!(
+                "{INVALID_PARAMS_CODE}: invalid syncMode '{other}'; expected 'group' or 'perCommit'"
+            ),
+        )),
+    }
+}
+
 impl Default for Database {
     fn default() -> Self {
-        Self::new(None, None).expect("in-memory Database::default should not fail")
+        Self::new(None, None, None, None).expect("in-memory Database::default should not fail")
     }
 }
 
@@ -383,6 +484,44 @@ impl Task for ExecuteTask {
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
         // `serde-json` feature on napi bridges serde_json::Value → JS objects.
         env.to_js_value(&output)
+    }
+}
+
+pub struct SyncTask {
+    db: Arc<InnerDatabase<InMemoryGraph>>,
+}
+
+impl Task for SyncTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        self.db
+            .sync()
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct ClearTask {
+    db: Arc<InnerDatabase<InMemoryGraph>>,
+}
+
+impl Task for ClearTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        self.db
+            .try_clear()
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
     }
 }
 
