@@ -464,6 +464,16 @@ impl InMemoryGraph {
             || self.active_relationship_property_index_count() != 0
     }
 
+    fn node_property_index_is_active(&mut self, key: &str) -> bool {
+        self.active_node_property_index_count() != 0
+            && self.indexes_mut().node_properties.is_active(key)
+    }
+
+    fn relationship_property_index_is_active(&mut self, key: &str) -> bool {
+        self.active_relationship_property_index_count() != 0
+            && self.indexes_mut().relationship_properties.is_active(key)
+    }
+
     fn ensure_node_property_index(&self, key: &str) {
         {
             let indexes = self.indexes_read();
@@ -560,6 +570,170 @@ impl InMemoryGraph {
             .store(node_index_count, Ordering::Relaxed);
         self.active_relationship_property_indexes
             .store(relationship_index_count, Ordering::Relaxed);
+    }
+
+    fn on_node_created(&mut self, node: &NodeRecord) {
+        for label in &node.labels {
+            self.insert_node_label_index(node.id, label);
+        }
+        self.index_node_properties_if_active(
+            node.id,
+            node.labels.iter().map(String::as_str),
+            &node.properties,
+        );
+    }
+
+    fn on_node_replayed(&mut self, node: &NodeRecord) {
+        for label in &node.labels {
+            self.insert_node_label_index(node.id, label);
+        }
+        self.index_node_properties_eager(
+            node.id,
+            node.labels.iter().map(String::as_str),
+            &node.properties,
+        );
+    }
+
+    fn on_node_property_set(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+        old: Option<&PropertyValue>,
+        new: &PropertyValue,
+    ) {
+        if !self.node_property_index_is_active(key) {
+            return;
+        }
+
+        let Some(labels) = self.nodes.get(&node_id).map(|node| node.labels.clone()) else {
+            return;
+        };
+
+        if let Some(old) = old {
+            self.unindex_node_property_if_active(
+                node_id,
+                labels.iter().map(String::as_str),
+                key,
+                old,
+            );
+        }
+        self.index_node_property_if_active(node_id, labels.iter().map(String::as_str), key, new);
+    }
+
+    fn on_node_property_removed(&mut self, node_id: NodeId, key: &str, old: &PropertyValue) {
+        if !self.node_property_index_is_active(key) {
+            return;
+        }
+
+        let Some(labels) = self.nodes.get(&node_id).map(|node| node.labels.clone()) else {
+            return;
+        };
+        self.unindex_node_property_if_active(node_id, labels.iter().map(String::as_str), key, old);
+    }
+
+    fn on_node_label_added(&mut self, node_id: NodeId, label: &str) {
+        self.insert_node_label_index(node_id, label);
+
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+
+        let Some(properties) = self.nodes.get(&node_id).map(|node| node.properties.clone()) else {
+            return;
+        };
+        self.index_node_scope_properties_if_active(node_id, label, &properties);
+    }
+
+    fn on_node_label_removed(&mut self, node_id: NodeId, label: &str) {
+        self.remove_node_label_index(node_id, label);
+
+        if self.active_node_property_index_count() == 0 {
+            return;
+        }
+
+        let Some(properties) = self.nodes.get(&node_id).map(|node| node.properties.clone()) else {
+            return;
+        };
+        self.unindex_node_scope_properties_if_active(node_id, label, &properties);
+    }
+
+    fn on_node_deleted(&mut self, node: &NodeRecord) {
+        for label in &node.labels {
+            self.remove_node_label_index(node.id, label);
+        }
+        self.unindex_active_node_properties(
+            node.id,
+            node.labels.iter().map(String::as_str),
+            &node.properties,
+        );
+    }
+
+    fn on_relationship_created(&mut self, rel: &RelationshipRecord) {
+        self.attach_relationship(rel);
+        self.index_relationship_properties_if_active(
+            rel.id,
+            [rel.rel_type.as_str()],
+            &rel.properties,
+        );
+    }
+
+    fn on_relationship_replayed(&mut self, rel: &RelationshipRecord) {
+        self.attach_relationship(rel);
+        self.index_relationship_properties_eager(rel.id, [rel.rel_type.as_str()], &rel.properties);
+    }
+
+    fn on_relationship_property_set(
+        &mut self,
+        rel_id: RelationshipId,
+        key: &str,
+        old: Option<&PropertyValue>,
+        new: &PropertyValue,
+    ) {
+        if !self.relationship_property_index_is_active(key) {
+            return;
+        }
+
+        let Some(rel_type) = self
+            .relationships
+            .get(&rel_id)
+            .map(|rel| rel.rel_type.clone())
+        else {
+            return;
+        };
+
+        if let Some(old) = old {
+            self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
+        }
+        self.index_relationship_property_if_active(rel_id, [rel_type.as_str()], key, new);
+    }
+
+    fn on_relationship_property_removed(
+        &mut self,
+        rel_id: RelationshipId,
+        key: &str,
+        old: &PropertyValue,
+    ) {
+        if !self.relationship_property_index_is_active(key) {
+            return;
+        }
+
+        let Some(rel_type) = self
+            .relationships
+            .get(&rel_id)
+            .map(|rel| rel.rel_type.clone())
+        else {
+            return;
+        };
+        self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
+    }
+
+    fn on_relationship_deleted(&mut self, rel: &RelationshipRecord) {
+        self.detach_relationship_indexes(rel);
+        self.unindex_active_relationship_properties(
+            rel.id,
+            [rel.rel_type.as_str()],
+            &rel.properties,
+        );
     }
 
     fn index_node_property_eager<'a>(
@@ -990,14 +1164,7 @@ impl InMemoryGraph {
             properties,
         };
 
-        for label in &labels {
-            self.insert_node_label_index(id, label);
-        }
-        self.index_node_properties_eager(
-            id,
-            node.labels.iter().map(String::as_str),
-            &node.properties,
-        );
+        self.on_node_replayed(&node);
         self.nodes.insert(id, node.clone());
         self.outgoing.entry(id).or_default();
         self.incoming.entry(id).or_default();
@@ -1050,12 +1217,76 @@ impl InMemoryGraph {
             properties,
         };
 
-        self.attach_relationship(&rel);
-        self.index_relationship_properties_eager(id, [rel.rel_type.as_str()], &rel.properties);
+        self.on_relationship_replayed(&rel);
         self.relationships.insert(id, rel.clone());
         self.bump_next_rel_id_past(id)?;
 
         Ok(rel)
+    }
+
+    #[cfg(test)]
+    fn assert_property_indexes_match_scan(&self) {
+        let indexes = self.indexes_read();
+        assert_eq!(
+            indexes.node_properties.active_keys.len(),
+            self.active_node_property_index_count(),
+            "node property index counter diverged from active key set"
+        );
+        assert_eq!(
+            indexes.relationship_properties.active_keys.len(),
+            self.active_relationship_property_index_count(),
+            "relationship property index counter diverged from active key set"
+        );
+
+        let mut expected_nodes = PropertyIndexState {
+            active_keys: indexes.node_properties.active_keys.clone(),
+            ..PropertyIndexState::default()
+        };
+        for (id, node) in &self.nodes {
+            for (key, value) in &node.properties {
+                if expected_nodes.is_active(key) {
+                    expected_nodes.insert_with_scopes(
+                        *id,
+                        node.labels.iter().map(String::as_str),
+                        key,
+                        value,
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            indexes.node_properties.values, expected_nodes.values,
+            "node property index values diverged from scan"
+        );
+        assert_eq!(
+            indexes.node_properties.scoped_values, expected_nodes.scoped_values,
+            "node property scoped index values diverged from scan"
+        );
+
+        let mut expected_relationships = PropertyIndexState {
+            active_keys: indexes.relationship_properties.active_keys.clone(),
+            ..PropertyIndexState::default()
+        };
+        for (id, rel) in &self.relationships {
+            for (key, value) in &rel.properties {
+                if expected_relationships.is_active(key) {
+                    expected_relationships.insert_with_scopes(
+                        *id,
+                        [rel.rel_type.as_str()],
+                        key,
+                        value,
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            indexes.relationship_properties.values, expected_relationships.values,
+            "relationship property index values diverged from scan"
+        );
+        assert_eq!(
+            indexes.relationship_properties.scoped_values, expected_relationships.scoped_values,
+            "relationship property scoped index values diverged from scan"
+        );
     }
 }
 
@@ -1578,16 +1809,7 @@ impl GraphStorageMut for InMemoryGraph {
             properties,
         };
 
-        for label in &labels {
-            self.insert_node_label_index(id, label);
-        }
-        if self.active_node_property_index_count() != 0 {
-            self.index_node_properties_if_active(
-                id,
-                node.labels.iter().map(String::as_str),
-                &node.properties,
-            );
-        }
+        self.on_node_created(&node);
 
         self.nodes.insert(id, node.clone());
 
@@ -1628,14 +1850,7 @@ impl GraphStorageMut for InMemoryGraph {
             properties,
         };
 
-        self.attach_relationship(&rel);
-        if self.active_relationship_property_index_count() != 0 {
-            self.index_relationship_properties_if_active(
-                id,
-                [rel.rel_type.as_str()],
-                &rel.properties,
-            );
-        }
+        self.on_relationship_created(&rel);
         self.relationships.insert(id, rel.clone());
 
         self.emit(|| MutationEvent::CreateRelationship {
@@ -1661,35 +1876,11 @@ impl GraphStorageMut for InMemoryGraph {
             (None, None)
         };
 
-        let index_active = self.active_node_property_index_count() != 0
-            && self.indexes_mut().node_properties.is_active(&key);
-        let (old, labels) = match self.nodes.get_mut(&node_id) {
-            Some(node) => {
-                let labels = if index_active {
-                    Some(node.labels.clone())
-                } else {
-                    None
-                };
-                (node.properties.insert(key.clone(), value.clone()), labels)
-            }
+        let old = match self.nodes.get_mut(&node_id) {
+            Some(node) => node.properties.insert(key.clone(), value.clone()),
             None => return false,
         };
-        if let Some(labels) = labels.as_ref() {
-            if let Some(old) = old.as_ref() {
-                self.unindex_node_property_if_active(
-                    node_id,
-                    labels.iter().map(String::as_str),
-                    &key,
-                    old,
-                );
-            }
-            self.index_node_property_if_active(
-                node_id,
-                labels.iter().map(String::as_str),
-                &key,
-                &value,
-            );
-        }
+        self.on_node_property_set(node_id, &key, old.as_ref(), &value);
 
         self.emit(|| MutationEvent::SetNodeProperty {
             node_id,
@@ -1709,22 +1900,7 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         };
 
-        let labels = if self.active_node_property_index_count() != 0
-            && self.indexes_mut().node_properties.is_active(key)
-        {
-            self.nodes.get(&node_id).map(|node| node.labels.clone())
-        } else {
-            None
-        };
-
-        if let Some(labels) = labels.as_ref() {
-            self.unindex_node_property_if_active(
-                node_id,
-                labels.iter().map(String::as_str),
-                key,
-                &removed,
-            );
-        }
+        self.on_node_property_removed(node_id, key, &removed);
 
         self.emit(|| MutationEvent::RemoveNodeProperty {
             node_id,
@@ -1740,8 +1916,6 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         }
 
-        let index_has_active_keys = self.active_node_property_index_count() != 0;
-        let mut scoped_properties = None;
         let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => {
                 if node.labels.iter().any(|l| l == label) {
@@ -1749,18 +1923,12 @@ impl GraphStorageMut for InMemoryGraph {
                 }
 
                 node.labels.push(label.to_string());
-                if index_has_active_keys {
-                    scoped_properties = Some(node.properties.clone());
-                }
-                self.insert_node_label_index(node_id, label);
                 true
             }
             None => false,
         };
         if applied {
-            if let Some(properties) = scoped_properties.as_ref() {
-                self.index_node_scope_properties_if_active(node_id, label, properties);
-            }
+            self.on_node_label_added(node_id, label);
             self.emit(|| MutationEvent::AddNodeLabel {
                 node_id,
                 label: label.to_string(),
@@ -1770,29 +1938,16 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> bool {
-        let index_has_active_keys = self.active_node_property_index_count() != 0;
-        let mut scoped_properties = None;
         let applied = match self.nodes.get_mut(&node_id) {
             Some(node) => {
                 let original_len = node.labels.len();
                 node.labels.retain(|l| l != label);
-
-                if node.labels.len() != original_len {
-                    if index_has_active_keys {
-                        scoped_properties = Some(node.properties.clone());
-                    }
-                    self.remove_node_label_index(node_id, label);
-                    true
-                } else {
-                    false
-                }
+                node.labels.len() != original_len
             }
             None => false,
         };
         if applied {
-            if let Some(properties) = scoped_properties.as_ref() {
-                self.unindex_node_scope_properties_if_active(node_id, label, properties);
-            }
+            self.on_node_label_removed(node_id, label);
             self.emit(|| MutationEvent::RemoveNodeLabel {
                 node_id,
                 label: label.to_string(),
@@ -1818,25 +1973,11 @@ impl GraphStorageMut for InMemoryGraph {
             (None, None)
         };
 
-        let index_active = self.active_relationship_property_index_count() != 0
-            && self.indexes_mut().relationship_properties.is_active(&key);
-        let (old, rel_type) = match self.relationships.get_mut(&rel_id) {
-            Some(rel) => {
-                let rel_type = if index_active {
-                    Some(rel.rel_type.clone())
-                } else {
-                    None
-                };
-                (rel.properties.insert(key.clone(), value.clone()), rel_type)
-            }
+        let old = match self.relationships.get_mut(&rel_id) {
+            Some(rel) => rel.properties.insert(key.clone(), value.clone()),
             None => return false,
         };
-        if let Some(rel_type) = rel_type.as_deref() {
-            if let Some(old) = old.as_ref() {
-                self.unindex_relationship_property_if_active(rel_id, [rel_type], &key, old);
-            }
-            self.index_relationship_property_if_active(rel_id, [rel_type], &key, &value);
-        }
+        self.on_relationship_property_set(rel_id, &key, old.as_ref(), &value);
 
         self.emit(|| MutationEvent::SetRelationshipProperty {
             rel_id,
@@ -1856,19 +1997,7 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         };
 
-        let rel_type = if self.active_relationship_property_index_count() != 0
-            && self.indexes_mut().relationship_properties.is_active(key)
-        {
-            self.relationships
-                .get(&rel_id)
-                .map(|rel| rel.rel_type.clone())
-        } else {
-            None
-        };
-
-        if let Some(rel_type) = rel_type.as_deref() {
-            self.unindex_relationship_property_if_active(rel_id, [rel_type], key, &removed);
-        }
+        self.on_relationship_property_removed(rel_id, key, &removed);
 
         self.emit(|| MutationEvent::RemoveRelationshipProperty {
             rel_id,
@@ -1881,12 +2010,7 @@ impl GraphStorageMut for InMemoryGraph {
     fn delete_relationship(&mut self, rel_id: RelationshipId) -> bool {
         let applied = match self.relationships.remove(&rel_id) {
             Some(rel) => {
-                self.detach_relationship_indexes(&rel);
-                self.unindex_active_relationship_properties(
-                    rel_id,
-                    [rel.rel_type.as_str()],
-                    &rel.properties,
-                );
+                self.on_relationship_deleted(&rel);
                 true
             }
             None => false,
@@ -1911,14 +2035,7 @@ impl GraphStorageMut for InMemoryGraph {
             None => return false,
         };
 
-        for label in &node.labels {
-            self.remove_node_label_index(node_id, label);
-        }
-        self.unindex_active_node_properties(
-            node_id,
-            node.labels.iter().map(String::as_str),
-            &node.properties,
-        );
+        self.on_node_deleted(&node);
 
         self.outgoing.remove(&node_id);
         self.incoming.remove(&node_id);
@@ -2462,6 +2579,128 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![n.id]
         );
+    }
+
+    #[test]
+    fn property_index_invariants_survive_mixed_mutations() {
+        let mut g = InMemoryGraph::new();
+        let alice = g.create_node(
+            vec!["Person".into()],
+            props(&[
+                ("name", PropertyValue::String("Alice".into())),
+                ("status", PropertyValue::String("active".into())),
+            ]),
+        );
+        let bob = g.create_node(
+            vec!["Person".into()],
+            props(&[
+                ("name", PropertyValue::String("Bob".into())),
+                ("status", PropertyValue::String("active".into())),
+            ]),
+        );
+        let acme = g.create_node(
+            vec!["Company".into()],
+            props(&[
+                ("name", PropertyValue::String("Acme".into())),
+                ("status", PropertyValue::String("active".into())),
+            ]),
+        );
+        let eve = g.create_node(
+            vec!["Person".into()],
+            props(&[
+                ("name", PropertyValue::String("Eve".into())),
+                ("status", PropertyValue::String("inactive".into())),
+            ]),
+        );
+        let knows = g
+            .create_relationship(
+                alice.id,
+                bob.id,
+                "KNOWS",
+                props(&[
+                    ("since", PropertyValue::Int(2020)),
+                    ("strength", PropertyValue::Int(5)),
+                ]),
+            )
+            .unwrap();
+        let works_at = g
+            .create_relationship(
+                bob.id,
+                acme.id,
+                "WORKS_AT",
+                props(&[
+                    ("since", PropertyValue::Int(2021)),
+                    ("strength", PropertyValue::Int(8)),
+                ]),
+            )
+            .unwrap();
+
+        assert_eq!(
+            g.find_node_ids_by_property(
+                Some("Person"),
+                "name",
+                &PropertyValue::String("Alice".into())
+            ),
+            vec![alice.id]
+        );
+        assert_eq!(
+            g.find_node_ids_by_property(None, "status", &PropertyValue::String("active".into())),
+            vec![alice.id, bob.id, acme.id]
+        );
+        assert_eq!(
+            g.find_relationship_ids_by_property(Some("KNOWS"), "since", &PropertyValue::Int(2020)),
+            vec![knows.id]
+        );
+        assert_eq!(
+            g.find_relationship_ids_by_property(None, "strength", &PropertyValue::Int(8)),
+            vec![works_at.id]
+        );
+        g.assert_property_indexes_match_scan();
+
+        assert!(g.set_node_property(
+            alice.id,
+            "name".into(),
+            PropertyValue::String("Alicia".into())
+        ));
+        g.assert_property_indexes_match_scan();
+
+        assert!(g.remove_node_property(bob.id, "status"));
+        g.assert_property_indexes_match_scan();
+
+        assert!(g.add_node_label(acme.id, "Employer"));
+        assert_eq!(
+            g.find_node_ids_by_property(
+                Some("Employer"),
+                "status",
+                &PropertyValue::String("active".into())
+            ),
+            vec![acme.id]
+        );
+        g.assert_property_indexes_match_scan();
+
+        assert!(g.remove_node_label(alice.id, "Person"));
+        assert!(g
+            .find_node_ids_by_property(
+                Some("Person"),
+                "name",
+                &PropertyValue::String("Alicia".into())
+            )
+            .is_empty());
+        g.assert_property_indexes_match_scan();
+
+        assert!(g.set_relationship_property(knows.id, "since".into(), PropertyValue::Int(2022)));
+        assert!(g.remove_relationship_property(works_at.id, "since"));
+        g.assert_property_indexes_match_scan();
+
+        assert!(g.delete_relationship(works_at.id));
+        assert!(g.delete_node(eve.id));
+        g.assert_property_indexes_match_scan();
+
+        assert!(g.detach_delete_node(bob.id));
+        g.assert_property_indexes_match_scan();
+
+        g.clear();
+        g.assert_property_indexes_match_scan();
     }
 
     #[test]
