@@ -38,7 +38,7 @@ pub(crate) fn write_string_vec(out: &mut Vec<u8>, values: &[String]) -> Result<(
 
 pub(crate) fn write_u32_vec(out: &mut Vec<u8>, values: &[u32]) {
     write_u64(out, values.len() as u64);
-    out.reserve(values.len() * std::mem::size_of::<u32>());
+    out.reserve(std::mem::size_of_val(values));
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
     }
@@ -46,7 +46,7 @@ pub(crate) fn write_u32_vec(out: &mut Vec<u8>, values: &[u32]) {
 
 pub(crate) fn write_u64_vec(out: &mut Vec<u8>, values: &[u64]) {
     write_u64(out, values.len() as u64);
-    out.reserve(values.len() * std::mem::size_of::<u64>());
+    out.reserve(std::mem::size_of_val(values));
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
     }
