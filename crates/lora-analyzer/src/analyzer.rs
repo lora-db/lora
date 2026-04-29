@@ -1181,112 +1181,6 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     }
 }
 
-/// Known scalar and aggregate function names accepted by the engine.
-const KNOWN_FUNCTIONS: &[&str] = &[
-    // Aggregate
-    "count",
-    "sum",
-    "avg",
-    "min",
-    "max",
-    "collect",
-    "stdev",
-    "stdevp",
-    "percentilecont",
-    "percentiledisc",
-    // Entity introspection
-    "id",
-    "type",
-    "labels",
-    "keys",
-    "properties",
-    // Path functions
-    "nodes",
-    "relationships",
-    // String
-    "tolower",
-    "toupper",
-    "trim",
-    "ltrim",
-    "rtrim",
-    "replace",
-    "split",
-    "substring",
-    "reverse",
-    "left",
-    "right",
-    "lpad",
-    "rpad",
-    "char_length",
-    "normalize",
-    // Type conversion / introspection
-    "tostring",
-    "tointeger",
-    "toint",
-    "tofloat",
-    "toboolean",
-    "tobooleanornull",
-    "valuetype",
-    // Math — basic
-    "abs",
-    "ceil",
-    "floor",
-    "round",
-    "sqrt",
-    "sign",
-    // Math — trigonometric / logarithmic
-    "log",
-    "ln",
-    "log10",
-    "exp",
-    "sin",
-    "cos",
-    "tan",
-    "asin",
-    "acos",
-    "atan",
-    "atan2",
-    "degrees",
-    "radians",
-    // Math — constants
-    "pi",
-    "e",
-    "rand",
-    // List / size
-    "size",
-    "length",
-    "head",
-    "tail",
-    "last",
-    "range",
-    // Other
-    "coalesce",
-    "timestamp",
-    // Temporal
-    "date",
-    "datetime",
-    "time",
-    "localtime",
-    "localdatetime",
-    "duration",
-    "date.truncate",
-    "datetime.truncate",
-    "duration.between",
-    "duration.indays",
-    // Spatial
-    "point",
-    "distance",
-    // Vector
-    "vector",
-    "tointegerlist",
-    "tofloatlist",
-    "vector_dimension_count",
-    "vector_distance",
-    "vector_norm",
-    "vector.similarity.cosine",
-    "vector.similarity.euclidean",
-];
-
 const AGGREGATE_FUNCTIONS: &[&str] = &[
     "count",
     "sum",
@@ -1395,7 +1289,7 @@ fn is_aggregate_function(name: &str) -> bool {
 
 fn validate_function_name(name: &str, start: usize, end: usize) -> Result<(), SemanticError> {
     let lower = name.to_ascii_lowercase();
-    if KNOWN_FUNCTIONS.contains(&lower.as_str()) {
+    if function_arity(&lower).is_some() {
         Ok(())
     } else {
         Err(SemanticError::UnknownFunction(name.to_string(), start, end))
