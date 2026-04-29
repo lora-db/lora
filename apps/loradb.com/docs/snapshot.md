@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 sidebar_label: Snapshots
-description: Manual point-in-time snapshots — save and restore the full in-memory LoraDB graph as a single file, through every binding and the opt-in HTTP admin surface. Standalone for backups, or paired with archive-backed recovery on every filesystem-backed surface.
+description: Manual point-in-time snapshots — save and restore the full in-memory LoraDB graph as a single file or byte payload, through every binding and the opt-in HTTP admin surface. Standalone for backups, or paired with WAL-backed recovery on every filesystem-backed surface.
 ---
 
 # Snapshots
@@ -20,14 +20,16 @@ still the portable file primitive those surfaces checkpoint to.
 
 ## What a snapshot is
 
-- A **single file on disk** containing the full graph — every node,
+- A **single encoded payload** containing the full graph — every node,
   every relationship, every property — plus a short header describing
-  the format.
+  the format. Filesystem bindings write that payload as one file; WASM
+  returns bytes or web-native wrappers around those bytes.
 - A **point-in-time dump.** The store mutex is held for the save, so
   every reader sees a consistent graph at the instant the save began.
-- **Atomic on rename.** Writes land in `<path>.tmp`, are `fsync`'d,
-  then renamed over the target; a crashed save can leave a stale
-  `.tmp` file but never a half-written target.
+- **Atomic on rename for path-based saves.** Writes land in
+  `<path>.tmp`, are `fsync`'d, then renamed over the target; a
+  crashed save can leave a stale `.tmp` file but never a half-written
+  target.
 - **Format-versioned and forward-compatible.** Files declare a format
   version; the reader dispatches by version so today's v1 files will
   keep loading after a future format bump until support is
@@ -40,9 +42,9 @@ The bright line, stated explicitly so it cannot be missed:
 - **Not continuous durability.** A crash between two saves loses every
   mutation in the window unless you pair snapshots with the WAL on a
   filesystem-backed surface.
-- **Not a background checkpoint loop.** Nothing schedules saves for
-  you. The host process, an external cron, or a call to the HTTP admin
-  endpoint decides when a save happens.
+- **Not a wall-clock checkpoint scheduler.** Manual snapshots run when
+  you call them. Explicit WAL helpers can also write managed snapshots
+  after N committed transactions, but there is no built-in timer.
 - **Not a general persistent storage layer.** There is no alternative
   backend; a snapshot is a dump of the in-memory graph, not a format
   a different engine writes into.
@@ -77,7 +79,9 @@ Bad fits:
 
 ## Metadata
 
-Every save and every load returns a small metadata record:
+Path-based saves, load calls, and HTTP admin calls return a small
+metadata record. Byte-output save APIs such as WASM `saveSnapshot()` or
+Node `saveSnapshot()` return the snapshot bytes directly instead.
 
 ```json
 {
@@ -95,14 +99,51 @@ Every save and every load returns a small metadata record:
 | `relationshipCount` | integer | Relationships in the saved / restored graph. |
 | `walLsn` | integer or null | `null` for a pure snapshot; non-`null` for a checkpoint snapshot written with WAL enabled. |
 
-Every binding returns the same four fields; the spelling of the field
-names matches the wire shape (camelCase).
+Whenever metadata is returned, every binding uses the same four
+fields; the spelling of the field names matches the wire shape
+(camelCase).
+
+## Compression and encryption
+
+Embedded bindings can save snapshots with codec options:
+
+| Option | Supported values |
+|---|---|
+| `compression` | `"none"`, `"gzip"`, or `{ format: "gzip", level: 0..9 }` |
+| `encryption` | Password / passphrase encryption, or a raw 32-byte key |
+
+Password encryption is the most portable shape:
+
+```ts
+const encryption = {
+  type: 'password',
+  keyId: 'backup-key',
+  password: process.env.LORA_SNAPSHOT_PASSWORD!,
+};
+
+await db.saveSnapshot('graph.lorasnap', {
+  compression: { format: 'gzip', level: 1 },
+  encryption,
+});
+
+await db.loadSnapshot('graph.lorasnap', { credentials: encryption });
+```
+
+Node, Python, WASM, and Ruby accept this JSON-style option shape; Go
+mirrors it with `SnapshotOptions`, `SnapshotCompression`, and
+`SnapshotEncryption` structs; Rust uses the typed `SnapshotOptions`,
+`SnapshotPassword`, and `EncryptionKey` structs. Load calls accept the
+credentials either under `credentials` or `encryption`, so the same
+object used to save can usually be reused to load. HTTP admin snapshot
+routes do not accept per-call codec options today; use an in-process
+binding when you need custom compression or encryption.
 
 ## Binding examples
 
 Snapshots are exposed on every binding that exposes the engine. The
-shape is always "save takes a target, load takes a source, both return
-a metadata record".
+shape is always "save produces a file or byte payload, load consumes a
+source, and metadata is returned whenever the operation has a metadata
+surface".
 
 ### Rust
 
@@ -185,7 +226,7 @@ needs the underlying store mutex.
 import { createDatabase, type SnapshotMeta } from '@loradb/lora-node';
 
 const db = await createDatabase(); // in-memory by default
-// const db = await createDatabase('app', { databaseDir: './data' }); // persistent + snapshots
+// const db = await createDatabase('app', { databaseDir: './data' }); // archive-backed
 await db.execute("CREATE (:Person {name: 'Ada'})");
 
 const meta: SnapshotMeta = await db.saveSnapshot('graph.bin');
@@ -195,15 +236,19 @@ const db2 = await createDatabase();
 await db2.loadSnapshot('graph.bin');
 ```
 
-Both methods return Promises that resolve to a `SnapshotMeta` object.
-The call runs synchronously inside the native layer — the Promise
-exists only for API symmetry with the rest of the `@loradb/lora-node`
-surface.
+`saveSnapshot(path)` writes atomically and resolves to `SnapshotMeta`.
+Calling `saveSnapshot()` with no path returns a Node `Buffer`; you can
+also request `uint8Array`, `arrayBuffer`, `base64`, or a Node stream.
+`loadSnapshot` accepts a string / `URL` path, `Buffer`, `Uint8Array`,
+`ArrayBuffer`, Node `Readable`, Web `ReadableStream`, or async
+iterable. The native engine work still holds the store mutex for the
+duration of the save or load.
 
 ### WebAssembly
 
-WASM has no filesystem. The API is byte-in / byte-out — the caller
-chooses where to persist the bytes:
+WASM has no filesystem path API. The snapshot API is byte/source based:
+the caller chooses where to persist the bytes, and `loadSnapshot` never
+accepts a string path.
 
 ```ts
 import { createDatabase } from '@loradb/lora-wasm';
@@ -212,7 +257,7 @@ const db = await createDatabase();
 await db.execute("CREATE (:Person {name: 'Ada'})");
 
 // Serialize the graph to a Uint8Array.
-const bytes: Uint8Array = await db.saveSnapshotToBytes();
+const bytes: Uint8Array = await db.saveSnapshot();
 
 // Persist however your app already stores state:
 // IndexedDB, localStorage, OPFS, a POST to your backend,
@@ -220,16 +265,17 @@ const bytes: Uint8Array = await db.saveSnapshotToBytes();
 
 // Later (same or a new session), restore from bytes.
 const db2 = await createDatabase();
-await db2.loadSnapshotFromBytes(bytes);
+await db2.loadSnapshot(bytes);
 ```
 
-The Node target of `@loradb/lora-wasm` exposes the same byte API for
-parity — port between targets with an import swap.
+`saveSnapshot` can also return `{ format: "arrayBuffer" }`,
+`"blob"`, `"response"`, `"stream"`, or `"url"`. `loadSnapshot`
+accepts `URL`, `Uint8Array`, `ArrayBuffer`, `Blob`, `Response`, or a
+`ReadableStream<Uint8Array | ArrayBuffer>`.
 
-The Worker-backed surface (`createWorkerDatabase`) does not yet plumb
-snapshots through the worker protocol. If you need a snapshot from a
-browser worker today, call `saveSnapshotToBytes` inside the worker and
-post the bytes back to the main thread yourself.
+The Worker-backed surface (`createWorkerDatabase`) exposes the same
+`saveSnapshot` / `loadSnapshot` methods and moves the snapshot work to
+the worker thread.
 
 #### Persist across reloads with IndexedDB
 
@@ -246,7 +292,7 @@ async function idb(): Promise<IDBDatabase> {
 }
 
 async function saveToIdb(db: Database) {
-  const bytes = await db.saveSnapshotToBytes();
+  const bytes = await db.saveSnapshot();
   const idbDb = await idb();
   await new Promise<void>((ok, err) => {
     const tx = idbDb.transaction(STORE, 'readwrite');
@@ -264,7 +310,7 @@ async function loadFromIdb(db: Database) {
     r.onsuccess = () => ok(r.result);
     r.onerror   = () => err(r.error);
   });
-  if (bytes) await db.loadSnapshotFromBytes(bytes);
+  if (bytes) await db.loadSnapshot(bytes);
 }
 ```
 
@@ -297,6 +343,21 @@ if _, err := db2.LoadSnapshot("graph.bin"); err != nil {
 `SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for pure snapshots
 and non-`nil` when you load or save a checkpoint snapshot stamped by a
 WAL-enabled surface.
+
+### Ruby
+
+```ruby
+require "lora_ruby"
+
+db = LoraRuby::Database.create
+db.execute("CREATE (:Person {name: 'Ada'})")
+
+meta = db.save_snapshot("graph.bin")
+puts "#{meta['nodeCount']} nodes, #{meta['relationshipCount']} relationships"
+
+db2 = LoraRuby::Database.create
+db2.load_snapshot("graph.bin")
+```
 
 ## HTTP admin surface
 
@@ -398,29 +459,40 @@ for the detailed security profile.
 
 ## File format (reference)
 
-The format is stable for v0.3 and will remain readable after future
-format bumps until support is deliberately dropped.
+The current database snapshot format is column-oriented and will
+remain readable after future format bumps until support is deliberately
+dropped. Older legacy snapshots with the previous `LORASNAP` magic are
+still recognized by the database loader when that legacy format is
+supported.
 
 ```
-[0..8)    magic         "LORASNAP"
-[8..12)   format        u32 — currently 1
-[12..16)  header_flags  u32 — bit 0 = has_wal_lsn
-[16..24)  wal_lsn       u64 — 0 when has_wal_lsn is unset
-[24..40)  reserved      16 zero bytes
-[40..)    payload       bincode-serialized payload
-last 4B   crc32         IEEE CRC over header + payload
+[0..8)     magic         "LORACOL1"
+[8..12)    format        u32 — envelope format, currently 1
+[12..16)   manifest_len  u32
+[16..24)   body_len      u64
+[24..56)   checksum      BLAKE3(manifest || body)
+[56..)     manifest      bincode-serialized manifest
+[...end)   body          column-oriented graph payload
 ```
 
-Readers validate the magic bytes, the format version, and the CRC
-before decoding the payload. A file that fails any of those checks is
-rejected — the graph in memory is never touched until the load
-succeeds.
+The manifest carries `walLsn`, node and relationship counts,
+compression, encryption metadata, and the body length. The body stores
+nodes, labels, relationships, relationship types, and properties in
+separate columns, then applies compression and authenticated
+encryption if requested.
+
+Readers validate the magic bytes, the format version, total length,
+and BLAKE3 checksum before decoding the payload. A file that fails any
+of those checks is rejected — the graph in memory is never touched
+until the load succeeds.
 
 ## Limitations
 
 Worth restating, because the failure modes are where snapshots bite:
 
-- **Manual save and restore only.** Nothing runs them for you.
+- **Manual save and restore only.** Manual snapshots run when you call
+  them. Explicit WAL helpers can also write managed snapshots after N
+  committed transactions, but there is no wall-clock scheduler.
 - **Snapshots alone are not continuous durability.** A crash between
   saves loses every mutation in the window unless you pair snapshots
   with the [WAL](./wal).

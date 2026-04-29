@@ -137,8 +137,8 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**Data types**](./data-types/overview) | Scalars, lists, maps, temporals, spatial points, [vectors](./data-types/vectors) — how each round-trips. |
 | [**HTTP API**](./api/http) | Endpoint reference for `lora-server`. |
 | [**Cookbook**](./cookbook) | Scenario-driven recipes: social graphs, e-commerce, events, geospatial, [backup and restore](./cookbook#backup-and-restore). |
-| [**Snapshots**](./snapshot) | Save / load the full graph as a single file — every binding, plus the opt-in HTTP admin surface. |
-| [**WAL & checkpoints**](./wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — plus full operator controls on Rust and the server. |
+| [**Snapshots**](./snapshot) | Save / load the full graph as a file or byte payload — every binding, plus the opt-in HTTP admin surface. |
+| [**WAL & checkpoints**](./wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — with full operator controls on Rust and the server. |
 | [**Limitations**](./limitations) | What's not supported — binding-level WAL-control asymmetry, no indexes, no `CALL`, etc. |
 | [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 
@@ -147,11 +147,11 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 Every item below is a deliberate trade-off, not an oversight:
 
 - **Durability depends on the surface.** Every binding can
-  [save / load snapshots](./snapshot). Every filesystem-backed
-  surface can also attach a [WAL](./wal) for continuous durability
-  between checkpoints. WASM remains snapshot-only. The engine is
-  still an in-memory, single-process system — not a separate
-  persistent storage tier.
+  [save / load snapshots](./snapshot). Filesystem-backed surfaces can
+  also attach a [WAL](./wal) for continuous durability between
+  checkpoints or managed commit-count snapshots. WASM remains
+  snapshot-only and pathless. The engine is still an in-memory,
+  single-process system — not a separate persistent storage tier.
 - **No property indexes.** `MATCH (n {prop: v})` without a label is `O(n)`.
 - **No uniqueness constraints.** Use [`MERGE`](./queries/unwind-merge#merge)
   on a key, or enforce in application code.

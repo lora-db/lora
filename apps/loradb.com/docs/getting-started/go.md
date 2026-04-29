@@ -1,7 +1,7 @@
 ---
 title: Using LoraDB in Go
 sidebar_label: Go
-description: Install and use LoraDB in Go via the lora-go cgo wrapper over the shared lora-ffi C ABI — in-process execution with the same tagged value model as the other bindings.
+description: Install and use LoraDB in Go via the lora-go cgo wrapper over the shared lora-ffi C ABI — in-process execution, snapshots, and WAL persistence.
 ---
 
 # Using LoraDB in Go
@@ -195,17 +195,17 @@ if err != nil {
 ### Persisting your graph
 
 LoraDB can save the in-memory graph to a single file and restore it
-later. Go now supports the same simple initialization rule as the other
-filesystem-backed bindings:
+later. Go has three persistence shapes:
 
 - `lora.New()` / `lora.NewDatabase()` => in-memory
-- `lora.New("app", lora.Options{DatabaseDir: "./data"})` / `lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` => persistent
+- `lora.New("app", lora.Options{DatabaseDir: "./data"})` / `lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` => archive-backed
+- `lora.OpenWal(lora.WalOptions{WalDir: "./data/wal", SnapshotDir: "./data/snapshots"})` => explicit WAL with optional managed snapshots
 
 ```go
 import lora "github.com/lora-db/lora/crates/lora-go"
 
 db, err := lora.New() // in-memory
-// db, err := lora.New("app", lora.Options{DatabaseDir: "./data"}) // persistent: ./data/app.loradb
+// db, err := lora.New("app", lora.Options{DatabaseDir: "./data"}) // archive: ./data/app.loradb
 if err != nil { log.Fatal(err) }
 defer db.Close()
 
@@ -224,21 +224,34 @@ defer db2.Close()
 if _, err := db2.LoadSnapshot("graph.bin"); err != nil {
     log.Fatal(err)
 }
+
+durable, err := lora.OpenWal(lora.WalOptions{
+    WalDir:               "./data/wal",
+    SnapshotDir:          "./data/snapshots",
+    SnapshotEveryCommits: 1000,
+    SnapshotKeepOld:      2,
+    SnapshotOptions: &lora.SnapshotOptions{
+        Compression: &lora.SnapshotCompression{Format: "gzip", Level: 1},
+    },
+})
+if err != nil { log.Fatal(err) }
+defer durable.Close()
 ```
 
 `SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for a pure snapshot
-and non-`nil` when you load a checkpoint snapshot written by a
-WAL-enabled Rust or `lora-server` deployment. Both save and load hold
+and non-`nil` when you load or save a checkpoint snapshot written by a
+WAL-enabled deployment. Both save and load hold
 the store mutex for the duration of the call — concurrent
 `Execute` calls block until the snapshot operation finishes. A crash
 between saves loses every mutation since the last save.
 
 Passing a database name and directory opens or creates an archive-backed persistent
 database at `<databaseDir>/<name>.loradb`. Reopening the same path replays committed
-writes before the handle is returned. This first Go persistence slice
-intentionally stays small: the binding exposes archive-backed
-initialization plus snapshots, but not checkpoint, truncate, status, or
-sync-mode controls.
+writes before the handle is returned. `OpenWal` opens a raw WAL
+directory; when `SnapshotDir` and `SnapshotEveryCommits` are set, the
+database writes managed checkpoint snapshots after that many committed
+transactions. Go does not expose WAL status, truncate, or sync-mode
+controls; use Rust or `lora-server` for those operator knobs.
 
 If you run `lora-server` alongside a Go client, you can also drive the
 admin surface as an ordinary HTTP request — see

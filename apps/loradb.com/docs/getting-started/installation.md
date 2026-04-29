@@ -107,9 +107,11 @@ multiple `Database` instances for read parallelism.
 If you want persistence, opt into it explicitly:
 
 - on `lora-node`, pass a database name and database directory to `createDatabase('app', { databaseDir: './data' })`;
+- on `lora-node`, use `openWalDatabase({ walDir: './data/wal' })` for an explicit WAL directory;
 - on Rust / `lora-server`, configure a WAL directory;
 - on Python, Go, and Ruby, pass a database name plus their `database_dir` /
-  `DatabaseDir` option;
+  `DatabaseDir` option for `.loradb` archives, or use `open_wal` /
+  `OpenWal` for an explicit WAL directory;
 
 ### Bulk-load from the host
 

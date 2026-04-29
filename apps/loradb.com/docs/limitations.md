@@ -130,8 +130,8 @@ in the internal documentation.
 
 | Gap | Impact |
 |---|---|
-| WAL controls are not uniform across bindings | Rust and `lora-server` expose the full [WAL](./wal) surface. Node, Python, Go, and Ruby expose simple WAL-backed initialization only. WASM remains snapshot-only. |
-| Automatic checkpoint loop — not yet supported | Checkpoints are explicit (`checkpoint_to(...)`, `POST /admin/checkpoint`, or host-driven snapshot saves). Nothing schedules them in the background for you. |
+| WAL controls are not uniform across bindings | Rust and `lora-server` expose the full [WAL](./wal) surface. Node exposes archive/raw WAL opens plus sync-mode control. Python, Go, and Ruby expose archive/raw WAL opens with managed snapshot options. WASM remains snapshot-only. |
+| Time-based checkpoint scheduler — not yet supported | Explicit WAL helpers can write managed snapshots after N committed transactions, and Rust / `lora-server` expose explicit checkpoints. Nothing schedules checkpoints by wall-clock time in the background for you. |
 | Uniqueness constraints — not supported | Duplicates can be created silently; enforce in application code or match before creating |
 | Property indexes — not yet supported | Property filters without a label are `O(n)` full scans |
 | Explicit transactions — not supported | Each query is atomic; no multi-query transaction boundary |

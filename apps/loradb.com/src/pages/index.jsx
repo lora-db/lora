@@ -24,7 +24,7 @@ const QUICKSTART_TABS = [
     code: `import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();           // in-memory
-// const db = await createDatabase('./app'); // persistent: directory string
+// const db = await createDatabase('app', { databaseDir: './data' }); // ./data/app.loradb
 
 await db.execute(
   "CREATE (:Person {name: 'Ada'})-[:INFLUENCED]->(:Person {name: 'Grace'})"

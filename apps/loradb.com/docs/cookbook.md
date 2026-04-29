@@ -1047,9 +1047,11 @@ curl -sX POST http://127.0.0.1:4747/admin/checkpoint \
 - `--restore-from` and `--snapshot-path` are independent. They can be
   the same file for a simple single-host setup, or different files for
   an immutable seed plus writable runtime checkpoint.
-- There is no automatic checkpoint loop yet. Trigger the endpoint from
-  a systemd timer, cron, deployment hook, or host process after you
-  measure acceptable replay time.
+- There is no wall-clock checkpoint scheduler. Trigger the endpoint
+  from a systemd timer, cron, deployment hook, or host process after
+  you measure acceptable replay time. Embedded raw-WAL helpers can also
+  write managed snapshots after N committed transactions; see
+  [WAL and checkpoints](./wal).
 
 See the canonical [Snapshots guide](./snapshot) for the file format
 and every binding's save / load API, and

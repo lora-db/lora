@@ -1,7 +1,7 @@
 ---
 title: Running LoraDB in the Browser with WebAssembly
 sidebar_label: Browser (WASM)
-description: Run LoraDB in the browser via WebAssembly with lora-wasm — including the Worker variant for keeping the main thread responsive and the same API as the Node binding.
+description: Run LoraDB in the browser via WebAssembly with lora-wasm — including the Worker variant, pathless snapshots, and the same query API as the Node binding.
 ---
 
 # Running LoraDB in the Browser with WebAssembly
@@ -10,9 +10,10 @@ description: Run LoraDB in the browser via WebAssembly with lora-wasm — includ
 
 `lora-wasm` runs the full LoraDB engine in the browser (or Node) via
 WebAssembly. The surface, helpers, and type guards match
-[`lora-node`](./node) exactly — the same code ports with an import
-swap. For browser apps, prefer the **Worker** variant so the main
-thread stays responsive.
+[`lora-node`](./node) for query execution and typed values. Snapshot
+persistence is pathless in WASM: save returns bytes or web-native
+objects, and load consumes byte/source objects. For browser apps,
+prefer the **Worker** variant so the main thread stays responsive.
 
 ## Installation / Setup
 
@@ -63,7 +64,7 @@ on the returned instance returns a Promise for API symmetry with
 Unlike `lora-node`, the WASM binding does **not** accept a directory
 string for persistent initialization. `createDatabase()` is always an
 in-memory database; persistency in WASM is byte-based through
-`saveSnapshotToBytes` / `loadSnapshotFromBytes`.
+`saveSnapshot` / `loadSnapshot`.
 
 :::caution Do not skip the `await`
 `createDatabase()` returns a `Promise`. Calling `execute()` on the
@@ -91,9 +92,9 @@ const db = createWorkerDatabase(worker);
 ```
 
 `WorkerDatabase` has the same surface as `Database` (`execute`,
-`clear`, `nodeCount`, `relationshipCount`). Every call posts a
-message to the worker and awaits the reply, so the main thread
-never blocks on the engine.
+`clear`, `nodeCount`, `relationshipCount`, `saveSnapshot`, and
+`loadSnapshot`). Every call posts a message to the worker and awaits
+the reply, so the main thread never blocks on the engine.
 
 ## Running Your First Query
 
@@ -213,27 +214,53 @@ try {
 ### Persisting your graph
 
 The browser WASM binding has no filesystem, so the snapshot API is
-**byte-in / byte-out**. Save produces a `Uint8Array`; load consumes
-one. Store the bytes wherever your app already stores state —
-IndexedDB, the fetch API, OPFS, a backend:
+**source-in / byte-out** and never accepts a string path. By default,
+save produces a `Uint8Array`; load accepts `URL`, `Uint8Array`,
+`ArrayBuffer`, `Blob`, `Response`, or a
+`ReadableStream<Uint8Array | ArrayBuffer>`. Store the bytes wherever
+your app already stores state — IndexedDB, the fetch API, OPFS, or a
+backend:
 
 ```ts
 // Dump the full graph to bytes.
-const bytes: Uint8Array = await db.saveSnapshotToBytes();
+const bytes: Uint8Array = await db.saveSnapshot();
 
 // Later (same or next session), restore from bytes.
-await db.loadSnapshotFromBytes(bytes);
+await db.loadSnapshot(bytes);
 ```
 
-The Node target of `@loradb/lora-wasm` exposes the same byte API for
-parity, so host code ports unchanged between targets (use the
-filesystem-backed `saveSnapshot(path)` on `@loradb/lora-node` only
-when you want a path-based API).
+Other output formats are available when they fit the surrounding
+platform better:
 
-The Worker-backed surface (`createWorkerDatabase`) does not yet plumb
-snapshots through the worker protocol. To snapshot from a worker
-today, call `saveSnapshotToBytes` inside the worker and post the bytes
-back to the main thread yourself.
+```ts
+const blob = await db.saveSnapshot({ format: 'blob' });
+const response = await db.saveSnapshot({ format: 'response' });
+const url = await db.saveSnapshot({ format: 'url' });
+```
+
+Compression and encryption are supported in WASM too:
+
+```ts
+const encryption = {
+  type: 'password',
+  keyId: 'browser-backup',
+  password: userSuppliedPassword,
+};
+
+const bytes = await db.saveSnapshot({
+  compression: { format: 'gzip', level: 1 },
+  encryption,
+});
+
+await db.loadSnapshot(bytes, { credentials: encryption });
+```
+
+The Node target of `@loradb/lora-wasm` exposes the same pathless API
+for parity. Use the filesystem-backed `saveSnapshot(path)` on
+`@loradb/lora-node` only when you want a path-based API. The
+Worker-backed surface (`createWorkerDatabase`) exposes the same
+`saveSnapshot` / `loadSnapshot` methods and runs the work off the main
+thread.
 
 See the canonical [Snapshots guide](../snapshot) for the full metadata
 shape and atomic-rename guarantees (the latter apply to path-based
@@ -255,7 +282,7 @@ async function idb(): Promise<IDBDatabase> {
 }
 
 async function saveToIdb(db: Database) {
-  const bytes = await db.saveSnapshotToBytes();
+  const bytes = await db.saveSnapshot();
   const idbDb = await idb();
   await new Promise<void>((ok, err) => {
     const tx = idbDb.transaction(STORE, 'readwrite');
@@ -273,7 +300,7 @@ async function loadFromIdb(db: Database) {
     r.onsuccess = () => ok(r.result);
     r.onerror   = () => err(r.error);
   });
-  if (bytes) await db.loadSnapshotFromBytes(bytes);
+  if (bytes) await db.loadSnapshot(bytes);
 }
 ```
 
@@ -316,6 +343,8 @@ await db.execute(query, params?);       // returns { columns, rows }
 await db.clear();
 await db.nodeCount();
 await db.relationshipCount();
+await db.saveSnapshot();
+await db.loadSnapshot(source);
 db.dispose();                           // release the WASM handle
 ```
 
@@ -330,6 +359,7 @@ further `execute` calls will throw.
 | `await init(); const db = new Database()` | `const db = await createDatabase()` (init is handled inside) |
 | `const db = Database.create()` (missing `await`) | `const db = await createDatabase()` |
 | `Database.create()` (legacy name) | `createDatabase()` |
+| `await db.loadSnapshot('/tmp/graph.bin')` | Fetch or read the bytes first, then `await db.loadSnapshot(bytes)` |
 
 `Database` is a **type-only** export in `lora-wasm`. Importing it
 as a value and calling `new Database()` is a compile error —

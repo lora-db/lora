@@ -1,7 +1,7 @@
 ---
 title: Using LoraDB in Ruby
 sidebar_label: Ruby
-description: Install and use LoraDB in Ruby via the lora-ruby native extension built with Magnus and rb-sys — in-process execution with the same tagged value model as the other bindings.
+description: Install and use LoraDB in Ruby via the lora-ruby native extension built with Magnus and rb-sys — in-process execution, snapshots, and WAL persistence.
 ---
 
 # Using LoraDB in Ruby
@@ -150,17 +150,17 @@ end
 ### Persisting your graph
 
 LoraDB can save the in-memory graph to a single file and restore it
-later. Ruby now supports the same simple initialization rule as the
-other filesystem-backed bindings:
+later. Ruby has three persistence shapes:
 
 - `LoraRuby::Database.create` / `LoraRuby::Database.new` => in-memory
-- `LoraRuby::Database.create("app", {"database_dir": "./data"})` / `LoraRuby::Database.new("app", { database_dir: "./data" })` => persistent
+- `LoraRuby::Database.create("app", {"database_dir": "./data"})` / `LoraRuby::Database.new("app", { database_dir: "./data" })` => archive-backed
+- `LoraRuby::Database.open_wal("./data/wal", snapshot_dir: "./data/snapshots")` => explicit WAL with optional managed snapshots
 
 ```ruby
 require 'lora_ruby'
 
 db = LoraRuby::Database.new # in-memory
-# db = LoraRuby::Database.new("app", { database_dir: "./data" }) # persistent: ./data/app.loradb
+# db = LoraRuby::Database.new("app", { database_dir: "./data" }) # archive: ./data/app.loradb
 db.execute("CREATE (:Person {name: 'Ada'})")
 
 # Save everything to disk.
@@ -170,20 +170,32 @@ puts "#{meta['nodeCount']} nodes, #{meta['relationshipCount']} relationships"
 # Restore into a fresh handle (in a new process, for example).
 db = LoraRuby::Database.new
 db.load_snapshot("graph.bin")
+
+durable = LoraRuby::Database.open_wal(
+  "./data/wal",
+  snapshot_dir: "./data/snapshots",
+  snapshot_every_commits: 1000,
+  snapshot_keep_old: 2,
+  snapshot_options: {
+    compression: { format: "gzip", level: 1 },
+  },
+)
+durable.close
 ```
 
 Both save and load serialise against every query on the handle. A
 crash between saves loses every mutation since the last save. See
-the
-[Snapshots operator doc (internal)](https://github.com/lora-db/lora/blob/main/docs/operations/snapshots.md)
-for the wire format and atomic-rename guarantees.
+the canonical [Snapshots guide](../snapshot) for the wire format and
+atomic-rename guarantees.
 
 Passing a database name and directory opens or creates an archive-backed persistent
 database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
-writes before the handle is returned. This first Ruby persistence slice
-intentionally stays small: the binding exposes archive-backed
-initialization plus snapshots, but not checkpoint, truncate, status, or
-sync-mode controls. Call `db.close` before reopening the same archive
+writes before the handle is returned. `open_wal` opens a raw WAL
+directory; when `snapshot_dir` and `snapshot_every_commits` are set,
+the database writes managed checkpoint snapshots after that many
+committed transactions. Ruby does not expose WAL status, truncate, or
+sync-mode controls; use Rust or `lora-server` for those operator
+knobs. Call `db.close` before reopening the same archive or WAL
 directory inside one process.
 
 ## Common Patterns

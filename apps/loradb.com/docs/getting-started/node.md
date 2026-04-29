@@ -1,7 +1,7 @@
 ---
 title: Using LoraDB in Node.js and TypeScript
 sidebar_label: Node.js
-description: Install and use LoraDB in Node.js or TypeScript via the lora-node N-API binding — async queries on libuv, helpers, type guards, and the shared result shapes.
+description: Install and use LoraDB in Node.js or TypeScript via the lora-node N-API binding — async queries on libuv, helpers, snapshots, WAL persistence, and shared result shapes.
 ---
 
 # Using LoraDB in Node.js and TypeScript
@@ -13,9 +13,10 @@ threadpool so they don't block the event loop, though parallel calls
 on a single `Database` still serialise on the engine mutex. The
 surface, helpers, and type guards match the
 [WASM binding](./wasm) for query execution and result handling — the
-same code largely ports with an import swap. Node also adds one
-embedded-only convenience the WASM build cannot: optional archive-backed
-initialization with `.loradb` files.
+same query code largely ports with an import swap. Node also adds
+filesystem-backed persistence the WASM build cannot: archive-backed
+`.loradb` files, explicit WAL directories, and path-based snapshot
+save/load.
 
 ## Installation / Setup
 
@@ -45,9 +46,8 @@ npm install @loradb/lora-node
 
 ## Creating a Client / Connection
 
-`lora-node` is **async-only**. The one supported initialization
-pattern is `createDatabase(...)`, which returns a
-`Promise<Database>`:
+`lora-node` is **async-only**. The common initialization path is
+`createDatabase(...)`, which returns a `Promise<Database>`:
 
 ```ts
 import { createDatabase } from '@loradb/lora-node';
@@ -55,22 +55,27 @@ import { createDatabase } from '@loradb/lora-node';
 const db = await createDatabase(); // in-memory by default
 ```
 
-`createDatabase(...)` is the single entry point — there is no
-synchronous constructor and no `Database.create()` static. This
-lets the binding extend initialization later without breaking
-callers.
+There is no synchronous constructor and no `Database.create()` static.
+Use `createDatabase(...)` for in-memory or archive-backed `.loradb`
+databases, and `openWalDatabase(...)` when you want an explicit WAL
+directory.
 
 Rule of thumb:
 
 ```ts
-import { createDatabase } from '@loradb/lora-node';
+import { createDatabase, openWalDatabase } from '@loradb/lora-node';
 
 const inMemory = await createDatabase();           // in-memory database
 const persistent = await createDatabase('app', { databaseDir: './data' }); // ./data/app.loradb
+const wal = await openWalDatabase({
+  walDir: './data/app.wal',
+  snapshotDir: './data/app.snapshots',
+  snapshotEveryCommits: 1000,
+});
 ```
 
 If you want persistence, pass a database name and `databaseDir` to
-`createDatabase(...)`.
+`createDatabase(...)`, or pass `walDir` to `openWalDatabase(...)`.
 
 To open an archive-backed embedded database instead of a fresh in-memory
 one, pass a database name and `databaseDir`:
@@ -216,16 +221,22 @@ multiple `Database` instances (each with its own graph).
 
 ### Persisting your graph
 
-LoraDB can save the graph to a single file and restore it later. In
-Node you now have two persistence shapes:
+LoraDB has three Node persistence shapes:
 
+- `createDatabase()` for a purely in-memory graph.
 - `createDatabase('app', { databaseDir: './data' })` for archive-backed
   recovery between process restarts.
+- `openWalDatabase({ walDir: './data/wal', snapshotDir: './data/snapshots' })`
+  for an explicit WAL directory with optional managed snapshots.
 - `saveSnapshot` / `loadSnapshot` for point-in-time files that you can
   move, back up, or load into a fresh handle.
 
 ```ts
-import { createDatabase, type SnapshotMeta } from '@loradb/lora-node';
+import {
+  createDatabase,
+  openWalDatabase,
+  type SnapshotMeta,
+} from '@loradb/lora-node';
 
 const db = await createDatabase();
 await db.execute("CREATE (:Person {name: 'Ada'})");
@@ -237,14 +248,28 @@ console.log(meta.nodeCount, meta.relationshipCount);
 // Restore into a fresh handle (in a new process, for example).
 const db2 = await createDatabase();
 await db2.loadSnapshot('graph.bin');
+
+const durable = await openWalDatabase({
+  walDir: './data/wal',
+  snapshotDir: './data/snapshots',
+  snapshotEveryCommits: 1000,
+  snapshotOptions: { compression: { format: 'gzip', level: 1 } },
+  syncMode: 'perCommit',
+});
 ```
 
 `saveSnapshot` / `loadSnapshot` are `async` like every other
 `@loradb/lora-node` call, but the underlying engine call is synchronous
 and holds the store mutex for the duration — concurrent `execute()`
 calls block until the snapshot operation finishes. When you are using
-plain `createDatabase()` with no WAL path, a crash between saves loses
-every mutation since the last save.
+plain `createDatabase()` with no archive or WAL path, a crash loses
+all in-memory state. Manual snapshots protect only the mutations saved
+before the crash; WAL-backed opens replay committed writes on restart.
+
+`saveSnapshot()` with no path returns a `Buffer`. `saveSnapshot(path)`
+writes atomically to disk and returns `SnapshotMeta`. `loadSnapshot`
+accepts a path string / `URL`, `Buffer`, `Uint8Array`, `ArrayBuffer`,
+Node `Readable`, Web `ReadableStream`, or async iterable.
 
 See the canonical [Snapshots guide](../snapshot) for the full
 metadata shape, atomic-rename guarantees, and boundaries.
@@ -314,8 +339,8 @@ db.dispose();                        // release the native handle
 
 `clear` / `nodeCount` / `relationshipCount` return Promises for API
 symmetry but run synchronously inside the native layer. `dispose()` is
-synchronous and idempotent; call it when you need to reopen the same WAL
-directory inside the same process.
+synchronous and idempotent; call it when you need to reopen the same
+archive or WAL directory inside the same process.
 
 ### Repository pattern
 
@@ -358,7 +383,8 @@ const users = new UserRepo(db);
 | `const db = new Database()` | `const db = await createDatabase()` |
 | `const db = Database.create()` (missing `await`) | `const db = await createDatabase()` |
 | `Database.create()` (legacy name) | `createDatabase()` |
-| `import { Database } from '@loradb/lora-node'; new Database()` | `import { createDatabase } from 'lora-node'`; then `await createDatabase()` |
+| `import { Database } from '@loradb/lora-node'; new Database()` | `import { createDatabase } from '@loradb/lora-node'`; then `await createDatabase()` |
+| `createDatabase(undefined, { walDir: './wal' })` | `openWalDatabase({ walDir: './wal' })` |
 
 `Database` is a **type-only** export. Importing it as a value and
 calling `new Database()` is a compile error — synchronous

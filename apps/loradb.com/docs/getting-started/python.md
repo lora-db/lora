@@ -1,7 +1,7 @@
 ---
 title: Using LoraDB in Python
 sidebar_label: Python
-description: Install and use LoraDB in Python via the PyO3 lora-python binding — synchronous Database and asyncio-friendly AsyncDatabase with identical shapes, installed through pip.
+description: Install and use LoraDB in Python via the PyO3 lora-python binding — synchronous Database and asyncio-friendly AsyncDatabase with snapshots and WAL persistence.
 ---
 
 # Using LoraDB in Python
@@ -183,22 +183,22 @@ a one-line import change.
 ### Persisting your graph
 
 LoraDB can save the in-memory graph to a single file and restore it
-later. Python now supports the same simple initialization rule as
-Node:
+later. Python has three persistence shapes:
 
 - `Database.create()` / `Database()` => in-memory
-- `Database.create("app", {"database_dir": "./data"})` / `Database("app", {"database_dir": "./data"})` => persistent
+- `Database.create("app", {"database_dir": "./data"})` / `Database("app", {"database_dir": "./data"})` => archive-backed
 
 Async follows the same rule:
 
 - `await AsyncDatabase.create()` => in-memory
-- `await AsyncDatabase.create("app", {"database_dir": "./data"})` => persistent
+- `await AsyncDatabase.create("app", {"database_dir": "./data"})` => archive-backed
+- `Database.open_wal("./wal", options)` / `await AsyncDatabase.open_wal("./wal", options)` => explicit WAL with optional managed snapshots
 
 ```python
 from lora_python import Database
 
 db = Database.create()         # in-memory
-# db = Database.create("app", {"database_dir": "./data"})  # persistent: ./data/app.loradb
+# db = Database.create("app", {"database_dir": "./data"})  # archive: ./data/app.loradb
 db.execute("CREATE (:Person {name: 'Ada'})")
 
 # Save everything to disk.
@@ -208,6 +208,18 @@ print(meta["nodeCount"], meta["relationshipCount"])
 # Restore into a fresh handle (in a new process, for example).
 db = Database.create()
 db.load_snapshot("graph.bin")
+
+durable = Database.open_wal(
+    "./data/wal",
+    {
+        "snapshot_dir": "./data/snapshots",
+        "snapshot_every_commits": 1000,
+        "snapshot_keep_old": 2,
+        "snapshot_options": {
+            "compression": {"format": "gzip", "level": 1},
+        },
+    },
+)
 ```
 
 `AsyncDatabase` exposes the same two methods as coroutines — the sync
@@ -220,12 +232,18 @@ from lora_python import AsyncDatabase
 
 async def main():
     db = await AsyncDatabase.create()  # in-memory
-    # db = await AsyncDatabase.create("app", {"database_dir": "./data"})  # persistent: ./data/app.loradb
+    # db = await AsyncDatabase.create("app", {"database_dir": "./data"})  # archive: ./data/app.loradb
     await db.execute("CREATE (:Person {name: 'Ada'})")
     await db.save_snapshot("graph.bin")
 
     db2 = await AsyncDatabase.create()
     await db2.load_snapshot("graph.bin")
+
+    durable = await AsyncDatabase.open_wal(
+        "./data/async-wal",
+        {"snapshot_dir": "./data/async-snapshots", "snapshot_every_commits": 1000},
+    )
+    await durable.close()
 
 asyncio.run(main())
 ```
@@ -235,11 +253,13 @@ crash between saves loses every mutation since the last save.
 
 Passing a database name and directory opens or creates an archive-backed persistent
 database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
-writes before the handle is returned. This first Python persistence
-slice intentionally stays small: the binding exposes archive-backed
-initialization plus snapshots, but not checkpoint, truncate, status, or
-sync-mode controls. Call `db.close()` / `await db.close()` before
-reopening the same archive inside one process.
+writes before the handle is returned. `open_wal` opens a raw WAL
+directory; when `snapshot_dir` and `snapshot_every_commits` are set,
+the database writes managed checkpoint snapshots after that many
+committed transactions. Python does not expose WAL status, truncate,
+or sync-mode controls; use Rust or `lora-server` for those operator
+knobs. Call `db.close()` / `await db.close()` before reopening the same
+archive or WAL directory inside one process.
 
 See the canonical [Snapshots guide](../snapshot) for the full
 metadata shape, atomic-rename guarantees, and boundaries, and

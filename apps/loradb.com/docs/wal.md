@@ -22,17 +22,18 @@ together.
 | Surface | How to enable it | What you get |
 |---|---|---|
 | Rust (`lora-database`) | `Database::open_with_wal(...)`, `Database::recover(...)` | Full WAL config, recovery, checkpoints, status, truncation |
-| Node (`@loradb/lora-node`) | `await createDatabase("app", { databaseDir: "./data" })` | Archive-backed embedded database at `./data/app.loradb` |
-| Python (`lora_python`) | `Database.create("app", {"database_dir": "./data"})`, `Database("app", {"database_dir": "./data"})`, `await AsyncDatabase.create("app", {"database_dir": "./data"})` | Archive-backed embedded database at `./data/app.loradb` |
-| Go (`lora-go`) | `lora.New("app", lora.Options{DatabaseDir: "./data"})`, `lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` | Archive-backed embedded database at `./data/app.loradb` |
-| Ruby (`lora-ruby`) | `LoraRuby::Database.create("app", { database_dir: "./data" })`, `LoraRuby::Database.new("app", { database_dir: "./data" })` | Archive-backed embedded database at `./data/app.loradb` |
+| Node (`@loradb/lora-node`) | `createDatabase("app", { databaseDir })` or `openWalDatabase({ walDir, snapshotDir })` | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots and sync-mode control |
+| Python (`lora_python`) | `Database.create("app", {"database_dir": ...})` or `Database.open_wal(wal_dir, options)`; async mirrors both | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots |
+| Go (`lora-go`) | `lora.New("app", lora.Options{DatabaseDir: ...})` or `lora.OpenWal(lora.WalOptions{...})` | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots |
+| Ruby (`lora-ruby`) | `LoraRuby::Database.create("app", { database_dir: ... })` or `LoraRuby::Database.open_wal(wal_dir, options)` | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots |
 | HTTP server (`lora-server`) | `--wal-dir`, `--wal-sync-mode`, `--restore-from` | Recovery, sync-mode control, `/admin/checkpoint`, `/admin/wal/status`, `/admin/wal/truncate` |
 | WASM (`@loradb/lora-wasm`) | Not exposed | Snapshot-only today |
 
-The default embedded-binding WAL settings are `SyncMode::PerCommit`
-and an 8 MiB segment target. Rust can override both through
-`WalConfig::Enabled`. `lora-server` exposes sync mode through
-`--wal-sync-mode`; it uses the same 8 MiB segment target.
+Raw WAL helpers default to `SyncMode::PerCommit` and an 8 MiB segment
+target. Archive-backed named databases default to grouped fsync with a
+1s interval. Rust can override the low-level WAL config directly;
+Node exposes `syncMode` on both archive-backed and explicit WAL opens;
+`lora-server` exposes it through `--wal-sync-mode`.
 
 ## Pick a persistence shape
 
@@ -51,10 +52,18 @@ checkpoints when replay time or log size starts to matter.
 ### Node.js
 
 ```ts
-import { createDatabase } from '@loradb/lora-node';
+import { createDatabase, openWalDatabase } from '@loradb/lora-node';
 
 const scratch = await createDatabase();                       // in-memory
 const db = await createDatabase('app', { databaseDir: './data' }); // ./data/app.loradb
+
+const walDb = await openWalDatabase({
+  walDir: './data/app.wal',
+  snapshotDir: './data/app.snapshots',
+  snapshotEveryCommits: 1000,
+  snapshotOptions: { compression: { format: 'gzip', level: 1 } },
+  syncMode: 'perCommit',
+});
 ```
 
 The name is validated and resolved under `databaseDir` as a `.loradb`
@@ -62,8 +71,11 @@ archive. Relative paths resolve from the current working directory.
 Reopening the same name and directory replays committed WAL records before
 the handle is returned.
 
-This first Node WAL surface intentionally stays small: it does not yet
-expose checkpoint, truncate, status, or sync-mode controls.
+Use `openWalDatabase` when you want a raw WAL directory instead of a
+portable `.loradb` archive. Pair it with `snapshotDir` to let the
+database write managed checkpoints every `snapshotEveryCommits`
+committed transactions. Node does not expose WAL status or truncate
+helpers yet; use Rust or `lora-server` for those operator controls.
 
 ### Python
 
@@ -74,7 +86,20 @@ scratch = Database.create()            # in-memory
 db = Database.create("app", {"database_dir": "./data"})          # archive-backed
 also_db = Database("app", {"database_dir": "./data"})            # equivalent
 
+wal_db = Database.open_wal(
+    "./data/app.wal",
+    {
+        "snapshot_dir": "./data/app.snapshots",
+        "snapshot_every_commits": 1000,
+        "snapshot_options": {"compression": {"format": "gzip", "level": 1}},
+    },
+)
+
 async_db = await AsyncDatabase.create("app", {"database_dir": "./data"})
+async_wal = await AsyncDatabase.open_wal(
+    "./data/async.wal",
+    {"snapshot_dir": "./data/async.snapshots", "snapshot_every_commits": 1000},
+)
 ```
 
 ### Go
@@ -82,6 +107,11 @@ async_db = await AsyncDatabase.create("app", {"database_dir": "./data"})
 ```go
 scratch, err := lora.New()        // in-memory
 db, err := lora.New("app", lora.Options{DatabaseDir: "./data"})      // archive-backed
+walDb, err := lora.OpenWal(lora.WalOptions{
+    WalDir:               "./data/app.wal",
+    SnapshotDir:          "./data/app.snapshots",
+    SnapshotEveryCommits: 1000,
+})
 ```
 
 ### Ruby
@@ -89,6 +119,11 @@ db, err := lora.New("app", lora.Options{DatabaseDir: "./data"})      // archive-
 ```ruby
 scratch = LoraRuby::Database.create          # in-memory
 db = LoraRuby::Database.create("app", {"database_dir": "./data"})      # archive-backed
+wal_db = LoraRuby::Database.open_wal(
+  "./data/app.wal",
+  snapshot_dir: "./data/app.snapshots",
+  snapshot_every_commits: 1000,
+)
 ```
 
 ### Rust
@@ -246,8 +281,11 @@ to the WAL's current `durableLsn`.
 
 ## Boundaries
 
-- **No automatic checkpoint loop yet.** Checkpoints are explicit. Host
-  code or operators decide when they run.
+- **Checkpoint automation is commit-count based, not time/background
+  based.** Explicit WAL helpers in Node, Python, Go, and Ruby can write
+  managed snapshots after N committed transactions. Rust and
+  `lora-server` expose explicit checkpoint calls. There is no
+  wall-clock scheduler built into the engine.
 - **No auth on the admin surface.** Snapshot and WAL admin routes are
   off by default but unauthenticated when enabled. Put them behind
   authenticated ingress only.
@@ -255,9 +293,10 @@ to the WAL's current `durableLsn`.
   `.loradb` archive. Opening the same root from another process, or from a second live
   handle in the same process, fails until the first handle is closed.
 - **Binding support is asymmetric.** The filesystem-backed bindings can
-  open WAL-backed databases, but only Rust and `lora-server` expose full
-  checkpoint, truncate, status, and sync-mode controls. WASM stays
-  snapshot-only.
+  open WAL-backed databases. Rust and `lora-server` expose full
+  checkpoint, truncate, status, and sync-mode controls. Node also
+  exposes sync-mode control. Python, Go, and Ruby expose simple raw WAL
+  opens plus managed snapshot options. WASM stays snapshot-only.
 - **No cross-version WAL compatibility guarantee yet.** Snapshots are
   the portable backup and migration artifact. Treat WAL directories as
   local runtime state for the same deployment line unless a release
@@ -273,6 +312,7 @@ to the WAL's current `durableLsn`.
 - [**Troubleshooting**](./troubleshooting#wal-and-checkpoints) - common
   WAL setup and recovery errors.
 - [**Node guide**](./getting-started/node#persisting-your-graph) -
-  `createDatabase("app", { databaseDir: "./data" })` in context.
+  `createDatabase("app", { databaseDir: "./data" })` and
+  `openWalDatabase({ walDir })` in context.
 - [**Rust guide**](./getting-started/rust#persisting-your-graph) -
   embedding the engine directly.

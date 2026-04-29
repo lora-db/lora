@@ -26,7 +26,7 @@ shortest way out.
 | Server won't start | [Server](#server) |
 | Admin snapshot endpoint returns 404 | [Snapshots → `/admin/snapshot/*` returns 404](#admin-snapshot-returns-404) |
 | A `.tmp` file is left beside the snapshot | [Snapshots → leftover `.tmp` file](#leftover-tmp-file-beside-the-snapshot) |
-| Snapshot load fails with "bad magic" or "bad CRC" | [Snapshots → load fails with bad magic / CRC](#snapshot-load-fails-with-bad-magic-or-crc) |
+| Snapshot load fails with "bad magic" or checksum mismatch | [Snapshots → load fails with bad magic / checksum](#snapshot-load-fails-with-bad-magic-or-crc) |
 | Snapshot load reports unsupported version | [Snapshots → unsupported format version](#snapshot-load-reports-unsupported-format-version) |
 | Result JSON shape is wrong | [Result format](#result-json-looks-nothing-like-what-i-expected) |
 | Build fails | [Build](#build) |
@@ -130,7 +130,10 @@ Common mistakes:
 1. **Data was created on a different non-persistent handle.** Plain
    in-memory databases start empty on each process run. Use a
    archive-backed open (`createDatabase("app", { databaseDir: "./data" })`, `Database.create("app", {"database_dir": "./data"})`,
-   `lora.New("app", lora.Options{DatabaseDir: "./data"})`, etc.) or load a snapshot if you expect data to
+   `lora.New("app", lora.Options{DatabaseDir: "./data"})`, etc.), an
+   explicit WAL open (`openWalDatabase({ walDir: "./wal" })`,
+   `Database.open_wal("./wal")`, `lora.OpenWal(...)`,
+   `LoraRuby::Database.open_wal("./wal")`), or load a snapshot if you expect data to
    survive restarts. See [Limitations → Storage](./limitations#storage).
 2. **Label case mismatch** — `:user` ≠ `:User`. Labels and types are
    case-sensitive. See [Nodes](./concepts/nodes).
@@ -270,18 +273,20 @@ cleanly — the last successful save. Delete the `<path>.tmp` and
 investigate whatever killed the process (disk space? OOM? operator
 error?). If the target does **not** exist, the tmp is your most
 recent attempt but has not been atomically committed — rename it
-and try loading; if CRC validation fails, restore from an earlier
+and try loading; if checksum validation fails, restore from an earlier
 backup.
 
-### Snapshot load fails with "bad magic" or "bad CRC" {#snapshot-load-fails-with-bad-magic-or-crc}
+### Snapshot load fails with "bad magic" or checksum mismatch {#snapshot-load-fails-with-bad-magic-or-crc}
 
-**Symptom:** `SnapshotError::BadMagic` or `SnapshotError::BadCrc`
-on load.
+**Symptom:** a bad-magic error, checksum-mismatch error, or
+`snapshot load failed: bad magic` style message on load.
 
 **Likely cause:**
 - **Bad magic** — the file is not a LoraDB snapshot. The first 8
-  bytes should be `LORASNAP`.
-- **Bad CRC** — the file is corrupt (truncated, bit-flipped, or an
+  bytes should be `LORACOL1` for the current columnar format
+  (`LORASNAP` for older supported legacy files).
+- **Checksum mismatch** — the file is corrupt (truncated,
+  bit-flipped, copied incompletely, or an
   unrelated file matching the magic by accident).
 
 **Fix:**
@@ -289,14 +294,14 @@ on load.
 ```bash
 # Confirm it looks like a snapshot at all.
 head -c 8 path/to/snapshot.bin
-# => LORASNAP
+# => LORACOL1
+# Older supported files may print LORASNAP.
 ```
 
 If the magic is wrong, check you pointed at the right path. If the
-magic is right but CRC fails, restore from a known-good copy — a
+magic is right but the checksum fails, restore from a known-good copy — a
 corrupt snapshot never loads partially on purpose, to prevent
-silently accepting half a graph. See the [Snapshots operator
-doc (internal)](https://github.com/lora-db/lora/blob/main/docs/operations/snapshots.md#file-format)
+silently accepting half a graph. See [Snapshots → File format](./snapshot#file-format-reference)
 for the on-disk layout.
 
 ### Snapshot load reports unsupported format version
