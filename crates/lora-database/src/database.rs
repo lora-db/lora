@@ -24,13 +24,14 @@ use lora_store::{
     GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder, NodeId,
     NodeRecord, Properties, RelationshipId, RelationshipRecord, SnapshotMeta, Snapshotable,
 };
-use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder, WroteCommit};
+use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder};
 
 use crate::archive::WalArchive;
 use crate::named::{DatabaseName, DatabaseOpenOptions};
 use crate::snapshot_store::{ManagedSnapshotStore, SnapshotConfig};
 use crate::stream::{AutoCommitGuard, LiveCursor, QueryStream};
 use crate::transaction::{LiveStoreGuard, Transaction, TransactionMode};
+use crate::wal_write_scope::{ensure_wal_query_can_start, WalAbortPolicy, WalWriteScope};
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
 pub trait QueryRunner: Send + Sync + 'static {
@@ -99,6 +100,8 @@ fn values_to_properties(values: BTreeMap<String, LoraValue>) -> Result<Propertie
 }
 
 const DEFAULT_SNAPSHOT_KEY_ID: &str = "default";
+const QUERY_FAILURE_POISON: &str =
+    "query mutated the live graph before failing; restart from snapshot + WAL required";
 
 /// Build snapshot save options from the JSON shape used by the language
 /// bindings.
@@ -931,9 +934,7 @@ where
 
             if matches!(classify_stream(&compiled), StreamShape::ReadOnly) {
                 if let Some(rec) = &self.wal {
-                    if let Some(reason) = rec.poisoned() {
-                        return Err(anyhow!("WAL arm failed: WAL poisoned: {reason}"));
-                    }
+                    ensure_wal_query_can_start(rec)?;
                 }
                 let executor = lora_executor::Executor::with_deadline(
                     lora_executor::ExecutionContext {
@@ -955,55 +956,20 @@ where
         let mut store = self.write_store_deadline(deadline)?;
         let compiled = self.compile_document_against(&document, &*store)?;
 
-        if let Some(rec) = &self.wal {
-            rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
-        }
-
-        let exec_result: Result<Vec<Row>> = (|| {
-            let mut executor = MutableExecutor::with_deadline(
-                MutableExecutionContext {
-                    storage: &mut *store,
-                    params,
-                },
-                deadline,
-            );
-            Ok(executor.execute_compiled_rows(&compiled)?)
-        })();
-
-        if let Some(rec) = &self.wal {
-            match &exec_result {
-                Ok(_) => match rec.commit() {
-                    Ok(WroteCommit::Yes) => {
-                        rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
-                        self.observe_snapshot_commit_if_needed(&store, rec)?;
-                    }
-                    Ok(WroteCommit::No) => {
-                        // Read-only query: no records were written
-                        // and there is nothing to fsync. Skip flush
-                        // entirely so PerCommit pays zero fsyncs on
-                        // pure reads.
-                    }
-                    Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
-                },
-                Err(_) => {
-                    // Best-effort abort. If the WAL saw mutations, durable
-                    // recovery will discard them but the live in-memory store
-                    // may already be ahead of durable state. Quarantine this
-                    // handle so callers restart instead of serving from a
-                    // potentially divergent graph.
-                    if matches!(rec.abort(), Ok(true)) {
-                        rec.poison(
-                            "query mutated the live graph before failing; restart from snapshot + WAL required",
-                        );
-                    }
-                }
-            }
-            if let Some(reason) = rec.poisoned() {
-                return Err(anyhow!("WAL poisoned: {reason}"));
-            }
-        }
-
-        exec_result
+        self.with_logged_write_guard(
+            &mut store,
+            WalAbortPolicy::PoisonIfMutated(QUERY_FAILURE_POISON),
+            |store| {
+                let mut executor = MutableExecutor::with_deadline(
+                    MutableExecutionContext {
+                        storage: store,
+                        params,
+                    },
+                    deadline,
+                );
+                Ok(executor.execute_compiled_rows(&compiled)?)
+            },
+        )
     }
 
     // ---------- Storage-agnostic utility helpers ----------
@@ -1023,25 +989,10 @@ where
     /// writes fail until the database is reopened from durable state.
     pub fn try_clear(&self) -> Result<()> {
         let mut guard = self.write_store();
-        let Some(rec) = &self.wal else {
-            guard.clear();
-            return Ok(());
-        };
-
-        rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
-        guard.clear();
-        match rec.commit() {
-            Ok(WroteCommit::Yes) => {
-                rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
-                self.observe_snapshot_commit_if_needed(&guard, rec)?;
-            }
-            Ok(WroteCommit::No) => {}
-            Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
-        }
-        if let Some(reason) = rec.poisoned() {
-            return Err(anyhow!("WAL poisoned: {reason}"));
-        }
-        Ok(())
+        self.with_logged_write_guard(&mut guard, WalAbortPolicy::AbortOnly, |store| {
+            store.clear();
+            Ok(())
+        })
     }
 
     /// Drop every node and relationship.
@@ -1081,27 +1032,24 @@ where
 
     fn with_logged_store_mut<R>(&self, f: impl FnOnce(&mut S) -> Result<R>) -> Result<R> {
         let mut guard = self.write_store();
+        self.with_logged_write_guard(&mut guard, WalAbortPolicy::AbortOnly, f)
+    }
+
+    fn with_logged_write_guard<R>(
+        &self,
+        guard: &mut RwLockWriteGuard<'_, S>,
+        abort_policy: WalAbortPolicy,
+        f: impl FnOnce(&mut S) -> Result<R>,
+    ) -> Result<R> {
         let Some(rec) = &self.wal else {
-            return f(&mut *guard);
+            return f(&mut **guard);
         };
 
-        rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
-        let result = f(&mut *guard);
-        match &result {
-            Ok(_) => match rec.commit() {
-                Ok(WroteCommit::Yes) => {
-                    rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
-                    self.observe_snapshot_commit_if_needed(&guard, rec)?;
-                }
-                Ok(WroteCommit::No) => {}
-                Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
-            },
-            Err(_) => {
-                let _ = rec.abort();
-            }
-        }
-        if let Some(reason) = rec.poisoned() {
-            return Err(anyhow!("WAL poisoned: {reason}"));
+        let scope = WalWriteScope::arm(rec, abort_policy)?;
+        let result = f(&mut **guard);
+        let wrote_commit = scope.finish(&result)?;
+        if wrote_commit {
+            self.observe_snapshot_commit_if_needed(&**guard, rec)?;
         }
         result
     }

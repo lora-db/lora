@@ -20,6 +20,7 @@ mod named;
 mod snapshot_store;
 mod stream;
 mod transaction;
+mod wal_write_scope;
 
 pub use database::{
     snapshot_credentials_from_json, snapshot_options_from_json, Database, GraphDirection,

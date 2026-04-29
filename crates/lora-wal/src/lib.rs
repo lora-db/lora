@@ -46,6 +46,8 @@ pub use config::{SyncMode, WalConfig};
 pub use dir::SegmentId;
 pub use error::WalError;
 pub use lsn::Lsn;
-pub use recorder_adapter::{WalMirror, WalRecorder, WroteCommit};
+pub use recorder_adapter::{
+    WalBufferedCommitError, WalCommitError, WalMirror, WalPoisonError, WalRecorder, WroteCommit,
+};
 pub use replay::{replay_dir, ReplayOutcome, TornTailInfo};
 pub use wal::Wal;

@@ -12,10 +12,11 @@ use lora_executor::{
 };
 use lora_parser::parse_query;
 use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
-use lora_wal::{WalRecorder, WroteCommit};
+use lora_wal::WalRecorder;
 
 use crate::snapshot_store::ManagedSnapshotStore;
 use crate::stream::QueryStream;
+use crate::wal_write_scope::ensure_wal_not_poisoned;
 
 /// Transaction execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,57 @@ impl LiveStoreGuard<'_> {
 pub(crate) struct Savepoint {
     staged: Option<InMemoryGraph>,
     buffer_len: usize,
+}
+
+/// How a transaction-bound stream finished. Exhaustion commits that
+/// statement's staged changes into the transaction; interruption means
+/// drop or runtime error before all rows were observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TxStreamOutcome {
+    Exhausted,
+    Interrupted,
+}
+
+impl TxStreamOutcome {
+    fn should_restore_savepoint(self, rollback_on_drop: bool) -> bool {
+        matches!(self, Self::Interrupted) && rollback_on_drop
+    }
+}
+
+/// Owns the active-cursor token for a transaction-bound stream.
+///
+/// The lease is created only after a cursor has opened successfully. If stream
+/// code forgets to finalize it explicitly, `Drop` treats the cursor as
+/// interrupted so a mutating statement cannot accidentally commit partial work
+/// into the transaction.
+pub(crate) struct TxCursorLease {
+    handle: Arc<Mutex<TxInner>>,
+    rollback_on_drop: bool,
+    finalized: bool,
+}
+
+impl TxCursorLease {
+    pub(crate) fn new(handle: Arc<Mutex<TxInner>>, rollback_on_drop: bool) -> Self {
+        Self {
+            handle,
+            rollback_on_drop,
+            finalized: false,
+        }
+    }
+
+    pub(crate) fn finalize(&mut self, outcome: TxStreamOutcome) {
+        if self.finalized {
+            return;
+        }
+        finalize_tx_stream(&self.handle, outcome, self.rollback_on_drop);
+        self.finalized = true;
+    }
+}
+
+impl Drop for TxCursorLease {
+    fn drop(&mut self) {
+        self.finalize(TxStreamOutcome::Interrupted);
+    }
 }
 
 /// Buffers `MutationEvent`s emitted by the staged graph while a
@@ -101,10 +153,6 @@ pub(crate) struct TxInner {
     /// alive. Blocks new statements and prevents commit until the
     /// cursor is released.
     pub(crate) cursor_active: bool,
-    /// Set by the cursor's `Drop` impl when the cursor was released
-    /// without exhausting all rows. The next transaction operation
-    /// applies the pending savepoint before doing anything else.
-    pub(crate) cursor_dropped_dirty: bool,
     /// True after `commit` or `rollback` has run, regardless of
     /// outcome. Subsequent operations fail loudly instead of silently
     /// running on stale state.
@@ -154,7 +202,6 @@ impl<'db> Transaction<'db> {
             buffer: Arc::new(Mutex::new(Vec::new())),
             pending_savepoint: None,
             cursor_active: false,
-            cursor_dropped_dirty: false,
             closed: false,
             mode,
             buffer_mutations,
@@ -377,7 +424,7 @@ impl<'db> Transaction<'db> {
 
         let mut inner = self.begin_statement()?;
         self.ensure_staged_locked(&mut inner)?;
-        inner.cursor_active = true;
+        inner.activate_cursor();
 
         // SAFETY: `inner.staged` is `Some` after `ensure_staged_locked`,
         // and stays at the same address while `cursor_active = true`
@@ -511,7 +558,7 @@ impl<'db> Transaction<'db> {
         // borrowing from the transaction-owned live write guard.
         let clone_savepoint_graph = inner.staged.is_some();
         self.ensure_staged_locked(&mut inner)?;
-        inner.cursor_active = true;
+        inner.activate_cursor();
 
         let rollback_on_drop = is_mutating;
         if rollback_on_drop {
@@ -557,11 +604,10 @@ impl<'db> Transaction<'db> {
             Ok(cursor) => Ok(QueryStream::for_tx_cursor(
                 cursor,
                 columns,
-                self.inner.clone(),
-                rollback_on_drop,
+                TxCursorLease::new(self.inner.clone(), rollback_on_drop),
             )),
             Err(err) => {
-                finalize_tx_stream(&self.inner, false, rollback_on_drop);
+                finalize_tx_stream(&self.inner, TxStreamOutcome::Interrupted, rollback_on_drop);
                 Err(err)
             }
         }
@@ -574,97 +620,101 @@ impl<'db> Transaction<'db> {
     /// transaction; recovery therefore observes either every write
     /// in this transaction or none.
     pub fn commit(mut self) -> Result<()> {
-        // Apply any pending statement rollback first (cursor was
-        // dropped pre-exhaustion in a previous step). After that we
-        // hold the staged graph and buffer in their final shape.
-        let (staged, buffer_events, mode) = {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.cursor_active {
-                return Err(anyhow!(
-                    "cannot commit transaction while a streaming cursor is still active"
-                ));
-            }
-            if inner.cursor_dropped_dirty {
-                if let Some(sp) = inner.pending_savepoint.take() {
-                    apply_savepoint(&mut inner, sp);
-                }
-                inner.cursor_dropped_dirty = false;
-            }
-            if inner.closed {
-                return Err(anyhow!("transaction is already closed"));
-            }
-            let mode = inner.mode;
-            // Both modes can have `staged = None`: ReadOnly never
-            // clones, and ReadWrite tx that performed no writes
-            // (or where every write was rolled back via a
-            // savepoint) leaves it unmaterialized too.
-            let staged = inner.staged.take();
-            let buffer_events = std::mem::take(&mut *inner.buffer.lock().unwrap());
-            inner.closed = true;
-            (staged, buffer_events, mode)
-        };
+        let CommitState {
+            staged,
+            buffer_events,
+            mode,
+        } = self.take_commit_state()?;
 
-        // Replay the tx-local mutation buffer into the real WAL as
-        // one committed transaction. Read-only transactions never
-        // touch the WAL — `arm` is only called when there is durable
-        // work to commit.
-        let wrote_wal_commit = if let Some(rec) = &self.wal {
-            if matches!(mode, TransactionMode::ReadWrite) && !buffer_events.is_empty() {
-                rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
-                for event in buffer_events {
-                    rec.record(event);
-                    if let Some(reason) = rec.poisoned() {
-                        return Err(anyhow!("WAL poisoned during commit replay: {reason}"));
-                    }
-                }
-                match rec.commit() {
-                    Ok(WroteCommit::Yes) => {
-                        rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
-                        true
-                    }
-                    Ok(WroteCommit::No) => false,
-                    Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if let Some(rec) = &self.wal {
-            if let Some(reason) = rec.poisoned() {
-                return Err(anyhow!("WAL poisoned: {reason}"));
-            }
-        }
-
-        if matches!(mode, TransactionMode::ReadWrite) {
-            if let Some(mut staged) = staged {
-                // Strip the buffering recorder from the staged graph
-                // before publishing it as the live store; the live store
-                // either has the durable WAL recorder reinstalled below
-                // or no recorder at all (for non-WAL databases).
-                staged.set_mutation_recorder(None);
-                if let Some(rec) = &self.wal {
-                    staged.set_mutation_recorder(Some(rec.clone() as Arc<dyn MutationRecorder>));
-                }
-                let live = self
-                    .live
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-                let live = live
-                    .as_graph_mut()
-                    .ok_or_else(|| anyhow!("read-only transaction cannot publish staged graph"))?;
-                *live = staged;
-
-                if wrote_wal_commit {
-                    if let (Some(snapshots), Some(rec)) = (&self.snapshots, &self.wal) {
-                        snapshots.observe_commit(live, rec)?;
-                    }
-                }
-            }
-        }
+        let wrote_wal_commit = self.replay_commit_wal(mode, buffer_events)?;
+        self.publish_staged_graph(mode, staged, wrote_wal_commit)?;
 
         self.live.take();
+        Ok(())
+    }
+
+    fn take_commit_state(&self) -> Result<CommitState> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.cursor_active {
+            return Err(anyhow!(
+                "cannot commit transaction while a streaming cursor is still active"
+            ));
+        }
+        if inner.closed {
+            return Err(anyhow!("transaction is already closed"));
+        }
+
+        let mode = inner.mode;
+        // Both modes can have `staged = None`: ReadOnly never clones,
+        // and ReadWrite transactions that performed no writes leave
+        // staging unmaterialized too.
+        let staged = inner.staged.take();
+        let buffer_events = std::mem::take(&mut *inner.buffer.lock().unwrap());
+        inner.closed = true;
+
+        Ok(CommitState {
+            staged,
+            buffer_events,
+            mode,
+        })
+    }
+
+    fn replay_commit_wal(
+        &self,
+        mode: TransactionMode,
+        buffer_events: Vec<MutationEvent>,
+    ) -> Result<bool> {
+        let Some(rec) = &self.wal else {
+            return Ok(false);
+        };
+
+        if !matches!(mode, TransactionMode::ReadWrite) {
+            ensure_wal_not_poisoned(rec)?;
+            return Ok(false);
+        }
+
+        Ok(rec.commit_events(buffer_events)?.wrote())
+    }
+
+    fn publish_staged_graph(
+        &mut self,
+        mode: TransactionMode,
+        staged: Option<InMemoryGraph>,
+        wrote_wal_commit: bool,
+    ) -> Result<()> {
+        if !matches!(mode, TransactionMode::ReadWrite) {
+            return Ok(());
+        }
+
+        let Some(mut staged) = staged else {
+            return Ok(());
+        };
+
+        // Strip the buffering recorder from the staged graph before
+        // publishing it as the live store; the live store either has
+        // the durable WAL recorder reinstalled below or no recorder at
+        // all (for non-WAL databases).
+        staged.set_mutation_recorder(None);
+        let wal = self.wal.clone();
+        if let Some(rec) = &wal {
+            staged.set_mutation_recorder(Some(rec.clone() as Arc<dyn MutationRecorder>));
+        }
+
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
+        let live = live
+            .as_graph_mut()
+            .ok_or_else(|| anyhow!("read-only transaction cannot publish staged graph"))?;
+        *live = staged;
+
+        if wrote_wal_commit {
+            if let (Some(snapshots), Some(rec)) = (&self.snapshots, wal.as_ref()) {
+                snapshots.observe_commit(live, rec)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -682,13 +732,12 @@ impl<'db> Transaction<'db> {
     }
 
     /// Acquire the inner state for a new statement. Validates that
-    /// the transaction is still open and no cursor is active, and
-    /// applies any pending savepoint left behind by a dropped
-    /// cursor. The staged graph is *not* required: ReadWrite
-    /// transactions defer the staging clone until the first
-    /// mutating statement (see [`Transaction::ensure_staged_locked`]).
+    /// the transaction is still open and no cursor is active. The
+    /// staged graph is *not* required: ReadWrite transactions
+    /// defer the staging clone until the first mutating statement
+    /// (see [`Transaction::ensure_staged_locked`]).
     fn begin_statement(&self) -> Result<MutexGuard<'_, TxInner>> {
-        let mut inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap();
         if inner.closed {
             return Err(anyhow!("transaction is already closed"));
         }
@@ -696,12 +745,6 @@ impl<'db> Transaction<'db> {
             return Err(anyhow!(
                 "cannot start a new statement while a streaming cursor is still active"
             ));
-        }
-        if inner.cursor_dropped_dirty {
-            if let Some(sp) = inner.pending_savepoint.take() {
-                apply_savepoint(&mut inner, sp);
-            }
-            inner.cursor_dropped_dirty = false;
         }
         Ok(inner)
     }
@@ -734,15 +777,60 @@ impl<'db> Transaction<'db> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    pub(crate) fn release_streaming_cursor(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.release_cursor();
+        }
+    }
 }
 
 type ExecResultRows = Result<Vec<Row>>;
+
+struct CommitState {
+    staged: Option<InMemoryGraph>,
+    buffer_events: Vec<MutationEvent>,
+    mode: TransactionMode,
+}
 
 impl TxInner {
     fn staged_mut(&mut self) -> Result<&mut InMemoryGraph> {
         self.staged
             .as_mut()
             .ok_or_else(|| anyhow!("transaction has no staged graph"))
+    }
+
+    fn activate_cursor(&mut self) {
+        self.cursor_active = true;
+    }
+
+    fn release_cursor(&mut self) {
+        self.cursor_active = false;
+    }
+
+    fn clear_pending_savepoint(&mut self) {
+        self.pending_savepoint = None;
+    }
+
+    fn restore_pending_savepoint(&mut self) {
+        if let Some(sp) = self.pending_savepoint.take() {
+            apply_savepoint(self, sp);
+        }
+    }
+
+    fn finalize_stream(&mut self, outcome: TxStreamOutcome, rollback_on_drop: bool) {
+        self.release_cursor();
+
+        if self.closed {
+            discard_transaction_state(self);
+            return;
+        }
+
+        if outcome.should_restore_savepoint(rollback_on_drop) {
+            self.restore_pending_savepoint();
+        } else {
+            self.clear_pending_savepoint();
+        }
     }
 }
 
@@ -761,37 +849,20 @@ impl RowSource for StreamingCursorWithArc {
     }
 }
 
-pub(crate) fn finalize_tx_stream(
+fn finalize_tx_stream(
     handle: &Arc<Mutex<TxInner>>,
-    exhausted: bool,
+    outcome: TxStreamOutcome,
     rollback_on_drop: bool,
 ) {
     if let Ok(mut inner) = handle.lock() {
-        inner.cursor_active = false;
-
-        if inner.closed {
-            discard_transaction_state(&mut inner);
-            return;
-        }
-
-        if exhausted || !rollback_on_drop {
-            inner.pending_savepoint = None;
-            inner.cursor_dropped_dirty = false;
-            return;
-        }
-
-        if let Some(sp) = inner.pending_savepoint.take() {
-            apply_savepoint(&mut inner, sp);
-        }
-        inner.cursor_dropped_dirty = false;
+        inner.finalize_stream(outcome, rollback_on_drop);
     }
 }
 
 fn discard_transaction_state(inner: &mut TxInner) {
     // A full transaction rollback supersedes any pending cursor savepoint.
-    inner.pending_savepoint = None;
-    inner.cursor_dropped_dirty = false;
-    inner.cursor_active = false;
+    inner.clear_pending_savepoint();
+    inner.release_cursor();
     inner.staged = None;
     if let Ok(mut buf) = inner.buffer.lock() {
         buf.clear();

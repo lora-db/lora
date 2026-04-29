@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::mem::ManuallyDrop;
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use anyhow::{anyhow, Result};
 use lora_compiler::CompiledQuery;
 use lora_executor::{ExecResult, LoraValue, PullExecutor, Row, RowSource};
 use lora_store::InMemoryGraph;
 
-use crate::transaction::{finalize_tx_stream, Transaction, TxInner};
+use crate::transaction::{Transaction, TxCursorLease, TxStreamOutcome};
 
 /// Owning row stream returned by [`crate::Database::stream`] and transaction
 /// streaming methods.
@@ -27,13 +27,14 @@ pub struct QueryStream<'a> {
 enum StreamInner<'a> {
     /// Transaction-bound streaming cursor. The cursor borrows from
     /// the transaction's staged graph, which is kept alive by
-    /// `tx_handle`; finalization releases the cursor token and
-    /// either clears or restores the pending statement savepoint.
+    /// `lease`; finalization releases the cursor token and either
+    /// clears or restores the pending statement savepoint.
     Tx {
         cursor: Option<Box<dyn RowSource + 'static>>,
         state: StreamState,
-        tx_handle: Arc<Mutex<TxInner>>,
-        rollback_on_drop: bool,
+        /// Lease releases the transaction cursor token and either
+        /// clears or restores the pending statement savepoint.
+        lease: TxCursorLease,
     },
     /// True pull-based read-only stream. Holds a live store read
     /// lock through the cursor's lifetime and emits rows as the
@@ -211,16 +212,14 @@ impl<'a> QueryStream<'a> {
     pub(crate) fn for_tx_cursor(
         cursor: Box<dyn RowSource + 'static>,
         columns: Vec<String>,
-        tx_handle: Arc<Mutex<TxInner>>,
-        rollback_on_drop: bool,
+        lease: TxCursorLease,
     ) -> Self {
         Self {
             columns,
             inner: StreamInner::Tx {
                 cursor: Some(cursor),
                 state: StreamState::Active,
-                tx_handle,
-                rollback_on_drop,
+                lease,
             },
         }
     }
@@ -283,8 +282,7 @@ impl<'a> QueryStream<'a> {
             StreamInner::Tx {
                 state,
                 cursor,
-                tx_handle,
-                rollback_on_drop,
+                lease,
             } => match *state {
                 StreamState::Errored => Err(anyhow!("query stream errored")),
                 StreamState::Exhausted => Ok(None),
@@ -300,13 +298,13 @@ impl<'a> QueryStream<'a> {
                         Ok(Some(row)) => Ok(Some(row)),
                         Ok(None) => {
                             cursor.take();
-                            finalize_tx_stream(tx_handle, true, *rollback_on_drop);
+                            lease.finalize(TxStreamOutcome::Exhausted);
                             *state = StreamState::Exhausted;
                             Ok(None)
                         }
                         Err(e) => {
                             cursor.take();
-                            finalize_tx_stream(tx_handle, false, *rollback_on_drop);
+                            lease.finalize(TxStreamOutcome::Interrupted);
                             *state = StreamState::Errored;
                             Err(anyhow!(e))
                         }
@@ -398,14 +396,14 @@ impl<'a> Drop for QueryStream<'a> {
     fn drop(&mut self) {
         let exhausted = self.is_exhausted();
         match &mut self.inner {
-            StreamInner::Tx {
-                cursor,
-                tx_handle,
-                rollback_on_drop,
-                ..
-            } => {
+            StreamInner::Tx { cursor, lease, .. } => {
                 cursor.take();
-                finalize_tx_stream(tx_handle, exhausted, *rollback_on_drop);
+                let outcome = if exhausted {
+                    TxStreamOutcome::Exhausted
+                } else {
+                    TxStreamOutcome::Interrupted
+                };
+                lease.finalize(outcome);
             }
             StreamInner::Live { .. } => {
                 // Drop releases the cursor, then the read guard,
@@ -459,9 +457,7 @@ impl<'a> AutoCommitGuard<'a> {
                 // safely flip the flag here. For the buffered
                 // fallback path the flag was never set, so this
                 // assignment is a no-op.
-                if let Ok(mut inner) = tx.inner.lock() {
-                    inner.cursor_active = false;
-                }
+                tx.release_streaming_cursor();
                 tx.commit()
             }
             None => Ok(()),
@@ -481,9 +477,7 @@ impl<'a> AutoCommitGuard<'a> {
             // Clear the streaming-cursor flag before delegating to
             // tx.rollback so the rollback can finalize without
             // stumbling over a stale `cursor_active = true`.
-            if let Ok(mut inner) = tx.inner.lock() {
-                inner.cursor_active = false;
-            }
+            tx.release_streaming_cursor();
             let _ = tx.rollback();
         }
     }

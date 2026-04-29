@@ -2,9 +2,12 @@
 //! fence so recovery can load the snapshot first, then replay only newer WAL
 //! records.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use lora_database::{Database, ExecuteOptions, QueryResult, ResultFormat, SnapshotConfig};
+use lora_database::{
+    Database, ExecuteOptions, LoraValue, QueryResult, ResultFormat, SnapshotConfig, TransactionMode,
+};
 use lora_snapshot::{
     Compression, EncryptionKey, PasswordKdfParams, SnapshotOptions, SnapshotPassword,
 };
@@ -77,6 +80,84 @@ fn managed_snapshot_can_checkpoint_after_commit_count() {
         db.execute("CREATE (:User {name: 'alice'})", opts())
             .unwrap();
         assert!(!snapshot_dir.join("CURRENT").exists());
+        db.execute("CREATE (:User {name: 'bob'})", opts()).unwrap();
+        assert!(snapshot_dir.join("CURRENT").exists());
+    }
+
+    let reopened = Database::open_with_wal_snapshots(
+        wal_enabled(&wal_dir),
+        SnapshotConfig::enabled(&snapshot_dir).every_commits(2),
+    )
+    .unwrap();
+    let rows = row_count(reopened.execute("MATCH (u:User) RETURN u", opts()).unwrap());
+    assert_eq!(rows, 2);
+}
+
+#[test]
+fn direct_graph_mutation_helpers_trigger_managed_checkpoint() {
+    let dir = TmpDir::new("direct_graph_helpers_checkpoint");
+    let wal_dir = dir.path().join("wal");
+    let snapshot_dir = dir.path().join("snapshots");
+
+    {
+        let db = Database::open_with_wal_snapshots(
+            wal_enabled(&wal_dir),
+            SnapshotConfig::enabled(&snapshot_dir).every_commits(2),
+        )
+        .unwrap();
+
+        let node = db
+            .graph_create_node(vec!["User".to_string()], BTreeMap::new())
+            .unwrap();
+        assert!(!snapshot_dir.join("CURRENT").exists());
+
+        db.graph_set_node_property(
+            node.id,
+            "name".to_string(),
+            LoraValue::String("alice".to_string()),
+        )
+        .unwrap();
+        assert!(snapshot_dir.join("CURRENT").exists());
+    }
+
+    let reopened = Database::open_with_wal_snapshots(
+        wal_enabled(&wal_dir),
+        SnapshotConfig::enabled(&snapshot_dir).every_commits(2),
+    )
+    .unwrap();
+    let rows = row_count(
+        reopened
+            .execute("MATCH (u:User) WHERE u.name = 'alice' RETURN u", opts())
+            .unwrap(),
+    );
+    assert_eq!(rows, 1);
+}
+
+#[test]
+fn readwrite_transaction_with_only_reads_does_not_trigger_managed_checkpoint() {
+    let dir = TmpDir::new("readwrite_read_only_tx_no_checkpoint");
+    let wal_dir = dir.path().join("wal");
+    let snapshot_dir = dir.path().join("snapshots");
+
+    {
+        let db = Database::open_with_wal_snapshots(
+            wal_enabled(&wal_dir),
+            SnapshotConfig::enabled(&snapshot_dir).every_commits(2),
+        )
+        .unwrap();
+        db.execute("CREATE (:User {name: 'alice'})", opts())
+            .unwrap();
+        assert!(!snapshot_dir.join("CURRENT").exists());
+
+        let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+        let rows = row_count(tx.execute("MATCH (u:User) RETURN u", opts()).unwrap());
+        assert_eq!(rows, 1);
+        tx.commit().unwrap();
+        assert!(
+            !snapshot_dir.join("CURRENT").exists(),
+            "read-only-in-effect ReadWrite tx must not count as a durable WAL commit"
+        );
+
         db.execute("CREATE (:User {name: 'bob'})", opts()).unwrap();
         assert!(snapshot_dir.join("CURRENT").exists());
     }

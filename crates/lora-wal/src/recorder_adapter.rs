@@ -11,11 +11,10 @@
 //! 3. Run analyze + compile + execute. The executor mutates the
 //!    in-memory store, which fires `MutationRecorder::record` for each
 //!    primitive mutation. The adapter buffers those events in memory.
-//! 4. On Ok: `recorder.commit()` writes `TxBegin`, one `MutationBatch`,
-//!    and `TxCommit`, then the host runs `recorder.flush()` (per the
-//!    configured `SyncMode`) **only** when `commit()` returned
-//!    `WroteCommit::Yes`. A read-only query returns `WroteCommit::No`
-//!    and the host skips the flush entirely.
+//! 4. On Ok: `recorder.commit_and_flush_if_needed()` writes `TxBegin`,
+//!    one `MutationBatch`, and `TxCommit`, then flushes only when
+//!    `commit()` returned `WroteCommit::Yes`. A read-only query returns
+//!    `WroteCommit::No` and skips the flush entirely.
 //! 5. On Err / panic: `recorder.abort()`. If any mutation events were
 //!    buffered, the host quarantines the live handle because the engine
 //!    has no rollback. Durable recovery stays atomic because the failed
@@ -48,6 +47,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use lora_store::{MutationEvent, MutationRecorder};
+use thiserror::Error;
 
 use crate::error::WalError;
 use crate::lsn::Lsn;
@@ -66,6 +66,44 @@ pub enum WroteCommit {
     /// No mutation events fired during the query, so neither `TxBegin`
     /// nor `TxCommit` was appended. Caller can skip `flush()` entirely.
     No,
+}
+
+impl WroteCommit {
+    pub fn wrote(self) -> bool {
+        matches!(self, Self::Yes)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum WalCommitError {
+    #[error("WAL commit failed: {0}")]
+    Commit(#[source] WalError),
+    #[error("WAL flush failed: {0}")]
+    Flush(#[source] WalError),
+}
+
+#[derive(Debug, Error)]
+#[error("WAL poisoned: {reason}")]
+pub struct WalPoisonError {
+    reason: String,
+}
+
+impl WalPoisonError {
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum WalBufferedCommitError {
+    #[error("WAL arm failed: {0}")]
+    Arm(#[source] WalError),
+    #[error("WAL poisoned: {0}")]
+    Poisoned(String),
+    #[error("WAL poisoned during commit replay: {0}")]
+    ReplayPoisoned(String),
+    #[error(transparent)]
+    Commit(#[from] WalCommitError),
 }
 
 /// Optional side-effect after the WAL has successfully flushed.
@@ -195,6 +233,40 @@ impl WalRecorder {
         Ok(WroteCommit::Yes)
     }
 
+    /// Commit the currently armed recorder and flush only when a commit record
+    /// was written. This is the normal durable boundary for query-scoped writes.
+    pub fn commit_and_flush_if_needed(&self) -> Result<WroteCommit, WalCommitError> {
+        let wrote_commit = self.commit().map_err(WalCommitError::Commit)?;
+        if wrote_commit.wrote() {
+            self.flush().map_err(WalCommitError::Flush)?;
+        }
+        Ok(wrote_commit)
+    }
+
+    /// Commit an explicit transaction's buffered mutation events as one durable
+    /// WAL transaction. The recorder is armed only for this replay window.
+    pub fn commit_events(
+        &self,
+        events: impl IntoIterator<Item = MutationEvent>,
+    ) -> Result<WroteCommit, WalBufferedCommitError> {
+        let mut events = events.into_iter().peekable();
+        if events.peek().is_none() {
+            self.ensure_not_poisoned()
+                .map_err(|e| WalBufferedCommitError::Poisoned(e.reason().to_string()))?;
+            return Ok(WroteCommit::No);
+        }
+
+        self.arm().map_err(WalBufferedCommitError::Arm)?;
+        for event in events {
+            self.record(event);
+            if let Some(reason) = self.poisoned_reason() {
+                return Err(WalBufferedCommitError::ReplayPoisoned(reason));
+            }
+        }
+
+        self.commit_and_flush_if_needed().map_err(Into::into)
+    }
+
     /// Append a `TxAbort` for the active transaction (if any) and
     /// clear the armed/active state. Returns `Ok(true)` when the live graph
     /// may have observed mutations and should be quarantined, `Ok(false)` when
@@ -289,10 +361,22 @@ impl WalRecorder {
     /// background flusher has latched a failure. Cheap to poll under
     /// the store lock.
     pub fn is_poisoned(&self) -> bool {
-        if self.state.lock().unwrap().poisoned.is_some() {
-            return true;
+        self.poisoned_reason().is_some()
+    }
+
+    pub fn poisoned_reason(&self) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        if let Some(msg) = state.poisoned.clone() {
+            return Some(msg);
         }
-        self.wal.bg_failure().is_some()
+        self.wal.bg_failure()
+    }
+
+    pub fn ensure_not_poisoned(&self) -> Result<(), WalPoisonError> {
+        if let Some(reason) = self.poisoned_reason() {
+            return Err(WalPoisonError { reason });
+        }
+        Ok(())
     }
 
     /// Quarantine the recorder after the host detects that the live
@@ -340,11 +424,7 @@ impl MutationRecorder for WalRecorder {
         // Surface a latched bg-flusher failure too — the recorder is
         // the host's single point of contact for "is the WAL still
         // safe to commit through?".
-        let state = self.state.lock().unwrap();
-        if let Some(msg) = state.poisoned.clone() {
-            return Some(msg);
-        }
-        self.wal.bg_failure()
+        self.poisoned_reason()
     }
 }
 
@@ -391,9 +471,8 @@ mod tests {
         let mut props2 = Properties::new();
         props2.insert("v".into(), PropertyValue::Int(2));
         g.create_node(vec!["N".into()], props2);
-        let outcome = recorder.commit().unwrap();
+        let outcome = recorder.commit_and_flush_if_needed().unwrap();
         assert_eq!(outcome, WroteCommit::Yes);
-        recorder.flush().unwrap();
 
         assert!(!recorder.is_poisoned());
 
@@ -407,6 +486,38 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], MutationEvent::CreateNode { id: 0, .. }));
         assert!(matches!(events[1], MutationEvent::CreateNode { id: 1, .. }));
+    }
+
+    #[test]
+    fn commit_events_records_buffered_transaction_as_one_commit() {
+        let dir = TmpDir::new("buffered-events");
+        let recorder = WalRecorder::new(open_wal(&dir.path));
+
+        let outcome = recorder
+            .commit_events(vec![
+                MutationEvent::CreateNode {
+                    id: 0,
+                    labels: vec!["N".into()],
+                    properties: Properties::new(),
+                },
+                MutationEvent::SetNodeProperty {
+                    node_id: 0,
+                    key: "v".into(),
+                    value: PropertyValue::Int(42),
+                },
+            ])
+            .unwrap();
+        assert_eq!(outcome, WroteCommit::Yes);
+
+        drop(recorder);
+        let (_wal, events) =
+            Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], MutationEvent::CreateNode { id: 0, .. }));
+        assert!(matches!(
+            events[1],
+            MutationEvent::SetNodeProperty { node_id: 0, .. }
+        ));
     }
 
     #[test]

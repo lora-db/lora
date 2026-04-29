@@ -424,6 +424,64 @@ fn dropped_stream_in_tx_rolls_back_only_that_statement() {
 }
 
 #[test]
+fn tx_stream_drop_after_transaction_handle_drop_discards_staged_state() {
+    let db = Database::in_memory();
+
+    let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+    let mut stream = tx
+        .stream("UNWIND range(1, 3) AS i CREATE (:Dropped {i: i}) RETURN i AS i")
+        .unwrap();
+    assert!(stream.next_row().unwrap().is_some());
+
+    // Dropping the transaction while a tx-bound cursor is alive marks
+    // the transaction closed but leaves staged state in place for the
+    // cursor's raw borrow. Dropping the stream must then discard that
+    // staged state rather than making it commit-eligible.
+    drop(tx);
+    drop(stream);
+
+    assert_eq!(db.node_count(), 0);
+
+    let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+    tx.execute("CREATE (:Survives)", rows_options()).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(db.node_count(), 1);
+}
+
+#[test]
+fn tx_stream_runtime_error_releases_cursor_and_stays_terminal() {
+    let db = Database::in_memory();
+    db.execute("CREATE (:Person {name:'Ada'})", rows_options())
+        .unwrap();
+
+    let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+    let mut stream = tx
+        .stream("MATCH (p:Person) RETURN point({x: p.name, y: 1}) AS pt")
+        .unwrap();
+
+    let err = stream.next_row().unwrap_err();
+    assert!(
+        format!("{err:#}").contains("point() field 'x'"),
+        "expected point() validation error, got: {err:#}"
+    );
+
+    let terminal = stream.next_row().unwrap_err();
+    assert!(
+        terminal.to_string().contains("query stream errored"),
+        "expected terminal stream error, got: {terminal:#}"
+    );
+
+    drop(stream);
+
+    let rows = rows_json(
+        tx.execute("MATCH (p:Person) RETURN count(p) AS c", rows_options())
+            .unwrap(),
+    );
+    assert_eq!(rows[0]["c"], JsonValue::Number(1.into()));
+    tx.commit().unwrap();
+}
+
+#[test]
 fn wal_replay_excludes_failed_statement_inside_committed_transaction() {
     let dir = TempWalDir::new("tx-wal-failed-stmt");
 
@@ -563,6 +621,44 @@ fn auto_commit_write_stream_rolls_back_on_partial_consumption() {
 }
 
 #[test]
+fn auto_commit_write_stream_open_failure_rolls_back_cleanly() {
+    let db = Database::in_memory();
+    db.execute(
+        "CREATE (:T {ord: 1, x: 1, marker: false}), \
+         (:T {ord: 2, x: 'bad', marker: false})",
+        rows_options(),
+    )
+    .unwrap();
+
+    let err = db
+        .stream(
+            "MATCH (t:T) WHERE point({x: t.x, y: 1}) IS NOT NULL \
+             SET t.marker = true \
+             RETURN t.ord AS ord",
+        )
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("point() field 'x'"),
+        "expected point() validation error, got: {err:#}"
+    );
+
+    let rows = rows_json(
+        db.execute(
+            "MATCH (t:T) WHERE t.marker = false RETURN count(t) AS c",
+            rows_options(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(rows[0]["c"], JsonValue::Number(2.into()));
+
+    let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+    tx.execute("CREATE (:AfterFailure)", rows_options())
+        .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(db.node_count(), 3);
+}
+
+#[test]
 fn auto_commit_write_stream_with_wal_only_writes_on_exhaustion() {
     let dir = TempWalDir::new("auto-commit-write-stream-wal");
 
@@ -591,6 +687,25 @@ fn auto_commit_write_stream_with_wal_only_writes_on_exhaustion() {
             .collect();
         let values = row_values(rows, "name");
         assert_eq!(values, vec![JsonValue::String("Committed".to_string())]);
+    }
+}
+
+#[test]
+fn auto_commit_write_stream_with_wal_rolls_back_partial_consumption() {
+    let dir = TempWalDir::new("auto-commit-write-stream-wal-partial");
+
+    {
+        let db = Database::open_with_wal(WalConfig::enabled(dir.path.clone())).unwrap();
+        let mut stream = db
+            .stream("UNWIND range(1, 3) AS i CREATE (:Partial {i: i}) RETURN i AS i")
+            .unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+        drop(stream);
+    }
+
+    {
+        let db = Database::open_with_wal(WalConfig::enabled(dir.path.clone())).unwrap();
+        assert_eq!(db.node_count(), 0);
     }
 }
 
@@ -1111,6 +1226,47 @@ mod concurrency {
         );
 
         // Dropping the stream releases the read lock; the writer must finish.
+        drop(stream);
+        writer.join().unwrap();
+
+        assert_eq!(db.node_count(), 11);
+    }
+
+    /// The same live-read lock must also block the auto-commit write
+    /// path, not just explicit `begin_transaction(ReadWrite)`.
+    #[test]
+    fn live_read_stream_blocks_auto_commit_write() {
+        let db = Arc::new(Database::in_memory());
+        db.execute("UNWIND range(1,10) AS i CREATE (:T {i: i})", rows_options())
+            .unwrap();
+
+        let mut stream = db.stream("MATCH (t:T) RETURN t.i AS i").unwrap();
+        assert!(stream.next_row().unwrap().is_some());
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(AtomicUsize::new(0));
+
+        let writer = {
+            let db = db.clone();
+            let started = started.clone();
+            let finished = finished.clone();
+            thread::spawn(move || {
+                started.store(1, Ordering::SeqCst);
+                db.execute("CREATE (:T {i:99})", rows_options()).unwrap();
+                finished.store(1, Ordering::SeqCst);
+            })
+        };
+
+        while started.load(Ordering::SeqCst) == 0 {
+            thread::yield_now();
+        }
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            finished.load(Ordering::SeqCst),
+            0,
+            "auto-commit write completed while a Live read stream still held the store read lock"
+        );
+
         drop(stream);
         writer.join().unwrap();
 
