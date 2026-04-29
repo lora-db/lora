@@ -17,14 +17,19 @@
 mod archive;
 mod database;
 mod named;
+mod snapshot_store;
 mod stream;
 mod transaction;
 
-pub use database::{Database, QueryRunner, SnapshotAdmin, WalAdmin, WalStatus};
+pub use database::{
+    snapshot_credentials_from_json, snapshot_options_from_json, Database, GraphDirection,
+    QueryRunner, SnapshotAdmin, SnapshotByteFormat, WalAdmin, WalStatus,
+};
 pub use named::{
     resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
     DEFAULT_DATABASE_MAX_BYTES,
 };
+pub use snapshot_store::SnapshotConfig;
 pub use stream::QueryStream;
 pub use transaction::{Transaction, TransactionMode};
 
@@ -43,7 +48,14 @@ pub use lora_store::InMemoryGraph;
 
 // Snapshot surface — re-exported so bindings/servers don't need a direct
 // `lora-store` dependency just to name the meta / error types.
-pub use lora_store::{SnapshotError, SnapshotMeta, Snapshotable};
+pub use lora_snapshot::{
+    Compression, EncryptionKey, PasswordKdfParams, SnapshotCredentials, SnapshotEncryption,
+    SnapshotInfo, SnapshotOptions, SnapshotPassword, DATABASE_SNAPSHOT_MAGIC,
+};
+pub use lora_store::{
+    NodeId, NodeRecord, RelationshipId, RelationshipRecord, SnapshotError, SnapshotMeta,
+    Snapshotable,
+};
 
 // Standalone parsing entry point (does not require building a `Database`).
 pub use lora_parser::parse_query;

@@ -1,6 +1,9 @@
 //! End-to-end snapshot tests driven through `Database`.
 
-use lora_database::{Database, ExecuteOptions, QueryResult, ResultFormat};
+use lora_database::{
+    Compression, Database, ExecuteOptions, PasswordKdfParams, QueryResult, ResultFormat,
+    SnapshotOptions, SnapshotPassword, Snapshotable, DATABASE_SNAPSHOT_MAGIC,
+};
 
 fn opts() -> Option<ExecuteOptions> {
     Some(ExecuteOptions {
@@ -12,6 +15,24 @@ fn row_count(result: QueryResult) -> usize {
     match result {
         QueryResult::RowArrays(r) => r.rows.len(),
         other => panic!("expected RowArrays, got {:?}", other),
+    }
+}
+
+fn encrypted_snapshot_options() -> SnapshotOptions {
+    SnapshotOptions {
+        compression: Compression::Gzip { level: 1 },
+        encryption: Some(
+            SnapshotPassword::with_params(
+                "test-password",
+                "correct horse battery staple",
+                PasswordKdfParams {
+                    memory_cost_kib: 512,
+                    time_cost: 1,
+                    parallelism: 1,
+                },
+            )
+            .into(),
+        ),
     }
 }
 
@@ -118,6 +139,149 @@ fn snapshot_survives_new_writes_after_restore() {
     assert_eq!(db.node_count(), 3);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn database_snapshot_bytes_roundtrip_through_columnar_format() {
+    let donor = Database::in_memory();
+    donor
+        .execute("CREATE (:Person {name: 'Alice'})", opts())
+        .unwrap();
+    donor
+        .execute("CREATE (:Person {name: 'Bob'})", opts())
+        .unwrap();
+    donor
+        .execute(
+            "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) \
+             CREATE (a)-[:KNOWS]->(b)",
+            opts(),
+        )
+        .unwrap();
+
+    let bytes = donor.save_snapshot_to_bytes().unwrap();
+    assert!(bytes.starts_with(DATABASE_SNAPSHOT_MAGIC));
+
+    let target = Database::in_memory();
+    let meta = target.load_snapshot_from_bytes(&bytes).unwrap();
+    assert_eq!(meta.node_count, 2);
+    assert_eq!(meta.relationship_count, 1);
+    assert_eq!(target.node_count(), 2);
+    assert_eq!(target.relationship_count(), 1);
+}
+
+#[test]
+fn database_snapshot_bytes_roundtrip_with_gzip_compression() {
+    let donor = Database::in_memory();
+    let repeated = "x".repeat(512);
+    for index in 0_i64..32 {
+        donor
+            .execute_with_params(
+                "CREATE (:Compressed {i: $i, repeated: $repeated})",
+                opts(),
+                [
+                    ("i".to_string(), lora_database::LoraValue::Int(index)),
+                    (
+                        "repeated".to_string(),
+                        lora_database::LoraValue::String(repeated.clone()),
+                    ),
+                ]
+                .into(),
+            )
+            .unwrap();
+    }
+
+    let plain = donor.save_snapshot_to_bytes().unwrap();
+    let options = SnapshotOptions {
+        compression: Compression::Gzip { level: 1 },
+        encryption: None,
+    };
+    let (compressed, info) = donor.save_snapshot_to_bytes_with_options(&options).unwrap();
+    assert_eq!(info.compression, Compression::Gzip { level: 1 });
+    assert!(compressed.starts_with(DATABASE_SNAPSHOT_MAGIC));
+    assert!(compressed.len() < plain.len());
+
+    let target = Database::in_memory();
+    let meta = target.load_snapshot_from_bytes(&compressed).unwrap();
+    assert_eq!(meta.node_count, 32);
+    let rows = row_count(
+        target
+            .execute("MATCH (n:Compressed) RETURN n", opts())
+            .unwrap(),
+    );
+    assert_eq!(rows, 32);
+}
+
+#[test]
+fn database_snapshot_bytes_roundtrip_with_password_encryption() {
+    let donor = Database::in_memory();
+    donor
+        .execute("CREATE (:Secret {name: 'Ada'})", opts())
+        .unwrap();
+
+    let options = encrypted_snapshot_options();
+    let credentials = options.encryption.clone();
+    let (bytes, info) = donor.save_snapshot_to_bytes_with_options(&options).unwrap();
+    assert!(bytes.starts_with(DATABASE_SNAPSHOT_MAGIC));
+    assert!(info.encrypted);
+    assert_eq!(info.key_id.as_deref(), Some("test-password"));
+
+    let target = Database::in_memory();
+    assert!(target.load_snapshot_from_bytes(&bytes).is_err());
+    let meta = target
+        .load_snapshot_from_bytes_with_credentials(&bytes, credentials.as_ref())
+        .unwrap();
+    assert_eq!(meta.node_count, 1);
+    let rows = row_count(target.execute("MATCH (n:Secret) RETURN n", opts()).unwrap());
+    assert_eq!(rows, 1);
+}
+
+#[test]
+fn database_snapshot_file_roundtrip_with_password_encryption() {
+    let dir = tempdir_like("encrypted_database_snapshot_file");
+    let path = dir.join("secret.lsnap");
+    let donor = Database::in_memory();
+    donor
+        .execute("CREATE (:Secret {name: 'Ada'})", opts())
+        .unwrap();
+
+    let options = encrypted_snapshot_options();
+    let credentials = options.encryption.clone();
+    let meta = donor
+        .save_snapshot_to_with_options(&path, &options)
+        .unwrap();
+    assert_eq!(meta.node_count, 1);
+
+    let target = Database::in_memory();
+    assert!(target
+        .load_snapshot_from_with_credentials(&path, None)
+        .is_err());
+    let meta = target
+        .load_snapshot_from_with_credentials(&path, credentials.as_ref())
+        .unwrap();
+    assert_eq!(meta.node_count, 1);
+    let rows = row_count(target.execute("MATCH (n:Secret) RETURN n", opts()).unwrap());
+    assert_eq!(rows, 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn database_snapshot_bytes_still_load_legacy_store_snapshots() {
+    let donor = Database::in_memory();
+    donor.execute("CREATE (:Legacy {n: 1})", opts()).unwrap();
+
+    let mut bytes = Vec::new();
+    donor
+        .with_store(|store| store.save_snapshot(&mut bytes))
+        .unwrap();
+    assert!(bytes.starts_with(b"LORASNAP"));
+
+    let target = Database::in_memory();
+    let meta = target.load_snapshot_from_bytes(&bytes).unwrap();
+    assert_eq!(meta.node_count, 1);
+    assert_eq!(target.node_count(), 1);
+    let rows = row_count(target.execute("MATCH (x:Legacy) RETURN x", opts()).unwrap());
+    assert_eq!(rows, 1);
 }
 
 #[test]

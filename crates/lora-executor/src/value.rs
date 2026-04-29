@@ -1,7 +1,7 @@
 use lora_analyzer::symbols::VarId;
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, NodeId, PropertyValue, RelationshipId, VectorValues,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, NodeId, PropertyValue, RelationshipId, VectorValues,
 };
 
 /// A materialised path: alternating node/relationship IDs.
@@ -22,6 +22,7 @@ pub enum LoraValue {
     Int(i64),
     Float(f64),
     String(String),
+    Binary(LoraBinary),
     List(Vec<LoraValue>),
     Map(BTreeMap<String, LoraValue>),
     Node(NodeId),
@@ -73,6 +74,7 @@ impl Serialize for LoraValue {
             LoraValue::Int(v) => serializer.serialize_i64(*v),
             LoraValue::Float(v) => serializer.serialize_f64(*v),
             LoraValue::String(v) => serializer.serialize_str(v),
+            LoraValue::Binary(v) => serialize_binary(serializer, v),
 
             LoraValue::List(values) => {
                 let mut seq = serializer.serialize_seq(Some(values.len()))?;
@@ -135,6 +137,14 @@ impl Serialize for LoraValue {
     }
 }
 
+fn serialize_binary<S: Serializer>(serializer: S, v: &LoraBinary) -> Result<S::Ok, S::Error> {
+    let mut m = serializer.serialize_map(Some(3))?;
+    m.serialize_entry("kind", "binary")?;
+    m.serialize_entry("length", &v.len())?;
+    m.serialize_entry("segments", v.segments())?;
+    m.end()
+}
+
 fn serialize_vector<S: Serializer>(serializer: S, v: &LoraVector) -> Result<S::Ok, S::Error> {
     let mut m = serializer.serialize_map(Some(4))?;
     m.serialize_entry("kind", "vector")?;
@@ -174,6 +184,7 @@ impl From<PropertyValue> for LoraValue {
             PropertyValue::Int(v) => LoraValue::Int(v),
             PropertyValue::Float(v) => LoraValue::Float(v),
             PropertyValue::String(v) => LoraValue::String(v),
+            PropertyValue::Binary(v) => LoraValue::Binary(v),
             PropertyValue::List(values) => {
                 LoraValue::List(values.into_iter().map(LoraValue::from).collect())
             }
@@ -205,6 +216,7 @@ impl From<&PropertyValue> for LoraValue {
             PropertyValue::Int(v) => LoraValue::Int(*v),
             PropertyValue::Float(v) => LoraValue::Float(*v),
             PropertyValue::String(v) => LoraValue::String(v.clone()),
+            PropertyValue::Binary(v) => LoraValue::Binary(v.clone()),
             PropertyValue::List(values) => {
                 LoraValue::List(values.iter().map(LoraValue::from).collect())
             }
@@ -233,6 +245,7 @@ impl From<LoraValue> for PropertyValue {
             LoraValue::Int(v) => PropertyValue::Int(v),
             LoraValue::Float(v) => PropertyValue::Float(v),
             LoraValue::String(v) => PropertyValue::String(v),
+            LoraValue::Binary(v) => PropertyValue::Binary(v),
             LoraValue::List(values) => {
                 PropertyValue::List(values.into_iter().map(PropertyValue::from).collect())
             }

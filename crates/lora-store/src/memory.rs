@@ -4,11 +4,11 @@ use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 use lora_ast::Direction;
 
-use crate::snapshot::{read_snapshot, write_snapshot};
+use crate::snapshot::{read_snapshot, write_snapshot, SNAPSHOT_FORMAT_VERSION};
 use crate::{
-    BorrowedGraphStorage, GraphStorage, GraphStorageMut, MutationEvent, MutationRecorder, NodeId,
-    NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord, SnapshotError,
-    SnapshotMeta, SnapshotPayload, Snapshotable,
+    BorrowedGraphStorage, GraphStorage, GraphStorageMut, LoraBinary, MutationEvent,
+    MutationRecorder, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId,
+    RelationshipRecord, SnapshotError, SnapshotMeta, SnapshotPayload, Snapshotable,
 };
 
 type PropertyValueBuckets = HashMap<PropertyIndexKey, BTreeSet<u64>>;
@@ -192,6 +192,7 @@ enum PropertyIndexKey {
     Int(i64),
     Float(u64),
     String(String),
+    Binary(LoraBinary),
     List(Vec<PropertyIndexKey>),
     Map(BTreeMap<String, PropertyIndexKey>),
 }
@@ -212,6 +213,7 @@ impl PropertyIndexKey {
                 }
             }
             PropertyValue::String(v) => Some(Self::String(v.clone())),
+            PropertyValue::Binary(v) => Some(Self::Binary(v.clone())),
             PropertyValue::List(values) => values
                 .iter()
                 .map(Self::from_value)
@@ -352,7 +354,7 @@ impl InMemoryGraph {
     #[inline]
     fn emit<F: FnOnce() -> MutationEvent>(&self, build: F) {
         if let Some(rec) = &self.recorder {
-            rec.record(&build());
+            rec.record(build());
         }
     }
 
@@ -1971,36 +1973,30 @@ impl GraphStorageMut for InMemoryGraph {
 // Snapshotable
 // ---------------------------------------------------------------------------
 
-impl Snapshotable for InMemoryGraph {
-    fn save_snapshot<W: std::io::Write>(&self, writer: W) -> Result<SnapshotMeta, SnapshotError> {
-        let payload = SnapshotPayload {
+impl InMemoryGraph {
+    /// Return the portable graph-state payload without encoding it into the
+    /// legacy `LORASNAP` file format.
+    pub fn snapshot_payload(&self) -> SnapshotPayload {
+        SnapshotPayload {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             nodes: self.nodes.values().cloned().collect(),
             relationships: self.relationships.values().cloned().collect(),
-        };
-        write_snapshot(writer, &payload, None)
+        }
     }
 
-    fn save_checkpoint<W: std::io::Write>(
-        &self,
-        writer: W,
-        wal_lsn: u64,
-    ) -> Result<SnapshotMeta, SnapshotError> {
-        let payload = SnapshotPayload {
-            next_node_id: self.next_node_id,
-            next_rel_id: self.next_rel_id,
-            nodes: self.nodes.values().cloned().collect(),
-            relationships: self.relationships.values().cloned().collect(),
-        };
-        write_snapshot(writer, &payload, Some(wal_lsn))
-    }
-
-    fn load_snapshot<R: std::io::Read>(
+    /// Replace the graph from a portable graph-state payload, preserving the
+    /// currently installed mutation recorder across the swap.
+    pub fn load_snapshot_payload(
         &mut self,
-        reader: R,
+        payload: SnapshotPayload,
     ) -> Result<SnapshotMeta, SnapshotError> {
-        let (payload, meta) = read_snapshot(reader)?;
+        let meta = SnapshotMeta {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            node_count: payload.nodes.len(),
+            relationship_count: payload.relationships.len(),
+            wal_lsn: None,
+        };
 
         // Build the restored graph in a fresh local instance and only
         // commit it into `self` at the very end. If a panic fires mid-
@@ -2037,6 +2033,31 @@ impl Snapshotable for InMemoryGraph {
         rebuilt.recorder = self.recorder.take();
         *self = rebuilt;
 
+        Ok(meta)
+    }
+}
+
+impl Snapshotable for InMemoryGraph {
+    fn save_snapshot<W: std::io::Write>(&self, writer: W) -> Result<SnapshotMeta, SnapshotError> {
+        let payload = self.snapshot_payload();
+        write_snapshot(writer, &payload, None)
+    }
+
+    fn save_checkpoint<W: std::io::Write>(
+        &self,
+        writer: W,
+        wal_lsn: u64,
+    ) -> Result<SnapshotMeta, SnapshotError> {
+        let payload = self.snapshot_payload();
+        write_snapshot(writer, &payload, Some(wal_lsn))
+    }
+
+    fn load_snapshot<R: std::io::Read>(
+        &mut self,
+        reader: R,
+    ) -> Result<SnapshotMeta, SnapshotError> {
+        let (payload, meta) = read_snapshot(reader)?;
+        self.load_snapshot_payload(payload)?;
         Ok(meta)
     }
 }
@@ -2641,8 +2662,8 @@ mod tests {
         }
 
         impl MutationRecorder for CapturingRecorder {
-            fn record(&self, event: &MutationEvent) {
-                self.events.lock().unwrap().push(event.clone());
+            fn record(&self, event: MutationEvent) {
+                self.events.lock().unwrap().push(event);
             }
         }
 
@@ -2710,7 +2731,7 @@ mod tests {
 
         struct CountingRecorder(Mutex<usize>);
         impl MutationRecorder for CountingRecorder {
-            fn record(&self, _: &MutationEvent) {
+            fn record(&self, _: MutationEvent) {
                 *self.0.lock().unwrap() += 1;
             }
         }

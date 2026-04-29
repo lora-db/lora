@@ -1292,6 +1292,7 @@ fn eval_function<S: GraphStorage>(
             Some(LoraValue::Int(_)) => LoraValue::String("INTEGER".to_string()),
             Some(LoraValue::Float(_)) => LoraValue::String("FLOAT".to_string()),
             Some(LoraValue::String(_)) => LoraValue::String("STRING".to_string()),
+            Some(LoraValue::Binary(_)) => LoraValue::String("BINARY".to_string()),
             Some(LoraValue::List(items)) => {
                 // Determine element type for homogeneous lists
                 let elem_type = if items.is_empty() {
@@ -2236,6 +2237,7 @@ fn value_eq(a: &LoraValue, b: &LoraValue) -> bool {
         (LoraValue::Int(x), LoraValue::Float(y)) => (*x as f64) == *y,
         (LoraValue::Float(x), LoraValue::Int(y)) => *x == (*y as f64),
         (LoraValue::String(x), LoraValue::String(y)) => x == y,
+        (LoraValue::Binary(x), LoraValue::Binary(y)) => x == y,
         (LoraValue::Node(x), LoraValue::Node(y)) => x == y,
         (LoraValue::Relationship(x), LoraValue::Relationship(y)) => x == y,
         (LoraValue::List(x), LoraValue::List(y)) => x == y,

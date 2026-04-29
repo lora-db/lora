@@ -31,7 +31,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use lora_database::{
-    Database, DatabaseOpenOptions, ExecuteOptions, ResultFormat, SyncMode, WalConfig,
+    Database, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, ResultFormat, SyncMode,
+    TransactionMode, WalConfig,
 };
 use std::hint::black_box;
 
@@ -88,6 +89,95 @@ fn smoke_config() -> Criterion {
         .measurement_time(Duration::from_millis(2_500))
         .sample_size(20)
         .noise_threshold(0.10)
+}
+
+#[derive(Clone, Copy)]
+enum SmokeProfile {
+    MemoryOnly,
+    WalDisabled,
+    WalEnabledNoSync,
+}
+
+impl SmokeProfile {
+    const ALL: [Self; 3] = [Self::MemoryOnly, Self::WalDisabled, Self::WalEnabledNoSync];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::MemoryOnly => "memory_only",
+            Self::WalDisabled => "wal_disabled",
+            Self::WalEnabledNoSync => "wal_enabled_none",
+        }
+    }
+}
+
+fn open_smoke_db(profile: SmokeProfile) -> (Option<ScratchDir>, Database<InMemoryGraph>) {
+    match profile {
+        SmokeProfile::MemoryOnly => (None, Database::in_memory()),
+        SmokeProfile::WalDisabled => (None, Database::open_with_wal(WalConfig::Disabled).unwrap()),
+        SmokeProfile::WalEnabledNoSync => {
+            let dir = ScratchDir::new("perf-smoke-wal-enabled-none");
+            let db = Database::open_with_wal(enabled(&dir.path, SyncMode::None)).unwrap();
+            (Some(dir), db)
+        }
+    }
+}
+
+fn seed_smoke_nodes(db: &Database<InMemoryGraph>) {
+    db.execute(
+        "UNWIND range(1, 1000) AS i CREATE (:Node {id: i, value: i % 100})",
+        opts(),
+    )
+    .unwrap();
+}
+
+fn bench_perf_smoke_profiles(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wal/perf_smoke_profiles");
+
+    for profile in SmokeProfile::ALL {
+        let (_dir, db) = open_smoke_db(profile);
+        seed_smoke_nodes(&db);
+        group.bench_function(format!("scan_1k/{}", profile.label()), |b| {
+            b.iter(|| {
+                black_box(db.execute("MATCH (n:Node) RETURN n.id", opts()).unwrap());
+            });
+        });
+    }
+
+    for profile in SmokeProfile::ALL {
+        let (_dir, db) = open_smoke_db(profile);
+        group.bench_function(format!("write_steady_100/{}", profile.label()), |b| {
+            b.iter(|| {
+                black_box(
+                    db.execute(
+                        "UNWIND range(1, 100) AS i CREATE (n:B {id: i, val: i * 2}) DELETE n",
+                        opts(),
+                    )
+                    .unwrap(),
+                );
+                black_box(db.node_count());
+            });
+        });
+    }
+
+    for profile in SmokeProfile::ALL {
+        let (_dir, db) = open_smoke_db(profile);
+        group.bench_function(format!("tx_write_steady_100/{}", profile.label()), |b| {
+            b.iter(|| {
+                let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+                black_box(
+                    tx.execute(
+                        "UNWIND range(1, 100) AS i CREATE (n:B {id: i}) DELETE n",
+                        opts(),
+                    )
+                    .unwrap(),
+                );
+                tx.commit().unwrap();
+                black_box(db.node_count());
+            });
+        });
+    }
+
+    group.finish();
 }
 
 fn bench_commit_latency(c: &mut Criterion) {
@@ -358,6 +448,6 @@ fn bench_named_archive_steady_state(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = smoke_config();
-    targets = bench_commit_latency, bench_recovery, bench_named_archive_write_heavy, bench_named_archive_steady_state,
+    targets = bench_perf_smoke_profiles, bench_commit_latency, bench_recovery, bench_named_archive_write_heavy, bench_named_archive_steady_state,
 }
 criterion_main!(benches);

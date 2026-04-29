@@ -1,0 +1,30 @@
+[package]
+name = "lora-snapshot"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "LoraDB — efficient column-oriented graph snapshots with compression and encryption."
+keywords = ["loradb", "snapshot", "graph", "compression", "encryption"]
+categories = ["database-implementations", "encoding"]
+
+[lib]
+bench = false
+
+[dependencies]
+blake3.workspace = true
+chacha20poly1305.workspace = true
+argon2.workspace = true
+flate2.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+bincode.workspace = true
+thiserror.workspace = true
+
+lora-store.workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { workspace = true, features = ["js"] }

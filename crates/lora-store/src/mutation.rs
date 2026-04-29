@@ -27,9 +27,8 @@ use crate::{NodeId, Properties, PropertyValue, RelationshipId};
 /// in order against a store initialised from the snapshot whose `wal_lsn`
 /// immediately precedes the first event reproduces the committed state.
 ///
-/// The enum derives `Serialize`/`Deserialize` so a WAL implementation can
-/// bincode-append events straight to disk without a second serialization
-/// layer.
+/// The enum derives `Serialize`/`Deserialize` for non-WAL observers and
+/// tooling; the production WAL uses its own compact tagged codec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MutationEvent {
     CreateNode {
@@ -96,7 +95,7 @@ pub enum MutationEvent {
 /// Implementations must be `Send + Sync` so a shared recorder can be driven
 /// from any thread holding the store's write lock.
 pub trait MutationRecorder: Send + Sync + 'static {
-    fn record(&self, event: &MutationEvent);
+    fn record(&self, event: MutationEvent);
 
     /// Sticky failure flag for durability-shaped recorders.
     ///
@@ -117,17 +116,17 @@ pub trait MutationRecorder: Send + Sync + 'static {
     }
 }
 
-/// Convenience adapter that turns any `Fn(&MutationEvent) + Send + Sync`
+/// Convenience adapter that turns any `Fn(MutationEvent) + Send + Sync`
 /// into a `MutationRecorder` — useful in tests and for quick wiring.
 pub struct ClosureRecorder<F>(pub F)
 where
-    F: Fn(&MutationEvent) + Send + Sync + 'static;
+    F: Fn(MutationEvent) + Send + Sync + 'static;
 
 impl<F> MutationRecorder for ClosureRecorder<F>
 where
-    F: Fn(&MutationEvent) + Send + Sync + 'static,
+    F: Fn(MutationEvent) + Send + Sync + 'static,
 {
-    fn record(&self, event: &MutationEvent) {
+    fn record(&self, event: MutationEvent) {
         (self.0)(event)
     }
 }

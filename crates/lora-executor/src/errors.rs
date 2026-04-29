@@ -101,6 +101,7 @@ pub fn value_kind(value: &LoraValue) -> String {
         LoraValue::Int(_) => "int".into(),
         LoraValue::Float(_) => "float".into(),
         LoraValue::String(_) => "string".into(),
+        LoraValue::Binary(_) => "binary".into(),
         LoraValue::List(_) => "list".into(),
         LoraValue::Map(_) => "map".into(),
         LoraValue::Node(_) => "node".into(),

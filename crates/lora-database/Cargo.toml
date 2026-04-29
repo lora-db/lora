@@ -24,6 +24,7 @@ lora-analyzer.workspace = true
 lora-compiler.workspace = true
 lora-executor.workspace = true
 lora-store.workspace = true
+lora-snapshot.workspace = true
 lora-wal.workspace = true
 
 serde_json.workspace = true

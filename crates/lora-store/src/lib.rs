@@ -1,3 +1,4 @@
+mod binary;
 mod graph;
 mod memory;
 mod mutation;
@@ -6,6 +7,7 @@ pub mod spatial;
 pub mod temporal;
 pub mod vector;
 
+pub use binary::*;
 pub use graph::*;
 pub use memory::*;
 pub use mutation::*;

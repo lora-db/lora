@@ -1,3 +1,4 @@
+use crate::binary::LoraBinary;
 use crate::spatial::LoraPoint;
 use crate::temporal::{
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraTime,
@@ -17,6 +18,7 @@ pub enum PropertyValue {
     Int(i64),
     Float(f64),
     String(String),
+    Binary(LoraBinary),
     List(Vec<PropertyValue>),
     Map(BTreeMap<String, PropertyValue>),
     Date(LoraDate),

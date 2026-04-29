@@ -322,7 +322,7 @@ impl WalRecorder {
 }
 
 impl MutationRecorder for WalRecorder {
-    fn record(&self, event: &MutationEvent) {
+    fn record(&self, event: MutationEvent) {
         let mut state = self.state.lock().unwrap();
         if state.poisoned.is_some() {
             return;
@@ -333,7 +333,7 @@ impl MutationRecorder for WalRecorder {
             });
             return;
         }
-        state.buffer.push(event.clone());
+        state.buffer.push(event);
     }
 
     fn poisoned(&self) -> Option<String> {
@@ -370,7 +370,7 @@ mod tests {
     fn record_outside_arm_poisons() {
         let dir = TmpDir::new("no-arm");
         let recorder = WalRecorder::new(open_wal(&dir.path));
-        recorder.record(&MutationEvent::Clear);
+        recorder.record(MutationEvent::Clear);
         assert!(recorder.is_poisoned());
         let msg = recorder.poisoned().unwrap();
         assert!(msg.contains("outside an armed query"));
@@ -479,7 +479,7 @@ mod tests {
         let recorder = WalRecorder::new(open_wal(&dir.path));
 
         // Poison it.
-        recorder.record(&MutationEvent::Clear);
+        recorder.record(MutationEvent::Clear);
         assert!(recorder.is_poisoned());
 
         // After poisoning, further `record` calls must NOT touch the
@@ -487,7 +487,7 @@ mod tests {
         // unwinding before the host observes `poisoned()` and fails
         // the query.
         for _ in 0..10 {
-            recorder.record(&MutationEvent::Clear);
+            recorder.record(MutationEvent::Clear);
         }
         assert!(recorder.is_poisoned());
     }
@@ -498,7 +498,7 @@ mod tests {
         let recorder = WalRecorder::new(open_wal(&dir.path));
 
         recorder.arm().unwrap();
-        recorder.record(&MutationEvent::Clear);
+        recorder.record(MutationEvent::Clear);
         assert_eq!(recorder.commit().unwrap(), WroteCommit::Yes);
         recorder.force_fsync().unwrap();
         let snapshot_lsn = recorder.wal().durable_lsn();

@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
@@ -7,21 +8,27 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use lora_analyzer::Analyzer;
-use lora_ast::Document;
+use lora_ast::{Direction, Document};
 use lora_compiler::{CompiledQuery, Compiler};
 use lora_executor::{
-    classify_stream, compiled_result_columns, project_rows, ExecuteOptions, LoraValue,
-    MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
+    classify_stream, compiled_result_columns, lora_value_to_property, project_rows, ExecuteOptions,
+    LoraValue, MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
 };
 use lora_parser::parse_query;
+use lora_snapshot::{
+    decode_snapshot as decode_database_snapshot, write_snapshot as write_database_snapshot,
+    Compression, EncryptionKey, PasswordKdfParams, SnapshotCredentials, SnapshotEncryption,
+    SnapshotInfo, SnapshotOptions, SnapshotPassword, DATABASE_SNAPSHOT_MAGIC,
+};
 use lora_store::{
-    GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder, SnapshotMeta,
-    Snapshotable,
+    GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder, NodeId,
+    NodeRecord, Properties, RelationshipId, RelationshipRecord, SnapshotMeta, Snapshotable,
 };
 use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder, WroteCommit};
 
 use crate::archive::WalArchive;
 use crate::named::{DatabaseName, DatabaseOpenOptions};
+use crate::snapshot_store::{ManagedSnapshotStore, SnapshotConfig};
 use crate::stream::{AutoCommitGuard, LiveCursor, QueryStream};
 use crate::transaction::{LiveStoreGuard, Transaction, TransactionMode};
 
@@ -43,6 +50,344 @@ pub trait QueryRunner: Send + Sync + 'static {
 pub struct Database<S> {
     pub(crate) store: Arc<RwLock<S>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
+    pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphDirection {
+    Outgoing,
+    Incoming,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotByteFormat {
+    Database,
+    LegacyStore,
+}
+
+impl SnapshotByteFormat {
+    pub fn detect(bytes: &[u8]) -> Option<Self> {
+        if bytes.starts_with(DATABASE_SNAPSHOT_MAGIC) {
+            Some(Self::Database)
+        } else if bytes.starts_with(lora_store::SNAPSHOT_MAGIC) {
+            Some(Self::LegacyStore)
+        } else {
+            None
+        }
+    }
+}
+
+impl GraphDirection {
+    fn as_store_direction(self) -> Direction {
+        match self {
+            Self::Outgoing => Direction::Right,
+            Self::Incoming => Direction::Left,
+            Self::Both => Direction::Undirected,
+        }
+    }
+}
+
+fn values_to_properties(values: BTreeMap<String, LoraValue>) -> Result<Properties> {
+    values
+        .into_iter()
+        .map(|(key, value)| {
+            let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+            Ok((key, value))
+        })
+        .collect()
+}
+
+const DEFAULT_SNAPSHOT_KEY_ID: &str = "default";
+
+/// Build snapshot save options from the JSON shape used by the language
+/// bindings.
+///
+/// Supported shape:
+///
+/// `{ compression?: "none" | "gzip" | { format: "gzip", level?: number },
+///    encryption?: { type: "password", keyId?: string, password: string,
+///                   params?: { memoryCostKib?: number, timeCost?: number,
+///                              parallelism?: number } } }`
+///
+/// `encryption` may also be a raw 32-byte key object with
+/// `{ type: "key", keyId?: string, key: number[] }`.
+pub fn snapshot_options_from_json(value: Option<serde_json::Value>) -> Result<SnapshotOptions> {
+    let Some(value) = value else {
+        return Ok(SnapshotOptions {
+            compression: Compression::None,
+            encryption: None,
+        });
+    };
+    if value.is_null() {
+        return Ok(SnapshotOptions {
+            compression: Compression::None,
+            encryption: None,
+        });
+    }
+
+    let compression = match value.get("compression") {
+        Some(value) => parse_snapshot_compression_json(value)?,
+        None => Compression::None,
+    };
+    let encryption = parse_snapshot_credentials_json(Some(value))?;
+
+    Ok(SnapshotOptions {
+        compression,
+        encryption,
+    })
+}
+
+/// Build snapshot load credentials from the JSON shape used by the language
+/// bindings. The credential object may be supplied directly, or under
+/// `credentials` / `encryption` so the same options object can be reused for
+/// save and load.
+pub fn snapshot_credentials_from_json(
+    value: Option<serde_json::Value>,
+) -> Result<Option<SnapshotCredentials>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    parse_snapshot_credentials_json(Some(value))
+}
+
+fn parse_snapshot_compression_json(value: &serde_json::Value) -> Result<Compression> {
+    match value {
+        serde_json::Value::Null => Ok(Compression::None),
+        serde_json::Value::String(format) => snapshot_compression_from_parts(format, None),
+        serde_json::Value::Object(obj) => {
+            let format =
+                string_field(obj, &["format", "type"])?.unwrap_or_else(|| "none".to_string());
+            let level = u32_field(obj, &["level"])?;
+            snapshot_compression_from_parts(&format, level)
+        }
+        _ => Err(anyhow!(
+            "snapshot compression must be a string or object with a format field"
+        )),
+    }
+}
+
+fn snapshot_compression_from_parts(format: &str, level: Option<u32>) -> Result<Compression> {
+    match format {
+        "none" | "identity" | "uncompressed" => Ok(Compression::None),
+        "gzip" => {
+            let level = level.unwrap_or(1);
+            if level > 9 {
+                return Err(anyhow!(
+                    "gzip snapshot compression level must be between 0 and 9"
+                ));
+            }
+            Ok(Compression::Gzip { level })
+        }
+        other => Err(anyhow!("unknown snapshot compression '{other}'")),
+    }
+}
+
+fn parse_snapshot_credentials_json(
+    value: Option<serde_json::Value>,
+) -> Result<Option<SnapshotCredentials>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let credential_value = if let Some(credentials) = value.get("credentials") {
+        credentials
+    } else if let Some(encryption) = value.get("encryption") {
+        encryption
+    } else if looks_like_snapshot_encryption(&value) {
+        &value
+    } else {
+        return Ok(None);
+    };
+
+    if credential_value.is_null() {
+        return Ok(None);
+    }
+
+    Ok(Some(parse_snapshot_encryption_json(credential_value)?))
+}
+
+fn looks_like_snapshot_encryption(value: &serde_json::Value) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    obj.contains_key("password")
+        || obj.contains_key("key")
+        || obj.contains_key("keyBytes")
+        || obj.contains_key("key_bytes")
+}
+
+fn parse_snapshot_encryption_json(value: &serde_json::Value) -> Result<SnapshotEncryption> {
+    let serde_json::Value::Object(obj) = value else {
+        return Err(anyhow!("snapshot encryption must be an object"));
+    };
+
+    let kind = string_field(obj, &["type", "kind"])?.unwrap_or_else(|| {
+        if obj.contains_key("key") || obj.contains_key("keyBytes") || obj.contains_key("key_bytes")
+        {
+            "key".to_string()
+        } else {
+            "password".to_string()
+        }
+    });
+
+    match kind.as_str() {
+        "password" | "passphrase" => {
+            let key_id = string_field(obj, &["keyId", "key_id"])?
+                .unwrap_or_else(|| DEFAULT_SNAPSHOT_KEY_ID.to_string());
+            let password = required_string_field(obj, &["password"])?;
+            let params = parse_password_kdf_params(
+                obj.get("params")
+                    .or_else(|| obj.get("kdfParams"))
+                    .or_else(|| obj.get("kdf_params")),
+            )?;
+            Ok(SnapshotEncryption::Password(SnapshotPassword::with_params(
+                key_id, password, params,
+            )))
+        }
+        "key" | "raw_key" | "rawKey" => {
+            let key_id = string_field(obj, &["keyId", "key_id"])?
+                .unwrap_or_else(|| DEFAULT_SNAPSHOT_KEY_ID.to_string());
+            let key = required_key_field(obj, &["key", "keyBytes", "key_bytes"])?;
+            Ok(SnapshotEncryption::Key(EncryptionKey::new(key_id, key)))
+        }
+        other => Err(anyhow!("unknown snapshot encryption type '{other}'")),
+    }
+}
+
+fn parse_password_kdf_params(value: Option<&serde_json::Value>) -> Result<PasswordKdfParams> {
+    let Some(value) = value else {
+        return Ok(PasswordKdfParams::interactive());
+    };
+    if value.is_null() {
+        return Ok(PasswordKdfParams::interactive());
+    }
+    let serde_json::Value::Object(obj) = value else {
+        return Err(anyhow!("snapshot password params must be an object"));
+    };
+
+    let defaults = PasswordKdfParams::interactive();
+    let memory_cost_kib =
+        u32_field(obj, &["memoryCostKib", "memory_cost_kib"])?.unwrap_or(defaults.memory_cost_kib);
+    let time_cost = u32_field(obj, &["timeCost", "time_cost"])?.unwrap_or(defaults.time_cost);
+    let parallelism = u32_field(obj, &["parallelism"])?.unwrap_or(defaults.parallelism);
+
+    if memory_cost_kib == 0 || time_cost == 0 || parallelism == 0 {
+        return Err(anyhow!(
+            "snapshot password params memoryCostKib, timeCost, and parallelism must be greater than zero"
+        ));
+    }
+
+    Ok(PasswordKdfParams {
+        memory_cost_kib,
+        time_cost,
+        parallelism,
+    })
+}
+
+fn string_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Result<Option<String>> {
+    for name in names {
+        if let Some(value) = obj.get(*name) {
+            return match value {
+                serde_json::Value::Null => Ok(None),
+                serde_json::Value::String(value) => Ok(Some(value.clone())),
+                _ => Err(anyhow!("snapshot field '{name}' must be a string")),
+            };
+        }
+    }
+    Ok(None)
+}
+
+fn required_string_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Result<String> {
+    string_field(obj, names)?.ok_or_else(|| anyhow!("snapshot field '{}' is required", names[0]))
+}
+
+fn u32_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Result<Option<u32>> {
+    for name in names {
+        if let Some(value) = obj.get(*name) {
+            return match value {
+                serde_json::Value::Null => Ok(None),
+                serde_json::Value::Number(number) => {
+                    let Some(value) = number.as_u64() else {
+                        return Err(anyhow!(
+                            "snapshot field '{name}' must be a non-negative integer"
+                        ));
+                    };
+                    if value > u32::MAX as u64 {
+                        return Err(anyhow!("snapshot field '{name}' is too large"));
+                    }
+                    Ok(Some(value as u32))
+                }
+                _ => Err(anyhow!("snapshot field '{name}' must be an integer")),
+            };
+        }
+    }
+    Ok(None)
+}
+
+fn required_key_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Result<[u8; 32]> {
+    for name in names {
+        if let Some(value) = obj.get(*name) {
+            return parse_key_bytes(value, name);
+        }
+    }
+    Err(anyhow!("snapshot field '{}' is required", names[0]))
+}
+
+fn parse_key_bytes(value: &serde_json::Value, field_name: &str) -> Result<[u8; 32]> {
+    let serde_json::Value::Array(values) = value else {
+        return Err(anyhow!(
+            "snapshot field '{field_name}' must be an array of 32 byte values"
+        ));
+    };
+    if values.len() != 32 {
+        return Err(anyhow!(
+            "snapshot field '{field_name}' must contain exactly 32 byte values"
+        ));
+    }
+
+    let mut out = [0u8; 32];
+    for (idx, value) in values.iter().enumerate() {
+        let Some(byte) = value.as_u64() else {
+            return Err(anyhow!(
+                "snapshot field '{field_name}' item {idx} must be a byte integer"
+            ));
+        };
+        if byte > u8::MAX as u64 {
+            return Err(anyhow!(
+                "snapshot field '{field_name}' item {idx} must be between 0 and 255"
+            ));
+        }
+        out[idx] = byte as u8;
+    }
+    Ok(out)
+}
+
+fn snapshot_info_to_meta(info: SnapshotInfo) -> SnapshotMeta {
+    SnapshotMeta {
+        format_version: info.format_version,
+        node_count: info.node_count,
+        relationship_count: info.relationship_count,
+        wal_lsn: info.wal_lsn,
+    }
 }
 
 impl Database<InMemoryGraph> {
@@ -77,6 +422,41 @@ impl Database<InMemoryGraph> {
                 Ok(Self {
                     store: Arc::new(RwLock::new(graph)),
                     wal: Some(recorder),
+                    snapshots: None,
+                })
+            }
+        }
+    }
+
+    /// Open or create a WAL-backed database with managed snapshots beside it.
+    ///
+    /// Recovery loads the newest managed snapshot first, then replays WAL
+    /// records above the snapshot's LSN fence. Checkpoints are written through
+    /// [`Self::checkpoint_managed`] / [`Self::sync`], or automatically when
+    /// `snapshot_config.checkpoint_every_commits` is set.
+    pub fn open_with_wal_snapshots(
+        wal_config: WalConfig,
+        snapshot_config: SnapshotConfig,
+    ) -> Result<Self> {
+        let snapshot_store = Arc::new(ManagedSnapshotStore::open(snapshot_config)?);
+        let mut graph = InMemoryGraph::new();
+
+        match wal_config {
+            WalConfig::Disabled => Err(anyhow!("managed snapshots require WAL enabled")),
+            WalConfig::Enabled {
+                dir,
+                sync_mode,
+                segment_target_bytes,
+            } => {
+                let snapshot_lsn = snapshot_store.load_latest(&mut graph)?;
+                let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
+                replay_into(&mut graph, events)?;
+                let recorder = Arc::new(WalRecorder::new(wal));
+                graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
+                Ok(Self {
+                    store: Arc::new(RwLock::new(graph)),
+                    wal: Some(recorder),
+                    snapshots: Some(snapshot_store),
                 })
             }
         }
@@ -118,6 +498,7 @@ impl Database<InMemoryGraph> {
         Ok(Self {
             store: Arc::new(RwLock::new(graph)),
             wal: Some(recorder),
+            snapshots: None,
         })
     }
 
@@ -137,11 +518,21 @@ impl Database<InMemoryGraph> {
             TransactionMode::ReadOnly => LiveStoreGuard::Read(self.read_store()),
             TransactionMode::ReadWrite => LiveStoreGuard::Write(self.write_store()),
         };
-        Ok(Transaction::new(live, self.wal.clone(), mode))
+        Ok(Transaction::new(
+            live,
+            self.wal.clone(),
+            self.snapshots.clone(),
+            mode,
+        ))
     }
 
     /// Force any pending WAL bytes to durable storage and, for archive-backed
     /// databases, refresh the portable `.loradb` file before returning.
+    ///
+    /// Managed snapshot checkpoints are explicit via
+    /// [`Self::checkpoint_managed`] or threshold-driven via
+    /// [`SnapshotConfig::checkpoint_every_commits`]; `sync()` remains a
+    /// durability operation rather than an O(graph) checkpoint.
     pub fn sync(&self) -> Result<()> {
         if let Some(wal) = &self.wal {
             wal.force_fsync()?;
@@ -217,6 +608,7 @@ impl Database<InMemoryGraph> {
                 Ok(Self {
                     store: Arc::new(RwLock::new(graph)),
                     wal: Some(recorder),
+                    snapshots: None,
                 })
             }
         }
@@ -331,11 +723,15 @@ impl Database<InMemoryGraph> {
 
 impl<S> Database<S>
 where
-    S: GraphStorage + GraphStorageMut,
+    S: GraphStorage + GraphStorageMut + Any,
 {
     /// Build a database from a pre-wrapped, shared store.
     pub fn new(store: Arc<RwLock<S>>) -> Self {
-        Self { store, wal: None }
+        Self {
+            store,
+            wal: None,
+            snapshots: None,
+        }
     }
 
     /// Build a database by taking ownership of a bare graph store.
@@ -348,6 +744,17 @@ where
     /// to drive the WAL outside the standard query lifecycle.
     pub fn wal(&self) -> Option<&Arc<WalRecorder>> {
         self.wal.as_ref()
+    }
+
+    fn observe_snapshot_commit_if_needed(&self, store: &S, recorder: &WalRecorder) -> Result<()> {
+        let Some(snapshots) = &self.snapshots else {
+            return Ok(());
+        };
+        let graph = (store as &dyn Any)
+            .downcast_ref::<InMemoryGraph>()
+            .ok_or_else(|| anyhow!("managed snapshots require InMemoryGraph storage"))?;
+        snapshots.observe_commit(graph, recorder)?;
+        Ok(())
     }
 
     /// Handle to the underlying shared store — useful for callers that need
@@ -568,6 +975,7 @@ where
                 Ok(_) => match rec.commit() {
                     Ok(WroteCommit::Yes) => {
                         rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
+                        self.observe_snapshot_commit_if_needed(&store, rec)?;
                     }
                     Ok(WroteCommit::No) => {
                         // Read-only query: no records were written
@@ -625,6 +1033,7 @@ where
         match rec.commit() {
             Ok(WroteCommit::Yes) => {
                 rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
+                self.observe_snapshot_commit_if_needed(&guard, rec)?;
             }
             Ok(WroteCommit::No) => {}
             Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
@@ -669,6 +1078,330 @@ where
         let mut guard = self.write_store();
         f(&mut *guard)
     }
+
+    fn with_logged_store_mut<R>(&self, f: impl FnOnce(&mut S) -> Result<R>) -> Result<R> {
+        let mut guard = self.write_store();
+        let Some(rec) = &self.wal else {
+            return f(&mut *guard);
+        };
+
+        rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
+        let result = f(&mut *guard);
+        match &result {
+            Ok(_) => match rec.commit() {
+                Ok(WroteCommit::Yes) => {
+                    rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
+                    self.observe_snapshot_commit_if_needed(&guard, rec)?;
+                }
+                Ok(WroteCommit::No) => {}
+                Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
+            },
+            Err(_) => {
+                let _ = rec.abort();
+            }
+        }
+        if let Some(reason) = rec.poisoned() {
+            return Err(anyhow!("WAL poisoned: {reason}"));
+        }
+        result
+    }
+
+    // ---------- Direct graph read surface ----------
+
+    pub fn graph_contains_node(&self, id: NodeId) -> bool {
+        self.with_store(|store| store.contains_node(id))
+    }
+
+    pub fn graph_node(&self, id: NodeId) -> Option<NodeRecord> {
+        self.with_store(|store| store.node(id))
+    }
+
+    pub fn graph_all_node_ids(&self) -> Vec<NodeId> {
+        self.with_store(|store| store.all_node_ids())
+    }
+
+    pub fn graph_node_ids_by_label(&self, label: &str) -> Vec<NodeId> {
+        self.with_store(|store| store.node_ids_by_label(label))
+    }
+
+    pub fn graph_all_nodes(&self) -> Vec<NodeRecord> {
+        self.with_store(|store| store.all_nodes())
+    }
+
+    pub fn graph_nodes_by_label(&self, label: &str) -> Vec<NodeRecord> {
+        self.with_store(|store| store.nodes_by_label(label))
+    }
+
+    pub fn graph_node_has_label(&self, id: NodeId, label: &str) -> bool {
+        self.with_store(|store| store.node_has_label(id, label))
+    }
+
+    pub fn graph_node_labels(&self, id: NodeId) -> Option<Vec<String>> {
+        self.with_store(|store| store.node_labels(id))
+    }
+
+    pub fn graph_node_properties(&self, id: NodeId) -> Option<BTreeMap<String, LoraValue>> {
+        self.with_store(|store| {
+            store.node_properties(id).map(|props| {
+                props
+                    .into_iter()
+                    .map(|(key, value)| (key, LoraValue::from(value)))
+                    .collect()
+            })
+        })
+    }
+
+    pub fn graph_node_property(&self, id: NodeId, key: &str) -> Option<LoraValue> {
+        self.with_store(|store| store.node_property(id, key).map(LoraValue::from))
+    }
+
+    pub fn graph_contains_relationship(&self, id: RelationshipId) -> bool {
+        self.with_store(|store| store.contains_relationship(id))
+    }
+
+    pub fn graph_relationship(&self, id: RelationshipId) -> Option<RelationshipRecord> {
+        self.with_store(|store| store.relationship(id))
+    }
+
+    pub fn graph_all_relationship_ids(&self) -> Vec<RelationshipId> {
+        self.with_store(|store| store.all_rel_ids())
+    }
+
+    pub fn graph_relationship_ids_by_type(&self, rel_type: &str) -> Vec<RelationshipId> {
+        self.with_store(|store| store.rel_ids_by_type(rel_type))
+    }
+
+    pub fn graph_all_relationships(&self) -> Vec<RelationshipRecord> {
+        self.with_store(|store| store.all_relationships())
+    }
+
+    pub fn graph_relationships_by_type(&self, rel_type: &str) -> Vec<RelationshipRecord> {
+        self.with_store(|store| store.relationships_by_type(rel_type))
+    }
+
+    pub fn graph_relationship_endpoints(&self, id: RelationshipId) -> Option<(NodeId, NodeId)> {
+        self.with_store(|store| store.relationship_endpoints(id))
+    }
+
+    pub fn graph_relationship_type(&self, id: RelationshipId) -> Option<String> {
+        self.with_store(|store| store.relationship_type(id))
+    }
+
+    pub fn graph_relationship_properties(
+        &self,
+        id: RelationshipId,
+    ) -> Option<BTreeMap<String, LoraValue>> {
+        self.with_store(|store| {
+            store.relationship_properties(id).map(|props| {
+                props
+                    .into_iter()
+                    .map(|(key, value)| (key, LoraValue::from(value)))
+                    .collect()
+            })
+        })
+    }
+
+    pub fn graph_relationship_property(&self, id: RelationshipId, key: &str) -> Option<LoraValue> {
+        self.with_store(|store| store.relationship_property(id, key).map(LoraValue::from))
+    }
+
+    pub fn graph_relationship_ids_of(
+        &self,
+        node_id: NodeId,
+        direction: GraphDirection,
+    ) -> Vec<RelationshipId> {
+        self.with_store(|store| store.relationship_ids_of(node_id, direction.as_store_direction()))
+    }
+
+    pub fn graph_degree(&self, node_id: NodeId, direction: GraphDirection) -> usize {
+        self.with_store(|store| store.degree(node_id, direction.as_store_direction()))
+    }
+
+    pub fn graph_neighbors(
+        &self,
+        node_id: NodeId,
+        direction: GraphDirection,
+        types: &[String],
+    ) -> Vec<NodeRecord> {
+        self.with_store(|store| store.neighbors(node_id, direction.as_store_direction(), types))
+    }
+
+    pub fn graph_expand_ids(
+        &self,
+        node_id: NodeId,
+        direction: GraphDirection,
+        types: &[String],
+    ) -> Vec<(RelationshipId, NodeId)> {
+        self.with_store(|store| store.expand_ids(node_id, direction.as_store_direction(), types))
+    }
+
+    pub fn graph_all_labels(&self) -> Vec<String> {
+        self.with_store(|store| store.all_labels())
+    }
+
+    pub fn graph_all_relationship_types(&self) -> Vec<String> {
+        self.with_store(|store| store.all_relationship_types())
+    }
+
+    pub fn graph_all_property_keys(&self) -> Vec<String> {
+        self.with_store(|store| store.all_property_keys())
+    }
+
+    pub fn graph_all_node_property_keys(&self) -> Vec<String> {
+        self.with_store(|store| store.all_node_property_keys())
+    }
+
+    pub fn graph_all_relationship_property_keys(&self) -> Vec<String> {
+        self.with_store(|store| store.all_relationship_property_keys())
+    }
+
+    pub fn graph_label_property_keys(&self, label: &str) -> Vec<String> {
+        self.with_store(|store| store.label_property_keys(label))
+    }
+
+    pub fn graph_relationship_type_property_keys(&self, rel_type: &str) -> Vec<String> {
+        self.with_store(|store| store.rel_type_property_keys(rel_type))
+    }
+
+    pub fn graph_find_node_ids_by_property(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        value: LoraValue,
+    ) -> Result<Vec<NodeId>> {
+        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        Ok(self.with_store(|store| store.find_node_ids_by_property(label, key, &value)))
+    }
+
+    pub fn graph_find_relationship_ids_by_property(
+        &self,
+        rel_type: Option<&str>,
+        key: &str,
+        value: LoraValue,
+    ) -> Result<Vec<RelationshipId>> {
+        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        Ok(self.with_store(|store| store.find_relationship_ids_by_property(rel_type, key, &value)))
+    }
+
+    // ---------- Direct graph mutation surface ----------
+
+    pub fn graph_create_node(
+        &self,
+        labels: Vec<String>,
+        properties: BTreeMap<String, LoraValue>,
+    ) -> Result<NodeRecord> {
+        let properties = values_to_properties(properties)?;
+        self.with_logged_store_mut(|store| Ok(store.create_node(labels, properties)))
+    }
+
+    pub fn graph_create_relationship(
+        &self,
+        src: NodeId,
+        dst: NodeId,
+        rel_type: &str,
+        properties: BTreeMap<String, LoraValue>,
+    ) -> Result<Option<RelationshipRecord>> {
+        let properties = values_to_properties(properties)?;
+        self.with_logged_store_mut(|store| {
+            Ok(store.create_relationship(src, dst, rel_type, properties))
+        })
+    }
+
+    pub fn graph_set_node_property(
+        &self,
+        node_id: NodeId,
+        key: String,
+        value: LoraValue,
+    ) -> Result<bool> {
+        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        self.with_logged_store_mut(|store| Ok(store.set_node_property(node_id, key, value)))
+    }
+
+    pub fn graph_remove_node_property(&self, node_id: NodeId, key: &str) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.remove_node_property(node_id, key)))
+    }
+
+    pub fn graph_add_node_label(&self, node_id: NodeId, label: &str) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.add_node_label(node_id, label)))
+    }
+
+    pub fn graph_remove_node_label(&self, node_id: NodeId, label: &str) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.remove_node_label(node_id, label)))
+    }
+
+    pub fn graph_set_node_labels(&self, node_id: NodeId, labels: Vec<String>) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.set_node_labels(node_id, labels)))
+    }
+
+    pub fn graph_replace_node_properties(
+        &self,
+        node_id: NodeId,
+        properties: BTreeMap<String, LoraValue>,
+    ) -> Result<bool> {
+        let properties = values_to_properties(properties)?;
+        self.with_logged_store_mut(|store| Ok(store.replace_node_properties(node_id, properties)))
+    }
+
+    pub fn graph_merge_node_properties(
+        &self,
+        node_id: NodeId,
+        properties: BTreeMap<String, LoraValue>,
+    ) -> Result<bool> {
+        let properties = values_to_properties(properties)?;
+        self.with_logged_store_mut(|store| Ok(store.merge_node_properties(node_id, properties)))
+    }
+
+    pub fn graph_set_relationship_property(
+        &self,
+        rel_id: RelationshipId,
+        key: String,
+        value: LoraValue,
+    ) -> Result<bool> {
+        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        self.with_logged_store_mut(|store| Ok(store.set_relationship_property(rel_id, key, value)))
+    }
+
+    pub fn graph_remove_relationship_property(
+        &self,
+        rel_id: RelationshipId,
+        key: &str,
+    ) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.remove_relationship_property(rel_id, key)))
+    }
+
+    pub fn graph_replace_relationship_properties(
+        &self,
+        rel_id: RelationshipId,
+        properties: BTreeMap<String, LoraValue>,
+    ) -> Result<bool> {
+        let properties = values_to_properties(properties)?;
+        self.with_logged_store_mut(|store| {
+            Ok(store.replace_relationship_properties(rel_id, properties))
+        })
+    }
+
+    pub fn graph_merge_relationship_properties(
+        &self,
+        rel_id: RelationshipId,
+        properties: BTreeMap<String, LoraValue>,
+    ) -> Result<bool> {
+        let properties = values_to_properties(properties)?;
+        self.with_logged_store_mut(|store| {
+            Ok(store.merge_relationship_properties(rel_id, properties))
+        })
+    }
+
+    pub fn graph_delete_relationship(&self, rel_id: RelationshipId) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.delete_relationship(rel_id)))
+    }
+
+    pub fn graph_delete_node(&self, node_id: NodeId) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.delete_node(node_id)))
+    }
+
+    pub fn graph_detach_delete_node(&self, node_id: NodeId) -> Result<bool> {
+        self.with_logged_store_mut(|store| Ok(store.detach_delete_node(node_id)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +1415,7 @@ where
 
 impl<S> Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Snapshotable,
+    S: GraphStorage + GraphStorageMut + Snapshotable + Any,
 {
     /// Serialize the current graph state to the given path. Writes are
     /// atomic: the payload goes to `<path>.tmp`, is `fsync`'d, and then
@@ -754,8 +1487,130 @@ impl Database<InMemoryGraph> {
     /// opened or the snapshot is malformed.
     pub fn in_memory_from_snapshot(path: impl AsRef<Path>) -> Result<Self> {
         let db = Self::in_memory();
-        db.load_snapshot_from(path)?;
+        db.load_snapshot_from_with_credentials(path, None)?;
         Ok(db)
+    }
+
+    /// Serialize the current graph state into the database snapshot byte
+    /// format.
+    ///
+    /// This uses the same column-oriented `lora-snapshot` codec as managed
+    /// snapshots, but without a WAL fence. The default is uncompressed so
+    /// bytes stay portable across native and WASM builds; callers that want a
+    /// specific codec can use [`Self::save_snapshot_to_bytes_with_options`].
+    pub fn save_snapshot_to_bytes(&self) -> Result<Vec<u8>> {
+        let options = SnapshotOptions {
+            compression: Compression::None,
+            encryption: None,
+        };
+        let (bytes, _) = self.save_snapshot_to_bytes_with_options(&options)?;
+        Ok(bytes)
+    }
+
+    /// Serialize the current graph state into database snapshot bytes with
+    /// explicit codec options.
+    pub fn save_snapshot_to_bytes_with_options(
+        &self,
+        options: &SnapshotOptions,
+    ) -> Result<(Vec<u8>, SnapshotInfo)> {
+        let guard = self.read_store();
+        let payload = guard.snapshot_payload();
+        let mut bytes = Vec::new();
+        let info = write_database_snapshot(&mut bytes, &payload, None, options)
+            .map_err(|e| anyhow!("encode database snapshot failed: {e}"))?;
+        Ok((bytes, info))
+    }
+
+    /// Serialize the current graph state to a database snapshot file with
+    /// explicit codec options. This is the path form of
+    /// [`Self::save_snapshot_to_bytes_with_options`] and supports the same
+    /// compression and encryption options.
+    pub fn save_snapshot_to_with_options(
+        &self,
+        path: impl AsRef<Path>,
+        options: &SnapshotOptions,
+    ) -> Result<SnapshotMeta> {
+        let path = path.as_ref();
+        let tmp = snapshot_tmp_path(path);
+        let guard = self.read_store();
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        let tmp_guard = TempFileGuard::new(tmp.clone());
+        let mut writer = BufWriter::new(file);
+
+        let payload = guard.snapshot_payload();
+        let info = write_database_snapshot(&mut writer, &payload, None, options)
+            .map_err(|e| anyhow!("encode database snapshot failed: {e}"))?;
+
+        use std::io::Write;
+        writer.flush()?;
+        let file = writer.into_inner().map_err(|e| e.into_error())?;
+        file.sync_all()?;
+        drop(file);
+
+        std::fs::rename(&tmp, path)?;
+        tmp_guard.commit();
+
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+
+        Ok(snapshot_info_to_meta(info))
+    }
+
+    /// Replace the current graph state from snapshot bytes.
+    ///
+    /// The database snapshot format is decoded first. Legacy `lora-store`
+    /// snapshot bytes are still accepted so existing bindings can load older
+    /// browser / native byte snapshots after this API moves to the columnar
+    /// database codec.
+    pub fn load_snapshot_from_bytes(&self, bytes: &[u8]) -> Result<SnapshotMeta> {
+        self.load_snapshot_from_bytes_with_credentials(bytes, None)
+    }
+
+    /// Replace the current graph state from snapshot bytes, supplying
+    /// credentials when loading an encrypted database snapshot.
+    pub fn load_snapshot_from_bytes_with_credentials(
+        &self,
+        bytes: &[u8],
+        credentials: Option<&SnapshotCredentials>,
+    ) -> Result<SnapshotMeta> {
+        let mut guard = self.write_store();
+        match SnapshotByteFormat::detect(bytes) {
+            Some(SnapshotByteFormat::Database) => {
+                let (payload, info) = decode_database_snapshot(bytes, credentials)
+                    .map_err(|e| anyhow!("decode database snapshot failed: {e}"))?;
+                let meta = SnapshotMeta {
+                    format_version: info.format_version,
+                    node_count: info.node_count,
+                    relationship_count: info.relationship_count,
+                    wal_lsn: info.wal_lsn,
+                };
+                guard.load_snapshot_payload(payload)?;
+                Ok(meta)
+            }
+            Some(SnapshotByteFormat::LegacyStore) => Ok(guard.load_snapshot(bytes)?),
+            None => Err(anyhow!("snapshot bytes have unrecognized magic")),
+        }
+    }
+
+    /// Replace the current graph state from a database snapshot file,
+    /// supplying credentials when the snapshot is encrypted. Legacy
+    /// `lora-store` snapshots are accepted when no database credentials are
+    /// needed.
+    pub fn load_snapshot_from_with_credentials(
+        &self,
+        path: impl AsRef<Path>,
+        credentials: Option<&SnapshotCredentials>,
+    ) -> Result<SnapshotMeta> {
+        let bytes = std::fs::read(path.as_ref())?;
+        self.load_snapshot_from_bytes_with_credentials(&bytes, credentials)
     }
 
     /// Take a checkpoint: snapshot the current state with the WAL's
@@ -828,6 +1683,21 @@ impl Database<InMemoryGraph> {
 
         Ok(meta)
     }
+
+    /// Take a checkpoint into the managed snapshot directory configured by
+    /// [`Self::open_with_wal_snapshots`].
+    pub fn checkpoint_managed(&self) -> Result<SnapshotMeta> {
+        let recorder = self
+            .wal
+            .as_ref()
+            .ok_or_else(|| anyhow!("managed checkpoint requires WAL enabled"))?;
+        let snapshots = self
+            .snapshots
+            .as_ref()
+            .ok_or_else(|| anyhow!("managed checkpoint requires snapshots enabled"))?;
+        let guard = self.write_store();
+        snapshots.checkpoint(&guard, recorder)
+    }
 }
 
 fn snapshot_tmp_path(target: &Path) -> PathBuf {
@@ -884,7 +1754,7 @@ pub trait SnapshotAdmin: Send + Sync + 'static {
 
 impl<S> SnapshotAdmin for Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Snapshotable + Send + Sync + 'static,
+    S: GraphStorage + GraphStorageMut + Snapshotable + Any + Send + Sync + 'static,
 {
     fn save_snapshot(&self, path: &Path) -> Result<SnapshotMeta> {
         self.save_snapshot_to(path)
@@ -965,7 +1835,7 @@ impl WalAdmin for Database<InMemoryGraph> {
 
 impl<S> QueryRunner for Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Send + Sync + 'static,
+    S: GraphStorage + GraphStorageMut + Any + Send + Sync + 'static,
 {
     fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
         Database::execute(self, query, options)

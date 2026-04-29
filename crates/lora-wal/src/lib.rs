@@ -19,6 +19,7 @@
 //! See `docs/decisions/0004-wal.md` for the full design and
 //! `docs/operations/wal.md` for operator-facing semantics.
 
+mod codec;
 mod config;
 mod dir;
 mod error;

@@ -3017,6 +3017,7 @@ fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
         (Int(x), Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Ordering::Equal),
         (Float(x), Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal),
         (String(x), String(y)) => x.cmp(y),
+        (Binary(x), Binary(y)) => x.segments().cmp(y.segments()),
         (Node(x), Node(y)) => x.cmp(y),
         (Relationship(x), Relationship(y)) => x.cmp(y),
         (Date(x), Date(y)) => x.cmp(y),
@@ -3038,6 +3039,7 @@ pub fn value_matches_property_value(expected: &LoraValue, actual: &PropertyValue
         (LoraValue::Int(a), PropertyValue::Float(b)) => (*a as f64) == *b,
         (LoraValue::Float(a), PropertyValue::Int(b)) => *a == (*b as f64),
         (LoraValue::String(a), PropertyValue::String(b)) => a == b,
+        (LoraValue::Binary(a), PropertyValue::Binary(b)) => a == b,
 
         (LoraValue::List(xs), PropertyValue::List(ys)) => {
             xs.len() == ys.len()
@@ -3222,19 +3224,20 @@ fn type_rank(v: &LoraValue) -> u8 {
         LoraValue::Bool(_) => 1,
         LoraValue::Int(_) | LoraValue::Float(_) => 2,
         LoraValue::String(_) => 3,
-        LoraValue::Date(_) => 4,
-        LoraValue::DateTime(_) => 5,
-        LoraValue::LocalDateTime(_) => 6,
-        LoraValue::Time(_) => 7,
-        LoraValue::LocalTime(_) => 8,
-        LoraValue::Duration(_) => 9,
-        LoraValue::Point(_) => 10,
-        LoraValue::Vector(_) => 11,
-        LoraValue::List(_) => 12,
-        LoraValue::Map(_) => 13,
-        LoraValue::Node(_) => 14,
-        LoraValue::Relationship(_) => 15,
-        LoraValue::Path(_) => 16,
+        LoraValue::Binary(_) => 4,
+        LoraValue::Date(_) => 5,
+        LoraValue::DateTime(_) => 6,
+        LoraValue::LocalDateTime(_) => 7,
+        LoraValue::Time(_) => 8,
+        LoraValue::LocalTime(_) => 9,
+        LoraValue::Duration(_) => 10,
+        LoraValue::Point(_) => 11,
+        LoraValue::Vector(_) => 12,
+        LoraValue::List(_) => 13,
+        LoraValue::Map(_) => 14,
+        LoraValue::Node(_) => 15,
+        LoraValue::Relationship(_) => 16,
+        LoraValue::Path(_) => 17,
     }
 }
 
@@ -3327,6 +3330,7 @@ pub(crate) enum GroupValueKey {
     Int(i64),
     Float(String),
     String(String),
+    Binary(Vec<Vec<u8>>),
     List(Vec<GroupValueKey>),
     Map(Vec<(String, GroupValueKey)>),
     Node(u64),
@@ -3341,6 +3345,7 @@ impl GroupValueKey {
             LoraValue::Int(x) => Self::Int(*x),
             LoraValue::Float(x) => Self::Float(x.to_string()),
             LoraValue::String(x) => Self::String(x.clone()),
+            LoraValue::Binary(x) => Self::Binary(x.segments().to_vec()),
             LoraValue::List(xs) => Self::List(xs.iter().map(Self::from_value).collect()),
             LoraValue::Map(m) => Self::Map(
                 m.iter()

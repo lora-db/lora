@@ -14,6 +14,7 @@ use lora_parser::parse_query;
 use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::{WalRecorder, WroteCommit};
 
+use crate::snapshot_store::ManagedSnapshotStore;
 use crate::stream::QueryStream;
 
 /// Transaction execution mode.
@@ -72,9 +73,9 @@ impl BufferingRecorder {
 }
 
 impl MutationRecorder for BufferingRecorder {
-    fn record(&self, event: &MutationEvent) {
+    fn record(&self, event: MutationEvent) {
         if let Ok(mut buf) = self.buffer.lock() {
-            buf.push(event.clone());
+            buf.push(event);
         }
     }
 }
@@ -135,6 +136,7 @@ pub struct Transaction<'db> {
     pub(crate) live: Option<LiveStoreGuard<'db>>,
     pub(crate) inner: Arc<Mutex<TxInner>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
+    pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
     mode: TransactionMode,
 }
 
@@ -143,6 +145,7 @@ impl<'db> Transaction<'db> {
     pub(crate) fn new(
         live: LiveStoreGuard<'db>,
         wal: Option<Arc<WalRecorder>>,
+        snapshots: Option<Arc<ManagedSnapshotStore>>,
         mode: TransactionMode,
     ) -> Self {
         let buffer_mutations = wal.is_some();
@@ -160,6 +163,7 @@ impl<'db> Transaction<'db> {
             live: Some(live),
             inner: Arc::new(Mutex::new(inner)),
             wal,
+            snapshots,
             mode,
         }
     }
@@ -604,10 +608,10 @@ impl<'db> Transaction<'db> {
         // one committed transaction. Read-only transactions never
         // touch the WAL — `arm` is only called when there is durable
         // work to commit.
-        if let Some(rec) = &self.wal {
+        let wrote_wal_commit = if let Some(rec) = &self.wal {
             if matches!(mode, TransactionMode::ReadWrite) && !buffer_events.is_empty() {
                 rec.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
-                for event in &buffer_events {
+                for event in buffer_events {
                     rec.record(event);
                     if let Some(reason) = rec.poisoned() {
                         return Err(anyhow!("WAL poisoned during commit replay: {reason}"));
@@ -616,13 +620,20 @@ impl<'db> Transaction<'db> {
                 match rec.commit() {
                     Ok(WroteCommit::Yes) => {
                         rec.flush().map_err(|e| anyhow!("WAL flush failed: {e}"))?;
+                        true
                     }
-                    Ok(WroteCommit::No) => {}
+                    Ok(WroteCommit::No) => false,
                     Err(e) => return Err(anyhow!("WAL commit failed: {e}")),
                 }
-                if let Some(reason) = rec.poisoned() {
-                    return Err(anyhow!("WAL poisoned: {reason}"));
-                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if let Some(rec) = &self.wal {
+            if let Some(reason) = rec.poisoned() {
+                return Err(anyhow!("WAL poisoned: {reason}"));
             }
         }
 
@@ -644,6 +655,12 @@ impl<'db> Transaction<'db> {
                     .as_graph_mut()
                     .ok_or_else(|| anyhow!("read-only transaction cannot publish staged graph"))?;
                 *live = staged;
+
+                if wrote_wal_commit {
+                    if let (Some(snapshots), Some(rec)) = (&self.snapshots, &self.wal) {
+                        snapshots.observe_commit(live, rec)?;
+                    }
+                }
             }
         }
 

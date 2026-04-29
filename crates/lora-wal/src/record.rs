@@ -7,7 +7,7 @@
 //! [4..5)   kind          u8     — see `RecordKind`
 //! [5..13)  lsn           u64 LE — monotonic record id
 //! [13..21) tx_begin_lsn  u64 LE — owning tx's begin lsn, or 0 for non-tx records
-//! [21..N)  payload       bincode bytes (kind-specific; empty for marker variants)
+//! [21..N)  payload       compact tagged bytes (kind-specific; empty for marker variants)
 //! [N..N+4) crc           u32 LE — IEEE CRC32 over [length..crc)
 //! ```
 //!
@@ -24,10 +24,11 @@ use std::io::{self, Read, Write};
 
 use lora_store::MutationEvent;
 
+use crate::codec;
 use crate::error::WalError;
 use crate::lsn::Lsn;
 
-/// Length of the fixed prefix that precedes the bincode payload:
+/// Length of the fixed prefix that precedes the compact payload:
 /// `length` + `kind` + `lsn` + `tx_begin_lsn`.
 pub const RECORD_HEADER_LEN: usize = 4 + 1 + 8 + 8;
 
@@ -139,29 +140,38 @@ impl WalRecord {
         }
     }
 
-    fn encode_payload(&self) -> Result<Vec<u8>, WalError> {
+    fn encoded_payload_len(&self) -> Result<usize, WalError> {
         match self {
-            Self::Mutation { event, .. } => {
-                bincode::serialize(event).map_err(|e| WalError::Encode(e.to_string()))
-            }
-            Self::MutationBatch { events, .. } => {
-                bincode::serialize(events).map_err(|e| WalError::Encode(e.to_string()))
-            }
+            Self::Mutation { event, .. } => codec::encoded_event_len(event),
+            Self::MutationBatch { events, .. } => codec::encoded_events_len(events),
             // Marker records carry no payload; the LSN + tx_begin_lsn in
             // the fixed header is the entire record.
             Self::TxBegin { .. }
             | Self::TxCommit { .. }
             | Self::TxAbort { .. }
-            | Self::Checkpoint { .. } => Ok(Vec::new()),
+            | Self::Checkpoint { .. } => Ok(0),
+        }
+    }
+
+    fn encode_payload_into(&self, out: &mut Vec<u8>) -> Result<(), WalError> {
+        match self {
+            Self::Mutation { event, .. } => codec::encode_event_into(out, event),
+            Self::MutationBatch { events, .. } => codec::encode_events_into(out, events),
+            // Marker records carry no payload; the LSN + tx_begin_lsn in
+            // the fixed header is the entire record.
+            Self::TxBegin { .. }
+            | Self::TxCommit { .. }
+            | Self::TxAbort { .. }
+            | Self::Checkpoint { .. } => Ok(()),
         }
     }
 
     /// Encode this record into `out`. Returns the number of bytes
     /// written, which equals the value stored in the `length` prefix.
     pub fn encode<W: Write>(&self, mut out: W) -> Result<u32, WalError> {
-        let payload = self.encode_payload()?;
+        let payload_len = self.encoded_payload_len()?;
         let total = RECORD_HEADER_LEN
-            .checked_add(payload.len())
+            .checked_add(payload_len)
             .and_then(|n| n.checked_add(RECORD_TRAILER_LEN))
             .ok_or_else(|| WalError::Encode("record larger than usize::MAX".into()))?;
         let length = u32::try_from(total)
@@ -172,7 +182,8 @@ impl WalRecord {
         framed.push(self.kind() as u8);
         framed.extend_from_slice(&self.lsn().raw().to_le_bytes());
         framed.extend_from_slice(&self.tx_begin_lsn().raw().to_le_bytes());
-        framed.extend_from_slice(&payload);
+        self.encode_payload_into(&mut framed)?;
+        debug_assert_eq!(framed.len(), total - RECORD_TRAILER_LEN);
 
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&framed);
@@ -249,8 +260,7 @@ impl WalRecord {
 
         Ok(Some(match kind {
             RecordKind::Mutation => {
-                let event: MutationEvent =
-                    bincode::deserialize(payload).map_err(|e| WalError::Decode(e.to_string()))?;
+                let event = codec::decode_event(payload)?;
                 WalRecord::Mutation {
                     lsn,
                     tx_begin_lsn,
@@ -258,8 +268,7 @@ impl WalRecord {
                 }
             }
             RecordKind::MutationBatch => {
-                let events: Vec<MutationEvent> =
-                    bincode::deserialize(payload).map_err(|e| WalError::Decode(e.to_string()))?;
+                let events = codec::decode_events(payload)?;
                 WalRecord::MutationBatch {
                     lsn,
                     tx_begin_lsn,
