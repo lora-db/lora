@@ -45,6 +45,41 @@ export interface SnapshotMeta {
   walLsn: number | null;
 }
 
+export type SnapshotCompression =
+  | "none"
+  | "gzip"
+  | { format: "none" }
+  | { format: "gzip"; level?: number };
+
+export interface SnapshotPasswordParams {
+  memoryCostKib?: number;
+  timeCost?: number;
+  parallelism?: number;
+}
+
+export type SnapshotEncryption =
+  | {
+      type?: "password" | "passphrase";
+      keyId?: string;
+      password: string;
+      params?: SnapshotPasswordParams;
+    }
+  | {
+      type: "key" | "rawKey" | "raw_key";
+      keyId?: string;
+      key: number[];
+    };
+
+export interface SnapshotCodecOptions {
+  compression?: SnapshotCompression;
+  encryption?: SnapshotEncryption | null;
+}
+
+export interface SnapshotLoadOptions {
+  credentials?: SnapshotEncryption | null;
+  encryption?: SnapshotEncryption | null;
+}
+
 export type NodeSnapshotChunk = string | Uint8Array | ArrayBuffer | Buffer;
 export type NodeSnapshotSource =
   | string
@@ -55,15 +90,26 @@ export type NodeSnapshotSource =
   | Readable
   | ReadableStream<NodeSnapshotChunk>
   | AsyncIterable<NodeSnapshotChunk>;
-export type NodeSnapshotSaveFormat = "binary" | "base64";
+export type NodeSnapshotSaveFormat =
+  | "buffer"
+  | "binary"
+  | "uint8Array"
+  | "arrayBuffer"
+  | "base64"
+  | "stream"
+  | "path";
 export type NodeSnapshotSaveOptions =
-  | { format: "path"; path: string | URL }
-  | { format: NodeSnapshotSaveFormat };
+  | ({ format?: "buffer" | "binary" } & SnapshotCodecOptions)
+  | ({ format: "uint8Array" } & SnapshotCodecOptions)
+  | ({ format: "arrayBuffer" } & SnapshotCodecOptions)
+  | ({ format: "base64" } & SnapshotCodecOptions)
+  | ({ format: "stream" } & SnapshotCodecOptions)
+  | ({ format: "path"; path: string | URL } & SnapshotCodecOptions);
 export type NodeSnapshotSaveTarget =
   | string
   | URL
-  | NodeSnapshotSaveFormat
-  | NodeSnapshotSaveOptions;
+  | NodeSnapshotSaveOptions
+  | SnapshotCodecOptions;
 
 export interface CreateDatabaseOptions {
   databaseDir?: string;
@@ -80,6 +126,30 @@ export interface CreateDatabaseOptions {
    *
    * Defaults to 1000. Must be greater than zero.
    */
+  groupSyncIntervalMs?: number;
+}
+
+export interface WalDatabaseOptions {
+  /**
+   * Explicit WAL directory. Use `openWalDatabase` for this lower-level
+   * persistent storage shape.
+   * Pair with `snapshotDir` for managed snapshots.
+   */
+  walDir: string;
+  /** Directory for managed checkpoint snapshots. Requires `walDir`. */
+  snapshotDir?: string;
+  /**
+   * Automatically checkpoint after this many committed WAL transactions.
+   * Omit or pass 0 to keep checkpoints manual.
+   */
+  snapshotEveryCommits?: number;
+  /** Number of older managed snapshot files to retain. Defaults to 1. */
+  snapshotKeepOld?: number;
+  /** Compression/encryption options used for managed snapshots. */
+  snapshotOptions?: SnapshotCodecOptions;
+  /** Durability mode for WAL commits. */
+  syncMode?: "group" | "perCommit";
+  /** Background fsync cadence for `syncMode: "group"`, in milliseconds. */
   groupSyncIntervalMs?: number;
 }
 
@@ -197,6 +267,18 @@ function snapshotChunkToBuffer(chunk: NodeSnapshotChunk): Buffer {
     : Buffer.from(bytesToUint8Array(chunk));
 }
 
+function snapshotBufferToUint8Array(buffer: Buffer): Uint8Array {
+  const bytes = new Uint8Array(buffer.byteLength);
+  bytes.set(buffer);
+  return bytes;
+}
+
+function snapshotBufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
+  const arrayBuffer = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(arrayBuffer).set(buffer);
+  return arrayBuffer;
+}
+
 function resolveNodeSnapshotPath(path: string | URL): string {
   if (path instanceof URL) {
     if (path.protocol !== "file:") {
@@ -291,6 +373,26 @@ async function resolveNodeSnapshotSource(
   }
 
   return Buffer.from(bytesToUint8Array(source));
+}
+
+function normalizeSnapshotCodecOptions(
+  options?: SnapshotCodecOptions | null,
+): SnapshotCodecOptions | null {
+  if (!options) return null;
+  const out: SnapshotCodecOptions = {};
+  if ("compression" in options) out.compression = options.compression;
+  if ("encryption" in options) out.encryption = options.encryption;
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+function normalizeSnapshotLoadOptions(
+  options?: SnapshotLoadOptions | null,
+): SnapshotLoadOptions | null {
+  if (!options) return null;
+  const out: SnapshotLoadOptions = {};
+  if ("credentials" in options) out.credentials = options.credentials;
+  if ("encryption" in options) out.encryption = options.encryption;
+  return Object.keys(out).length === 0 ? null : out;
 }
 
 /**
@@ -434,54 +536,68 @@ class DatabaseImpl {
     }
   }
 
-  saveSnapshot(format: "binary"): Promise<Buffer>;
-  saveSnapshot(format: "base64"): Promise<string>;
+  saveSnapshot(): Promise<Buffer>;
+  saveSnapshot(options: SnapshotCodecOptions): Promise<Buffer>;
   saveSnapshot(path: string | URL): Promise<SnapshotMeta>;
-  saveSnapshot(options: { format: "binary" }): Promise<Buffer>;
-  saveSnapshot(options: { format: "base64" }): Promise<string>;
-  saveSnapshot(options: { format: "path"; path: string | URL }): Promise<SnapshotMeta>;
+  saveSnapshot(path: string | URL, options: SnapshotCodecOptions): Promise<SnapshotMeta>;
+  saveSnapshot(options: { format?: "buffer" | "binary" } & SnapshotCodecOptions): Promise<Buffer>;
+  saveSnapshot(options: { format: "uint8Array" } & SnapshotCodecOptions): Promise<Uint8Array>;
+  saveSnapshot(options: { format: "arrayBuffer" } & SnapshotCodecOptions): Promise<ArrayBuffer>;
+  saveSnapshot(options: { format: "base64" } & SnapshotCodecOptions): Promise<string>;
+  saveSnapshot(options: { format: "stream" } & SnapshotCodecOptions): Promise<Readable>;
+  saveSnapshot(options: { format: "path"; path: string | URL } & SnapshotCodecOptions): Promise<SnapshotMeta>;
   /**
    * Save the graph as a snapshot.
    *
-   * - `saveSnapshot(path)` and `saveSnapshot({ format: "path", path })`
-   *   write atomically to a local file and return `SnapshotMeta`.
-   * - `saveSnapshot("binary")` / `{ format: "binary" }` return a `Buffer`.
-   * - `saveSnapshot("base64")` / `{ format: "base64" }` return base64 text.
+   * - `saveSnapshot()` / `{ format: "buffer" }` return a Node `Buffer`.
+   * - `saveSnapshot(path)` and `{ format: "path", path }` write atomically
+   *   to a local file and return `SnapshotMeta`.
+   * - `{ format: "uint8Array" | "arrayBuffer" | "base64" | "stream" }`
+   *   return in-memory snapshot data in that shape.
    */
   async saveSnapshot(
-    target: NodeSnapshotSaveTarget,
-  ): Promise<SnapshotMeta | Buffer | string> {
+    target?: NodeSnapshotSaveTarget,
+    options?: SnapshotCodecOptions,
+  ): Promise<SnapshotMeta | Buffer | Uint8Array | ArrayBuffer | string | Readable> {
     try {
-      if (target === "binary" || (typeof target === "object"
-        && !(target instanceof URL)
-        && target.format === "binary")) {
-        return this.saveSnapshotToBytes();
+      if (typeof target === "string" || target instanceof URL) {
+        return this.#inner.saveSnapshot(
+          resolveNodeSnapshotPath(target),
+          normalizeSnapshotCodecOptions(options),
+        ) as SnapshotMeta;
       }
 
-      if (target === "base64" || (typeof target === "object"
-        && !(target instanceof URL)
-        && target.format === "base64")) {
-        return (await this.saveSnapshotToBytes()).toString("base64");
-      }
-
-      let path: string | URL;
-      if (typeof target === "object" && !(target instanceof URL)) {
-        if (target.format !== "path") {
-          throw new Error(`LORA_ERROR: unsupported snapshot save format '${target.format}'`);
+      const saveOptions = target ?? {};
+      if ("format" in saveOptions && saveOptions.format === "path") {
+        const path = "path" in saveOptions ? saveOptions.path : undefined;
+        if (!(typeof path === "string" || path instanceof URL)) {
+          throw new Error("LORA_ERROR: snapshot path format requires a path");
         }
-        path = target.path;
-      } else {
-        path = target;
+        return this.#inner.saveSnapshot(
+          resolveNodeSnapshotPath(path),
+          normalizeSnapshotCodecOptions({ ...options, ...saveOptions }),
+        ) as SnapshotMeta;
       }
-      return this.#inner.saveSnapshot(resolveNodeSnapshotPath(path)) as SnapshotMeta;
-    } catch (err) {
-      throw wrapError(err);
-    }
-  }
 
-  async saveSnapshotToBytes(): Promise<Buffer> {
-    try {
-      return this.#inner.saveSnapshotToBytes();
+      const format = ("format" in saveOptions ? saveOptions.format : "buffer") ?? "buffer";
+      const bytes = this.#inner.saveSnapshotBuffer(
+        normalizeSnapshotCodecOptions({ ...options, ...saveOptions }),
+      );
+      switch (format) {
+        case "buffer":
+        case "binary":
+          return bytes;
+        case "uint8Array":
+          return snapshotBufferToUint8Array(bytes);
+        case "arrayBuffer":
+          return snapshotBufferToArrayBuffer(bytes);
+        case "base64":
+          return bytes.toString("base64");
+        case "stream":
+          return Readable.from([bytes]);
+        default:
+          throw new Error(`LORA_ERROR: unsupported snapshot save format '${format}'`);
+      }
     } catch (err) {
       throw wrapError(err);
     }
@@ -492,25 +608,17 @@ class DatabaseImpl {
    * Concurrent `execute()` calls block on the store write lock until the
    * load completes.
    */
-  async loadSnapshot(source: NodeSnapshotSource): Promise<SnapshotMeta> {
-    try {
-      const resolved = await resolveNodeSnapshotSource(source);
-      if (typeof resolved === "string") {
-        return this.#inner.loadSnapshot(resolved) as SnapshotMeta;
-      }
-      return this.#inner.loadSnapshotFromBytes(resolved) as SnapshotMeta;
-    } catch (err) {
-      throw wrapError(err);
-    }
-  }
-
-  async loadSnapshotFromBytes(
-    bytes: Uint8Array | ArrayBuffer | Buffer,
+  async loadSnapshot(
+    source: NodeSnapshotSource,
+    options?: SnapshotLoadOptions,
   ): Promise<SnapshotMeta> {
     try {
-      return this.#inner.loadSnapshotFromBytes(
-        Buffer.from(bytesToUint8Array(bytes)),
-      ) as SnapshotMeta;
+      const resolved = await resolveNodeSnapshotSource(source);
+      const loadOptions = normalizeSnapshotLoadOptions(options);
+      if (typeof resolved === "string") {
+        return this.#inner.loadSnapshot(resolved, loadOptions) as SnapshotMeta;
+      }
+      return this.#inner.loadSnapshotBuffer(resolved, loadOptions) as SnapshotMeta;
     } catch (err) {
       throw wrapError(err);
     }
@@ -558,6 +666,10 @@ export type Database = DatabaseImpl;
  * const nestedPersistent = await createDatabase("app", {
  *   databaseDir: "./data",
  * });                                               // ./data/app.loradb
+ * const walPersistent = await openWalDatabase({
+ *   walDir: "./data/wal",
+ *   snapshotDir: "./data/snapshots",
+ * });
  * ```
  *
  * Passing a database name enables persistence. The database name is validated
@@ -578,6 +690,19 @@ export async function createDatabase(
       options.databaseDir !== undefined ||
       options.syncMode !== undefined ||
       options.groupSyncIntervalMs !== undefined;
+    const rawOptions = options as Record<string, unknown>;
+    const hasWalOptions =
+      rawOptions.walDir !== undefined ||
+      rawOptions.snapshotDir !== undefined ||
+      rawOptions.snapshotEveryCommits !== undefined ||
+      rawOptions.snapshotKeepOld !== undefined ||
+      rawOptions.snapshotOptions !== undefined;
+    if (hasWalOptions) {
+      throw new LoraError(
+        "walDir/snapshotDir are not valid for createDatabase(); use openWalDatabase()",
+        "INVALID_PARAMS",
+      );
+    }
     if (databaseName == null && hasPersistenceOptions) {
       throw new LoraError(
         "databaseName is required when persistence options are provided",
@@ -594,7 +719,52 @@ export async function createDatabase(
             options.databaseDir ?? null,
             syncMode,
             groupSyncIntervalMs,
+            null,
+            null,
+            null,
+            null,
+            null,
           ),
+    );
+  } catch (err) {
+    throw wrapError(err);
+  }
+}
+
+export async function openWalDatabase(options: WalDatabaseOptions): Promise<Database> {
+  try {
+    const hasSnapshotTuningOptions =
+      options.snapshotEveryCommits !== undefined ||
+      options.snapshotKeepOld !== undefined ||
+      options.snapshotOptions !== undefined;
+    if (!options.walDir) {
+      throw new LoraError(
+        "walDir is required for openWalDatabase()",
+        "INVALID_PARAMS",
+      );
+    }
+    if (options.snapshotDir === undefined && hasSnapshotTuningOptions) {
+      throw new LoraError(
+        "snapshotDir is required when managed snapshot options are provided",
+        "INVALID_PARAMS",
+      );
+    }
+    const syncMode = options.syncMode ?? null;
+    const groupSyncIntervalMs = options.groupSyncIntervalMs ?? null;
+    const snapshotEveryCommits = options.snapshotEveryCommits ?? null;
+    const snapshotKeepOld = options.snapshotKeepOld ?? null;
+    return new DatabaseImpl(
+      new NativeDatabase(
+        null,
+        null,
+        syncMode,
+        groupSyncIntervalMs,
+        options.walDir,
+        options.snapshotDir ?? null,
+        snapshotEveryCommits,
+        snapshotKeepOld,
+        options.snapshotOptions ?? null,
+      ),
     );
   } catch (err) {
     throw wrapError(err);

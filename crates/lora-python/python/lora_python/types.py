@@ -7,7 +7,7 @@ Python uses pragmatic representations:
 - Scalars pass through as Python natives (``None``, ``bool``, ``int``,
   ``float``, ``str``).
 - Lists and maps come back as ``list`` / ``dict``.
-- Graph, temporal, and spatial values come back as ``TypedDict``s with
+- Graph, temporal, spatial, vector, and binary values come back as ``TypedDict``s with
   a ``kind`` discriminator. They're plain dicts at runtime — no class
   wrappers to unpack — and narrow cleanly under ``typing.TYPE_CHECKING``.
 
@@ -44,6 +44,7 @@ LoraValue = Union[
     "LoraDuration",
     "LoraPoint",
     "LoraVector",
+    "LoraBinary",
 ]
 
 LoraParam = Union[
@@ -62,6 +63,10 @@ LoraParam = Union[
     "LoraDuration",
     "LoraPoint",
     "LoraVector",
+    "LoraBinary",
+    bytes,
+    bytearray,
+    memoryview,
 ]
 
 LoraParams = Mapping[str, LoraParam]
@@ -207,6 +212,17 @@ class LoraVector(TypedDict):
 
 
 # ---------------------------------------------------------------------------
+# Binary / blob
+# ---------------------------------------------------------------------------
+
+
+class LoraBinary(TypedDict):
+    kind: Literal["binary"]
+    length: int
+    segments: List[bytes]
+
+
+# ---------------------------------------------------------------------------
 # Query result
 # ---------------------------------------------------------------------------
 
@@ -274,6 +290,20 @@ def vector(
         "dimension": dimension,
         "coordinateType": coordinate_type,
         "values": list(values),
+    }
+
+
+def binary(segments: List[bytes]) -> LoraBinary:
+    """Build a segmented binary/blob parameter value.
+
+    The engine preserves segment boundaries in WAL/snapshot storage. Concatenate
+    ``segments`` in order to reconstruct the logical byte string.
+    """
+    copied = [bytes(segment) for segment in segments]
+    return {
+        "kind": "binary",
+        "length": sum(len(segment) for segment in copied),
+        "segments": copied,
     }
 
 
@@ -358,3 +388,8 @@ def is_temporal(v: Any) -> bool:
 def is_vector(v: Any) -> bool:
     """Return True if ``v`` is a Lora VECTOR value."""
     return _is_tagged(v, "vector")
+
+
+def is_binary(v: Any) -> bool:
+    """Return True if ``v`` is a Lora binary/blob value."""
+    return _is_tagged(v, "binary")

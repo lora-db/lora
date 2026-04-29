@@ -107,18 +107,21 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         respond({ ok: true, result: result as never });
         break;
       }
-      case "saveSnapshotToBytes": {
+      case "saveSnapshot": {
         const native = db as unknown as {
-          saveSnapshotToBytes(): Uint8Array;
+          saveSnapshot(options?: unknown): Uint8Array;
         };
-        respond({ ok: true, result: native.saveSnapshotToBytes() });
+        respond({ ok: true, result: native.saveSnapshot(body.options ?? null) });
         break;
       }
-      case "loadSnapshotFromBytes": {
+      case "loadSnapshot": {
         const native = db as unknown as {
-          loadSnapshotFromBytes(bytes: Uint8Array): unknown;
+          loadSnapshot(bytes: Uint8Array, options?: unknown): unknown;
         };
-        respond({ ok: true, result: native.loadSnapshotFromBytes(body.bytes) as never });
+        respond({
+          ok: true,
+          result: native.loadSnapshot(body.bytes, body.options ?? null) as never,
+        });
         break;
       }
       case "clear": {

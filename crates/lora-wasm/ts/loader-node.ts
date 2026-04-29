@@ -12,7 +12,7 @@ export interface NativeModule {
 }
 
 /**
- * Shape of the snapshot metadata emitted by `loadSnapshotFromBytes`. The
+ * Shape of the snapshot metadata emitted by `loadSnapshot`. The
  * native Rust layer returns this as a plain JS object via `serde-wasm-bindgen`.
  */
 export interface NativeSnapshotMeta {

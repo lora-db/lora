@@ -612,6 +612,22 @@ func TestVectorParameterAcceptsMixedNumericEntries(t *testing.T) {
 	}
 }
 
+func TestBinaryParameterRoundTrip(t *testing.T) {
+	db := newDB(t)
+	param := lora.Binary([]byte{0, 1, 2}, []byte{250, 251, 255})
+	r := mustExec(t, db, "RETURN $b AS b", lora.Params{"b": param})
+	b := rowAt(t, r, 0)["b"].(map[string]any)
+	if b["kind"] != "binary" {
+		t.Fatalf("kind = %v, want binary", b["kind"])
+	}
+	if !approx(b["length"], 6) {
+		t.Fatalf("length = %v, want 6", b["length"])
+	}
+	if !lora.IsBinary(b) {
+		t.Fatal("expected IsBinary to accept binary result")
+	}
+}
+
 // A vector parameter flows into Cypher's vector.similarity.cosine and
 // produces the expected similarity score.
 func TestVectorParameterInSimilarityFunction(t *testing.T) {

@@ -8,6 +8,7 @@ import "C"
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"unsafe"
@@ -27,6 +28,50 @@ type SnapshotMeta struct {
 	WalLsn            *uint64
 }
 
+// SnapshotCompression selects the database snapshot compression codec.
+// Supported formats are "none" and "gzip".
+type SnapshotCompression struct {
+	Format string `json:"format"`
+	Level  uint32 `json:"level,omitempty"`
+}
+
+// SnapshotPasswordParams tunes the password KDF used by encrypted snapshots.
+// Leave nil for the core interactive defaults.
+type SnapshotPasswordParams struct {
+	MemoryCostKib uint32 `json:"memoryCostKib,omitempty"`
+	TimeCost      uint32 `json:"timeCost,omitempty"`
+	Parallelism   uint32 `json:"parallelism,omitempty"`
+}
+
+// SnapshotEncryption describes snapshot encryption credentials.
+//
+// Password encryption is the most portable option across all bindings:
+//
+//	SnapshotEncryption{Type: "password", Password: "..."}
+//
+// Raw-key encryption accepts exactly 32 bytes through Key.
+type SnapshotEncryption struct {
+	Type     string                  `json:"type,omitempty"`
+	KeyID    string                  `json:"keyId,omitempty"`
+	Password string                  `json:"password,omitempty"`
+	Params   *SnapshotPasswordParams `json:"params,omitempty"`
+	Key      *[32]byte               `json:"key,omitempty"`
+}
+
+// SnapshotOptions controls snapshot save encoding.
+type SnapshotOptions struct {
+	Compression *SnapshotCompression `json:"compression,omitempty"`
+	Encryption  *SnapshotEncryption  `json:"encryption,omitempty"`
+}
+
+// SnapshotLoadOptions supplies credentials for encrypted snapshot loads.
+// Encryption is accepted so the same encryption block used to save can be
+// reused for load.
+type SnapshotLoadOptions struct {
+	Credentials *SnapshotEncryption `json:"credentials,omitempty"`
+	Encryption  *SnapshotEncryption `json:"encryption,omitempty"`
+}
+
 // SaveSnapshot writes the current graph state to `path`. The write is
 // atomic: the payload is staged in `<path>.tmp`, fsync'd, and then
 // renamed over the target. A crashed save can leave a `.tmp` file
@@ -36,6 +81,12 @@ type SnapshotMeta struct {
 // so concurrent writes block until the save completes. This matches the
 // semantics of the Rust core.
 func (db *Database) SaveSnapshot(path string) (*SnapshotMeta, error) {
+	return db.SaveSnapshotWithOptions(path, nil)
+}
+
+// SaveSnapshotWithOptions writes the current graph state with explicit
+// snapshot codec options, including optional encryption.
+func (db *Database) SaveSnapshotWithOptions(path string, options *SnapshotOptions) (*SnapshotMeta, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.handle == nil {
@@ -44,10 +95,15 @@ func (db *Database) SaveSnapshot(path string) (*SnapshotMeta, error) {
 
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
+	cOptions, cleanup, err := snapshotOptionsCString(options)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 
 	var meta C.LoraSnapshotMeta
 	var outError *C.char
-	status := C.lora_db_save_snapshot(db.handle, cPath, &meta, &outError)
+	status := C.lora_db_save_snapshot_with_options(db.handle, cPath, cOptions, &meta, &outError)
 	if status != C.LORA_STATUS_OK {
 		defer func() {
 			if outError != nil {
@@ -61,17 +117,28 @@ func (db *Database) SaveSnapshot(path string) (*SnapshotMeta, error) {
 
 // SaveSnapshotBytes serializes the current graph into an in-memory snapshot.
 func (db *Database) SaveSnapshotBytes() ([]byte, *SnapshotMeta, error) {
+	return db.SaveSnapshotBytesWithOptions(nil)
+}
+
+// SaveSnapshotBytesWithOptions serializes the graph with explicit snapshot
+// codec options, including optional encryption.
+func (db *Database) SaveSnapshotBytesWithOptions(options *SnapshotOptions) ([]byte, *SnapshotMeta, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.handle == nil {
 		return nil, nil, errClosed()
 	}
+	cOptions, cleanup, err := snapshotOptionsCString(options)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanup()
 
 	var outBytes *C.uint8_t
 	var outLen C.size_t
 	var meta C.LoraSnapshotMeta
 	var outError *C.char
-	status := C.lora_db_save_snapshot_to_bytes(db.handle, &outBytes, &outLen, &meta, &outError)
+	status := C.lora_db_save_snapshot_to_bytes_with_options(db.handle, cOptions, &outBytes, &outLen, &meta, &outError)
 	if status != C.LORA_STATUS_OK {
 		defer func() {
 			if outError != nil {
@@ -89,7 +156,13 @@ func (db *Database) SaveSnapshotBytes() ([]byte, *SnapshotMeta, error) {
 // SaveSnapshotBase64 serializes the current graph and returns the snapshot
 // encoded with standard base64.
 func (db *Database) SaveSnapshotBase64() (string, *SnapshotMeta, error) {
-	bytes, meta, err := db.SaveSnapshotBytes()
+	return db.SaveSnapshotBase64WithOptions(nil)
+}
+
+// SaveSnapshotBase64WithOptions serializes the current graph with explicit
+// snapshot options and returns standard base64 text.
+func (db *Database) SaveSnapshotBase64WithOptions(options *SnapshotOptions) (string, *SnapshotMeta, error) {
+	bytes, meta, err := db.SaveSnapshotBytesWithOptions(options)
 	if err != nil {
 		return "", nil, err
 	}
@@ -98,7 +171,13 @@ func (db *Database) SaveSnapshotBase64() (string, *SnapshotMeta, error) {
 
 // SaveSnapshotTo writes an in-memory snapshot to w.
 func (db *Database) SaveSnapshotTo(w io.Writer) (*SnapshotMeta, error) {
-	bytes, meta, err := db.SaveSnapshotBytes()
+	return db.SaveSnapshotToWithOptions(w, nil)
+}
+
+// SaveSnapshotToWithOptions writes an in-memory snapshot with explicit
+// snapshot options to w.
+func (db *Database) SaveSnapshotToWithOptions(w io.Writer, options *SnapshotOptions) (*SnapshotMeta, error) {
+	bytes, meta, err := db.SaveSnapshotBytesWithOptions(options)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +195,12 @@ func (db *Database) SaveSnapshotTo(w io.Writer) (*SnapshotMeta, error) {
 // "optional restore" behaviour used by `lora-server --restore-from`
 // should stat the file themselves first.
 func (db *Database) LoadSnapshot(path string) (*SnapshotMeta, error) {
+	return db.LoadSnapshotWithOptions(path, nil)
+}
+
+// LoadSnapshotWithOptions replaces the current graph state with a snapshot at
+// path, supplying credentials for encrypted database snapshots.
+func (db *Database) LoadSnapshotWithOptions(path string, options *SnapshotLoadOptions) (*SnapshotMeta, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.handle == nil {
@@ -124,10 +209,15 @@ func (db *Database) LoadSnapshot(path string) (*SnapshotMeta, error) {
 
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
+	cOptions, cleanup, err := snapshotOptionsCString(options)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 
 	var meta C.LoraSnapshotMeta
 	var outError *C.char
-	status := C.lora_db_load_snapshot(db.handle, cPath, &meta, &outError)
+	status := C.lora_db_load_snapshot_with_options(db.handle, cPath, cOptions, &meta, &outError)
 	if status != C.LORA_STATUS_OK {
 		defer func() {
 			if outError != nil {
@@ -142,6 +232,12 @@ func (db *Database) LoadSnapshot(path string) (*SnapshotMeta, error) {
 // LoadSnapshotBytes replaces the current graph state from in-memory
 // snapshot bytes.
 func (db *Database) LoadSnapshotBytes(bytes []byte) (*SnapshotMeta, error) {
+	return db.LoadSnapshotBytesWithOptions(bytes, nil)
+}
+
+// LoadSnapshotBytesWithOptions replaces the graph from in-memory bytes,
+// supplying credentials for encrypted database snapshots.
+func (db *Database) LoadSnapshotBytesWithOptions(bytes []byte, options *SnapshotLoadOptions) (*SnapshotMeta, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.handle == nil {
@@ -150,13 +246,19 @@ func (db *Database) LoadSnapshotBytes(bytes []byte) (*SnapshotMeta, error) {
 	if len(bytes) == 0 {
 		return nil, &LoraError{Code: CodeInvalidParams, Message: "snapshot bytes are empty"}
 	}
+	cOptions, cleanup, err := snapshotOptionsCString(options)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 
 	var meta C.LoraSnapshotMeta
 	var outError *C.char
-	status := C.lora_db_load_snapshot_from_bytes(
+	status := C.lora_db_load_snapshot_from_bytes_with_options(
 		db.handle,
 		(*C.uint8_t)(unsafe.Pointer(&bytes[0])),
 		C.size_t(len(bytes)),
+		cOptions,
 		&meta,
 		&outError,
 	)
@@ -173,20 +275,32 @@ func (db *Database) LoadSnapshotBytes(bytes []byte) (*SnapshotMeta, error) {
 
 // LoadSnapshotBase64 decodes standard base64 snapshot text and restores it.
 func (db *Database) LoadSnapshotBase64(encoded string) (*SnapshotMeta, error) {
+	return db.LoadSnapshotBase64WithOptions(encoded, nil)
+}
+
+// LoadSnapshotBase64WithOptions decodes standard base64 snapshot text and
+// restores it with optional credentials.
+func (db *Database) LoadSnapshotBase64WithOptions(encoded string, options *SnapshotLoadOptions) (*SnapshotMeta, error) {
 	bytes, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, err
 	}
-	return db.LoadSnapshotBytes(bytes)
+	return db.LoadSnapshotBytesWithOptions(bytes, options)
 }
 
 // LoadSnapshotFrom reads all snapshot bytes from r and restores them.
 func (db *Database) LoadSnapshotFrom(r io.Reader) (*SnapshotMeta, error) {
+	return db.LoadSnapshotFromWithOptions(r, nil)
+}
+
+// LoadSnapshotFromWithOptions reads all snapshot bytes from r and restores
+// them with optional credentials.
+func (db *Database) LoadSnapshotFromWithOptions(r io.Reader, options *SnapshotLoadOptions) (*SnapshotMeta, error) {
 	bytes, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	return db.LoadSnapshotBytes(bytes)
+	return db.LoadSnapshotBytesWithOptions(bytes, options)
 }
 
 func snapshotMetaFromC(m *C.LoraSnapshotMeta) *SnapshotMeta {
@@ -200,6 +314,18 @@ func snapshotMetaFromC(m *C.LoraSnapshotMeta) *SnapshotMeta {
 		out.WalLsn = &lsn
 	}
 	return out
+}
+
+func snapshotOptionsCString(options any) (*C.char, func(), error) {
+	if options == nil {
+		return nil, func() {}, nil
+	}
+	bytes, err := json.Marshal(options)
+	if err != nil {
+		return nil, nil, err
+	}
+	cString := C.CString(string(bytes))
+	return cString, func() { C.free(unsafe.Pointer(cString)) }, nil
 }
 
 // String renders the metadata in the shape used by the other bindings'

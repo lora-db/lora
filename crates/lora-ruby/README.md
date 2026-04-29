@@ -76,8 +76,9 @@ binding's `lora_python.Database` and because it mirrors the
 ## Public API
 
 ```ruby
-LoraRuby::Database.create(wal_dir = nil)  # -> Database
-LoraRuby::Database.new(wal_dir = nil)     # -> Database  (alias of .create)
+LoraRuby::Database.create(database_name = nil, options = nil)  # -> Database
+LoraRuby::Database.new(database_name = nil, options = nil)     # -> Database
+LoraRuby::Database.open_wal(wal_dir, options = nil)            # -> Database
 
 db.execute(query, params = nil)       # -> { "columns" => [...], "rows" => [...] }
 db.clear                              # -> nil
@@ -156,9 +157,19 @@ replays committed writes before returning the handle.
 Call `db.close` before reopening the same archive inside one
 process.
 
-This first Ruby persistence slice intentionally stays small: the
-binding exposes archive-backed initialization plus the existing snapshot
-APIs, but not checkpoint, truncate, status, or sync-mode controls.
+For explicit WAL directories with managed snapshots, use `open_wal`:
+
+```ruby
+db = LoraRuby::Database.open_wal(
+  "./data/wal",
+  snapshot_dir: "./data/snapshots",
+  snapshot_every_commits: 1000,
+  snapshot_keep_old: 2,
+)
+```
+
+`snapshot_options` accepts the same compression/encryption options as
+`save_snapshot`.
 
 ## Concurrency (GVL release)
 

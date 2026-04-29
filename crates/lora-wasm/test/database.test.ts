@@ -115,97 +115,114 @@ describe("Database — basics", () => {
     }
   });
 
-  it("loads snapshots from bytes, web binary objects, and URLs", async () => {
+  it("saves and loads snapshots as browser-native binary objects", async () => {
     const source = await createDatabase();
     await source.execute("CREATE (:Snapshot {name: 'Ada'})");
-    const bytes = await source.saveSnapshot("binary");
-    const base64 = await source.saveSnapshot({ format: "base64" });
+    const bytes = await source.saveSnapshot();
+    const arrayBuffer = await source.saveSnapshot({ format: "arrayBuffer" });
     const blob = await source.saveSnapshot({ format: "blob" });
-
-    const originalDocument = (globalThis as { document?: unknown }).document;
-    const originalCreateObjectURL = URL.createObjectURL;
-    const originalRevokeObjectURL = URL.revokeObjectURL;
-    let clickedDownload = false;
-    Object.defineProperty(globalThis, "document", {
-      configurable: true,
-      value: {
-        body: { appendChild() {} },
-        createElement() {
-          return {
-            href: "",
-            download: "",
-            style: {},
-            click() {
-              clickedDownload = true;
-            },
-            remove() {},
-          };
-        },
-      },
-    });
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      value: () => "blob:lora-snapshot",
-    });
-    Object.defineProperty(URL, "revokeObjectURL", {
-      configurable: true,
-      value: () => {},
-    });
-    try {
-      await source.saveSnapshot({ format: "download", filename: "graph.bin" });
-      expect(clickedDownload).toBe(true);
-    } finally {
-      if (originalDocument === undefined) {
-        Reflect.deleteProperty(globalThis, "document");
-      } else {
-        Object.defineProperty(globalThis, "document", {
-          configurable: true,
-          value: originalDocument,
-        });
-      }
-      Object.defineProperty(URL, "createObjectURL", {
-        configurable: true,
-        value: originalCreateObjectURL,
-      });
-      Object.defineProperty(URL, "revokeObjectURL", {
-        configurable: true,
-        value: originalRevokeObjectURL,
-      });
-    }
-    source.dispose();
-
-    const arrayBuffer = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength,
+    const response = await source.saveSnapshot({ format: "response" });
+    const stream = await source.saveSnapshot({ format: "stream" });
+    const dataUrl = new URL(
+      `data:application/octet-stream;base64,${Buffer.from(bytes).toString("base64")}`,
     );
-    const dataUrl = `data:application/octet-stream;base64,${base64}`;
+    let objectUrl: URL | null = null;
+    if (typeof URL.createObjectURL === "function") {
+      objectUrl = await source.saveSnapshot({ format: "url" });
+    }
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    source.dispose();
 
     const inputs = [
       bytes,
       arrayBuffer,
       blob,
+      response,
+      stream,
       new Blob([bytes]),
       new Response(bytes),
-      new ReadableStream({
+      new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(bytes);
           controller.close();
         },
       }),
       dataUrl,
-      new URL(dataUrl),
+      ...(objectUrl ? [objectUrl] : []),
     ];
 
-    for (const input of inputs) {
-      const db = await createDatabase();
-      const meta = await db.loadSnapshot(input);
-      expect(meta.nodeCount).toBe(1);
-      const { rows } = await db.execute<{ name: string }>(
-        "MATCH (n:Snapshot) RETURN n.name AS name",
-      );
-      expect(rows).toEqual([{ name: "Ada" }]);
-      await db.dispose();
+    try {
+      for (const input of inputs) {
+        const db = await createDatabase();
+        const meta = await db.loadSnapshot(input);
+        expect(meta.nodeCount).toBe(1);
+        const { rows } = await db.execute<{ name: string }>(
+          "MATCH (n:Snapshot) RETURN n.name AS name",
+        );
+        expect(rows).toEqual([{ name: "Ada" }]);
+        await db.dispose();
+      }
+    } finally {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl.href);
+      }
     }
+  });
+
+  it("saves and loads gzip-compressed snapshots", async () => {
+    const source = await createDatabase({ runtime: "main-thread" });
+    const repeated = "compress-me-".repeat(128);
+    for (let i = 0; i < 32; i += 1) {
+      await source.execute("CREATE (:Compressed {i: $i, repeated: $repeated})", {
+        i,
+        repeated,
+      });
+    }
+
+    const plain = await source.saveSnapshot({ compression: "none" });
+    const compressed = await source.saveSnapshot({
+      compression: { format: "gzip", level: 1 },
+    });
+    expect(compressed.byteLength).toBeLessThan(plain.byteLength);
+
+    const target = await createDatabase({ runtime: "main-thread" });
+    const meta = await target.loadSnapshot(compressed);
+    expect(meta.nodeCount).toBe(32);
+    const { rows } = await target.execute<{ count: number }>(
+      "MATCH (n:Compressed) RETURN count(n) AS count",
+    );
+    expect(rows).toEqual([{ count: 32 }]);
+
+    await source.dispose();
+    await target.dispose();
+  });
+
+  it("saves and loads encrypted snapshots", async () => {
+    const encryption = {
+      type: "password" as const,
+      keyId: "wasm-test",
+      password: "open sesame",
+      params: { memoryCostKib: 512, timeCost: 1, parallelism: 1 },
+    };
+    const source = await createDatabase({ runtime: "main-thread" });
+    await source.execute("CREATE (:Secret {name: 'Ada'})");
+
+    const bytes = await source.saveSnapshot({
+      compression: { format: "gzip" as const, level: 1 },
+      encryption,
+    });
+
+    const target = await createDatabase({ runtime: "main-thread" });
+    await expect(target.loadSnapshot(bytes)).rejects.toThrow(/password encrypted/);
+    const meta = await target.loadSnapshot(bytes, { credentials: encryption });
+    expect(meta.nodeCount).toBe(1);
+    const { rows } = await target.execute<{ name: string }>(
+      "MATCH (n:Secret) RETURN n.name AS name",
+    );
+    expect(rows).toEqual([{ name: "Ada" }]);
+
+    await source.dispose();
+    await target.dispose();
   });
 });
 

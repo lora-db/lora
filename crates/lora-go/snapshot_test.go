@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -188,6 +189,78 @@ func TestWalBackedNewPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestManagedWalSnapshotsRecoverSnapshotThenNewerWal(t *testing.T) {
+	root := t.TempDir()
+	walDir := filepath.Join(root, "wal")
+	snapshotDir := filepath.Join(root, "snapshots")
+	options := WalOptions{
+		WalDir:               walDir,
+		SnapshotDir:          snapshotDir,
+		SnapshotEveryCommits: 2,
+	}
+
+	db, err := OpenWal(options)
+	if err != nil {
+		t.Fatalf("OpenWal(managed snapshots): %v", err)
+	}
+	if _, err := db.Execute("CREATE (:Managed {id: 1})", nil); err != nil {
+		t.Fatalf("seed 1: %v", err)
+	}
+	if _, err := db.Execute("CREATE (:Managed {id: 2})", nil); err != nil {
+		t.Fatalf("seed 2: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snapshotDir, "CURRENT")); err != nil {
+		t.Fatalf("CURRENT snapshot missing: %v", err)
+	}
+	if _, err := db.Execute("CREATE (:Managed {id: 3})", nil); err != nil {
+		t.Fatalf("seed 3: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := OpenWal(options)
+	if err != nil {
+		t.Fatalf("OpenWal(reopen managed snapshots): %v", err)
+	}
+	defer reopened.Close()
+	r, err := reopened.Execute("MATCH (n:Managed) RETURN n.id AS id ORDER BY id", nil)
+	if err != nil {
+		t.Fatalf("Execute(reopen): %v", err)
+	}
+	if got, want := len(r.Rows), 3; got != want {
+		t.Fatalf("row count = %d; want %d (%#v)", got, want, r.Rows)
+	}
+	for i, row := range r.Rows {
+		if got, want := row["id"], int64(i+1); got != want {
+			t.Fatalf("row %d id = %#v; want %d", i, got, want)
+		}
+	}
+}
+
+func TestNewOptionsWithoutNameDoesNotEnablePersistence(t *testing.T) {
+	_, err := New(Options{DatabaseDir: filepath.Join(t.TempDir(), "data")})
+	if err == nil {
+		t.Fatal("New(Options) succeeded; want database name error")
+	}
+	if !strings.Contains(err.Error(), "database name") {
+		t.Fatalf("error = %v; want database name validation", err)
+	}
+}
+
+func TestManagedSnapshotOptionsRequireSnapshotDir(t *testing.T) {
+	_, err := OpenWal(WalOptions{
+		WalDir:               filepath.Join(t.TempDir(), "wal"),
+		SnapshotEveryCommits: 2,
+	})
+	if err == nil {
+		t.Fatal("OpenWal(managed snapshot tuning without SnapshotDir) succeeded; want error")
+	}
+	if !strings.Contains(err.Error(), "SnapshotDir") {
+		t.Fatalf("error = %v; want SnapshotDir validation", err)
+	}
+}
+
 func TestWalBackedNewAcceptsRelativeDatabaseDir(t *testing.T) {
 	oldWd, err := os.Getwd()
 	if err != nil {
@@ -255,6 +328,90 @@ func TestWalBackedNewInvalidNameSurfacesLoraError(t *testing.T) {
 	}
 	if lerr.Code != CodeLoraError {
 		t.Fatalf("error code = %s; want %s", lerr.Code, CodeLoraError)
+	}
+}
+
+func TestEncryptedSnapshotBytesAndPath(t *testing.T) {
+	db, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Execute("CREATE (:Secret {name: 'Ada'})", nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	encryption := &SnapshotEncryption{
+		Type:     "password",
+		KeyID:    "go-test",
+		Password: "open sesame",
+		Params: &SnapshotPasswordParams{
+			MemoryCostKib: 512,
+			TimeCost:      1,
+			Parallelism:   1,
+		},
+	}
+	saveOptions := &SnapshotOptions{
+		Compression: &SnapshotCompression{Format: "gzip", Level: 1},
+		Encryption:  encryption,
+	}
+	loadOptions := &SnapshotLoadOptions{Credentials: encryption}
+
+	snapshotBytes, meta, err := db.SaveSnapshotBytesWithOptions(saveOptions)
+	if err != nil {
+		t.Fatalf("SaveSnapshotBytesWithOptions: %v", err)
+	}
+	if len(snapshotBytes) == 0 || meta.NodeCount != 1 {
+		t.Fatalf("encrypted bytes meta=%+v len=%d; want one node and bytes", meta, len(snapshotBytes))
+	}
+
+	target, err := New()
+	if err != nil {
+		t.Fatalf("New target: %v", err)
+	}
+	defer target.Close()
+	if _, err := target.LoadSnapshotBytes(snapshotBytes); err == nil {
+		t.Fatal("LoadSnapshotBytes without credentials succeeded; want error")
+	}
+	meta, err = target.LoadSnapshotBytesWithOptions(snapshotBytes, loadOptions)
+	if err != nil {
+		t.Fatalf("LoadSnapshotBytesWithOptions: %v", err)
+	}
+	if meta.NodeCount != 1 {
+		t.Fatalf("LoadSnapshotBytesWithOptions NodeCount = %d; want 1", meta.NodeCount)
+	}
+
+	path := filepath.Join(t.TempDir(), "secret.lsnap")
+	meta, err = db.SaveSnapshotWithOptions(path, saveOptions)
+	if err != nil {
+		t.Fatalf("SaveSnapshotWithOptions: %v", err)
+	}
+	if meta.NodeCount != 1 {
+		t.Fatalf("SaveSnapshotWithOptions NodeCount = %d; want 1", meta.NodeCount)
+	}
+
+	targetFromPath, err := New()
+	if err != nil {
+		t.Fatalf("New targetFromPath: %v", err)
+	}
+	defer targetFromPath.Close()
+	if _, err := targetFromPath.LoadSnapshot(path); err == nil {
+		t.Fatal("LoadSnapshot without credentials succeeded; want error")
+	}
+	meta, err = targetFromPath.LoadSnapshotWithOptions(path, &SnapshotLoadOptions{Encryption: encryption})
+	if err != nil {
+		t.Fatalf("LoadSnapshotWithOptions: %v", err)
+	}
+	if meta.NodeCount != 1 {
+		t.Fatalf("LoadSnapshotWithOptions NodeCount = %d; want 1", meta.NodeCount)
+	}
+	result, err := targetFromPath.Execute("MATCH (n:Secret) RETURN n.name AS name", nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["name"] != "Ada" {
+		t.Fatalf("rows = %#v; want Ada", result.Rows)
 	}
 }
 

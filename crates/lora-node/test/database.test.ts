@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDatabase,
+  openWalDatabase,
   type Database,
   LoraError,
   isNode,
@@ -481,6 +482,67 @@ describe("Database — WAL-backed initialization", () => {
     );
   });
 
+  it("recovers through managed WAL snapshots", async () => {
+    const dir = await makeTempDir("lora-node-managed-snapshot-");
+    const walDir = join(dir, "wal");
+    const snapshotDir = join(dir, "snapshots");
+
+    const first = await openWalDatabase({
+      walDir,
+      snapshotDir,
+      snapshotEveryCommits: 2,
+    });
+    await first.execute("CREATE (:Managed {id: 1})");
+    await first.execute("CREATE (:Managed {id: 2})");
+    await expect(stat(join(snapshotDir, "CURRENT"))).resolves.toSatisfy(
+      (entry) => entry.isFile(),
+    );
+    await first.execute("CREATE (:Managed {id: 3})");
+    first.dispose();
+
+    const second = await openWalDatabase({
+      walDir,
+      snapshotDir,
+      snapshotEveryCommits: 2,
+    });
+    const { rows } = await second.execute<{ id: number }>(
+      "MATCH (n:Managed) RETURN n.id AS id ORDER BY id",
+    );
+    expect(rows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    second.dispose();
+  });
+
+  it("rejects WAL options on the in-memory initializer", async () => {
+    const dir = await makeTempDir("lora-node-memory-rejects-wal-");
+
+    await expect(
+      createDatabase(undefined, {
+        walDir: join(dir, "wal"),
+      } as never),
+    ).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "INVALID_PARAMS" &&
+        e.message.includes("openWalDatabase"),
+    );
+  });
+
+  it("rejects managed snapshot tuning without snapshotDir", async () => {
+    const dir = await makeTempDir("lora-node-managed-snapshot-options-");
+
+    await expect(
+      openWalDatabase({
+        walDir: join(dir, "wal"),
+        snapshotEveryCommits: 2,
+      }),
+    ).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "INVALID_PARAMS" &&
+        e.message.includes("snapshotDir"),
+    );
+  });
+
   it("loads snapshots from paths, file URLs, buffers, array buffers, and URLs", async () => {
     const dir = await makeTempDir("lora-node-snapshot-");
     const snapshotPath = join(dir, "graph.bin");
@@ -494,8 +556,15 @@ describe("Database — WAL-backed initialization", () => {
       path: pathToFileURL(optionPath),
     });
     expect(pathMeta.nodeCount).toBe(1);
-    const binary = await source.saveSnapshot("binary");
+    const binary = await source.saveSnapshot();
     expect(Buffer.isBuffer(binary)).toBe(true);
+    const uint8Array = await source.saveSnapshot({ format: "uint8Array" });
+    expect(uint8Array).toBeInstanceOf(Uint8Array);
+    expect(Buffer.isBuffer(uint8Array)).toBe(false);
+    const savedArrayBuffer = await source.saveSnapshot({ format: "arrayBuffer" });
+    expect(savedArrayBuffer).toBeInstanceOf(ArrayBuffer);
+    const stream = await source.saveSnapshot({ format: "stream" });
+    expect(stream).toBeInstanceOf(Readable);
     const base64 = await source.saveSnapshot({ format: "base64" });
     source.dispose();
 
@@ -517,7 +586,10 @@ describe("Database — WAL-backed initialization", () => {
       bytes,
       arrayBuffer,
       binary,
+      uint8Array,
+      savedArrayBuffer,
       Buffer.from(base64, "base64"),
+      stream,
       Readable.from([bytes]),
       new ReadableStream({
         start(controller) {
@@ -537,6 +609,53 @@ describe("Database — WAL-backed initialization", () => {
       expect(rows).toEqual([{ name: "Ada" }]);
       db.dispose();
     }
+  });
+
+  it("saves and loads encrypted snapshots from bytes and paths", async () => {
+    const dir = await makeTempDir("lora-node-encrypted-snapshot-");
+    const snapshotPath = join(dir, "secret.lsnap");
+    const encryption = {
+      type: "password" as const,
+      keyId: "node-test",
+      password: "open sesame",
+      params: { memoryCostKib: 512, timeCost: 1, parallelism: 1 },
+    };
+    const options = {
+      compression: { format: "gzip" as const, level: 1 },
+      encryption,
+    };
+
+    const source = await createDatabase();
+    await source.execute("CREATE (:Secret {name: 'Ada'})");
+
+    const bytes = await source.saveSnapshot(options);
+    const targetFromBytes = await createDatabase();
+    await expect(targetFromBytes.loadSnapshot(bytes)).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+    );
+    const bytesMeta = await targetFromBytes.loadSnapshot(bytes, {
+      credentials: encryption,
+    });
+    expect(bytesMeta.nodeCount).toBe(1);
+
+    const pathMeta = await source.saveSnapshot(snapshotPath, options);
+    expect(pathMeta.nodeCount).toBe(1);
+    const targetFromPath = await createDatabase();
+    await expect(targetFromPath.loadSnapshot(snapshotPath)).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+    );
+    const loadedMeta = await targetFromPath.loadSnapshot(snapshotPath, {
+      encryption,
+    });
+    expect(loadedMeta.nodeCount).toBe(1);
+    const { rows } = await targetFromPath.execute<{ name: string }>(
+      "MATCH (n:Secret) RETURN n.name AS name",
+    );
+    expect(rows).toEqual([{ name: "Ada" }]);
+
+    source.dispose();
+    targetFromBytes.dispose();
+    targetFromPath.dispose();
   });
 });
 

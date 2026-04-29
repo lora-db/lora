@@ -36,7 +36,8 @@ export type LoraParam =
   | LoraLocalDateTime
   | LoraDuration
   | LoraPoint
-  | LoraVector;
+  | LoraVector
+  | LoraBinary;
 
 export type LoraParams = Record<string, LoraParam>;
 
@@ -247,6 +248,20 @@ export interface LoraVector {
 }
 
 // ---------------------------------------------------------------------------
+// Binary
+// ---------------------------------------------------------------------------
+
+/**
+ * Segmented binary/blob value. Each segment is a byte array; concatenate
+ * segments in order to reconstruct the logical binary value.
+ */
+export interface LoraBinary {
+  kind: "binary";
+  length: number;
+  segments: number[][];
+}
+
+// ---------------------------------------------------------------------------
 // Value union
 // ---------------------------------------------------------------------------
 
@@ -267,7 +282,8 @@ export type LoraValue =
   | LoraLocalDateTime
   | LoraDuration
   | LoraPoint
-  | LoraVector;
+  | LoraVector
+  | LoraBinary;
 
 export type QueryRow<T extends Record<string, LoraValue> = Record<string, LoraValue>> = T;
 
@@ -300,6 +316,10 @@ export function isPoint(v: LoraValue): v is LoraPoint {
 
 export function isVector(v: LoraValue): v is LoraVector {
   return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "vector";
+}
+
+export function isBinary(v: LoraValue): v is LoraBinary {
+  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "binary";
 }
 
 export function isTemporal(v: LoraValue): v is LoraTemporal {
@@ -336,6 +356,12 @@ export const vector = (
   dimension: number,
   coordinateType: LoraVectorCoordinateType,
 ): LoraVector => ({ kind: "vector", dimension, coordinateType, values });
+
+export const binary = (segments: number[][]): LoraBinary => ({
+  kind: "binary",
+  length: segments.reduce((sum, segment) => sum + segment.length, 0),
+  segments,
+});
 
 export const cartesian = (x: number, y: number): LoraCartesianPoint => ({
   kind: "point",

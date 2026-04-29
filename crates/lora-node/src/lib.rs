@@ -22,12 +22,14 @@ use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
 use napi_derive::napi;
 
 use lora_database::{
-    Database as InnerDatabase, DatabaseName, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph,
-    LoraValue, QueryResult, ResultFormat, Row, Snapshotable, SyncMode, TransactionMode,
+    snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
+    DatabaseName, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult,
+    ResultFormat, Row, SnapshotConfig, SnapshotCredentials, SnapshotOptions, SyncMode,
+    TransactionMode, WalConfig,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, RawCoordinate, VectorCoordinateType,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, RawCoordinate, VectorCoordinateType,
 };
 
 const LORA_ERROR_CODE: &str = "LORA_ERROR";
@@ -76,17 +78,50 @@ impl Database {
     ///   `.loradb` path under `database_dir`, or the current directory when no
     ///   directory is provided.
     #[napi(constructor)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         #[napi(ts_arg_type = "string | null | undefined")] database_name: Option<String>,
         #[napi(ts_arg_type = "string | null | undefined")] database_dir: Option<String>,
         #[napi(ts_arg_type = "\"group\" | \"perCommit\" | \"per_commit\" | null | undefined")]
         sync_mode: Option<String>,
         #[napi(ts_arg_type = "number | null | undefined")] group_sync_interval_ms: Option<u32>,
+        #[napi(ts_arg_type = "string | null | undefined")] wal_dir: Option<String>,
+        #[napi(ts_arg_type = "string | null | undefined")] snapshot_dir: Option<String>,
+        #[napi(ts_arg_type = "number | null | undefined")] snapshot_every_commits: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] snapshot_keep_old: Option<u32>,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] snapshot_options: Option<
+            serde_json::Value,
+        >,
     ) -> Result<Self> {
-        let db = match database_name {
-            None => Arc::new(InnerDatabase::in_memory()),
-            Some(name) => {
-                open_persistent_database(name, database_dir, sync_mode, group_sync_interval_ms)?
+        let explicit_wal = wal_dir.is_some()
+            || snapshot_dir.is_some()
+            || snapshot_every_commits.is_some()
+            || snapshot_keep_old.is_some()
+            || snapshot_options.is_some();
+        let db = if explicit_wal {
+            if database_name.is_some() || database_dir.is_some() {
+                return Err(NapiError::new(
+                    Status::InvalidArg,
+                    format!(
+                        "{INVALID_PARAMS_CODE}: walDir/snapshotDir cannot be combined with databaseName/databaseDir"
+                    ),
+                ));
+            }
+            open_explicit_wal_database(
+                wal_dir,
+                snapshot_dir,
+                sync_mode,
+                group_sync_interval_ms,
+                snapshot_every_commits,
+                snapshot_keep_old,
+                snapshot_options,
+            )?
+        } else {
+            match database_name {
+                None => Arc::new(InnerDatabase::in_memory()),
+                Some(name) => {
+                    open_persistent_database(name, database_dir, sync_mode, group_sync_interval_ms)?
+                }
             }
         };
         Ok(Self {
@@ -270,32 +305,52 @@ impl Database {
     #[napi(
         ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
     )]
-    pub fn save_snapshot(&self, path: String) -> Result<serde_json::Value> {
+    pub fn save_snapshot(
+        &self,
+        path: String,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] options: Option<
+            serde_json::Value,
+        >,
+    ) -> Result<serde_json::Value> {
+        let options = parse_snapshot_options_for_napi(options)?;
         let meta = self
             .inner()?
-            .save_snapshot_to(&path)
+            .save_snapshot_to_with_options(&path, &options)
             .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
     }
 
     /// Serialize the current graph into snapshot bytes.
     #[napi(ts_return_type = "Buffer")]
-    pub fn save_snapshot_to_bytes(&self) -> Result<Buffer> {
-        let mut buf = Vec::new();
-        self.inner()?
-            .with_store(|store| store.save_snapshot(&mut buf))
-            .map_err(|e| NapiError::new(Status::GenericFailure, e.to_string()))?;
-        Ok(Buffer::from(buf))
+    pub fn save_snapshot_buffer(
+        &self,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] options: Option<
+            serde_json::Value,
+        >,
+    ) -> Result<Buffer> {
+        let options = parse_snapshot_options_for_napi(options)?;
+        let (bytes, _) = self
+            .inner()?
+            .save_snapshot_to_bytes_with_options(&options)
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+        Ok(Buffer::from(bytes))
     }
 
     /// Replace the current graph state with a snapshot loaded from disk.
     #[napi(
         ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
     )]
-    pub fn load_snapshot(&self, path: String) -> Result<serde_json::Value> {
+    pub fn load_snapshot(
+        &self,
+        path: String,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] options: Option<
+            serde_json::Value,
+        >,
+    ) -> Result<serde_json::Value> {
+        let credentials = parse_snapshot_credentials_for_napi(options)?;
         let meta = self
             .inner()?
-            .load_snapshot_from(&path)
+            .load_snapshot_from_with_credentials(&path, credentials.as_ref())
             .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
     }
@@ -304,14 +359,18 @@ impl Database {
     #[napi(
         ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
     )]
-    pub fn load_snapshot_from_bytes(
+    pub fn load_snapshot_buffer(
         &self,
         #[napi(ts_arg_type = "Uint8Array | Buffer")] bytes: Buffer,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] options: Option<
+            serde_json::Value,
+        >,
     ) -> Result<serde_json::Value> {
+        let credentials = parse_snapshot_credentials_for_napi(options)?;
         let meta = self
             .inner()?
-            .with_store_mut(|store| store.load_snapshot(bytes.as_ref()))
-            .map_err(|e| NapiError::new(Status::GenericFailure, e.to_string()))?;
+            .load_snapshot_from_bytes_with_credentials(bytes.as_ref(), credentials.as_ref())
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
     }
 
@@ -335,8 +394,77 @@ fn snapshot_meta_to_json(meta: lora_database::SnapshotMeta) -> serde_json::Value
     })
 }
 
+fn parse_snapshot_options_for_napi(options: Option<serde_json::Value>) -> Result<SnapshotOptions> {
+    snapshot_options_from_json(options).map_err(|e| {
+        NapiError::new(
+            Status::InvalidArg,
+            format!("{INVALID_PARAMS_CODE}: invalid snapshot options: {e}"),
+        )
+    })
+}
+
+fn parse_snapshot_credentials_for_napi(
+    options: Option<serde_json::Value>,
+) -> Result<Option<SnapshotCredentials>> {
+    snapshot_credentials_from_json(options).map_err(|e| {
+        NapiError::new(
+            Status::InvalidArg,
+            format!("{INVALID_PARAMS_CODE}: invalid snapshot credentials: {e}"),
+        )
+    })
+}
+
 fn persistent_database_registry() -> &'static Mutex<BTreeMap<PathBuf, PersistentDatabaseEntry>> {
     PERSISTENT_DATABASES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn open_explicit_wal_database(
+    wal_dir: Option<String>,
+    snapshot_dir: Option<String>,
+    sync_mode: Option<String>,
+    group_sync_interval_ms: Option<u32>,
+    snapshot_every_commits: Option<u32>,
+    snapshot_keep_old: Option<u32>,
+    snapshot_options: Option<serde_json::Value>,
+) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
+    let has_snapshot_tuning = snapshot_every_commits.is_some()
+        || snapshot_keep_old.is_some()
+        || snapshot_options.is_some();
+    let wal_dir = wal_dir.ok_or_else(|| {
+        NapiError::new(
+            Status::InvalidArg,
+            format!("{INVALID_PARAMS_CODE}: managed snapshot options require walDir"),
+        )
+    })?;
+    if snapshot_dir.is_none() && has_snapshot_tuning {
+        return Err(NapiError::new(
+            Status::InvalidArg,
+            format!(
+                "{INVALID_PARAMS_CODE}: snapshotDir is required when managed snapshot options are provided"
+            ),
+        ));
+    }
+    let sync_mode = parse_sync_mode(sync_mode, group_sync_interval_ms)?;
+    let wal_config = WalConfig::Enabled {
+        dir: PathBuf::from(wal_dir),
+        sync_mode,
+        segment_target_bytes: 8 * 1024 * 1024,
+    };
+    let db = if let Some(snapshot_dir) = snapshot_dir {
+        let mut snapshots = SnapshotConfig::enabled(snapshot_dir)
+            .keep_old(snapshot_keep_old.unwrap_or(1) as usize)
+            .codec(parse_snapshot_options_for_napi(snapshot_options)?);
+        if let Some(every) = snapshot_every_commits {
+            if every != 0 {
+                snapshots = snapshots.every_commits(every as u64);
+            }
+        }
+        InnerDatabase::open_with_wal_snapshots(wal_config, snapshots)
+    } else {
+        InnerDatabase::open_with_wal(wal_config)
+    }
+    .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+    Ok(Arc::new(db))
 }
 
 fn open_persistent_database(
@@ -427,7 +555,8 @@ fn parse_sync_mode(
 
 impl Default for Database {
     fn default() -> Self {
-        Self::new(None, None, None, None).expect("in-memory Database::default should not fail")
+        Self::new(None, None, None, None, None, None, None, None, None)
+            .expect("in-memory Database::default should not fail")
     }
 }
 
@@ -669,6 +798,7 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
             .map(J::Number)
             .unwrap_or(J::Null),
         LoraValue::String(s) => J::String(s.clone()),
+        LoraValue::Binary(b) => binary_to_json(b),
         LoraValue::List(items) => J::Array(items.iter().map(lora_value_to_json).collect()),
         LoraValue::Map(m) => {
             let obj = m
@@ -709,6 +839,14 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
         LoraValue::Point(p) => point_to_json(p),
         LoraValue::Vector(v) => vector_to_json(v),
     }
+}
+
+fn binary_to_json(b: &LoraBinary) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "binary",
+        "length": b.len(),
+        "segments": b.segments(),
+    })
 }
 
 /// Render a `LoraVector` into the canonical external tagged shape.
@@ -868,6 +1006,9 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue> {
                         let v = vector_from_json_map(&obj).map_err(invalid_param)?;
                         return Ok(LoraValue::Vector(v));
                     }
+                    "binary" | "blob" => {
+                        return Ok(LoraValue::Binary(binary_from_json_map(&obj)?));
+                    }
                     _ => {}
                 }
             }
@@ -878,6 +1019,30 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue> {
             Ok(LoraValue::Map(map))
         }
     }
+}
+
+fn binary_from_json_map(obj: &serde_json::Map<String, serde_json::Value>) -> Result<LoraBinary> {
+    let segments = obj
+        .get("segments")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| invalid_param("binary.segments must be an array of byte arrays"))?;
+    let mut out = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let bytes = segment
+            .as_array()
+            .ok_or_else(|| invalid_param("binary segment must be an array of bytes"))?;
+        let mut chunk = Vec::with_capacity(bytes.len());
+        for byte in bytes {
+            let value = byte
+                .as_u64()
+                .ok_or_else(|| invalid_param("binary byte must be an integer 0..255"))?;
+            let value = u8::try_from(value)
+                .map_err(|_| invalid_param("binary byte must be an integer 0..255"))?;
+            chunk.push(value);
+        }
+        out.push(chunk);
+    }
+    Ok(LoraBinary::from_segments(out))
 }
 
 fn require_iso<'a>(

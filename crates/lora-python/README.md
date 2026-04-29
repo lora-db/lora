@@ -124,10 +124,21 @@ replays committed writes before returning the handle.
 Call `db.close()` / `await db.close()` before reopening the same archive
 inside one process.
 
-This first Python persistence slice intentionally stays small: the
-binding exposes archive-backed initialization plus the existing
-`save_snapshot` / `load_snapshot` APIs, but not checkpoint, truncate,
-status, or sync-mode controls.
+For explicit WAL directories with managed snapshots, use `open_wal`:
+
+```python
+db = Database.open_wal(
+    "./data/wal",
+    {
+        "snapshot_dir": "./data/snapshots",
+        "snapshot_every_commits": 1000,
+        "snapshot_keep_old": 2,
+    },
+)
+```
+
+`snapshot_options` accepts the same compression/encryption options as
+`save_snapshot`.
 
 Snapshots accept the same broad shapes in sync and async APIs:
 

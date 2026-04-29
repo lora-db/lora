@@ -26,13 +26,16 @@ import { WasmDatabase, init as wasmInit } from "./loader-node.js";
 import { createWorkerDatabase } from "./worker-client.js";
 import type { WorkerDatabase, WorkerLike } from "./worker-client.js";
 import {
-  downloadSnapshotBytes,
-  resolveSnapshotSaveFormat,
-  snapshotBytesToBase64,
-  snapshotBytesToBlob,
-  snapshotSourceToBytes,
+  snapshotAsArrayBuffer,
+  snapshotAsBlob,
+  snapshotAsObjectUrl,
+  snapshotAsReadableStream,
+  snapshotAsResponse,
+  readSnapshotSource,
 } from "./snapshot.js";
 import type {
+  WasmSnapshotByteOptions,
+  WasmSnapshotLoadOptions,
   WasmSnapshotSaveOptions,
   WasmSnapshotSource,
 } from "./snapshot.js";
@@ -44,16 +47,20 @@ export {
   type WorkerLike,
 } from "./worker-client.js";
 export type {
+  WasmSnapshotByteOptions,
+  WasmSnapshotCompression,
+  WasmSnapshotEncryption,
+  WasmSnapshotLoadOptions,
+  WasmSnapshotPasswordParams,
   WasmSnapshotSaveFormat,
   WasmSnapshotSaveOptions,
   WasmSnapshotSource,
 } from "./snapshot.js";
 
 /**
- * Metadata returned by `saveSnapshotToBytes` / `loadSnapshotFromBytes`.
- * Mirrors the Rust `SnapshotMeta` struct and matches the shape used by
- * every other binding — `walLsn` is reserved for the future
- * WAL/checkpoint hybrid and is `null` for pure snapshots.
+ * Metadata returned by `loadSnapshot`.
+ * Mirrors the Rust `SnapshotMeta` struct. WASM saves the database snapshot
+ * codec and accepts legacy store snapshots on load for compatibility.
  */
 export interface SnapshotMeta {
   formatVersion: number;
@@ -256,64 +263,58 @@ class DatabaseImpl {
     return this.#inner.relationshipCount();
   }
 
-  /**
-   * Serialize the current graph to a `Uint8Array`. WASM has no filesystem
-   * access — the caller is responsible for persisting the bytes (IndexedDB,
-   * localStorage, fetch POST, `fs.writeFileSync` in Node, etc.) and passing
-   * them back to `loadSnapshotFromBytes` on a future database instance.
-   */
-  async saveSnapshotToBytes(): Promise<Uint8Array> {
-    try {
-      return this.#inner.saveSnapshotToBytes();
-    } catch (err) {
-      throw wrapError(err);
-    }
-  }
-
   saveSnapshot(): Promise<Uint8Array>;
-  saveSnapshot(format: "binary"): Promise<Uint8Array>;
-  saveSnapshot(format: "base64"): Promise<string>;
-  saveSnapshot(format: "blob"): Promise<Blob>;
-  saveSnapshot(format: "download"): Promise<void>;
-  saveSnapshot(options: { format: "binary" }): Promise<Uint8Array>;
-  saveSnapshot(options: { format: "base64" }): Promise<string>;
-  saveSnapshot(options: { format: "blob"; mimeType?: string }): Promise<Blob>;
-  saveSnapshot(options: { format: "download"; filename?: string; mimeType?: string }): Promise<void>;
-  async saveSnapshot(
-    target?: WasmSnapshotSaveOptions["format"] | WasmSnapshotSaveOptions,
-  ): Promise<Uint8Array | string | Blob | void> {
-    const options = resolveSnapshotSaveFormat(target);
-    const bytes = await this.saveSnapshotToBytes();
-
-    switch (options.format) {
-      case "binary":
-        return bytes;
-      case "base64":
-        return snapshotBytesToBase64(bytes);
-      case "blob":
-        return snapshotBytesToBlob(bytes, options.mimeType);
-      case "download":
-        return downloadSnapshotBytes(bytes, options.filename, options.mimeType);
-    }
-  }
-
+  saveSnapshot(options: WasmSnapshotByteOptions): Promise<Uint8Array>;
+  saveSnapshot(options: { format?: "bytes" } & WasmSnapshotByteOptions): Promise<Uint8Array>;
+  saveSnapshot(options: { format: "arrayBuffer" } & WasmSnapshotByteOptions): Promise<ArrayBuffer>;
+  saveSnapshot(options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Blob>;
+  saveSnapshot(options: { format: "response"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Response>;
+  saveSnapshot(options: { format: "stream" } & WasmSnapshotByteOptions): Promise<ReadableStream<Uint8Array>>;
+  saveSnapshot(options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions): Promise<URL>;
   /**
-   * Replace the current graph state with a snapshot decoded from `bytes`.
-   * Returns metadata describing the restored snapshot.
+   * Serialize the current graph to a host-friendly snapshot object. WASM has
+   * no filesystem access; callers persist the returned bytes/Blob/stream/URL
+   * through host-provided storage.
    */
-  async loadSnapshotFromBytes(bytes: Uint8Array): Promise<SnapshotMeta> {
+  async saveSnapshot(
+    options?: WasmSnapshotSaveOptions | WasmSnapshotByteOptions,
+  ): Promise<Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | URL> {
     try {
-      return this.#inner.loadSnapshotFromBytes(bytes) as SnapshotMeta;
+      const native = this.#inner as unknown as {
+        saveSnapshot(options?: unknown): Uint8Array;
+      };
+      const bytes = native.saveSnapshot(options ?? null);
+      const format = options && "format" in options ? options.format ?? "bytes" : "bytes";
+      const mimeType = options && "mimeType" in options ? options.mimeType : undefined;
+      switch (format) {
+        case "bytes":
+          return bytes;
+        case "arrayBuffer":
+          return snapshotAsArrayBuffer(bytes);
+        case "blob":
+          return snapshotAsBlob(bytes, mimeType);
+        case "response":
+          return snapshotAsResponse(bytes, mimeType);
+        case "stream":
+          return snapshotAsReadableStream(bytes);
+        case "url":
+          return snapshotAsObjectUrl(bytes, mimeType);
+      }
     } catch (err) {
       throw wrapError(err);
     }
   }
 
-  async loadSnapshot(source: WasmSnapshotSource): Promise<SnapshotMeta> {
+  async loadSnapshot(
+    source: WasmSnapshotSource,
+    options?: WasmSnapshotLoadOptions,
+  ): Promise<SnapshotMeta> {
     try {
-      return this.#inner.loadSnapshotFromBytes(
-        await snapshotSourceToBytes(source),
-      ) as SnapshotMeta;
+      const bytes = await readSnapshotSource(source);
+      const native = this.#inner as unknown as {
+        loadSnapshot(bytes: Uint8Array, options?: unknown): unknown;
+      };
+      return native.loadSnapshot(bytes, options ?? null) as SnapshotMeta;
     } catch (err) {
       throw wrapError(err);
     }

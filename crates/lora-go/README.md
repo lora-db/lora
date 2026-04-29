@@ -186,9 +186,19 @@ if err != nil {
 an archive-backed persistent database at `./data/app.loradb`. Reopening the
 same path replays committed writes before returning the handle.
 
-This first Go persistence slice intentionally stays small: the binding
-exposes archive-backed initialization plus the existing snapshot APIs, but
-not checkpoint, truncate, status, or sync-mode controls.
+For explicit WAL directories with managed snapshots, use `OpenWal`:
+
+```go
+db, err := lora.OpenWal(lora.WalOptions{
+    WalDir:               "./data/wal",
+    SnapshotDir:          "./data/snapshots",
+    SnapshotEveryCommits: 1000,
+    SnapshotKeepOld:      2,
+})
+```
+
+`SnapshotOptions` accepts the same compression/encryption options as
+`SaveSnapshot`.
 
 Snapshot helpers cover files, bytes, base64, and Go readers/writers:
 

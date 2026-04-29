@@ -25,11 +25,11 @@ use magnus::{
 
 use lora_database::{
     Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
-    QueryResult, ResultFormat,
+    QueryResult, ResultFormat, SnapshotConfig, SnapshotOptions, WalConfig,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -63,6 +63,7 @@ fn init(ruby: &Ruby) -> Result<(), MagnusError> {
     let database = lora_ruby.define_class("Database", ruby.class_object())?;
     database.define_singleton_method("create", function!(database_create, -1))?;
     database.define_singleton_method("new", function!(database_new, -1))?;
+    database.define_singleton_method("open_wal", function!(database_open_wal, -1))?;
     database.define_method("execute", method!(database_execute, -1))?;
     database.define_method("clear", method!(database_clear, 0))?;
     database.define_method("close", method!(database_close, 0))?;
@@ -73,8 +74,8 @@ fn init(ruby: &Ruby) -> Result<(), MagnusError> {
     )?;
     database.define_method("inspect", method!(database_inspect, 0))?;
     database.define_method("to_s", method!(database_inspect, 0))?;
-    database.define_method("save_snapshot", method!(database_save_snapshot, 1))?;
-    database.define_method("load_snapshot", method!(database_load_snapshot, 1))?;
+    database.define_method("save_snapshot", method!(database_save_snapshot, -1))?;
+    database.define_method("load_snapshot", method!(database_load_snapshot, -1))?;
 
     // `LoraRuby::VERSION` is owned by `lib/lora_ruby/version.rb` so the
     // gem can expose a version before the native extension compiles
@@ -126,6 +127,34 @@ struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
 }
 
+#[derive(Default)]
+struct RubyDatabaseOpenOptions {
+    named: DatabaseOpenOptions,
+    has_database_dir: bool,
+    wal_dir: Option<String>,
+    snapshot_dir: Option<String>,
+    snapshot_every_commits: Option<u64>,
+    snapshot_keep_old: Option<usize>,
+    has_snapshot_codec: bool,
+    snapshot_codec: SnapshotOptions,
+}
+
+impl RubyDatabaseOpenOptions {
+    fn has_explicit_wal_options(&self) -> bool {
+        self.wal_dir.is_some()
+            || self.snapshot_dir.is_some()
+            || self.snapshot_every_commits.is_some()
+            || self.snapshot_keep_old.is_some()
+            || self.has_snapshot_codec
+    }
+
+    fn has_snapshot_tuning_options(&self) -> bool {
+        self.snapshot_every_commits.is_some()
+            || self.snapshot_keep_old.is_some()
+            || self.has_snapshot_codec
+    }
+}
+
 impl Database {
     fn from_db(db: Arc<InnerDatabase<InMemoryGraph>>) -> Self {
         Self {
@@ -146,6 +175,35 @@ fn database_new(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
 
 fn database_create(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
     database_new(ruby, args)
+}
+
+fn database_open_wal(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
+    let (wal_dir, mut options) = match args.len() {
+        1 | 2 => {
+            let wal_dir = RString::try_convert(args[0])?.to_string()?;
+            let options = if args.len() == 2 {
+                ruby_database_open_options(ruby, RHash::try_convert(args[1])?)?
+            } else {
+                RubyDatabaseOpenOptions::default()
+            };
+            (wal_dir, options)
+        }
+        n => {
+            return Err(MagnusError::new(
+                ruby.exception_arg_error(),
+                format!("wrong number of arguments (given {n}, expected 1..2)"),
+            ));
+        }
+    };
+    if options.wal_dir.is_some() {
+        return Err(invalid_params(
+            ruby,
+            "wal_dir must be passed as the first argument to open_wal",
+        ));
+    }
+    options.wal_dir = Some(wal_dir);
+    let db = without_gvl(move || open_wal_database(options)).map_err(|e| query_error(ruby, e))?;
+    Ok(Database::from_db(db))
 }
 
 fn database_clear(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
@@ -189,11 +247,11 @@ fn database_inspect(rb_self: &Database) -> String {
 fn database_save_snapshot(
     ruby: &Ruby,
     rb_self: &Database,
-    path: RString,
+    args: &[Value],
 ) -> Result<RHash, MagnusError> {
-    let path = path.to_string()?;
+    let (path, options) = snapshot_file_args(ruby, args)?;
     let db = database_inner(ruby, rb_self)?;
-    let meta = without_gvl(move || db.save_snapshot_to(&path))
+    let meta = without_gvl(move || db.save_snapshot_to_with_options(&path, &options))
         .map_err(|e| query_error(ruby, format!("{e}")))?;
     snapshot_meta_to_rhash(ruby, meta)
 }
@@ -201,13 +259,60 @@ fn database_save_snapshot(
 fn database_load_snapshot(
     ruby: &Ruby,
     rb_self: &Database,
-    path: RString,
+    args: &[Value],
 ) -> Result<RHash, MagnusError> {
-    let path = path.to_string()?;
+    let (path, credentials) = snapshot_load_file_args(ruby, args)?;
     let db = database_inner(ruby, rb_self)?;
-    let meta = without_gvl(move || db.load_snapshot_from(&path))
-        .map_err(|e| query_error(ruby, format!("{e}")))?;
+    let meta =
+        without_gvl(move || db.load_snapshot_from_with_credentials(&path, credentials.as_ref()))
+            .map_err(|e| query_error(ruby, format!("{e}")))?;
     snapshot_meta_to_rhash(ruby, meta)
+}
+
+fn snapshot_file_args(
+    ruby: &Ruby,
+    args: &[Value],
+) -> Result<(String, lora_database::SnapshotOptions), MagnusError> {
+    match args.len() {
+        1 | 2 => {
+            let path = RString::try_convert(args[0])?.to_string()?;
+            let json = if args.len() == 2 {
+                ruby_optional_to_json(ruby, args[1])?
+            } else {
+                None
+            };
+            let options = lora_database::snapshot_options_from_json(json)
+                .map_err(|e| invalid_params(ruby, format!("invalid snapshot options: {e}")))?;
+            Ok((path, options))
+        }
+        n => Err(MagnusError::new(
+            ruby.exception_arg_error(),
+            format!("wrong number of arguments (given {n}, expected 1..2)"),
+        )),
+    }
+}
+
+fn snapshot_load_file_args(
+    ruby: &Ruby,
+    args: &[Value],
+) -> Result<(String, Option<lora_database::SnapshotCredentials>), MagnusError> {
+    match args.len() {
+        1 | 2 => {
+            let path = RString::try_convert(args[0])?.to_string()?;
+            let json = if args.len() == 2 {
+                ruby_optional_to_json(ruby, args[1])?
+            } else {
+                None
+            };
+            let credentials = lora_database::snapshot_credentials_from_json(json)
+                .map_err(|e| invalid_params(ruby, format!("invalid snapshot credentials: {e}")))?;
+            Ok((path, credentials))
+        }
+        n => Err(MagnusError::new(
+            ruby.exception_arg_error(),
+            format!("wrong number of arguments (given {n}, expected 1..2)"),
+        )),
+    }
 }
 
 fn snapshot_meta_to_rhash(
@@ -237,16 +342,18 @@ fn snapshot_meta_to_rhash(
 fn database_open_args(
     ruby: &Ruby,
     args: &[Value],
-) -> Result<(Option<String>, DatabaseOpenOptions), MagnusError> {
+) -> Result<(Option<String>, RubyDatabaseOpenOptions), MagnusError> {
     match args.len() {
-        0 => Ok((None, DatabaseOpenOptions::default())),
+        0 => Ok((None, RubyDatabaseOpenOptions::default())),
         1 => {
             if args[0].is_nil() {
-                Ok((None, DatabaseOpenOptions::default()))
+                Ok((None, RubyDatabaseOpenOptions::default()))
+            } else if let Ok(hash) = RHash::try_convert(args[0]) {
+                Ok((None, ruby_database_open_options(ruby, hash)?))
             } else {
                 Ok((
                     Some(RString::try_convert(args[0])?.to_string()?),
-                    DatabaseOpenOptions::default(),
+                    RubyDatabaseOpenOptions::default(),
                 ))
             }
         }
@@ -256,13 +363,7 @@ fn database_open_args(
             } else {
                 Some(RString::try_convert(args[0])?.to_string()?)
             };
-            let mut options = DatabaseOpenOptions::default();
-            let hash = RHash::try_convert(args[1])?;
-            if let Some(dir) = hash_get_either(ruby, hash, "database_dir")
-                .or_else(|| hash_get_either(ruby, hash, "databaseDir"))
-            {
-                options.database_dir = RString::try_convert(dir)?.to_string()?.into();
-            }
+            let options = ruby_database_open_options(ruby, RHash::try_convert(args[1])?)?;
             Ok((database_name, options))
         }
         n => Err(MagnusError::new(
@@ -272,13 +373,94 @@ fn database_open_args(
     }
 }
 
+fn ruby_database_open_options(
+    ruby: &Ruby,
+    hash: RHash,
+) -> Result<RubyDatabaseOpenOptions, MagnusError> {
+    let mut options = RubyDatabaseOpenOptions::default();
+    if let Some(dir) = hash_get_any(ruby, hash, &["database_dir", "databaseDir"]) {
+        options.named.database_dir = RString::try_convert(dir)?.to_string()?.into();
+        options.has_database_dir = true;
+    }
+    if let Some(dir) = hash_get_any(ruby, hash, &["wal_dir", "walDir"]) {
+        options.wal_dir = Some(RString::try_convert(dir)?.to_string()?);
+    }
+    if let Some(dir) = hash_get_any(ruby, hash, &["snapshot_dir", "snapshotDir"]) {
+        options.snapshot_dir = Some(RString::try_convert(dir)?.to_string()?);
+    }
+    if let Some(value) = hash_get_any(
+        ruby,
+        hash,
+        &["snapshot_every_commits", "snapshotEveryCommits"],
+    ) {
+        options.snapshot_every_commits = Some(read_nonnegative_u64(ruby, value)?);
+    }
+    if let Some(value) = hash_get_any(ruby, hash, &["snapshot_keep_old", "snapshotKeepOld"]) {
+        let keep_old = read_nonnegative_u64(ruby, value)?;
+        options.snapshot_keep_old = Some(
+            usize::try_from(keep_old)
+                .map_err(|_| invalid_params(ruby, "snapshot_keep_old does not fit in usize"))?,
+        );
+    }
+    if let Some(value) = hash_get_any(ruby, hash, &["snapshot_options", "snapshotOptions"]) {
+        let json = ruby_optional_to_json(ruby, value)?;
+        options.has_snapshot_codec = true;
+        options.snapshot_codec = lora_database::snapshot_options_from_json(json)
+            .map_err(|e| invalid_params(ruby, format!("invalid snapshot options: {e}")))?;
+    }
+    Ok(options)
+}
+
 fn open_database(
     database_name: Option<String>,
-    options: DatabaseOpenOptions,
+    options: RubyDatabaseOpenOptions,
 ) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    if options.has_explicit_wal_options() {
+        return Err(
+            "wal_dir/snapshot_dir are not valid for Database.create; use Database.open_wal"
+                .to_string(),
+        );
+    }
     let db = match database_name {
-        Some(name) => InnerDatabase::open_named(name, options).map_err(|e| e.to_string())?,
-        None => InnerDatabase::in_memory(),
+        Some(name) => InnerDatabase::open_named(name, options.named).map_err(|e| e.to_string())?,
+        None => {
+            if options.has_database_dir {
+                return Err("database_name is required when database_dir is provided".to_string());
+            }
+            InnerDatabase::in_memory()
+        }
+    };
+    Ok(Arc::new(db))
+}
+
+fn open_wal_database(
+    options: RubyDatabaseOpenOptions,
+) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    if options.has_database_dir {
+        return Err("database_dir is not valid for Database.open_wal".to_string());
+    }
+    let has_snapshot_tuning = options.has_snapshot_tuning_options();
+    if options.snapshot_dir.is_none() && has_snapshot_tuning {
+        return Err(
+            "snapshot_dir is required when managed snapshot options are provided".to_string(),
+        );
+    }
+    let wal_dir = options
+        .wal_dir
+        .ok_or_else(|| "wal_dir is required for Database.open_wal".to_string())?;
+    let wal_config = WalConfig::enabled(wal_dir);
+    let db = if let Some(snapshot_dir) = options.snapshot_dir {
+        let mut snapshots = SnapshotConfig::enabled(snapshot_dir)
+            .keep_old(options.snapshot_keep_old.unwrap_or(1))
+            .codec(options.snapshot_codec);
+        if let Some(every) = options.snapshot_every_commits {
+            if every != 0 {
+                snapshots = snapshots.every_commits(every);
+            }
+        }
+        InnerDatabase::open_with_wal_snapshots(wal_config, snapshots).map_err(|e| e.to_string())?
+    } else {
+        InnerDatabase::open_with_wal(wal_config).map_err(|e| e.to_string())?
     };
     Ok(Arc::new(db))
 }
@@ -432,7 +614,23 @@ fn lora_value_to_ruby(ruby: &Ruby, value: &LoraValue) -> Result<Value, MagnusErr
         LoraValue::Duration(v) => tagged_iso(ruby, "duration", v.to_string()),
         LoraValue::Point(p) => point_to_ruby(ruby, p),
         LoraValue::Vector(v) => vector_to_ruby(ruby, v),
+        LoraValue::Binary(v) => binary_to_ruby(ruby, v),
     }
+}
+
+fn binary_to_ruby(ruby: &Ruby, value: &LoraBinary) -> Result<Value, MagnusError> {
+    let h = ruby.hash_new();
+    h.aset(ruby.str_new("kind"), ruby.str_new("binary"))?;
+    h.aset(
+        ruby.str_new("length"),
+        ruby.integer_from_i64(value.len() as i64),
+    )?;
+    let segments = ruby.ary_new();
+    for segment in value.segments() {
+        segments.push(ruby.str_from_slice(segment))?;
+    }
+    h.aset(ruby.str_new("segments"), segments)?;
+    Ok(h.as_value())
 }
 
 fn vector_to_ruby(ruby: &Ruby, v: &LoraVector) -> Result<Value, MagnusError> {
@@ -573,6 +771,86 @@ fn coerce_key(ruby: &Ruby, v: Value) -> Result<String, MagnusError> {
     Err(invalid_params(ruby, "param keys must be String or Symbol"))
 }
 
+fn ruby_optional_to_json(
+    ruby: &Ruby,
+    value: Value,
+) -> Result<Option<serde_json::Value>, MagnusError> {
+    if value.is_nil() {
+        Ok(None)
+    } else {
+        ruby_value_to_json(ruby, value).map(Some)
+    }
+}
+
+fn ruby_value_to_json(ruby: &Ruby, value: Value) -> Result<serde_json::Value, MagnusError> {
+    if value.is_nil() {
+        return Ok(serde_json::Value::Null);
+    }
+    if value.is_kind_of(ruby.class_true_class()) {
+        return Ok(serde_json::Value::Bool(true));
+    }
+    if value.is_kind_of(ruby.class_false_class()) {
+        return Ok(serde_json::Value::Bool(false));
+    }
+    if let Ok(i) = Integer::try_convert(value) {
+        let n = i
+            .to_i64()
+            .map_err(|_| invalid_params(ruby, "snapshot option integer does not fit in i64"))?;
+        return Ok(serde_json::Value::Number(n.into()));
+    }
+    if let Ok(f) = Float::try_convert(value) {
+        let Some(number) = serde_json::Number::from_f64(f.to_f64()) else {
+            return Err(invalid_params(ruby, "snapshot option float must be finite"));
+        };
+        return Ok(serde_json::Value::Number(number));
+    }
+    if let Ok(s) = RString::try_convert(value) {
+        return Ok(serde_json::Value::String(s.to_string()?));
+    }
+    if let Ok(sym) = Symbol::try_convert(value) {
+        return Ok(serde_json::Value::String(sym.name()?.into_owned()));
+    }
+    if let Ok(arr) = RArray::try_convert(value) {
+        let mut out = Vec::with_capacity(arr.len());
+        for item in arr.into_iter() {
+            out.push(ruby_value_to_json(ruby, item)?);
+        }
+        return Ok(serde_json::Value::Array(out));
+    }
+    if let Ok(hash) = RHash::try_convert(value) {
+        let mut out = serde_json::Map::new();
+        let mut error = None;
+        hash.foreach(|k: Value, v: Value| {
+            let key = match coerce_key(ruby, k) {
+                Ok(key) => key,
+                Err(e) => {
+                    error = Some(e);
+                    return Ok(ForEach::Stop);
+                }
+            };
+            let json = match ruby_value_to_json(ruby, v) {
+                Ok(json) => json,
+                Err(e) => {
+                    error = Some(e);
+                    return Ok(ForEach::Stop);
+                }
+            };
+            out.insert(key, json);
+            Ok(ForEach::Continue)
+        })?;
+        if let Some(error) = error {
+            return Err(error);
+        }
+        return Ok(serde_json::Value::Object(out));
+    }
+
+    let class_name = unsafe { value.classname() }.into_owned();
+    Err(invalid_params(
+        ruby,
+        format!("unsupported snapshot option type: {class_name}"),
+    ))
+}
+
 fn ruby_value_to_lora(ruby: &Ruby, v: Value) -> Result<LoraValue, MagnusError> {
     if v.is_nil() {
         return Ok(LoraValue::Null);
@@ -665,6 +943,7 @@ fn ruby_hash_to_cypher(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusErro
             }
             "point" => return build_point(ruby, hash),
             "vector" => return build_vector(ruby, hash),
+            "binary" | "blob" => return build_binary(ruby, hash),
             _ => { /* fall through to plain-map handling */ }
         }
     }
@@ -765,6 +1044,20 @@ fn build_vector(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
     Ok(LoraValue::Vector(v))
 }
 
+fn build_binary(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
+    let segments_value = hash_get_either(ruby, hash, "segments")
+        .ok_or_else(|| invalid_params(ruby, "binary.segments required"))?;
+    let arr = RArray::try_convert(segments_value)
+        .map_err(|_| invalid_params(ruby, "binary.segments must be an Array"))?;
+    let mut segments = Vec::with_capacity(arr.len());
+    for item in arr.into_iter() {
+        let segment = RString::try_convert(item)
+            .map_err(|_| invalid_params(ruby, "binary.segments entries must be Strings"))?;
+        segments.push(unsafe { segment.as_slice().to_vec() });
+    }
+    Ok(LoraValue::Binary(LoraBinary::from_segments(segments)))
+}
+
 fn read_i64(ruby: &Ruby, hash: RHash, key: &str) -> Result<Option<i64>, MagnusError> {
     let Some(v) = hash_get_either(ruby, hash, key) else {
         return Ok(None);
@@ -781,6 +1074,15 @@ fn hash_get_either(ruby: &Ruby, hash: RHash, key: &str) -> Option<Value> {
         return Some(v);
     }
     hash.get(ruby.to_symbol(key))
+}
+
+fn hash_get_any(ruby: &Ruby, hash: RHash, keys: &[&str]) -> Option<Value> {
+    keys.iter().find_map(|key| hash_get_either(ruby, hash, key))
+}
+
+fn read_nonnegative_u64(ruby: &Ruby, value: Value) -> Result<u64, MagnusError> {
+    let n = Integer::try_convert(value)?.to_i64()?;
+    u64::try_from(n).map_err(|_| invalid_params(ruby, "option integer must be non-negative"))
 }
 
 fn read_string(ruby: &Ruby, hash: RHash, key: &str) -> Result<Option<String>, MagnusError> {

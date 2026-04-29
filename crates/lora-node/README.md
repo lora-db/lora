@@ -86,12 +86,30 @@ single live native engine. Call `db.dispose()` when you need to release a handle
 eagerly; cross-process opens of the same archive are blocked to prevent
 split-brain writers.
 
+For explicit WAL directories with managed snapshots, use `openWalDatabase`:
+
+```ts
+import { openWalDatabase } from "lora-node";
+
+const db = await openWalDatabase({
+  walDir: "./data/wal",
+  snapshotDir: "./data/snapshots",
+  snapshotEveryCommits: 1000,
+  snapshotKeepOld: 2,
+});
+```
+
+`snapshotOptions` accepts the same compression/encryption options as
+`saveSnapshot`.
+
 ## Snapshots
 
-`saveSnapshot(path)` writes the current graph to a local file. It also accepts
-typed formats: `"binary"` returns a Node `Buffer`, `"base64"` returns base64
-text, and `{ format: "path", path }` accepts either a path string or `file:`
-URL.
+`saveSnapshot(path)` writes the current graph to a local file. Plain strings
+are always treated as paths. Calling `saveSnapshot()` returns a Node `Buffer`;
+object formats such as `{ format: "base64" }`, `{ format: "arrayBuffer" }`,
+`{ format: "uint8Array" }`, and `{ format: "stream" }` return in-memory
+snapshot data in that shape. `{ format: "path", path }` accepts either a path
+string or `file:` URL.
 
 `loadSnapshot` accepts a `NodeSnapshotSource`: a filesystem path, `file:` URL,
 HTTP(S) or `data:` URL, `Buffer`, `Uint8Array`, `ArrayBuffer`, Node
@@ -106,19 +124,18 @@ import { createDatabase } from "lora-node";
 const db = await createDatabase();
 await db.execute("CREATE (:Person {name: 'Alice'})");
 await db.saveSnapshot("./graph.lorasnap");
-const bytes = await db.saveSnapshot("binary");
+const bytes = await db.saveSnapshot();
 const base64 = await db.saveSnapshot({ format: "base64" });
+const stream = await db.saveSnapshot({ format: "stream" });
 
 await db.loadSnapshot("./graph.lorasnap");
 await db.loadSnapshot(pathToFileURL("./graph.lorasnap"));
 await db.loadSnapshot(await readFile("./graph.lorasnap"));
 await db.loadSnapshot(createReadStream("./graph.lorasnap"));
 await db.loadSnapshot(bytes);
+await db.loadSnapshot(stream);
 await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
 ```
-
-Use `loadSnapshotFromBytes(bytes)` when you already have in-memory bytes and
-want to make that intent explicit.
 
 ## Typed value model
 

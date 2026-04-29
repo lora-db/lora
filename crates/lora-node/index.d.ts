@@ -27,7 +27,7 @@ export declare class Database {
    *   `.loradb` path under `database_dir`, or the current directory when no
    *   directory is provided.
    */
-  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "group" | "perCommit" | "per_commit" | null | undefined, groupSyncIntervalMs?: number | null | undefined)
+  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "group" | "perCommit" | "per_commit" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined)
   /**
    * Execute a Lora query on the libuv threadpool.
    *
@@ -83,11 +83,11 @@ export declare class Database {
    * Synchronous — snapshots are usually infrequent and running on the
    * event loop dodges the cost of a thread hop for small graphs.
    */
-  saveSnapshot(path: string): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
+  saveSnapshot(path: string, options?: Record<string, any> | null | undefined): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
   /** Serialize the current graph into snapshot bytes. */
-  saveSnapshotToBytes(): Buffer
+  saveSnapshotBuffer(options?: Record<string, any> | null | undefined): Buffer
   /** Replace the current graph state with a snapshot loaded from disk. */
-  loadSnapshot(path: string): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
+  loadSnapshot(path: string, options?: Record<string, any> | null | undefined): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
   /** Replace the current graph state with a snapshot loaded from bytes. */
-  loadSnapshotFromBytes(bytes: Uint8Array | Buffer): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
+  loadSnapshotBuffer(bytes: Uint8Array | Buffer, options?: Record<string, any> | null | undefined): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
 }

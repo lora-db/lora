@@ -29,11 +29,11 @@ use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyStri
 
 use lora_database::{
     Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
-    QueryResult, ResultFormat, Row, Snapshotable, TransactionMode,
+    QueryResult, ResultFormat, Row, SnapshotConfig, SnapshotOptions, TransactionMode, WalConfig,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -118,6 +118,29 @@ impl Database {
         options: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
         Self::py_new(py, database_name, options)
+    }
+
+    /// Open or create an explicit WAL-backed database.
+    #[staticmethod]
+    #[pyo3(signature = (wal_dir, options=None))]
+    fn open_wal(
+        py: Python<'_>,
+        wal_dir: String,
+        options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
+        let mut options = py_database_open_options(options)?;
+        if options.wal_dir.is_some() {
+            return Err(InvalidParamsError::new_err(
+                "wal_dir must be passed as the first argument to open_wal",
+            ));
+        }
+        options.wal_dir = Some(wal_dir);
+        let db = py
+            .allow_threads(move || open_wal_database(options))
+            .map_err(LoraQueryError::new_err)?;
+        Ok(Self {
+            db: Mutex::new(Some(db)),
+        })
     }
 
     /// Execute a Lora query.
@@ -268,14 +291,16 @@ impl Database {
 
     /// Save the graph to a snapshot file, byte string, base64 string, or
     /// file-like writer.
-    #[pyo3(signature = (target=None, format=None))]
+    #[pyo3(signature = (target=None, format=None, options=None))]
     fn save_snapshot<'py>(
         &self,
         py: Python<'py>,
         target: Option<&Bound<'py, PyAny>>,
         format: Option<&str>,
+        options: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let db = self.inner()?;
+        let snapshot_options = py_snapshot_options(options)?;
         let requested = format.map(str::to_string).or_else(|| {
             target
                 .and_then(|value| value.extract::<String>().ok())
@@ -287,7 +312,7 @@ impl Database {
         });
 
         if matches!(requested.as_deref(), Some("binary" | "base64")) || target.is_none() {
-            let (bytes, _meta) = save_snapshot_to_vec(py, db)?;
+            let (bytes, _meta) = save_snapshot_to_vec(py, db, snapshot_options)?;
             return match requested.as_deref().unwrap_or("binary") {
                 "base64" => py_base64_encode(py, &bytes),
                 _ => Ok(PyBytes::new_bound(py, &bytes).into_any().unbind()),
@@ -299,34 +324,39 @@ impl Database {
         };
 
         if has_attr(target, "write")? {
-            let (bytes, meta) = save_snapshot_to_vec(py, db)?;
+            let (bytes, meta) = save_snapshot_to_vec(py, db, snapshot_options)?;
             target.call_method1("write", (PyBytes::new_bound(py, &bytes),))?;
             return Ok(snapshot_meta_to_py(py, meta)?.into_any().unbind());
         }
 
         let path = py_fspath(target)?;
         let meta = py
-            .allow_threads(move || db.save_snapshot_to(&path))
+            .allow_threads(move || db.save_snapshot_to_with_options(&path, &snapshot_options))
             .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
         Ok(snapshot_meta_to_py(py, meta)?.into_any().unbind())
     }
 
     /// Replace the current graph state from a path, bytes-like object,
     /// base64 string, or file-like reader.
-    #[pyo3(signature = (source, format=None))]
+    #[pyo3(signature = (source, format=None, options=None))]
     fn load_snapshot<'py>(
         &self,
         py: Python<'py>,
         source: &Bound<'py, PyAny>,
         format: Option<&str>,
+        options: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let db = self.inner()?;
+        let credentials = py_snapshot_credentials(options)?;
 
         if matches!(format, Some("base64")) {
             let bytes = py_base64_decode(py, source)?;
             let meta = py
                 .allow_threads(move || {
-                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                    db.load_snapshot_from_bytes_with_credentials(
+                        bytes.as_slice(),
+                        credentials.as_ref(),
+                    )
                 })
                 .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
             return snapshot_meta_to_py(py, meta);
@@ -336,7 +366,10 @@ impl Database {
             let bytes = bytes.as_ref().to_vec();
             let meta = py
                 .allow_threads(move || {
-                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                    db.load_snapshot_from_bytes_with_credentials(
+                        bytes.as_slice(),
+                        credentials.as_ref(),
+                    )
                 })
                 .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
             return snapshot_meta_to_py(py, meta);
@@ -350,7 +383,10 @@ impl Database {
             let bytes = bytes.as_ref().to_vec();
             let meta = py
                 .allow_threads(move || {
-                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                    db.load_snapshot_from_bytes_with_credentials(
+                        bytes.as_slice(),
+                        credentials.as_ref(),
+                    )
                 })
                 .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
             return snapshot_meta_to_py(py, meta);
@@ -364,7 +400,10 @@ impl Database {
             let bytes = bytes.as_ref().to_vec();
             let meta = py
                 .allow_threads(move || {
-                    db.with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+                    db.load_snapshot_from_bytes_with_credentials(
+                        bytes.as_slice(),
+                        credentials.as_ref(),
+                    )
                 })
                 .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
             return snapshot_meta_to_py(py, meta);
@@ -372,7 +411,9 @@ impl Database {
 
         let path = py_fspath(source)?;
         let meta = py
-            .allow_threads(move || db.load_snapshot_from(&path))
+            .allow_threads(move || {
+                db.load_snapshot_from_with_credentials(&path, credentials.as_ref())
+            })
             .map_err(|e| LoraQueryError::new_err(format!("{e}")))?;
         snapshot_meta_to_py(py, meta)
     }
@@ -392,13 +433,22 @@ impl Database {
 fn save_snapshot_to_vec(
     py: Python<'_>,
     db: Arc<InnerDatabase<InMemoryGraph>>,
+    options: lora_database::SnapshotOptions,
 ) -> PyResult<(Vec<u8>, lora_database::SnapshotMeta)> {
     let result = py.allow_threads(move || {
-        let mut bytes = Vec::new();
-        let meta = db.with_store(|store| store.save_snapshot(&mut bytes))?;
-        Ok::<_, lora_store::SnapshotError>((bytes, meta))
+        db.save_snapshot_to_bytes_with_options(&options)
+            .map(|(bytes, info)| (bytes, snapshot_info_to_meta(info)))
     });
     result.map_err(|e| LoraQueryError::new_err(format!("{e}")))
+}
+
+fn snapshot_info_to_meta(info: lora_database::SnapshotInfo) -> lora_database::SnapshotMeta {
+    lora_database::SnapshotMeta {
+        format_version: info.format_version,
+        node_count: info.node_count,
+        relationship_count: info.relationship_count,
+        wal_lsn: info.wal_lsn,
+    }
 }
 
 fn snapshot_meta_to_py<'py>(
@@ -501,28 +551,230 @@ impl Database {
     }
 }
 
-fn py_database_open_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<DatabaseOpenOptions> {
-    let Some(options) = options else {
-        return Ok(DatabaseOpenOptions::default());
+struct PyDatabaseOpenOptions {
+    named: DatabaseOpenOptions,
+    has_database_dir: bool,
+    wal_dir: Option<String>,
+    snapshot_dir: Option<String>,
+    snapshot_every_commits: Option<u64>,
+    snapshot_keep_old: Option<usize>,
+    has_snapshot_codec: bool,
+    snapshot_codec: SnapshotOptions,
+}
+
+impl PyDatabaseOpenOptions {
+    fn has_explicit_wal_options(&self) -> bool {
+        self.wal_dir.is_some()
+            || self.snapshot_dir.is_some()
+            || self.snapshot_every_commits.is_some()
+            || self.snapshot_keep_old.is_some()
+            || self.has_snapshot_codec
+    }
+
+    fn has_snapshot_tuning_options(&self) -> bool {
+        self.snapshot_every_commits.is_some()
+            || self.snapshot_keep_old.is_some()
+            || self.has_snapshot_codec
+    }
+}
+
+fn py_database_open_options(
+    options: Option<&Bound<'_, PyDict>>,
+) -> PyResult<PyDatabaseOpenOptions> {
+    let mut out = PyDatabaseOpenOptions {
+        named: DatabaseOpenOptions::default(),
+        has_database_dir: false,
+        wal_dir: None,
+        snapshot_dir: None,
+        snapshot_every_commits: None,
+        snapshot_keep_old: None,
+        has_snapshot_codec: false,
+        snapshot_codec: SnapshotOptions::default(),
     };
-    let mut out = DatabaseOpenOptions::default();
+    let Some(options) = options else {
+        return Ok(out);
+    };
     let value = match options.get_item("database_dir")? {
         Some(value) => Some(value),
         None => options.get_item("databaseDir")?,
     };
     if let Some(value) = value {
-        out.database_dir = value.extract::<String>()?.into();
+        out.named.database_dir = value.extract::<String>()?.into();
+        out.has_database_dir = true;
+    }
+    let value = match options.get_item("wal_dir")? {
+        Some(value) => Some(value),
+        None => options.get_item("walDir")?,
+    };
+    if let Some(value) = value {
+        out.wal_dir = Some(value.extract::<String>()?);
+    }
+    let value = match options.get_item("snapshot_dir")? {
+        Some(value) => Some(value),
+        None => options.get_item("snapshotDir")?,
+    };
+    if let Some(value) = value {
+        out.snapshot_dir = Some(value.extract::<String>()?);
+    }
+    let value = match options.get_item("snapshot_every_commits")? {
+        Some(value) => Some(value),
+        None => options.get_item("snapshotEveryCommits")?,
+    };
+    if let Some(value) = value {
+        out.snapshot_every_commits = Some(value.extract::<u64>()?);
+    }
+    let value = match options.get_item("snapshot_keep_old")? {
+        Some(value) => Some(value),
+        None => options.get_item("snapshotKeepOld")?,
+    };
+    if let Some(value) = value {
+        out.snapshot_keep_old = Some(value.extract::<usize>()?);
+    }
+    let value = match options.get_item("snapshot_options")? {
+        Some(value) => Some(value),
+        None => options.get_item("snapshotOptions")?,
+    };
+    if let Some(value) = value {
+        out.has_snapshot_codec = true;
+        out.snapshot_codec = lora_database::snapshot_options_from_json(Some(py_to_json(&value)?))
+            .map_err(|e| {
+            InvalidParamsError::new_err(format!("invalid snapshot options: {e}"))
+        })?;
     }
     Ok(out)
 }
 
+fn py_snapshot_options(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<lora_database::SnapshotOptions> {
+    let json = py_optional_to_json(options)?;
+    lora_database::snapshot_options_from_json(json)
+        .map_err(|e| InvalidParamsError::new_err(format!("invalid snapshot options: {e}")))
+}
+
+fn py_snapshot_credentials(
+    options: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<lora_database::SnapshotCredentials>> {
+    let json = py_optional_to_json(options)?;
+    lora_database::snapshot_credentials_from_json(json)
+        .map_err(|e| InvalidParamsError::new_err(format!("invalid snapshot credentials: {e}")))
+}
+
+fn py_optional_to_json(options: Option<&Bound<'_, PyAny>>) -> PyResult<Option<serde_json::Value>> {
+    match options {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => py_to_json(value).map(Some),
+    }
+}
+
+fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    if obj.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+    if let Ok(b) = obj.downcast::<PyBool>() {
+        return Ok(serde_json::Value::Bool(b.is_true()));
+    }
+    if let Ok(i) = obj.downcast::<PyInt>() {
+        let value = i.extract::<i64>().map_err(|_| {
+            InvalidParamsError::new_err("snapshot option integer does not fit in i64")
+        })?;
+        return Ok(serde_json::Value::Number(value.into()));
+    }
+    if let Ok(f) = obj.downcast::<PyFloat>() {
+        let value = f.extract::<f64>()?;
+        let Some(number) = serde_json::Number::from_f64(value) else {
+            return Err(InvalidParamsError::new_err(
+                "snapshot option float must be finite",
+            ));
+        };
+        return Ok(serde_json::Value::Number(number));
+    }
+    if let Ok(s) = obj.downcast::<PyString>() {
+        return Ok(serde_json::Value::String(s.extract::<String>()?));
+    }
+    if let Ok(bytes) = obj.extract::<PyBackedBytes>() {
+        return Ok(serde_json::Value::Array(
+            bytes
+                .as_ref()
+                .iter()
+                .map(|byte| serde_json::Value::Number((*byte as u64).into()))
+                .collect(),
+        ));
+    }
+    if let Ok(list) = obj.downcast::<PyList>() {
+        let mut out = Vec::with_capacity(list.len());
+        for item in list {
+            out.push(py_to_json(&item)?);
+        }
+        return Ok(serde_json::Value::Array(out));
+    }
+    if let Ok(dict) = obj.downcast::<PyDict>() {
+        let mut out = serde_json::Map::new();
+        for (key, value) in dict {
+            let key = key
+                .extract::<String>()
+                .map_err(|_| InvalidParamsError::new_err("snapshot option keys must be str"))?;
+            out.insert(key, py_to_json(&value)?);
+        }
+        return Ok(serde_json::Value::Object(out));
+    }
+    Err(InvalidParamsError::new_err(format!(
+        "unsupported snapshot option type: {}",
+        obj.get_type().name()?,
+    )))
+}
+
 fn open_database(
     database_name: Option<String>,
-    options: DatabaseOpenOptions,
+    options: PyDatabaseOpenOptions,
 ) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    if options.has_explicit_wal_options() {
+        return Err(
+            "wal_dir/snapshot_dir are not valid for Database.create(); use Database.open_wal()"
+                .to_string(),
+        );
+    }
     let db = match database_name {
-        Some(name) => InnerDatabase::open_named(name, options).map_err(|e| e.to_string())?,
-        None => InnerDatabase::in_memory(),
+        Some(name) => InnerDatabase::open_named(name, options.named).map_err(|e| e.to_string())?,
+        None => {
+            if options.has_database_dir {
+                return Err("database_name is required when database_dir is provided".to_string());
+            }
+            InnerDatabase::in_memory()
+        }
+    };
+    Ok(Arc::new(db))
+}
+
+fn open_wal_database(
+    options: PyDatabaseOpenOptions,
+) -> Result<Arc<InnerDatabase<InMemoryGraph>>, String> {
+    if options.has_database_dir {
+        return Err("database_dir is not valid for Database.open_wal()".to_string());
+    }
+    let has_snapshot_tuning = options.has_snapshot_tuning_options();
+    if options.snapshot_dir.is_none() && has_snapshot_tuning {
+        return Err(
+            "snapshot_dir is required when managed snapshot options are provided".to_string(),
+        );
+    }
+    let wal_dir = options
+        .wal_dir
+        .ok_or_else(|| "wal_dir is required for Database.open_wal()".to_string())?;
+    let wal_config = WalConfig::enabled(wal_dir);
+    let db = if let Some(snapshot_dir) = options.snapshot_dir {
+        let mut snapshots = SnapshotConfig::enabled(snapshot_dir)
+            .keep_old(options.snapshot_keep_old.unwrap_or(1))
+            .codec(options.snapshot_codec);
+        if let Some(every) = options.snapshot_every_commits {
+            if every != 0 {
+                snapshots = snapshots.every_commits(every);
+            }
+        }
+        InnerDatabase::open_with_wal_snapshots(wal_config, snapshots).map_err(|e| e.to_string())?
+    } else {
+        InnerDatabase::open_with_wal(wal_config).map_err(|e| e.to_string())?
     };
     Ok(Arc::new(db))
 }
@@ -609,6 +861,7 @@ fn lora_value_to_py<'py>(py: Python<'py>, value: &LoraValue) -> PyResult<Bound<'
         LoraValue::Int(i) => Ok(i.into_py(py).into_bound(py)),
         LoraValue::Float(f) => Ok(f.into_py(py).into_bound(py)),
         LoraValue::String(s) => Ok(s.into_py(py).into_bound(py)),
+        LoraValue::Binary(b) => binary_to_py(py, b),
         LoraValue::List(items) => {
             let list = PyList::empty_bound(py);
             for item in items {
@@ -659,6 +912,18 @@ fn lora_value_to_py<'py>(py: Python<'py>, value: &LoraValue) -> PyResult<Bound<'
         LoraValue::Point(p) => point_to_py(py, p),
         LoraValue::Vector(v) => vector_to_py(py, v),
     }
+}
+
+fn binary_to_py<'py>(py: Python<'py>, b: &LoraBinary) -> PyResult<Bound<'py, PyAny>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("kind", "binary")?;
+    d.set_item("length", b.len())?;
+    let segments = PyList::empty_bound(py);
+    for segment in b.segments() {
+        segments.append(PyBytes::new_bound(py, segment))?;
+    }
+    d.set_item("segments", segments)?;
+    Ok(d.into_any())
 }
 
 /// Convert a `LoraVector` to the canonical tagged Python dict shape.
@@ -779,6 +1044,9 @@ fn py_to_lora_value(obj: &Bound<'_, PyAny>) -> PyResult<LoraValue> {
     if let Ok(s) = obj.downcast::<PyString>() {
         return Ok(LoraValue::String(s.extract::<String>()?));
     }
+    if let Ok(bytes) = obj.extract::<PyBackedBytes>() {
+        return Ok(LoraValue::Binary(LoraBinary::from_bytes(bytes.to_vec())));
+    }
     if let Ok(list) = obj.downcast::<PyList>() {
         let mut out = Vec::with_capacity(list.len());
         for item in list {
@@ -853,6 +1121,7 @@ fn py_dict_to_cypher(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
                 "vector" => {
                     return build_vector_from_dict(dict);
                 }
+                "binary" | "blob" => return build_binary_from_dict(dict),
                 _ => { /* fall through to generic map */ }
             }
         }
@@ -866,6 +1135,23 @@ fn py_dict_to_cypher(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
         map.insert(key, py_to_lora_value(&v)?);
     }
     Ok(LoraValue::Map(map))
+}
+
+fn build_binary_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
+    let segments_obj = dict
+        .get_item("segments")?
+        .ok_or_else(|| InvalidParamsError::new_err("binary.segments required"))?;
+    let segments = segments_obj
+        .downcast::<PyList>()
+        .map_err(|_| InvalidParamsError::new_err("binary.segments must be a list of bytes"))?;
+    let mut out = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let bytes = segment
+            .extract::<PyBackedBytes>()
+            .map_err(|_| InvalidParamsError::new_err("binary segment must be bytes"))?;
+        out.push(bytes.to_vec());
+    }
+    Ok(LoraValue::Binary(LoraBinary::from_segments(out)))
 }
 
 fn parse_tagged(

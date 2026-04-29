@@ -116,14 +116,17 @@ useful for tests and for swapping execution backends behind the same API.
 
 ## Snapshots
 
-WASM has no filesystem access, so `saveSnapshot()` defaults to a `Uint8Array`.
-It also accepts typed formats: `"base64"` returns base64 text, `"blob"` returns
-a `Blob`, and `"download"` triggers a browser download from the main thread.
-
-`loadSnapshot` accepts a `WasmSnapshotSource`: `Uint8Array`, `ArrayBuffer`,
-`Blob`/`File`, `Response`, web `ReadableStream`, string URL, or `URL`. It does
-not include Node `Buffer`; use `Uint8Array` bytes when running the WASM package
-from Node.
+WASM has no filesystem access, so snapshots never accept string paths.
+`saveSnapshot()` defaults to `Uint8Array`, and can also return `ArrayBuffer`,
+`Blob`, `Response`, `ReadableStream`, or an object `URL`. `loadSnapshot`
+accepts `URL`, `Uint8Array`, `ArrayBuffer`, `Blob`, `Response`, and web
+`ReadableStream<Uint8Array | ArrayBuffer>`. The bytes use the database
+snapshot codec (`LORACOL1`) and can be loaded by native LoraDB. Older store
+snapshots (`LORASNAP`) are still accepted by `loadSnapshot` for compatibility.
+Snapshot bytes are uncompressed by default; pass `{ compression: "gzip" }` or
+`{ compression: { format: "gzip", level: 1 } }` to save smaller
+WASM-portable snapshots. Gzip levels `0..9` are supported; level `1` is the
+fast default.
 
 ```ts
 import { createDatabase } from "lora-wasm";
@@ -131,19 +134,17 @@ import { createDatabase } from "lora-wasm";
 const db = await createDatabase();
 await db.execute("CREATE (:Person {name: 'Alice'})");
 
-const bytes = await db.saveSnapshotToBytes();
-const sameBytes = await db.saveSnapshot("binary");
-const blob = await db.saveSnapshot({ format: "blob" });
-await db.saveSnapshot({ format: "download", filename: "graph.lorasnap" });
+const bytes = await db.saveSnapshot();
+const compressed = await db.saveSnapshot({ compression: "gzip" });
+const blob = await db.saveSnapshot({ format: "blob", compression: "gzip" });
+const response = await db.saveSnapshot({ format: "response" });
 
 await db.loadSnapshot(bytes);
+await db.loadSnapshot(compressed);
 await db.loadSnapshot(blob);
-await db.loadSnapshot(new Response(bytes).body!);
+await db.loadSnapshot(response);
 await db.loadSnapshot(new URL("/graph.lorasnap", location.href));
 ```
-
-`loadSnapshotFromBytes(bytes)` remains available for the narrow
-`Uint8Array`-only path.
 
 ## Typed value model
 

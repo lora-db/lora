@@ -38,6 +38,11 @@ class Database:
         database_name: Optional[str] = None,
         options: Optional[Mapping[str, Any]] = None,
     ) -> "Database": ...
+    @staticmethod
+    def open_wal(
+        wal_dir: str,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> "Database": ...
     def execute(
         self,
         query: str,
@@ -62,19 +67,59 @@ class Database:
     @overload
     def save_snapshot(self) -> bytes: ...
     @overload
-    def save_snapshot(self, target: Literal["binary", "bytes"]) -> bytes: ...
+    def save_snapshot(
+        self,
+        target: Literal["binary", "bytes"],
+        format: None = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> bytes: ...
     @overload
-    def save_snapshot(self, target: Literal["base64"]) -> str: ...
+    def save_snapshot(
+        self,
+        target: Literal["base64"],
+        format: None = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> str: ...
     @overload
-    def save_snapshot(self, target: BinaryIO) -> SnapshotMeta: ...
+    def save_snapshot(
+        self,
+        target: BinaryIO,
+        format: None = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> SnapshotMeta: ...
     @overload
-    def save_snapshot(self, target: SnapshotPath, format: None = None) -> SnapshotMeta: ...
-    def save_snapshot(self, target: Any = None, format: Optional[str] = None) -> Any: ...
+    def save_snapshot(
+        self,
+        target: SnapshotPath,
+        format: None = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> SnapshotMeta: ...
+    def save_snapshot(
+        self,
+        target: Any = None,
+        format: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> Any: ...
     @overload
-    def load_snapshot(self, source: SnapshotLoadSource, format: None = None) -> SnapshotMeta: ...
+    def load_snapshot(
+        self,
+        source: SnapshotLoadSource,
+        format: None = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> SnapshotMeta: ...
     @overload
-    def load_snapshot(self, source: str | bytes, format: Literal["base64"]) -> SnapshotMeta: ...
-    def load_snapshot(self, source: Any, format: Optional[str] = None) -> SnapshotMeta: ...
+    def load_snapshot(
+        self,
+        source: str | bytes,
+        format: Literal["base64"],
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> SnapshotMeta: ...
+    def load_snapshot(
+        self,
+        source: Any,
+        format: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> SnapshotMeta: ...
     def __repr__(self) -> str: ...
 
 class QueryStream(Iterator[Mapping[str, Any]]):

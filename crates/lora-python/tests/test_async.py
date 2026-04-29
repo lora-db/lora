@@ -76,6 +76,28 @@ async def test_invalid_wal_dir_error_propagates_through_await(tmp_path: Path) ->
         await AsyncDatabase.create("app", {"database_dir": str(not_a_dir)})
 
 
+async def test_async_managed_wal_snapshots(tmp_path: Path) -> None:
+    wal_dir = tmp_path / "wal"
+    snapshot_dir = tmp_path / "snapshots"
+    options = {
+        "snapshot_dir": str(snapshot_dir),
+        "snapshot_every_commits": 2,
+    }
+
+    first = await AsyncDatabase.open_wal(str(wal_dir), options)
+    await first.execute("CREATE (:Managed {id: 1})")
+    await first.execute("CREATE (:Managed {id: 2})")
+    assert (snapshot_dir / "CURRENT").is_file()
+    await first.execute("CREATE (:Managed {id: 3})")
+    await first.close()
+
+    second = await AsyncDatabase.open_wal(str(wal_dir), options)
+    assert (await second.execute(
+        "MATCH (n:Managed) RETURN n.id AS id ORDER BY id"
+    ))["rows"] == [{"id": 1}, {"id": 2}, {"id": 3}]
+    await second.close()
+
+
 async def test_invalid_database_name_error_propagates_through_await() -> None:
     with pytest.raises(LoraQueryError):
         await AsyncDatabase.create("../bad")
@@ -175,3 +197,37 @@ async def test_async_snapshot_bytes_and_readers() -> None:
         assert meta["nodeCount"] == 1
         rows = (await target.execute("MATCH (n:Snapshot) RETURN n.name AS name"))["rows"]
         assert rows == [{"name": "Ada"}]
+
+
+async def test_async_encrypted_snapshot_bytes_and_paths(tmp_path: Path) -> None:
+    encryption = {
+        "type": "password",
+        "keyId": "python-async-test",
+        "password": "open sesame",
+        "params": {"memoryCostKib": 512, "timeCost": 1, "parallelism": 1},
+    }
+    options = {
+        "compression": {"format": "gzip", "level": 1},
+        "encryption": encryption,
+    }
+    source = await AsyncDatabase.create()
+    await source.execute("CREATE (:Secret {name: 'Ada'})")
+
+    binary = await source.save_snapshot("binary", options=options)
+    assert isinstance(binary, bytes)
+    target = await AsyncDatabase.create()
+    with pytest.raises(LoraQueryError):
+        await target.load_snapshot(binary)
+    meta = await target.load_snapshot(binary, options={"credentials": encryption})
+    assert meta["nodeCount"] == 1
+
+    path = tmp_path / "secret.lsnap"
+    meta = await source.save_snapshot(path, options=options)
+    assert meta["nodeCount"] == 1
+    target = await AsyncDatabase.create()
+    with pytest.raises(LoraQueryError):
+        await target.load_snapshot(path)
+    meta = await target.load_snapshot(path, options={"encryption": encryption})
+    assert meta["nodeCount"] == 1
+    rows = (await target.execute("MATCH (n:Secret) RETURN n.name AS name"))["rows"]
+    assert rows == [{"name": "Ada"}]

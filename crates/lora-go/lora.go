@@ -28,6 +28,24 @@ type Options struct {
 	DatabaseDir string
 }
 
+// WalOptions controls explicit WAL-backed persistence. Use [OpenWal] instead
+// of [New] when opening this lower-level storage shape.
+type WalOptions struct {
+	// WalDir is the directory containing WAL segment files.
+	WalDir string
+	// SnapshotDir stores managed checkpoint snapshots for WalDir-backed
+	// databases. SnapshotDir requires WalDir.
+	SnapshotDir string
+	// SnapshotEveryCommits creates an automatic checkpoint after this many
+	// committed WAL transactions. Zero keeps checkpointing manual.
+	SnapshotEveryCommits uint64
+	// SnapshotKeepOld controls how many old managed snapshots to retain.
+	// Zero uses the core default of one retained old snapshot.
+	SnapshotKeepOld uint64
+	// SnapshotOptions controls managed snapshot compression/encryption.
+	SnapshotOptions *SnapshotOptions
+}
+
 // Database is a Lora graph database backed by the Rust engine. It is
 // safe to share across goroutines; native handle access is protected
 // by an internal RWMutex, while the Rust engine separately shares
@@ -70,29 +88,120 @@ func NewDatabase(args ...any) (*Database, error) {
 		if status != C.LORA_STATUS_OK {
 			return nil, &LoraError{Code: CodePanic, Message: fmt.Sprintf("lora_db_new returned status %d", int(status))}
 		}
-	case 1, 2:
+	case 1:
+		if options, ok := args[0].(Options); ok {
+			if options.DatabaseDir != "" {
+				return nil, &LoraError{
+					Code:    CodeInvalidParams,
+					Message: "database name is required when DatabaseDir is provided",
+				}
+			}
+			return nil, &LoraError{
+				Code:    CodeInvalidParams,
+				Message: "New with lora.Options requires a database name; call New() for in-memory or OpenWal() for WAL persistence",
+			}
+		}
 		databaseName, ok := args[0].(string)
 		if !ok {
 			return nil, &LoraError{Code: CodeInvalidParams, Message: "database name must be a string"}
 		}
-		var options Options
-		if len(args) == 2 {
-			var ok bool
-			options, ok = args[1].(Options)
-			if !ok {
-				return nil, &LoraError{Code: CodeInvalidParams, Message: "options must be lora.Options"}
-			}
+		var err error
+		handle, err = openNamed(databaseName, Options{})
+		if err != nil {
+			return nil, err
 		}
+	case 2:
+		databaseName, ok := args[0].(string)
+		if !ok {
+			return nil, &LoraError{Code: CodeInvalidParams, Message: "database name must be a string"}
+		}
+		options, ok := args[1].(Options)
+		if !ok {
+			return nil, &LoraError{Code: CodeInvalidParams, Message: "options must be lora.Options"}
+		}
+		var err error
+		handle, err = openNamed(databaseName, options)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, &LoraError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("expected database name and optional lora.Options, got %d arguments", len(args)),
+		}
+	}
+	return databaseFromHandle(handle), nil
+}
 
-		cDatabaseName := C.CString(databaseName)
-		defer C.free(unsafe.Pointer(cDatabaseName))
-		var cDatabaseDir *C.char
-		if options.DatabaseDir != "" {
-			cDatabaseDir = C.CString(options.DatabaseDir)
-			defer C.free(unsafe.Pointer(cDatabaseDir))
+func openNamed(databaseName string, options Options) (*C.LoraDatabase, error) {
+	var handle *C.LoraDatabase
+	cDatabaseName := C.CString(databaseName)
+	defer C.free(unsafe.Pointer(cDatabaseName))
+	var cDatabaseDir *C.char
+	if options.DatabaseDir != "" {
+		cDatabaseDir = C.CString(options.DatabaseDir)
+		defer C.free(unsafe.Pointer(cDatabaseDir))
+	}
+	var outError *C.char
+	status := C.lora_db_new_named(&handle, cDatabaseName, cDatabaseDir, &outError)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+	return handle, nil
+}
+
+func databaseFromHandle(handle *C.LoraDatabase) *Database {
+	db := &Database{handle: handle}
+	// Safety net: if a caller forgets Close, the finalizer frees the
+	// handle. This does not replace Close — the finalizer may run
+	// arbitrarily late or not at all on process exit.
+	runtime.SetFinalizer(db, func(d *Database) {
+		_ = d.Close()
+	})
+	return db
+}
+
+func (options WalOptions) hasSnapshotTuningOptions() bool {
+	return options.SnapshotEveryCommits != 0 ||
+		options.SnapshotKeepOld != 0 ||
+		options.SnapshotOptions != nil
+}
+
+// OpenWal opens or creates an explicit WAL-backed database. Pass SnapshotDir
+// to enable managed snapshots for faster recovery.
+func OpenWal(options WalOptions) (*Database, error) {
+	handle, err := openWalHandle(options)
+	if err != nil {
+		return nil, err
+	}
+	return databaseFromHandle(handle), nil
+}
+
+func openWalHandle(options WalOptions) (*C.LoraDatabase, error) {
+	if options.WalDir == "" {
+		return nil, &LoraError{
+			Code:    CodeInvalidParams,
+			Message: "WalDir is required",
 		}
-		var outError *C.char
-		status := C.lora_db_new_named(&handle, cDatabaseName, cDatabaseDir, &outError)
+	}
+	if options.SnapshotDir == "" && options.hasSnapshotTuningOptions() {
+		return nil, &LoraError{
+			Code:    CodeInvalidParams,
+			Message: "SnapshotDir is required when managed snapshot options are provided",
+		}
+	}
+
+	cWalDir := C.CString(options.WalDir)
+	defer C.free(unsafe.Pointer(cWalDir))
+	var handle *C.LoraDatabase
+	var outError *C.char
+	if options.SnapshotDir == "" {
+		status := C.lora_db_new_with_wal(&handle, cWalDir, &outError)
 		if status != C.LORA_STATUS_OK {
 			defer func() {
 				if outError != nil {
@@ -101,20 +210,38 @@ func NewDatabase(args ...any) (*Database, error) {
 			}()
 			return nil, statusToError(int(status), outError)
 		}
-	default:
-		return nil, &LoraError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("expected database name and optional lora.Options, got %d arguments", len(args)),
-		}
+		return handle, nil
 	}
-	db := &Database{handle: handle}
-	// Safety net: if a caller forgets Close, the finalizer frees the
-	// handle. This does not replace Close — the finalizer may run
-	// arbitrarily late or not at all on process exit.
-	runtime.SetFinalizer(db, func(d *Database) {
-		_ = d.Close()
-	})
-	return db, nil
+
+	cSnapshotDir := C.CString(options.SnapshotDir)
+	defer C.free(unsafe.Pointer(cSnapshotDir))
+	keepOld := options.SnapshotKeepOld
+	if keepOld == 0 {
+		keepOld = 1
+	}
+	cSnapshotOptions, cleanup, err := snapshotOptionsCString(options.SnapshotOptions)
+	if err != nil {
+		return nil, &LoraError{Code: CodeInvalidParams, Message: err.Error()}
+	}
+	defer cleanup()
+	status := C.lora_db_new_with_wal_snapshots(
+		&handle,
+		cWalDir,
+		cSnapshotDir,
+		C.uint64_t(options.SnapshotEveryCommits),
+		C.uint64_t(keepOld),
+		cSnapshotOptions,
+		&outError,
+	)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+	return handle, nil
 }
 
 // Close releases the native database handle. Subsequent calls are

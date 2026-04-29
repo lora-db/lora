@@ -85,6 +85,34 @@ func Vector(values []any, dimension int, coordinateType string) map[string]any {
 func IsVector(v any) bool { return kindOf(v) == "vector" }
 
 // ---------------------------------------------------------------------------
+// Binary / blob
+// ---------------------------------------------------------------------------
+
+// Binary builds a segmented binary/blob parameter value. Segment boundaries are
+// preserved by WAL/snapshot storage; concatenate the segments in order to
+// reconstruct the logical byte string.
+func Binary(segments ...[]byte) map[string]any {
+	out := make([]any, len(segments))
+	length := 0
+	for i, segment := range segments {
+		copySegment := make([]any, len(segment))
+		for j, b := range segment {
+			copySegment[j] = int(b)
+		}
+		out[i] = copySegment
+		length += len(segment)
+	}
+	return map[string]any{
+		"kind":     "binary",
+		"length":   length,
+		"segments": out,
+	}
+}
+
+// IsBinary reports whether v is a binary/blob value.
+func IsBinary(v any) bool { return kindOf(v) == "binary" }
+
+// ---------------------------------------------------------------------------
 // Spatial constructors
 // ---------------------------------------------------------------------------
 

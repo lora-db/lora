@@ -122,6 +122,72 @@ class TestBasic < Minitest::Test
     FileUtils.remove_entry(dir) if dir && File.exist?(dir)
   end
 
+  def test_managed_wal_snapshots_recover_snapshot_then_newer_wal
+    dir = Dir.mktmpdir("lora-ruby-managed-snapshot-")
+    wal_dir = File.join(dir, "wal")
+    snapshot_dir = File.join(dir, "snapshots")
+
+    first = LoraRuby::Database.open_wal(
+      wal_dir,
+      {
+        snapshot_dir: snapshot_dir,
+        snapshot_every_commits: 2,
+      },
+    )
+    first.execute("CREATE (:Managed {id: 1})")
+    first.execute("CREATE (:Managed {id: 2})")
+    assert File.file?(File.join(snapshot_dir, "CURRENT"))
+    first.execute("CREATE (:Managed {id: 3})")
+    first.close
+
+    second = LoraRuby::Database.open_wal(
+      wal_dir,
+      {
+        snapshot_dir: snapshot_dir,
+        snapshot_every_commits: 2,
+      },
+    )
+    assert_equal(
+      [{ "id" => 1 }, { "id" => 2 }, { "id" => 3 }],
+      second.execute("MATCH (n:Managed) RETURN n.id AS id ORDER BY id")["rows"],
+    )
+    second.close
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.exist?(dir)
+  end
+
+  def test_create_rejects_wal_options_for_memory_database
+    dir = Dir.mktmpdir("lora-ruby-managed-snapshot-options-")
+
+    error = assert_raises(LoraRuby::QueryError) do
+      LoraRuby::Database.create(
+        {
+          wal_dir: File.join(dir, "wal"),
+          snapshot_every_commits: 2,
+        },
+      )
+    end
+    assert_includes error.message, "open_wal"
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.exist?(dir)
+  end
+
+  def test_managed_snapshot_options_require_snapshot_dir
+    dir = Dir.mktmpdir("lora-ruby-managed-snapshot-options-")
+
+    error = assert_raises(LoraRuby::QueryError) do
+      LoraRuby::Database.open_wal(
+        File.join(dir, "wal"),
+        {
+          snapshot_every_commits: 2,
+        },
+      )
+    end
+    assert_includes error.message, "snapshot_dir"
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.exist?(dir)
+  end
+
   def test_invalid_database_name_raises_query_error
     assert_raises(LoraRuby::QueryError) do
       LoraRuby::Database.create("../bad")

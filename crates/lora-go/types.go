@@ -8,8 +8,8 @@ type Params = map[string]any
 
 // Row is a single result row keyed by column name. Values are Go
 // natives for primitives and map[string]any for structured values
-// (nodes, relationships, paths, points, temporal values). Use the
-// IsNode / IsRelationship / IsPath / IsPoint / IsTemporal guards to
+// (nodes, relationships, paths, points, temporal, vector, and binary values).
+// Use the IsNode / IsRelationship / IsPath / IsPoint / IsTemporal guards to
 // narrow safely.
 type Row = map[string]any
 

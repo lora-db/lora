@@ -18,12 +18,19 @@ export interface NativeSnapshotMeta {
   walLsn: number | null;
 }
 
+export type NativeSnapshotOptions = unknown;
+
 export declare class Database {
   constructor(
     databaseName?: string | null,
     databaseDir?: string | null,
     syncMode?: "group" | "perCommit" | "per_commit" | null,
     groupSyncIntervalMs?: number | null,
+    walDir?: string | null,
+    snapshotDir?: string | null,
+    snapshotEveryCommits?: number | null,
+    snapshotKeepOld?: number | null,
+    snapshotOptions?: NativeSnapshotOptions | null,
   );
   /** Non-blocking: runs on the libuv threadpool, returns a Promise. */
   execute(
@@ -48,11 +55,14 @@ export declare class Database {
   relationshipCount(): number;
   dispose(): void;
   /** Atomic save. Synchronous under the store read lock. */
-  saveSnapshot(path: string): NativeSnapshotMeta;
+  saveSnapshot(path: string, options?: NativeSnapshotOptions | null): NativeSnapshotMeta;
   /** Serialize the current graph into snapshot bytes. */
-  saveSnapshotToBytes(): Buffer;
+  saveSnapshotBuffer(options?: NativeSnapshotOptions | null): Buffer;
   /** Replace the current graph with the snapshot at `path`. */
-  loadSnapshot(path: string): NativeSnapshotMeta;
+  loadSnapshot(path: string, options?: NativeSnapshotOptions | null): NativeSnapshotMeta;
   /** Replace the current graph with snapshot bytes. */
-  loadSnapshotFromBytes(bytes: Uint8Array | Buffer): NativeSnapshotMeta;
+  loadSnapshotBuffer(
+    bytes: Uint8Array | Buffer,
+    options?: NativeSnapshotOptions | null,
+  ): NativeSnapshotMeta;
 }

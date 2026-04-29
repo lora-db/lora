@@ -44,12 +44,13 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 
 use lora_database::{
-    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
-    QueryResult, ResultFormat, Row, Snapshotable, TransactionMode, WalConfig,
+    snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
+    DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat, Row,
+    SnapshotConfig, SnapshotCredentials, SnapshotOptions, TransactionMode, WalConfig,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 // ============================================================================
@@ -101,6 +102,26 @@ impl LoraDatabase {
     fn new_with_wal(wal_dir: &str) -> Result<Self, String> {
         let inner =
             InnerDatabase::open_with_wal(WalConfig::enabled(wal_dir)).map_err(|e| e.to_string())?;
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
+    }
+
+    fn new_with_wal_snapshots(
+        wal_dir: &str,
+        snapshot_dir: &str,
+        checkpoint_every_commits: u64,
+        keep_old: usize,
+        codec: SnapshotOptions,
+    ) -> Result<Self, String> {
+        let mut snapshots = SnapshotConfig::enabled(snapshot_dir)
+            .keep_old(keep_old)
+            .codec(codec);
+        if checkpoint_every_commits != 0 {
+            snapshots = snapshots.every_commits(checkpoint_every_commits);
+        }
+        let inner = InnerDatabase::open_with_wal_snapshots(WalConfig::enabled(wal_dir), snapshots)
+            .map_err(|e| e.to_string())?;
         Ok(Self {
             inner: Arc::new(inner),
         })
@@ -198,6 +219,100 @@ pub unsafe extern "C" fn lora_db_new_with_wal(
         };
 
         match LoraDatabase::new_with_wal(wal_dir) {
+            Ok(db) => {
+                *out_db = Box::into_raw(Box::new(db));
+                LoraStatus::Ok
+            }
+            Err(e) => {
+                write_error(out_error, LORA_ERROR_PREFIX, &e);
+                LoraStatus::LoraError
+            }
+        }
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, LORA_ERROR_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Allocate a WAL-backed database with a managed snapshot directory.
+///
+/// `checkpoint_every_commits == 0` keeps checkpointing manual; any positive
+/// value creates an automatic snapshot after that many committed WAL
+/// transactions. `snapshot_options_json` accepts the same codec options as
+/// `lora_db_save_snapshot_with_options`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_new_with_wal_snapshots(
+    out_db: *mut *mut LoraDatabase,
+    wal_dir: *const c_char,
+    snapshot_dir: *const c_char,
+    checkpoint_every_commits: u64,
+    keep_old: u64,
+    snapshot_options_json: *const c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if !out_db.is_null() {
+            *out_db = ptr::null_mut();
+        }
+        if out_db.is_null() || wal_dir.is_null() || snapshot_dir.is_null() {
+            return LoraStatus::NullPointer;
+        }
+
+        let wal_dir = match CStr::from_ptr(wal_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    LORA_ERROR_PREFIX,
+                    "wal directory is not valid UTF-8",
+                );
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+        let snapshot_dir = match CStr::from_ptr(snapshot_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    LORA_ERROR_PREFIX,
+                    "snapshot directory is not valid UTF-8",
+                );
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+        let keep_old = match usize::try_from(keep_old) {
+            Ok(value) => value,
+            Err(_) => {
+                write_error(
+                    out_error,
+                    INVALID_PARAMS_PREFIX,
+                    "snapshot keep_old does not fit in usize",
+                );
+                return LoraStatus::InvalidParams;
+            }
+        };
+        let codec = match parse_snapshot_options_arg(snapshot_options_json) {
+            Ok(options) => options,
+            Err(error) => return write_parse_error(out_error, error),
+        };
+
+        match LoraDatabase::new_with_wal_snapshots(
+            wal_dir,
+            snapshot_dir,
+            checkpoint_every_commits,
+            keep_old,
+            codec,
+        ) {
             Ok(db) => {
                 *out_db = Box::into_raw(Box::new(db));
                 LoraStatus::Ok
@@ -809,6 +924,16 @@ impl LoraSnapshotMeta {
         }
     }
 
+    fn from_info(info: lora_database::SnapshotInfo) -> Self {
+        Self {
+            format_version: info.format_version,
+            wal_lsn_set: if info.wal_lsn.is_some() { 1 } else { 0 },
+            node_count: info.node_count as u64,
+            relationship_count: info.relationship_count as u64,
+            wal_lsn: info.wal_lsn.unwrap_or(0),
+        }
+    }
+
     fn zeroed() -> Self {
         Self {
             format_version: 0,
@@ -820,6 +945,75 @@ impl LoraSnapshotMeta {
     }
 }
 
+type FfiParseResult<T> = std::result::Result<T, (LoraStatus, &'static str, String)>;
+
+unsafe fn parse_optional_json_arg(
+    json: *const c_char,
+    label: &str,
+) -> FfiParseResult<Option<serde_json::Value>> {
+    if json.is_null() {
+        return Ok(None);
+    }
+
+    let value = CStr::from_ptr(json)
+        .to_str()
+        .map_err(|_| {
+            (
+                LoraStatus::InvalidUtf8,
+                INVALID_PARAMS_PREFIX,
+                format!("{label} is not valid UTF-8"),
+            )
+        })?
+        .trim();
+
+    if value.is_empty() || value == "null" {
+        return Ok(None);
+    }
+
+    serde_json::from_str(value).map(Some).map_err(|e| {
+        (
+            LoraStatus::InvalidParams,
+            INVALID_PARAMS_PREFIX,
+            format!("{label} is not valid JSON: {e}"),
+        )
+    })
+}
+
+unsafe fn parse_snapshot_options_arg(
+    options_json: *const c_char,
+) -> FfiParseResult<SnapshotOptions> {
+    let options = parse_optional_json_arg(options_json, "snapshot options")?;
+    snapshot_options_from_json(options).map_err(|e| {
+        (
+            LoraStatus::InvalidParams,
+            INVALID_PARAMS_PREFIX,
+            format!("invalid snapshot options: {e}"),
+        )
+    })
+}
+
+unsafe fn parse_snapshot_credentials_arg(
+    options_json: *const c_char,
+) -> FfiParseResult<Option<SnapshotCredentials>> {
+    let options = parse_optional_json_arg(options_json, "snapshot credentials")?;
+    snapshot_credentials_from_json(options).map_err(|e| {
+        (
+            LoraStatus::InvalidParams,
+            INVALID_PARAMS_PREFIX,
+            format!("invalid snapshot credentials: {e}"),
+        )
+    })
+}
+
+unsafe fn write_parse_error(
+    out_error: *mut *mut c_char,
+    error: (LoraStatus, &'static str, String),
+) -> LoraStatus {
+    let (status, prefix, message) = error;
+    write_error(out_error, prefix, &message);
+    status
+}
+
 /// Save a snapshot to `path`. Atomic: the target is only replaced once the
 /// full payload has been written + fsync'd.
 ///
@@ -829,6 +1023,22 @@ impl LoraSnapshotMeta {
 pub unsafe extern "C" fn lora_db_save_snapshot(
     db: *mut LoraDatabase,
     path: *const c_char,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    lora_db_save_snapshot_with_options(db, path, ptr::null(), out_meta, out_error)
+}
+
+/// Save a snapshot to `path` with JSON-encoded codec options.
+///
+/// `options_json` may be null/empty or a JSON object accepted by the shared
+/// snapshot option parser. Encrypted snapshots can be restored with the
+/// matching load-with-options functions.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_save_snapshot_with_options(
+    db: *mut LoraDatabase,
+    path: *const c_char,
+    options_json: *const c_char,
     out_meta: *mut LoraSnapshotMeta,
     out_error: *mut *mut c_char,
 ) -> c_int {
@@ -850,7 +1060,15 @@ pub unsafe extern "C" fn lora_db_save_snapshot(
             }
         };
 
-        match (*db).inner.save_snapshot_to(path_str) {
+        let options = match parse_snapshot_options_arg(options_json) {
+            Ok(options) => options,
+            Err(e) => return write_parse_error(out_error, e),
+        };
+
+        match (*db)
+            .inner
+            .save_snapshot_to_with_options(path_str, &options)
+        {
             Ok(meta) => {
                 *out_meta = LoraSnapshotMeta::from_meta(meta);
                 LoraStatus::Ok
@@ -883,6 +1101,27 @@ pub unsafe extern "C" fn lora_db_save_snapshot_to_bytes(
     out_meta: *mut LoraSnapshotMeta,
     out_error: *mut *mut c_char,
 ) -> c_int {
+    lora_db_save_snapshot_to_bytes_with_options(
+        db,
+        ptr::null(),
+        out_bytes,
+        out_len,
+        out_meta,
+        out_error,
+    )
+}
+
+/// Serialize the current graph into snapshot bytes with JSON-encoded codec
+/// options.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_save_snapshot_to_bytes_with_options(
+    db: *mut LoraDatabase,
+    options_json: *const c_char,
+    out_bytes: *mut *mut c_uchar,
+    out_len: *mut usize,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
     let result = catch_unwind(AssertUnwindSafe(|| {
         if db.is_null() || out_bytes.is_null() || out_len.is_null() || out_meta.is_null() {
             return LoraStatus::NullPointer;
@@ -891,17 +1130,21 @@ pub unsafe extern "C" fn lora_db_save_snapshot_to_bytes(
         *out_len = 0;
         *out_meta = LoraSnapshotMeta::zeroed();
 
-        let mut bytes = Vec::new();
-        match (*db)
-            .inner
-            .with_store(|store| store.save_snapshot(&mut bytes))
-        {
-            Ok(meta) => {
+        let options = match parse_snapshot_options_arg(options_json) {
+            Ok(options) => options,
+            Err(e) => {
+                *out_bytes = ptr::null_mut();
+                *out_len = 0;
+                return write_parse_error(out_error, e);
+            }
+        };
+        match (*db).inner.save_snapshot_to_bytes_with_options(&options) {
+            Ok((bytes, info)) => {
                 let mut boxed = bytes.into_boxed_slice();
                 *out_len = boxed.len();
                 *out_bytes = boxed.as_mut_ptr();
                 std::mem::forget(boxed);
-                *out_meta = LoraSnapshotMeta::from_meta(meta);
+                *out_meta = LoraSnapshotMeta::from_info(info);
                 LoraStatus::Ok
             }
             Err(e) => {
@@ -930,6 +1173,18 @@ pub unsafe extern "C" fn lora_db_load_snapshot(
     out_meta: *mut LoraSnapshotMeta,
     out_error: *mut *mut c_char,
 ) -> c_int {
+    lora_db_load_snapshot_with_options(db, path, ptr::null(), out_meta, out_error)
+}
+
+/// Load a snapshot from `path` with JSON-encoded credentials.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_load_snapshot_with_options(
+    db: *mut LoraDatabase,
+    path: *const c_char,
+    options_json: *const c_char,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
     let result = catch_unwind(AssertUnwindSafe(|| {
         if db.is_null() || path.is_null() || out_meta.is_null() {
             return LoraStatus::NullPointer;
@@ -948,7 +1203,15 @@ pub unsafe extern "C" fn lora_db_load_snapshot(
             }
         };
 
-        match (*db).inner.load_snapshot_from(path_str) {
+        let credentials = match parse_snapshot_credentials_arg(options_json) {
+            Ok(credentials) => credentials,
+            Err(e) => return write_parse_error(out_error, e),
+        };
+
+        match (*db)
+            .inner
+            .load_snapshot_from_with_credentials(path_str, credentials.as_ref())
+        {
             Ok(meta) => {
                 *out_meta = LoraSnapshotMeta::from_meta(meta);
                 LoraStatus::Ok
@@ -980,6 +1243,19 @@ pub unsafe extern "C" fn lora_db_load_snapshot_from_bytes(
     out_meta: *mut LoraSnapshotMeta,
     out_error: *mut *mut c_char,
 ) -> c_int {
+    lora_db_load_snapshot_from_bytes_with_options(db, bytes, len, ptr::null(), out_meta, out_error)
+}
+
+/// Load a snapshot from borrowed bytes with JSON-encoded credentials.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_load_snapshot_from_bytes_with_options(
+    db: *mut LoraDatabase,
+    bytes: *const c_uchar,
+    len: usize,
+    options_json: *const c_char,
+    out_meta: *mut LoraSnapshotMeta,
+    out_error: *mut *mut c_char,
+) -> c_int {
     let result = catch_unwind(AssertUnwindSafe(|| {
         if db.is_null() || bytes.is_null() || out_meta.is_null() {
             return LoraStatus::NullPointer;
@@ -987,9 +1263,13 @@ pub unsafe extern "C" fn lora_db_load_snapshot_from_bytes(
         *out_meta = LoraSnapshotMeta::zeroed();
 
         let bytes = std::slice::from_raw_parts(bytes, len);
+        let credentials = match parse_snapshot_credentials_arg(options_json) {
+            Ok(credentials) => credentials,
+            Err(e) => return write_parse_error(out_error, e),
+        };
         match (*db)
             .inner
-            .with_store_mut(|store| store.load_snapshot(bytes))
+            .load_snapshot_from_bytes_with_credentials(bytes, credentials.as_ref())
         {
             Ok(meta) => {
                 *out_meta = LoraSnapshotMeta::from_meta(meta);
@@ -1195,6 +1475,7 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, String> {
                     "vector" => {
                         return vector_from_json_map(&obj).map(LoraValue::Vector);
                     }
+                    "binary" | "blob" => return binary_from_json_map(&obj).map(LoraValue::Binary),
                     _ => { /* fall through to generic map */ }
                 }
             }
@@ -1205,6 +1486,33 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, String> {
             Ok(LoraValue::Map(map))
         }
     }
+}
+
+fn binary_from_json_map(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<LoraBinary, String> {
+    let segments = obj
+        .get("segments")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "binary.segments must be an array of byte arrays".to_string())?;
+    let mut out = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let values = segment
+            .as_array()
+            .ok_or_else(|| "binary segment must be an array of bytes".to_string())?;
+        let mut chunk = Vec::with_capacity(values.len());
+        for value in values {
+            let byte = value
+                .as_u64()
+                .ok_or_else(|| "binary byte must be an integer 0..255".to_string())?;
+            chunk.push(
+                u8::try_from(byte)
+                    .map_err(|_| "binary byte must be an integer 0..255".to_string())?,
+            );
+        }
+        out.push(chunk);
+    }
+    Ok(LoraBinary::from_segments(out))
 }
 
 fn require_iso<'a>(
@@ -1292,6 +1600,7 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
             .map(J::Number)
             .unwrap_or(J::Null),
         LoraValue::String(s) => J::String(s.clone()),
+        LoraValue::Binary(b) => binary_to_json(b),
         LoraValue::List(items) => J::Array(items.iter().map(lora_value_to_json).collect()),
         LoraValue::Map(m) => {
             let obj = m
@@ -1332,6 +1641,14 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
         LoraValue::Point(p) => point_to_json(p),
         LoraValue::Vector(v) => vector_to_json(v),
     }
+}
+
+fn binary_to_json(b: &LoraBinary) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "binary",
+        "length": b.len(),
+        "segments": b.segments(),
+    })
 }
 
 fn vector_to_json(v: &LoraVector) -> serde_json::Value {

@@ -12,29 +12,32 @@ import type {
   QueryResult,
 } from "./types.js";
 import { LoraError } from "./types.js";
-import type { Request, Response } from "./worker-protocol.js";
+import type { Request, Response as WorkerResponse } from "./worker-protocol.js";
 import type {
+  WasmSnapshotByteOptions,
+  WasmSnapshotLoadOptions,
+  WasmSnapshotSaveOptions,
+  WasmSnapshotSource,
   RowStream,
   SnapshotMeta,
-  WasmSnapshotSaveOptions,
   TransactionMode,
   TransactionStatement,
 } from "./index.js";
 import {
-  downloadSnapshotBytes,
-  resolveSnapshotSaveFormat,
-  snapshotBytesToBase64,
-  snapshotBytesToBlob,
-  snapshotSourceToBytes,
+  snapshotAsArrayBuffer,
+  snapshotAsBlob,
+  snapshotAsObjectUrl,
+  snapshotAsReadableStream,
+  snapshotAsResponse,
+  readSnapshotSource,
 } from "./snapshot.js";
-import type { WasmSnapshotSource } from "./snapshot.js";
 
 export interface WorkerLike {
   postMessage(message: unknown): void;
   terminate(): void;
-  addEventListener(type: "message", listener: (event: { data: Response }) => void): void;
+  addEventListener(type: "message", listener: (event: { data: WorkerResponse }) => void): void;
   addEventListener(type: "error", listener: (event: { message?: string }) => void): void;
-  removeEventListener(type: "message", listener: (event: { data: Response }) => void): void;
+  removeEventListener(type: "message", listener: (event: { data: WorkerResponse }) => void): void;
 }
 
 export interface WorkerDatabase {
@@ -54,18 +57,15 @@ export interface WorkerDatabase {
     statements: TransactionStatement[],
     mode?: TransactionMode,
   ): Promise<Array<QueryResult<T>>>;
-  saveSnapshotToBytes(): Promise<Uint8Array>;
   saveSnapshot(): Promise<Uint8Array>;
-  saveSnapshot(format: "binary"): Promise<Uint8Array>;
-  saveSnapshot(format: "base64"): Promise<string>;
-  saveSnapshot(format: "blob"): Promise<Blob>;
-  saveSnapshot(format: "download"): Promise<void>;
-  saveSnapshot(options: { format: "binary" }): Promise<Uint8Array>;
-  saveSnapshot(options: { format: "base64" }): Promise<string>;
-  saveSnapshot(options: { format: "blob"; mimeType?: string }): Promise<Blob>;
-  saveSnapshot(options: { format: "download"; filename?: string; mimeType?: string }): Promise<void>;
-  loadSnapshotFromBytes(bytes: Uint8Array): Promise<SnapshotMeta>;
-  loadSnapshot(source: WasmSnapshotSource): Promise<SnapshotMeta>;
+  saveSnapshot(options: WasmSnapshotByteOptions): Promise<Uint8Array>;
+  saveSnapshot(options: { format?: "bytes" } & WasmSnapshotByteOptions): Promise<Uint8Array>;
+  saveSnapshot(options: { format: "arrayBuffer" } & WasmSnapshotByteOptions): Promise<ArrayBuffer>;
+  saveSnapshot(options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Blob>;
+  saveSnapshot(options: { format: "response"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Response>;
+  saveSnapshot(options: { format: "stream" } & WasmSnapshotByteOptions): Promise<ReadableStream<Uint8Array>>;
+  saveSnapshot(options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions): Promise<URL>;
+  loadSnapshot(source: WasmSnapshotSource, options?: WasmSnapshotLoadOptions): Promise<SnapshotMeta>;
   clear(): Promise<void>;
   nodeCount(): Promise<number>;
   relationshipCount(): Promise<number>;
@@ -189,21 +189,33 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
     });
   }
 
+  function saveSnapshot(): Promise<Uint8Array>;
+  function saveSnapshot(options: WasmSnapshotByteOptions): Promise<Uint8Array>;
+  function saveSnapshot(options: { format?: "bytes" } & WasmSnapshotByteOptions): Promise<Uint8Array>;
+  function saveSnapshot(options: { format: "arrayBuffer" } & WasmSnapshotByteOptions): Promise<ArrayBuffer>;
+  function saveSnapshot(options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Blob>;
+  function saveSnapshot(options: { format: "response"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Response>;
+  function saveSnapshot(options: { format: "stream" } & WasmSnapshotByteOptions): Promise<ReadableStream<Uint8Array>>;
+  function saveSnapshot(options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions): Promise<URL>;
   async function saveSnapshot(
-    target?: WasmSnapshotSaveOptions["format"] | WasmSnapshotSaveOptions,
-  ): Promise<Uint8Array | string | Blob | void> {
-    const options = resolveSnapshotSaveFormat(target);
-    const bytes = await call<Uint8Array>({ op: "saveSnapshotToBytes" });
-
-    switch (options.format) {
-      case "binary":
+    options?: WasmSnapshotSaveOptions | WasmSnapshotByteOptions,
+  ): Promise<Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | URL> {
+    const bytes = await call<Uint8Array>({ op: "saveSnapshot", options: options ?? null });
+    const format = options && "format" in options ? options.format ?? "bytes" : "bytes";
+    const mimeType = options && "mimeType" in options ? options.mimeType : undefined;
+    switch (format) {
+      case "bytes":
         return bytes;
-      case "base64":
-        return snapshotBytesToBase64(bytes);
+      case "arrayBuffer":
+        return snapshotAsArrayBuffer(bytes);
       case "blob":
-        return snapshotBytesToBlob(bytes, options.mimeType);
-      case "download":
-        return downloadSnapshotBytes(bytes, options.filename, options.mimeType);
+        return snapshotAsBlob(bytes, mimeType);
+      case "response":
+        return snapshotAsResponse(bytes, mimeType);
+      case "stream":
+        return snapshotAsReadableStream(bytes);
+      case "url":
+        return snapshotAsObjectUrl(bytes, mimeType);
     }
   }
 
@@ -241,17 +253,15 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
     ): Promise<Array<QueryResult<T>>> {
       return call<Array<QueryResult<T>>>({ op: "transaction", statements, mode });
     },
-    saveSnapshotToBytes(): Promise<Uint8Array> {
-      return call<Uint8Array>({ op: "saveSnapshotToBytes" });
-    },
-    saveSnapshot: saveSnapshot as WorkerDatabase["saveSnapshot"],
-    loadSnapshotFromBytes(bytes: Uint8Array): Promise<SnapshotMeta> {
-      return call<SnapshotMeta>({ op: "loadSnapshotFromBytes", bytes });
-    },
-    async loadSnapshot(source: WasmSnapshotSource): Promise<SnapshotMeta> {
+    saveSnapshot,
+    async loadSnapshot(
+      source: WasmSnapshotSource,
+      options?: WasmSnapshotLoadOptions,
+    ): Promise<SnapshotMeta> {
       return call<SnapshotMeta>({
-        op: "loadSnapshotFromBytes",
-        bytes: await snapshotSourceToBytes(source),
+        op: "loadSnapshot",
+        bytes: await readSnapshotSource(source),
+        options: options ?? null,
       });
     },
     async clear(): Promise<void> {

@@ -76,6 +76,20 @@ int lora_db_new_with_wal(
     const char *wal_dir,
     char **out_error);
 
+/* Allocates a WAL-backed database with managed snapshots. A
+ * checkpoint_every_commits value of 0 disables automatic checkpoints;
+ * positive values checkpoint after that many committed WAL transactions.
+ * snapshot_options_json may be NULL, empty, "null", or the same codec options
+ * object accepted by lora_db_save_snapshot_with_options. */
+int lora_db_new_with_wal_snapshots(
+    LoraDatabase **out_db,
+    const char *wal_dir,
+    const char *snapshot_dir,
+    uint64_t checkpoint_every_commits,
+    uint64_t keep_old,
+    const char *snapshot_options_json,
+    char **out_error);
+
 /* Allocates a named archive-backed database under database_dir. database_name
  * may be a portable basename (`app`, `app.loradb`) or safe relative path
  * (`tenant/app`). database_dir may be NULL to use the current working
@@ -189,12 +203,35 @@ int lora_db_save_snapshot(
     LoraSnapshotMeta *out_meta,
     char **out_error);
 
+/* Save the current graph to `path` with JSON-encoded snapshot options.
+ *
+ * options_json may be NULL, empty, "null", or an object such as:
+ *   {"compression":{"format":"gzip","level":1},
+ *    "encryption":{"type":"password","keyId":"default","password":"secret"}}
+ */
+int lora_db_save_snapshot_with_options(
+    LoraDatabase *db,
+    const char *path,
+    const char *options_json,
+    LoraSnapshotMeta *out_meta,
+    char **out_error);
+
 /* Replace the current graph state with the snapshot at `path`. Holds the
  * store write lock for the duration of the load; concurrent queries block
  * until the restore completes. */
 int lora_db_load_snapshot(
     LoraDatabase *db,
     const char *path,
+    LoraSnapshotMeta *out_meta,
+    char **out_error);
+
+/* Replace the current graph state with the snapshot at `path`, supplying
+ * JSON-encoded credentials for encrypted database snapshots. The credentials
+ * may be supplied directly or under "credentials" / "encryption". */
+int lora_db_load_snapshot_with_options(
+    LoraDatabase *db,
+    const char *path,
+    const char *options_json,
     LoraSnapshotMeta *out_meta,
     char **out_error);
 
@@ -208,11 +245,31 @@ int lora_db_save_snapshot_to_bytes(
     LoraSnapshotMeta *out_meta,
     char **out_error);
 
+/* Serialize the current graph into an owned byte buffer with JSON-encoded
+ * snapshot options. */
+int lora_db_save_snapshot_to_bytes_with_options(
+    LoraDatabase *db,
+    const char *options_json,
+    uint8_t **out_bytes,
+    size_t *out_len,
+    LoraSnapshotMeta *out_meta,
+    char **out_error);
+
 /* Replace the current graph state from borrowed snapshot bytes. */
 int lora_db_load_snapshot_from_bytes(
     LoraDatabase *db,
     const uint8_t *bytes,
     size_t len,
+    LoraSnapshotMeta *out_meta,
+    char **out_error);
+
+/* Replace the current graph state from borrowed snapshot bytes, supplying
+ * JSON-encoded credentials for encrypted database snapshots. */
+int lora_db_load_snapshot_from_bytes_with_options(
+    LoraDatabase *db,
+    const uint8_t *bytes,
+    size_t len,
+    const char *options_json,
     LoraSnapshotMeta *out_meta,
     char **out_error);
 

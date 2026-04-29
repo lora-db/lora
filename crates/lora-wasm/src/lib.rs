@@ -15,12 +15,13 @@ use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    Row, Snapshotable, TransactionMode,
+    snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
+    ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat, Row, SnapshotCredentials,
+    SnapshotOptions, TransactionMode,
 };
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, RawCoordinate, VectorCoordinateType, VectorValues,
 };
 
 const LORA_ERROR_CODE: &str = "LORA_ERROR";
@@ -156,30 +157,33 @@ impl WasmDatabase {
         self.db.relationship_count() as u32
     }
 
-    /// Serialize the graph into a byte buffer. The caller is responsible for
-    /// writing it to disk, IndexedDB, localStorage, or wherever — WASM does
-    /// not have direct filesystem access. The returned bytes can later be
-    /// passed to `loadSnapshotFromBytes` on any `WasmDatabase` instance.
+    /// Serialize the graph into database snapshot bytes. The caller is
+    /// responsible for writing them to IndexedDB, localStorage, a server, or
+    /// another host-provided store — WASM has no direct filesystem access.
+    /// The returned bytes can later be passed to `loadSnapshot` on any
+    /// `WasmDatabase` instance.
     ///
     /// Returns the serialized bytes as a `Uint8Array`.
-    #[wasm_bindgen(js_name = saveSnapshotToBytes)]
-    pub fn save_snapshot_to_bytes(&self) -> Result<Vec<u8>, JsError> {
-        let mut buf = Vec::new();
+    #[wasm_bindgen(js_name = saveSnapshot)]
+    pub fn save_snapshot(&self, options: JsValue) -> Result<Vec<u8>, JsError> {
+        let options = parse_snapshot_options(options)?;
         self.db
-            .with_store(|store| store.save_snapshot(&mut buf))
-            .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
-        Ok(buf)
+            .save_snapshot_to_bytes_with_options(&options)
+            .map(|(bytes, _)| bytes)
+            .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))
     }
 
-    /// Replace the graph state with a snapshot decoded from `bytes`.
+    /// Replace the graph state with a database snapshot decoded from `bytes`.
+    /// Legacy store snapshot bytes are accepted for compatibility.
     ///
     /// Returns a plain object matching the shape of `SnapshotMeta`:
     /// `{ formatVersion, nodeCount, relationshipCount, walLsn }`.
-    #[wasm_bindgen(js_name = loadSnapshotFromBytes)]
-    pub fn load_snapshot_from_bytes(&self, bytes: Vec<u8>) -> Result<JsValue, JsError> {
+    #[wasm_bindgen(js_name = loadSnapshot)]
+    pub fn load_snapshot(&self, bytes: Vec<u8>, options: JsValue) -> Result<JsValue, JsError> {
+        let credentials = parse_snapshot_credentials(options)?;
         let meta = self
             .db
-            .with_store_mut(|store| store.load_snapshot(bytes.as_slice()))
+            .load_snapshot_from_bytes_with_credentials(bytes.as_slice(), credentials.as_ref())
             .map_err(|e| js_error(LORA_ERROR_CODE, &format!("{e}")))?;
 
         let out = serde_json::json!({
@@ -254,6 +258,41 @@ fn js_error(code: &str, message: &str) -> JsError {
 struct TransactionStatement {
     query: String,
     params: BTreeMap<String, LoraValue>,
+}
+
+fn parse_snapshot_options(value: JsValue) -> Result<SnapshotOptions, JsError> {
+    let json = snapshot_js_value_to_json(value)?;
+    snapshot_options_from_json(json).map_err(|e| {
+        js_error(
+            INVALID_PARAMS_CODE,
+            &format!("invalid snapshot options: {e}"),
+        )
+    })
+}
+
+fn parse_snapshot_credentials(value: JsValue) -> Result<Option<SnapshotCredentials>, JsError> {
+    let json = snapshot_js_value_to_json(value)?;
+    snapshot_credentials_from_json(json).map_err(|e| {
+        js_error(
+            INVALID_PARAMS_CODE,
+            &format!("invalid snapshot credentials: {e}"),
+        )
+    })
+}
+
+fn snapshot_js_value_to_json(value: JsValue) -> Result<Option<serde_json::Value>, JsError> {
+    if value.is_undefined() || value.is_null() {
+        return Ok(None);
+    }
+
+    serde_wasm_bindgen::from_value(value)
+        .map(Some)
+        .map_err(|e| {
+            js_error(
+                INVALID_PARAMS_CODE,
+                &format!("invalid snapshot options: {e}"),
+            )
+        })
 }
 
 fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode, JsError> {
@@ -345,6 +384,7 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
             .map(J::Number)
             .unwrap_or(J::Null),
         LoraValue::String(s) => J::String(s.clone()),
+        LoraValue::Binary(b) => binary_to_json(b),
         LoraValue::List(items) => J::Array(items.iter().map(lora_value_to_json).collect()),
         LoraValue::Map(m) => {
             let obj = m
@@ -385,6 +425,14 @@ fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {
         LoraValue::Point(p) => point_to_json(p),
         LoraValue::Vector(v) => vector_to_json(v),
     }
+}
+
+fn binary_to_json(b: &LoraBinary) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "binary",
+        "length": b.len(),
+        "segments": b.segments(),
+    })
 }
 
 /// Render a `LoraVector` into the canonical external tagged shape.
@@ -545,6 +593,11 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, JsError> 
                             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
                         return Ok(LoraValue::Vector(v));
                     }
+                    "binary" | "blob" => {
+                        let v = binary_from_json_map(&obj)
+                            .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
+                        return Ok(LoraValue::Binary(v));
+                    }
                     _ => {}
                 }
             }
@@ -555,6 +608,33 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, JsError> 
             Ok(LoraValue::Map(map))
         }
     }
+}
+
+fn binary_from_json_map(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<LoraBinary, String> {
+    let segments = obj
+        .get("segments")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "binary.segments must be an array of byte arrays".to_string())?;
+    let mut out = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let values = segment
+            .as_array()
+            .ok_or_else(|| "binary segment must be an array of bytes".to_string())?;
+        let mut chunk = Vec::with_capacity(values.len());
+        for value in values {
+            let byte = value
+                .as_u64()
+                .ok_or_else(|| "binary byte must be an integer 0..255".to_string())?;
+            chunk.push(
+                u8::try_from(byte)
+                    .map_err(|_| "binary byte must be an integer 0..255".to_string())?,
+            );
+        }
+        out.push(chunk);
+    }
+    Ok(LoraBinary::from_segments(out))
 }
 
 fn require_iso<'a>(

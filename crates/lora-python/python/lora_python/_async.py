@@ -78,9 +78,18 @@ class AsyncDatabase:
         ``database_name=None`` creates a fresh in-memory database.
         Passing a name opens or creates ``<database_dir>/<name>.loradb``.
         """
-        if database_name is None:
+        if database_name is None and not options:
             return cls(_Database())
         return cls(await _to_thread(_Database.create, database_name, dict(options or {})))
+
+    @classmethod
+    async def open_wal(
+        cls,
+        wal_dir: str,
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> "AsyncDatabase":
+        """Open or create an explicit WAL-backed database."""
+        return cls(await _to_thread(_Database.open_wal, wal_dir, dict(options or {})))
 
     async def close(self) -> None:
         """Release the native database handle."""
@@ -143,6 +152,7 @@ class AsyncDatabase:
         self,
         target: Any = None,
         format: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
     ) -> SnapshotMeta | bytes | str:
         """Save the graph to a snapshot path, bytes, base64, or writer.
 
@@ -150,19 +160,30 @@ class AsyncDatabase:
         ``bytes``. ``"base64"`` returns text. A file-like writer receives the
         snapshot bytes and returns ``SnapshotMeta``.
         """
-        return await _to_thread(self._inner.save_snapshot, target, format)
+        return await _to_thread(
+            self._inner.save_snapshot,
+            target,
+            format,
+            dict(options) if options is not None else None,
+        )
 
     async def load_snapshot(
         self,
         source: Any,
         format: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
     ) -> SnapshotMeta:
         """Replace the current graph state from a path, bytes, base64, or reader.
 
         Concurrent ``execute`` coroutines block on the store write lock
         until the load completes.
         """
-        return await _to_thread(self._inner.load_snapshot, source, format)
+        return await _to_thread(
+            self._inner.load_snapshot,
+            source,
+            format,
+            dict(options) if options is not None else None,
+        )
 
     @property
     def node_count(self) -> int:

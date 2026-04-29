@@ -24,6 +24,7 @@ Example
 Persistent:
 
     >>> db = Database.create("app", {"database_dir": "./data"})  # archive-backed persistent database
+    >>> db = Database.open_wal("./data/wal", {"snapshot_dir": "./data/snapshots"})
 
 Async:
 
@@ -69,6 +70,7 @@ from .types import (
     LoraWgs84Point3D,
     LoraVector,
     LoraVectorCoordinateType,
+    LoraBinary,
     SnapshotMeta,
     date,
     time,
@@ -81,12 +83,14 @@ from .types import (
     wgs84,
     wgs84_3d,
     vector,
+    binary,
     is_node,
     is_relationship,
     is_path,
     is_point,
     is_temporal,
     is_vector,
+    is_binary,
 )
 
 __all__ = [
@@ -118,6 +122,7 @@ __all__ = [
     "LoraWgs84Point3D",
     "LoraVector",
     "LoraVectorCoordinateType",
+    "LoraBinary",
     "SnapshotMeta",
     "date",
     "time",
@@ -130,10 +135,12 @@ __all__ = [
     "wgs84",
     "wgs84_3d",
     "vector",
+    "binary",
     "is_node",
     "is_relationship",
     "is_path",
     "is_point",
     "is_temporal",
     "is_vector",
+    "is_binary",
 ]

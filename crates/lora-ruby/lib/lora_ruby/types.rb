@@ -7,7 +7,7 @@ module LoraRuby
   # - Scalars pass through as Ruby natives (`nil`, `true`, `false`,
   #   `Integer`, `Float`, `String`).
   # - Lists and maps come back as `Array` / `Hash` (string keys).
-  # - Graph, temporal, and spatial values come back as plain `Hash`es
+  # - Graph, temporal, spatial, vector, and binary values come back as plain `Hash`es
   #   with a `"kind"` discriminator.
   #
   # If you want to narrow a value explicitly, use the `node?` / `point?`
@@ -53,6 +53,21 @@ module LoraRuby
         "dimension"      => dimension,
         "coordinateType" => coordinate_type.to_s,
         "values"         => values.dup,
+      }
+    end
+
+    # ------------------------------------------------------------------
+    # Binary / blob constructor — segmented bytes. The native extension
+    # accepts each segment as a Ruby String and preserves segment
+    # boundaries in WAL/snapshot storage.
+    # ------------------------------------------------------------------
+
+    def binary(segments)
+      copied = segments.map { |segment| segment.b.dup }
+      {
+        "kind"     => "binary",
+        "length"   => copied.sum(&:bytesize),
+        "segments" => copied,
       }
     end
 
@@ -122,6 +137,7 @@ module LoraRuby
     def path?(v)         = tagged?(v, "path")
     def point?(v)        = tagged?(v, "point")
     def vector?(v)       = tagged?(v, "vector")
+    def binary?(v)       = tagged?(v, "binary")
 
     def temporal?(v)
       return false unless v.is_a?(Hash)

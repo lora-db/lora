@@ -134,6 +134,57 @@ def test_wal_open_failure_raises_query_error(tmp_path: Path) -> None:
         Database.create("app", {"database_dir": str(not_a_dir)})
 
 
+def test_managed_wal_snapshots_recover_snapshot_then_newer_wal(tmp_path: Path) -> None:
+    wal_dir = tmp_path / "wal"
+    snapshot_dir = tmp_path / "snapshots"
+
+    first = Database.open_wal(
+        str(wal_dir),
+        {
+            "snapshot_dir": str(snapshot_dir),
+            "snapshot_every_commits": 2,
+        },
+    )
+    first.execute("CREATE (:Managed {id: 1})")
+    first.execute("CREATE (:Managed {id: 2})")
+    assert (snapshot_dir / "CURRENT").is_file()
+    first.execute("CREATE (:Managed {id: 3})")
+    first.close()
+
+    second = Database.open_wal(
+        str(wal_dir),
+        {
+            "snapshot_dir": str(snapshot_dir),
+            "snapshot_every_commits": 2,
+        },
+    )
+    assert second.execute(
+        "MATCH (n:Managed) RETURN n.id AS id ORDER BY id"
+    )["rows"] == [{"id": 1}, {"id": 2}, {"id": 3}]
+    second.close()
+
+
+def test_create_rejects_wal_options_for_memory_database(tmp_path: Path) -> None:
+    with pytest.raises(LoraQueryError, match="open_wal"):
+        Database.create(
+            None,
+            {
+                "wal_dir": str(tmp_path / "wal"),
+                "snapshot_every_commits": 2,
+            },
+        )
+
+
+def test_managed_snapshot_options_require_snapshot_dir(tmp_path: Path) -> None:
+    with pytest.raises(LoraQueryError, match="snapshot_dir"):
+        Database.open_wal(
+            str(tmp_path / "wal"),
+            {
+                "snapshot_every_commits": 2,
+            },
+        )
+
+
 def test_invalid_database_name_raises_query_error() -> None:
     with pytest.raises(LoraQueryError):
         Database.create("../bad")
@@ -176,6 +227,40 @@ def test_snapshot_bytes_base64_pathlike_and_streams(tmp_path: Path) -> None:
         assert meta["nodeCount"] == 1
         rows = target.execute("MATCH (n:Snapshot) RETURN n.name AS name")["rows"]
         assert rows == [{"name": "Ada"}]
+
+
+def test_encrypted_snapshot_bytes_and_paths(tmp_path: Path) -> None:
+    encryption = {
+        "type": "password",
+        "keyId": "python-test",
+        "password": "open sesame",
+        "params": {"memoryCostKib": 512, "timeCost": 1, "parallelism": 1},
+    }
+    options = {
+        "compression": {"format": "gzip", "level": 1},
+        "encryption": encryption,
+    }
+    source = Database.create()
+    source.execute("CREATE (:Secret {name: 'Ada'})")
+
+    binary = source.save_snapshot("binary", options=options)
+    assert isinstance(binary, bytes)
+    target = Database.create()
+    with pytest.raises(LoraQueryError):
+        target.load_snapshot(binary)
+    meta = target.load_snapshot(binary, options={"credentials": encryption})
+    assert meta["nodeCount"] == 1
+
+    path = tmp_path / "secret.lsnap"
+    meta = source.save_snapshot(path, options=options)
+    assert meta["nodeCount"] == 1
+    target = Database.create()
+    with pytest.raises(LoraQueryError):
+        target.load_snapshot(path)
+    meta = target.load_snapshot(path, options={"encryption": encryption})
+    assert meta["nodeCount"] == 1
+    rows = target.execute("MATCH (n:Secret) RETURN n.name AS name")["rows"]
+    assert rows == [{"name": "Ada"}]
 
 
 def test_roundtrips_mixed_list() -> None:
