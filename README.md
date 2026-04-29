@@ -328,14 +328,14 @@ LoraDB ships via GitHub Actions. Every push and pull request runs the full quali
 | [`loradb-docs`](.github/workflows/loradb-docs.yml) | Deploys [loradb.com](https://loradb.com) |
 | [`commitlint`](.github/workflows/commitlint.yml) | Conventional-commit enforcement |
 
-Conventional Commits are enforced on every PR via `commitlint` + Husky. Releases are driven by `git-cliff` — see [RELEASING.md](RELEASING.md).
+Conventional Commits are enforced on every PR via `commitlint` + Husky. Local Husky commits also run `cargo fmt --all --check` and `cargo clippy --workspace -- -D warnings` before commitlint. Releases are driven by `git-cliff` — see [RELEASING.md](RELEASING.md).
 
 ## Contributing
 
 Contributions are welcome. Before opening a PR, please read [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, …) — enforced by commitlint
-- Run `cargo fmt`, `cargo clippy`, and `cargo test --workspace` before pushing
+- Run `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`, and `cargo test --workspace` before pushing
 - Open an issue first for anything larger than a bug fix or docs change
 
 ## License

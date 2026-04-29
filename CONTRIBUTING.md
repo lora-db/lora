@@ -153,14 +153,15 @@ ci(commits): enforce conventional commits on pull requests
 npm install    # installs commitlint + husky into the repo root
 ```
 
-After that, `git commit` runs `commitlint` automatically through the
-`.husky/commit-msg` hook.
+After that, `git commit` runs the Rust formatting and clippy gates through
+`.husky/pre-commit`, then runs `commitlint` through `.husky/commit-msg`.
 
 ### Other rules
 
 - One logical change per commit.
+- Ensure `cargo fmt --all --check` passes before committing.
+- Ensure `cargo clippy --workspace -- -D warnings` produces no warnings.
 - Ensure `cargo test --workspace` passes before committing.
-- Ensure `cargo clippy --workspace` produces no warnings.
 - Squash fix-up commits before requesting review (`git rebase -i`).
 
 ## Pull request process
