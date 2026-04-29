@@ -723,10 +723,12 @@ Published on every release:
 | --------------- | ---------------------------------------------------------- |
 | `lora-ast`      | AST types for the Cypher query language.                   |
 | `lora-store`    | In-memory graph store with property indexes.               |
+| `lora-snapshot` | Column-oriented snapshot encoding, compression, and encryption. |
 | `lora-parser`   | Cypher grammar + parser (pest-based).                      |
 | `lora-analyzer` | Semantic analysis over parsed Cypher queries.              |
 | `lora-compiler` | Query-plan compiler.                                       |
 | `lora-executor` | Query-plan executor.                                       |
+| `lora-wal`      | Write-ahead log and replay engine.                         |
 | `lora-database` | Embeddable in-memory graph database — the main public API. |
 | `lora-server`   | HTTP server binary (`lora-server`) wrapping `lora-database`. |
 
@@ -737,8 +739,10 @@ Intentionally **not** published to crates.io:
 | `lora-node`   | napi-rs cdylib shipped as an npm package; its Rust surface is a JS-facing FFI layer. Rust users depend on `lora-database` directly. |
 | `lora-wasm`   | wasm-bindgen cdylib shipped as an npm package; same reasoning. |
 | `lora-python` | pyo3 cdylib shipped as a PyPI wheel; same reasoning.        |
+| `lora-ffi`    | C ABI helper crate used by out-of-tree language bindings.   |
+| `lora-ruby`   | Ruby native extension shipped as a RubyGem.                 |
 
-All three keep `publish = false` in their `Cargo.toml`.
+All five keep `publish = false` in their `Cargo.toml`.
 
 ## Publish order
 
@@ -748,10 +752,12 @@ Computed from the workspace dependency DAG and hard-coded in
 ```
 lora-ast
   -> lora-store
+  -> lora-snapshot
   -> lora-parser
   -> lora-analyzer
   -> lora-compiler
   -> lora-executor
+  -> lora-wal
   -> lora-database
   -> lora-server
 ```
@@ -766,13 +772,14 @@ anything else in the workspace depends on it.
    - Verify an email address — crates.io refuses to publish from
      unverified accounts.
 2. **Reserve the crate names.** crates.io is first-come-first-served. All
-   eight names must be available and owned by you before the first
-   release, otherwise one publish step will fail with `crate <name> is
-   already taken`. Quick check:
+   publishable workspace crate names must be available and owned by you
+   before the first release. Otherwise one publish step will fail because
+   crates.io reports that the crate name is already taken. Quick check:
 
    ```bash
-   for name in lora-ast lora-store lora-parser lora-analyzer \
-               lora-compiler lora-executor lora-database lora-server; do
+   for name in lora-ast lora-store lora-snapshot lora-parser \
+               lora-analyzer lora-compiler lora-executor lora-wal \
+               lora-database lora-server; do
      status=$(curl -sSo /dev/null -w "%{http_code}" \
        "https://crates.io/api/v1/crates/${name}")
      echo "${status} ${name}"
@@ -786,8 +793,9 @@ anything else in the workspace depends on it.
    <https://crates.io/settings/tokens/new>:
    - Scope: `publish-new` + `publish-update` (both).
    - Lifetime: short (90 days) is fine — rotate when it expires.
-   - Crates: leave unrestricted for the first release (all 8 names
-     need to be registered); scope the next token to the 8 names once
+   - Crates: leave unrestricted for the first release (all publishable
+     workspace crate names need to be registered); scope the next token
+     to those names once
      they exist.
 
 4. **Add the GitHub secret.** Settings → Environments → new environment
@@ -883,7 +891,7 @@ The workflow itself doesn't have to change.
 5. When `cargo-release` is green, confirm
    <https://crates.io/crates/lora-database> and
    <https://crates.io/crates/lora-server> show the new version, plus the
-   other six library crates.
+   other publishable workspace crates.
 
 ## Recovery from a failed publish
 

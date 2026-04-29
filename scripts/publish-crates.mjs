@@ -42,24 +42,28 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
+const INDEX_POLL_INTERVAL_MS = 5_000;
+const INDEX_PROPAGATION_TIMEOUT_MS = 120_000;
 
 // ── Crate publish order ─────────────────────────────────────────────────
 // Derived from `crates/*/Cargo.toml` dependency edges:
 //   lora-ast      : —
 //   lora-store    : lora-ast
+//   lora-snapshot : lora-store
 //   lora-parser   : lora-ast
 //   lora-analyzer : lora-ast, lora-store, lora-parser
 //   lora-compiler : lora-analyzer, lora-ast
 //   lora-executor : lora-compiler, lora-store, lora-analyzer, lora-ast
 //   lora-wal      : lora-store
 //   lora-database : lora-ast, lora-parser, lora-analyzer, lora-compiler,
-//                   lora-executor, lora-store, lora-wal
+//                   lora-executor, lora-store, lora-snapshot, lora-wal
 //   lora-server   : lora-database
 // Any linear extension of that DAG works. This one is leaf-first and
 // minimises the number of edges each step introduces.
 const PUBLISH_ORDER = [
   'lora-ast',
   'lora-store',
+  'lora-snapshot',
   'lora-parser',
   'lora-analyzer',
   'lora-compiler',
@@ -80,6 +84,8 @@ const workspaceVersion = readWorkspaceVersion();
 const version = explicitVersion
   ? explicitVersion.replace(/^v/, '')
   : workspaceVersion;
+
+validatePublishOrder();
 
 if (version !== workspaceVersion) {
   console.error(
@@ -133,6 +139,7 @@ for (const crate of PUBLISH_ORDER) {
   });
   if (status === 0) {
     console.log(`ok       ${crate}@${version} published`);
+    waitForCrateVersionPublished(crate, version);
     continue;
   }
   if (isAlreadyUploadedError(stderr)) {
@@ -184,6 +191,57 @@ function readWorkspaceVersion() {
   }
   console.error('could not locate [workspace.package] version in Cargo.toml');
   process.exit(1);
+}
+
+/** Ensure the hard-coded real-publish order covers every publishable crate. */
+function validatePublishOrder() {
+  const publishable = readPublishableWorkspaceCrates();
+  const publishableSet = new Set(publishable);
+  const orderSet = new Set(PUBLISH_ORDER);
+  const missing = publishable.filter((crate) => !orderSet.has(crate));
+  const extra = PUBLISH_ORDER.filter((crate) => !publishableSet.has(crate));
+  const duplicates = PUBLISH_ORDER.filter((crate, index) => PUBLISH_ORDER.indexOf(crate) !== index);
+
+  if (missing.length === 0 && extra.length === 0 && duplicates.length === 0) return;
+
+  if (missing.length > 0) {
+    console.error(`publish order is missing publishable crate(s): ${missing.join(', ')}`);
+  }
+  if (extra.length > 0) {
+    console.error(`publish order includes non-publishable crate(s): ${extra.join(', ')}`);
+  }
+  if (duplicates.length > 0) {
+    console.error(`publish order has duplicate crate(s): ${[...new Set(duplicates)].join(', ')}`);
+  }
+  console.error('update PUBLISH_ORDER in scripts/publish-crates.mjs before publishing.');
+  process.exit(1);
+}
+
+/** @returns {string[]} publishable workspace package names */
+function readPublishableWorkspaceCrates() {
+  const rootToml = readFileSync(resolve(ROOT, 'Cargo.toml'), 'utf8');
+  const membersMatch = rootToml.match(/^\[workspace\][\s\S]*?^\s*members\s*=\s*\[([\s\S]*?)^\s*\]/m);
+  if (!membersMatch) {
+    console.error('could not locate [workspace].members in Cargo.toml');
+    process.exit(1);
+  }
+
+  return [...membersMatch[1].matchAll(/"([^"]+)"/g)]
+    .map((match) => match[1])
+    .map((member) => {
+      const manifest = readFileSync(resolve(ROOT, member, 'Cargo.toml'), 'utf8');
+      const nameMatch = manifest.match(/^\s*name\s*=\s*"([^"]+)"/m);
+      if (!nameMatch) {
+        console.error(`could not locate package name in ${member}/Cargo.toml`);
+        process.exit(1);
+      }
+      return {
+        name: nameMatch[1],
+        publishable: !/^\s*publish\s*=\s*false\b/m.test(manifest),
+      };
+    })
+    .filter((crate) => crate.publishable)
+    .map((crate) => crate.name);
 }
 
 /**
@@ -260,6 +318,34 @@ function isCrateVersionPublished(crate, version) {
     // fall through and try to publish. crates.io will tell us authoritatively.
     return false;
   }
+}
+
+/**
+ * Wait until crates.io's sparse index can resolve a freshly published crate.
+ * Downstream `cargo publish --package ...` calls rely on that index, so this
+ * avoids racing index propagation after publishing a new internal dependency.
+ *
+ * @param {string} crate
+ * @param {string} version
+ */
+function waitForCrateVersionPublished(crate, version) {
+  const deadline = Date.now() + INDEX_PROPAGATION_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    if (isCrateVersionPublished(crate, version)) {
+      console.log(`index    ${crate}@${version} visible on crates.io`);
+      return;
+    }
+    console.log(`wait     ${crate}@${version} not visible in crates.io index yet`);
+    sleep(INDEX_POLL_INTERVAL_MS);
+  }
+
+  console.error(`::error::${crate}@${version} did not appear in crates.io index within ${INDEX_PROPAGATION_TIMEOUT_MS / 1000}s.`);
+  process.exit(1);
+}
+
+/** @param {number} ms */
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** Path in the crates.io sparse index for a given crate name. */

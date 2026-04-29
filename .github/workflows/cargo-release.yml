@@ -16,8 +16,9 @@ name: cargo-release
 #      recovery run against the same tag converges correctly.
 #
 # Published crates (in order):
-#   lora-ast -> lora-store -> lora-parser -> lora-analyzer -> lora-compiler
-#     -> lora-executor -> lora-wal -> lora-database -> lora-server
+#   lora-ast -> lora-store -> lora-snapshot -> lora-parser -> lora-analyzer
+#     -> lora-compiler -> lora-executor -> lora-wal -> lora-database
+#     -> lora-server
 #
 # Not published:
 #   lora-node, lora-wasm, lora-python, lora-ffi, lora-ruby
