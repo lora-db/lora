@@ -9,7 +9,17 @@ tags: [founder-notes, persistence, design, operations]
 Most databases I have worked with had a write-ahead log before they had a
 snapshot story. LoraDB went the other way.
 
-v0.3 ships manual point-in-time snapshots and nothing else on the
+:::info Current API note
+
+This founder note is historical. The WAL has since landed on every
+filesystem-backed surface, snapshots now write the columnar `LORACOL1`
+format with compression/encryption support, and WASM uses
+`saveSnapshot` / `loadSnapshot` instead of the older byte-specific
+method names.
+
+:::
+
+At the time, v0.3 shipped manual point-in-time snapshots and nothing else on the
 persistence side. No append-only log. No background checkpoint loop. No
 continuous durability. One file on disk, taken on demand, atomic on
 rename.
@@ -50,8 +60,10 @@ A snapshot is the lowest-risk way to learn the shape of "the graph as a
 serialized artifact." It forces the project to answer a small set of
 concrete questions:
 
-- What does the file format look like? `LORASNAP` magic, format version,
-  reserved header bits, bincode payload, CRC32 footer.
+- What does the file format look like? v0.3 answered with the original
+  `LORASNAP` envelope; current releases write `LORACOL1`, a columnar
+  snapshot payload with a BLAKE3 checksum plus compression and
+  encryption metadata.
 - How is the write atomic? `<path>.tmp`, `fsync`, rename over the
   target.
 - How is the read atomic? Hold the store mutex, validate, swap the
@@ -66,15 +78,14 @@ concrete questions:
   `--restore-from`, off-by-default admin endpoints, no auth, behind
   ingress only.
 
-None of those answers go away when a WAL eventually arrives. A
-checkpoint, by definition, is a snapshot with a WAL LSN attached. The
-header already reserves the slot. The reader already accepts files
-where the flag is set. The day the WAL ships, the file format does not
-change — the LSN field stops being null, and the recovery logic learns
-to replay from the log past it.
+None of those answers went away when the WAL arrived. A checkpoint, by
+definition, is a snapshot with a WAL LSN attached. In current releases,
+pure snapshots report `walLsn: null`; checkpoint snapshots stamp it
+with the durable WAL fence, and recovery replays committed records
+newer than that fence.
 
-In other words, the snapshot work is not throwaway scaffolding. It is
-the foundation a future log sits on.
+In other words, the snapshot work was not throwaway scaffolding. It is
+the foundation the current log now sits on.
 
 ## What A Snapshot Is Honest About
 
@@ -127,20 +138,16 @@ aggressively than they are documented.
 
 Three steps line up against the boundary above, in order.
 
-**A write-ahead log.** The snapshot header already reserves the LSN.
-The mutation event vocabulary already exists in `lora-store` —
-`MutationRecorder` is a no-op observer today, and the `MutationEvent`
-enum carries one variant per `GraphStorageMut` method. That is the
-vocabulary the log will append to. When it ships, the snapshot file
-format does not change; the reader keeps loading today's v1 files. A
-checkpoint becomes "a snapshot with a meaningful `walLsn`," exactly the
-shape the reader was written for.
+**A write-ahead log.** This has since landed. Rust and `lora-server`
+expose the full WAL/checkpoint/status/truncate surface; Node, Python,
+Go, and Ruby expose archive-backed opens plus explicit raw-WAL helpers.
+WAL checkpoints are snapshots with a meaningful `walLsn`, exactly the
+shape the snapshot contract prepared for.
 
-**A checkpoint loop.** Once the log exists, the engine can fold
-snapshots and the log together in the background. The operator stops
-having to time saves themselves. The trigger should be
-throughput-aware, not wall-clock — saving a graph that has barely
-changed is wasted I/O.
+**Checkpoint automation.** Current raw-WAL helpers can write managed
+snapshots after N committed transactions. The remaining boundary is
+wall-clock scheduling: if you want time-based checkpoints, run them
+from the host process, cron, systemd, or an operator loop.
 
 **Auth on the admin surface.** Token-based auth in front of `/admin/*`
 so the endpoints can be enabled on hosts that face a real network
@@ -166,8 +173,9 @@ The persistence staircase mirrors the adoption staircase.
    scheduled backups. `POST /admin/snapshot/save` from a systemd unit
    or a cron is enough.
 4. **Production with tighter SLAs.** They need continuous durability —
-   point-in-time recovery to the last second, not the last save. That
-   is when the WAL lands.
+   point-in-time recovery to the last committed WAL transaction, not
+   the last manual save. That is where WAL-backed opens and
+   checkpoints now fit.
 5. **Managed operations.** They do not want to operate the engine at
    all. That is when the hosted platform takes over the snapshot
    cadence, the WAL config, and the auth boundary.
@@ -186,12 +194,13 @@ The clearest signal for whether v0.3 lands is concrete:
   every-N-mutations;
 - did atomic rename land cleanly on your filesystem (we test on Linux
   ext4/xfs and macOS APFS);
-- which binding did you use, and did the WASM byte-oriented surface
-  fit your storage layer (IndexedDB, OPFS, a backend POST) without
-  extra glue;
+- which binding did you use, and did the WASM pathless
+  `saveSnapshot` / `loadSnapshot` surface fit your storage layer
+  (IndexedDB, OPFS, a backend POST) without extra glue;
 - what does your ingress look like for the admin endpoints — reverse
   proxy, Unix socket, or "not exposed at all";
-- where did the lack of a WAL stop being acceptable for your workload?
+- where did manual snapshots stop being acceptable for your workload,
+  and what WAL sync/checkpoint cadence did you need?
 
 The answers decide what cadence the WAL has to support, which crash
 windows we need to harden first, and which surfaces need the auth

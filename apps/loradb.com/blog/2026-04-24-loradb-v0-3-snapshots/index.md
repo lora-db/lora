@@ -8,6 +8,16 @@ tags: [release-notes, announcement, persistence, operations]
 
 LoraDB v0.3 adds manual point-in-time snapshots.
 
+:::info Current API note
+
+This release note is historical, but the snippets below have been
+updated to the current snapshot API. Current releases write the
+columnar `LORACOL1` database snapshot format, support compression and
+encryption options, expose WASM snapshots through `saveSnapshot` /
+`loadSnapshot`, and can pair snapshots with WAL-backed checkpoints.
+
+:::
+
 You can now dump the entire in-memory graph to a single file and
 restore it later. The save is atomic on rename, the load replaces the
 live graph in one shot, and the feature is exposed on every surface
@@ -31,23 +41,27 @@ controlled shutdowns, scheduled backups).
 
 The short list:
 
-- A new single-file snapshot format (`LORASNAP` magic, format version
-  `1`, bincode-serialized payload, CRC32 footer).
+- A new single-file snapshot format. v0.3 introduced the original
+  `LORASNAP` format; current releases write the columnar `LORACOL1`
+  format with a BLAKE3 envelope checksum, compression metadata, and
+  optional encryption metadata.
 - Atomic saves — writes go to `<path>.tmp`, are `fsync`'d, and then
   renamed over the target. A crashed save never leaves a half-written
   file at the target path.
 - Atomic loads — the store mutex is held for the full restore, so
   concurrent queries see the old or the new graph, never a partial
   one.
-- Reserved header space for a future WAL/checkpoint hybrid
-  (`walLsn` / `has_wal_lsn`); pure snapshots emit it as null today.
+- A `walLsn` metadata slot for WAL/checkpoint recovery. Pure snapshots
+  emit it as `null`; checkpoint snapshots written by WAL-backed
+  surfaces stamp it with a durable fence.
 - Forward-compatible reader — formats are dispatched by version, so
   today's v1 files will keep loading after the next format bump until
   support is deliberately dropped.
 - Snapshot metadata (`formatVersion`, `nodeCount`,
-  `relationshipCount`, `walLsn`) returned from every save and load.
+  `relationshipCount`, `walLsn`) returned from path-based saves, load
+  calls, and HTTP admin calls. Byte-output save helpers return bytes.
 
-Binding support that actually exists in v0.3:
+Binding support, using today's API names:
 
 | Surface | Save | Load | Shape |
 |---|---|---|---|
@@ -55,16 +69,16 @@ Binding support that actually exists in v0.3:
 | Python (sync `Database`) | `save_snapshot(path)` | `load_snapshot(path)` | file path |
 | Python (`AsyncDatabase`) | `await save_snapshot(path)` | `await load_snapshot(path)` | file path |
 | Node.js (`@loradb/lora-node`) | `await saveSnapshot(path)` | `await loadSnapshot(path)` | file path |
-| WebAssembly (`@loradb/lora-wasm`) | `await saveSnapshotToBytes()` | `await loadSnapshotFromBytes(bytes)` | `Uint8Array` |
+| WebAssembly (`@loradb/lora-wasm`) | `await saveSnapshot()` | `await loadSnapshot(source)` | `Uint8Array`, `ArrayBuffer`, `Blob`, `Response`, `URL`, stream |
 | Go (`lora-go`) | `db.SaveSnapshot(path)` | `db.LoadSnapshot(path)` | file path |
 | Ruby (`lora-ruby`) | `db.save_snapshot(path)` | `db.load_snapshot(path)` | file path |
 | C FFI (`lora-ffi`) | `lora_db_save_snapshot(handle, path, ...)` | `lora_db_load_snapshot(handle, path, ...)` | file path |
 | HTTP server (`lora-server`) | `POST /admin/snapshot/save` | `POST /admin/snapshot/load` | file path on the server's disk |
 
-WebAssembly is byte-oriented by design — WASM has no filesystem, so
-the caller is responsible for persisting the `Uint8Array` to IndexedDB,
-localStorage, `fs.writeFileSync`, a backend upload, or wherever their
-app already stores state.
+WebAssembly is source/byte-oriented by design — WASM has no filesystem
+path API, so the caller is responsible for persisting the `Uint8Array`
+or web-native wrapper to IndexedDB, OPFS, a backend upload, or wherever
+their app already stores state.
 
 ## Why Snapshots Matter
 
@@ -95,12 +109,14 @@ storage tier gets one new verb (`save_snapshot`), one new verse
 
 Same list as above, stated as the bright line:
 
-- **Not continuous durability.** A crash between two saves loses every
-  mutation in the window. If you need zero data loss, you need a WAL;
-  LoraDB does not have one yet.
-- **Not a checkpoint loop.** Nothing schedules saves for you. The host
-  process, an external cron, or the admin HTTP endpoint decides when a
-  save happens.
+- **Not continuous durability by itself.** A crash between two saves
+  loses every mutation in the window. Current releases can pair
+  snapshots with WAL-backed recovery when you need committed writes to
+  survive crashes.
+- **Not a wall-clock checkpoint scheduler.** Manual saves happen
+  because the host process, an external cron, or the admin HTTP
+  endpoint calls them. Current raw-WAL helpers can also write managed
+  snapshots after N committed transactions.
 - **Not a general persistent storage tier.** There is no storage
   backend other than the in-memory graph; the snapshot is a dump of
   that graph, not a format a different engine writes into.
@@ -151,8 +167,8 @@ Every save and load returns a `SnapshotMeta`:
 }
 ```
 
-The `walLsn` field is reserved for the future WAL/checkpoint hybrid
-and is always `null` for today's pure snapshots.
+The `walLsn` field is `null` for pure snapshots and non-null for
+checkpoint snapshots written by WAL-backed surfaces.
 
 ### Save and load from Python
 
@@ -208,7 +224,8 @@ await db2.loadSnapshot('graph.bin');
 
 ### Save and load from WebAssembly
 
-WASM has no filesystem, so the snapshot API is byte-in / byte-out:
+WASM has no filesystem path API, so the snapshot API is source-in /
+byte-out:
 
 ```ts
 import { createDatabase } from '@loradb/lora-wasm';
@@ -217,21 +234,21 @@ const db = await createDatabase();
 await db.execute("CREATE (:Person {name: 'Ada'})");
 
 // Dump the graph to a Uint8Array.
-const bytes: Uint8Array = await db.saveSnapshotToBytes();
+const bytes: Uint8Array = await db.saveSnapshot();
 
 // Persist the bytes wherever you already store state — IndexedDB,
 // localStorage, a POST to your backend, `fs.writeFileSync` in Node.
 // Later:
 const db2 = await createDatabase();
-await db2.loadSnapshotFromBytes(bytes);
+await db2.loadSnapshot(bytes);
 ```
 
-The Worker-backed surface (`createWorkerDatabase`) does not yet plumb
-snapshots through the worker protocol — for snapshotting from a
-browser worker today, call `saveSnapshotToBytes` in-process in the
-worker and post the bytes back to the main thread yourself. In-process
-WASM (`createDatabase`) supports snapshots on both the Node and
-bundler targets.
+`saveSnapshot` can also return `ArrayBuffer`, `Blob`, `Response`,
+`ReadableStream`, or an object `URL`; `loadSnapshot` accepts `URL`,
+`Uint8Array`, `ArrayBuffer`, `Blob`, `Response`, or
+`ReadableStream<Uint8Array | ArrayBuffer>`. The Worker-backed surface
+(`createWorkerDatabase`) exposes the same `saveSnapshot` /
+`loadSnapshot` methods.
 
 ### Save and load from Go
 
@@ -326,10 +343,11 @@ surface disabled by default, enabled only behind an auth boundary".
 
 :::
 
-## Why Snapshots Are Useful Even Without A WAL
+## Why Snapshots Are Useful With Or Without A WAL
 
 A snapshot is not a replacement for continuous durability, but it
-closes enough of the gap for the workloads LoraDB currently serves:
+closes enough of the gap for many workloads. When paired with WAL,
+snapshots become the checkpoint artifact that keeps replay bounded:
 
 - **Seeded services.** Build the graph offline from a cheaper source
   (SQL exports, a scrape, an ETL job), snapshot it, and ship the
@@ -357,18 +375,18 @@ narrow enough for your workload. For most of the shapes above, it is.
 Explicitly not in this release, so the feature stays honest about its
 boundary:
 
-- **No WAL / checkpoint loop.** The header reserves space for a WAL
-  LSN, but the engine does not yet write one. A future release will
-  turn checkpoints into "snapshots with a meaningful `walLsn`" — the
-  reader already accepts the flag.
-- **No automatic persistence.** Snapshots are always manual. Nothing
-  runs them on a schedule unless you do.
+- **Snapshots alone are still not a WAL.** Current releases have
+  WAL-backed recovery on filesystem-backed surfaces, but a manual
+  snapshot by itself is still only point-in-time persistence.
+- **No wall-clock scheduler.** Manual snapshots run when you call them.
+  Raw-WAL helpers can write managed snapshots after N committed
+  transactions; wall-clock scheduling is still host/operator work.
 - **No partial / incremental snapshots.** A save serializes the whole
   graph. For v0.3 the expected scale is graphs that fit in memory
   comfortably and dump in seconds.
 - **Non-blocking save.** The store mutex is held for the full save.
   Concurrent queries block. Real per-mutation copy-on-write will come
-  with the WAL work.
+  with deeper storage-engine work.
 - **No multi-graph file format.** One file, one graph — same one-process
   model as the rest of the engine.
 - **No auth on the HTTP admin surface.** Opt-in, off by default, and
@@ -412,15 +430,14 @@ surface:
 
 ## What Comes Next
 
-Three directions stand out after v0.3:
+Three directions stood out after v0.3:
 
-1. **A WAL.** The snapshot header already reserves the slot; the
-   missing piece is the append-only log that checkpoints refer to.
-   That unlocks continuous durability, which in turn unblocks multi-
-   minute crash-recovery windows.
-2. **A checkpoint loop.** Once there is a WAL, the engine can fold
-   snapshots and the log together in the background — the operator
-   stops having to decide when to save.
+1. **A WAL.** This has since landed on every filesystem-backed
+   surface, with Rust and `lora-server` exposing the full operator
+   controls and embedded bindings exposing raw-WAL helpers.
+2. **Checkpoint automation.** Current raw-WAL helpers can write
+   managed snapshots after N committed transactions. Wall-clock
+   scheduling remains a host/operator concern.
 3. **Auth on the admin surface.** Token-based auth in front of
    `/admin/*` so the endpoints can be used on network-reachable hosts
    without an external reverse proxy.

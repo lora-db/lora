@@ -212,9 +212,11 @@ while the hosted platform business remains sustainable.
 
 ## What Is Not Included Yet
 
-This release is intentionally honest about what it is not.
+This release was intentionally honest about what it was not. Current
+releases have since added snapshots and WAL-backed local durability;
+the rest of this section is the public-launch boundary.
 
-LoraDB does not yet include:
+At public launch, LoraDB did not yet include:
 
 - durable disk persistence;
 - WAL or snapshots;
@@ -227,8 +229,8 @@ LoraDB does not yet include:
 - a managed cloud service.
 
 The HTTP server is useful for local development, internal experiments, and
-controlled environments. It is not yet a hardened internet-facing database
-server.
+controlled environments. Even with today's opt-in snapshot and WAL admin
+routes, it is not yet a hardened internet-facing database server.
 
 Those limitations are not hidden. They are the roadmap.
 
