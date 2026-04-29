@@ -1,5 +1,5 @@
 use crate::errors::{value_kind, ExecResult, ExecutorError};
-use crate::eval::{eval_expr, take_eval_error, EvalContext};
+use crate::eval::{clear_eval_error, eval_expr, eval_expr_result, eval_truthy_result, EvalContext};
 use crate::value::{lora_value_to_property, LoraPath, LoraValue, Row};
 use crate::{project_rows, ExecuteOptions, QueryResult};
 
@@ -67,6 +67,54 @@ fn check_deadline_at(deadline: Instant) -> ExecResult<()> {
     }
 }
 
+fn filter_rows_checked<S: GraphStorage>(
+    input_rows: Vec<Row>,
+    predicate: &ResolvedExpr,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<Vec<Row>> {
+    let mut out = Vec::with_capacity(input_rows.len());
+    for row in input_rows {
+        if eval_truthy_result(predicate, &row, eval_ctx).map_err(ExecutorError::RuntimeError)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+fn project_rows_checked<S: GraphStorage>(
+    input_rows: Vec<Row>,
+    op: &ProjectionExec,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<Vec<Row>> {
+    let mut out = Vec::with_capacity(input_rows.len());
+
+    for row in input_rows {
+        if op.include_existing {
+            let mut projected = row;
+            for item in &op.items {
+                let value = eval_expr_result(&item.expr, &projected, eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                projected.insert_named(item.output, item.name.clone(), value);
+            }
+            out.push(projected);
+        } else {
+            let mut projected = Row::new();
+            for item in &op.items {
+                let value = eval_expr_result(&item.expr, &row, eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                projected.insert_named(item.output, item.name.clone(), value);
+            }
+            out.push(projected);
+        }
+    }
+
+    Ok(if op.distinct {
+        dedup_rows_by_vars(out)
+    } else {
+        out
+    })
+}
+
 impl<'a, S: GraphStorage> Executor<'a, S> {
     pub fn execute(
         &self,
@@ -92,7 +140,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             return self.execute_rows(&compiled.physical);
         }
 
-        let _ = take_eval_error();
+        clear_eval_error();
 
         let mut all_rows = self.execute_rows(&compiled.physical)?;
         let mut needs_dedup = false;
@@ -118,7 +166,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
-        let _ = take_eval_error();
+        clear_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
         Ok(rows
@@ -587,10 +635,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
-        Ok(input_rows
-            .into_iter()
-            .filter(|row| eval_expr(&op.predicate, row, &eval_ctx).is_truthy())
-            .collect())
+        filter_rows_checked(input_rows, &op.predicate, &eval_ctx)
     }
 
     fn exec_projection(&self, plan: &PhysicalPlan, op: &ProjectionExec) -> ExecResult<Vec<Row>> {
@@ -600,39 +645,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
-        let mut out = Vec::with_capacity(input_rows.len());
-
-        for row in input_rows {
-            // include_existing=true means we carry all upstream columns — move
-            // the row into the projection instead of cloning every value.
-            if op.include_existing {
-                let mut projected = row;
-                for item in &op.items {
-                    let value = eval_expr(&item.expr, &projected, &eval_ctx);
-                    if let Some(err) = take_eval_error() {
-                        return Err(ExecutorError::RuntimeError(err));
-                    }
-                    projected.insert_named(item.output, item.name.clone(), value);
-                }
-                out.push(projected);
-            } else {
-                let mut projected = Row::new();
-                for item in &op.items {
-                    let value = eval_expr(&item.expr, &row, &eval_ctx);
-                    if let Some(err) = take_eval_error() {
-                        return Err(ExecutorError::RuntimeError(err));
-                    }
-                    projected.insert_named(item.output, item.name.clone(), value);
-                }
-                out.push(projected);
-            }
-        }
-
-        Ok(if op.distinct {
-            dedup_rows_by_vars(out)
-        } else {
-            out
-        })
+        project_rows_checked(input_rows, op, &eval_ctx)
     }
 
     fn hydrate_value(&self, value: LoraValue) -> LoraValue {
@@ -712,11 +725,12 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             groups.insert(Vec::new(), input_rows);
         } else {
             for row in input_rows {
-                let key = op
-                    .group_by
-                    .iter()
-                    .map(|proj| GroupValueKey::from_value(&eval_expr(&proj.expr, &row, &eval_ctx)))
-                    .collect::<Vec<_>>();
+                let mut key = Vec::with_capacity(op.group_by.len());
+                for proj in &op.group_by {
+                    let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?;
+                    key.push(GroupValueKey::from_value(&value));
+                }
 
                 groups.entry(key).or_default().push(row);
             }
@@ -729,13 +743,15 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
 
             if let Some(first) = rows.first() {
                 for proj in &op.group_by {
-                    let value = self.hydrate_value(eval_expr(&proj.expr, first, &eval_ctx));
+                    let value = eval_expr_result(&proj.expr, first, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?;
+                    let value = self.hydrate_value(value);
                     result.insert_named(proj.output, proj.name.clone(), value);
                 }
             }
 
             for proj in &op.aggregates {
-                let value = compute_aggregate_expr(&proj.expr, &rows, &eval_ctx);
+                let value = compute_aggregate_expr(&proj.expr, &rows, &eval_ctx)?;
                 result.insert_named(proj.output, proj.name.clone(), value);
             }
 
@@ -928,7 +944,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
-        let _ = take_eval_error();
+        clear_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
         Ok(rows
@@ -953,7 +969,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             return self.execute_rows(&compiled.physical);
         }
 
-        let _ = take_eval_error();
+        clear_eval_error();
 
         // Execute the head branch.
         let mut all_rows = self.execute_and_hydrate(&compiled.physical)?;
@@ -1396,10 +1412,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
-        Ok(input_rows
-            .into_iter()
-            .filter(|row| eval_expr(&op.predicate, row, &eval_ctx).is_truthy())
-            .collect())
+        filter_rows_checked(input_rows, &op.predicate, &eval_ctx)
     }
 
     fn exec_projection(
@@ -1413,37 +1426,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
-        let mut out = Vec::with_capacity(input_rows.len());
-
-        for row in input_rows {
-            if op.include_existing {
-                let mut projected = row;
-                for item in &op.items {
-                    let value = eval_expr(&item.expr, &projected, &eval_ctx);
-                    if let Some(err) = take_eval_error() {
-                        return Err(ExecutorError::RuntimeError(err));
-                    }
-                    projected.insert_named(item.output, item.name.clone(), value);
-                }
-                out.push(projected);
-            } else {
-                let mut projected = Row::new();
-                for item in &op.items {
-                    let value = eval_expr(&item.expr, &row, &eval_ctx);
-                    if let Some(err) = take_eval_error() {
-                        return Err(ExecutorError::RuntimeError(err));
-                    }
-                    projected.insert_named(item.output, item.name.clone(), value);
-                }
-                out.push(projected);
-            }
-        }
-
-        Ok(if op.distinct {
-            dedup_rows_by_vars(out)
-        } else {
-            out
-        })
+        project_rows_checked(input_rows, op, &eval_ctx)
     }
 
     fn hydrate_value(&self, value: LoraValue) -> LoraValue {
@@ -1523,11 +1506,12 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             groups.insert(Vec::new(), input_rows);
         } else {
             for row in input_rows {
-                let key = op
-                    .group_by
-                    .iter()
-                    .map(|proj| GroupValueKey::from_value(&eval_expr(&proj.expr, &row, &eval_ctx)))
-                    .collect::<Vec<_>>();
+                let mut key = Vec::with_capacity(op.group_by.len());
+                for proj in &op.group_by {
+                    let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?;
+                    key.push(GroupValueKey::from_value(&value));
+                }
 
                 groups.entry(key).or_default().push(row);
             }
@@ -1540,13 +1524,15 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
             if let Some(first) = rows.first() {
                 for proj in &op.group_by {
-                    let value = self.hydrate_value(eval_expr(&proj.expr, first, &eval_ctx));
+                    let value = eval_expr_result(&proj.expr, first, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?;
+                    let value = self.hydrate_value(value);
                     result.insert_named(proj.output, proj.name.clone(), value);
                 }
             }
 
             for proj in &op.aggregates {
-                let value = compute_aggregate_expr(&proj.expr, &rows, &eval_ctx);
+                let value = compute_aggregate_expr(&proj.expr, &rows, &eval_ctx)?;
                 result.insert_named(proj.output, proj.name.clone(), value);
             }
 
@@ -2718,7 +2704,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
     expr: &ResolvedExpr,
     rows: &[Row],
     eval_ctx: &EvalContext<'_, S>,
-) -> LoraValue {
+) -> ExecResult<LoraValue> {
     match expr {
         ResolvedExpr::Function {
             name,
@@ -2730,48 +2716,39 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
             match func.as_str() {
                 "count" => {
                     if args.is_empty() {
-                        return LoraValue::Int(rows.len() as i64);
+                        return Ok(LoraValue::Int(rows.len() as i64));
                     }
 
-                    let mut values = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
-                        .filter(|v| !matches!(v, LoraValue::Null))
-                        .collect::<Vec<_>>();
+                    let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
+                    values.retain(|v| !matches!(v, LoraValue::Null));
 
                     if *distinct {
                         values = dedup_values(values);
                     }
 
-                    LoraValue::Int(values.len() as i64)
+                    Ok(LoraValue::Int(values.len() as i64))
                 }
 
                 "collect" => {
                     if args.is_empty() {
-                        return LoraValue::List(Vec::new());
+                        return Ok(LoraValue::List(Vec::new()));
                     }
 
-                    let mut values = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
-                        .collect::<Vec<_>>();
+                    let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
 
                     if *distinct {
                         values = dedup_values(values);
                     }
 
-                    LoraValue::List(values)
+                    Ok(LoraValue::List(values))
                 }
 
                 "sum" => {
                     if args.is_empty() {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
-                    let mut values = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
-                        .collect::<Vec<_>>();
+                    let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
 
                     if *distinct {
                         values = dedup_values(values);
@@ -2783,23 +2760,20 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         .collect::<Vec<_>>();
 
                     if nums.is_empty() {
-                        LoraValue::Null
+                        Ok(LoraValue::Null)
                     } else if nums.iter().all(|n| n.fract() == 0.0) {
-                        LoraValue::Int(nums.iter().sum::<f64>() as i64)
+                        Ok(LoraValue::Int(nums.iter().sum::<f64>() as i64))
                     } else {
-                        LoraValue::Float(nums.iter().sum::<f64>())
+                        Ok(LoraValue::Float(nums.iter().sum::<f64>()))
                     }
                 }
 
                 "avg" => {
                     if args.is_empty() {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
-                    let mut values = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
-                        .collect::<Vec<_>>();
+                    let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
 
                     if *distinct {
                         values = dedup_values(values);
@@ -2811,69 +2785,64 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         .collect::<Vec<_>>();
 
                     if nums.is_empty() {
-                        LoraValue::Null
+                        Ok(LoraValue::Null)
                     } else {
-                        LoraValue::Float(nums.iter().sum::<f64>() / nums.len() as f64)
+                        Ok(LoraValue::Float(
+                            nums.iter().sum::<f64>() / nums.len() as f64,
+                        ))
                     }
                 }
 
                 "min" => {
                     if args.is_empty() {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
-                    let mut values = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
-                        .filter(|v| !matches!(v, LoraValue::Null))
-                        .collect::<Vec<_>>();
+                    let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
+                    values.retain(|v| !matches!(v, LoraValue::Null));
 
                     if *distinct {
                         values = dedup_values(values);
                     }
 
-                    values
+                    Ok(values
                         .into_iter()
                         .min_by(compare_values_total)
-                        .unwrap_or(LoraValue::Null)
+                        .unwrap_or(LoraValue::Null))
                 }
 
                 "max" => {
                     if args.is_empty() {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
-                    let mut values = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
-                        .filter(|v| !matches!(v, LoraValue::Null))
-                        .collect::<Vec<_>>();
+                    let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
+                    values.retain(|v| !matches!(v, LoraValue::Null));
 
                     if *distinct {
                         values = dedup_values(values);
                     }
 
-                    values
+                    Ok(values
                         .into_iter()
                         .max_by(compare_values_total)
-                        .unwrap_or(LoraValue::Null)
+                        .unwrap_or(LoraValue::Null))
                 }
 
                 "stdev" | "stdevp" => {
                     if args.is_empty() {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
-                    let nums: Vec<f64> = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
+                    let nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
+                        .into_iter()
                         .filter_map(as_f64_lossy)
                         .collect();
 
                     let is_population = func == "stdevp";
 
                     if nums.is_empty() || (!is_population && nums.len() < 2) {
-                        return LoraValue::Float(0.0);
+                        return Ok(LoraValue::Float(0.0));
                     }
 
                     let mean = nums.iter().sum::<f64>() / nums.len() as f64;
@@ -2883,25 +2852,29 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     } else {
                         (nums.len() - 1) as f64
                     };
-                    LoraValue::Float((variance_sum / denom).sqrt())
+                    Ok(LoraValue::Float((variance_sum / denom).sqrt()))
                 }
 
                 "percentilecont" => {
                     if args.len() < 2 {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
-                    let percentile = eval_expr(&args[1], &rows[0], eval_ctx)
+                    let Some(first) = rows.first() else {
+                        return Ok(LoraValue::Null);
+                    };
+
+                    let percentile = eval_expr_result(&args[1], first, eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?
                         .as_f64()
                         .unwrap_or(0.5);
-                    let mut nums: Vec<f64> = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
+                    let mut nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
+                        .into_iter()
                         .filter_map(as_f64_lossy)
                         .collect();
 
                     if nums.is_empty() {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
                     nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
@@ -2912,48 +2885,69 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     let fraction = index - lower as f64;
 
                     if lower == upper || upper >= nums.len() {
-                        LoraValue::Float(nums[lower])
+                        Ok(LoraValue::Float(nums[lower]))
                     } else {
-                        LoraValue::Float(nums[lower] * (1.0 - fraction) + nums[upper] * fraction)
+                        Ok(LoraValue::Float(
+                            nums[lower] * (1.0 - fraction) + nums[upper] * fraction,
+                        ))
                     }
                 }
 
                 "percentiledisc" => {
                     if args.len() < 2 {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
-                    let percentile = eval_expr(&args[1], &rows[0], eval_ctx)
+                    let Some(first) = rows.first() else {
+                        return Ok(LoraValue::Null);
+                    };
+
+                    let percentile = eval_expr_result(&args[1], first, eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?
                         .as_f64()
                         .unwrap_or(0.5);
-                    let mut nums: Vec<f64> = rows
-                        .iter()
-                        .map(|r| eval_expr(&args[0], r, eval_ctx))
+                    let mut nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
+                        .into_iter()
                         .filter_map(as_f64_lossy)
                         .collect();
 
                     if nums.is_empty() {
-                        return LoraValue::Null;
+                        return Ok(LoraValue::Null);
                     }
 
                     nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
                     let index = (percentile * (nums.len() - 1) as f64).round() as usize;
                     let index = index.min(nums.len() - 1);
-                    LoraValue::Float(nums[index])
+                    Ok(LoraValue::Float(nums[index]))
                 }
 
-                _ => rows
-                    .first()
-                    .map(|r| eval_expr(expr, r, eval_ctx))
-                    .unwrap_or(LoraValue::Null),
+                _ => eval_first_or_null(expr, rows, eval_ctx),
             }
         }
 
-        _ => rows
-            .first()
-            .map(|r| eval_expr(expr, r, eval_ctx))
-            .unwrap_or(LoraValue::Null),
+        _ => eval_first_or_null(expr, rows, eval_ctx),
+    }
+}
+
+fn eval_aggregate_arg_values<S: GraphStorage>(
+    expr: &ResolvedExpr,
+    rows: &[Row],
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<Vec<LoraValue>> {
+    rows.iter()
+        .map(|row| eval_expr_result(expr, row, eval_ctx).map_err(ExecutorError::RuntimeError))
+        .collect()
+}
+
+fn eval_first_or_null<S: GraphStorage>(
+    expr: &ResolvedExpr,
+    rows: &[Row],
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<LoraValue> {
+    match rows.first() {
+        Some(row) => eval_expr_result(expr, row, eval_ctx).map_err(ExecutorError::RuntimeError),
+        None => Ok(LoraValue::Null),
     }
 }
 

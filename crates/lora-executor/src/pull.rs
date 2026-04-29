@@ -52,7 +52,7 @@ use lora_compiler::CompiledQuery;
 use lora_store::{GraphStorage, GraphStorageMut, NodeId};
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
-use crate::eval::{eval_expr, take_eval_error, EvalContext};
+use crate::eval::{clear_eval_error, eval_expr, eval_expr_result, eval_truthy_result, EvalContext};
 use crate::executor::{
     build_path_value, compute_aggregate_expr, hydrate_node_record, hydrate_relationship_record,
     indexed_node_property_candidates, label_group_candidates_prefiltered,
@@ -906,7 +906,9 @@ impl<'a, S: GraphStorage> RowSource for FilterSource<'a, S> {
             match self.upstream.next_row()? {
                 Some(row) => {
                     let eval_ctx = self.ctx.eval_ctx();
-                    if eval_expr(self.predicate, &row, &eval_ctx).is_truthy() {
+                    if eval_truthy_result(self.predicate, &row, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?
+                    {
                         return Ok(Some(row));
                     }
                 }
@@ -951,20 +953,16 @@ impl<'a, S: GraphStorage> RowSource for ProjectionSource<'a, S> {
                 if self.include_existing {
                     let mut projected = row;
                     for item in self.items {
-                        let value = eval_expr(&item.expr, &projected, &eval_ctx);
-                        if let Some(err) = take_eval_error() {
-                            return Err(ExecutorError::RuntimeError(err));
-                        }
+                        let value = eval_expr_result(&item.expr, &projected, &eval_ctx)
+                            .map_err(ExecutorError::RuntimeError)?;
                         projected.insert_named(item.output, item.name.clone(), value);
                     }
                     Ok(Some(projected))
                 } else {
                     let mut projected = Row::new();
                     for item in self.items {
-                        let value = eval_expr(&item.expr, &row, &eval_ctx);
-                        if let Some(err) = take_eval_error() {
-                            return Err(ExecutorError::RuntimeError(err));
-                        }
+                        let value = eval_expr_result(&item.expr, &row, &eval_ctx)
+                            .map_err(ExecutorError::RuntimeError)?;
                         projected.insert_named(item.output, item.name.clone(), value);
                     }
                     Ok(Some(projected))
@@ -1029,7 +1027,8 @@ impl<'a, S: GraphStorage> RowSource for UnwindSource<'a, S> {
                 None => return Ok(None),
                 Some(row) => {
                     let eval_ctx = self.ctx.eval_ctx();
-                    let value = eval_expr(self.expr, &row, &eval_ctx);
+                    let value = eval_expr_result(self.expr, &row, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?;
                     match value {
                         LoraValue::List(values) => {
                             self.cur_row = Some(row);
@@ -1260,10 +1259,12 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             groups.insert(Vec::new(), input_rows);
         } else {
             for row in input_rows {
-                let key = group_by
-                    .iter()
-                    .map(|proj| GroupValueKey::from_value(&eval_expr(&proj.expr, &row, &eval_ctx)))
-                    .collect::<Vec<_>>();
+                let mut key = Vec::with_capacity(group_by.len());
+                for proj in group_by {
+                    let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?;
+                    key.push(GroupValueKey::from_value(&value));
+                }
                 groups.entry(key).or_default().push(row);
             }
         }
@@ -1273,12 +1274,14 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             let mut result = Row::new();
             if let Some(first) = rows.first() {
                 for proj in group_by {
-                    let value = hydrate_value(eval_expr(&proj.expr, first, &eval_ctx), ctx.storage);
+                    let value = eval_expr_result(&proj.expr, first, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?;
+                    let value = hydrate_value(value, ctx.storage);
                     result.insert_named(proj.output, proj.name.clone(), value);
                 }
             }
             for proj in aggregates {
-                let value = compute_aggregate_expr(&proj.expr, &rows, &eval_ctx);
+                let value = compute_aggregate_expr(&proj.expr, &rows, &eval_ctx)?;
                 result.insert_named(proj.output, proj.name.clone(), value);
             }
             out.push(result);
@@ -2046,7 +2049,7 @@ impl<'a, S: GraphStorage> PullExecutor<'a, S> {
     where
         S: 'a,
     {
-        let _ = take_eval_error();
+        clear_eval_error();
         compiled_to_streaming(compiled, self.storage, self.params)
     }
 }
@@ -2108,11 +2111,32 @@ fn open_mutable_plan_cursor<'a, S: GraphStorageMut + GraphStorage + 'a>(
     Ok(Box::new(BufferedRowSource::new(rows)))
 }
 
+#[derive(Clone, Copy)]
+struct StoragePtr<S> {
+    ptr: *mut S,
+}
+
+impl<S> StoragePtr<S> {
+    fn from_mut(storage: &mut S) -> Self {
+        Self {
+            ptr: storage as *mut S,
+        }
+    }
+
+    unsafe fn as_ref<'a>(&self) -> &'a S {
+        unsafe { &*self.ptr }
+    }
+
+    unsafe fn as_mut<'a>(&self) -> &'a mut S {
+        unsafe { &mut *self.ptr }
+    }
+}
+
 /// Mutable UNION cursor. `UNION ALL` streams one branch at a time
 /// against the same staged graph. Plain `UNION` streams branch-by-branch
 /// while retaining only a seen-key set for deduplication.
 pub struct MutableUnionSource<'a, S: GraphStorageMut + GraphStorage + 'a> {
-    storage_ptr: *mut S,
+    storage_ptr: StoragePtr<S>,
     compiled: &'a CompiledQuery,
     params: BTreeMap<String, LoraValue>,
     branch_idx: usize,
@@ -2130,7 +2154,7 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> MutableUnionSource<'a, S> {
     ) -> ExecResult<Self> {
         let needs_dedup = compiled.unions.iter().any(|branch| !branch.all);
         Ok(Self {
-            storage_ptr: storage as *mut S,
+            storage_ptr: StoragePtr::from_mut(storage),
             compiled,
             params,
             branch_idx: 0,
@@ -2159,7 +2183,7 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> MutableUnionSource<'a, S> {
         // alive at a time. `current` is dropped before advancing to
         // the next branch, so each mutable reborrow is temporally
         // disjoint.
-        let storage = unsafe { &mut *self.storage_ptr };
+        let storage = unsafe { self.storage_ptr.as_mut() };
         open_mutable_plan_cursor(storage, plan, self.params.clone())
     }
 }
@@ -2210,7 +2234,7 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for MutableUnionSourc
 ///
 /// # Layout invariant
 ///
-/// The cursor owns a raw alias `*mut S` of the original `&'a mut S`.
+/// The cursor owns a raw alias of the original `&'a mut S`.
 /// Its `upstream` was constructed using a `&'a S` reborrow derived
 /// from `storage_ptr` via unsafe lifetime extension. This is sound
 /// because the existing read-side `RowSource` impls (see
@@ -2231,9 +2255,8 @@ pub struct StreamingWriteCursor<'a, S: GraphStorageMut + GraphStorage + 'a> {
     /// SAFETY: borrows from `*storage_ptr`. Must drop first.
     upstream: ManuallyDrop<Box<dyn RowSource + 'a>>,
     /// Raw alias of the `&'a mut S` handed in at construction. Used
-    /// as `&S` (via `&*ptr`) by `upstream` and as `&mut S` (via
-    /// `&mut *ptr`) inside this cursor's `next_row`.
-    storage_ptr: *mut S,
+    /// as `&S` by `upstream` and as `&mut S` inside this cursor's `next_row`.
+    storage_ptr: StoragePtr<S>,
     /// Physical plan — kept alive for the per-row op borrow.
     plan: &'a PhysicalPlan,
     /// Index into `plan.nodes` of the write operator.
@@ -2264,10 +2287,10 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> StreamingWriteCursor<'a, S> {
                 )));
             }
         };
-        let storage_ptr: *mut S = storage as *mut S;
+        let storage_ptr = StoragePtr::from_mut(storage);
 
         // SAFETY: see struct-level comment.
-        let storage_ref: &'a S = unsafe { &*storage_ptr };
+        let storage_ref: &'a S = unsafe { storage_ptr.as_ref() };
         let upstream = build_streaming(plan, input, storage_ref, Arc::new(params.clone()))?;
 
         Ok(Self {
@@ -2292,7 +2315,7 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for StreamingWriteCur
         // dormant `&S` borrow is not in active use right now. We
         // reborrow `&mut S` for the per-row write and drop the
         // borrow before the next pull.
-        let storage_mut: &mut S = unsafe { &mut *self.storage_ptr };
+        let storage_mut: &mut S = unsafe { self.storage_ptr.as_mut() };
         let mut exec = MutableExecutor::new(MutableExecutionContext {
             storage: storage_mut,
             params: self.params.clone(),

@@ -578,6 +578,27 @@ fn node_matches_properties<S: GraphStorage>(
     }
 }
 
+pub fn eval_expr_result<S: GraphStorage>(
+    expr: &ResolvedExpr,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> Result<LoraValue, String> {
+    clear_eval_error();
+    let value = eval_expr(expr, row, ctx);
+    match take_eval_error() {
+        Some(err) => Err(err),
+        None => Ok(value),
+    }
+}
+
+pub fn eval_truthy_result<S: GraphStorage>(
+    expr: &ResolvedExpr,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> Result<bool, String> {
+    Ok(eval_expr_result(expr, row, ctx)?.is_truthy())
+}
+
 fn eval_literal(lit: &LiteralValue) -> LoraValue {
     match lit {
         LiteralValue::Integer(v) => LoraValue::Int(*v),
@@ -859,6 +880,15 @@ fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     }
 }
 
+fn substring_by_chars(s: &str, start: i64, length: Option<i64>) -> String {
+    let start = start.max(0) as usize;
+    let chars = s.chars().skip(start);
+    match length {
+        Some(length) => chars.take(length.max(0) as usize).collect(),
+        None => chars.collect(),
+    }
+}
+
 fn eval_function<S: GraphStorage>(
     name: &str,
     args: &[LoraValue],
@@ -1115,28 +1145,14 @@ fn eval_function<S: GraphStorage>(
             _ => LoraValue::Null,
         },
 
-        "substring" => {
-            match args.first() {
-                Some(LoraValue::String(s)) => {
-                    let start = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as usize;
-                    if start > s.len() {
-                        return LoraValue::String(String::new());
-                    }
-                    match args.get(2).and_then(|v| v.as_i64()) {
-                        Some(len) => {
-                            let len = len.max(0) as usize;
-                            let end = (start + len).min(s.len());
-                            LoraValue::String(s[start..end].to_string())
-                        }
-                        None => {
-                            // Two-argument form: substring(s, start) — rest of string
-                            LoraValue::String(s[start..].to_string())
-                        }
-                    }
-                }
-                _ => LoraValue::Null,
+        "substring" => match args.first() {
+            Some(LoraValue::String(s)) => {
+                let start = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0);
+                let length = args.get(2).and_then(|v| v.as_i64());
+                LoraValue::String(substring_by_chars(s, start, length))
             }
-        }
+            _ => LoraValue::Null,
+        },
 
         "reverse" => match args.first() {
             Some(LoraValue::String(s)) => LoraValue::String(s.chars().rev().collect()),
@@ -2033,6 +2049,10 @@ thread_local! {
 
 fn set_eval_error(msg: String) {
     EVAL_ERROR.with(|e| *e.borrow_mut() = Some(msg));
+}
+
+pub fn clear_eval_error() {
+    EVAL_ERROR.with(|e| *e.borrow_mut() = None);
 }
 
 pub fn take_eval_error() -> Option<String> {

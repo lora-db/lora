@@ -222,6 +222,18 @@ fn substring_zero_length() {
     assert_eq!(TestDb::new().scalar("RETURN substring('hello', 0, 0)"), "");
 }
 
+#[test]
+fn substring_uses_character_offsets_for_unicode() {
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('éclair', 1, 3)"),
+        "cla"
+    );
+    assert_eq!(
+        TestDb::new().scalar("RETURN substring('éclair', 1)"),
+        "clair"
+    );
+}
+
 // ============================================================
 // 6. Left / Right functions — edge cases
 // ============================================================

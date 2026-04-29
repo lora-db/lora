@@ -573,6 +573,25 @@ fn vector_norm_unknown_metric_errors() {
 }
 
 #[test]
+fn vector_norm_unknown_metric_errors_in_filter() {
+    let err = TestDb::new().run_err(
+        "WITH vector([1,2,3], 3, FLOAT32) AS v \
+         WHERE vector_norm(v, COSINE) > 0 \
+         RETURN v",
+    );
+    assert!(err.contains("metric"), "got: {err}");
+}
+
+#[test]
+fn vector_norm_unknown_metric_errors_in_aggregate_argument() {
+    let err = TestDb::new().run_err(
+        "UNWIND [1] AS x \
+         RETURN sum(vector_norm(vector([1,2,3], 3, FLOAT32), COSINE)) AS n",
+    );
+    assert!(err.contains("metric"), "got: {err}");
+}
+
+#[test]
 fn vector_norm_accepts_string_metric() {
     let v = TestDb::new()
         .scalar("RETURN vector_norm(vector([3.0, 4.0], 2, FLOAT32), 'EUCLIDEAN') AS n");
