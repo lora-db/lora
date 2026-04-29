@@ -44,7 +44,7 @@
 //! storage trait does not need to learn about durability.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lora_store::{MutationEvent, MutationRecorder};
 use thiserror::Error;
@@ -168,6 +168,12 @@ impl WalRecorder {
         &self.wal
     }
 
+    fn state_lock(&self) -> MutexGuard<'_, RecorderState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Mark the recorder as inside a query critical section. No WAL
     /// I/O happens here — `Wal::begin` is deferred until the first
     /// mutation event fires. A pure read query that never produces a
@@ -178,7 +184,7 @@ impl WalRecorder {
     /// poisoned the recorder, or if the host is double-arming
     /// (`arm` already in effect).
     pub fn arm(&self) -> Result<(), WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
@@ -201,7 +207,7 @@ impl WalRecorder {
     /// - [`WroteCommit::No`] when no mutations fired during the query
     ///   and no records were written. The host should skip `flush()`.
     pub fn commit(&self) -> Result<WroteCommit, WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
@@ -272,7 +278,7 @@ impl WalRecorder {
     /// may have observed mutations and should be quarantined, `Ok(false)` when
     /// the query never mutated anything.
     pub fn abort(&self) -> Result<bool, WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
@@ -295,7 +301,7 @@ impl WalRecorder {
     /// Flush the WAL — write the pending buffer to the OS and
     /// (under `SyncMode::PerCommit`) `fsync`.
     pub fn flush(&self) -> Result<(), WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
@@ -314,7 +320,7 @@ impl WalRecorder {
     /// durable fence regardless of the configured sync mode. Admin
     /// paths use this when they need a durability point immediately.
     pub fn force_fsync(&self) -> Result<(), WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
@@ -333,7 +339,7 @@ impl WalRecorder {
     /// path after a successful snapshot rename — the marker doubles
     /// as the log-side fence the next replay will trust.
     pub fn checkpoint_marker(&self, snapshot_lsn: Lsn) -> Result<Lsn, WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         if state.poisoned.is_some() {
             return Err(WalError::Poisoned);
         }
@@ -365,7 +371,7 @@ impl WalRecorder {
     }
 
     pub fn poisoned_reason(&self) -> Option<String> {
-        let state = self.state.lock().unwrap();
+        let state = self.state_lock();
         if let Some(msg) = state.poisoned.clone() {
             return Some(msg);
         }
@@ -384,7 +390,7 @@ impl WalRecorder {
     /// future query arms fail until the database is restarted from a
     /// snapshot + WAL.
     pub fn poison(&self, reason: impl Into<String>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         state.poisoned.get_or_insert_with(|| reason.into());
         state.active_tx = None;
         state.armed = false;
@@ -397,7 +403,7 @@ impl WalRecorder {
     /// operator restart from the last snapshot + WAL.
     #[doc(hidden)]
     pub fn clear_poisoned_for_tests(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         state.poisoned = None;
         state.active_tx = None;
         state.armed = false;
@@ -407,7 +413,7 @@ impl WalRecorder {
 
 impl MutationRecorder for WalRecorder {
     fn record(&self, event: MutationEvent) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state_lock();
         if state.poisoned.is_some() {
             return;
         }
