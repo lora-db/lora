@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use lora_analyzer::Analyzer;
 use lora_ast::{Direction, Document};
 use lora_compiler::{CompiledQuery, Compiler};
@@ -1406,13 +1406,10 @@ where
         // it doesn't try to remove the just-renamed target by name race.
         tmp_guard.commit();
 
-        // Best-effort parent-dir fsync so the rename itself is durable on
-        // power loss. Non-fatal if the parent can't be opened.
-        if let Some(parent) = path.parent() {
-            if let Ok(dir) = File::open(parent) {
-                let _ = dir.sync_all();
-            }
-        }
+        // Parent-dir fsync makes the rename itself durable on power loss;
+        // surface failures so snapshot callers know the filesystem boundary
+        // was not fully reached.
+        sync_parent_dir(path)?;
 
         Ok(meta)
     }
@@ -1627,7 +1624,13 @@ impl Database<InMemoryGraph> {
 
         // Best-effort segment truncation. Failure here doesn't undo
         // the checkpoint — the next call will retry.
-        let _ = recorder.truncate_up_to(snapshot_lsn);
+        if let Err(err) = recorder.truncate_up_to(snapshot_lsn) {
+            tracing::warn!(
+                lsn = snapshot_lsn.raw(),
+                error = %err,
+                "WAL truncation after checkpoint failed; will retry later"
+            );
+        }
 
         Ok(meta)
     }
@@ -1652,6 +1655,15 @@ fn snapshot_tmp_path(target: &Path) -> PathBuf {
     let mut tmp = target.as_os_str().to_owned();
     tmp.push(".tmp");
     PathBuf::from(tmp)
+}
+
+fn sync_parent_dir(path: &Path) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let dir = File::open(parent).with_context(|| format!("open dir {}", parent.display()))?;
+    dir.sync_all()
+        .with_context(|| format!("sync dir {}", parent.display()))
 }
 
 /// RAII handle that deletes its path on drop unless [`commit`] is called.

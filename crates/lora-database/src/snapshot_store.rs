@@ -97,7 +97,13 @@ impl ManagedSnapshotStore {
         recorder
             .force_fsync()
             .map_err(|e| anyhow!("WAL fsync after checkpoint marker failed: {e}"))?;
-        let _ = recorder.truncate_up_to(snapshot_lsn);
+        if let Err(err) = recorder.truncate_up_to(snapshot_lsn) {
+            tracing::warn!(
+                lsn = snapshot_lsn.raw(),
+                error = %err,
+                "WAL truncation after managed checkpoint failed; will retry later"
+            );
+        }
 
         self.commits_since_checkpoint.store(0, Ordering::Relaxed);
         self.prune_old_snapshots(snapshot_lsn)?;
@@ -153,7 +159,8 @@ impl ManagedSnapshotStore {
 
         fs::rename(&tmp, &target)
             .with_context(|| format!("rename {} to {}", tmp.display(), target.display()))?;
-        sync_dir(&self.config.dir);
+        sync_dir(&self.config.dir)
+            .with_context(|| format!("sync snapshot dir {}", self.config.dir.display()))?;
         write_current(&self.config.dir, &target)?;
         Ok(meta)
     }
@@ -192,7 +199,8 @@ impl ManagedSnapshotStore {
             fs::remove_file(&path)
                 .with_context(|| format!("remove old snapshot {}", path.display()))?;
         }
-        sync_dir(&self.config.dir);
+        sync_dir(&self.config.dir)
+            .with_context(|| format!("sync snapshot dir {}", self.config.dir.display()))?;
         Ok(())
     }
 }
@@ -250,7 +258,7 @@ fn write_current(dir: &Path, target: &Path) -> Result<()> {
     drop(file);
     fs::rename(&tmp, &current)
         .with_context(|| format!("rename {} to {}", tmp.display(), current.display()))?;
-    sync_dir(dir);
+    sync_dir(dir).with_context(|| format!("sync snapshot dir {}", dir.display()))?;
     Ok(())
 }
 
@@ -260,8 +268,8 @@ fn tmp_path(path: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
-fn sync_dir(path: &Path) {
-    if let Ok(dir) = File::open(path) {
-        let _ = dir.sync_all();
-    }
+fn sync_dir(path: &Path) -> Result<()> {
+    let dir = File::open(path).with_context(|| format!("open dir {}", path.display()))?;
+    dir.sync_all()
+        .with_context(|| format!("sync dir {}", path.display()))
 }
