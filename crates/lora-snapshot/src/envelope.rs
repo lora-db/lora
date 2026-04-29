@@ -79,13 +79,13 @@ pub(crate) fn decode_envelope_borrowed(bytes: &[u8]) -> Result<(Manifest, &[u8])
     if &bytes[0..8] != MAGIC {
         return Err(SnapshotCodecError::BadMagic);
     }
-    let format_version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let format_version = u32::from_le_bytes(read_header_array::<4>(bytes, 8)?);
     if format_version != FORMAT_VERSION {
         return Err(SnapshotCodecError::UnsupportedVersion(format_version));
     }
-    let manifest_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    let body_len = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
-    let checksum: [u8; 32] = bytes[24..56].try_into().unwrap();
+    let manifest_len = u32::from_le_bytes(read_header_array::<4>(bytes, 12)?) as usize;
+    let body_len = u64::from_le_bytes(read_header_array::<8>(bytes, 16)?) as usize;
+    let checksum = read_header_array::<32>(bytes, 24)?;
     let expected_len = HEADER_LEN
         .checked_add(manifest_len)
         .and_then(|len| len.checked_add(body_len))
@@ -109,6 +109,17 @@ pub(crate) fn decode_envelope_borrowed(bytes: &[u8]) -> Result<(Manifest, &[u8])
     let manifest: Manifest = bincode::deserialize(manifest_bytes)
         .map_err(|e| SnapshotCodecError::Decode(e.to_string()))?;
     Ok((manifest, body))
+}
+
+fn read_header_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N]> {
+    let end = offset
+        .checked_add(N)
+        .ok_or_else(|| SnapshotCodecError::Decode("snapshot header offset overflow".into()))?;
+    bytes
+        .get(offset..end)
+        .ok_or_else(|| SnapshotCodecError::Decode("truncated snapshot header".into()))?
+        .try_into()
+        .map_err(|_| SnapshotCodecError::Decode("truncated snapshot header".into()))
 }
 
 pub(crate) fn manifest_info(manifest: &Manifest) -> Result<SnapshotInfo> {

@@ -152,14 +152,15 @@ impl<'a> U64ColumnView<'a> {
         if index >= self.len {
             return None;
         }
-        let start = index * 8;
+        let start = index.checked_mul(8)?;
+        let end = start.checked_add(8)?;
         Some(u64::from_le_bytes(
-            self.bytes[start..start + 8].try_into().unwrap(),
+            self.bytes.get(start..end)?.try_into().ok()?,
         ))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
-        (0..self.len).map(|index| self.get(index).unwrap())
+        (0..self.len).filter_map(|index| self.get(index))
     }
 }
 
@@ -186,18 +187,19 @@ impl<'a> U32ColumnView<'a> {
         if index >= self.len {
             return None;
         }
-        let start = index * 4;
+        let start = index.checked_mul(4)?;
+        let end = start.checked_add(4)?;
         Some(u32::from_le_bytes(
-            self.bytes[start..start + 4].try_into().unwrap(),
+            self.bytes.get(start..end)?.try_into().ok()?,
         ))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
-        (0..self.len).map(|index| self.get(index).unwrap())
+        (0..self.len).filter_map(|index| self.get(index))
     }
 
     pub(crate) fn slice(&self, start: usize, end: usize) -> impl Iterator<Item = u32> + '_ {
-        (start..end).map(|index| self.get(index).unwrap())
+        (start..end).filter_map(|index| self.get(index))
     }
 }
 

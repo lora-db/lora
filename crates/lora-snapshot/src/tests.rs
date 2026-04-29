@@ -133,6 +133,24 @@ fn checksum_rejects_tampering() {
 }
 
 #[test]
+fn truncated_header_is_a_decode_error() {
+    let err = decode_snapshot(&[0; HEADER_LEN - 1], None).unwrap_err();
+    assert!(matches!(err, SnapshotCodecError::Decode(_)));
+}
+
+#[test]
+fn column_views_are_panic_free_for_short_buffers() {
+    let u64s = crate::view::U64ColumnView::new(&[1, 2, 3], 1);
+    assert_eq!(u64s.get(0), None);
+    assert_eq!(u64s.iter().collect::<Vec<_>>(), Vec::<u64>::new());
+
+    let u32s = crate::view::U32ColumnView::new(&[1, 2, 3], 1);
+    assert_eq!(u32s.get(0), None);
+    assert_eq!(u32s.iter().collect::<Vec<_>>(), Vec::<u32>::new());
+    assert_eq!(u32s.slice(0, 1).collect::<Vec<_>>(), Vec::<u32>::new());
+}
+
+#[test]
 fn info_path_does_not_decode_body() {
     let payload = payload();
     let bytes = encode_snapshot(&payload, Some(23)).unwrap();

@@ -86,20 +86,26 @@ impl<'a> BodyReader<'a> {
         Ok(out)
     }
 
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        self.read_exact(N)?.try_into().map_err(|_| {
+            SnapshotCodecError::Decode("snapshot body fixed-width field was truncated".into())
+        })
+    }
+
     pub(crate) fn read_u8(&mut self) -> Result<u8> {
         Ok(self.read_exact(1)?[0])
     }
 
     pub(crate) fn read_u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.read_exact(4)?.try_into().unwrap()))
+        Ok(u32::from_le_bytes(self.read_array()?))
     }
 
     pub(crate) fn read_u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.read_exact(8)?.try_into().unwrap()))
+        Ok(u64::from_le_bytes(self.read_array()?))
     }
 
     pub(crate) fn read_i64(&mut self) -> Result<i64> {
-        Ok(i64::from_le_bytes(self.read_exact(8)?.try_into().unwrap()))
+        Ok(i64::from_le_bytes(self.read_array()?))
     }
 
     pub(crate) fn read_len(&mut self) -> Result<usize> {
