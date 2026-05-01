@@ -58,3 +58,7 @@ harness = false
 [[bench]]
 name = "wal_benchmarks"
 harness = false
+
+[[bench]]
+name = "concurrent_benchmarks"
+harness = false
