@@ -1,5 +1,6 @@
 mod binary;
 mod graph;
+mod lock_table;
 mod memory;
 mod mutation;
 mod snapshot;
@@ -9,6 +10,7 @@ pub mod vector;
 
 pub use binary::*;
 pub use graph::*;
+pub use lock_table::{LockTable, MutationWriteSet, WriteSetLocks, LOCK_TABLE_SHARDS};
 pub use memory::*;
 pub use mutation::*;
 pub use snapshot::{
