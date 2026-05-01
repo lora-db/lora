@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::mem::ManuallyDrop;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 
 use anyhow::{anyhow, Result};
 use lora_compiler::CompiledQuery;
@@ -73,29 +75,27 @@ enum StreamInner<'a> {
     },
 }
 
-/// Self-referential cursor that pulls rows directly from the live
-/// store. The `Arc<RwLock<...>>` keeps the storage alive, the
-/// `RwLockReadGuard` keeps it locked, and the boxed `RowSource`
-/// borrows from the locked storage. Drop releases them in
-/// declaration order — `cursor` first, then `guard`, finally the
-/// `Arc` — so the cursor never sees a dropped guard and the
-/// guard never sees a dropped lock.
+/// Self-referential cursor that pulls rows directly from a snapshot
+/// of the live store. We hold an `Arc<InMemoryGraph>` (loaded once
+/// from the database's `ArcSwap` at open time) and the boxed
+/// `RowSource` borrows from `&*snapshot`. Drop order — `cursor`
+/// first, then `_snapshot` — guarantees the cursor never sees a
+/// freed graph.
 ///
-/// `self_cell` can't model this because the cursor borrows from
-/// the guard's deref while the guard itself borrows from the
-/// owner — two levels of nested borrow inside the dependent. The
-/// unsafe scope is small (one constructor, one drop) and
-/// fully encapsulated; nothing outside this module can observe
-/// the lifetime extension.
+/// Snapshot isolation is automatic: even if a writer commits a new
+/// version while this cursor is live, the cursor keeps observing the
+/// graph it was opened against until it drops the Arc.
 pub(crate) struct LiveCursor {
-    /// SAFETY invariant: borrows from `*guard`. Must drop before
-    /// `guard`.
+    /// SAFETY invariant: borrows from `&*_snapshot` and `&*_compiled`.
+    /// Must drop before either.
     cursor: ManuallyDrop<Box<dyn RowSource + 'static>>,
-    /// SAFETY invariant: borrows from the `RwLock` inside `_store`.
-    /// Must drop before `_store`.
-    guard: ManuallyDrop<RwLockReadGuard<'static, InMemoryGraph>>,
-    /// Keeps the underlying `RwLock` alive. Dropped after `guard`.
-    _store: Arc<RwLock<InMemoryGraph>>,
+    /// Pinned snapshot the cursor borrows from. Dropped after `cursor`.
+    _snapshot: Arc<InMemoryGraph>,
+    /// Pinned ArcSwap so subsequent loads still find the database's
+    /// current state — kept for parity with the previous `_store`
+    /// field even though the cursor itself only reads from
+    /// `_snapshot`.
+    _store: Arc<ArcSwap<InMemoryGraph>>,
     /// Keeps the compiled plan alive — operator sources hold
     /// references into it (e.g. predicate `ResolvedExpr`s). Boxed
     /// so the plan address is stable across the move into the
@@ -104,35 +104,31 @@ pub(crate) struct LiveCursor {
 }
 
 impl LiveCursor {
-    /// Lock the live store and open a streaming cursor against
+    /// Snapshot the live store and open a streaming cursor against
     /// the given compiled query. Internal helper for
     /// `Database::stream_with_params` — never expose the
     /// constructed `LiveCursor` to callers without the
     /// surrounding `QueryStream`, which makes the `'static`
     /// transmutes invisible.
     pub(crate) fn open(
-        store: Arc<RwLock<InMemoryGraph>>,
+        store: Arc<ArcSwap<InMemoryGraph>>,
         compiled: CompiledQuery,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<Self> {
         let compiled = Box::new(compiled);
+        let snapshot = store.load_full();
 
-        let guard = store
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        // SAFETY: We extend the lifetime of the guard and the
-        // borrows into `*guard` / `*compiled` to `'static`. This
-        // is sound because the surrounding `LiveCursor` keeps
-        // (a) the `Arc<RwLock<...>>` alive while the guard is
-        // alive — the RwLock behind the guard never gets freed —
-        // and (b) the `Box<CompiledQuery>` alive while the
-        // cursor is alive. The `Drop` impl below releases
-        // `cursor` before `guard` before `_store`, so neither
-        // borrow can outlive its backing storage.
-        let guard: RwLockReadGuard<'static, InMemoryGraph> = unsafe { std::mem::transmute(guard) };
+        // SAFETY: We extend the lifetime of borrows into `&*snapshot`
+        // and `&*compiled` to `'static`. This is sound because the
+        // surrounding `LiveCursor` keeps:
+        //   (a) the `Arc<InMemoryGraph>` alive while the cursor is
+        //       alive — the graph behind it is never freed; and
+        //   (b) the `Box<CompiledQuery>` alive while the cursor is
+        //       alive.
+        // The `Drop` impl below releases `cursor` before `_snapshot`,
+        // so neither borrow can outlive its backing storage.
         let storage_ref: &'static InMemoryGraph =
-            unsafe { std::mem::transmute::<&InMemoryGraph, _>(&*guard) };
+            unsafe { std::mem::transmute::<&InMemoryGraph, _>(&*snapshot) };
         let compiled_ref: &'static CompiledQuery =
             unsafe { std::mem::transmute::<&CompiledQuery, _>(&*compiled) };
 
@@ -142,7 +138,7 @@ impl LiveCursor {
 
         Ok(Self {
             cursor: ManuallyDrop::new(cursor),
-            guard: ManuallyDrop::new(guard),
+            _snapshot: snapshot,
             _store: store,
             _compiled: compiled,
         })
@@ -156,14 +152,11 @@ impl LiveCursor {
 impl Drop for LiveCursor {
     fn drop(&mut self) {
         // SAFETY: drop in the documented order — cursor first
-        // (releases its borrow into `*guard`), then guard
-        // (releases the read lock). After these calls we never touch
-        // `cursor` or `guard` again. `_store` and `_compiled`
-        // drop naturally afterwards via the normal field-drop
-        // sequence.
+        // (releases its borrow into `*_snapshot` / `*_compiled`),
+        // then the rest drops via field-drop ordering. After this
+        // call we never touch `cursor` again.
         unsafe {
             ManuallyDrop::drop(&mut self.cursor);
-            ManuallyDrop::drop(&mut self.guard);
         }
     }
 }

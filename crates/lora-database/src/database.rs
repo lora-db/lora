@@ -2,9 +2,12 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
+
+use arc_swap::ArcSwap;
 
 use anyhow::{anyhow, Context, Result};
 use lora_analyzer::Analyzer;
@@ -51,7 +54,19 @@ pub trait QueryRunner: Send + Sync + 'static {
 /// the WAL handle is `None` and the engine pays only the existing
 /// `MutationRecorder::record` null-pointer check per mutation.
 pub struct Database<S> {
-    pub(crate) store: Arc<RwLock<S>>,
+    /// The current authoritative store, atomically swappable. Reads call
+    /// `store.load_full()` to obtain an `Arc<S>` snapshot — no lock, no
+    /// blocking — and run their executor against `&*snapshot`. Writes
+    /// take the `writer` Mutex (for commit-order serialization), clone
+    /// the current snapshot into a working copy, mutate that copy, append
+    /// to the WAL, then `store.store(Arc::new(staged))` to publish.
+    /// Concurrent reads keep their old `Arc<S>` alive until they drop it,
+    /// which gives natural snapshot isolation.
+    pub(crate) store: Arc<ArcSwap<S>>,
+    /// Serializes commit ordering. Held only across `clone-mutate-WAL-publish`,
+    /// not around any read. Multiple readers proceed concurrently with a
+    /// writer; only writers contend with each other on this Mutex.
+    pub(crate) writer: Arc<Mutex<()>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
     pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
     /// Cache of compiled query plans, content-keyed by raw query text. Shared
@@ -430,7 +445,8 @@ impl Database<InMemoryGraph> {
                 let recorder = Arc::new(WalRecorder::new(wal));
                 graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
-                    store: Arc::new(RwLock::new(graph)),
+                    store: Arc::new(ArcSwap::from(Arc::new(graph))),
+                    writer: Arc::new(Mutex::new(())),
                     wal: Some(recorder),
                     snapshots: None,
                     plan_cache: Arc::new(PlanCache::new()),
@@ -465,7 +481,8 @@ impl Database<InMemoryGraph> {
                 let recorder = Arc::new(WalRecorder::new(wal));
                 graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
-                    store: Arc::new(RwLock::new(graph)),
+                    store: Arc::new(ArcSwap::from(Arc::new(graph))),
+                    writer: Arc::new(Mutex::new(())),
                     wal: Some(recorder),
                     snapshots: Some(snapshot_store),
                     plan_cache: Arc::new(PlanCache::new()),
@@ -508,7 +525,8 @@ impl Database<InMemoryGraph> {
             .flush()
             .map_err(|e| anyhow!("initial database archive persist failed: {e}"))?;
         Ok(Self {
-            store: Arc::new(RwLock::new(graph)),
+            store: Arc::new(ArcSwap::from(Arc::new(graph))),
+            writer: Arc::new(Mutex::new(())),
             wal: Some(recorder),
             snapshots: None,
             plan_cache: Arc::new(PlanCache::new()),
@@ -528,8 +546,25 @@ impl Database<InMemoryGraph> {
     /// empty) pay nothing for staging.
     pub fn begin_transaction(&self, mode: TransactionMode) -> Result<Transaction<'_>> {
         let live = match mode {
-            TransactionMode::ReadOnly => LiveStoreGuard::Read(self.read_store()),
-            TransactionMode::ReadWrite => LiveStoreGuard::Write(self.write_store()),
+            TransactionMode::ReadOnly => LiveStoreGuard::Read(self.store.load_full()),
+            TransactionMode::ReadWrite => {
+                // Acquire the writer lock — writers serialize, but we
+                // do NOT clone the graph yet. Staging is lazy: the
+                // working copy is built only when the first mutating
+                // statement runs. This keeps a `begin_transaction →
+                // commit` round trip with no mutations cheap (matches
+                // the previous RwLock-based behavior).
+                let lock = self
+                    .writer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let snapshot = self.store.load_full();
+                LiveStoreGuard::Write(crate::transaction::WriteLease {
+                    _writer_lock: lock,
+                    store: self.store.clone(),
+                    snapshot,
+                })
+            }
         };
         Ok(Transaction::new(
             live,
@@ -619,7 +654,8 @@ impl Database<InMemoryGraph> {
                 let recorder = Arc::new(WalRecorder::new(wal));
                 graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
                 Ok(Self {
-                    store: Arc::new(RwLock::new(graph)),
+                    store: Arc::new(ArcSwap::from(Arc::new(graph))),
+                    writer: Arc::new(Mutex::new(())),
                     wal: Some(recorder),
                     snapshots: None,
                     plan_cache: Arc::new(PlanCache::new()),
@@ -730,12 +766,13 @@ impl Database<InMemoryGraph> {
 
 impl<S> Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Any,
+    S: GraphStorage + GraphStorageMut + Any + Clone + Send + Sync + 'static,
 {
     /// Build a database from a pre-wrapped, shared store.
-    pub fn new(store: Arc<RwLock<S>>) -> Self {
+    pub fn new(store: Arc<ArcSwap<S>>) -> Self {
         Self {
             store,
+            writer: Arc::new(Mutex::new(())),
             wal: None,
             snapshots: None,
             plan_cache: Arc::new(PlanCache::new()),
@@ -744,7 +781,7 @@ where
 
     /// Build a database by taking ownership of a bare graph store.
     pub fn from_graph(graph: S) -> Self {
-        Self::new(Arc::new(RwLock::new(graph)))
+        Self::new(Arc::new(ArcSwap::from(Arc::new(graph))))
     }
 
     /// Handle to the installed WAL recorder, if any. Exposed for
@@ -767,7 +804,7 @@ where
 
     /// Handle to the underlying shared store — useful for callers that need
     /// to snapshot or share the graph across multiple databases.
-    pub fn store(&self) -> &Arc<RwLock<S>> {
+    pub fn store(&self) -> &Arc<ArcSwap<S>> {
         &self.store
     }
 
@@ -776,46 +813,131 @@ where
         Ok(parse_query(query)?)
     }
 
-    pub(crate) fn read_store(&self) -> RwLockReadGuard<'_, S> {
-        self.store
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// Read the current authoritative snapshot. Lock-free: returns an
+    /// `Arc<S>` whose lifetime is independent of any writer.
+    pub(crate) fn read_store(&self) -> Arc<S> {
+        self.store.load_full()
     }
+}
 
-    pub(crate) fn write_store(&self) -> RwLockWriteGuard<'_, S> {
-        self.store
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// Best-effort: install a mutation recorder on the storage when the
+/// concrete type is `InMemoryGraph`. The WAL's recorder lives on the
+/// store, but `GraphStorage` is an open trait — backends that don't
+/// support recorders are simply skipped (their writes go unobserved
+/// for WAL purposes, which is correct because they don't drive the WAL
+/// in the first place).
+fn install_recorder_if_inmemory<S: GraphStorage + Any + Sized>(
+    store: &mut S,
+    recorder: Option<Arc<dyn MutationRecorder>>,
+) {
+    let any: &mut dyn Any = store;
+    if let Some(graph) = any.downcast_mut::<InMemoryGraph>() {
+        graph.set_mutation_recorder(recorder);
     }
+}
 
-    fn read_store_deadline(&self, deadline: Option<Instant>) -> Result<RwLockReadGuard<'_, S>> {
-        let Some(deadline) = deadline else {
-            return Ok(self.read_store());
-        };
+/// Working copy + writer-mutex lease produced by
+/// [`Database::write_store`]. The caller mutates the inner `S`, then
+/// calls [`WriteGuard::publish`] to atomically swap the new state into
+/// the `ArcSwap`. Dropping without `publish` discards the staged copy
+/// (rollback semantics) and releases the writer lock, leaving the
+/// authoritative store unchanged.
+pub(crate) struct WriteGuard<'db, S> {
+    db: &'db Database<S>,
+    /// Held for the lifetime of the guard so commits are serialized
+    /// (and so the WAL records appear in commit order).
+    _writer_lock: MutexGuard<'db, ()>,
+    /// `Some` until `publish` consumes the staged graph, `None` after.
+    /// Drop on `None` is a no-op; drop on `Some` discards the staged
+    /// changes.
+    staged: Option<S>,
+}
 
-        loop {
-            match self.store.try_read() {
-                Ok(guard) => return Ok(guard),
-                Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
-                Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                    return Err(anyhow!("query deadline exceeded"));
-                }
-                Err(TryLockError::WouldBlock) => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            }
+impl<S> Deref for WriteGuard<'_, S> {
+    type Target = S;
+    fn deref(&self) -> &S {
+        self.staged
+            .as_ref()
+            .expect("staged graph already published or taken")
+    }
+}
+
+impl<S> DerefMut for WriteGuard<'_, S> {
+    fn deref_mut(&mut self) -> &mut S {
+        self.staged
+            .as_mut()
+            .expect("staged graph already published or taken")
+    }
+}
+
+impl<S> WriteGuard<'_, S>
+where
+    S: Send + Sync + 'static,
+{
+    /// Atomically replace the live store with the staged graph. After
+    /// this returns, subsequent reads see the new state.
+    pub(crate) fn publish(mut self) {
+        if let Some(staged) = self.staged.take() {
+            self.db.store.store(Arc::new(staged));
+        }
+    }
+}
+
+impl<S> Database<S>
+where
+    S: GraphStorage + GraphStorageMut + Any + Clone + Send + Sync + 'static,
+{
+    /// Take the writer lease and clone the current snapshot into a
+    /// staged working copy. The caller mutates the staged graph and
+    /// either calls `publish()` to install it (atomically swapping the
+    /// `ArcSwap`) or drops the guard to discard the changes.
+    pub(crate) fn write_store(&self) -> WriteGuard<'_, S> {
+        let lock = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = self.store.load_full();
+        let staged: S = (*snapshot).clone();
+        WriteGuard {
+            db: self,
+            _writer_lock: lock,
+            staged: Some(staged),
         }
     }
 
-    fn write_store_deadline(&self, deadline: Option<Instant>) -> Result<RwLockWriteGuard<'_, S>> {
+    fn read_store_deadline(&self, _deadline: Option<Instant>) -> Result<Arc<S>> {
+        // Reads are lock-free; the deadline only mattered when readers
+        // could be starved by an in-flight writer holding the RwLock.
+        // ArcSwap reads are wait-free, so we always succeed immediately.
+        Ok(self.store.load_full())
+    }
+
+    fn write_store_deadline(&self, deadline: Option<Instant>) -> Result<WriteGuard<'_, S>> {
         let Some(deadline) = deadline else {
             return Ok(self.write_store());
         };
 
         loop {
-            match self.store.try_write() {
-                Ok(guard) => return Ok(guard),
-                Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            match self.writer.try_lock() {
+                Ok(lock) => {
+                    let snapshot = self.store.load_full();
+                    let staged: S = (*snapshot).clone();
+                    return Ok(WriteGuard {
+                        db: self,
+                        _writer_lock: lock,
+                        staged: Some(staged),
+                    });
+                }
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    let lock = poisoned.into_inner();
+                    let snapshot = self.store.load_full();
+                    let staged: S = (*snapshot).clone();
+                    return Ok(WriteGuard {
+                        db: self,
+                        _writer_lock: lock,
+                        staged: Some(staged),
+                    });
+                }
                 Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
                     return Err(anyhow!("query deadline exceeded"));
                 }
@@ -979,10 +1101,10 @@ where
         drop(store);
         debug_assert!(shape.is_mutating());
 
-        let mut store = self.write_store_deadline(deadline)?;
+        let store = self.write_store_deadline(deadline)?;
 
         self.with_logged_write_guard(
-            &mut store,
+            store,
             WalAbortPolicy::PoisonIfMutated(QUERY_FAILURE_POISON),
             |store| {
                 let mut executor = MutableExecutor::with_deadline(
@@ -1013,8 +1135,8 @@ where
     /// cleared, the recorder is poisoned by the failing WAL path and future
     /// writes fail until the database is reopened from durable state.
     pub fn try_clear(&self) -> Result<()> {
-        let mut guard = self.write_store();
-        self.with_logged_write_guard(&mut guard, WalAbortPolicy::AbortOnly, |store| {
+        let guard = self.write_store();
+        self.with_logged_write_guard(guard, WalAbortPolicy::AbortOnly, |store| {
             store.clear();
             Ok(())
         })
@@ -1030,51 +1152,84 @@ where
 
     /// Number of nodes currently in the graph.
     pub fn node_count(&self) -> usize {
-        let guard = self.read_store();
-        guard.node_count()
+        let snapshot = self.read_store();
+        snapshot.node_count()
     }
 
     /// Number of relationships currently in the graph.
     pub fn relationship_count(&self) -> usize {
-        let guard = self.read_store();
-        guard.relationship_count()
+        let snapshot = self.read_store();
+        snapshot.relationship_count()
     }
 
-    /// Run a closure with a shared borrow of the underlying store. Used by
-    /// bindings to answer ad-hoc queries without locking the RwLock themselves.
+    /// Run a closure with a shared borrow of the underlying store.
+    /// Lock-free: callers see a consistent snapshot for the duration of
+    /// the closure even while writers commit new versions.
     pub fn with_store<R>(&self, f: impl FnOnce(&S) -> R) -> R {
-        let guard = self.read_store();
-        f(&*guard)
+        let snapshot = self.read_store();
+        f(&*snapshot)
     }
 
     /// Run a closure with an exclusive borrow of the underlying store. Reserved
     /// for admin paths (restore, bulk load); regular mutation goes through
-    /// `execute_with_params`.
+    /// `execute_with_params`. The closure mutates a staged copy that is
+    /// published atomically when the closure returns.
     pub fn with_store_mut<R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
         let mut guard = self.write_store();
-        f(&mut *guard)
+        let result = f(&mut *guard);
+        guard.publish();
+        result
     }
 
     fn with_logged_store_mut<R>(&self, f: impl FnOnce(&mut S) -> Result<R>) -> Result<R> {
-        let mut guard = self.write_store();
-        self.with_logged_write_guard(&mut guard, WalAbortPolicy::AbortOnly, f)
+        let guard = self.write_store();
+        self.with_logged_write_guard(guard, WalAbortPolicy::AbortOnly, f)
     }
 
+    /// Run `f` against the staged graph inside a WAL transaction. On
+    /// success, atomically publishes the staged graph to the live
+    /// `ArcSwap`; on error, the staged copy is dropped (no observable
+    /// state change) and the WAL is aborted per `abort_policy`.
     fn with_logged_write_guard<R>(
         &self,
-        guard: &mut RwLockWriteGuard<'_, S>,
+        mut guard: WriteGuard<'_, S>,
         abort_policy: WalAbortPolicy,
         f: impl FnOnce(&mut S) -> Result<R>,
     ) -> Result<R> {
-        let Some(rec) = &self.wal else {
-            return f(&mut **guard);
+        let Some(rec) = self.wal.clone() else {
+            // No WAL: just run the closure, publish on success.
+            let result = f(&mut *guard);
+            if result.is_ok() {
+                guard.publish();
+            }
+            return result;
         };
 
-        let scope = WalWriteScope::arm(rec, abort_policy)?;
-        let result = f(&mut **guard);
+        // Install the durable recorder on the staged graph so the
+        // executor's mutations fire into it. `InMemoryGraph::clone`
+        // intentionally drops the recorder, so the staged copy starts
+        // without one.
+        install_recorder_if_inmemory(&mut *guard, Some(rec.clone() as Arc<dyn MutationRecorder>));
+
+        let scope = WalWriteScope::arm(&rec, abort_policy)?;
+        let result = f(&mut *guard);
         let wrote_commit = scope.finish(&result)?;
         if wrote_commit {
-            self.observe_snapshot_commit_if_needed(&**guard, rec)?;
+            self.observe_snapshot_commit_if_needed(&*guard, &rec)?;
+        }
+
+        // Strip the per-mutation recorder before publish — the new live
+        // store carries the durable recorder reinstalled below.
+        install_recorder_if_inmemory(&mut *guard, None);
+
+        if result.is_ok() {
+            // Reinstall the durable recorder on staged so the new live
+            // graph keeps observing mutations after the swap.
+            install_recorder_if_inmemory(
+                &mut *guard,
+                Some(rec.clone() as Arc<dyn MutationRecorder>),
+            );
+            guard.publish();
         }
         result
     }
@@ -1422,7 +1577,7 @@ fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalN
 
 impl<S> Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Snapshotable + Any,
+    S: GraphStorage + GraphStorageMut + Snapshotable + Any + Clone + Send + Sync + 'static,
 {
     /// Serialize the current graph state to the given path. Writes are
     /// atomic: the payload goes to `<path>.tmp`, is `fsync`'d, and then
@@ -1773,7 +1928,7 @@ pub trait SnapshotAdmin: Send + Sync + 'static {
 
 impl<S> SnapshotAdmin for Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Snapshotable + Any + Send + Sync + 'static,
+    S: GraphStorage + GraphStorageMut + Snapshotable + Any + Clone + Send + Sync + 'static,
 {
     fn save_snapshot(&self, path: &Path) -> Result<SnapshotMeta> {
         self.save_snapshot_to(path)
@@ -1854,7 +2009,7 @@ impl WalAdmin for Database<InMemoryGraph> {
 
 impl<S> QueryRunner for Database<S>
 where
-    S: GraphStorage + GraphStorageMut + Any + Send + Sync + 'static,
+    S: GraphStorage + GraphStorageMut + Any + Clone + Send + Sync + 'static,
 {
     fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
         Database::execute(self, query, options)

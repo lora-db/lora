@@ -43,6 +43,7 @@ lora-database = { path = "crates/lora-database", version = "=0.6.0" }
 
 # External crates.
 anyhow = "1"
+arc-swap = "1"
 thiserror = "2"
 tracing = "0"
 axum = "0"

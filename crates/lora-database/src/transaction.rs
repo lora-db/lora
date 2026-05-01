@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+use arc_swap::ArcSwap;
 
 use anyhow::{anyhow, Result};
 use lora_analyzer::Analyzer;
@@ -27,23 +29,39 @@ pub enum TransactionMode {
     ReadWrite,
 }
 
+/// What a transaction holds onto for the duration of its statements.
+///
+/// `Read` simply pins an `Arc<InMemoryGraph>` snapshot — readers don't
+/// take any lock, so nothing observable changes when a writer commits
+/// a new version mid-transaction. `Write` holds the writer Mutex
+/// (serializing commit ordering) and a snapshot of the live graph at
+/// the point the transaction began; the working copy is built lazily
+/// in `TxInner::staged` on first mutation, mirroring the previous
+/// "clone on first mutation" behavior.
 pub(crate) enum LiveStoreGuard<'db> {
-    Read(RwLockReadGuard<'db, InMemoryGraph>),
-    Write(RwLockWriteGuard<'db, InMemoryGraph>),
+    Read(Arc<InMemoryGraph>),
+    Write(WriteLease<'db>),
+}
+
+/// Writer lease for a `ReadWrite` transaction. Holds the per-database
+/// writer Mutex plus a read snapshot of the graph at lease open time.
+/// The mutating working copy lives in `TxInner::staged` and is
+/// cloned from `snapshot` lazily.
+pub(crate) struct WriteLease<'db> {
+    /// Held for the tx lifetime so concurrent ReadWrite txns serialize.
+    pub(crate) _writer_lock: MutexGuard<'db, ()>,
+    /// Pointer back to the live `ArcSwap` so commit can publish.
+    pub(crate) store: Arc<ArcSwap<InMemoryGraph>>,
+    /// Read-only view of the graph at lease open time. The first
+    /// mutating statement clones from this into `TxInner::staged`.
+    pub(crate) snapshot: Arc<InMemoryGraph>,
 }
 
 impl LiveStoreGuard<'_> {
     fn as_graph(&self) -> &InMemoryGraph {
         match self {
-            Self::Read(guard) => guard,
-            Self::Write(guard) => guard,
-        }
-    }
-
-    fn as_graph_mut(&mut self) -> Option<&mut InMemoryGraph> {
-        match self {
-            Self::Read(_) => None,
-            Self::Write(guard) => Some(guard),
+            Self::Read(arc) => arc,
+            Self::Write(lease) => &lease.snapshot,
         }
     }
 }
@@ -704,16 +722,23 @@ impl<'db> Transaction<'db> {
             .live
             .as_mut()
             .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
-        let live = live
-            .as_graph_mut()
-            .ok_or_else(|| anyhow!("read-only transaction cannot publish staged graph"))?;
-        *live = staged;
+        let lease = match live {
+            LiveStoreGuard::Write(lease) => lease,
+            LiveStoreGuard::Read(_) => {
+                return Err(anyhow!("read-only transaction cannot publish staged graph"));
+            }
+        };
 
         if wrote_wal_commit {
             if let (Some(snapshots), Some(rec)) = (&self.snapshots, wal.as_ref()) {
-                snapshots.observe_commit(live, rec)?;
+                snapshots.observe_commit(&staged, rec)?;
             }
         }
+
+        // Atomic publish — concurrent readers will see the new state on
+        // their next `load_full()`, while in-flight readers keep their
+        // existing `Arc<InMemoryGraph>` snapshot until they drop it.
+        lease.store.store(Arc::new(staged));
 
         Ok(())
     }
