@@ -250,8 +250,17 @@ pub struct InMemoryGraph {
     /// when `id < next_node_id` — same identity guarantee the previous
     /// `BTreeMap<NodeId, NodeRecord>` had, just with O(1) lookup and
     /// cache-coherent layout.
-    nodes: Vec<Option<NodeRecord>>,
-    relationships: Vec<Option<RelationshipRecord>>,
+    ///
+    /// Records are wrapped in `Arc` so [`Self::clone`] (called on every
+    /// auto-commit write to build a working copy) is `O(N)` atomic
+    /// refcount bumps instead of `O(N)` deep record clones — for a
+    /// 100k-node graph the difference is microseconds vs. tens of
+    /// milliseconds. Mutating a record uses `Arc::make_mut`, which
+    /// clones in place when the refcount is 1 (no concurrent reader)
+    /// and falls back to a single-record clone-on-write when readers
+    /// still hold a snapshot.
+    nodes: Vec<Option<Arc<NodeRecord>>>,
+    relationships: Vec<Option<Arc<RelationshipRecord>>>,
     /// Live (non-tombstoned) counts kept in sync with `put_*`/`take_*` so
     /// `node_count` / `relationship_count` stay O(1) — without a counter
     /// they'd have to scan the slab.
@@ -415,17 +424,30 @@ impl InMemoryGraph {
 
     #[inline]
     fn node_at(&self, id: NodeId) -> Option<&NodeRecord> {
-        self.nodes.get(id as usize).and_then(|s| s.as_ref())
+        self.nodes
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .map(|arc| arc.as_ref())
     }
 
+    /// Mutable handle to a node record, doing copy-on-write only when the
+    /// `Arc` is shared with a concurrent reader. With no readers (the
+    /// common case after a fresh write_store clone), `Arc::make_mut`
+    /// upgrades in place — no record clone.
     #[inline]
     fn node_at_mut(&mut self, id: NodeId) -> Option<&mut NodeRecord> {
-        self.nodes.get_mut(id as usize).and_then(|s| s.as_mut())
+        self.nodes
+            .get_mut(id as usize)
+            .and_then(|s| s.as_mut())
+            .map(Arc::make_mut)
     }
 
     #[inline]
     fn rel_at(&self, id: RelationshipId) -> Option<&RelationshipRecord> {
-        self.relationships.get(id as usize).and_then(|s| s.as_ref())
+        self.relationships
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .map(|arc| arc.as_ref())
     }
 
     #[inline]
@@ -433,6 +455,7 @@ impl InMemoryGraph {
         self.relationships
             .get_mut(id as usize)
             .and_then(|s| s.as_mut())
+            .map(Arc::make_mut)
     }
 
     /// Resize the node-keyed Vecs so `id as usize` is in range. Adjacency
@@ -457,7 +480,7 @@ impl InMemoryGraph {
     fn put_node(&mut self, id: NodeId, node: NodeRecord) {
         self.ensure_node_slot(id);
         let was_present = self.nodes[id as usize].is_some();
-        self.nodes[id as usize] = Some(node);
+        self.nodes[id as usize] = Some(Arc::new(node));
         if !was_present {
             self.live_node_count += 1;
         }
@@ -466,7 +489,7 @@ impl InMemoryGraph {
     fn put_rel(&mut self, id: RelationshipId, rel: RelationshipRecord) {
         self.ensure_rel_slot(id);
         let was_present = self.relationships[id as usize].is_some();
-        self.relationships[id as usize] = Some(rel);
+        self.relationships[id as usize] = Some(Arc::new(rel));
         if !was_present {
             self.live_rel_count += 1;
         }
@@ -489,7 +512,11 @@ impl InMemoryGraph {
                 inc.clear();
             }
         }
-        removed
+        // Unwrap the Arc — `try_unwrap` returns the inner `NodeRecord`
+        // without cloning when our slab held the only reference, falling
+        // back to a clone only when concurrent readers still hold a
+        // snapshot Arc.
+        removed.map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
     }
 
     fn take_rel(&mut self, id: RelationshipId) -> Option<RelationshipRecord> {
@@ -498,7 +525,7 @@ impl InMemoryGraph {
         if removed.is_some() {
             self.live_rel_count -= 1;
         }
-        removed
+        removed.map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
     }
 
     #[inline]
@@ -519,7 +546,10 @@ impl InMemoryGraph {
     }
 
     fn iter_node_records(&self) -> impl Iterator<Item = &NodeRecord> + '_ {
-        self.nodes.iter().filter_map(|s| s.as_ref())
+        self.nodes
+            .iter()
+            .filter_map(|s| s.as_ref())
+            .map(|arc| arc.as_ref())
     }
 
     fn iter_rel_ids(&self) -> impl Iterator<Item = RelationshipId> + '_ {
@@ -530,21 +560,24 @@ impl InMemoryGraph {
     }
 
     fn iter_rel_records(&self) -> impl Iterator<Item = &RelationshipRecord> + '_ {
-        self.relationships.iter().filter_map(|s| s.as_ref())
+        self.relationships
+            .iter()
+            .filter_map(|s| s.as_ref())
+            .map(|arc| arc.as_ref())
     }
 
     fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &NodeRecord)> + '_ {
         self.nodes
             .iter()
             .enumerate()
-            .filter_map(|(i, slot)| slot.as_ref().map(|n| (i as NodeId, n)))
+            .filter_map(|(i, slot)| slot.as_ref().map(|n| (i as NodeId, n.as_ref())))
     }
 
     fn iter_rels(&self) -> impl Iterator<Item = (RelationshipId, &RelationshipRecord)> + '_ {
         self.relationships
             .iter()
             .enumerate()
-            .filter_map(|(i, slot)| slot.as_ref().map(|r| (i as RelationshipId, r)))
+            .filter_map(|(i, slot)| slot.as_ref().map(|r| (i as RelationshipId, r.as_ref())))
     }
 
     /// Add `rel_id` to `node_id`'s outgoing list. Idempotent: skips the push
