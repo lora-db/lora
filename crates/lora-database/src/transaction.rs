@@ -132,12 +132,17 @@ impl Drop for TxCursorLease {
 /// buffer into the real `WalRecorder` as a single durable
 /// transaction. Statement rollback truncates the buffer back to its
 /// pre-statement length; transaction rollback drops it entirely.
-struct BufferingRecorder {
+///
+/// Also reused by the optimistic auto-commit write path
+/// ([`Database::execute_rows_with_params_deadline`]) so multiple
+/// concurrent writers can buffer mutations off-thread and only
+/// serialize at the brief WAL append + ArcSwap publish step.
+pub(crate) struct BufferingRecorder {
     buffer: Arc<Mutex<Vec<MutationEvent>>>,
 }
 
 impl BufferingRecorder {
-    fn new(buffer: Arc<Mutex<Vec<MutationEvent>>>) -> Self {
+    pub(crate) fn new(buffer: Arc<Mutex<Vec<MutationEvent>>>) -> Self {
         Self { buffer }
     }
 }

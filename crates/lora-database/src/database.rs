@@ -1095,14 +1095,25 @@ where
                 .map_err(|e| anyhow!(e));
         }
 
-        // Mutating path: drop the read lock, take the write lock, and reuse
-        // the same cached plan rather than recompiling against the store
-        // we're about to mutate.
+        // Mutating path. Drop the snapshot we used for compilation and
+        // route through the optimistic auto-commit path: build the
+        // working copy + mutate without holding any lock, then take
+        // the writer Mutex only briefly to do a CAS publish (replays
+        // buffered mutation events to the durable WAL inside the
+        // critical section). Multiple auto-commit writers can run
+        // their prep work in parallel; they only serialize at the
+        // commit point. On conflict (another writer published since
+        // we took our snapshot), retry from a fresh snapshot.
         drop(store);
         debug_assert!(shape.is_mutating());
 
-        let store = self.write_store_deadline(deadline)?;
+        if std::any::TypeId::of::<S>() == std::any::TypeId::of::<InMemoryGraph>() {
+            return self.execute_mutating_optimistic(params, deadline, &compiled);
+        }
 
+        // Backends that aren't `InMemoryGraph` don't support the
+        // recorder install hook, so fall back to the pessimistic path.
+        let store = self.write_store_deadline(deadline)?;
         self.with_logged_write_guard(
             store,
             WalAbortPolicy::PoisonIfMutated(QUERY_FAILURE_POISON),
@@ -1117,6 +1128,120 @@ where
                 Ok(executor.execute_compiled_rows(&compiled)?)
             },
         )
+    }
+
+    /// Optimistic auto-commit write path. Multiple concurrent writers
+    /// can build their staged working copies in parallel, then race to
+    /// publish via a CAS on the [`ArcSwap`] under the brief writer
+    /// Mutex. On conflict the staged copy is dropped and the executor
+    /// re-runs against a fresh snapshot.
+    ///
+    /// The mutating executor fires mutation events into a tx-local
+    /// [`BufferingRecorder`] rather than the durable WAL, so a losing
+    /// retry leaves zero side effects. The winning attempt replays its
+    /// buffered events into the WAL as a single durable transaction
+    /// just before publishing.
+    ///
+    /// This path is gated on `S == InMemoryGraph` because the recorder
+    /// install hook is concrete to that backend; other backends fall
+    /// back to the pessimistic `with_logged_write_guard` path.
+    fn execute_mutating_optimistic(
+        &self,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+        compiled: &Arc<CompiledQuery>,
+    ) -> Result<Vec<Row>> {
+        // Cap retries so a livelock under heavy contention surfaces as
+        // an error rather than spinning forever. In practice, retries
+        // happen only when a concurrent writer publishes between our
+        // snapshot and our commit; for typical workloads the loop
+        // executes once.
+        const MAX_RETRIES: usize = 64;
+
+        for _ in 0..MAX_RETRIES {
+            let snapshot = self.store.load_full();
+            let mut staged: S = (*snapshot).clone();
+
+            // Buffer mutation events tx-locally. They're replayed into
+            // the durable WAL only on the winning commit, so a losing
+            // retry leaves no on-disk trace.
+            let buffer = Arc::new(Mutex::new(Vec::<MutationEvent>::new()));
+            let buffering_rec: Arc<dyn MutationRecorder> =
+                Arc::new(crate::transaction::BufferingRecorder::new(buffer.clone()));
+            install_recorder_if_inmemory(&mut staged, Some(buffering_rec));
+
+            // Run the mutating executor against the staged copy. No
+            // lock is held; concurrent writers can be doing the same
+            // against the same `snapshot`.
+            let exec_result = {
+                let mut executor = MutableExecutor::with_deadline(
+                    MutableExecutionContext {
+                        storage: &mut staged,
+                        params: params.clone(),
+                    },
+                    deadline,
+                );
+                executor.execute_compiled_rows(compiled)
+            };
+
+            let rows = match exec_result {
+                Ok(rows) => rows,
+                Err(e) => return Err(anyhow!(e)),
+            };
+
+            // Strip the buffering recorder before publish — the new
+            // live store gets the durable recorder reinstalled below.
+            install_recorder_if_inmemory(&mut staged, None);
+
+            // Commit critical section. Held only across CAS check +
+            // WAL append + ArcSwap publish — microseconds, not the
+            // full mutation phase.
+            let _commit_lock = self
+                .writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            // CAS check: did anyone publish since our snapshot?
+            let current = self.store.load_full();
+            if !Arc::ptr_eq(&current, &snapshot) {
+                drop(_commit_lock);
+                continue; // retry from a fresh snapshot
+            }
+
+            // No conflict — replay buffered events to the durable WAL
+            // (a single TxBegin / batched record / TxCommit at the
+            // log layer), then publish.
+            let events: Vec<MutationEvent> = std::mem::take(&mut buffer.lock().unwrap());
+            let mut wrote_commit = false;
+            if let Some(rec) = self.wal.as_ref() {
+                ensure_wal_query_can_start(rec)?;
+                wrote_commit = rec.commit_events(events)?.wrote();
+            }
+
+            // Reinstall the durable recorder on staged so the
+            // post-publish live store keeps observing mutations.
+            if let Some(rec) = self.wal.as_ref() {
+                install_recorder_if_inmemory(
+                    &mut staged,
+                    Some(rec.clone() as Arc<dyn MutationRecorder>),
+                );
+            }
+
+            self.store.store(Arc::new(staged));
+
+            if wrote_commit {
+                if let Some(rec) = self.wal.as_ref() {
+                    let live = self.store.load_full();
+                    self.observe_snapshot_commit_if_needed(&*live, rec)?;
+                }
+            }
+
+            return Ok(rows);
+        }
+
+        Err(anyhow!(
+            "auto-commit write conflict: exceeded {MAX_RETRIES} retries"
+        ))
     }
 
     // ---------- Storage-agnostic utility helpers ----------
