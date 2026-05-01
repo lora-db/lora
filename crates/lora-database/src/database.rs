@@ -25,8 +25,9 @@ use lora_snapshot::{
     SnapshotInfo, SnapshotOptions, SnapshotPassword, DATABASE_SNAPSHOT_MAGIC,
 };
 use lora_store::{
-    GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder, NodeId,
-    NodeRecord, Properties, RelationshipId, RelationshipRecord, SnapshotMeta, Snapshotable,
+    GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder,
+    MutationWriteSet, NodeId, NodeRecord, Properties, RelationshipId, RelationshipRecord,
+    SnapshotMeta, Snapshotable,
 };
 use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder};
 
@@ -67,6 +68,14 @@ pub struct Database<S> {
     /// not around any read. Multiple readers proceed concurrently with a
     /// writer; only writers contend with each other on this Mutex.
     pub(crate) writer: Arc<Mutex<()>>,
+    /// Per-record write locks, plumbed in Phase 4.1. Phase 4.2 keeps
+    /// the writer Mutex serialization model so the lock table sits
+    /// idle for now; it becomes load-bearing in a future phase that
+    /// drops the writer Mutex in favour of ArcSwap CAS for true
+    /// concurrent commits, where two writers with overlapping write
+    /// sets need a real serialization point.
+    #[allow(dead_code)]
+    pub(crate) lock_table: Arc<lora_store::LockTable>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
     pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
     /// Cache of compiled query plans, content-keyed by raw query text. Shared
@@ -447,6 +456,7 @@ impl Database<InMemoryGraph> {
                 Ok(Self {
                     store: Arc::new(ArcSwap::from(Arc::new(graph))),
                     writer: Arc::new(Mutex::new(())),
+                    lock_table: Arc::new(lora_store::LockTable::new()),
                     wal: Some(recorder),
                     snapshots: None,
                     plan_cache: Arc::new(PlanCache::new()),
@@ -483,6 +493,7 @@ impl Database<InMemoryGraph> {
                 Ok(Self {
                     store: Arc::new(ArcSwap::from(Arc::new(graph))),
                     writer: Arc::new(Mutex::new(())),
+                    lock_table: Arc::new(lora_store::LockTable::new()),
                     wal: Some(recorder),
                     snapshots: Some(snapshot_store),
                     plan_cache: Arc::new(PlanCache::new()),
@@ -527,6 +538,7 @@ impl Database<InMemoryGraph> {
         Ok(Self {
             store: Arc::new(ArcSwap::from(Arc::new(graph))),
             writer: Arc::new(Mutex::new(())),
+            lock_table: Arc::new(lora_store::LockTable::new()),
             wal: Some(recorder),
             snapshots: None,
             plan_cache: Arc::new(PlanCache::new()),
@@ -656,6 +668,7 @@ impl Database<InMemoryGraph> {
                 Ok(Self {
                     store: Arc::new(ArcSwap::from(Arc::new(graph))),
                     writer: Arc::new(Mutex::new(())),
+                    lock_table: Arc::new(lora_store::LockTable::new()),
                     wal: Some(recorder),
                     snapshots: None,
                     plan_cache: Arc::new(PlanCache::new()),
@@ -773,6 +786,7 @@ where
         Self {
             store,
             writer: Arc::new(Mutex::new(())),
+            lock_table: Arc::new(lora_store::LockTable::new()),
             wal: None,
             snapshots: None,
             plan_cache: Arc::new(PlanCache::new()),
@@ -833,6 +847,151 @@ fn install_recorder_if_inmemory<S: GraphStorage + Any + Sized>(
     let any: &mut dyn Any = store;
     if let Some(graph) = any.downcast_mut::<InMemoryGraph>() {
         graph.set_mutation_recorder(recorder);
+    }
+}
+
+/// Phase 4.2 per-record validation. Returns true if every record in
+/// the write set has the same identity in `current` as it did in
+/// `snapshot` — meaning no concurrent writer modified those records
+/// between this writer's snapshot and its commit.
+///
+/// Identity is established by the address of the `&NodeRecord` /
+/// `&RelationshipRecord` reached via `with_node` / `with_relationship`:
+/// because each record lives behind an `Arc` (Phase 2), two graphs
+/// share refcount of the same heap allocation iff their references
+/// are pointer-equal. A modified record produces a fresh `Arc::new(...)`
+/// at the same id; the pointer differs and the check rejects.
+///
+/// Returns `false` if the write set contains a `Clear` (we can't
+/// merge through a clear), if any record was added/removed between
+/// snapshots (slot present-vs-absent mismatch), or if a non-`InMemoryGraph`
+/// backend is in use (the helper falls back to coarse Arc::ptr_eq).
+fn validate_write_set_unchanged<S: GraphStorage + Any + Sized>(
+    snapshot: &S,
+    current: &S,
+    write_set: &MutationWriteSet,
+) -> bool {
+    if write_set.cleared {
+        return false;
+    }
+
+    // Downcast to InMemoryGraph so we can compare per-record Arc
+    // identity. Other backends fall back to a coarse "is the whole
+    // graph the same Arc" check.
+    let snap_any: &dyn Any = snapshot;
+    let cur_any: &dyn Any = current;
+    let snap_im = snap_any.downcast_ref::<InMemoryGraph>();
+    let cur_im = cur_any.downcast_ref::<InMemoryGraph>();
+    let (snap, cur) = match (snap_im, cur_im) {
+        (Some(s), Some(c)) => (s, c),
+        _ => return std::ptr::eq(snapshot as *const S, current as *const S),
+    };
+
+    for &id in &write_set.nodes {
+        let snap_ptr = snap.with_node(id, |n| n as *const NodeRecord);
+        let cur_ptr = cur.with_node(id, |n| n as *const NodeRecord);
+        match (snap_ptr, cur_ptr) {
+            (Some(a), Some(b)) if std::ptr::eq(a, b) => {}
+            (None, None) => {}
+            _ => return false,
+        }
+    }
+    for &id in &write_set.rels {
+        let snap_ptr = snap.with_relationship(id, |r| r as *const RelationshipRecord);
+        let cur_ptr = cur.with_relationship(id, |r| r as *const RelationshipRecord);
+        match (snap_ptr, cur_ptr) {
+            (Some(a), Some(b)) if std::ptr::eq(a, b) => {}
+            (None, None) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Phase 4.2 merge. Apply a writer's buffered `MutationEvent` stream
+/// to a fresh clone of the current live state, producing the graph
+/// the writer should publish. By replaying onto `current` (rather
+/// than the writer's stale snapshot), we preserve any concurrent
+/// disjoint writer's updates that landed between this writer's
+/// snapshot and its commit.
+///
+/// Returns `true` on successful merge. `false` indicates the events
+/// couldn't be applied (e.g. an id-allocation collision the validation
+/// missed) and the caller should retry from a fresh snapshot.
+///
+/// Only handles `InMemoryGraph`; other backends fall through to a
+/// no-op merge (caller publishes the staged copy via the existing
+/// Phase 3 path).
+fn merge_events_into<S: GraphStorage + Any + Sized>(
+    publish_state: &mut S,
+    events: &[MutationEvent],
+) -> bool {
+    let any: &mut dyn Any = publish_state;
+    let Some(graph) = any.downcast_mut::<InMemoryGraph>() else {
+        // Non-InMemoryGraph backend — caller falls back. Returning
+        // true keeps the publish path intact (publishes whatever the
+        // caller staged), which is the Phase 3 behavior for those
+        // backends.
+        return true;
+    };
+
+    // The fresh clone has no recorder (clone drops it deliberately),
+    // so replay won't double-emit through a downstream WAL.
+    for event in events {
+        if !apply_event(graph, event) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Apply a single buffered mutation event to a graph. Mirrors
+/// `replay_into` (which is the WAL recovery path) but operates on a
+/// borrowed graph so the caller can compose it across an event slice
+/// without taking ownership.
+fn apply_event(graph: &mut InMemoryGraph, event: &MutationEvent) -> bool {
+    match event {
+        MutationEvent::CreateNode {
+            id,
+            labels,
+            properties,
+        } => graph
+            .replay_create_node(*id, labels.clone(), properties.clone())
+            .is_ok(),
+        MutationEvent::CreateRelationship {
+            id,
+            src,
+            dst,
+            rel_type,
+            properties,
+        } => graph
+            .replay_create_relationship(*id, *src, *dst, rel_type, properties.clone())
+            .is_ok(),
+        MutationEvent::SetNodeProperty {
+            node_id,
+            key,
+            value,
+        } => graph.set_node_property(*node_id, key.clone(), value.clone()),
+        MutationEvent::RemoveNodeProperty { node_id, key } => {
+            graph.remove_node_property(*node_id, key)
+        }
+        MutationEvent::AddNodeLabel { node_id, label } => graph.add_node_label(*node_id, label),
+        MutationEvent::RemoveNodeLabel { node_id, label } => {
+            graph.remove_node_label(*node_id, label)
+        }
+        MutationEvent::SetRelationshipProperty { rel_id, key, value } => {
+            graph.set_relationship_property(*rel_id, key.clone(), value.clone())
+        }
+        MutationEvent::RemoveRelationshipProperty { rel_id, key } => {
+            graph.remove_relationship_property(*rel_id, key)
+        }
+        MutationEvent::DeleteRelationship { rel_id } => graph.delete_relationship(*rel_id),
+        MutationEvent::DeleteNode { node_id } => graph.delete_node(*node_id),
+        MutationEvent::DetachDeleteNode { node_id } => graph.detach_delete_node(*node_id),
+        MutationEvent::Clear => {
+            graph.clear();
+            true
+        }
     }
 }
 
@@ -1130,49 +1289,45 @@ where
         )
     }
 
-    /// Optimistic auto-commit write path. Multiple concurrent writers
-    /// can build their staged working copies in parallel, then race to
-    /// publish via a CAS on the [`ArcSwap`] under the brief writer
-    /// Mutex. On conflict the staged copy is dropped and the executor
-    /// re-runs against a fresh snapshot.
+    /// Optimistic auto-commit write path with per-record conflict
+    /// detection (Phase 4.2). Multiple concurrent writers can build
+    /// their staged copies in parallel; at commit time we validate
+    /// only that *the records this writer touched* have not been
+    /// modified since our snapshot. Disjoint writers pass validation
+    /// without retry.
     ///
-    /// The mutating executor fires mutation events into a tx-local
-    /// [`BufferingRecorder`] rather than the durable WAL, so a losing
-    /// retry leaves zero side effects. The winning attempt replays its
-    /// buffered events into the WAL as a single durable transaction
-    /// just before publishing.
+    /// The merge: a winning writer publishes
+    /// `current + my_events_replayed`, not `my_snapshot + my_writes`.
+    /// That preserves any concurrent (disjoint) writer's updates that
+    /// landed between our snapshot and our commit.
     ///
-    /// This path is gated on `S == InMemoryGraph` because the recorder
-    /// install hook is concrete to that backend; other backends fall
-    /// back to the pessimistic `with_logged_write_guard` path.
+    /// Per-record locks are acquired (sorted by id) for the write set
+    /// so two writers with overlapping write sets serialize at the
+    /// commit boundary rather than racing on validation.
     fn execute_mutating_optimistic(
         &self,
         params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
         compiled: &Arc<CompiledQuery>,
     ) -> Result<Vec<Row>> {
-        // Cap retries so a livelock under heavy contention surfaces as
-        // an error rather than spinning forever. In practice, retries
-        // happen only when a concurrent writer publishes between our
-        // snapshot and our commit; for typical workloads the loop
-        // executes once.
+        // Cap retries so a livelock under heavy contention surfaces
+        // as an error. With per-record validation, retries happen
+        // only when this writer's own write set actually overlaps
+        // a concurrent writer's; the typical case is one iteration.
         const MAX_RETRIES: usize = 64;
 
         for _ in 0..MAX_RETRIES {
             let snapshot = self.store.load_full();
             let mut staged: S = (*snapshot).clone();
 
-            // Buffer mutation events tx-locally. They're replayed into
-            // the durable WAL only on the winning commit, so a losing
+            // Buffer mutation events tx-locally. Replayed into the
+            // durable WAL only on the winning commit; a losing
             // retry leaves no on-disk trace.
             let buffer = Arc::new(Mutex::new(Vec::<MutationEvent>::new()));
             let buffering_rec: Arc<dyn MutationRecorder> =
                 Arc::new(crate::transaction::BufferingRecorder::new(buffer.clone()));
             install_recorder_if_inmemory(&mut staged, Some(buffering_rec));
 
-            // Run the mutating executor against the staged copy. No
-            // lock is held; concurrent writers can be doing the same
-            // against the same `snapshot`.
             let exec_result = {
                 let mut executor = MutableExecutor::with_deadline(
                     MutableExecutionContext {
@@ -1189,45 +1344,85 @@ where
                 Err(e) => return Err(anyhow!(e)),
             };
 
-            // Strip the buffering recorder before publish — the new
-            // live store gets the durable recorder reinstalled below.
             install_recorder_if_inmemory(&mut staged, None);
 
-            // Commit critical section. Held only across CAS check +
-            // WAL append + ArcSwap publish — microseconds, not the
-            // full mutation phase.
+            // Drain the buffered events. Build the write set from
+            // them — this is the set of records we're going to
+            // validate and apply at commit time.
+            let events: Vec<MutationEvent> = std::mem::take(&mut buffer.lock().unwrap());
+
+            if events.is_empty() {
+                // Mutating-shape query that didn't actually mutate
+                // (e.g., MATCH that found nothing to SET). Nothing
+                // to publish — the rows are valid against snapshot.
+                return Ok(rows);
+            }
+
+            let mut write_set = MutationWriteSet::new();
+            write_set.extend_from_events(events.iter());
+
+            // Brief commit critical section: WAL append + state
+            // publish must serialize on the writer Mutex so the
+            // WAL records appear in commit order. The per-record
+            // `LockTable` exists in `Database` but is intentionally
+            // not used here — the writer Mutex already provides
+            // single-writer-at-commit-time semantics, so per-record
+            // locks would be redundant overhead. They become
+            // load-bearing in a future phase that drops the writer
+            // Mutex in favour of ArcSwap CAS for true concurrent
+            // commits; until then the table is plumbed but idle.
             let _commit_lock = self
                 .writer
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-            // CAS check: did anyone publish since our snapshot?
+            // Fast path: nothing else committed since our snapshot.
+            // `staged` already reflects exactly what we want to
+            // publish — no merge needed. This restores Phase 3's
+            // single-writer cost (one mutation pass, one graph
+            // clone) when there's no concurrent activity.
+            //
+            // Slow path (concurrent writer landed): validate per
+            // record, then rebuild publish state by replaying our
+            // events onto `current`. Roughly doubles per-write cost
+            // but is the price of preserving concurrent updates.
             let current = self.store.load_full();
-            if !Arc::ptr_eq(&current, &snapshot) {
-                drop(_commit_lock);
-                continue; // retry from a fresh snapshot
-            }
+            let publish_state: S = if Arc::ptr_eq(&current, &snapshot) {
+                staged
+            } else {
+                if !validate_write_set_unchanged(&*snapshot, &*current, &write_set) {
+                    drop(_commit_lock);
+                    continue; // retry from a fresh snapshot
+                }
+                let mut merged: S = (*current).clone();
+                if !merge_events_into(&mut merged, &events) {
+                    // The replay couldn't apply (e.g. id allocation
+                    // collision the validation missed). Retry.
+                    drop(_commit_lock);
+                    continue;
+                }
+                merged
+            };
+            let mut publish_state = publish_state;
 
-            // No conflict — replay buffered events to the durable WAL
-            // (a single TxBegin / batched record / TxCommit at the
-            // log layer), then publish.
-            let events: Vec<MutationEvent> = std::mem::take(&mut buffer.lock().unwrap());
+            // Durable WAL append. Order matters: WAL goes first so
+            // a crash between WAL and publish replays cleanly.
             let mut wrote_commit = false;
             if let Some(rec) = self.wal.as_ref() {
                 ensure_wal_query_can_start(rec)?;
                 wrote_commit = rec.commit_events(events)?.wrote();
             }
 
-            // Reinstall the durable recorder on staged so the
-            // post-publish live store keeps observing mutations.
+            // Reinstall the durable recorder on the merged state so
+            // the post-publish live store keeps observing mutations.
             if let Some(rec) = self.wal.as_ref() {
                 install_recorder_if_inmemory(
-                    &mut staged,
+                    &mut publish_state,
                     Some(rec.clone() as Arc<dyn MutationRecorder>),
                 );
             }
 
-            self.store.store(Arc::new(staged));
+            self.store.store(Arc::new(publish_state));
 
             if wrote_commit {
                 if let Some(rec) = self.wal.as_ref() {

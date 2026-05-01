@@ -155,6 +155,96 @@ fn bench_concurrent_creates(c: &mut Criterion) {
     group.finish();
 }
 
+/// Disjoint SETs on pre-existing nodes. Each thread updates a
+/// distinct, non-overlapping node id range. Unlike CREATE, this
+/// workload doesn't collide on `next_node_id` allocation, so it's
+/// the right test for whether per-record conflict detection
+/// (Phase 4.2) actually lets disjoint writers commit in parallel.
+fn bench_concurrent_disjoint_sets(c: &mut Criterion) {
+    let mut group = c.benchmark_group("concurrent_disjoint_sets");
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(15);
+
+    let writes_per_thread = 50usize;
+    let max_threads = 8usize;
+    // Pre-seed enough nodes that each thread can write to its own
+    // disjoint range. Built once per iteration so timings reflect
+    // steady-state SET cost only.
+    let total_nodes = max_threads * writes_per_thread;
+
+    for &threads in &[1usize, 2, 4, 8] {
+        let total_ops = threads * writes_per_thread;
+        group.throughput(Throughput::Elements(total_ops as u64));
+        group.bench_with_input(
+            BenchmarkId::new("threads", threads),
+            &threads,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    let mut total = Duration::ZERO;
+                    for _ in 0..iters {
+                        // Pre-seed all nodes single-threaded so each
+                        // thread's target nodes already exist.
+                        let db = Arc::new(BenchDb::new().service);
+                        for i in 0..total_nodes {
+                            let mut params = BTreeMap::new();
+                            params.insert("idx".to_string(), LoraValue::Int(i as i64));
+                            params.insert("v".to_string(), LoraValue::Int(0));
+                            db.execute_with_params(
+                                "CREATE (:N {idx: $idx, v: $v})",
+                                opts(),
+                                params,
+                            )
+                            .unwrap();
+                        }
+
+                        let barrier = Arc::new(Barrier::new(threads));
+                        let start = Instant::now();
+                        let handles: Vec<_> = (0..threads)
+                            .map(|tid| {
+                                let db = db.clone();
+                                let barrier = barrier.clone();
+                                std::thread::spawn(move || {
+                                    barrier.wait();
+                                    // Each thread updates ids
+                                    // [tid * writes, (tid+1) * writes).
+                                    // Disjoint ranges → disjoint
+                                    // record sets → disjoint write
+                                    // sets at the OCC validation step.
+                                    let base = tid * writes_per_thread;
+                                    for i in 0..writes_per_thread {
+                                        let target = base + i;
+                                        let mut params = BTreeMap::new();
+                                        params.insert(
+                                            "idx".to_string(),
+                                            LoraValue::Int(target as i64),
+                                        );
+                                        params.insert(
+                                            "v".to_string(),
+                                            LoraValue::Int(target as i64 + 1),
+                                        );
+                                        db.execute_with_params(
+                                            "MATCH (n:N {idx: $idx}) SET n.v = $v",
+                                            opts(),
+                                            params,
+                                        )
+                                        .unwrap();
+                                    }
+                                })
+                            })
+                            .collect();
+                        for h in handles {
+                            h.join().unwrap();
+                        }
+                        total += start.elapsed();
+                    }
+                    total
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 /// Mixed read + write concurrency. Holds the writer count fixed at 1
 /// and scales the reader count. Phase 1 says writers don't block
 /// readers and vice versa, so adding readers shouldn't regress the
@@ -251,6 +341,7 @@ criterion_group! {
     targets =
         bench_concurrent_reads,
         bench_concurrent_creates,
+        bench_concurrent_disjoint_sets,
         bench_mixed_read_write,
 }
 criterion_main!(concurrent_benchmarks);
