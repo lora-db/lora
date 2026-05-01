@@ -244,16 +244,36 @@ pub struct InMemoryGraph {
     next_node_id: NodeId,
     next_rel_id: RelationshipId,
 
-    nodes: BTreeMap<NodeId, NodeRecord>,
-    relationships: BTreeMap<RelationshipId, RelationshipRecord>,
+    /// Slot-indexed node storage: `nodes[id as usize]` is the record at `id`.
+    /// `None` slots are tombstones from deletes (we don't compact). Because
+    /// `next_node_id` is monotonic the slot at `id` is initialized exactly
+    /// when `id < next_node_id` — same identity guarantee the previous
+    /// `BTreeMap<NodeId, NodeRecord>` had, just with O(1) lookup and
+    /// cache-coherent layout.
+    nodes: Vec<Option<NodeRecord>>,
+    relationships: Vec<Option<RelationshipRecord>>,
+    /// Live (non-tombstoned) counts kept in sync with `put_*`/`take_*` so
+    /// `node_count` / `relationship_count` stay O(1) — without a counter
+    /// they'd have to scan the slab.
+    live_node_count: usize,
+    live_rel_count: usize,
 
-    // adjacency
-    outgoing: BTreeMap<NodeId, BTreeSet<RelationshipId>>,
-    incoming: BTreeMap<NodeId, BTreeSet<RelationshipId>>,
+    /// Adjacency keyed by NodeId. `outgoing[id]` is the list of relationship
+    /// ids that leave `id`; mirrored on `incoming[id]`. Inner `Vec` instead
+    /// of `BTreeSet` because edges are inserted exactly once and traversal
+    /// only needs sequential iteration; the cache-friendly contiguous layout
+    /// shows up on every traversal hop.
+    outgoing: Vec<Vec<RelationshipId>>,
+    incoming: Vec<Vec<RelationshipId>>,
 
     // secondary indexes
-    nodes_by_label: BTreeMap<String, BTreeSet<NodeId>>,
-    relationships_by_type: BTreeMap<String, BTreeSet<RelationshipId>>,
+    /// Label -> the (unique, monotonic) node ids that carry it. The inner
+    /// `Vec` instead of `BTreeSet` because every node id is inserted at most
+    /// once per label (no dedup needed) and every consumer iterates the
+    /// whole list anyway — contiguous storage iterates faster than a
+    /// tree-of-pointers, and removes via `swap_remove` stay O(degree-of-label).
+    nodes_by_label: BTreeMap<String, Vec<NodeId>>,
+    relationships_by_type: BTreeMap<String, Vec<RelationshipId>>,
     indexes: RwLock<PropertyIndexRegistry>,
     active_node_property_indexes: AtomicUsize,
     active_relationship_property_indexes: AtomicUsize,
@@ -299,6 +319,8 @@ impl Clone for InMemoryGraph {
             next_rel_id: self.next_rel_id,
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
+            live_node_count: self.live_node_count,
+            live_rel_count: self.live_rel_count,
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
@@ -328,11 +350,11 @@ impl InMemoryGraph {
     }
 
     pub fn contains_node(&self, node_id: NodeId) -> bool {
-        self.nodes.contains_key(&node_id)
+        self.node_at(node_id).is_some()
     }
 
     pub fn contains_relationship(&self, rel_id: RelationshipId) -> bool {
-        self.relationships.contains_key(&rel_id)
+        self.rel_at(rel_id).is_some()
     }
 
     /// Install (or clear) the mutation recorder. Passing `None` detaches any
@@ -386,6 +408,182 @@ impl InMemoryGraph {
         Ok(())
     }
 
+    // ---------- Slab access helpers ----------
+    //
+    // Stand-in for the BTreeMap API the previous storage used. They keep the
+    // call sites readable while the underlying layout is positional Vec.
+
+    #[inline]
+    fn node_at(&self, id: NodeId) -> Option<&NodeRecord> {
+        self.nodes.get(id as usize).and_then(|s| s.as_ref())
+    }
+
+    #[inline]
+    fn node_at_mut(&mut self, id: NodeId) -> Option<&mut NodeRecord> {
+        self.nodes.get_mut(id as usize).and_then(|s| s.as_mut())
+    }
+
+    #[inline]
+    fn rel_at(&self, id: RelationshipId) -> Option<&RelationshipRecord> {
+        self.relationships.get(id as usize).and_then(|s| s.as_ref())
+    }
+
+    #[inline]
+    fn rel_at_mut(&mut self, id: RelationshipId) -> Option<&mut RelationshipRecord> {
+        self.relationships
+            .get_mut(id as usize)
+            .and_then(|s| s.as_mut())
+    }
+
+    /// Resize the node-keyed Vecs so `id as usize` is in range. Adjacency
+    /// lists are kept in lockstep with `nodes`, so a freshly-grown slot has
+    /// empty outgoing/incoming Vecs ready to receive edges.
+    fn ensure_node_slot(&mut self, id: NodeId) {
+        let target = id as usize + 1;
+        if self.nodes.len() < target {
+            self.nodes.resize_with(target, || None);
+            self.outgoing.resize_with(target, Vec::new);
+            self.incoming.resize_with(target, Vec::new);
+        }
+    }
+
+    fn ensure_rel_slot(&mut self, id: RelationshipId) {
+        let target = id as usize + 1;
+        if self.relationships.len() < target {
+            self.relationships.resize_with(target, || None);
+        }
+    }
+
+    fn put_node(&mut self, id: NodeId, node: NodeRecord) {
+        self.ensure_node_slot(id);
+        let was_present = self.nodes[id as usize].is_some();
+        self.nodes[id as usize] = Some(node);
+        if !was_present {
+            self.live_node_count += 1;
+        }
+    }
+
+    fn put_rel(&mut self, id: RelationshipId, rel: RelationshipRecord) {
+        self.ensure_rel_slot(id);
+        let was_present = self.relationships[id as usize].is_some();
+        self.relationships[id as usize] = Some(rel);
+        if !was_present {
+            self.live_rel_count += 1;
+        }
+    }
+
+    fn take_node(&mut self, id: NodeId) -> Option<NodeRecord> {
+        let idx = id as usize;
+        let removed = self.nodes.get_mut(idx).and_then(|s| s.take());
+        if removed.is_some() {
+            self.live_node_count -= 1;
+            // Also clear the per-id adjacency entries so the memory is reclaimed
+            // on the typical "delete every node" pattern. We deliberately do not
+            // shrink the outer Vec — leaving the slot lets new ids reuse the
+            // same index without growth churn (and `next_node_id` is monotonic
+            // anyway, so no immediate reuse).
+            if let Some(out) = self.outgoing.get_mut(idx) {
+                out.clear();
+            }
+            if let Some(inc) = self.incoming.get_mut(idx) {
+                inc.clear();
+            }
+        }
+        removed
+    }
+
+    fn take_rel(&mut self, id: RelationshipId) -> Option<RelationshipRecord> {
+        let idx = id as usize;
+        let removed = self.relationships.get_mut(idx).and_then(|s| s.take());
+        if removed.is_some() {
+            self.live_rel_count -= 1;
+        }
+        removed
+    }
+
+    #[inline]
+    fn outgoing_at(&self, id: NodeId) -> Option<&Vec<RelationshipId>> {
+        self.outgoing.get(id as usize)
+    }
+
+    #[inline]
+    fn incoming_at(&self, id: NodeId) -> Option<&Vec<RelationshipId>> {
+        self.incoming.get(id as usize)
+    }
+
+    fn iter_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|_| i as NodeId))
+    }
+
+    fn iter_node_records(&self) -> impl Iterator<Item = &NodeRecord> + '_ {
+        self.nodes.iter().filter_map(|s| s.as_ref())
+    }
+
+    fn iter_rel_ids(&self) -> impl Iterator<Item = RelationshipId> + '_ {
+        self.relationships
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|_| i as RelationshipId))
+    }
+
+    fn iter_rel_records(&self) -> impl Iterator<Item = &RelationshipRecord> + '_ {
+        self.relationships.iter().filter_map(|s| s.as_ref())
+    }
+
+    fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &NodeRecord)> + '_ {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|n| (i as NodeId, n)))
+    }
+
+    fn iter_rels(&self) -> impl Iterator<Item = (RelationshipId, &RelationshipRecord)> + '_ {
+        self.relationships
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|r| (i as RelationshipId, r)))
+    }
+
+    /// Add `rel_id` to `node_id`'s outgoing list. Idempotent: skips the push
+    /// if the id is already present (it shouldn't be — relationship ids are
+    /// monotonic — but the guard is cheap and keeps the invariant explicit).
+    fn outgoing_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
+        self.ensure_node_slot(node_id);
+        let v = &mut self.outgoing[node_id as usize];
+        if !v.contains(&rel_id) {
+            v.push(rel_id);
+        }
+    }
+
+    fn incoming_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
+        self.ensure_node_slot(node_id);
+        let v = &mut self.incoming[node_id as usize];
+        if !v.contains(&rel_id) {
+            v.push(rel_id);
+        }
+    }
+
+    /// Remove `rel_id` from `node_id`'s outgoing list. `swap_remove` keeps
+    /// the operation O(1) — adjacency order doesn't carry semantic meaning.
+    fn outgoing_remove(&mut self, node_id: NodeId, rel_id: RelationshipId) {
+        if let Some(v) = self.outgoing.get_mut(node_id as usize) {
+            if let Some(pos) = v.iter().position(|&id| id == rel_id) {
+                v.swap_remove(pos);
+            }
+        }
+    }
+
+    fn incoming_remove(&mut self, node_id: NodeId, rel_id: RelationshipId) {
+        if let Some(v) = self.incoming.get_mut(node_id as usize) {
+            if let Some(pos) = v.iter().position(|&id| id == rel_id) {
+                v.swap_remove(pos);
+            }
+        }
+    }
+
     fn normalize_labels(labels: Vec<String>) -> Vec<String> {
         let mut seen = BTreeSet::new();
 
@@ -398,15 +596,20 @@ impl InMemoryGraph {
     }
 
     fn insert_node_label_index(&mut self, node_id: NodeId, label: &str) {
-        self.nodes_by_label
-            .entry(label.to_string())
-            .or_default()
-            .insert(node_id);
+        let bucket = self.nodes_by_label.entry(label.to_string()).or_default();
+        // Same monotonic-id invariant as `outgoing_push`: ids never appear
+        // twice, but the `contains` guard is cheap on small buckets and
+        // makes the invariant explicit for replay paths.
+        if !bucket.contains(&node_id) {
+            bucket.push(node_id);
+        }
     }
 
     fn remove_node_label_index(&mut self, node_id: NodeId, label: &str) {
         if let Some(ids) = self.nodes_by_label.get_mut(label) {
-            ids.remove(&node_id);
+            if let Some(pos) = ids.iter().position(|&id| id == node_id) {
+                ids.swap_remove(pos);
+            }
             if ids.is_empty() {
                 self.nodes_by_label.remove(label);
             }
@@ -414,15 +617,20 @@ impl InMemoryGraph {
     }
 
     fn insert_relationship_type_index(&mut self, rel_id: RelationshipId, rel_type: &str) {
-        self.relationships_by_type
+        let bucket = self
+            .relationships_by_type
             .entry(rel_type.to_string())
-            .or_default()
-            .insert(rel_id);
+            .or_default();
+        if !bucket.contains(&rel_id) {
+            bucket.push(rel_id);
+        }
     }
 
     fn remove_relationship_type_index(&mut self, rel_id: RelationshipId, rel_type: &str) {
         if let Some(ids) = self.relationships_by_type.get_mut(rel_type) {
-            ids.remove(&rel_id);
+            if let Some(pos) = ids.iter().position(|&id| id == rel_id) {
+                ids.swap_remove(pos);
+            }
             if ids.is_empty() {
                 self.relationships_by_type.remove(rel_type);
             }
@@ -487,10 +695,10 @@ impl InMemoryGraph {
             return;
         }
 
-        for (id, node) in &self.nodes {
+        for (id, node) in self.iter_nodes() {
             if let Some(value) = node.properties.get(key) {
                 indexes.node_properties.insert_with_scopes(
-                    *id,
+                    id,
                     node.labels.iter().map(String::as_str),
                     key,
                     value,
@@ -516,10 +724,10 @@ impl InMemoryGraph {
             return;
         }
 
-        for (id, rel) in &self.relationships {
+        for (id, rel) in self.iter_rels() {
             if let Some(value) = rel.properties.get(key) {
                 indexes.relationship_properties.insert_with_scopes(
-                    *id,
+                    id,
                     [rel.rel_type.as_str()],
                     key,
                     value,
@@ -535,12 +743,12 @@ impl InMemoryGraph {
     fn rebuild_property_indexes(&mut self) {
         let mut indexes = PropertyIndexRegistry::default();
 
-        for (id, node) in &self.nodes {
+        for (id, node) in self.iter_nodes() {
             for (key, value) in &node.properties {
                 if PropertyIndexKey::from_value(value).is_some() {
                     indexes.node_properties.activate(key);
                     indexes.node_properties.insert_with_scopes(
-                        *id,
+                        id,
                         node.labels.iter().map(String::as_str),
                         key,
                         value,
@@ -549,12 +757,12 @@ impl InMemoryGraph {
             }
         }
 
-        for (id, rel) in &self.relationships {
+        for (id, rel) in self.iter_rels() {
             for (key, value) in &rel.properties {
                 if PropertyIndexKey::from_value(value).is_some() {
                     indexes.relationship_properties.activate(key);
                     indexes.relationship_properties.insert_with_scopes(
-                        *id,
+                        id,
                         [rel.rel_type.as_str()],
                         key,
                         value,
@@ -605,7 +813,7 @@ impl InMemoryGraph {
             return;
         }
 
-        let Some(labels) = self.nodes.get(&node_id).map(|node| node.labels.clone()) else {
+        let Some(labels) = self.node_at(node_id).map(|node| node.labels.clone()) else {
             return;
         };
 
@@ -625,7 +833,7 @@ impl InMemoryGraph {
             return;
         }
 
-        let Some(labels) = self.nodes.get(&node_id).map(|node| node.labels.clone()) else {
+        let Some(labels) = self.node_at(node_id).map(|node| node.labels.clone()) else {
             return;
         };
         self.unindex_node_property_if_active(node_id, labels.iter().map(String::as_str), key, old);
@@ -638,7 +846,7 @@ impl InMemoryGraph {
             return;
         }
 
-        let Some(properties) = self.nodes.get(&node_id).map(|node| node.properties.clone()) else {
+        let Some(properties) = self.node_at(node_id).map(|node| node.properties.clone()) else {
             return;
         };
         self.index_node_scope_properties_if_active(node_id, label, &properties);
@@ -651,7 +859,7 @@ impl InMemoryGraph {
             return;
         }
 
-        let Some(properties) = self.nodes.get(&node_id).map(|node| node.properties.clone()) else {
+        let Some(properties) = self.node_at(node_id).map(|node| node.properties.clone()) else {
             return;
         };
         self.unindex_node_scope_properties_if_active(node_id, label, &properties);
@@ -693,11 +901,7 @@ impl InMemoryGraph {
             return;
         }
 
-        let Some(rel_type) = self
-            .relationships
-            .get(&rel_id)
-            .map(|rel| rel.rel_type.clone())
-        else {
+        let Some(rel_type) = self.rel_at(rel_id).map(|rel| rel.rel_type.clone()) else {
             return;
         };
 
@@ -717,11 +921,7 @@ impl InMemoryGraph {
             return;
         }
 
-        let Some(rel_type) = self
-            .relationships
-            .get(&rel_id)
-            .map(|rel| rel.rel_type.clone())
-        else {
+        let Some(rel_type) = self.rel_at(rel_id).map(|rel| rel.rel_type.clone()) else {
             return;
         };
         self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
@@ -1012,9 +1212,9 @@ impl InMemoryGraph {
                     .get(label)
                     .into_iter()
                     .flat_map(|ids| ids.iter())
-                    .filter_map(|id| self.nodes.get(id)),
+                    .filter_map(|&id| self.node_at(id)),
             ),
-            None => Box::new(self.nodes.values()),
+            None => Box::new(self.iter_node_records()),
         };
 
         candidates
@@ -1035,9 +1235,9 @@ impl InMemoryGraph {
                     .get(rel_type)
                     .into_iter()
                     .flat_map(|ids| ids.iter())
-                    .filter_map(|id| self.relationships.get(id)),
+                    .filter_map(|&id| self.rel_at(id)),
             ),
-            None => Box::new(self.relationships.values()),
+            None => Box::new(self.iter_rel_records()),
         };
 
         candidates
@@ -1047,25 +1247,17 @@ impl InMemoryGraph {
     }
 
     fn attach_relationship(&mut self, rel: &RelationshipRecord) {
-        self.outgoing.entry(rel.src).or_default().insert(rel.id);
-        self.incoming.entry(rel.dst).or_default().insert(rel.id);
+        self.outgoing_push(rel.src, rel.id);
+        self.incoming_push(rel.dst, rel.id);
         self.insert_relationship_type_index(rel.id, &rel.rel_type);
     }
 
     fn detach_relationship_indexes(&mut self, rel: &RelationshipRecord) {
-        if let Some(ids) = self.outgoing.get_mut(&rel.src) {
-            ids.remove(&rel.id);
-            if ids.is_empty() {
-                self.outgoing.remove(&rel.src);
-            }
-        }
-
-        if let Some(ids) = self.incoming.get_mut(&rel.dst) {
-            ids.remove(&rel.id);
-            if ids.is_empty() {
-                self.incoming.remove(&rel.dst);
-            }
-        }
+        // Adjacency is now positional `Vec<Vec<RelationshipId>>` — clearing
+        // the inner Vec leaves the slot in place (the slot is sized for the
+        // node's lifetime, not the edge's).
+        self.outgoing_remove(rel.src, rel.id);
+        self.incoming_remove(rel.dst, rel.id);
 
         self.remove_relationship_type_index(rel.id, &rel.rel_type);
     }
@@ -1076,25 +1268,17 @@ impl InMemoryGraph {
         direction: Direction,
     ) -> Vec<RelationshipId> {
         match direction {
-            Direction::Left => self
-                .incoming
-                .get(&node_id)
-                .map(|ids| ids.iter().copied().collect())
-                .unwrap_or_default(),
+            Direction::Left => self.incoming_at(node_id).cloned().unwrap_or_default(),
 
-            Direction::Right => self
-                .outgoing
-                .get(&node_id)
-                .map(|ids| ids.iter().copied().collect())
-                .unwrap_or_default(),
+            Direction::Right => self.outgoing_at(node_id).cloned().unwrap_or_default(),
 
             Direction::Undirected => {
                 let mut ids = BTreeSet::new();
 
-                if let Some(out) = self.outgoing.get(&node_id) {
+                if let Some(out) = self.outgoing_at(node_id) {
                     ids.extend(out.iter().copied());
                 }
-                if let Some(inc) = self.incoming.get(&node_id) {
+                if let Some(inc) = self.incoming_at(node_id) {
                     ids.extend(inc.iter().copied());
                 }
 
@@ -1114,13 +1298,11 @@ impl InMemoryGraph {
     }
 
     fn has_incident_relationships(&self, node_id: NodeId) -> bool {
-        self.outgoing
-            .get(&node_id)
+        self.outgoing_at(node_id)
             .map(|ids| !ids.is_empty())
             .unwrap_or(false)
             || self
-                .incoming
-                .get(&node_id)
+                .incoming_at(node_id)
                 .map(|ids| !ids.is_empty())
                 .unwrap_or(false)
     }
@@ -1128,10 +1310,10 @@ impl InMemoryGraph {
     fn incident_relationship_ids(&self, node_id: NodeId) -> BTreeSet<RelationshipId> {
         let mut rel_ids = BTreeSet::new();
 
-        if let Some(ids) = self.outgoing.get(&node_id) {
+        if let Some(ids) = self.outgoing_at(node_id) {
             rel_ids.extend(ids.iter().copied());
         }
-        if let Some(ids) = self.incoming.get(&node_id) {
+        if let Some(ids) = self.incoming_at(node_id) {
             rel_ids.extend(ids.iter().copied());
         }
 
@@ -1153,7 +1335,7 @@ impl InMemoryGraph {
                 "cannot replay node creation while a mutation recorder is installed".into(),
             );
         }
-        if self.nodes.contains_key(&id) {
+        if self.node_at(id).is_some() {
             return Err(format!("node id {id} already exists"));
         }
 
@@ -1165,9 +1347,9 @@ impl InMemoryGraph {
         };
 
         self.on_node_replayed(&node);
-        self.nodes.insert(id, node.clone());
-        self.outgoing.entry(id).or_default();
-        self.incoming.entry(id).or_default();
+        self.put_node(id, node.clone());
+        // ensure_node_slot grew both adjacency Vecs to cover this id when
+        // we put_node above.
         self.bump_next_node_id_past(id)?;
 
         Ok(node)
@@ -1190,15 +1372,15 @@ impl InMemoryGraph {
                 "cannot replay relationship creation while a mutation recorder is installed".into(),
             );
         }
-        if self.relationships.contains_key(&id) {
+        if self.rel_at(id).is_some() {
             return Err(format!("relationship id {id} already exists"));
         }
-        if !self.nodes.contains_key(&src) {
+        if self.node_at(src).is_none() {
             return Err(format!(
                 "relationship {id} references missing source node {src}"
             ));
         }
-        if !self.nodes.contains_key(&dst) {
+        if self.node_at(dst).is_none() {
             return Err(format!(
                 "relationship {id} references missing target node {dst}"
             ));
@@ -1218,7 +1400,7 @@ impl InMemoryGraph {
         };
 
         self.on_relationship_replayed(&rel);
-        self.relationships.insert(id, rel.clone());
+        self.put_rel(id, rel.clone());
         self.bump_next_rel_id_past(id)?;
 
         Ok(rel)
@@ -1242,11 +1424,11 @@ impl InMemoryGraph {
             active_keys: indexes.node_properties.active_keys.clone(),
             ..PropertyIndexState::default()
         };
-        for (id, node) in &self.nodes {
+        for (id, node) in self.iter_nodes() {
             for (key, value) in &node.properties {
                 if expected_nodes.is_active(key) {
                     expected_nodes.insert_with_scopes(
-                        *id,
+                        id,
                         node.labels.iter().map(String::as_str),
                         key,
                         value,
@@ -1267,11 +1449,11 @@ impl InMemoryGraph {
             active_keys: indexes.relationship_properties.active_keys.clone(),
             ..PropertyIndexState::default()
         };
-        for (id, rel) in &self.relationships {
+        for (id, rel) in self.iter_rels() {
             for (key, value) in &rel.properties {
                 if expected_relationships.is_active(key) {
                     expected_relationships.insert_with_scopes(
-                        *id,
+                        id,
                         [rel.rel_type.as_str()],
                         key,
                         value,
@@ -1294,45 +1476,45 @@ impl GraphStorage for InMemoryGraph {
     // ---------- Required primitives ----------
 
     fn contains_node(&self, id: NodeId) -> bool {
-        self.nodes.contains_key(&id)
+        self.node_at(id).is_some()
     }
 
     fn node(&self, id: NodeId) -> Option<NodeRecord> {
-        self.nodes.get(&id).cloned()
+        self.node_at(id).cloned()
     }
 
     fn all_node_ids(&self) -> Vec<NodeId> {
-        self.nodes.keys().copied().collect()
+        self.iter_node_ids().collect()
     }
 
     fn node_ids_by_label(&self, label: &str) -> Vec<NodeId> {
         match self.nodes_by_label.get(label) {
-            Some(ids) => ids.iter().copied().collect(),
+            Some(ids) => ids.clone(),
             None => Vec::new(),
         }
     }
 
     fn contains_relationship(&self, id: RelationshipId) -> bool {
-        self.relationships.contains_key(&id)
+        self.rel_at(id).is_some()
     }
 
     fn relationship(&self, id: RelationshipId) -> Option<RelationshipRecord> {
-        self.relationships.get(&id).cloned()
+        self.rel_at(id).cloned()
     }
 
     fn all_rel_ids(&self) -> Vec<RelationshipId> {
-        self.relationships.keys().copied().collect()
+        self.iter_rel_ids().collect()
     }
 
     fn rel_ids_by_type(&self, rel_type: &str) -> Vec<RelationshipId> {
         match self.relationships_by_type.get(rel_type) {
-            Some(ids) => ids.iter().copied().collect(),
+            Some(ids) => ids.clone(),
             None => Vec::new(),
         }
     }
 
     fn relationship_endpoints(&self, id: RelationshipId) -> Option<(NodeId, NodeId)> {
-        self.relationships.get(&id).map(|r| (r.src, r.dst))
+        self.rel_at(id).map(|r| (r.src, r.dst))
     }
 
     fn expand_ids(
@@ -1341,37 +1523,73 @@ impl GraphStorage for InMemoryGraph {
         direction: Direction,
         types: &[String],
     ) -> Vec<(RelationshipId, NodeId)> {
-        if !self.nodes.contains_key(&node_id) {
+        if self.node_at(node_id).is_none() {
             return Vec::new();
         }
 
-        // Fast path: no type filter — just join adjacency + rel endpoints.
-        if types.is_empty() {
-            return self
-                .relationship_ids_for_direction(node_id, direction)
-                .into_iter()
-                .filter_map(|rel_id| {
-                    let rel = self.relationships.get(&rel_id)?;
-                    let other_id = Self::other_endpoint(rel, node_id)?;
-                    Some((rel_id, other_id))
-                })
-                .collect();
-        }
+        // Walk the adjacency Vec(s) directly into a single output Vec,
+        // skipping the previous intermediate `Vec<RelationshipId>`
+        // allocation that `relationship_ids_for_direction` produced.
+        // For type-filtered traversal we read `rel.rel_type` once per
+        // edge against the (typically tiny) `types` slice.
+        let mut out: Vec<(RelationshipId, NodeId)> = Vec::new();
 
-        // Type-filtered: borrow rel_type straight from the stored record.
-        // For small type lists (the common case) the linear scan beats a
-        // BTreeSet; we keep it allocation-free.
-        self.relationship_ids_for_direction(node_id, direction)
-            .into_iter()
-            .filter_map(|rel_id| {
-                let rel = self.relationships.get(&rel_id)?;
-                if !types.iter().any(|t| t == &rel.rel_type) {
-                    return None;
+        let push_from = |adj: &Vec<RelationshipId>, out: &mut Vec<(RelationshipId, NodeId)>| {
+            for &rel_id in adj {
+                let Some(rel) = self.rel_at(rel_id) else {
+                    continue;
+                };
+                if !types.is_empty() && !types.iter().any(|t| t == &rel.rel_type) {
+                    continue;
                 }
-                let other_id = Self::other_endpoint(rel, node_id)?;
-                Some((rel_id, other_id))
-            })
-            .collect()
+                let Some(other_id) = Self::other_endpoint(rel, node_id) else {
+                    continue;
+                };
+                out.push((rel_id, other_id));
+            }
+        };
+
+        match direction {
+            Direction::Right => {
+                if let Some(adj) = self.outgoing_at(node_id) {
+                    out.reserve(adj.len());
+                    push_from(adj, &mut out);
+                }
+            }
+            Direction::Left => {
+                if let Some(adj) = self.incoming_at(node_id) {
+                    out.reserve(adj.len());
+                    push_from(adj, &mut out);
+                }
+            }
+            Direction::Undirected => {
+                let out_len = self.outgoing_at(node_id).map(Vec::len).unwrap_or(0);
+                let in_len = self.incoming_at(node_id).map(Vec::len).unwrap_or(0);
+                out.reserve(out_len + in_len);
+                if let Some(adj) = self.outgoing_at(node_id) {
+                    push_from(adj, &mut out);
+                }
+                if let Some(adj) = self.incoming_at(node_id) {
+                    // Skip self-loops we already counted on the outgoing side.
+                    for &rel_id in adj {
+                        if out.iter().any(|(r, _)| *r == rel_id) {
+                            continue;
+                        }
+                        let Some(rel) = self.rel_at(rel_id) else {
+                            continue;
+                        };
+                        if !types.is_empty() && !types.iter().any(|t| t == &rel.rel_type) {
+                            continue;
+                        }
+                        let Some(other_id) = Self::other_endpoint(rel, node_id) else {
+                            continue;
+                        };
+                        out.push((rel_id, other_id));
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn all_labels(&self) -> Vec<String> {
@@ -1389,7 +1607,7 @@ impl GraphStorage for InMemoryGraph {
         F: FnOnce(&NodeRecord) -> R,
         Self: Sized,
     {
-        self.nodes.get(&id).map(f)
+        self.node_at(id).map(f)
     }
 
     fn with_relationship<F, R>(&self, id: RelationshipId, f: F) -> Option<R>
@@ -1397,31 +1615,31 @@ impl GraphStorage for InMemoryGraph {
         F: FnOnce(&RelationshipRecord) -> R,
         Self: Sized,
     {
-        self.relationships.get(&id).map(f)
+        self.rel_at(id).map(f)
     }
 
     // ---------- Overrides: counts + existence ----------
 
     fn node_count(&self) -> usize {
-        self.nodes.len()
+        self.live_node_count
     }
 
     fn relationship_count(&self) -> usize {
-        self.relationships.len()
+        self.live_rel_count
     }
 
     fn has_node(&self, id: NodeId) -> bool {
-        self.nodes.contains_key(&id)
+        self.node_at(id).is_some()
     }
 
     fn has_relationship(&self, id: RelationshipId) -> bool {
-        self.relationships.contains_key(&id)
+        self.rel_at(id).is_some()
     }
 
     // ---------- Overrides: record-returning scans (direct iteration) ----------
 
     fn all_nodes(&self) -> Vec<NodeRecord> {
-        self.nodes.values().cloned().collect()
+        self.iter_node_records().cloned().collect()
     }
 
     fn nodes_by_label(&self, label: &str) -> Vec<NodeRecord> {
@@ -1429,12 +1647,12 @@ impl GraphStorage for InMemoryGraph {
             .get(label)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.nodes.get(id).cloned())
+            .filter_map(|&id| self.node_at(id).cloned())
             .collect()
     }
 
     fn all_relationships(&self) -> Vec<RelationshipRecord> {
-        self.relationships.values().cloned().collect()
+        self.iter_rel_records().cloned().collect()
     }
 
     fn relationships_by_type(&self, rel_type: &str) -> Vec<RelationshipRecord> {
@@ -1442,7 +1660,7 @@ impl GraphStorage for InMemoryGraph {
             .get(rel_type)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.relationships.get(id).cloned())
+            .filter_map(|&id| self.rel_at(id).cloned())
             .collect()
     }
 
@@ -1468,7 +1686,7 @@ impl GraphStorage for InMemoryGraph {
                     return Vec::new();
                 };
                 ids.iter()
-                    .filter_map(|id| self.nodes.get(id).cloned())
+                    .filter_map(|&id| self.node_at(id).cloned())
                     .collect()
             }
             None => indexes
@@ -1476,7 +1694,7 @@ impl GraphStorage for InMemoryGraph {
                 .ids_for(key, value)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|id| self.nodes.get(id).cloned())
+                .filter_map(|&id| self.node_at(id).cloned())
                 .collect(),
         }
     }
@@ -1540,7 +1758,7 @@ impl GraphStorage for InMemoryGraph {
                     return Vec::new();
                 };
                 ids.iter()
-                    .filter_map(|id| self.relationships.get(id).cloned())
+                    .filter_map(|&id| self.rel_at(id).cloned())
                     .collect()
             }
             None => indexes
@@ -1548,7 +1766,7 @@ impl GraphStorage for InMemoryGraph {
                 .ids_for(key, value)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|id| self.relationships.get(id).cloned())
+                .filter_map(|&id| self.rel_at(id).cloned())
                 .collect(),
         }
     }
@@ -1642,30 +1860,28 @@ impl GraphStorage for InMemoryGraph {
     }
 
     fn outgoing_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
-        self.outgoing
-            .get(&node_id)
+        self.outgoing_at(node_id)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.relationships.get(id).cloned())
+            .filter_map(|&id| self.rel_at(id).cloned())
             .collect()
     }
 
     fn incoming_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
-        self.incoming
-            .get(&node_id)
+        self.incoming_at(node_id)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.relationships.get(id).cloned())
+            .filter_map(|&id| self.rel_at(id).cloned())
             .collect()
     }
 
     fn degree(&self, node_id: NodeId, direction: Direction) -> usize {
         match direction {
-            Direction::Right => self.outgoing.get(&node_id).map(|s| s.len()).unwrap_or(0),
-            Direction::Left => self.incoming.get(&node_id).map(|s| s.len()).unwrap_or(0),
+            Direction::Right => self.outgoing_at(node_id).map(|s| s.len()).unwrap_or(0),
+            Direction::Left => self.incoming_at(node_id).map(|s| s.len()).unwrap_or(0),
             Direction::Undirected => {
-                self.outgoing.get(&node_id).map(|s| s.len()).unwrap_or(0)
-                    + self.incoming.get(&node_id).map(|s| s.len()).unwrap_or(0)
+                self.outgoing_at(node_id).map(|s| s.len()).unwrap_or(0)
+                    + self.incoming_at(node_id).map(|s| s.len()).unwrap_or(0)
             }
         }
     }
@@ -1676,7 +1892,7 @@ impl GraphStorage for InMemoryGraph {
         direction: Direction,
         types: &[String],
     ) -> Vec<(RelationshipRecord, NodeRecord)> {
-        if !self.nodes.contains_key(&node_id) {
+        if self.node_at(node_id).is_none() {
             return Vec::new();
         }
 
@@ -1688,7 +1904,7 @@ impl GraphStorage for InMemoryGraph {
 
         self.relationship_ids_for_direction(node_id, direction)
             .into_iter()
-            .filter_map(|rel_id| self.relationships.get(&rel_id))
+            .filter_map(|rel_id| self.rel_at(rel_id))
             .filter(|rel| {
                 type_filter
                     .as_ref()
@@ -1697,7 +1913,7 @@ impl GraphStorage for InMemoryGraph {
             })
             .filter_map(|rel| {
                 let other_id = Self::other_endpoint(rel, node_id)?;
-                let other = self.nodes.get(&other_id)?;
+                let other = self.node_at(other_id)?;
                 Some((rel.clone(), other.clone()))
             })
             .collect()
@@ -1706,7 +1922,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn all_node_property_keys(&self) -> Vec<String> {
         let mut keys = BTreeSet::new();
-        for node in self.nodes.values() {
+        for node in self.iter_node_records() {
             for key in node.properties.keys() {
                 keys.insert(key.clone());
             }
@@ -1716,7 +1932,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn all_relationship_property_keys(&self) -> Vec<String> {
         let mut keys = BTreeSet::new();
-        for rel in self.relationships.values() {
+        for rel in self.iter_rel_records() {
             for key in rel.properties.keys() {
                 keys.insert(key.clone());
             }
@@ -1728,8 +1944,8 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.nodes_by_label.get(label) {
-            for id in ids {
-                if let Some(node) = self.nodes.get(id) {
+            for &id in ids {
+                if let Some(node) = self.node_at(id) {
                     for key in node.properties.keys() {
                         keys.insert(key.clone());
                     }
@@ -1744,8 +1960,8 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.relationships_by_type.get(rel_type) {
-            for id in ids {
-                if let Some(rel) = self.relationships.get(id) {
+            for &id in ids {
+                if let Some(rel) = self.rel_at(id) {
                     for key in rel.properties.keys() {
                         keys.insert(key.clone());
                     }
@@ -1759,15 +1975,15 @@ impl GraphStorage for InMemoryGraph {
 
 impl BorrowedGraphStorage for InMemoryGraph {
     fn node_ref(&self, id: NodeId) -> Option<&NodeRecord> {
-        self.nodes.get(&id)
+        self.node_at(id)
     }
 
     fn relationship_ref(&self, id: RelationshipId) -> Option<&RelationshipRecord> {
-        self.relationships.get(&id)
+        self.rel_at(id)
     }
 
     fn node_refs(&self) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
-        Box::new(self.nodes.values())
+        Box::new(self.iter_node_records())
     }
 
     fn node_refs_by_label(&self, label: &str) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
@@ -1776,12 +1992,12 @@ impl BorrowedGraphStorage for InMemoryGraph {
                 .get(label)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|id| self.nodes.get(id)),
+                .filter_map(|&id| self.node_at(id)),
         )
     }
 
     fn relationship_refs(&self) -> Box<dyn Iterator<Item = &RelationshipRecord> + '_> {
-        Box::new(self.relationships.values())
+        Box::new(self.iter_rel_records())
     }
 
     fn relationship_refs_by_type(
@@ -1793,7 +2009,7 @@ impl BorrowedGraphStorage for InMemoryGraph {
                 .get(rel_type)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|id| self.relationships.get(id)),
+                .filter_map(|&id| self.rel_at(id)),
         )
     }
 }
@@ -1811,10 +2027,10 @@ impl GraphStorageMut for InMemoryGraph {
 
         self.on_node_created(&node);
 
-        self.nodes.insert(id, node.clone());
+        self.put_node(id, node.clone());
 
-        self.outgoing.entry(id).or_default();
-        self.incoming.entry(id).or_default();
+        // ensure_node_slot grew both adjacency Vecs to cover this id when
+        // we put_node above.
 
         self.emit(|| MutationEvent::CreateNode {
             id,
@@ -1832,7 +2048,7 @@ impl GraphStorageMut for InMemoryGraph {
         rel_type: &str,
         properties: Properties,
     ) -> Option<RelationshipRecord> {
-        if !self.nodes.contains_key(&src) || !self.nodes.contains_key(&dst) {
+        if self.node_at(src).is_none() || self.node_at(dst).is_none() {
             return None;
         }
 
@@ -1851,7 +2067,7 @@ impl GraphStorageMut for InMemoryGraph {
         };
 
         self.on_relationship_created(&rel);
-        self.relationships.insert(id, rel.clone());
+        self.put_rel(id, rel.clone());
 
         self.emit(|| MutationEvent::CreateRelationship {
             id,
@@ -1865,7 +2081,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn set_node_property(&mut self, node_id: NodeId, key: String, value: PropertyValue) -> bool {
-        if !self.nodes.contains_key(&node_id) {
+        if self.node_at(node_id).is_none() {
             return false;
         }
 
@@ -1876,7 +2092,7 @@ impl GraphStorageMut for InMemoryGraph {
             (None, None)
         };
 
-        let old = match self.nodes.get_mut(&node_id) {
+        let old = match self.node_at_mut(node_id) {
             Some(node) => node.properties.insert(key.clone(), value.clone()),
             None => return false,
         };
@@ -1892,7 +2108,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn remove_node_property(&mut self, node_id: NodeId, key: &str) -> bool {
-        let removed = match self.nodes.get_mut(&node_id) {
+        let removed = match self.node_at_mut(node_id) {
             Some(node) => node.properties.remove(key),
             None => return false,
         };
@@ -1916,7 +2132,7 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         }
 
-        let applied = match self.nodes.get_mut(&node_id) {
+        let applied = match self.node_at_mut(node_id) {
             Some(node) => {
                 if node.labels.iter().any(|l| l == label) {
                     return false;
@@ -1938,7 +2154,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> bool {
-        let applied = match self.nodes.get_mut(&node_id) {
+        let applied = match self.node_at_mut(node_id) {
             Some(node) => {
                 let original_len = node.labels.len();
                 node.labels.retain(|l| l != label);
@@ -1962,7 +2178,7 @@ impl GraphStorageMut for InMemoryGraph {
         key: String,
         value: PropertyValue,
     ) -> bool {
-        if !self.relationships.contains_key(&rel_id) {
+        if self.rel_at(rel_id).is_none() {
             return false;
         }
 
@@ -1973,7 +2189,7 @@ impl GraphStorageMut for InMemoryGraph {
             (None, None)
         };
 
-        let old = match self.relationships.get_mut(&rel_id) {
+        let old = match self.rel_at_mut(rel_id) {
             Some(rel) => rel.properties.insert(key.clone(), value.clone()),
             None => return false,
         };
@@ -1989,7 +2205,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn remove_relationship_property(&mut self, rel_id: RelationshipId, key: &str) -> bool {
-        let removed = match self.relationships.get_mut(&rel_id) {
+        let removed = match self.rel_at_mut(rel_id) {
             Some(rel) => rel.properties.remove(key),
             None => return false,
         };
@@ -2008,7 +2224,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn delete_relationship(&mut self, rel_id: RelationshipId) -> bool {
-        let applied = match self.relationships.remove(&rel_id) {
+        let applied = match self.take_rel(rel_id) {
             Some(rel) => {
                 self.on_relationship_deleted(&rel);
                 true
@@ -2022,7 +2238,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn delete_node(&mut self, node_id: NodeId) -> bool {
-        if !self.nodes.contains_key(&node_id) {
+        if self.node_at(node_id).is_none() {
             return false;
         }
 
@@ -2030,15 +2246,14 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         }
 
-        let node = match self.nodes.remove(&node_id) {
+        let node = match self.take_node(node_id) {
             Some(node) => node,
             None => return false,
         };
 
         self.on_node_deleted(&node);
 
-        self.outgoing.remove(&node_id);
-        self.incoming.remove(&node_id);
+        // take_node already cleared the per-node adjacency Vecs.
 
         self.emit(|| MutationEvent::DeleteNode { node_id });
 
@@ -2046,7 +2261,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn detach_delete_node(&mut self, node_id: NodeId) -> bool {
-        if !self.nodes.contains_key(&node_id) {
+        if self.node_at(node_id).is_none() {
             return false;
         }
 
@@ -2097,8 +2312,8 @@ impl InMemoryGraph {
         SnapshotPayload {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
-            nodes: self.nodes.values().cloned().collect(),
-            relationships: self.relationships.values().cloned().collect(),
+            nodes: self.iter_node_records().cloned().collect(),
+            relationships: self.iter_rel_records().cloned().collect(),
         }
     }
 
@@ -2125,22 +2340,23 @@ impl InMemoryGraph {
             ..Self::default()
         };
 
-        // Insert nodes + rebuild label index + seed adjacency slots.
+        // Insert nodes + rebuild label index. `put_node` ensures the
+        // adjacency slots grow in lockstep, so per-node slot seeding is no
+        // longer needed.
         for node in payload.nodes {
             let id = node.id;
             let labels = node.labels.clone();
-            rebuilt.nodes.insert(id, node);
+            rebuilt.put_node(id, node);
             for label in &labels {
                 rebuilt.insert_node_label_index(id, label);
             }
-            rebuilt.outgoing.entry(id).or_default();
-            rebuilt.incoming.entry(id).or_default();
         }
 
         // Insert relationships + rebuild adjacency + type index.
         for rel in payload.relationships {
             rebuilt.attach_relationship(&rel);
-            rebuilt.relationships.insert(rel.id, rel);
+            let id = rel.id;
+            rebuilt.put_rel(id, rel);
         }
         rebuilt.rebuild_property_indexes();
 

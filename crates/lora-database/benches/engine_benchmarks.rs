@@ -138,6 +138,17 @@ fn bench_match_queries(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("limit_10_1k", |b| {
+        b.iter(|| {
+            black_box(
+                db_small
+                    .service
+                    .execute("MATCH (n:Node) RETURN n.id LIMIT 10", opts())
+                    .unwrap(),
+            );
+        });
+    });
+
     group.bench_function("count_only_1k", |b| {
         b.iter(|| {
             black_box(

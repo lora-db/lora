@@ -5,7 +5,7 @@ use crate::{project_rows, ExecuteOptions, QueryResult};
 
 use lora_analyzer::{
     symbols::VarId, ResolvedExpr, ResolvedPattern, ResolvedPatternElement, ResolvedPatternPart,
-    ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
+    ResolvedProjection, ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
 };
 use lora_ast::{Direction, RangeLiteral};
 use lora_compiler::physical::*;
@@ -719,6 +719,21 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
+        // Streaming fold fast path. When every aggregate is a fold-only
+        // function (count/sum/min/max/avg, no DISTINCT) we never buffer
+        // input rows by group — we fold each row's aggregate value into
+        // running per-group state. Memory drops from O(input_rows) to
+        // O(groups).
+        if let Some(specs) = crate::pull::classify_streamable_aggregates(&op.aggregates) {
+            return self.exec_hash_aggregation_streaming(
+                input_rows,
+                &op.group_by,
+                &op.aggregates,
+                &specs,
+                &eval_ctx,
+            );
+        }
+
         let mut groups: BTreeMap<Vec<GroupValueKey>, Vec<Row>> = BTreeMap::new();
 
         if op.group_by.is_empty() {
@@ -758,6 +773,94 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             out.push(result);
         }
 
+        Ok(out)
+    }
+
+    fn exec_hash_aggregation_streaming(
+        &self,
+        input_rows: Vec<Row>,
+        group_by: &[ResolvedProjection],
+        aggregates: &[ResolvedProjection],
+        specs: &[crate::pull::StreamableAggSpec],
+        eval_ctx: &EvalContext<'_, S>,
+    ) -> ExecResult<Vec<Row>> {
+        // No-group-by fast path: a single accumulator, no BTreeMap.
+        if group_by.is_empty() {
+            let mut aggs: Vec<crate::pull::AggState> = specs
+                .iter()
+                .map(|s| crate::pull::AggState::seed(s.kind))
+                .collect();
+            for row in &input_rows {
+                for (i, spec) in specs.iter().enumerate() {
+                    let value = match &spec.arg {
+                        Some(arg) => eval_expr_result(arg, row, eval_ctx)
+                            .map_err(ExecutorError::RuntimeError)?,
+                        None => LoraValue::Null,
+                    };
+                    aggs[i].fold(spec.kind, value);
+                }
+            }
+            let mut result = Row::new();
+            for (i, proj) in aggregates.iter().enumerate() {
+                let value =
+                    std::mem::replace(&mut aggs[i], crate::pull::AggState::seed(specs[i].kind))
+                        .finalize(specs[i].kind);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            return Ok(vec![result]);
+        }
+
+        // Group-by path: per-group running accumulator. The first row in
+        // each group is retained so we can compute the group_by output
+        // expressions later; nothing else from the input is buffered.
+        let mut groups: BTreeMap<Vec<GroupValueKey>, (Row, Vec<crate::pull::AggState>)> =
+            BTreeMap::new();
+
+        for row in input_rows {
+            let mut key = Vec::with_capacity(group_by.len());
+            for proj in group_by {
+                let value = eval_expr_result(&proj.expr, &row, eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                key.push(GroupValueKey::from_value(&value));
+            }
+
+            let entry = groups.entry(key).or_insert_with(|| {
+                (
+                    row.clone(),
+                    specs
+                        .iter()
+                        .map(|s| crate::pull::AggState::seed(s.kind))
+                        .collect(),
+                )
+            });
+
+            for (i, spec) in specs.iter().enumerate() {
+                let value = match &spec.arg {
+                    Some(arg) => eval_expr_result(arg, &row, eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?,
+                    None => LoraValue::Null,
+                };
+                entry.1[i].fold(spec.kind, value);
+            }
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (_, (first_row, mut aggs)) in groups {
+            let mut result = Row::new();
+            for proj in group_by {
+                let value = eval_expr_result(&proj.expr, &first_row, eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                let value = self.hydrate_value(value);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            for (i, proj) in aggregates.iter().enumerate() {
+                let value =
+                    std::mem::replace(&mut aggs[i], crate::pull::AggState::seed(specs[i].kind))
+                        .finalize(specs[i].kind);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            out.push(result);
+        }
         Ok(out)
     }
 
@@ -1500,6 +1603,19 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
+        // Streaming fold fast path — same logic as the read-side
+        // `Executor::exec_hash_aggregation`. See that method for the full
+        // rationale.
+        if let Some(specs) = crate::pull::classify_streamable_aggregates(&op.aggregates) {
+            return self.exec_hash_aggregation_streaming(
+                input_rows,
+                &op.group_by,
+                &op.aggregates,
+                &specs,
+                &eval_ctx,
+            );
+        }
+
         let mut groups: BTreeMap<Vec<GroupValueKey>, Vec<Row>> = BTreeMap::new();
 
         if op.group_by.is_empty() {
@@ -1539,6 +1655,90 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             out.push(result);
         }
 
+        Ok(out)
+    }
+
+    fn exec_hash_aggregation_streaming(
+        &self,
+        input_rows: Vec<Row>,
+        group_by: &[ResolvedProjection],
+        aggregates: &[ResolvedProjection],
+        specs: &[crate::pull::StreamableAggSpec],
+        eval_ctx: &EvalContext<'_, S>,
+    ) -> ExecResult<Vec<Row>> {
+        if group_by.is_empty() {
+            let mut aggs: Vec<crate::pull::AggState> = specs
+                .iter()
+                .map(|s| crate::pull::AggState::seed(s.kind))
+                .collect();
+            for row in &input_rows {
+                for (i, spec) in specs.iter().enumerate() {
+                    let value = match &spec.arg {
+                        Some(arg) => eval_expr_result(arg, row, eval_ctx)
+                            .map_err(ExecutorError::RuntimeError)?,
+                        None => LoraValue::Null,
+                    };
+                    aggs[i].fold(spec.kind, value);
+                }
+            }
+            let mut result = Row::new();
+            for (i, proj) in aggregates.iter().enumerate() {
+                let value =
+                    std::mem::replace(&mut aggs[i], crate::pull::AggState::seed(specs[i].kind))
+                        .finalize(specs[i].kind);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            return Ok(vec![result]);
+        }
+
+        let mut groups: BTreeMap<Vec<GroupValueKey>, (Row, Vec<crate::pull::AggState>)> =
+            BTreeMap::new();
+
+        for row in input_rows {
+            let mut key = Vec::with_capacity(group_by.len());
+            for proj in group_by {
+                let value = eval_expr_result(&proj.expr, &row, eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                key.push(GroupValueKey::from_value(&value));
+            }
+
+            let entry = groups.entry(key).or_insert_with(|| {
+                (
+                    row.clone(),
+                    specs
+                        .iter()
+                        .map(|s| crate::pull::AggState::seed(s.kind))
+                        .collect(),
+                )
+            });
+
+            for (i, spec) in specs.iter().enumerate() {
+                let value = match &spec.arg {
+                    Some(arg) => eval_expr_result(arg, &row, eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?,
+                    None => LoraValue::Null,
+                };
+                entry.1[i].fold(spec.kind, value);
+            }
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (_, (first_row, mut aggs)) in groups {
+            let mut result = Row::new();
+            for proj in group_by {
+                let value = eval_expr_result(&proj.expr, &first_row, eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                let value = self.hydrate_value(value);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            for (i, proj) in aggregates.iter().enumerate() {
+                let value =
+                    std::mem::replace(&mut aggs[i], crate::pull::AggState::seed(specs[i].kind))
+                        .finalize(specs[i].kind);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            out.push(result);
+        }
         Ok(out)
     }
 

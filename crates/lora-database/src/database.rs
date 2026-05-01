@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use lora_analyzer::Analyzer;
 use lora_ast::{Direction, Document};
-use lora_compiler::{CompiledQuery, Compiler};
+use lora_compiler::{CompiledQuery, Compiler, PhysicalNodeId, PhysicalOp, PhysicalPlan};
 use lora_executor::{
-    classify_stream, compiled_result_columns, lora_value_to_property, project_rows, ExecuteOptions,
-    LoraValue, MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
+    classify_stream, collect_compiled, compiled_result_columns, lora_value_to_property,
+    project_rows, ExecuteOptions, LoraValue, MutableExecutionContext, MutableExecutor, QueryResult,
+    Row, StreamShape,
 };
 use lora_parser::parse_query;
 use lora_snapshot::{
@@ -28,6 +29,7 @@ use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder};
 
 use crate::archive::WalArchive;
 use crate::named::{DatabaseName, DatabaseOpenOptions};
+use crate::plan_cache::PlanCache;
 use crate::snapshot_store::{ManagedSnapshotStore, SnapshotConfig};
 use crate::stream::{AutoCommitGuard, LiveCursor, QueryStream};
 use crate::transaction::{LiveStoreGuard, Transaction, TransactionMode};
@@ -52,6 +54,11 @@ pub struct Database<S> {
     pub(crate) store: Arc<RwLock<S>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
     pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
+    /// Cache of compiled query plans, content-keyed by raw query text. Shared
+    /// across the read- and write-lock phases of a single execute (so a
+    /// mutating query compiles at most once instead of twice) and across
+    /// every subsequent call that uses the same query string.
+    pub(crate) plan_cache: Arc<PlanCache>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,6 +433,7 @@ impl Database<InMemoryGraph> {
                     store: Arc::new(RwLock::new(graph)),
                     wal: Some(recorder),
                     snapshots: None,
+                    plan_cache: Arc::new(PlanCache::new()),
                 })
             }
         }
@@ -460,6 +468,7 @@ impl Database<InMemoryGraph> {
                     store: Arc::new(RwLock::new(graph)),
                     wal: Some(recorder),
                     snapshots: Some(snapshot_store),
+                    plan_cache: Arc::new(PlanCache::new()),
                 })
             }
         }
@@ -502,6 +511,7 @@ impl Database<InMemoryGraph> {
             store: Arc::new(RwLock::new(graph)),
             wal: Some(recorder),
             snapshots: None,
+            plan_cache: Arc::new(PlanCache::new()),
         })
     }
 
@@ -612,6 +622,7 @@ impl Database<InMemoryGraph> {
                     store: Arc::new(RwLock::new(graph)),
                     wal: Some(recorder),
                     snapshots: None,
+                    plan_cache: Arc::new(PlanCache::new()),
                 })
             }
         }
@@ -637,22 +648,15 @@ impl Database<InMemoryGraph> {
         query: &str,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryStream<'_>> {
-        // Classify by compiling once against the live store. The
-        // mutating branch then re-compiles inside the hidden
-        // transaction (against a staged graph that's identical to
-        // live at clone time, so the second plan matches the
-        // first); the cost is one extra parse+analyze+compile per
-        // mutating stream, paid in exchange for a tiny
-        // classify-stream surface.
-        let document = parse_query(query)?;
+        // Classify by fetching (or compiling once into) the plan cache. The
+        // mutating branch hands the same `Arc<CompiledQuery>` straight to
+        // the hidden transaction, so we no longer recompile against the
+        // staged graph — and the read-only branch reuses the cached plan
+        // for every subsequent stream.
         let store_guard = self.read_store();
-        let resolved = {
-            let mut analyzer = Analyzer::new(&*store_guard);
-            analyzer.analyze(&document)?
-        };
-        let compiled = Compiler::compile(&resolved);
-        let columns = compiled_result_columns(&compiled);
-        let shape = classify_stream(&compiled);
+        let compiled_arc = self.compile_query_cached(query, &*store_guard)?;
+        let columns = compiled_result_columns(&compiled_arc);
+        let shape = classify_stream(&compiled_arc);
         // Release the analyzer's lock before either branch
         // re-acquires (read-only path keeps it; mutating path
         // delegates to begin_transaction which takes its own).
@@ -666,6 +670,7 @@ impl Database<InMemoryGraph> {
                 // the right order so the caller observes pure
                 // pull semantics with no intermediate
                 // materialization.
+                let compiled = (*compiled_arc).clone();
                 let live = LiveCursor::open(self.store.clone(), compiled, params)?;
                 Ok(QueryStream::live(live, columns))
             }
@@ -682,11 +687,10 @@ impl Database<InMemoryGraph> {
                 // operators that still need full materialization.
                 // Either way the AutoCommit guard's
                 // drop/exhaustion semantics are identical. The
-                // compiled plan is wrapped in an `Arc` so the
-                // cursor's `'static` borrows into it remain valid
-                // for the cursor's lifetime.
+                // compiled plan is already wrapped in an `Arc` so
+                // the cursor's `'static` borrows into it remain
+                // valid for the cursor's lifetime.
                 let mut tx = self.begin_transaction(TransactionMode::ReadWrite)?;
-                let compiled_arc = Arc::new(compiled);
                 let cursor =
                     match tx.open_streaming_compiled_autocommit(compiled_arc.clone(), params) {
                         Ok(c) => c,
@@ -734,6 +738,7 @@ where
             store,
             wal: None,
             snapshots: None,
+            plan_cache: Arc::new(PlanCache::new()),
         }
     }
 
@@ -828,6 +833,20 @@ where
         };
 
         Ok(Compiler::compile(&resolved))
+    }
+
+    /// Return a cached compiled plan for `query`, or compile + cache one
+    /// against the supplied store. The store is only touched on cache
+    /// miss, so a steady-state hot query never reaches the analyzer or
+    /// the compiler.
+    fn compile_query_cached(&self, query: &str, store: &S) -> Result<Arc<CompiledQuery>> {
+        if let Some(plan) = self.plan_cache.get(query) {
+            return Ok(plan);
+        }
+        let document = parse_query(query)?;
+        let plan = Arc::new(self.compile_document_against(&document, store)?);
+        self.plan_cache.insert(query, plan.clone());
+        Ok(plan)
     }
 
     /// Execute a query and return its result.
@@ -927,34 +946,40 @@ where
         params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
-        let document = self.parse(query)?;
-        let shape = {
-            let store = self.read_store_deadline(deadline)?;
-            let compiled = self.compile_document_against(&document, &*store)?;
+        // Compile (or fetch from the plan cache) under the read lock. The
+        // read lock is also what the read-only fast path runs under, so we
+        // can reuse it without a release/reacquire when the plan turns out
+        // to be a pure read.
+        let store = self.read_store_deadline(deadline)?;
+        let compiled = self.compile_query_cached(query, &*store)?;
+        let shape = classify_stream(&compiled);
 
-            if matches!(classify_stream(&compiled), StreamShape::ReadOnly) {
-                if let Some(rec) = &self.wal {
-                    ensure_wal_query_can_start(rec)?;
-                }
-                let executor = lora_executor::Executor::with_deadline(
-                    lora_executor::ExecutionContext {
-                        storage: &*store,
-                        params,
-                    },
-                    deadline,
-                );
-                return executor
-                    .execute_compiled_rows(&compiled)
-                    .map_err(|e| anyhow!(e));
+        if matches!(shape, StreamShape::ReadOnly) {
+            if let Some(rec) = &self.wal {
+                ensure_wal_query_can_start(rec)?;
             }
+            if deadline.is_none() && should_collect_read_via_pull(&compiled) {
+                return collect_compiled(&*store, params, &compiled).map_err(|e| anyhow!(e));
+            }
+            let executor = lora_executor::Executor::with_deadline(
+                lora_executor::ExecutionContext {
+                    storage: &*store,
+                    params,
+                },
+                deadline,
+            );
+            return executor
+                .execute_compiled_rows(&compiled)
+                .map_err(|e| anyhow!(e));
+        }
 
-            classify_stream(&compiled)
-        };
-
+        // Mutating path: drop the read lock, take the write lock, and reuse
+        // the same cached plan rather than recompiling against the store
+        // we're about to mutate.
+        drop(store);
         debug_assert!(shape.is_mutating());
 
         let mut store = self.write_store_deadline(deadline)?;
-        let compiled = self.compile_document_against(&document, &*store)?;
 
         self.with_logged_write_guard(
             &mut store,
@@ -1349,6 +1374,40 @@ where
 
     pub fn graph_detach_delete_node(&self, node_id: NodeId) -> Result<bool> {
         self.with_logged_store_mut(|store| Ok(store.detach_delete_node(node_id)))
+    }
+}
+
+fn should_collect_read_via_pull(compiled: &CompiledQuery) -> bool {
+    compiled.unions.is_empty() && plan_has_early_limit(&compiled.physical)
+}
+
+fn plan_has_early_limit(plan: &PhysicalPlan) -> bool {
+    plan.nodes.iter().any(|op| {
+        let PhysicalOp::Limit(limit) = op else {
+            return false;
+        };
+        limit.limit.is_some() && !subtree_contains_blocking_limit_input(plan, limit.input)
+    })
+}
+
+fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
+    match &plan.nodes[node_id] {
+        PhysicalOp::Sort(_) | PhysicalOp::HashAggregation(_) | PhysicalOp::OptionalMatch(_) => true,
+        PhysicalOp::Argument(_)
+        | PhysicalOp::NodeScan(_)
+        | PhysicalOp::NodeByLabelScan(_)
+        | PhysicalOp::NodeByPropertyScan(_) => false,
+        PhysicalOp::Expand(op) => subtree_contains_blocking_limit_input(plan, op.input),
+        PhysicalOp::Filter(op) => subtree_contains_blocking_limit_input(plan, op.input),
+        PhysicalOp::Projection(op) => subtree_contains_blocking_limit_input(plan, op.input),
+        PhysicalOp::Unwind(op) => subtree_contains_blocking_limit_input(plan, op.input),
+        PhysicalOp::Limit(op) => subtree_contains_blocking_limit_input(plan, op.input),
+        PhysicalOp::PathBuild(op) => subtree_contains_blocking_limit_input(plan, op.input),
+        PhysicalOp::Create(_)
+        | PhysicalOp::Merge(_)
+        | PhysicalOp::Delete(_)
+        | PhysicalOp::Set(_)
+        | PhysicalOp::Remove(_) => true,
     }
 }
 

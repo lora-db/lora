@@ -335,15 +335,34 @@ pub fn lora_value_to_property(value: LoraValue) -> Result<PropertyValue, Propert
 
 #[derive(Debug, Clone, PartialEq)]
 struct RowEntry {
+    /// Stored alongside the value so iterators can hand back `&VarId` while
+    /// the slot's position in `entries` remains the source of truth for
+    /// lookups.
+    var: VarId,
     /// `None` means "use the fallback `_{key}` lazily". This avoids allocating
     /// a String for every anonymous variable on the insert hot path.
     name: Option<String>,
     value: LoraValue,
 }
 
+/// Row layout: a positional vector indexed by `VarId.0`. Two reasons this beats
+/// the previous `BTreeMap<VarId, RowEntry>`:
+///
+/// 1. **Cheaper clone.** Per-row clone is on the hottest path of the executor
+///    (every filter, projection, expand, optional-match). A `BTreeMap` clone
+///    allocates one tree node per entry; a `SmallVec` clone is a single
+///    `memcpy` (or zero allocations when the row fits inline).
+/// 2. **O(1) lookup.** `VarId`s are dense `u32`s minted from 0 by the
+///    analyzer's `SymbolTable` (lora-analyzer/src/symbols.rs:23), so the
+///    positional index is exact and tight.
+///
+/// `entries[i] == None` means "VarId(i) is unset"; the cached `len_set`
+/// counter keeps `len()` O(1) without scanning. The inline capacity (`8`)
+/// covers typical query rows without touching the heap.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Row {
-    values: BTreeMap<VarId, RowEntry>,
+    entries: smallvec::SmallVec<Option<RowEntry>, 8>,
+    len_set: u32,
 }
 
 impl Serialize for Row {
@@ -351,12 +370,12 @@ impl Serialize for Row {
     where
         S: Serializer,
     {
-        let mut ser_map = serializer.serialize_map(Some(self.values.len()))?;
-        for (key, entry) in &self.values {
+        let mut ser_map = serializer.serialize_map(Some(self.len()))?;
+        for entry in self.entries.iter().flatten() {
             match &entry.name {
                 Some(name) => ser_map.serialize_entry(name.as_str(), &entry.value)?,
                 None => {
-                    let fallback = format!("_{key}");
+                    let fallback = format!("_{}", entry.var);
                     ser_map.serialize_entry(fallback.as_str(), &entry.value)?;
                 }
             }
@@ -367,54 +386,76 @@ impl Serialize for Row {
 
 impl Row {
     pub fn new() -> Self {
-        Self {
-            values: BTreeMap::new(),
-        }
+        Self::default()
     }
 
     pub fn get(&self, key: VarId) -> Option<&LoraValue> {
-        self.values.get(&key).map(|entry| &entry.value)
+        self.entries
+            .get(key.0 as usize)
+            .and_then(|slot| slot.as_ref())
+            .map(|entry| &entry.value)
     }
 
     /// Returns the column name for `key`, generating the `_{key}` fallback
     /// on demand for entries inserted without an explicit name.
     pub fn get_name(&self, key: VarId) -> Option<String> {
-        self.values.get(&key).map(|entry| match &entry.name {
-            Some(n) => n.clone(),
-            None => format!("_{key}"),
-        })
+        self.entries
+            .get(key.0 as usize)
+            .and_then(|slot| slot.as_ref())
+            .map(|entry| match &entry.name {
+                Some(n) => n.clone(),
+                None => format!("_{}", entry.var),
+            })
     }
 
     pub fn insert(&mut self, key: VarId, value: LoraValue) {
         // Preserve any previously-set explicit name when overwriting an entry;
         // otherwise leave name as None so the fallback is produced lazily.
-        use std::collections::btree_map::Entry;
-        match self.values.entry(key) {
-            Entry::Occupied(mut e) => e.get_mut().value = value,
-            Entry::Vacant(e) => {
-                e.insert(RowEntry { name: None, value });
+        let idx = self.ensure_slot(key);
+        match &mut self.entries[idx] {
+            Some(existing) => existing.value = value,
+            slot @ None => {
+                *slot = Some(RowEntry {
+                    var: key,
+                    name: None,
+                    value,
+                });
+                self.len_set += 1;
             }
         }
     }
 
     pub fn insert_named(&mut self, key: VarId, name: impl Into<String>, value: LoraValue) {
-        self.values.insert(
-            key,
-            RowEntry {
-                name: Some(name.into()),
-                value,
-            },
-        );
+        let idx = self.ensure_slot(key);
+        let was_set = self.entries[idx].is_some();
+        self.entries[idx] = Some(RowEntry {
+            var: key,
+            name: Some(name.into()),
+            value,
+        });
+        if !was_set {
+            self.len_set += 1;
+        }
     }
 
     pub fn extend_from(&mut self, other: &Row) {
-        for (k, v) in &other.values {
-            self.values.insert(*k, v.clone());
+        // Mirrors the previous `BTreeMap::insert` semantics: every set entry
+        // in `other` overwrites the slot wholesale (name and value), no merge.
+        for entry in other.entries.iter().flatten() {
+            let idx = self.ensure_slot(entry.var);
+            let was_set = self.entries[idx].is_some();
+            self.entries[idx] = Some(entry.clone());
+            if !was_set {
+                self.len_set += 1;
+            }
         }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&VarId, &LoraValue)> {
-        self.values.iter().map(|(k, entry)| (k, &entry.value))
+        self.entries
+            .iter()
+            .flatten()
+            .map(|entry| (&entry.var, &entry.value))
     }
 
     /// Iterate `(key, name, value)`. The name is a `Cow`: borrowed when an
@@ -423,37 +464,46 @@ impl Row {
     pub fn iter_named(
         &self,
     ) -> impl Iterator<Item = (&VarId, std::borrow::Cow<'_, str>, &LoraValue)> {
-        self.values.iter().map(|(k, entry)| {
+        self.entries.iter().flatten().map(|entry| {
             let name: std::borrow::Cow<'_, str> = match &entry.name {
                 Some(n) => std::borrow::Cow::Borrowed(n.as_str()),
-                None => std::borrow::Cow::Owned(format!("_{k}")),
+                None => std::borrow::Cow::Owned(format!("_{}", entry.var)),
             };
-            (k, name, &entry.value)
+            (&entry.var, name, &entry.value)
         })
     }
 
     /// Consume the row and yield owned `(VarId, name, LoraValue)` triples.
     /// Used by hydrate_row to avoid cloning values on the projection hot path.
     pub fn into_iter_named(self) -> impl Iterator<Item = (VarId, String, LoraValue)> {
-        self.values.into_iter().map(|(k, entry)| {
-            (
-                k,
-                entry.name.unwrap_or_else(|| format!("_{k}")),
-                entry.value,
-            )
+        self.entries.into_iter().flatten().map(|entry| {
+            let RowEntry { var, name, value } = entry;
+            (var, name.unwrap_or_else(|| format!("_{var}")), value)
         })
     }
 
     pub fn len(&self) -> usize {
-        self.values.len()
+        self.len_set as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+        self.len_set == 0
     }
 
     pub fn contains_key(&self, key: VarId) -> bool {
-        self.values.contains_key(&key)
+        self.entries
+            .get(key.0 as usize)
+            .is_some_and(|slot| slot.is_some())
+    }
+
+    /// Grow `entries` so that index `key.0` is in-range. Returns that index.
+    /// New slots are filled with `None` (counted as unset by `len_set`).
+    fn ensure_slot(&mut self, key: VarId) -> usize {
+        let idx = key.0 as usize;
+        if idx >= self.entries.len() {
+            self.entries.resize_with(idx + 1, || None);
+        }
+        idx
     }
 }
 

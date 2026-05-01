@@ -49,7 +49,7 @@ use lora_compiler::physical::{
     PhysicalOp, PhysicalPlan, ProjectionExec, SortExec, UnwindExec,
 };
 use lora_compiler::CompiledQuery;
-use lora_store::{GraphStorage, GraphStorageMut, NodeId};
+use lora_store::{GraphStorage, GraphStorageMut, NodeId, RelationshipId};
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
 use crate::eval::{clear_eval_error, eval_expr, eval_expr_result, eval_truthy_result, EvalContext};
@@ -669,6 +669,55 @@ impl<'a, S: GraphStorage> RowSource for ExpandSource<'a, S> {
     }
 }
 
+/// Singly-linked path segment used by [`VariableLengthExpandSource`] to share
+/// path prefixes between BFS frontier entries. Each new path adds one
+/// `Arc<PathSegment>` allocation regardless of depth, and cloning is a
+/// refcount bump — vs. the previous `Vec<RelationshipId>`-per-frontier-entry
+/// which copied the entire prefix on every step (O(branching^depth × depth)
+/// at worst).
+#[derive(Debug)]
+struct PathSegment {
+    rel: RelationshipId,
+    parent: Option<Arc<PathSegment>>,
+}
+
+impl PathSegment {
+    fn contains(self_: &Option<Arc<Self>>, rel_id: RelationshipId) -> bool {
+        let mut cur = self_.as_ref();
+        while let Some(node) = cur {
+            if node.rel == rel_id {
+                return true;
+            }
+            cur = node.parent.as_ref();
+        }
+        false
+    }
+
+    fn len(self_: &Option<Arc<Self>>) -> usize {
+        let mut cur = self_.as_ref();
+        let mut n = 0;
+        while let Some(node) = cur {
+            n += 1;
+            cur = node.parent.as_ref();
+        }
+        n
+    }
+
+    /// Materialize the path into a flat `Vec<RelationshipId>`. Reverses
+    /// in place because segments link tip → root.
+    fn to_vec(self_: &Option<Arc<Self>>) -> Vec<RelationshipId> {
+        let len = Self::len(self_);
+        let mut out = Vec::with_capacity(len);
+        let mut cur = self_.as_ref();
+        while let Some(node) = cur {
+            out.push(node.rel);
+            cur = node.parent.as_ref();
+        }
+        out.reverse();
+        out
+    }
+}
+
 /// Variable-length expansion streams its upstream and walks one input row's BFS
 /// frontier incrementally, yielding each matching path as it is discovered.
 pub struct VariableLengthExpandSource<'a, S: GraphStorage> {
@@ -683,12 +732,15 @@ pub struct VariableLengthExpandSource<'a, S: GraphStorage> {
     max_hops: u64,
     cur_row: Option<Row>,
     pending_zero_hop: bool,
-    frontier: Vec<(NodeId, Vec<u64>)>,
+    /// Each frontier entry is `(node, path-from-source)`. The `Option<Arc>`
+    /// is `None` for the seed (zero-length path); subsequent steps share
+    /// the entire prefix via the Arc chain.
+    frontier: Vec<(NodeId, Option<Arc<PathSegment>>)>,
     frontier_idx: usize,
-    next_frontier: Vec<(NodeId, Vec<u64>)>,
+    next_frontier: Vec<(NodeId, Option<Arc<PathSegment>>)>,
     depth: u64,
     cur_path_node: Option<NodeId>,
-    cur_path_rels: Vec<u64>,
+    cur_path: Option<Arc<PathSegment>>,
     cur_edges: Vec<(u64, NodeId)>,
     cur_edge_idx: usize,
 }
@@ -723,7 +775,7 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
             next_frontier: Vec::new(),
             depth: 1,
             cur_path_node: None,
-            cur_path_rels: Vec::new(),
+            cur_path: None,
             cur_edges: Vec::new(),
             cur_edge_idx: 0,
         }
@@ -733,12 +785,12 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
         self.cur_row = Some(row);
         self.pending_zero_hop = self.min_hops == 0;
         self.frontier.clear();
-        self.frontier.push((src_id, Vec::new()));
+        self.frontier.push((src_id, None));
         self.frontier_idx = 0;
         self.next_frontier.clear();
         self.depth = 1;
         self.cur_path_node = None;
-        self.cur_path_rels.clear();
+        self.cur_path = None;
         self.cur_edges.clear();
         self.cur_edge_idx = 0;
     }
@@ -751,7 +803,7 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
         self.next_frontier.clear();
         self.depth = 1;
         self.cur_path_node = None;
-        self.cur_path_rels.clear();
+        self.cur_path = None;
         self.cur_edges.clear();
         self.cur_edge_idx = 0;
     }
@@ -838,10 +890,10 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                         break;
                     }
 
-                    let (node_id, rels) = &self.frontier[self.frontier_idx];
+                    let (node_id, path) = &self.frontier[self.frontier_idx];
                     self.frontier_idx += 1;
                     self.cur_path_node = Some(*node_id);
-                    self.cur_path_rels.clone_from(rels);
+                    self.cur_path = path.clone();
                     self.cur_edges =
                         self.ctx
                             .storage
@@ -853,25 +905,34 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                     let (rel_id, neighbor_id) = self.cur_edges[self.cur_edge_idx];
                     self.cur_edge_idx += 1;
 
-                    if self.cur_path_rels.contains(&rel_id) {
+                    if PathSegment::contains(&self.cur_path, rel_id) {
                         continue;
                     }
 
-                    let mut rel_ids = Vec::with_capacity(self.cur_path_rels.len() + 1);
-                    rel_ids.extend_from_slice(&self.cur_path_rels);
-                    rel_ids.push(rel_id);
+                    // One Arc allocation per new path. The prefix is shared
+                    // structurally — `cur_path` becomes this new segment's
+                    // parent via a refcount bump, no copy of the prefix.
+                    let new_path = Arc::new(PathSegment {
+                        rel: rel_id,
+                        parent: self.cur_path.clone(),
+                    });
 
                     if self.depth < self.max_hops {
-                        self.next_frontier.push((neighbor_id, rel_ids.clone()));
+                        self.next_frontier
+                            .push((neighbor_id, Some(new_path.clone())));
                     }
 
                     if self.depth >= self.min_hops {
+                        // Materialize the path to a flat Vec only when we
+                        // actually emit a row — most edges visited during
+                        // BFS never reach this branch.
+                        let rel_ids = PathSegment::to_vec(&Some(new_path));
                         return Ok(Some(self.row_for_path(neighbor_id, &rel_ids)));
                     }
                 }
 
                 self.cur_path_node = None;
-                self.cur_path_rels.clear();
+                self.cur_path = None;
                 self.cur_edges.clear();
                 self.cur_edge_idx = 0;
             }
@@ -1210,6 +1271,232 @@ impl<'a> RowSource for DistinctSource<'a> {
     }
 }
 
+// ============================================================================
+// Streaming fold-only aggregation (count / sum / min / max / avg, no DISTINCT)
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamableAggKind {
+    /// `count()` / `count(*)` — count input rows.
+    CountAll,
+    /// `count(expr)` — count rows where the expression is non-null.
+    CountField,
+    /// `sum(expr)` over numeric values, NULLs ignored.
+    Sum,
+    /// `min(expr)` ignoring NULLs.
+    Min,
+    /// `max(expr)` ignoring NULLs.
+    Max,
+    /// `avg(expr)` ignoring NULLs.
+    Avg,
+}
+
+pub(crate) struct StreamableAggSpec {
+    pub(crate) kind: StreamableAggKind,
+    /// `None` for `count(*)`; the expression to evaluate per row otherwise.
+    pub(crate) arg: Option<ResolvedExpr>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum AggState {
+    Count(i64),
+    /// Running sum tracking integer-only-so-far so we can emit `Int` when
+    /// every contributing value was integer (matching the existing
+    /// `compute_aggregate_expr` semantics).
+    Sum {
+        sum: f64,
+        all_int: bool,
+        any: bool,
+    },
+    Min(Option<LoraValue>),
+    Max(Option<LoraValue>),
+    Avg {
+        sum: f64,
+        count: usize,
+    },
+}
+
+impl AggState {
+    pub(crate) fn seed(kind: StreamableAggKind) -> Self {
+        match kind {
+            StreamableAggKind::CountAll | StreamableAggKind::CountField => AggState::Count(0),
+            StreamableAggKind::Sum => AggState::Sum {
+                sum: 0.0,
+                all_int: true,
+                any: false,
+            },
+            StreamableAggKind::Min => AggState::Min(None),
+            StreamableAggKind::Max => AggState::Max(None),
+            StreamableAggKind::Avg => AggState::Avg { sum: 0.0, count: 0 },
+        }
+    }
+
+    pub(crate) fn fold(&mut self, kind: StreamableAggKind, value: LoraValue) {
+        match self {
+            AggState::Count(n) => match kind {
+                StreamableAggKind::CountAll => *n += 1,
+                StreamableAggKind::CountField => {
+                    if !matches!(value, LoraValue::Null) {
+                        *n += 1;
+                    }
+                }
+                _ => {}
+            },
+            AggState::Sum { sum, all_int, any } => match value {
+                LoraValue::Null => {}
+                LoraValue::Int(i) => {
+                    *sum += i as f64;
+                    *any = true;
+                }
+                LoraValue::Float(f) => {
+                    *sum += f;
+                    *all_int = false;
+                    *any = true;
+                }
+                _ => {}
+            },
+            AggState::Min(slot) => {
+                if matches!(value, LoraValue::Null) {
+                    return;
+                }
+                match slot {
+                    None => *slot = Some(value),
+                    Some(cur) => {
+                        if cmp_values_total(&value, cur) == std::cmp::Ordering::Less {
+                            *cur = value;
+                        }
+                    }
+                }
+            }
+            AggState::Max(slot) => {
+                if matches!(value, LoraValue::Null) {
+                    return;
+                }
+                match slot {
+                    None => *slot = Some(value),
+                    Some(cur) => {
+                        if cmp_values_total(&value, cur) == std::cmp::Ordering::Greater {
+                            *cur = value;
+                        }
+                    }
+                }
+            }
+            AggState::Avg { sum, count } => {
+                let n = match value {
+                    LoraValue::Int(i) => Some(i as f64),
+                    LoraValue::Float(f) => Some(f),
+                    _ => None,
+                };
+                if let Some(n) = n {
+                    *sum += n;
+                    *count += 1;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn finalize(self, _kind: StreamableAggKind) -> LoraValue {
+        match self {
+            AggState::Count(n) => LoraValue::Int(n),
+            AggState::Sum { sum, all_int, any } => {
+                if !any {
+                    LoraValue::Null
+                } else if all_int && sum.fract() == 0.0 {
+                    LoraValue::Int(sum as i64)
+                } else {
+                    LoraValue::Float(sum)
+                }
+            }
+            AggState::Min(v) | AggState::Max(v) => v.unwrap_or(LoraValue::Null),
+            AggState::Avg { sum, count } => {
+                if count == 0 {
+                    LoraValue::Null
+                } else {
+                    LoraValue::Float(sum / count as f64)
+                }
+            }
+        }
+    }
+}
+
+struct StreamingGroup {
+    /// First input row in this group, retained so we can evaluate the
+    /// `group_by` projections for the output without buffering more rows.
+    first_row: Row,
+    aggs: Vec<AggState>,
+}
+
+impl StreamingGroup {
+    fn new(specs: &[StreamableAggSpec], first_row: Row) -> Self {
+        Self {
+            first_row,
+            aggs: specs.iter().map(|spec| AggState::seed(spec.kind)).collect(),
+        }
+    }
+}
+
+/// If every aggregate in `projections` is a streamable fold (count, sum,
+/// min, max, avg with no DISTINCT), return the per-projection specs.
+/// Otherwise return `None` so the caller falls back to the buffered path.
+pub(crate) fn classify_streamable_aggregates(
+    projections: &[ResolvedProjection],
+) -> Option<Vec<StreamableAggSpec>> {
+    let mut specs = Vec::with_capacity(projections.len());
+    for proj in projections {
+        let spec = streamable_spec(&proj.expr)?;
+        specs.push(spec);
+    }
+    Some(specs)
+}
+
+fn streamable_spec(expr: &ResolvedExpr) -> Option<StreamableAggSpec> {
+    match expr {
+        ResolvedExpr::Function {
+            name,
+            distinct,
+            args,
+        } => {
+            if *distinct {
+                return None;
+            }
+            let name = name.to_ascii_lowercase();
+            let kind = match name.as_str() {
+                "count" if args.is_empty() => StreamableAggKind::CountAll,
+                "count" if args.len() == 1 => StreamableAggKind::CountField,
+                "sum" if args.len() == 1 => StreamableAggKind::Sum,
+                "min" if args.len() == 1 => StreamableAggKind::Min,
+                "max" if args.len() == 1 => StreamableAggKind::Max,
+                "avg" if args.len() == 1 => StreamableAggKind::Avg,
+                _ => return None,
+            };
+            let arg = if args.is_empty() {
+                None
+            } else {
+                Some(args[0].clone())
+            };
+            Some(StreamableAggSpec { kind, arg })
+        }
+        _ => None,
+    }
+}
+
+fn cmp_values_total(a: &LoraValue, b: &LoraValue) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (LoraValue::Int(x), LoraValue::Int(y)) => x.cmp(y),
+        (LoraValue::Float(x), LoraValue::Float(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
+        (LoraValue::Int(x), LoraValue::Float(y)) => {
+            (*x as f64).partial_cmp(y).unwrap_or(Ordering::Equal)
+        }
+        (LoraValue::Float(x), LoraValue::Int(y)) => {
+            x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal)
+        }
+        (LoraValue::String(x), LoraValue::String(y)) => x.cmp(y),
+        (LoraValue::Bool(x), LoraValue::Bool(y)) => x.cmp(y),
+        _ => Ordering::Equal,
+    }
+}
+
 /// Lazy-buffered aggregation source. Aggregation must observe every
 /// input row before it can emit the first group, so this source drains
 /// upstream on first pull, builds grouped rows, then yields them one
@@ -1251,6 +1538,16 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
         group_by: &[ResolvedProjection],
         aggregates: &[ResolvedProjection],
     ) -> ExecResult<Vec<Row>> {
+        // Fast path: when every aggregate is a fold-only function (count,
+        // sum, min, max, avg, all without DISTINCT), compute the aggregate
+        // running state per group as we iterate the upstream — never
+        // buffering the input rows. This turns aggregation memory from
+        // O(input_rows) into O(groups), which on large scans is the
+        // difference between MB allocations and KB.
+        if let Some(specs) = classify_streamable_aggregates(aggregates) {
+            return Self::materialize_streaming(upstream, ctx, group_by, aggregates, &specs);
+        }
+
         let input_rows = drain(upstream.as_mut())?;
         let eval_ctx = ctx.eval_ctx();
         let mut groups: BTreeMap<Vec<GroupValueKey>, Vec<Row>> = BTreeMap::new();
@@ -1287,6 +1584,88 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             out.push(result);
         }
 
+        Ok(out)
+    }
+
+    /// Streaming fold path: build per-group running aggregate state as we
+    /// pull each upstream row, then emit one output row per group at the
+    /// end. Memory is O(groups), not O(input_rows).
+    fn materialize_streaming(
+        upstream: &mut Box<dyn RowSource + 'a>,
+        ctx: &StreamCtx<'a, S>,
+        group_by: &[ResolvedProjection],
+        aggregates: &[ResolvedProjection],
+        specs: &[StreamableAggSpec],
+    ) -> ExecResult<Vec<Row>> {
+        let eval_ctx = ctx.eval_ctx();
+
+        // No-group-by fast path: skip the `BTreeMap` entirely and fold into
+        // a single accumulator. The BTreeMap entry/insert overhead per row
+        // dominates pure `RETURN count(*)` workloads at scale, and there is
+        // no point indexing groups when there's only ever one.
+        if group_by.is_empty() {
+            let mut aggs: Vec<AggState> = specs.iter().map(|s| AggState::seed(s.kind)).collect();
+            while let Some(row) = upstream.next_row()? {
+                for (i, spec) in specs.iter().enumerate() {
+                    let value = match &spec.arg {
+                        Some(arg) => eval_expr_result(arg, &row, &eval_ctx)
+                            .map_err(ExecutorError::RuntimeError)?,
+                        None => LoraValue::Null,
+                    };
+                    aggs[i].fold(spec.kind, value);
+                }
+            }
+            let mut result = Row::new();
+            for (i, proj) in aggregates.iter().enumerate() {
+                let value = std::mem::replace(&mut aggs[i], AggState::seed(specs[i].kind))
+                    .finalize(specs[i].kind);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            return Ok(vec![result]);
+        }
+
+        let mut groups: BTreeMap<Vec<GroupValueKey>, StreamingGroup> = BTreeMap::new();
+
+        while let Some(row) = upstream.next_row()? {
+            let mut key = Vec::with_capacity(group_by.len());
+            for proj in group_by {
+                let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                key.push(GroupValueKey::from_value(&value));
+            }
+
+            // First time we see this key, capture the row as the
+            // representative for group_by output evaluation. Subsequent
+            // rows in the same group only feed the aggregates.
+            let entry = groups
+                .entry(key)
+                .or_insert_with(|| StreamingGroup::new(specs, row.clone()));
+
+            for (i, spec) in specs.iter().enumerate() {
+                let value = match &spec.arg {
+                    Some(arg) => eval_expr_result(arg, &row, &eval_ctx)
+                        .map_err(ExecutorError::RuntimeError)?,
+                    None => LoraValue::Null,
+                };
+                entry.aggs[i].fold(spec.kind, value);
+            }
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for group in groups.into_values() {
+            let mut result = Row::new();
+            for proj in group_by {
+                let value = eval_expr_result(&proj.expr, &group.first_row, &eval_ctx)
+                    .map_err(ExecutorError::RuntimeError)?;
+                let value = hydrate_value(value, ctx.storage);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            for (i, proj) in aggregates.iter().enumerate() {
+                let value = group.aggs[i].clone().finalize(specs[i].kind);
+                result.insert_named(proj.output, proj.name.clone(), value);
+            }
+            out.push(result);
+        }
         Ok(out)
     }
 }

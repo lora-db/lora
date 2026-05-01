@@ -17,6 +17,7 @@
 mod archive;
 mod database;
 mod named;
+mod plan_cache;
 mod snapshot_store;
 mod stream;
 mod transaction;
