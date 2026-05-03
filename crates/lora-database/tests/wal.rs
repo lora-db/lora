@@ -606,31 +606,50 @@ fn aborted_query_does_not_persist_partial_mutation() {
 }
 
 #[test]
-fn failed_mutating_query_poisons_live_wal_handle_until_restart() {
-    let dir = TmpDir::new("abort-poisons-live");
+fn failed_mutating_query_leaves_live_handle_usable_under_occ() {
+    // Under Phase 4.2 OCC, mutating queries run against a *staged clone*
+    // of the live store. A query that fails mid-mutation simply drops
+    // the clone — the live store is untouched and the WAL never sees a
+    // partial transaction. The pessimistic poison-on-mutate-failure
+    // mode is reserved for non-InMemoryGraph backends that fall back to
+    // the `with_logged_write_guard` path.
+    let dir = TmpDir::new("abort-keeps-live-usable");
 
     {
         let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+
+        // CREATE (a)-[:R]->(b) WITH a DELETE a — relationship created,
+        // then DELETE a fails because a still has relationships. The
+        // failure surfaces as a query error, but the staged clone is
+        // discarded so the live store is not affected.
         let err = db
             .execute("CREATE (a)-[:R]->(b) WITH a DELETE a", rows())
             .unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("WAL poisoned"),
-            "expected the failed mutating query to poison the live handle, got {err}"
+            msg.contains("relationship") || msg.contains("DETACH"),
+            "expected the constraint failure to surface, got {err}"
         );
 
-        let next = db.execute("RETURN 1 AS ok", rows()).unwrap_err();
-        assert!(
-            next.to_string().contains("WAL arm failed"),
-            "expected future queries on the live handle to fail, got {next}"
-        );
+        // Live store is untouched: counts stay at zero, follow-up
+        // queries continue to work without WAL poisoning.
+        assert_eq!(db.node_count(), 0);
+        assert_eq!(db.relationship_count(), 0);
+
+        let ok = db.execute("RETURN 1 AS ok", rows()).unwrap();
+        let json = serde_json::to_value(&ok).unwrap();
+        assert_eq!(json["rows"][0]["ok"], 1);
+
+        // A subsequent successful write commits normally.
+        db.execute("CREATE (:T)", rows()).unwrap();
+        assert_eq!(db.node_count(), 1);
     }
 
     let recovered = Database::open_with_wal(enabled(dir.path())).unwrap();
     assert_eq!(
         recovered.node_count(),
-        0,
-        "recovery should discard the aborted create/delete transaction"
+        1,
+        "recovery should observe only the committed CREATE, not the aborted transaction"
     );
 }
 

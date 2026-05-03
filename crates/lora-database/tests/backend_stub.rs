@@ -21,7 +21,7 @@ use lora_store::{
     RelationshipRecord,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct OwnedMapStore {
     next_node_id: NodeId,
     next_rel_id: RelationshipId,

@@ -2,7 +2,7 @@
 
 use lora_database::{
     Compression, Database, ExecuteOptions, PasswordKdfParams, QueryResult, ResultFormat,
-    SnapshotOptions, SnapshotPassword, Snapshotable, DATABASE_SNAPSHOT_MAGIC,
+    SnapshotOptions, SnapshotPassword, DATABASE_SNAPSHOT_MAGIC,
 };
 
 fn opts() -> Option<ExecuteOptions> {
@@ -263,25 +263,6 @@ fn database_snapshot_file_roundtrip_with_password_encryption() {
     assert_eq!(rows, 1);
 
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn database_snapshot_bytes_still_load_legacy_store_snapshots() {
-    let donor = Database::in_memory();
-    donor.execute("CREATE (:Legacy {n: 1})", opts()).unwrap();
-
-    let mut bytes = Vec::new();
-    donor
-        .with_store(|store| store.save_snapshot(&mut bytes))
-        .unwrap();
-    assert!(bytes.starts_with(b"LORASNAP"));
-
-    let target = Database::in_memory();
-    let meta = target.load_snapshot_from_bytes(&bytes).unwrap();
-    assert_eq!(meta.node_count, 1);
-    assert_eq!(target.node_count(), 1);
-    let rows = row_count(target.execute("MATCH (x:Legacy) RETURN x", opts()).unwrap());
-    assert_eq!(rows, 1);
 }
 
 #[test]

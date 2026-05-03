@@ -845,10 +845,7 @@ fn vector_parameter_stored_as_node_property() {
         "embedding".into(),
         LoraValue::Vector(
             LoraVector::try_new(
-                vec![
-                    lora_store::RawCoordinate::Float(0.5),
-                    lora_store::RawCoordinate::Float(0.25),
-                ],
+                vec![RawCoordinate::Float(0.5), RawCoordinate::Float(0.25)],
                 2,
                 VectorCoordinateType::Float32,
             )
@@ -868,10 +865,7 @@ fn map_parameter_with_vector_value_is_stored() {
     let db = TestDb::new();
     let vec_val = LoraValue::Vector(
         LoraVector::try_new(
-            vec![
-                lora_store::RawCoordinate::Int(1),
-                lora_store::RawCoordinate::Int(2),
-            ],
+            vec![RawCoordinate::Int(1), RawCoordinate::Int(2)],
             2,
             VectorCoordinateType::Integer8,
         )
@@ -891,7 +885,7 @@ fn list_parameter_containing_vector_is_rejected_on_write() {
     let db = TestDb::new();
     let vec_val = LoraValue::Vector(
         LoraVector::try_new(
-            vec![lora_store::RawCoordinate::Int(1)],
+            vec![RawCoordinate::Int(1)],
             1,
             VectorCoordinateType::Integer8,
         )

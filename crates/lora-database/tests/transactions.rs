@@ -772,7 +772,7 @@ mod pull_shape {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    fn compile(store: &lora_store::InMemoryGraph, query: &str) -> lora_compiler::CompiledQuery {
+    fn compile(store: &InMemoryGraph, query: &str) -> lora_compiler::CompiledQuery {
         let document = parse_query(query).unwrap();
         let resolved = {
             let mut analyzer = lora_analyzer::Analyzer::new(store);
@@ -804,7 +804,7 @@ mod pull_shape {
             )
             .unwrap();
         }
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v");
         let mut cursor = open(&store, &compiled);
 
@@ -829,7 +829,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 3 RETURN n.v AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 1);
@@ -845,7 +845,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 2 RETURN n.v AS v");
 
         let indexed = compiled.physical.nodes.iter().any(|op| {
@@ -869,7 +869,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 1.0 RETURN n.v AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 2);
@@ -878,7 +878,7 @@ mod pull_shape {
     #[test]
     fn unwind_yields_each_element_lazily() {
         let db = Database::in_memory();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "UNWIND [10, 20, 30] AS x RETURN x");
         let mut cursor = open(&store, &compiled);
 
@@ -902,7 +902,7 @@ mod pull_shape {
             )
             .unwrap();
         }
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v LIMIT 5");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 5);
@@ -918,7 +918,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v + 10 AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 3);
@@ -936,7 +936,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(
             &store,
             "MATCH (p:Person)-[:KNOWS]->(other) RETURN other.name AS name ORDER BY name",
@@ -957,7 +957,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v ORDER BY n.v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         // Sort yields rows in ascending order.
@@ -979,7 +979,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let compiled = compile(&store, "MATCH (n:N) RETURN sum(n.v) AS total");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 1);
@@ -989,7 +989,7 @@ mod pull_shape {
     fn classify_stream_recognises_writes() {
         use lora_executor::{classify_stream, StreamShape};
         let db = Database::in_memory();
-        let store = db.store().read().unwrap();
+        let store = db.store().load_full();
         let read = compile(&store, "MATCH (n) RETURN n");
         let write = compile(&store, "CREATE (:Foo) RETURN 1 AS one");
         assert_eq!(classify_stream(&read), StreamShape::ReadOnly);
@@ -1052,7 +1052,7 @@ mod concurrency {
         db.execute("CREATE (:T {i:1}), (:T {i:2})", rows_options())
             .unwrap();
 
-        let read_guard = db.store().read().unwrap();
+        let read_guard = db.store().load_full();
         let (tx, rx) = mpsc::channel();
         let worker = {
             let db = db.clone();
@@ -1079,7 +1079,7 @@ mod concurrency {
         db.execute("CREATE (:T {i:1}), (:T {i:2})", rows_options())
             .unwrap();
 
-        let read_guard = db.store().read().unwrap();
+        let read_guard = db.store().load_full();
         let (tx, rx) = mpsc::channel();
         let worker = {
             let db = db.clone();
@@ -1182,11 +1182,13 @@ mod concurrency {
         );
     }
 
-    /// A `Live` read stream holds a store read lock through the cursor's
-    /// lifetime. A concurrent `begin_transaction(ReadWrite)` must block
-    /// until the stream is dropped.
+    /// A `Live` read stream pins an `Arc<S>` snapshot at open time.
+    /// A concurrent `begin_transaction(ReadWrite)` proceeds without
+    /// blocking; the writer's commit publishes a new Arc, but the
+    /// reader keeps seeing its original snapshot for the duration of
+    /// the cursor.
     #[test]
-    fn live_read_stream_blocks_concurrent_writer() {
+    fn live_read_stream_sees_snapshot_under_concurrent_writer() {
         let db = Arc::new(Database::in_memory());
         db.execute("UNWIND range(1,10) AS i CREATE (:T {i: i})", rows_options())
             .unwrap();
@@ -1196,46 +1198,39 @@ mod concurrency {
         let mut stream = db.stream("MATCH (t:T) RETURN t.i AS i").unwrap();
         assert!(stream.next_row().unwrap().is_some());
 
-        let started = Arc::new(AtomicUsize::new(0));
-        let entered = Arc::new(AtomicUsize::new(0));
-
+        // Writer commits while our stream is mid-iteration. Lock-free
+        // reads mean the writer never blocks on us.
         let writer = {
             let db = db.clone();
-            let started = started.clone();
-            let entered = entered.clone();
             thread::spawn(move || {
-                started.store(1, Ordering::SeqCst);
                 let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
-                entered.store(1, Ordering::SeqCst);
                 tx.execute("CREATE (:T {i:99})", rows_options()).unwrap();
                 tx.commit().unwrap();
             })
         };
-
-        // Wait for the writer to actually attempt begin_transaction, then
-        // give the scheduler enough time that, if it weren't blocked by
-        // our held stream, it would have already entered the tx.
-        while started.load(Ordering::SeqCst) == 0 {
-            thread::yield_now();
-        }
-        thread::sleep(Duration::from_millis(20));
-        assert_eq!(
-            entered.load(Ordering::SeqCst),
-            0,
-            "writer entered tx while a Live read stream still held the store read lock"
-        );
-
-        // Dropping the stream releases the read lock; the writer must finish.
-        drop(stream);
         writer.join().unwrap();
 
+        // The stream's snapshot was taken at open time, so the writer's
+        // create is invisible to it. Drain the rest and count.
+        let mut count = 1; // already pulled one row above
+        while stream.next_row().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(
+            count, 10,
+            "live stream's snapshot must not include concurrent writes"
+        );
+        drop(stream);
+
+        // Once the reader is gone, queries observe the new node too.
         assert_eq!(db.node_count(), 11);
     }
 
-    /// The same live-read lock must also block the auto-commit write
-    /// path, not just explicit `begin_transaction(ReadWrite)`.
+    /// Same snapshot-isolation invariant for the auto-commit write
+    /// path: it doesn't block on a held reader, and the reader doesn't
+    /// see the auto-commit's effect.
     #[test]
-    fn live_read_stream_blocks_auto_commit_write() {
+    fn live_read_stream_sees_snapshot_under_auto_commit_write() {
         let db = Arc::new(Database::in_memory());
         db.execute("UNWIND range(1,10) AS i CREATE (:T {i: i})", rows_options())
             .unwrap();
@@ -1243,32 +1238,23 @@ mod concurrency {
         let mut stream = db.stream("MATCH (t:T) RETURN t.i AS i").unwrap();
         assert!(stream.next_row().unwrap().is_some());
 
-        let started = Arc::new(AtomicUsize::new(0));
-        let finished = Arc::new(AtomicUsize::new(0));
-
         let writer = {
             let db = db.clone();
-            let started = started.clone();
-            let finished = finished.clone();
             thread::spawn(move || {
-                started.store(1, Ordering::SeqCst);
                 db.execute("CREATE (:T {i:99})", rows_options()).unwrap();
-                finished.store(1, Ordering::SeqCst);
             })
         };
-
-        while started.load(Ordering::SeqCst) == 0 {
-            thread::yield_now();
-        }
-        thread::sleep(Duration::from_millis(20));
-        assert_eq!(
-            finished.load(Ordering::SeqCst),
-            0,
-            "auto-commit write completed while a Live read stream still held the store read lock"
-        );
-
-        drop(stream);
         writer.join().unwrap();
+
+        let mut count = 1;
+        while stream.next_row().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(
+            count, 10,
+            "live stream's snapshot must not include the auto-commit's write"
+        );
+        drop(stream);
 
         assert_eq!(db.node_count(), 11);
     }
