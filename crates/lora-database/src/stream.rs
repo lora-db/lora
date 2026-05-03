@@ -69,7 +69,7 @@ enum StreamInner<'a> {
     /// taken and dropped before the guard's commit/rollback so any
     /// borrows back into the staged graph are released first.
     AutoCommit {
-        cursor: Option<Box<dyn lora_executor::RowSource + 'static>>,
+        cursor: Option<Box<dyn RowSource + 'static>>,
         state: StreamState,
         guard: AutoCommitGuard<'a>,
     },
@@ -218,7 +218,7 @@ impl<'a> QueryStream<'a> {
     }
 
     pub(crate) fn auto_commit(
-        cursor: Box<dyn lora_executor::RowSource + 'static>,
+        cursor: Box<dyn RowSource + 'static>,
         columns: Vec<String>,
         guard: AutoCommitGuard<'a>,
     ) -> Self {

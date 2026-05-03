@@ -14,26 +14,26 @@
 //! db.execute("CREATE (:User {name: 'alice'})", None).unwrap();
 //! ```
 
-mod archive;
 mod database;
 mod named;
 mod plan_cache;
-mod snapshot_store;
+mod snapshot;
 mod stream;
 mod transaction;
-mod wal_write_scope;
+mod wal;
 
-pub use database::{
-    snapshot_credentials_from_json, snapshot_options_from_json, Database, GraphDirection,
-    QueryRunner, SnapshotAdmin, SnapshotByteFormat, WalAdmin, WalStatus,
-};
+pub use database::{Database, GraphDirection, QueryRunner};
 pub use named::{
     resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
     DEFAULT_DATABASE_MAX_BYTES,
 };
-pub use snapshot_store::SnapshotConfig;
+pub use snapshot::{
+    snapshot_credentials_from_json, snapshot_options_from_json, SnapshotAdmin, SnapshotByteFormat,
+    SnapshotConfig,
+};
 pub use stream::QueryStream;
 pub use transaction::{Transaction, TransactionMode};
+pub use wal::{WalAdmin, WalStatus};
 
 // Re-export the WAL configuration types so transports / operators can
 // build a `Database::open_with_wal` argument without taking a direct
@@ -56,7 +56,6 @@ pub use lora_snapshot::{
 };
 pub use lora_store::{
     NodeId, NodeRecord, RelationshipId, RelationshipRecord, SnapshotError, SnapshotMeta,
-    Snapshotable,
 };
 
 // Standalone parsing entry point (does not require building a `Database`).

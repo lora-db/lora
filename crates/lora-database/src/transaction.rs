@@ -16,9 +16,9 @@ use lora_parser::parse_query;
 use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::WalRecorder;
 
-use crate::snapshot_store::ManagedSnapshotStore;
+use crate::snapshot::ManagedSnapshotStore;
 use crate::stream::QueryStream;
-use crate::wal_write_scope::ensure_wal_not_poisoned;
+use crate::wal::write_scope::ensure_wal_not_poisoned;
 
 /// Transaction execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
