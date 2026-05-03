@@ -9,10 +9,11 @@ engine paths. This is a canary, not a measurement instrument.
 - **Binary:** `crates/lora-database/benches/perf_smoke_benchmarks.rs`
 - **Baseline:** `crates/lora-database/benches/perf_smoke_baseline.json`
 - **Check script:** `scripts/check-perf-smoke.mjs`
+- **Summary script:** `scripts/summarize-benchmarks.mjs`
 - **Workflow:** `.github/workflows/perf-smoke.yml`
 
-Four benchmarks, chosen to cover the main engine paths a regression is
-likely to touch:
+The smoke suite covers the main engine paths a regression is likely to
+touch:
 
 | Name | What it exercises |
 |---|---|
@@ -20,6 +21,8 @@ likely to touch:
 | `perf_smoke/filter_1k` | `MATCH (n:Node) WHERE n.value > 50 RETURN n.id` — predicate evaluation |
 | `perf_smoke/traversal_chain_500` | `(:Chain)-[:NEXT]->(:Chain)` on a 500-node chain — edge iteration |
 | `perf_smoke/write_batch_100` | `UNWIND range(1,100) CREATE (:B {...})` on a fresh DB — write path |
+| `perf_smoke/stream_*` | Streaming read/write surfaces, including lazy pull and `ORDER BY` into write |
+| `perf_smoke/tx_*` | Explicit transaction round-trip, read, and write paths |
 
 Each bench runs with a tight Criterion budget (300 ms warmup, 1.5 s
 measurement, 30 samples). Total measurement time ≈ 7 s; total workflow
@@ -51,7 +54,12 @@ runtime ≈ 3–8 min including `cargo build --release` from a warm cache.
    `perf_smoke_baseline.json`.
 3. If any bench's `current / baseline` ratio exceeds its threshold
    (default 3.0, overridable per bench), the job fails.
-4. The raw bencher log is uploaded as an artifact for 14 days.
+4. `scripts/summarize-benchmarks.mjs` writes
+   `benchmark-summary.json`, a machine-readable current-state summary
+   with per-benchmark ns/iter, error, group rollups, baseline ratios,
+   new benches, missing baseline entries, and regressions.
+5. The raw bencher log and JSON summary are uploaded as artifacts for
+   14 days.
 
 ## Running it locally
 

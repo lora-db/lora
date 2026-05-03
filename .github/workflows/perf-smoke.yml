@@ -13,6 +13,8 @@ name: perf-smoke
 #   - PR + push to `main`, path-filtered to code that can plausibly move
 #     engine performance.
 #   - Manual dispatch for ad-hoc runs.
+#   - Every successful benchmark run uploads a JSON summary of the current
+#     performance canary state next to the raw bencher log.
 #
 # Kept separate from `workspace-quality` because:
 #   - bench builds use a different profile (release) and cache partition
@@ -29,6 +31,7 @@ on:
       - "crates/lora-database/benches/perf_smoke_benchmarks.rs"
       - "crates/lora-database/benches/perf_smoke_baseline.json"
       - "scripts/check-perf-smoke.mjs"
+      - "scripts/summarize-benchmarks.mjs"
       - ".github/actions/setup-rust/**"
       - ".github/workflows/perf-smoke.yml"
   pull_request:
@@ -40,6 +43,7 @@ on:
       - "crates/lora-database/benches/perf_smoke_benchmarks.rs"
       - "crates/lora-database/benches/perf_smoke_baseline.json"
       - "scripts/check-perf-smoke.mjs"
+      - "scripts/summarize-benchmarks.mjs"
       - ".github/actions/setup-rust/**"
       - ".github/workflows/perf-smoke.yml"
   workflow_dispatch:
@@ -72,16 +76,27 @@ jobs:
               -- --output-format bencher \
             | tee perf-smoke-out/bencher.log
 
+      - name: Generate benchmark JSON summary
+        shell: bash
+        run: |
+          node scripts/summarize-benchmarks.mjs \
+            --input perf-smoke-out/bencher.log \
+            --output perf-smoke-out/benchmark-summary.json \
+            --baseline crates/lora-database/benches/perf_smoke_baseline.json \
+            --suite perf-smoke
+
       - name: Check against baseline
         shell: bash
         run: |
           node scripts/check-perf-smoke.mjs --input perf-smoke-out/bencher.log
 
-      - name: Upload bencher log
+      - name: Upload benchmark artifacts
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: perf-smoke-bencher-log
-          path: perf-smoke-out/bencher.log
+          name: perf-smoke-benchmark-summary
+          path: |
+            perf-smoke-out/bencher.log
+            perf-smoke-out/benchmark-summary.json
           if-no-files-found: warn
           retention-days: 14

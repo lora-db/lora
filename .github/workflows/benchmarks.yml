@@ -5,6 +5,8 @@ name: benchmarks
 # Purpose:
 #   - Keep benchmarks out of the critical release path.
 #   - Allow benchmarks to be run on demand for an existing release tag.
+#   - Publish a JSON summary artifact for release notes, dashboards, and
+#     database-state reviews.
 #
 # Trigger:
 #   - Manual dispatch only.
@@ -79,6 +81,14 @@ jobs:
           cargo bench --locked -p lora-database --benches -- --output-format bencher \
             | tee bench-out/benchmarks.log
 
+      - name: Generate benchmark JSON summary
+        shell: bash
+        run: |
+          node scripts/summarize-benchmarks.mjs \
+            --input bench-out/benchmarks.log \
+            --output bench-out/benchmark-summary.json \
+            --suite release-benchmarks
+
       - name: Collect criterion reports
         shell: bash
         env:
@@ -100,6 +110,8 @@ jobs:
 
           Contents:
             benchmarks.log   Raw cargo-bench output (bencher format)
+            benchmark-summary.json
+                             Machine-readable current-state summary
             criterion/       criterion HTML reports + raw estimates.json
             README.txt       This file
           EOF
@@ -111,6 +123,8 @@ jobs:
         run: |
           tar -czf "$ARCHIVE" -C bench-out .
           sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          cp bench-out/benchmark-summary.json "${ARCHIVE%.tar.gz}.summary.json"
+          sha256sum "${ARCHIVE%.tar.gz}.summary.json" > "${ARCHIVE%.tar.gz}.summary.json.sha256"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v5
@@ -119,6 +133,8 @@ jobs:
           path: |
             ${{ steps.names.outputs.archive }}
             ${{ steps.names.outputs.archive }}.sha256
+            lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.summary.json
+            lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.summary.json.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -143,3 +159,5 @@ jobs:
           files: |
             dist/lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.tar.gz
             dist/lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.tar.gz.sha256
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.summary.json
+            dist/lora-server-${{ needs.verify-versions.outputs.tag }}-benchmarks.summary.json.sha256

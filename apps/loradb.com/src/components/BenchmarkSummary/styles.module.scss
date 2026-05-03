@@ -1,0 +1,138 @@
+.report {
+  margin: 1.5rem 0 2rem;
+}
+
+.meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+
+  > div {
+    min-width: 0;
+    border: 1px solid var(--ifm-table-border-color);
+    border-radius: 8px;
+    padding: 0.85rem 0.95rem;
+    background: var(--ifm-background-surface-color);
+  }
+
+  strong,
+  code {
+    display: block;
+    margin-top: 0.15rem;
+    overflow-wrap: anywhere;
+  }
+}
+
+.metaLabel,
+.metricLabel {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ifm-color-emphasis-700);
+  text-transform: uppercase;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+
+  > div {
+    border: 1px solid var(--ifm-table-border-color);
+    border-radius: 8px;
+    padding: 0.85rem 0.95rem;
+    background: var(--ifm-background-surface-color);
+  }
+}
+
+.metricValue {
+  display: block;
+  color: var(--ifm-heading-color);
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.table {
+  width: 100%;
+
+  th,
+  td {
+    white-space: nowrap;
+  }
+
+  th:first-child,
+  td:first-child {
+    min-width: 18rem;
+  }
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4.75rem;
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  border: 1px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.statusOk {
+  color: #176f3d;
+  background: rgba(46, 160, 88, 0.12);
+  border-color: rgba(46, 160, 88, 0.34);
+}
+
+.statusRegressed {
+  color: #9a3412;
+  background: rgba(234, 88, 12, 0.12);
+  border-color: rgba(234, 88, 12, 0.34);
+}
+
+.statusNew,
+.statusUnknown {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.34);
+}
+
+.caption {
+  margin-top: 0.75rem;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.9rem;
+}
+
+.notice {
+  margin: 1.5rem 0;
+  border: 1px solid var(--ifm-table-border-color);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  background: var(--ifm-background-surface-color);
+}
+
+html[data-theme='dark'] {
+  .statusOk {
+    color: #86efac;
+  }
+
+  .statusRegressed {
+    color: #fdba74;
+  }
+
+  .statusNew,
+  .statusUnknown {
+    color: #93c5fd;
+  }
+}
+
+@media (max-width: 720px) {
+  .meta,
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+}

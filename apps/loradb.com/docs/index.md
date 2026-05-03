@@ -139,6 +139,7 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**Cookbook**](./cookbook) | Scenario-driven recipes: social graphs, e-commerce, events, geospatial, [backup and restore](./cookbook#backup-and-restore). |
 | [**Snapshots**](./snapshot) | Save / load the full graph as a file or byte payload — every binding, plus the opt-in HTTP admin surface. |
 | [**WAL & checkpoints**](./wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — with full operator controls on Rust and the server. |
+| [**Performance**](./performance) | Benchmark tables, CI `benchmark-summary.json`, and how to read regression signals. |
 | [**Limitations**](./limitations) | What's not supported — binding-level WAL-control asymmetry, no indexes, no `CALL`, etc. |
 | [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 

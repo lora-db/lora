@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-02T09:49:00.000Z",
+  "suite": "perf-smoke",
+  "source": {
+    "input": "perf-smoke-out/bencher.log",
+    "baseline": "crates/lora-database/benches/perf_smoke_baseline.json",
+    "github": {
+      "repository": null,
+      "run_id": null,
+      "run_attempt": null,
+      "workflow": null,
+      "ref": null,
+      "ref_name": null,
+      "sha": null,
+      "event_name": null,
+      "actor": null
+    },
+    "runner": {
+      "os": "darwin",
+      "arch": "arm64",
+      "cpus": 12
+    }
+  },
+  "summary": {
+    "benchmark_count": 11,
+    "group_count": 1,
+    "fastest": "perf_smoke/tx_roundtrip_empty",
+    "fastest_ns_per_iter": 272,
+    "slowest": "perf_smoke/stream_write_sort_100",
+    "slowest_ns_per_iter": 481607,
+    "top_fastest": [
+      "perf_smoke/tx_roundtrip_empty",
+      "perf_smoke/stream_pull_one",
+      "perf_smoke/tx_write_100",
+      "perf_smoke/stream_write_100",
+      "perf_smoke/write_batch_100",
+      "perf_smoke/scan_1k",
+      "perf_smoke/filter_1k",
+      "perf_smoke/traversal_chain_500",
+      "perf_smoke/stream_scan_1k",
+      "perf_smoke/tx_read_1k"
+    ],
+    "top_slowest": [
+      "perf_smoke/stream_write_sort_100",
+      "perf_smoke/tx_read_1k",
+      "perf_smoke/stream_scan_1k",
+      "perf_smoke/traversal_chain_500",
+      "perf_smoke/filter_1k",
+      "perf_smoke/scan_1k",
+      "perf_smoke/write_batch_100",
+      "perf_smoke/stream_write_100",
+      "perf_smoke/tx_write_100",
+      "perf_smoke/stream_pull_one"
+    ]
+  },
+  "baseline": {
+    "default_threshold": 3,
+    "compared_count": 11,
+    "ok_count": 11,
+    "regressed_count": 0,
+    "new_count": 0,
+    "missing_count": 0,
+    "regressions": [],
+    "new_benchmarks": [],
+    "missing_benchmarks": []
+  },
+  "groups": [
+    {
+      "name": "perf_smoke",
+      "benchmark_count": 11,
+      "fastest": "perf_smoke/tx_roundtrip_empty",
+      "fastest_ns_per_iter": 272,
+      "median_ns_per_iter": 298262,
+      "p95_ns_per_iter": 481607,
+      "slowest": "perf_smoke/stream_write_sort_100",
+      "slowest_ns_per_iter": 481607,
+      "average_ns_per_iter": 254589
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "perf_smoke/filter_1k",
+      "group": "perf_smoke",
+      "case": "filter_1k",
+      "ns_per_iter": 302086,
+      "error_ns": 12667,
+      "relative_error_pct": 4.193,
+      "iterations_per_second": 3310.315,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 383337,
+        "ratio": 0.788,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/scan_1k",
+      "group": "perf_smoke",
+      "case": "scan_1k",
+      "ns_per_iter": 298262,
+      "error_ns": 64681,
+      "relative_error_pct": 21.686,
+      "iterations_per_second": 3352.757,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 293999,
+        "ratio": 1.015,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/stream_pull_one",
+      "group": "perf_smoke",
+      "case": "stream_pull_one",
+      "ns_per_iter": 1654,
+      "error_ns": 102,
+      "relative_error_pct": 6.167,
+      "iterations_per_second": 604594.921,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 100948,
+        "ratio": 0.016,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/stream_scan_1k",
+      "group": "perf_smoke",
+      "case": "stream_scan_1k",
+      "ns_per_iter": 338089,
+      "error_ns": 47231,
+      "relative_error_pct": 13.97,
+      "iterations_per_second": 2957.801,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 281758,
+        "ratio": 1.2,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/stream_write_100",
+      "group": "perf_smoke",
+      "case": "stream_write_100",
+      "ns_per_iter": 179787,
+      "error_ns": 37669,
+      "relative_error_pct": 20.952,
+      "iterations_per_second": 5562.136,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 85205,
+        "ratio": 2.11,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/stream_write_sort_100",
+      "group": "perf_smoke",
+      "case": "stream_write_sort_100",
+      "ns_per_iter": 481607,
+      "error_ns": 20940,
+      "relative_error_pct": 4.348,
+      "iterations_per_second": 2076.384,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 252797,
+        "ratio": 1.905,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/traversal_chain_500",
+      "group": "perf_smoke",
+      "case": "traversal_chain_500",
+      "ns_per_iter": 308539,
+      "error_ns": 51761,
+      "relative_error_pct": 16.776,
+      "iterations_per_second": 3241.082,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 262341,
+        "ratio": 1.176,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/tx_read_1k",
+      "group": "perf_smoke",
+      "case": "tx_read_1k",
+      "ns_per_iter": 460315,
+      "error_ns": 50582,
+      "relative_error_pct": 10.989,
+      "iterations_per_second": 2172.425,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 294197,
+        "ratio": 1.565,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/tx_roundtrip_empty",
+      "group": "perf_smoke",
+      "case": "tx_roundtrip_empty",
+      "ns_per_iter": 272,
+      "error_ns": 32,
+      "relative_error_pct": 11.765,
+      "iterations_per_second": 3676470.588,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 182,
+        "ratio": 1.495,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/tx_write_100",
+      "group": "perf_smoke",
+      "case": "tx_write_100",
+      "ns_per_iter": 162462,
+      "error_ns": 1797,
+      "relative_error_pct": 1.106,
+      "iterations_per_second": 6155.284,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 114336,
+        "ratio": 1.421,
+        "threshold": 3
+      }
+    },
+    {
+      "name": "perf_smoke/write_batch_100",
+      "group": "perf_smoke",
+      "case": "write_batch_100",
+      "ns_per_iter": 267408,
+      "error_ns": 17985,
+      "relative_error_pct": 6.726,
+      "iterations_per_second": 3739.6,
+      "baseline": {
+        "status": "ok",
+        "ns_per_iter": 132457,
+        "ratio": 2.019,
+        "threshold": 3
+      }
+    }
+  ]
+}

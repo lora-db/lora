@@ -133,3 +133,7 @@ mdbook/
 
 # Local release marketing drafts
 release-marketing/
+
+# Private head-to-head benches against other graph databases.
+# Standalone crate with its own [workspace]; not part of lora's workspace.
+/comparisons/

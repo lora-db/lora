@@ -100,7 +100,7 @@ module.exports = {
       type: 'category',
       label: 'Guides & Reference',
       collapsed: false,
-      items: ['cookbook', 'snapshot', 'wal', 'limitations', 'troubleshooting'],
+      items: ['cookbook', 'snapshot', 'wal', 'performance', 'limitations', 'troubleshooting'],
     },
   ],
 };
