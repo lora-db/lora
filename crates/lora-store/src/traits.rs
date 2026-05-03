@@ -1,93 +1,18 @@
-use crate::binary::LoraBinary;
-use crate::spatial::LoraPoint;
-use crate::temporal::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraTime,
-};
-use crate::vector::LoraVector;
+//! Storage trait surface: read, borrow, and mutate contracts.
+//!
+//! Backends speak the value types defined in [`crate::types`] and surface
+//! them through the traits here. The split keeps the hot loop of "what
+//! shape does a record have" (types) separate from "what can a backend
+//! do with one" (traits).
+
+use std::collections::BTreeSet;
+
 use lora_ast::Direction;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
 
-pub type NodeId = u64;
-pub type RelationshipId = u64;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum PropertyValue {
-    Null,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(String),
-    Binary(LoraBinary),
-    List(Vec<PropertyValue>),
-    Map(BTreeMap<String, PropertyValue>),
-    Date(LoraDate),
-    Time(LoraTime),
-    LocalTime(LoraLocalTime),
-    DateTime(LoraDateTime),
-    LocalDateTime(LoraLocalDateTime),
-    Duration(LoraDuration),
-    Point(LoraPoint),
-    Vector(LoraVector),
-}
-
-pub type Properties = BTreeMap<String, PropertyValue>;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NodeRecord {
-    pub id: NodeId,
-    pub labels: Vec<String>,
-    pub properties: Properties,
-}
-
-impl NodeRecord {
-    pub fn has_label(&self, label: &str) -> bool {
-        self.labels.iter().any(|l| l == label)
-    }
-
-    pub fn property(&self, key: &str) -> Option<&PropertyValue> {
-        self.properties.get(key)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RelationshipRecord {
-    pub id: RelationshipId,
-    pub src: NodeId,
-    pub dst: NodeId,
-    pub rel_type: String,
-    pub properties: Properties,
-}
-
-impl RelationshipRecord {
-    pub fn property(&self, key: &str) -> Option<&PropertyValue> {
-        self.properties.get(key)
-    }
-
-    pub fn other_node(&self, node_id: NodeId) -> Option<NodeId> {
-        if self.src == node_id {
-            Some(self.dst)
-        } else if self.dst == node_id {
-            Some(self.src)
-        } else {
-            None
-        }
-    }
-
-    pub fn matches_direction_from(&self, node_id: NodeId, direction: Direction) -> bool {
-        match direction {
-            Direction::Right => self.src == node_id,
-            Direction::Left => self.dst == node_id,
-            Direction::Undirected => self.src == node_id || self.dst == node_id,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExpandedRelationship {
-    pub relationship: RelationshipRecord,
-    pub other_node: NodeRecord,
-}
+use crate::types::{
+    ExpandedRelationship, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId,
+    RelationshipRecord,
+};
 
 // ============================================================================
 // GraphStorage — the read-side storage contract

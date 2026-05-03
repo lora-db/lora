@@ -1,6 +1,4 @@
-//! Segmented binary value support.
-
-use std::hash::{Hash, Hasher};
+//! `LoraBinary` definition + constructor / accessor surface.
 
 /// A logical binary/blob value stored as one or more byte segments.
 ///
@@ -9,8 +7,8 @@ use std::hash::{Hash, Hasher};
 /// without building one large temporary buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LoraBinary {
-    segments: Vec<Vec<u8>>,
-    len: usize,
+    pub(super) segments: Vec<Vec<u8>>,
+    pub(super) len: usize,
 }
 
 impl LoraBinary {
@@ -57,55 +55,5 @@ impl LoraBinary {
             out.extend_from_slice(segment);
         }
         out
-    }
-}
-
-impl PartialEq for LoraBinary {
-    fn eq(&self, other: &Self) -> bool {
-        self.len == other.len
-            && self
-                .chunks()
-                .flat_map(|segment| segment.iter())
-                .eq(other.chunks().flat_map(|segment| segment.iter()))
-    }
-}
-
-impl Eq for LoraBinary {}
-
-impl Hash for LoraBinary {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.len.hash(state);
-        for segment in self.chunks() {
-            state.write(segment);
-        }
-    }
-}
-
-impl From<Vec<u8>> for LoraBinary {
-    fn from(value: Vec<u8>) -> Self {
-        Self::from_bytes(value)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    use super::*;
-
-    #[test]
-    fn equality_and_hash_use_logical_bytes_not_chunking() {
-        let contiguous = LoraBinary::from_bytes(vec![1, 2, 3, 4]);
-        let segmented = LoraBinary::from_segments(vec![vec![1, 2], vec![3], vec![4]]);
-
-        assert_eq!(contiguous, segmented);
-        assert_eq!(hash(&contiguous), hash(&segmented));
-    }
-
-    fn hash(value: &LoraBinary) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        value.hash(&mut hasher);
-        hasher.finish()
     }
 }

@@ -1,24 +1,14 @@
 //! Per-record write locks for fine-grained concurrent mutations.
 //!
-//! Phase 4 of the concurrency plan introduces *true* concurrent writes
-//! for non-conflicting transactions. The crux is conflict detection at
-//! record granularity: two writers that touch disjoint records should
-//! commit in parallel without retrying. The pieces:
+//! [`LockTable`] is the sharded per-record `Mutex<()>` registry the
+//! auto-commit / OCC path consults at commit time. Writers translate
+//! their buffered mutation stream into a [`MutationWriteSet`] (defined
+//! in [`crate::mutation`]) and call [`WriteSetLocks::acquire`] to grab
+//! every per-record lock in sorted order before publishing.
 //!
-//! * **`LockTable`** (this module) — sharded per-record `Mutex<()>`
-//!   registry. Writers acquire locks for the records they intend to
-//!   mutate; concurrent writers on the same record serialize, on
-//!   different records proceed independently.
-//! * **`MutationWriteSet`** — typed accumulator for the touched
-//!   record IDs extracted from a buffered [`MutationEvent`] stream.
-//!   The auto-commit OCC path uses it both to acquire locks (sorted
-//!   to prevent deadlock) and to validate per-record Arc identity
-//!   against the snapshot at commit time.
-//!
-//! Neither type is wired into the `InMemoryGraph` write path yet —
-//! that's the next step. Building them as a self-contained module
-//! first lets us test the locking primitives in isolation before the
-//! larger refactor.
+//! Concurrent writers on the same record serialize on the entry's
+//! `Mutex`; concurrent writers on disjoint record sets proceed
+//! independently.
 //!
 //! # Sharding
 //!
@@ -44,7 +34,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::{MutationEvent, NodeId, RelationshipId};
+use crate::{MutationWriteSet, NodeId, RelationshipId};
 
 /// Power-of-two number of shards in the lock table. Chosen large
 /// enough that per-shard contention is well below per-record
@@ -182,80 +172,6 @@ impl WriteSetLocks {
     }
 }
 
-/// Set of record ids touched by a buffered [`MutationEvent`] stream.
-///
-/// Built incrementally as events buffer (or in one pass at commit
-/// time) by [`MutationWriteSet::extend_from_events`]. Used by the OCC
-/// auto-commit path to (a) sort lock-acquire on commit, (b) validate
-/// per-record Arc identity against the snapshot.
-#[derive(Debug, Default, Clone)]
-pub struct MutationWriteSet {
-    /// Nodes whose record was created, modified, or deleted.
-    pub nodes: std::collections::BTreeSet<NodeId>,
-    /// Relationships whose record was created, modified, or deleted.
-    pub rels: std::collections::BTreeSet<RelationshipId>,
-    /// `true` if the stream contained a `MutationEvent::Clear`. A
-    /// clear invalidates any per-record check — the writer must
-    /// fall back to a full-graph commit (or fail under OCC).
-    pub cleared: bool,
-}
-
-impl MutationWriteSet {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Walk a `MutationEvent` stream and accumulate every touched
-    /// record id. Variants that touch two records (e.g.
-    /// `CreateRelationship` mentions both `src` and `dst` plus the
-    /// new relationship) record both nodes — the writer's view of
-    /// those nodes' adjacency changed too.
-    pub fn extend_from_events<'a>(&mut self, events: impl IntoIterator<Item = &'a MutationEvent>) {
-        for event in events {
-            match event {
-                MutationEvent::CreateNode { id, .. } => {
-                    self.nodes.insert(*id);
-                }
-                MutationEvent::CreateRelationship { id, src, dst, .. } => {
-                    self.rels.insert(*id);
-                    self.nodes.insert(*src);
-                    self.nodes.insert(*dst);
-                }
-                MutationEvent::SetNodeProperty { node_id, .. }
-                | MutationEvent::RemoveNodeProperty { node_id, .. }
-                | MutationEvent::AddNodeLabel { node_id, .. }
-                | MutationEvent::RemoveNodeLabel { node_id, .. } => {
-                    self.nodes.insert(*node_id);
-                }
-                MutationEvent::SetRelationshipProperty { rel_id, .. }
-                | MutationEvent::RemoveRelationshipProperty { rel_id, .. } => {
-                    self.rels.insert(*rel_id);
-                }
-                MutationEvent::DeleteRelationship { rel_id } => {
-                    self.rels.insert(*rel_id);
-                }
-                MutationEvent::DeleteNode { node_id } => {
-                    self.nodes.insert(*node_id);
-                }
-                MutationEvent::DetachDeleteNode { node_id } => {
-                    // Detach-delete also touches every incident
-                    // relationship, but those fire as
-                    // `DeleteRelationship` events of their own and
-                    // the surrounding loop will pick them up.
-                    self.nodes.insert(*node_id);
-                }
-                MutationEvent::Clear => {
-                    self.cleared = true;
-                }
-            }
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        !self.cleared && self.nodes.is_empty() && self.rels.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,45 +229,5 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(*counter.lock().unwrap(), 4);
-    }
-
-    #[test]
-    fn write_set_extracts_ids_from_events() {
-        let events = vec![
-            MutationEvent::CreateNode {
-                id: 1,
-                labels: vec!["A".into()],
-                properties: Default::default(),
-            },
-            MutationEvent::CreateRelationship {
-                id: 10,
-                src: 1,
-                dst: 2,
-                rel_type: "R".into(),
-                properties: Default::default(),
-            },
-            MutationEvent::SetNodeProperty {
-                node_id: 3,
-                key: "x".into(),
-                value: crate::PropertyValue::Int(5),
-            },
-            MutationEvent::DeleteRelationship { rel_id: 11 },
-        ];
-
-        let mut ws = MutationWriteSet::new();
-        ws.extend_from_events(events.iter());
-
-        // CreateRelationship pulls in src=1, dst=2 alongside its own rel id.
-        assert_eq!(ws.nodes.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
-        assert_eq!(ws.rels.iter().copied().collect::<Vec<_>>(), vec![10, 11]);
-        assert!(!ws.cleared);
-    }
-
-    #[test]
-    fn write_set_clear_event_is_sticky() {
-        let mut ws = MutationWriteSet::new();
-        ws.extend_from_events([&MutationEvent::Clear]);
-        assert!(ws.cleared);
-        assert!(!ws.is_empty()); // cleared counts as non-empty
     }
 }

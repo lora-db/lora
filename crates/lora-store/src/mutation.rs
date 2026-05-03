@@ -130,3 +130,122 @@ where
         (self.0)(event)
     }
 }
+
+/// Set of record ids touched by a buffered [`MutationEvent`] stream.
+///
+/// Built incrementally as events buffer (or in one pass at commit
+/// time) by [`MutationWriteSet::extend_from_events`]. Used by the OCC
+/// auto-commit path to (a) sort lock-acquire on commit, (b) validate
+/// per-record Arc identity against the snapshot.
+#[derive(Debug, Default, Clone)]
+pub struct MutationWriteSet {
+    /// Nodes whose record was created, modified, or deleted.
+    pub nodes: std::collections::BTreeSet<NodeId>,
+    /// Relationships whose record was created, modified, or deleted.
+    pub rels: std::collections::BTreeSet<RelationshipId>,
+    /// `true` if the stream contained a `MutationEvent::Clear`. A
+    /// clear invalidates any per-record check — the writer must
+    /// fall back to a full-graph commit (or fail under OCC).
+    pub cleared: bool,
+}
+
+impl MutationWriteSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Walk a `MutationEvent` stream and accumulate every touched
+    /// record id. Variants that touch two records (e.g.
+    /// `CreateRelationship` mentions both `src` and `dst` plus the
+    /// new relationship) record both nodes — the writer's view of
+    /// those nodes' adjacency changed too.
+    pub fn extend_from_events<'a>(&mut self, events: impl IntoIterator<Item = &'a MutationEvent>) {
+        for event in events {
+            match event {
+                MutationEvent::CreateNode { id, .. } => {
+                    self.nodes.insert(*id);
+                }
+                MutationEvent::CreateRelationship { id, src, dst, .. } => {
+                    self.rels.insert(*id);
+                    self.nodes.insert(*src);
+                    self.nodes.insert(*dst);
+                }
+                MutationEvent::SetNodeProperty { node_id, .. }
+                | MutationEvent::RemoveNodeProperty { node_id, .. }
+                | MutationEvent::AddNodeLabel { node_id, .. }
+                | MutationEvent::RemoveNodeLabel { node_id, .. } => {
+                    self.nodes.insert(*node_id);
+                }
+                MutationEvent::SetRelationshipProperty { rel_id, .. }
+                | MutationEvent::RemoveRelationshipProperty { rel_id, .. } => {
+                    self.rels.insert(*rel_id);
+                }
+                MutationEvent::DeleteRelationship { rel_id } => {
+                    self.rels.insert(*rel_id);
+                }
+                MutationEvent::DeleteNode { node_id } => {
+                    self.nodes.insert(*node_id);
+                }
+                MutationEvent::DetachDeleteNode { node_id } => {
+                    // Detach-delete also touches every incident
+                    // relationship, but those fire as
+                    // `DeleteRelationship` events of their own and
+                    // the surrounding loop will pick them up.
+                    self.nodes.insert(*node_id);
+                }
+                MutationEvent::Clear => {
+                    self.cleared = true;
+                }
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.cleared && self.nodes.is_empty() && self.rels.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_set_extracts_ids_from_events() {
+        let events = [
+            MutationEvent::CreateNode {
+                id: 1,
+                labels: vec!["A".into()],
+                properties: Default::default(),
+            },
+            MutationEvent::CreateRelationship {
+                id: 10,
+                src: 1,
+                dst: 2,
+                rel_type: "R".into(),
+                properties: Default::default(),
+            },
+            MutationEvent::SetNodeProperty {
+                node_id: 3,
+                key: "x".into(),
+                value: PropertyValue::Int(5),
+            },
+            MutationEvent::DeleteRelationship { rel_id: 11 },
+        ];
+
+        let mut ws = MutationWriteSet::new();
+        ws.extend_from_events(events.iter());
+
+        // CreateRelationship pulls in src=1, dst=2 alongside its own rel id.
+        assert_eq!(ws.nodes.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(ws.rels.iter().copied().collect::<Vec<_>>(), vec![10, 11]);
+        assert!(!ws.cleared);
+    }
+
+    #[test]
+    fn write_set_clear_event_is_sticky() {
+        let mut ws = MutationWriteSet::new();
+        ws.extend_from_events([&MutationEvent::Clear]);
+        assert!(ws.cleared);
+        assert!(!ws.is_empty()); // cleared counts as non-empty
+    }
+}
