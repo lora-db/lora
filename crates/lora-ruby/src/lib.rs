@@ -272,7 +272,7 @@ fn database_load_snapshot(
 fn snapshot_file_args(
     ruby: &Ruby,
     args: &[Value],
-) -> Result<(String, lora_database::SnapshotOptions), MagnusError> {
+) -> Result<(String, SnapshotOptions), MagnusError> {
     match args.len() {
         1 | 2 => {
             let path = RString::try_convert(args[0])?.to_string()?;

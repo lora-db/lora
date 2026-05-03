@@ -474,7 +474,7 @@ mod tests {
         for r in &records {
             r.encode(&mut buf).unwrap();
         }
-        let mut cursor = std::io::Cursor::new(&buf);
+        let mut cursor = io::Cursor::new(&buf);
         let mut out = Vec::new();
         while let Some(r) = WalRecord::decode(&mut cursor).unwrap() {
             out.push(r);

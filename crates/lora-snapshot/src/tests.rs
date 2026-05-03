@@ -140,11 +140,11 @@ fn truncated_header_is_a_decode_error() {
 
 #[test]
 fn column_views_are_panic_free_for_short_buffers() {
-    let u64s = crate::view::U64ColumnView::new(&[1, 2, 3], 1);
+    let u64s = U64ColumnView::new(&[1, 2, 3], 1);
     assert_eq!(u64s.get(0), None);
     assert_eq!(u64s.iter().collect::<Vec<_>>(), Vec::<u64>::new());
 
-    let u32s = crate::view::U32ColumnView::new(&[1, 2, 3], 1);
+    let u32s = U32ColumnView::new(&[1, 2, 3], 1);
     assert_eq!(u32s.get(0), None);
     assert_eq!(u32s.iter().collect::<Vec<_>>(), Vec::<u32>::new());
     assert_eq!(u32s.slice(0, 1).collect::<Vec<_>>(), Vec::<u32>::new());

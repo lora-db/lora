@@ -19,7 +19,7 @@ use tracing::{debug, error, trace};
 
 pub struct ExecutionContext<'a, S: GraphStorage> {
     pub storage: &'a S,
-    pub params: std::collections::BTreeMap<String, LoraValue>,
+    pub params: BTreeMap<String, LoraValue>,
 }
 
 pub struct Executor<'a, S: GraphStorage> {
@@ -996,7 +996,7 @@ fn properties_to_value_map(props: &Properties) -> LoraValue {
 
 pub struct MutableExecutionContext<'a, S: GraphStorageMut> {
     pub storage: &'a mut S,
-    pub params: std::collections::BTreeMap<String, LoraValue>,
+    pub params: BTreeMap<String, LoraValue>,
 }
 
 pub struct MutableExecutor<'a, S: GraphStorageMut> {
@@ -2723,7 +2723,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     fn materialize_node_pattern(
         &mut self,
         row: &mut Row,
-        var: Option<lora_analyzer::symbols::VarId>,
+        var: Option<VarId>,
         labels: &[Vec<String>],
         properties: Option<&ResolvedExpr>,
     ) -> ExecResult<u64> {
@@ -2880,7 +2880,7 @@ fn eval_properties_expr<S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &Row,
     storage: &S,
-    params: &std::collections::BTreeMap<String, LoraValue>,
+    params: &BTreeMap<String, LoraValue>,
 ) -> ExecResult<Properties> {
     let eval_ctx = EvalContext { storage, params };
 
@@ -3449,13 +3449,13 @@ pub(crate) fn node_matches_label_groups(node_labels: &[String], groups: &[Vec<St
 pub(crate) fn scan_node_ids_for_label_groups<S: GraphStorage>(
     storage: &S,
     groups: &[Vec<String>],
-) -> Vec<lora_store::NodeId> {
+) -> Vec<NodeId> {
     if groups.is_empty() {
         storage.all_node_ids()
     } else if groups.len() == 1 && groups[0].len() == 1 {
         storage.node_ids_by_label(&groups[0][0])
     } else if groups.len() == 1 && groups[0].len() > 1 {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         for label in &groups[0] {
             for id in storage.node_ids_by_label(label) {

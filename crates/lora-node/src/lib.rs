@@ -2,7 +2,7 @@
 
 //! Node.js N-API bindings for the Lora graph database.
 //!
-//! Query execution runs on the libuv threadpool via [`napi::Task`] so the
+//! Query execution runs on the libuv threadpool via [`Task`] so the
 //! JS main thread (event loop) stays responsive for the duration of a
 //! query. The JS `execute()` method returns a real Promise backed by an
 //! `AsyncTask`; parameter parsing, query planning, execution and result

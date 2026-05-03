@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(wal.active_segment_id(), 1);
         // No CURRENT pointer file is written — the highest segment id
         // is the source of truth for "active segment".
-        let entries: Vec<_> = std::fs::read_dir(&dir.path)
+        let entries: Vec<_> = fs::read_dir(&dir.path)
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -917,7 +917,7 @@ mod tests {
         );
 
         // Wait up to ~500 ms for the bg flusher to advance the LSN.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
         loop {
             if wal.durable_lsn() > Lsn::ZERO {
                 break;
@@ -928,7 +928,7 @@ mod tests {
                     wal.durable_lsn()
                 );
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(wal.durable_lsn().raw(), wal.next_lsn().raw() - 1);
         // Wal drop should join the bg thread cleanly.

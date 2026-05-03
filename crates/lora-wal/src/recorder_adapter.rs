@@ -1,5 +1,5 @@
-//! Bridge between [`lora_store::MutationRecorder`] (the storage-side
-//! observer hook) and [`crate::Wal`] (the durable log handle).
+//! Bridge between [`MutationRecorder`] (the storage-side
+//! observer hook) and [`Wal`] (the durable log handle).
 //!
 //! Lifecycle, viewed from `lora-database::Database::execute_with_params`:
 //!
@@ -445,7 +445,7 @@ mod tests {
     use crate::testing::TmpDir;
     use crate::Wal;
 
-    fn open_wal(dir: &std::path::Path) -> Arc<Wal> {
+    fn open_wal(dir: &Path) -> Arc<Wal> {
         let (wal, replay) =
             Wal::open(dir, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
         assert!(replay.is_empty());

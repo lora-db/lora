@@ -33,7 +33,7 @@ pub fn eval_expr<S: GraphStorage>(
         }
 
         ResolvedExpr::Map(items) => {
-            let mut map = std::collections::BTreeMap::new();
+            let mut map = BTreeMap::new();
             for (k, v) in items {
                 map.insert(k.clone(), eval_expr(v, row, ctx));
             }
@@ -210,7 +210,7 @@ pub fn eval_expr<S: GraphStorage>(
 
         ResolvedExpr::MapProjection { base, selectors } => {
             let base_val = eval_expr(base, row, ctx);
-            let mut result = std::collections::BTreeMap::new();
+            let mut result = BTreeMap::new();
 
             for sel in selectors {
                 match sel {
@@ -557,7 +557,7 @@ fn node_matches_labels(node_labels: &[String], groups: &[Vec<String>]) -> bool {
 }
 
 fn node_matches_properties<S: GraphStorage>(
-    props: &std::collections::BTreeMap<String, lora_store::PropertyValue>,
+    props: &BTreeMap<String, lora_store::PropertyValue>,
     expected: &Option<ResolvedExpr>,
     row: &Row,
     ctx: &EvalContext<'_, S>,

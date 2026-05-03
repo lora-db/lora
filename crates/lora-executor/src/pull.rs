@@ -2661,7 +2661,7 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> StreamingWriteCursor<'a, S> {
         let input = match write_op_input(plan, write_op_node) {
             Some(i) => i,
             None => {
-                return Err(crate::errors::ExecutorError::RuntimeError(format!(
+                return Err(ExecutorError::RuntimeError(format!(
                     "StreamingWriteCursor::open called with non-write node {write_op_node:?}"
                 )));
             }

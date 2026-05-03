@@ -433,7 +433,7 @@ impl Database {
 fn save_snapshot_to_vec(
     py: Python<'_>,
     db: Arc<InnerDatabase<InMemoryGraph>>,
-    options: lora_database::SnapshotOptions,
+    options: SnapshotOptions,
 ) -> PyResult<(Vec<u8>, lora_database::SnapshotMeta)> {
     let result = py.allow_threads(move || {
         db.save_snapshot_to_bytes_with_options(&options)
@@ -644,9 +644,7 @@ fn py_database_open_options(
     Ok(out)
 }
 
-fn py_snapshot_options(
-    options: Option<&Bound<'_, PyAny>>,
-) -> PyResult<lora_database::SnapshotOptions> {
+fn py_snapshot_options(options: Option<&Bound<'_, PyAny>>) -> PyResult<SnapshotOptions> {
     let json = py_optional_to_json(options)?;
     lora_database::snapshot_options_from_json(json)
         .map_err(|e| InvalidParamsError::new_err(format!("invalid snapshot options: {e}")))

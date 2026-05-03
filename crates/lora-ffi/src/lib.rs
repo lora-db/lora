@@ -15,7 +15,7 @@
 //!   the same `kind` discriminator as the other bindings.
 //!
 //! Every exported function is `extern "C"` and wraps its body in
-//! [`std::panic::catch_unwind`] so a Rust panic cannot unwind across the
+//! [`catch_unwind`] so a Rust panic cannot unwind across the
 //! FFI boundary. Panics surface as [`LoraStatus::Panic`] with a captured
 //! message in the out-error string.
 //!
@@ -945,7 +945,7 @@ impl LoraSnapshotMeta {
     }
 }
 
-type FfiParseResult<T> = std::result::Result<T, (LoraStatus, &'static str, String)>;
+type FfiParseResult<T> = Result<T, (LoraStatus, &'static str, String)>;
 
 unsafe fn parse_optional_json_arg(
     json: *const c_char,
