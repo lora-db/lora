@@ -18,22 +18,23 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use napi::bindgen_prelude::*;
-use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
+use napi::{Error as NapiError, Status};
 use napi_derive::napi;
 
 use lora_database::{
     snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
-    DatabaseName, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult,
-    ResultFormat, SnapshotConfig, SnapshotCredentials, SnapshotOptions, SyncMode, TransactionMode,
-    WalConfig,
+    DatabaseName, DatabaseOpenOptions, InMemoryGraph, SnapshotConfig, SnapshotCredentials,
+    SnapshotOptions, SyncMode, WalConfig,
 };
 
+mod errors;
 mod json;
+mod tasks;
 
-use json::{json_value_to_params, row_to_json, serialize_rows};
+use errors::{closed_error_message, format_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
+use json::{json_value_to_params, row_to_json};
+use tasks::{ClearTask, ExecuteTask, SyncTask, TransactionTask};
 
-pub(crate) const LORA_ERROR_CODE: &str = "LORA_ERROR";
-pub(crate) const INVALID_PARAMS_CODE: &str = "INVALID_PARAMS";
 static PERSISTENT_DATABASES: OnceLock<Mutex<BTreeMap<PathBuf, PersistentDatabaseEntry>>> =
     OnceLock::new();
 
@@ -563,200 +564,4 @@ impl Default for Database {
 pub struct NativeQueryStream {
     _db: Arc<InnerDatabase<InMemoryGraph>>,
     stream: lora_database::QueryStream<'static>,
-}
-
-// ============================================================================
-// Threadpool task
-// ============================================================================
-
-/// Work unit for `Database.execute`. Owns its inputs so it can move onto the
-/// libuv worker pool and run without touching the JS main thread until it
-/// resolves the Promise with the serialised `{columns, rows}` payload.
-pub struct ExecuteTask {
-    db: Arc<InnerDatabase<InMemoryGraph>>,
-    query: String,
-    params: Option<serde_json::Value>,
-}
-
-impl Task for ExecuteTask {
-    type Output = serde_json::Value;
-    type JsValue = JsUnknown;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        // Parse params here (on the worker thread) so param-validation errors
-        // surface as Promise rejections, not synchronous throws. Matches the
-        // lora-wasm semantics.
-        let params_map = match self.params.take() {
-            None | Some(serde_json::Value::Null) => BTreeMap::new(),
-            Some(other) => json_value_to_params(other)?,
-        };
-
-        let options = ExecuteOptions {
-            format: ResultFormat::RowArrays,
-        };
-
-        let result = self
-            .db
-            .execute_with_params(&self.query, Some(options), params_map)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
-
-        let QueryResult::RowArrays(row_arrays) = result else {
-            return Err(NapiError::new(
-                Status::GenericFailure,
-                "expected RowArrays result".to_string(),
-            ));
-        };
-
-        Ok(serialize_rows(&row_arrays.columns, &row_arrays.rows))
-    }
-
-    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        // `serde-json` feature on napi bridges serde_json::Value → JS objects.
-        env.to_js_value(&output)
-    }
-}
-
-pub struct SyncTask {
-    db: Arc<InnerDatabase<InMemoryGraph>>,
-}
-
-impl Task for SyncTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        self.db
-            .sync()
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct ClearTask {
-    db: Arc<InnerDatabase<InMemoryGraph>>,
-}
-
-impl Task for ClearTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        self.db
-            .try_clear()
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct TransactionTask {
-    db: Arc<InnerDatabase<InMemoryGraph>>,
-    statements: serde_json::Value,
-    mode: Option<String>,
-}
-
-impl Task for TransactionTask {
-    type Output = serde_json::Value;
-    type JsValue = JsUnknown;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        let mode = parse_transaction_mode(self.mode.as_deref())?;
-        let statements = parse_transaction_statements(std::mem::take(&mut self.statements))?;
-        let options = ExecuteOptions {
-            format: ResultFormat::RowArrays,
-        };
-        let mut tx = self
-            .db
-            .begin_transaction(mode)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
-
-        let mut results = Vec::with_capacity(statements.len());
-        for statement in statements {
-            let result = tx
-                .execute_with_params(&statement.query, Some(options), statement.params)
-                .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
-            let QueryResult::RowArrays(row_arrays) = result else {
-                return Err(NapiError::new(
-                    Status::GenericFailure,
-                    "expected RowArrays result".to_string(),
-                ));
-            };
-            results.push(serialize_rows(&row_arrays.columns, &row_arrays.rows));
-        }
-
-        tx.commit()
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
-
-        Ok(serde_json::Value::Array(results))
-    }
-
-    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        env.to_js_value(&output)
-    }
-}
-
-struct TransactionStatement {
-    query: String,
-    params: BTreeMap<String, LoraValue>,
-}
-
-fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode> {
-    match mode.unwrap_or("read_write") {
-        "read_write" | "readwrite" | "rw" => Ok(TransactionMode::ReadWrite),
-        "read_only" | "readonly" | "ro" => Ok(TransactionMode::ReadOnly),
-        other => Err(NapiError::new(
-            Status::InvalidArg,
-            format!("{INVALID_PARAMS_CODE}: unknown transaction mode '{other}'"),
-        )),
-    }
-}
-
-fn parse_transaction_statements(value: serde_json::Value) -> Result<Vec<TransactionStatement>> {
-    let serde_json::Value::Array(items) = value else {
-        return Err(NapiError::new(
-            Status::InvalidArg,
-            format!("{INVALID_PARAMS_CODE}: transaction statements must be an array"),
-        ));
-    };
-
-    items
-        .into_iter()
-        .map(|item| {
-            let serde_json::Value::Object(mut obj) = item else {
-                return Err(NapiError::new(
-                    Status::InvalidArg,
-                    format!("{INVALID_PARAMS_CODE}: transaction statement must be an object"),
-                ));
-            };
-            let query = match obj.remove("query") {
-                Some(serde_json::Value::String(query)) => query,
-                _ => {
-                    return Err(NapiError::new(
-                        Status::InvalidArg,
-                        format!(
-                            "{INVALID_PARAMS_CODE}: transaction statement requires query: string"
-                        ),
-                    ));
-                }
-            };
-            let params = match obj.remove("params") {
-                None | Some(serde_json::Value::Null) => BTreeMap::new(),
-                Some(other) => json_value_to_params(other)?,
-            };
-            Ok(TransactionStatement { query, params })
-        })
-        .collect()
-}
-
-fn format_error(err: &anyhow::Error) -> String {
-    format!("{LORA_ERROR_CODE}: {err}")
-}
-
-fn closed_error_message() -> String {
-    format!("{LORA_ERROR_CODE}: database is closed")
 }
