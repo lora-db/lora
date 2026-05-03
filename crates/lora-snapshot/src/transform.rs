@@ -7,9 +7,9 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression as GzipCompression;
 
-use crate::error::{Result, SnapshotCodecError};
+use crate::errors::{Result, SnapshotCodecError};
+use crate::format::MAGIC;
 use crate::options::{Compression, PasswordKdfParams};
-use crate::MAGIC;
 
 pub(crate) fn compress(mut bytes: Vec<u8>, compression: Compression) -> Result<Vec<u8>> {
     match compression {

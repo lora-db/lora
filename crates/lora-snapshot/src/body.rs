@@ -1,4 +1,4 @@
-use crate::error::{Result, SnapshotCodecError};
+use crate::errors::{Result, SnapshotCodecError};
 use crate::view::{StringTableView, U32ColumnView, U64ColumnView};
 
 pub(crate) fn write_u32(out: &mut Vec<u8>, value: u32) {

@@ -1,6 +1,7 @@
 use crate::body::BodyReader;
-use crate::error::{Result, SnapshotCodecError};
-use crate::{SnapshotInfo, BODY_FORMAT_VERSION};
+use crate::codec::SnapshotInfo;
+use crate::errors::{Result, SnapshotCodecError};
+use crate::format::BODY_FORMAT_VERSION;
 
 #[derive(Debug, Clone)]
 pub struct SnapshotView<'a> {

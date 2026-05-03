@@ -7,8 +7,8 @@ use crate::body::{
     write_bytes, write_len, write_string, write_string_vec, write_u32, write_u32_vec, write_u64,
     write_u64_vec, BodyReader,
 };
-use crate::error::{Result, SnapshotCodecError};
-use crate::BODY_FORMAT_VERSION;
+use crate::errors::{Result, SnapshotCodecError};
+use crate::format::BODY_FORMAT_VERSION;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ColumnarSnapshot {

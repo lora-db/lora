@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, SnapshotCodecError};
+use crate::codec::SnapshotInfo;
+use crate::errors::{Result, SnapshotCodecError};
+use crate::format::{FORMAT_VERSION, HEADER_LEN, MAGIC};
 use crate::options::{Compression, PasswordKdfParams};
-use crate::{SnapshotInfo, FORMAT_VERSION, HEADER_LEN, MAGIC};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Manifest {

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use lora_store::{NodeRecord, PropertyValue, RelationshipRecord, SnapshotPayload};
 
+use crate::format::HEADER_LEN;
 use crate::*;
 
 fn payload() -> SnapshotPayload {
