@@ -5,9 +5,18 @@ pub mod physical;
 mod pattern;
 mod planner;
 
-pub use logical::*;
+pub use logical::{
+    Aggregation, Argument, Create, Delete, Expand, Filter, Limit, LogicalOp, LogicalPlan, Merge,
+    NodeByPropertyScan, NodeScan, OptionalMatch, PathBuild, PlanNodeId, Projection, Remove, Set,
+    Sort, Unwind,
+};
 pub use optimizer::Optimizer;
-pub use physical::*;
+pub use physical::{
+    ArgumentExec, CreateExec, DeleteExec, ExpandExec, FilterExec, HashAggregationExec, LimitExec,
+    MergeExec, NodeByLabelScanExec, NodeByPropertyScanExec, NodeScanExec, OptionalMatchExec,
+    PathBuildExec, PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, RemoveExec, SetExec,
+    SortExec, UnwindExec,
+};
 pub use planner::Planner;
 
 use lora_analyzer::resolved::ResolvedQuery;

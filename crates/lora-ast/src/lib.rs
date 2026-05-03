@@ -6,4 +6,13 @@
 #![allow(clippy::large_enum_variant)]
 
 pub mod ast;
-pub use ast::*;
+
+pub use ast::{
+    BinaryOp, Create, Delete, Direction, Document, Expr, InQueryCall, ListPredicateKind,
+    MapProjectionSelector, Match, Merge, MergeAction, MultiPartQuery, NodePattern, Pattern,
+    PatternElement, PatternElementChain, PatternPart, ProcedureInvocation, ProcedureInvocationKind,
+    ProcedureName, ProjectionBody, ProjectionItem, Query, QueryPart, RangeLiteral, ReadingClause,
+    RegularQuery, RelationshipDetail, RelationshipPattern, Remove, RemoveItem, Return, Set,
+    SetItem, SinglePartQuery, SingleQuery, SortDirection, SortItem, Span, StandaloneCall,
+    Statement, UnaryOp, UnionPart, Unwind, UpdatingClause, Variable, With, YieldItem,
+};
