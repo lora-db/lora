@@ -27,7 +27,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::error::WalError;
+use crate::errors::WalError;
 use crate::lsn::Lsn;
 use crate::record::WalRecord;
 

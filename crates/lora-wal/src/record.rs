@@ -25,7 +25,7 @@ use std::io::{self, Read, Write};
 use lora_store::MutationEvent;
 
 use crate::codec;
-use crate::error::WalError;
+use crate::errors::WalError;
 use crate::lsn::Lsn;
 
 /// Length of the fixed prefix that precedes the compact payload:

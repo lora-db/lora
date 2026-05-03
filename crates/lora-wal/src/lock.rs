@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
 
-use crate::error::WalError;
+use crate::errors::WalError;
 
 const LOCK_FILE_NAME: &str = ".lora-wal.lock";
 

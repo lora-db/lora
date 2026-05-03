@@ -25,7 +25,7 @@ use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::error::WalError;
+use crate::errors::WalError;
 use crate::lsn::Lsn;
 use crate::segment::SegmentReader;
 

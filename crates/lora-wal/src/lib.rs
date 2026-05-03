@@ -22,11 +22,11 @@
 mod codec;
 mod config;
 mod dir;
-mod error;
+mod errors;
 mod lock;
 mod lsn;
 mod record;
-mod recorder_adapter;
+mod recorder;
 mod replay;
 mod segment;
 #[cfg(test)]
@@ -44,9 +44,9 @@ mod wal;
 
 pub use config::{SyncMode, WalConfig};
 pub use dir::SegmentId;
-pub use error::WalError;
+pub use errors::WalError;
 pub use lsn::Lsn;
-pub use recorder_adapter::{
+pub use recorder::{
     WalBufferedCommitError, WalCommitError, WalMirror, WalPoisonError, WalRecorder, WroteCommit,
 };
 pub use replay::{replay_dir, ReplayOutcome, TornTailInfo};

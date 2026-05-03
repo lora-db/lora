@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use lora_store::MutationEvent;
 
 use crate::dir::SegmentDir;
-use crate::error::WalError;
+use crate::errors::WalError;
 use crate::lsn::Lsn;
 use crate::record::WalRecord;
 use crate::segment::SegmentReader;
