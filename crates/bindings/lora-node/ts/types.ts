@@ -418,11 +418,12 @@ export const wgs84_3d = (
 // ---------------------------------------------------------------------------
 
 /**
- * Umbrella error codes preserved for backwards compatibility with the
- * pre-0.7 LoraDB wire format. All engine errors map to `LORA_ERROR`;
- * parameter mapping failures map to `INVALID_PARAMS`. Use
- * [`LoraError.engineCode`] for the precise code from the underlying
- * `lora_database::LoraErrorCode` catalog.
+ * Error codes emitted by the engine bridges.
+ *
+ * - `LORA_ERROR` — parse / analyze / execute failure
+ * - `INVALID_PARAMS` — a param value could not be mapped to a Lora value
+ * - `WORKER_ERROR` — worker transport / lifecycle failure (wasm worker only)
+ * - `UNKNOWN` — fall-through for unrecognised error shapes
  */
 export type LoraErrorCode =
   | "LORA_ERROR"
@@ -431,88 +432,20 @@ export type LoraErrorCode =
   | "UNKNOWN";
 
 /**
- * Stable wire codes emitted by the LoraDB engine. The string values
- * match `lora_database::LoraErrorCode` exactly. Match on these to
- * route errors precisely (e.g. handle `LORA_TIMEOUT` differently from
- * `LORA_PARSE`); do not match on the message text.
- */
-export type LoraEngineCode =
-  // Client codes — caller fault
-  | "LORA_PARSE"
-  | "LORA_SEMANTIC"
-  | "LORA_INVALID_PARAMS"
-  | "LORA_READ_ONLY"
-  | "LORA_NOT_FOUND"
-  | "LORA_CONSTRAINT"
-  | "LORA_INVALID_VECTOR"
-  | "LORA_TIMEOUT"
-  | "LORA_DATABASE_NAME"
-  | "LORA_CONFIG"
-  // Server codes — engine fault
-  | "LORA_IO"
-  | "LORA_WAL_CORRUPTION"
-  | "LORA_WAL_POISONED"
-  | "LORA_SNAPSHOT_CODEC"
-  | "LORA_SNAPSHOT_CRYPTO"
-  | "LORA_INTERNAL"
-  // Binding-side codes
-  | "LORA_PANIC"
-  | "LORA_ERROR"
-  | "INVALID_PARAMS"
-  | "WORKER_ERROR"
-  | "UNKNOWN";
-
-const CLIENT_ENGINE_CODES: ReadonlySet<LoraEngineCode> = new Set([
-  "LORA_PARSE",
-  "LORA_SEMANTIC",
-  "LORA_INVALID_PARAMS",
-  "LORA_READ_ONLY",
-  "LORA_NOT_FOUND",
-  "LORA_CONSTRAINT",
-  "LORA_INVALID_VECTOR",
-  "LORA_TIMEOUT",
-  "LORA_DATABASE_NAME",
-  "LORA_CONFIG",
-  "INVALID_PARAMS",
-]);
-
-/**
  * Error thrown by `Database.execute` when Lora parsing, analysis, or
- * execution fails. The `code` field carries the legacy umbrella code
- * (`LORA_ERROR` / `INVALID_PARAMS`) for backwards compatibility;
- * `engineCode` carries the precise wire code from the LoraDB catalog.
+ * execution fails.
  */
 export class LoraError extends Error {
   public readonly code: LoraErrorCode;
-  public readonly engineCode: LoraEngineCode;
 
-  constructor(message: string, engineCode: LoraEngineCode = "UNKNOWN") {
+  constructor(message: string, code: LoraErrorCode = "UNKNOWN") {
     super(message);
     this.name = "LoraError";
-    this.engineCode = engineCode;
-    this.code = legacyCodeFor(engineCode);
-  }
-
-  /** True when the failure was the caller's fault rather than the engine's. */
-  public isClient(): boolean {
-    return CLIENT_ENGINE_CODES.has(this.engineCode);
+    this.code = code;
   }
 }
 
-function legacyCodeFor(code: LoraEngineCode): LoraErrorCode {
-  // Map every precise client-side param code onto INVALID_PARAMS, every
-  // other LoraDB engine code onto LORA_ERROR, and pass through the
-  // binding-only WORKER_ERROR / UNKNOWN codes unchanged.
-  if (code === "LORA_INVALID_PARAMS" || code === "INVALID_PARAMS") return "INVALID_PARAMS";
-  if (code === "WORKER_ERROR") return "WORKER_ERROR";
-  if (code === "UNKNOWN") return "UNKNOWN";
-  return "LORA_ERROR";
-}
-
-// Any token starting with `LORA_` followed by uppercase letters/underscores
-// counts as an engine code; the legacy `INVALID_PARAMS` / `WORKER_ERROR`
-// prefixes remain recognised so older error pipelines continue to work.
-const ERROR_PREFIX_RE = /^(LORA_[A-Z_]+|INVALID_PARAMS|WORKER_ERROR):\s*(.*)$/s;
+const ERROR_PREFIX_RE = /^(LORA_ERROR|INVALID_PARAMS|WORKER_ERROR):\s*(.*)$/s;
 
 /**
  * Normalise a thrown value into a `LoraError` with a narrowed `code`
@@ -523,7 +456,7 @@ export function wrapError(err: unknown): Error {
   if (!(err instanceof Error)) return new LoraError(String(err), "UNKNOWN");
   const match = ERROR_PREFIX_RE.exec(err.message);
   if (match) {
-    return new LoraError(match[2]!, match[1] as LoraEngineCode);
+    return new LoraError(match[2]!, match[1] as LoraErrorCode);
   }
   return err;
 }

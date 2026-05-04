@@ -64,8 +64,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "sync:types": "node -e \"require('fs').copyFileSync('../shared-ts/types.ts','ts/types.ts')\"",
-    "verify:types": "node -e \"const fs=require('fs'); const a=fs.readFileSync('../shared-ts/types.ts','utf8'); const b=fs.readFileSync('ts/types.ts','utf8'); if (a!==b) { console.error('ts/types.ts is out of sync with shared-ts/types.ts — run npm run sync:types'); process.exit(1);} \"",
+    "sync:types": "node -e \"require('fs').copyFileSync('../../shared-ts/types.ts','ts/types.ts')\"",
+    "verify:types": "node -e \"const fs=require('fs'); const a=fs.readFileSync('../../shared-ts/types.ts','utf8'); const b=fs.readFileSync('ts/types.ts','utf8'); if (a!==b) { console.error('ts/types.ts is out of sync with shared-ts/types.ts — run npm run sync:types'); process.exit(1);} \"",
     "prebuild": "npm run sync:types",
     "pretypecheck": "npm run sync:types",
     "pretest": "npm run sync:types",

@@ -173,7 +173,7 @@ are exported from `lora-node`.
 lora-database (Rust)
    └── lora-node (crate, cdylib)        <- napi-rs bindings, AsyncTask
           └── ts/index.ts                 <- strongly-typed async wrapper
-                 └── ../shared-ts/types.ts  <- shared TS contract (with lora-wasm)
+                 └── ../../shared-ts/types.ts  <- shared TS contract (with lora-wasm)
 ```
 
 Query execution path:
