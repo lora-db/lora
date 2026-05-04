@@ -54,4 +54,34 @@ must match on the stable `LoraErrorCode` wire string (`LORA_PARSE`,
 rewritten between minor versions to improve clarity; codes are part of
 the public API and never change.
 
-See `crates/lora-database/src/error/code.rs` for the catalog.
+See `crates/lora-database/src/error.rs` for the catalog.
+
+## Boundary discipline
+
+`anyhow::Error` is allowed in **internal** `?`-chains because it makes
+multi-layer error funnels ergonomic, but it must not appear in the
+return type of any `pub fn` in `lora-database` or `lora-server`. Public
+methods on `Database`, `Transaction`, the `QueryRunner`/`SnapshotAdmin`/
+`WalAdmin` traits, and HTTP handlers all return `Result<T, LoraError>`.
+This guarantees that every external caller — bindings, transports,
+tests — receives a typed code at the boundary and never has to downcast
+through an `anyhow` chain.
+
+When converting an internal `anyhow::Error` to a `LoraError` at the
+boundary, the `From<anyhow::Error> for LoraError` impl downcasts to any
+known concrete type (`ParseError`, `WalError`, `LoraError` itself, …)
+and falls back to `LoraErrorCode::Internal` when the chain is opaque.
+
+## HTTP status mapping
+
+The transport in `lora-server` maps codes to status as follows:
+
+| Code | Status | Notes |
+| --- | --- | --- |
+| `LORA_PARSE`, `LORA_SEMANTIC`, `LORA_READ_ONLY`, `LORA_DATABASE_NAME`, `LORA_CONFIG` | 400 | Caller-fixable mistake |
+| `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR` | 422 | Well-formed request, semantically invalid value |
+| `LORA_NOT_FOUND` | 404 | Named entity does not exist |
+| `LORA_CONSTRAINT` | 409 | Action conflicts with current state |
+| `LORA_TIMEOUT` | 408 | Cooperative deadline expired |
+| `LORA_WAL_POISONED` | 503 | Engine cannot accept further writes |
+| `LORA_IO`, `LORA_WAL_CORRUPTION`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO`, `LORA_INTERNAL` | 500 | Server-side failure |
