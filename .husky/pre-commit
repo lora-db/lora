@@ -1,20 +1,47 @@
 cargo fmt --all --check
 cargo clippy --workspace -- -D warnings
 
-# Binding gate: when a JS-facing binding or its shared TS contract is
-# staged, run the full test suite for the affected binding so a broken
-# wrapper or drifted types.ts can't reach a commit. Set
-# SKIP_BINDING_TESTS=1 to bypass for emergencies.
-if [ "${SKIP_BINDING_TESTS:-0}" = "1" ]; then
+# Always-run lint passes are above. Below: heavier test gates that fire
+# only when the relevant paths are touched. Set SKIP_TESTS=1 to bypass
+# (e.g. for emergency commits or known-broken-but-WIP states).
+if [ "${SKIP_TESTS:-0}" = "1" ]; then
   exit 0
 fi
 
 STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
 
-if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/(lora-node|shared-ts)/'; then
-  (cd crates/bindings/lora-node && npm test) || exit 1
+ANY_RUST=0
+if printf '%s\n' "$STAGED" | grep -qE '\.rs$|^Cargo\.(toml|lock)$|^rust-toolchain\.toml$'; then
+  ANY_RUST=1
 fi
 
-if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/(lora-wasm|shared-ts)/'; then
-  (cd crates/bindings/lora-wasm && npm test) || exit 1
+# Cargo workspace tests when any Rust source / Cargo manifest changes.
+# Excludes lora-python and lora_ruby so the hook doesn't require a local
+# Python or Ruby toolchain — those are exercised in their own CI jobs.
+if [ "$ANY_RUST" = "1" ]; then
+  cargo test --workspace --exclude lora-python --exclude lora_ruby || exit 1
+fi
+
+# Binding tests. Any Rust change can ripple through the engine into a
+# binding's wrapper layer, so rebuild + npm test runs whenever Rust
+# moves OR the binding's own files / shared TS contract are staged.
+SHARED_TS_STAGED=0
+NODE_STAGED=0
+WASM_STAGED=0
+if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/shared-ts/'; then
+  SHARED_TS_STAGED=1
+fi
+if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/lora-node/'; then
+  NODE_STAGED=1
+fi
+if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/lora-wasm/'; then
+  WASM_STAGED=1
+fi
+
+if [ "$ANY_RUST" = "1" ] || [ "$SHARED_TS_STAGED" = "1" ] || [ "$NODE_STAGED" = "1" ]; then
+  (cd crates/bindings/lora-node && npm run build:native && npm test) || exit 1
+fi
+
+if [ "$ANY_RUST" = "1" ] || [ "$SHARED_TS_STAGED" = "1" ] || [ "$WASM_STAGED" = "1" ]; then
+  (cd crates/bindings/lora-wasm && npm run build:wasm:node && npm test) || exit 1
 fi
