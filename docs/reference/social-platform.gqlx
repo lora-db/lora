@@ -1,0 +1,575 @@
+schema SocialPlatform
+version "1.0.0"
+namespace "com.example.social"
+strict true
+{
+  // =========================================================
+  // Scalars
+  // =========================================================
+
+  scalar UUID
+  scalar Date
+  scalar Time
+  scalar DateTime
+  scalar Duration
+  scalar Email
+  scalar URL
+  scalar JSON
+  scalar PhoneNumber
+
+  scalar Username extends String
+    @pattern("^[a-zA-Z0-9_]{3,32}$")
+
+  scalar Slug extends String
+    @pattern("^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+  scalar NonEmptyString extends String
+    @length(min: 1)
+
+  scalar PositiveInt extends Int
+    @range(min: 1)
+
+  scalar Percentage extends Int
+    @range(min: 0, max: 100)
+
+  scalar Money extends Decimal
+    @precision(scale: 2, precision: 18)
+    @range(min: 0)
+
+  // =========================================================
+  // Enums
+  // =========================================================
+
+  enum UserRole {
+    ADMIN
+    MODERATOR
+    MEMBER
+    GUEST
+  }
+
+  enum TeamVisibility {
+    PUBLIC
+    PRIVATE
+    SECRET
+  }
+
+  enum ContentStatus {
+    DRAFT
+    PUBLISHED
+    ARCHIVED
+    DELETED
+  }
+
+  enum NotificationChannel {
+    EMAIL
+    PUSH
+    SMS
+  }
+
+  enum ReactionKind {
+    LIKE
+    HEART
+    LAUGH
+    FIRE
+  }
+
+  enum BillingPlan {
+    FREE
+    PRO
+    ENTERPRISE
+  }
+
+  // =========================================================
+  // Value types
+  // =========================================================
+
+  value AuditInfo {
+    createdAt: DateTime
+    createdBy: UUID
+    updatedAt: DateTime?
+    updatedBy: UUID?
+  }
+
+  value Profile {
+    displayName: NonEmptyString @length(max: 120)
+    bio: String? @length(max: 280)
+    avatarUrl: URL?
+    website: URL?
+    location: String? @length(max: 120)
+  }
+
+  value Address {
+    line1: NonEmptyString @length(max: 120)
+    line2: String? @length(max: 120)
+    city: NonEmptyString @length(max: 80)
+    state: String? @length(max: 80)
+    postalCode: NonEmptyString @length(max: 20)
+    country: NonEmptyString @length(max: 80)
+  }
+
+  value BillingInfo {
+    legalName: NonEmptyString @length(max: 200)
+    taxId: String? @length(max: 40)
+    address: Address
+    plan: BillingPlan = FREE
+  }
+
+  value NotificationPreference {
+    channel: NotificationChannel
+    enabled: Bool = true
+  }
+
+  value ReactionSummary {
+    likes: Int = 0
+    hearts: Int = 0
+    laughs: Int = 0
+    fire: Int = 0
+  }
+
+  value SeoMetadata {
+    title: String? @length(max: 70)
+    description: String? @length(max: 160)
+    canonicalUrl: URL?
+  }
+
+  value Price {
+    amount: Money
+    currency: String @length(min: 3, max: 3)
+  }
+
+  // =========================================================
+  // Interfaces
+  // =========================================================
+
+  interface Entity {
+    id: UUID @id
+  }
+
+  interface AuditedEntity extends Entity {
+    audit: AuditInfo
+  }
+
+  interface SoftDeletable {
+    isDeleted: Bool = false
+    deletedAt: DateTime?
+
+    @check("not (isDeleted = true and deletedAt = null)")
+  }
+
+  interface Named {
+    name: NonEmptyString @length(max: 200)
+  }
+
+  interface TenantScoped {
+    tenantId: UUID
+  }
+
+  interface Publishable {
+    status: ContentStatus = DRAFT
+    publishedAt: DateTime?
+
+    @check("
+      (status = DRAFT and publishedAt = null) or
+      (status = PUBLISHED and publishedAt != null) or
+      (status in [ARCHIVED, DELETED])
+    ")
+  }
+
+  // =========================================================
+  // Abstract nodes
+  // =========================================================
+
+  abstract node BaseNode implements AuditedEntity {
+    id: UUID @id
+    audit: AuditInfo
+  }
+
+  abstract node TenantNode extends BaseNode implements TenantScoped {
+    tenantId: UUID
+  }
+
+  abstract node Principal extends TenantNode, SoftDeletable {
+    tenantId: UUID
+    isDeleted: Bool = false
+    deletedAt: DateTime?
+  }
+
+  abstract node Content extends TenantNode, SoftDeletable, Publishable {
+    tenantId: UUID
+
+    title: NonEmptyString @length(max: 300)
+    body: String
+    status: ContentStatus = DRAFT
+    publishedAt: DateTime?
+
+    seo: SeoMetadata?
+    reactionSummary: ReactionSummary = {}
+
+    isDeleted: Bool = false
+    deletedAt: DateTime?
+  }
+
+  abstract node PaymentSource extends TenantNode {
+    provider: NonEmptyString @length(max: 40)
+    externalId: NonEmptyString @length(max: 120)
+    last4: String? @length(min: 4, max: 4)
+  }
+
+  // =========================================================
+  // Concrete nodes
+  // =========================================================
+
+  node User extends Principal {
+    email: Email @unique
+    username: Username @unique
+    phoneNumber: PhoneNumber?
+    role: UserRole = MEMBER
+
+    profile: Profile
+    birthDate: Date?
+    lastLoginAt: DateTime?
+
+    notificationPreferences: List<NotificationPreference> = []
+
+    followers: Set<User> @derived(from: FOLLOWS.in)
+    following: Set<User> @derived(from: FOLLOWS.out)
+    teams: Set<Team> @derived(from: MEMBER_OF.out)
+    authoredPosts: Set<Post> @derived(from: AUTHORED.out)
+    comments: Set<Comment> @derived(from: WROTE_COMMENT.out)
+    reactions: Set<ContentReaction> @derived(from: REACTED.out)
+    subscriptions: Set<Subscription> @derived(from: OWNS_SUBSCRIPTION.out)
+  }
+
+  node Team extends TenantNode, Named, SoftDeletable {
+    tenantId: UUID
+
+    name: NonEmptyString @length(max: 120)
+    slug: Slug @unique
+    visibility: TeamVisibility = PRIVATE
+    description: String? @length(max: 5000)
+
+    billing: BillingInfo?
+    memberCount: Int = 0 @readonly
+
+    isDeleted: Bool = false
+    deletedAt: DateTime?
+
+    members: Set<User> @derived(from: MEMBER_OF.in)
+    posts: Set<Post> @derived(from: POSTED_IN.in)
+    projects: Set<Project> @derived(from: OWNED_BY_TEAM.in)
+    subscriptions: Set<Subscription> @derived(from: BILLED_TO.in)
+
+    @check("not (visibility = SECRET and description != null and length(description) > 500)")
+  }
+
+  node Project extends TenantNode, Named, SoftDeletable {
+    tenantId: UUID
+
+    name: NonEmptyString @length(max: 120)
+    slug: Slug
+    description: String? @length(max: 2000)
+    archivedAt: DateTime?
+
+    isDeleted: Bool = false
+    deletedAt: DateTime?
+
+    team: Team @derived(from: OWNED_BY_TEAM.out, exactly: 1)
+    posts: Set<Post> @derived(from: BELONGS_TO_PROJECT.in)
+
+    @check("not (isDeleted = true and archivedAt = null and deletedAt = null)")
+  }
+
+  node Post extends Content {
+    tenantId: UUID
+
+    excerpt: String? @length(max: 500)
+    author: User @derived(from: AUTHORED.in, exactly: 1)
+    team: Team? @derived(from: POSTED_IN.out, at_most: 1)
+    project: Project? @derived(from: BELONGS_TO_PROJECT.out, at_most: 1)
+    likedBy: Set<User> @derived(from: REACTED.in where edge.kind == LIKE)
+    comments: Set<Comment> @derived(from: COMMENT_ON.in)
+  }
+
+  node Comment extends TenantNode, SoftDeletable {
+    tenantId: UUID
+
+    body: NonEmptyString @length(max: 5000)
+    editedAt: DateTime?
+
+    isDeleted: Bool = false
+    deletedAt: DateTime?
+
+    author: User @derived(from: WROTE_COMMENT.in, exactly: 1)
+    post: Post @derived(from: COMMENT_ON.out, exactly: 1)
+    parent: Comment? @derived(from: REPLY_TO.out, at_most: 1)
+    replies: Set<Comment> @derived(from: REPLY_TO.in)
+  }
+
+  node Invitation extends TenantNode {
+    tenantId: UUID
+
+    email: Email
+    token: NonEmptyString @unique
+    expiresAt: DateTime
+    acceptedAt: DateTime?
+
+    team: Team @derived(from: INVITES_TO_TEAM.out, exactly: 1)
+
+    @check("acceptedAt = null or acceptedAt <= expiresAt")
+  }
+
+  node ContentReaction extends TenantNode {
+    tenantId: UUID
+
+    kind: ReactionKind
+    reactedAt: DateTime
+
+    user: User @derived(from: REACTED.in, exactly: 1)
+    post: Post @derived(from: REACTION_ON.out, exactly: 1)
+  }
+
+  node Subscription extends TenantNode, SoftDeletable {
+    tenantId: UUID
+
+    externalSubscriptionId: NonEmptyString @unique
+    plan: BillingPlan
+    startedAt: DateTime
+    renewsAt: DateTime?
+    canceledAt: DateTime?
+
+    isDeleted: Bool = false
+    deletedAt: DateTime?
+
+    owner: User @derived(from: OWNS_SUBSCRIPTION.in, exactly: 1)
+    team: Team @derived(from: BILLED_TO.out, exactly: 1)
+
+    @check("canceledAt = null or canceledAt >= startedAt")
+  }
+
+  node CardPaymentSource extends PaymentSource {
+    tenantId: UUID
+
+    brand: NonEmptyString @length(max: 30)
+    expiryMonth: Int @range(min: 1, max: 12)
+    expiryYear: Int @range(min: 2020, max: 2100)
+  }
+
+  // =========================================================
+  // Unions
+  // =========================================================
+
+  union SearchResult = User | Team | Project | Post | Comment
+  union FeedItem = Post | Comment
+  union BillableEntity = Team | Subscription
+
+  // =========================================================
+  // Edges
+  // =========================================================
+
+  edge MEMBER_OF from User to Team {
+    since: DateTime
+    isOwner: Bool = false
+    title: String? @length(max: 120)
+  }
+  @cardinality(many_to_many)
+  @unique_pair
+  @reverse("HAS_MEMBER")
+
+  edge FOLLOWS from User to User {
+    since: DateTime
+    notificationsEnabled: Bool = true
+  }
+  @cardinality(many_to_many)
+  @unique_pair
+  @acyclic
+  @reverse("FOLLOWED_BY")
+
+  edge AUTHORED from User to Post {
+    at: DateTime
+  }
+  @cardinality(one_to_many)
+  @required(to)
+  @cascade(onDelete: from)
+  @reverse("AUTHOR")
+
+  edge POSTED_IN from Post to Team {
+    at: DateTime
+    pinned: Bool = false
+  }
+  @cardinality(many_to_one)
+  @restrict(onDelete: to)
+  @reverse("HAS_POST")
+
+  edge BELONGS_TO_PROJECT from Post to Project {
+    at: DateTime
+  }
+  @cardinality(many_to_one)
+  @restrict(onDelete: to)
+  @reverse("HAS_POST")
+
+  edge OWNED_BY_TEAM from Project to Team {
+    since: DateTime
+  }
+  @cardinality(many_to_one)
+  @required(from)
+  @restrict(onDelete: to)
+  @reverse("OWNS_PROJECT")
+
+  edge WROTE_COMMENT from User to Comment {
+    at: DateTime
+  }
+  @cardinality(one_to_many)
+  @required(to)
+  @cascade(onDelete: from)
+
+  edge COMMENT_ON from Comment to Post {
+    at: DateTime
+  }
+  @cardinality(many_to_one)
+  @required(from)
+  @restrict(onDelete: to)
+
+  edge REPLY_TO from Comment to Comment {
+    at: DateTime
+  }
+  @cardinality(many_to_one)
+  @acyclic
+  @reverse("HAS_REPLY")
+
+  edge INVITES_TO_TEAM from Invitation to Team {
+    sentAt: DateTime
+  }
+  @cardinality(many_to_one)
+  @required(from)
+  @restrict(onDelete: to)
+
+  edge REACTED from User to ContentReaction {
+    at: DateTime
+  }
+  @cardinality(one_to_many)
+  @required(to)
+  @cascade(onDelete: from)
+
+  edge REACTION_ON from ContentReaction to Post {
+    at: DateTime
+  }
+  @cardinality(many_to_one)
+  @required(from)
+  @cascade(onDelete: to)
+
+  edge OWNS_SUBSCRIPTION from User to Subscription {
+    at: DateTime
+  }
+  @cardinality(one_to_many)
+  @required(to)
+  @cascade(onDelete: from)
+
+  edge BILLED_TO from Subscription to Team {
+    at: DateTime
+  }
+  @cardinality(many_to_one)
+  @required(from)
+  @restrict(onDelete: to)
+
+  // =========================================================
+  // Indexes
+  // =========================================================
+
+  index idx_user_email on User(email)
+  index idx_user_username on User(username)
+  index idx_user_role on User(role)
+  index idx_team_slug on Team(slug)
+  index idx_project_slug on Project(slug)
+  index idx_post_status_published on Post(status, publishedAt desc)
+  index idx_comment_edited on Comment(editedAt desc)
+  index idx_invitation_email on Invitation(email)
+  index idx_subscription_external_id on Subscription(externalSubscriptionId)
+
+  edge index idx_member_of_since on MEMBER_OF(since)
+  edge index idx_follows_since on FOLLOWS(since)
+  edge index idx_authored_at on AUTHORED(at)
+  edge index idx_posted_in_at on POSTED_IN(at)
+
+  fulltext index ftx_post_text on Post(title, body, excerpt)
+  fulltext index ftx_team_text on Team(name, description)
+  fulltext index ftx_project_text on Project(name, description)
+
+  // =========================================================
+  // Composite uniqueness
+  // =========================================================
+
+  unique uq_team_name_per_tenant on Team(tenantId, name)
+  unique uq_project_slug_per_team on Project(tenantId, slug)
+  unique uq_invitation_email_team on Invitation(email, tenantId)
+  unique uq_card_provider_external on CardPaymentSource(provider, externalId)
+
+  // =========================================================
+  // Policies
+  // =========================================================
+
+  policy User {
+    read: auth != null and auth.tenantId == node.tenantId
+    create: auth != null
+    update: auth.id == node.id or auth.role == ADMIN
+    delete: auth.role == ADMIN
+  }
+
+  policy Team {
+    read: (
+      auth != null and auth.tenantId == node.tenantId and (
+        node.visibility == PUBLIC or
+        auth.role == ADMIN or
+        exists(auth -> MEMBER_OF -> node)
+      )
+    )
+    create: auth != null
+    update: exists(auth -[m:MEMBER_OF]-> node where m.isOwner == true) or auth.role == ADMIN
+    delete: auth.role == ADMIN
+  }
+
+  policy Project {
+    read: auth != null and auth.tenantId == node.tenantId
+    create: auth != null
+    update: exists(auth -> MEMBER_OF -> node.team) or auth.role == ADMIN
+    delete: auth.role == ADMIN
+  }
+
+  policy Post {
+    read: auth != null and auth.tenantId == node.tenantId and node.isDeleted == false
+    create: auth != null
+    update: exists(auth -> AUTHORED -> node) or auth.role == ADMIN
+    delete: exists(auth -> AUTHORED -> node) or auth.role == ADMIN
+  }
+
+  policy Comment {
+    read: auth != null and auth.tenantId == node.tenantId and node.isDeleted == false
+    create: auth != null
+    update: exists(auth -> WROTE_COMMENT -> node) or auth.role == ADMIN
+    delete: exists(auth -> WROTE_COMMENT -> node) or auth.role == ADMIN
+  }
+
+  policy Subscription {
+    read: auth.role == ADMIN or exists(auth -> OWNS_SUBSCRIPTION -> node)
+    create: auth.role in [ADMIN, MEMBER]
+    update: auth.role == ADMIN
+    delete: auth.role == ADMIN
+  }
+
+  // =========================================================
+  // Hooks
+  // =========================================================
+
+  hook before create User validate "validators.user.beforeCreate"
+  hook before update User validate "validators.user.beforeUpdate"
+  hook after create MEMBER_OF emit "events.team.member_added"
+  hook after delete MEMBER_OF emit "events.team.member_removed"
+  hook after create Post emit "events.post.created"
+  hook after update Subscription emit "events.billing.subscription_updated"
+
+  // =========================================================
+  // Deprecations
+  // =========================================================
+
+  deprecated Team.description since "1.1.0" note "move long-form content to TeamProfile"
+  deprecated User.phoneNumber since "1.2.0" replace_with "notificationPreferences"
+}

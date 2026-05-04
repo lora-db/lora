@@ -1,0 +1,7623 @@
+---
+grammar:
+  BNFdef:
+    - rhs:
+        alt:
+          - BNF:
+              _name: program activity
+            opt:
+              BNF:
+                _name: session close command
+          - BNF:
+              _name: session close command
+      _name: GQL-program
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: session activity
+          - BNF:
+              _name: transaction activity
+      _name: program activity
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: session reset command
+            repeat: ''
+          - BNF:
+              _name: session set command
+            repeat: ''
+            opt:
+              BNF:
+                _name: session reset command
+              repeat: ''
+      _name: session activity
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: start transaction command
+            opt:
+              BNF:
+                _name: procedure specification
+              opt:
+                BNF:
+                  _name: end transaction command
+          - BNF:
+              _name: procedure specification
+            opt:
+              BNF:
+                _name: end transaction command
+          - BNF:
+              _name: end transaction command
+      _name: transaction activity
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: rollback command
+          - BNF:
+              _name: commit command
+      _name: end transaction command
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - SESSION
+          - SET
+        group:
+          alt:
+            - BNF:
+                _name: session set schema clause
+            - BNF:
+                _name: session set graph clause
+            - BNF:
+                _name: session set time zone clause
+            - BNF:
+                _name: session set parameter clause
+      _name: session set command
+      _predicative: 'no'
+    - rhs:
+        kw: SCHEMA
+        BNF:
+          _name: schema reference
+      _name: session set schema clause
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: PROPERTY
+        kw: GRAPH
+        BNF:
+          _name: graph expression
+      _name: session set graph clause
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - TIME
+          - ZONE
+        BNF:
+          _name: set time zone value
+      _name: session set time zone clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: time zone string
+      _name: set time zone value
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: session set graph parameter clause
+          - BNF:
+              _name: session set binding table parameter clause
+          - BNF:
+              _name: session set value parameter clause
+      _name: session set parameter clause
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: PROPERTY
+        kw: GRAPH
+        BNF:
+          - _name: session set parameter name
+          - _name: opt typed graph initializer
+      _name: session set graph parameter clause
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: BINDING
+        kw: TABLE
+        BNF:
+          - _name: session set parameter name
+          - _name: opt typed binding table initializer
+      _name: session set binding table parameter clause
+      _predicative: 'no'
+    - rhs:
+        kw: VALUE
+        BNF:
+          - _name: session set parameter name
+          - _name: opt typed value initializer
+      _name: session set value parameter clause
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw:
+            - IF
+            - NOT
+            - EXISTS
+        BNF:
+          _name: session parameter specification
+      _name: session set parameter name
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - SESSION
+          - RESET
+        opt:
+          BNF:
+            _name: session reset arguments
+      _name: session reset command
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              kw: ALL
+            group:
+              alt:
+                - kw: PARAMETERS
+                - kw: CHARACTERISTICS
+          - kw: SCHEMA
+          - opt:
+              kw: PROPERTY
+            kw: GRAPH
+          - kw:
+              - TIME
+              - ZONE
+          - opt:
+              kw: PARAMETER
+            BNF:
+              _name: session parameter specification
+      _name: session reset arguments
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - SESSION
+          - CLOSE
+      _name: session close command
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: general parameter reference
+      _name: session parameter specification
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - START
+          - TRANSACTION
+        opt:
+          BNF:
+            _name: transaction characteristics
+      _name: start transaction command
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: transaction mode
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: transaction mode
+          repeat: ''
+      _name: transaction characteristics
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: transaction access mode
+          - BNF:
+              _name: implementation-defined access mode
+      _name: transaction mode
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - READ
+              - ONLY
+          - kw:
+              - READ
+              - WRITE
+      _name: transaction access mode
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: implementation-defined access mode
+      _predicative: 'no'
+    - rhs:
+        kw: ROLLBACK
+      _name: rollback command
+      _predicative: 'no'
+    - rhs:
+        kw: COMMIT
+      _name: commit command
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: procedure specification
+          - _name: right brace
+      _name: nested procedure specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: catalog-modifying procedure specification
+          - BNF:
+              _name: data-modifying procedure specification
+          - BNF:
+              _name: query specification
+      _name: procedure specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: procedure body
+      _name: catalog-modifying procedure specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: data-modifying procedure specification
+          - _name: right brace
+      _name: nested data-modifying procedure specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: procedure body
+      _name: data-modifying procedure specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: query specification
+          - _name: right brace
+      _name: nested query specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: procedure body
+      _name: query specification
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - BNF:
+              _name: at schema clause
+          - BNF:
+              _name: binding variable definition block
+        BNF:
+          _name: statement block
+      _name: procedure body
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable definition
+        repeat: ''
+      _name: binding variable definition block
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: graph variable definition
+          - BNF:
+              _name: binding table variable definition
+          - BNF:
+              _name: value variable definition
+      _name: binding variable definition
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: statement
+        opt:
+          BNF:
+            _name: next statement
+          repeat: ''
+      _name: statement block
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: linear catalog-modifying statement
+          - BNF:
+              _name: linear data-modifying statement
+          - BNF:
+              _name: composite query statement
+      _name: statement
+      _predicative: 'no'
+    - rhs:
+        kw: NEXT
+        opt:
+          BNF:
+            _name: yield clause
+        BNF:
+          _name: statement
+      _name: next statement
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: PROPERTY
+        kw: GRAPH
+        BNF:
+          - _name: binding variable
+          - _name: opt typed graph initializer
+      _name: graph variable definition
+      _predicative: 'no'
+    - rhs:
+        opt:
+          opt:
+            BNF:
+              _name: typed
+          BNF:
+            _name: graph reference value type
+        BNF:
+          _name: graph initializer
+      _name: opt typed graph initializer
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: equals operator
+          - _name: graph expression
+      _name: graph initializer
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: BINDING
+        kw: TABLE
+        BNF:
+          - _name: binding variable
+          - _name: opt typed binding table initializer
+      _name: binding table variable definition
+      _predicative: 'no'
+    - rhs:
+        opt:
+          opt:
+            BNF:
+              _name: typed
+          BNF:
+            _name: binding table reference value type
+        BNF:
+          _name: binding table initializer
+      _name: opt typed binding table initializer
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: equals operator
+          - _name: binding table expression
+      _name: binding table initializer
+      _predicative: 'no'
+    - rhs:
+        kw: VALUE
+        BNF:
+          - _name: binding variable
+          - _name: opt typed value initializer
+      _name: value variable definition
+      _predicative: 'no'
+    - rhs:
+        opt:
+          opt:
+            BNF:
+              _name: typed
+          BNF:
+            _name: value type
+        BNF:
+          _name: value initializer
+      _name: opt typed value initializer
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: equals operator
+          - _name: value expression
+      _name: value initializer
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: object expression primary
+          - BNF:
+              _name: graph reference
+          - BNF:
+              _name: object name or binding variable
+          - BNF:
+              _name: current graph
+      _name: graph expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: CURRENT_PROPERTY_GRAPH
+          - kw: CURRENT_GRAPH
+      _name: current graph
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: nested binding table query specification
+          - BNF:
+              _name: object expression primary
+          - BNF:
+              _name: binding table reference
+          - BNF:
+              _name: object name or binding variable
+      _name: binding table expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: nested query specification
+      _name: nested binding table query specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: VARIABLE
+            BNF:
+              _name: value expression primary
+          - BNF:
+              _name: parenthesized value expression
+          - BNF:
+              _name: non-parenthesized value expression primary special case
+      _name: object expression primary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: simple catalog-modifying statement
+        repeat: ''
+      _name: linear catalog-modifying statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: primitive catalog-modifying statement
+          - BNF:
+              _name: call catalog-modifying procedure statement
+      _name: simple catalog-modifying statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: create schema statement
+          - BNF:
+              _name: drop schema statement
+          - BNF:
+              _name: create graph statement
+          - BNF:
+              _name: drop graph statement
+          - BNF:
+              _name: create graph type statement
+          - BNF:
+              _name: drop graph type statement
+      _name: primitive catalog-modifying statement
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - CREATE
+          - SCHEMA
+        opt:
+          kw:
+            - IF
+            - NOT
+            - EXISTS
+        BNF:
+          _name: catalog schema parent and name
+      _name: create schema statement
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - DROP
+          - SCHEMA
+        opt:
+          kw:
+            - IF
+            - EXISTS
+        BNF:
+          _name: catalog schema parent and name
+      _name: drop schema statement
+      _predicative: 'no'
+    - rhs:
+        kw: CREATE
+        group:
+          - alt:
+              - opt:
+                  - kw: PROPERTY
+                  - kw:
+                      - IF
+                      - NOT
+                      - EXISTS
+                kw: GRAPH
+              - kw:
+                  - OR
+                  - REPLACE
+                  - GRAPH
+                opt:
+                  kw: PROPERTY
+          - alt:
+              - BNF:
+                  _name: open graph type
+              - BNF:
+                  _name: of graph type
+        BNF:
+          _name: catalog graph parent and name
+        opt:
+          BNF:
+            _name: graph source
+      _name: create graph statement
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - BNF:
+              _name: typed
+          - opt:
+              kw: PROPERTY
+            kw: GRAPH
+        kw: ANY
+      _name: open graph type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: graph type like graph
+          - opt:
+              BNF:
+                _name: typed
+            BNF:
+              _name: graph type reference
+          - opt:
+              - BNF:
+                  _name: typed
+              - opt:
+                  kw: PROPERTY
+                kw: GRAPH
+            BNF:
+              _name: nested graph type specification
+      _name: of graph type
+      _predicative: 'no'
+    - rhs:
+        kw: LIKE
+        BNF:
+          _name: graph expression
+      _name: graph type like graph
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - AS
+          - COPY
+          - OF
+        BNF:
+          _name: graph expression
+      _name: graph source
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - DROP
+          - GRAPH
+        opt:
+          - kw: PROPERTY
+          - kw:
+              - IF
+              - EXISTS
+        BNF:
+          _name: catalog graph parent and name
+      _name: drop graph statement
+      _predicative: 'no'
+    - rhs:
+        kw: CREATE
+        group:
+          alt:
+            - opt:
+                - kw: PROPERTY
+                - kw:
+                    - IF
+                    - NOT
+                    - EXISTS
+              kw:
+                - GRAPH
+                - TYPE
+            - kw:
+                - OR
+                - REPLACE
+                - GRAPH
+                - TYPE
+              opt:
+                kw: PROPERTY
+        BNF:
+          - _name: catalog graph type parent and name
+          - _name: graph type source
+      _name: create graph type statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              kw: AS
+            BNF:
+              _name: copy of graph type
+          - BNF:
+              _name: graph type like graph
+          - opt:
+              kw: AS
+            BNF:
+              _name: nested graph type specification
+      _name: graph type source
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - COPY
+          - OF
+        group:
+          alt:
+            - BNF:
+                _name: graph type reference
+            - BNF:
+                _name: external object reference
+      _name: copy of graph type
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - DROP
+          - GRAPH
+          - TYPE
+        opt:
+          - kw: PROPERTY
+          - kw:
+              - IF
+              - EXISTS
+        BNF:
+          _name: catalog graph type parent and name
+      _name: drop graph type statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: call procedure statement
+      _name: call catalog-modifying procedure statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: focused linear data-modifying statement
+          - BNF:
+              _name: ambient linear data-modifying statement
+      _name: linear data-modifying statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: focused linear data-modifying statement body
+          - BNF:
+              _name: focused nested data-modifying procedure specification
+      _name: focused linear data-modifying statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: use graph clause
+          - _name: simple linear data-accessing statement
+        opt:
+          BNF:
+            _name: primitive result statement
+      _name: focused linear data-modifying statement body
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: use graph clause
+          - _name: nested data-modifying procedure specification
+      _name: focused nested data-modifying procedure specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: ambient linear data-modifying statement body
+          - BNF:
+              _name: nested data-modifying procedure specification
+      _name: ambient linear data-modifying statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: simple linear data-accessing statement
+        opt:
+          BNF:
+            _name: primitive result statement
+      _name: ambient linear data-modifying statement body
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: simple data-accessing statement
+        repeat: ''
+      _name: simple linear data-accessing statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simple query statement
+          - BNF:
+              _name: simple data-modifying statement
+      _name: simple data-accessing statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: primitive data-modifying statement
+          - BNF:
+              _name: call data-modifying procedure statement
+      _name: simple data-modifying statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: insert statement
+          - BNF:
+              _name: set statement
+          - BNF:
+              _name: remove statement
+          - BNF:
+              _name: delete statement
+      _name: primitive data-modifying statement
+      _predicative: 'no'
+    - rhs:
+        kw: INSERT
+        BNF:
+          _name: insert graph pattern
+      _name: insert statement
+      _predicative: 'no'
+    - rhs:
+        kw: SET
+        BNF:
+          _name: set item list
+      _name: set statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: set item
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: set item
+          repeat: ''
+      _name: set item list
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: set property item
+          - BNF:
+              _name: set all properties item
+          - BNF:
+              _name: set label item
+      _name: set item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: binding variable reference
+          - _name: period
+          - _name: property name
+          - _name: equals operator
+          - _name: value expression
+      _name: set property item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: binding variable reference
+          - _name: equals operator
+          - _name: left brace
+          - _name: right brace
+        opt:
+          BNF:
+            _name: property key value pair list
+      _name: set all properties item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: binding variable reference
+          - _name: is or colon
+          - _name: label name
+      _name: set label item
+      _predicative: 'no'
+    - rhs:
+        kw: REMOVE
+        BNF:
+          _name: remove item list
+      _name: remove statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: remove item
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: remove item
+          repeat: ''
+      _name: remove item list
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: remove property item
+          - BNF:
+              _name: remove label item
+      _name: remove item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: binding variable reference
+          - _name: period
+          - _name: property name
+      _name: remove property item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: binding variable reference
+          - _name: is or colon
+          - _name: label name
+      _name: remove label item
+      _predicative: 'no'
+    - rhs:
+        opt:
+          alt:
+            - kw: DETACH
+            - kw: NODETACH
+        kw: DELETE
+        BNF:
+          _name: delete item list
+      _name: delete statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: delete item
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: delete item
+          repeat: ''
+      _name: delete item list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression
+      _name: delete item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: call procedure statement
+      _name: call data-modifying procedure statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: composite query expression
+      _name: composite query statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: composite query expression
+              - _name: query conjunction
+              - _name: composite query primary
+          - BNF:
+              _name: composite query primary
+      _name: composite query expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: set operator
+          - kw: OTHERWISE
+      _name: query conjunction
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: UNION
+            opt:
+              BNF:
+                _name: set quantifier
+          - kw: EXCEPT
+            opt:
+              BNF:
+                _name: set quantifier
+          - kw: INTERSECT
+            opt:
+              BNF:
+                _name: set quantifier
+      _name: set operator
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: linear query statement
+      _name: composite query primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: focused linear query statement
+          - BNF:
+              _name: ambient linear query statement
+      _name: linear query statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              BNF:
+                _name: focused linear query statement part
+              repeat: ''
+            BNF:
+              _name: focused linear query and primitive result statement part
+          - BNF:
+              _name: focused primitive result statement
+          - BNF:
+              _name: focused nested query specification
+          - BNF:
+              _name: select statement
+      _name: focused linear query statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: use graph clause
+          - _name: simple linear query statement
+      _name: focused linear query statement part
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: use graph clause
+          - _name: simple linear query statement
+          - _name: primitive result statement
+      _name: focused linear query and primitive result statement part
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: use graph clause
+          - _name: primitive result statement
+      _name: focused primitive result statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: use graph clause
+          - _name: nested query specification
+      _name: focused nested query specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              BNF:
+                _name: simple linear query statement
+            BNF:
+              _name: primitive result statement
+          - BNF:
+              _name: nested query specification
+      _name: ambient linear query statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: simple query statement
+        repeat: ''
+      _name: simple linear query statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: primitive query statement
+          - BNF:
+              _name: call query statement
+      _name: simple query statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: match statement
+          - BNF:
+              _name: let statement
+          - BNF:
+              _name: for statement
+          - BNF:
+              _name: filter statement
+          - BNF:
+              _name: order by and page statement
+      _name: primitive query statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simple match statement
+          - BNF:
+              _name: optional match statement
+      _name: match statement
+      _predicative: 'no'
+    - rhs:
+        kw: MATCH
+        BNF:
+          _name: graph pattern binding table
+      _name: simple match statement
+      _predicative: 'no'
+    - rhs:
+        kw: OPTIONAL
+        BNF:
+          _name: optional operand
+      _name: optional match statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simple match statement
+          - BNF:
+              - _name: left brace
+              - _name: match statement block
+              - _name: right brace
+          - BNF:
+              - _name: left paren
+              - _name: match statement block
+              - _name: right paren
+      _name: optional operand
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: match statement
+        repeat: ''
+      _name: match statement block
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: call procedure statement
+      _name: call query statement
+      _predicative: 'no'
+    - rhs:
+        kw: FILTER
+        group:
+          alt:
+            - BNF:
+                _name: where clause
+            - BNF:
+                _name: search condition
+      _name: filter statement
+      _predicative: 'no'
+    - rhs:
+        kw: LET
+        BNF:
+          _name: let variable definition list
+      _name: let statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: let variable definition
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: let variable definition
+          repeat: ''
+      _name: let variable definition list
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: value variable definition
+          - BNF:
+              - _name: binding variable
+              - _name: equals operator
+              - _name: value expression
+      _name: let variable definition
+      _predicative: 'no'
+    - rhs:
+        kw: FOR
+        BNF:
+          _name: for item
+        opt:
+          BNF:
+            _name: for ordinality or offset
+      _name: for statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: for item alias
+          - _name: for item source
+      _name: for item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable
+        kw: IN
+      _name: for item alias
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: list value expression
+          - BNF:
+              _name: binding table reference value expression
+      _name: for item source
+      _predicative: 'no'
+    - rhs:
+        kw: WITH
+        group:
+          alt:
+            - kw: ORDINALITY
+            - kw: OFFSET
+        BNF:
+          _name: binding variable
+      _name: for ordinality or offset
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: order by clause
+            opt:
+              - BNF:
+                  _name: offset clause
+              - BNF:
+                  _name: limit clause
+          - BNF:
+              _name: offset clause
+            opt:
+              BNF:
+                _name: limit clause
+          - BNF:
+              _name: limit clause
+      _name: order by and page statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: return statement
+            opt:
+              BNF:
+                _name: order by and page statement
+          - kw: FINISH
+      _name: primitive result statement
+      _predicative: 'no'
+    - rhs:
+        kw: RETURN
+        BNF:
+          _name: return statement body
+      _name: return statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              - BNF:
+                  _name: set quantifier
+              - BNF:
+                  _name: group by clause
+            group:
+              alt:
+                - BNF:
+                    _name: asterisk
+                - BNF:
+                    _name: return item list
+          - kw:
+              - 'NO'
+              - BINDINGS
+      _name: return statement body
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: return item
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: return item
+          repeat: ''
+      _name: return item list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: aggregating value expression
+        opt:
+          BNF:
+            _name: return item alias
+      _name: return item
+      _predicative: 'no'
+    - rhs:
+        kw: AS
+        BNF:
+          _name: identifier
+      _name: return item alias
+      _predicative: 'no'
+    - rhs:
+        kw: SELECT
+        opt:
+          - BNF:
+              _name: set quantifier
+          - BNF:
+              _name: select statement body
+            opt:
+              - BNF:
+                  _name: where clause
+              - BNF:
+                  _name: group by clause
+              - BNF:
+                  _name: having clause
+              - BNF:
+                  _name: order by clause
+              - BNF:
+                  _name: offset clause
+              - BNF:
+                  _name: limit clause
+        group:
+          alt:
+            - BNF:
+                _name: asterisk
+            - BNF:
+                _name: select item list
+      _name: select statement
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: select item
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: select item
+          repeat: ''
+      _name: select item list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: aggregating value expression
+        opt:
+          BNF:
+            _name: select item alias
+      _name: select item
+      _predicative: 'no'
+    - rhs:
+        kw: AS
+        BNF:
+          _name: identifier
+      _name: select item alias
+      _predicative: 'no'
+    - rhs:
+        kw: HAVING
+        BNF:
+          _name: search condition
+      _name: having clause
+      _predicative: 'no'
+    - rhs:
+        kw: FROM
+        group:
+          alt:
+            - BNF:
+                _name: select graph match list
+            - BNF:
+                _name: select query specification
+      _name: select statement body
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: select graph match
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: select graph match
+          repeat: ''
+      _name: select graph match list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: graph expression
+          - _name: match statement
+      _name: select graph match
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: nested query specification
+          - BNF:
+              - _name: graph expression
+              - _name: nested query specification
+      _name: select query specification
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: OPTIONAL
+        kw: CALL
+        BNF:
+          _name: procedure call
+      _name: call procedure statement
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: inline procedure call
+          - BNF:
+              _name: named procedure call
+      _name: procedure call
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: variable scope clause
+        BNF:
+          _name: nested procedure specification
+      _name: inline procedure call
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: right paren
+        opt:
+          BNF:
+            _name: binding variable reference list
+      _name: variable scope clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable reference
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: binding variable reference
+          repeat: ''
+      _name: binding variable reference list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: procedure reference
+          - _name: left paren
+          - _name: right paren
+        opt:
+          - BNF:
+              _name: procedure argument list
+          - BNF:
+              _name: yield clause
+      _name: named procedure call
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: procedure argument
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: procedure argument
+          repeat: ''
+      _name: procedure argument list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression
+      _name: procedure argument
+      _predicative: 'no'
+    - rhs:
+        kw: AT
+        BNF:
+          _name: schema reference
+      _name: at schema clause
+      _predicative: 'no'
+    - rhs:
+        kw: USE
+        BNF:
+          _name: graph expression
+      _name: use graph clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: graph pattern
+        opt:
+          BNF:
+            _name: graph pattern yield clause
+      _name: graph pattern binding table
+      _predicative: 'no'
+    - rhs:
+        kw: YIELD
+        BNF:
+          _name: graph pattern yield item list
+      _name: graph pattern yield clause
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: graph pattern yield item
+            opt:
+              group:
+                BNF:
+                  - _name: comma
+                  - _name: graph pattern yield item
+              repeat: ''
+          - kw:
+              - 'NO'
+              - BINDINGS
+      _name: graph pattern yield item list
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: element variable reference
+          - BNF:
+              _name: path variable reference
+      _name: graph pattern yield item
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - BNF:
+              _name: match mode
+          - BNF:
+              _name: keep clause
+          - BNF:
+              _name: graph pattern where clause
+        BNF:
+          _name: path pattern list
+      _name: graph pattern
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: repeatable elements match mode
+          - BNF:
+              _name: different edges match mode
+      _name: match mode
+      _predicative: 'no'
+    - rhs:
+        kw: REPEATABLE
+        BNF:
+          _name: element bindings or elements
+      _name: repeatable elements match mode
+      _predicative: 'no'
+    - rhs:
+        kw: DIFFERENT
+        BNF:
+          _name: edge bindings or edges
+      _name: different edges match mode
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: ELEMENT
+            opt:
+              kw: BINDINGS
+          - kw: ELEMENTS
+      _name: element bindings or elements
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: edge synonym
+            opt:
+              kw: BINDINGS
+          - BNF:
+              _name: edges synonym
+      _name: edge bindings or edges
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: path pattern
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: path pattern
+          repeat: ''
+      _name: path pattern list
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - BNF:
+              _name: path variable declaration
+          - BNF:
+              _name: path pattern prefix
+        BNF:
+          _name: path pattern expression
+      _name: path pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: path variable
+          - _name: equals operator
+      _name: path variable declaration
+      _predicative: 'no'
+    - rhs:
+        kw: KEEP
+        BNF:
+          _name: path pattern prefix
+      _name: keep clause
+      _predicative: 'no'
+    - rhs:
+        kw: WHERE
+        BNF:
+          _name: search condition
+      _name: graph pattern where clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: insert path pattern list
+      _name: insert graph pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: insert path pattern
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: insert path pattern
+          repeat: ''
+      _name: insert path pattern list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: insert node pattern
+        opt:
+          group:
+            BNF:
+              - _name: insert edge pattern
+              - _name: insert node pattern
+          repeat: ''
+      _name: insert path pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: right paren
+        opt:
+          BNF:
+            _name: insert element pattern filler
+      _name: insert node pattern
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: insert edge pointing left
+          - BNF:
+              _name: insert edge pointing right
+          - BNF:
+              _name: insert edge undirected
+      _name: insert edge pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left arrow bracket
+          - _name: right bracket minus
+        opt:
+          BNF:
+            _name: insert element pattern filler
+      _name: insert edge pointing left
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: minus left bracket
+          - _name: bracket right arrow
+        opt:
+          BNF:
+            _name: insert element pattern filler
+      _name: insert edge pointing right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde left bracket
+          - _name: right bracket tilde
+        opt:
+          BNF:
+            _name: insert element pattern filler
+      _name: insert edge undirected
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: element variable declaration
+            opt:
+              BNF:
+                _name: label and property set specification
+          - opt:
+              BNF:
+                _name: element variable declaration
+            BNF:
+              _name: label and property set specification
+      _name: insert element pattern filler
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: is or colon
+              - _name: label set specification
+            opt:
+              BNF:
+                _name: element property specification
+          - opt:
+              BNF:
+                - _name: is or colon
+                - _name: label set specification
+            BNF:
+              _name: element property specification
+      _name: label and property set specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: path mode prefix
+          - BNF:
+              _name: path search prefix
+      _name: path pattern prefix
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: path mode
+        opt:
+          BNF:
+            _name: path or paths
+      _name: path mode prefix
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: WALK
+          - kw: TRAIL
+          - kw: SIMPLE
+          - kw: ACYCLIC
+      _name: path mode
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: all path search
+          - BNF:
+              _name: any path search
+          - BNF:
+              _name: shortest path search
+      _name: path search prefix
+      _predicative: 'no'
+    - rhs:
+        kw: ALL
+        opt:
+          - BNF:
+              _name: path mode
+          - BNF:
+              _name: path or paths
+      _name: all path search
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: PATH
+          - kw: PATHS
+      _name: path or paths
+      _predicative: 'no'
+    - rhs:
+        kw: ANY
+        opt:
+          - BNF:
+              _name: number of paths
+          - BNF:
+              _name: path mode
+          - BNF:
+              _name: path or paths
+      _name: any path search
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: non-negative integer specification
+      _name: number of paths
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: all shortest path search
+          - BNF:
+              _name: any shortest path search
+          - BNF:
+              _name: counted shortest path search
+          - BNF:
+              _name: counted shortest group search
+      _name: shortest path search
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - ALL
+          - SHORTEST
+        opt:
+          - BNF:
+              _name: path mode
+          - BNF:
+              _name: path or paths
+      _name: all shortest path search
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - ANY
+          - SHORTEST
+        opt:
+          - BNF:
+              _name: path mode
+          - BNF:
+              _name: path or paths
+      _name: any shortest path search
+      _predicative: 'no'
+    - rhs:
+        kw: SHORTEST
+        BNF:
+          _name: number of paths
+        opt:
+          - BNF:
+              _name: path mode
+          - BNF:
+              _name: path or paths
+      _name: counted shortest path search
+      _predicative: 'no'
+    - rhs:
+        kw: SHORTEST
+        opt:
+          - BNF:
+              _name: number of groups
+          - BNF:
+              _name: path mode
+          - BNF:
+              _name: path or paths
+        group:
+          alt:
+            - kw: GROUP
+            - kw: GROUPS
+      _name: counted shortest group search
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: non-negative integer specification
+      _name: number of groups
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: path term
+          - BNF:
+              _name: path multiset alternation
+          - BNF:
+              _name: path pattern union
+      _name: path pattern expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: path term
+          - _name: multiset alternation operator
+          - _name: path term
+        opt:
+          group:
+            BNF:
+              - _name: multiset alternation operator
+              - _name: path term
+          repeat: ''
+      _name: path multiset alternation
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: path term
+          - _name: vertical bar
+          - _name: path term
+        opt:
+          group:
+            BNF:
+              - _name: vertical bar
+              - _name: path term
+          repeat: ''
+      _name: path pattern union
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: path factor
+          - BNF:
+              _name: path concatenation
+      _name: path term
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: path term
+          - _name: path factor
+      _name: path concatenation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: path primary
+          - BNF:
+              _name: quantified path primary
+          - BNF:
+              _name: questioned path primary
+      _name: path factor
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: path primary
+          - _name: graph pattern quantifier
+      _name: quantified path primary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: path primary
+          - _name: question mark
+      _name: questioned path primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: element pattern
+          - BNF:
+              _name: parenthesized path pattern expression
+          - BNF:
+              _name: simplified path pattern expression
+      _name: path primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: node pattern
+          - BNF:
+              _name: edge pattern
+      _name: element pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: element pattern filler
+          - _name: right paren
+      _name: node pattern
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - BNF:
+              _name: element variable declaration
+          - BNF:
+              _name: is label expression
+          - BNF:
+              _name: element pattern predicate
+      _name: element pattern filler
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: TEMP
+        BNF:
+          _name: element variable
+      _name: element variable declaration
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: is or colon
+          - _name: label expression
+      _name: is label expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: IS
+          - BNF:
+              _name: colon
+      _name: is or colon
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: element pattern where clause
+          - BNF:
+              _name: element property specification
+      _name: element pattern predicate
+      _predicative: 'no'
+    - rhs:
+        kw: WHERE
+        BNF:
+          _name: search condition
+      _name: element pattern where clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: property key value pair list
+          - _name: right brace
+      _name: element property specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: property key value pair
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: property key value pair
+          repeat: ''
+      _name: property key value pair list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: property name
+          - _name: colon
+          - _name: value expression
+      _name: property key value pair
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: full edge pattern
+          - BNF:
+              _name: abbreviated edge pattern
+      _name: edge pattern
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: full edge pointing left
+          - BNF:
+              _name: full edge undirected
+          - BNF:
+              _name: full edge pointing right
+          - BNF:
+              _name: full edge left or undirected
+          - BNF:
+              _name: full edge undirected or right
+          - BNF:
+              _name: full edge left or right
+          - BNF:
+              _name: full edge any direction
+      _name: full edge pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left arrow bracket
+          - _name: element pattern filler
+          - _name: right bracket minus
+      _name: full edge pointing left
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde left bracket
+          - _name: element pattern filler
+          - _name: right bracket tilde
+      _name: full edge undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: minus left bracket
+          - _name: element pattern filler
+          - _name: bracket right arrow
+      _name: full edge pointing right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left arrow tilde bracket
+          - _name: element pattern filler
+          - _name: right bracket tilde
+      _name: full edge left or undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde left bracket
+          - _name: element pattern filler
+          - _name: bracket tilde right arrow
+      _name: full edge undirected or right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left arrow bracket
+          - _name: element pattern filler
+          - _name: bracket right arrow
+      _name: full edge left or right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: minus left bracket
+          - _name: element pattern filler
+          - _name: right bracket minus
+      _name: full edge any direction
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: left arrow
+          - BNF:
+              _name: tilde
+          - BNF:
+              _name: right arrow
+          - BNF:
+              _name: left arrow tilde
+          - BNF:
+              _name: tilde right arrow
+          - BNF:
+              _name: left minus right
+          - BNF:
+              _name: minus sign
+      _name: abbreviated edge pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: path pattern expression
+          - _name: right paren
+        opt:
+          - BNF:
+              _name: subpath variable declaration
+          - BNF:
+              _name: path mode prefix
+          - BNF:
+              _name: parenthesized path pattern where clause
+      _name: parenthesized path pattern expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: subpath variable
+          - _name: equals operator
+      _name: subpath variable declaration
+      _predicative: 'no'
+    - rhs:
+        kw: WHERE
+        BNF:
+          _name: search condition
+      _name: parenthesized path pattern where clause
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: label term
+          - BNF:
+              _name: label disjunction
+      _name: label expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: label expression
+          - _name: vertical bar
+          - _name: label term
+      _name: label disjunction
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: label factor
+          - BNF:
+              _name: label conjunction
+      _name: label term
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: label term
+          - _name: ampersand
+          - _name: label factor
+      _name: label conjunction
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: label primary
+          - BNF:
+              _name: label negation
+      _name: label factor
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: exclamation mark
+          - _name: label primary
+      _name: label negation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: label name
+          - BNF:
+              _name: wildcard label
+          - BNF:
+              _name: parenthesized label expression
+      _name: label primary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: percent
+      _name: wildcard label
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: label expression
+          - _name: right paren
+      _name: parenthesized label expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable reference
+      _name: path variable reference
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable reference
+      _name: element variable reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: asterisk
+          - BNF:
+              _name: plus sign
+          - BNF:
+              _name: fixed quantifier
+          - BNF:
+              _name: general quantifier
+      _name: graph pattern quantifier
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: unsigned integer
+          - _name: right brace
+      _name: fixed quantifier
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: comma
+          - _name: right brace
+        opt:
+          - BNF:
+              _name: lower bound
+          - BNF:
+              _name: upper bound
+      _name: general quantifier
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned integer
+      _name: lower bound
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned integer
+      _name: upper bound
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified defaulting left
+          - BNF:
+              _name: simplified defaulting undirected
+          - BNF:
+              _name: simplified defaulting right
+          - BNF:
+              _name: simplified defaulting left or undirected
+          - BNF:
+              _name: simplified defaulting undirected or right
+          - BNF:
+              _name: simplified defaulting left or right
+          - BNF:
+              _name: simplified defaulting any direction
+      _name: simplified path pattern expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left minus slash
+          - _name: simplified contents
+          - _name: slash minus
+      _name: simplified defaulting left
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde slash
+          - _name: simplified contents
+          - _name: slash tilde
+      _name: simplified defaulting undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: minus slash
+          - _name: simplified contents
+          - _name: slash minus right
+      _name: simplified defaulting right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left tilde slash
+          - _name: simplified contents
+          - _name: slash tilde
+      _name: simplified defaulting left or undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde slash
+          - _name: simplified contents
+          - _name: slash tilde right
+      _name: simplified defaulting undirected or right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left minus slash
+          - _name: simplified contents
+          - _name: slash minus right
+      _name: simplified defaulting left or right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: minus slash
+          - _name: simplified contents
+          - _name: slash minus
+      _name: simplified defaulting any direction
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified term
+          - BNF:
+              _name: simplified path union
+          - BNF:
+              _name: simplified multiset alternation
+      _name: simplified contents
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simplified term
+          - _name: vertical bar
+          - _name: simplified term
+        opt:
+          group:
+            BNF:
+              - _name: vertical bar
+              - _name: simplified term
+          repeat: ''
+      _name: simplified path union
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simplified term
+          - _name: multiset alternation operator
+          - _name: simplified term
+        opt:
+          group:
+            BNF:
+              - _name: multiset alternation operator
+              - _name: simplified term
+          repeat: ''
+      _name: simplified multiset alternation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified factor low
+          - BNF:
+              _name: simplified concatenation
+      _name: simplified term
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simplified term
+          - _name: simplified factor low
+      _name: simplified concatenation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified factor high
+          - BNF:
+              _name: simplified conjunction
+      _name: simplified factor low
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simplified factor low
+          - _name: ampersand
+          - _name: simplified factor high
+      _name: simplified conjunction
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified tertiary
+          - BNF:
+              _name: simplified quantified
+          - BNF:
+              _name: simplified questioned
+      _name: simplified factor high
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simplified tertiary
+          - _name: graph pattern quantifier
+      _name: simplified quantified
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simplified tertiary
+          - _name: question mark
+      _name: simplified questioned
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified direction override
+          - BNF:
+              _name: simplified secondary
+      _name: simplified tertiary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified override left
+          - BNF:
+              _name: simplified override undirected
+          - BNF:
+              _name: simplified override right
+          - BNF:
+              _name: simplified override left or undirected
+          - BNF:
+              _name: simplified override undirected or right
+          - BNF:
+              _name: simplified override left or right
+          - BNF:
+              _name: simplified override any direction
+      _name: simplified direction override
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left angle bracket
+          - _name: simplified secondary
+      _name: simplified override left
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde
+          - _name: simplified secondary
+      _name: simplified override undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simplified secondary
+          - _name: right angle bracket
+      _name: simplified override right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left arrow tilde
+          - _name: simplified secondary
+      _name: simplified override left or undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde
+          - _name: simplified secondary
+          - _name: right angle bracket
+      _name: simplified override undirected or right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left angle bracket
+          - _name: simplified secondary
+          - _name: right angle bracket
+      _name: simplified override left or right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: minus sign
+          - _name: simplified secondary
+      _name: simplified override any direction
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simplified primary
+          - BNF:
+              _name: simplified negation
+      _name: simplified secondary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: exclamation mark
+          - _name: simplified primary
+      _name: simplified negation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: label name
+          - BNF:
+              - _name: left paren
+              - _name: simplified contents
+              - _name: right paren
+      _name: simplified primary
+      _predicative: 'no'
+    - rhs:
+        kw: WHERE
+        BNF:
+          _name: search condition
+      _name: where clause
+      _predicative: 'no'
+    - rhs:
+        kw: YIELD
+        BNF:
+          _name: yield item list
+      _name: yield clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: yield item
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: yield item
+          repeat: ''
+      _name: yield item list
+      _predicative: 'no'
+    - rhs:
+        group:
+          BNF:
+            _name: yield item name
+          opt:
+            BNF:
+              _name: yield item alias
+      _name: yield item
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: field name
+      _name: yield item name
+      _predicative: 'no'
+    - rhs:
+        kw: AS
+        BNF:
+          _name: binding variable
+      _name: yield item alias
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - GROUP
+          - BY
+        BNF:
+          _name: grouping element list
+      _name: group by clause
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: grouping element
+            opt:
+              group:
+                BNF:
+                  - _name: comma
+                  - _name: grouping element
+              repeat: ''
+          - BNF:
+              _name: empty grouping set
+      _name: grouping element list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable reference
+      _name: grouping element
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: right paren
+      _name: empty grouping set
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - ORDER
+          - BY
+        BNF:
+          _name: sort specification list
+      _name: order by clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: sort specification
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: sort specification
+          repeat: ''
+      _name: sort specification list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: sort key
+        opt:
+          - BNF:
+              _name: ordering specification
+          - BNF:
+              _name: null ordering
+      _name: sort specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: aggregating value expression
+      _name: sort key
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: ASC
+          - kw: ASCENDING
+          - kw: DESC
+          - kw: DESCENDING
+      _name: ordering specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - NULLS
+              - FIRST
+          - kw:
+              - NULLS
+              - LAST
+      _name: null ordering
+      _predicative: 'no'
+    - rhs:
+        kw: LIMIT
+        BNF:
+          _name: non-negative integer specification
+      _name: limit clause
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: offset synonym
+          - _name: non-negative integer specification
+      _name: offset clause
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: OFFSET
+          - kw: SKIP
+      _name: offset synonym
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: absolute catalog schema reference
+          - BNF:
+              _name: relative catalog schema reference
+          - BNF:
+              _name: reference parameter specification
+      _name: schema reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: solidus
+          - BNF:
+              - _name: absolute directory path
+              - _name: schema name
+      _name: absolute catalog schema reference
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: absolute directory path
+          - _name: schema name
+      _name: catalog schema parent and name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: predefined schema reference
+          - BNF:
+              - _name: relative directory path
+              - _name: schema name
+      _name: relative catalog schema reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: HOME_SCHEMA
+          - kw: CURRENT_SCHEMA
+          - BNF:
+              _name: period
+      _name: predefined schema reference
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: solidus
+        opt:
+          BNF:
+            _name: simple directory path
+      _name: absolute directory path
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: double period
+        opt:
+          group:
+            BNF:
+              - _name: solidus
+              - _name: double period
+          repeat: ''
+          BNF:
+            _name: solidus
+          opt:
+            BNF:
+              _name: simple directory path
+      _name: relative directory path
+      _predicative: 'no'
+    - rhs:
+        group:
+          BNF:
+            - _name: directory name
+            - _name: solidus
+        repeat: ''
+      _name: simple directory path
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: catalog object parent reference
+              - _name: graph name
+          - BNF:
+              _name: delimited graph name
+          - BNF:
+              _name: home graph
+          - BNF:
+              _name: reference parameter specification
+      _name: graph reference
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: catalog object parent reference
+        BNF:
+          _name: graph name
+      _name: catalog graph parent and name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: HOME_PROPERTY_GRAPH
+          - kw: HOME_GRAPH
+      _name: home graph
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: catalog graph type parent and name
+          - BNF:
+              _name: reference parameter specification
+      _name: graph type reference
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: catalog object parent reference
+        BNF:
+          _name: graph type name
+      _name: catalog graph type parent and name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: catalog object parent reference
+              - _name: binding table name
+          - BNF:
+              _name: delimited binding table name
+          - BNF:
+              _name: reference parameter specification
+      _name: binding table reference
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: catalog object parent reference
+        BNF:
+          _name: binding table name
+      _name: catalog binding table parent and name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: catalog procedure parent and name
+          - BNF:
+              _name: reference parameter specification
+      _name: procedure reference
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: catalog object parent reference
+        BNF:
+          _name: procedure name
+      _name: catalog procedure parent and name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: schema reference
+            opt:
+              - BNF:
+                  _name: solidus
+              - group:
+                  BNF:
+                    - _name: object name
+                    - _name: period
+                repeat: ''
+          - group:
+              BNF:
+                - _name: object name
+                - _name: period
+            repeat: ''
+      _name: catalog object parent reference
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: substituted parameter reference
+      _name: reference parameter specification
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: external object reference
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: graph type specification body
+          - _name: right brace
+      _name: nested graph type specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: element type list
+      _name: graph type specification body
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: element type specification
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: element type specification
+          repeat: ''
+      _name: element type list
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: node type specification
+          - BNF:
+              _name: edge type specification
+      _name: element type specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: node type pattern
+          - BNF:
+              _name: node type phrase
+      _name: node type specification
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - BNF:
+              - _name: node synonym
+              - _name: node type name
+            opt:
+              kw: TYPE
+          - BNF:
+              _name: local node type alias
+          - BNF:
+              _name: node type filler
+        BNF:
+          - _name: left paren
+          - _name: right paren
+      _name: node type pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: node synonym
+          - _name: node type phrase filler
+        opt:
+          - kw: TYPE
+          - kw: AS
+            BNF:
+              _name: local node type alias
+      _name: node type phrase
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: node type name
+            opt:
+              BNF:
+                _name: node type filler
+          - BNF:
+              _name: node type filler
+      _name: node type phrase filler
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: node type key label set
+            opt:
+              BNF:
+                _name: node type implied content
+          - BNF:
+              _name: node type implied content
+      _name: node type filler
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: regular identifier
+      _name: local node type alias
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: node type label set
+          - BNF:
+              _name: node type property types
+          - BNF:
+              - _name: node type label set
+              - _name: node type property types
+      _name: node type implied content
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: label set phrase
+        BNF:
+          _name: implies
+      _name: node type key label set
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: label set phrase
+      _name: node type label set
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: property types specification
+      _name: node type property types
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: edge type pattern
+          - BNF:
+              _name: edge type phrase
+      _name: edge type specification
+      _predicative: 'no'
+    - rhs:
+        opt:
+          opt:
+            - BNF:
+                _name: edge kind
+            - kw: TYPE
+          BNF:
+            - _name: edge synonym
+            - _name: edge type name
+        group:
+          alt:
+            - BNF:
+                _name: edge type pattern directed
+            - BNF:
+                _name: edge type pattern undirected
+      _name: edge type pattern
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: edge kind
+          - _name: edge synonym
+          - _name: edge type phrase filler
+          - _name: endpoint pair phrase
+        opt:
+          kw: TYPE
+      _name: edge type phrase
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: edge type name
+            opt:
+              BNF:
+                _name: edge type filler
+          - BNF:
+              _name: edge type filler
+      _name: edge type phrase filler
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: edge type key label set
+            opt:
+              BNF:
+                _name: edge type implied content
+          - BNF:
+              _name: edge type implied content
+      _name: edge type filler
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: edge type label set
+          - BNF:
+              _name: edge type property types
+          - BNF:
+              - _name: edge type label set
+              - _name: edge type property types
+      _name: edge type implied content
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: label set phrase
+        BNF:
+          _name: implies
+      _name: edge type key label set
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: label set phrase
+      _name: edge type label set
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: property types specification
+      _name: edge type property types
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: edge type pattern pointing right
+          - BNF:
+              _name: edge type pattern pointing left
+      _name: edge type pattern directed
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: source node type reference
+          - _name: arc type pointing right
+          - _name: destination node type reference
+      _name: edge type pattern pointing right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: destination node type reference
+          - _name: arc type pointing left
+          - _name: source node type reference
+      _name: edge type pattern pointing left
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: source node type reference
+          - _name: arc type undirected
+          - _name: destination node type reference
+      _name: edge type pattern undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: minus left bracket
+          - _name: edge type filler
+          - _name: bracket right arrow
+      _name: arc type pointing right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left arrow bracket
+          - _name: edge type filler
+          - _name: right bracket minus
+      _name: arc type pointing left
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: tilde left bracket
+          - _name: edge type filler
+          - _name: right bracket tilde
+      _name: arc type undirected
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: left paren
+              - _name: source node type alias
+              - _name: right paren
+          - BNF:
+              - _name: left paren
+              - _name: right paren
+            opt:
+              BNF:
+                _name: node type filler
+      _name: source node type reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: left paren
+              - _name: destination node type alias
+              - _name: right paren
+          - BNF:
+              - _name: left paren
+              - _name: right paren
+            opt:
+              BNF:
+                _name: node type filler
+      _name: destination node type reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: DIRECTED
+          - kw: UNDIRECTED
+      _name: edge kind
+      _predicative: 'no'
+    - rhs:
+        kw: CONNECTING
+        BNF:
+          _name: endpoint pair
+      _name: endpoint pair phrase
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: endpoint pair directed
+          - BNF:
+              _name: endpoint pair undirected
+      _name: endpoint pair
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: endpoint pair pointing right
+          - BNF:
+              _name: endpoint pair pointing left
+      _name: endpoint pair directed
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: source node type alias
+          - _name: connector pointing right
+          - _name: destination node type alias
+          - _name: right paren
+      _name: endpoint pair pointing right
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: destination node type alias
+          - _name: left arrow
+          - _name: source node type alias
+          - _name: right paren
+      _name: endpoint pair pointing left
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: source node type alias
+          - _name: connector undirected
+          - _name: destination node type alias
+          - _name: right paren
+      _name: endpoint pair undirected
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: TO
+          - BNF:
+              _name: right arrow
+      _name: connector pointing right
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: TO
+          - BNF:
+              _name: tilde
+      _name: connector undirected
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: regular identifier
+      _name: source node type alias
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: regular identifier
+      _name: destination node type alias
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: LABEL
+            BNF:
+              _name: label name
+          - kw: LABELS
+            BNF:
+              _name: label set specification
+          - BNF:
+              - _name: is or colon
+              - _name: label set specification
+      _name: label set phrase
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: label name
+        opt:
+          group:
+            BNF:
+              - _name: ampersand
+              - _name: label name
+          repeat: ''
+      _name: label set specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: right brace
+        opt:
+          BNF:
+            _name: property type list
+      _name: property types specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: property type
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: property type
+          repeat: ''
+      _name: property type list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: property name
+          - _name: property value type
+        opt:
+          BNF:
+            _name: typed
+      _name: property type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value type
+      _name: property value type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: BINDING
+        kw: TABLE
+        BNF:
+          _name: field types specification
+      _name: binding table type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: predefined type
+          - BNF:
+              _name: constructed value type
+          - BNF:
+              _name: dynamic union type
+      _name: value type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: double colon
+          - kw: TYPED
+      _name: typed
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: boolean type
+          - BNF:
+              _name: character string type
+          - BNF:
+              _name: byte string type
+          - BNF:
+              _name: numeric type
+          - BNF:
+              _name: temporal type
+          - BNF:
+              _name: reference value type
+          - BNF:
+              _name: immaterial value type
+      _name: predefined type
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: BOOL
+            - kw: BOOLEAN
+        opt:
+          BNF:
+            _name: not null
+      _name: boolean type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: STRING
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: max length
+                  - _name: right paren
+                opt:
+                  BNF:
+                    - _name: min length
+                    - _name: comma
+              - BNF:
+                  _name: not null
+          - kw: CHAR
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: fixed length
+                  - _name: right paren
+              - BNF:
+                  _name: not null
+          - kw: VARCHAR
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: max length
+                  - _name: right paren
+              - BNF:
+                  _name: not null
+      _name: character string type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: BYTES
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: max length
+                  - _name: right paren
+                opt:
+                  BNF:
+                    - _name: min length
+                    - _name: comma
+              - BNF:
+                  _name: not null
+          - kw: BINARY
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: fixed length
+                  - _name: right paren
+              - BNF:
+                  _name: not null
+          - kw: VARBINARY
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: max length
+                  - _name: right paren
+              - BNF:
+                  _name: not null
+      _name: byte string type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned integer
+      _name: min length
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned integer
+      _name: max length
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned integer
+      _name: fixed length
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: exact numeric type
+          - BNF:
+              _name: approximate numeric type
+      _name: numeric type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: binary exact numeric type
+          - BNF:
+              _name: decimal exact numeric type
+      _name: exact numeric type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: signed binary exact numeric type
+          - BNF:
+              _name: unsigned binary exact numeric type
+      _name: binary exact numeric type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: INT8
+            opt:
+              BNF:
+                _name: not null
+          - kw: INT16
+            opt:
+              BNF:
+                _name: not null
+          - kw: INT32
+            opt:
+              BNF:
+                _name: not null
+          - kw: INT64
+            opt:
+              BNF:
+                _name: not null
+          - kw: INT128
+            opt:
+              BNF:
+                _name: not null
+          - kw: INT256
+            opt:
+              BNF:
+                _name: not null
+          - kw: SMALLINT
+            opt:
+              BNF:
+                _name: not null
+          - kw: INT
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: precision
+                  - _name: right paren
+              - BNF:
+                  _name: not null
+          - kw: BIGINT
+            opt:
+              BNF:
+                _name: not null
+          - opt:
+              kw: SIGNED
+            BNF:
+              _name: verbose binary exact numeric type
+      _name: signed binary exact numeric type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: UINT8
+            opt:
+              BNF:
+                _name: not null
+          - kw: UINT16
+            opt:
+              BNF:
+                _name: not null
+          - kw: UINT32
+            opt:
+              BNF:
+                _name: not null
+          - kw: UINT64
+            opt:
+              BNF:
+                _name: not null
+          - kw: UINT128
+            opt:
+              BNF:
+                _name: not null
+          - kw: UINT256
+            opt:
+              BNF:
+                _name: not null
+          - kw: USMALLINT
+            opt:
+              BNF:
+                _name: not null
+          - kw: UINT
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: precision
+                  - _name: right paren
+              - BNF:
+                  _name: not null
+          - kw: UBIGINT
+            opt:
+              BNF:
+                _name: not null
+          - kw: UNSIGNED
+            BNF:
+              _name: verbose binary exact numeric type
+      _name: unsigned binary exact numeric type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: INTEGER8
+            opt:
+              BNF:
+                _name: not null
+          - kw: INTEGER16
+            opt:
+              BNF:
+                _name: not null
+          - kw: INTEGER32
+            opt:
+              BNF:
+                _name: not null
+          - kw: INTEGER64
+            opt:
+              BNF:
+                _name: not null
+          - kw: INTEGER128
+            opt:
+              BNF:
+                _name: not null
+          - kw: INTEGER256
+            opt:
+              BNF:
+                _name: not null
+          - kw:
+              - SMALL
+              - INTEGER
+            opt:
+              BNF:
+                _name: not null
+          - kw: INTEGER
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: precision
+                  - _name: right paren
+              - BNF:
+                  _name: not null
+          - kw:
+              - BIG
+              - INTEGER
+            opt:
+              BNF:
+                _name: not null
+      _name: verbose binary exact numeric type
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: DECIMAL
+            - kw: DEC
+        opt:
+          BNF:
+            - _name: left paren
+            - _name: precision
+            - _name: right paren
+          opt:
+            - BNF:
+                - _name: comma
+                - _name: scale
+            - BNF:
+                _name: not null
+      _name: decimal exact numeric type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned decimal integer
+      _name: precision
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned decimal integer
+      _name: scale
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: FLOAT16
+            opt:
+              BNF:
+                _name: not null
+          - kw: FLOAT32
+            opt:
+              BNF:
+                _name: not null
+          - kw: FLOAT64
+            opt:
+              BNF:
+                _name: not null
+          - kw: FLOAT128
+            opt:
+              BNF:
+                _name: not null
+          - kw: FLOAT256
+            opt:
+              BNF:
+                _name: not null
+          - kw: FLOAT
+            opt:
+              - BNF:
+                  - _name: left paren
+                  - _name: precision
+                  - _name: right paren
+                opt:
+                  BNF:
+                    - _name: comma
+                    - _name: scale
+              - BNF:
+                  _name: not null
+          - kw: REAL
+            opt:
+              BNF:
+                _name: not null
+          - kw: DOUBLE
+            opt:
+              - kw: PRECISION
+              - BNF:
+                  _name: not null
+      _name: approximate numeric type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: temporal instant type
+          - BNF:
+              _name: temporal duration type
+      _name: temporal type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: datetime type
+          - BNF:
+              _name: localdatetime type
+          - BNF:
+              _name: date type
+          - BNF:
+              _name: time type
+          - BNF:
+              _name: localtime type
+      _name: temporal instant type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - ZONED
+              - DATETIME
+            opt:
+              BNF:
+                _name: not null
+          - kw:
+              - TIMESTAMP
+              - WITH
+              - TIME
+              - ZONE
+            opt:
+              BNF:
+                _name: not null
+      _name: datetime type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - LOCAL
+              - DATETIME
+            opt:
+              BNF:
+                _name: not null
+          - kw: TIMESTAMP
+            opt:
+              - kw:
+                  - WITHOUT
+                  - TIME
+                  - ZONE
+              - BNF:
+                  _name: not null
+      _name: localdatetime type
+      _predicative: 'no'
+    - rhs:
+        kw: DATE
+        opt:
+          BNF:
+            _name: not null
+      _name: date type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - ZONED
+              - TIME
+            opt:
+              BNF:
+                _name: not null
+          - kw:
+              - TIME
+              - WITH
+              - TIME
+              - ZONE
+            opt:
+              BNF:
+                _name: not null
+      _name: time type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - LOCAL
+              - TIME
+            opt:
+              BNF:
+                _name: not null
+          - kw:
+              - TIME
+              - WITHOUT
+              - TIME
+              - ZONE
+            opt:
+              BNF:
+                _name: not null
+      _name: localtime type
+      _predicative: 'no'
+    - rhs:
+        kw: DURATION
+        BNF:
+          - _name: left paren
+          - _name: temporal duration qualifier
+          - _name: right paren
+        opt:
+          BNF:
+            _name: not null
+      _name: temporal duration type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - YEAR
+              - TO
+              - MONTH
+          - kw:
+              - DAY
+              - TO
+              - SECOND
+      _name: temporal duration qualifier
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: graph reference value type
+          - BNF:
+              _name: binding table reference value type
+          - BNF:
+              _name: node reference value type
+          - BNF:
+              _name: edge reference value type
+      _name: reference value type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: null type
+          - BNF:
+              _name: empty type
+      _name: immaterial value type
+      _predicative: 'no'
+    - rhs:
+        kw: 'NULL'
+      _name: null type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: 'NULL'
+            BNF:
+              _name: not null
+          - kw: NOTHING
+      _name: empty type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: open graph reference value type
+          - BNF:
+              _name: closed graph reference value type
+      _name: graph reference value type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - kw: PROPERTY
+          - BNF:
+              _name: not null
+        kw: GRAPH
+        BNF:
+          _name: nested graph type specification
+      _name: closed graph reference value type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - kw: ANY
+          - kw: PROPERTY
+          - BNF:
+              _name: not null
+        kw: GRAPH
+      _name: open graph reference value type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding table type
+        opt:
+          BNF:
+            _name: not null
+      _name: binding table reference value type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: open node reference value type
+          - BNF:
+              _name: closed node reference value type
+      _name: node reference value type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: node type specification
+        opt:
+          BNF:
+            _name: not null
+      _name: closed node reference value type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - kw: ANY
+          - BNF:
+              _name: not null
+        BNF:
+          _name: node synonym
+      _name: open node reference value type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: open edge reference value type
+          - BNF:
+              _name: closed edge reference value type
+      _name: edge reference value type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: edge type specification
+        opt:
+          BNF:
+            _name: not null
+      _name: closed edge reference value type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - kw: ANY
+          - BNF:
+              _name: not null
+        BNF:
+          _name: edge synonym
+      _name: open edge reference value type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: path value type
+          - BNF:
+              _name: list value type
+          - BNF:
+              _name: record type
+      _name: constructed value type
+      _predicative: 'no'
+    - rhs:
+        kw: PATH
+        opt:
+          BNF:
+            _name: not null
+      _name: path value type
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - BNF:
+                - _name: list value type name
+                - _name: left angle bracket
+                - _name: value type
+                - _name: right angle bracket
+            - opt:
+                BNF:
+                  _name: value type
+              BNF:
+                _name: list value type name
+        opt:
+          - BNF:
+              - _name: left bracket
+              - _name: max length
+              - _name: right bracket
+          - BNF:
+              _name: not null
+      _name: list value type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: GROUP
+        BNF:
+          _name: list value type name synonym
+      _name: list value type name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: LIST
+          - kw: ARRAY
+      _name: list value type name synonym
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              - kw: ANY
+              - BNF:
+                  _name: not null
+            kw: RECORD
+          - opt:
+              - kw: RECORD
+              - BNF:
+                  _name: not null
+            BNF:
+              _name: field types specification
+      _name: record type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: right brace
+        opt:
+          BNF:
+            _name: field type list
+      _name: field types specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: field type
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: field type
+          repeat: ''
+      _name: field type list
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: open dynamic union type
+          - BNF:
+              _name: dynamic property value type
+          - BNF:
+              _name: closed dynamic union type
+      _name: dynamic union type
+      _predicative: 'no'
+    - rhs:
+        kw: ANY
+        opt:
+          - kw: VALUE
+          - BNF:
+              _name: not null
+      _name: open dynamic union type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - kw: ANY
+          - BNF:
+              _name: not null
+        kw:
+          - PROPERTY
+          - VALUE
+      _name: dynamic property value type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: ANY
+            opt:
+              kw: VALUE
+            BNF:
+              - _name: left angle bracket
+              - _name: component type list
+              - _name: right angle bracket
+          - BNF:
+              _name: component type list
+      _name: closed dynamic union type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: component type
+        opt:
+          group:
+            BNF:
+              - _name: vertical bar
+              - _name: component type
+          repeat: ''
+      _name: component type list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value type
+      _name: component type
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - NOT
+          - 'NULL'
+      _name: not null
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: field name
+          - _name: value type
+        opt:
+          BNF:
+            _name: typed
+      _name: field type
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: boolean value expression
+      _name: search condition
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: comparison predicate
+          - BNF:
+              _name: exists predicate
+          - BNF:
+              _name: null predicate
+          - BNF:
+              _name: normalized predicate
+          - BNF:
+              _name: value type predicate
+          - BNF:
+              _name: directed predicate
+          - BNF:
+              _name: labeled predicate
+          - BNF:
+              _name: source/destination predicate
+          - BNF:
+              _name: all_different predicate
+          - BNF:
+              _name: same predicate
+          - BNF:
+              _name: property_exists predicate
+      _name: predicate
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: comparison predicand
+          - _name: comparison predicate part 2
+      _name: comparison predicate
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: comp op
+          - _name: comparison predicand
+      _name: comparison predicate part 2
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: equals operator
+          - BNF:
+              _name: not equals operator
+          - BNF:
+              _name: less than operator
+          - BNF:
+              _name: greater than operator
+          - BNF:
+              _name: less than or equals operator
+          - BNF:
+              _name: greater than or equals operator
+      _name: comp op
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: common value expression
+          - BNF:
+              _name: boolean predicand
+      _name: comparison predicand
+      _predicative: 'no'
+    - rhs:
+        kw: EXISTS
+        group:
+          alt:
+            - BNF:
+                - _name: left brace
+                - _name: graph pattern
+                - _name: right brace
+            - BNF:
+                - _name: left paren
+                - _name: graph pattern
+                - _name: right paren
+            - BNF:
+                - _name: left brace
+                - _name: match statement block
+                - _name: right brace
+            - BNF:
+                - _name: left paren
+                - _name: match statement block
+                - _name: right paren
+            - BNF:
+                _name: nested query specification
+      _name: exists predicate
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: value expression primary
+          - _name: null predicate part 2
+      _name: null predicate
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - IS
+          - 'NULL'
+        opt:
+          kw: NOT
+      _name: null predicate part 2
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: value expression primary
+          - _name: value type predicate part 2
+      _name: value type predicate
+      _predicative: 'no'
+    - rhs:
+        kw: IS
+        opt:
+          kw: NOT
+        BNF:
+          - _name: typed
+          - _name: value type
+      _name: value type predicate part 2
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: string value expression
+          - _name: normalized predicate part 2
+      _name: normalized predicate
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - IS
+          - NORMALIZED
+        opt:
+          - kw: NOT
+          - BNF:
+              _name: normal form
+      _name: normalized predicate part 2
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: element variable reference
+          - _name: directed predicate part 2
+      _name: directed predicate
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - IS
+          - DIRECTED
+        opt:
+          kw: NOT
+      _name: directed predicate part 2
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: element variable reference
+          - _name: labeled predicate part 2
+      _name: labeled predicate
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: is labeled or colon
+          - _name: label expression
+      _name: labeled predicate part 2
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw:
+              - IS
+              - LABELED
+            opt:
+              kw: NOT
+          - BNF:
+              _name: colon
+      _name: is labeled or colon
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: node reference
+              - _name: source predicate part 2
+          - BNF:
+              - _name: node reference
+              - _name: destination predicate part 2
+      _name: source/destination predicate
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: element variable reference
+      _name: node reference
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - IS
+          - SOURCE
+          - OF
+        opt:
+          kw: NOT
+        BNF:
+          _name: edge reference
+      _name: source predicate part 2
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - IS
+          - DESTINATION
+          - OF
+        opt:
+          kw: NOT
+        BNF:
+          _name: edge reference
+      _name: destination predicate part 2
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: element variable reference
+      _name: edge reference
+      _predicative: 'no'
+    - rhs:
+        kw: ALL_DIFFERENT
+        BNF:
+          - _name: left paren
+          - _name: element variable reference
+          - _name: comma
+          - _name: element variable reference
+          - _name: right paren
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: element variable reference
+          repeat: ''
+      _name: all_different predicate
+      _predicative: 'no'
+    - rhs:
+        kw: SAME
+        BNF:
+          - _name: left paren
+          - _name: element variable reference
+          - _name: comma
+          - _name: element variable reference
+          - _name: right paren
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: element variable reference
+          repeat: ''
+      _name: same predicate
+      _predicative: 'no'
+    - rhs:
+        kw: PROPERTY_EXISTS
+        BNF:
+          - _name: left paren
+          - _name: element variable reference
+          - _name: comma
+          - _name: property name
+          - _name: right paren
+      _name: property_exists predicate
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: common value expression
+          - BNF:
+              _name: boolean value expression
+      _name: value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: numeric value expression
+          - BNF:
+              _name: string value expression
+          - BNF:
+              _name: datetime value expression
+          - BNF:
+              _name: duration value expression
+          - BNF:
+              _name: list value expression
+          - BNF:
+              _name: record expression
+          - BNF:
+              _name: path value expression
+          - BNF:
+              _name: reference value expression
+      _name: common value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: graph reference value expression
+          - BNF:
+              _name: binding table reference value expression
+          - BNF:
+              _name: node reference value expression
+          - BNF:
+              _name: edge reference value expression
+      _name: reference value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              kw: PROPERTY
+            kw: GRAPH
+            BNF:
+              _name: graph expression
+          - BNF:
+              _name: value expression primary
+      _name: graph reference value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - opt:
+              kw: BINDING
+            kw: TABLE
+            BNF:
+              _name: binding table expression
+          - BNF:
+              _name: value expression primary
+      _name: binding table reference value expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression primary
+      _name: node reference value expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression primary
+      _name: edge reference value expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression primary
+      _name: record expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression
+      _name: aggregating value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: parenthesized value expression
+          - BNF:
+              _name: non-parenthesized value expression primary
+      _name: value expression primary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: value expression
+          - _name: right paren
+      _name: parenthesized value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: non-parenthesized value expression primary special case
+          - BNF:
+              _name: binding variable reference
+      _name: non-parenthesized value expression primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: aggregate function
+          - BNF:
+              _name: unsigned value specification
+          - BNF:
+              _name: list value constructor
+          - BNF:
+              _name: record constructor
+          - BNF:
+              _name: path value constructor
+          - BNF:
+              _name: property reference
+          - BNF:
+              _name: value query expression
+          - BNF:
+              _name: case expression
+          - BNF:
+              _name: cast specification
+          - BNF:
+              _name: element_id function
+          - BNF:
+              _name: let value expression
+      _name: non-parenthesized value expression primary special case
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: literal
+          - BNF:
+              _name: general value specification
+      _name: value specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unsigned literal
+          - BNF:
+              _name: general value specification
+      _name: unsigned value specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unsigned integer
+          - BNF:
+              _name: dynamic parameter specification
+      _name: non-negative integer specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: dynamic parameter specification
+          - kw: SESSION_USER
+      _name: general value specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: general parameter reference
+      _name: dynamic parameter specification
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - LET
+          - IN
+          - END
+        BNF:
+          - _name: let variable definition list
+          - _name: value expression
+      _name: let value expression
+      _predicative: 'no'
+    - rhs:
+        kw: VALUE
+        BNF:
+          _name: nested query specification
+      _name: value query expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: case abbreviation
+          - BNF:
+              _name: case specification
+      _name: case expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: NULLIF
+            BNF:
+              - _name: left paren
+              - _name: value expression
+              - _name: comma
+              - _name: value expression
+              - _name: right paren
+          - kw: COALESCE
+            BNF:
+              - _name: left paren
+              - _name: value expression
+              - _name: right paren
+            group:
+              BNF:
+                - _name: comma
+                - _name: value expression
+            repeat: ''
+      _name: case abbreviation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simple case
+          - BNF:
+              _name: searched case
+      _name: case specification
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - CASE
+          - END
+        BNF:
+          - _name: case operand
+          - _name: simple when clause
+        repeat: ''
+        opt:
+          BNF:
+            _name: else clause
+      _name: simple case
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - CASE
+          - END
+        BNF:
+          _name: searched when clause
+        repeat: ''
+        opt:
+          BNF:
+            _name: else clause
+      _name: searched case
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - WHEN
+          - THEN
+        BNF:
+          - _name: when operand list
+          - _name: result
+      _name: simple when clause
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - WHEN
+          - THEN
+        BNF:
+          - _name: search condition
+          - _name: result
+      _name: searched when clause
+      _predicative: 'no'
+    - rhs:
+        kw: ELSE
+        BNF:
+          _name: result
+      _name: else clause
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: non-parenthesized value expression primary
+          - BNF:
+              _name: element variable reference
+      _name: case operand
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: when operand
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: when operand
+          repeat: ''
+      _name: when operand list
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: non-parenthesized value expression primary
+          - BNF:
+              _name: comparison predicate part 2
+          - BNF:
+              _name: null predicate part 2
+          - BNF:
+              _name: value type predicate part 2
+          - BNF:
+              _name: normalized predicate part 2
+          - BNF:
+              _name: directed predicate part 2
+          - BNF:
+              _name: labeled predicate part 2
+          - BNF:
+              _name: source predicate part 2
+          - BNF:
+              _name: destination predicate part 2
+      _name: when operand
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: result expression
+          - BNF:
+              _name: null literal
+      _name: result
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression
+      _name: result expression
+      _predicative: 'no'
+    - rhs:
+        kw:
+          - CAST
+          - AS
+        BNF:
+          - _name: left paren
+          - _name: cast operand
+          - _name: cast target
+          - _name: right paren
+      _name: cast specification
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: value expression
+          - BNF:
+              _name: null literal
+      _name: cast operand
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value type
+      _name: cast target
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: COUNT
+            BNF:
+              - _name: left paren
+              - _name: asterisk
+              - _name: right paren
+          - BNF:
+              _name: general set function
+          - BNF:
+              _name: binary set function
+      _name: aggregate function
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: general set function type
+          - _name: left paren
+          - _name: value expression
+          - _name: right paren
+        opt:
+          BNF:
+            _name: set quantifier
+      _name: general set function
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: binary set function type
+          - _name: left paren
+          - _name: dependent value expression
+          - _name: comma
+          - _name: independent value expression
+          - _name: right paren
+      _name: binary set function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: AVG
+          - kw: COUNT
+          - kw: MAX
+          - kw: MIN
+          - kw: SUM
+          - kw: COLLECT_LIST
+          - kw: STDDEV_SAMP
+          - kw: STDDEV_POP
+      _name: general set function type
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: DISTINCT
+          - kw: ALL
+      _name: set quantifier
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: PERCENTILE_CONT
+          - kw: PERCENTILE_DISC
+      _name: binary set function type
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: set quantifier
+        BNF:
+          _name: numeric value expression
+      _name: dependent value expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: independent value expression
+      _predicative: 'no'
+    - rhs:
+        kw: ELEMENT_ID
+        BNF:
+          - _name: left paren
+          - _name: element variable reference
+          - _name: right paren
+      _name: element_id function
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: property source
+          - _name: period
+          - _name: property name
+      _name: property reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: node reference value expression
+          - BNF:
+              _name: edge reference value expression
+          - BNF:
+              _name: record expression
+      _name: property source
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable
+      _name: binding variable reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: path value concatenation
+          - BNF:
+              _name: path value primary
+      _name: path value expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: path value expression 1
+          - _name: concatenation operator
+          - _name: path value primary
+      _name: path value concatenation
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: path value expression
+      _name: path value expression 1
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression primary
+      _name: path value primary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: path value constructor by enumeration
+      _name: path value constructor
+      _predicative: 'no'
+    - rhs:
+        kw: PATH
+        BNF:
+          - _name: left bracket
+          - _name: path element list
+          - _name: right bracket
+      _name: path value constructor by enumeration
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: path element list start
+        opt:
+          BNF:
+            _name: path element list step
+          repeat: ''
+      _name: path element list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: node reference value expression
+      _name: path element list start
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: comma
+          - _name: edge reference value expression
+          - _name: comma
+          - _name: node reference value expression
+      _name: path element list step
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: list concatenation
+          - BNF:
+              _name: list primary
+      _name: list value expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: list value expression 1
+          - _name: concatenation operator
+          - _name: list primary
+      _name: list concatenation
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: list value expression
+      _name: list value expression 1
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: list value function
+          - BNF:
+              _name: value expression primary
+      _name: list primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: trim list function
+          - BNF:
+              _name: elements function
+      _name: list value function
+      _predicative: 'no'
+    - rhs:
+        kw: TRIM
+        BNF:
+          - _name: left paren
+          - _name: list value expression
+          - _name: comma
+          - _name: numeric value expression
+          - _name: right paren
+      _name: trim list function
+      _predicative: 'no'
+    - rhs:
+        kw: ELEMENTS
+        BNF:
+          - _name: left paren
+          - _name: path value expression
+          - _name: right paren
+      _name: elements function
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: list value constructor by enumeration
+      _name: list value constructor
+      _predicative: 'no'
+    - rhs:
+        opt:
+          - BNF:
+              _name: list value type name
+          - BNF:
+              _name: list element list
+        BNF:
+          - _name: left bracket
+          - _name: right bracket
+      _name: list value constructor by enumeration
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: list element
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: list element
+          repeat: ''
+      _name: list element list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: value expression
+      _name: list element
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: RECORD
+        BNF:
+          _name: fields specification
+      _name: record constructor
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left brace
+          - _name: right brace
+        opt:
+          BNF:
+            _name: field list
+      _name: fields specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: field
+        opt:
+          group:
+            BNF:
+              - _name: comma
+              - _name: field
+          repeat: ''
+      _name: field list
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: field name
+          - _name: colon
+          - _name: value expression
+      _name: field
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: boolean term
+          - BNF:
+              - _name: boolean value expression
+              - _name: boolean term
+            kw: OR
+          - BNF:
+              - _name: boolean value expression
+              - _name: boolean term
+            kw: XOR
+      _name: boolean value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: boolean factor
+          - BNF:
+              - _name: boolean term
+              - _name: boolean factor
+            kw: AND
+      _name: boolean term
+      _predicative: 'no'
+    - rhs:
+        opt:
+          kw: NOT
+        BNF:
+          _name: boolean test
+      _name: boolean factor
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: boolean primary
+        opt:
+          kw: IS
+          opt:
+            kw: NOT
+          BNF:
+            _name: truth value
+      _name: boolean test
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: 'TRUE'
+          - kw: 'FALSE'
+          - kw: UNKNOWN
+      _name: truth value
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: predicate
+          - BNF:
+              _name: boolean predicand
+      _name: boolean primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: parenthesized boolean value expression
+          - BNF:
+              _name: non-parenthesized value expression primary
+      _name: boolean predicand
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: left paren
+          - _name: boolean value expression
+          - _name: right paren
+      _name: parenthesized boolean value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: term
+          - BNF:
+              - _name: numeric value expression
+              - _name: plus sign
+              - _name: term
+          - BNF:
+              - _name: numeric value expression
+              - _name: minus sign
+              - _name: term
+      _name: numeric value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: factor
+          - BNF:
+              - _name: term
+              - _name: asterisk
+              - _name: factor
+          - BNF:
+              - _name: term
+              - _name: solidus
+              - _name: factor
+      _name: term
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: sign
+        BNF:
+          _name: numeric primary
+      _name: factor
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: value expression primary
+          - BNF:
+              _name: numeric value function
+      _name: numeric primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: length expression
+          - BNF:
+              _name: cardinality expression
+          - BNF:
+              _name: absolute value expression
+          - BNF:
+              _name: modulus expression
+          - BNF:
+              _name: trigonometric function
+          - BNF:
+              _name: general logarithm function
+          - BNF:
+              _name: common logarithm
+          - BNF:
+              _name: natural logarithm
+          - BNF:
+              _name: exponential function
+          - BNF:
+              _name: power function
+          - BNF:
+              _name: square root
+          - BNF:
+              _name: floor function
+          - BNF:
+              _name: ceiling function
+      _name: numeric value function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: char length expression
+          - BNF:
+              _name: byte length expression
+          - BNF:
+              _name: path length expression
+      _name: length expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: CARDINALITY
+            BNF:
+              - _name: left paren
+              - _name: cardinality expression argument
+              - _name: right paren
+          - kw: SIZE
+            BNF:
+              - _name: left paren
+              - _name: list value expression
+              - _name: right paren
+      _name: cardinality expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: binding table reference value expression
+          - BNF:
+              _name: path value expression
+          - BNF:
+              _name: list value expression
+          - BNF:
+              _name: record expression
+      _name: cardinality expression argument
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: CHAR_LENGTH
+            - kw: CHARACTER_LENGTH
+        BNF:
+          - _name: left paren
+          - _name: character string value expression
+          - _name: right paren
+      _name: char length expression
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: BYTE_LENGTH
+            - kw: OCTET_LENGTH
+        BNF:
+          - _name: left paren
+          - _name: byte string value expression
+          - _name: right paren
+      _name: byte length expression
+      _predicative: 'no'
+    - rhs:
+        kw: PATH_LENGTH
+        BNF:
+          - _name: left paren
+          - _name: path value expression
+          - _name: right paren
+      _name: path length expression
+      _predicative: 'no'
+    - rhs:
+        kw: ABS
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: absolute value expression
+      _predicative: 'no'
+    - rhs:
+        kw: MOD
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression dividend
+          - _name: comma
+          - _name: numeric value expression divisor
+          - _name: right paren
+      _name: modulus expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: numeric value expression dividend
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: numeric value expression divisor
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: trigonometric function name
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: trigonometric function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: SIN
+          - kw: COS
+          - kw: TAN
+          - kw: COT
+          - kw: SINH
+          - kw: COSH
+          - kw: TANH
+          - kw: ASIN
+          - kw: ACOS
+          - kw: ATAN
+          - kw: DEGREES
+          - kw: RADIANS
+      _name: trigonometric function name
+      _predicative: 'no'
+    - rhs:
+        kw: LOG
+        BNF:
+          - _name: left paren
+          - _name: general logarithm base
+          - _name: comma
+          - _name: general logarithm argument
+          - _name: right paren
+      _name: general logarithm function
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: general logarithm base
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: general logarithm argument
+      _predicative: 'no'
+    - rhs:
+        kw: LOG10
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: common logarithm
+      _predicative: 'no'
+    - rhs:
+        kw: LN
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: natural logarithm
+      _predicative: 'no'
+    - rhs:
+        kw: EXP
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: exponential function
+      _predicative: 'no'
+    - rhs:
+        kw: POWER
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression base
+          - _name: comma
+          - _name: numeric value expression exponent
+          - _name: right paren
+      _name: power function
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: numeric value expression base
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: numeric value expression exponent
+      _predicative: 'no'
+    - rhs:
+        kw: SQRT
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: square root
+      _predicative: 'no'
+    - rhs:
+        kw: FLOOR
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: floor function
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: CEIL
+            - kw: CEILING
+        BNF:
+          - _name: left paren
+          - _name: numeric value expression
+          - _name: right paren
+      _name: ceiling function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: character string value expression
+          - BNF:
+              _name: byte string value expression
+      _name: string value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: character string concatenation
+          - BNF:
+              _name: character string primary
+      _name: character string value expression
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: character string value expression
+          - _name: concatenation operator
+          - _name: character string primary
+      _name: character string concatenation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: value expression primary
+          - BNF:
+              _name: character string function
+      _name: character string primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: byte string concatenation
+          - BNF:
+              _name: byte string primary
+      _name: byte string value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: value expression primary
+          - BNF:
+              _name: byte string function
+      _name: byte string primary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: byte string value expression
+          - _name: concatenation operator
+          - _name: byte string primary
+      _name: byte string concatenation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: substring function
+          - BNF:
+              _name: fold
+          - BNF:
+              _name: trim function
+          - BNF:
+              _name: normalize function
+      _name: character string function
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: LEFT
+            - kw: RIGHT
+        BNF:
+          - _name: left paren
+          - _name: character string value expression
+          - _name: comma
+          - _name: string length
+          - _name: right paren
+      _name: substring function
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: UPPER
+            - kw: LOWER
+        BNF:
+          - _name: left paren
+          - _name: character string value expression
+          - _name: right paren
+      _name: fold
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: single-character trim function
+          - BNF:
+              _name: multi-character trim function
+      _name: trim function
+      _predicative: 'no'
+    - rhs:
+        kw: TRIM
+        BNF:
+          - _name: left paren
+          - _name: trim operands
+          - _name: right paren
+      _name: single-character trim function
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: BTRIM
+            - kw: LTRIM
+            - kw: RTRIM
+        BNF:
+          - _name: left paren
+          - _name: trim source
+          - _name: right paren
+        opt:
+          BNF:
+            - _name: comma
+            - _name: trim character string
+      _name: multi-character trim function
+      _predicative: 'no'
+    - rhs:
+        opt:
+          opt:
+            - BNF:
+                _name: trim specification
+            - BNF:
+                _name: trim character string
+          kw: FROM
+        BNF:
+          _name: trim source
+      _name: trim operands
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: character string value expression
+      _name: trim source
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: LEADING
+          - kw: TRAILING
+          - kw: BOTH
+      _name: trim specification
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: character string value expression
+      _name: trim character string
+      _predicative: 'no'
+    - rhs:
+        kw: NORMALIZE
+        BNF:
+          - _name: left paren
+          - _name: character string value expression
+          - _name: right paren
+        opt:
+          BNF:
+            - _name: comma
+            - _name: normal form
+      _name: normalize function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: NFC
+          - kw: NFD
+          - kw: NFKC
+          - kw: NFKD
+      _name: normal form
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: numeric value expression
+      _name: string length
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: byte string substring function
+          - BNF:
+              _name: byte string trim function
+      _name: byte string function
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: LEFT
+            - kw: RIGHT
+        BNF:
+          - _name: left paren
+          - _name: byte string value expression
+          - _name: comma
+          - _name: string length
+          - _name: right paren
+      _name: byte string substring function
+      _predicative: 'no'
+    - rhs:
+        kw: TRIM
+        BNF:
+          - _name: left paren
+          - _name: byte string trim operands
+          - _name: right paren
+      _name: byte string trim function
+      _predicative: 'no'
+    - rhs:
+        opt:
+          opt:
+            - BNF:
+                _name: trim specification
+            - BNF:
+                _name: trim byte string
+          kw: FROM
+        BNF:
+          _name: byte string trim source
+      _name: byte string trim operands
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: byte string value expression
+      _name: byte string trim source
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: byte string value expression
+      _name: trim byte string
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: datetime primary
+          - BNF:
+              - _name: duration value expression
+              - _name: plus sign
+              - _name: datetime primary
+          - BNF:
+              - _name: datetime value expression
+              - _name: plus sign
+              - _name: duration term
+          - BNF:
+              - _name: datetime value expression
+              - _name: minus sign
+              - _name: duration term
+      _name: datetime value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: value expression primary
+          - BNF:
+              _name: datetime value function
+      _name: datetime primary
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: date function
+          - BNF:
+              _name: time function
+          - BNF:
+              _name: datetime function
+          - BNF:
+              _name: localtime function
+          - BNF:
+              _name: localdatetime function
+      _name: datetime value function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: CURRENT_DATE
+          - kw: DATE
+            BNF:
+              - _name: left paren
+              - _name: right paren
+            opt:
+              BNF:
+                _name: date function parameters
+      _name: date function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: CURRENT_TIME
+          - kw: ZONED_TIME
+            BNF:
+              - _name: left paren
+              - _name: right paren
+            opt:
+              BNF:
+                _name: time function parameters
+      _name: time function
+      _predicative: 'no'
+    - rhs:
+        kw: LOCAL_TIME
+        opt:
+          BNF:
+            - _name: left paren
+            - _name: right paren
+          opt:
+            BNF:
+              _name: time function parameters
+      _name: localtime function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: CURRENT_TIMESTAMP
+          - kw: ZONED_DATETIME
+            BNF:
+              - _name: left paren
+              - _name: right paren
+            opt:
+              BNF:
+                _name: datetime function parameters
+      _name: datetime function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: LOCAL_TIMESTAMP
+          - kw: LOCAL_DATETIME
+            BNF:
+              - _name: left paren
+              - _name: right paren
+            opt:
+              BNF:
+                _name: datetime function parameters
+      _name: localdatetime function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: date string
+          - BNF:
+              _name: record constructor
+      _name: date function parameters
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: time string
+          - BNF:
+              _name: record constructor
+      _name: time function parameters
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: datetime string
+          - BNF:
+              _name: record constructor
+      _name: datetime function parameters
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: duration term
+          - BNF:
+              _name: duration addition and subtraction
+          - BNF:
+              _name: datetime subtraction
+      _name: duration value expression
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: duration value expression 1
+              - _name: plus sign
+              - _name: duration term 1
+          - BNF:
+              - _name: duration value expression 1
+              - _name: minus sign
+              - _name: duration term 1
+      _name: duration addition and subtraction
+      _predicative: 'no'
+    - rhs:
+        kw: DURATION_BETWEEN
+        BNF:
+          - _name: left paren
+          - _name: datetime subtraction parameters
+          - _name: right paren
+        opt:
+          BNF:
+            _name: temporal duration qualifier
+      _name: datetime subtraction
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: datetime value expression 1
+          - _name: comma
+          - _name: datetime value expression 2
+      _name: datetime subtraction parameters
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: duration factor
+          - BNF:
+              - _name: duration term 2
+              - _name: asterisk
+              - _name: factor
+          - BNF:
+              - _name: duration term 2
+              - _name: solidus
+              - _name: factor
+          - BNF:
+              - _name: term
+              - _name: asterisk
+              - _name: duration factor
+      _name: duration term
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: sign
+        BNF:
+          _name: duration primary
+      _name: duration factor
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: value expression primary
+          - BNF:
+              _name: duration value function
+      _name: duration primary
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: duration value expression
+      _name: duration value expression 1
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: duration term
+      _name: duration term 1
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: duration term
+      _name: duration term 2
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: datetime value expression
+      _name: datetime value expression 1
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: datetime value expression
+      _name: datetime value expression 2
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: duration function
+          - BNF:
+              _name: duration absolute value function
+      _name: duration value function
+      _predicative: 'no'
+    - rhs:
+        kw: DURATION
+        BNF:
+          - _name: left paren
+          - _name: duration function parameters
+          - _name: right paren
+      _name: duration function
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: duration string
+          - BNF:
+              _name: record constructor
+      _name: duration function parameters
+      _predicative: 'no'
+    - rhs:
+        kw: ABS
+        BNF:
+          - _name: left paren
+          - _name: duration value expression
+          - _name: right paren
+      _name: duration absolute value function
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: authorization identifier
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: object name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: regular identifier
+      _name: object name or binding variable
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: directory name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: schema name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: regular identifier
+          - BNF:
+              _name: delimited graph name
+      _name: graph name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: delimited identifier
+      _name: delimited graph name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: graph type name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: node type name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: edge type name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: regular identifier
+          - BNF:
+              _name: delimited binding table name
+      _name: binding table name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: delimited identifier
+      _name: delimited binding table name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: procedure name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: label name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: property name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier
+      _name: field name
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: separated identifier
+      _name: parameter name
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: element variable
+          - BNF:
+              _name: path or subpath variable
+      _name: graph pattern variable
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: path variable
+          - BNF:
+              _name: subpath variable
+      _name: path or subpath variable
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable
+      _name: element variable
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: binding variable
+      _name: path variable
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: regular identifier
+      _name: subpath variable
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: regular identifier
+      _name: binding variable
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: signed numeric literal
+          - BNF:
+              _name: general literal
+      _name: literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unsigned numeric literal
+          - BNF:
+              _name: general literal
+      _name: unsigned literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: boolean literal
+          - BNF:
+              _name: character string literal
+          - BNF:
+              _name: byte string literal
+          - BNF:
+              _name: temporal literal
+          - BNF:
+              _name: duration literal
+          - BNF:
+              _name: null literal
+          - BNF:
+              _name: list literal
+          - BNF:
+              _name: record literal
+      _name: general literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: 'TRUE'
+          - kw: 'FALSE'
+          - kw: UNKNOWN
+      _name: boolean literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: single quoted character sequence
+          - BNF:
+              _name: double quoted character sequence
+      _name: character string literal
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: no escape
+        BNF:
+          _name: unbroken single quoted character sequence
+      _name: single quoted character sequence
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: no escape
+        BNF:
+          _name: unbroken double quoted character sequence
+      _name: double quoted character sequence
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: no escape
+        BNF:
+          _name: unbroken accent quoted character sequence
+      _name: accent quoted character sequence
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: commercial at
+      _name: no escape
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: quote
+          - _name: quote
+        opt:
+          BNF:
+            _name: single quoted character representation
+          repeat: ''
+      _name: unbroken single quoted character sequence
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: double quote
+          - _name: double quote
+        opt:
+          BNF:
+            _name: double quoted character representation
+          repeat: ''
+      _name: unbroken double quoted character sequence
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: grave accent
+          - _name: grave accent
+        opt:
+          BNF:
+            _name: accent quoted character representation
+          repeat: ''
+      _name: unbroken accent quoted character sequence
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: character representation
+          - BNF:
+              _name: double single quote
+        seeTheRules: ''
+      _name: single quoted character representation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: character representation
+          - BNF:
+              _name: double double quote
+        seeTheRules: ''
+      _name: double quoted character representation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: character representation
+          - BNF:
+              _name: double grave accent
+        seeTheRules: ''
+      _name: accent quoted character representation
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: character representation
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: quote
+          - _name: quote
+        seeTheRules: ''
+      _name: double single quote
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: double quote
+          - _name: double quote
+        seeTheRules: ''
+      _name: double double quote
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: grave accent
+          - _name: grave accent
+        seeTheRules: ''
+      _name: double grave accent
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: string literal character
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: escaped reverse solidus
+          - BNF:
+              _name: escaped quote
+          - BNF:
+              _name: escaped double quote
+          - BNF:
+              _name: escaped grave accent
+          - BNF:
+              _name: escaped tab
+          - BNF:
+              _name: escaped backspace
+          - BNF:
+              _name: escaped newline
+          - BNF:
+              _name: escaped carriage return
+          - BNF:
+              _name: escaped form feed
+          - BNF:
+              _name: unicode escape value
+      _name: escaped character
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: reverse solidus
+          - _name: reverse solidus
+      _name: escaped reverse solidus
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: reverse solidus
+          - _name: quote
+      _name: escaped quote
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: reverse solidus
+          - _name: double quote
+      _name: escaped double quote
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: reverse solidus
+          - _name: grave accent
+      _name: escaped grave accent
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: reverse solidus
+        terminalsymbol: t
+      _name: escaped tab
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: reverse solidus
+        terminalsymbol: b
+      _name: escaped backspace
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: reverse solidus
+        terminalsymbol: "n"
+      _name: escaped newline
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: reverse solidus
+        terminalsymbol: r
+      _name: escaped carriage return
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: reverse solidus
+        terminalsymbol: f
+      _name: escaped form feed
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unicode 4 digit escape value
+          - BNF:
+              _name: unicode 6 digit escape value
+      _name: unicode escape value
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: reverse solidus
+          - _name: hex digit
+          - _name: hex digit
+          - _name: hex digit
+          - _name: hex digit
+        terminalsymbol: u
+      _name: unicode 4 digit escape value
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: reverse solidus
+          - _name: hex digit
+          - _name: hex digit
+          - _name: hex digit
+          - _name: hex digit
+          - _name: hex digit
+          - _name: hex digit
+        terminalsymbol: U
+      _name: unicode 6 digit escape value
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol: X
+        BNF:
+          - _name: quote
+          - _name: quote
+        opt:
+          - BNF:
+              _name: space
+            repeat: ''
+          - group:
+              BNF:
+                - _name: hex digit
+                - _name: hex digit
+              opt:
+                - BNF:
+                    _name: space
+                  repeat: ''
+                - BNF:
+                    _name: space
+                  repeat: ''
+            repeat: ''
+          - group:
+              BNF:
+                - _name: separator
+                - _name: quote
+                - _name: quote
+              opt:
+                - BNF:
+                    _name: space
+                  repeat: ''
+                - group:
+                    BNF:
+                      - _name: hex digit
+                      - _name: hex digit
+                    opt:
+                      - BNF:
+                          _name: space
+                        repeat: ''
+                      - BNF:
+                          _name: space
+                        repeat: ''
+                  repeat: ''
+            repeat: ''
+      _name: byte string literal
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: sign
+        BNF:
+          _name: unsigned numeric literal
+      _name: signed numeric literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: plus sign
+          - BNF:
+              _name: minus sign
+      _name: sign
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: exact numeric literal
+          - BNF:
+              _name: approximate numeric literal
+      _name: unsigned numeric literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              - _name: unsigned decimal in scientific notation
+              - _name: exact number suffix
+          - BNF:
+              _name: unsigned decimal in common notation
+            opt:
+              BNF:
+                _name: exact number suffix
+          - BNF:
+              - _name: unsigned decimal integer
+              - _name: exact number suffix
+          - BNF:
+              _name: unsigned integer
+      _name: exact numeric literal
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol: M
+      _name: exact number suffix
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: mantissa
+          - _name: exponent
+        terminalsymbol: E
+        seeTheRules: ''
+      _name: unsigned decimal in scientific notation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unsigned decimal in common notation
+          - BNF:
+              _name: unsigned decimal integer
+      _name: mantissa
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: signed decimal integer
+      _name: exponent
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unsigned decimal integer
+            group:
+              BNF:
+                _name: period
+              opt:
+                BNF:
+                  _name: unsigned decimal integer
+          - BNF:
+              - _name: period
+              - _name: unsigned decimal integer
+      _name: unsigned decimal in common notation
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unsigned decimal integer
+          - BNF:
+              _name: unsigned hexadecimal integer
+          - BNF:
+              _name: unsigned octal integer
+          - BNF:
+              _name: unsigned binary integer
+      _name: unsigned integer
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: sign
+        BNF:
+          _name: unsigned decimal integer
+      _name: signed decimal integer
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: digit
+        opt:
+          group:
+            opt:
+              BNF:
+                _name: underscore
+            BNF:
+              _name: digit
+          repeat: ''
+      _name: unsigned decimal integer
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol: 0x
+        group:
+          opt:
+            BNF:
+              _name: underscore
+          BNF:
+            _name: hex digit
+        repeat: ''
+      _name: unsigned hexadecimal integer
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol: 0o
+        group:
+          opt:
+            BNF:
+              _name: underscore
+          BNF:
+            _name: octal digit
+        repeat: ''
+      _name: unsigned octal integer
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol: 0b
+        group:
+          opt:
+            BNF:
+              _name: underscore
+          BNF:
+            _name: binary digit
+        repeat: ''
+      _name: unsigned binary integer
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: unsigned decimal in scientific notation
+            opt:
+              BNF:
+                _name: approximate number suffix
+          - BNF:
+              - _name: unsigned decimal in common notation
+              - _name: approximate number suffix
+          - BNF:
+              - _name: unsigned decimal integer
+              - _name: approximate number suffix
+      _name: approximate numeric literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - terminalsymbol: F
+          - terminalsymbol: D
+      _name: approximate number suffix
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: date literal
+          - BNF:
+              _name: time literal
+          - BNF:
+              _name: datetime literal
+          - BNF:
+              _name: SQL-datetime literal
+      _name: temporal literal
+      _predicative: 'no'
+    - rhs:
+        kw: DATE
+        BNF:
+          _name: date string
+      _name: date literal
+      _predicative: 'no'
+    - rhs:
+        kw: TIME
+        BNF:
+          _name: time string
+      _name: time literal
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - kw: DATETIME
+            - kw: TIMESTAMP
+        BNF:
+          _name: datetime string
+      _name: datetime literal
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: character string literal
+      _name: date string
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: character string literal
+      _name: time string
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: character string literal
+      _name: datetime string
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: character string literal
+      _name: time zone string
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: SQL-datetime literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: DURATION
+            BNF:
+              _name: duration string
+          - BNF:
+              _name: SQL-interval literal
+      _name: duration literal
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: character string literal
+      _name: duration string
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol: P
+        opt:
+          - BNF:
+              _name: iso8601 years
+          - BNF:
+              _name: iso8601 months
+      _name: iso8601 years and months
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: iso8601 sint
+        terminalsymbol: "Y"
+      _name: iso8601 years
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: iso8601 sint
+        terminalsymbol: M
+      _name: iso8601 months
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: iso8601 sint
+        terminalsymbol: D
+      _name: iso8601 days
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          - P
+          - T
+        opt:
+          - BNF:
+              _name: iso8601 days
+          - BNF:
+              _name: iso8601 hours
+          - BNF:
+              _name: iso8601 minutes
+          - BNF:
+              _name: iso8601 seconds
+      _name: iso8601 days and time
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: iso8601 sint
+        terminalsymbol: H
+      _name: iso8601 hours
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: iso8601 sint
+        terminalsymbol: M
+      _name: iso8601 minutes
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: iso8601 sint
+        opt:
+          BNF:
+            - _name: period
+            - _name: iso8601 uint
+        terminalsymbol: S
+      _name: iso8601 seconds
+      _predicative: 'no'
+    - rhs:
+        opt:
+          BNF:
+            _name: minus sign
+        BNF:
+          _name: unsigned decimal integer
+      _name: iso8601 sint
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: unsigned decimal integer
+      _name: iso8601 uint
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: SQL-interval literal
+      _predicative: 'no'
+    - rhs:
+        kw: 'NULL'
+      _name: null literal
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: list value constructor by enumeration
+      _name: list literal
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: record constructor
+      _name: record literal
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: non-delimiter token
+          - BNF:
+              _name: delimiter token
+      _name: token
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: regular identifier
+          - BNF:
+              _name: substituted parameter reference
+          - BNF:
+              _name: general parameter reference
+          - BNF:
+              _name: keyword
+          - BNF:
+              _name: unsigned numeric literal
+          - BNF:
+              _name: byte string literal
+          - BNF:
+              _name: multiset alternation operator
+      _name: non-delimiter token
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: regular identifier
+          - BNF:
+              _name: delimited identifier
+      _name: identifier
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: extended identifier
+          - BNF:
+              _name: delimited identifier
+      _name: separated identifier
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: regular identifier
+          - BNF:
+              _name: extended identifier
+      _name: non-delimited identifier
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier start
+        opt:
+          BNF:
+            _name: identifier extend
+          repeat: ''
+      _name: regular identifier
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: identifier extend
+        repeat: ''
+      _name: extended identifier
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: double quoted character sequence
+          - BNF:
+              _name: accent quoted character sequence
+      _name: delimited identifier
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: identifier start
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: identifier extend
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: double dollar sign
+          - _name: parameter name
+      _name: substituted parameter reference
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: dollar sign
+          - _name: parameter name
+      _name: general parameter reference
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: reserved word
+          - BNF:
+              _name: non-reserved word
+      _name: keyword
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: pre-reserved word
+          - kw: ABS
+          - kw: ACOS
+          - kw: ALL
+          - kw: ALL_DIFFERENT
+          - kw: AND
+          - kw: ANY
+          - kw: ARRAY
+          - kw: AS
+          - kw: ASC
+          - kw: ASCENDING
+          - kw: ASIN
+          - kw: AT
+          - kw: ATAN
+          - kw: AVG
+          - kw: BIG
+          - kw: BIGINT
+          - kw: BINARY
+          - kw: BOOL
+          - kw: BOOLEAN
+          - kw: BOTH
+          - kw: BTRIM
+          - kw: BY
+          - kw: BYTE_LENGTH
+          - kw: BYTES
+          - kw: CALL
+          - kw: CARDINALITY
+          - kw: CASE
+          - kw: CAST
+          - kw: CEIL
+          - kw: CEILING
+          - kw: CHAR
+          - kw: CHAR_LENGTH
+          - kw: CHARACTER_LENGTH
+          - kw: CHARACTERISTICS
+          - kw: CLOSE
+          - kw: COALESCE
+          - kw: COLLECT_LIST
+          - kw: COMMIT
+          - kw: COPY
+          - kw: COS
+          - kw: COSH
+          - kw: COT
+          - kw: COUNT
+          - kw: CREATE
+          - kw: CURRENT_DATE
+          - kw: CURRENT_GRAPH
+          - kw: CURRENT_PROPERTY_GRAPH
+          - kw: CURRENT_SCHEMA
+          - kw: CURRENT_TIME
+          - kw: CURRENT_TIMESTAMP
+          - kw: DATE
+          - kw: DATETIME
+          - kw: DAY
+          - kw: DEC
+          - kw: DECIMAL
+          - kw: DEGREES
+          - kw: DELETE
+          - kw: DESC
+          - kw: DESCENDING
+          - kw: DETACH
+          - kw: DISTINCT
+          - kw: DOUBLE
+          - kw: DROP
+          - kw: DURATION
+          - kw: DURATION_BETWEEN
+          - kw: ELEMENT_ID
+          - kw: ELSE
+          - kw: END
+          - kw: EXCEPT
+          - kw: EXISTS
+          - kw: EXP
+          - kw: 'FALSE'
+          - kw: FILTER
+          - kw: FINISH
+          - kw: FLOAT
+          - kw: FLOAT16
+          - kw: FLOAT32
+          - kw: FLOAT64
+          - kw: FLOAT128
+          - kw: FLOAT256
+          - kw: FLOOR
+          - kw: FOR
+          - kw: FROM
+          - kw: GROUP
+          - kw: HAVING
+          - kw: HOME_GRAPH
+          - kw: HOME_PROPERTY_GRAPH
+          - kw: HOME_SCHEMA
+          - kw: HOUR
+          - kw: IF
+          - kw: IMPLIES
+          - kw: IN
+          - kw: INSERT
+          - kw: INT
+          - kw: INTEGER
+          - kw: INT8
+          - kw: INTEGER8
+          - kw: INT16
+          - kw: INTEGER16
+          - kw: INT32
+          - kw: INTEGER32
+          - kw: INT64
+          - kw: INTEGER64
+          - kw: INT128
+          - kw: INTEGER128
+          - kw: INT256
+          - kw: INTEGER256
+          - kw: INTERSECT
+          - kw: INTERVAL
+          - kw: IS
+          - kw: LEADING
+          - kw: LEFT
+          - kw: LET
+          - kw: LIKE
+          - kw: LIMIT
+          - kw: LIST
+          - kw: LN
+          - kw: LOCAL
+          - kw: LOCAL_DATETIME
+          - kw: LOCAL_TIME
+          - kw: LOCAL_TIMESTAMP
+          - kw: LOG
+          - kw: LOG10
+          - kw: LOWER
+          - kw: LTRIM
+          - kw: MATCH
+          - kw: MAX
+          - kw: MIN
+          - kw: MINUTE
+          - kw: MOD
+          - kw: MONTH
+          - kw: NEXT
+          - kw: NODETACH
+          - kw: NORMALIZE
+          - kw: NOT
+          - kw: NOTHING
+          - kw: 'NULL'
+          - kw: NULLS
+          - kw: NULLIF
+          - kw: OCTET_LENGTH
+          - kw: OF
+          - kw: OFFSET
+          - kw: OPTIONAL
+          - kw: OR
+          - kw: ORDER
+          - kw: OTHERWISE
+          - kw: PARAMETER
+          - kw: PARAMETERS
+          - kw: PATH
+          - kw: PATH_LENGTH
+          - kw: PATHS
+          - kw: PERCENTILE_CONT
+          - kw: PERCENTILE_DISC
+          - kw: POWER
+          - kw: PRECISION
+          - kw: PROPERTY_EXISTS
+          - kw: RADIANS
+          - kw: REAL
+          - kw: RECORD
+          - kw: REMOVE
+          - kw: REPLACE
+          - kw: RESET
+          - kw: RETURN
+          - kw: RIGHT
+          - kw: ROLLBACK
+          - kw: RTRIM
+          - kw: SAME
+          - kw: SCHEMA
+          - kw: SECOND
+          - kw: SELECT
+          - kw: SESSION
+          - kw: SESSION_USER
+          - kw: SET
+          - kw: SIGNED
+          - kw: SIN
+          - kw: SINH
+          - kw: SIZE
+          - kw: SKIP
+          - kw: SMALL
+          - kw: SMALLINT
+          - kw: SQRT
+          - kw: START
+          - kw: STDDEV_POP
+          - kw: STDDEV_SAMP
+          - kw: STRING
+          - kw: SUM
+          - kw: TAN
+          - kw: TANH
+          - kw: THEN
+          - kw: TIME
+          - kw: TIMESTAMP
+          - kw: TRAILING
+          - kw: TRIM
+          - kw: 'TRUE'
+          - kw: TYPED
+          - kw: UBIGINT
+          - kw: UINT
+          - kw: UINT8
+          - kw: UINT16
+          - kw: UINT32
+          - kw: UINT64
+          - kw: UINT128
+          - kw: UINT256
+          - kw: UNION
+          - kw: UNKNOWN
+          - kw: UNSIGNED
+          - kw: UPPER
+          - kw: USE
+          - kw: USMALLINT
+          - kw: VALUE
+          - kw: VARBINARY
+          - kw: VARCHAR
+          - kw: VARIABLE
+          - kw: WHEN
+          - kw: WHERE
+          - kw: WITH
+          - kw: XOR
+          - kw: YEAR
+          - kw: YIELD
+          - kw: ZONED
+          - kw: ZONED_DATETIME
+          - kw: ZONED_TIME
+      _name: reserved word
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: ABSTRACT
+          - kw: AGGREGATE
+          - kw: AGGREGATES
+          - kw: ALTER
+          - kw: CATALOG
+          - kw: CLEAR
+          - kw: CLONE
+          - kw: CONSTRAINT
+          - kw: CURRENT_ROLE
+          - kw: CURRENT_USER
+          - kw: DATA
+          - kw: DIRECTORY
+          - kw: DRYRUN
+          - kw: EXACT
+          - kw: EXISTING
+          - kw: FUNCTION
+          - kw: GQLSTATUS
+          - kw: GRANT
+          - kw: INSTANT
+          - kw: INFINITY
+          - kw: NUMBER
+          - kw: NUMERIC
+          - kw: 'ON'
+          - kw: OPEN
+          - kw: PARTITION
+          - kw: PROCEDURE
+          - kw: PRODUCT
+          - kw: PROJECT
+          - kw: QUERY
+          - kw: RECORDS
+          - kw: REFERENCE
+          - kw: RENAME
+          - kw: REVOKE
+          - kw: SUBSTRING
+          - kw: SYSTEM_USER
+          - kw: TEMPORAL
+          - kw: UNIQUE
+          - kw: UNIT
+          - kw: VALUES
+          - kw: WHITESPACE
+      _name: pre-reserved word
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: ACYCLIC
+          - kw: BINDING
+          - kw: BINDINGS
+          - kw: CONNECTING
+          - kw: DESTINATION
+          - kw: DIFFERENT
+          - kw: DIRECTED
+          - kw: EDGE
+          - kw: EDGES
+          - kw: ELEMENT
+          - kw: ELEMENTS
+          - kw: FIRST
+          - kw: GRAPH
+          - kw: GROUPS
+          - kw: KEEP
+          - kw: LABEL
+          - kw: LABELED
+          - kw: LABELS
+          - kw: LAST
+          - kw: NFC
+          - kw: NFD
+          - kw: NFKC
+          - kw: NFKD
+          - kw: 'NO'
+          - kw: NODE
+          - kw: NORMALIZED
+          - kw: ONLY
+          - kw: ORDINALITY
+          - kw: PROPERTY
+          - kw: READ
+          - kw: RELATIONSHIP
+          - kw: RELATIONSHIPS
+          - kw: REPEATABLE
+          - kw: SHORTEST
+          - kw: SIMPLE
+          - kw: SOURCE
+          - kw: TABLE
+          - kw: TEMP
+          - kw: TO
+          - kw: TRAIL
+          - kw: TRANSACTION
+          - kw: TYPE
+          - kw: UNDIRECTED
+          - kw: VERTEX
+          - kw: WALK
+          - kw: WITHOUT
+          - kw: WRITE
+          - kw: ZONE
+      _name: non-reserved word
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007C,002B,007C
+          __text: "|+|"
+      _name: multiset alternation operator
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: GQL special character
+          - BNF:
+              _name: bracket right arrow
+          - BNF:
+              _name: bracket tilde right arrow
+          - BNF:
+              _name: character string literal
+          - BNF:
+              _name: concatenation operator
+          - BNF:
+              _name: date string
+          - BNF:
+              _name: datetime string
+          - BNF:
+              _name: delimited identifier
+          - BNF:
+              _name: double colon
+          - BNF:
+              _name: double period
+          - BNF:
+              _name: duration string
+          - BNF:
+              _name: greater than operator
+          - BNF:
+              _name: greater than or equals operator
+          - BNF:
+              _name: left arrow
+          - BNF:
+              _name: left arrow bracket
+          - BNF:
+              _name: left arrow tilde
+          - BNF:
+              _name: left arrow tilde bracket
+          - BNF:
+              _name: left minus right
+          - BNF:
+              _name: left minus slash
+          - BNF:
+              _name: left tilde slash
+          - BNF:
+              _name: less than operator
+          - BNF:
+              _name: less than or equals operator
+          - BNF:
+              _name: minus left bracket
+          - BNF:
+              _name: minus slash
+          - BNF:
+              _name: not equals operator
+          - BNF:
+              _name: right arrow
+          - BNF:
+              _name: right bracket minus
+          - BNF:
+              _name: right bracket tilde
+          - BNF:
+              _name: right double arrow
+          - BNF:
+              _name: slash minus
+          - BNF:
+              _name: slash minus right
+          - BNF:
+              _name: slash tilde
+          - BNF:
+              _name: slash tilde right
+          - BNF:
+              _name: tilde left bracket
+          - BNF:
+              _name: tilde right arrow
+          - BNF:
+              _name: tilde slash
+          - BNF:
+              _name: time string
+      _name: delimiter token
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005D, 002D, 003E
+          __text: "]->"
+      _name: bracket right arrow
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005D, 007E, 003E
+          __text: "]~>"
+      _name: bracket tilde right arrow
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007C, 007C
+          __text: "||"
+      _name: concatenation operator
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003A, 003A
+          __text: "::"
+      _name: double colon
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 0024, 0024
+          __text: "$$"
+      _name: double dollar sign
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002D, 002D
+          __text: "--"
+      _name: double minus sign
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002E, 002E
+          __text: ".."
+      _name: double period
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: right angle bracket
+      _name: greater than operator
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003E, 003D
+          __text: ">="
+      _name: greater than or equals operator
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 002D
+          __text: "<-"
+      _name: left arrow
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 007E
+          __text: "<~"
+      _name: left arrow tilde
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 002D, 005B
+          __text: "<-["
+      _name: left arrow bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 007E, 005B
+          __text: "<~["
+      _name: left arrow tilde bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 002D, 003E
+          __text: "<->"
+      _name: left minus right
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 002D, 002F
+          __text: "<-/"
+      _name: left minus slash
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 007E, 002F
+          __text: "<~/"
+      _name: left tilde slash
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          _name: left angle bracket
+      _name: less than operator
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 003D
+          __text: "<="
+      _name: less than or equals operator
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002D, 005B
+          __text: "-["
+      _name: minus left bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002D, 002F
+          __text: "-/"
+      _name: minus slash
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C, 003E
+          __text: "<>"
+      _name: not equals operator
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002D, 003E
+          __text: "->"
+      _name: right arrow
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005D, 002D
+          __text: "]-"
+      _name: right bracket minus
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005D, 007E
+          __text: "]~"
+      _name: right bracket tilde
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003D, 003E
+          __text: "=>"
+      _name: right double arrow
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002F, 002D
+          __text: "/-"
+      _name: slash minus
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002F, 002D, 003E
+          __text: "/->"
+      _name: slash minus right
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002F, 007E
+          __text: "/~"
+      _name: slash tilde
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002F, 007E, 003E
+          __text: "/~>"
+      _name: slash tilde right
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007E,005B
+          __text: "~["
+      _name: tilde left bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007E,003E
+          __text: "~>"
+      _name: tilde right arrow
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007E, 002F
+          __text: "~/"
+      _name: tilde slash
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002F, 002F
+          __text: "//"
+      _name: double solidus
+      _predicative: 'no'
+    - rhs:
+        group:
+          alt:
+            - BNF:
+                _name: comment
+            - BNF:
+                _name: whitespace
+        repeat: ''
+      _name: separator
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: whitespace
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: truncating whitespace
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: bidirectional control character
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simple comment
+          - BNF:
+              _name: bracketed comment
+      _name: comment
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: simple comment introducer
+          - _name: newline
+        opt:
+          BNF:
+            _name: simple comment character
+          repeat: ''
+      _name: simple comment
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: double solidus
+          - BNF:
+              _name: double minus sign
+      _name: simple comment introducer
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: simple comment character
+      _predicative: 'no'
+    - rhs:
+        BNF:
+          - _name: bracketed comment introducer
+          - _name: bracketed comment contents
+          - _name: bracketed comment terminator
+      _name: bracketed comment
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002F, 002A
+          __text: "/*"
+      _name: bracketed comment introducer
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002A, 002F
+          __text: "*/"
+      _name: bracketed comment terminator
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: bracketed comment contents
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: newline
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: EDGE
+          - kw: RELATIONSHIP
+      _name: edge synonym
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: EDGES
+          - kw: RELATIONSHIPS
+      _name: edges synonym
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - kw: NODE
+          - kw: VERTEX
+      _name: node synonym
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: right double arrow
+          - kw: IMPLIES
+      _name: implies
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: GQL language character
+          - BNF:
+              _name: other language character
+      _name: GQL terminal character
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simple Latin letter
+          - BNF:
+              _name: digit
+          - BNF:
+              _name: GQL special character
+      _name: GQL language character
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: simple Latin lower-case letter
+          - BNF:
+              _name: simple Latin upper-case letter
+      _name: simple Latin letter
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - terminalsymbol: a
+          - terminalsymbol: b
+          - terminalsymbol: c
+          - terminalsymbol: d
+          - terminalsymbol: e
+          - terminalsymbol: f
+          - terminalsymbol: g
+          - terminalsymbol: h
+          - terminalsymbol: i
+          - terminalsymbol: j
+          - terminalsymbol: k
+          - terminalsymbol: l
+          - terminalsymbol: m
+          - terminalsymbol: "n"
+          - terminalsymbol: o
+          - terminalsymbol: p
+          - terminalsymbol: q
+          - terminalsymbol: r
+          - terminalsymbol: s
+          - terminalsymbol: t
+          - terminalsymbol: u
+          - terminalsymbol: v
+          - terminalsymbol: w
+          - terminalsymbol: x
+          - terminalsymbol: "y"
+          - terminalsymbol: z
+      _name: simple Latin lower-case letter
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - terminalsymbol: A
+          - terminalsymbol: B
+          - terminalsymbol: C
+          - terminalsymbol: D
+          - terminalsymbol: E
+          - terminalsymbol: F
+          - terminalsymbol: G
+          - terminalsymbol: H
+          - terminalsymbol: I
+          - terminalsymbol: J
+          - terminalsymbol: K
+          - terminalsymbol: L
+          - terminalsymbol: M
+          - terminalsymbol: "N"
+          - terminalsymbol: O
+          - terminalsymbol: P
+          - terminalsymbol: Q
+          - terminalsymbol: R
+          - terminalsymbol: S
+          - terminalsymbol: T
+          - terminalsymbol: U
+          - terminalsymbol: V
+          - terminalsymbol: W
+          - terminalsymbol: X
+          - terminalsymbol: "Y"
+          - terminalsymbol: Z
+      _name: simple Latin upper-case letter
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: standard digit
+          - terminalsymbol: A
+          - terminalsymbol: B
+          - terminalsymbol: C
+          - terminalsymbol: D
+          - terminalsymbol: E
+          - terminalsymbol: F
+          - terminalsymbol: a
+          - terminalsymbol: b
+          - terminalsymbol: c
+          - terminalsymbol: d
+          - terminalsymbol: e
+          - terminalsymbol: f
+      _name: hex digit
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: standard digit
+          - BNF:
+              _name: other digit
+      _name: digit
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: octal digit
+          - terminalsymbol: '8'
+          - terminalsymbol: '9'
+      _name: standard digit
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: binary digit
+          - terminalsymbol: '2'
+          - terminalsymbol: '3'
+          - terminalsymbol: '4'
+          - terminalsymbol: '5'
+          - terminalsymbol: '6'
+          - terminalsymbol: '7'
+      _name: octal digit
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - terminalsymbol: '0'
+          - terminalsymbol: '1'
+      _name: binary digit
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: other digit
+      _predicative: 'no'
+    - rhs:
+        alt:
+          - BNF:
+              _name: space
+          - BNF:
+              _name: ampersand
+          - BNF:
+              _name: asterisk
+          - BNF:
+              _name: colon
+          - BNF:
+              _name: equals operator
+          - BNF:
+              _name: comma
+          - BNF:
+              _name: commercial at
+          - BNF:
+              _name: dollar sign
+          - BNF:
+              _name: double quote
+          - BNF:
+              _name: exclamation mark
+          - BNF:
+              _name: grave accent
+          - BNF:
+              _name: right angle bracket
+          - BNF:
+              _name: left brace
+          - BNF:
+              _name: left bracket
+          - BNF:
+              _name: left paren
+          - BNF:
+              _name: left angle bracket
+          - BNF:
+              _name: minus sign
+          - BNF:
+              _name: period
+          - BNF:
+              _name: plus sign
+          - BNF:
+              _name: question mark
+          - BNF:
+              _name: quote
+          - BNF:
+              _name: reverse solidus
+          - BNF:
+              _name: right brace
+          - BNF:
+              _name: right bracket
+          - BNF:
+              _name: right paren
+          - BNF:
+              _name: solidus
+          - BNF:
+              _name: underscore
+          - BNF:
+              _name: vertical bar
+          - BNF:
+              _name: percent
+          - BNF:
+              _name: tilde
+      _name: GQL special character
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0020'
+      _name: space
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0026'
+          __text: "&"
+      _name: ampersand
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002A
+          __text: "*"
+      _name: asterisk
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003A
+          __text: ":"
+      _name: colon
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002C
+          __text: ","
+      _name: comma
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0040'
+          __text: "@"
+      _name: commercial at
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0024'
+          __text: "$"
+      _name: dollar sign
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0022'
+          __text: "\""
+      _name: double quote
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003D
+          __text: "="
+      _name: equals operator
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0021'
+          __text: "!"
+      _name: exclamation mark
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003E
+          __text: ">"
+      _name: right angle bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0060'
+          __text: "`"
+      _name: grave accent
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007B
+          __text: "{"
+      _name: left brace
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005B
+          __text: "["
+      _name: left bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0028'
+          __text: "("
+      _name: left paren
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003C
+          __text: "<"
+      _name: left angle bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002D
+          __text: "-"
+      _name: minus sign
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0025'
+          __text: "%"
+      _name: percent
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002E
+          __text: "."
+      _name: period
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002B
+          __text: "+"
+      _name: plus sign
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 003F
+          __text: "?"
+      _name: question mark
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0027'
+          __text: "'"
+      _name: quote
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005C
+          __text: "\\"
+      _name: reverse solidus
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007D
+          __text: "}"
+      _name: right brace
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005D
+          __text: "]"
+      _name: right bracket
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: '0029'
+          __text: ")"
+      _name: right paren
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 002F
+          __text: "/"
+      _name: solidus
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007E
+          __text: "~"
+      _name: tilde
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 005F
+          __text: _
+      _name: underscore
+      _predicative: 'no'
+    - rhs:
+        terminalsymbol:
+          _unicode: 007C
+          __text: "|"
+      _name: vertical bar
+      _predicative: 'no'
+    - rhs:
+        seeTheRules: ''
+      _name: other language character
+      _predicative: 'no'
