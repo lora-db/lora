@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    Row, TransactionMode,
+    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraError, LoraErrorCode, LoraValue,
+    QueryResult, ResultFormat, Row, TransactionMode,
 };
 use lora_store::{
     LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
@@ -69,20 +69,23 @@ pub(crate) fn execute_json_payload(
     inner: &InnerDatabase<InMemoryGraph>,
     query: &str,
     params_map: BTreeMap<String, LoraValue>,
-) -> anyhow::Result<String> {
+) -> Result<String, LoraError> {
     let options = ExecuteOptions {
         format: ResultFormat::RowArrays,
     };
-    let exec = inner.execute_with_params(query, Some(options), params_map);
-
-    let row_arrays = match exec {
-        Ok(QueryResult::RowArrays(r)) => r,
-        Ok(_) => anyhow::bail!("expected RowArrays result"),
-        Err(e) => return Err(e),
+    let row_arrays = match inner.execute_with_params(query, Some(options), params_map)? {
+        QueryResult::RowArrays(r) => r,
+        _ => {
+            return Err(LoraError::new(
+                LoraErrorCode::Internal,
+                "expected RowArrays result",
+            ))
+        }
     };
 
     let payload = serialize_rows(&row_arrays.columns, &row_arrays.rows);
-    Ok(serde_json::to_string(&payload)?)
+    serde_json::to_string(&payload)
+        .map_err(|e| LoraError::new(LoraErrorCode::Internal, e.to_string()))
 }
 
 pub(crate) fn json_value_to_params(

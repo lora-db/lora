@@ -201,6 +201,12 @@ impl LoraError {
     /// layers that hold `&anyhow::Error` from a `Result::Err` capture
     /// and don't want to move the error.
     pub fn from_anyhow_ref(err: &anyhow::Error) -> Self {
+        // If the chain already carries a typed `LoraError` (because some
+        // intermediate layer wrapped one with `?` or `.into()`), preserve
+        // its code rather than re-classifying as `Internal`.
+        if let Some(e) = err.downcast_ref::<LoraError>() {
+            return Self::new(e.code, e.message.clone());
+        }
         if let Some(e) = err.downcast_ref::<ParseError>() {
             return Self::new(LoraErrorCode::Parse, e.to_string());
         }
