@@ -21,12 +21,12 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationRecorder};
 use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder};
 
 use crate::database::Database;
+use crate::error::{LoraError, LoraErrorCode};
 use crate::named::{DatabaseName, DatabaseOpenOptions};
 use crate::plan_cache::PlanCache;
 use crate::snapshot::{ManagedSnapshotStore, SnapshotConfig};
@@ -50,7 +50,7 @@ impl Database<InMemoryGraph> {
     ///
     /// To restore from a snapshot in addition to the WAL, use
     /// [`Database::recover`] instead.
-    pub fn open_with_wal(wal_config: WalConfig) -> Result<Self> {
+    pub fn open_with_wal(wal_config: WalConfig) -> Result<Self, LoraError> {
         match wal_config {
             WalConfig::Disabled => Ok(Self::in_memory()),
             WalConfig::Enabled {
@@ -60,7 +60,7 @@ impl Database<InMemoryGraph> {
             } => {
                 let mut graph = InMemoryGraph::new();
                 let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, Lsn::ZERO)?;
-                replay_into(&mut graph, events)?;
+                replay_into(&mut graph, events).map_err(LoraError::from_anyhow)?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 Ok(Self::from_graph_with_wal(graph, recorder, None))
             }
@@ -76,20 +76,26 @@ impl Database<InMemoryGraph> {
     pub fn open_with_wal_snapshots(
         wal_config: WalConfig,
         snapshot_config: SnapshotConfig,
-    ) -> Result<Self> {
-        let snapshot_store = Arc::new(ManagedSnapshotStore::open(snapshot_config)?);
+    ) -> Result<Self, LoraError> {
+        let snapshot_store =
+            Arc::new(ManagedSnapshotStore::open(snapshot_config).map_err(LoraError::from_anyhow)?);
         let mut graph = InMemoryGraph::new();
 
         match wal_config {
-            WalConfig::Disabled => Err(anyhow!("managed snapshots require WAL enabled")),
+            WalConfig::Disabled => Err(LoraError::new(
+                LoraErrorCode::Config,
+                "managed snapshots require WAL enabled",
+            )),
             WalConfig::Enabled {
                 dir,
                 sync_mode,
                 segment_target_bytes,
             } => {
-                let snapshot_lsn = snapshot_store.load_latest(&mut graph)?;
+                let snapshot_lsn = snapshot_store
+                    .load_latest(&mut graph)
+                    .map_err(LoraError::from_anyhow)?;
                 let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
-                replay_into(&mut graph, events)?;
+                replay_into(&mut graph, events).map_err(LoraError::from_anyhow)?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 Ok(Self::from_graph_with_wal(
                     graph,
@@ -109,7 +115,7 @@ impl Database<InMemoryGraph> {
     pub fn open_named(
         database_name: impl AsRef<str>,
         options: DatabaseOpenOptions,
-    ) -> Result<Self> {
+    ) -> Result<Self, LoraError> {
         let name = DatabaseName::parse(database_name.as_ref())?;
         let archive = Arc::new(WalArchive::open(
             options.database_path_for(&name),
@@ -122,16 +128,14 @@ impl Database<InMemoryGraph> {
             options.segment_target_bytes,
             Lsn::ZERO,
         )?;
-        replay_into(&mut graph, events)?;
+        replay_into(&mut graph, events).map_err(LoraError::from_anyhow)?;
         let mirror: Arc<dyn WalMirror> = archive;
         let recorder = Arc::new(WalRecorder::new_with_mirror(wal, Some(mirror)));
         // Mark the archive dirty so a fresh named database is materialized as
         // a portable ZIP. The archive writer coalesces this with any immediate
         // follow-up writes and flushes it in the background, with a final flush
         // on database drop.
-        recorder
-            .flush()
-            .map_err(|e| anyhow!("initial database archive persist failed: {e}"))?;
+        recorder.flush()?;
         Ok(Self::from_graph_with_wal(graph, recorder, None))
     }
 
@@ -153,7 +157,10 @@ impl Database<InMemoryGraph> {
     /// is deferred to v2 because verifying that the marker's
     /// snapshot file actually exists and is loadable is a separate
     /// observability concern.
-    pub fn recover(snapshot_path: impl AsRef<Path>, wal_config: WalConfig) -> Result<Self> {
+    pub fn recover(
+        snapshot_path: impl AsRef<Path>,
+        wal_config: WalConfig,
+    ) -> Result<Self, LoraError> {
         let snapshot_path = snapshot_path.as_ref();
         let mut graph = InMemoryGraph::new();
         let snapshot_lsn = match File::open(snapshot_path) {
@@ -198,7 +205,7 @@ impl Database<InMemoryGraph> {
                 }
 
                 let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
-                replay_into(&mut graph, events)?;
+                replay_into(&mut graph, events).map_err(LoraError::from_anyhow)?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 Ok(Self::from_graph_with_wal(graph, recorder, None))
             }

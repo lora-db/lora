@@ -7,11 +7,11 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
 use lora_store::{InMemoryGraph, SnapshotMeta};
 use lora_wal::Lsn;
 
 use crate::database::Database;
+use crate::error::{LoraError, LoraErrorCode};
 
 /// Storage-agnostic admin surface for the WAL.
 ///
@@ -21,14 +21,14 @@ pub trait WalAdmin: Send + Sync + 'static {
     /// Take a checkpoint at `path`. The snapshot's header is stamped
     /// with the WAL's `durable_lsn`; older sealed segments are then
     /// dropped.
-    fn checkpoint(&self, path: &Path) -> Result<SnapshotMeta>;
+    fn checkpoint(&self, path: &Path) -> Result<SnapshotMeta, LoraError>;
 
     /// Snapshot of the WAL's current state — durable / next LSN,
     /// active / oldest segment id. Cheap; a single WAL mutex acquisition.
-    fn wal_status(&self) -> Result<WalStatus>;
+    fn wal_status(&self) -> Result<WalStatus, LoraError>;
 
     /// Drop sealed segments at or below `fence_lsn`. Idempotent.
-    fn wal_truncate(&self, fence_lsn: u64) -> Result<()>;
+    fn wal_truncate(&self, fence_lsn: u64) -> Result<(), LoraError>;
 }
 
 /// Snapshot of WAL state returned by [`WalAdmin::wal_status`].
@@ -47,15 +47,15 @@ pub struct WalStatus {
 }
 
 impl WalAdmin for Database<InMemoryGraph> {
-    fn checkpoint(&self, path: &Path) -> Result<SnapshotMeta> {
+    fn checkpoint(&self, path: &Path) -> Result<SnapshotMeta, LoraError> {
         self.checkpoint_to(path)
     }
 
-    fn wal_status(&self) -> Result<WalStatus> {
+    fn wal_status(&self) -> Result<WalStatus, LoraError> {
         let recorder = self
             .wal
             .as_ref()
-            .ok_or_else(|| anyhow!("WAL not enabled"))?;
+            .ok_or_else(|| LoraError::new(LoraErrorCode::Internal, "WAL not enabled"))?;
         let wal = recorder.wal();
         Ok(WalStatus {
             durable_lsn: wal.durable_lsn().raw(),
@@ -66,11 +66,11 @@ impl WalAdmin for Database<InMemoryGraph> {
         })
     }
 
-    fn wal_truncate(&self, fence_lsn: u64) -> Result<()> {
+    fn wal_truncate(&self, fence_lsn: u64) -> Result<(), LoraError> {
         let recorder = self
             .wal
             .as_ref()
-            .ok_or_else(|| anyhow!("WAL not enabled"))?;
+            .ok_or_else(|| LoraError::new(LoraErrorCode::Internal, "WAL not enabled"))?;
         recorder.truncate_up_to(Lsn::new(fence_lsn))?;
         Ok(())
     }

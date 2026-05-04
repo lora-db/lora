@@ -23,15 +23,16 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 
 use lora_snapshot::{
     decode_snapshot as decode_database_snapshot, read_snapshot as read_database_snapshot,
-    write_snapshot as write_database_snapshot, Compression, SnapshotCredentials, SnapshotInfo,
-    SnapshotOptions, DATABASE_SNAPSHOT_MAGIC,
+    write_snapshot as write_database_snapshot, Compression, SnapshotCodecError,
+    SnapshotCredentials, SnapshotInfo, SnapshotOptions, DATABASE_SNAPSHOT_MAGIC,
 };
 use lora_store::{InMemoryGraph, SnapshotMeta, SnapshotPayload};
 
+use crate::error::{LoraError, LoraErrorCode};
 use crate::Database;
 
 /// Magic-byte sniff for snapshot bytes. The legacy in-store `LORASNAP`
@@ -117,29 +118,23 @@ impl Drop for TempFileGuard {
     }
 }
 
-/// Decode columnar snapshot bytes into a payload + info.
-///
-/// Wraps `lora_snapshot::decode_snapshot` in our `anyhow::Result` so
-/// internal callers don't have to translate every codec error site.
+/// Decode columnar snapshot bytes into a payload + info. Returns the
+/// underlying typed [`SnapshotCodecError`] so callers can `?` it
+/// straight into a [`LoraError`] via the `From` impl.
 pub(crate) fn decode_snapshot_bytes(
     bytes: &[u8],
     credentials: Option<&SnapshotCredentials>,
-) -> Result<(SnapshotPayload, SnapshotInfo)> {
+) -> Result<(SnapshotPayload, SnapshotInfo), SnapshotCodecError> {
     decode_database_snapshot(bytes, credentials)
-        .map_err(|e| anyhow!("decode database snapshot failed: {e}"))
 }
 
-/// Decode columnar snapshot bytes streamed from a reader.
-///
-/// Used by `Database::recover` to read a checkpoint at startup; the
-/// path-based `Database::load_snapshot_from*` methods read the file
-/// to a `Vec<u8>` first and call [`decode_snapshot_bytes`] instead.
+/// Decode columnar snapshot bytes streamed from a reader. Used by
+/// `Database::recover` at startup.
 pub(crate) fn read_snapshot_from<R: Read>(
     reader: R,
     credentials: Option<&SnapshotCredentials>,
-) -> Result<(SnapshotPayload, SnapshotInfo)> {
+) -> Result<(SnapshotPayload, SnapshotInfo), SnapshotCodecError> {
     read_database_snapshot(reader, credentials)
-        .map_err(|e| anyhow!("decode database snapshot failed: {e}"))
 }
 
 /// Encode a payload through the columnar codec.
@@ -148,9 +143,8 @@ pub(crate) fn encode_snapshot_to<W: Write>(
     payload: &SnapshotPayload,
     wal_lsn: Option<u64>,
     options: &SnapshotOptions,
-) -> Result<SnapshotInfo> {
+) -> Result<SnapshotInfo, SnapshotCodecError> {
     write_database_snapshot(writer, payload, wal_lsn, options)
-        .map_err(|e| anyhow!("encode database snapshot failed: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +158,7 @@ impl Database<InMemoryGraph> {
     ///
     /// Callers that need compression or encryption should reach for
     /// [`Self::save_snapshot_to_with_options`] directly.
-    pub fn save_snapshot_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta> {
+    pub fn save_snapshot_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta, LoraError> {
         let options = SnapshotOptions {
             compression: Compression::None,
             encryption: None,
@@ -175,14 +169,14 @@ impl Database<InMemoryGraph> {
     /// Replace the current graph state with a snapshot loaded from `path`.
     /// Decodes via the columnar codec; encrypted snapshots require
     /// [`Self::load_snapshot_from_with_credentials`] instead.
-    pub fn load_snapshot_from(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta> {
+    pub fn load_snapshot_from(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta, LoraError> {
         self.load_snapshot_from_with_credentials(path, None)
     }
 
     /// Convenience constructor: open (or create) an empty in-memory database
     /// and immediately restore it from `path`. Errors if the file cannot be
     /// opened or the snapshot is malformed.
-    pub fn in_memory_from_snapshot(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn in_memory_from_snapshot(path: impl AsRef<Path>) -> Result<Self, LoraError> {
         let db = Self::in_memory();
         db.load_snapshot_from_with_credentials(path, None)?;
         Ok(db)
@@ -196,7 +190,7 @@ impl Database<InMemoryGraph> {
     /// The default is uncompressed so bytes stay portable across native
     /// and WASM builds; callers that want a specific codec can use
     /// [`Self::save_snapshot_to_bytes_with_options`].
-    pub fn save_snapshot_to_bytes(&self) -> Result<Vec<u8>> {
+    pub fn save_snapshot_to_bytes(&self) -> Result<Vec<u8>, LoraError> {
         let options = SnapshotOptions {
             compression: Compression::None,
             encryption: None,
@@ -210,7 +204,7 @@ impl Database<InMemoryGraph> {
     pub fn save_snapshot_to_bytes_with_options(
         &self,
         options: &SnapshotOptions,
-    ) -> Result<(Vec<u8>, SnapshotInfo)> {
+    ) -> Result<(Vec<u8>, SnapshotInfo), LoraError> {
         let guard = self.read_store();
         let payload = guard.snapshot_payload();
         let mut bytes = Vec::new();
@@ -226,7 +220,7 @@ impl Database<InMemoryGraph> {
         &self,
         path: impl AsRef<Path>,
         options: &SnapshotOptions,
-    ) -> Result<SnapshotMeta> {
+    ) -> Result<SnapshotMeta, LoraError> {
         let path = path.as_ref();
         let tmp = snapshot_tmp_path(path);
         let guard = self.read_store();
@@ -250,14 +244,14 @@ impl Database<InMemoryGraph> {
         std::fs::rename(&tmp, path)?;
         tmp_guard.commit();
 
-        sync_parent_dir(path)?;
+        sync_parent_dir(path).map_err(|e| LoraError::new(LoraErrorCode::Io, e.to_string()))?;
 
         Ok(snapshot_info_to_meta(info))
     }
 
     /// Replace the current graph state from snapshot bytes (columnar
     /// `lora-snapshot` format).
-    pub fn load_snapshot_from_bytes(&self, bytes: &[u8]) -> Result<SnapshotMeta> {
+    pub fn load_snapshot_from_bytes(&self, bytes: &[u8]) -> Result<SnapshotMeta, LoraError> {
         self.load_snapshot_from_bytes_with_credentials(bytes, None)
     }
 
@@ -267,9 +261,12 @@ impl Database<InMemoryGraph> {
         &self,
         bytes: &[u8],
         credentials: Option<&SnapshotCredentials>,
-    ) -> Result<SnapshotMeta> {
+    ) -> Result<SnapshotMeta, LoraError> {
         if SnapshotByteFormat::detect(bytes).is_none() {
-            return Err(anyhow!("snapshot bytes have unrecognized magic"));
+            return Err(LoraError::new(
+                LoraErrorCode::SnapshotCodec,
+                "snapshot bytes have unrecognized magic",
+            ));
         }
         let mut guard = self.write_store();
         let (payload, info) = decode_snapshot_bytes(bytes, credentials)?;
@@ -288,7 +285,7 @@ impl Database<InMemoryGraph> {
         &self,
         path: impl AsRef<Path>,
         credentials: Option<&SnapshotCredentials>,
-    ) -> Result<SnapshotMeta> {
+    ) -> Result<SnapshotMeta, LoraError> {
         let bytes = std::fs::read(path.as_ref())?;
         self.load_snapshot_from_bytes_with_credentials(&bytes, credentials)
     }
@@ -306,11 +303,10 @@ impl Database<InMemoryGraph> {
     /// checkpoint marker append. Truncation runs after the rename
     /// but still under the write lock; making it concurrent with queries
     /// is a v2 concern (see `docs/decisions/0004-wal.md`).
-    pub fn checkpoint_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta> {
-        let recorder = self
-            .wal
-            .as_ref()
-            .ok_or_else(|| anyhow!("checkpoint requires WAL enabled"))?;
+    pub fn checkpoint_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta, LoraError> {
+        let recorder = self.wal.as_ref().ok_or_else(|| {
+            LoraError::new(LoraErrorCode::Internal, "checkpoint requires WAL enabled")
+        })?;
         let path = path.as_ref();
         let tmp = snapshot_tmp_path(path);
 
@@ -318,9 +314,7 @@ impl Database<InMemoryGraph> {
 
         // Make every record appended so far durable, then capture
         // the LSN that becomes the snapshot fence.
-        recorder
-            .force_fsync()
-            .map_err(|e| anyhow!("WAL fsync before checkpoint failed: {e}"))?;
+        recorder.force_fsync()?;
         let snapshot_lsn = recorder.wal().durable_lsn();
 
         let file = OpenOptions::new()
@@ -346,17 +340,13 @@ impl Database<InMemoryGraph> {
         std::fs::rename(&tmp, path)?;
         tmp_guard.commit();
 
-        sync_parent_dir(path)?;
+        sync_parent_dir(path).map_err(|e| LoraError::new(LoraErrorCode::Io, e.to_string()))?;
 
         // Append the checkpoint marker AFTER the rename succeeds —
         // this preserves the invariant that a `Checkpoint` record
         // in the WAL implies the snapshot it points at exists.
-        recorder
-            .checkpoint_marker(snapshot_lsn)
-            .map_err(|e| anyhow!("WAL checkpoint marker failed: {e}"))?;
-        recorder
-            .force_fsync()
-            .map_err(|e| anyhow!("WAL fsync after checkpoint marker failed: {e}"))?;
+        recorder.checkpoint_marker(snapshot_lsn)?;
+        recorder.force_fsync()?;
 
         // Best-effort segment truncation. Failure here doesn't undo
         // the checkpoint — the next call will retry.
@@ -373,17 +363,21 @@ impl Database<InMemoryGraph> {
 
     /// Take a checkpoint into the managed snapshot directory configured by
     /// [`Self::open_with_wal_snapshots`].
-    pub fn checkpoint_managed(&self) -> Result<SnapshotMeta> {
-        let recorder = self
-            .wal
-            .as_ref()
-            .ok_or_else(|| anyhow!("managed checkpoint requires WAL enabled"))?;
-        let snapshots = self
-            .snapshots
-            .as_ref()
-            .ok_or_else(|| anyhow!("managed checkpoint requires snapshots enabled"))?;
+    pub fn checkpoint_managed(&self) -> Result<SnapshotMeta, LoraError> {
+        let recorder = self.wal.as_ref().ok_or_else(|| {
+            LoraError::new(
+                LoraErrorCode::Internal,
+                "managed checkpoint requires WAL enabled",
+            )
+        })?;
+        let snapshots = self.snapshots.as_ref().ok_or_else(|| {
+            LoraError::new(
+                LoraErrorCode::Internal,
+                "managed checkpoint requires snapshots enabled",
+            )
+        })?;
         let guard = self.write_store();
-        snapshots.checkpoint(&guard, recorder)
+        snapshots.checkpoint(&guard, recorder).map_err(Into::into)
     }
 }
 
@@ -399,16 +393,16 @@ impl Database<InMemoryGraph> {
 /// `lora-snapshot` codec. Transports (e.g. `lora-server`) type-erase on
 /// `Arc<dyn SnapshotAdmin>`.
 pub trait SnapshotAdmin: Send + Sync + 'static {
-    fn save_snapshot(&self, path: &Path) -> Result<SnapshotMeta>;
-    fn load_snapshot(&self, path: &Path) -> Result<SnapshotMeta>;
+    fn save_snapshot(&self, path: &Path) -> Result<SnapshotMeta, LoraError>;
+    fn load_snapshot(&self, path: &Path) -> Result<SnapshotMeta, LoraError>;
 }
 
 impl SnapshotAdmin for Database<InMemoryGraph> {
-    fn save_snapshot(&self, path: &Path) -> Result<SnapshotMeta> {
+    fn save_snapshot(&self, path: &Path) -> Result<SnapshotMeta, LoraError> {
         self.save_snapshot_to(path)
     }
 
-    fn load_snapshot(&self, path: &Path) -> Result<SnapshotMeta> {
+    fn load_snapshot(&self, path: &Path) -> Result<SnapshotMeta, LoraError> {
         self.load_snapshot_from(path)
     }
 }
