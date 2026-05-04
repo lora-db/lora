@@ -37,7 +37,8 @@ export declare class Database {
    * and temporal / spatial values are tagged objects.
    *
    * Errors surface as `LoraError` in the TS wrapper with a narrowed
-   * `code` (`LORA_ERROR`, `INVALID_PARAMS`).
+   * `code` from the `LoraErrorCode` union (e.g. `LORA_PARSE`,
+   * `LORA_INVALID_PARAMS`, `LORA_INTERNAL`).
    */
   execute(query: string, params?: Record<string, any> | null | undefined): Promise<{ columns: string[]; rows: Array<Record<string, any>> }>
   /**

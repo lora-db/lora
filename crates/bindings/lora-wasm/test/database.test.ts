@@ -213,7 +213,9 @@ describe("Database — basics", () => {
     });
 
     const target = await createDatabase({ runtime: "main-thread" });
-    await expect(target.loadSnapshot(bytes)).rejects.toThrow(/password encrypted/);
+    await expect(target.loadSnapshot(bytes)).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_SNAPSHOT_CRYPTO",
+    );
     const meta = await target.loadSnapshot(bytes, { credentials: encryption });
     expect(meta.nodeCount).toBe(1);
     const { rows } = await target.execute<{ name: string }>(
@@ -376,15 +378,15 @@ describe("Database — errors", () => {
   it("throws LoraError for a parse error", async () => {
     const db = await createDatabase();
     await expect(db.execute("THIS IS NOT CYPHER")).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_PARSE",
     );
   });
 
-  it("throws INVALID_PARAMS for a malformed temporal param", async () => {
+  it("throws LORA_INVALID_PARAMS for a malformed temporal param", async () => {
     const db = await createDatabase();
     await expect(
       db.execute("RETURN $d AS d", { d: { kind: "date", iso: "not-a-date" } }),
-    ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "INVALID_PARAMS");
+    ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS");
   });
 });
 
@@ -448,7 +450,7 @@ describe("Database — vector values (wasm)", () => {
         },
       }),
     ).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "INVALID_PARAMS",
+      (e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS",
     );
   });
 
@@ -495,7 +497,7 @@ describe("Database — vector values (wasm)", () => {
         { query: "THIS IS NOT CYPHER" },
       ]),
     ).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_PARSE",
     );
     const after = await db.execute<{ v: number }>(
       "MATCH (n:Tx) RETURN n.id AS v ORDER BY v",

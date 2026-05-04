@@ -4,8 +4,8 @@
 //! it can be moved onto the libuv worker pool by `napi`'s `AsyncTask`
 //! plumbing and run without touching the JS main thread until it
 //! resolves the Promise. Errors flow back as `NapiError`s carrying the
-//! stable `LORA_ERROR:` / `INVALID_PARAMS:` code prefixes from
-//! [`crate::errors`].
+//! stable `LORA_*:` code prefixes from [`crate::errors`] (mirroring
+//! `lora_database::LoraErrorCode::as_str`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

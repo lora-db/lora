@@ -177,18 +177,28 @@ Helper constructors: `date`, `time`, `datetime`, `localtime`, `localdatetime`,
 
 ## Errors
 
-`db.execute(...)` and the worker client throw `LoraError` with a narrowed
-`code`:
+`db.execute(...)` and the worker client throw `LoraError` with a
+narrowed `code` from the `LoraErrorCode` union — these mirror
+`lora_database::LoraErrorCode` 1:1, plus `WORKER_ERROR` and `UNKNOWN`.
 
-- `LORA_ERROR` — parse / analyze / execute failure
-- `INVALID_PARAMS` — a param value could not be mapped to a Lora value
+Common ones:
+
+- `LORA_PARSE` — Cypher syntax could not be parsed
+- `LORA_SEMANTIC` — analysis failure (unknown variable, label, type mismatch, …)
+- `LORA_INVALID_PARAMS` — a parameter value could not be coerced to a `LoraValue`
+- `LORA_INVALID_VECTOR` — vector value failed dimension / coordinate-type validation
+- `LORA_TIMEOUT` — query exceeded its cooperative deadline
+- `LORA_IO`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO` — storage / snapshot failures
+- `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
 - `WORKER_ERROR` — worker transport / lifecycle failure (worker client only)
+
+See `ts/types.ts` (`LoraErrorCode`) for the full list.
 
 ## Shared type contract
 
 The public TypeScript value model (`LoraValue`, `LoraNode`, …,
 `QueryResult`, `LoraError`) lives in a single canonical file at
-`crates/shared-ts/types.ts` and is copied into each consumer package by
+`crates/bindings/shared-ts/types.ts` and is copied into each consumer package by
 its `sync:types` npm script. CI runs `verify:types` to fail on drift.
 That keeps `lora-node` and `lora-wasm` locked to one identical
 public surface — consumers can swap backends without rewriting types.
@@ -228,7 +238,7 @@ public surface — consumers can swap backends without rewriting types.
   forms, parameter validation errors, and concurrent queries across the
   worker message protocol.
 - The TypeScript public contract is shared verbatim with `lora-node`
-  via `crates/shared-ts/types.ts`, enforced by `verify:types` in CI.
+  via `crates/bindings/shared-ts/types.ts`, enforced by `verify:types` in CI.
 - `npm pack --dry-run` produces a 45-file, 6.6 MB tarball containing
   all three wasm bundles plus the compiled TS wrapper. No `file:` deps,
   no postinstall scripts.

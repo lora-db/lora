@@ -23,8 +23,8 @@ use napi_derive::napi;
 
 use lora_database::{
     snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
-    DatabaseName, DatabaseOpenOptions, InMemoryGraph, SnapshotConfig, SnapshotCredentials,
-    SnapshotOptions, SyncMode, WalConfig,
+    DatabaseName, DatabaseOpenOptions, InMemoryGraph, LoraError, LoraErrorCode, SnapshotConfig,
+    SnapshotCredentials, SnapshotOptions, SyncMode, WalConfig,
 };
 
 mod errors;
@@ -140,7 +140,8 @@ impl Database {
     /// and temporal / spatial values are tagged objects.
     ///
     /// Errors surface as `LoraError` in the TS wrapper with a narrowed
-    /// `code` (`LORA_ERROR`, `INVALID_PARAMS`).
+    /// `code` from the `LoraErrorCode` union (e.g. `LORA_PARSE`,
+    /// `LORA_INVALID_PARAMS`, `LORA_INTERNAL`).
     #[napi(ts_return_type = "Promise<{ columns: string[]; rows: Array<Record<string, any>> }>")]
     pub fn execute(
         &self,
@@ -216,7 +217,7 @@ impl Database {
                 streams.remove(&stream_id);
                 Err(NapiError::new(
                     Status::GenericFailure,
-                    format!("{LORA_ERROR_CODE}: {e}"),
+                    format_lora_error(&LoraError::from_anyhow(e)),
                 ))
             }
         }
@@ -474,8 +475,12 @@ fn open_persistent_database(
     sync_mode: Option<String>,
     group_sync_interval_ms: Option<u32>,
 ) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
-    let name = DatabaseName::parse(&database_name)
-        .map_err(|e| NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}")))?;
+    let name = DatabaseName::parse(&database_name).map_err(|e| {
+        NapiError::new(
+            Status::GenericFailure,
+            format_lora_error(&LoraError::from(e)),
+        )
+    })?;
     let sync_mode = parse_sync_mode(sync_mode, group_sync_interval_ms)?;
     let mut options = DatabaseOpenOptions::default();
     if let Some(database_dir) = database_dir {
@@ -483,10 +488,26 @@ fn open_persistent_database(
     }
     options.sync_mode = sync_mode;
 
-    std::fs::create_dir_all(&options.database_dir)
-        .map_err(|e| NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}")))?;
-    options.database_dir = std::fs::canonicalize(&options.database_dir)
-        .map_err(|e| NapiError::new(Status::GenericFailure, format!("{LORA_ERROR_CODE}: {e}")))?;
+    std::fs::create_dir_all(&options.database_dir).map_err(|e| {
+        NapiError::new(
+            Status::GenericFailure,
+            format_lora_error(&LoraError::with_source(
+                LoraErrorCode::Io,
+                format!("failed to create database directory: {e}"),
+                e,
+            )),
+        )
+    })?;
+    options.database_dir = std::fs::canonicalize(&options.database_dir).map_err(|e| {
+        NapiError::new(
+            Status::GenericFailure,
+            format_lora_error(&LoraError::with_source(
+                LoraErrorCode::Io,
+                format!("failed to canonicalize database directory: {e}"),
+                e,
+            )),
+        )
+    })?;
     let key = options.database_path_for(&name);
     let open_options = PersistentOpenOptions {
         sync_mode: options.sync_mode,
@@ -505,9 +526,9 @@ fn open_persistent_database(
         if let Some(existing) = entry.db.upgrade() {
             if entry.options != open_options {
                 return Err(NapiError::new(
-                    Status::GenericFailure,
+                    Status::InvalidArg,
                     format!(
-                        "{LORA_ERROR_CODE}: database '{}' is already open with different persistence options",
+                        "{INVALID_PARAMS_CODE}: database '{}' is already open with different persistence options",
                         key.display()
                     ),
                 ));

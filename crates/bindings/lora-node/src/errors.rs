@@ -3,10 +3,11 @@
 //! Every `NapiError` that crosses the JS boundary carries a `LORA_*:`
 //! prefix in its message, drawn from
 //! `lora_database::LoraErrorCode::as_str`. The JS wrapper splits on the
-//! first colon to recover the precise code; existing class-routing
-//! based on `LORA_ERROR` / `INVALID_PARAMS` continues to work via the
-//! deprecated [`LORA_ERROR_CODE`] / [`INVALID_PARAMS_CODE`] aliases for
-//! call sites that don't yet have a typed error to inspect.
+//! first colon to recover the precise code (e.g. `LORA_PARSE`,
+//! `LORA_INVALID_PARAMS`, `LORA_INTERNAL`). Binding-level call sites
+//! that don't have a typed `LoraError` to forward use the precomputed
+//! [`LORA_ERROR_CODE`] / [`INVALID_PARAMS_CODE`] constants
+//! (`LORA_INTERNAL` and `LORA_INVALID_PARAMS` respectively).
 
 use lora_database::{LoraError, LoraErrorCode};
 

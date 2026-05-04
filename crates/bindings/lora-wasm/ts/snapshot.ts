@@ -106,7 +106,7 @@ export function snapshotAsObjectUrl(
   mimeType = DEFAULT_SNAPSHOT_MIME_TYPE,
 ): URL {
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
-    throw new Error("LORA_ERROR: snapshot URL output requires URL.createObjectURL");
+    throw new Error("LORA_CONFIG: snapshot URL output requires URL.createObjectURL");
   }
   return new URL(URL.createObjectURL(snapshotAsBlob(bytes, mimeType)));
 }
@@ -134,7 +134,7 @@ export async function readSnapshotSource(
     return readSnapshotStream(source);
   }
 
-  throw new Error("LORA_ERROR: unsupported snapshot source");
+  throw new Error("LORA_INVALID_PARAMS: unsupported snapshot source");
 }
 
 function isReadableStream(
@@ -174,7 +174,7 @@ async function readSnapshotStream(
 async function readSnapshotResponse(response: Response): Promise<Uint8Array> {
   if (!response.ok) {
     throw new Error(
-      `LORA_ERROR: snapshot fetch failed (${response.status} ${response.statusText})`,
+      `LORA_IO: snapshot fetch failed (${response.status} ${response.statusText})`,
     );
   }
   return new Uint8Array(await response.arrayBuffer());

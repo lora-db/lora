@@ -472,13 +472,13 @@ describe("Database — WAL-backed initialization", () => {
     await writeFile(notADir, "not a directory");
 
     await expect(createDatabase("app", { databaseDir: notADir })).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_IO",
     );
   });
 
   it("rejects invalid database names before creating storage", async () => {
     await expect(createDatabase("../bad")).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_DATABASE_NAME",
     );
   });
 
@@ -522,7 +522,7 @@ describe("Database — WAL-backed initialization", () => {
     ).rejects.toSatisfy(
       (e) =>
         e instanceof LoraError &&
-        e.code === "INVALID_PARAMS" &&
+        e.code === "LORA_INVALID_PARAMS" &&
         e.message.includes("openWalDatabase"),
     );
   });
@@ -538,7 +538,7 @@ describe("Database — WAL-backed initialization", () => {
     ).rejects.toSatisfy(
       (e) =>
         e instanceof LoraError &&
-        e.code === "INVALID_PARAMS" &&
+        e.code === "LORA_INVALID_PARAMS" &&
         e.message.includes("snapshotDir"),
     );
   });
@@ -631,7 +631,7 @@ describe("Database — WAL-backed initialization", () => {
     const bytes = await source.saveSnapshot(options);
     const targetFromBytes = await createDatabase();
     await expect(targetFromBytes.loadSnapshot(bytes)).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_SNAPSHOT_CRYPTO",
     );
     const bytesMeta = await targetFromBytes.loadSnapshot(bytes, {
       credentials: encryption,
@@ -642,7 +642,7 @@ describe("Database — WAL-backed initialization", () => {
     expect(pathMeta.nodeCount).toBe(1);
     const targetFromPath = await createDatabase();
     await expect(targetFromPath.loadSnapshot(snapshotPath)).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_SNAPSHOT_CRYPTO",
     );
     const loadedMeta = await targetFromPath.loadSnapshot(snapshotPath, {
       encryption,
@@ -776,15 +776,15 @@ describe("Database — errors", () => {
   it("throws LoraError for a parse error", async () => {
     const db = await createDatabase();
     await expect(db.execute("THIS IS NOT CYPHER")).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_PARSE",
     );
   });
 
-  it("throws INVALID_PARAMS for a malformed temporal param", async () => {
+  it("throws LORA_INVALID_PARAMS for a malformed temporal param", async () => {
     const db = await createDatabase();
     await expect(
       db.execute("RETURN $d AS d", { d: { kind: "date", iso: "not-a-date" } }),
-    ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "INVALID_PARAMS");
+    ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS");
   });
 });
 
@@ -930,7 +930,7 @@ describe("Database — vector values", () => {
         },
       }),
     ).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "INVALID_PARAMS",
+      (e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS",
     );
   });
 
@@ -946,7 +946,7 @@ describe("Database — vector values", () => {
         },
       }),
     ).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "INVALID_PARAMS",
+      (e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS",
     );
   });
 
@@ -993,7 +993,7 @@ describe("Database — vector values", () => {
         { query: "THIS IS NOT CYPHER" },
       ]),
     ).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_ERROR",
+      (e) => e instanceof LoraError && e.code === "LORA_PARSE",
     );
     const after = await db.execute<{ v: number }>(
       "MATCH (n:Tx) RETURN n.id AS v ORDER BY v",

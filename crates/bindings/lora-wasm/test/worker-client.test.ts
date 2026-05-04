@@ -88,7 +88,7 @@ class InProcessWorker {
         }
         case "streamNext": {
           const stream = this.#streams.get(msg.body.streamId);
-          if (!stream) throw new Error("LORA_ERROR: query stream is closed");
+          if (!stream) throw new Error("LORA_INTERNAL: query stream is closed");
           const next = await stream.next();
           if (next.done) {
             this.#streams.delete(msg.body.streamId);
@@ -134,7 +134,7 @@ class InProcessWorker {
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
-      const match = /^(LORA_ERROR|INVALID_PARAMS|WORKER_ERROR):\s*(.*)$/s.exec(message);
+      const match = /^(LORA_[A-Z_]+|WORKER_ERROR):\s*(.*)$/s.exec(message);
       const code: LoraErrorCode =
         (match?.[1] as LoraErrorCode | undefined) ?? "UNKNOWN";
       const cleanedMessage = match ? match[2]! : message;
@@ -179,9 +179,9 @@ describe("WorkerDatabase — message protocol", () => {
     expect(seen).toEqual([1, 2, 3]);
   });
 
-  it("surfaces LORA_ERROR from the worker", async () => {
+  it("surfaces LORA_PARSE from the worker", async () => {
     await expect(db.execute("NOT CYPHER")).rejects.toSatisfy(
-      (e) => e instanceof Error && (e as { code?: string }).code === "LORA_ERROR",
+      (e) => e instanceof Error && (e as { code?: string }).code === "LORA_PARSE",
     );
   });
 

@@ -42,7 +42,7 @@ function ensureReady(): Promise<void> {
 }
 
 function extractErrorCode(message: string): LoraErrorCode {
-  const match = /^(LORA_ERROR|INVALID_PARAMS|WORKER_ERROR):/.exec(message);
+  const match = /^(LORA_[A-Z_]+|WORKER_ERROR):/.exec(message);
   return (match?.[1] as LoraErrorCode | undefined) ?? "UNKNOWN";
 }
 
@@ -82,7 +82,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       }
       case "streamNext": {
         const stream = streams.get(body.streamId);
-        if (!stream) throw new Error("LORA_ERROR: query stream is closed");
+        if (!stream) throw new Error("LORA_INTERNAL: query stream is closed");
         const row = stream.next();
         if (row === null) {
           streams.delete(body.streamId);

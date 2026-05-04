@@ -5,7 +5,7 @@
  * native layer, which runs each query on the libuv threadpool so the JS
  * event loop stays responsive. This file only narrows the `unknown`-valued
  * native surface into the strongly-typed `QueryResult<T>` / `LoraParams`
- * shapes defined in the shared TS contract (`crates/shared-ts/types.ts`).
+ * shapes defined in the shared TS contract (`crates/bindings/shared-ts/types.ts`).
  *
  * **Initialization is async-only.** The canonical entry point is
  * `createDatabase(...)`, optionally with archive-backed persistence. There is no
@@ -418,7 +418,8 @@ class DatabaseImpl {
   /**
    * Execute a Lora query on the libuv threadpool. Returns a Promise that
    * resolves with `{ columns, rows }`; errors surface as `LoraError`
-   * with a narrowed `code` (`LORA_ERROR` / `INVALID_PARAMS`).
+   * with a narrowed `code` from the `LoraErrorCode` union (e.g.
+   * `LORA_PARSE`, `LORA_INVALID_PARAMS`, `LORA_INTERNAL`).
    */
   async execute<
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
@@ -700,13 +701,13 @@ export async function createDatabase(
     if (hasWalOptions) {
       throw new LoraError(
         "walDir/snapshotDir are not valid for createDatabase(); use openWalDatabase()",
-        "INVALID_PARAMS",
+        "LORA_INVALID_PARAMS",
       );
     }
     if (databaseName == null && hasPersistenceOptions) {
       throw new LoraError(
         "databaseName is required when persistence options are provided",
-        "INVALID_PARAMS",
+        "LORA_INVALID_PARAMS",
       );
     }
     const syncMode = options.syncMode ?? null;
@@ -740,13 +741,13 @@ export async function openWalDatabase(options: WalDatabaseOptions): Promise<Data
     if (!options.walDir) {
       throw new LoraError(
         "walDir is required for openWalDatabase()",
-        "INVALID_PARAMS",
+        "LORA_INVALID_PARAMS",
       );
     }
     if (options.snapshotDir === undefined && hasSnapshotTuningOptions) {
       throw new LoraError(
         "snapshotDir is required when managed snapshot options are provided",
-        "INVALID_PARAMS",
+        "LORA_INVALID_PARAMS",
       );
     }
     const syncMode = options.syncMode ?? null;

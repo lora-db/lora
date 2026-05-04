@@ -173,7 +173,7 @@ are exported from `lora-node`.
 lora-database (Rust)
    └── lora-node (crate, cdylib)        <- napi-rs bindings, AsyncTask
           └── ts/index.ts                 <- strongly-typed async wrapper
-                 └── ../../shared-ts/types.ts  <- shared TS contract (with lora-wasm)
+                 └── ../shared-ts/types.ts     <- shared TS contract (with lora-wasm)
 ```
 
 Query execution path:
@@ -196,10 +196,22 @@ identical to `lora-wasm`.
 
 ## Errors
 
-`db.execute(...)` throws `LoraError` with a narrowed `code`:
+`db.execute(...)` throws `LoraError` with a narrowed `code` from the
+`LoraErrorCode` union — these mirror `lora_database::LoraErrorCode` 1:1.
 
-- `LORA_ERROR` — parse / analyze / execute failure
-- `INVALID_PARAMS` — a param value could not be mapped to a `LoraValue`
+Common ones:
+
+- `LORA_PARSE` — Cypher syntax could not be parsed
+- `LORA_SEMANTIC` — analysis failure (unknown variable, label, type mismatch, …)
+- `LORA_INVALID_PARAMS` — a parameter value could not be coerced to a `LoraValue`
+- `LORA_INVALID_VECTOR` — vector value failed dimension / coordinate-type validation
+- `LORA_TIMEOUT` — query exceeded its cooperative deadline
+- `LORA_DATABASE_NAME` — logical database name violates the portable-path rules
+- `LORA_IO`, `LORA_WAL_CORRUPTION`, `LORA_WAL_POISONED` — storage failures
+- `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO` — snapshot codec / crypto failures
+- `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
+
+See `ts/types.ts` (`LoraErrorCode`) for the full list.
 
 ## Known limitations
 
