@@ -76,7 +76,7 @@ console.log(result.rows);`,
     id: 'go',
     label: 'Go',
     file: 'quickstart.go',
-    code: `import lora "github.com/lora-db/lora/crates/lora-go"
+    code: `import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, _ := lora.New()
 defer db.Close()

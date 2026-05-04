@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/lora-ruby/**"
+      - "crates/bindings/lora-ruby/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -19,7 +19,7 @@ on:
       - ".github/workflows/lora-ruby.yml"
   pull_request:
     paths:
-      - "crates/lora-ruby/**"
+      - "crates/bindings/lora-ruby/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -43,7 +43,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: crates/lora-ruby
+    working-directory: crates/bindings/lora-ruby
 
 jobs:
   verify:
@@ -76,7 +76,7 @@ jobs:
           # Gemfile at `working-directory`; scoping it here keeps the
           # cache key stable across Ruby versions.
           bundler-cache: true
-          working-directory: crates/lora-ruby
+          working-directory: crates/bindings/lora-ruby
 
       - name: cargo check (rlib target — no libruby link)
         working-directory: .
@@ -111,6 +111,6 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: lora-ruby-${{ matrix.os }}-ruby${{ matrix.ruby-version }}-gem
-          path: crates/lora-ruby/pkg/lora-ruby-*.gem
+          path: crates/bindings/lora-ruby/pkg/lora-ruby-*.gem
           if-no-files-found: error
           retention-days: 7

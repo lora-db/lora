@@ -6,9 +6,9 @@ Lora is a Rust workspace implementing an **in-memory property graph database** w
 
 The **core engine** is structured as eight crates that form a compiler-style pipeline plus an orchestration layer (described below). The wider workspace additionally contains transport and binding surfaces that all wrap this same pipeline:
 
-- `crates/lora-ffi` — Rust crate exposing a C ABI over `Database`
-- `crates/lora-node`, `crates/lora-wasm`, `crates/lora-python`, `crates/lora-ruby` — Rust crates that are cargo workspace members and compile to native extensions for their respective runtimes
-- `crates/lora-go` — a Go module (not a cargo crate) that cgo-links against `lora-ffi`
+- `crates/bindings/lora-ffi` — Rust crate exposing a C ABI over `Database`
+- `crates/bindings/lora-node`, `crates/bindings/lora-wasm`, `crates/bindings/lora-python`, `crates/bindings/lora-ruby` — Rust crates that are cargo workspace members and compile to native extensions for their respective runtimes
+- `crates/bindings/lora-go` — a Go module (not a cargo crate) that cgo-links against `lora-ffi`
 - `crates/shared-ts` — shared TypeScript type declarations consumed by `lora-node` and `lora-wasm` (source only, not a cargo crate)
 
 These are documented elsewhere and are not part of the eight-crate count here.

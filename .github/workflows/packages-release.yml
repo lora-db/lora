@@ -104,7 +104,7 @@ jobs:
     timeout-minutes: 25
     defaults:
       run:
-        working-directory: crates/lora-wasm
+        working-directory: crates/bindings/lora-wasm
     steps:
       - uses: actions/checkout@v5
         with:
@@ -123,14 +123,14 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: crates/lora-wasm/package-lock.json
+          cache-dependency-path: crates/bindings/lora-wasm/package-lock.json
 
       - name: npm install
         run: npm ci --no-audit --no-fund --ignore-scripts
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-wasm
+          destination: crates/bindings/lora-wasm
 
       - name: Build (WASM + TS)
         run: npm run build
@@ -166,7 +166,7 @@ jobs:
       id-token: write
     defaults:
       run:
-        working-directory: crates/lora-wasm
+        working-directory: crates/bindings/lora-wasm
     steps:
       - uses: actions/checkout@v5
         with:
@@ -185,7 +185,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: crates/lora-wasm/package-lock.json
+          cache-dependency-path: crates/bindings/lora-wasm/package-lock.json
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm to a version that supports --provenance (>=9.5)
@@ -196,7 +196,7 @@ jobs:
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-wasm
+          destination: crates/bindings/lora-wasm
 
       - name: Build (WASM + TS)
         run: npm run build
@@ -248,7 +248,7 @@ jobs:
             cross: false
     defaults:
       run:
-        working-directory: crates/lora-node
+        working-directory: crates/bindings/lora-node
     steps:
       - uses: actions/checkout@v5
         with:
@@ -269,7 +269,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: crates/lora-node/package-lock.json
+          cache-dependency-path: crates/bindings/lora-node/package-lock.json
 
       - name: npm install
         run: npm ci --no-audit --no-fund --ignore-scripts
@@ -279,7 +279,7 @@ jobs:
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-node
+          destination: crates/bindings/lora-node
 
       - name: Build native for target ${{ matrix.target }} (zig=${{ matrix.cross == 'zig' }})
         shell: bash
@@ -325,7 +325,7 @@ jobs:
       id-token: write
     defaults:
       run:
-        working-directory: crates/lora-node
+        working-directory: crates/bindings/lora-node
     steps:
       - uses: actions/checkout@v5
         with:
@@ -335,7 +335,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: crates/lora-node/package-lock.json
+          cache-dependency-path: crates/bindings/lora-node/package-lock.json
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm to a version that supports --provenance (>=9.5)
@@ -352,13 +352,13 @@ jobs:
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-node
+          destination: crates/bindings/lora-node
 
       - name: Download every per-triple native artifact
         uses: actions/download-artifact@v4
         with:
           pattern: lora-node-binary-*
-          path: crates/lora-node/artifacts
+          path: crates/bindings/lora-node/artifacts
           merge-multiple: true
 
       - name: Show collected .node files
@@ -464,12 +464,12 @@ jobs:
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-python
+          destination: crates/bindings/lora-python
 
       - name: Build abi3 wheel via maturin
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: crates/lora-python
+          working-directory: crates/bindings/lora-python
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           args: --release --out dist --interpreter python3.12
@@ -477,7 +477,7 @@ jobs:
 
       - name: List built wheel
         shell: bash
-        run: ls -la crates/lora-python/dist
+        run: ls -la crates/bindings/lora-python/dist
 
       # maturin-action runs inside a manylinux Docker container on Linux,
       # so the wheel files in dist/ (and dist/ itself) are owned by root.
@@ -487,13 +487,13 @@ jobs:
       - name: Re-own container-written dist (manylinux docker)
         if: runner.os == 'Linux'
         shell: bash
-        run: sudo chown -R "$(id -u):$(id -g)" crates/lora-python/dist
+        run: sudo chown -R "$(id -u):$(id -g)" crates/bindings/lora-python/dist
 
       - name: Stage wheels at workspace root for clean artifact layout
         shell: bash
         run: |
           mkdir -p wheelhouse
-          mv crates/lora-python/dist/*.whl wheelhouse/
+          mv crates/bindings/lora-python/dist/*.whl wheelhouse/
 
       - uses: actions/upload-artifact@v5
         with:
@@ -518,19 +518,19 @@ jobs:
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-python
+          destination: crates/bindings/lora-python
 
       - name: Build sdist via maturin
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: crates/lora-python
+          working-directory: crates/bindings/lora-python
           command: sdist
           args: --out dist
 
       - name: Stage sdist at workspace root for clean artifact layout
         run: |
           mkdir -p wheelhouse
-          mv crates/lora-python/dist/*.tar.gz wheelhouse/
+          mv crates/bindings/lora-python/dist/*.tar.gz wheelhouse/
 
       - uses: actions/upload-artifact@v5
         with:
@@ -600,7 +600,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: crates/lora-ruby
+        working-directory: crates/bindings/lora-ruby
     steps:
       - uses: actions/checkout@v5
         with:
@@ -615,11 +615,11 @@ jobs:
         with:
           ruby-version: "3.3"
           bundler-cache: true
-          working-directory: crates/lora-ruby
+          working-directory: crates/bindings/lora-ruby
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-ruby
+          destination: crates/bindings/lora-ruby
 
       - name: Build source gem
         run: bundle exec rake build
@@ -657,7 +657,7 @@ jobs:
           - platform: x64-mingw-ucrt
     defaults:
       run:
-        working-directory: crates/lora-ruby
+        working-directory: crates/bindings/lora-ruby
     steps:
       - uses: actions/checkout@v5
         with:
@@ -668,11 +668,11 @@ jobs:
         with:
           ruby-version: "3.3"
           bundler-cache: true
-          working-directory: crates/lora-ruby
+          working-directory: crates/bindings/lora-ruby
 
       - uses: ./.github/actions/copy-license
         with:
-          destination: crates/lora-ruby
+          destination: crates/bindings/lora-ruby
 
       - name: Cross-build precompiled gem for ${{ matrix.platform }}
         # `cross-gem-action` runs inside rb-sys' official toolchain
@@ -683,7 +683,7 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: "3.1,3.2,3.3"
-          working-directory: crates/lora-ruby
+          working-directory: crates/bindings/lora-ruby
           # rb-sys-dock does not forward LANG/LC_ALL from the host, so
           # the container defaults to US-ASCII. `cargo metadata` emits
           # UTF-8 (our Cargo.toml comments/descriptions contain em-dash
@@ -739,11 +739,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: lora-ruby-gem-*
-          path: crates/lora-ruby/pkg
+          path: crates/bindings/lora-ruby/pkg
           merge-multiple: true
 
       - name: Sanity-check collected gems
-        working-directory: crates/lora-ruby
+        working-directory: crates/bindings/lora-ruby
         run: |
           set -euo pipefail
           ls -la pkg
@@ -768,7 +768,7 @@ jobs:
         uses: rubygems/configure-rubygems-credentials@v1.0.0
 
       - name: Push every gem to rubygems.org
-        working-directory: crates/lora-ruby
+        working-directory: crates/bindings/lora-ruby
         run: |
           set -euo pipefail
           # Static-token fallback: export GEM_HOST_API_KEY only when the
@@ -797,7 +797,7 @@ jobs:
           done
 
   # ──────────────────────────────────────────────────────────────────────
-  # lora-go (github.com/lora-db/lora/crates/lora-go)
+  # lora-go (github.com/lora-db/lora/crates/bindings/lora-go)
   # Go modules have no registry upload step — the module URL resolves to
   # the git tag itself. The jobs below:
   #   1. build + test the Go binding (+ the lora-ffi static lib it links)
@@ -822,7 +822,7 @@ jobs:
     timeout-minutes: 25
     defaults:
       run:
-        working-directory: crates/lora-go
+        working-directory: crates/bindings/lora-go
     steps:
       - uses: actions/checkout@v5
         with:
@@ -835,7 +835,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-          cache-dependency-path: crates/lora-go/go.sum
+          cache-dependency-path: crates/bindings/lora-go/go.sum
 
       - name: Build lora-ffi (release)
         working-directory: .
@@ -908,7 +908,7 @@ jobs:
           dir="lora-ffi-${TAG}-${TRIPLE}"
           mkdir -p "${dir}"
           cp "target/${TARGET}/release/liblora_ffi.a" "${dir}/"
-          cp crates/lora-go/include/lora_ffi.h         "${dir}/"
+          cp crates/bindings/lora-go/include/lora_ffi.h         "${dir}/"
           cp LICENSE README.md                          "${dir}/"
           tar -czf "${dir}.tar.gz" "${dir}"
           shasum -a 256 "${dir}.tar.gz" | awk '{print $1}' > "${dir}.tar.gz.sha256"
@@ -936,7 +936,7 @@ jobs:
       - name: Poll proxy.golang.org for the tag
         shell: bash
         env:
-          MODULE: github.com/lora-db/lora/crates/lora-go
+          MODULE: github.com/lora-db/lora/crates/bindings/lora-go
           TAG: ${{ needs.verify-versions.outputs.tag }}
           GOPROXY: https://proxy.golang.org
           GOFLAGS: -mod=mod

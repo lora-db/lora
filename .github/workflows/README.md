@@ -145,11 +145,11 @@ the safest way to stay consistent.
   for version checks, 5–15 for quality/unit jobs, 20–30 for
   package/native builds, 45–60 for release builds and benchmarks.
 - **Path filters.** Per-binding CI filters always include:
-  - the binding's own crate (`crates/lora-<lang>/**`),
+  - the binding's own crate (`crates/bindings/lora-<lang>/**`),
   - every shared core crate it depends on (`crates/lora-ast`,
     `lora-parser`, `lora-analyzer`, `lora-compiler`, `lora-executor`,
     `lora-store`, `lora-database`, plus `crates/shared-ts` for the TS
-    bindings and `crates/lora-ffi` for `lora-go`),
+    bindings and `crates/bindings/lora-ffi` for `lora-go`),
   - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
   - `.github/actions/setup-rust/**`,
   - the workflow file itself.
@@ -189,10 +189,10 @@ registration, yank / recovery semantics) live in
 
 ## Adding a new language binding
 
-When a new `crates/lora-<lang>` binding joins the workspace, do exactly
+When a new `crates/bindings/lora-<lang>` binding joins the workspace, do exactly
 the following in a single PR:
 
-1. **Crate**. Add `crates/lora-<lang>` to `[workspace].members` in
+1. **Crate**. Add `crates/bindings/lora-<lang>` to `[workspace].members` in
    `Cargo.toml`. Set `publish = false` in the crate's own
    `Cargo.toml` (client bindings don't publish to crates.io).
 2. **Version propagation**. If the binding has its own versioned

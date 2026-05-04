@@ -62,11 +62,11 @@ The short list:
 Language support is included in this release for:
 
 - the Rust core;
-- Node.js / TypeScript (`crates/lora-node`);
-- WebAssembly (`crates/lora-wasm`);
-- Python (`crates/lora-python`);
-- Go (`crates/lora-go`);
-- Ruby (`crates/lora-ruby`).
+- Node.js / TypeScript (`crates/bindings/lora-node`);
+- WebAssembly (`crates/bindings/lora-wasm`);
+- Python (`crates/bindings/lora-python`);
+- Go (`crates/bindings/lora-go`);
+- Ruby (`crates/bindings/lora-ruby`).
 
 Each binding ships a `vector(...)` helper and an `isVector` /
 `is_vector` / `IsVector` / `vector?` guard, so callers do not need to

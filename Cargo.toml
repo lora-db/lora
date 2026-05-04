@@ -10,11 +10,11 @@ members = [
     "crates/lora-executor",
     "crates/lora-database",
     "crates/lora-server",
-    "crates/lora-node",
-    "crates/lora-wasm",
-    "crates/lora-python",
-    "crates/lora-ffi",
-    "crates/lora-ruby",
+    "crates/bindings/lora-node",
+    "crates/bindings/lora-wasm",
+    "crates/bindings/lora-python",
+    "crates/bindings/lora-ffi",
+    "crates/bindings/lora-ruby",
 ]
 resolver = "2"
 

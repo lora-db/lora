@@ -23,16 +23,16 @@ Operational checklist for cutting a LoraDB release. The technical workflow
   ```bash
   node scripts/sync-versions.mjs X.Y.Z
   cargo check --workspace                                # refresh Cargo.lock
-  (cd crates/lora-node && npm install --package-lock-only --ignore-scripts)
-  (cd crates/lora-wasm && npm install --package-lock-only --ignore-scripts)
+  (cd crates/bindings/lora-node && npm install --package-lock-only --ignore-scripts)
+  (cd crates/bindings/lora-wasm && npm install --package-lock-only --ignore-scripts)
   (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
-  (cd crates/lora-ruby && bundle install)                 # refreshes Gemfile.lock
+  (cd crates/bindings/lora-ruby && bundle install)                 # refreshes Gemfile.lock
   node scripts/sync-versions.mjs X.Y.Z --check           # sanity check
   ```
-  Touches: workspace `Cargo.toml`, `crates/lora-node/package.json`,
-  `crates/lora-wasm/package.json`, `apps/loradb.com/package.json`,
-  `crates/lora-python/pyproject.toml`,
-  `crates/lora-ruby/lib/lora_ruby/version.rb`, and the corresponding lockfiles.
+  Touches: workspace `Cargo.toml`, `crates/bindings/lora-node/package.json`,
+  `crates/bindings/lora-wasm/package.json`, `apps/loradb.com/package.json`,
+  `crates/bindings/lora-python/pyproject.toml`,
+  `crates/bindings/lora-ruby/lib/lora_ruby/version.rb`, and the corresponding lockfiles.
 - [ ] The commit that bumps versions is `chore(release): vX.Y.Z`.
 - [ ] The release workflow's `verify-versions` job will re-run this check on
       the pushed tag; if any manifest is out of sync with the tag, the release
@@ -90,7 +90,7 @@ Run before every tag that will end up on a public remote:
          `lora-parser`, `lora-analyzer`, `lora-compiler`,
          `lora-executor`, `lora-server`).
    - [ ] The Go binding resolves via the proxy:
-         `GOPROXY=https://proxy.golang.org go list -m github.com/lora-db/lora/crates/lora-go@vX.Y.Z`
+         `GOPROXY=https://proxy.golang.org go list -m github.com/lora-db/lora/crates/bindings/lora-go@vX.Y.Z`
          returns the expected version. The `verify-go-module-resolvable`
          CI job also covers this, but re-running locally surfaces any
          network flakiness that only shows up in your environment.
@@ -107,7 +107,7 @@ Run before every tag that will end up on a public remote:
       `ruby examples/basic.rb` from the checked-out crate.
 - [ ] `cargo add lora-database@X.Y.Z` in a throwaway crate and run the README snippet.
 - [ ] `cargo install lora-server --version X.Y.Z` and start the binary once.
-- [ ] `go get github.com/lora-db/lora/crates/lora-go@vX.Y.Z` in a
+- [ ] `go get github.com/lora-db/lora/crates/bindings/lora-go@vX.Y.Z` in a
       throwaway module, then `go run ./examples/basic` (or a tiny
       `main.go` that opens a DB, runs `MATCH (n) RETURN count(n)`,
       and prints the result) to confirm the module builds against a

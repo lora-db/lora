@@ -377,7 +377,7 @@ built. `ts/native.js` will throw a clear "no native binary for this
 platform" error on unsupported hosts instead of crashing silently.
 
 To add a triple: extend `napi.triples.additional` in
-`crates/lora-node/package.json` AND the `build-node` matrix in
+`crates/bindings/lora-node/package.json` AND the `build-node` matrix in
 `.github/workflows/packages-release.yml`. Nothing else needs to change.
 
 ### `lora-python` wheel layout
@@ -416,7 +416,7 @@ source gem and rebuilds locally — this requires a Rust toolchain
 (1.87+). The source gem is always published.
 
 To add a platform: extend `ext.cross_platform` in
-`crates/lora-ruby/Rakefile` AND the `build-ruby-platform` matrix in
+`crates/bindings/lora-ruby/Rakefile` AND the `build-ruby-platform` matrix in
 `.github/workflows/packages-release.yml`. Nothing else needs to change.
 
 ## One-time registry setup
@@ -563,10 +563,10 @@ you want a manual approval gate before any publish runs.
    ```bash
    node scripts/sync-versions.mjs X.Y.Z
    cargo check --workspace
-   (cd crates/lora-node && npm install --package-lock-only --ignore-scripts)
-   (cd crates/lora-wasm && npm install --package-lock-only --ignore-scripts)
+   (cd crates/bindings/lora-node && npm install --package-lock-only --ignore-scripts)
+   (cd crates/bindings/lora-wasm && npm install --package-lock-only --ignore-scripts)
    (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
-   (cd crates/lora-ruby && bundle install)
+   (cd crates/bindings/lora-ruby && bundle install)
    node scripts/sync-versions.mjs X.Y.Z --check
    git commit -am "chore(release): vX.Y.Z"
    ```
@@ -627,7 +627,7 @@ subpackages are already public. Recovery rules:
   missing subpackage manually (one-off, with your user token):
 
   ```bash
-  cd crates/lora-node
+  cd crates/bindings/lora-node
   npm run build:native -- --target <target>
   npx napi create-npm-dir -t .
   mkdir -p artifacts && cp lora-node.<triple>.node artifacts/
@@ -681,14 +681,14 @@ subpackages are already public. Recovery rules:
   `napi.triples.additional`. Either a new triple was added to the
   workflow matrix without updating `package.json`, or a binary was
   uploaded with the wrong filename. Check
-  `crates/lora-node/package.json` → `napi.triples.additional`.
+  `crates/bindings/lora-node/package.json` → `napi.triples.additional`.
 - **Version drift.** The package pipeline starts with
   `verify-versions`, which re-runs `scripts/sync-versions.mjs --check`.
   If any of workspace `Cargo.toml` (including the internal-dep pins in
-  `[workspace.dependencies]`), `crates/lora-node/package.json`,
-  `crates/lora-wasm/package.json`, `apps/loradb.com/package.json`,
-  `crates/lora-python/pyproject.toml`, or
-  `crates/lora-ruby/lib/lora_ruby/version.rb` disagrees with the tag,
+  `[workspace.dependencies]`), `crates/bindings/lora-node/package.json`,
+  `crates/bindings/lora-wasm/package.json`, `apps/loradb.com/package.json`,
+  `crates/bindings/lora-python/pyproject.toml`, or
+  `crates/bindings/lora-ruby/lib/lora_ruby/version.rb` disagrees with the tag,
   the build never starts.
 
 - **`Error fetching gem: You are rate limited.`** RubyGems throttles
@@ -846,8 +846,8 @@ The workflow itself doesn't have to change.
    ```bash
    node scripts/sync-versions.mjs X.Y.Z
    cargo check --workspace --locked            # refresh Cargo.lock
-   (cd crates/lora-node && npm install --package-lock-only --ignore-scripts)
-   (cd crates/lora-wasm && npm install --package-lock-only --ignore-scripts)
+   (cd crates/bindings/lora-node && npm install --package-lock-only --ignore-scripts)
+   (cd crates/bindings/lora-wasm && npm install --package-lock-only --ignore-scripts)
    (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
    node scripts/sync-versions.mjs X.Y.Z --check
    git commit -am "chore(release): vX.Y.Z"
@@ -952,11 +952,11 @@ through, some crates are live and some aren't.
 
 ---
 
-# Releasing the Go binding (`github.com/lora-db/lora/crates/lora-go`)
+# Releasing the Go binding (`github.com/lora-db/lora/crates/bindings/lora-go`)
 
 The Go binding ships via Go's standard module/tag resolution: there is
 no registry upload. When a consumer runs
-`go get github.com/lora-db/lora/crates/lora-go@vX.Y.Z`, the Go module
+`go get github.com/lora-db/lora/crates/bindings/lora-go@vX.Y.Z`, the Go module
 proxy (`proxy.golang.org`) walks the repo, finds the tag, and serves
 the source at that commit. The release pipeline therefore does not
 "push" anywhere; it verifies that the tagged tree builds, that the Go
@@ -973,18 +973,18 @@ to keep in lockstep. One fewer synced manifest.
 
 Two crates in one release:
 
-- `crates/lora-ffi` — `publish = false` Rust crate with
+- `crates/bindings/lora-ffi` — `publish = false` Rust crate with
   `crate-type = ["staticlib", "cdylib", "rlib"]`. Exposes a stable C
-  ABI over `lora-database` (see `crates/lora-ffi/src/lib.rs` and
-  `crates/lora-go/include/lora_ffi.h`). Uses `catch_unwind` at every
+  ABI over `lora-database` (see `crates/bindings/lora-ffi/src/lib.rs` and
+  `crates/bindings/lora-go/include/lora_ffi.h`). Uses `catch_unwind` at every
   entry point so a Rust panic never unwinds into the caller.
-- `crates/lora-go` — a Go module (`go.mod` with module path
-  `github.com/lora-db/lora/crates/lora-go`) that cgo-links against
+- `crates/bindings/lora-go` — a Go module (`go.mod` with module path
+  `github.com/lora-db/lora/crates/bindings/lora-go`) that cgo-links against
   `liblora_ffi.a`. Value model is the same tagged JSON used by the
   other bindings (`lora-node`, `lora-wasm`, `lora-python`,
   `lora-ruby`).
 
-The `#cgo` directives in `crates/lora-go/lora.go` pin the linker to
+The `#cgo` directives in `crates/bindings/lora-go/lora.go` pin the linker to
 `${SRCDIR}/../../target/release/liblora_ffi.a`, so building the FFI is
 a prerequisite for `go test` / `go build` on any consumer's machine.
 
@@ -1008,7 +1008,7 @@ every tag push or dispatch:
    a prebuilt static lib.
 3. **`verify-go-module-resolvable`** (only on push, only in non-dry-run
    mode). Polls `GOPROXY=https://proxy.golang.org go list -m
-   github.com/lora-db/lora/crates/lora-go@<tag>` every 30 seconds for
+   github.com/lora-db/lora/crates/bindings/lora-go@<tag>` every 30 seconds for
    up to 5 minutes. Fails if the proxy never returns the tag. This is
    the Go equivalent of checking an npm / PyPI / crates.io package
    page.
@@ -1033,7 +1033,7 @@ re-upload.
   from any machine:
 
   ```bash
-  GOPROXY=direct go get github.com/lora-db/lora/crates/lora-go@vX.Y.Z
+  GOPROXY=direct go get github.com/lora-db/lora/crates/bindings/lora-go@vX.Y.Z
   ```
 
   which causes `proxy.golang.org` to index the tag on the next
@@ -1062,11 +1062,11 @@ intentionally deferred.
 - **`could not import C` at build time.** The Rust FFI hasn't been
   built yet, or was built in debug mode. Run
   `cargo build --release -p lora-ffi` from the workspace root before
-  `go build` / `go test`. `make test` from `crates/lora-go/` does this
+  `go build` / `go test`. `make test` from `crates/bindings/lora-go/` does this
   automatically.
 - **`ld: library not found for -llora_ffi`** when building the Go
   module. The cgo linker is looking under
-  `crates/lora-go/../../target/release/liblora_ffi.a`. Either the
+  `crates/bindings/lora-go/../../target/release/liblora_ffi.a`. Either the
   FFI was built for a different target directory (e.g. `CARGO_TARGET_DIR`
   override) or the release build step was skipped. Rebuild with the
   default target dir, or adjust the `#cgo LDFLAGS` line to point at

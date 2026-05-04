@@ -317,7 +317,7 @@ async function loadFromIdb(db: Database) {
 ### Go
 
 ```go
-import lora "github.com/lora-db/lora/crates/lora-go"
+import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, err := lora.New()
 if err != nil { log.Fatal(err) }

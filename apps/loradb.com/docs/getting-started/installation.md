@@ -25,7 +25,7 @@ error handling end-to-end.
 | **Node / TS** | [![npm](https://img.shields.io/npm/v/@loradb/lora-node?label=%40loradb%2Flora-node&logo=npm)](https://www.npmjs.com/package/@loradb/lora-node) | `npm install @loradb/lora-node` | [Node →](./node) |
 | **Python** | [![PyPI](https://img.shields.io/pypi/v/lora-python?label=pypi&logo=pypi&logoColor=white)](https://pypi.org/project/lora-python/) | `pip install lora-python` | [Python →](./python) |
 | **Browser / WASM** | [![npm](https://img.shields.io/npm/v/@loradb/lora-wasm?label=%40loradb%2Flora-wasm&logo=npm)](https://www.npmjs.com/package/@loradb/lora-wasm) | `npm install @loradb/lora-wasm` | [WASM →](./wasm) |
-| **Go** | [pkg.go.dev](https://pkg.go.dev/github.com/lora-db/lora/crates/lora-go) | `go get github.com/lora-db/lora/crates/lora-go` | [Go →](./go) |
+| **Go** | [pkg.go.dev](https://pkg.go.dev/github.com/lora-db/lora/crates/bindings/lora-go) | `go get github.com/lora-db/lora/crates/bindings/lora-go` | [Go →](./go) |
 | **Ruby** | [![Gem](https://img.shields.io/gem/v/lora-ruby?label=lora-ruby&logo=rubygems&logoColor=white)](https://rubygems.org/gems/lora-ruby) | `gem install lora-ruby` | [Ruby →](./ruby) |
 
 :::tip

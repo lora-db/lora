@@ -52,3 +52,8 @@ operations:
   label: Operations
   permalink: /operations
   description: Running LoraDB in production — admin endpoints, deployment, ops.
+
+performance:
+  label: Performance
+  permalink: /performance
+  description: Query execution, benchmarks, indexing, and concurrency work.

@@ -56,11 +56,11 @@ use errors::{
     panic_message, write_coded_error, write_error, write_lora_error, INVALID_PARAMS_PREFIX,
     PANIC_PREFIX,
 };
-use lora_database::LoraErrorCode;
 use json::{
     execute_json_payload, parse_params, parse_transaction_mode, parse_transaction_statements,
     row_to_json, serialize_rows,
 };
+use lora_database::LoraErrorCode;
 
 // ============================================================================
 // Opaque handle
@@ -1301,7 +1301,6 @@ pub unsafe extern "C" fn lora_string_free(s: *mut c_char) {
     }));
 }
 
-
 // ============================================================================
 // C string helpers
 // ============================================================================
@@ -1315,7 +1314,6 @@ fn to_c_string(s: String) -> *mut c_char {
         Err(_) => ptr::null_mut(),
     }
 }
-
 
 // ============================================================================
 // In-process tests

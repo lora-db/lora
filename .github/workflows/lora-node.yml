@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/lora-node/**"
+      - "crates/bindings/lora-node/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -20,7 +20,7 @@ on:
       - ".github/workflows/lora-node.yml"
   pull_request:
     paths:
-      - "crates/lora-node/**"
+      - "crates/bindings/lora-node/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -45,7 +45,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: crates/lora-node
+    working-directory: crates/bindings/lora-node
 
 jobs:
   verify:
@@ -67,7 +67,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: crates/lora-node/package-lock.json
+          cache-dependency-path: crates/bindings/lora-node/package-lock.json
 
       - name: cargo check
         working-directory: .
@@ -100,6 +100,6 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: lora-node-${{ matrix.os }}-tarball
-          path: crates/lora-node/loradb-lora-node-*.tgz
+          path: crates/bindings/lora-node/loradb-lora-node-*.tgz
           if-no-files-found: error
           retention-days: 7

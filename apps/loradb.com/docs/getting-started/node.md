@@ -33,7 +33,7 @@ save/load.
 While pre-release, build from source:
 
 ```bash
-cd crates/lora-node
+cd crates/bindings/lora-node
 npm install
 npm run build        # builds native .node artifact + TypeScript
 ```

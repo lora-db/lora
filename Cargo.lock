@@ -836,6 +836,7 @@ dependencies = [
  "lora-store",
  "lora-wal",
  "serde_json",
+ "thiserror",
  "tower",
  "tracing",
  "zip",

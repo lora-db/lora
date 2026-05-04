@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/lora-go/**"
-      - "crates/lora-ffi/**"
+      - "crates/bindings/lora-go/**"
+      - "crates/bindings/lora-ffi/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -20,8 +20,8 @@ on:
       - ".github/workflows/lora-go.yml"
   pull_request:
     paths:
-      - "crates/lora-go/**"
-      - "crates/lora-ffi/**"
+      - "crates/bindings/lora-go/**"
+      - "crates/bindings/lora-ffi/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -45,7 +45,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: crates/lora-go
+    working-directory: crates/bindings/lora-go
 
 jobs:
   verify:
@@ -68,7 +68,7 @@ jobs:
           # Any 1.22+ build works. Pinning to 1.22 gives us a predictable
           # floor; tests pass on 1.22, 1.23, and 1.24.
           go-version: "1.22"
-          cache-dependency-path: crates/lora-go/go.sum
+          cache-dependency-path: crates/bindings/lora-go/go.sum
 
       - name: Build lora-ffi (release)
         # Built from the workspace root so the output lands in

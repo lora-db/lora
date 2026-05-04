@@ -8,7 +8,7 @@ description: Install and use LoraDB in Go via the lora-go cgo wrapper over the s
 
 ## Overview
 
-`lora-go` is a thin cgo wrapper over the shared [`lora-ffi`](https://github.com/lora-db/lora/tree/main/crates/lora-ffi)
+`lora-go` is a thin cgo wrapper over the shared [`lora-ffi`](https://github.com/lora-db/lora/tree/main/crates/bindings/lora-ffi)
 C ABI. The engine runs in-process — no separate server, no socket
 hop. Values follow the same tagged model as the Node, Python, WASM,
 and Ruby bindings (primitives pass through; nodes, relationships,
@@ -28,7 +28,7 @@ paths, temporals, and points come back as `map[string]any` with a
 ### Install
 
 ```bash
-go get github.com/lora-db/lora/crates/lora-go
+go get github.com/lora-db/lora/crates/bindings/lora-go
 ```
 
 Because the binding links against the Rust engine, `go build` needs
@@ -39,7 +39,7 @@ clone the workspace and build the FFI in-tree:
 git clone https://github.com/lora-db/lora
 cd lora
 cargo build --release -p lora-ffi    # produces target/release/liblora_ffi.a
-cd crates/lora-go
+cd crates/bindings/lora-go
 go test -race ./...
 ```
 
@@ -51,18 +51,18 @@ For consumer projects outside the repo, build `lora-ffi` once and
 override the cgo flags in the environment:
 
 ```bash
-export CGO_CFLAGS="-I$PWD/lora/crates/lora-go/include"
+export CGO_CFLAGS="-I$PWD/lora/crates/bindings/lora-go/include"
 export CGO_LDFLAGS="-L$PWD/lora/target/release -llora_ffi -lm -ldl -lpthread"
 go build ./...
 ```
 
-See [`crates/lora-go/README.md`](https://github.com/lora-db/lora/tree/main/crates/lora-go)
+See [`crates/bindings/lora-go/README.md`](https://github.com/lora-db/lora/tree/main/crates/bindings/lora-go)
 for the full build-from-release-archive flow.
 
 ## Creating a Client / Connection
 
 ```go
-import lora "github.com/lora-db/lora/crates/lora-go"
+import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, err := lora.New()
 if err != nil { log.Fatal(err) }
@@ -81,7 +81,7 @@ import (
     "fmt"
     "log"
 
-    lora "github.com/lora-db/lora/crates/lora-go"
+    lora "github.com/lora-db/lora/crates/bindings/lora-go"
 )
 
 func main() {
@@ -202,7 +202,7 @@ later. Go has three persistence shapes:
 - `lora.OpenWal(lora.WalOptions{WalDir: "./data/wal", SnapshotDir: "./data/snapshots"})` => explicit WAL with optional managed snapshots
 
 ```go
-import lora "github.com/lora-db/lora/crates/lora-go"
+import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, err := lora.New() // in-memory
 // db, err := lora.New("app", lora.Options{DatabaseDir: "./data"}) // archive: ./data/app.loradb
@@ -318,5 +318,5 @@ Engine-level causes live in [Troubleshooting](../troubleshooting).
 - [**Ten-Minute Tour**](./tutorial) — guided walkthrough.
 - [**Queries → Parameters**](../queries/parameters) — binding typed values.
 - [**Data Types**](../data-types/overview) — Go ↔ engine mapping.
-- [**Binding README**](https://github.com/lora-db/lora/tree/main/crates/lora-go) — the source-of-truth install and build guide.
+- [**Binding README**](https://github.com/lora-db/lora/tree/main/crates/bindings/lora-go) — the source-of-truth install and build guide.
 - [**Troubleshooting**](../troubleshooting).

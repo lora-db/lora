@@ -91,7 +91,7 @@ patterns neither of which the engine supported well:
   but adds real seeding time on restart and pushes reload logic into
   every deployment.
 - **Rebuild a parallel persistence layer.** The application writes
-  every mutation to Lan external store, then replays it on boot. A
+  every mutation to an external store, then replays it on boot. A
   second data model to maintain, a second consistency story.
 
 Neither is what you want for the shape of workload LoraDB is actually
@@ -102,7 +102,7 @@ graph as of this moment" — cheap to take, cheap to restore, no second
 data model.
 
 That is what v0.3 ships. The Cypher surface does not change; the
-storage tier gets one new verb (`save_snapshot`), one new verse
+storage tier gets one save verb (`save_snapshot`), one load verb
 (`load_snapshot`), and one new file on disk.
 
 ## What A Snapshot Is Not
@@ -253,7 +253,7 @@ await db2.loadSnapshot(bytes);
 ### Save and load from Go
 
 ```go
-import lora "github.com/lora-db/lora/crates/lora-go"
+import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, err := lora.New()
 if err != nil { log.Fatal(err) }
@@ -276,7 +276,7 @@ if _, err := db2.LoadSnapshot("graph.bin"); err != nil {
 }
 ```
 
-The Go FFI header (`crates/lora-go/include/lora_ffi.h`) now declares
+The Go FFI header (`crates/bindings/lora-go/include/lora_ffi.h`) now declares
 `lora_db_save_snapshot` / `lora_db_load_snapshot` alongside a
 `LoraSnapshotMeta` struct; the Go wrapper turns that into an idiomatic
 `*SnapshotMeta` with a nullable `WalLsn` pointer.

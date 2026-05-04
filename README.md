@@ -85,12 +85,12 @@ npm install @loradb/lora-wasm
 ### Go (Go modules)
 
 ```bash
-go get github.com/lora-db/lora/crates/lora-go
+go get github.com/lora-db/lora/crates/bindings/lora-go
 ```
 
 The Go binding is a thin cgo layer over `lora-ffi`; builds require the
 `liblora_ffi` static library on disk. See
-[`crates/lora-go/README.md`](crates/lora-go/README.md) for the local
+[`crates/bindings/lora-go/README.md`](crates/bindings/lora-go/README.md) for the local
 checkout path and the prebuilt-archive path.
 
 ### Ruby (RubyGems)
@@ -153,7 +153,7 @@ import (
     "fmt"
     "log"
 
-    lora "github.com/lora-db/lora/crates/lora-go"
+    lora "github.com/lora-db/lora/crates/bindings/lora-go"
 )
 
 func main() {
@@ -279,22 +279,22 @@ cargo build --workspace
 cargo build --release --bin lora-server
 
 # Node.js bindings
-cd crates/lora-node && npm run build
+cd crates/bindings/lora-node && npm run build
 
 # Python bindings (produces a wheel)
-cd crates/lora-python && maturin build --release
+cd crates/bindings/lora-python && maturin build --release
 
 # WebAssembly bindings
-cd crates/lora-wasm && npm run build
+cd crates/bindings/lora-wasm && npm run build
 
 # Shared FFI (static library consumed by lora-go)
 cargo build --release -p lora-ffi
 
 # Go bindings (requires lora-ffi built above)
-cd crates/lora-go && go test -race ./...
+cd crates/bindings/lora-go && go test -race ./...
 
 # Ruby bindings (native extension via rb-sys)
-cd crates/lora-ruby && bundle install && bundle exec rake compile
+cd crates/bindings/lora-ruby && bundle install && bundle exec rake compile
 ```
 
 ## Testing

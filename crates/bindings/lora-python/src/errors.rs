@@ -57,10 +57,7 @@ pub(crate) fn lora_query_err_from_anyhow_ref(err: &anyhow::Error) -> PyErr {
 /// `database lock poisoned`). Tagged with [`LoraErrorCode::Internal`].
 #[allow(dead_code)]
 pub(crate) fn lora_query_err_internal(message: &str) -> PyErr {
-    LoraQueryError::new_err(format!(
-        "{}: {message}",
-        LoraErrorCode::Internal.as_str()
-    ))
+    LoraQueryError::new_err(format!("{}: {message}", LoraErrorCode::Internal.as_str()))
 }
 
 /// Build an [`InvalidParamsError`] tagged with `LORA_INVALID_PARAMS`.

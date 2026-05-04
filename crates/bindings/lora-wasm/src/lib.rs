@@ -139,8 +139,7 @@ impl WasmDatabase {
             results.push(serialize_rows(&row_arrays.columns, &row_arrays.rows));
         }
 
-        tx.commit()
-            .map_err(|e| js_error_from_anyhow(&e))?;
+        tx.commit().map_err(|e| js_error_from_anyhow(&e))?;
 
         serde_json::Value::Array(results)
             .serialize(&Serializer::json_compatible())

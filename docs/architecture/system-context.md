@@ -78,7 +78,7 @@ The engine is reached through **multiple in-process surfaces**, all of which ult
 - **C ABI** (`lora-ffi`) — a `#[no_mangle]` C-compatible surface around `Database`, used by the Go binding and available to any third-party cgo-style consumer.
 - **Language bindings** — `lora-node` (napi-rs), `lora-wasm` (wasm-bindgen / wasm-pack), `lora-python` (PyO3), `lora-go` (cgo over `lora-ffi`), `lora-ruby` (Magnus / rb-sys).
 
-All of these live in this workspace; see `crates/lora-server`, `crates/lora-ffi`, `crates/lora-node`, `crates/lora-wasm`, `crates/lora-python`, `crates/lora-go`, and `crates/lora-ruby`. There are no message queues, database connections, file watchers, or scheduled jobs. The graph exists entirely within the host process address space.
+All of these live in this workspace; see `crates/lora-server`, `crates/bindings/lora-ffi`, `crates/bindings/lora-node`, `crates/bindings/lora-wasm`, `crates/bindings/lora-python`, `crates/bindings/lora-go`, and `crates/bindings/lora-ruby`. There are no message queues, database connections, file watchers, or scheduled jobs. The graph exists entirely within the host process address space.
 
 ## Next steps
 

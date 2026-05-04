@@ -75,7 +75,7 @@ identical.
 | [Node / TypeScript](./getting-started/node) | `npm install @loradb/lora-node` |
 | [Python](./getting-started/python) | `pip install lora-python` |
 | [Browser / WASM](./getting-started/wasm) | `npm install @loradb/lora-wasm` |
-| [Go](./getting-started/go) | `go get github.com/lora-db/lora/crates/lora-go` |
+| [Go](./getting-started/go) | `go get github.com/lora-db/lora/crates/bindings/lora-go` |
 | [Ruby](./getting-started/ruby) | `gem install lora-ruby` |
 | [Rust (embedded)](./getting-started/rust) | `cargo add lora-database` |
 | [HTTP server](./getting-started/server) | `cargo install --path crates/lora-server` |

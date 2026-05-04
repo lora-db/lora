@@ -13,8 +13,8 @@
 | `lora-parser` | Unit tests | `tests/parser.rs` *(plus the file in lora-database)* | Grammar rules: match, where, return, create, delete, set, remove, merge, unwind, union, call, with, case, literals, parameters, relationships, ranges, star, order / skip / limit, string escapes, operators |
 | `lora-database` | Integration tests | `tests/*.rs` | Full pipeline (parse → analyze → compile → execute) for all Cypher features, plus snapshot save / load / format-version compatibility |
 | `lora-server` | HTTP tests | `tests/{http,admin}.rs` | Axum routing, health, query endpoint, parse-error response, create-then-match flow, opt-in admin snapshot endpoints |
-| `lora-go` | Go tests | `crates/lora-go/*_test.go` | cgo round-trip over `lora-ffi`, execute + params, typed value shapes, error codes, context cancellation semantics. CI: `.github/workflows/lora-go.yml` (`go vet` + `go test -race` + `go run ./examples/basic`) |
-| `lora-ruby` | Ruby tests | `crates/lora-ruby/test/` (minitest) | rb-sys / Magnus round-trip, execute + params, typed value shapes, error classes, GVL release. CI: `.github/workflows/lora-ruby.yml` (`rake compile` + `rake test` across Ruby 3.1/3.2/3.3) |
+| `lora-go` | Go tests | `crates/bindings/lora-go/*_test.go` | cgo round-trip over `lora-ffi`, execute + params, typed value shapes, error codes, context cancellation semantics. CI: `.github/workflows/lora-go.yml` (`go vet` + `go test -race` + `go run ./examples/basic`) |
+| `lora-ruby` | Ruby tests | `crates/bindings/lora-ruby/test/` (minitest) | rb-sys / Magnus round-trip, execute + params, typed value shapes, error classes, GVL release. CI: `.github/workflows/lora-ruby.yml` (`rake compile` + `rake test` across Ruby 3.1/3.2/3.3) |
 
 ## Integration test files (`lora-database/tests/`)
 

@@ -244,7 +244,7 @@ const result = await db.execute(
     note: 'lora-go · prototype',
     guideTo: '/docs/getting-started/go',
     guideLabel: 'Go guide',
-    code: `import lora "github.com/lora-db/lora/crates/lora-go"
+    code: `import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, _ := lora.New()
 defer db.Close()

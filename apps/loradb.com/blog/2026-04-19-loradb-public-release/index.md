@@ -117,9 +117,9 @@ let rows = db.execute("MATCH (n) RETURN n LIMIT 10")?;
 
 This repository includes package work for:
 
-- Node.js / TypeScript through `crates/lora-node`;
-- WebAssembly through `crates/lora-wasm`;
-- Python through `crates/lora-python`.
+- Node.js / TypeScript through `crates/bindings/lora-node`;
+- WebAssembly through `crates/bindings/lora-wasm`;
+- Python through `crates/bindings/lora-python`.
 
 The bindings are part of the same public release because the customer journey
 should not stop at Rust. Graph workloads show up in web apps, notebooks,

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/lora-python/**"
+      - "crates/bindings/lora-python/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -19,7 +19,7 @@ on:
       - ".github/workflows/lora-python.yml"
   pull_request:
     paths:
-      - "crates/lora-python/**"
+      - "crates/bindings/lora-python/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -43,7 +43,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: crates/lora-python
+    working-directory: crates/bindings/lora-python
 
 jobs:
   verify:
