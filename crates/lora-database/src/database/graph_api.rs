@@ -17,6 +17,7 @@ use lora_store::{
 };
 
 use crate::database::{values_to_properties, Database, GraphDirection};
+use crate::error::LoraError;
 
 impl<S> Database<S>
 where
@@ -205,9 +206,10 @@ where
         &self,
         labels: Vec<String>,
         properties: BTreeMap<String, LoraValue>,
-    ) -> Result<NodeRecord> {
-        let properties = values_to_properties(properties)?;
+    ) -> Result<NodeRecord, LoraError> {
+        let properties = values_to_properties(properties).map_err(LoraError::from_anyhow)?;
         self.with_logged_store_mut(|store| Ok(store.create_node(labels, properties)))
+            .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_create_relationship(
@@ -216,11 +218,12 @@ where
         dst: NodeId,
         rel_type: &str,
         properties: BTreeMap<String, LoraValue>,
-    ) -> Result<Option<RelationshipRecord>> {
-        let properties = values_to_properties(properties)?;
+    ) -> Result<Option<RelationshipRecord>, LoraError> {
+        let properties = values_to_properties(properties).map_err(LoraError::from_anyhow)?;
         self.with_logged_store_mut(|store| {
             Ok(store.create_relationship(src, dst, rel_type, properties))
         })
+        .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_set_node_property(
@@ -228,43 +231,58 @@ where
         node_id: NodeId,
         key: String,
         value: LoraValue,
-    ) -> Result<bool> {
+    ) -> Result<bool, LoraError> {
         let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
         self.with_logged_store_mut(|store| Ok(store.set_node_property(node_id, key, value)))
+            .map_err(LoraError::from_anyhow)
     }
 
-    pub fn graph_remove_node_property(&self, node_id: NodeId, key: &str) -> Result<bool> {
+    pub fn graph_remove_node_property(
+        &self,
+        node_id: NodeId,
+        key: &str,
+    ) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.remove_node_property(node_id, key)))
+            .map_err(LoraError::from_anyhow)
     }
 
-    pub fn graph_add_node_label(&self, node_id: NodeId, label: &str) -> Result<bool> {
+    pub fn graph_add_node_label(&self, node_id: NodeId, label: &str) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.add_node_label(node_id, label)))
+            .map_err(LoraError::from_anyhow)
     }
 
-    pub fn graph_remove_node_label(&self, node_id: NodeId, label: &str) -> Result<bool> {
+    pub fn graph_remove_node_label(&self, node_id: NodeId, label: &str) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.remove_node_label(node_id, label)))
+            .map_err(LoraError::from_anyhow)
     }
 
-    pub fn graph_set_node_labels(&self, node_id: NodeId, labels: Vec<String>) -> Result<bool> {
+    pub fn graph_set_node_labels(
+        &self,
+        node_id: NodeId,
+        labels: Vec<String>,
+    ) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.set_node_labels(node_id, labels)))
+            .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_replace_node_properties(
         &self,
         node_id: NodeId,
         properties: BTreeMap<String, LoraValue>,
-    ) -> Result<bool> {
-        let properties = values_to_properties(properties)?;
+    ) -> Result<bool, LoraError> {
+        let properties = values_to_properties(properties).map_err(LoraError::from_anyhow)?;
         self.with_logged_store_mut(|store| Ok(store.replace_node_properties(node_id, properties)))
+            .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_merge_node_properties(
         &self,
         node_id: NodeId,
         properties: BTreeMap<String, LoraValue>,
-    ) -> Result<bool> {
-        let properties = values_to_properties(properties)?;
+    ) -> Result<bool, LoraError> {
+        let properties = values_to_properties(properties).map_err(LoraError::from_anyhow)?;
         self.with_logged_store_mut(|store| Ok(store.merge_node_properties(node_id, properties)))
+            .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_set_relationship_property(
@@ -272,50 +290,57 @@ where
         rel_id: RelationshipId,
         key: String,
         value: LoraValue,
-    ) -> Result<bool> {
+    ) -> Result<bool, LoraError> {
         let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
         self.with_logged_store_mut(|store| Ok(store.set_relationship_property(rel_id, key, value)))
+            .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_remove_relationship_property(
         &self,
         rel_id: RelationshipId,
         key: &str,
-    ) -> Result<bool> {
+    ) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.remove_relationship_property(rel_id, key)))
+            .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_replace_relationship_properties(
         &self,
         rel_id: RelationshipId,
         properties: BTreeMap<String, LoraValue>,
-    ) -> Result<bool> {
-        let properties = values_to_properties(properties)?;
+    ) -> Result<bool, LoraError> {
+        let properties = values_to_properties(properties).map_err(LoraError::from_anyhow)?;
         self.with_logged_store_mut(|store| {
             Ok(store.replace_relationship_properties(rel_id, properties))
         })
+        .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_merge_relationship_properties(
         &self,
         rel_id: RelationshipId,
         properties: BTreeMap<String, LoraValue>,
-    ) -> Result<bool> {
-        let properties = values_to_properties(properties)?;
+    ) -> Result<bool, LoraError> {
+        let properties = values_to_properties(properties).map_err(LoraError::from_anyhow)?;
         self.with_logged_store_mut(|store| {
             Ok(store.merge_relationship_properties(rel_id, properties))
         })
+        .map_err(LoraError::from_anyhow)
     }
 
-    pub fn graph_delete_relationship(&self, rel_id: RelationshipId) -> Result<bool> {
+    pub fn graph_delete_relationship(&self, rel_id: RelationshipId) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.delete_relationship(rel_id)))
+            .map_err(LoraError::from_anyhow)
     }
 
-    pub fn graph_delete_node(&self, node_id: NodeId) -> Result<bool> {
+    pub fn graph_delete_node(&self, node_id: NodeId) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.delete_node(node_id)))
+            .map_err(LoraError::from_anyhow)
     }
 
-    pub fn graph_detach_delete_node(&self, node_id: NodeId) -> Result<bool> {
+    pub fn graph_detach_delete_node(&self, node_id: NodeId) -> Result<bool, LoraError> {
         self.with_logged_store_mut(|store| Ok(store.detach_delete_node(node_id)))
+            .map_err(LoraError::from_anyhow)
     }
 }
