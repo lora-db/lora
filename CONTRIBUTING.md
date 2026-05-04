@@ -66,7 +66,7 @@ runtime):
 - **lora-python** -- PyO3 binding built with maturin
 - **lora-go** -- cgo binding over `lora-ffi`
 - **lora-ruby** -- Magnus / rb-sys native extension
-- **shared-ts** -- shared TypeScript types for `lora-node` + `lora-wasm`
+- **bindings/shared-ts** -- shared TypeScript types for `lora-node` + `lora-wasm`
 
 Changes to Cypher language support typically touch crates 1-6 in
 order. See [docs/internals/cypher-development.md](docs/internals/cypher-development.md)

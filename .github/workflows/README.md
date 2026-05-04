@@ -52,7 +52,7 @@ Each per-binding workflow is path-filtered. The filter covers the
 binding's own crate, every shared core crate it depends on, the Cargo
 manifests, the toolchain pin, the `setup-rust` composite action, and
 the workflow file itself. Bindings that share TS types
-(`lora-node`, `lora-wasm`) additionally include `crates/shared-ts/**`.
+(`lora-node`, `lora-wasm`) additionally include `crates/bindings/shared-ts/**`.
 
 | Workflow            | Matrix                                                                  | Per-binding-specific steps                                                                                                                                                                 |
 | ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -148,7 +148,7 @@ the safest way to stay consistent.
   - the binding's own crate (`crates/bindings/lora-<lang>/**`),
   - every shared core crate it depends on (`crates/lora-ast`,
     `lora-parser`, `lora-analyzer`, `lora-compiler`, `lora-executor`,
-    `lora-store`, `lora-database`, plus `crates/shared-ts` for the TS
+    `lora-store`, `lora-database`, plus `crates/bindings/shared-ts` for the TS
     bindings and `crates/bindings/lora-ffi` for `lora-go`),
   - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
   - `.github/actions/setup-rust/**`,

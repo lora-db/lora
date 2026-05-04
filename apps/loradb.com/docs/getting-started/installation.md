@@ -87,7 +87,7 @@ the language-specific syntax.
 ### Shared value model
 
 Typed values follow one contract (defined in
-`crates/shared-ts/types.ts`): primitives, lists/maps, graph entities
+`crates/bindings/shared-ts/types.ts`): primitives, lists/maps, graph entities
 (tagged `{kind: "node" | "relationship" | "path"}`), temporals
 (tagged `{kind: "date" | "datetime" | ...}`), and points (tagged
 `{kind: "point", srid, crs, ...}`).

@@ -6,7 +6,7 @@
  * spatial values are tagged so TypeScript can narrow safely after a
  * query runs.
  *
- * Canonical source: `crates/shared-ts/types.ts`. Each JS-facing package
+ * Canonical source: `crates/bindings/shared-ts/types.ts`. Each JS-facing package
  * (`lora-node`, `lora-wasm`) copies this file into its own `ts/` dir
  * via its `sync:types` npm script. The `verify:types` script fails CI if
  * the copies drift — do not edit the per-package copies directly.
@@ -418,16 +418,51 @@ export const wgs84_3d = (
 // ---------------------------------------------------------------------------
 
 /**
- * Error codes emitted by the engine bridges.
+ * Error codes emitted by the engine bridges. Mirrors
+ * `lora_database::LoraErrorCode::as_str` 1:1, plus two binding-only
+ * codes (`WORKER_ERROR`, `UNKNOWN`).
  *
- * - `LORA_ERROR` — parse / analyze / execute failure
- * - `INVALID_PARAMS` — a param value could not be mapped to a Lora value
+ * Client errors (caller's fault):
+ * - `LORA_PARSE` — Cypher syntax could not be parsed
+ * - `LORA_SEMANTIC` — analysis failure (unknown variable, label, type mismatch, …)
+ * - `LORA_INVALID_PARAMS` — a parameter value could not be coerced
+ * - `LORA_READ_ONLY` — mutating statement issued in a read-only context
+ * - `LORA_NOT_FOUND` — a named entity does not exist
+ * - `LORA_CONSTRAINT` — a precondition (e.g. delete-with-relationships) is not satisfied
+ * - `LORA_INVALID_VECTOR` — vector value failed dimension / coordinate-type validation
+ * - `LORA_TIMEOUT` — query exceeded its cooperative deadline
+ * - `LORA_DATABASE_NAME` — logical database name violates the portable-path rules
+ * - `LORA_CONFIG` — required parameters are missing or malformed
+ *
+ * Server errors (engine-side):
+ * - `LORA_IO` — I/O failure outside the WAL / snapshot boundaries
+ * - `LORA_WAL_CORRUPTION` — WAL record was truncated, mis-CRC'd, or otherwise unreadable
+ * - `LORA_WAL_POISONED` — WAL is poisoned and no longer accepts durable writes
+ * - `LORA_SNAPSHOT_CODEC` — snapshot codec failure (bad magic, version, checksum, …)
+ * - `LORA_SNAPSHOT_CRYPTO` — snapshot encryption / decryption / KDF failure
+ * - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
+ *
+ * Binding-only:
  * - `WORKER_ERROR` — worker transport / lifecycle failure (wasm worker only)
  * - `UNKNOWN` — fall-through for unrecognised error shapes
  */
 export type LoraErrorCode =
-  | "LORA_ERROR"
-  | "INVALID_PARAMS"
+  | "LORA_PARSE"
+  | "LORA_SEMANTIC"
+  | "LORA_INVALID_PARAMS"
+  | "LORA_READ_ONLY"
+  | "LORA_NOT_FOUND"
+  | "LORA_CONSTRAINT"
+  | "LORA_INVALID_VECTOR"
+  | "LORA_TIMEOUT"
+  | "LORA_DATABASE_NAME"
+  | "LORA_CONFIG"
+  | "LORA_IO"
+  | "LORA_WAL_CORRUPTION"
+  | "LORA_WAL_POISONED"
+  | "LORA_SNAPSHOT_CODEC"
+  | "LORA_SNAPSHOT_CRYPTO"
+  | "LORA_INTERNAL"
   | "WORKER_ERROR"
   | "UNKNOWN";
 
@@ -445,7 +480,7 @@ export class LoraError extends Error {
   }
 }
 
-const ERROR_PREFIX_RE = /^(LORA_ERROR|INVALID_PARAMS|WORKER_ERROR):\s*(.*)$/s;
+const ERROR_PREFIX_RE = /^(LORA_[A-Z_]+|WORKER_ERROR):\s*(.*)$/s;
 
 /**
  * Normalise a thrown value into a `LoraError` with a narrowed `code`

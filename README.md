@@ -264,7 +264,7 @@ lora/
 │   ├── lora-wasm/        WebAssembly bindings
 │   ├── lora-go/          Go bindings (cgo over lora-ffi)
 │   ├── lora-ruby/        Ruby bindings (Magnus / rb-sys)
-│   └── shared-ts/        Shared TypeScript types
+│   └── bindings/shared-ts/  Shared TypeScript types for lora-node + lora-wasm
 ├── apps/loradb.com/      Documentation site (Docusaurus)
 └── docs/                 Design docs and internals
 ```
