@@ -93,11 +93,7 @@ impl AggState {
         match self {
             AggState::Count(n) => match kind {
                 StreamableAggKind::CountAll => *n += 1,
-                StreamableAggKind::CountField => {
-                    if !matches!(value, LoraValue::Null) {
-                        *n += 1;
-                    }
-                }
+                StreamableAggKind::CountField if !matches!(value, LoraValue::Null) => *n += 1,
                 _ => {}
             },
             AggState::Sum { sum, all_int, any } => match value {

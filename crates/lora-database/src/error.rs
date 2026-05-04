@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn wal_io_is_server_io() {
-        let inner = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let inner = std::io::Error::other("disk full");
         let mapped = LoraError::from(WalError::Io(inner));
         assert_eq!(mapped.code(), LoraErrorCode::Io);
         assert_eq!(mapped.category(), LoraErrorCategory::Server);

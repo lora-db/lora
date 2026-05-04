@@ -106,7 +106,7 @@ fn poisoned() {
 
 #[test]
 fn commit_error_commit() {
-    let inner = WalError::Io(std::io::Error::new(std::io::ErrorKind::Other, "disk full"));
+    let inner = WalError::Io(std::io::Error::other("disk full"));
     let err = WalCommitError::Commit(inner);
     assert_eq!(
         err.to_string(),
@@ -126,7 +126,7 @@ fn commit_error_flush() {
 
 #[test]
 fn buffered_commit_arm() {
-    let inner = WalError::Io(std::io::Error::new(std::io::ErrorKind::Other, "io"));
+    let inner = WalError::Io(std::io::Error::other("io"));
     let err = WalBufferedCommitError::Arm(inner);
     assert_eq!(err.to_string(), "WAL arm failed: WAL I/O error: io");
 }
@@ -148,10 +148,7 @@ fn buffered_commit_replay_poisoned() {
 
 #[test]
 fn buffered_commit_commit() {
-    let inner = WalCommitError::Commit(WalError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        "boom",
-    )));
+    let inner = WalCommitError::Commit(WalError::Io(std::io::Error::other("boom")));
     let err = WalBufferedCommitError::Commit(inner);
     // `#[error(transparent)]` defers to the inner Display.
     assert_eq!(err.to_string(), "WAL commit failed: WAL I/O error: boom");
