@@ -10,8 +10,7 @@ use axum::{
     Json, Router,
 };
 use lora_database::{
-    ExecuteOptions, LoraError, LoraErrorCategory, LoraErrorCode, QueryRunner, ResultFormat,
-    SnapshotAdmin, WalAdmin,
+    ExecuteOptions, LoraError, LoraErrorCode, QueryRunner, ResultFormat, SnapshotAdmin, WalAdmin,
 };
 use serde::{Deserialize, Serialize};
 
@@ -92,22 +91,43 @@ impl ErrorResponse {
 
 /// Map a [`LoraError`] to its HTTP status code.
 ///
-/// Server-category errors are 500. Client-category errors are 400 with
-/// two refinements: `Timeout` → 408 (matches the cooperative-deadline
-/// semantics on the engine side) and `NotFound` → 404.
+/// Server-category errors collapse to 500, with one refinement:
+/// `WalPoisoned` → 503 because the engine cannot accept further writes
+/// until an operator restarts from snapshot + WAL.
+///
+/// Client-category errors collapse to 400, with refinements that match
+/// standard HTTP semantics:
+/// * `Timeout` → 408 (cooperative-deadline expired)
+/// * `NotFound` → 404 (named entity does not exist)
+/// * `InvalidParams` / `InvalidVector` → 422 (well-formed request,
+///   semantically invalid value)
+/// * `ConstraintViolation` → 409 (action conflicts with current state)
 fn status_for(err: &LoraError) -> StatusCode {
-    match err.category() {
-        LoraErrorCategory::Server => StatusCode::INTERNAL_SERVER_ERROR,
-        LoraErrorCategory::Client => match err.code() {
-            LoraErrorCode::Timeout => StatusCode::REQUEST_TIMEOUT,
-            LoraErrorCode::NotFound => StatusCode::NOT_FOUND,
-            _ => StatusCode::BAD_REQUEST,
-        },
+    match err.code() {
+        // Server-category
+        LoraErrorCode::WalPoisoned => StatusCode::SERVICE_UNAVAILABLE,
+        LoraErrorCode::Io
+        | LoraErrorCode::WalCorruption
+        | LoraErrorCode::SnapshotCodec
+        | LoraErrorCode::SnapshotCrypto
+        | LoraErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        // Client-category
+        LoraErrorCode::Timeout => StatusCode::REQUEST_TIMEOUT,
+        LoraErrorCode::NotFound => StatusCode::NOT_FOUND,
+        LoraErrorCode::InvalidParams | LoraErrorCode::InvalidVector => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        LoraErrorCode::ConstraintViolation => StatusCode::CONFLICT,
+        LoraErrorCode::Parse
+        | LoraErrorCode::Semantic
+        | LoraErrorCode::ReadOnlyViolation
+        | LoraErrorCode::DatabaseName
+        | LoraErrorCode::Config => StatusCode::BAD_REQUEST,
     }
 }
 
-fn lora_error_response(err: anyhow::Error) -> Response {
-    let lora = LoraError::from_anyhow(err);
+fn lora_error_response(err: impl Into<LoraError>) -> Response {
+    let lora = err.into();
     let status = status_for(&lora);
     (status, Json(ErrorResponse::from_lora(&lora))).into_response()
 }
