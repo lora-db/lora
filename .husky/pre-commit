@@ -1,2 +1,20 @@
 cargo fmt --all --check
 cargo clippy --workspace -- -D warnings
+
+# Binding gate: when a JS-facing binding or its shared TS contract is
+# staged, run the full test suite for the affected binding so a broken
+# wrapper or drifted types.ts can't reach a commit. Set
+# SKIP_BINDING_TESTS=1 to bypass for emergencies.
+if [ "${SKIP_BINDING_TESTS:-0}" = "1" ]; then
+  exit 0
+fi
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/(lora-node|shared-ts)/'; then
+  (cd crates/bindings/lora-node && npm test) || exit 1
+fi
+
+if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/(lora-wasm|shared-ts)/'; then
+  (cd crates/bindings/lora-wasm && npm test) || exit 1
+fi
