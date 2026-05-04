@@ -43,7 +43,7 @@ impl fmt::Display for VectorBuildError {
                 write!(f, "vector coordinates cannot contain nested lists")
             }
             VectorBuildError::NonNumericCoordinate(kind) => {
-                write!(f, "vector coordinates must be numeric, got {kind}")
+                write!(f, "vector coordinates must be numeric, got `{kind}`")
             }
             VectorBuildError::NonFiniteCoordinate => {
                 write!(f, "vector coordinates cannot be NaN or Infinity")
@@ -53,11 +53,11 @@ impl fmt::Display for VectorBuildError {
                 value,
             } => write!(
                 f,
-                "value {value} is out of range for coordinate type {}",
+                "value `{value}` is out of range for coordinate type `{}`",
                 coordinate_type.as_str()
             ),
             VectorBuildError::UnknownCoordinateType(name) => {
-                write!(f, "unknown vector coordinate type '{name}'")
+                write!(f, "unknown vector coordinate type `{name}`")
             }
         }
     }

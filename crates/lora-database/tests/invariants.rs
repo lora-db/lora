@@ -62,7 +62,7 @@ fn missing_property_is_rejected_by_analyzer() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
     let err = db.run_err("MATCH (n:User) RETURN n.nonexistent");
-    assert!(err.contains("Unknown property"));
+    assert!(err.contains("unknown property"));
 }
 
 #[test]

@@ -3,7 +3,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ParseError {
-    #[error("parse error: {message} at {span:?}")]
+    #[error("parse error at {}..{}: {message}", span.start, span.end)]
     Message { message: String, span: Span },
 }
 

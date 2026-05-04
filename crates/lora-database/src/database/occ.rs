@@ -84,7 +84,7 @@ where
 
             let rows = match exec_result {
                 Ok(rows) => rows,
-                Err(e) => return Err(anyhow!(e)),
+                Err(e) => return Err(anyhow::Error::from(e)),
             };
 
             install_recorder_if_inmemory(&mut staged, None);

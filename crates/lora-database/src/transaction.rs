@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use thiserror::Error;
+
 use lora_analyzer::Analyzer;
 use lora_compiler::{CompiledQuery, Compiler};
 use lora_executor::{
@@ -19,6 +21,38 @@ use lora_wal::WalRecorder;
 use crate::snapshot::ManagedSnapshotStore;
 use crate::stream::QueryStream;
 use crate::wal::write_scope::ensure_wal_not_poisoned;
+
+/// Transaction-lifecycle invariant violations.
+///
+/// All variants used to be raised as `anyhow!("...")` strings. Surfacing
+/// them as a typed enum lets [`crate::LoraError`] route them onto stable
+/// `LoraErrorCode`s without phrase-matching the `Display` text.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TransactionError {
+    #[error("transaction is already closed")]
+    AlreadyClosed,
+
+    #[error("transaction has no live graph guard")]
+    NoGraphGuard,
+
+    #[error("transaction has no staged graph")]
+    NoStagedGraph,
+
+    #[error("cannot commit transaction while a streaming cursor is still active")]
+    CursorActiveCommit,
+
+    #[error("cannot start a new statement while a streaming cursor is still active")]
+    CursorActiveStatement,
+
+    #[error("cannot execute mutating query in read-only transaction")]
+    ReadOnlyMutation,
+
+    #[error("streaming write cursor requires a ReadWrite transaction")]
+    StreamingRequiresReadWrite,
+
+    #[error("read-only transaction cannot publish staged graph")]
+    ReadOnlyCommit,
+}
 
 /// Transaction execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,15 +360,12 @@ impl<'db> Transaction<'db> {
         // ReadOnly tx: never clones, runs straight against live.
         if self.is_read_only_unchecked() {
             self.precheck_open_no_savepoint()?;
-            let live = self
-                .live
-                .as_ref()
-                .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
+            let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
             let storage = live.as_graph();
             let executor = Executor::with_deadline(ExecutionContext { storage, params }, deadline);
             return executor
                 .execute_compiled_rows(compiled)
-                .map_err(|e| anyhow!(e));
+                .map_err(anyhow::Error::from);
         }
 
         // ReadWrite tx, lazy-clone aware.
@@ -358,20 +389,17 @@ impl<'db> Transaction<'db> {
                     );
                     executor
                         .execute_compiled_rows(compiled)
-                        .map_err(|e| anyhow!(e))
+                        .map_err(anyhow::Error::from)
                 }
                 None => {
                     drop(inner);
-                    let live = self
-                        .live
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
+                    let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
                     let storage = live.as_graph();
                     let executor =
                         Executor::with_deadline(ExecutionContext { storage, params }, deadline);
                     executor
                         .execute_compiled_rows(compiled)
-                        .map_err(|e| anyhow!(e))
+                        .map_err(anyhow::Error::from)
                 }
             };
         }
@@ -394,7 +422,7 @@ impl<'db> Transaction<'db> {
             );
             executor
                 .execute_compiled_rows(compiled)
-                .map_err(|e| anyhow!(e))
+                .map_err(anyhow::Error::from)
         };
 
         match exec_result {
@@ -440,9 +468,7 @@ impl<'db> Transaction<'db> {
         params: BTreeMap<String, LoraValue>,
     ) -> Result<Box<dyn RowSource + 'static>> {
         if self.is_read_only_unchecked() {
-            return Err(anyhow!(
-                "streaming write cursor requires a ReadWrite transaction"
-            ));
+            return Err(TransactionError::StreamingRequiresReadWrite.into());
         }
 
         let mut inner = self.begin_statement()?;
@@ -481,7 +507,7 @@ impl<'db> Transaction<'db> {
                     discard_transaction_state(&mut inner);
                 }
                 self.live.take();
-                anyhow!(e)
+                anyhow::Error::from(e)
             })?;
 
         // The Arc<CompiledQuery> is the safety anchor for the
@@ -509,10 +535,7 @@ impl<'db> Transaction<'db> {
                 analyzer.analyze(&document)?
             } else {
                 drop(inner);
-                let live = self
-                    .live
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
+                let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
                 let mut analyzer = Analyzer::new(live.as_graph());
                 analyzer.analyze(&document)?
             }
@@ -527,10 +550,7 @@ impl<'db> Transaction<'db> {
         if inner.staged.is_some() {
             return Ok(());
         }
-        let live = self
-            .live
-            .as_ref()
-            .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
+        let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
         let mut staged: InMemoryGraph = live.as_graph().clone();
         if matches!(inner.mode, TransactionMode::ReadWrite) && inner.buffer_mutations {
             staged.set_mutation_recorder(Some(
@@ -570,9 +590,7 @@ impl<'db> Transaction<'db> {
         let mut inner = self.begin_statement()?;
         let is_mutating = classify_stream(&compiled).is_mutating();
         if matches!(inner.mode, TransactionMode::ReadOnly) && is_mutating {
-            return Err(anyhow!(
-                "cannot execute mutating query in read-only transaction"
-            ));
+            return Err(TransactionError::ReadOnlyMutation.into());
         }
 
         // Transaction streams borrow from the staged graph. Even
@@ -609,7 +627,7 @@ impl<'db> Transaction<'db> {
                         _compiled: compiled.clone(),
                     }) as Box<dyn RowSource + 'static>
                 })
-                .map_err(|e| anyhow!(e))
+                .map_err(anyhow::Error::from)
         } else {
             let storage_static: &'static InMemoryGraph = unsafe { &*staged_ptr };
             PullExecutor::new(storage_static, params)
@@ -620,7 +638,7 @@ impl<'db> Transaction<'db> {
                         _compiled: compiled.clone(),
                     }) as Box<dyn RowSource + 'static>
                 })
-                .map_err(|e| anyhow!(e))
+                .map_err(anyhow::Error::from)
         };
 
         match cursor {
@@ -659,12 +677,10 @@ impl<'db> Transaction<'db> {
     fn take_commit_state(&self) -> Result<CommitState> {
         let mut inner = self.inner.lock().unwrap();
         if inner.cursor_active {
-            return Err(anyhow!(
-                "cannot commit transaction while a streaming cursor is still active"
-            ));
+            return Err(TransactionError::CursorActiveCommit.into());
         }
         if inner.closed {
-            return Err(anyhow!("transaction is already closed"));
+            return Err(TransactionError::AlreadyClosed.into());
         }
 
         let mode = inner.mode;
@@ -723,14 +739,11 @@ impl<'db> Transaction<'db> {
             staged.set_mutation_recorder(Some(rec.clone() as Arc<dyn MutationRecorder>));
         }
 
-        let live = self
-            .live
-            .as_mut()
-            .ok_or_else(|| anyhow!("transaction has no live graph guard"))?;
+        let live = self.live.as_mut().ok_or(TransactionError::NoGraphGuard)?;
         let lease = match live {
             LiveStoreGuard::Write(lease) => lease,
             LiveStoreGuard::Read(_) => {
-                return Err(anyhow!("read-only transaction cannot publish staged graph"));
+                return Err(TransactionError::ReadOnlyCommit.into());
             }
         };
 
@@ -753,7 +766,7 @@ impl<'db> Transaction<'db> {
     pub fn rollback(mut self) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
-            return Err(anyhow!("transaction is already closed"));
+            return Err(TransactionError::AlreadyClosed.into());
         }
         discard_transaction_state(&mut inner);
         drop(inner);
@@ -769,12 +782,10 @@ impl<'db> Transaction<'db> {
     fn begin_statement(&self) -> Result<MutexGuard<'_, TxInner>> {
         let inner = self.inner.lock().unwrap();
         if inner.closed {
-            return Err(anyhow!("transaction is already closed"));
+            return Err(TransactionError::AlreadyClosed.into());
         }
         if inner.cursor_active {
-            return Err(anyhow!(
-                "cannot start a new statement while a streaming cursor is still active"
-            ));
+            return Err(TransactionError::CursorActiveStatement.into());
         }
         Ok(inner)
     }
@@ -785,12 +796,10 @@ impl<'db> Transaction<'db> {
     fn precheck_open_no_savepoint(&self) -> Result<()> {
         let inner = self.inner.lock().unwrap();
         if inner.closed {
-            return Err(anyhow!("transaction is already closed"));
+            return Err(TransactionError::AlreadyClosed.into());
         }
         if inner.cursor_active {
-            return Err(anyhow!(
-                "cannot start a new statement while a streaming cursor is still active"
-            ));
+            return Err(TransactionError::CursorActiveStatement.into());
         }
         Ok(())
     }
@@ -827,7 +836,7 @@ impl TxInner {
     fn staged_mut(&mut self) -> Result<&mut InMemoryGraph> {
         self.staged
             .as_mut()
-            .ok_or_else(|| anyhow!("transaction has no staged graph"))
+            .ok_or(TransactionError::NoStagedGraph.into())
     }
 
     fn activate_cursor(&mut self) {

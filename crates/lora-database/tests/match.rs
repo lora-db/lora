@@ -48,7 +48,7 @@ fn match_by_label_no_results() {
     let db = TestDb::new();
     db.run("CREATE (a:User {name: 'Alice'})");
     let err = db.run_err("MATCH (n:Product) RETURN n");
-    assert!(err.contains("Unknown label"));
+    assert!(err.contains("unknown label"));
 }
 
 #[test]

@@ -17,6 +17,7 @@ bench = false
 [dependencies]
 anyhow.workspace = true
 arc-swap.workspace = true
+thiserror.workspace = true
 zip.workspace = true
 
 lora-ast.workspace = true

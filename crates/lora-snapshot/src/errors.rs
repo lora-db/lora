@@ -19,7 +19,7 @@ pub enum SnapshotCodecError {
     #[error("snapshot is encrypted with key id `{0}`, but no matching key was supplied")]
     MissingEncryptionKey(String),
     #[error(
-        "snapshot is password encrypted with key id `{0}`, but no matching password was supplied"
+        "snapshot is password-encrypted with key id `{0}`, but no matching password was supplied"
     )]
     MissingPassword(String),
     #[error("snapshot password key derivation failed: {0}")]

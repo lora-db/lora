@@ -16,20 +16,20 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConfigError::UnknownArg(a) => write!(f, "unknown argument: {a}"),
-            ConfigError::MissingValue(flag) => write!(f, "missing value for {flag}"),
-            ConfigError::EmptyValue(flag) => write!(f, "{flag} value must not be empty"),
+            ConfigError::UnknownArg(a) => write!(f, "unknown argument `{a}`"),
+            ConfigError::MissingValue(flag) => write!(f, "missing value for `{flag}`"),
+            ConfigError::EmptyValue(flag) => write!(f, "`{flag}` value must not be empty"),
             ConfigError::InvalidPort { value, reason } => {
-                write!(f, "invalid port '{value}': {reason}")
+                write!(f, "invalid port `{value}`: {reason}")
             }
             ConfigError::InvalidSyncMode(value) => {
                 write!(
                     f,
-                    "invalid --wal-sync-mode '{value}': expected per-commit, group, or none"
+                    "invalid `--wal-sync-mode` `{value}`: expected `per-commit`, `group`, or `none`"
                 )
             }
             ConfigError::UnexpectedPositional(a) => {
-                write!(f, "unexpected positional argument: {a}")
+                write!(f, "unexpected positional argument `{a}`")
             }
         }
     }

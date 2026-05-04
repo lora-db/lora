@@ -15,6 +15,7 @@
 //! ```
 
 mod database;
+mod error;
 mod named;
 mod plan_cache;
 mod snapshot;
@@ -23,6 +24,7 @@ mod transaction;
 mod wal;
 
 pub use database::{Database, GraphDirection, QueryRunner};
+pub use error::{LoraError, LoraErrorCategory, LoraErrorCode};
 pub use named::{
     resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
     DEFAULT_DATABASE_MAX_BYTES,
@@ -32,7 +34,7 @@ pub use snapshot::{
     SnapshotConfig,
 };
 pub use stream::QueryStream;
-pub use transaction::{Transaction, TransactionMode};
+pub use transaction::{Transaction, TransactionError, TransactionMode};
 pub use wal::{WalAdmin, WalStatus};
 
 // Re-export the WAL configuration types so transports / operators can

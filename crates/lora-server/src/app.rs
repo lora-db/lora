@@ -5,11 +5,14 @@ use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use lora_database::{ExecuteOptions, QueryRunner, ResultFormat, SnapshotAdmin, WalAdmin};
+use lora_database::{
+    ExecuteOptions, LoraError, LoraErrorCategory, LoraErrorCode, QueryRunner, ResultFormat,
+    SnapshotAdmin, WalAdmin,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -39,9 +42,74 @@ impl From<QueryFormat> for ResultFormat {
     }
 }
 
+/// Structured error body returned by every fallible HTTP endpoint.
+///
+/// Wire shape:
+/// ```json
+/// { "error": { "code": "LORA_PARSE", "message": "...", "category": "client" } }
+/// ```
+///
+/// `code` is a stable wire string from the [`LoraErrorCode`] catalog and
+/// is the field bindings / dashboards / tests should match on. `message`
+/// is human-friendly and may be reworded between releases. `category` is
+/// `"client"` for caller mistakes (4xx) and `"server"` for engine
+/// failures (5xx).
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
-    pub error: String,
+    pub error: ErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorBody {
+    pub code: &'static str,
+    pub message: String,
+    pub category: &'static str,
+}
+
+impl ErrorResponse {
+    fn from_lora(err: &LoraError) -> Self {
+        Self {
+            error: ErrorBody {
+                code: err.code().as_str(),
+                message: err.message().to_string(),
+                category: err.category().as_str(),
+            },
+        }
+    }
+
+    /// Build an ad-hoc error response for cases that never reach the
+    /// engine (e.g. config-level argument validation in a handler).
+    fn from_parts(code: LoraErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            error: ErrorBody {
+                code: code.as_str(),
+                message: message.into(),
+                category: code.category().as_str(),
+            },
+        }
+    }
+}
+
+/// Map a [`LoraError`] to its HTTP status code.
+///
+/// Server-category errors are 500. Client-category errors are 400 with
+/// two refinements: `Timeout` → 408 (matches the cooperative-deadline
+/// semantics on the engine side) and `NotFound` → 404.
+fn status_for(err: &LoraError) -> StatusCode {
+    match err.category() {
+        LoraErrorCategory::Server => StatusCode::INTERNAL_SERVER_ERROR,
+        LoraErrorCategory::Client => match err.code() {
+            LoraErrorCode::Timeout => StatusCode::REQUEST_TIMEOUT,
+            LoraErrorCode::NotFound => StatusCode::NOT_FOUND,
+            _ => StatusCode::BAD_REQUEST,
+        },
+    }
+}
+
+fn lora_error_response(err: anyhow::Error) -> Response {
+    let lora = LoraError::from_anyhow(err);
+    let status = status_for(&lora);
+    (status, Json(ErrorResponse::from_lora(&lora))).into_response()
 }
 
 #[derive(Debug, Serialize)]
@@ -263,13 +331,7 @@ async fn admin_snapshot_save(
             }),
         )
             .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(err) => lora_error_response(err),
     }
 }
 
@@ -292,13 +354,7 @@ async fn admin_snapshot_load(
             }),
         )
             .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(err) => lora_error_response(err),
     }
 }
 
@@ -356,9 +412,7 @@ async fn admin_checkpoint(
         Err(msg) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: msg.to_string(),
-                }),
+                Json(ErrorResponse::from_parts(LoraErrorCode::Config, msg)),
             )
                 .into_response()
         }
@@ -376,13 +430,7 @@ async fn admin_checkpoint(
             }),
         )
             .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(err) => lora_error_response(err),
     }
 }
 
@@ -399,13 +447,7 @@ async fn admin_wal_status(State(state): State<WalAdminState>) -> impl IntoRespon
             }),
         )
             .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(err) => lora_error_response(err),
     }
 }
 
@@ -419,27 +461,13 @@ async fn admin_wal_truncate(
         Some(lsn) => lsn,
         None => match state.wal.wal_status() {
             Ok(s) => s.durable_lsn,
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: err.to_string(),
-                    }),
-                )
-                    .into_response()
-            }
+            Err(err) => return lora_error_response(err),
         },
     };
 
     match state.wal.wal_truncate(fence) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(err) => lora_error_response(err),
     }
 }
 
@@ -457,12 +485,6 @@ where
 
     match db.execute(&req.query, options) {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(err) => lora_error_response(err),
     }
 }

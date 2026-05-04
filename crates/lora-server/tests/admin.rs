@@ -410,9 +410,14 @@ async fn wal_admin_routes_mount_without_snapshot_path() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(
-        json["error"].as_str().unwrap().contains("--snapshot-path"),
-        "error should mention --snapshot-path or `path` body"
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--snapshot-path"),
+        "error message should mention --snapshot-path or `path` body"
     );
+    assert_eq!(json["error"]["code"].as_str().unwrap(), "LORA_CONFIG");
+    assert_eq!(json["error"]["category"].as_str().unwrap(), "client");
 
     // /admin/checkpoint WITH a body path works.
     let body = serde_json::json!({ "path": dir.join("ckpt.bin").to_str().unwrap() }).to_string();
@@ -478,7 +483,8 @@ async fn wal_status_errors_when_wal_admin_is_disconnected() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("WAL"));
+    assert!(json["error"]["message"].as_str().unwrap().contains("WAL"));
+    assert_eq!(json["error"]["category"].as_str().unwrap(), "server");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

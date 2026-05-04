@@ -71,7 +71,7 @@ fn with_hides_unmentioned_variables() {
     let db = TestDb::new();
     db.seed_social_graph();
     let err = db.run_err("MATCH (a:User {name: 'Alice'})-[r:FOLLOWS]->(b) WITH a RETURN b");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn with_hides_unselected_variables() {
     let db = TestDb::new();
     db.seed_org_graph();
     let err = db.run_err("MATCH (p:Person)-[r:WORKS_AT]->(c:Company) WITH p RETURN r");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn with_variables_before_not_visible_after() {
          WITH a \
          RETURN r",
     );
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn with_passes_only_listed_variables() {
          WITH c \
          RETURN p.name AS name",
     );
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn with_alias_rename_hides_original() {
          WITH n AS x \
          RETURN n.val",
     );
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 // ============================================================

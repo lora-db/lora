@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use lora_analyzer::Analyzer;
 use lora_ast::Document;
 use lora_compiler::{CompiledQuery, Compiler};
@@ -174,7 +174,7 @@ where
                 ensure_wal_query_can_start(rec)?;
             }
             if deadline.is_none() && should_collect_read_via_pull(&compiled) {
-                return collect_compiled(&*store, params, &compiled).map_err(|e| anyhow!(e));
+                return collect_compiled(&*store, params, &compiled).map_err(anyhow::Error::from);
             }
             let executor = lora_executor::Executor::with_deadline(
                 lora_executor::ExecutionContext {
@@ -185,7 +185,7 @@ where
             );
             return executor
                 .execute_compiled_rows(&compiled)
-                .map_err(|e| anyhow!(e));
+                .map_err(anyhow::Error::from);
         }
 
         // Mutating path. Drop the snapshot we used for compilation and

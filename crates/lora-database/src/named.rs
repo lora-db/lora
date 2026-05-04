@@ -150,14 +150,14 @@ impl fmt::Display for DatabaseNameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => write!(f, "database name must not be empty"),
-            Self::Reserved(name) => write!(f, "database name '{name}' is reserved"),
+            Self::Reserved(name) => write!(f, "database name `{name}` is reserved"),
             Self::AbsolutePath(name) => write!(
                 f,
-                "invalid database name '{name}': use a relative path under database_dir"
+                "invalid database name `{name}`: use a relative path under `database_dir`"
             ),
             Self::InvalidCharacters(name) => write!(
                 f,
-                "invalid database name '{name}': use relative path components containing only letters, digits, '+', '_', '-', with an optional .loradb suffix on the basename"
+                "invalid database name `{name}`: use relative path components containing only letters, digits, `+`, `_`, `-`, with an optional `.loradb` suffix on the basename"
             ),
         }
     }

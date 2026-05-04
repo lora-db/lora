@@ -56,7 +56,7 @@ fn error_unknown_variable_in_return() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
     let err = db.run_err("MATCH (n:User) RETURN x");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn error_unknown_variable_in_where() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
     let err = db.run_err("MATCH (n:User) WHERE x.name = 'Alice' RETURN n");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn error_set_on_unbound_variable() {
     let db = TestDb::new();
     db.run("CREATE (:X {id:1})");
     let err = db.run_err("MATCH (a:X) SET b.val = 1");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn error_return_unbound_variable() {
     let db = TestDb::new();
     db.run("CREATE (:X {id:1})");
     let err = db.run_err("MATCH (a:X) RETURN b");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn error_where_unbound_variable() {
     let db = TestDb::new();
     db.run("CREATE (:X {id:1})");
     let err = db.run_err("MATCH (a:X) WHERE b.id = 1 RETURN a");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 // ============================================================
@@ -100,7 +100,7 @@ fn error_unknown_label_in_match() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
     let err = db.run_err("MATCH (n:NonexistentLabel) RETURN n");
-    assert!(err.contains("Unknown label"));
+    assert!(err.contains("unknown label"));
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn error_unknown_relationship_type_in_match() {
     let db = TestDb::new();
     db.run("CREATE (a:User {name: 'Alice'})-[:FOLLOWS]->(b:User {name: 'Bob'})");
     let err = db.run_err("MATCH (a)-[:NONEXISTENT]->(b) RETURN a, b");
-    assert!(err.contains("Unknown relationship type"));
+    assert!(err.contains("unknown relationship type"));
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn error_standalone_call_unsupported() {
     let db = TestDb::new();
     let err = db.run_err("CALL db.labels()");
     assert!(
-        err.contains("Unsupported") || err.contains("not yet supported") || err.contains("CALL")
+        err.contains("unsupported") || err.contains("not yet supported") || err.contains("CALL")
     );
 }
 
@@ -205,14 +205,14 @@ fn error_duplicate_projection_alias() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice', age: 30})");
     let err = db.run_err("MATCH (n:User) RETURN n.name AS x, n.age AS x");
-    assert!(err.contains("Duplicate") || err.contains("alias"));
+    assert!(err.contains("duplicate") || err.contains("alias"));
 }
 
 #[test]
 fn error_duplicate_map_key() {
     let db = TestDb::new();
     let err = db.run_err("RETURN {name: 'Alice', name: 'Bob'}");
-    assert!(err.contains("Duplicate") || err.contains("map key"));
+    assert!(err.contains("duplicate") || err.contains("map key"));
 }
 
 // ============================================================
@@ -306,7 +306,7 @@ fn error_unknown_property_in_where() {
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice'})");
     let err = db.run_err("MATCH (n:User) WHERE n.nonexistent = 'x' RETURN n");
-    assert!(err.contains("Unknown property"));
+    assert!(err.contains("unknown property"));
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn error_unknown_property_in_order_by() {
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice'})");
     let err = db.run_err("MATCH (n:User) RETURN n.name ORDER BY n.nonexistent");
-    assert!(err.contains("Unknown property"));
+    assert!(err.contains("unknown property"));
 }
 
 // ============================================================
@@ -353,7 +353,7 @@ fn error_duplicate_variable_binding() {
     let db = TestDb::new();
     db.run("CREATE (:X {id:1})-[:R]->(:Y {id:2})");
     let err = db.run_err("MATCH (n:X)-[r:R]->(n:Y) RETURN n");
-    assert!(err.contains("Duplicate") || err.contains("variable") || err.contains("already"));
+    assert!(err.contains("duplicate") || err.contains("variable") || err.contains("already"));
 }
 
 // ============================================================
@@ -454,7 +454,7 @@ fn error_unknown_label_and_unknown_property_combined() {
     db.run("CREATE (:Known {id: 1})");
     // Unknown label in MATCH on non-empty graph
     let err = db.run_err("MATCH (n:TotallyFakeLabel) RETURN n.also_fake");
-    assert!(err.contains("Unknown label") || err.contains("label"));
+    assert!(err.contains("unknown label") || err.contains("label"));
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn error_order_by_unbound_variable() {
     let db = TestDb::new();
     db.run("CREATE (:X {id:1})");
     let err = db.run_err("MATCH (n:X) RETURN n.id ORDER BY z.id");
-    assert!(err.contains("Unknown variable") || err.contains("variable"));
+    assert!(err.contains("unknown variable") || err.contains("variable"));
 }
 
 // ============================================================
@@ -645,7 +645,7 @@ fn error_unknown_label_multiple_types_first_unknown() {
     let db = TestDb::new();
     db.run("CREATE (:Known {id:1})");
     let err = db.run_err("MATCH (n:Unknown) RETURN n");
-    assert!(err.contains("Unknown label"));
+    assert!(err.contains("unknown label"));
 }
 
 #[test]
@@ -653,7 +653,7 @@ fn error_unknown_rel_type_on_populated_graph() {
     let db = TestDb::new();
     db.run("CREATE (:A {id:1})-[:REAL]->(:B {id:2})");
     let err = db.run_err("MATCH ()-[:FAKE]->() RETURN 1");
-    assert!(err.contains("Unknown relationship type"));
+    assert!(err.contains("unknown relationship type"));
 }
 
 // ============================================================

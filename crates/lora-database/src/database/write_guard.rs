@@ -19,6 +19,7 @@ use std::sync::{Arc, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use lora_executor::ExecutorError;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationRecorder};
 use lora_wal::WalRecorder;
 
@@ -133,7 +134,7 @@ where
                     });
                 }
                 Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                    return Err(anyhow!("query deadline exceeded"));
+                    return Err(ExecutorError::QueryTimeout.into());
                 }
                 Err(TryLockError::WouldBlock) => {
                     std::thread::sleep(Duration::from_millis(1));

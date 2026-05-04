@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
-use lora_wal::WalRecorder;
+use anyhow::Result;
+use lora_wal::{WalBufferedCommitError, WalRecorder};
 
 /// Policy for a failed write while a WAL scope is armed.
 #[derive(Debug, Clone, Copy)]
@@ -27,7 +27,7 @@ pub(crate) struct WalWriteScope<'a> {
 
 impl<'a> WalWriteScope<'a> {
     pub(crate) fn arm(recorder: &'a WalRecorder, abort_policy: WalAbortPolicy) -> Result<Self> {
-        recorder.arm().map_err(|e| anyhow!("WAL arm failed: {e}"))?;
+        recorder.arm().map_err(WalBufferedCommitError::Arm)?;
         Ok(Self {
             recorder,
             abort_policy,
@@ -53,14 +53,14 @@ impl<'a> WalWriteScope<'a> {
 
 pub(crate) fn ensure_wal_not_poisoned(recorder: &WalRecorder) -> Result<()> {
     if let Some(reason) = recorder.poisoned_reason() {
-        return Err(anyhow!("WAL poisoned: {reason}"));
+        return Err(WalBufferedCommitError::Poisoned(reason).into());
     }
     Ok(())
 }
 
 pub(crate) fn ensure_wal_query_can_start(recorder: &WalRecorder) -> Result<()> {
     if let Some(reason) = recorder.poisoned_reason() {
-        return Err(anyhow!("WAL arm failed: WAL poisoned: {reason}"));
+        return Err(WalBufferedCommitError::Poisoned(reason).into());
     }
     Ok(())
 }
