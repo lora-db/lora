@@ -36,16 +36,18 @@ create_exception!(
     "A parameter value could not be mapped to a Lora value. Message starts with `LORA_INVALID_PARAMS:`."
 );
 
-/// Build a [`LoraQueryError`] from an `anyhow::Error`, prefixing the
-/// message with the precise wire code so the Python caller can route
-/// past the exception class.
-pub(crate) fn lora_query_err_from_anyhow(err: anyhow::Error) -> PyErr {
-    let lora = EngineLoraError::from_anyhow(err);
+/// Build a [`LoraQueryError`], prefixing the message with the precise
+/// wire code so the Python caller can route past the exception class.
+/// Accepts anything convertible into [`EngineLoraError`] — typed
+/// engine errors and binding-internal `anyhow::Error` both flow through
+/// the same path.
+pub(crate) fn lora_query_err_from_anyhow(err: impl Into<EngineLoraError>) -> PyErr {
+    let lora = err.into();
     LoraQueryError::new_err(format!("{}: {}", lora.code().as_str(), lora.message()))
 }
 
-/// Borrowed-by-reference variant of [`lora_query_err_from_anyhow`] for
-/// call sites that don't have an owned `anyhow::Error`.
+/// Borrowed-by-reference variant for call sites that don't have an
+/// owned error (e.g. closures that need to keep the original).
 #[allow(dead_code)]
 pub(crate) fn lora_query_err_from_anyhow_ref(err: &anyhow::Error) -> PyErr {
     let lora = EngineLoraError::from_anyhow_ref(err);

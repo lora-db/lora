@@ -26,13 +26,20 @@ pub(crate) fn js_error(code: &str, message: &str) -> JsError {
     JsError::new(&format!("{code}: {message}"))
 }
 
-/// Build a [`JsError`] from an engine-side `anyhow::Error`, using the
-/// precise wire code from [`lora_database::LoraErrorCode`] as the
-/// prefix so JS callers can route on it without parsing free-form
-/// text.
+/// Build a [`JsError`] from an engine-side error, using the precise
+/// wire code from [`lora_database::LoraErrorCode`] as the prefix so
+/// JS callers can route on it without parsing free-form text.
+/// Accepts both `anyhow::Error` (binding-internal) and the
+/// engine-typed [`LoraError`].
 pub(crate) fn js_error_from_anyhow(err: &anyhow::Error) -> JsError {
     let lora = LoraError::from_anyhow_ref(err);
     js_error(lora.code().as_str(), lora.message())
+}
+
+/// Variant of [`js_error_from_anyhow`] for the LoraError-typed
+/// engine API (`Database::execute*`, `Transaction::commit`, …).
+pub(crate) fn js_error_from_lora(err: &LoraError) -> JsError {
+    js_error(err.code().as_str(), err.message())
 }
 
 pub(crate) struct TransactionStatement {

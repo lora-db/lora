@@ -13,17 +13,16 @@ use lora_database::{LoraError, LoraErrorCode};
 /// Deprecated umbrella code retained so binding-level call sites that
 /// only know they failed (e.g. `database is closed`) keep emitting a
 /// recognisable prefix. New code paths should derive the prefix from
-/// `LoraError::from_anyhow(e).code().as_str()` via [`format_error`].
+/// `LoraError::code().as_str()` via [`format_lora_error`].
 pub(crate) const LORA_ERROR_CODE: &str = "LORA_INTERNAL";
 /// Wire string for binding-level parameter validation failures.
 pub(crate) const INVALID_PARAMS_CODE: &str = "LORA_INVALID_PARAMS";
 
-/// Format an engine error as `<code>: <message>` where `<code>` is the
+/// Format a [`LoraError`] as `<code>: <message>` where `<code>` is the
 /// precise [`LoraErrorCode`] (e.g. `LORA_PARSE`, `LORA_TIMEOUT`,
 /// `LORA_WAL_POISONED`, …) so the JS wrapper can route on it.
-pub(crate) fn format_error(err: &anyhow::Error) -> String {
-    let lora = LoraError::from_anyhow_ref(err);
-    format!("{}: {}", lora.code().as_str(), lora.message())
+pub(crate) fn format_lora_error(err: &LoraError) -> String {
+    format!("{}: {}", err.code().as_str(), err.message())
 }
 
 /// Format a binding-level error using a precomputed code (used for

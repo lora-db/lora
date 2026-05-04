@@ -60,7 +60,7 @@ use json::{
     execute_json_payload, parse_params, parse_transaction_mode, parse_transaction_statements,
     row_to_json, serialize_rows,
 };
-use lora_database::LoraErrorCode;
+use lora_database::{LoraError, LoraErrorCode};
 
 // ============================================================================
 // Opaque handle
@@ -79,7 +79,7 @@ impl LoraDatabase {
         }
     }
 
-    fn new_with_wal(wal_dir: &str) -> anyhow::Result<Self> {
+    fn new_with_wal(wal_dir: &str) -> Result<Self, LoraError> {
         let inner = InnerDatabase::open_with_wal(WalConfig::enabled(wal_dir))?;
         Ok(Self {
             inner: Arc::new(inner),
@@ -92,7 +92,7 @@ impl LoraDatabase {
         checkpoint_every_commits: u64,
         keep_old: usize,
         codec: SnapshotOptions,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, LoraError> {
         let mut snapshots = SnapshotConfig::enabled(snapshot_dir)
             .keep_old(keep_old)
             .codec(codec);
@@ -105,7 +105,7 @@ impl LoraDatabase {
         })
     }
 
-    fn new_named(database_name: &str, database_dir: Option<&str>) -> anyhow::Result<Self> {
+    fn new_named(database_name: &str, database_dir: Option<&str>) -> Result<Self, LoraError> {
         let mut options = DatabaseOpenOptions::default();
         if let Some(database_dir) = database_dir {
             options.database_dir = database_dir.into();

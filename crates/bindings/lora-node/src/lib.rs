@@ -31,7 +31,7 @@ mod errors;
 mod json;
 mod tasks;
 
-use errors::{closed_error_message, format_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
+use errors::{closed_error_message, format_lora_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
 use json::{json_value_to_params, row_to_json};
 use tasks::{ClearTask, ExecuteTask, SyncTask, TransactionTask};
 
@@ -175,7 +175,7 @@ impl Database {
         };
         let db = self.inner()?;
         let stream = unsafe { db.stream_with_params_owned(&query, params_map) }
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
         let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
         let mut streams = self
             .streams
@@ -317,7 +317,7 @@ impl Database {
         let meta = self
             .inner()?
             .save_snapshot_to_with_options(&path, &options)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
     }
 
@@ -333,7 +333,7 @@ impl Database {
         let (bytes, _) = self
             .inner()?
             .save_snapshot_to_bytes_with_options(&options)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
         Ok(Buffer::from(bytes))
     }
 
@@ -352,7 +352,7 @@ impl Database {
         let meta = self
             .inner()?
             .load_snapshot_from_with_credentials(&path, credentials.as_ref())
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
     }
 
@@ -371,7 +371,7 @@ impl Database {
         let meta = self
             .inner()?
             .load_snapshot_from_bytes_with_credentials(bytes.as_ref(), credentials.as_ref())
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
         Ok(snapshot_meta_to_json(meta))
     }
 
@@ -464,7 +464,7 @@ fn open_explicit_wal_database(
     } else {
         InnerDatabase::open_with_wal(wal_config)
     }
-    .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+    .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
     Ok(Arc::new(db))
 }
 
@@ -518,7 +518,7 @@ fn open_persistent_database(
     registry.retain(|_, entry| entry.db.strong_count() > 0);
 
     let db = InnerDatabase::open_named(name.as_str(), options)
-        .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+        .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
     let db = Arc::new(db);
     registry.insert(
         key,

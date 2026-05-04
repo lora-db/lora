@@ -21,9 +21,9 @@ use lora_database::{
 mod json;
 
 use json::{
-    js_error, js_error_from_anyhow, json_value_to_params, parse_snapshot_credentials,
-    parse_snapshot_options, parse_transaction_mode, parse_transaction_statements, row_to_json,
-    serialize_rows,
+    js_error, js_error_from_anyhow, js_error_from_lora, json_value_to_params,
+    parse_snapshot_credentials, parse_snapshot_options, parse_transaction_mode,
+    parse_transaction_statements, row_to_json, serialize_rows,
 };
 /// Deprecated umbrella code preserved for binding-level static-message
 /// call sites (stream closed, lock invariants). Engine errors go through
@@ -75,7 +75,7 @@ impl WasmDatabase {
         let result = self
             .db
             .execute_with_params(query, Some(options), params_map)
-            .map_err(|e| js_error_from_anyhow(&e))?;
+            .map_err(|e| js_error_from_lora(&e))?;
 
         let QueryResult::RowArrays(row_arrays) = result else {
             return Err(js_error(LORA_ERROR_CODE, "expected RowArrays result"));
@@ -101,7 +101,7 @@ impl WasmDatabase {
             json_value_to_params(json_value)?
         };
         let stream = unsafe { self.db.stream_with_params_owned(query, params_map) }
-            .map_err(|e| js_error_from_anyhow(&e))?;
+            .map_err(|e| js_error_from_lora(&e))?;
         Ok(WasmQueryStream {
             _db: self.db.clone(),
             stream: Some(stream),
@@ -126,20 +126,20 @@ impl WasmDatabase {
         let mut tx = self
             .db
             .begin_transaction(mode)
-            .map_err(|e| js_error_from_anyhow(&e))?;
+            .map_err(|e| js_error_from_lora(&e))?;
 
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
             let result = tx
                 .execute_with_params(&statement.query, Some(options), statement.params)
-                .map_err(|e| js_error_from_anyhow(&e))?;
+                .map_err(|e| js_error_from_lora(&e))?;
             let QueryResult::RowArrays(row_arrays) = result else {
                 return Err(js_error(LORA_ERROR_CODE, "expected RowArrays result"));
             };
             results.push(serialize_rows(&row_arrays.columns, &row_arrays.rows));
         }
 
-        tx.commit().map_err(|e| js_error_from_anyhow(&e))?;
+        tx.commit().map_err(|e| js_error_from_lora(&e))?;
 
         serde_json::Value::Array(results)
             .serialize(&Serializer::json_compatible())
@@ -173,7 +173,7 @@ impl WasmDatabase {
         self.db
             .save_snapshot_to_bytes_with_options(&options)
             .map(|(bytes, _)| bytes)
-            .map_err(|e| js_error_from_anyhow(&e))
+            .map_err(|e| js_error_from_lora(&e))
     }
 
     /// Replace the graph state with a database snapshot decoded from `bytes`.
@@ -187,7 +187,7 @@ impl WasmDatabase {
         let meta = self
             .db
             .load_snapshot_from_bytes_with_credentials(bytes.as_slice(), credentials.as_ref())
-            .map_err(|e| js_error_from_anyhow(&e))?;
+            .map_err(|e| js_error_from_lora(&e))?;
 
         let out = serde_json::json!({
             "formatVersion": meta.format_version,

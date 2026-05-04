@@ -27,8 +27,8 @@ use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, QueryResult, ResultFormat,
-    SnapshotConfig, SnapshotOptions, WalConfig,
+    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraError as EngineLoraError,
+    QueryResult, ResultFormat, SnapshotConfig, SnapshotOptions, WalConfig,
 };
 
 mod errors;
@@ -235,7 +235,7 @@ impl Database {
                 results.push(result);
             }
             tx.commit()?;
-            Ok::<_, anyhow::Error>(results)
+            Ok::<_, EngineLoraError>(results)
         });
 
         let exec_results = exec_results.map_err(lora_query_err_from_anyhow)?;

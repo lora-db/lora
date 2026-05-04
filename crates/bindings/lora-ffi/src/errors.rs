@@ -74,11 +74,13 @@ pub(crate) unsafe fn write_error(out_error: *mut *mut c_char, prefix: &str, mess
     *out_error = ptr;
 }
 
-/// Convert an `anyhow::Error` from the engine into a typed
-/// [`LoraError`], then write `<code>: <message>` into `*out_error` so
-/// the host binding can route on the wire string.
-pub(crate) unsafe fn write_lora_error(out_error: *mut *mut c_char, err: anyhow::Error) {
-    let lora = LoraError::from_anyhow(err);
+/// Write `<code>: <message>` into `*out_error` so the host binding
+/// can route on the wire string. Accepts anything that converts into
+/// [`LoraError`] — including `anyhow::Error` from binding-internal
+/// call sites — so the engine's typed errors and the binding's
+/// stringly errors share one path.
+pub(crate) unsafe fn write_lora_error(out_error: *mut *mut c_char, err: impl Into<LoraError>) {
+    let lora = err.into();
     write_error(out_error, lora.code().as_str(), lora.message());
 }
 

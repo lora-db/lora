@@ -51,11 +51,13 @@ pub(crate) fn invalid_params(ruby: &Ruby, msg: impl Into<String>) -> MagnusError
     MagnusError::new(lora_error_class(ruby, "InvalidParamsError"), body)
 }
 
-/// Build a `LoraRuby::QueryError` from an `anyhow::Error`, deriving the
-/// precise wire code from [`LoraError::from_anyhow`].
+/// Build a `LoraRuby::QueryError` from any error convertible into
+/// [`LoraError`]. Accepts both the engine's typed `LoraError` and the
+/// binding-internal `anyhow::Error` (via `From<anyhow::Error>`), so
+/// query and admin paths share one helper.
 #[allow(dead_code)]
-pub(crate) fn query_error_from_anyhow(ruby: &Ruby, err: anyhow::Error) -> MagnusError {
-    let lora = LoraError::from_anyhow(err);
+pub(crate) fn query_error_from_anyhow(ruby: &Ruby, err: impl Into<LoraError>) -> MagnusError {
+    let lora = err.into();
     let body = format!("{}: {}", lora.code().as_str(), lora.message());
     MagnusError::new(lora_error_class(ruby, "QueryError"), body)
 }

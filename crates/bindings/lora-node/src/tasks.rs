@@ -18,7 +18,7 @@ use lora_database::{
     TransactionMode,
 };
 
-use crate::errors::{format_error, INVALID_PARAMS_CODE};
+use crate::errors::{format_lora_error, INVALID_PARAMS_CODE};
 use crate::json::{json_value_to_params, serialize_rows};
 
 /// Work unit for `Database.execute`. Owns its inputs so it can move onto the
@@ -50,7 +50,7 @@ impl Task for ExecuteTask {
         let result = self
             .db
             .execute_with_params(&self.query, Some(options), params_map)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
 
         let QueryResult::RowArrays(row_arrays) = result else {
             return Err(NapiError::new(
@@ -79,7 +79,7 @@ impl Task for SyncTask {
     fn compute(&mut self) -> Result<Self::Output> {
         self.db
             .sync()
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -98,7 +98,7 @@ impl Task for ClearTask {
     fn compute(&mut self) -> Result<Self::Output> {
         self.db
             .try_clear()
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -125,13 +125,13 @@ impl Task for TransactionTask {
         let mut tx = self
             .db
             .begin_transaction(mode)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
 
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
             let result = tx
                 .execute_with_params(&statement.query, Some(options), statement.params)
-                .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+                .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
             let QueryResult::RowArrays(row_arrays) = result else {
                 return Err(NapiError::new(
                     Status::GenericFailure,
@@ -142,7 +142,7 @@ impl Task for TransactionTask {
         }
 
         tx.commit()
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_error(&e)))?;
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
 
         Ok(serde_json::Value::Array(results))
     }
