@@ -19,11 +19,15 @@ pub use json::{snapshot_credentials_from_json, snapshot_options_from_json};
 pub(crate) use store::ManagedSnapshotStore;
 pub use store::SnapshotConfig;
 
-use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 
 use lora_snapshot::{
     decode_snapshot as decode_database_snapshot, read_snapshot as read_database_snapshot,
@@ -73,6 +77,7 @@ pub(crate) fn snapshot_tmp_path(target: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
+#[cfg(unix)]
 pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -80,6 +85,11 @@ pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     let dir = File::open(parent).with_context(|| format!("open dir {}", parent.display()))?;
     dir.sync_all()
         .with_context(|| format!("sync dir {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_parent_dir(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// RAII handle that deletes its path on drop unless [`commit`] is called.

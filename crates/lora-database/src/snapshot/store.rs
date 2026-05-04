@@ -268,8 +268,14 @@ fn tmp_path(path: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
+#[cfg(unix)]
 fn sync_dir(path: &Path) -> Result<()> {
     let dir = File::open(path).with_context(|| format!("open dir {}", path.display()))?;
     dir.sync_all()
         .with_context(|| format!("sync dir {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> Result<()> {
+    Ok(())
 }
