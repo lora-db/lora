@@ -451,7 +451,7 @@ impl<'a> AutoCommitGuard<'a> {
                 // fallback path the flag was never set, so this
                 // assignment is a no-op.
                 tx.release_streaming_cursor();
-                tx.commit()
+                Ok(tx.commit()?)
             }
             None => Ok(()),
         }

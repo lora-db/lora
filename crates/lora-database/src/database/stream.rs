@@ -19,6 +19,7 @@ use lora_executor::{classify_stream, compiled_result_columns, LoraValue, StreamS
 use lora_store::InMemoryGraph;
 
 use crate::database::Database;
+use crate::error::LoraError;
 use crate::stream::{AutoCommitGuard, LiveCursor, QueryStream};
 use crate::transaction::{LiveStoreGuard, Transaction, TransactionMode, WriteLease};
 
@@ -34,7 +35,7 @@ impl Database<InMemoryGraph> {
     /// clone so their cursors can own a stable view. ReadWrite
     /// transactions that perform only materialized reads (or commit
     /// empty) pay nothing for staging.
-    pub fn begin_transaction(&self, mode: TransactionMode) -> Result<Transaction<'_>> {
+    pub fn begin_transaction(&self, mode: TransactionMode) -> Result<Transaction<'_>, LoraError> {
         let live = match mode {
             TransactionMode::ReadOnly => LiveStoreGuard::Read(self.store.load_full()),
             TransactionMode::ReadWrite => {
@@ -65,7 +66,7 @@ impl Database<InMemoryGraph> {
     }
 
     /// Execute a query and return an owning row stream.
-    pub fn stream(&self, query: &str) -> Result<QueryStream<'_>> {
+    pub fn stream(&self, query: &str) -> Result<QueryStream<'_>, LoraError> {
         self.stream_with_params(query, BTreeMap::new())
     }
 
@@ -83,7 +84,7 @@ impl Database<InMemoryGraph> {
         &self,
         query: &str,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<QueryStream<'_>> {
+    ) -> Result<QueryStream<'_>, LoraError> {
         // Classify by fetching (or compiling once into) the plan cache. The
         // mutating branch hands the same `Arc<CompiledQuery>` straight to
         // the hidden transaction, so we no longer recompile against the
@@ -132,7 +133,7 @@ impl Database<InMemoryGraph> {
                         Ok(c) => c,
                         Err(err) => {
                             // Tx rolls back implicitly on drop here.
-                            return Err(err);
+                            return Err(err.into());
                         }
                     };
                 let guard = AutoCommitGuard {
@@ -158,7 +159,7 @@ impl Database<InMemoryGraph> {
         self: &Arc<Self>,
         query: &str,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<QueryStream<'static>> {
+    ) -> Result<QueryStream<'static>, LoraError> {
         let stream = self.stream_with_params(query, params)?;
         Ok(std::mem::transmute::<QueryStream<'_>, QueryStream<'static>>(stream))
     }

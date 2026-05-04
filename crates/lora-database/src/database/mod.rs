@@ -20,13 +20,18 @@ mod replay;
 mod stream;
 mod write_guard;
 
+use crate::error::LoraError;
 use crate::plan_cache::PlanCache;
 use crate::snapshot::ManagedSnapshotStore;
 use crate::wal::write_scope::WalAbortPolicy;
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
 pub trait QueryRunner: Send + Sync + 'static {
-    fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult>;
+    fn execute(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+    ) -> Result<QueryResult, LoraError>;
 }
 
 /// Owns the graph store and orchestrates parse → analyze → compile → execute.
@@ -108,7 +113,7 @@ impl Database<InMemoryGraph> {
     /// [`Self::checkpoint_managed`] or threshold-driven via
     /// [`SnapshotConfig::checkpoint_every_commits`]; `sync()` remains a
     /// durability operation rather than an O(graph) checkpoint.
-    pub fn sync(&self) -> Result<()> {
+    pub fn sync(&self) -> Result<(), LoraError> {
         if let Some(wal) = &self.wal {
             wal.force_fsync()?;
         }
@@ -134,7 +139,7 @@ where
     }
 
     /// Parse a query string into an AST without executing it.
-    pub fn parse(&self, query: &str) -> Result<Document> {
+    pub fn parse(&self, query: &str) -> Result<Document, LoraError> {
         Ok(parse_query(query)?)
     }
 
@@ -164,12 +169,13 @@ where
     /// transaction. If a failure happens after the in-memory graph has been
     /// cleared, the recorder is poisoned by the failing WAL path and future
     /// writes fail until the database is reopened from durable state.
-    pub fn try_clear(&self) -> Result<()> {
+    pub fn try_clear(&self) -> Result<(), LoraError> {
         let guard = self.write_store();
         self.with_logged_write_guard(guard, WalAbortPolicy::AbortOnly, |store| {
             store.clear();
             Ok(())
         })
+        .map_err(LoraError::from_anyhow)
     }
 
     /// Drop every node and relationship.
@@ -216,7 +222,11 @@ impl<S> QueryRunner for Database<S>
 where
     S: GraphStorage + GraphStorageMut + Any + Clone + Send + Sync + 'static,
 {
-    fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
+    fn execute(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+    ) -> Result<QueryResult, LoraError> {
         Database::execute(self, query, options)
     }
 }

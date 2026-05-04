@@ -25,6 +25,7 @@ use lora_parser::parse_query;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph};
 
 use crate::database::{Database, QUERY_FAILURE_POISON};
+use crate::error::LoraError;
 use crate::wal::write_scope::{ensure_wal_query_can_start, WalAbortPolicy};
 
 use super::pull_mode::should_collect_read_via_pull;
@@ -65,7 +66,11 @@ where
     }
 
     /// Execute a query and return its result.
-    pub fn execute(&self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
+    pub fn execute(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+    ) -> Result<QueryResult, LoraError> {
         self.execute_with_params(query, options, BTreeMap::new())
     }
 
@@ -78,7 +83,7 @@ where
         query: &str,
         options: Option<ExecuteOptions>,
         timeout: Duration,
-    ) -> Result<QueryResult> {
+    ) -> Result<QueryResult, LoraError> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
@@ -119,7 +124,7 @@ where
         query: &str,
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<QueryResult> {
+    ) -> Result<QueryResult, LoraError> {
         let rows = self.execute_rows_with_params_deadline(query, params, None)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
@@ -131,7 +136,7 @@ where
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
         timeout: Duration,
-    ) -> Result<QueryResult> {
+    ) -> Result<QueryResult, LoraError> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
@@ -141,7 +146,7 @@ where
 
     /// Execute a query and return hydrated rows before final result-format
     /// projection.
-    pub fn execute_rows(&self, query: &str) -> Result<Vec<Row>> {
+    pub fn execute_rows(&self, query: &str) -> Result<Vec<Row>, LoraError> {
         self.execute_rows_with_params(query, BTreeMap::new())
     }
 
@@ -151,8 +156,8 @@ where
         &self,
         query: &str,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<Vec<Row>> {
-        self.execute_rows_with_params_deadline(query, params, None)
+    ) -> Result<Vec<Row>, LoraError> {
+        Ok(self.execute_rows_with_params_deadline(query, params, None)?)
     }
 
     pub(crate) fn execute_rows_with_params_deadline(

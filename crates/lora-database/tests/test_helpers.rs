@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use lora_database::{
-    Database, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
+    Database, ExecuteOptions, InMemoryGraph, LoraError, LoraValue, QueryResult, ResultFormat,
 };
 use serde_json::Value as JsonValue;
 
@@ -31,7 +31,7 @@ impl TestDb {
     }
 
     /// Execute a Lora query and return the result in Rows format.
-    pub fn exec(&self, cypher: &str) -> Result<QueryResult, anyhow::Error> {
+    pub fn exec(&self, cypher: &str) -> Result<QueryResult, LoraError> {
         let options = Some(ExecuteOptions {
             format: ResultFormat::Rows,
         });
@@ -43,7 +43,7 @@ impl TestDb {
         &self,
         cypher: &str,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<QueryResult, anyhow::Error> {
+    ) -> Result<QueryResult, LoraError> {
         let options = Some(ExecuteOptions {
             format: ResultFormat::Rows,
         });
@@ -68,7 +68,7 @@ impl TestDb {
 
     /// Execute and return rows as JSON values for easy assertion.
     pub fn exec_json(&self, cypher: &str) -> Result<Vec<JsonValue>, anyhow::Error> {
-        let result = self.exec(cypher)?;
+        let result = self.exec(cypher).map_err(anyhow::Error::from)?;
         let json = serde_json::to_value(&result)?;
         match json.get("rows") {
             Some(JsonValue::Array(rows)) => Ok(rows.clone()),

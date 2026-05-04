@@ -18,6 +18,7 @@ use lora_parser::parse_query;
 use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::WalRecorder;
 
+use crate::error::LoraError;
 use crate::snapshot::ManagedSnapshotStore;
 use crate::stream::QueryStream;
 use crate::wal::write_scope::ensure_wal_not_poisoned;
@@ -279,7 +280,11 @@ impl<'db> Transaction<'db> {
 
     /// Execute a query inside the transaction and return a materialized
     /// `QueryResult`.
-    pub fn execute(&mut self, query: &str, options: Option<ExecuteOptions>) -> Result<QueryResult> {
+    pub fn execute(
+        &mut self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+    ) -> Result<QueryResult, LoraError> {
         self.execute_with_params(query, options, BTreeMap::new())
     }
 
@@ -289,7 +294,7 @@ impl<'db> Transaction<'db> {
         query: &str,
         options: Option<ExecuteOptions>,
         timeout: Duration,
-    ) -> Result<QueryResult> {
+    ) -> Result<QueryResult, LoraError> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
@@ -304,7 +309,7 @@ impl<'db> Transaction<'db> {
         query: &str,
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<QueryResult> {
+    ) -> Result<QueryResult, LoraError> {
         let rows = self.execute_rows_with_params_deadline(query, params, None)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
@@ -317,7 +322,7 @@ impl<'db> Transaction<'db> {
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
         timeout: Duration,
-    ) -> Result<QueryResult> {
+    ) -> Result<QueryResult, LoraError> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
@@ -327,7 +332,7 @@ impl<'db> Transaction<'db> {
 
     /// Execute a query inside the transaction and return hydrated rows before
     /// final result-format projection.
-    pub fn execute_rows(&mut self, query: &str) -> Result<Vec<Row>> {
+    pub fn execute_rows(&mut self, query: &str) -> Result<Vec<Row>, LoraError> {
         self.execute_rows_with_params(query, BTreeMap::new())
     }
 
@@ -337,8 +342,8 @@ impl<'db> Transaction<'db> {
         &mut self,
         query: &str,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<Vec<Row>> {
-        self.execute_rows_with_params_deadline(query, params, None)
+    ) -> Result<Vec<Row>, LoraError> {
+        Ok(self.execute_rows_with_params_deadline(query, params, None)?)
     }
 
     fn execute_rows_with_params_deadline(
@@ -562,7 +567,7 @@ impl<'db> Transaction<'db> {
     }
 
     /// Execute a query inside the transaction and return an owning row stream.
-    pub fn stream(&mut self, query: &str) -> Result<QueryStream<'static>> {
+    pub fn stream(&mut self, query: &str) -> Result<QueryStream<'static>, LoraError> {
         self.stream_with_params(query, BTreeMap::new())
     }
 
@@ -572,10 +577,10 @@ impl<'db> Transaction<'db> {
         &mut self,
         query: &str,
         params: BTreeMap<String, LoraValue>,
-    ) -> Result<QueryStream<'static>> {
+    ) -> Result<QueryStream<'static>, LoraError> {
         let compiled = Arc::new(self.compile_in_tx(query)?);
         let columns = compiled_result_columns(&compiled);
-        self.stream_compiled(compiled, columns, params)
+        Ok(self.stream_compiled(compiled, columns, params)?)
     }
 
     /// Open a tx-bound stream for an already-compiled plan. Lets
@@ -660,7 +665,7 @@ impl<'db> Transaction<'db> {
     /// replayed into the durable WAL as a single committed
     /// transaction; recovery therefore observes either every write
     /// in this transaction or none.
-    pub fn commit(mut self) -> Result<()> {
+    pub fn commit(mut self) -> Result<(), LoraError> {
         let CommitState {
             staged,
             buffer_events,
@@ -763,7 +768,7 @@ impl<'db> Transaction<'db> {
 
     /// Roll back the transaction. Staged graph changes and buffered
     /// mutations are discarded; the WAL is never armed.
-    pub fn rollback(mut self) -> Result<()> {
+    pub fn rollback(mut self) -> Result<(), LoraError> {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
             return Err(TransactionError::AlreadyClosed.into());
