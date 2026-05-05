@@ -154,7 +154,7 @@ for `valueType`, `toInteger`, `toString`, and friends.
 | Enforce "X is unique" | `UNIQUE` | `MERGE` on the key |
 | Catch typos in writes | Schema | Code review / tests |
 | Catch typos in reads | Schema | Analyzer rejects unknown labels/types |
-| Index lookups | Fast | No property indexes — scope to a label |
+| Index lookups | Explicit schema-managed indexes | Internal lazy exact-match indexes only; no user DDL/composite/range/vector indexes |
 
 ## When to add a "soft schema" at the app layer
 

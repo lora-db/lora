@@ -21,7 +21,7 @@ placeholder.
 | Left / right slice | [`left`, `right`](#left--right) |
 | Split by delimiter | [`split`](#split) |
 | Reverse | [`reverse`](#reverse) |
-| Length | [`size`, `length`, `charLength`](#size--length--charlength) |
+| Length | [`size`, `length`, `char_length`](#size--length--char_length) |
 | Pad | [`lpad`, `rpad`](#lpad--rpad) |
 | Normalise (NFC) | [`normalize`](#normalize) (placeholder) |
 | Convert type | [`toString`, `toInteger`, `toFloat`, `toBoolean`](#type-conversion) |
@@ -149,18 +149,18 @@ RETURN reverse('hello')       -- 'olleh'
 RETURN reverse([1, 2, 3])     -- [3, 2, 1]
 ```
 
-## size / length / charLength
+## size / length / char_length
 
 | Function | Measures |
 |---|---|
 | `size(s)` | Length of the string (bytes for ASCII-only; code units otherwise) |
 | `length(s)` | Alias for `size` on strings; also accepts paths |
-| `charLength(s)` | Unicode code-point count |
+| `char_length(s)` | Unicode code-point count |
 
 ```cypher
 RETURN size('abc')           -- 3
 RETURN length('abc')         -- 3
-RETURN charLength('café')    -- 4
+RETURN char_length('café')   -- 4
 ```
 
 `length` also accepts paths — see
@@ -346,7 +346,7 @@ expression — LoraDB's ternary. See that page for the full reference.
 - `normalize` is not yet implemented — it's a placeholder that
   returns its input unchanged.
 - String indexing is byte-based inside `size` and `length`. Use
-  `charLength` when you need Unicode code-point counts.
+  `char_length` when you need Unicode code-point counts.
 
 ## See also
 

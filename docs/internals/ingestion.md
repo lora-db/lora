@@ -2,18 +2,25 @@
 
 ## How data enters the graph
 
-Lora has one logical ingestion mechanism — **writing Cypher statements (`CREATE`, `MERGE`, `SET`, …) through `Database::execute` / `execute_with_params`**. What varies is the surface the caller reaches it through:
+Most user-facing ingestion flows through **writing Cypher statements (`CREATE`,
+`MERGE`, `SET`, …) via `Database::execute` / `execute_with_params`**. What
+varies is the surface the caller reaches it through:
 
 - **HTTP** — `POST /query` on `lora-server`
 - **Direct Rust** — depend on the `lora-database` crate and call `Database` directly
 - **C ABI** — `lora-ffi` exposes the same `Database` pipeline through a C-compatible surface (used by `lora-go`)
 - **Language bindings** — `lora-node`, `lora-wasm`, `lora-python`, `lora-go`, `lora-ruby` each wrap the same `Database` calls
 
+The Rust `Database<InMemoryGraph>` also exposes a direct graph API
+(`create_node`, `create_relationship`, property/label mutation, delete, and
+detach delete) for embedded callers that intentionally bypass Cypher. Those
+methods use the same storage mutation primitives and recorder events.
+
 There are no:
 - Bulk import tools
 - CSV/JSON file loaders
 - ETL pipelines
-- Streaming ingestion
+- External streaming ingestion service
 - Database migration scripts
 - Seed scripts outside the test suite (see [Batch seeding](#batch-seeding))
 
@@ -25,7 +32,17 @@ Client -> POST /query {"query": "CREATE ..."} -> lora-server -> Database::execut
 
 The same `Database::execute` / `execute_with_params` entry point handles writes from every other surface listed above.
 
-Every write (`CREATE` / `MERGE` / `SET` / `SET +=` / `DELETE` / `DETACH DELETE` / `REMOVE`) maps to exactly one `GraphStorageMut` method call, and each method fires a `MutationEvent` at the store's optional `MutationRecorder`. The recorder is `None` by default — no event is constructed, so the hot path is a single null-pointer check. The shipping consumer of the recorder is the WAL (`lora-wal::WalRecorder`); install your own via `InMemoryGraph::set_mutation_recorder` for audit streams, change-data-capture, or replication. See [../operations/snapshots.md#mutation-events](../operations/snapshots.md#mutation-events) for the recorder contract and variant list, and [../operations/wal.md](../operations/wal.md) for how the WAL drives it.
+Every primitive write (`create_node`, `create_relationship`, property set/remove,
+label add/remove, delete, detach delete, clear) maps to a `GraphStorageMut`
+method, and each method fires a `MutationEvent` at the store's optional
+`MutationRecorder`. A single Cypher statement may produce many primitive
+mutations. The recorder is `None` by default — no event is constructed, so the
+hot path is a single null-pointer check. The shipping consumer of the recorder is
+the WAL; install your own via `InMemoryGraph::set_mutation_recorder` for audit
+streams, change-data-capture, or replication. See
+[../operations/snapshots.md#mutation-events](../operations/snapshots.md#mutation-events)
+for the recorder contract and variant list, and [../operations/wal.md](../operations/wal.md)
+for how the WAL drives it.
 
 ### Creating nodes
 
@@ -77,10 +94,10 @@ graph LR
 ### Bulk loading (needs confirmation)
 
 If bulk loading is needed, potential approaches:
-1. **Direct API on `InMemoryGraph`** -- bypass the Cypher pipeline, call `create_node` / `create_relationship` directly
+1. **Direct Rust graph API** -- bypass the Cypher pipeline, call `Database<InMemoryGraph>` graph methods directly
 2. **Batch Cypher endpoint** -- accept an array of queries in a single request
 3. **CSV import command** -- parse a CSV and map rows to `CREATE` statements
-4. **Snapshot restore** -- serialize/deserialize the `InMemoryGraph` struct
+4. **Snapshot restore** -- encode/decode the graph through the snapshot codec
 
 ### Persistence (snapshots and WAL)
 
@@ -89,19 +106,17 @@ LoraDB ships two persistence primitives:
 1. **Point-in-time snapshots** — `Database::save_snapshot_to` /
    `load_snapshot_from` / `in_memory_from_snapshot` persist and
    restore the full in-memory graph to a single file. On-disk
-   format, atomic-write protocol, and admin surface are documented in
-   [../operations/snapshots.md](../operations/snapshots.md). The trait
-   (`Snapshotable`) and wire format live in `crates/lora-store/src/snapshot.rs`.
+   format, atomic-write protocol, compression/encryption options, and admin
+   surface are documented in [../operations/snapshots.md](../operations/snapshots.md).
+   The codec lives in `crates/lora-snapshot`; the storage payload bridge lives in
+   `crates/lora-store/src/snapshot.rs`.
 
-2. **Write-ahead log** (v0.3.x, Rust + `lora-server` only) —
+2. **Write-ahead log** —
    `Database::open_with_wal` / `Database::recover` /
-   `Database::checkpoint_to`. The WAL appends `MutationEvent` records
-   to durable segment files and replays committed transactions on
-   boot. See [../operations/wal.md](../operations/wal.md) for the
-   operator-facing reference and
-   [../decisions/0004-wal.md](../decisions/0004-wal.md) for the
-   design.
-
-Bindings (Python / Node.js / Ruby / WASM / Go FFI) currently expose the
-snapshot surface only. WAL is intentionally Rust + HTTP server in this
-release; binding parity is a separate decision.
+   `Database::checkpoint_to`, plus managed snapshot and named database
+   constructors. The WAL appends committed `MutationEvent` batches to segment
+   files and replays committed transactions on boot. Rust and `lora-server`
+   expose the full operator surface; Node, Python, Go, and Ruby expose
+   filesystem-backed WAL opens; WASM remains snapshot-only. See
+   [../operations/wal.md](../operations/wal.md) for the operator-facing reference
+   and [../decisions/0004-wal.md](../decisions/0004-wal.md) for the design.

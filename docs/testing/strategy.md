@@ -39,7 +39,7 @@
 | `update.rs` | `SET` property / label / replace / merge, `REMOVE` property / label, `DELETE`, `DETACH DELETE` |
 | `where_clause.rs` | Comparison, boolean, string predicates, null checks, `IN`, regex, list predicates, arithmetic, relationship properties |
 | `with.rs` | Variable piping, renaming, filtering, aggregation, star, ordering, pagination |
-| `snapshot.rs` | `Snapshotable` round-trip, atomic rename + `.tmp` cleanup, format-version gating, CRC failure, `MutationRecorder` replay shape |
+| `snapshot.rs` | Snapshot round-trip, atomic rename + `.tmp` cleanup, format-version gating, checksum failure, `MutationRecorder` replay shape |
 | `seeds.rs` | Shared seed-graph builders (social, org, transport, knowledge, …) |
 | `test_helpers.rs` | `TestDb` helper with `run` / `assert` / `column` / `scalar` utilities |
 | `advanced_queries.rs` | Complex multi-clause queries and forward-looking features (most are `#[ignore]`) |

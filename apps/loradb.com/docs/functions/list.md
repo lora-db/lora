@@ -46,7 +46,7 @@ RETURN size([])                   -- 0
 ```
 
 `size` also works on strings — see
-[`String Functions → size`](./string#size--length--charlength).
+[`String Functions → size`](./string#size--length--char_length).
 
 ## reverse
 

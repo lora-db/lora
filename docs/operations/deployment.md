@@ -2,7 +2,12 @@
 
 This page covers **running the core `lora-server` binary yourself**. It's the right starting point for local development, single-node embedded use, and self-hosted experiments.
 
-> 🚀 **Production note** — The core is single-node, in-memory, unauthenticated, and has only point-in-time persistence (no WAL). For production workloads that need continuous durability, scaling, TLS, authentication, backups, or metrics, use the managed platform at **<https://loradb.com>** — those concerns are handled for you. The sections below stay focused on the self-hosted path.
+> 🚀 **Production note** — The core is single-node, in-memory, and
+> unauthenticated. It supports local snapshots and optional WAL-backed
+> durability, but it does not provide clustering, TLS, authentication, hosted
+> backups, or metrics. For production workloads that need those operational
+> concerns handled for you, use the managed platform at **<https://loradb.com>**.
+> The sections below stay focused on the self-hosted path.
 
 ## Building
 
@@ -77,7 +82,24 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
 # => {"formatVersion":1,"nodeCount":1024,"relationshipCount":4096,"walLsn":null}
 ```
 
-`--restore-from` is independent of `--snapshot-path`. You can restore from a read-only seed (`/var/lib/lora/seed.bin`) and snapshot to a writable path (`/var/lib/lora/runtime.bin`). See [Snapshots](snapshots.md) for the wire format, atomic-rename protocol, and the `MutationEvent` seam that a future WAL will use.
+`--restore-from` is independent of `--snapshot-path`. You can restore from a read-only seed (`/var/lib/lora/seed.bin`) and snapshot to a writable path (`/var/lib/lora/runtime.bin`). See [Snapshots](snapshots.md) for the wire format and atomic-rename protocol.
+
+### WAL-backed recovery
+
+`--wal-dir <DIR>` enables the write-ahead log and mounts WAL admin routes.
+`--wal-sync-mode` accepts `per-commit`, `group`, and `none`/`off`; the server's
+group mode fsync interval is 50 ms.
+
+```bash
+./target/release/lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --wal-dir /var/lib/lora/wal \
+  --wal-sync-mode per-commit
+```
+
+Combine `--wal-dir` with `--restore-from` to load a checkpoint snapshot and
+replay committed WAL records above the snapshot's fence. Add `--snapshot-path`
+when you also want snapshot save/load admin routes or a default checkpoint path.
 
 > ⚠️ **Security** — The admin endpoints have no authentication and the optional `path` body field is passed straight to the OS. See [Security → Admin surface](security.md#admin-surface) before exposing them.
 
@@ -96,6 +118,9 @@ curl http://127.0.0.1:4747/health
 | `POST` | `/query` | Execute a Cypher query |
 | `POST` | `/admin/snapshot/save` | Save a snapshot (opt-in; requires `--snapshot-path`) |
 | `POST` | `/admin/snapshot/load` | Restore a snapshot (opt-in; requires `--snapshot-path`) |
+| `POST` | `/admin/checkpoint` | Write a WAL checkpoint snapshot (opt-in; requires `--wal-dir`) |
+| `POST` | `/admin/wal/status` | Inspect WAL state (opt-in; requires `--wal-dir`) |
+| `POST` | `/admin/wal/truncate` | Truncate safe WAL history (opt-in; requires `--wal-dir`) |
 
 ### POST /query
 
@@ -110,7 +135,17 @@ curl http://127.0.0.1:4747/health
 **Format options**: `"rows"`, `"rowArrays"`, `"graph"` (default), `"combined"`
 
 **Success response**: `200 OK` with JSON result
-**Error response**: `400 Bad Request` with `{"error": "..."}`
+**Error response**: non-2xx with structured JSON:
+
+```json
+{
+  "error": {
+    "code": "LORA_PARSE",
+    "message": "parse error: expected ...",
+    "category": "client"
+  }
+}
+```
 
 ## Monitoring
 
@@ -122,9 +157,9 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 
 | Aspect | Status |
 |--------|--------|
-| Persistence | Point-in-time snapshots (`save_snapshot_to` / `--restore-from`); no WAL. See [Snapshots](snapshots.md) |
+| Persistence | Point-in-time snapshots plus optional WAL (`--wal-dir`) and checkpoints. See [Snapshots](snapshots.md) and [WAL](wal.md) |
 | Backups | Manual or scheduled via `POST /admin/snapshot/save` or a host-side loop over `save_snapshot_to` |
-| Scaling | Single process; reads can share the store `RwLock`, writes serialize |
+| Scaling | Single process; auto-commit reads load Arc snapshots, write commits serialize |
 | Authentication | None |
 | TLS | None |
 | Rate limiting | None |
@@ -135,8 +170,8 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 ## Known operational risks
 
 1. **Memory growth** -- no eviction policy; the graph grows without bound
-2. **Write-lock contention** -- writes, snapshots, and restores take the store write lock; long-running read streams can delay writers
-3. **No continuous durability** -- only point-in-time snapshots; data between saves is lost on crash. See [Snapshots](snapshots.md)
+2. **Write publication contention** -- write commits and explicit read-write transactions serialize; large writes, restores, and checkpoints can still affect latency
+3. **Durability depends on configuration** -- without `--wal-dir`, only snapshots survive crashes; with group/none sync modes, the crash window matches the chosen fsync policy. See [WAL](wal.md)
 4. **No auth** -- anyone who can reach the server's bind address (default `127.0.0.1:4747`) can execute arbitrary queries including `DETACH DELETE`. Bind to `0.0.0.0` only in trusted networks.
 5. **Admin surface has no auth** -- when `--snapshot-path` is set, `POST /admin/snapshot/{save,load}` is reachable by anyone who can hit the bind address. Treat it as privileged. See [Security → Admin surface](security.md#admin-surface).
 6. **Panic = abort** -- in release mode, any panic terminates the process immediately with no recovery
@@ -147,7 +182,7 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 - Add graceful shutdown with SIGTERM handling
 - Add Prometheus metrics endpoint
 - Add authentication middleware (including the admin surface)
-- Add WAL on top of the existing `MutationEvent` surface and the reserved `wal_lsn` field in the snapshot header — see [Snapshots](snapshots.md) and [ADR-0003](../decisions/0003-snapshot-format.md)
+- Add scheduled checkpoints and backup rotation around the existing snapshot/WAL primitives
 
 ## From local to production
 

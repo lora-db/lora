@@ -11,7 +11,7 @@ Technical documentation for **contributors** to the Lora (LoraDB) engine and its
 ## Architecture
 
 - [System Context](architecture/system-context.md) — what the system is, what it is not, external boundaries
-- [Architecture Overview](architecture/overview.md) — the eight-crate core engine pipeline and its responsibilities (the workspace also contains FFI and language-binding crates that wrap this pipeline)
+- [Architecture Overview](architecture/overview.md) — the core engine pipeline, storage, durability, transport, and binding surfaces
 - [Data Flow](architecture/data-flow.md) — end-to-end query execution pipeline
 - [Graph Engine](architecture/graph-engine.md) — in-memory storage internals
 
@@ -30,9 +30,9 @@ Technical documentation for **contributors** to the Lora (LoraDB) engine and its
 
 Architectural Decision Records for non-trivial design choices.
 
-- [ADR-0001: Graph Architecture](decisions/0001-graph-architecture.md) — BTreeMap-backed in-memory storage
+- [ADR-0001: Graph Architecture](decisions/0001-graph-architecture.md) — original storage decision; see [Graph Engine](architecture/graph-engine.md) for the current slot-indexed implementation
 - [ADR-0002: Cypher Query Conventions](decisions/0002-cypher-query-conventions.md) — grammar and pipeline design
-- [ADR-0003: Snapshot Format](decisions/0003-snapshot-format.md) — bincode payload + CRC + reserved `wal_lsn`, point-in-time snapshots vs WAL
+- [ADR-0003: Snapshot Format](decisions/0003-snapshot-format.md) — original snapshot decision; see [Snapshots](operations/snapshots.md) for the current `LORACOL1` columnar format
 
 ## Performance
 
@@ -47,7 +47,8 @@ Architectural Decision Records for non-trivial design choices.
 
 - [Deployment](operations/deployment.md) — how to build, run, and deploy
 - [Security](operations/security.md) — security posture and data-handling risks
-- [Snapshots](operations/snapshots.md) — durable save/load, admin endpoints, atomic rename, mutation events
+- [Snapshots](operations/snapshots.md) — durable save/load, admin endpoints, atomic rename, checkpoint fences
+- [WAL](operations/wal.md) — write-ahead log, recovery, sync modes, and checkpoints
 
 ## Reference
 
@@ -79,8 +80,8 @@ the website.
 
 Most contributors start here with a local `cargo run --bin lora-server`. As workloads grow, the single-node, in-memory design hits predictable edges:
 
-- **Scale** — writes serialize on the store write lock, data lives in RAM only
-- **Reliability** — point-in-time snapshots only (no WAL, no replication)
+- **Scale** — single process, data lives in RAM, write commits serialize
+- **Reliability** — snapshots and optional WAL exist, but no replication
 - **Operations** — no authentication, TLS, or metrics in the core; snapshot backups are manual
 
 For those needs, developers typically move to the managed platform at **<https://loradb.com>**, which handles persistence, scaling, and operational concerns on top of the same Cypher surface. The core engine in this repo remains the right choice for embedded, local, and development use cases.

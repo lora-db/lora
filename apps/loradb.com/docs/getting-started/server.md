@@ -140,8 +140,7 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/save \
   -d '{"path":"/var/backups/lora/2026-04-24.bin"}'
 ```
 
-Load (restores on top of the live graph — serialises against every
-other query):
+Load (publishes the restored graph for new queries):
 
 ```bash
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/load
@@ -260,10 +259,20 @@ HTTP status codes:
 | Status | Meaning |
 |---|---|
 | `200` | Query executed successfully; body is a `QueryResult` |
-| `400` | Parse / semantic / runtime error; body is `{ "error": "…" }` |
+| `400` | Parse / semantic / read-only / config error; body is structured as shown below |
+| `408` | Cooperative timeout |
+| `409` | Constraint violation |
+| `422` | Invalid params or vector value |
+| `500` / `503` | Storage, snapshot, WAL, or internal error |
 
 ```json
-{ "error": "parse error: expected ')' at position 17" }
+{
+  "error": {
+    "code": "LORA_PARSE",
+    "message": "parse error: expected ...",
+    "category": "client"
+  }
+}
 ```
 
 Handle both explicitly; never assume `200` on a mis-typed query.

@@ -283,8 +283,7 @@ backup.
 
 **Likely cause:**
 - **Bad magic** — the file is not a LoraDB snapshot. The first 8
-  bytes should be `LORACOL1` for the current columnar format
-  (`LORASNAP` for older supported legacy files).
+  bytes should be `LORACOL1` for the current columnar format.
 - **Checksum mismatch** — the file is corrupt (truncated,
   bit-flipped, copied incompletely, or an
   unrelated file matching the magic by accident).
@@ -295,7 +294,6 @@ backup.
 # Confirm it looks like a snapshot at all.
 head -c 8 path/to/snapshot.bin
 # => LORACOL1
-# Older supported files may print LORASNAP.
 ```
 
 If the magic is wrong, check you pointed at the right path. If the
@@ -312,8 +310,7 @@ for the on-disk layout.
 - The file was written by a **newer** LoraDB than the reader — the
   reader is older than the writer.
 - The file was written by an **obsolete** LoraDB whose format has
-  since been retired (the reader's `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION`
-  has been raised above the file's version).
+  since been retired.
 
 **Fix:**
 - If the reader is older: upgrade the reader to a release that
@@ -436,8 +433,9 @@ Use `bigint` parameters or string-encoded ids for large values. See
 
 ### Query is slow on a big graph
 
-- No property indexes — `MATCH ({id: 1})` is `O(n)`. Scope to a label
-  (`MATCH (n:L {id: 1})`) to narrow the search.
+- Internal exact-match property indexes help indexable equality predicates, but
+  there is no user-managed range/sorted/vector index. Scope to a label
+  (`MATCH (n:L {id: 1})`) to narrow candidate rows.
 - Unbounded variable-length traversals explode fast. Cap with a max
   depth: `[:R*1..6]`.
 - `ORDER BY` on a huge unbounded result requires a full sort. Pair
@@ -447,8 +445,9 @@ Use `bigint` parameters or string-encoded ids for large values. See
 
 ### Queries block each other
 
-LoraDB serialises queries on a single mutex. There is no concurrent
-read execution. See [Limitations → Concurrency](./limitations#concurrency).
+Auto-commit reads can overlap on Arc snapshots. Write commits and explicit
+read-write transactions still serialize. See
+[Limitations → Concurrency](./limitations#concurrency).
 
 ## Debugging query pipelines
 

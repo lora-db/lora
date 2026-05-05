@@ -26,16 +26,18 @@ This means removing the last instance of a label/type/property is a breaking cha
 
 ### Snapshot format compatibility
 
-Snapshots (see [../operations/snapshots.md](../operations/snapshots.md)) are a durable on-disk contract. Two constants in `crates/lora-store/src/snapshot.rs` govern compatibility:
+Snapshots (see [../operations/snapshots.md](../operations/snapshots.md)) are a durable on-disk contract. Compatibility is governed by `crates/lora-snapshot/src/format.rs`:
 
 | Constant | Meaning |
 |---|---|
-| `SNAPSHOT_FORMAT_VERSION` | The format the current writer always emits. Currently `1`. |
-| `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION` | The oldest format the current reader will accept. Older files fail with `SnapshotError::UnsupportedVersion`. |
+| `FORMAT_VERSION` | The `LORACOL1` envelope format the current writer emits. |
+| `BODY_FORMAT_VERSION` | The graph payload body format encoded inside the envelope. |
 
-The reader accepts any version in `[MIN..=CURRENT]` and migrates legacy payloads to the current in-memory shape on load. This is the only place the engine supports backward-compatible file reads.
+The current reader accepts the supported envelope/body versions and rejects
+unknown formats with an unsupported-version error. Backward compatibility
+requires adding an explicit reader/migration path before changing either format.
 
-#### When to bump `SNAPSHOT_FORMAT_VERSION`
+#### When to bump snapshot format constants
 
 **Required** for any change to:
 
@@ -45,30 +47,38 @@ The reader accepts any version in `[MIN..=CURRENT]` and migrates legacy payloads
 - Any temporal type (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`).
 - Any spatial type (`LoraPoint`, SRID handling).
 - Any vector-related type (`LoraVector`, `VectorValues`, `VectorCoordinateType` discriminant order).
-- The on-disk header layout beyond the reserved fields.
+- The `LORACOL1` envelope header, manifest, compression/encryption metadata, or
+  body layout.
 
-Every bump **must** come with a reader path that accepts the prior version — deserialize into the legacy shape, then migrate to current. See the checklist below.
+Every bump **must** come with a reader path that accepts the prior version or an
+explicit migration recipe. See the checklist below.
 
-#### When to raise `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION`
+#### When to drop support for an older snapshot format
 
 Reserved for dropping support for genuinely obsolete files. Requires:
 
-- A release-notes warning on the major version that raises the floor.
+- A release-notes warning on the version that drops support.
 - A migration recipe (typically: use the last release that accepted the old version to export via Cypher, then re-import on the new release).
 - An explicit contract: any user holding files below the new floor must migrate before upgrading.
 
-Raise this rarely. The cost of maintaining a reader path for old versions is low; the cost of breaking operator backups is high.
+Do this rarely. The cost of maintaining a reader path for old versions is often
+lower than the cost of breaking operator backups.
 
 #### Forward-compatible changes (safe, no version bump)
 
-- The snapshot header has a `header_flags: u32` field. Bit 0 (`has_wal_lsn`) gates the reserved `wal_lsn` slot. Future writers may set additional bits; current readers **must** ignore unknown bits. Adding a new bit is forward-compatible provided its semantics leave the payload itself unchanged.
-- The CRC32 trailer is validated on every load — a truncated or bit-flipped file must fail loudly with `SnapshotError::BadCrc` or `SnapshotError::BadMagic`. Never silently accept a partially-read file.
-- Indexes (label, relationship-type, adjacency) are rebuilt on load and are **not** serialized. Changing the in-memory index layout is therefore not a wire change.
+- Adding Rust methods or helper APIs that do not change serialized records or
+  manifest/body layout.
+- Changing in-memory index layout when the snapshot body and rebuild semantics
+  are unchanged.
+- Adding validation that rejects values which older writers never produced.
 
-#### Checklist for bumping `SNAPSHOT_FORMAT_VERSION`
+The BLAKE3 checksum is validated on every load. A truncated or bit-flipped file
+must fail loudly; never silently accept a partially-read file.
 
-- [ ] Update `SNAPSHOT_FORMAT_VERSION` in `crates/lora-store/src/snapshot.rs`.
-- [ ] Add a reader branch for the prior version that deserializes the legacy shape and converts it to current.
+#### Checklist for bumping snapshot formats
+
+- [ ] Update `FORMAT_VERSION` and/or `BODY_FORMAT_VERSION` in `crates/lora-snapshot/src/format.rs`.
+- [ ] Add a reader branch for the prior version and convert it to current graph state, or document a migration recipe.
 - [ ] Add an integration test in `crates/lora-database/tests/snapshot.rs` that loads a frozen file produced by the prior version and verifies the migrated in-memory state.
 - [ ] Update the file-format table in [../operations/snapshots.md](../operations/snapshots.md#file-format).
 - [ ] Update the serialization-stability rules in [../internals/value-model.md](../internals/value-model.md#serialization-stability) if a new value-level invariant applies.

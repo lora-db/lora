@@ -16,6 +16,7 @@ enum PropertyValue {
     Int(i64),
     Float(f64),
     String(String),
+    Binary(LoraBinary),
     List(Vec<PropertyValue>),
     Map(BTreeMap<String, PropertyValue>),
     Date(LoraDate),
@@ -34,34 +35,44 @@ Notes:
 - Storage does **not** carry graph-entity references — those only exist at the
   executor level.
 - `Map` is `BTreeMap` for deterministic serialisation order.
-- Temporal and spatial types are defined in `lora-store/src/temporal.rs` and
-  `lora-store/src/spatial.rs` respectively.
+- Binary, temporal, spatial, and vector types are defined under
+  `crates/lora-store/src/types/`.
 
 ## Serialization stability
 
-Snapshots (see [../operations/snapshots.md](../operations/snapshots.md)) bincode-serialize `NodeRecord`, `RelationshipRecord`, and every `PropertyValue` variant — including the temporal, spatial, and vector types below. The value model is therefore a **wire-format contract**: any change to these types must consider backward compatibility with existing snapshot files.
+Snapshots (see [../operations/snapshots.md](../operations/snapshots.md)) are
+encoded through the `lora-snapshot` columnar codec. The envelope magic is
+`LORACOL1`; the manifest is bincode-encoded, the body uses the snapshot crate's
+body format, and the envelope is protected by a BLAKE3 checksum. The value model
+is still a **wire-format contract**: any change to stored records or
+`PropertyValue` variants must be reflected in the snapshot body format and
+backward-compatibility plan.
 
 ### What is a wire-incompatible change
 
-- **Adding a `PropertyValue` variant.** New variants shift the discriminant layout bincode emits.
-- **Removing, reordering, or renaming existing `PropertyValue` variants.** Same reason.
-- **Adding a field to `NodeRecord`, `RelationshipRecord`, `LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`, or `VectorValues`.** Bincode serializes structs positionally — any new field changes the layout of every encoded instance.
-- **Changing the `VectorCoordinateType` discriminant layout** (reordering variants, adding one before an existing one, deleting one). The tag is serialized by ordinal.
-- **Changing the `SnapshotPayload` struct** (auxiliary state beside the record vectors).
+- **Adding, removing, reordering, or renaming a `PropertyValue` variant.**
+- **Adding or removing fields on `NodeRecord`, `RelationshipRecord`, `LoraBinary`, temporal types, `LoraPoint`, `LoraVector`, or `VectorValues`.**
+- **Changing canonical vector coordinate tags or binary wire shape.**
+- **Changing `SnapshotPayload` or the snapshot body layout.**
 
-Each of the above requires a bump of `SNAPSHOT_FORMAT_VERSION` and a reader path that still accepts the prior version. See [../design/change-management.md](../design/change-management.md#snapshot-format-compatibility) for the full policy.
+Each of the above requires a snapshot format/body-format compatibility review in
+`crates/lora-snapshot` and a reader path or migration story for prior files. See
+[../design/change-management.md](../design/change-management.md#snapshot-format-compatibility)
+for the release policy.
 
 ### What is a wire-compatible change (rare)
 
 - Implementing a new method, trait, or `Display` on any of these types — pure Rust-side additions.
 - Internal refactors that do not touch serialized struct fields or enum variant order.
-- Relaxing a validation rule in a constructor (e.g., allowing a broader input range in `LoraVector::try_new`). Older files still load; newer files that exploit the relaxation simply cannot be read by older binaries — which is why dropping support via `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION` is a separate, deliberate release-note event.
+- Relaxing a validation rule in a constructor (e.g., allowing a broader input
+  range in `LoraVector::try_new`). Older files still load; newer files that
+  exploit the relaxation may not be readable by older binaries.
 
 ### Checklist when touching any of these types
 
-- [ ] Does the change add, remove, reorder, or rename a `PropertyValue` variant? → bump `SNAPSHOT_FORMAT_VERSION`.
-- [ ] Does the change add or remove a struct field on any record or temporal/spatial/vector type? → bump `SNAPSHOT_FORMAT_VERSION`.
-- [ ] Did you add a reader path for the prior version? (`crates/lora-store/src/snapshot.rs` migration handling)
+- [ ] Does the change add, remove, reorder, or rename a `PropertyValue` variant? → review `crates/lora-snapshot/src/format.rs`.
+- [ ] Does the change add or remove a struct field on any record or binary/temporal/spatial/vector type? → review `crates/lora-snapshot` body encoding.
+- [ ] Did you add a reader path or migration for the prior version?
 - [ ] Did you add an integration test that loads a frozen file from the prior version?
 - [ ] Did you update the file-format table in [../operations/snapshots.md](../operations/snapshots.md#file-format) if the header changed?
 
@@ -115,13 +126,19 @@ Maintained by `InMemoryGraph`:
 
 | Index | Structure | Used for |
 |---|---|---|
-| Label index | `BTreeMap<String, BTreeSet<NodeId>>` | `MATCH (n:Label)` |
-| Rel-type index | `BTreeMap<String, BTreeSet<RelationshipId>>` | Type-filtered scans / expands |
-| Outgoing adjacency | `BTreeMap<NodeId, BTreeSet<RelationshipId>>` | Right / undirected expand |
-| Incoming adjacency | `BTreeMap<NodeId, BTreeSet<RelationshipId>>` | Left / undirected expand |
+| Node slots | `Vec<Option<Arc<NodeRecord>>>` | Point lookup by `NodeId`, copy-on-write snapshots |
+| Relationship slots | `Vec<Option<Arc<RelationshipRecord>>>` | Point lookup by `RelationshipId`, copy-on-write snapshots |
+| Label index | `BTreeMap<String, Vec<NodeId>>` | `MATCH (n:Label)` |
+| Rel-type index | `BTreeMap<String, Vec<RelationshipId>>` | Type-filtered scans / expands |
+| Outgoing adjacency | `Vec<Vec<RelationshipId>>` | Right / undirected expand |
+| Incoming adjacency | `Vec<Vec<RelationshipId>>` | Left / undirected expand |
+| Property indexes | Lazy exact-match registry | Equality property lookup for indexable values |
 
-No property index, uniqueness constraint, or composite index is implemented.
-Property filters without a label are `O(n)` full scans.
+The property index is internal and exact-match only. It covers `null`,
+booleans, integers, finite floats, strings, binary values, and nested lists/maps
+made only from indexable values. Temporal, spatial, vector, and `NaN` values
+fall back to scans. There is no uniqueness constraint, composite index, range
+index, full-text index, vector index, or Cypher DDL for index management.
 
 ## Spatial points
 

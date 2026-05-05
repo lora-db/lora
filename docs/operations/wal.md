@@ -2,10 +2,10 @@
 
 LoraDB's WAL (write-ahead log) gives the in-memory engine **continuous
 durability**: every mutating query is appended to a durable log before
-the call returns, so a crashed process can replay committed writes on
-the next boot. The WAL is fully optional — without `--wal-dir` the
-server still runs as a pure in-memory database with snapshot-only
-durability.
+the call returns in `per-commit` mode, so a crashed process can replay
+committed writes on the next boot. The WAL is fully optional — without
+`--wal-dir` the server still runs as a pure in-memory database with
+snapshot-only durability.
 
 This document is the operator-facing reference. For the design rationale
 and the seams under the hood, read
@@ -19,14 +19,19 @@ The WAL is shipped today through:
   - `Database::open_with_wal(WalConfig)`
   - `Database::recover(snapshot, WalConfig)`
   - `Database::checkpoint_to(path)`
+  - `Database::open_with_wal_snapshots(wal_config, snapshot_config)`
+  - `Database::open_named(name, options)` for `.loradb` archive-backed WAL mirrors
+- The **Node.js binding** through named archive databases and explicit
+  `openWalDatabase(...)`.
+- The **Python, Go, and Ruby bindings** through named archive databases and raw
+  WAL opens with managed snapshot options.
 - The **HTTP server** `lora-server` via the `--wal-dir`,
   `--wal-sync-mode`, and `--restore-from` flags, and the admin routes
   `/admin/wal/status`, `/admin/wal/truncate`, and `/admin/checkpoint`.
 
-The Python, Node.js, Ruby, WASM, and Go FFI bindings **do not** expose
-WAL configuration in v0.3.x; they remain snapshot-only. If you need
-WAL durability, run `lora-server` and talk to it over HTTP, or depend
-on `lora-database` directly from Rust.
+The WASM binding remains snapshot-only because it has no filesystem path
+surface. Rust and `lora-server` expose the full operator surface, including
+explicit checkpoints and WAL admin status/truncate.
 
 ## Quick start
 
@@ -88,9 +93,9 @@ LSN, sealed flag, header CRC) and a sequence of length-prefixed,
 CRC-checked records. The active segment is always the file with the
 highest numeric id — there is no separate `CURRENT` pointer file.
 
-Segment rotation happens at `TxBegin` boundaries when the active
-segment crosses `segment_target_bytes` (default 8 MiB), so a single
-transaction never spans segments.
+Segment rotation happens before appending a new record when the active segment
+crosses `segment_target_bytes` (default 8 MiB). Transaction-style record groups
+are kept together by rotating at the transaction boundary.
 
 ## Records
 
@@ -100,15 +105,16 @@ their owning query.
 
 | Kind | Body | When written |
 |---|---|---|
-| `TxBegin` | — | Lazily, on the first mutation event of a query |
-| `Mutation` | `MutationEvent` (bincode) | Per primitive mutation in the query |
-| `TxCommit` | — | After the query returned `Ok` |
-| `TxAbort` | — | After the query returned `Err` (and a `TxBegin` had been issued) |
+| `TxBegin` | — | Transaction boundary for legacy/multi-record write scopes |
+| `Mutation` | `MutationEvent` | One primitive mutation record |
+| `MutationBatch` | `Vec<MutationEvent>` | The common auto-commit path buffers a successful mutating query into one committed batch |
+| `TxCommit` | — | Commit marker for a transaction-style write scope |
+| `TxAbort` | — | Abort marker for a transaction-style write scope that opened a WAL transaction |
 | `Checkpoint` | `snapshot_lsn` | After a checkpoint snapshot has been renamed into place |
 
-Read-only queries fire **no** records — the recorder is *armed* on
-every query but only allocates a `TxBegin` LSN on the first mutation
-event. Pure reads therefore cost zero log bytes and zero `fsync`.
+Read-only queries fire **no** records. Mutations are recorded only after the
+query or transaction reaches a successful commit point; replay ignores any
+uncommitted transaction records.
 
 ## Recovery
 

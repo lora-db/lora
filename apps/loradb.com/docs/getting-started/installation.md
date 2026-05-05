@@ -101,8 +101,9 @@ map in.
 ### One process, one graph
 
 Each binding defaults to **one process, one in-memory graph**.
-Parallel queries on the same handle serialise on a mutex — spawn
-multiple `Database` instances for read parallelism.
+Auto-commit reads on the same handle can overlap on snapshots; write commits
+and explicit read-write transactions serialize. Spawn multiple `Database`
+instances only when you intentionally want separate graphs or archives.
 
 If you want persistence, opt into it explicitly:
 

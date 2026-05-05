@@ -370,7 +370,7 @@ One query per iteration; throughput reads as *queries per second*.
 
 ### Notes & caveats
 
-- **All benches are in-memory.** The store is a `BTreeMap`-backed graph held behind an `Arc<RwLock>`. Numbers will not translate directly to any persistent engine — there is no I/O, no buffer pool, no WAL.
+- **All benches are in-memory.** The live store is a slot-indexed `InMemoryGraph` published through `ArcSwap`. Numbers will not translate directly to a disk-backed engine — there is no buffer pool, and WAL/snapshot I/O is outside these query benches unless a benchmark opts into it explicitly.
 - **Partial indexes.** Equality lookups on indexable stored properties use the in-memory property index. Other predicates, string operators, temporal/spatial/vector values, and planner-selected filters still scan.
 - **Single-query measurements.** Benchmarks report one query at a time; they are not a measurement of concurrent read throughput.
 - **Microbenchmark vs. workload.** The *functions*, *parse_compile*, *temporal_creation*, and *spatial_creation* tables are microbenchmarks that stabilise in a few µs; they measure constant-factor cost of the evaluator and planner. The *realistic*, *recommendation*, *scale_social*, and *shortest_path* tables are representative whole-query workloads.

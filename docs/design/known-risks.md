@@ -57,12 +57,12 @@ The following features were listed as gaps in earlier revisions of this document
 
 | Gap | Classification | Risk |
 |-----|---------------|------|
-| WAL surface is Rust + `lora-server` only — bindings (Python / Node.js / Ruby / WASM / Go FFI) remain snapshot-only in v0.3.x | Observed | **Low–Medium** — Continuous durability is available via `Database::open_with_wal` / `--wal-dir`. See [WAL](../operations/wal.md). Binding parity is a separate decision tracked in [0004-wal.md](../decisions/0004-wal.md). |
+| WAL/operator controls are not uniform across surfaces | Observed | **Low–Medium** — Rust and `lora-server` expose explicit checkpoint/status/truncate controls. Node, Python, Go, and Ruby can open filesystem-backed WAL databases; WASM remains snapshot-only. See [WAL](../operations/wal.md). |
 | No uniqueness constraints | Observed | **Medium** — duplicate data can be created silently |
-| Property indexes are exact-match only | Observed | **Medium** — equality filters can use the in-memory property index; range/prefix predicates still scan |
-| Transaction isolation is conservative | Observed | **Medium** — read-write transactions serialize on the store write lock; read-only work can share the read lock |
+| Property indexes are internal exact-match only | Observed | **Medium** — equality filters on indexable values can use lazy in-memory indexes; range/prefix/composite/vector predicates still scan |
+| Transaction isolation is conservative | Observed | **Medium** — auto-commit writes publish optimistically under a writer mutex; explicit read-write transactions serialize for their full lifetime; read-only transactions pin snapshots |
 | Node / relationship IDs are never reused | Observed | Low — `u64` counter will not overflow in practice |
-| `BTreeMap` cloning on bulk reads | Observed | **Low–Medium** — hot executor paths now go through `with_node` / `with_relationship` closures (zero-clone on in-memory); `all_nodes()` and other record-returning scans still allocate |
+| Tombstones and clone-heavy compatibility APIs | Observed | **Low–Medium** — deleted IDs leave slot gaps; hot executor paths use borrow closures, but `all_nodes()` and other record-returning scans still allocate |
 
 ---
 
@@ -94,7 +94,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 | Issue | Classification | Impact |
 |-------|---------------|--------|
-| Store `RwLock` held for query execution | Observed | Read-only queries can overlap; writes and long live read streams still contend |
+| Write publication still serializes | Observed | Read-only auto-commit queries load Arc snapshots without a store lock; write commits and explicit read-write transactions serialize through the database writer mutex |
 | Property indexes do not cover range/prefix predicates | Observed | Non-equality property filters still scan candidate records |
 | Clone-heavy read API | Observed | Allocation overhead proportional to result set |
 | Query timeout coverage is partial | Observed | Rust materialized execute paths have cooperative deadlines; streaming and language bindings still need surfaces |
@@ -119,7 +119,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 1. Wire HTTP `params` body field through to `Database::execute_with_params`
 2. Add `tracing-subscriber` so the existing `tracing` instrumentation produces output
-3. Make bind address / port / log level configurable
+3. Add configurable log level
 4. Add query length and result-size limits in the HTTP layer
 
 ### Medium term (robustness)
@@ -132,10 +132,10 @@ The following features were listed as gaps in earlier revisions of this document
 ### Long term (capability)
 
 10. ~~Persistence (WAL and/or snapshots)~~ — partially addressed:
-    snapshots ship as part of the in-memory core, the WAL ships in
-    v0.3.x for the Rust API + `lora-server`. Binding parity for the
-    WAL surface (Python / Node.js / Ruby / WASM / Go FFI) and
-    multi-process WAL exclusion remain open.
+    snapshots ship across surfaces, WAL-backed opens ship on
+    filesystem-backed surfaces, and Rust / `lora-server` expose explicit
+    checkpoint/admin controls. Remaining work is operational polish,
+    scheduled checkpoints, and richer multi-process/process-manager guidance.
 11. Richer optimizer: join ordering, limit push-down, index selection
 12. `CALL` / procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`)
 13. `FOREACH`

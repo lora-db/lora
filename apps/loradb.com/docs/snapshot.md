@@ -7,9 +7,9 @@ description: Manual point-in-time snapshots — save and restore the full in-mem
 # Snapshots
 
 LoraDB can dump the in-memory graph to a single file and restore it
-later. A snapshot is the full graph frozen at the moment the call
-took the store mutex — taken on demand, atomic on rename, readable
-from any binding.
+later. A snapshot is the full graph frozen from the database's current
+Arc snapshot — taken on demand, atomic on rename, readable from any
+binding.
 
 Snapshots are shipped as of v0.3. They close the "no persistence at
 all" gap for workloads that only need occasional save / restore
@@ -24,16 +24,16 @@ still the portable file primitive those surfaces checkpoint to.
   every relationship, every property — plus a short header describing
   the format. Filesystem bindings write that payload as one file; WASM
   returns bytes or web-native wrappers around those bytes.
-- A **point-in-time dump.** The store mutex is held for the save, so
-  every reader sees a consistent graph at the instant the save began.
+- A **point-in-time dump.** The save loads the current Arc snapshot and
+  encodes that graph consistently; readers already using an older Arc
+  continue normally.
 - **Atomic on rename for path-based saves.** Writes land in
   `<path>.tmp`, are `fsync`'d, then renamed over the target; a
   crashed save can leave a stale `.tmp` file but never a half-written
   target.
-- **Format-versioned and forward-compatible.** Files declare a format
-  version; the reader dispatches by version so today's v1 files will
-  keep loading after a future format bump until support is
-  deliberately dropped.
+- **Format-versioned.** Files declare an envelope/body format version; the
+  reader accepts supported versions and rejects unsupported ones rather than
+  partially loading unknown data.
 
 ## What snapshots are not
 
@@ -48,8 +48,9 @@ The bright line, stated explicitly so it cannot be missed:
 - **Not a general persistent storage layer.** There is no alternative
   backend; a snapshot is a dump of the in-memory graph, not a format
   a different engine writes into.
-- **Not non-blocking.** The store mutex is held for the full save and
-  the full load. Concurrent queries block until the call finishes.
+- **Not free.** Saves and loads are whole-graph operations. Existing
+  readers can keep using their pinned Arc snapshot, but the encode/decode work
+  is still proportional to graph size.
 - **Not a multi-tenant boundary.** One process holds one graph; each
   process you run needs its own snapshot file.
 
@@ -74,8 +75,8 @@ Bad fits:
 - **Hard-durability workloads.** If losing even a minute of mutations
   on crash is unacceptable, snapshots alone are not enough — use one
   of the [WAL-enabled surfaces](./wal).
-- **Very large graphs where save time exceeds your query window.** The
-  mutex is held for the save; latency-sensitive reads stall.
+- **Very large graphs where save time exceeds your query window.** Save work is
+  proportional to graph size and can add meaningful CPU/I/O pressure.
 
 ## Metadata
 
@@ -217,8 +218,8 @@ asyncio.run(main())
 
 Both the sync and async forms run with the GIL released (sync) / on a
 worker thread (async) so other Python threads / coroutines make
-progress during the call. A large save still blocks anything that
-needs the underlying store mutex.
+progress during the call. A large save still consumes native engine work and
+filesystem I/O proportional to graph size.
 
 ### Node.js / TypeScript
 
@@ -241,8 +242,8 @@ Calling `saveSnapshot()` with no path returns a Node `Buffer`; you can
 also request `uint8Array`, `arrayBuffer`, `base64`, or a Node stream.
 `loadSnapshot` accepts a string / `URL` path, `Buffer`, `Uint8Array`,
 `ArrayBuffer`, Node `Readable`, Web `ReadableStream`, or async
-iterable. The native engine work still holds the store mutex for the
-duration of the save or load.
+iterable. The native engine work still encodes or decodes the whole graph for
+the duration of the save or load.
 
 ### WebAssembly
 
@@ -459,11 +460,9 @@ for the detailed security profile.
 
 ## File format (reference)
 
-The current database snapshot format is column-oriented and will
-remain readable after future format bumps until support is deliberately
-dropped. Older legacy snapshots with the previous `LORASNAP` magic are
-still recognized by the database loader when that legacy format is
-supported.
+The current database snapshot format is column-oriented. Files declare an
+envelope format version and are rejected when the reader does not support that
+version. The previous `LORASNAP` legacy format has been retired.
 
 ```
 [0..8)     magic         "LORACOL1"
@@ -496,8 +495,9 @@ Worth restating, because the failure modes are where snapshots bite:
 - **Snapshots alone are not continuous durability.** A crash between
   saves loses every mutation in the window unless you pair snapshots
   with the [WAL](./wal).
-- **Blocking.** Both save and load hold the store mutex for the full
-  call; concurrent queries wait.
+- **Whole-graph work.** Save and load encode/decode the entire graph. Existing
+  readers can continue on already-loaded Arc snapshots, but new queries see the
+  restored graph only after load publishes it.
 - **One process, one graph.** Each process you run needs its own
   snapshot file.
 - **No partial or incremental snapshots.** Every save serializes the

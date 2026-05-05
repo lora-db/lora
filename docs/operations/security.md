@@ -14,7 +14,7 @@ Lora is designed for local development and experimentation. It has **no security
 | Input validation | Cypher parser rejects invalid syntax; no size limits |
 | Rate limiting | None |
 | Audit logging | None |
-| Encryption at rest | Not applicable (in-memory only) |
+| Encryption at rest | Snapshot encryption is available when callers pass snapshot options; WAL segments and `.loradb` archives are plaintext on disk unless the host filesystem encrypts them |
 | Admin surface auth | None (opt-in via `--snapshot-path`; see [Admin surface](#admin-surface) below) |
 
 ## Risks

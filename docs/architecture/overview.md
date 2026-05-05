@@ -4,14 +4,17 @@
 
 Lora is a Rust workspace implementing an **in-memory property graph database** with a **Cypher-like query language** (see the [Cypher support matrix](../reference/cypher-support-matrix.md) for the exact subset). The entire query pipeline and storage engine are implemented from scratch — there is no external graph database behind it.
 
-The **core engine** is structured as eight crates that form a compiler-style pipeline plus an orchestration layer (described below). The wider workspace additionally contains transport and binding surfaces that all wrap this same pipeline:
+The **core engine** is structured as a compiler-style pipeline plus storage,
+durability, orchestration, and transport crates (described below). The wider
+workspace additionally contains binding surfaces that all wrap this same
+pipeline:
 
 - `crates/bindings/lora-ffi` — Rust crate exposing a C ABI over `Database`
 - `crates/bindings/lora-node`, `crates/bindings/lora-wasm`, `crates/bindings/lora-python`, `crates/bindings/lora-ruby` — Rust crates that are cargo workspace members and compile to native extensions for their respective runtimes
 - `crates/bindings/lora-go` — a Go module (not a cargo crate) that cgo-links against `lora-ffi`
 - `crates/bindings/shared-ts` — shared TypeScript type declarations consumed by `lora-node` and `lora-wasm` (source only, not a cargo crate)
 
-These are documented elsewhere and are not part of the eight-crate count here.
+These are documented elsewhere and are not part of the core pipeline count here.
 
 ```
 Cypher text
@@ -56,16 +59,46 @@ Defines the Cypher grammar in PEG notation (pest) and lowers parse trees into th
 
 ### lora-store
 
-Defines the `GraphStorage` (read) and `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a BTreeMap-backed implementation with secondary indexes for labels, relationship types, and adjacency. Also defines the temporal, spatial, and vector value types (`LoraDate`, `LoraTime`, `LoraLocalTime`, `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`) shared between the store and the executor. Owns the `Snapshotable` trait plus wire format, and the `MutationEvent` / `MutationRecorder` surface that the durability layer builds on.
+Defines the `GraphStorage` (read), `BorrowedGraphStorage`, `GraphCatalog`, and
+`GraphStorageMut` (write) traits and provides `InMemoryGraph`, a slot-indexed
+in-memory implementation with adjacency vectors, label/type indexes, and lazy
+exact-match property indexes. Also defines the binary, temporal, spatial, and
+vector value types (`LoraBinary`, `LoraDate`, `LoraTime`, `LoraLocalTime`,
+`LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`)
+shared between the store and the executor. Owns the `MutationEvent` /
+`MutationRecorder` surface that the WAL and archive layers build on.
 
 **Key files**:
-- `src/graph.rs` — trait definitions, `NodeRecord`, `RelationshipRecord`, `PropertyValue`
-- `src/memory.rs` — `InMemoryGraph`
-- `src/temporal.rs` — temporal value types and parsing
-- `src/spatial.rs` — `LoraPoint` and distance functions
-- `src/vector.rs` — `LoraVector`, coordinate-type enum, construction + math helpers
-- `src/snapshot.rs` — `Snapshotable` trait, wire format, `SnapshotMeta`, format-version constants
+- `src/traits.rs` — storage traits and default helpers
+- `src/types/graph.rs` — `NodeRecord`, `RelationshipRecord`, identifiers
+- `src/types/property_value.rs` — `PropertyValue`
+- `src/types/binary/`, `src/types/temporal/`, `src/types/spatial/`, `src/types/vector/` — typed property values
+- `src/memory/` — `InMemoryGraph`, mutation implementation, property indexes
+- `src/snapshot.rs` — `SnapshotPayload` bridge consumed by `lora-snapshot`
 - `src/mutation.rs` — `MutationEvent` enum, `MutationRecorder` trait
+
+### lora-snapshot
+
+Columnar snapshot codec. Encodes full graph payloads into the current
+`LORACOL1` envelope with a bincode manifest, BLAKE3 checksum, optional gzip
+compression, and optional ChaCha20-Poly1305 encryption.
+
+**Key files**:
+- `src/format.rs` — magic, format version, body format version
+- `src/envelope.rs` — manifest, checksum, encryption metadata
+- `src/codec.rs` — encode/decode API
+- `src/options.rs` — compression and encryption options
+
+### lora-wal
+
+Write-ahead log segment implementation. Stores committed mutation batches in
+numbered `*.wal` files, supports per-commit, group, and no-fsync sync modes, and
+replays only committed records.
+
+**Key files**:
+- `src/config.rs` — `WalConfig`, `SyncMode`, segment sizing
+- `src/record.rs` — WAL record kinds and framing payloads
+- `src/wal.rs` — append, replay, fsync, truncate
 
 ### lora-analyzer
 
@@ -105,22 +138,35 @@ Interprets a `PhysicalPlan` against a `GraphStorage` (read-only) or `GraphStorag
 
 ### lora-database
 
-Orchestration layer. Owns `Arc<RwLock<S: GraphStorage + GraphStorageMut>>` and exposes a single `Database` entry point with `execute` / `execute_with_params`. Drives the full parse → analyze → compile → execute pipeline so callers (HTTP server, benchmarks, examples, embedded consumers) don't depend on the individual pipeline crates. Also exposes the public snapshot API: `save_snapshot_to`, `load_snapshot_from`, and `in_memory_from_snapshot`, driving the atomic-write protocol.
+Orchestration layer. Owns an `ArcSwap<S>` current-store pointer, a writer mutex
+for publishing writes and explicit read-write transactions, optional WAL /
+managed snapshot state, and a plan cache. Exposes `Database` entry points for
+materialized execution, parameterized execution, cooperative timeouts, row
+streams, explicit transactions, direct graph mutations, snapshots, WAL recovery,
+managed snapshots, and named `.loradb` archive-backed databases.
 
 **Key files**:
-- `src/database.rs` — `Database` struct, `QueryRunner` trait, snapshot API
-- `src/lib.rs` — re-exports `Database`, `QueryRunner`, `InMemoryGraph`, `LoraValue`, `ExecuteOptions`, `QueryResult`, `ResultFormat`, `parse_query`, `SnapshotMeta`
+- `src/database/mod.rs` — `Database` struct and snapshot publishing model
+- `src/database/builder.rs` — in-memory, WAL, managed snapshot, named archive, and recovery constructors
+- `src/database/execute.rs` — parse/analyze/compile/execute flow
+- `src/database/occ.rs` — optimistic auto-commit write publishing
+- `src/database/stream.rs`, `src/stream.rs` — row streaming API
+- `src/transaction.rs` — explicit read-only and read-write transactions
+- `src/snapshot/` — snapshot admin, JSON options, managed snapshot store
+- `src/wal/`, `src/named.rs` — WAL recorder integration and `.loradb` archives
+- `src/lib.rs` — public re-exports
 
 The integration test suite for the full pipeline lives here under `tests/`.
 
 ### lora-server
 
-Thin Axum-based HTTP transport. Wraps any `QueryRunner` implementation — by default `Arc<Database<InMemoryGraph>>`. No pipeline logic of its own.
+Thin Axum-based HTTP transport. Wraps any `QueryRunner` implementation — by
+default `Arc<Database<InMemoryGraph>>`. No pipeline logic of its own.
 
 **Key files**:
-- `src/main.rs` — entry point; parses `--host`/`--port`/`--snapshot-path`/`--restore-from` (with `LORA_SERVER_HOST`/`LORA_SERVER_PORT`/`LORA_SERVER_SNAPSHOT_PATH` env fallbacks) and serves a `Database::in_memory()` instance, optionally restored from a snapshot at boot
-- `src/config.rs` — CLI/env parser for bind address, port, and snapshot paths
-- `src/app.rs` — `build_app`, route handlers, request / response types. Mounts the opt-in `/admin/snapshot/{save,load}` routes only when `--snapshot-path` is configured.
+- `src/main.rs` — entry point; opens in-memory, snapshot-restored, WAL-backed, or snapshot+WAL recovered databases
+- `src/config/` — hand-rolled CLI/env parser for host, port, snapshot path, restore path, WAL directory, and WAL sync mode
+- `src/app.rs` — `GET /health`, `POST /query`, structured error responses, and opt-in snapshot/WAL admin routes
 
 ## Architecture diagram
 

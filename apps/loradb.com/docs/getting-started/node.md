@@ -9,8 +9,8 @@ description: Install and use LoraDB in Node.js or TypeScript via the lora-node N
 ## Overview
 
 `lora-node` is a native N-API binding. Queries run on the libuv
-threadpool so they don't block the event loop, though parallel calls
-on a single `Database` still serialise on the engine mutex. The
+threadpool so they don't block the event loop. Auto-commit reads can
+overlap on engine snapshots; write commits still serialize. The
 surface, helpers, and type guards match the
 [WASM binding](./wasm) for query execution and result handling — the
 same query code largely ports with an import swap. Node also adds
@@ -30,18 +30,18 @@ save/load.
 
 ### Install
 
-While pre-release, build from source:
+Install from npm:
+
+```bash
+npm install @loradb/lora-node
+```
+
+When working inside this repository, build from source:
 
 ```bash
 cd crates/bindings/lora-node
 npm install
 npm run build        # builds native .node artifact + TypeScript
-```
-
-After publish:
-
-```bash
-npm install @loradb/lora-node
 ```
 
 ## Creating a Client / Connection
@@ -206,7 +206,7 @@ try {
 ### Concurrency
 
 ```ts
-// Five lookups in parallel — each awaits the engine mutex
+// Five lookups in parallel — read-only queries can overlap on snapshots
 const handles = ['alice', 'bob', 'carol', 'dan', 'eve'];
 const results = await Promise.all(
   handles.map(h =>
@@ -215,9 +215,8 @@ const results = await Promise.all(
 );
 ```
 
-The event loop stays responsive, but the five queries execute in
-series inside the native layer. For read parallelism, spin up
-multiple `Database` instances (each with its own graph).
+The event loop stays responsive. Read-only calls can overlap on engine
+snapshots; write commits still serialize.
 
 ### Persisting your graph
 
@@ -259,9 +258,8 @@ const durable = await openWalDatabase({
 ```
 
 `saveSnapshot` / `loadSnapshot` are `async` like every other
-`@loradb/lora-node` call, but the underlying engine call is synchronous
-and holds the store mutex for the duration — concurrent `execute()`
-calls block until the snapshot operation finishes. When you are using
+`@loradb/lora-node` call, but the underlying engine still encodes or decodes the
+whole graph. When you are using
 plain `createDatabase()` with no archive or WAL path, a crash loses
 all in-memory state. Manual snapshots protect only the mutations saved
 before the crash; WAL-backed opens replay committed writes on restart.
@@ -408,11 +406,9 @@ For the engine-level cases see the
   loses precision above `Number.MAX_SAFE_INTEGER` (2^53). For very
   large IDs prefer `bigint` parameters or string encoding. See
   [Troubleshooting → integer precision](../troubleshooting#integer-precision-lost-in-js).
-- **Concurrency.** Each `Database` has its own in-memory graph
-  guarded by a mutex. Parallel `execute()` calls against one
-  instance serialise in the native layer — the event loop stays
-  free, but execution is one-at-a-time. For read parallelism, spawn
-  multiple instances with separate graphs / archives.
+- **Concurrency.** Each `Database` has its own in-memory graph. Auto-commit
+  reads can overlap on Arc snapshots; write commits and explicit read-write
+  transactions serialize. The event loop stays free while native work runs.
 - **No cancellation.** Once dispatched, a query runs to completion.
   Bound variable-length patterns and `UNWIND` list sizes.
 - **Dispose explicitly** only when you need to release the native

@@ -188,13 +188,13 @@ fires.
 | Query outcome | WAL behavior |
 |---|---|
 | Read-only query | Writes no records and does not fsync |
-| Successful mutating query | Writes `TxBegin`, one or more `Mutation` records, then `TxCommit` |
-| Failed mutating query | Writes `TxAbort`; replay discards that query's mutation records |
+| Successful mutating query | Usually writes one committed `MutationBatch`; transaction-style scopes may write `TxBegin`, `Mutation` records, then `TxCommit` |
+| Failed mutating query | Does not publish a committed batch; transaction-style scopes that opened a WAL transaction may write `TxAbort` |
 
-Replay is query-atomic even though the log records individual primitive
-mutations. A crashed process can leave an uncommitted tail; replay
-drops it. A torn record in the active segment is truncated back to the
-last valid record before new appends resume.
+Replay is query-atomic even when the log records individual primitive
+mutations. A crashed process can leave an uncommitted tail; replay drops it. A
+torn record in the active segment is truncated back to the last valid record
+before new appends resume.
 
 ## Recovery and checkpoints
 

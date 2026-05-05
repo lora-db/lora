@@ -2,28 +2,46 @@
 
 ## Storage engine design
 
-The graph is stored entirely in process memory using a `BTreeMap`-backed implementation (`InMemoryGraph`). The design prioritizes simplicity and correctness over throughput.
+The live graph is stored entirely in process memory by
+`lora_store::InMemoryGraph`. The implementation is slot-indexed rather than
+map-backed: node and relationship IDs are direct indexes into vectors of
+optional records. Deletes leave tombstones, IDs are never reused, and a compact
+`live_*_count` is maintained for catalog reads.
+
+`lora-database` wraps this store in an `ArcSwap` snapshot holder. Read-only
+auto-commit queries load an `Arc<InMemoryGraph>` and run without a store lock.
+Mutating auto-commit queries stage changes against a cloned snapshot, append WAL
+records when configured, and publish the new `Arc` atomically. Explicit
+read-write transactions still serialize through the database writer mutex.
 
 ## Core data structures
 
-```
+```text
 InMemoryGraph
-├── nodes:              BTreeMap<NodeId, NodeRecord>
-├── relationships:      BTreeMap<RelationshipId, RelationshipRecord>
-├── outgoing:           BTreeMap<NodeId, BTreeSet<RelationshipId>>     # adjacency out
-├── incoming:           BTreeMap<NodeId, BTreeSet<RelationshipId>>     # adjacency in
-├── nodes_by_label:     BTreeMap<String, BTreeSet<NodeId>>    # label index
-├── relationships_by_type: BTreeMap<String, BTreeSet<RelationshipId>>  # type index
-├── next_node_id:       u64                                    # monotonic counter
-└── next_rel_id:        u64                                    # monotonic counter
+├── nodes:                  Vec<Option<Arc<NodeRecord>>>
+├── relationships:          Vec<Option<Arc<RelationshipRecord>>>
+├── outgoing:               Vec<Vec<RelationshipId>>
+├── incoming:               Vec<Vec<RelationshipId>>
+├── nodes_by_label:         BTreeMap<String, Vec<NodeId>>
+├── relationships_by_type:  BTreeMap<String, Vec<RelationshipId>>
+├── indexes:                RwLock<PropertyIndexRegistry>
+├── next_node_id:           u64
+├── next_rel_id:            u64
+├── live_node_count:        usize
+├── live_rel_count:         usize
+└── recorder:               Option<Arc<dyn MutationRecorder>>
 ```
+
+Records are held behind `Arc` so a staged writer can share unchanged records
+with the current published snapshot. Property, label, and relationship changes
+use `Arc::make_mut`, so only touched records are cloned.
 
 ### Node record
 
 ```rust
 struct NodeRecord {
     id: NodeId,           // u64, auto-incremented
-    labels: Vec<String>,  // zero or more (deduplicated on create)
+    labels: Vec<String>,  // trimmed, empty labels removed, duplicates removed
     properties: BTreeMap<String, PropertyValue>,
 }
 ```
@@ -32,13 +50,16 @@ struct NodeRecord {
 
 ```rust
 struct RelationshipRecord {
-    id: RelationshipId,            // u64, auto-incremented
+    id: RelationshipId,   // u64, auto-incremented
     src: NodeId,          // source node
     dst: NodeId,          // destination node
-    rel_type: String,     // exactly one type (trimmed, non-empty)
+    rel_type: String,     // trimmed, non-empty, immutable
     properties: BTreeMap<String, PropertyValue>,
 }
 ```
+
+Relationship creation fails if either endpoint is missing or the trimmed type is
+empty.
 
 ### Property values
 
@@ -49,6 +70,7 @@ enum PropertyValue {
     Int(i64),
     Float(f64),
     String(String),
+    Binary(LoraBinary),
     List(Vec<PropertyValue>),
     Map(BTreeMap<String, PropertyValue>),
     Date(LoraDate),
@@ -58,218 +80,181 @@ enum PropertyValue {
     LocalDateTime(LoraLocalDateTime),
     Duration(LoraDuration),
     Point(LoraPoint),
+    Vector(LoraVector),
 }
 ```
 
-Temporal and spatial types are first-class property values — they can be stored on nodes and relationships, compared, and used in expressions. Definitions live in `lora-store/src/temporal.rs` and `lora-store/src/spatial.rs`.
+Temporal, spatial, binary, and vector types are first-class property values.
+Definitions live under `crates/lora-store/src/types/`.
 
 ## Index structures
 
-### Label index
+### Label and relationship-type indexes
 
-Maps label names to the set of node IDs carrying that label. Updated on node creation, `add_node_label`, `remove_node_label`, and node deletion.
+Labels and relationship types map to vectors of IDs:
 
+```text
+"User"    -> [0, 1, 3, 5]
+"Admin"   -> [0]
+"FOLLOWS" -> [0, 1, 2]
 ```
-"User"    -> {0, 1, 3, 5}
-"Admin"   -> {0}
-"Company" -> {2}
-```
 
-### Relationship type index
-
-Maps type names to the set of relationship IDs with that type. Updated on relationship creation and deletion.
-
-```
-"FOLLOWS"  -> {0, 1, 2}
-"KNOWS"    -> {3, 4}
-```
+The indexes are maintained on create, label add/remove, relationship create,
+relationship delete, node delete, snapshot load, and WAL replay. They preserve
+deterministic key ordering through `BTreeMap`; the ID lists may contain gaps only
+when the corresponding records have been deleted and filtered out by the read
+helpers.
 
 ### Property indexes
 
-Exact-match property indexes map `(property key, property value)` pairs to
-matching node or relationship IDs. They are maintained on create, set,
-remove, delete, snapshot load, and WAL replay. Equality filters can use
-these indexes directly; range and string-prefix predicates still scan their
-candidate records.
+`InMemoryGraph` has lazy exact-match property indexes for nodes and
+relationships. A call to `find_nodes_by_property` or
+`find_relationships_by_property` builds the index for that property key the
+first time it can be indexed, then keeps the active index current on future
+mutations.
+
+Indexed values:
+
+- `null`, booleans, integers, strings, binary values
+- finite floats (`NaN` is not indexed; `-0.0` and `+0.0` normalize together)
+- lists and maps whose nested values are all indexable
+
+Scan fallback:
+
+- temporal values
+- spatial points
+- vectors
+- `NaN` floats
+- nested lists/maps containing any non-indexable value
+
+The index is internal only. There is no Cypher DDL such as `CREATE INDEX`, no
+composite/range/full-text/vector index, and no user-visible index catalog.
 
 ### Adjacency indexes
 
-Two separate indexes for directed traversal:
+Outgoing and incoming relationship IDs are stored in two per-node vectors:
 
-- **outgoing**: `BTreeMap<NodeId, BTreeSet<RelationshipId>>` -- relationships leaving a node
-- **incoming**: `BTreeMap<NodeId, BTreeSet<RelationshipId>>` -- relationships arriving at a node
+- `outgoing[node_id]` — relationships leaving the node
+- `incoming[node_id]` — relationships arriving at the node
 
-Both are updated on relationship creation and deletion.
+Deleting a relationship removes its ID from both endpoint vectors. Deleting a
+node clears the node's adjacency vectors; the outer adjacency vectors are not
+shrunk.
 
 ## ID allocation
 
-Node and relationship IDs are allocated sequentially from monotonic counters. IDs are never reused after deletion.
+Node and relationship IDs are allocated sequentially from monotonic counters and
+are never reused after deletion.
 
-```
+```text
 next_node_id: 0 -> 1 -> 2 -> ...
 next_rel_id:  0 -> 1 -> 2 -> ...
 ```
 
-**Implication**: after deleting node 3 and creating a new node, the new node gets ID `next_node_id` (not 3). This avoids stale reference issues but means IDs are not contiguous after deletions.
+This avoids stale-reference reuse but means IDs are not contiguous after
+deletions and slot vectors may contain tombstones.
 
 ## Traversal operations
 
 ### Expand
 
-The core traversal primitive. Given a source node, direction, and optional type filter:
+The core traversal primitive takes a source node, a direction, and an optional
+relationship type filter:
 
-1. Look up relationship IDs from the adjacency index (outgoing, incoming, or both)
-2. Filter by relationship type if types are specified
-3. For each matching relationship, resolve the other endpoint node
-4. Return `Vec<(RelationshipRecord, NodeRecord)>`
+1. Read relationship IDs from `outgoing`, `incoming`, or both.
+2. Filter by relationship type when types were supplied.
+3. Resolve each relationship and the other endpoint node.
+4. Return `Vec<(RelationshipRecord, NodeRecord)>` for the compatibility API, or
+   use borrow hooks on hot executor paths to avoid record clones.
 
-The `InMemoryGraph` overrides the default `expand` implementation for efficiency, using `BTreeSet`-based lookups instead of scanning all relationships.
-
-### Direction handling
-
-```
-Direction::Right     -> outgoing adjacency
-Direction::Left      -> incoming adjacency
-Direction::Undirected -> union of both
+```text
+Direction::Right      -> outgoing adjacency
+Direction::Left       -> incoming adjacency
+Direction::Undirected -> outgoing + incoming
 ```
 
 ## Write operations
 
 ### Node creation
 
-1. Allocate `NodeId`
-2. Normalize labels (trim, deduplicate, remove empty)
-3. Insert `NodeRecord`
-4. Update label index for each label
-5. Initialize empty adjacency entries
+1. Allocate `NodeId`.
+2. Normalize labels: trim, drop empty strings, deduplicate while preserving first
+   occurrence.
+3. Insert `NodeRecord` at the ID slot.
+4. Update active label and property indexes.
+5. Initialize empty adjacency vectors for that slot.
 
 ### Relationship creation
 
-1. Validate both endpoints exist
-2. Validate type is non-empty
-3. Allocate `RelationshipId`
-4. Insert `RelationshipRecord`
-5. Update outgoing adjacency for source
-6. Update incoming adjacency for destination
-7. Update type index
+1. Validate both endpoints exist.
+2. Validate type is non-empty after trimming.
+3. Allocate `RelationshipId`.
+4. Insert `RelationshipRecord` at the ID slot.
+5. Update outgoing, incoming, type, and active property indexes.
 
 ### Node deletion
 
-- **Plain delete** (`delete_node`): fails if the node has any incident relationships (outgoing or incoming)
-- **Detach delete** (`detach_delete_node`): first deletes all incident relationships, then the node
+- `delete_node` fails if the node has any incident relationships.
+- `detach_delete_node` deletes all incident relationships first, then deletes the
+  node.
 
-### Property mutation
+### Property and label mutation
 
-- `set_node_property` / `set_relationship_property`: insert or update a single key
-- `remove_node_property` / `remove_relationship_property`: remove a single key
-- `replace_node_properties`: clear all properties, then set new ones
-- `merge_node_properties`: set new properties without removing existing ones
-- `add_node_label` / `remove_node_label`: modify labels with index maintenance
+- `set_node_property` / `set_relationship_property`: insert or update one key.
+- `remove_node_property` / `remove_relationship_property`: remove one key.
+- `replace_node_properties`: replace the complete property map.
+- `merge_node_properties`: merge keys without removing existing properties.
+- `add_node_label` / `remove_node_label` / `set_node_labels`: modify labels with
+  index maintenance.
+
+Each primitive mutation emits a `MutationEvent` when a recorder is installed.
 
 ## Storage trait hierarchy
 
-The storage API is split into a small set of required primitives plus a large
-defaulted helper surface. A new backend only has to implement the required
-primitives; everything else is derived.
+The storage API is split into read, catalog, borrow, and mutation traits:
 
-```rust
-trait GraphStorage {
-    // --- Required primitives (backend-neutral) ---
-    fn contains_node(&self, id) -> bool;
-    fn node(&self, id) -> Option<NodeRecord>;      // owned point lookup
-    fn all_node_ids(&self) -> Vec<NodeId>;
-    fn node_ids_by_label(&self, label) -> Vec<NodeId>;
+- `GraphStorage` — point lookups, ID scans, label/type scans, expansion, and
+  default helpers.
+- `GraphCatalog` — a narrow analyzer-facing slice for counts, labels, types, and
+  property-key existence.
+- `BorrowedGraphStorage` — optional `&NodeRecord` / `&RelationshipRecord`
+  access for backends that can hand out references.
+- `GraphStorageMut` — create, mutate, delete, `clear`, and property/label helper
+  methods.
 
-    fn contains_relationship(&self, id) -> bool;
-    fn relationship(&self, id) -> Option<RelationshipRecord>;
-    fn all_rel_ids(&self) -> Vec<RelationshipId>;
-    fn rel_ids_by_type(&self, rel_type) -> Vec<RelationshipId>;
-    fn relationship_endpoints(&self, id) -> Option<(NodeId, NodeId)>;
+`InMemoryGraph` implements all four traits and overrides the hot paths. Bulk
+record-returning APIs such as `all_nodes()` still allocate owned record vectors;
+the executor uses `with_node` / `with_relationship` closures where possible.
 
-    fn expand_ids(&self, node, direction, types) -> Vec<(RelationshipId, NodeId)>;
+## Limitations
 
-    fn all_labels(&self) -> Vec<String>;
-    fn all_relationship_types(&self) -> Vec<String>;
-
-    // --- Optional optimization hooks (default: clone through `node` / `relationship`) ---
-    fn with_node<F, R>(&self, id, f: F) -> Option<R>           where F: FnOnce(&NodeRecord) -> R;
-    fn with_relationship<F, R>(&self, id, f: F) -> Option<R>   where F: FnOnce(&RelationshipRecord) -> R;
-
-    // --- Defaulted helpers (override for perf) ---
-    //   all_nodes / nodes_by_label / all_relationships / relationships_by_type
-    //   outgoing_relationships / incoming_relationships / expand / degree / ...
-    //   node_has_label / node_labels / node_property / relationship_type / ...
-    //   has_label_name / has_property_key / find_nodes_by_property / ...
-}
-
-trait GraphCatalog {
-    // Narrow schema slice. Blanket-implemented for every `GraphStorage`.
-    // The analyzer bounds on this, not on the full `GraphStorage` surface.
-    fn node_count(&self) -> usize;
-    fn relationship_count(&self) -> usize;
-    fn has_label_name(&self, label) -> bool;
-    fn has_relationship_type_name(&self, rel_type) -> bool;
-    fn has_property_key(&self, key) -> bool;
-}
-
-trait BorrowedGraphStorage: GraphStorage {
-    // Optional capability for backends that keep owned records in
-    // long-lived, addressable storage (e.g. `InMemoryGraph`). Exposes
-    // `&NodeRecord` / `&RelationshipRecord`. The executor does not require
-    // this trait — it uses `with_node` / `with_relationship` on hot paths so
-    // a non-borrow backend is a first-class citizen.
-    fn node_ref(&self, id) -> Option<&NodeRecord>;
-    fn relationship_ref(&self, id) -> Option<&RelationshipRecord>;
-}
-
-trait GraphStorageMut: GraphStorage {
-    // Create / mutate / delete plus an admin `clear()` hook for resets.
-    // Snapshot / WAL / restore entry points will land here next.
-}
-```
-
-**Why the layering:**
-
-1. `GraphStorage` is the single umbrella a backend implements. All
-   record-returning scans (`all_nodes` etc.) default through the id-scan +
-   point-lookup primitives, so a minimal backend only needs the required ones.
-2. `GraphCatalog` lets the analyzer depend on a ~5-method slice instead of the
-   full storage surface. Every `GraphStorage` gets `GraphCatalog` for free.
-3. `BorrowedGraphStorage` is opt-in. The executor pivots on `with_node` /
-   `with_relationship` closures, so backends that cannot hand out `&NodeRecord`
-   (disk-backed, column-oriented, remote) are not forced to fake it.
-4. `GraphStorageMut` adds write + lifecycle hooks. `clear()` is the first
-   admin method — future snapshot/restore/WAL work will land here without a
-   second round of restructuring.
-
-`InMemoryGraph` implements all four traits and overrides the optimization
-hooks plus the bulk-scan methods for zero-clone access.
-
-## Limitations (observed)
-
-- **Exact-match property indexes only** -- equality lookups can use the property index; range and prefix filters still scan
-- **No uniqueness constraints** -- nothing prevents duplicate nodes with identical labels and properties
-- **BTreeMap overhead** -- ordered maps are used everywhere, which has higher constant factors than `HashMap` for unordered access; provides deterministic iteration order
-- **Full cloning on bulk reads** -- `all_nodes()`, `nodes_by_label()`, and the other record-returning scans still allocate a `Vec<NodeRecord>`. Hot-path executor code has been migrated to `with_node` / `with_relationship` closures, which avoid the clone on `InMemoryGraph`; bulk-scan APIs remain clone-based
-- **No compaction** -- deleted IDs leave gaps in the ID space, adjacency maps may retain empty entries
-
-> 🚀 **Production note** — These limits are fine for local development, tests, and modest embedded graphs. Richer indexing, uniqueness constraints, and compaction are handled automatically in the [LoraDB managed platform](https://loradb.com) — reach for it once your workload outgrows a single in-memory process.
+- **Single-process memory store** — there is no disk-backed buffer pool or remote
+  storage engine.
+- **Tombstones, no compaction** — deleted IDs leave gaps in the slot vectors.
+- **No uniqueness constraints** — duplicate labels/properties are allowed.
+- **Internal exact-match property indexes only** — no DDL, composite, range,
+  full-text, or vector indexes.
+- **Clone compatibility APIs** — bulk read helpers allocate owned records even
+  though executor hot paths avoid many clones.
+- **Vectors cannot be stored inside list properties** — a vector can be a direct
+  property or a value inside a top-level map property, but list-of-vector
+  properties are rejected to preserve future indexing options.
 
 ## Durability
 
-`InMemoryGraph` implements the [`Snapshotable`] trait: it can serialize its
-full state (nodes, relationships, ID counters) to a byte stream and restore
-from one. The file format is a fixed-size header (magic + version + a
-reserved `wal_lsn` field) followed by a bincode-serialized payload and a
-CRC32 trailer. Adjacency, label/type, and property indexes are rebuilt on
-load rather than stored.
+Snapshots are encoded by the `lora-snapshot` columnar codec. The current file
+magic is `LORACOL1`; the envelope contains a bincode manifest, a BLAKE3 checksum,
+and an optional compressed/encrypted body. `lora-database` writes snapshots via
+an atomic `<path>.tmp` + rename protocol and publishes loaded snapshots by
+swapping the database's `ArcSwap` store pointer.
 
-Alongside snapshots, every mutation fires a `MutationEvent` at an optional
-`MutationRecorder`. The recorder is `None` by default, so zero-WAL
-workloads pay only a null-pointer check per mutation. The enum covers every
-`GraphStorageMut` method and is the vocabulary a future WAL will use. See
-[Snapshots](../operations/snapshots.md) for the operator-facing
-documentation.
+The WAL is built on `MutationEvent`. When WAL is enabled, `InMemoryGraph` has a
+`MutationRecorder`; writes are buffered into committed batches and replayed on
+recovery. Named databases use the same WAL events with a `.loradb` ZIP archive
+mirror.
+
+See [Snapshots](../operations/snapshots.md) and [WAL](../operations/wal.md) for
+operator-facing details.
 
 ## Next steps
 
@@ -277,4 +262,4 @@ documentation.
 - Value representation and property types: [Value Model](../internals/value-model.md)
 - Known performance trade-offs: [Performance Notes](../performance/notes.md)
 - Broader limitations and mitigations: [Known Risks](../design/known-risks.md)
-- Durability, snapshots, and the admin surface: [Snapshots](../operations/snapshots.md)
+- Durability, snapshots, WAL, and admin routes: [Snapshots](../operations/snapshots.md)

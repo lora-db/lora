@@ -248,8 +248,8 @@ async def main():
 asyncio.run(main())
 ```
 
-Both save and load serialise against every query on the handle. A
-crash between saves loses every mutation since the last save.
+Both save and load process the whole graph. A crash between saves loses every
+mutation since the last save unless you opened the database with WAL.
 
 Passing a database name and directory opens or creates an archive-backed persistent
 database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
@@ -354,9 +354,9 @@ Engine-level causes live in [Troubleshooting](../troubleshooting).
 
 ## Performance / Best Practices
 
-- **Thread-safety.** `Database` is safe to share across threads —
-  the underlying mutex serialises access. No Python-level locking
-  needed.
+- **Thread-safety.** `Database` is safe to share across threads. Auto-commit
+  reads can overlap on snapshots; write commits and explicit read-write
+  transactions serialize. No Python-level locking needed.
 - **GIL.** `Database.execute` releases the GIL while Rust code
   runs, so other Python threads / asyncio tasks can progress. This
   is the real non-blocking mechanism — `AsyncDatabase` is a thin

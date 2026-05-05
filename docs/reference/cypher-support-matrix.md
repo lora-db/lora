@@ -1,6 +1,7 @@
 # Cypher Support Matrix
 
-Current engine state as verified by the test suite. **1698 passing tests, 0 failing, 58 ignored.**
+Current engine state as verified from the grammar, implementation, and feature
+tests. Re-run the workspace tests before publishing exact pass/ignore counts.
 
 ## Classification key
 
@@ -33,7 +34,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering |
 | `SKIP` / `LIMIT` | **Supported** | Pagination patterns |
 | `DISTINCT` | **Supported** | In RETURN and WITH |
-| `EXPLAIN` | **Partial** | Parses; executor still runs the underlying query |
+| `EXPLAIN` | **Not yet implemented** | Not in grammar |
 | `CALL` (standalone) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `CALL ... YIELD` (in-query) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `FOREACH` | **Not yet implemented** | Not in grammar |
@@ -137,7 +138,10 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `timestamp()` | **Supported** |
 | `valueType(expr)` | **Supported** |
 
-`valueType` returns one of: `"NULL"`, `"BOOLEAN"`, `"INTEGER"`, `"FLOAT"`, `"STRING"`, `"LIST<T>"`, `"MAP"`, `"NODE"`, `"RELATIONSHIP"`, `"PATH"`, `"DATE"`, `"DATE_TIME"`, `"LOCAL_DATE_TIME"`, `"TIME"`, `"LOCAL_TIME"`, `"DURATION"`, `"POINT"`.
+`valueType` returns one of the scalar/graph type names, including `"NULL"`,
+`"BOOLEAN"`, `"INTEGER"`, `"FLOAT"`, `"STRING"`, `"BINARY"`, `"LIST<T>"`,
+`"MAP"`, `"NODE"`, `"RELATIONSHIP"`, `"PATH"`, temporal names, `"POINT"`, and
+`"VECTOR<COORD>(N)"`.
 
 ## 7. String functions
 
@@ -152,7 +156,7 @@ All ASCII-based. Unicode normalization is a no-op placeholder.
 | `left(str, n)`, `right(str, n)` | **Supported** |
 | `split(str, delim)` | **Supported** |
 | `reverse(str)` | **Supported** (also on lists) |
-| `size(str)`, `length(str)`, `charLength(str)` | **Supported** |
+| `size(str)`, `length(str)`, `char_length(str)` | **Supported** |
 | `lpad(str, len, pad)`, `rpad(str, len, pad)` | **Supported** |
 | `toString`, `toInteger`, `toFloat`, `toBoolean` | **Supported** |
 | `normalize(str)` | **Partial** (ASCII passthrough, no Unicode NFC) |
@@ -236,7 +240,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 |----------|--------|-------|
 | `point({x, y})` | **Supported** | Cartesian 2D |
 | `point({latitude, longitude})` | **Supported** | WGS-84 geographic 2D |
-| `point.distance(a, b)` / `distance(a, b)` | **Supported** | Euclidean for Cartesian, Haversine for geographic (Earth radius 6,371 km) |
+| `distance(a, b)` | **Supported** | Euclidean for Cartesian, Haversine for geographic (Earth radius 6,371 km) |
 | Component access: `p.x`, `p.y`, `p.latitude`, `p.longitude`, `p.srid` | **Supported** | Via property access on Point |
 | 3D points (Cartesian SRID 9157, WGS-84 SRID 4979) | **Supported** | `z` / `height` exposed via property access; `distance()` on WGS-84-3D ignores height and falls back to great-circle |
 
@@ -295,6 +299,7 @@ Alias matching is case-insensitive and collapses runs of whitespace.
 | Integer (`i64`) | **Supported** | |
 | Float (`f64`) | **Supported** | IEEE 754 |
 | String | **Supported** | UTF-8, escape sequences |
+| Binary | **Supported** | Byte-string property value exposed through binding wire formats |
 | Boolean | **Supported** | |
 | Null | **Supported** | Three-valued logic |
 | List | **Supported** | Heterogeneous, nested, indexing, slicing |
@@ -320,7 +325,7 @@ Alias matching is case-insensitive and collapses runs of whitespace.
 | Temporal / spatial parameters | **Supported** |
 | Parameter as label | **Not yet implemented** | Not standard Cypher |
 | Parameter type checking at parse time | **Not yet implemented** | |
-| Parameter support over HTTP | **Not yet implemented** | Rust API only (`execute_with_params`) |
+| Parameter support over HTTP | **Not yet implemented** | Use Rust or an in-process binding (`execute_with_params` / equivalent) |
 
 ## 16. Write operations
 
@@ -390,21 +395,23 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | Feature | Category | Reason |
 |---------|----------|--------|
 | `CALL` (standalone and YIELD) | Clause | Analyzer rejects with `UnsupportedFeature` |
+| `EXPLAIN` | Clause | Not in grammar |
 | `FOREACH` | Clause | Not in grammar |
 | `CREATE INDEX` / `CREATE CONSTRAINT` | DDL | Not in grammar |
 | `LOAD CSV` | DDL | Not in grammar |
 | `USE <graph>` (multi-database) | Clause | Not in grammar |
 | Quantified path patterns | Pattern | Future openCypher syntax |
 | Inline WHERE inside variable-length | Pattern | 1 ignored test |
-| 3D points | Type | No `z` dimension |
 | Type mismatch detection in comparison | Validation | 1 ignored test |
 | Parameter as label | Parameters | Non-standard |
 | Parameter type checking at parse time | Parameters | |
-| Parameters over HTTP | Transport | Rust API only |
+| Parameters over HTTP | Transport | In-process bindings only |
 | APOC-style utilities | Functions | No compatibility layer |
-| Persistence (WAL / snapshots) | Storage | In-memory only |
+| DDL/user-managed indexes and constraints | Storage | Internal exact-match property indexes exist, but no Cypher DDL |
 | Authentication / TLS | Server | See [`../operations/security.md`](../operations/security.md) |
 
 ---
 
-*Last verified against `cargo test --workspace`: 1698 passing, 0 failing, 58 ignored.*
+*Last updated from code audit: the parser grammar lives in
+`crates/lora-parser/src/cypher.pest`, behavior tests live under
+`crates/lora-database/tests/`.*

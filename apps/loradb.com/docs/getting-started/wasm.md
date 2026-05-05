@@ -375,9 +375,9 @@ bubble to a generic handler.
 
 ## Performance / Best Practices
 
-- **Single-threaded by default.** Parallel `execute()` calls on one
-  instance serialise. For parallel reads in the browser, spin up
-  multiple Workers.
+- **Single runtime by default.** Auto-commit reads can overlap on engine
+  snapshots; write commits serialize. Use multiple Workers when you want
+  separate graphs or stronger UI isolation.
 - **Integer precision.** Same 2^53 limit as `lora-node` — `i64`
   values outside the safe integer range lose precision.
 - **Wall-clock resolution.** `date()` / `datetime()` without

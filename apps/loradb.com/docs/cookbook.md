@@ -906,10 +906,9 @@ fn snapshot_loop(db: Arc<Database>, path: &'static str) {
 - `save_snapshot_to` writes to `<path>.tmp`, `fsync`s, and renames
   over the target — a crashed save never leaves a half-written file
   at `<path>`.
-- The call serialises against every query on the handle. The mutex
-  is held for the serialize step (`O(n + r)` in nodes and
-  relationships). Pick an interval larger than the measured save
-  wall-time so successive saves don't stack.
+- The call encodes the current graph snapshot (`O(n + r)` in nodes and
+  relationships) and writes it atomically. Pick an interval larger than the
+  measured save wall-time so successive saves don't stack.
 - You can safely overwrite the same path on every tick. For
   versioned backups, rotate the filename (`graph-2026-04-24.bin`)
   and garbage-collect outside the process.

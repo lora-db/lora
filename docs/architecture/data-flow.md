@@ -74,7 +74,7 @@ The `Planner` converts resolved clauses into a plan graph represented as `Vec<Lo
 
 | Resolved clause | Logical operator(s) |
 |-----------------|---------------------|
-| `MATCH` pattern | `NodeScan` / `NodeByLabelScan` + `Expand` + `Filter` (+ `PathBuild` if path bound) |
+| `MATCH` pattern | `NodeScan` + `Expand` + `Filter` (+ `PathBuild` if path bound) |
 | `OPTIONAL MATCH` | `OptionalMatch` wrapping a subplan |
 | `WHERE` | `Filter` |
 | `RETURN` | `Projection` (+ `Sort`, `Limit`) |
@@ -142,16 +142,32 @@ Four output formats:
 
 ## Concurrency model
 
-`Database` holds the graph in `Arc<RwLock<S>>`. Auto-commit read-only queries
-analyze, compile, and execute under a shared read lock. Mutating queries compile
-under a read lock for classification, then recompile and execute under the
-exclusive write lock so the plan matches the write view. Parsing is done before
-locking.
+`Database<InMemoryGraph>` stores the current graph in `ArcSwap`. Read-only
+auto-commit queries load an `Arc<InMemoryGraph>` snapshot, then analyze,
+compile, and execute without holding a store lock. Existing readers keep their
+snapshot alive even if a writer publishes a newer graph.
 
-- Read-only queries can overlap
-- Write queries block reads and writes while they hold the write lock
-- No transaction isolation beyond single-query atomicity
-- `save_snapshot_to` holds a read lock for the serialize step (bincode of every node and relationship); the `fsync` + rename happen on the tmp file, but the read-lock-held window is still `O(n + r)`. `load_snapshot_from` holds the write lock for the full deserialize + index-rebuild. See [../performance/notes.md](../performance/notes.md#snapshot-save--load).
+Mutating auto-commit queries use optimistic copy-on-write:
+
+1. Load the current `Arc` snapshot.
+2. Clone the `InMemoryGraph` cheaply; unchanged records remain shared through
+   `Arc<NodeRecord>` / `Arc<RelationshipRecord>`.
+3. Execute the write against the staged graph while buffering mutation events.
+4. Serialize commit publication with the database writer mutex.
+5. If the current snapshot changed, validate or replay the write set; retry up
+   to the configured retry limit.
+6. Append WAL records when configured, then publish the staged graph by swapping
+   the `ArcSwap` pointer.
+
+Explicit transactions use a different rule: read-only transactions pin a
+snapshot; read-write transactions hold the writer mutex for the transaction
+lifetime and publish on `commit`.
+
+Snapshot save encodes the loaded `Arc` snapshot outside a write lock, writes
+`<path>.tmp`, fsyncs, renames, and best-effort fsyncs the parent directory.
+Snapshot load decodes a full graph and publishes it by swapping the current
+`Arc`. WAL checkpoints pair a snapshot with a durable WAL LSN fence and then
+write a checkpoint marker.
 
 `execute_with_timeout` and `execute_with_params_timeout` add cooperative
 deadline checks during lock acquisition and executor work; they are cancellation
@@ -162,19 +178,23 @@ sequenceDiagram
     participant C as Client
     participant S as lora-server
     participant D as Database
-    participant M as RwLock<InMemoryGraph>
+    participant M as ArcSwap<InMemoryGraph>
 
     C->>S: POST /query
     S->>D: QueryRunner::execute(query)
     D->>D: parse_query(query)
-    D->>M: read() or write()
-    M-->>D: RwLock guard
-    D->>D: Analyzer::analyze(doc, &graph)
+    D->>M: load current Arc snapshot
+    M-->>D: Arc<InMemoryGraph>
+    D->>D: Analyzer::analyze(doc, &snapshot)
     D->>D: Compiler::compile(resolved)
-    D->>D: MutableExecutor::execute_compiled(plan, &mut graph)
-    D->>M: unlock (guard drop)
-    D-->>S: QueryResult
-    S-->>C: JSON response (200 or 400)
+    alt read-only
+        D->>D: Executor::execute_compiled(plan, &snapshot)
+    else mutating
+        D->>D: clone snapshot, execute write, append WAL if configured
+        D->>M: publish new Arc
+    end
+    D-->>S: QueryResult or LoraError
+    S-->>C: JSON response
 ```
 
 ## Next steps

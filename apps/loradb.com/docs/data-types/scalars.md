@@ -239,10 +239,10 @@ RETURN u
 
 ```cypher
 RETURN size('café'),        -- may be 4 or 5 depending on encoding nuances
-       charLength('café')   -- 4  (code points)
+       char_length('café')  -- 4  (code points)
 ```
 
-For display-length, prefer `charLength`. For serialisation sizes,
+For display-length, prefer `char_length`. For serialisation sizes,
 prefer `size`.
 
 ## Parameters

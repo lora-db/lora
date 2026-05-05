@@ -96,16 +96,24 @@ Quick reference:
 
 ### Response (error)
 
-`400 Bad Request`, body is:
+Non-2xx responses use the same structured error body:
 
 ```json
-{ "error": "parse error: expected ')' at position 17" }
+{
+  "error": {
+    "code": "LORA_PARSE",
+    "message": "parse error: expected ')' at position 17",
+    "category": "client"
+  }
+}
 ```
 
-The `error` string is the engine's underlying message. Parse,
-semantic, and runtime errors all return `400` — distinguish by the
-text if you need to, or treat "any non-2xx is a query error" and log
-the message.
+`code` is the stable field to branch on; `message` is human-facing and may be
+reworded. `category` is `"client"` for caller errors and `"server"` for engine
+or durability failures. Parse/semantic/read-only/config errors return 400,
+timeouts return 408, not-found errors return 404, invalid params/vectors return
+422, constraint violations return 409, WAL-poisoned errors return 503, and
+server/storage failures return 500.
 
 ## Admin endpoints (opt-in)
 
@@ -178,7 +186,13 @@ Both endpoints accept the same optional JSON body:
 Error bodies match `/query`'s shape:
 
 ```json
-{ "error": "snapshot load failed: bad magic" }
+{
+  "error": {
+    "code": "LORA_SNAPSHOT_CODEC",
+    "message": "snapshot load failed: bad magic",
+    "category": "server"
+  }
+}
 ```
 
 ### Examples
@@ -373,7 +387,7 @@ async function runQuery(query: string, format = 'rows') {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? `http ${res.status}`);
+    throw new Error(body.error?.message ?? `http ${res.status}`);
   }
   return res.json();
 }

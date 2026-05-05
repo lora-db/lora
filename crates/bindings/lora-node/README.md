@@ -11,7 +11,7 @@ stays free for the full duration of a query — a 2 000-node MATCH happily
 interleaves with `setImmediate` ticks on the main thread (proven by a
 dedicated vitest).
 
-> **Status:** prototype / feasibility check. Not published to npm.
+> **Package:** `@loradb/lora-node`.
 
 ## Install (local dev)
 
@@ -33,7 +33,7 @@ to `package.json`.
 `Database.create()` static; `Database` is a type-only export.
 
 ```ts
-import { createDatabase, isNode, type LoraNode } from "lora-node";
+import { createDatabase, isNode, type LoraNode } from "@loradb/lora-node";
 
 const db = await createDatabase(); // in-memory by default
 await db.execute("CREATE (:Person {name: $n, age: $a})", { n: "Alice", a: 30 });
@@ -49,7 +49,7 @@ for (const row of res.rows) {
 The initialization rule is:
 
 ```ts
-import { createDatabase } from "lora-node";
+import { createDatabase } from "@loradb/lora-node";
 
 const inMemory = await createDatabase();           // in-memory only
 const defaultPersistent = await createDatabase("app"); // ./app.loradb
@@ -70,7 +70,7 @@ copying the portable `.loradb` archive while the database is still open.
 Node also has an archive-backed convenience overload:
 
 ```ts
-import { createDatabase } from "lora-node";
+import { createDatabase } from "@loradb/lora-node";
 
 const db = await createDatabase("app", { databaseDir: "./data" });
 ```
@@ -89,7 +89,7 @@ split-brain writers.
 For explicit WAL directories with managed snapshots, use `openWalDatabase`:
 
 ```ts
-import { openWalDatabase } from "lora-node";
+import { openWalDatabase } from "@loradb/lora-node";
 
 const db = await openWalDatabase({
   walDir: "./data/wal",
@@ -119,7 +119,7 @@ HTTP(S) or `data:` URL, `Buffer`, `Uint8Array`, `ArrayBuffer`, Node
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { createDatabase } from "lora-node";
+import { createDatabase } from "@loradb/lora-node";
 
 const db = await createDatabase();
 await db.execute("CREATE (:Person {name: 'Alice'})");

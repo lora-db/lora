@@ -16,7 +16,7 @@ server.
 It is:
 
 - **A query engine.** Parser, analyzer, planner, optimizer, and
-  executor all in one crate.
+  executor live in separate Rust crates with one shared pipeline.
 - **An in-process graph store.** Nodes, relationships, and properties
   held in RAM.
 - **A set of bindings over one shared core.** Node, Python, WASM, Go
@@ -80,13 +80,6 @@ identical.
 | [Rust (embedded)](./getting-started/rust) | `cargo add lora-database` |
 | [HTTP server](./getting-started/server) | `cargo install --path crates/lora-server` |
 
-:::note
-
-Pre-release: packages aren't yet on npm / PyPI / crates.io. Each
-platform guide includes repo-local build steps.
-
-:::
-
 ### 2. Create data
 
 ```cypher
@@ -140,7 +133,7 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**Snapshots**](./snapshot) | Save / load the full graph as a file or byte payload — every binding, plus the opt-in HTTP admin surface. |
 | [**WAL & checkpoints**](./wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — with full operator controls on Rust and the server. |
 | [**Performance**](./performance) | Benchmark tables, CI `benchmark-summary.json`, and how to read regression signals. |
-| [**Limitations**](./limitations) | What's not supported — binding-level WAL-control asymmetry, no indexes, no `CALL`, etc. |
+| [**Limitations**](./limitations) | What's not supported — binding-level WAL-control asymmetry, no DDL indexes, no `CALL`, etc. |
 | [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 
 ## The engine's boundaries
@@ -153,10 +146,14 @@ Every item below is a deliberate trade-off, not an oversight:
   checkpoints or managed commit-count snapshots. WASM remains
   snapshot-only and pathless. The engine is still an in-memory,
   single-process system — not a separate persistent storage tier.
-- **No property indexes.** `MATCH (n {prop: v})` without a label is `O(n)`.
+- **No user-managed indexes.** The in-memory store has lazy internal
+  exact-match property indexes for indexable values, but there is no
+  `CREATE INDEX`, composite/range/full-text/vector index, or user-visible
+  index catalog.
 - **No uniqueness constraints.** Use [`MERGE`](./queries/unwind-merge#merge)
   on a key, or enforce in application code.
-- **Global mutex.** Queries serialise — concurrent reads don't parallelise.
+- **Single-process concurrency.** Auto-commit reads can overlap on Arc snapshots;
+  write commits and explicit read-write transactions serialize.
 - **No HTTP auth / TLS.** Bind the server to localhost or put it behind
   a reverse proxy. The opt-in admin snapshot and WAL endpoints also ship
   without auth — see [Limitations → HTTP server](./limitations#http-server).

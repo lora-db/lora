@@ -16,7 +16,7 @@ storage, [parameters](../queries/parameters), and results.
 | Goal | Function |
 |---|---|
 | Construct a point | [<CypherCode code="point({…})" />](#constructors) |
-| Distance between two points | [<CypherCode code="distance(a, b)" /> / <CypherCode code="point.distance(a, b)" />](#distance) |
+| Distance between two points | [<CypherCode code="distance(a, b)" />](#distance) |
 | Access components | <CypherCode code="p.x" />, <CypherCode code="p.y" />, <CypherCode code="p.z" />, <CypherCode code="p.latitude" />, <CypherCode code="p.longitude" />, <CypherCode code="p.height" /> |
 | SRID / CRS metadata | <CypherCode code="p.srid" />, <CypherCode code="p.crs" /> |
 | Filter by radius | [<CypherCode code="distance(p, centre) < r" />](#storing-points) |
@@ -65,7 +65,7 @@ RETURN point({x: 4.89, y: 52.37, crs: 'WGS-84-2D'})            -- CRS promotes x
 
 ## distance
 
-`distance(a, b)` — or the alias `point.distance(a, b)`.
+`distance(a, b)`.
 
 | Same-SRID pair | Formula |
 |---|---|

@@ -32,7 +32,7 @@ An in-process graph store with a Cypher-like query engine — small enough to em
 
 ## Overview
 
-LoraDB is an embeddable property-graph database written in Rust. It parses, analyzes, compiles, and executes a Cypher-like query language against an in-process graph store — with no daemons, no clusters, and no schema migrations. `VECTOR` is a first-class value type, so embeddings live next to the graph they describe.
+LoraDB is an embeddable property-graph database written in Rust. It parses, analyzes, compiles, and executes a Cypher-like query language against an in-process graph store — with no daemons, no clusters, and no schema migrations. Optional snapshots, WAL directories, and named `.loradb` archives provide local durability on filesystem-backed surfaces. `VECTOR` is a first-class value type, so embeddings live next to the graph they describe.
 
 The graph belongs inside your process. Reach for LoraDB when you're building:
 
@@ -53,7 +53,7 @@ LoraDB ships a single Rust engine with bindings for the major application runtim
 ```toml
 # Cargo.toml
 [dependencies]
-lora-database = "0.1"
+lora-database = "0.7"
 ```
 
 &nbsp;→ [crates.io/crates/lora-database](https://crates.io/crates/lora-database)
@@ -202,12 +202,12 @@ let result = db.execute("MATCH (n:User) RETURN n.name", None)?;
 cargo run --bin lora-server
 # => LoraDB server running at http://127.0.0.1:4747
 
-curl -s localhost:4747/query \
+curl -s http://127.0.0.1:4747/query \
   -H 'Content-Type: application/json' \
   -d '{"query": "CREATE (:User {name: \"Alice\"}) RETURN *"}'
 ```
 
-Result formats: `rows`, `rowArrays`, `graph` (default), `combined`. See [loradb.com](https://loradb.com) for the full API.
+Result formats: `rows`, `rowArrays`, `graph` (default), `combined`. The HTTP body does not yet accept `params`; use an in-process binding for parameterized queries. See [loradb.com](https://loradb.com) for the full API.
 
 ## Documentation
 
@@ -255,16 +255,19 @@ lora/
 │   ├── lora-analyzer/    Semantic analysis
 │   ├── lora-compiler/    Logical + physical planning
 │   ├── lora-executor/    Plan interpreter
-│   ├── lora-store/       In-memory store, temporal/spatial types
-│   ├── lora-database/    Pipeline entry point
+│   ├── lora-store/       In-memory graph, value types, mutation events
+│   ├── lora-snapshot/    Columnar snapshot codec
+│   ├── lora-wal/         Write-ahead log segments and replay
+│   ├── lora-database/    Pipeline entry point, transactions, durability
 │   ├── lora-server/      Axum HTTP server
-│   ├── lora-ffi/         C ABI over lora-database (used by lora-go)
-│   ├── lora-node/        Node.js bindings (napi-rs)
-│   ├── lora-python/      Python bindings (PyO3 / maturin)
-│   ├── lora-wasm/        WebAssembly bindings
-│   ├── lora-go/          Go bindings (cgo over lora-ffi)
-│   ├── lora-ruby/        Ruby bindings (Magnus / rb-sys)
-│   └── bindings/shared-ts/  Shared TypeScript types for lora-node + lora-wasm
+│   └── bindings/
+│       ├── lora-ffi/     C ABI over lora-database (used by lora-go)
+│       ├── lora-node/    Node.js bindings (napi-rs)
+│       ├── lora-python/  Python bindings (PyO3 / maturin)
+│       ├── lora-wasm/    WebAssembly bindings
+│       ├── lora-go/      Go bindings (cgo over lora-ffi)
+│       ├── lora-ruby/    Ruby bindings (Magnus / rb-sys)
+│       └── shared-ts/    Shared TypeScript types for lora-node + lora-wasm
 ├── apps/loradb.com/      Documentation site (Docusaurus)
 └── docs/                 Design docs and internals
 ```

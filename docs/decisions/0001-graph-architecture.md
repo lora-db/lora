@@ -2,59 +2,85 @@
 
 ## Status
 
-Accepted (inferred from implementation)
+Accepted, updated to match the current implementation.
 
 ## Context
 
-The project needed a graph storage engine to back a Cypher query engine. The key decisions were:
+LoraDB needs a graph storage engine for a Cypher-like query engine. The current
+core is intentionally in-memory and single-process, while durability is layered
+around the store through snapshots, WAL, and named archives.
 
-1. In-memory vs persistent storage
-2. Data structure choices for the graph
-3. Storage trait design
+Key forces:
+
+1. Fast point lookup by `NodeId` / `RelationshipId`.
+2. Deterministic catalog ordering for labels, relationship types, and map keys.
+3. Cheap read snapshots for concurrent read-only queries.
+4. A mutation vocabulary that can feed WAL, recovery, archive mirrors, and future
+   CDC-style consumers.
+5. A backend trait surface that does not force every implementation to expose
+   borrowed records.
 
 ## Decision
 
-### In-memory BTreeMap-based storage
+### Slot-indexed in-memory storage
 
-The graph is stored entirely in memory using `BTreeMap` collections:
+`InMemoryGraph` stores primary records in slot vectors:
 
-- `BTreeMap<NodeId, NodeRecord>` for nodes
-- `BTreeMap<RelationshipId, RelationshipRecord>` for relationships
-- `BTreeMap<NodeId, BTreeSet<RelationshipId>>` for outgoing and incoming adjacency
-- `BTreeMap<String, BTreeSet<NodeId>>` for label indexes
-- `BTreeMap<String, BTreeSet<RelationshipId>>` for relationship type indexes
-- exact-match property indexes for `(property key, property value)` lookups
+- `Vec<Option<Arc<NodeRecord>>>` for nodes
+- `Vec<Option<Arc<RelationshipRecord>>>` for relationships
+- `Vec<Vec<RelationshipId>>` for outgoing and incoming adjacency
+- `BTreeMap<String, Vec<NodeId>>` for labels
+- `BTreeMap<String, Vec<RelationshipId>>` for relationship types
+- lazy exact-match property indexes for indexable property values
 
-### Trait-based abstraction
+IDs are monotonic `u64`s and are never reused. Deletes leave tombstones in the
+slot vectors. Records are held behind `Arc` so database snapshots and staged
+writes can share unchanged records; mutations use copy-on-write for touched
+records.
 
-Storage is abstracted behind two traits:
+### Database-level snapshot publication
 
-- `GraphStorage` -- read-only operations (scan, lookup, expand, introspection)
-- `GraphStorageMut` -- extends `GraphStorage` with create, update, delete
+`lora-database` publishes the current store through `ArcSwap`. Read-only
+auto-commit queries load an `Arc<InMemoryGraph>` and execute without holding a
+store lock. Mutating auto-commit queries stage a clone, buffer mutation events,
+serialize commit publication through the writer mutex, append WAL records when
+configured, and swap in the new `Arc`.
 
-This separation allows the analyzer and read-only executor to work with `&dyn GraphStorage` while the mutable executor requires `&mut dyn GraphStorageMut`.
+Explicit read-only transactions pin a snapshot. Explicit read-write
+transactions hold the writer mutex until commit or rollback.
 
-### Monotonic ID allocation
+### Storage trait layering
 
-Node and relationship IDs are sequential `u64` values that are never reused.
+The storage API is split into:
 
-## Rationale
+- `GraphStorage` for reads, scans, expansion, and default helpers.
+- `GraphCatalog` for the analyzer's narrow count/name/property-key checks.
+- `BorrowedGraphStorage` for backends that can expose borrowed records.
+- `GraphStorageMut` for primitive writes, deletes, property/label helpers, and
+  `clear`.
 
-- **BTreeMap** provides deterministic iteration order, which simplifies testing and debugging. The performance trade-off (O(log n) vs O(1)) is acceptable for an in-memory engine where the constant factors are small.
-- **Trait abstraction** enables future alternative implementations (e.g., persistent storage, sharded storage) without changing the query engine.
-- **In-memory** avoids complexity of persistence, WAL, recovery, and crash safety. Appropriate for a project focused on the Cypher language implementation.
-- **Monotonic IDs** are simple, fast, and avoid stale reference bugs. The trade-off is that IDs are not reused after deletion, but `u64` overflow is not a practical concern.
+### Mutation events
+
+Every primitive write emits a `MutationEvent` when a `MutationRecorder` is
+installed. The recorder is optional and absent by default. The WAL uses this
+vocabulary for committed mutation batches; the same event stream is suitable for
+audit, CDC, and replication work later.
 
 ## Consequences
 
-- Data is lost on process exit
-- Concurrent reads are now supported through the database-level `RwLock`
-- Clone-heavy bulk APIs remain (methods return `Vec<Record>` rather than iterators), though executor hot paths use borrowed closures
-- Property equality lookups can use exact-match indexes; range/prefix predicates still scan
-- `BTreeMap` is slightly slower than `HashMap` for point lookups but provides ordered iteration
+- Read-only auto-commit queries can overlap on immutable snapshots.
+- Write commits and explicit read-write transactions still serialize.
+- Point lookup by ID is direct, but tombstones mean slot vectors can grow after
+  heavy delete/create workloads.
+- Exact-match property lookups on indexable values can use internal lazy
+  indexes, but there is no Cypher DDL, no uniqueness constraint, and no
+  composite/range/full-text/vector index.
+- Bulk compatibility APIs that return owned records still allocate; executor hot
+  paths use borrowed closure hooks where possible.
 
-## Alternatives considered (inferred)
+## See also
 
-- **HashMap** -- faster lookups but non-deterministic iteration; could be considered for performance optimization
-- **SlotMap / Arena** -- more cache-friendly than BTreeMap for entity storage; would require a different deletion strategy
-- **Adjacency list on nodes** -- storing outgoing/incoming relationships directly on `NodeRecord` instead of separate index maps; rejected in favor of decoupled indexes
+- [Graph Engine](../architecture/graph-engine.md)
+- [Data Flow](../architecture/data-flow.md)
+- [Value Model](../internals/value-model.md)
+- [WAL](../operations/wal.md)

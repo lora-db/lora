@@ -5,7 +5,7 @@ it later. Snapshots are deliberately simple: one file on disk, taken
 on-demand, atomic on rename — a snapshot is a point-in-time dump of
 everything the database knows.
 
-For continuous durability between snapshots, the v0.3.x core also ships a
+For continuous durability between snapshots, the core also ships a
 write-ahead log: see [WAL](wal.md). When the WAL is enabled, snapshots
 double as **checkpoints** — they record the WAL position they cover so
 recovery replays only the records past the fence.
@@ -13,27 +13,33 @@ recovery replays only the records past the fence.
 ## File format
 
 ```
-[0..8)    magic         "LORASNAP"
-[8..12)   format        u32 — currently 1
-[12..16)  header_flags  u32 — bit 0 = has_wal_lsn
-[16..24)  wal_lsn       u64 — 0 when has_wal_lsn is unset
-[24..40)  reserved      16 zero bytes
-[40..)    payload       bincode-serialized SnapshotPayload
-last 4B   crc32         IEEE CRC over header + payload
+[0..8)    magic         "LORACOL1"
+[8..12)   format        u32 — envelope format, currently 1
+[12..16)  manifest_len  u32
+[16..24)  body_len      u64
+[24..56)  checksum      BLAKE3 over manifest + body
+[56..)    manifest      bincode-serialized manifest
+[...]     body          columnar SnapshotPayload body
 ```
 
-The `wal_lsn` field marks a checkpoint produced by `Database::checkpoint_to`
-(or HTTP `POST /admin/checkpoint`) — it carries the WAL's `durable_lsn` at
-the time the snapshot was taken so recovery knows which records the
-snapshot already covers. Pure (non-checkpoint) snapshots leave
-`has_wal_lsn = 0`. Readers written against format v1 transparently load
-both shapes.
+The manifest carries the snapshot format version, optional `wal_lsn`, node and
+relationship counts, compression mode, encryption metadata, and body length. The
+current body format version is tracked in `crates/lora-snapshot/src/format.rs`.
+
+`wal_lsn` marks a checkpoint produced by `Database::checkpoint_to`, managed
+snapshot checkpointing, or HTTP `POST /admin/checkpoint`. It carries the WAL's
+durable LSN at the time the snapshot was taken so recovery knows which records
+the snapshot already covers. Pure snapshots leave `wal_lsn = null`.
+
+Default Rust snapshot options use gzip level 1 with no encryption. The JSON
+options surfaces used by bindings/admin helpers also accept no compression or
+gzip, plus raw 32-byte key or password-based ChaCha20-Poly1305 encryption.
 
 ## API surfaces
 
 | Context | Entry point |
 |---|---|
-| Rust | `Database::save_snapshot_to(path)` / `load_snapshot_from(path)` / `in_memory_from_snapshot(path)` / `checkpoint_to(path)` |
+| Rust | `Database::save_snapshot_to(path)` / `save_snapshot_to_with_options(path, options)` / `load_snapshot_from(path)` / `in_memory_from_snapshot(path)` / `checkpoint_to(path)` / managed snapshot constructors |
 | Python | `db.save_snapshot(path \| "binary" \| "base64" \| writer)` / `db.load_snapshot(source)` where `source` can be a path, bytes-like object, base64 string, or binary reader |
 | Node.js | `db.saveSnapshot(path \| "binary" \| "base64" \| options)` / `db.loadSnapshot(source)` where `source` can be a path, `file:`/HTTP(S)/`data:` URL, `Buffer`, `Uint8Array`, `ArrayBuffer`, Node `Readable`, web `ReadableStream`, or async iterable of byte chunks |
 | Ruby | `db.save_snapshot(path)` / `db.load_snapshot(path)` |
@@ -43,9 +49,9 @@ both shapes.
 
 `checkpoint_to(path)` (Rust) and `POST /admin/checkpoint` (HTTP) are
 **WAL-only** entry points — they require `Database::open_with_wal` /
-`--wal-dir` because they stamp the WAL's `durable_lsn` into the
-snapshot header. Bindings (Python/Node.js/Ruby/WASM/FFI) do not expose
-WAL or checkpoint APIs in v0.3.x; they remain snapshot-only. See
+`--wal-dir` because they stamp the WAL's durable LSN into the snapshot
+manifest. Node, Python, Go, and Ruby can open WAL-backed databases and managed
+snapshot directories; WASM remains snapshot-only and pathless. See
 [wal.md](wal.md) for the WAL surface.
 
 All API surfaces return a `SnapshotMeta` describing the file:
@@ -83,9 +89,10 @@ behind but can never leave a half-written file at the target path. The
 parent directory is also `fsync`ed on best-effort, so the rename itself is
 durable on power loss.
 
-`load_snapshot_from` holds the store write lock for the duration of the
-restore. Concurrent queries block until the restore completes; normal
-read-only queries can otherwise share the store read lock.
+`load_snapshot_from` decodes the file into a fresh `InMemoryGraph` and then
+publishes it by swapping the database's current `Arc`. Readers that already
+loaded the previous `Arc` keep seeing that previous snapshot until they finish;
+new queries see the restored graph.
 
 ## The HTTP admin surface
 
@@ -160,15 +167,11 @@ replication) install a recorder via
   / `POST /admin/checkpoint` pairs the two together.
 - **Multi-tenant isolation.** Each server process holds one graph; if you
   run several, each has its own snapshot file.
-- **Schema migration.** Snapshots are versioned (format v1 today), but
-  that is the *file* format, not an application-level schema. The reader
-  accepts any version in
-  `[SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION..=SNAPSHOT_FORMAT_VERSION]` and
-  migrates legacy payloads to the current shape in-memory, so a v1 file
-  keeps loading after the next format bump. Support is dropped only when
-  `SNAPSHOT_MIN_SUPPORTED_FORMAT_VERSION` is deliberately raised; at that
-  point you need to export via Cypher and re-import, or restore with the
-  last release that still accepted the old format.
+- **Schema migration.** Snapshots are versioned, but that is the snapshot
+  envelope/body format, not an application-level schema. The current reader
+  accepts the current `LORACOL1` envelope format and rejects unsupported format
+  versions. Treat format changes as compatibility events that need a reader
+  path or an export/import migration.
 
 ## See also
 

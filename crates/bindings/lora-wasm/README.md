@@ -6,7 +6,7 @@ database. The package is designed for browsers and Node.js and exposes a
 heavy query work can run inside a Web Worker while your UI code simply awaits
 the result.
 
-> **Status:** prototype / feasibility check. Not published to npm.
+> **Package:** `@loradb/lora-wasm`.
 
 ## Build
 
@@ -52,7 +52,7 @@ fails during startup, the package emits one `console.warn` and falls back to
 the in-process WASM engine so the app can still run.
 
 ```ts
-import { createDatabase, isNode } from "lora-wasm";
+import { createDatabase, isNode } from "@loradb/lora-wasm";
 
 const db = await createDatabase(); // Worker-backed in browsers when possible
 await db.execute("CREATE (:Person {name: $n})", { n: "Alice" });
@@ -84,7 +84,7 @@ const db = await createDatabase({ warnOnFallback: false });
 ### 2. Explicit main-thread WASM
 
 ```ts
-import { createMainThreadDatabase } from "lora-wasm";
+import { createMainThreadDatabase } from "@loradb/lora-wasm";
 
 const db = await createMainThreadDatabase();
 ```
@@ -122,14 +122,14 @@ WASM has no filesystem access, so snapshots never accept string paths.
 accepts `URL`, `Uint8Array`, `ArrayBuffer`, `Blob`, `Response`, and web
 `ReadableStream<Uint8Array | ArrayBuffer>`. The bytes use the database
 snapshot codec (`LORACOL1`) and can be loaded by native LoraDB. Older store
-snapshots (`LORASNAP`) are still accepted by `loadSnapshot` for compatibility.
+snapshots use the current `LORACOL1` columnar format.
 Snapshot bytes are uncompressed by default; pass `{ compression: "gzip" }` or
 `{ compression: { format: "gzip", level: 1 } }` to save smaller
 WASM-portable snapshots. Gzip levels `0..9` are supported; level `1` is the
 fast default.
 
 ```ts
-import { createDatabase } from "lora-wasm";
+import { createDatabase } from "@loradb/lora-wasm";
 
 const db = await createDatabase();
 await db.execute("CREATE (:Person {name: 'Alice'})");
@@ -205,8 +205,9 @@ public surface — consumers can swap backends without rewriting types.
 
 ## Known limitations
 
-- The wasm module is single-threaded. Parallel queries inside one worker
-  serialise; spawn more workers for true parallelism.
+- The wasm module runs inside one JavaScript runtime. Auto-commit reads can
+  overlap on engine snapshots; write commits serialize. Use more Workers for
+  separate graphs or stronger UI isolation.
 - I64 values are delivered as JS `number` and lose precision above 2^53.
   Applications that need bigint precision should use the native
   `lora-node` binding instead.
@@ -255,9 +256,8 @@ public surface — consumers can swap backends without rewriting types.
 - I64 precision is capped at `Number.MAX_SAFE_INTEGER`. For larger
   integer properties we need a `bigint`-aware serializer on the wasm
   boundary.
-- The engine is synchronous inside wasm — a single Worker serialises
-  queries. Multi-tenant workloads need either multiple Workers (already
-  possible), or an engine-level cooperative scheduler.
+- The engine is synchronous inside wasm once a call enters the module. A slow
+  query blocks that Worker until completion.
 - No query cancellation or progress streaming crosses the Worker
   boundary; a slow query blocks that Worker until completion.
 

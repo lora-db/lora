@@ -4,7 +4,7 @@ Python bindings for the [Lora](../../../README.md) graph
 engine. Ships both a synchronous PyO3 `Database` class and an
 asyncio-compatible `AsyncDatabase` wrapper that never blocks the event loop.
 
-> **Status:** prototype / feasibility check. Not published to PyPI.
+> **Package:** `lora-python`.
 
 ## Install (local dev)
 

@@ -80,11 +80,10 @@ see the [**Cheat sheet**](./cheat-sheet).
 
 ## Execution model
 
-- Queries execute **atomically** per call. There is no explicit
-  transaction boundary.
-- Reads and writes share a single mutex — queries run one at a time.
-  This keeps the model simple and removes classes of concurrency bugs,
-  but it means concurrent reads don't parallelise. See
+- Queries execute **atomically** per auto-commit call. Rust and in-process
+  bindings also expose explicit transactions; HTTP does not.
+- Auto-commit reads can overlap on Arc snapshots. Write commits and explicit
+  read-write transactions serialize. See
   [Limitations → Concurrency](../limitations#concurrency).
 - Names (labels, relationship types, property keys) are validated
   against the live graph for [`MATCH`](./match); any name is accepted

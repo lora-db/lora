@@ -183,8 +183,8 @@ durable = LoraRuby::Database.open_wal(
 durable.close
 ```
 
-Both save and load serialise against every query on the handle. A
-crash between saves loses every mutation since the last save. See
+Both save and load process the whole graph. A crash between saves loses every
+mutation since the last save unless you opened the database with WAL. See
 the canonical [Snapshots guide](../snapshot) for the wire format and
 atomic-rename guarantees.
 
@@ -237,9 +237,8 @@ Engine-level causes live in [Troubleshooting](../troubleshooting).
 
 - **GVL release.** `Database#execute` calls
   `rb_thread_call_without_gvl`, so other Ruby threads run while a
-  query is in flight. Concurrent queries against the same
-  `Database` serialise on an internal `Mutex`; parallel queries
-  against **different** `Database` instances have no shared state.
+  query is in flight. Auto-commit reads can overlap on snapshots; write commits
+  and explicit read-write transactions serialize.
 - **Interrupts after current query.** The engine has no
   cancellation hook, so a thread interrupted mid-query
   (`Thread#kill`) will observe the interrupt **after** the current

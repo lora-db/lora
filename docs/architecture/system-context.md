@@ -16,7 +16,7 @@ An in-memory property graph database with a Cypher-like query language (a broad,
 
 - **Not a client for another graph database** -- it is a standalone engine, not a driver
 - **Not a distributed system** -- single-process, single-thread execution
-- **Not continuously durable** -- point-in-time snapshots exist (`save_snapshot_to` / `load_snapshot_from`; see [operations/snapshots.md](../operations/snapshots.md)); no WAL, no replication. Data between saves is lost on crash.
+- **Not replicated or clustered** -- point-in-time snapshots and optional WAL-backed recovery exist (`save_snapshot_to`, `load_snapshot_from`, `open_with_wal`; see [Snapshots](../operations/snapshots.md) and [WAL](../operations/wal.md)), but there is no replication or distributed storage. Without WAL, data between saves is lost on crash.
 - **Not openCypher-complete** -- implements a working subset of Cypher (see the support matrix for the specific clauses and functions that are covered, partial, or not yet implemented)
 - **Not production-grade** -- no authentication, only point-in-time persistence, no replication
 

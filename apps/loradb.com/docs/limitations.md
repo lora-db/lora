@@ -29,8 +29,8 @@ in the internal documentation.
 
 | Theme | Biggest gaps |
 |---|---|
-| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; no indexes; no constraints |
-| Concurrency | Single global lock, no timeouts |
+| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; internal exact-match property indexes only; no constraints |
+| Concurrency | Snapshot reads can overlap; write commits and explicit read-write transactions serialize; timeout coverage is API-dependent |
 | Clauses | No `CALL`, `FOREACH`, `LOAD CSV`, DDL |
 | Patterns | No quantified path patterns |
 | Operators | No `BETWEEN`; cross-type comparisons return `null` |
@@ -51,7 +51,7 @@ in the internal documentation.
 | `CREATE CONSTRAINT` / `DROP CONSTRAINT` | Not supported |
 | `LOAD CSV` | Not supported |
 | `USE <graph>` (multi-database) | Not supported |
-| `PROFILE` | Not supported (`EXPLAIN` is supported) |
+| `EXPLAIN` / `PROFILE` | Not supported |
 
 ## Patterns
 
@@ -91,7 +91,7 @@ in the internal documentation.
 
 | Feature | Status |
 |---|---|
-| Binary / byte arrays | Not supported — store base64 strings |
+| Binary / byte arrays | Supported as a byte-string property value through binding wire formats; there is no Cypher byte literal |
 | Fixed-precision decimals | Not supported — use scaled integers or strings |
 | User-defined types | Not supported |
 | Numeric overflow guarding | Not supported — Rust panics in debug, wraps in release |
@@ -114,7 +114,7 @@ in the internal documentation.
 | Built-in embedding generation | Not supported — no plugin surface; generate embeddings in host code |
 | [List-of-vectors as a property](./data-types/vectors#restriction-no-list-of-vectors-as-a-property) | Not supported — rejected at write time; hang many embeddings off separate nodes |
 | Dimension > 4096 | Not supported — rejected at construction time |
-| `ORDER BY` on a `VECTOR` column | Not implemented — runs without panicking, but ordering is unspecified; order by a scalar score instead |
+| `ORDER BY` on a `VECTOR` column | Deterministic but implementation-defined; order by a scalar score instead |
 | Metric extensions (e.g. Minkowski, Chebyshev) | Not yet supported — current metrics are listed in [Vectors → Signed distance metrics](./data-types/vectors#signed-distance-metrics) |
 | Passing a `VECTOR` parameter over HTTP | Blocked by the HTTP parameters limitation below — build the vector with `vector(...)` in the query string or use an in-process binding |
 
@@ -133,16 +133,17 @@ in the internal documentation.
 | WAL controls are not uniform across bindings | Rust and `lora-server` expose the full [WAL](./wal) surface. Node exposes archive/raw WAL opens plus sync-mode control. Python, Go, and Ruby expose archive/raw WAL opens with managed snapshot options. WASM remains snapshot-only. |
 | Time-based checkpoint scheduler — not yet supported | Explicit WAL helpers can write managed snapshots after N committed transactions, and Rust / `lora-server` expose explicit checkpoints. Nothing schedules checkpoints by wall-clock time in the background for you. |
 | Uniqueness constraints — not supported | Duplicates can be created silently; enforce in application code or match before creating |
-| Property indexes — not yet supported | Property filters without a label are `O(n)` full scans |
-| Explicit transactions — not supported | Each query is atomic; no multi-query transaction boundary |
+| User-managed indexes — not supported | Internal lazy exact-match property indexes exist for indexable values, but there is no `CREATE INDEX`, composite, range, full-text, or vector index |
+| Explicit transactions are surface-dependent | Rust and in-process bindings expose transaction APIs; HTTP has no multi-query transaction endpoint |
 | ID reuse — not supported | Deleting an entity does not free its `u64` id |
 
 ## Concurrency
 
-- A single global lock serialises every query. Concurrent **reads**
-  do not parallelise.
-- Query timeouts — not supported; a pathological query can hold the
-  lock indefinitely.
+- Auto-commit read-only queries load Arc snapshots and can overlap.
+- Write commits serialize, and explicit read-write transactions hold the
+  writer slot until commit or rollback.
+- Query timeouts are cooperative and not exposed uniformly across every
+  binding or HTTP endpoint.
 - HTTP rate limiting — not supported.
 
 ## HTTP server

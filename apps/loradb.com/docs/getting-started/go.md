@@ -151,9 +151,9 @@ r, err := db.ExecuteContext(ctx, "MATCH (n) RETURN count(n)", nil)
 `ExecuteContext` honours `context.Context` deadlines on the Go side
 — the call returns `ctx.Err()` as soon as the context fires. But
 the engine does **not** yet support mid-query cancellation, so the
-native call keeps running in a helper goroutine and holds the
-database's internal mutex until it finishes. Any follow-up call
-that needs the mutex blocks until then.
+native call keeps running in a helper goroutine until it reaches a normal
+completion point. Follow-up writes or explicit read-write transactions may still
+queue behind that work.
 
 If you rely on a hard deadline, either keep queries small enough
 that their worst-case latency is acceptable even if they can't be
@@ -240,9 +240,8 @@ defer durable.Close()
 
 `SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for a pure snapshot
 and non-`nil` when you load or save a checkpoint snapshot written by a
-WAL-enabled deployment. Both save and load hold
-the store mutex for the duration of the call — concurrent
-`Execute` calls block until the snapshot operation finishes. A crash
+WAL-enabled deployment. Save and load encode or decode the whole graph, so large
+snapshots can still affect latency. A crash
 between saves loses every mutation since the last save.
 
 Passing a database name and directory opens or creates an archive-backed persistent
@@ -304,9 +303,9 @@ Engine-level causes live in [Troubleshooting](../troubleshooting).
 
 - **Platform support.** Linux and macOS (x86_64, arm64). Windows is
   not yet supported — revisit once a Windows Go target ships.
-- **One mutex per `Database`.** Parallel `Execute` calls on the same
-  handle serialise on the engine mutex. For read parallelism, spin
-  up multiple `Database` instances (each with its own graph).
+- **One graph per `Database`.** Auto-commit reads can overlap on snapshots;
+  write commits and explicit read-write transactions serialize. Multiple
+  `Database` instances have separate graphs/archives.
 - **No cancellation.** `ExecuteContext` returns the context error
   immediately but the native call keeps running. See
   [the caveat above](#context-cancellation-important-caveat).

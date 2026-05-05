@@ -2,23 +2,32 @@
 
 ## Current bottlenecks
 
-### Store lock contention
+### Snapshot publication and writer serialization
 
-The database stores the graph in `Arc<RwLock<InMemoryGraph>>`.
-Auto-commit read-only queries analyze, compile, and execute under a shared read
-lock, so multiple reads can overlap. Writes, explicit transactions, snapshot
-loads, and WAL checkpoints still take the exclusive write side. This means:
+The database stores the graph in an `ArcSwap<InMemoryGraph>`.
+Auto-commit read-only queries load an `Arc` snapshot and run without holding a
+store lock, so readers can overlap and keep seeing their pinned snapshot after a
+writer publishes a newer graph. Mutating auto-commit queries stage a
+copy-on-write clone, then serialize commit publication through the database
+writer mutex. Explicit read-write transactions hold that writer mutex for the
+transaction lifetime.
 
-- Concurrent read-only queries are allowed
-- Write queries block reads and writes while they hold the write lock
-- A long-running read stream can still delay writers until the stream is dropped
+This means:
 
-**Source**: `crates/lora-database/src/database.rs` (`Database::execute_with_params`)
+- Concurrent read-only queries are allowed and do not block write staging.
+- Write commits serialize at publication time.
+- Explicit read-write transactions block other writers until commit/rollback.
+- A long-running stream pins its snapshot, which can increase memory pressure by
+  keeping older `Arc` records alive.
+
+**Source**: `crates/lora-database/src/database/mod.rs`,
+`crates/lora-database/src/database/execute.rs`,
+`crates/lora-database/src/database/occ.rs`, and
+`crates/lora-database/src/transaction.rs`.
 
 `execute_with_timeout` / `execute_with_params_timeout` add cooperative
-deadline checks during lock acquisition and executor work. The checks are not
-preemptive; very large single operator steps can still run until they reach the
-next check.
+deadline checks during executor work. The checks are not preemptive; very large
+single operator steps can still run until they reach the next check.
 
 ### Clone-heavy read API
 
@@ -32,12 +41,12 @@ fn nodes_by_label(&self, label: &str) -> Vec<NodeRecord>;  // clones matching no
 ```
 
 For a graph with 1M nodes, `MATCH (n) RETURN n` allocates and clones all 1M records.
-Borrow-capable backends can now implement `BorrowedGraphStorage` iterator hooks
-(`node_refs`, `node_refs_by_label`, `relationship_refs`,
-`relationship_refs_by_type`) to expose borrowed scans, but more executor paths
-still need to move onto those hooks before the owned helpers can be retired.
+Borrow-capable backends can implement `BorrowedGraphStorage` and the
+`with_node` / `with_relationship` hooks to avoid clones on hot paths, but more
+bulk compatibility APIs still return owned records.
 
-**Source**: `crates/lora-store/src/graph.rs` (`GraphStorage::all_nodes`, `nodes_by_label`) and `crates/lora-store/src/memory.rs` (`InMemoryGraph` overrides)
+**Source**: `crates/lora-store/src/traits.rs` and
+`crates/lora-store/src/memory/impls.rs`.
 
 ### Property index coverage
 
@@ -83,17 +92,25 @@ the same time.
 
 ### Snapshot save / load
 
-Snapshot operations coordinate through the store lock.
+Snapshot operations publish through the same current-store pointer but do not
+use the old `RwLock` model.
 
-- **Save.** `Database::save_snapshot_to` acquires a read lock, bincode-serializes every `NodeRecord` and `RelationshipRecord`, writes the result to `<path>.tmp`, then `fsync`s and renames. The read-lock-held window covers the serialize step — it is `O(n + r)` in nodes and relationships. Other readers may proceed; writers wait.
-- **Load.** `Database::load_snapshot_from` acquires the write lock for the entire deserialize + index-rebuild. Adjacency and label / type indexes are reconstructed from the deserialized records, which is also `O(n + r)`.
+- **Save.** `Database::save_snapshot_to` loads an `Arc` snapshot, encodes it with
+  the `lora-snapshot` columnar codec, writes to `<path>.tmp`, `fsync`s, renames,
+  and best-effort syncs the parent directory. Encoding is `O(n + r)`.
+- **Load.** `Database::load_snapshot_from` decodes the file into a fresh graph,
+  rebuilds adjacency and label/type/property index state, then publishes the new
+  `Arc`. Decode/rebuild is also `O(n + r)`.
 
 Practical rule: do not schedule a save at a cadence smaller than the measured
 save duration — overlapping saves can amplify writer stalls. For large graphs,
 prefer a cron that calls `POST /admin/snapshot/save` at an interval larger than
 the measured save wall-time.
 
-**Source**: `crates/lora-store/src/snapshot.rs`, `crates/lora-database/src/database.rs`. Round-trip coverage lives in `crates/lora-database/tests/snapshot.rs`; there is no dedicated benchmark file yet (potential future slot: `crates/lora-database/benches/snapshot_benchmarks.rs`).
+**Source**: `crates/lora-snapshot`, `crates/lora-store/src/snapshot.rs`, and
+`crates/lora-database/src/snapshot/`. Round-trip coverage lives in
+`crates/lora-database/tests/snapshot.rs`; there is no dedicated benchmark file
+yet (potential future slot: `crates/lora-database/benches/snapshot_benchmarks.rs`).
 
 See also [Snapshots (operator doc)](../operations/snapshots.md) and [Data Flow → Concurrency model](../architecture/data-flow.md#concurrency-model).
 
@@ -157,15 +174,13 @@ Conditions for push-down:
 
 ## Data structure choices
 
-### BTreeMap vs HashMap
+### Slot vectors and BTreeMap catalogs
 
-The codebase uses `BTreeMap` and `BTreeSet` exclusively instead of `HashMap`/`HashSet`. This provides:
-
-- **Deterministic iteration order** -- useful for testing and debugging
-- **Slower point lookups** -- O(log n) vs O(1) amortized
-- **No hashing overhead** -- avoids hash function cost
-
-For a graph database workload, `HashMap` would likely be faster for point lookups but `BTreeMap` gives more predictable behavior.
+Primary node and relationship storage uses slot-indexed vectors, so point lookup
+by ID is direct. Catalog-style indexes use `BTreeMap<String, Vec<Id>>` for
+deterministic label/type ordering, and properties remain `BTreeMap` for stable
+map order. Lazy property indexes use hashable keys internally for exact-match
+lookups.
 
 ### SmallVec for labels and types
 
@@ -191,8 +206,8 @@ scalar and scalar-container properties.
 
 ## Recommendations for improvement
 
-1. **Read/write lock coverage** -- continue shrinking exclusive write-lock windows for admin and write-heavy paths
-2. **Borrowing iterators** -- migrate more executor internals from owned `GraphStorage` helpers onto the new `BorrowedGraphStorage` iterator hooks
+1. **Write publication windows** -- continue shrinking serialized commit/checkpoint/restore windows for write-heavy paths
+2. **Borrowing APIs** -- migrate more executor internals from owned `GraphStorage` helpers onto `with_node` / `with_relationship` and other borrowed hooks
 3. **Property indexes** -- extend the current hash indexes to temporal / spatial / vector values once canonical hash keys are available
 4. **Streaming coverage** -- keep moving remaining blocking internals toward cursor-shaped sources where semantics allow it
 5. **Query timeout coverage** -- extend deadline cancellation into streaming APIs and more fine-grained executor loops

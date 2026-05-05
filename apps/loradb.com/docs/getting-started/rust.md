@@ -12,23 +12,20 @@ The Rust API is the reference surface — every other binding wraps
 the same `lora_database::Database` type. Results map to a strongly
 typed `LoraValue` enum; errors propagate through `Result`. The
 handle is `Send + Sync` and cheap to clone; the underlying store is
-guarded by a mutex.
+published through Arc snapshots, with writes serialized at commit.
 
 ## Installation / Setup
 
 [![crates.io](https://img.shields.io/crates/v/lora-database?label=crates.io&logo=rust)](https://crates.io/crates/lora-database)
 
-While pre-release, consume the crate as a workspace path or git
-dependency rather than from crates.io:
-
 ```toml
 # Cargo.toml
 [dependencies]
-lora-database = { path = "../../crates/lora-database" }
+lora-database = "0.7"
 anyhow        = "1"
-# or, once published:
-# lora-database = "0.1"
 ```
+
+When working inside this repository, use the workspace path dependency instead.
 
 ## Creating a Client / Connection
 
@@ -224,8 +221,7 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-Calls serialise on the inner mutex; no data races, but no parallel
-execution either.
+Auto-commit reads can overlap on Arc snapshots; write commits serialize.
 
 ### Persisting your graph
 
@@ -254,9 +250,9 @@ let db2 = Database::in_memory_from_snapshot("graph.bin")?;
 db.load_snapshot_from("graph.bin")?;
 ```
 
-Both save and load serialise against every query on the handle — the
-snapshot holds the same mutex as `execute`. A crash between saves
-loses every mutation since the last save.
+Both save and load process the whole graph. Existing readers can keep using
+their pinned snapshots, but a crash between manual saves loses every mutation
+since the last save unless you opened the database with WAL.
 
 WAL-backed open / recover:
 
@@ -305,8 +301,9 @@ See [UNWIND](../queries/unwind-merge#bulk-load-from-parameter).
 
 ### Share a `Database` across threads or tasks
 
-Wrap in `Arc` and clone freely. Calls serialise on the internal
-mutex — the clones share a single graph.
+Wrap in `Arc` and clone freely. Clones share a single graph; auto-commit reads
+can overlap on snapshots, while write commits and explicit read-write
+transactions serialize.
 
 ### Result format selection
 
@@ -360,14 +357,13 @@ if let Err(e) = db.execute("BAD QUERY", None) {
 
 ## Performance / Best Practices
 
-- **One mutex, one graph.** Multiple `execute()` calls on the same
-  `Database` serialise.
+- **One graph per `Database`.** Auto-commit reads can overlap on snapshots;
+  write commits and explicit read-write transactions serialize.
 - **Clone the handle, not the data.** `Arc<Database>` gives every
   thread / task a cheap clone; the inner `Arc<Mutex<Store>>` is
   shared.
-- **No query timeout.** A pathological query will hold the lock
-  indefinitely. Cap variable-length traversals, and ensure parameter
-  sizes are reasonable.
+- **Timeouts are cooperative.** Use `execute_with_timeout` where available,
+  and still cap variable-length traversals and parameter sizes.
 - **Release build for benchmarks.** Debug builds are ~10× slower
   for most query shapes.
 

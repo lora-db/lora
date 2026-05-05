@@ -184,8 +184,8 @@ raise, but the sort is effectively a no-op.
 
 ## What isn't a type
 
-- **Binary / byte arrays** — not supported; store base64 strings
-  in `String`.
+- **Binary / byte arrays** — supported as byte-string properties through
+  binding wire formats; there is no Cypher byte literal.
 - **Fixed-precision decimals** — not supported; use scaled integers
   or strings.
 - **User-defined types** — not supported.

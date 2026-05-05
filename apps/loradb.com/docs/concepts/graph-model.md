@@ -161,11 +161,12 @@ Otherwise you'd get both `(alice, bob)` and `(bob, alice)` rows.
 
 ## Storage model (at a glance)
 
-- **In-memory only.** All data lives in the process; nothing persists
-  across restarts. See [Limitations](../limitations#storage) for the
+- **In-memory core.** All live data lives in the process; use snapshots or WAL
+  for filesystem durability. See [Limitations](../limitations#storage) for the
   full storage shape.
-- **Single mutex.** Queries serialise. No per-row locking, no isolation
-  levels.
+- **Snapshot concurrency.** Auto-commit reads can overlap on Arc snapshots;
+  write commits and explicit read-write transactions serialize. There is no
+  per-row locking.
 - **Adjacency on both ends.** Each relationship is reachable from both
   endpoints without a separate index.
 
