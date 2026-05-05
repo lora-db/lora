@@ -813,6 +813,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lora-binding-buffer"
+version = "0.7.0"
+dependencies = [
+ "lora-database",
+ "lora-store",
+]
+
+[[package]]
 name = "lora-compiler"
 version = "0.7.0"
 dependencies = [
@@ -862,6 +870,7 @@ name = "lora-ffi"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "lora-binding-buffer",
  "lora-database",
  "lora-store",
  "serde",
@@ -873,6 +882,7 @@ name = "lora-node"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "lora-binding-buffer",
  "lora-database",
  "lora-store",
  "napi",
@@ -963,6 +973,7 @@ dependencies = [
  "anyhow",
  "console_error_panic_hook",
  "js-sys",
+ "lora-binding-buffer",
  "lora-database",
  "lora-store",
  "serde",

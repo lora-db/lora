@@ -10,6 +10,7 @@ members = [
     "crates/lora-executor",
     "crates/lora-database",
     "crates/lora-server",
+    "crates/bindings/lora-binding-buffer",
     "crates/bindings/lora-node",
     "crates/bindings/lora-wasm",
     "crates/bindings/lora-python",
@@ -40,6 +41,7 @@ lora-snapshot = { path = "crates/lora-snapshot", version = "=0.7.0", default-fea
 lora-wal = { path = "crates/lora-wal", version = "=0.7.0" }
 lora-executor = { path = "crates/lora-executor", version = "=0.7.0" }
 lora-database = { path = "crates/lora-database", version = "=0.7.0" }
+lora-binding-buffer = { path = "crates/bindings/lora-binding-buffer", version = "=0.7.0" }
 
 # External crates.
 anyhow = "1"
