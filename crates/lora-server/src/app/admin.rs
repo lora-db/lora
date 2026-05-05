@@ -1,0 +1,256 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use lora_database::{LoraErrorCode, SnapshotAdmin, WalAdmin};
+
+use super::errors::{lora_error_response, ErrorResponse};
+use super::types::{SnapshotRequest, SnapshotResponse, WalStatusResponse, WalTruncateRequest};
+
+/// Snapshot admin surface. Mounted as a unit so that
+/// `/admin/snapshot/{save,load}` always have a configured default
+/// path: an operator who set `--snapshot-path` is the one paying the
+/// cost of the route's existence, and they reasonably expect the
+/// path to be resolved automatically when no `path` field is sent in
+/// the request body.
+#[derive(Clone)]
+pub struct SnapshotAdminConfig {
+    pub path: PathBuf,
+    pub admin: Arc<dyn SnapshotAdmin>,
+}
+
+/// Configuration for the admin surface. Snapshot and WAL admin are
+/// independent: each set of routes mounts only when its corresponding
+/// field is `Some`.
+///
+/// - `snapshot.is_some()` mounts `POST /admin/snapshot/save` and
+///   `POST /admin/snapshot/load` against the configured path
+///   (the body's optional `path` field overrides per request).
+/// - `wal.is_some()` mounts `POST /admin/wal/status` and
+///   `POST /admin/wal/truncate` unconditionally, plus
+///   `POST /admin/checkpoint` (which uses `snapshot.path` as a default
+///   when present, and otherwise requires `path` in the request body).
+///
+/// The endpoints are intentionally opt-in: exposing them without
+/// authentication on a network-reachable interface is a footgun, so
+/// the caller must explicitly construct an `AdminConfig` and pass it
+/// to the server — there is no implicit default path.
+#[derive(Clone, Default)]
+pub struct AdminConfig {
+    /// Snapshot save/load admin. `None` to disable
+    /// `/admin/snapshot/{save,load}`.
+    pub snapshot: Option<SnapshotAdminConfig>,
+    /// WAL admin. `None` to disable `/admin/wal/*` and
+    /// `/admin/checkpoint`.
+    pub wal: Option<Arc<dyn WalAdmin>>,
+}
+
+impl AdminConfig {
+    /// Construct a snapshot-only admin config (no WAL endpoints).
+    pub fn snapshot_only(snapshot_path: PathBuf, admin: Arc<dyn SnapshotAdmin>) -> Self {
+        Self {
+            snapshot: Some(SnapshotAdminConfig {
+                path: snapshot_path,
+                admin,
+            }),
+            wal: None,
+        }
+    }
+
+    /// Construct a WAL-only admin config (no snapshot endpoints). The
+    /// `/admin/checkpoint` route still mounts but every call needs a
+    /// `path` in the request body since there is no configured
+    /// default.
+    pub fn wal_only(wal: Arc<dyn WalAdmin>) -> Self {
+        Self {
+            snapshot: None,
+            wal: Some(wal),
+        }
+    }
+
+    /// True when neither admin surface is configured. The router
+    /// merge then becomes a no-op and the admin routes don't exist.
+    pub fn is_empty(&self) -> bool {
+        self.snapshot.is_none() && self.wal.is_none()
+    }
+}
+
+pub(crate) fn build_admin_router(cfg: AdminConfig) -> Router {
+    let mut router = Router::new();
+
+    if let Some(snap) = cfg.snapshot.clone() {
+        let snapshot_router: Router = Router::new()
+            .route("/admin/snapshot/save", post(admin_snapshot_save))
+            .route("/admin/snapshot/load", post(admin_snapshot_load))
+            .with_state(snap);
+        router = router.merge(snapshot_router);
+    }
+
+    if let Some(wal) = cfg.wal.clone() {
+        let wal_state = WalAdminState {
+            // Reuse the snapshot path as the default checkpoint
+            // target when present so a body-less
+            // `POST /admin/checkpoint` writes to the same file the
+            // snapshot endpoints use. When no snapshot path is
+            // configured, the handler requires `path` in the body.
+            default_checkpoint_path: cfg.snapshot.as_ref().map(|s| s.path.clone()),
+            wal,
+        };
+        let wal_router: Router = Router::new()
+            .route("/admin/checkpoint", post(admin_checkpoint))
+            .route("/admin/wal/status", post(admin_wal_status))
+            .route("/admin/wal/truncate", post(admin_wal_truncate))
+            .with_state(wal_state);
+        router = router.merge(wal_router);
+    }
+
+    router
+}
+
+/// State plumbed into the WAL admin handlers.
+#[derive(Clone)]
+struct WalAdminState {
+    /// Default target for `POST /admin/checkpoint` when the body
+    /// omits `path`. `None` when the operator did not pass
+    /// `--snapshot-path`; in that case the handler returns 400 with
+    /// a hint.
+    default_checkpoint_path: Option<PathBuf>,
+    wal: Arc<dyn WalAdmin>,
+}
+
+/// Extract the target path for a snapshot operation: the request-body
+/// override if present, else the configured default.
+fn resolve_snapshot_path(cfg: &SnapshotAdminConfig, req: Option<&SnapshotRequest>) -> PathBuf {
+    match req.and_then(|r| r.path.as_deref()) {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p),
+        _ => cfg.path.clone(),
+    }
+}
+
+async fn admin_snapshot_save(
+    State(cfg): State<SnapshotAdminConfig>,
+    body: Option<Json<SnapshotRequest>>,
+) -> impl IntoResponse {
+    let req = body.map(|Json(r)| r);
+    let path = resolve_snapshot_path(&cfg, req.as_ref());
+
+    match cfg.admin.save_snapshot(&path) {
+        Ok(meta) => (
+            StatusCode::OK,
+            Json(SnapshotResponse {
+                format_version: meta.format_version,
+                node_count: meta.node_count as u64,
+                relationship_count: meta.relationship_count as u64,
+                wal_lsn: meta.wal_lsn,
+                path: path.display().to_string(),
+            }),
+        )
+            .into_response(),
+        Err(err) => lora_error_response(err),
+    }
+}
+
+async fn admin_snapshot_load(
+    State(cfg): State<SnapshotAdminConfig>,
+    body: Option<Json<SnapshotRequest>>,
+) -> impl IntoResponse {
+    let req = body.map(|Json(r)| r);
+    let path = resolve_snapshot_path(&cfg, req.as_ref());
+
+    match cfg.admin.load_snapshot(&path) {
+        Ok(meta) => (
+            StatusCode::OK,
+            Json(SnapshotResponse {
+                format_version: meta.format_version,
+                node_count: meta.node_count as u64,
+                relationship_count: meta.relationship_count as u64,
+                wal_lsn: meta.wal_lsn,
+                path: path.display().to_string(),
+            }),
+        )
+            .into_response(),
+        Err(err) => lora_error_response(err),
+    }
+}
+
+fn resolve_checkpoint_path(
+    state: &WalAdminState,
+    req: Option<&SnapshotRequest>,
+) -> Result<PathBuf, &'static str> {
+    match req.and_then(|r| r.path.as_deref()) {
+        Some(p) if !p.trim().is_empty() => Ok(PathBuf::from(p)),
+        _ => state
+            .default_checkpoint_path
+            .clone()
+            .ok_or("no checkpoint path: pass `path` in the request body or start the server with --snapshot-path"),
+    }
+}
+
+async fn admin_checkpoint(
+    State(state): State<WalAdminState>,
+    body: Option<Json<SnapshotRequest>>,
+) -> impl IntoResponse {
+    let req = body.map(|Json(r)| r);
+    let path = match resolve_checkpoint_path(&state, req.as_ref()) {
+        Ok(p) => p,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::from_parts(LoraErrorCode::Config, msg)),
+            )
+                .into_response()
+        }
+    };
+
+    match state.wal.checkpoint(&path) {
+        Ok(meta) => (
+            StatusCode::OK,
+            Json(SnapshotResponse {
+                format_version: meta.format_version,
+                node_count: meta.node_count as u64,
+                relationship_count: meta.relationship_count as u64,
+                wal_lsn: meta.wal_lsn,
+                path: path.display().to_string(),
+            }),
+        )
+            .into_response(),
+        Err(err) => lora_error_response(err),
+    }
+}
+
+async fn admin_wal_status(State(state): State<WalAdminState>) -> impl IntoResponse {
+    match state.wal.wal_status() {
+        Ok(s) => (
+            StatusCode::OK,
+            Json(WalStatusResponse {
+                durable_lsn: s.durable_lsn,
+                next_lsn: s.next_lsn,
+                active_segment_id: s.active_segment_id,
+                oldest_segment_id: s.oldest_segment_id,
+                bg_failure: s.bg_failure,
+            }),
+        )
+            .into_response(),
+        Err(err) => lora_error_response(err),
+    }
+}
+
+async fn admin_wal_truncate(
+    State(state): State<WalAdminState>,
+    body: Option<Json<WalTruncateRequest>>,
+) -> impl IntoResponse {
+    // No body / no fence => truncate up to the WAL's current durable
+    // LSN. That's the natural "drop everything safe to drop" default.
+    let fence = match body.and_then(|Json(r)| r.fence_lsn) {
+        Some(lsn) => lsn,
+        None => match state.wal.wal_status() {
+            Ok(s) => s.durable_lsn,
+            Err(err) => return lora_error_response(err),
+        },
+    };
+
+    match state.wal.wal_truncate(fence) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => lora_error_response(err),
+    }
+}

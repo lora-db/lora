@@ -34,7 +34,8 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering |
 | `SKIP` / `LIMIT` | **Supported** | Pagination patterns |
 | `DISTINCT` | **Supported** | In RETURN and WITH |
-| `EXPLAIN` | **Not yet implemented** | Not in grammar |
+| `EXPLAIN` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.explain(query, params?)`; deliberately not exposed as a Cypher keyword. |
+| `PROFILE` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.profile(query, params?)`; runs the query and reports per-operator timing. |
 | `CALL` (standalone) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `CALL ... YIELD` (in-query) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `FOREACH` | **Not yet implemented** | Not in grammar |
@@ -395,7 +396,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | Feature | Category | Reason |
 |---------|----------|--------|
 | `CALL` (standalone and YIELD) | Clause | Analyzer rejects with `UnsupportedFeature` |
-| `EXPLAIN` | Clause | Not in grammar |
+| `EXPLAIN` / `PROFILE` (as Cypher keywords) | Clause | Not in grammar — exposed instead as the `db.explain()` / `db.profile()` API methods so callers must explicitly request plan-only or instrumented execution. |
 | `FOREACH` | Clause | Not in grammar |
 | `CREATE INDEX` / `CREATE CONSTRAINT` | DDL | Not in grammar |
 | `LOAD CSV` | DDL | Not in grammar |

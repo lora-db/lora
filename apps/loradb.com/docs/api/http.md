@@ -23,6 +23,8 @@ host and port, embed it in a larger Axum app), see the
 |---|---|---|
 | `GET` | [`/health`](#get-health) | Liveness probe |
 | `POST` | [`/query`](#post-query) | Run a Cypher query |
+| `POST` | [`/explain`](#post-explain) | Compile a query and return its plan — never executes |
+| `POST` | [`/profile`](#post-profile) | Execute a query and return runtime metrics |
 | `POST` | [`/admin/snapshot/save`](#admin-endpoints-opt-in) | Save a snapshot (opt-in; only when `--snapshot-path` is set) |
 | `POST` | [`/admin/snapshot/load`](#admin-endpoints-opt-in) | Restore a snapshot (opt-in; only when `--snapshot-path` is set) |
 | `POST` | [`/admin/checkpoint`](#post-admincheckpoint-opt-in) | Write a checkpoint snapshot (opt-in; only when `--wal-dir` is set) |
@@ -114,6 +116,107 @@ or durability failures. Parse/semantic/read-only/config errors return 400,
 timeouts return 408, not-found errors return 404, invalid params/vectors return
 422, constraint violations return 409, WAL-poisoned errors return 503, and
 server/storage failures return 500.
+
+## `POST /explain`
+
+Compile a query and return its plan as JSON. **The executor is never
+invoked.** Mutating queries (`CREATE`, `MERGE`, `SET`, `DELETE`,
+`REMOVE`) leave the graph untouched — `/explain` is a pure planning
+call.
+
+### Request body
+
+```json
+{
+  "query":  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  "params": { "name": "Alice" }
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `query` | string | yes | Cypher source. |
+| `params` | object | no | Bound parameters keyed by name. Accepted for API symmetry with `/profile` and `/query`; reserved for a future cost model. |
+
+### Response
+
+```json
+{
+  "query": "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  "shape": "readOnly",
+  "resultColumns": ["p"],
+  "tree": {
+    "id": 3,
+    "operator": "Projection",
+    "details": { "distinct": "false", "include_existing": "false", "items": "p" },
+    "estimatedRows": null,
+    "children": [
+      {
+        "id": 2,
+        "operator": "Filter",
+        "details": { "predicate": "..." },
+        "estimatedRows": null,
+        "children": [
+          {
+            "id": 1,
+            "operator": "NodeByLabelScan",
+            "details": { "var": "v0", "labels": "Person" },
+            "estimatedRows": null,
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`shape` is `"readOnly"` or `"mutating"`. `details` values are opaque
+human-readable strings; do not parse them programmatically.
+`estimatedRows` is reserved for a future cost model and is `null`
+today.
+
+## `POST /profile`
+
+Execute a query and return the plan plus runtime metrics.
+
+:::caution PROFILE executes the query for real
+
+Mutating queries (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`)
+produce the same side effects as `/query`: the WAL is written,
+snapshots observe the commit, and the live store advances.
+
+Use `/explain` to inspect a mutating plan without running it.
+
+:::
+
+### Request body
+
+Identical to `/explain`.
+
+### Response
+
+```json
+{
+  "plan": { "...same shape as /explain..." },
+  "metrics": {
+    "totalElapsedNs": 124500,
+    "totalRows": 3,
+    "mutated": false,
+    "perOperator": {
+      "1": { "rows": 5, "dbHits": 0, "elapsedNs": 18200, "nextCalls": 6 },
+      "2": { "rows": 4, "dbHits": 0, "elapsedNs": 21100, "nextCalls": 5 },
+      "3": { "rows": 4, "dbHits": 0, "elapsedNs": 24400, "nextCalls": 5 }
+    }
+  }
+}
+```
+
+`perOperator` keys are physical-node ids matching `tree[*].id` from
+the plan. Per-operator `elapsedNs` is wall-clock time *inclusive of
+descendants* — that's the "operator + everything below it" view that
+matches what is visually surprising when reading a profile. `dbHits`
+is reserved for a future phase and is `0` today.
 
 ## Admin endpoints (opt-in)
 

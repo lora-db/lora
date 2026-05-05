@@ -21,7 +21,7 @@
 | `CREATE CONSTRAINT` | Not in grammar | N/A | Low |
 | `LOAD CSV` | Not in grammar | N/A | Low |
 | `USE <graph>` (multi-database) | Not in grammar | N/A | Low |
-| `PROFILE` | Not in grammar | N/A | Low |
+| `EXPLAIN` / `PROFILE` (Cypher keywords) | Not in grammar | API-only | Low — exposed as `db.explain()` / `db.profile()` API methods rather than Cypher syntax. `PROFILE` runs the query for real (including writes); `EXPLAIN` is plan-only. |
 | Quantified path patterns | Not in grammar | N/A | Low — future openCypher syntax |
 | Inline `WHERE` inside variable-length relationship | Parsed | Not evaluated | Low — 1 ignored test |
 | Type mismatch detection between comparable types | Accepted | Compared without error | Low — 1 ignored test |
