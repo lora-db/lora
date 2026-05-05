@@ -491,6 +491,123 @@ pub unsafe extern "C" fn lora_db_execute_json(
     }
 }
 
+/// Execute a query and return the result as a compact binary buffer
+/// (see `lora_binding_buffer` for the wire format).
+///
+/// Faster than `lora_db_execute_json` for bulk reads: skips the
+/// `RowArrays` projection inside the engine and the JSON
+/// serialize/parse round-trip on both sides of the FFI. The caller
+/// owns `*out_bytes` on success and must release it with
+/// `lora_bytes_free(out_bytes, out_len)`.
+///
+/// On failure `*out_error` is populated and must be released with
+/// `lora_string_free`. Exactly one of the two outputs is non-null.
+///
+/// # Safety
+/// All pointers must be valid; `params_json` may be null. The caller
+/// is responsible for releasing whichever output pointer is populated.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_execute_buffer(
+    db: *mut LoraDatabase,
+    query: *const c_char,
+    params_json: *const c_char,
+    out_bytes: *mut *mut c_uchar,
+    out_len: *mut usize,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_bytes.is_null() {
+            *out_bytes = ptr::null_mut();
+        }
+        if !out_len.is_null() {
+            *out_len = 0;
+        }
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if db.is_null()
+            || query.is_null()
+            || out_bytes.is_null()
+            || out_len.is_null()
+            || out_error.is_null()
+        {
+            return LoraStatus::NullPointer;
+        }
+
+        let query = match CStr::from_ptr(query).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, "query is not valid UTF-8");
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+
+        let params_str = if params_json.is_null() {
+            None
+        } else {
+            match CStr::from_ptr(params_json).to_str() {
+                Ok("") => None,
+                Ok(s) => Some(s),
+                Err(_) => {
+                    write_error(
+                        out_error,
+                        INVALID_PARAMS_PREFIX,
+                        "params JSON is not valid UTF-8",
+                    );
+                    return LoraStatus::InvalidParams;
+                }
+            }
+        };
+
+        let params_map = match parse_params(params_str) {
+            Ok(map) => map,
+            Err(msg) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
+                return LoraStatus::InvalidParams;
+            }
+        };
+
+        // ResultFormat::Rows lets the encoder iterate the engine's
+        // native row format directly and skip the RowArrays projection
+        // (which would otherwise clone every cell).
+        let options = ExecuteOptions {
+            format: ResultFormat::Rows,
+        };
+
+        let exec = (*db)
+            .inner
+            .execute_with_params(query, Some(options), params_map);
+        let rows = match exec {
+            Ok(QueryResult::Rows(r)) => r.rows,
+            Ok(_) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, "expected Rows result");
+                return LoraStatus::InvalidParams;
+            }
+            Err(e) => {
+                write_lora_error(out_error, e);
+                return LoraStatus::LoraError;
+            }
+        };
+
+        let buf = lora_binding_buffer::encode_query_rows(&rows);
+        let mut boxed = buf.into_boxed_slice();
+        *out_len = boxed.len();
+        *out_bytes = boxed.as_mut_ptr();
+        std::mem::forget(boxed);
+        LoraStatus::Ok
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, PANIC_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
 /// Compile a query and return its plan as JSON without executing it.
 ///
 /// Mutating queries (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`)
