@@ -674,6 +674,21 @@ jobs:
         with:
           destination: crates/bindings/lora-ruby
 
+      - name: Stage Gemfile.lock at repo root for cross-gem version detection
+        # cross-gem's setup step greps `Gemfile.lock` from the repo root
+        # (NOT from its `working-directory` input) to discover the pinned
+        # rb_sys version, which then drives both the host `gem install
+        # rb_sys` and the rb-sys-dock Docker tag. Our lockfile lives at
+        # crates/bindings/lora-ruby/Gemfile.lock, so without this stage
+        # the grep falls through to `gem info rb_sys --remote` and picks
+        # up the absolute latest gem release. When that newest version
+        # has not yet had its matching `rbsys/<platform>:<ver>` image
+        # pushed to Docker Hub, the docker pull fails ("manifest
+        # unknown") and the cross-build aborts.
+        shell: bash
+        working-directory: .
+        run: cp crates/bindings/lora-ruby/Gemfile.lock Gemfile.lock
+
       - name: Cross-build precompiled gem for ${{ matrix.platform }}
         # `cross-gem-action` runs inside rb-sys' official toolchain
         # image, which contains every target Ruby ABI and the Rust
