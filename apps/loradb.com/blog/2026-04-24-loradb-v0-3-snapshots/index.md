@@ -4,7 +4,10 @@ title: "LoraDB v0.3: snapshots for saving and restoring graph state"
 description: "LoraDB v0.3 adds manual point-in-time snapshots — a single-file dump of the in-memory graph, atomic on rename, restorable at boot or on demand, exposed through every binding and the HTTP admin surface."
 authors: [loradb]
 tags: [release-notes, announcement, persistence, operations]
+image: /img/blog/loradb-v0-3-snapshots-header.png
 ---
+
+![LoraDB v0.3 — manual point-in-time snapshots, atomic on rename, admin surface secured.](/img/blog/loradb-v0-3-snapshots-header.png)
 
 LoraDB v0.3 adds manual point-in-time snapshots.
 

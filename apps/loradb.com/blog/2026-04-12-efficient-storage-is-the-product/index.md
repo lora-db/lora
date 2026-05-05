@@ -4,7 +4,10 @@ title: "Efficient storage is the product"
 description: "Why LoraDB treats memory layout, traversal cost, and predictable data structures as product features."
 authors: [joost]
 tags: [founder-notes, architecture, deep-dive]
+image: /img/blog/efficient-storage-is-the-product-header.png
 ---
+
+![Efficient storage is the product — memory layout and traversal cost are product features.](/img/blog/efficient-storage-is-the-product-header.png)
 
 When people talk about graph databases, they usually talk about query
 languages, visualizations, and relationship modeling. All of that matters. But

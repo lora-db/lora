@@ -4,7 +4,10 @@ title: "Building LoraDB with Claude and Codex"
 description: "How Claude and Codex fit into LoraDB's engineering workflow: repository work, documentation, releases, and product direction, with the code remaining the source of truth."
 authors: [joost]
 tags: [founder-notes, ai, architecture, design]
+image: /img/blog/building-loradb-with-ai-header.png
 ---
+
+![Built with Claude and Codex — the code stays the source of truth.](/img/blog/building-loradb-with-ai-header.png)
 
 I use Claude and Codex to build LoraDB.
 
@@ -18,11 +21,13 @@ Claude and Codex help with different parts of the process: reading code, checkin
 
 The practical version is fairly ordinary.
 
-Codex is useful inside the repository. It can read files, follow code paths, run commands, patch docs, check links, find stale claims, and keep track of release work that is easy to get almost right.
+Claude is useful inside the repository. It can read files, follow code paths, run commands, patch docs, check links, find stale claims, and keep track of release work that is easy to get almost right.
 
-Claude is useful around the repository. It helps with structure, narrative, product direction, and the question of whether a phrase like "production-grade" is being earned or just repeated.
+Codex is useful around the repository. It helps with structure, narrative, product direction, and the question of whether a phrase like "production-grade" is being earned or just repeated.
 
 I use both, and I reject both often. Their value is not that they are always right. Their value is that they make it easier to inspect the project from several angles before deciding what should change.
+
+![The loop: Claude and Codex propose, the proposal is verified against the implementation, most are rejected, only verified work reaches the code.](/img/blog/building-loradb-with-ai-loop.png)
 
 ## Why This Matters For LoraDB
 
@@ -46,7 +51,7 @@ It can explain a feature that does not exist. It can make a limitation sound lik
 
 So the rule is simple: the code wins.
 
-If Codex writes a claim, the implementation has to back it. If Claude helps shape a post, the post still has to respect the current product. If something is work in progress, it should be called work in progress.
+If Claude writes a claim, the implementation has to back it. If Codex helps shape a post, the post still has to respect the current product. If something is work in progress, it should be called work in progress.
 
 ## Where It Helps
 
@@ -66,9 +71,11 @@ LoraDB spans several kinds of work:
 
 A human can reason about all of that, but context switching has a cost. AI helps reduce that cost by making it faster to ask the obvious follow-up questions.
 
-Codex is good at the repository question: where is this in the code?
+Claude is good at the repository question: where is this in the code?
 
-Claude is good at the product question: what does this mean for the user?
+Codex is good at the product question: what does this mean for the user?
+
+![Two questions, one project: Codex asks where this is in the code, Claude asks what it means for the user. Direction, merge, and publish stay with the human owner.](/img/blog/building-loradb-with-ai-breadth.png)
 
 Those two questions catch a lot of weak spots.
 
@@ -101,6 +108,8 @@ Because AI is part of the process, and it is better to be direct about that.
 Because the way LoraDB is built affects the kind of project it becomes.
 
 Because there is a serious version of AI-assisted engineering: use the tools, name the tools, verify the tools, and keep responsibility with the person building the system.
+
+![The rule: use the tools, name the tools, verify the tools.](/img/blog/building-loradb-with-ai-rule.png)
 
 LoraDB is being built with Claude and Codex as part of the workflow.
 

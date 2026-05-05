@@ -4,7 +4,10 @@ title: "LoraDB v0.2: vector values for connected AI context"
 description: "LoraDB v0.2 adds first-class VECTOR values, vector functions, binding support, and documentation for graph-shaped AI retrieval on top of the v0.1 core."
 authors: [loradb]
 tags: [release-notes, announcement, ai, cypher]
+image: /img/blog/loradb-v0-2-vectors-header.png
 ---
+
+![LoraDB v0.2 — first-class VECTOR values for connected AI context.](/img/blog/loradb-v0-2-vectors-header.png)
 
 LoraDB v0.2 adds first-class `VECTOR` values.
 

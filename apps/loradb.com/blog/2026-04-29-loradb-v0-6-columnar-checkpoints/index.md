@@ -4,7 +4,10 @@ title: "LoraDB v0.6: columnar snapshots and managed WAL checkpoints"
 description: "LoraDB v0.6 upgrades persistence with the columnar LORACOL1 snapshot format, managed commit-count WAL checkpoints, and aligned binding APIs across Rust, Node, WASM, Python, Go, and Ruby."
 authors: [loradb]
 tags: [release-notes, announcement, persistence, operations]
+image: /img/blog/loradb-v0-6-columnar-checkpoints-header.png
 ---
+
+![LoraDB v0.6 — columnar LORACOL1 snapshots and managed WAL checkpoints.](/img/blog/loradb-v0-6-columnar-checkpoints-header.png)
 
 LoraDB v0.6 is a persistence hardening release.
 

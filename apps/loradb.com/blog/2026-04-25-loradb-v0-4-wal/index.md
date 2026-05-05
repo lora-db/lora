@@ -4,7 +4,10 @@ title: "LoraDB v0.4.0: WAL, checkpoints, and crash recovery"
 description: "LoraDB v0.4.0 adds continuous durability on every filesystem-backed surface via a write-ahead log, plus checkpoints, recovery, WAL admin routes, and simple directory-based persistent startup for embedded bindings."
 authors: [loradb]
 tags: [release-notes, announcement, persistence, operations]
+image: /img/blog/loradb-v0-4-0-wal-header.png
 ---
+
+![LoraDB v0.4 — WAL, checkpoints, and crash recovery.](/img/blog/loradb-v0-4-0-wal-header.png)
 
 LoraDB v0.4.0 adds a write-ahead log.
 

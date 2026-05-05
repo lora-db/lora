@@ -4,7 +4,10 @@ title: "Why I started LoraDB"
 description: "The first reason was simple: I needed a graph database that felt fast enough to keep in the hot path."
 authors: [joost]
 tags: [founder-notes, design, announcement]
+image: /img/blog/why-i-started-loradb-header.png
 ---
+
+![Why I started LoraDB — a graph database fast enough to keep in the hot path.](/img/blog/why-i-started-loradb-header.png)
 
 I did not start LoraDB because the world was missing another database with a
 logo and a query language. I started it because I kept reaching for a graph

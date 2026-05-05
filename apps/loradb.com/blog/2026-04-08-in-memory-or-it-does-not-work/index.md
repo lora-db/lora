@@ -4,7 +4,10 @@ title: "In-memory or it does not work"
 description: "Why LoraDB starts with hot data, predictable traversal, and a graph engine close to the application."
 authors: [joost]
 tags: [founder-notes, architecture, design]
+image: /img/blog/in-memory-or-it-does-not-work-header.png
 ---
+
+![In-memory or it does not work — hot data, predictable traversal, the engine close to the application.](/img/blog/in-memory-or-it-does-not-work-header.png)
 
 The phrase "in-memory database" can sound like a performance trick. For
 LoraDB, it is more basic than that. The product I wanted to build did not make

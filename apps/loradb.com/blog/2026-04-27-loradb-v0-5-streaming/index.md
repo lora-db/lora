@@ -4,7 +4,10 @@ title: "LoraDB v0.5: streaming queries, property indexes, and faster bindings"
 description: "LoraDB v0.5 turns the engine from whole-result execution toward pull-based streaming, property indexes, owned result streams, and binding APIs that can handle larger graph workloads without forcing everything through one materialized response."
 authors: [loradb]
 tags: [release-notes, announcement, performance, cypher]
+image: /img/blog/loradb-v0-5-streaming-header.png
 ---
+
+![LoraDB v0.5 — streaming queries, property indexes, and faster bindings.](/img/blog/loradb-v0-5-streaming-header.png)
 
 LoraDB v0.5 is the release where the engine starts to breathe under
 larger result sets.

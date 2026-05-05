@@ -4,7 +4,10 @@ title: "Vectors belong next to relationships"
 description: "Why LoraDB adds VECTOR values: similarity is useful, but connected context is what makes retrieval explainable."
 authors: [joost]
 tags: [founder-notes, ai, design, cypher]
+image: /img/blog/vectors-belong-next-to-relationships-header.png
 ---
+
+![Vectors belong next to relationships — connected context makes retrieval explainable.](/img/blog/vectors-belong-next-to-relationships-header.png)
 
 The conventional advice for AI retrieval is to pick a side.
 

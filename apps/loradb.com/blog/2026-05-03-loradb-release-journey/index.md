@@ -4,7 +4,10 @@ title: "The LoraDB release journey so far"
 description: "A narrative map of LoraDB from public v0.1 through vectors, snapshots, WAL recovery, streaming execution, columnar checkpoints, and the current performance/concurrency work."
 authors: [loradb]
 tags: [founder-notes, release-notes, architecture, performance]
+image: /img/blog/loradb-release-journey-header.png
 ---
+
+![The LoraDB release journey — v0.1 through v0.6 milestones.](/img/blog/loradb-release-journey-header.png)
 
 LoraDB has moved quickly since the public release, so it is worth
 stepping back from the version numbers and looking at the journey.

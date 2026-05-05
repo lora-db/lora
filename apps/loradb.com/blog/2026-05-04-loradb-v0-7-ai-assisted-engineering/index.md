@@ -4,7 +4,10 @@ title: "LoraDB v0.7: AI-assisted engineering, honestly"
 description: "LoraDB v0.7 is a process release about using Claude and Codex across the project: code review, refactoring, documentation, release work, and product direction without pretending AI owns the engineering."
 authors: [loradb]
 tags: [release-notes, announcement, architecture, ai]
+image: /img/blog/loradb-v0-7-ai-assisted-engineering-header.png
 ---
+
+![LoraDB v0.7 — AI-assisted engineering, honestly: use, name, verify the tools.](/img/blog/loradb-v0-7-ai-assisted-engineering-header.png)
 
 LoraDB v0.7 is about how the project is being built.
 
@@ -31,13 +34,14 @@ AI is being used across the full scope of the project:
 - comparing architecture claims against source files;
 - helping reason about where persistence and concurrency should go next.
 
-Codex is most useful inside the repository. It can inspect the codebase, edit
-files, run tests, build the docs site, and catch the small mismatches that make
-a database project feel less trustworthy.
+Claude does most of the code work. It inspects the codebase, edits files,
+runs tests, builds the docs site, and shapes the next change inside the
+repository.
 
-Claude is most useful as a reasoning partner. It helps pressure-test the
-product narrative: what is actually implemented, what is only a direction, what
-is still experimental, and what a serious user would misunderstand.
+Codex sits on the other side of the loop, as the reviewer and the
+documentarian. It checks code changes against intent, audits the docs against
+the implementation, drafts and revises release notes, and catches the small
+mismatches that make a database project feel less trustworthy.
 
 Those are different jobs. Both are useful.
 

@@ -4,7 +4,10 @@ title: "Snapshots before a log"
 description: "Why LoraDB v0.3 ships manual point-in-time snapshots before any write-ahead log, what that primitive teaches, and how durability gets layered on top of it."
 authors: [joost]
 tags: [founder-notes, persistence, design, operations]
+image: /img/blog/snapshots-before-a-log-header.png
 ---
+
+![Snapshots before a log — the simpler primitive earns the harder one.](/img/blog/snapshots-before-a-log-header.png)
 
 Most databases I have worked with had a write-ahead log before they had a
 snapshot story. LoraDB went the other way.

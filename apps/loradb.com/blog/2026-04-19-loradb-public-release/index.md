@@ -4,7 +4,10 @@ title: "LoraDB public release: a fast in-memory graph database in Rust"
 description: "The first public release of LoraDB, what is included, how to try it, the license model, and where the project goes next."
 authors: [loradb]
 tags: [release-notes, announcement, architecture, cypher]
+image: /img/blog/loradb-public-release-header.png
 ---
+
+![LoraDB public release v0.1 — a fast in-memory graph database in Rust.](/img/blog/loradb-public-release-header.png)
 
 LoraDB is now public.
 

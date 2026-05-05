@@ -4,7 +4,10 @@ title: "From developer trust to hosted platform"
 description: "The customer journey behind LoraDB: local adoption first, managed operations later."
 authors: [joost]
 tags: [founder-notes, design, architecture]
+image: /img/blog/from-developer-trust-to-hosted-platform-header.png
 ---
+
+![From developer trust to hosted platform — local adoption first, managed operations later.](/img/blog/from-developer-trust-to-hosted-platform-header.png)
 
 The easiest way to misunderstand LoraDB is to see the open core and the hosted
 platform as separate ideas.

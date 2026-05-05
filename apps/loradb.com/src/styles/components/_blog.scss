@@ -391,6 +391,15 @@ html.blog-wrapper {
 }
 
 // -------------------------------------------------------------------
+// Inline images inside blog markdown — header banners and inline figures
+// share a small rounded radius so they read as soft cards rather than
+// hard rectangles flush against the prose.
+// -------------------------------------------------------------------
+html.blog-wrapper main article .markdown img {
+  border-radius: 8px;
+}
+
+// -------------------------------------------------------------------
 // Single post page — header polish
 // -------------------------------------------------------------------
 html.blog-post-page main article > header {
