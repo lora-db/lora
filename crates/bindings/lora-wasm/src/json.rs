@@ -12,8 +12,9 @@ use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
 use lora_database::{
-    snapshot_credentials_from_json, snapshot_options_from_json, LoraError, LoraValue, Row,
-    SnapshotCredentials, SnapshotOptions, TransactionMode,
+    snapshot_credentials_from_json, snapshot_options_from_json, LoraError, LoraValue, PlanShape,
+    PlanTreeNode, QueryPlan, QueryProfile, Row, SnapshotCredentials, SnapshotOptions,
+    TransactionMode,
 };
 use lora_store::{
     LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
@@ -161,6 +162,71 @@ pub(crate) fn row_to_json(row: &Row) -> serde_json::Value {
         obj.insert(name.into_owned(), lora_value_to_json(value));
     }
     serde_json::Value::Object(obj)
+}
+
+pub(crate) fn plan_to_json(plan: &QueryPlan) -> serde_json::Value {
+    serde_json::json!({
+        "query": &plan.query,
+        "shape": plan_shape_str(plan.shape),
+        "resultColumns": serde_json::Value::Array(
+            plan.result_columns
+                .iter()
+                .map(|c| serde_json::Value::String(c.clone()))
+                .collect(),
+        ),
+        "tree": plan_tree_node_to_json(&plan.tree.root),
+    })
+}
+
+pub(crate) fn profile_to_json(profile: &QueryProfile) -> serde_json::Value {
+    serde_json::json!({
+        "plan": plan_to_json(&profile.plan),
+        "metrics": {
+            "totalElapsedNs": profile.metrics.total_elapsed_ns as f64,
+            "totalRows": profile.metrics.total_rows as f64,
+            "mutated": profile.metrics.mutated,
+            "perOperator": serde_json::Value::Object(
+                profile
+                    .metrics
+                    .per_operator
+                    .iter()
+                    .map(|(id, m)| {
+                        (
+                            id.to_string(),
+                            serde_json::json!({
+                                "rows": m.rows as f64,
+                                "dbHits": m.db_hits as f64,
+                                "elapsedNs": m.elapsed_ns as f64,
+                                "nextCalls": m.next_calls as f64,
+                            }),
+                        )
+                    })
+                    .collect(),
+            ),
+        },
+    })
+}
+
+fn plan_tree_node_to_json(node: &PlanTreeNode) -> serde_json::Value {
+    let details = serde_json::Value::Object(
+        node.details
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect(),
+    );
+    serde_json::json!({
+        "id": node.id as f64,
+        "operator": &node.operator,
+        "details": details,
+        "estimatedRows": node.estimated_rows.map(|r| r as f64),
+        "children": serde_json::Value::Array(
+            node.children.iter().map(plan_tree_node_to_json).collect(),
+        ),
+    })
+}
+
+fn plan_shape_str(s: PlanShape) -> serde_json::Value {
+    serde_json::Value::String(s.as_str().to_string())
 }
 
 fn lora_value_to_json(value: &LoraValue) -> serde_json::Value {

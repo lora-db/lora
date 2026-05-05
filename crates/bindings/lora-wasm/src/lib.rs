@@ -23,7 +23,7 @@ mod json;
 use json::{
     js_error, js_error_from_anyhow, js_error_from_lora, json_value_to_params,
     parse_snapshot_credentials, parse_snapshot_options, parse_transaction_mode,
-    parse_transaction_statements, row_to_json, serialize_rows,
+    parse_transaction_statements, plan_to_json, profile_to_json, row_to_json, serialize_rows,
 };
 /// Deprecated umbrella code preserved for binding-level static-message
 /// call sites (stream closed, lock invariants). Engine errors go through
@@ -85,6 +85,51 @@ impl WasmDatabase {
 
         // `json_compatible` emits plain JS objects (not Maps) so the result
         // survives `structuredClone` across the worker boundary.
+        out.serialize(&Serializer::json_compatible())
+            .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
+    }
+
+    /// Compile a query and return its plan without executing it.
+    ///
+    /// Mutating queries (CREATE / MERGE / SET / DELETE / REMOVE) leave
+    /// the graph untouched — this method never runs the executor.
+    pub fn explain(&self, query: &str, params: JsValue) -> Result<JsValue, JsError> {
+        let params_map = if params.is_undefined() || params.is_null() {
+            None
+        } else {
+            let json_value: serde_json::Value = serde_wasm_bindgen::from_value(params)
+                .map_err(|e| js_error(INVALID_PARAMS_CODE, &e.to_string()))?;
+            Some(json_value_to_params(json_value)?)
+        };
+
+        let plan = self
+            .db
+            .explain(query, params_map)
+            .map_err(|e| js_error_from_lora(&e))?;
+        let out = plan_to_json(&plan);
+        out.serialize(&Serializer::json_compatible())
+            .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
+    }
+
+    /// Execute a query and return the plan plus runtime metrics.
+    ///
+    /// **PROFILE executes the query for real.** Mutating queries are
+    /// persisted exactly as in `execute()`. Use `explain()` to inspect
+    /// a mutating plan without running it.
+    pub fn profile(&self, query: &str, params: JsValue) -> Result<JsValue, JsError> {
+        let params_map = if params.is_undefined() || params.is_null() {
+            None
+        } else {
+            let json_value: serde_json::Value = serde_wasm_bindgen::from_value(params)
+                .map_err(|e| js_error(INVALID_PARAMS_CODE, &e.to_string()))?;
+            Some(json_value_to_params(json_value)?)
+        };
+
+        let prof = self
+            .db
+            .profile(query, params_map)
+            .map_err(|e| js_error_from_lora(&e))?;
+        let out = profile_to_json(&prof);
         out.serialize(&Serializer::json_compatible())
             .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
     }

@@ -37,6 +37,16 @@ export declare class Database {
     query: string,
     params?: Record<string, unknown> | null,
   ): Promise<NativeQueryResult>;
+  /** Compile a query and return its plan without executing it. */
+  explain(
+    query: string,
+    params?: Record<string, unknown> | null,
+  ): Promise<unknown>;
+  /** Execute a query and return the plan plus runtime metrics. PROFILE executes writes. */
+  profile(
+    query: string,
+    params?: Record<string, unknown> | null,
+  ): Promise<unknown>;
   openStream(
     query: string,
     params?: Record<string, unknown> | null,

@@ -46,6 +46,38 @@ for (const row of res.rows) {
 }
 ```
 
+### Explain & Profile
+
+`db.explain()` and `db.profile()` are first-class methods alongside
+`db.execute()`. They are intentionally *separate calls*, not a flag on
+`execute()`, so you have to opt in explicitly to plan inspection or
+metrics collection.
+
+```ts
+const plan = await db.explain(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { name: "Alice" },
+);
+console.log(plan.shape);          // "readOnly"
+console.log(plan.tree.operator);  // top-most operator label
+
+const profile = await db.profile(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { name: "Alice" },
+);
+console.log(profile.metrics.totalElapsedNs);
+console.log(profile.metrics.perOperator);
+```
+
+`explain()` never invokes the executor — calling it on a mutating
+query (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`) leaves the graph
+untouched.
+
+> **`profile()` executes the query for real.** Mutating queries
+> produce the same side effects as `execute()`: the WAL is written,
+> snapshots observe the commit, and the live store advances. Use
+> `explain()` to inspect a mutating plan without running it.
+
 The initialization rule is:
 
 ```ts

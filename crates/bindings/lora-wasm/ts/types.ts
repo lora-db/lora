@@ -295,6 +295,57 @@ export interface QueryResult<
 }
 
 // ---------------------------------------------------------------------------
+// Explain / Profile result types
+// ---------------------------------------------------------------------------
+
+export type LoraPlanShape = "readOnly" | "mutating";
+
+export interface LoraPlanNode {
+  /** Stable physical-node id within the owning plan, or `Number.MAX_SAFE_INTEGER` for synthetic Union / UnionBranch wrappers. */
+  id: number;
+  /** Operator label, e.g. "NodeByLabelScan", "Expand", "Projection". */
+  operator: string;
+  /** Human-readable details map keyed on stable strings. Values are opaque strings — internal expression / variable types are not exposed here. */
+  details: Record<string, string>;
+  /** Reserved for a future cost model. Always `null` today. */
+  estimatedRows: number | null;
+  children: LoraPlanNode[];
+}
+
+export interface LoraQueryPlan {
+  /** The exact query string the caller submitted to `explain()`. */
+  query: string;
+  shape: LoraPlanShape;
+  /** Result column names in projection order. Empty for plans without a top-level projection. */
+  resultColumns: string[];
+  tree: LoraPlanNode;
+}
+
+export interface LoraOperatorMetrics {
+  rows: number;
+  /** Reserved for a future phase. `0` today. */
+  dbHits: number;
+  /** Wall-clock time spent inside this operator's `next_row`, *inclusive* of children. */
+  elapsedNs: number;
+  nextCalls: number;
+}
+
+export interface LoraQueryProfile {
+  /** Same shape as the result of `explain()`. */
+  plan: LoraQueryPlan;
+  metrics: {
+    /** Wall-clock time spent inside the executor for this query. */
+    totalElapsedNs: number;
+    /** Number of rows produced (before result-format projection). */
+    totalRows: number;
+    /** Whether at least one mutating operator ran. */
+    mutated: boolean;
+    /** Per-operator metrics keyed by physical node id (string-encoded for object compatibility). */
+    perOperator: Record<string, LoraOperatorMetrics>;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Guards
 // ---------------------------------------------------------------------------
 

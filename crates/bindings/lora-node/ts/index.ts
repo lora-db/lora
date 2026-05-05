@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 
 import type {
   LoraParams,
+  LoraQueryPlan,
+  LoraQueryProfile,
   LoraValue,
   QueryResult,
 } from "./types.js";
@@ -427,6 +429,39 @@ class DatabaseImpl {
     try {
       const raw = await this.#inner.execute(query, params ?? null);
       return raw as QueryResult<T>;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Compile a query and return its execution plan without running it.
+   *
+   * This is a separate API method from `execute()`; it never invokes the
+   * executor, so calling `explain()` on a mutating query (`CREATE`,
+   * `MERGE`, `SET`, `DELETE`, `REMOVE`) leaves the graph untouched.
+   * Errors surface with the same `LoraError` shape as `execute()`.
+   */
+  async explain(query: string, params?: LoraParams): Promise<LoraQueryPlan> {
+    try {
+      return (await this.#inner.explain(query, params ?? null)) as LoraQueryPlan;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Execute a query and return the plan plus runtime metrics.
+   *
+   * **`profile()` runs the query for real.** Mutating queries
+   * (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`) produce the same
+   * side effects as `execute()`: the WAL is written, snapshots observe
+   * the commit, and the live store advances. Use `explain()` if you
+   * want to inspect a mutating plan without running it.
+   */
+  async profile(query: string, params?: LoraParams): Promise<LoraQueryProfile> {
+    try {
+      return (await this.#inner.profile(query, params ?? null)) as LoraQueryProfile;
     } catch (err) {
       throw wrapError(err);
     }

@@ -42,6 +42,23 @@ export declare class Database {
    */
   execute(query: string, params?: Record<string, any> | null | undefined): Promise<{ columns: string[]; rows: Array<Record<string, any>> }>
   /**
+   * Compile a query and return its execution plan without running it.
+   *
+   * Unlike [`Self::execute`], this never invokes the executor — even
+   * for mutating queries (`CREATE`, `MERGE`, `SET`, `DELETE`,
+   * `REMOVE`) `explain()` produces no side effects. The returned
+   * object describes the operator tree the executor *would* run.
+   */
+  explain(query: string, params?: Record<string, any> | null | undefined): Promise<LoraQueryPlan>
+  /**
+   * Execute a query and return runtime metrics alongside the plan.
+   *
+   * **`profile()` runs the query for real.** Mutating queries
+   * produce the same side effects as `execute()`. Use `explain()`
+   * to inspect a mutating plan without running it.
+   */
+  profile(query: string, params?: Record<string, any> | null | undefined): Promise<LoraQueryProfile>
+  /**
    * Open a true native row stream.
    *
    * The returned handle owns the Rust `QueryStream`, so rows are pulled

@@ -33,7 +33,7 @@ mod tasks;
 
 use errors::{closed_error_message, format_lora_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
 use json::{json_value_to_params, row_to_json};
-use tasks::{ClearTask, ExecuteTask, SyncTask, TransactionTask};
+use tasks::{ClearTask, ExecuteTask, ExplainTask, ProfileTask, SyncTask, TransactionTask};
 
 static PERSISTENT_DATABASES: OnceLock<Mutex<BTreeMap<PathBuf, PersistentDatabaseEntry>>> =
     OnceLock::new();
@@ -151,6 +151,47 @@ impl Database {
         >,
     ) -> Result<AsyncTask<ExecuteTask>> {
         Ok(AsyncTask::new(ExecuteTask {
+            db: self.inner()?,
+            query,
+            params,
+        }))
+    }
+
+    /// Compile a query and return its execution plan without running it.
+    ///
+    /// Unlike [`Self::execute`], this never invokes the executor — even
+    /// for mutating queries (`CREATE`, `MERGE`, `SET`, `DELETE`,
+    /// `REMOVE`) `explain()` produces no side effects. The returned
+    /// object describes the operator tree the executor *would* run.
+    #[napi(ts_return_type = "Promise<LoraQueryPlan>")]
+    pub fn explain(
+        &self,
+        query: String,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
+            serde_json::Value,
+        >,
+    ) -> Result<AsyncTask<ExplainTask>> {
+        Ok(AsyncTask::new(ExplainTask {
+            db: self.inner()?,
+            query,
+            params,
+        }))
+    }
+
+    /// Execute a query and return runtime metrics alongside the plan.
+    ///
+    /// **`profile()` runs the query for real.** Mutating queries
+    /// produce the same side effects as `execute()`. Use `explain()`
+    /// to inspect a mutating plan without running it.
+    #[napi(ts_return_type = "Promise<LoraQueryProfile>")]
+    pub fn profile(
+        &self,
+        query: String,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
+            serde_json::Value,
+        >,
+    ) -> Result<AsyncTask<ProfileTask>> {
+        Ok(AsyncTask::new(ProfileTask {
             db: self.inner()?,
             query,
             params,

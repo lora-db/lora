@@ -19,7 +19,7 @@ use lora_database::{
 };
 
 use crate::errors::{format_lora_error, INVALID_PARAMS_CODE};
-use crate::json::{json_value_to_params, serialize_rows};
+use crate::json::{json_value_to_params, plan_to_json, profile_to_json, serialize_rows};
 
 /// Work unit for `Database.execute`. Owns its inputs so it can move onto the
 /// libuv worker pool and run without touching the JS main thread until it
@@ -64,6 +64,66 @@ impl Task for ExecuteTask {
 
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
         // `serde-json` feature on napi bridges serde_json::Value → JS objects.
+        env.to_js_value(&output)
+    }
+}
+
+/// Work unit for `Database.explain`. Compiles the query and serializes
+/// the resulting plan; the executor is never invoked, so this stays
+/// safe to run on any query including mutating ones.
+pub struct ExplainTask {
+    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
+    pub(crate) query: String,
+    pub(crate) params: Option<serde_json::Value>,
+}
+
+impl Task for ExplainTask {
+    type Output = serde_json::Value;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let params_map = match self.params.take() {
+            None | Some(serde_json::Value::Null) => None,
+            Some(other) => Some(json_value_to_params(other)?),
+        };
+        let plan = self
+            .db
+            .explain(&self.query, params_map)
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
+        Ok(plan_to_json(&plan))
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        env.to_js_value(&output)
+    }
+}
+
+/// Work unit for `Database.profile`. PROFILE runs the query for real,
+/// including any mutations; the runtime metrics are returned alongside
+/// the plan tree.
+pub struct ProfileTask {
+    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
+    pub(crate) query: String,
+    pub(crate) params: Option<serde_json::Value>,
+}
+
+impl Task for ProfileTask {
+    type Output = serde_json::Value;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let params_map = match self.params.take() {
+            None | Some(serde_json::Value::Null) => None,
+            Some(other) => Some(json_value_to_params(other)?),
+        };
+        let profile = self
+            .db
+            .profile(&self.query, params_map)
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
+        Ok(profile_to_json(&profile))
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
         env.to_js_value(&output)
     }
 }
