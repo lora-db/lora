@@ -54,6 +54,41 @@ impl WasmDatabase {
         }
     }
 
+    /// Execute a Lora query and return the result as a binary buffer.
+    ///
+    /// Wire format is the shared `lora_binding_buffer` layout. The TS
+    /// wrapper decodes it once into the same `{ columns, rows }` shape
+    /// `execute()` returns, but in a tight V8 loop instead of going
+    /// through `serde_wasm_bindgen` value-by-value. Materially faster
+    /// on bulk reads.
+    #[wasm_bindgen(js_name = executeBuffer)]
+    pub fn execute_buffer(&self, query: &str, params: JsValue) -> Result<Vec<u8>, JsError> {
+        let params_map = if params.is_undefined() || params.is_null() {
+            BTreeMap::new()
+        } else {
+            let json_value: serde_json::Value = serde_wasm_bindgen::from_value(params)
+                .map_err(|e| js_error(INVALID_PARAMS_CODE, &e.to_string()))?;
+            json_value_to_params(json_value)?
+        };
+
+        // ResultFormat::Rows lets the encoder iterate the engine's
+        // native row format directly and skip the RowArrays projection.
+        let options = ExecuteOptions {
+            format: ResultFormat::Rows,
+        };
+
+        let result = self
+            .db
+            .execute_with_params(query, Some(options), params_map)
+            .map_err(|e| js_error_from_lora(&e))?;
+
+        let QueryResult::Rows(rows_result) = result else {
+            return Err(js_error(LORA_ERROR_CODE, "expected Rows result"));
+        };
+
+        Ok(lora_binding_buffer::encode_query_rows(&rows_result.rows))
+    }
+
     /// Execute a Lora query. `params` may be `undefined`, `null`, or a
     /// plain object keyed by parameter name.
     ///

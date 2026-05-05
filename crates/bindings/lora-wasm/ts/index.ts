@@ -23,6 +23,7 @@ import type {
 } from "./types.js";
 import { wrapError } from "./types.js";
 import { WasmDatabase, init as wasmInit } from "./loader-node.js";
+import { decodeResult } from "./decode.js";
 import { createWorkerDatabase } from "./worker-client.js";
 import type { WorkerDatabase, WorkerLike } from "./worker-client.js";
 import {
@@ -207,8 +208,15 @@ class DatabaseImpl {
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
   >(query: string, params?: LoraParams): Promise<QueryResult<T>> {
     try {
-      const raw = this.#inner.execute(query, (params ?? null) as unknown);
-      return raw as QueryResult<T>;
+      // executeBuffer ships a single binary buffer instead of building
+      // the JS object tree inside Rust + serialising it through
+      // serde_wasm_bindgen value-by-value. We decode once on the JS
+      // side in JIT'd code, which is materially faster.
+      const native = this.#inner as unknown as {
+        executeBuffer(query: string, params: unknown): Uint8Array;
+      };
+      const buf = native.executeBuffer(query, (params ?? null) as unknown);
+      return decodeResult(buf) as QueryResult<T>;
     } catch (err) {
       throw wrapError(err);
     }

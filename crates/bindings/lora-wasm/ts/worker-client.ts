@@ -31,6 +31,7 @@ import {
   snapshotAsResponse,
   readSnapshotSource,
 } from "./snapshot.js";
+import { decodeResult } from "./decode.js";
 
 export interface WorkerLike {
   postMessage(message: unknown): void;
@@ -224,7 +225,18 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
       query: string,
       params?: LoraParams,
     ): Promise<QueryResult<T>> {
-      return call<QueryResult<T>>({ op: "execute", query, params: params ?? null });
+      // The real worker hands back the binary result buffer
+      // (transferable Uint8Array, no structured-clone tax) which we
+      // decode here on the main thread. The in-process test stub
+      // bypasses the encoder and returns the already-decoded object;
+      // the typeof check covers both.
+      return call<Uint8Array | QueryResult<T>>({
+        op: "execute",
+        query,
+        params: params ?? null,
+      }).then((res) =>
+        res instanceof Uint8Array ? (decodeResult(res) as QueryResult<T>) : res,
+      );
     },
     stream<T extends Record<string, LoraValue> = Record<string, LoraValue>>(
       query: string,

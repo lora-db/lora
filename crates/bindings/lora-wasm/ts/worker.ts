@@ -48,9 +48,9 @@ function extractErrorCode(message: string): LoraErrorCode {
 
 self.onmessage = async (event: MessageEvent<Request>) => {
   const { id, body } = event.data;
-  const respond = (payload: Response["body"]) => {
+  const respond = (payload: Response["body"], transfer?: Transferable[]) => {
     const res: Response = { id, body: payload };
-    self.postMessage(res);
+    self.postMessage(res, transfer ?? []);
   };
 
   try {
@@ -59,8 +59,15 @@ self.onmessage = async (event: MessageEvent<Request>) => {
 
     switch (body.op) {
       case "execute": {
-        const result = db.execute(body.query, body.params ?? null) as unknown as Response["body"];
-        respond({ ok: true, result: result as never });
+        // executeBuffer returns the encoded result as a Uint8Array;
+        // its underlying ArrayBuffer is transferable, so postMessage
+        // skips structured-clone entirely. The client decodes on the
+        // main thread in JIT'd JavaScript.
+        const native = db as unknown as {
+          executeBuffer(query: string, params: unknown): Uint8Array;
+        };
+        const buf = native.executeBuffer(body.query, body.params ?? null);
+        respond({ ok: true, result: buf as never }, [buf.buffer]);
         break;
       }
       case "streamOpen": {
