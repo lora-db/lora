@@ -416,24 +416,32 @@ func (db *Database) execute(query string, paramsJSON []byte) (*Result, error) {
 		defer C.free(unsafe.Pointer(cParams))
 	}
 
-	var outResult *C.char
+	var outBytes *C.uint8_t
+	var outLen C.size_t
 	var outError *C.char
-	status := C.lora_db_execute_json(db.handle, cQuery, cParams, &outResult, &outError)
+	status := C.lora_db_execute_buffer(db.handle, cQuery, cParams, &outBytes, &outLen, &outError)
 
 	if status != C.LORA_STATUS_OK {
 		defer func() {
 			if outError != nil {
 				C.lora_string_free(outError)
 			}
-			if outResult != nil {
-				C.lora_string_free(outResult)
+			if outBytes != nil {
+				C.lora_bytes_free(outBytes, outLen)
 			}
 		}()
 		return nil, statusToError(int(status), outError)
 	}
 
-	defer C.lora_string_free(outResult)
-	return decodeResult(C.GoString(outResult))
+	// Aliasing the C-owned bytes with unsafe.Slice avoids a copy. The
+	// decoder copies any string/byte data it actually keeps before we
+	// release the buffer.
+	defer C.lora_bytes_free(outBytes, outLen)
+	if outBytes == nil || outLen == 0 {
+		return nil, fmt.Errorf("lora: execute returned an empty buffer")
+	}
+	bytes := unsafe.Slice((*byte)(unsafe.Pointer(outBytes)), int(outLen))
+	return decodeBuffer(bytes)
 }
 
 func (db *Database) explain(query string, paramsJSON []byte) (*QueryPlan, error) {

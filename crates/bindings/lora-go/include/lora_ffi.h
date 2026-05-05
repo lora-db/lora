@@ -125,6 +125,22 @@ int lora_db_execute_json(
     char **out_result,
     char **out_error);
 
+/* Executes a query and returns the result as a binary buffer in the
+ * shared `lora-binding-buffer` wire format.
+ *
+ * Faster than lora_db_execute_json for bulk reads: skips the engine's
+ * RowArrays projection plus the JSON serialize/parse round-trip. The
+ * caller owns `*out_bytes` on success and must release it via
+ * `lora_bytes_free(out_bytes, out_len)`. On failure `*out_error` is
+ * populated and must be released with `lora_string_free`. */
+int lora_db_execute_buffer(
+    LoraDatabase *db,
+    const char *query,
+    const char *params_json,
+    uint8_t **out_bytes,
+    size_t *out_len,
+    char **out_error);
+
 /* Compiles a query and returns its plan as JSON without executing it.
  *
  * On LORA_STATUS_OK, `*out_result` is a NUL-terminated JSON object:
