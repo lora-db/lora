@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use napi::bindgen_prelude::*;
-use napi::{Error as NapiError, Status};
+use napi::{Env, Error as NapiError, JsUnknown, Status};
 use napi_derive::napi;
 
 use lora_database::{
@@ -27,13 +27,16 @@ use lora_database::{
     SnapshotCredentials, SnapshotOptions, SyncMode, WalConfig,
 };
 
+mod encode;
 mod errors;
 mod json;
 mod tasks;
+mod to_napi;
 
 use errors::{closed_error_message, format_lora_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
-use json::{json_value_to_params, row_to_json};
+use json::json_value_to_params;
 use tasks::{ClearTask, ExecuteTask, ExplainTask, ProfileTask, SyncTask, TransactionTask};
+use to_napi::row_to_napi;
 
 static PERSISTENT_DATABASES: OnceLock<Mutex<BTreeMap<PathBuf, PersistentDatabaseEntry>>> =
     OnceLock::new();
@@ -142,7 +145,15 @@ impl Database {
     /// Errors surface as `LoraError` in the TS wrapper with a narrowed
     /// `code` from the `LoraErrorCode` union (e.g. `LORA_PARSE`,
     /// `LORA_INVALID_PARAMS`, `LORA_INTERNAL`).
-    #[napi(ts_return_type = "Promise<{ columns: string[]; rows: Array<Record<string, any>> }>")]
+    /// Execute a Lora query and return the encoded result buffer.
+    ///
+    /// The TS wrapper decodes the buffer into the canonical
+    /// `{ columns, rows }` shape. Encoding the result on the libuv
+    /// worker and transferring it to JS as a single Buffer avoids the
+    /// per-cell napi syscalls that otherwise dominate wall-clock cost
+    /// on bulk reads. See `crates/bindings/lora-node/src/encode.rs`
+    /// for the wire format.
+    #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn execute(
         &self,
         query: String,
@@ -240,7 +251,7 @@ impl Database {
     }
 
     #[napi(ts_return_type = "Record<string, any> | null")]
-    pub fn stream_next(&self, stream_id: u32) -> Result<Option<serde_json::Value>> {
+    pub fn stream_next(&self, env: Env, stream_id: u32) -> Result<Option<JsUnknown>> {
         let mut streams = self
             .streams
             .lock()
@@ -249,7 +260,7 @@ impl Database {
             .get_mut(&stream_id)
             .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
         match stream.stream.next_row() {
-            Ok(Some(row)) => Ok(Some(row_to_json(&row))),
+            Ok(Some(row)) => Ok(Some(row_to_napi(&env, &row)?.into_unknown())),
             Ok(None) => {
                 streams.remove(&stream_id);
                 Ok(None)
@@ -279,9 +290,7 @@ impl Database {
     /// `statements` is an array of `{ query, params? }` objects. Results are
     /// returned in statement order. If any statement fails, the transaction is
     /// rolled back by dropping the native transaction before commit.
-    #[napi(
-        ts_return_type = "Promise<Array<{ columns: string[]; rows: Array<Record<string, any>> }>>"
-    )]
+    #[napi(ts_return_type = "Promise<Buffer[]>")]
     pub fn transaction(
         &self,
         #[napi(ts_arg_type = "Array<{ query: string; params?: Record<string, any> | null }>")]

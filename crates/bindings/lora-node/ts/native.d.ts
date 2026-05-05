@@ -32,11 +32,15 @@ export declare class Database {
     snapshotKeepOld?: number | null,
     snapshotOptions?: NativeSnapshotOptions | null,
   );
-  /** Non-blocking: runs on the libuv threadpool, returns a Promise. */
+  /**
+   * Non-blocking: runs on the libuv threadpool, returns a Promise.
+   * Resolves to the encoded result Buffer; the TS wrapper decodes it
+   * into the public `{columns, rows}` shape.
+   */
   execute(
     query: string,
     params?: Record<string, unknown> | null,
-  ): Promise<NativeQueryResult>;
+  ): Promise<Buffer>;
   /** Compile a query and return its plan without executing it. */
   explain(
     query: string,
@@ -57,7 +61,7 @@ export declare class Database {
   transaction(
     statements: Array<{ query: string; params?: Record<string, unknown> | null }>,
     mode?: "read_write" | "read_only" | "readwrite" | "readonly" | "rw" | "ro" | null,
-  ): Promise<NativeQueryResult[]>;
+  ): Promise<Buffer[]>;
   /** Force pending WAL bytes and the portable archive mirror to disk. */
   sync(): Promise<void>;
   clear(): Promise<void>;

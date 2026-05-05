@@ -6,24 +6,58 @@
 //! resolves the Promise. Errors flow back as `NapiError`s carrying the
 //! stable `LORA_*:` code prefixes from [`crate::errors`] (mirroring
 //! `lora_database::LoraErrorCode::as_str`).
+//!
+//! `execute()` and the per-statement results inside `transaction()` are
+//! encoded into a single binary buffer on the worker thread (see
+//! [`crate::encode`]) and handed to JS as a `Buffer` in one napi call.
+//! This bypasses the per-row / per-cell napi syscalls that otherwise
+//! dominate the wall-clock cost. The TS wrapper decodes the buffer
+//! into the same `{ columns, rows }` shape the engine has always
+//! produced, so the user-facing API is unchanged.
+//!
+//! `explain()` and `profile()` produce small, tree-shaped results;
+//! they stay on the napi-direct path (`crate::to_napi`) because the
+//! decode/encode overhead would dominate.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use napi::bindgen_prelude::Result;
+use napi::bindgen_prelude::{Buffer, Result};
 use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    TransactionMode,
+    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryPlan, QueryProfile,
+    QueryResult, ResultFormat, TransactionMode,
 };
 
+use crate::encode::{encode_query_rows, encode_rows};
 use crate::errors::{format_lora_error, INVALID_PARAMS_CODE};
-use crate::json::{json_value_to_params, plan_to_json, profile_to_json, serialize_rows};
+use crate::json::json_value_to_params;
+use crate::to_napi::{plan_to_napi, profile_to_napi};
+
+fn encode_query_result_rowarrays(result: QueryResult) -> Result<Vec<u8>> {
+    let QueryResult::RowArrays(row_arrays) = result else {
+        return Err(NapiError::new(
+            Status::GenericFailure,
+            "expected RowArrays result".to_string(),
+        ));
+    };
+    Ok(encode_rows(&row_arrays.columns, &row_arrays.rows))
+}
+
+fn encode_query_result_rows(result: QueryResult) -> Result<Vec<u8>> {
+    let QueryResult::Rows(rows_result) = result else {
+        return Err(NapiError::new(
+            Status::GenericFailure,
+            "expected Rows result".to_string(),
+        ));
+    };
+    Ok(encode_query_rows(&rows_result.rows))
+}
 
 /// Work unit for `Database.execute`. Owns its inputs so it can move onto the
 /// libuv worker pool and run without touching the JS main thread until it
-/// resolves the Promise with the serialised `{columns, rows}` payload.
+/// resolves the Promise with the encoded result buffer.
 pub struct ExecuteTask {
     pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
     pub(crate) query: String,
@@ -31,20 +65,23 @@ pub struct ExecuteTask {
 }
 
 impl Task for ExecuteTask {
-    type Output = serde_json::Value;
-    type JsValue = JsUnknown;
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
 
     fn compute(&mut self) -> Result<Self::Output> {
         // Parse params here (on the worker thread) so param-validation errors
-        // surface as Promise rejections, not synchronous throws. Matches the
-        // lora-wasm semantics.
+        // surface as Promise rejections, not synchronous throws.
         let params_map = match self.params.take() {
             None | Some(serde_json::Value::Null) => BTreeMap::new(),
             Some(other) => json_value_to_params(other)?,
         };
 
+        // ResultFormat::Rows lets us encode straight from the engine's
+        // native `Vec<Row>` and skip the RowArrays projection, which
+        // otherwise clones every cell and allocates a `Vec<LoraValue>`
+        // per row.
         let options = ExecuteOptions {
-            format: ResultFormat::RowArrays,
+            format: ResultFormat::Rows,
         };
 
         let result = self
@@ -52,19 +89,13 @@ impl Task for ExecuteTask {
             .execute_with_params(&self.query, Some(options), params_map)
             .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
 
-        let QueryResult::RowArrays(row_arrays) = result else {
-            return Err(NapiError::new(
-                Status::GenericFailure,
-                "expected RowArrays result".to_string(),
-            ));
-        };
-
-        Ok(serialize_rows(&row_arrays.columns, &row_arrays.rows))
+        encode_query_result_rows(result)
     }
 
-    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        // `serde-json` feature on napi bridges serde_json::Value → JS objects.
-        env.to_js_value(&output)
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        // Owned-Vec → JS Buffer: napi takes the allocation and finalizes
+        // it when GC'd, so this is a single napi call with no copy.
+        Ok(Buffer::from(output))
     }
 }
 
@@ -78,7 +109,7 @@ pub struct ExplainTask {
 }
 
 impl Task for ExplainTask {
-    type Output = serde_json::Value;
+    type Output = QueryPlan;
     type JsValue = JsUnknown;
 
     fn compute(&mut self) -> Result<Self::Output> {
@@ -86,15 +117,13 @@ impl Task for ExplainTask {
             None | Some(serde_json::Value::Null) => None,
             Some(other) => Some(json_value_to_params(other)?),
         };
-        let plan = self
-            .db
+        self.db
             .explain(&self.query, params_map)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
-        Ok(plan_to_json(&plan))
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
     }
 
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        env.to_js_value(&output)
+        Ok(plan_to_napi(&env, &output)?.into_unknown())
     }
 }
 
@@ -108,7 +137,7 @@ pub struct ProfileTask {
 }
 
 impl Task for ProfileTask {
-    type Output = serde_json::Value;
+    type Output = QueryProfile;
     type JsValue = JsUnknown;
 
     fn compute(&mut self) -> Result<Self::Output> {
@@ -116,15 +145,13 @@ impl Task for ProfileTask {
             None | Some(serde_json::Value::Null) => None,
             Some(other) => Some(json_value_to_params(other)?),
         };
-        let profile = self
-            .db
+        self.db
             .profile(&self.query, params_map)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
-        Ok(profile_to_json(&profile))
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
     }
 
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        env.to_js_value(&output)
+        Ok(profile_to_napi(&env, &output)?.into_unknown())
     }
 }
 
@@ -173,8 +200,8 @@ pub struct TransactionTask {
 }
 
 impl Task for TransactionTask {
-    type Output = serde_json::Value;
-    type JsValue = JsUnknown;
+    type Output = Vec<Vec<u8>>;
+    type JsValue = Vec<Buffer>;
 
     fn compute(&mut self) -> Result<Self::Output> {
         let mode = parse_transaction_mode(self.mode.as_deref())?;
@@ -192,23 +219,17 @@ impl Task for TransactionTask {
             let result = tx
                 .execute_with_params(&statement.query, Some(options), statement.params)
                 .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
-            let QueryResult::RowArrays(row_arrays) = result else {
-                return Err(NapiError::new(
-                    Status::GenericFailure,
-                    "expected RowArrays result".to_string(),
-                ));
-            };
-            results.push(serialize_rows(&row_arrays.columns, &row_arrays.rows));
+            results.push(encode_query_result_rowarrays(result)?);
         }
 
         tx.commit()
             .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
 
-        Ok(serde_json::Value::Array(results))
+        Ok(results)
     }
 
-    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        env.to_js_value(&output)
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output.into_iter().map(Buffer::from).collect())
     }
 }
 

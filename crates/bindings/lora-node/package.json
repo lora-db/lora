@@ -64,8 +64,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "sync:types": "node -e \"require('fs').copyFileSync('../shared-ts/types.ts','ts/types.ts')\"",
-    "verify:types": "node -e \"const fs=require('fs'); const a=fs.readFileSync('../shared-ts/types.ts','utf8'); const b=fs.readFileSync('ts/types.ts','utf8'); if (a!==b) { console.error('ts/types.ts is out of sync with shared-ts/types.ts — run npm run sync:types'); process.exit(1);} \"",
+    "sync:types": "node -e \"const fs=require('fs'); for (const f of ['types.ts','decode.ts']) fs.copyFileSync('../shared-ts/' + f, 'ts/' + f);\"",
+    "verify:types": "node -e \"const fs=require('fs'); for (const f of ['types.ts','decode.ts']) { const a=fs.readFileSync('../shared-ts/' + f,'utf8'); const b=fs.readFileSync('ts/' + f,'utf8'); if (a!==b) { console.error('ts/' + f + ' is out of sync with shared-ts/' + f + ' — run npm run sync:types'); process.exit(1);} } \"",
     "prebuild": "npm run sync:types",
     "pretypecheck": "npm run sync:types",
     "pretest": "npm run sync:types",
@@ -76,6 +76,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "bench": "node bench/run.mjs",
     "artifacts": "napi artifacts",
     "create-npm-dirs": "napi create-npm-dir -t .",
     "copy-license": "node -e \"const fs=require('fs'); try { fs.copyFileSync('../../../LICENSE','LICENSE'); } catch (e) { if (e.code !== 'ENOENT') throw e; }\"",

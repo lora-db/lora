@@ -39,8 +39,16 @@ export declare class Database {
    * Errors surface as `LoraError` in the TS wrapper with a narrowed
    * `code` from the `LoraErrorCode` union (e.g. `LORA_PARSE`,
    * `LORA_INVALID_PARAMS`, `LORA_INTERNAL`).
+   * Execute a Lora query and return the encoded result buffer.
+   *
+   * The TS wrapper decodes the buffer into the canonical
+   * `{ columns, rows }` shape. Encoding the result on the libuv
+   * worker and transferring it to JS as a single Buffer avoids the
+   * per-cell napi syscalls that otherwise dominate wall-clock cost
+   * on bulk reads. See `crates/bindings/lora-node/src/encode.rs`
+   * for the wire format.
    */
-  execute(query: string, params?: Record<string, any> | null | undefined): Promise<{ columns: string[]; rows: Array<Record<string, any>> }>
+  execute(query: string, params?: Record<string, any> | null | undefined): Promise<Buffer>
   /**
    * Compile a query and return its execution plan without running it.
    *
@@ -76,7 +84,7 @@ export declare class Database {
    * returned in statement order. If any statement fails, the transaction is
    * rolled back by dropping the native transaction before commit.
    */
-  transaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<Array<{ columns: string[]; rows: Array<Record<string, any>> }>>
+  transaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<Buffer[]>
   /** Force pending WAL bytes and the portable archive mirror to disk. */
   sync(): Promise<void>
   /**

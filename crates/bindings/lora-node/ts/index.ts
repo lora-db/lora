@@ -26,6 +26,8 @@ import type {
 } from "./types.js";
 import { LoraError, wrapError } from "./types.js";
 
+import { decodeResult } from "./decode.js";
+
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore - resolved at runtime via native.js loader
 import native from "./native.js";
@@ -427,8 +429,8 @@ class DatabaseImpl {
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
   >(query: string, params?: LoraParams): Promise<QueryResult<T>> {
     try {
-      const raw = await this.#inner.execute(query, params ?? null);
-      return raw as QueryResult<T>;
+      const buf = await this.#inner.execute(query, params ?? null);
+      return decodeResult(buf) as QueryResult<T>;
     } catch (err) {
       throw wrapError(err);
     }
@@ -508,7 +510,8 @@ class DatabaseImpl {
     mode: TransactionMode = "read_write",
   ): Promise<Array<QueryResult<T>>> {
     try {
-      return (await this.#inner.transaction(statements, mode)) as Array<QueryResult<T>>;
+      const buffers = await this.#inner.transaction(statements, mode);
+      return buffers.map((buf) => decodeResult(buf)) as Array<QueryResult<T>>;
     } catch (err) {
       throw wrapError(err);
     }
