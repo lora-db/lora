@@ -129,8 +129,8 @@ pub(crate) fn profile_to_json(profile: &QueryProfile) -> serde_json::Value {
     serde_json::json!({
         "plan": plan_to_json(&profile.plan),
         "metrics": {
-            "totalElapsedNs": profile.metrics.total_elapsed_ns as f64,
-            "totalRows": profile.metrics.total_rows as f64,
+            "totalElapsedNs": profile.metrics.total_elapsed_ns,
+            "totalRows": profile.metrics.total_rows,
             "mutated": profile.metrics.mutated,
             "perOperator": serde_json::Value::Object(
                 profile
@@ -141,10 +141,10 @@ pub(crate) fn profile_to_json(profile: &QueryProfile) -> serde_json::Value {
                         (
                             id.to_string(),
                             serde_json::json!({
-                                "rows": m.rows as f64,
-                                "dbHits": m.db_hits as f64,
-                                "elapsedNs": m.elapsed_ns as f64,
-                                "nextCalls": m.next_calls as f64,
+                                "rows": m.rows,
+                                "dbHits": m.db_hits,
+                                "elapsedNs": m.elapsed_ns,
+                                "nextCalls": m.next_calls,
                             }),
                         )
                     })
@@ -162,10 +162,10 @@ fn plan_tree_node_to_json(node: &PlanTreeNode) -> serde_json::Value {
             .collect(),
     );
     serde_json::json!({
-        "id": node.id as f64,
+        "id": node.id,
         "operator": &node.operator,
         "details": details,
-        "estimatedRows": node.estimated_rows.map(|r| r as f64),
+        "estimatedRows": node.estimated_rows,
         "children": serde_json::Value::Array(
             node.children.iter().map(plan_tree_node_to_json).collect(),
         ),
