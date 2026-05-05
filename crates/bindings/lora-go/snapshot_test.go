@@ -298,7 +298,7 @@ func TestWalBackedNewAcceptsRelativeDatabaseDir(t *testing.T) {
 	}
 }
 
-func TestWalBackedNewInvalidPathSurfacesLoraError(t *testing.T) {
+func TestWalBackedNewInvalidPathSurfacesIOError(t *testing.T) {
 	notADir := filepath.Join(t.TempDir(), "wal-file")
 	if err := os.WriteFile(notADir, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -312,12 +312,12 @@ func TestWalBackedNewInvalidPathSurfacesLoraError(t *testing.T) {
 	if !errors.As(err, &lerr) {
 		t.Fatalf("expected *LoraError, got %T: %v", err, err)
 	}
-	if lerr.Code != CodeLoraError {
-		t.Fatalf("error code = %s; want %s", lerr.Code, CodeLoraError)
+	if lerr.Code != CodeIO {
+		t.Fatalf("error code = %s; want %s", lerr.Code, CodeIO)
 	}
 }
 
-func TestWalBackedNewInvalidNameSurfacesLoraError(t *testing.T) {
+func TestWalBackedNewInvalidNameSurfacesDatabaseNameError(t *testing.T) {
 	_, err := New("../bad")
 	if err == nil {
 		t.Fatal("expected an error")
@@ -326,8 +326,8 @@ func TestWalBackedNewInvalidNameSurfacesLoraError(t *testing.T) {
 	if !errors.As(err, &lerr) {
 		t.Fatalf("expected *LoraError, got %T: %v", err, err)
 	}
-	if lerr.Code != CodeLoraError {
-		t.Fatalf("error code = %s; want %s", lerr.Code, CodeLoraError)
+	if lerr.Code != CodeDatabaseName {
+		t.Fatalf("error code = %s; want %s", lerr.Code, CodeDatabaseName)
 	}
 }
 

@@ -624,7 +624,7 @@ func (db *Database) RelationshipCount() (uint64, error) {
 }
 
 func errClosed() error {
-	return &LoraError{Code: CodeLoraError, Message: "database is closed"}
+	return &LoraError{Code: CodeInvalidParams, Message: "database is closed"}
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +801,7 @@ func statusToError(status int, outError *C.char) error {
 	}
 	switch status {
 	case C.LORA_STATUS_LORA_ERROR:
-		return parseLoraError(payload, CodeLoraError)
+		return parseLoraError(payload, CodeInternal)
 	case C.LORA_STATUS_INVALID_PARAMS:
 		return parseLoraError(payload, CodeInvalidParams)
 	case C.LORA_STATUS_NULL_POINTER:

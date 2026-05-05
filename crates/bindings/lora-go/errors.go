@@ -71,11 +71,6 @@ const (
 	// CodeUnknown is the catch-all for error messages that did not
 	// carry a recognised prefix.
 	CodeUnknown Code = "UNKNOWN"
-
-	// CodeLoraError — Deprecated: use the precise codes above.
-	// Retained as a constant for callers that still match against the
-	// pre-0.7 wire string. New code should branch on [Code] equality.
-	CodeLoraError Code = "LORA_ERROR"
 )
 
 // allKnownCodes lists every code prefix the FFI may emit, used by
@@ -98,7 +93,6 @@ var allKnownCodes = []Code{
 	CodeSnapshotCrypto,
 	CodeInternal,
 	CodePanic,
-	CodeLoraError,
 }
 
 // LoraError is the error type returned by every method on [Database].

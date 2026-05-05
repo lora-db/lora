@@ -162,13 +162,38 @@ higher layer (e.g. a rate-limited queue).
 ## Errors
 
 Every method returns a `*LoraError` on failure. The `Code` field is
-one of:
+one of the canonical engine codes (mirrored from
+`lora_database::LoraErrorCode`):
 
-- `LORA_ERROR` — parse / analyze / execute failure
-- `INVALID_PARAMS` — a parameter value could not be mapped
-- `PANIC` — the engine panicked; the FFI caught it and surfaced the
-  message
+Client-side (caller's mistake):
+
+- `LORA_PARSE` — Cypher syntax could not be parsed
+- `LORA_SEMANTIC` — analysis failure (unknown variable, label, type mismatch, …)
+- `LORA_INVALID_PARAMS` — a parameter value could not be coerced
+- `LORA_READ_ONLY` — mutating statement issued in a read-only context
+- `LORA_NOT_FOUND` — a named entity does not exist
+- `LORA_CONSTRAINT` — a precondition (e.g. delete-with-relationships) is not satisfied
+- `LORA_INVALID_VECTOR` — vector failed dimension / coordinate-type validation
+- `LORA_TIMEOUT` — query exceeded its cooperative deadline
+- `LORA_DATABASE_NAME` — logical database name violates the portable-path rules
+- `LORA_CONFIG` — required parameters are missing or malformed
+
+Server-side (engine condition):
+
+- `LORA_IO` — I/O failure outside the WAL / snapshot boundaries
+- `LORA_WAL_CORRUPTION` — WAL record was truncated, mis-CRC'd, or otherwise unreadable
+- `LORA_WAL_POISONED` — WAL is poisoned and no longer accepts durable writes
+- `LORA_SNAPSHOT_CODEC` — snapshot codec failure (bad magic, version, checksum, …)
+- `LORA_SNAPSHOT_CRYPTO` — snapshot encryption / decryption / KDF failure
+- `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
+
+Binding-side fallbacks (emitted by lora-go, not the engine):
+
+- `LORA_PANIC` — a Rust panic was caught at the FFI boundary
 - `UNKNOWN` — catch-all for messages without a recognised prefix
+
+Use `(*LoraError).IsClient()` to check whether the failure was caller-side
+or engine-side without listing every code yourself.
 
 ```go
 if err != nil {
