@@ -10,7 +10,7 @@ use lora_store::{GraphStorageMut, InMemoryGraph};
 
 use crate::value::LoraValue;
 
-use super::traits::{build_streaming, drain, subtree_is_fully_streaming};
+use super::{build_streaming, drain, subtree_is_fully_streaming};
 
 #[test]
 fn variable_length_expand_has_streaming_source() {

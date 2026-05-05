@@ -17,7 +17,7 @@ use crate::eval::eval_expr;
 use crate::executor::{resolve_range, value_matches_property_value};
 use crate::value::{LoraValue, Row};
 
-use super::traits::{RowSource, StreamCtx};
+use super::{RowSource, StreamCtx};
 
 /// Single-hop expansion. For each input row, walks edges from `src`
 /// through the configured `direction` and `types` and emits one row

@@ -1,9 +1,12 @@
 pub mod logical;
 pub mod optimizer;
 pub mod physical;
+pub mod plan_tree;
 
 mod pattern;
 mod planner;
+
+pub use plan_tree::{plan_tree_from_compiled, PlanTree, PlanTreeNode};
 
 pub use logical::{
     Aggregation, Argument, Create, Delete, Expand, Filter, Limit, LogicalOp, LogicalPlan, Merge,

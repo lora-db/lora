@@ -27,7 +27,7 @@ use crate::eval::eval_expr_result;
 use crate::executor::{compute_aggregate_expr, GroupValueKey};
 use crate::value::{LoraValue, Row};
 
-use super::traits::{drain, hydrate_value, RowSource, StreamCtx};
+use super::{drain, hydrate_value, RowSource, StreamCtx};
 
 // ============================================================================
 // Streaming fold-only aggregation (count / sum / min / max / avg, no DISTINCT)

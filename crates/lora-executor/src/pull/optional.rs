@@ -7,7 +7,7 @@ use lora_store::GraphStorage;
 use crate::errors::ExecResult;
 use crate::value::{LoraValue, Row};
 
-use super::traits::{build_streaming, drain, RowSource, StreamCtx};
+use super::{build_streaming, drain, RowSource, StreamCtx};
 
 /// Streaming outer OPTIONAL MATCH source. The optional inner plan is
 /// independent of each incoming row in the current physical plan, so

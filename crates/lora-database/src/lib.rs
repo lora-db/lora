@@ -16,6 +16,7 @@
 
 mod database;
 mod error;
+mod explain;
 mod named;
 mod plan_cache;
 mod snapshot;
@@ -25,6 +26,8 @@ mod wal;
 
 pub use database::{Database, GraphDirection, QueryRunner};
 pub use error::{LoraError, LoraErrorCategory, LoraErrorCode};
+pub use explain::{OperatorMetrics, PlanShape, ProfileMetrics, QueryPlan, QueryProfile};
+pub use lora_compiler::{PlanTree, PlanTreeNode};
 pub use named::{
     resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
     DEFAULT_DATABASE_MAX_BYTES,

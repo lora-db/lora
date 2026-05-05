@@ -37,16 +37,18 @@
 //! map form before the row leaves the cursor.
 //!
 //! ## Layout
-//! - `traits` — the [`RowSource`] trait, [`drain`], [`StreamCtx`],
-//!   [`BufferedRowSource`], [`ArgumentSource`], [`HydratingSource`] and
-//!   [`hydrate_value`]; the plan walker (`is_streaming_op`,
+//! - `source` — the [`RowSource`] trait, [`drain`],
+//!   [`BufferedRowSource`], and [`ArgumentSource`].
+//! - `context` — [`StreamCtx`], the shared storage / params handle.
+//! - `hydration` — [`HydratingSource`] and [`hydrate_value`].
+//! - `traits` — the read-side plan walker (`is_streaming_op`,
 //!   `subtree_is_fully_streaming`, `build_streaming`,
-//!   `compiled_to_streaming`, `write_op_input`); the
-//!   [`PullExecutor`] / [`MutablePullExecutor`] entry points and the
-//!   mutable cursor machinery ([`StreamingWriteCursor`],
-//!   [`MutableUnionSource`]); [`collect_compiled`]; [`StreamShape`] and
-//!   [`classify_stream`]; [`plan_result_columns`] /
-//!   [`compiled_result_columns`].
+//!   `compiled_to_streaming`, `write_op_input`), [`PullExecutor`],
+//!   and [`collect_compiled`].
+//! - `mutable` — [`MutablePullExecutor`] and the mutable cursor
+//!   machinery ([`StreamingWriteCursor`], [`MutableUnionSource`]).
+//! - `shape` — [`StreamShape`] and [`classify_stream`].
+//! - `columns` — [`plan_result_columns`] / [`compiled_result_columns`].
 //! - `scan` — node scan operator sources ([`NodeScanSource`],
 //!   [`NodeByLabelScanSource`], [`NodeByPropertyScanSource`]).
 //! - `expand` — single-hop and variable-length expansion
@@ -64,13 +66,19 @@
 //! - `union` — read-side UNION ([`UnionSource`]).
 
 mod aggregate;
+mod columns;
+mod context;
 mod expand;
 mod filter;
+mod hydration;
+mod mutable;
 mod optional;
 mod path;
 mod projection;
 mod scan;
+mod shape;
 mod sort;
+mod source;
 mod traits;
 mod union;
 
@@ -79,13 +87,17 @@ mod tests;
 
 // Public surface — these names appear in `lora_executor`'s public
 // API via the explicit `pub use pull::{...}` list in `lib.rs`.
-pub use traits::{
-    classify_stream, collect_compiled, compiled_result_columns, drain, plan_result_columns,
-    BufferedRowSource, MutablePullExecutor, PullExecutor, RowSource, StreamShape,
-};
+pub use columns::{compiled_result_columns, plan_result_columns};
+pub use mutable::MutablePullExecutor;
+pub use shape::{classify_stream, StreamShape};
+pub use source::{drain, BufferedRowSource, RowSource};
+pub use traits::{collect_compiled, PullExecutor};
 
 // Crate-internal re-exports used by the buffered executor in
 // `crate::executor` for the streaming aggregate fast-path and for
 // the `StreamingWriteCursor` plan-shape probes.
 pub(crate) use aggregate::{classify_streamable_aggregates, AggState, StreamableAggSpec};
+pub(crate) use context::StreamCtx;
+pub(crate) use hydration::{hydrate_value, HydratingSource};
+pub(crate) use source::ArgumentSource;
 pub(crate) use traits::{build_streaming, subtree_is_fully_streaming};

@@ -16,7 +16,7 @@ use crate::eval::eval_expr_result;
 use crate::executor::GroupValueKey;
 use crate::value::{LoraValue, Row};
 
-use super::traits::{RowSource, StreamCtx};
+use super::{RowSource, StreamCtx};
 
 /// Pulls one upstream row, projects each item, returns a single row
 /// per upstream row. `DISTINCT` projection wraps this source in

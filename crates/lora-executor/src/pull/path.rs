@@ -7,7 +7,7 @@ use crate::errors::ExecResult;
 use crate::executor::build_path_value;
 use crate::value::{LoraValue, Row};
 
-use super::traits::{RowSource, StreamCtx};
+use super::{RowSource, StreamCtx};
 
 /// Path-building source. Ordinary path construction is one-in/one-out.
 /// Shortest-path filtering still has to compare the complete path set,

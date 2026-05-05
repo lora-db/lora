@@ -1,24 +1,11 @@
-//! Pull-pipeline trait, plan walker, and public entry points.
+//! Pull-pipeline plan walker and executor entry points.
 //!
-//! This file owns:
-//! - The [`RowSource`] cursor trait, [`drain`] helper, and the shared
-//!   [`StreamCtx`] that every operator source borrows storage and bound
-//!   parameters from.
-//! - The buffered fallback ([`BufferedRowSource`]) and the leaf
-//!   [`ArgumentSource`].
-//! - The top-of-pipeline [`HydratingSource`] and its
-//!   [`hydrate_value`] helper.
-//! - The plan walker (`is_streaming_op`, `subtree_is_fully_streaming`,
-//!   `build_streaming`, `compiled_to_streaming`, `write_op_input`,
-//!   `open_input`, `build_buffered_subtree`).
-//! - The public [`PullExecutor`] / [`MutablePullExecutor`] entry points
-//!   plus the mutable cursor machinery ([`StreamingWriteCursor`],
-//!   [`MutableUnionSource`], [`StoragePtr`]).
-//! - [`collect_compiled`], [`StreamShape`] / [`classify_stream`], and
-//!   [`plan_result_columns`] / [`compiled_result_columns`].
+//! Cursor/source basics, context, hydration, stream-shape classification,
+//! and result-column inference live in sibling modules. This file keeps the
+//! code that turns physical plans into row cursors plus the public read/write
+//! pull executors.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::mem::ManuallyDrop;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lora_compiler::physical::{
@@ -27,14 +14,12 @@ use lora_compiler::physical::{
     PhysicalOp, PhysicalPlan, ProjectionExec, SortExec, UnwindExec,
 };
 use lora_compiler::CompiledQuery;
-use lora_store::{GraphStorage, GraphStorageMut};
+use lora_store::GraphStorage;
 
-use crate::errors::{ExecResult, ExecutorError};
-use crate::eval::{clear_eval_error, eval_expr, EvalContext};
-use crate::executor::{
-    hydrate_node_record, hydrate_relationship_record, ExecutionContext, Executor, GroupValueKey,
-    MutableExecutionContext, MutableExecutor,
-};
+use crate::errors::ExecResult;
+use crate::eval::{clear_eval_error, eval_expr};
+use crate::executor::{ExecutionContext, Executor};
+use crate::profile::wrap_metered;
 use crate::value::{LoraValue, Row};
 
 use super::aggregate::HashAggregationSource;
@@ -46,170 +31,7 @@ use super::projection::{DistinctSource, ProjectionSource, UnwindSource};
 use super::scan::{NodeByLabelScanSource, NodeByPropertyScanSource, NodeScanSource};
 use super::sort::{LimitSource, SortSource};
 use super::union::UnionSource;
-
-/// Fallible pull-based row cursor.
-///
-/// Each call to [`RowSource::next_row`] returns the next row,
-/// `Ok(None)` when the cursor is exhausted, or an error if execution
-/// fails. The cursor stays in a valid state after an error — callers
-/// may drop it without observing additional side effects.
-pub trait RowSource {
-    /// Pull the next row.
-    fn next_row(&mut self) -> ExecResult<Option<Row>>;
-}
-
-/// Drain a row source into a `Vec<Row>`, propagating the first error.
-pub fn drain<S: RowSource + ?Sized>(source: &mut S) -> ExecResult<Vec<Row>> {
-    let mut out = Vec::new();
-    while let Some(row) = source.next_row()? {
-        out.push(row);
-    }
-    Ok(out)
-}
-
-// ---------------------------------------------------------------------------
-// Shared streaming context
-// ---------------------------------------------------------------------------
-
-/// Storage + bound parameters shared by every operator source in a
-/// pull pipeline. `Clone` is one pointer-copy plus an `Arc::clone`
-/// (params), so passing it by value down the build tree is
-/// effectively free, while consolidating "the two pieces every
-/// expression-evaluating source needs" into one field.
-#[derive(Clone)]
-pub(super) struct StreamCtx<'a, S: GraphStorage> {
-    pub storage: &'a S,
-    pub params: Arc<BTreeMap<String, LoraValue>>,
-}
-
-impl<'a, S: GraphStorage> StreamCtx<'a, S> {
-    pub(super) fn new(storage: &'a S, params: Arc<BTreeMap<String, LoraValue>>) -> Self {
-        Self { storage, params }
-    }
-
-    /// Build a borrowing [`EvalContext`] for use inside an
-    /// operator's `next_row` method. Cheap — two pointer reads.
-    pub(super) fn eval_ctx<'b>(&'b self) -> EvalContext<'b, S> {
-        EvalContext {
-            storage: self.storage,
-            params: &self.params,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Buffered fallback
-// ---------------------------------------------------------------------------
-
-/// Buffered cursor backed by a pre-computed `Vec<Row>`. Used both as
-/// a simple "rows already collected" adapter and as the leaf fallback
-/// for operators whose internals still require full materialization.
-pub struct BufferedRowSource {
-    iter: std::vec::IntoIter<Row>,
-}
-
-impl BufferedRowSource {
-    pub fn new(rows: Vec<Row>) -> Self {
-        Self {
-            iter: rows.into_iter(),
-        }
-    }
-}
-
-impl RowSource for BufferedRowSource {
-    fn next_row(&mut self) -> ExecResult<Option<Row>> {
-        Ok(self.iter.next())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Leaf "yield one empty row" source
-// ---------------------------------------------------------------------------
-
-/// Yields a single empty row exactly once. The bottom of every plan
-/// chain that doesn't start with an explicit input.
-pub struct ArgumentSource {
-    yielded: bool,
-}
-
-impl ArgumentSource {
-    pub fn new() -> Self {
-        Self { yielded: false }
-    }
-}
-
-impl Default for ArgumentSource {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RowSource for ArgumentSource {
-    fn next_row(&mut self) -> ExecResult<Option<Row>> {
-        if self.yielded {
-            Ok(None)
-        } else {
-            self.yielded = true;
-            Ok(Some(Row::new()))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Top-of-pipeline hydration
-// ---------------------------------------------------------------------------
-
-/// Top-of-pipeline hydration. Replaces node / relationship id
-/// references in each emitted row with their full hydrated map form,
-/// matching the buffered executor's post-execution hydration step.
-pub struct HydratingSource<'a, S: GraphStorage> {
-    upstream: Box<dyn RowSource + 'a>,
-    storage: &'a S,
-}
-
-impl<'a, S: GraphStorage> HydratingSource<'a, S> {
-    pub(super) fn new(upstream: Box<dyn RowSource + 'a>, storage: &'a S) -> Self {
-        Self { upstream, storage }
-    }
-}
-
-impl<'a, S: GraphStorage> RowSource for HydratingSource<'a, S> {
-    fn next_row(&mut self) -> ExecResult<Option<Row>> {
-        match self.upstream.next_row()? {
-            None => Ok(None),
-            Some(row) => {
-                let mut out = Row::new();
-                for (var, name, value) in row.into_iter_named() {
-                    out.insert_named(var, name, hydrate_value(value, self.storage));
-                }
-                Ok(Some(out))
-            }
-        }
-    }
-}
-
-pub(super) fn hydrate_value<S: GraphStorage>(value: LoraValue, storage: &S) -> LoraValue {
-    match value {
-        LoraValue::Node(id) => storage
-            .with_node(id, hydrate_node_record)
-            .unwrap_or(LoraValue::Null),
-        LoraValue::Relationship(id) => storage
-            .with_relationship(id, hydrate_relationship_record)
-            .unwrap_or(LoraValue::Null),
-        LoraValue::List(values) => LoraValue::List(
-            values
-                .into_iter()
-                .map(|v| hydrate_value(v, storage))
-                .collect(),
-        ),
-        LoraValue::Map(map) => LoraValue::Map(
-            map.into_iter()
-                .map(|(k, v)| (k, hydrate_value(v, storage)))
-                .collect(),
-        ),
-        other => other,
-    }
-}
+use super::{drain, ArgumentSource, BufferedRowSource, HydratingSource, RowSource, StreamCtx};
 
 // ---------------------------------------------------------------------------
 // Compiled-query → streaming entry helpers
@@ -307,7 +129,7 @@ pub(super) fn is_streaming_op(op: &PhysicalOp) -> bool {
 /// (Create / Set / Delete / Remove / Merge), return its input
 /// `PhysicalNodeId`. Used by [`MutablePullExecutor::open_compiled`]
 /// to detect plans that can be driven by [`StreamingWriteCursor`].
-pub(super) fn write_op_input(
+pub(crate) fn write_op_input(
     plan: &PhysicalPlan,
     node_id: PhysicalNodeId,
 ) -> Option<PhysicalNodeId> {
@@ -356,6 +178,15 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
 }
 
 pub(crate) fn build_streaming<'a, S: GraphStorage + 'a>(
+    plan: &'a PhysicalPlan,
+    node_id: PhysicalNodeId,
+    storage: &'a S,
+    params: Arc<BTreeMap<String, LoraValue>>,
+) -> ExecResult<Box<dyn RowSource + 'a>> {
+    build_streaming_inner(plan, node_id, storage, params).map(|src| wrap_metered(node_id, src))
+}
+
+fn build_streaming_inner<'a, S: GraphStorage + 'a>(
     plan: &'a PhysicalPlan,
     node_id: PhysicalNodeId,
     storage: &'a S,
@@ -601,290 +432,6 @@ impl<'a, S: GraphStorage> PullExecutor<'a, S> {
     }
 }
 
-/// Pull-based read-write executor. Wraps the existing
-/// [`MutableExecutor`] under the same row-cursor API. Mutations are
-/// applied during `open_compiled`; the returned cursor yields the
-/// resulting rows lazily.
-pub struct MutablePullExecutor<'a, S: GraphStorageMut> {
-    storage: &'a mut S,
-    params: BTreeMap<String, LoraValue>,
-}
-
-impl<'a, S: GraphStorageMut + GraphStorage> MutablePullExecutor<'a, S> {
-    pub fn new(storage: &'a mut S, params: BTreeMap<String, LoraValue>) -> Self {
-        Self { storage, params }
-    }
-
-    /// Open a cursor for a compiled write query.
-    ///
-    /// Fast path: when a branch root is one of `Create` / `Set` /
-    /// `Delete` / `Remove` / `Merge` and its input subtree is fully
-    /// streamable, returns a [`StreamingWriteCursor`] that pulls input
-    /// row-by-row and applies the per-row write through
-    /// [`MutableExecutor::apply_write_op`]. `UNION ALL` plans stream
-    /// one branch at a time. Plain `UNION` drains branches first so
-    /// rows can be deduplicated by name.
-    ///
-    /// Fallback: a branch that is not streamable materializes through
-    /// [`MutableExecutor::execute_rows`] and wraps the result in a
-    /// [`BufferedRowSource`].
-    pub fn open_compiled(self, compiled: &'a CompiledQuery) -> ExecResult<Box<dyn RowSource + 'a>>
-    where
-        S: 'a,
-    {
-        if compiled.unions.is_empty() {
-            return open_mutable_plan_cursor(self.storage, &compiled.physical, self.params);
-        }
-
-        MutableUnionSource::open(self.storage, compiled, self.params)
-            .map(|source| Box::new(source) as Box<dyn RowSource + 'a>)
-    }
-}
-
-fn open_mutable_plan_cursor<'a, S: GraphStorageMut + GraphStorage + 'a>(
-    storage: &'a mut S,
-    plan: &'a PhysicalPlan,
-    params: BTreeMap<String, LoraValue>,
-) -> ExecResult<Box<dyn RowSource + 'a>> {
-    if let Some(input) = write_op_input(plan, plan.root) {
-        if subtree_is_fully_streaming(plan, input) {
-            return StreamingWriteCursor::open(storage, plan, plan.root, params)
-                .map(|c| Box::new(c) as Box<dyn RowSource + 'a>);
-        }
-    }
-
-    let mut executor = MutableExecutor::new(MutableExecutionContext { storage, params });
-    let rows = executor.execute_rows(plan)?;
-    Ok(Box::new(BufferedRowSource::new(rows)))
-}
-
-#[derive(Clone, Copy)]
-struct StoragePtr<S> {
-    ptr: *mut S,
-}
-
-impl<S> StoragePtr<S> {
-    fn from_mut(storage: &mut S) -> Self {
-        Self {
-            ptr: storage as *mut S,
-        }
-    }
-
-    unsafe fn as_ref<'a>(&self) -> &'a S {
-        unsafe { &*self.ptr }
-    }
-
-    unsafe fn as_mut<'a>(&self) -> &'a mut S {
-        unsafe { &mut *self.ptr }
-    }
-}
-
-/// Mutable UNION cursor. `UNION ALL` streams one branch at a time
-/// against the same staged graph. Plain `UNION` streams branch-by-branch
-/// while retaining only a seen-key set for deduplication.
-pub struct MutableUnionSource<'a, S: GraphStorageMut + GraphStorage + 'a> {
-    storage_ptr: StoragePtr<S>,
-    compiled: &'a CompiledQuery,
-    params: BTreeMap<String, LoraValue>,
-    branch_idx: usize,
-    current: Option<Box<dyn RowSource + 'a>>,
-    needs_dedup: bool,
-    seen: BTreeSet<Vec<(String, GroupValueKey)>>,
-    _phantom: std::marker::PhantomData<&'a mut S>,
-}
-
-impl<'a, S: GraphStorageMut + GraphStorage + 'a> MutableUnionSource<'a, S> {
-    fn open(
-        storage: &'a mut S,
-        compiled: &'a CompiledQuery,
-        params: BTreeMap<String, LoraValue>,
-    ) -> ExecResult<Self> {
-        let needs_dedup = compiled.unions.iter().any(|branch| !branch.all);
-        Ok(Self {
-            storage_ptr: StoragePtr::from_mut(storage),
-            compiled,
-            params,
-            branch_idx: 0,
-            current: None,
-            needs_dedup,
-            seen: BTreeSet::new(),
-            _phantom: std::marker::PhantomData,
-        })
-    }
-
-    fn branch_count(&self) -> usize {
-        self.compiled.unions.len() + 1
-    }
-
-    fn branch_plan(&self, idx: usize) -> &'a PhysicalPlan {
-        if idx == 0 {
-            &self.compiled.physical
-        } else {
-            &self.compiled.unions[idx - 1].physical
-        }
-    }
-
-    fn open_branch(&mut self, idx: usize) -> ExecResult<Box<dyn RowSource + 'a>> {
-        let plan = self.branch_plan(idx);
-        // SAFETY: MutableUnionSource keeps at most one branch cursor
-        // alive at a time. `current` is dropped before advancing to
-        // the next branch, so each mutable reborrow is temporally
-        // disjoint.
-        let storage = unsafe { self.storage_ptr.as_mut() };
-        open_mutable_plan_cursor(storage, plan, self.params.clone())
-    }
-}
-
-impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for MutableUnionSource<'a, S> {
-    fn next_row(&mut self) -> ExecResult<Option<Row>> {
-        loop {
-            if self.branch_idx >= self.branch_count() {
-                return Ok(None);
-            }
-
-            if self.current.is_none() {
-                self.current = Some(self.open_branch(self.branch_idx)?);
-            }
-
-            match self
-                .current
-                .as_mut()
-                .expect("current branch initialized above")
-                .next_row()?
-            {
-                Some(row) => {
-                    if self.needs_dedup {
-                        let key = row
-                            .iter_named()
-                            .map(|(_, name, val)| {
-                                (name.into_owned(), GroupValueKey::from_value(val))
-                            })
-                            .collect();
-                        if !self.seen.insert(key) {
-                            continue;
-                        }
-                    }
-                    return Ok(Some(row));
-                }
-                None => {
-                    self.current.take();
-                    self.branch_idx += 1;
-                }
-            }
-        }
-    }
-}
-
-/// Streaming write cursor for plans whose root is one of
-/// `Create` / `Set` / `Delete` / `Remove` / `Merge` and whose input
-/// subtree is fully streamable.
-///
-/// # Layout invariant
-///
-/// The cursor owns a raw alias of the original `&'a mut S`.
-/// Its `upstream` was constructed using a `&'a S` reborrow derived
-/// from `storage_ptr` via unsafe lifetime extension. This is sound
-/// because the existing read-side `RowSource` impls (see
-/// `NodeScanSource::cur_ids`, `ExpandSource::cur_edges`, etc.)
-/// materialize their iteration state into owned `Vec`s at
-/// construction or first call, so no live `&S` borrow into storage
-/// persists across `next_row` calls. Read-only access happens
-/// transiently inside each `upstream.next_row` call; mutable access
-/// happens between calls inside [`MutableExecutor::apply_write_op`].
-/// The borrows never overlap in time.
-///
-/// # Drop order
-///
-/// `upstream` must drop before any caller may regain `&mut S` access
-/// to the underlying storage. The explicit `Drop` impl enforces
-/// that order — `ManuallyDrop` lets us force the sequence.
-pub struct StreamingWriteCursor<'a, S: GraphStorageMut + GraphStorage + 'a> {
-    /// SAFETY: borrows from `*storage_ptr`. Must drop first.
-    upstream: ManuallyDrop<Box<dyn RowSource + 'a>>,
-    /// Raw alias of the `&'a mut S` handed in at construction. Used
-    /// as `&S` by `upstream` and as `&mut S` inside this cursor's `next_row`.
-    storage_ptr: StoragePtr<S>,
-    /// Physical plan — kept alive for the per-row op borrow.
-    plan: &'a PhysicalPlan,
-    /// Index into `plan.nodes` of the write operator.
-    /// We re-fetch the op per call so this struct doesn't need to
-    /// be parameterized by the specific op type.
-    write_op_node: PhysicalNodeId,
-    /// Parameters; cloned per row into a fresh `MutableExecutor`.
-    /// In typical bulk-write workloads this is empty or tiny.
-    params: BTreeMap<String, LoraValue>,
-    _phantom: std::marker::PhantomData<&'a mut S>,
-}
-
-impl<'a, S: GraphStorageMut + GraphStorage + 'a> StreamingWriteCursor<'a, S> {
-    /// Build a cursor. Caller must already have verified that
-    /// `plan.nodes[write_op_node]` is a streamable write op via
-    /// [`write_op_input`] and [`subtree_is_fully_streaming`].
-    pub(crate) fn open(
-        storage: &'a mut S,
-        plan: &'a PhysicalPlan,
-        write_op_node: PhysicalNodeId,
-        params: BTreeMap<String, LoraValue>,
-    ) -> ExecResult<Self> {
-        let input = match write_op_input(plan, write_op_node) {
-            Some(i) => i,
-            None => {
-                return Err(ExecutorError::RuntimeError(format!(
-                    "StreamingWriteCursor::open called with non-write node {write_op_node:?}"
-                )));
-            }
-        };
-        let storage_ptr = StoragePtr::from_mut(storage);
-
-        // SAFETY: see struct-level comment.
-        let storage_ref: &'a S = unsafe { storage_ptr.as_ref() };
-        let upstream = build_streaming(plan, input, storage_ref, Arc::new(params.clone()))?;
-
-        Ok(Self {
-            upstream: ManuallyDrop::new(upstream),
-            storage_ptr,
-            plan,
-            write_op_node,
-            params,
-            _phantom: std::marker::PhantomData,
-        })
-    }
-}
-
-impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for StreamingWriteCursor<'a, S> {
-    fn next_row(&mut self) -> ExecResult<Option<Row>> {
-        let mut row = match self.upstream.next_row()? {
-            Some(r) => r,
-            None => return Ok(None),
-        };
-
-        // SAFETY: upstream's `next_row` has returned, so its
-        // dormant `&S` borrow is not in active use right now. We
-        // reborrow `&mut S` for the per-row write and drop the
-        // borrow before the next pull.
-        let storage_mut: &mut S = unsafe { self.storage_ptr.as_mut() };
-        let mut exec = MutableExecutor::new(MutableExecutionContext {
-            storage: storage_mut,
-            params: self.params.clone(),
-        });
-        let op = &self.plan.nodes[self.write_op_node];
-        exec.apply_write_op(op, &mut row)?;
-        let row = exec.hydrate_row(row);
-        Ok(Some(row))
-    }
-}
-
-impl<'a, S: GraphStorageMut + GraphStorage + 'a> Drop for StreamingWriteCursor<'a, S> {
-    fn drop(&mut self) {
-        // SAFETY: drop `upstream` first to release its borrow into
-        // `*storage_ptr`. Subsequent fields drop via the normal
-        // field-drop sequence and don't touch storage.
-        unsafe {
-            ManuallyDrop::drop(&mut self.upstream);
-        }
-    }
-}
-
 /// Drain a freshly opened cursor into a `Vec<Row>`. Convenience for
 /// callers that want the streaming entry point but a buffered result.
 pub fn collect_compiled<'a, S: GraphStorage + 'a>(
@@ -894,108 +441,4 @@ pub fn collect_compiled<'a, S: GraphStorage + 'a>(
 ) -> ExecResult<Vec<Row>> {
     let mut cursor = PullExecutor::new(storage, params).open_compiled(compiled)?;
     drain(cursor.as_mut())
-}
-
-// ---------------------------------------------------------------------------
-// Stream classification
-// ---------------------------------------------------------------------------
-
-/// Classification of a compiled query, used by the database layer to
-/// decide whether `db.stream` needs a hidden staged transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamShape {
-    /// No mutating operator anywhere in the plan or any of its
-    /// UNION branches. Safe to stream against the live store.
-    ReadOnly,
-    /// Has at least one mutating operator (Create / Merge / Delete /
-    /// Set / Remove). The host should run this against a staged
-    /// graph and only publish on cursor exhaustion.
-    Mutating,
-}
-
-impl StreamShape {
-    pub fn is_mutating(self) -> bool {
-        matches!(self, StreamShape::Mutating)
-    }
-}
-
-fn plan_is_mutating(plan: &PhysicalPlan) -> bool {
-    plan.nodes.iter().any(|op| {
-        matches!(
-            op,
-            PhysicalOp::Create(_)
-                | PhysicalOp::Merge(_)
-                | PhysicalOp::Delete(_)
-                | PhysicalOp::Set(_)
-                | PhysicalOp::Remove(_)
-        )
-    })
-}
-
-/// Classify a compiled query for streaming. Treats any UNION branch
-/// the same as the head: a single mutating op anywhere across the
-/// compiled query promotes the whole query to `Mutating`.
-pub fn classify_stream(compiled: &CompiledQuery) -> StreamShape {
-    if plan_is_mutating(&compiled.physical)
-        || compiled
-            .unions
-            .iter()
-            .any(|b| plan_is_mutating(&b.physical))
-    {
-        StreamShape::Mutating
-    } else {
-        StreamShape::ReadOnly
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Plan-derived result columns
-// ---------------------------------------------------------------------------
-
-/// Result column names derived from the compiled plan.
-///
-/// Walks the plan from `root` looking for the topmost projection-shaped
-/// node (Projection, HashAggregation). Other operators that wrap a
-/// projection (Limit, Sort, PathBuild, OptionalMatch, Filter, Unwind,
-/// Create/Merge/Set/Delete/Remove) defer to their input. Returns an
-/// empty `Vec` for plans that have no named output (e.g. a bare
-/// scan-only plan), preserving the previous "infer from first row"
-/// behaviour for those cases.
-pub fn plan_result_columns(plan: &PhysicalPlan) -> Vec<String> {
-    plan_columns_at(plan, plan.root).unwrap_or_default()
-}
-
-fn plan_columns_at(plan: &PhysicalPlan, node: PhysicalNodeId) -> Option<Vec<String>> {
-    match &plan.nodes[node] {
-        PhysicalOp::Projection(p) => Some(p.items.iter().map(|i| i.name.clone()).collect()),
-        PhysicalOp::HashAggregation(p) => Some(
-            p.group_by
-                .iter()
-                .chain(p.aggregates.iter())
-                .map(|i| i.name.clone())
-                .collect(),
-        ),
-        PhysicalOp::Limit(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Sort(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::PathBuild(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::OptionalMatch(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Filter(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Unwind(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Create(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Merge(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Delete(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Set(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Remove(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Argument(_)
-        | PhysicalOp::NodeScan(_)
-        | PhysicalOp::NodeByLabelScan(_)
-        | PhysicalOp::NodeByPropertyScan(_)
-        | PhysicalOp::Expand(_) => None,
-    }
-}
-
-/// Result column names for a compiled query (head plan; UNION branches
-/// must produce the same shape so the head's columns are authoritative).
-pub fn compiled_result_columns(compiled: &CompiledQuery) -> Vec<String> {
-    plan_result_columns(&compiled.physical)
 }

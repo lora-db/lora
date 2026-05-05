@@ -19,9 +19,12 @@ use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::WalRecorder;
 
 use crate::error::LoraError;
+use crate::explain::{OperatorMetrics, PlanShape, ProfileMetrics, QueryPlan, QueryProfile};
 use crate::snapshot::ManagedSnapshotStore;
 use crate::stream::QueryStream;
 use crate::wal::write_scope::ensure_wal_not_poisoned;
+use lora_compiler::plan_tree_from_compiled;
+use lora_executor::{plan_result_columns, CollectorGuard, MetricsCollector};
 
 /// Transaction-lifecycle invariant violations.
 ///
@@ -564,6 +567,87 @@ impl<'db> Transaction<'db> {
         }
         inner.staged = Some(staged);
         Ok(())
+    }
+
+    /// Compile `query` against the transaction's view of the graph and
+    /// return the plan that *would* run. Never executes the query, so
+    /// running `explain` on a mutating statement leaves the transaction's
+    /// staged graph untouched.
+    pub fn explain(
+        &self,
+        query: &str,
+        _params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryPlan, LoraError> {
+        let compiled = self.compile_in_tx(query).map_err(LoraError::from_anyhow)?;
+        let tree = plan_tree_from_compiled(&compiled);
+        let shape: PlanShape = classify_stream(&compiled).into();
+        let result_columns = plan_result_columns(&compiled.physical);
+        Ok(QueryPlan {
+            query: query.to_string(),
+            tree,
+            shape,
+            result_columns,
+        })
+    }
+
+    /// Execute `query` inside the transaction and return the plan plus
+    /// runtime metrics.
+    ///
+    /// **PROFILE executes the query for real.** Mutating statements
+    /// affect the transaction's staged graph and are persisted at the
+    /// usual `commit` point. Use [`Transaction::explain`] to inspect a
+    /// plan without running it.
+    pub fn profile(
+        &mut self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryProfile, LoraError> {
+        let params = params.unwrap_or_default();
+        let compiled = self.compile_in_tx(query).map_err(LoraError::from_anyhow)?;
+        let tree = plan_tree_from_compiled(&compiled);
+        let shape: PlanShape = classify_stream(&compiled).into();
+        let result_columns = plan_result_columns(&compiled.physical);
+        let plan = QueryPlan {
+            query: query.to_string(),
+            tree,
+            shape,
+            result_columns,
+        };
+
+        let collector = Arc::new(MetricsCollector::new());
+        let _guard = CollectorGuard::install(collector.clone());
+
+        let started = Instant::now();
+        let rows = self
+            .execute_rows_compiled_deadline(&compiled, params, None)
+            .map_err(LoraError::from_anyhow)?;
+        let total_elapsed_ns = started.elapsed().as_nanos() as u64;
+
+        drop(_guard);
+        let per_operator = collector
+            .snapshot()
+            .into_iter()
+            .map(|(id, op)| {
+                (
+                    id,
+                    OperatorMetrics {
+                        rows: op.rows,
+                        elapsed_ns: op.elapsed_ns,
+                        next_calls: op.next_calls,
+                        db_hits: 0,
+                    },
+                )
+            })
+            .collect();
+
+        let metrics = ProfileMetrics {
+            total_elapsed_ns,
+            total_rows: rows.len() as u64,
+            mutated: shape.is_mutating(),
+            per_operator,
+        };
+
+        Ok(QueryProfile { plan, metrics })
     }
 
     /// Execute a query inside the transaction and return an owning row stream.

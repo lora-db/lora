@@ -9,7 +9,7 @@ use lora_store::GraphStorage;
 use crate::errors::ExecResult;
 use crate::value::Row;
 
-use super::traits::{drain, RowSource, StreamCtx};
+use super::{drain, RowSource, StreamCtx};
 
 /// Skip the first `skip` rows, emit at most `limit` rows from
 /// upstream, then return `None` regardless of whether upstream is

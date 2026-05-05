@@ -6,7 +6,7 @@ use crate::errors::ExecResult;
 use crate::executor::GroupValueKey;
 use crate::value::Row;
 
-use super::traits::RowSource;
+use super::RowSource;
 
 /// Streaming UNION source. Pulls each branch in sequence. `UNION ALL`
 /// passes rows through directly; plain `UNION` keeps a seen-key set and

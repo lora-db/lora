@@ -12,26 +12,53 @@ use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, Properties};
 use lora_wal::WalRecorder;
 
 mod builder;
+mod compile;
 mod execute;
+mod explain;
 mod graph_api;
 mod occ;
+mod profile;
 mod pull_mode;
 mod replay;
 mod stream;
 mod write_guard;
 
 use crate::error::LoraError;
+use crate::explain::{QueryPlan, QueryProfile};
 use crate::plan_cache::PlanCache;
 use crate::snapshot::ManagedSnapshotStore;
 use crate::wal::write_scope::WalAbortPolicy;
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
+///
+/// `execute` runs a query and returns rows. `explain` and `profile` are
+/// deliberately separate methods: `explain` never invokes the executor
+/// (so it can be called on mutating queries without side effects) and
+/// `profile` runs the executor and reports runtime metrics. Transports
+/// MUST NOT route plan / profile requests through `execute` — exposing
+/// the plan-only and profile-with-metrics behaviours as separate
+/// methods is part of the public contract.
 pub trait QueryRunner: Send + Sync + 'static {
     fn execute(
         &self,
         query: &str,
         options: Option<ExecuteOptions>,
     ) -> Result<QueryResult, LoraError>;
+
+    /// Compile a query and return its plan without executing it.
+    fn explain(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryPlan, LoraError>;
+
+    /// Execute a query and return its plan plus runtime metrics.
+    /// Mutating queries are persisted exactly as in `execute`.
+    fn profile(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryProfile, LoraError>;
 }
 
 /// Owns the graph store and orchestrates parse → analyze → compile → execute.
@@ -228,5 +255,21 @@ where
         options: Option<ExecuteOptions>,
     ) -> Result<QueryResult, LoraError> {
         Database::execute(self, query, options)
+    }
+
+    fn explain(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryPlan, LoraError> {
+        Database::explain(self, query, params)
+    }
+
+    fn profile(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryProfile, LoraError> {
+        Database::profile(self, query, params)
     }
 }

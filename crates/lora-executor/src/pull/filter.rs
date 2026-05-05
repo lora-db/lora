@@ -7,7 +7,7 @@ use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_truthy_result;
 use crate::value::Row;
 
-use super::traits::{RowSource, StreamCtx};
+use super::{RowSource, StreamCtx};
 
 /// Pulls upstream rows until one matches `predicate`, then yields it.
 pub struct FilterSource<'a, S: GraphStorage> {

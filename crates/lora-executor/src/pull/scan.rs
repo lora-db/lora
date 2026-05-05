@@ -17,7 +17,7 @@ use crate::executor::{
 };
 use crate::value::{LoraValue, Row};
 
-use super::traits::{RowSource, StreamCtx};
+use super::{RowSource, StreamCtx};
 
 /// Streams `(input × node_ids)`. For each upstream row, emits one
 /// row per node id with `var` bound. If `var` is already bound in

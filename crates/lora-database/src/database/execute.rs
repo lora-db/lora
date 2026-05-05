@@ -10,18 +10,13 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use lora_analyzer::Analyzer;
-use lora_ast::Document;
-use lora_compiler::{CompiledQuery, Compiler};
 use lora_executor::{
     classify_stream, collect_compiled, project_rows, ExecuteOptions, LoraValue,
     MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
 };
-use lora_parser::parse_query;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph};
 
 use crate::database::{Database, QUERY_FAILURE_POISON};
@@ -34,37 +29,6 @@ impl<S> Database<S>
 where
     S: GraphStorage + GraphStorageMut + Any + Clone + Send + Sync + 'static,
 {
-    pub(super) fn compile_document_against(
-        &self,
-        document: &Document,
-        store: &S,
-    ) -> Result<CompiledQuery> {
-        let resolved = {
-            let mut analyzer = Analyzer::new(store);
-            analyzer.analyze(document)?
-        };
-
-        Ok(Compiler::compile(&resolved))
-    }
-
-    /// Return a cached compiled plan for `query`, or compile + cache one
-    /// against the supplied store. The store is only touched on cache
-    /// miss, so a steady-state hot query never reaches the analyzer or
-    /// the compiler.
-    pub(crate) fn compile_query_cached(
-        &self,
-        query: &str,
-        store: &S,
-    ) -> Result<Arc<CompiledQuery>> {
-        if let Some(plan) = self.plan_cache.get(query) {
-            return Ok(plan);
-        }
-        let document = parse_query(query)?;
-        let plan = Arc::new(self.compile_document_against(&document, store)?);
-        self.plan_cache.insert(query, plan.clone());
-        Ok(plan)
-    }
-
     /// Execute a query and return its result.
     pub fn execute(
         &self,
