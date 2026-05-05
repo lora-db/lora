@@ -145,7 +145,7 @@ jobs:
         run: npm pack
 
       - name: Stage tarball at workspace root for clean artifact layout
-        run: mv loradb-lora-wasm-*.tgz ../../
+        run: mv loradb-lora-wasm-*.tgz ../../../
 
       - uses: actions/upload-artifact@v5
         with:
@@ -304,7 +304,7 @@ jobs:
         shell: bash
         env:
           TRIPLE: ${{ matrix.triple }}
-        run: mv "lora-node.${TRIPLE}.node" ../../
+        run: mv "lora-node.${TRIPLE}.node" ../../../
 
       - uses: actions/upload-artifact@v5
         with:
@@ -628,7 +628,7 @@ jobs:
         run: ls -la pkg
 
       - name: Stage gem at workspace root for clean artifact layout
-        run: mv pkg/lora-ruby-*.gem ../../
+        run: mv pkg/lora-ruby-*.gem ../../../
 
       - uses: actions/upload-artifact@v5
         with:
@@ -697,7 +697,7 @@ jobs:
         run: ls -la pkg
 
       - name: Stage gem at workspace root for clean artifact layout
-        run: mv pkg/lora-ruby-*-${{ matrix.platform }}.gem ../../
+        run: mv pkg/lora-ruby-*-${{ matrix.platform }}.gem ../../../
 
       - uses: actions/upload-artifact@v5
         with:
