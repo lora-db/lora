@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "crates/bindings/lora-wasm/**"
+      - "crates/bindings/lora-binding-buffer/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -21,6 +22,7 @@ on:
   pull_request:
     paths:
       - "crates/bindings/lora-wasm/**"
+      - "crates/bindings/lora-binding-buffer/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"

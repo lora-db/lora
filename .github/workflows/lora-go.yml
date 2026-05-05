@@ -6,6 +6,7 @@ on:
     paths:
       - "crates/bindings/lora-go/**"
       - "crates/bindings/lora-ffi/**"
+      - "crates/bindings/lora-binding-buffer/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
@@ -22,6 +23,7 @@ on:
     paths:
       - "crates/bindings/lora-go/**"
       - "crates/bindings/lora-ffi/**"
+      - "crates/bindings/lora-binding-buffer/**"
       - "crates/lora-ast/**"
       - "crates/lora-parser/**"
       - "crates/lora-analyzer/**"
