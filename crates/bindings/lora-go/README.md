@@ -145,6 +145,41 @@ if lora.IsNode(row["n"]) {
 }
 ```
 
+## Explain & Profile
+
+`Explain` and `Profile` are first-class methods alongside `Execute`.
+They are deliberately separate calls — neither routes through
+`Execute` — so plan inspection and runtime metrics must be requested
+explicitly.
+
+```go
+plan, err := db.Explain(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    lora.Params{"name": "Alice"},
+)
+if err != nil { /* ... */ }
+fmt.Println(plan.Shape)            // "readOnly"
+fmt.Println(plan.Tree.Operator)    // top-most operator label
+
+prof, err := db.Profile(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    lora.Params{"name": "Alice"},
+)
+fmt.Println(prof.Metrics.TotalElapsedNs)
+fmt.Println(prof.Metrics.PerOperator) // per-step inclusive timing
+```
+
+`Explain` never invokes the executor — calling it on a mutating query
+(`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`) leaves the graph
+untouched.
+
+> **`Profile` executes the query for real.** Mutating queries are
+> persisted exactly as in `Execute`. Use `Explain` to inspect a
+> mutating plan without running it.
+
+`ExplainContext` and `ProfileContext` are the context-aware variants;
+they share the cancellation caveat below.
+
 ## Context cancellation (important caveat)
 
 `ExecuteContext` honours `context.Context` deadlines in the Go sense

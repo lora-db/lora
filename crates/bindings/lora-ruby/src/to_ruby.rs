@@ -6,8 +6,78 @@
 
 use magnus::{prelude::*, Error as MagnusError, RHash, Ruby, Value};
 
-use lora_database::LoraValue;
+use lora_database::{LoraValue, PlanTreeNode, QueryPlan, QueryProfile};
 use lora_store::{LoraBinary, LoraPoint, LoraVector, VectorValues};
+
+pub(crate) fn query_plan_to_ruby(ruby: &Ruby, plan: &QueryPlan) -> Result<RHash, MagnusError> {
+    let out = ruby.hash_new();
+    out.aset(ruby.str_new("query"), ruby.str_new(&plan.query))?;
+    out.aset(ruby.str_new("shape"), ruby.str_new(plan.shape.as_str()))?;
+    let cols = ruby.ary_new();
+    for c in &plan.result_columns {
+        cols.push(ruby.str_new(c))?;
+    }
+    out.aset(ruby.str_new("result_columns"), cols)?;
+    out.aset(
+        ruby.str_new("tree"),
+        plan_tree_node_to_ruby(ruby, &plan.tree.root)?,
+    )?;
+    Ok(out)
+}
+
+pub(crate) fn query_profile_to_ruby(
+    ruby: &Ruby,
+    profile: &QueryProfile,
+) -> Result<RHash, MagnusError> {
+    let out = ruby.hash_new();
+    out.aset(
+        ruby.str_new("plan"),
+        query_plan_to_ruby(ruby, &profile.plan)?,
+    )?;
+
+    let metrics = ruby.hash_new();
+    metrics.aset(
+        ruby.str_new("total_elapsed_ns"),
+        profile.metrics.total_elapsed_ns,
+    )?;
+    metrics.aset(ruby.str_new("total_rows"), profile.metrics.total_rows)?;
+    metrics.aset(ruby.str_new("mutated"), profile.metrics.mutated)?;
+
+    let per_op = ruby.hash_new();
+    for (id, op) in &profile.metrics.per_operator {
+        let entry = ruby.hash_new();
+        entry.aset(ruby.str_new("rows"), op.rows)?;
+        entry.aset(ruby.str_new("db_hits"), op.db_hits)?;
+        entry.aset(ruby.str_new("elapsed_ns"), op.elapsed_ns)?;
+        entry.aset(ruby.str_new("next_calls"), op.next_calls)?;
+        per_op.aset(*id as u64, entry)?;
+    }
+    metrics.aset(ruby.str_new("per_operator"), per_op)?;
+
+    out.aset(ruby.str_new("metrics"), metrics)?;
+    Ok(out)
+}
+
+fn plan_tree_node_to_ruby(ruby: &Ruby, node: &PlanTreeNode) -> Result<Value, MagnusError> {
+    let out = ruby.hash_new();
+    out.aset(ruby.str_new("id"), node.id as u64)?;
+    out.aset(ruby.str_new("operator"), ruby.str_new(&node.operator))?;
+    let details = ruby.hash_new();
+    for (k, v) in &node.details {
+        details.aset(ruby.str_new(k), ruby.str_new(v))?;
+    }
+    out.aset(ruby.str_new("details"), details)?;
+    match node.estimated_rows {
+        Some(r) => out.aset(ruby.str_new("estimated_rows"), r)?,
+        None => out.aset(ruby.str_new("estimated_rows"), ruby.qnil())?,
+    }
+    let children = ruby.ary_new();
+    for child in &node.children {
+        children.push(plan_tree_node_to_ruby(ruby, child)?)?;
+    }
+    out.aset(ruby.str_new("children"), children)?;
+    Ok(out.as_value())
+}
 
 pub(crate) fn lora_value_to_ruby(ruby: &Ruby, value: &LoraValue) -> Result<Value, MagnusError> {
     match value {

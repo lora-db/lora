@@ -271,6 +271,78 @@ func (db *Database) Execute(query string, params Params) (*Result, error) {
 	return db.ExecuteContext(context.Background(), query, params)
 }
 
+// Explain compiles a query and returns its execution plan without
+// running it. Mutating queries (CREATE / MERGE / SET / DELETE / REMOVE)
+// produce no side effects: the executor is never invoked.
+func (db *Database) Explain(query string, params Params) (*QueryPlan, error) {
+	return db.ExplainContext(context.Background(), query, params)
+}
+
+// ExplainContext is the context-aware variant of [Database.Explain].
+func (db *Database) ExplainContext(ctx context.Context, query string, params Params) (*QueryPlan, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	paramsJSON, err := encodeParams(params)
+	if err != nil {
+		return nil, &LoraError{Code: CodeInvalidParams, Message: err.Error()}
+	}
+	done := make(chan struct {
+		plan *QueryPlan
+		err  error
+	}, 1)
+	go func() {
+		p, err := db.explain(query, paramsJSON)
+		done <- struct {
+			plan *QueryPlan
+			err  error
+		}{p, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case out := <-done:
+		return out.plan, out.err
+	}
+}
+
+// Profile runs a query and returns the plan plus runtime metrics.
+//
+// PROFILE EXECUTES THE QUERY FOR REAL. Mutating queries are persisted
+// exactly as in [Database.Execute]. Use [Database.Explain] to inspect
+// a mutating plan without running it.
+func (db *Database) Profile(query string, params Params) (*QueryProfile, error) {
+	return db.ProfileContext(context.Background(), query, params)
+}
+
+// ProfileContext is the context-aware variant of [Database.Profile].
+func (db *Database) ProfileContext(ctx context.Context, query string, params Params) (*QueryProfile, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	paramsJSON, err := encodeParams(params)
+	if err != nil {
+		return nil, &LoraError{Code: CodeInvalidParams, Message: err.Error()}
+	}
+	done := make(chan struct {
+		prof *QueryProfile
+		err  error
+	}, 1)
+	go func() {
+		p, err := db.profile(query, paramsJSON)
+		done <- struct {
+			prof *QueryProfile
+			err  error
+		}{p, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case out := <-done:
+		return out.prof, out.err
+	}
+}
+
 // Stream runs a query and returns an iterator over its rows. The current
 // binding materializes the native result first, then exposes row-by-row
 // consumption to Go callers.
@@ -362,6 +434,84 @@ func (db *Database) execute(query string, paramsJSON []byte) (*Result, error) {
 
 	defer C.lora_string_free(outResult)
 	return decodeResult(C.GoString(outResult))
+}
+
+func (db *Database) explain(query string, paramsJSON []byte) (*QueryPlan, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.handle == nil {
+		return nil, errClosed()
+	}
+
+	cQuery := C.CString(query)
+	defer C.free(unsafe.Pointer(cQuery))
+
+	var cParams *C.char
+	if len(paramsJSON) > 0 {
+		cParams = C.CString(string(paramsJSON))
+		defer C.free(unsafe.Pointer(cParams))
+	}
+
+	var outResult *C.char
+	var outError *C.char
+	status := C.lora_db_explain_json(db.handle, cQuery, cParams, &outResult, &outError)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+			if outResult != nil {
+				C.lora_string_free(outResult)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+	defer C.lora_string_free(outResult)
+
+	var plan QueryPlan
+	if err := json.Unmarshal([]byte(C.GoString(outResult)), &plan); err != nil {
+		return nil, &LoraError{Code: CodeInternal, Message: err.Error()}
+	}
+	return &plan, nil
+}
+
+func (db *Database) profile(query string, paramsJSON []byte) (*QueryProfile, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.handle == nil {
+		return nil, errClosed()
+	}
+
+	cQuery := C.CString(query)
+	defer C.free(unsafe.Pointer(cQuery))
+
+	var cParams *C.char
+	if len(paramsJSON) > 0 {
+		cParams = C.CString(string(paramsJSON))
+		defer C.free(unsafe.Pointer(cParams))
+	}
+
+	var outResult *C.char
+	var outError *C.char
+	status := C.lora_db_profile_json(db.handle, cQuery, cParams, &outResult, &outError)
+	if status != C.LORA_STATUS_OK {
+		defer func() {
+			if outError != nil {
+				C.lora_string_free(outError)
+			}
+			if outResult != nil {
+				C.lora_string_free(outResult)
+			}
+		}()
+		return nil, statusToError(int(status), outError)
+	}
+	defer C.lora_string_free(outResult)
+
+	var prof QueryProfile
+	if err := json.Unmarshal([]byte(C.GoString(outResult)), &prof); err != nil {
+		return nil, &LoraError{Code: CodeInternal, Message: err.Error()}
+	}
+	return &prof, nil
 }
 
 func (db *Database) stream(query string, paramsJSON []byte) (*RowIterator, error) {

@@ -8,7 +8,9 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
-use lora_database::{LoraValue, Row, SnapshotInfo, SnapshotMeta};
+use lora_database::{
+    LoraValue, PlanTreeNode, QueryPlan, QueryProfile, Row, SnapshotInfo, SnapshotMeta,
+};
 use lora_store::{LoraBinary, LoraPoint, LoraVector, VectorValues};
 
 pub(crate) fn snapshot_info_to_meta(info: SnapshotInfo) -> SnapshotMeta {
@@ -61,6 +63,67 @@ pub(crate) fn row_to_py_dict<'py>(py: Python<'py>, row: &Row) -> PyResult<Bound<
     for (_, name, value) in row.iter_named() {
         out.set_item(name.as_ref(), lora_value_to_py(py, value)?)?;
     }
+    Ok(out)
+}
+
+pub(crate) fn query_plan_to_py<'py>(
+    py: Python<'py>,
+    plan: &QueryPlan,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new_bound(py);
+    out.set_item("query", &plan.query)?;
+    out.set_item("shape", plan.shape.as_str())?;
+    let cols = PyList::new_bound(py, plan.result_columns.iter().map(|c| c.as_str()));
+    out.set_item("result_columns", cols)?;
+    out.set_item("tree", plan_tree_node_to_py(py, &plan.tree.root)?)?;
+    Ok(out)
+}
+
+pub(crate) fn query_profile_to_py<'py>(
+    py: Python<'py>,
+    profile: &QueryProfile,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new_bound(py);
+    out.set_item("plan", query_plan_to_py(py, &profile.plan)?)?;
+
+    let metrics = PyDict::new_bound(py);
+    metrics.set_item("total_elapsed_ns", profile.metrics.total_elapsed_ns)?;
+    metrics.set_item("total_rows", profile.metrics.total_rows)?;
+    metrics.set_item("mutated", profile.metrics.mutated)?;
+
+    let per_op = PyDict::new_bound(py);
+    for (id, op) in &profile.metrics.per_operator {
+        let entry = PyDict::new_bound(py);
+        entry.set_item("rows", op.rows)?;
+        entry.set_item("db_hits", op.db_hits)?;
+        entry.set_item("elapsed_ns", op.elapsed_ns)?;
+        entry.set_item("next_calls", op.next_calls)?;
+        per_op.set_item(*id as u64, entry)?;
+    }
+    metrics.set_item("per_operator", per_op)?;
+
+    out.set_item("metrics", metrics)?;
+    Ok(out)
+}
+
+fn plan_tree_node_to_py<'py>(py: Python<'py>, node: &PlanTreeNode) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new_bound(py);
+    out.set_item("id", node.id as u64)?;
+    out.set_item("operator", &node.operator)?;
+    let details = PyDict::new_bound(py);
+    for (k, v) in &node.details {
+        details.set_item(k, v)?;
+    }
+    out.set_item("details", details)?;
+    match node.estimated_rows {
+        Some(r) => out.set_item("estimated_rows", r)?,
+        None => out.set_item("estimated_rows", py.None())?,
+    }
+    let children = PyList::empty_bound(py);
+    for child in &node.children {
+        children.append(plan_tree_node_to_py(py, child)?)?;
+    }
+    out.set_item("children", children)?;
     Ok(out)
 }
 

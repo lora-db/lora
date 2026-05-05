@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loradb.com/schemas/profile.json",
+  "title": "LoraProfileResponse",
+  "description": "JSON envelope returned by lora_db_profile_json. PROFILE EXECUTES THE QUERY FOR REAL: mutating queries (CREATE / MERGE / SET / DELETE / REMOVE) produce the same side effects as lora_db_execute_json. Use lora_db_explain_json to inspect a mutating plan without running it.",
+  "type": "object",
+  "required": ["plan", "metrics"],
+  "additionalProperties": false,
+  "properties": {
+    "plan": {
+      "$ref": "explain.json#",
+      "description": "Same shape as the response of lora_db_explain_json."
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["totalElapsedNs", "totalRows", "mutated", "perOperator"],
+      "additionalProperties": false,
+      "properties": {
+        "totalElapsedNs": {
+          "type": "number",
+          "description": "Wall-clock time (in nanoseconds) spent inside the executor for this query."
+        },
+        "totalRows": {
+          "type": "number",
+          "description": "Number of rows produced before result-format projection."
+        },
+        "mutated": {
+          "type": "boolean",
+          "description": "Whether at least one mutating operator ran."
+        },
+        "perOperator": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/OperatorMetrics" },
+          "description": "Per-operator metrics keyed by physical node id (string-encoded). Keys match the `id` field of nodes in the plan tree."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "OperatorMetrics": {
+      "type": "object",
+      "required": ["rows", "dbHits", "elapsedNs", "nextCalls"],
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "type": "number",
+          "description": "Rows produced by this operator."
+        },
+        "dbHits": {
+          "type": "number",
+          "description": "Reserved for a future phase. 0 today."
+        },
+        "elapsedNs": {
+          "type": "number",
+          "description": "Wall-clock time spent inside this operator's next_row, INCLUSIVE of descendants."
+        },
+        "nextCalls": {
+          "type": "number",
+          "description": "Total invocations of this operator's next_row."
+        }
+      }
+    }
+  }
+}

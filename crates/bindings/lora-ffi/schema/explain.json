@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loradb.com/schemas/explain.json",
+  "title": "LoraExplainResponse",
+  "description": "JSON envelope returned by lora_db_explain_json. The executor is never invoked: even on mutating queries (CREATE / MERGE / SET / DELETE / REMOVE) this response describes the plan without producing side effects.",
+  "type": "object",
+  "required": ["query", "shape", "resultColumns", "tree"],
+  "additionalProperties": false,
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "The exact query text submitted by the caller."
+    },
+    "shape": {
+      "type": "string",
+      "enum": ["readOnly", "mutating"],
+      "description": "Whether running this plan would (potentially) mutate the graph."
+    },
+    "resultColumns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Result column names in projection order. Empty for plans without a top-level projection."
+    },
+    "tree": { "$ref": "#/$defs/PlanNode" }
+  },
+  "$defs": {
+    "PlanNode": {
+      "type": "object",
+      "required": ["id", "operator", "details", "estimatedRows", "children"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "Stable physical-node id within the owning plan, or Number.MAX_SAFE_INTEGER for synthetic Union / UnionBranch wrappers."
+        },
+        "operator": {
+          "type": "string",
+          "description": "Operator label, e.g. NodeByLabelScan, Expand, Projection."
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Human-readable details map. Values are opaque strings; do not parse them programmatically — internal expression / variable types are deliberately not exposed here."
+        },
+        "estimatedRows": {
+          "type": ["number", "null"],
+          "description": "Reserved for a future cost model. Always null today."
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PlanNode" }
+        }
+      }
+    }
+  }
+}

@@ -81,6 +81,8 @@ LoraRuby::Database.new(database_name = nil, options = nil)     # -> Database
 LoraRuby::Database.open_wal(wal_dir, options = nil)            # -> Database
 
 db.execute(query, params = nil)       # -> { "columns" => [...], "rows" => [...] }
+db.explain(query, params = nil)       # -> plan Hash; never executes
+db.profile(query, params = nil)       # -> { "plan" => ..., "metrics" => ... }; PROFILE executes writes
 db.clear                              # -> nil
 db.node_count                         # -> Integer
 db.relationship_count                 # -> Integer
@@ -101,6 +103,37 @@ Hash keys on the output are always **strings**, matching the `lora-node`,
 `lora-wasm`, and `lora-python` bindings. Input Hashes accept either
 symbol or string keys — both work for param names and for tagged
 constructor Hashes like `point`/`date`/...
+
+### Explain & Profile
+
+`db.explain` and `db.profile` are first-class methods alongside
+`db.execute`. They are intentionally *separate calls*, not a flag on
+`execute`, so plan inspection and runtime metrics must be requested
+explicitly.
+
+```ruby
+plan = db.explain(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { "name" => "Alice" }
+)
+plan["shape"]           # => "readOnly"
+plan["tree"]["operator"]
+
+profile = db.profile(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { "name" => "Alice" }
+)
+profile["metrics"]["total_elapsed_ns"]
+profile["metrics"]["per_operator"]   # per-step inclusive timing
+```
+
+`explain` never invokes the executor — calling it on a mutating query
+(`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`) leaves the graph
+untouched.
+
+> **`profile` executes the query for real.** Mutating queries are
+> persisted exactly as in `execute`. Use `explain` to inspect a
+> mutating plan without running it.
 
 ## Typed value model
 

@@ -42,7 +42,8 @@ use from_python::{
     py_statements_to_transaction, PyDatabaseOpenOptions,
 };
 use to_python::{
-    lora_value_to_py, row_arrays_to_py, row_to_py_dict, snapshot_info_to_meta, snapshot_meta_to_py,
+    lora_value_to_py, query_plan_to_py, query_profile_to_py, row_arrays_to_py, row_to_py_dict,
+    snapshot_info_to_meta, snapshot_meta_to_py,
 };
 
 // ============================================================================
@@ -183,6 +184,54 @@ impl Database {
         }
         out.set_item("rows", rows)?;
         Ok(out)
+    }
+
+    /// Compile a query and return its plan as a `dict` without
+    /// executing it.
+    ///
+    /// Mutating queries (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`)
+    /// leave the graph untouched. Errors surface with the same
+    /// `LoraQueryError` shape as `execute()`.
+    #[pyo3(signature = (query, params=None))]
+    fn explain<'py>(
+        &self,
+        py: Python<'py>,
+        query: String,
+        params: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let params_map = match params {
+            Some(p) if !p.is_none() => Some(py_object_to_params(p)?),
+            _ => None,
+        };
+        let db = self.inner()?;
+        let plan = py
+            .allow_threads(move || db.explain(&query, params_map))
+            .map_err(lora_query_err_from_anyhow)?;
+        query_plan_to_py(py, &plan)
+    }
+
+    /// Execute a query and return the plan plus runtime metrics as a
+    /// `dict`.
+    ///
+    /// **PROFILE executes the query for real.** Mutating queries are
+    /// persisted exactly as in `execute()`. Use `explain()` to inspect
+    /// a mutating plan without running it.
+    #[pyo3(signature = (query, params=None))]
+    fn profile<'py>(
+        &self,
+        py: Python<'py>,
+        query: String,
+        params: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let params_map = match params {
+            Some(p) if !p.is_none() => Some(py_object_to_params(p)?),
+            _ => None,
+        };
+        let db = self.inner()?;
+        let prof = py
+            .allow_threads(move || db.profile(&query, params_map))
+            .map_err(lora_query_err_from_anyhow)?;
+        query_profile_to_py(py, &prof)
     }
 
     /// Return an iterator over result rows. The query is materialized by

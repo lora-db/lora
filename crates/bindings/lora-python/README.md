@@ -46,6 +46,37 @@ persistent = Database.create("app", {"database_dir": "./data"})  # persistent: .
 If you want persistence, pass a database name and `database_dir` to
 `Database.create(...)` or `Database(...)`.
 
+## Explain & Profile
+
+`db.explain()` and `db.profile()` are first-class methods alongside
+`db.execute()`. They are intentionally separate calls — neither
+routes through `execute()` — so plan inspection and runtime metrics
+must be requested explicitly.
+
+```python
+plan = db.explain(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    {"name": "Alice"},
+)
+print(plan["shape"])             # "readOnly"
+print(plan["tree"]["operator"])  # top-most operator label
+
+profile = db.profile(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    {"name": "Alice"},
+)
+print(profile["metrics"]["total_elapsed_ns"])
+print(profile["metrics"]["per_operator"])  # per-step inclusive timing
+```
+
+`explain()` never invokes the executor — calling it on a mutating
+query (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`) leaves the graph
+untouched.
+
+> **`profile()` executes the query for real.** Mutating queries
+> produce the same side effects as `execute()`. Use `explain()` to
+> inspect a mutating plan without running it.
+
 ## Async usage (non-blocking)
 
 ```python

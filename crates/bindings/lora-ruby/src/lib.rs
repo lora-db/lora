@@ -34,7 +34,7 @@ mod to_ruby;
 use errors::{invalid_params, query_error, query_error_from_anyhow};
 use from_ruby::{hash_get_any, read_nonnegative_u64, ruby_optional_to_json, ruby_value_to_params};
 use gvl::without_gvl;
-use to_ruby::lora_value_to_ruby;
+use to_ruby::{lora_value_to_ruby, query_plan_to_ruby, query_profile_to_ruby};
 
 // ============================================================================
 // Module / exception registration
@@ -69,6 +69,8 @@ fn init(ruby: &Ruby) -> Result<(), MagnusError> {
     database.define_singleton_method("new", function!(database_new, -1))?;
     database.define_singleton_method("open_wal", function!(database_open_wal, -1))?;
     database.define_method("execute", method!(database_execute, -1))?;
+    database.define_method("explain", method!(database_explain, -1))?;
+    database.define_method("profile", method!(database_profile, -1))?;
     database.define_method("clear", method!(database_clear, 0))?;
     database.define_method("close", method!(database_close, 0))?;
     database.define_method("node_count", method!(database_node_count, 0))?;
@@ -522,4 +524,56 @@ fn database_execute(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<R
     }
     out.aset(ruby.str_new("rows"), rows)?;
     Ok(out)
+}
+
+/// `explain(query, params = nil)` — compile a query and return the plan
+/// as a Ruby `Hash` without invoking the executor. Mutating queries
+/// produce no side effects.
+fn database_explain(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<RHash, MagnusError> {
+    let (query, params_value) = parse_query_params(ruby, args)?;
+    let params_map = match params_value {
+        Some(v) => Some(ruby_value_to_params(ruby, v)?),
+        None => None,
+    };
+    let db = database_inner(ruby, rb_self)?;
+    let plan = without_gvl(move || db.explain(&query, params_map))
+        .map_err(|e| query_error_from_anyhow(ruby, e))?;
+    query_plan_to_ruby(ruby, &plan)
+}
+
+/// `profile(query, params = nil)` — execute a query and return the plan
+/// plus runtime metrics as a Ruby `Hash`.
+///
+/// **PROFILE executes the query for real.** Mutating queries are
+/// persisted exactly as in `execute`. Use `explain` to inspect a
+/// mutating plan without running it.
+fn database_profile(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<RHash, MagnusError> {
+    let (query, params_value) = parse_query_params(ruby, args)?;
+    let params_map = match params_value {
+        Some(v) => Some(ruby_value_to_params(ruby, v)?),
+        None => None,
+    };
+    let db = database_inner(ruby, rb_self)?;
+    let prof = without_gvl(move || db.profile(&query, params_map))
+        .map_err(|e| query_error_from_anyhow(ruby, e))?;
+    query_profile_to_ruby(ruby, &prof)
+}
+
+fn parse_query_params(ruby: &Ruby, args: &[Value]) -> Result<(String, Option<Value>), MagnusError> {
+    match args.len() {
+        1 => Ok((RString::try_convert(args[0])?.to_string()?, None)),
+        2 => {
+            let q = RString::try_convert(args[0])?.to_string()?;
+            let p = if args[1].is_nil() {
+                None
+            } else {
+                Some(args[1])
+            };
+            Ok((q, p))
+        }
+        n => Err(MagnusError::new(
+            ruby.exception_arg_error(),
+            format!("wrong number of arguments (given {n}, expected 1..2)"),
+        )),
+    }
 }

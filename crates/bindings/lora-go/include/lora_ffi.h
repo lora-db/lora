@@ -125,6 +125,40 @@ int lora_db_execute_json(
     char **out_result,
     char **out_error);
 
+/* Compiles a query and returns its plan as JSON without executing it.
+ *
+ * On LORA_STATUS_OK, `*out_result` is a NUL-terminated JSON object:
+ *   {"query":..., "shape":"readOnly"|"mutating", "resultColumns":[...],
+ *    "tree": {"id":..,"operator":..,"details":{...},"estimatedRows":null,"children":[...]}}
+ *
+ * The executor is never invoked, so calling this on a mutating query
+ * (CREATE/MERGE/SET/DELETE/REMOVE) leaves the graph untouched. */
+int lora_db_explain_json(
+    LoraDatabase *db,
+    const char *query,
+    const char *params_json,
+    char **out_result,
+    char **out_error);
+
+/* Executes a query and returns its plan plus runtime metrics as JSON.
+ *
+ * **PROFILE EXECUTES THE QUERY FOR REAL.** Mutating queries are
+ * persisted exactly as in lora_db_execute_json. Use lora_db_explain_json
+ * to inspect a mutating plan without running it.
+ *
+ * On LORA_STATUS_OK, `*out_result` is a NUL-terminated JSON object:
+ *   {"plan": {... same shape as lora_db_explain_json ...},
+ *    "metrics": {
+ *      "totalElapsedNs": ..., "totalRows": ..., "mutated": true|false,
+ *      "perOperator": {"<id>": {"rows":..,"dbHits":..,"elapsedNs":..,"nextCalls":..}, ...}
+ *    }} */
+int lora_db_profile_json(
+    LoraDatabase *db,
+    const char *query,
+    const char *params_json,
+    char **out_result,
+    char **out_error);
+
 /* Executes a JSON array of statement objects inside one native transaction.
  *
  * statements_json must be:

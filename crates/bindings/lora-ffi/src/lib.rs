@@ -57,8 +57,8 @@ use errors::{
     PANIC_PREFIX,
 };
 use json::{
-    execute_json_payload, parse_params, parse_transaction_mode, parse_transaction_statements,
-    row_to_json, serialize_rows,
+    execute_json_payload, explain_json_payload, parse_params, parse_transaction_mode,
+    parse_transaction_statements, profile_json_payload, row_to_json, serialize_rows,
 };
 use lora_database::{LoraError, LoraErrorCode};
 
@@ -471,6 +471,121 @@ pub unsafe extern "C" fn lora_db_execute_json(
         };
 
         match execute_json_payload(&(*db).inner, query, params_map) {
+            Ok(json) => *out_result = to_c_string(json),
+            Err(e) => {
+                write_lora_error(out_error, e);
+                return LoraStatus::LoraError;
+            }
+        }
+        LoraStatus::Ok
+    }));
+    match result {
+        Ok(status) => status as c_int,
+        Err(panic) => {
+            if !out_error.is_null() {
+                let msg = panic_message(panic);
+                write_error(out_error, PANIC_PREFIX, &msg);
+            }
+            LoraStatus::Panic as c_int
+        }
+    }
+}
+
+/// Compile a query and return its plan as JSON without executing it.
+///
+/// Mutating queries (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`)
+/// produce no side effects: the executor is never invoked. On success,
+/// `*out_result` receives a JSON object describing the plan tree.
+/// Allocation rules match `lora_db_execute_json`.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_explain_json(
+    db: *mut LoraDatabase,
+    query: *const c_char,
+    params_json: *const c_char,
+    out_result: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    explain_or_profile_json(db, query, params_json, out_result, out_error, false)
+}
+
+/// Execute a query and return the plan plus runtime metrics as JSON.
+///
+/// **PROFILE executes the query for real.** Mutating queries are
+/// persisted exactly as in `lora_db_execute_json`. Use
+/// `lora_db_explain_json` to inspect a mutating plan without running it.
+#[no_mangle]
+pub unsafe extern "C" fn lora_db_profile_json(
+    db: *mut LoraDatabase,
+    query: *const c_char,
+    params_json: *const c_char,
+    out_result: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    explain_or_profile_json(db, query, params_json, out_result, out_error, true)
+}
+
+unsafe fn explain_or_profile_json(
+    db: *mut LoraDatabase,
+    query: *const c_char,
+    params_json: *const c_char,
+    out_result: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+    profile: bool,
+) -> c_int {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if !out_result.is_null() {
+            *out_result = ptr::null_mut();
+        }
+        if !out_error.is_null() {
+            *out_error = ptr::null_mut();
+        }
+        if db.is_null() || query.is_null() || out_result.is_null() || out_error.is_null() {
+            return LoraStatus::NullPointer;
+        }
+
+        let query = match CStr::from_ptr(query).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                write_error(out_error, INVALID_PARAMS_PREFIX, "query is not valid UTF-8");
+                return LoraStatus::InvalidUtf8;
+            }
+        };
+
+        let params_str = if params_json.is_null() {
+            None
+        } else {
+            match CStr::from_ptr(params_json).to_str() {
+                Ok("") => None,
+                Ok(s) => Some(s),
+                Err(_) => {
+                    write_error(
+                        out_error,
+                        INVALID_PARAMS_PREFIX,
+                        "params JSON is not valid UTF-8",
+                    );
+                    return LoraStatus::InvalidParams;
+                }
+            }
+        };
+
+        let params_map = match params_str {
+            None => None,
+            Some(_) => match parse_params(params_str) {
+                Ok(map) if map.is_empty() => None,
+                Ok(map) => Some(map),
+                Err(msg) => {
+                    write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
+                    return LoraStatus::InvalidParams;
+                }
+            },
+        };
+
+        let payload = if profile {
+            profile_json_payload(&(*db).inner, query, params_map)
+        } else {
+            explain_json_payload(&(*db).inner, query, params_map)
+        };
+        match payload {
             Ok(json) => *out_result = to_c_string(json),
             Err(e) => {
                 write_lora_error(out_error, e);
