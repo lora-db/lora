@@ -1,7 +1,7 @@
 ---
 title: Using LoraDB in Node.js and TypeScript
 sidebar_label: Node.js
-description: Install and use LoraDB in Node.js or TypeScript via the lora-node N-API binding — async queries on libuv, helpers, snapshots, WAL persistence, and shared result shapes.
+description: Install and use LoraDB in Node.js or TypeScript via the lora-node N-API binding — async queries on libuv, explain/profile diagnostics, helpers, snapshots, WAL persistence, and shared result shapes.
 ---
 
 # Using LoraDB in Node.js and TypeScript
@@ -135,6 +135,81 @@ Values map automatically: JS numbers → `Int` or `Float`, strings →
 `String`, booleans → `Bool`, `null` → `Null`, arrays → `List`, plain
 objects → `Map`. Dates and spatial points use helper factories — see
 [Typed helpers](#typed-helpers).
+
+### Explain and profile
+
+`explain` and `profile` are first-class binding methods, not Cypher
+keywords that you prepend to the query string. Use `db.explain(...)`
+when you want the compiled plan without running the executor:
+
+```ts
+const plan = await db.explain(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { name: 'Ada' }
+);
+
+console.log(plan.shape);          // "readOnly" or "mutating"
+console.log(plan.resultColumns);  // ["p"]
+console.log(plan.tree.operator);  // top-level physical operator
+```
+
+The plan tree contains stable operator `id`s, an `operator` label,
+opaque human-readable `details`, `estimatedRows` (currently `null`),
+and child operators. `explain` never invokes the executor, so even
+`CREATE`, `MERGE`, `SET`, `DELETE`, and `REMOVE` plans leave the graph
+untouched.
+
+Use `db.profile(...)` when you want the same plan plus runtime metrics:
+
+```ts
+const profile = await db.profile(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { name: 'Ada' }
+);
+
+console.log(profile.metrics.totalElapsedNs);
+console.log(profile.metrics.totalRows);
+console.log(profile.metrics.mutated);
+console.log(profile.metrics.perOperator);
+```
+
+:::caution `profile` executes the query
+Mutating queries passed to `profile` produce the same side effects as
+`execute`: WAL-backed databases write the commit, snapshots observe the
+new state, and the live graph advances. Use `explain` to inspect a
+mutating plan without running it.
+:::
+
+Both methods accept the same parameter values as `execute`, including
+tagged helper structs for temporal, spatial, vector, and binary values.
+Graph structs such as `LoraNode` are returned by queries; for input,
+pass property values or typed helper values:
+
+```ts
+import { date, wgs84 } from '@loradb/lora-node';
+
+const params = {
+  since: date('1800-01-01'),
+  near: wgs84(4.89, 52.37),
+  radius: 5000,
+};
+
+const plan = await db.explain(
+  `MATCH (c:City)
+   WHERE c.founded >= $since
+     AND distance(c.location, $near) < $radius
+   RETURN c.name AS name`,
+  params
+);
+
+const profile = await db.profile(
+  `MATCH (c:City)
+   WHERE c.founded >= $since
+     AND distance(c.location, $near) < $radius
+   RETURN c.name AS name`,
+  params
+);
+```
 
 ### Structured result handling
 

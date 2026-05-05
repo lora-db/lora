@@ -51,7 +51,7 @@ in the internal documentation.
 | `CREATE CONSTRAINT` / `DROP CONSTRAINT` | Not supported |
 | `LOAD CSV` | Not supported |
 | `USE <graph>` (multi-database) | Not supported |
-| `EXPLAIN` / `PROFILE` | Not supported |
+| `EXPLAIN` / `PROFILE` Cypher keywords | Not supported — use the explicit binding methods (`db.explain`, `db.profile`, `Explain`, `Profile`) or HTTP `/explain` and `/profile` endpoints |
 
 ## Patterns
 

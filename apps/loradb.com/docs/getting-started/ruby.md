@@ -1,7 +1,7 @@
 ---
 title: Using LoraDB in Ruby
 sidebar_label: Ruby
-description: Install and use LoraDB in Ruby via the lora-ruby native extension built with Magnus and rb-sys — in-process execution, snapshots, and WAL persistence.
+description: Install and use LoraDB in Ruby via the lora-ruby native extension built with Magnus and rb-sys — in-process execution, explain/profile diagnostics, snapshots, and WAL persistence.
 ---
 
 # Using LoraDB in Ruby
@@ -79,6 +79,72 @@ Params accept String or Symbol keys. Ruby values map automatically:
 `Float` → `Float`, `String`/`Symbol` → `String`, `Array` → `List`,
 `Hash` → `Map`. Use the tagged helpers for dates, durations, and
 points — see [typed helpers](#typed-helpers) below.
+
+### Explain and profile
+
+`explain` and `profile` are binding methods, not Cypher keywords in
+the query string. `db.explain(...)` compiles the query and returns the
+physical plan without running the executor:
+
+```ruby
+plan = db.explain(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { name: "Ada" },
+)
+
+puts plan["shape"]              # "readOnly" or "mutating"
+puts plan["result_columns"]     # ["p"]
+puts plan["tree"]["operator"]   # top-level physical operator
+```
+
+Ruby uses snake_case keys for the explain/profile envelopes:
+`result_columns`, `estimated_rows`, `total_elapsed_ns`, and
+`per_operator`. Plan `details` values are human-readable and opaque;
+avoid parsing them programmatically.
+
+`db.profile(...)` runs the query and returns the plan plus runtime
+metrics:
+
+```ruby
+profile = db.profile(
+  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  { name: "Ada" },
+)
+
+puts profile["metrics"]["total_elapsed_ns"]
+puts profile["metrics"]["total_rows"]
+puts profile["metrics"]["mutated"]
+puts profile["metrics"]["per_operator"]
+```
+
+:::caution `profile` executes the query
+Mutating queries passed to `profile` produce the same side effects as
+`execute`. Use `explain` to inspect a mutating `CREATE`, `MERGE`, `SET`,
+`DELETE`, or `REMOVE` plan without changing the graph.
+:::
+
+Both methods accept the same parameter values as `execute`, including
+tagged helper Hashes for temporal, spatial, vector, and binary values.
+Graph Hashes such as returned nodes are result values; for input, pass
+property values or typed helper values:
+
+```ruby
+params = {
+  since:  LoraRuby.date("1800-01-01"),
+  near:   LoraRuby.wgs84(4.89, 52.37),
+  radius: 5000.0,
+}
+
+query = <<~CYPHER
+  MATCH (c:City)
+  WHERE c.founded >= $since
+    AND distance(c.location, $near) < $radius
+  RETURN c.name AS name
+CYPHER
+
+plan = db.explain(query, params)
+profile = db.profile(query, params)
+```
 
 ### Structured result handling
 

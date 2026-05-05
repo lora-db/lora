@@ -1,7 +1,7 @@
 ---
 title: Running LoraDB in the Browser with WebAssembly
 sidebar_label: Browser (WASM)
-description: Run LoraDB in the browser via WebAssembly with lora-wasm — including the Worker variant, pathless snapshots, and the same query API as the Node binding.
+description: Run LoraDB in the browser via WebAssembly with lora-wasm — including the Worker variant, explain/profile diagnostics, pathless snapshots, and the same query API as the Node binding.
 ---
 
 # Running LoraDB in the Browser with WebAssembly
@@ -125,6 +125,79 @@ Shown above.
 const res = await db.execute(
   "MATCH (u:User) WHERE u.handle = $handle RETURN u.id AS id",
   { handle: 'alice' }
+);
+```
+
+### Explain and profile
+
+`explain` and `profile` are explicit binding methods, not Cypher
+keywords inside the query string. `db.explain(...)` compiles the query
+and returns the physical plan without invoking the executor:
+
+```ts
+const plan = await db.explain(
+  "MATCH (u:User) WHERE u.handle = $handle RETURN u",
+  { handle: 'alice' }
+);
+
+console.log(plan.shape);          // "readOnly" or "mutating"
+console.log(plan.resultColumns);  // ["u"]
+console.log(plan.tree.operator);
+```
+
+The plan tree uses the same JSON-compatible shape as Node:
+`id`, `operator`, `details`, `estimatedRows`, and `children`.
+`details` is intentionally human-readable and opaque; don't parse it
+as a stable machine contract.
+
+`db.profile(...)` runs the query and returns the plan plus per-operator
+metrics:
+
+```ts
+const profile = await db.profile(
+  "MATCH (u:User) WHERE u.handle = $handle RETURN u",
+  { handle: 'alice' }
+);
+
+console.log(profile.metrics.totalElapsedNs);
+console.log(profile.metrics.totalRows);
+console.log(profile.metrics.perOperator);
+```
+
+:::caution `profile` executes the query
+Mutating queries passed to `profile` produce the same side effects as
+`execute`. Use `explain` to inspect a mutating `CREATE`, `MERGE`, `SET`,
+`DELETE`, or `REMOVE` plan without changing the graph.
+:::
+
+Both methods accept the same parameter values as `execute`, including
+tagged helper structs for temporal, spatial, vector, and binary values.
+Graph structs such as `LoraNode` are returned by queries; for input,
+pass property values or typed helper values:
+
+```ts
+import { date, wgs84 } from '@loradb/lora-wasm';
+
+const params = {
+  since: date('1800-01-01'),
+  near: wgs84(4.89, 52.37),
+  radius: 5000,
+};
+
+await db.explain(
+  `MATCH (c:City)
+   WHERE c.founded >= $since
+     AND distance(c.location, $near) < $radius
+   RETURN c.name AS name`,
+  params
+);
+
+await db.profile(
+  `MATCH (c:City)
+   WHERE c.founded >= $since
+     AND distance(c.location, $near) < $radius
+   RETURN c.name AS name`,
+  params
 );
 ```
 

@@ -1,17 +1,17 @@
 ---
 title: Using LoraDB in Python
 sidebar_label: Python
-description: Install and use LoraDB in Python via the PyO3 lora-python binding — synchronous Database and asyncio-friendly AsyncDatabase with snapshots and WAL persistence.
+description: Install and use LoraDB in Python via the PyO3 lora-python binding — synchronous Database and asyncio-friendly AsyncDatabase with explain/profile diagnostics, snapshots, and WAL persistence.
 ---
 
 # Using LoraDB in Python
 
 ## Overview
 
-`lora-python` is a PyO3 binding built with `maturin`. It ships two
-classes with identical surfaces: a synchronous `Database` and an
-asyncio-friendly `AsyncDatabase`. Switching between them is a
-one-line import change.
+`lora-python` is a PyO3 binding built with `maturin`. It ships a
+synchronous `Database` plus an asyncio-friendly `AsyncDatabase` wrapper
+for normal query execution, snapshots, and WAL-backed opens. Switching
+the core `execute` path between them is a one-line import change.
 
 ## Installation / Setup
 
@@ -80,6 +80,83 @@ result = db.execute(
 Python values map to engine values automatically:
 `int`/`float`/`bool`/`str`/`None` and `list`/`dict` pass through. For
 temporal and spatial values, use the tagged helpers below.
+
+### Explain and profile
+
+`explain` and `profile` are binding methods on `Database`, not Cypher
+keywords that you prepend to the query string. `db.explain(...)`
+returns the compiled plan without invoking the executor:
+
+```python
+plan = db.explain(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    {"name": "Ada"},
+)
+
+print(plan["shape"])             # "readOnly" or "mutating"
+print(plan["result_columns"])    # ["p"]
+print(plan["tree"]["operator"])  # top-level physical operator
+```
+
+Python uses snake_case keys for the explain/profile envelopes:
+`result_columns`, `estimated_rows`, `total_elapsed_ns`, and
+`per_operator`. `details` values in the plan tree are opaque
+human-readable strings; don't parse them as a stable machine contract.
+
+Use `db.profile(...)` when you want the same plan plus runtime metrics:
+
+```python
+profile = db.profile(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    {"name": "Ada"},
+)
+
+print(profile["metrics"]["total_elapsed_ns"])
+print(profile["metrics"]["total_rows"])
+print(profile["metrics"]["mutated"])
+print(profile["metrics"]["per_operator"])
+```
+
+:::caution `profile` executes the query
+Mutating queries passed to `profile` produce the same side effects as
+`execute`. Use `explain` to inspect a mutating `CREATE`, `MERGE`, `SET`,
+`DELETE`, or `REMOVE` plan without changing the graph.
+:::
+
+Both methods accept the same parameter values as `execute`, including
+tagged helper dicts for temporal, spatial, vector, and binary values.
+Graph dicts such as returned nodes are result values; for input, pass
+property values or typed helper values:
+
+```python
+from lora_python import date, wgs84
+
+params = {
+    "since": date("1800-01-01"),
+    "near": wgs84(4.89, 52.37),
+    "radius": 5000.0,
+}
+
+plan = db.explain(
+    """
+    MATCH (c:City)
+    WHERE c.founded >= $since
+      AND distance(c.location, $near) < $radius
+    RETURN c.name AS name
+    """,
+    params,
+)
+
+profile = db.profile(
+    """
+    MATCH (c:City)
+    WHERE c.founded >= $since
+      AND distance(c.location, $near) < $radius
+    RETURN c.name AS name
+    """,
+    params,
+)
+```
 
 ### Structured result handling
 
@@ -177,8 +254,8 @@ asyncio.run(main())
 ```
 
 `AsyncDatabase` delegates to `asyncio.to_thread` so long queries
-don't block the event loop. The surface is identical — switching is
-a one-line import change.
+don't block the event loop. For the core `execute` path, switching
+between sync and async code is a one-line import change.
 
 ### Persisting your graph
 

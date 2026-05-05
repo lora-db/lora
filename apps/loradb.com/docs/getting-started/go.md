@@ -1,7 +1,7 @@
 ---
 title: Using LoraDB in Go
 sidebar_label: Go
-description: Install and use LoraDB in Go via the lora-go cgo wrapper over the shared lora-ffi C ABI — in-process execution, snapshots, and WAL persistence.
+description: Install and use LoraDB in Go via the lora-go cgo wrapper over the shared lora-ffi C ABI — in-process execution, explain/profile diagnostics, snapshots, and WAL persistence.
 ---
 
 # Using LoraDB in Go
@@ -121,6 +121,85 @@ Go values map automatically: `int`/`int64` → `Integer`,
 `nil` → `Null`, `[]any` → `List`, `map[string]any` → `Map`. Use the
 tagged helpers for dates, durations, and points — see
 [typed helpers](#typed-helpers) below.
+
+### Explain and profile
+
+`Explain` and `Profile` are binding methods, not Cypher keywords in
+the query string. `db.Explain(...)` compiles the query and returns the
+physical plan without running the executor:
+
+```go
+plan, err := db.Explain(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    lora.Params{"name": "Ada"},
+)
+if err != nil { log.Fatal(err) }
+
+fmt.Println(plan.Shape)         // "readOnly" or "mutating"
+fmt.Println(plan.ResultColumns) // []string{"p"}
+fmt.Println(plan.Tree.Operator)
+```
+
+The plan tree is made of `PlanNode` values with `ID`, `Operator`,
+`Details`, `EstimatedRows`, and `Children`. `Details` values are
+human-readable and opaque; avoid parsing them programmatically.
+
+`db.Profile(...)` runs the query and returns the plan plus runtime
+metrics:
+
+```go
+prof, err := db.Profile(
+    "MATCH (p:Person) WHERE p.name = $name RETURN p",
+    lora.Params{"name": "Ada"},
+)
+if err != nil { log.Fatal(err) }
+
+fmt.Println(prof.Metrics.TotalElapsedNs)
+fmt.Println(prof.Metrics.TotalRows)
+fmt.Println(prof.Metrics.Mutated)
+fmt.Println(prof.Metrics.PerOperator)
+```
+
+:::caution `Profile` executes the query
+Mutating queries passed to `Profile` produce the same side effects as
+`Execute`. Use `Explain` to inspect a mutating `CREATE`, `MERGE`, `SET`,
+`DELETE`, or `REMOVE` plan without changing the graph.
+:::
+
+`ExplainContext` and `ProfileContext` are available when you want the
+same Go-side cancellation behavior as `ExecuteContext`; cancellation
+does not currently interrupt native work already running inside Rust.
+
+Both methods accept the same parameter values as `Execute`, including
+tagged helper maps for temporal, spatial, vector, and binary values.
+Graph structs such as returned nodes are result values; for input, pass
+property values or typed helper values:
+
+```go
+params := lora.Params{
+    "since":  lora.Date("1800-01-01"),
+    "near":   lora.WGS84(4.89, 52.37),
+    "radius": 5000.0,
+}
+
+plan, err := db.Explain(
+    `MATCH (c:City)
+     WHERE c.founded >= $since
+       AND distance(c.location, $near) < $radius
+     RETURN c.name AS name`,
+    params,
+)
+if err != nil { log.Fatal(err) }
+
+prof, err := db.Profile(
+    `MATCH (c:City)
+     WHERE c.founded >= $since
+       AND distance(c.location, $near) < $radius
+     RETURN c.name AS name`,
+    params,
+)
+if err != nil { log.Fatal(err) }
+```
 
 ### Structured result handling
 
