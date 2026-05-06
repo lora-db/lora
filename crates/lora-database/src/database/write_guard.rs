@@ -4,27 +4,35 @@
 //!
 //! * [`WriteGuard`] — a working copy + writer-mutex lease produced by
 //!   [`Database::write_store`]. Callers mutate the inner `S` and then
-//!   `publish()` to atomically swap the new state into the `ArcSwap`,
-//!   or drop the guard to discard the changes.
+//!   `publish()` to atomically swap the new state into the live store,
+//!   or drop the guard to discard the changes. Reserved for the
+//!   pessimistic non-`InMemoryGraph` fallback in `execute.rs`; the
+//!   InMemoryGraph admin paths bypass it via the live-mutate
+//!   fast path below.
 //! * [`Database::write_store_deadline`] / [`Database::read_store_deadline`]
 //!   — deadline-aware variants that participate in the cooperative
 //!   query-timeout flow.
 //! * [`Database::with_logged_write_guard`] — a closure runner that
 //!   brackets the staged mutation with WAL `arm` / `commit` / `abort`
 //!   and atomically publishes on success.
+//! * [`Database::with_logged_store_mut`] — the InMemoryGraph fast
+//!   path: mutates the live `Arc<S>` in place via `Arc::make_mut`
+//!   and only commits buffered events to the WAL on success. Skips
+//!   the O(N+E) snapshot clone that `write_store()` pays.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, MutexGuard, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use lora_executor::ExecutorError;
-use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationRecorder};
+use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::WalRecorder;
 
 use crate::database::Database;
-use crate::wal::write_scope::{WalAbortPolicy, WalWriteScope};
+use crate::transaction::BufferingRecorder;
+use crate::wal::write_scope::{ensure_wal_query_can_start, WalAbortPolicy, WalWriteScope};
 
 use super::replay::install_recorder_if_inmemory;
 
@@ -158,12 +166,78 @@ where
         Ok(())
     }
 
+    /// Run `f` against the live graph, mutating in place, and commit
+    /// the buffered mutation events to the WAL on success.
+    ///
+    /// For `InMemoryGraph` (the default backend) this is the fast
+    /// path: it skips the O(N+E) snapshot clone that `write_store()`
+    /// pays, going through the same `LiveStore::write()` +
+    /// `Arc::make_mut` flow that the optimistic auto-commit query
+    /// path uses. Mutation events buffer into a tx-local `Vec` while
+    /// the closure runs; on success they're appended to the WAL as a
+    /// single transaction, on failure they're discarded so the WAL
+    /// stays consistent. The trade-off matches the OCC fast path: a
+    /// failure mid-closure can leave the in-memory graph partially
+    /// mutated, but durable state stays consistent and recovery from
+    /// snapshot+WAL replays only committed transactions.
+    ///
+    /// For non-`InMemoryGraph` backends the pessimistic clone-then-
+    /// publish path is preserved: those backends don't expose the
+    /// `set_mutation_recorder` hook, so a buffered-event redirect
+    /// isn't possible.
     pub(crate) fn with_logged_store_mut<R>(
         &self,
         f: impl FnOnce(&mut S) -> Result<R>,
     ) -> Result<R> {
+        if TypeId::of::<S>() == TypeId::of::<InMemoryGraph>() {
+            return self.with_live_store_mut(f);
+        }
         let guard = self.write_store();
         self.with_logged_write_guard(guard, WalAbortPolicy::AbortOnly, f)
+    }
+
+    fn with_live_store_mut<R>(&self, f: impl FnOnce(&mut S) -> Result<R>) -> Result<R> {
+        let _commit_lock = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let buffer = Arc::new(Mutex::new(Vec::<MutationEvent>::new()));
+        let buffering_rec: Arc<dyn MutationRecorder> =
+            Arc::new(BufferingRecorder::new(buffer.clone()));
+
+        let mut handle = self.store.write();
+
+        let exec_result = {
+            let staged = handle.as_mut();
+            install_recorder_if_inmemory(staged, Some(buffering_rec));
+            let r = f(staged);
+            install_recorder_if_inmemory(staged, None);
+            r
+        };
+
+        let events: Vec<MutationEvent> = std::mem::take(&mut buffer.lock().unwrap());
+
+        let mut wrote_commit = false;
+        if let Some(rec) = self.wal.as_ref() {
+            if exec_result.is_ok() && !events.is_empty() {
+                ensure_wal_query_can_start(rec)?;
+                wrote_commit = rec.commit_events(events)?.wrote();
+            }
+            // Reinstall the durable recorder so the live graph keeps
+            // observing future mutations after this scope exits.
+            let staged = handle.as_mut();
+            install_recorder_if_inmemory(staged, Some(rec.clone() as Arc<dyn MutationRecorder>));
+        }
+
+        if wrote_commit {
+            if let Some(rec) = self.wal.as_ref() {
+                let live = handle.snapshot();
+                self.observe_snapshot_commit_if_needed(&*live, rec)?;
+            }
+        }
+
+        exec_result
     }
 
     /// Run `f` against the staged graph inside a WAL transaction. On

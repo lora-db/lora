@@ -26,7 +26,6 @@ use crate::explain::{QueryPlan, QueryProfile};
 use crate::live_store::LiveStore;
 use crate::plan_cache::PlanCache;
 use crate::snapshot::ManagedSnapshotStore;
-use crate::wal::write_scope::WalAbortPolicy;
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
 ///
@@ -192,14 +191,12 @@ where
     /// Drop every node and relationship, returning WAL/archive errors to the
     /// caller.
     ///
-    /// When a WAL is attached, the clear is wrapped in `arm`/`commit` so the
-    /// `MutationEvent::Clear` fired by the store reaches the log inside a
-    /// transaction. If a failure happens after the in-memory graph has been
-    /// cleared, the recorder is poisoned by the failing WAL path and future
-    /// writes fail until the database is reopened from durable state.
+    /// When a WAL is attached, the buffered `MutationEvent::Clear` is appended
+    /// to the log on success. The clear runs in place against the live
+    /// graph via the same fast path as `with_logged_store_mut`, so a
+    /// large graph clear no longer pays an O(N+E) snapshot clone.
     pub fn try_clear(&self) -> Result<(), LoraError> {
-        let guard = self.write_store();
-        self.with_logged_write_guard(guard, WalAbortPolicy::AbortOnly, |store| {
+        self.with_logged_store_mut(|store| {
             store.clear();
             Ok(())
         })
@@ -236,13 +233,18 @@ where
 
     /// Run a closure with an exclusive borrow of the underlying store. Reserved
     /// for admin paths (restore, bulk load); regular mutation goes through
-    /// `execute_with_params`. The closure mutates a staged copy that is
-    /// published atomically when the closure returns.
+    /// `execute_with_params`. The closure mutates the live graph in place
+    /// via `Arc::make_mut`, so callers don't pay an O(N+E) snapshot clone
+    /// just to overwrite the graph. Concurrent readers, when present,
+    /// force a single CoW clone and keep observing their pre-mutation
+    /// snapshot via the `Arc<S>` they already hold.
     pub fn with_store_mut<R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
-        let mut guard = self.write_store();
-        let result = f(&mut *guard);
-        guard.publish();
-        result
+        let _lock = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut handle = self.store.write();
+        f(handle.as_mut())
     }
 }
 
