@@ -22,14 +22,62 @@ mod fixtures;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use fixtures::*;
-use lora_database::{ExecuteOptions, ResultFormat, TransactionMode};
+use lora_database::{
+    Database, ExecuteOptions, InMemoryGraph, ResultFormat, SyncMode, TransactionMode, WalConfig,
+};
 use std::hint::black_box;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn opts() -> Option<ExecuteOptions> {
     Some(ExecuteOptions {
         format: ResultFormat::Rows,
     })
+}
+
+/// Per-iteration scratch directory for WAL-backed benches. Removed on
+/// drop, so each Criterion sample starts on an empty WAL.
+struct WalScratch {
+    path: PathBuf,
+}
+
+impl WalScratch {
+    fn new(tag: &str) -> Self {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "lora-perf-smoke-{}-{}-{}",
+            tag,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+}
+
+impl Drop for WalScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Open a WAL-backed database with `SyncMode::Group`. Group sync matches
+/// the durability profile most embedded callers reach for — write-only
+/// on commit, background flusher fsyncs on a 50 ms interval — and keeps
+/// the bench dominated by engine + WAL append cost rather than fsync
+/// latency.
+fn open_wal_group(tag: &str) -> (WalScratch, Database<InMemoryGraph>) {
+    let dir = WalScratch::new(tag);
+    let cfg = WalConfig::Enabled {
+        dir: dir.path.clone(),
+        sync_mode: SyncMode::Group { interval_ms: 50 },
+        segment_target_bytes: 8 * 1024 * 1024,
+    };
+    let db = Database::open_with_wal(cfg).unwrap();
+    (dir, db)
 }
 
 /// CI-friendly Criterion config: short warmup + short measurement + modest
@@ -262,6 +310,67 @@ fn bench_perf_smoke(c: &mut Criterion) {
             BatchSize::SmallInput,
         );
     });
+
+    // --- 11. persistent single CREATE: WAL group sync --------------------
+    //
+    // Auto-commit `CREATE` against a WAL-backed DB. The DB is opened
+    // once and shared across iterations — the WAL grows, but UNWIND-free
+    // CREATE has no scan cost, so per-iteration cost stays steady-state.
+    // What this bench captures is one record-encode + one segment append
+    // + one `Arc::make_mut` mutation. A regression here means the
+    // durable single-write path picked up per-call overhead beyond the
+    // fixed WAL append cost.
+    {
+        let (_dir, db) = open_wal_group("write-one");
+        group.bench_function("write_one_wal_group", |b| {
+            b.iter(|| {
+                black_box(db.execute("CREATE (:B {n: 1})", opts()).unwrap());
+            });
+        });
+    }
+
+    // --- 12. persistent batched write: WAL group sync --------------------
+    //
+    // Same shape as `write_batch_100` but committed durably via the
+    // group-sync WAL path. Distance from `write_batch_100` is the
+    // batched-write WAL overhead (one append, not 100). A regression
+    // that affects only the persistence write path — e.g., a per-row
+    // WAL fence or extra encode pass — shows up here without moving
+    // the in-memory baseline.
+    {
+        let (_dir, db) = open_wal_group("write-batch-100");
+        group.bench_function("write_batch_100_wal_group", |b| {
+            b.iter(|| {
+                black_box(
+                    db.execute(
+                        "UNWIND range(1, 100) AS i CREATE (:B {id: i, val: i * 2})",
+                        opts(),
+                    )
+                    .unwrap(),
+                );
+            });
+        });
+    }
+
+    // --- 13. persistent explicit transaction: WAL group sync -------------
+    //
+    // Mirror of `tx_write_100` against the WAL/group profile. Catches
+    // regressions in the explicit-transaction commit path where it
+    // intersects the WAL recorder (transaction commit promotes the
+    // staged graph and appends one batched commit record).
+    {
+        let (_dir, db) = open_wal_group("tx-write-100");
+        group.bench_function("tx_write_100_wal_group", |b| {
+            b.iter(|| {
+                let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+                black_box(
+                    tx.execute("UNWIND range(1, 100) AS i CREATE (:B {id: i})", opts())
+                        .unwrap(),
+                );
+                tx.commit().unwrap();
+            });
+        });
+    }
 
     group.finish();
 }

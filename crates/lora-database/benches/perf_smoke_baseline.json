@@ -5,7 +5,7 @@
     "default_threshold": 3,
     "seeded_on": "2026-04-24",
     "seeded_from": "Rough scaling of docs/performance/benchmarks.md numbers to allow for ubuntu-latest CI being slower and noisier than the reference Apple Silicon run. Replace with real CI-measured values on first green run.",
-    "last_updated": "2026-04-26"
+    "last_updated": "2026-05-06"
   },
   "benchmarks": {
     "perf_smoke/scan_1k": {
@@ -40,6 +40,21 @@
     },
     "perf_smoke/tx_write_100": {
       "ns": 114336
+    },
+    "perf_smoke/write_one_wal_group": {
+      "ns": 40000,
+      "threshold": 5,
+      "note": "Seed estimate from local Apple Silicon (~15 µs/iter) scaled ~2.5x for ubuntu-latest. Refresh after first green CI run."
+    },
+    "perf_smoke/write_batch_100_wal_group": {
+      "ns": 4000000,
+      "threshold": 5,
+      "note": "Seed estimate from local Apple Silicon (~1.56 ms/iter) scaled ~2.5x for ubuntu-latest. Wide threshold because WAL segment rotation and FS noise inflate variance. Refresh after first green CI run."
+    },
+    "perf_smoke/tx_write_100_wal_group": {
+      "ns": 7000000,
+      "threshold": 5,
+      "note": "Seed estimate from local Apple Silicon (~2.6 ms/iter) scaled ~2.5x for ubuntu-latest. Wide threshold because the explicit-tx path stages-and-publishes alongside the WAL append and adds variance. Refresh after first green CI run."
     }
   }
 }
