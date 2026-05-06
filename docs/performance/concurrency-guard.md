@@ -38,8 +38,10 @@ assuming a regression is real.
 - `tx_roundtrip_empty`: explicit read-write transaction fixed cost.
 - `tx_write_create_one`: explicit write transaction with one commit.
 - `mixed_4_readers_1_writer`: coarse mixed read/write thread pressure.
-- `wal_none_create_delete_one`: WAL encode/flush-buffer path without fsync.
-- `wal_group_create_delete_one`: cooperative Group-mode WAL path.
+- `wal_group_sync_create_delete_one`: WAL encode/flush-buffer path plus
+  GroupSync background fsync coordination.
+- `wal_group_create_delete_one`: legacy GroupSync guard name retained for
+  older benchmark comparisons.
 
 ## Interpreting Results
 

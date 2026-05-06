@@ -18,9 +18,9 @@ fine-grained concurrent commits.
 The WAL path is intentionally single-threaded for this release. `WalRecorder`
 buffers mutation events in memory, `abort` only clears that buffer, and
 production commits use `Wal::commit_tx` to write the begin/batch/commit triple
-in one critical section. `SyncMode::Group` is cooperative: commits write bytes
-to the OS, while `force_fsync`, checkpoint, `Database::sync`, and clean drop
-provide the fsync boundary.
+in one critical section. `SyncMode::GroupSync` commits write bytes to the OS,
+while the background flusher, `force_fsync`, checkpoint, `Database::sync`, and
+clean drop provide the fsync boundary.
 
 ## Performance Guard Usage
 
@@ -151,15 +151,13 @@ coordination.
 - Keep append ordering as commit ordering.
 - Extend `Wal::commit_tx` to expose the commit LSN or target durable LSN.
 - Reintroduce an `FsyncCoord` only after commit protocol work is stable.
-- Batch Group-mode waiters and surface background fsync failures through
+- Batch GroupSync waiters and surface background fsync failures through
   `Wal::bg_failure`.
-- Keep `PerCommit` semantics: a write is acknowledged only after its commit
-  records are durable.
 
 Performance guard usage:
 
-- Use `wal_none_create_delete_one` to isolate append/encode overhead.
-- Use `wal_group_create_delete_one` to catch coordination overhead.
+- Use `wal_group_sync_create_delete_one` to isolate append/encode overhead and
+  catch coordination overhead.
 - For fsync-sensitive work, rerun the guard once before calling a regression.
 
 ## Phase 6: Concurrent Snapshot And Archive Syncs

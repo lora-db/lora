@@ -1,8 +1,9 @@
 # Write-ahead log
 
 LoraDB's WAL (write-ahead log) gives the in-memory engine **continuous
-durability**: every mutating query is appended to a durable log before
-the call returns in `per-commit` mode, so a crashed process can replay
+durability**: every mutating query is appended to the log before the
+call returns, and GroupSync creates storage durability boundaries on a
+background cadence or explicit sync. A crashed process can replay
 committed writes on the next boot. The WAL is fully optional — without
 `--wal-dir` the server still runs as a pure in-memory database with
 snapshot-only durability.
@@ -51,16 +52,14 @@ lora-server --wal-dir /var/lib/lora/wal \
 
 ## Sync modes
 
-`--wal-sync-mode` controls when the WAL `fsync`s. There is no global
-"right" answer — it is a wallclock-budget knob.
+`--wal-sync-mode` controls when the WAL `fsync`s. `group-sync` is the
+only supported mode.
 
 | Mode | `fsync` cadence | Crash window | When to use |
 |---|---|---|---|
-| `per-commit` (default) | Per commit, before the call returns | 0 — every observed result is durable | Strong durability, write rate fits the disk's `fsync` budget |
-| `group` | On a 50 ms timer in a background thread | Up to ~50 ms of writes | Write-heavy workloads where ~50 ms is acceptable |
-| `none` / `off` | Never (relies on the OS) | Whatever the kernel decides | CDC-only, read replicas, or testing |
+| `group-sync` (default) | On a 50 ms timer, explicit sync, checkpoint, or clean drop | Up to the configured interval since the last fsync | Write-heavy workloads with an explicit sync option when needed |
 
-### Group mode honesty
+### GroupSync Honesty
 
 If the background flusher's `fsync` fails (full disk, hardware error,
 revoked permissions), the failure is **latched** onto the WAL itself.
@@ -197,7 +196,7 @@ configured, the body must include a `path` or the call returns 400.
 | Symptom | Cause | Operator action |
 |---|---|---|
 | Query fails with `WAL flush failed: ...` | `fsync` returned an OS error | Investigate disk, restart from last checkpoint |
-| `/admin/wal/status` shows `bgFailure: "..."` | Group-mode bg flusher hit a fsync error | Same as above |
+| `/admin/wal/status` shows `bgFailure: "..."` | GroupSync background flusher hit a fsync error | Same as above |
 | Boot prints "snapshot at LSN X is older than the newest checkpoint marker" | Operator passed a stale `--restore-from` | Check whether a more recent snapshot exists; replay from the older one is still safe but does extra work |
 | A `*.wal.tmp` is left in the WAL dir | Crash mid-rotation | Safe to delete — segment rotation never relies on `.tmp` files |
 

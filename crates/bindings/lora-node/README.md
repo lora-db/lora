@@ -87,17 +87,16 @@ const inMemory = await createDatabase();           // in-memory only
 const defaultPersistent = await createDatabase("app"); // ./app.loradb
 const nestedPersistent = await createDatabase("app", {
   databaseDir: "./data",
-  syncMode: "group",                              // default
+  syncMode: "groupSync",                          // default
 });                                                // ./data/app.loradb
 ```
 
 Passing a database name enables persistence. Use `databaseDir` when you want a
 directory other than the current working directory.
-The default `syncMode: "group"` writes WAL bytes before `execute()` resolves
-and batches fsyncs for write-heavy workloads. That recovers from ordinary
-process death, while `syncMode: "perCommit"` also protects each committed write
-against power loss before `execute()` resolves. Call `await db.sync()` before
-copying the portable `.loradb` archive while the database is still open.
+The default `syncMode: "groupSync"` writes WAL bytes before `execute()` resolves
+and batches fsyncs for write-heavy workloads. Call `await db.sync()` when you
+need an immediate durability boundary before copying the portable `.loradb`
+archive while the database is still open.
 
 Node also has an archive-backed convenience overload:
 
@@ -259,7 +258,7 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
 - **Cancellation.** The napi `Task` abstraction does not support
   cancellation once dispatched; a runaway query runs to completion.
 - **WAL surface.** Node persistence exposes archive-backed initialization,
-  `syncMode: "group" | "perCommit"`, and `db.sync()`. Checkpoint, truncate,
+  `syncMode: "groupSync"`, and `db.sync()`. Checkpoint, truncate,
   and status controls are not exposed yet.
 - **Archive ownership.** One archive can only be open by one writer process at a
   time. Multiple Node handles in the same process share the same live engine;

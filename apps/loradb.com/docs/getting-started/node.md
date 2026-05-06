@@ -328,7 +328,7 @@ const durable = await openWalDatabase({
   snapshotDir: './data/snapshots',
   snapshotEveryCommits: 1000,
   snapshotOptions: { compression: { format: 'gzip', level: 1 } },
-  syncMode: 'perCommit',
+  syncMode: 'groupSync',
 });
 ```
 

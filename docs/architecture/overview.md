@@ -92,8 +92,8 @@ compression, and optional ChaCha20-Poly1305 encryption.
 ### lora-wal
 
 Write-ahead log segment implementation. Stores committed mutation batches in
-numbered `*.wal` files, supports per-commit, group, and no-fsync sync modes, and
-replays only committed records.
+numbered `*.wal` files, uses GroupSync durability, and replays only committed
+records.
 
 **Key files**:
 - `src/config.rs` — `WalConfig`, `SyncMode`, segment sizing

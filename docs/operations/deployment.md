@@ -87,14 +87,13 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
 ### WAL-backed recovery
 
 `--wal-dir <DIR>` enables the write-ahead log and mounts WAL admin routes.
-`--wal-sync-mode` accepts `per-commit`, `group`, and `none`/`off`; the server's
-group mode fsync interval is 50 ms.
+`--wal-sync-mode` accepts `group-sync`; the server's fsync interval is 50 ms.
 
 ```bash
 ./target/release/lora-server \
   --host 127.0.0.1 --port 4747 \
   --wal-dir /var/lib/lora/wal \
-  --wal-sync-mode per-commit
+  --wal-sync-mode group-sync
 ```
 
 Combine `--wal-dir` with `--restore-from` to load a checkpoint snapshot and

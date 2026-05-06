@@ -350,9 +350,8 @@ include `path` or the route returns `400 Bad Request`.
 ```
 
 The important difference is `walLsn`: a checkpoint stamps the snapshot
-with the WAL's durable fence. For checkpoint-heavy deployments, use
-`--wal-sync-mode per-commit` unless you are intentionally managing
-group-mode fsync lag.
+with the WAL's durable fence. Call `sync()` or use an explicit checkpoint
+when you need an immediate GroupSync durability boundary.
 
 ### Examples
 
@@ -401,7 +400,7 @@ No body.
 | `nextLsn` | number | Next LSN the WAL will allocate. |
 | `activeSegmentId` | number | Numeric id of the segment currently accepting appends. |
 | `oldestSegmentId` | number | Numeric id of the oldest retained segment. |
-| `bgFailure` | string or null | Latched background fsync failure, populated when group mode goes unhealthy. |
+| `bgFailure` | string or null | Latched background fsync failure, populated when GroupSync goes unhealthy. |
 
 ### Response (error)
 

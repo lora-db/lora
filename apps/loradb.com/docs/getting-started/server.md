@@ -48,7 +48,7 @@ Most runtime flags also have an env-var equivalent:
 | `--snapshot-path <PATH>` | `LORA_SERVER_SNAPSHOT_PATH` | unset | Default file for the admin snapshot endpoints. **Also gates whether they are mounted** — unset = 404. |
 | `--restore-from <PATH>` | — | unset | Load a snapshot at boot, before accepting queries. |
 | `--wal-dir <DIR>` | `LORA_SERVER_WAL_DIR` | unset | Attach a write-ahead log at this directory and enable the WAL admin routes. |
-| `--wal-sync-mode <MODE>` | `LORA_SERVER_WAL_SYNC_MODE` | `per-commit` | WAL durability cadence: `per-commit`, `group`, or `none`. |
+| `--wal-sync-mode <MODE>` | `LORA_SERVER_WAL_SYNC_MODE` | `group-sync` | WAL durability cadence: `group-sync`. |
 
 ### Snapshots, WAL, and restore
 
@@ -68,7 +68,7 @@ LoraDB can persist the live graph in two complementary ways:
   [`POST /admin/wal/status`](../api/http#post-adminwalstatus-opt-in),
   and [`POST /admin/wal/truncate`](../api/http#post-adminwaltruncate-opt-in).
 - **`--wal-sync-mode <MODE>`** chooses when the WAL `fsync`s:
-  `per-commit` (default), `group`, or `none`.
+  `group-sync` is the supported mode.
 - **`--restore-from <PATH>`** loads a snapshot at startup. A missing
   file is fine — the server starts with an empty graph and logs a
   message. A malformed file is fatal. When `--wal-dir` is also set,

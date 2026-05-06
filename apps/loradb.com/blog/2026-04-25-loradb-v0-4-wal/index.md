@@ -85,7 +85,7 @@ const walDb = await openWalDatabase({
   walDir: "./data/application.wal",
   snapshotDir: "./data/application.snapshots",
   snapshotEveryCommits: 1000,
-  syncMode: "perCommit",
+  syncMode: "groupSync",
 });
 
 await db.execute("CREATE (:Person {name: 'Ada'})");
@@ -107,7 +107,7 @@ paths resolve from the current working directory. Archive-backed named
 databases default to grouped fsync with a 1s interval. Raw WAL helpers
 default to:
 
-- `SyncMode::PerCommit`
+- `SyncMode::GroupSync`
 - `8 MiB` target segment size
 
 Node exposes `syncMode` for archive-backed and explicit WAL opens. It
@@ -158,13 +158,11 @@ And the admin routes that make the log inspectable and manageable:
 - `POST /admin/wal/truncate`
 - `POST /admin/checkpoint`
 
-There are also sync modes now:
+WAL durability now uses GroupSync:
 
 | Mode | Meaning |
 |---|---|
-| `per-commit` | `fsync` before each commit returns |
-| `group` | buffer commits and flush in the background |
-| `none` | no `fsync`; rely on the OS or external durability |
+| `group-sync` | write commits immediately and fsync in the background or on explicit sync/checkpoint/drop |
 
 The server is still honest about its boundary: one process, one graph,
 no auth, no TLS, no multi-database routing. The durability story is

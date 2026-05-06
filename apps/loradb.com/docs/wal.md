@@ -29,9 +29,9 @@ together.
 | HTTP server (`lora-server`) | `--wal-dir`, `--wal-sync-mode`, `--restore-from` | Recovery, sync-mode control, `/admin/checkpoint`, `/admin/wal/status`, `/admin/wal/truncate` |
 | WASM (`@loradb/lora-wasm`) | Not exposed | Snapshot-only today |
 
-Raw WAL helpers default to `SyncMode::PerCommit` and an 8 MiB segment
-target. Archive-backed named databases default to grouped fsync with a
-1s interval. Rust can override the low-level WAL config directly;
+Raw WAL helpers default to `SyncMode::GroupSync` and an 8 MiB segment
+target. Archive-backed named databases default to GroupSync with a 1s
+interval. Rust can override the low-level WAL config directly;
 Node exposes `syncMode` on both archive-backed and explicit WAL opens;
 `lora-server` exposes it through `--wal-sync-mode`.
 
@@ -62,7 +62,7 @@ const walDb = await openWalDatabase({
   snapshotDir: './data/app.snapshots',
   snapshotEveryCommits: 1000,
   snapshotOptions: { compression: { format: 'gzip', level: 1 } },
-  syncMode: 'perCommit',
+  syncMode: 'groupSync',
 });
 ```
 
@@ -142,7 +142,7 @@ let recovered = Database::recover("graph.bin", WalConfig::enabled("./app"))?;
 
 | Setting | Value |
 |---|---|
-| Sync mode | `SyncMode::PerCommit` |
+| Sync mode | `SyncMode::GroupSync { interval_ms: 50 }` |
 | Segment target | 8 MiB |
 
 Use the explicit enum variant when you need different knobs:
@@ -152,7 +152,7 @@ use lora_database::{Database, SyncMode, WalConfig};
 
 let db = Database::open_with_wal(WalConfig::Enabled {
     dir: "./app".into(),
-    sync_mode: SyncMode::Group { interval_ms: 50 },
+    sync_mode: SyncMode::GroupSync { interval_ms: 50 },
     segment_target_bytes: 16 * 1024 * 1024,
 })?;
 ```
@@ -224,25 +224,23 @@ fence. That is safe, but it may do more replay work than necessary.
 
 ## Sync modes
 
-`lora-server --wal-sync-mode` and the Rust API expose three durability
-cadences:
+`lora-server --wal-sync-mode` and the Rust API expose GroupSync
+durability:
 
 | Mode | `fsync` cadence | Crash window | When to use |
 |---|---|---|---|
-| `per-commit` | Before each mutating query returns | 0 for observed successful writes | Strong durability, simplest contract |
-| `group` | Background fsync, currently about every 50 ms in `lora-server` | Up to the group interval | Higher write rates where a short loss window is acceptable |
-| `none` | Never fsyncs | OS-dependent | Testing, replicas, or external durability layers |
+| `group-sync` | Background fsync, explicit sync, checkpoint, or clean drop | Up to the group interval | Higher write rates with explicit sync points when needed |
 
-In `group` mode, append and commit records are written before the query
+In `group-sync` mode, append and commit records are written before the query
 returns, but the `fsync` happens on a background cadence. If that
 background fsync fails, the failure is latched: future WAL operations
 return a poisoned error and `/admin/wal/status` reports `bgFailure`.
 Restart from the last consistent snapshot + WAL after fixing the
 underlying disk issue.
 
-For checkpointed deployments, prefer `per-commit` unless you are
-deliberately managing the group-mode lag. A checkpoint snapshot is
-stamped with the WAL's current `durableLsn`; in `group` mode that fence
+For checkpointed deployments, call `sync()` when you need an immediate
+durability point. A checkpoint snapshot is stamped with the WAL's current
+`durableLsn`; in `group-sync` mode that fence
 can trail the newest writes until the background fsync catches up.
 
 In `none` mode, `durableLsn` is only a logical fence for checkpointing.
