@@ -3,6 +3,13 @@
 //! `TmpDir`; this is the single source of truth.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Process-local counter so parallel test threads can't collide on the
+/// same scratch path. The wall-clock nanos we used previously are not
+/// monotonic across threads — two tests entering `TmpDir::new` in the
+/// same nanosecond produced identical paths and clobbered each other.
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Per-test scratch directory under `std::env::temp_dir()`.
 /// `tag` shows up in the directory name to make debugging stuck tests
@@ -15,13 +22,14 @@ impl TmpDir {
     pub fn new(tag: &str) -> Self {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "lora-wal-test-{}-{}-{}",
+            "lora-wal-test-{}-{}-{}-{}",
             tag,
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&path).unwrap();
         Self { path }
