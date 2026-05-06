@@ -391,6 +391,104 @@ fn bench_perf_smoke(c: &mut Criterion) {
         });
     }
 
+    // --- 15. persistent read: WAL group sync -----------------------------
+    //
+    // Read-heavy workload against a WAL-backed DB. Reads should not touch
+    // the recorder, so this should track `scan_1k` (#1) ± noise. A
+    // regression here without one in `scan_1k` points at the WAL recorder
+    // leaking into the read path (e.g. an extra guard or fence taken on
+    // every MATCH).
+    {
+        let (_dir, db) = open_wal_group("scan-wal");
+        db.execute(
+            "UNWIND range(1, 1000) AS i CREATE (:Node {id: i, value: i % 100})",
+            opts(),
+        )
+        .unwrap();
+        group.bench_function("scan_1k_wal_group", |b| {
+            b.iter(|| {
+                black_box(db.execute("MATCH (n:Node) RETURN n.id", opts()).unwrap());
+            });
+        });
+    }
+
+    // --- 16. persistent batched delete: WAL group sync -------------------
+    //
+    // MATCH + DELETE on 100 nodes against a freshly seeded DB. Exercises
+    // the WAL node-tombstone record path, which is distinct from the
+    // node-create path that #11/#12 cover. Fresh DB per iteration since
+    // each batch consumes the seed.
+    group.bench_function("delete_100_wal_group", |b| {
+        b.iter_batched(
+            || {
+                let (dir, db) = open_wal_group("delete-100");
+                db.execute("UNWIND range(1, 100) AS i CREATE (:D {id: i})", opts())
+                    .unwrap();
+                (dir, db)
+            },
+            |(_dir, db)| {
+                black_box(db.execute("MATCH (n:D) DELETE n", opts()).unwrap());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // --- 17. persistent property update: WAL group sync ------------------
+    //
+    // MATCH + SET on 100 nodes — exercises the property-mutation WAL
+    // record path (distinct from create/delete). DB is shared across
+    // iterations: each SET re-stamps the same property and appends one
+    // batched commit record, giving a steady-state cost per iteration.
+    {
+        let (_dir, db) = open_wal_group("update-100");
+        db.execute("UNWIND range(1, 100) AS i CREATE (:U {id: i})", opts())
+            .unwrap();
+        group.bench_function("update_100_wal_group", |b| {
+            b.iter(|| {
+                black_box(
+                    db.execute("MATCH (n:U) SET n.touched = true", opts())
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    // --- 18. WAL replay on open ------------------------------------------
+    //
+    // Open a WAL directory that already has 100 committed records and
+    // measure how long the replay-on-open path takes. Bounds startup time
+    // on a crash-recovery boot. The WAL is built once outside the iter and
+    // its scratch directory is `mem::forget`-ed so the files stay alive
+    // across every Criterion iteration (the OS reclaims at process exit).
+    {
+        let dir = WalScratch::new("replay-100");
+        {
+            let cfg = WalConfig::Enabled {
+                dir: dir.path.clone(),
+                sync_mode: SyncMode::GroupSync { interval_ms: 50 },
+                segment_target_bytes: 8 * 1024 * 1024,
+            };
+            let db = Database::open_with_wal(cfg).unwrap();
+            for _ in 0..100 {
+                db.execute("CREATE (:R {n: 1})", opts()).unwrap();
+            }
+            drop(db);
+        }
+        let path = dir.path.clone();
+        std::mem::forget(dir);
+        group.bench_function("wal_replay_100", |b| {
+            b.iter(|| {
+                let cfg = WalConfig::Enabled {
+                    dir: path.clone(),
+                    sync_mode: SyncMode::GroupSync { interval_ms: 50 },
+                    segment_target_bytes: 8 * 1024 * 1024,
+                };
+                let db = Database::open_with_wal(cfg).unwrap();
+                black_box(db.node_count());
+            });
+        });
+    }
+
     group.finish();
 }
 

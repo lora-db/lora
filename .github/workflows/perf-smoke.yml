@@ -3,11 +3,14 @@ name: perf-smoke
 # Performance-regression smoke benchmark.
 #
 # Purpose:
-#   Catch obvious, large (>=3x) regressions in core engine paths — scan,
-#   filter, traversal, write — before they land on `main`. This is NOT a
-#   source of truth for performance numbers; it's a canary. See
-#   `docs/performance/perf-smoke.md` for scope and limits. For authoritative
-#   numbers use the manual `benchmarks` workflow against a tagged release.
+#   Catch obvious, large regressions in core engine paths — scan, filter,
+#   traversal, write, plus the WAL durability profiles — before they land
+#   on `main`. Each bench in `perf_smoke_baseline.json` carries an explicit
+#   `threshold` multiplier (3× for low-variance in-memory paths, 5× for
+#   sub-µs and WAL-backed paths). This is NOT a source of truth for
+#   performance numbers; it's a canary. See `docs/performance/perf-smoke.md`
+#   for scope and limits. For authoritative numbers use the manual
+#   `benchmarks` workflow against a tagged release.
 #
 # Trigger:
 #   - PR + push to `main`, path-filtered to code that can plausibly move
@@ -57,7 +60,7 @@ concurrency:
 
 jobs:
   smoke:
-    name: perf smoke (>=3x regression gate)
+    name: perf smoke (per-bench regression gate)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -86,9 +89,23 @@ jobs:
             --suite perf-smoke
 
       - name: Check against baseline
+        id: check
         shell: bash
         run: |
-          node scripts/check-perf-smoke.mjs --input perf-smoke-out/bencher.log
+          node scripts/check-perf-smoke.mjs --input perf-smoke-out/bencher.log \
+            | tee perf-smoke-out/regression-report.txt
+
+      # Always render the per-bench table to the run's step summary, even
+      # when the previous step exited non-zero, so reviewers can see exactly
+      # which benches regressed without opening the raw log.
+      - name: Append regression table to step summary
+        if: always()
+        shell: bash
+        run: |
+          node scripts/check-perf-smoke.mjs \
+              --input perf-smoke-out/bencher.log \
+              --format markdown \
+            >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload benchmark artifacts
         if: always()
@@ -98,5 +115,6 @@ jobs:
           path: |
             perf-smoke-out/bencher.log
             perf-smoke-out/benchmark-summary.json
+            perf-smoke-out/regression-report.txt
           if-no-files-found: warn
           retention-days: 14

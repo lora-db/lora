@@ -17,6 +17,11 @@
  *   --update            Rewrite the baseline from the incoming bencher output
  *                       (keeps existing `_meta` + per-bench `threshold` fields).
  *   --input <path>      Read bencher output from a file instead of stdin.
+ *   --format <text|markdown>
+ *                       Output format. `text` (default) prints a fixed-width
+ *                       table for terminals and CI logs; `markdown` prints a
+ *                       GitHub-flavoured markdown table suitable for
+ *                       `$GITHUB_STEP_SUMMARY`.
  *
  * This is a "catch obvious big regressions" tool, not a measurement lab.
  * See docs/performance/perf-smoke.md.
@@ -43,6 +48,7 @@ function parseArgs(argv) {
     threshold: null,
     update: false,
     input: null,
+    format: "text",
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -61,6 +67,12 @@ function parseArgs(argv) {
         break;
       case "--input":
         opts.input = argv[++i];
+        break;
+      case "--format":
+        opts.format = argv[++i];
+        if (opts.format !== "text" && opts.format !== "markdown") {
+          fail(`--format must be 'text' or 'markdown' (got ${opts.format})`, 2);
+        }
         break;
       case "-h":
       case "--help":
@@ -166,6 +178,79 @@ function fmtRatio(r) {
   return `${r.toFixed(2)}x`;
 }
 
+// ---------- renderers -------------------------------------------------------
+
+function renderText(rows, orphan) {
+  const col = (s, w) => String(s).padEnd(w);
+  const wName = Math.max(4, ...rows.map((r) => r.name.length));
+  const wBase = Math.max(10, ...rows.map((r) => r.baseline.length));
+  const wCur = Math.max(10, ...rows.map((r) => r.current.length));
+  const wRatio = Math.max(8, ...rows.map((r) => r.ratio.length));
+  const wThr = Math.max(10, ...rows.map((r) => r.threshold.length));
+
+  console.log(
+    `${col("BENCH", wName)}  ${col("BASELINE", wBase)}  ${col(
+      "CURRENT",
+      wCur,
+    )}  ${col("RATIO", wRatio)}  ${col("THRESHOLD", wThr)}  STATUS`,
+  );
+  for (const r of rows) {
+    console.log(
+      `${col(r.name, wName)}  ${col(r.baseline, wBase)}  ${col(
+        r.current,
+        wCur,
+      )}  ${col(r.ratio, wRatio)}  ${col(r.threshold, wThr)}  ${r.status}`,
+    );
+  }
+
+  if (orphan.length) {
+    console.log("");
+    console.log(
+      `check-perf-smoke: ${orphan.length} baseline bench(es) not produced by this run (renamed or removed?):`,
+    );
+    for (const n of orphan) console.log(`  - ${n}`);
+  }
+}
+
+function statusBadge(status) {
+  switch (status) {
+    case "ok":
+      return "✅ ok";
+    case "REGRESSED":
+      return "🔴 REGRESSED";
+    case "NEW":
+      return "🆕 new";
+    default:
+      return status;
+  }
+}
+
+function renderMarkdown(rows, orphan, totals) {
+  const lines = [];
+  const headline =
+    totals.failed > 0
+      ? `### ❌ perf-smoke: ${totals.failed} regression(s)`
+      : totals.missing > 0
+        ? `### ⚠️ perf-smoke: ${totals.missing} bench(es) missing from baseline`
+        : `### ✅ perf-smoke: all ${rows.length} bench(es) within threshold`;
+  lines.push(headline, "");
+  lines.push("| Bench | Baseline | Current | Ratio | Threshold | Status |");
+  lines.push("| --- | ---: | ---: | ---: | ---: | --- |");
+  for (const r of rows) {
+    lines.push(
+      `| \`${r.name}\` | ${r.baseline} | ${r.current} | ${r.ratio} | ${r.threshold} | ${statusBadge(r.status)} |`,
+    );
+  }
+  if (orphan.length) {
+    lines.push("");
+    lines.push(
+      `_${orphan.length} baseline bench(es) not produced by this run (renamed or removed?):_`,
+    );
+    for (const n of orphan) lines.push(`- \`${n}\``);
+  }
+  console.log(lines.join("\n"));
+}
+
 // ---------- main ------------------------------------------------------------
 
 function main() {
@@ -258,35 +343,10 @@ function main() {
     if (!current[name]) orphan.push(name);
   }
 
-  // Render.
-  const col = (s, w) => String(s).padEnd(w);
-  const wName = Math.max(4, ...rows.map((r) => r.name.length));
-  const wBase = Math.max(10, ...rows.map((r) => r.baseline.length));
-  const wCur = Math.max(10, ...rows.map((r) => r.current.length));
-  const wRatio = Math.max(8, ...rows.map((r) => r.ratio.length));
-  const wThr = Math.max(10, ...rows.map((r) => r.threshold.length));
-
-  console.log(
-    `${col("BENCH", wName)}  ${col("BASELINE", wBase)}  ${col(
-      "CURRENT",
-      wCur,
-    )}  ${col("RATIO", wRatio)}  ${col("THRESHOLD", wThr)}  STATUS`,
-  );
-  for (const r of rows) {
-    console.log(
-      `${col(r.name, wName)}  ${col(r.baseline, wBase)}  ${col(
-        r.current,
-        wCur,
-      )}  ${col(r.ratio, wRatio)}  ${col(r.threshold, wThr)}  ${r.status}`,
-    );
-  }
-
-  if (orphan.length) {
-    console.log("");
-    console.log(
-      `check-perf-smoke: ${orphan.length} baseline bench(es) not produced by this run (renamed or removed?):`,
-    );
-    for (const n of orphan) console.log(`  - ${n}`);
+  if (opts.format === "markdown") {
+    renderMarkdown(rows, orphan, { failed, missing });
+  } else {
+    renderText(rows, orphan);
   }
 
   if (failed > 0) {
