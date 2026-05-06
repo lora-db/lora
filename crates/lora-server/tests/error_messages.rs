@@ -38,7 +38,7 @@ fn invalid_sync_mode() {
     let err = ConfigError::InvalidSyncMode("burst".into());
     assert_eq!(
         err.to_string(),
-        "invalid `--wal-sync-mode` `burst`: expected `per-commit`, `group`, or `none`"
+        "invalid `--wal-sync-mode` `burst`: expected `group-sync`"
     );
 }
 

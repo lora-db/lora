@@ -114,7 +114,7 @@ where
     let wal_dir = cli_wal_dir.or(env.wal_dir).and_then(non_empty_path);
     let wal_sync_mode = match cli_wal_sync_mode.or(env.wal_sync_mode) {
         Some(raw) => parse_sync_mode(&raw)?,
-        None => SyncMode::PerCommit,
+        None => SyncMode::default(),
     };
 
     Ok(ConfigOutcome::Run(ServerConfig {
@@ -164,15 +164,13 @@ fn parse_port(raw: &str) -> Result<u16, ConfigError> {
 
 fn parse_sync_mode(raw: &str) -> Result<SyncMode, ConfigError> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "per-commit" | "per_commit" | "percommit" => Ok(SyncMode::PerCommit),
-        "group" => Ok(SyncMode::Group {
+        "group-sync" | "group_sync" | "groupsync" => Ok(SyncMode::GroupSync {
             // 50 ms cadence is short enough that a crash window is
             // bounded by the wallclock budget operators usually quote
             // ("at most ~50 ms of writes lost") and long enough that
             // the bg flusher does not tax disks under sustained load.
             interval_ms: 50,
         }),
-        "none" | "off" => Ok(SyncMode::None),
         other => Err(ConfigError::InvalidSyncMode(other.to_string())),
     }
 }

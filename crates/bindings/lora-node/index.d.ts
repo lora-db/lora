@@ -27,7 +27,7 @@ export declare class Database {
    *   `.loradb` path under `database_dir`, or the current directory when no
    *   directory is provided.
    */
-  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "group" | "perCommit" | "per_commit" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined)
+  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "groupSync" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined)
   /**
    * Execute a Lora query on the libuv threadpool.
    *

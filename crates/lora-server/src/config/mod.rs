@@ -80,7 +80,7 @@ impl Default for ServerConfig {
             snapshot_path: None,
             restore_from: None,
             wal_dir: None,
-            wal_sync_mode: SyncMode::PerCommit,
+            wal_sync_mode: SyncMode::default(),
         }
     }
 }

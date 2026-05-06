@@ -24,7 +24,7 @@ impl Default for DatabaseOpenOptions {
     fn default() -> Self {
         Self {
             database_dir: PathBuf::from("."),
-            sync_mode: SyncMode::Group { interval_ms: 1_000 },
+            sync_mode: SyncMode::GroupSync { interval_ms: 1_000 },
             segment_target_bytes: 8 * 1024 * 1024,
             max_database_bytes: DEFAULT_DATABASE_MAX_BYTES,
         }

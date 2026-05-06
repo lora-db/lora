@@ -149,19 +149,14 @@ fn wal_dir_from_cli_and_env() {
 
 #[test]
 fn wal_sync_mode_parses_known_strings() {
-    for (raw, expected) in [
-        ("per-commit", SyncMode::PerCommit),
-        ("PER_COMMIT", SyncMode::PerCommit),
-        ("none", SyncMode::None),
-        ("OFF", SyncMode::None),
-    ] {
+    for raw in ["group-sync", "GROUP_SYNC", "groupsync"] {
         let cfg = run_cfg(resolve(args(&["--wal-sync-mode", raw]), EnvInputs::default()).unwrap());
-        assert_eq!(cfg.wal_sync_mode, expected, "raw={raw}");
+        assert_eq!(
+            cfg.wal_sync_mode,
+            SyncMode::GroupSync { interval_ms: 50 },
+            "raw={raw}"
+        );
     }
-
-    // group parses to Group { .. } with v1 defaults.
-    let cfg = run_cfg(resolve(args(&["--wal-sync-mode", "group"]), EnvInputs::default()).unwrap());
-    assert!(matches!(cfg.wal_sync_mode, SyncMode::Group { .. }));
 }
 
 #[test]

@@ -86,8 +86,7 @@ impl Database {
     pub fn new(
         #[napi(ts_arg_type = "string | null | undefined")] database_name: Option<String>,
         #[napi(ts_arg_type = "string | null | undefined")] database_dir: Option<String>,
-        #[napi(ts_arg_type = "\"group\" | \"perCommit\" | \"per_commit\" | null | undefined")]
-        sync_mode: Option<String>,
+        #[napi(ts_arg_type = "\"groupSync\" | null | undefined")] sync_mode: Option<String>,
         #[napi(ts_arg_type = "number | null | undefined")] group_sync_interval_ms: Option<u32>,
         #[napi(ts_arg_type = "string | null | undefined")] wal_dir: Option<String>,
         #[napi(ts_arg_type = "string | null | undefined")] snapshot_dir: Option<String>,
@@ -613,14 +612,11 @@ fn parse_sync_mode(
         ));
     }
 
-    match sync_mode.as_deref().unwrap_or("group") {
-        "group" => Ok(SyncMode::Group { interval_ms }),
-        "perCommit" | "per_commit" => Ok(SyncMode::PerCommit),
+    match sync_mode.as_deref().unwrap_or("groupSync") {
+        "groupSync" => Ok(SyncMode::GroupSync { interval_ms }),
         other => Err(NapiError::new(
             Status::InvalidArg,
-            format!(
-                "{INVALID_PARAMS_CODE}: invalid syncMode '{other}'; expected 'group' or 'perCommit'"
-            ),
+            format!("{INVALID_PARAMS_CODE}: invalid syncMode '{other}'; expected 'groupSync'"),
         )),
     }
 }

@@ -12,7 +12,15 @@ use crate::testing::TmpDir;
 use crate::Wal;
 
 fn open_wal(dir: &Path) -> Arc<Wal> {
-    let (wal, replay) = Wal::open(dir, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+    let (wal, replay) = Wal::open(
+        dir,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    )
+    .unwrap();
     assert!(replay.is_empty());
     wal
 }
@@ -52,8 +60,15 @@ fn arm_record_commit_round_trip_via_in_memory_graph() {
     g.set_mutation_recorder(None);
     drop(recorder);
 
-    let (_wal, events) =
-        Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+    let (_wal, events) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    )
+    .unwrap();
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], MutationEvent::CreateNode { id: 0, .. }));
     assert!(matches!(events[1], MutationEvent::CreateNode { id: 1, .. }));
@@ -81,8 +96,15 @@ fn commit_events_records_buffered_transaction_as_one_commit() {
     assert_eq!(outcome, WroteCommit::Yes);
 
     drop(recorder);
-    let (_wal, events) =
-        Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+    let (_wal, events) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    )
+    .unwrap();
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], MutationEvent::CreateNode { id: 0, .. }));
     assert!(matches!(
@@ -135,8 +157,15 @@ fn abort_drops_in_flight_events_on_replay() {
     g.set_mutation_recorder(None);
     drop(recorder);
 
-    let (_wal, events) =
-        Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+    let (_wal, events) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    )
+    .unwrap();
     assert_eq!(events.len(), 1);
     if let MutationEvent::CreateNode { labels, .. } = &events[0] {
         assert_eq!(labels, &vec!["A".to_string()]);

@@ -87,7 +87,9 @@ fn rows() -> Option<ExecuteOptions> {
 fn enabled(dir: &Path) -> WalConfig {
     WalConfig::Enabled {
         dir: dir.to_path_buf(),
-        sync_mode: SyncMode::PerCommit,
+        sync_mode: SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
         segment_target_bytes: 8 * 1024 * 1024,
     }
 }
@@ -95,7 +97,7 @@ fn enabled(dir: &Path) -> WalConfig {
 fn group_enabled(dir: &Path) -> WalConfig {
     WalConfig::Enabled {
         dir: dir.to_path_buf(),
-        sync_mode: SyncMode::Group {
+        sync_mode: SyncMode::GroupSync {
             interval_ms: 60_000,
         },
         segment_target_bytes: 8 * 1024 * 1024,
@@ -211,7 +213,9 @@ fn named_database_recovers_from_durable_sidecar_when_archive_lags() {
         let db = Database::open_named(
             "app",
             DatabaseOpenOptions {
-                sync_mode: SyncMode::PerCommit,
+                sync_mode: SyncMode::GroupSync {
+                    interval_ms: 60_000,
+                },
                 ..DatabaseOpenOptions::default().with_database_dir(dir.path())
             },
         )
@@ -224,7 +228,9 @@ fn named_database_recovers_from_durable_sidecar_when_archive_lags() {
         let db = Database::open_named(
             "app",
             DatabaseOpenOptions {
-                sync_mode: SyncMode::PerCommit,
+                sync_mode: SyncMode::GroupSync {
+                    interval_ms: 60_000,
+                },
                 ..DatabaseOpenOptions::default().with_database_dir(dir.path())
             },
         )
@@ -259,7 +265,7 @@ fn named_database_sync_makes_archive_immediately_portable() {
     let db = Database::open_named(
         "app",
         DatabaseOpenOptions {
-            sync_mode: SyncMode::Group {
+            sync_mode: SyncMode::GroupSync {
                 interval_ms: 60_000,
             },
             ..DatabaseOpenOptions::default().with_database_dir(dir.path())
@@ -440,7 +446,7 @@ fn named_database_final_archive_flush_captures_group_buffer() {
             "app",
             DatabaseOpenOptions {
                 database_dir: dir.path().to_path_buf(),
-                sync_mode: SyncMode::Group {
+                sync_mode: SyncMode::GroupSync {
                     interval_ms: 60_000,
                 },
                 ..DatabaseOpenOptions::default()
@@ -478,8 +484,9 @@ fn fresh_open_then_crash_recover_replays_committed_writes() {
             .unwrap();
         db.execute("CREATE (:User {id: 2, name: 'bob'})", rows())
             .unwrap();
-        // Drop without explicit close to model a crash; PerCommit
-        // already fsync'd the commit markers, so the WAL is durable.
+        db.sync().unwrap();
+        // Drop without explicit close to model a crash after an explicit
+        // GroupSync durability boundary.
     }
 
     // Fresh process: empty graph + WAL on disk → recover replays.
@@ -669,8 +676,15 @@ fn replay_preserves_ids_after_aborted_create_gap() {
     let dir = TmpDir::new("id-gap");
 
     {
-        let (wal, replay) =
-            Wal::open(dir.path(), SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+        let (wal, replay) = Wal::open(
+            dir.path(),
+            SyncMode::GroupSync {
+                interval_ms: 60_000,
+            },
+            8 * 1024 * 1024,
+            Lsn::ZERO,
+        )
+        .unwrap();
         assert!(replay.is_empty());
 
         let aborted = wal.begin().unwrap();
@@ -733,8 +747,15 @@ fn replay_rejects_relationship_with_missing_endpoint() {
     let dir = TmpDir::new("missing-endpoint");
 
     {
-        let (wal, replay) =
-            Wal::open(dir.path(), SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+        let (wal, replay) = Wal::open(
+            dir.path(),
+            SyncMode::GroupSync {
+                interval_ms: 60_000,
+            },
+            8 * 1024 * 1024,
+            Lsn::ZERO,
+        )
+        .unwrap();
         assert!(replay.is_empty());
 
         let tx = wal.begin().unwrap();

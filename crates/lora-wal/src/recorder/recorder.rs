@@ -135,9 +135,9 @@ impl WalRecorder {
     ///
     /// Routes through [`Wal::commit_tx`], which encodes
     /// `TxBegin` + `MutationBatch` + `TxCommit` in a single critical
-    /// section and applies the configured flush policy. Under
-    /// `SyncMode::PerCommit`, durability is complete when this method returns
-    /// — the legacy "commit then flush" split is gone.
+    /// section and applies the configured flush policy. Under `GroupSync`,
+    /// bytes are written before this method returns; storage durability is
+    /// completed by the background flusher or an explicit sync boundary.
     ///
     /// Returns:
     /// - [`WroteCommit::Yes`] when mutation events fired and the WAL
@@ -221,8 +221,7 @@ impl WalRecorder {
         Ok(had_buffered_events)
     }
 
-    /// Flush the WAL — write the pending buffer to the OS and
-    /// (under `SyncMode::PerCommit`) `fsync`.
+    /// Flush the WAL — write the pending buffer to the OS.
     pub fn flush(&self) -> Result<(), WalError> {
         let mut state = self.state_lock();
         if state.poisoned.is_some() {

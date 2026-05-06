@@ -27,7 +27,7 @@ use crate::dir::SegmentDir;
 use crate::errors::WalError;
 use crate::lsn::Lsn;
 use crate::record::WalRecord;
-use crate::segment::SegmentReader;
+use crate::segment::{SegmentReader, SEGMENT_HEADER_LEN};
 
 /// Outcome of a full replay walk.
 #[derive(Debug)]
@@ -66,6 +66,11 @@ pub struct ReplayOutcome {
     /// can log a warning when the snapshot is older than the newest
     /// observed marker.
     pub checkpoint_lsn_observed: Option<Lsn>,
+
+    /// Offset immediately after the last well-formed record in the last
+    /// segment walked. `Wal::open` uses this to reopen the active writer
+    /// without performing a second full scan of the active segment.
+    pub last_good_offset: u64,
 }
 
 #[derive(Debug)]
@@ -90,9 +95,11 @@ pub(crate) fn replay_segments(
     let mut last_segment_base: Option<Lsn> = None;
     let mut torn_tail: Option<TornTailInfo> = None;
     let mut checkpoint_lsn_observed: Option<Lsn> = None;
+    let mut last_good_offset = SEGMENT_HEADER_LEN as u64;
 
     'outer: for path in paths {
         let mut reader = SegmentReader::open(path)?;
+        last_good_offset = reader.position();
         let segment_base = reader.header().base_lsn;
         if let Some(prev_base) = last_segment_base {
             if segment_base <= prev_base {
@@ -141,6 +148,7 @@ pub(crate) fn replay_segments(
                     if lsn > max_lsn {
                         max_lsn = lsn;
                     }
+                    last_good_offset = reader.position();
                     if lsn.raw() <= checkpoint_lsn.raw() {
                         // Already in the snapshot. Markers below the
                         // fence still need to keep their pending
@@ -258,6 +266,7 @@ pub(crate) fn replay_segments(
         max_lsn,
         torn_tail,
         checkpoint_lsn_observed,
+        last_good_offset,
     })
 }
 

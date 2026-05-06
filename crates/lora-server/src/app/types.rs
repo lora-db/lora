@@ -95,7 +95,7 @@ pub struct WalStatusResponse {
     #[serde(rename = "oldestSegmentId")]
     pub oldest_segment_id: u64,
     /// Latched fsync error from the bg flusher (only populated under
-    /// `SyncMode::Group`). `None` when healthy.
+    /// `SyncMode::GroupSync`). `None` when healthy.
     #[serde(rename = "bgFailure")]
     pub bg_failure: Option<String>,
 }

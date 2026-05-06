@@ -64,7 +64,7 @@ impl Drop for WalScratch {
     }
 }
 
-/// Open a WAL-backed database with `SyncMode::Group`. Group sync matches
+/// Open a WAL-backed database with `SyncMode::GroupSync`. Group sync matches
 /// the durability profile most embedded callers reach for — write-only
 /// on commit, background flusher fsyncs on a 50 ms interval — and keeps
 /// the bench dominated by engine + WAL append cost rather than fsync
@@ -73,7 +73,7 @@ fn open_wal_group(tag: &str) -> (WalScratch, Database<InMemoryGraph>) {
     let dir = WalScratch::new(tag);
     let cfg = WalConfig::Enabled {
         dir: dir.path.clone(),
-        sync_mode: SyncMode::Group { interval_ms: 50 },
+        sync_mode: SyncMode::GroupSync { interval_ms: 50 },
         segment_target_bytes: 8 * 1024 * 1024,
     };
     let db = Database::open_with_wal(cfg).unwrap();
@@ -368,6 +368,25 @@ fn bench_perf_smoke(c: &mut Criterion) {
                         .unwrap(),
                 );
                 tx.commit().unwrap();
+            });
+        });
+    }
+
+    // --- 14. persistent single CREATE: WAL + force_fsync per commit ------
+    //
+    // Same shape as `write_one_wal_group` but adds an explicit
+    // `Database::sync()` on each iteration, forcing the WAL through to
+    // durable storage before the next commit lands. This captures the
+    // fully-durable per-commit profile (formerly `SyncMode::PerCommit`)
+    // — the gap to `write_one_wal_group` is one `fsync` per iteration.
+    // A regression here without one in `write_one_wal_group` points at
+    // the durability boundary path (`force_fsync` / `sync_dir`).
+    {
+        let (_dir, db) = open_wal_group("write-one-persistent");
+        group.bench_function("write_one_wal_persistent", |b| {
+            b.iter(|| {
+                black_box(db.execute("CREATE (:B {n: 1})", opts()).unwrap());
+                db.sync().unwrap();
             });
         });
     }

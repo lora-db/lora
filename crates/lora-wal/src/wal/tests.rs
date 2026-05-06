@@ -22,7 +22,15 @@ fn ev(id: u64) -> MutationEvent {
 }
 
 fn open_default(dir: &Path) -> (Arc<Wal>, Vec<MutationEvent>) {
-    Wal::open(dir, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO).unwrap()
+    Wal::open(
+        dir,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -57,7 +65,14 @@ fn opening_same_directory_twice_fails_until_first_handle_drops() {
     let dir = TmpDir::new("exclusive");
     let (wal, _) = open_default(&dir.path);
 
-    match Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO) {
+    match Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    ) {
         Err(WalError::AlreadyOpen { dir: locked_dir }) => {
             assert_eq!(locked_dir, dir.path);
         }
@@ -151,7 +166,15 @@ fn segment_rotation_at_begin_boundary() {
 
     // Tiny segment target so we trip rotation on the second
     // transaction.
-    let (wal, _) = Wal::open(&dir.path, SyncMode::PerCommit, 256, Lsn::ZERO).unwrap();
+    let (wal, _) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        256,
+        Lsn::ZERO,
+    )
+    .unwrap();
 
     // First tx: a few events, takes us past 256 bytes.
     let b1 = wal.begin().unwrap();
@@ -202,7 +225,15 @@ fn checkpoint_lsn_skips_already_checkpointed_events() {
 
     // Re-open with checkpoint_lsn = commit_a so tx A is treated
     // as already-applied.
-    let (_, replay) = Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, commit_a).unwrap();
+    let (_, replay) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        commit_a,
+    )
+    .unwrap();
     assert_eq!(replay, vec![ev(3)]);
 }
 
@@ -216,7 +247,14 @@ fn replay_rejects_commit_without_begin() {
         wal.flush().unwrap();
     }
 
-    let err = match Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO) {
+    let err = match Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    ) {
         Ok(_) => panic!("malformed WAL should not open"),
         Err(err) => err,
     };
@@ -236,7 +274,14 @@ fn replay_rejects_mutation_without_begin() {
         wal.flush().unwrap();
     }
 
-    let err = match Wal::open(&dir.path, SyncMode::PerCommit, 8 * 1024 * 1024, Lsn::ZERO) {
+    let err = match Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    ) {
         Ok(_) => panic!("malformed WAL should not open"),
         Err(err) => err,
     };
@@ -312,7 +357,7 @@ fn group_mode_is_cooperative_until_force_fsync() {
     let dir = TmpDir::new("group");
     let (wal, _) = Wal::open(
         &dir.path,
-        SyncMode::Group { interval_ms: 25 },
+        SyncMode::GroupSync { interval_ms: 25 },
         8 * 1024 * 1024,
         Lsn::ZERO,
     )
@@ -335,17 +380,25 @@ fn group_mode_is_cooperative_until_force_fsync() {
 }
 
 #[test]
-fn none_mode_advances_durable_lsn_on_flush() {
-    let dir = TmpDir::new("none");
-    let (wal, _) = Wal::open(&dir.path, SyncMode::None, 8 * 1024 * 1024, Lsn::ZERO).unwrap();
+fn group_sync_flush_does_not_advance_durable_lsn() {
+    let dir = TmpDir::new("group-sync-durable");
+    let (wal, _) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    )
+    .unwrap();
 
     let begin = wal.begin().unwrap();
     wal.append(begin, &ev(1)).unwrap();
     wal.commit(begin).unwrap();
     wal.flush().unwrap();
 
-    // None mode: flush() advances durable_lsn even without
-    // fsync, because the mode opted out of crash durability.
+    assert_eq!(wal.durable_lsn(), Lsn::ZERO);
+    wal.force_fsync().unwrap();
     assert_eq!(wal.durable_lsn().raw(), wal.next_lsn().raw() - 1);
 }
 
@@ -354,7 +407,7 @@ fn force_fsync_always_advances_durable_lsn() {
     let dir = TmpDir::new("force-fsync");
     let (wal, _) = Wal::open(
         &dir.path,
-        SyncMode::Group {
+        SyncMode::GroupSync {
             interval_ms: 60_000,
         },
         8 * 1024 * 1024,
@@ -379,7 +432,15 @@ fn truncate_up_to_drops_old_sealed_segments() {
     let dir = TmpDir::new("truncate");
 
     // Tiny target so each tx forces a rotation on the next begin.
-    let (wal, _) = Wal::open(&dir.path, SyncMode::PerCommit, 64, Lsn::ZERO).unwrap();
+    let (wal, _) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        64,
+        Lsn::ZERO,
+    )
+    .unwrap();
 
     let mut last_commit = Lsn::ZERO;
     for i in 0..5 {
@@ -417,7 +478,15 @@ fn truncate_up_to_drops_old_sealed_segments() {
     // already at or below `last_commit`, which we feed back as
     // the checkpoint fence on reopen.
     drop(wal);
-    let (_, replay) = Wal::open(&dir.path, SyncMode::PerCommit, 64, last_commit).unwrap();
+    let (_, replay) = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        64,
+        last_commit,
+    )
+    .unwrap();
     // Everything was at or below the fence, so replay is empty.
     assert!(replay.is_empty());
 }

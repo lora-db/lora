@@ -67,16 +67,15 @@ struct WalState {
 type BgFailure = Mutex<Option<String>>;
 
 /// Selects the durability work that [`Wal::flush_inner`] actually does.
-/// Centralising the three modes here means `flush` and `force_fsync`
-/// share one code path and the call sites don't have to remember which
-/// mode advances `durable_lsn` and which does not.
+/// Centralising the normal write-only path and the forced fsync path keeps
+/// the call sites from duplicating durable-LSN rules.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum FlushKind {
-    /// Honour the configured [`SyncMode`]. This is what the recorder's
-    /// `flush()` calls into.
+    /// Write pending WAL bytes to the OS without forcing storage durability.
+    /// This is what commits do under [`SyncMode::GroupSync`].
     PerConfiguredMode,
-    /// Always write the buffer + fsync + advance `durable_lsn`, regardless of
-    /// mode. Used by checkpoints, explicit sync, and clean Group-mode drop.
+    /// Write pending WAL bytes, fsync, and advance `durable_lsn`. Used by
+    /// checkpoints, explicit sync, the background flusher, and clean drop.
     ForceFsync,
 }
 
@@ -86,7 +85,7 @@ pub(super) enum FlushKind {
 /// committed mutation events that need to be re-applied to the
 /// in-memory store before any new traffic is accepted.
 ///
-/// `Wal::open` returns `Arc<Self>` because the optional Group-mode
+/// `Wal::open` returns `Arc<Self>` because the optional GroupSync
 /// background flusher needs a `Weak<Wal>` to call back into without
 /// taking a strong reference (which would prevent shutdown).
 pub struct Wal {
@@ -97,9 +96,9 @@ pub struct Wal {
     /// Latched durability failure; surfaced via [`Wal::bg_failure`] and
     /// propagated to commit/flush/force_fsync as [`WalError::Poisoned`].
     bg_failure: Arc<BgFailure>,
-    /// Background flusher for `SyncMode::Group`. `Drop` joins the
+    /// Background flusher for `SyncMode::GroupSync`. `Drop` joins the
     /// thread, so a `Wal` going out of scope is a clean shutdown
-    /// signal. Absent on `wasm32`, where Group mode falls back to the
+    /// signal. Absent on `wasm32`, where GroupSync falls back to the
     /// drop-time flush.
     #[cfg(not(target_arch = "wasm32"))]
     flusher: Mutex<Option<GroupFlusherHandle>>,
@@ -169,13 +168,14 @@ impl Wal {
             _dir_lock: dir_lock,
         });
 
-        // Spawn the Group flusher *after* the Arc exists so it can hold a
+        // Spawn the GroupSync flusher *after* the Arc exists so it can hold a
         // `Weak<Wal>` that drops when the last strong ref does. The flusher's
         // own Drop joins the thread, so removing the field on `Wal::drop` is
         // a clean shutdown signal. Wasm has no real fsync boundary and no
-        // thread support, so Group there relies on the drop-time flush.
+        // thread support, so GroupSync there relies on the drop-time flush.
         #[cfg(not(target_arch = "wasm32"))]
-        if let SyncMode::Group { interval_ms } = sync_mode {
+        {
+            let SyncMode::GroupSync { interval_ms } = sync_mode;
             let interval = Duration::from_millis(u64::from(interval_ms.max(1)));
             let handle = spawn_group_flusher(Arc::downgrade(&wal), interval);
             *wal.flusher.lock().unwrap() = Some(handle);
@@ -197,6 +197,7 @@ impl Wal {
             max_lsn: Lsn::ZERO,
             torn_tail: None,
             checkpoint_lsn_observed: None,
+            last_good_offset: crate::segment::SEGMENT_HEADER_LEN as u64,
         };
         Ok((id, writer, replay))
     }
@@ -216,8 +217,10 @@ impl Wal {
         // numeric id — segment file names are self-describing, so
         // there is no separate CURRENT pointer.
         let active = entries.last().expect("entries non-empty in open_existing");
-        let (mut writer, _torn_from_writer) =
-            SegmentWriter::open_for_append(segments.path_for(active.id))?;
+        let mut writer = SegmentWriter::open_for_append_at(
+            segments.path_for(active.id),
+            replay.last_good_offset,
+        )?;
 
         // A torn tail in a *sealed* segment is impossible (sealed
         // segments are never appended to), so we only need to handle
@@ -414,15 +417,10 @@ impl Wal {
             })?;
         }
 
-        // Phase 2: durability per sync mode. PerCommit fsyncs inline;
-        // Group is cooperative in this single-threaded release (no bg
-        // flusher thread); None just pushes bytes to the page cache.
-        match self.sync_mode {
-            SyncMode::PerCommit => self.flush_inner(FlushKind::ForceFsync)?,
-            SyncMode::Group { .. } | SyncMode::None => {
-                self.flush_inner(FlushKind::PerConfiguredMode)?;
-            }
-        }
+        // Phase 2: make commit bytes visible to the OS page cache. Storage
+        // durability is provided by the GroupSync flusher or an explicit
+        // force_fsync/checkpoint/sync/drop boundary.
+        self.flush_inner(FlushKind::PerConfiguredMode)?;
 
         Ok(WroteCommit::Yes)
     }
@@ -457,18 +455,9 @@ impl Wal {
 
     /// Flush the active segment's pending buffer.
     ///
-    /// What "flush" means depends on [`SyncMode`]:
-    ///
-    /// - `PerCommit` — write the buffer to the OS, `fsync`, and
-    ///   advance `durable_lsn`. The strongest contract: every
-    ///   record up to `next_lsn - 1` is on disk.
-    /// - `Group` — write the buffer to the OS, but leave
-    ///   `durable_lsn` unchanged until an explicit `force_fsync`,
-    ///   checkpoint, sync, or clean drop.
-    /// - `None` — write the buffer to the OS only, but advance
-    ///   `durable_lsn` anyway. The mode opts out of crash
-    ///   durability, so the checkpoint fence reports
-    ///   "what's been written" instead of "what's actually safe".
+    /// Under [`SyncMode::GroupSync`], a normal flush writes bytes to the OS
+    /// but leaves `durable_lsn` unchanged until an explicit `force_fsync`,
+    /// checkpoint, sync, the background flusher, or clean drop.
     pub fn flush(&self) -> Result<(), WalError> {
         self.check_healthy()?;
         self.flush_inner(FlushKind::PerConfiguredMode)
@@ -485,34 +474,17 @@ impl Wal {
     }
 
     /// Single source of truth for the flush state machine. Skips the
-    /// `check_healthy` gate so clean shutdown can force a final Group-mode
+    /// `check_healthy` gate so clean shutdown can force a final GroupSync
     /// sync even if callers are otherwise done with the handle.
     pub(super) fn flush_inner(&self, kind: FlushKind) -> Result<(), WalError> {
         let mut state = self.state.lock().unwrap();
         let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
 
-        // Decide whether this call is allowed to advance `durable_lsn`.
-        // PerCommit and forced syncs advance after the fsync boundary. None
-        // advances after write because the mode opts out of crash durability.
-        // Group is cooperative for this release: normal `flush()` writes bytes
-        // but leaves the durable fence alone until `force_fsync`, checkpoint,
-        // sync(), or drop.
-        let do_fsync = matches!(
-            (kind, self.sync_mode),
-            (FlushKind::ForceFsync, _) | (_, SyncMode::PerCommit)
-        );
-        let advance_durable = matches!(
-            (kind, self.sync_mode),
-            (FlushKind::ForceFsync, _) | (_, SyncMode::PerCommit) | (_, SyncMode::None)
-        );
-
-        if do_fsync {
+        if matches!(kind, FlushKind::ForceFsync) {
             state.active_writer.flush_and_sync()?;
+            state.durable_lsn = written_lsn;
         } else {
             state.active_writer.flush_buffer()?;
-        }
-        if advance_durable {
-            state.durable_lsn = written_lsn;
         }
         Ok(())
     }
@@ -571,7 +543,6 @@ impl Wal {
         // Seal the current segment (forces a flush + fsync) and open
         // a fresh one with `base_lsn = next_lsn` so the segment file
         // names line up with the record LSNs they contain.
-        state.active_writer.flush_and_sync()?;
         state.active_writer.seal()?;
 
         let next_id = state.active_segment_id.next();
@@ -585,9 +556,7 @@ impl Wal {
 
 impl Drop for Wal {
     fn drop(&mut self) {
-        if matches!(self.sync_mode, SyncMode::Group { .. }) {
-            let _ = self.flush_inner(FlushKind::ForceFsync);
-        }
+        let _ = self.flush_inner(FlushKind::ForceFsync);
         // Join the group flusher, if any, before the directory lock is
         // released. That keeps the "one live append owner" boundary intact
         // through shutdown.

@@ -1,23 +1,18 @@
 //! WAL-aware microbenchmarks.
 //!
-//! These exercise the four durability profiles end-to-end through
+//! These exercise the active durability profiles end-to-end through
 //! `Database::execute_with_params`:
 //!
 //! - **`no_wal`** — `Database::in_memory()` (the existing fast path;
 //!   serves as the baseline the others are compared against).
-//! - **`per_commit`** — `WalConfig::Enabled` with `SyncMode::PerCommit`
-//!   (fsync before every commit returns).
-//! - **`group`** — `WalConfig::Enabled` with `SyncMode::Group`
-//!   (write-only on commit, bg flusher fsyncs).
-//! - **`none`** — `WalConfig::Enabled` with `SyncMode::None`
-//!   (no fsync at all, OS-buffered).
+//! - **`group_sync`** — `WalConfig::Enabled` with `SyncMode::GroupSync`
+//!   (write on commit, background flusher fsyncs).
 //!
 //! The shape that matters is *commit latency* — every iteration runs a
 //! single tiny `CREATE` statement so the engine work is negligible and
-//! the WAL path dominates. On NVMe the gap between `no_wal` and
-//! `per_commit` is roughly the cost of one `fsync` (50–200 µs); the
-//! gap between `per_commit` and `group` / `none` measures how much
-//! you save by deferring durability.
+//! the WAL path dominates. The gap between `no_wal` and `group_sync`
+//! measures WAL encoding, buffering, and file-write overhead without an
+//! inline fsync in the commit path.
 //!
 //! There is also a small **`recovery`** bench that times opening a WAL
 //! with N committed transactions and re-applying them. This is the
@@ -81,9 +76,8 @@ fn enabled(dir: &std::path::Path, sync_mode: SyncMode) -> WalConfig {
 }
 
 fn smoke_config() -> Criterion {
-    // Per-bench budget of ~3 s. fsync cost dominates per_commit so we
-    // cannot run this as cheaply as the in-memory smoke suite, but we
-    // also don't want a 30-second bench on every CI run.
+    // Per-bench budget of ~3 s. WAL setup still touches the filesystem, but
+    // GroupSync keeps commit latency bounded enough for a compact smoke run.
     Criterion::default()
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_millis(2_500))
@@ -95,17 +89,76 @@ fn smoke_config() -> Criterion {
 enum SmokeProfile {
     MemoryOnly,
     WalDisabled,
-    WalEnabledNoSync,
+    WalGroupSync,
 }
 
 impl SmokeProfile {
-    const ALL: [Self; 3] = [Self::MemoryOnly, Self::WalDisabled, Self::WalEnabledNoSync];
+    const ALL: [Self; 3] = [Self::MemoryOnly, Self::WalDisabled, Self::WalGroupSync];
 
     fn label(self) -> &'static str {
         match self {
             Self::MemoryOnly => "memory_only",
             Self::WalDisabled => "wal_disabled",
-            Self::WalEnabledNoSync => "wal_enabled_none",
+            Self::WalGroupSync => "wal_group_sync",
+        }
+    }
+}
+
+/// Comparison axis for the named_archive groups: each variant is either
+/// purely in-memory or backed by a persistent storage engine. Benches use
+/// this to iterate over the same workload across engines without
+/// duplicating setup.
+#[derive(Clone, Copy)]
+enum EngineProfile {
+    /// `Database::in_memory()` — no durability, baseline.
+    InMemory,
+    /// `Database::open_named()` — persistent `.loradb` archive
+    /// (snapshot-on-shutdown).
+    LoraArchive,
+    /// `Database::open_with_wal(Enabled)` — persistent WAL with the
+    /// default GroupSync flusher.
+    WalPersistent,
+}
+
+impl EngineProfile {
+    const ALL: [Self; 3] = [Self::InMemory, Self::LoraArchive, Self::WalPersistent];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::InMemory => "memory_only",
+            Self::LoraArchive => "lora_archive",
+            Self::WalPersistent => "wal_persistent",
+        }
+    }
+
+    fn is_persistent(self) -> bool {
+        !matches!(self, Self::InMemory)
+    }
+
+    /// Open a fresh database for this profile. Returns the `ScratchDir`
+    /// alongside so persistent variants keep their files alive for the
+    /// lifetime of the bench iteration.
+    fn open(self, tag: &str) -> (Option<ScratchDir>, Database<InMemoryGraph>) {
+        match self {
+            Self::InMemory => (None, Database::in_memory()),
+            Self::LoraArchive => {
+                let dir = ScratchDir::new(&format!("{tag}-lora-archive"));
+                let db = Database::open_named(
+                    "bench",
+                    DatabaseOpenOptions::default().with_database_dir(&dir.path),
+                )
+                .unwrap();
+                (Some(dir), db)
+            }
+            Self::WalPersistent => {
+                let dir = ScratchDir::new(&format!("{tag}-wal-persistent"));
+                let db = Database::open_with_wal(enabled(
+                    &dir.path,
+                    SyncMode::GroupSync { interval_ms: 50 },
+                ))
+                .unwrap();
+                (Some(dir), db)
+            }
         }
     }
 }
@@ -114,9 +167,13 @@ fn open_smoke_db(profile: SmokeProfile) -> (Option<ScratchDir>, Database<InMemor
     match profile {
         SmokeProfile::MemoryOnly => (None, Database::in_memory()),
         SmokeProfile::WalDisabled => (None, Database::open_with_wal(WalConfig::Disabled).unwrap()),
-        SmokeProfile::WalEnabledNoSync => {
-            let dir = ScratchDir::new("perf-smoke-wal-enabled-none");
-            let db = Database::open_with_wal(enabled(&dir.path, SyncMode::None)).unwrap();
+        SmokeProfile::WalGroupSync => {
+            let dir = ScratchDir::new("perf-smoke-wal-group-sync");
+            let db = Database::open_with_wal(enabled(
+                &dir.path,
+                SyncMode::GroupSync { interval_ms: 50 },
+            ))
+            .unwrap();
             (Some(dir), db)
         }
     }
@@ -196,52 +253,17 @@ fn bench_commit_latency(c: &mut Criterion) {
         });
     }
 
-    // ---- PerCommit (fsync per commit) --------------------------------------
+    // ---- GroupSync (write on commit, bg flusher fsyncs) --------------------
     {
-        group.bench_function("per_commit", |b| {
+        group.bench_function("group_sync", |b| {
             b.iter_batched(
                 || {
-                    let dir = ScratchDir::new("per-commit");
-                    let db =
-                        Database::open_with_wal(enabled(&dir.path, SyncMode::PerCommit)).unwrap();
-                    (dir, db)
-                },
-                |(_dir, db)| {
-                    black_box(db.execute("CREATE (:N {v: 1})", opts()).unwrap());
-                },
-                BatchSize::SmallInput,
-            );
-        });
-    }
-
-    // ---- Group (write-only on commit, bg flusher fsyncs) -------------------
-    {
-        group.bench_function("group", |b| {
-            b.iter_batched(
-                || {
-                    let dir = ScratchDir::new("group");
+                    let dir = ScratchDir::new("group-sync");
                     let db = Database::open_with_wal(enabled(
                         &dir.path,
-                        SyncMode::Group { interval_ms: 50 },
+                        SyncMode::GroupSync { interval_ms: 50 },
                     ))
                     .unwrap();
-                    (dir, db)
-                },
-                |(_dir, db)| {
-                    black_box(db.execute("CREATE (:N {v: 1})", opts()).unwrap());
-                },
-                BatchSize::SmallInput,
-            );
-        });
-    }
-
-    // ---- None (no fsync at all) --------------------------------------------
-    {
-        group.bench_function("none", |b| {
-            b.iter_batched(
-                || {
-                    let dir = ScratchDir::new("none");
-                    let db = Database::open_with_wal(enabled(&dir.path, SyncMode::None)).unwrap();
                     (dir, db)
                 },
                 |(_dir, db)| {
@@ -265,17 +287,25 @@ fn bench_recovery(c: &mut Criterion) {
         // Build the WAL once outside the iter loop.
         let dir = ScratchDir::new(&format!("recovery-{}", n));
         {
-            let db = Database::open_with_wal(enabled(&dir.path, SyncMode::PerCommit)).unwrap();
+            let db = Database::open_with_wal(enabled(
+                &dir.path,
+                SyncMode::GroupSync { interval_ms: 50 },
+            ))
+            .unwrap();
             for _ in 0..n {
                 db.execute("CREATE (:N {v: 1})", opts()).unwrap();
             }
-            // Drop to release file handles; bg flusher (none here) joins.
+            // Drop to release file handles; the GroupSync flusher joins.
             drop(db);
         }
 
         group.bench_function(format!("replay_{}", n), |b| {
             b.iter(|| {
-                let db = Database::open_with_wal(enabled(&dir.path, SyncMode::None)).unwrap();
+                let db = Database::open_with_wal(enabled(
+                    &dir.path,
+                    SyncMode::GroupSync { interval_ms: 50 },
+                ))
+                .unwrap();
                 black_box(db.node_count());
             });
         });
@@ -292,89 +322,51 @@ fn bench_recovery(c: &mut Criterion) {
 fn bench_named_archive_write_heavy(c: &mut Criterion) {
     let mut group = c.benchmark_group("named_archive/write_heavy");
 
-    // One timed iteration performs a realistic write burst. For the
-    // persistent variant, dropping the DB at the end joins the archive writer
-    // and includes the final `.loradb` ZIP flush, so the result measures more
-    // than just "enqueue dirty flag".
+    // One timed iteration performs a realistic write burst. For persistent
+    // variants, dropping the DB at the end joins any background writer and
+    // includes the final flush, so the result measures more than just
+    // "enqueue dirty flag".
     const WRITES: usize = 1_000;
 
-    group.bench_function("memory_only_1000_creates", |b| {
-        b.iter_batched(
-            Database::in_memory,
-            |db| {
-                for i in 0..WRITES {
+    for profile in EngineProfile::ALL {
+        group.bench_function(format!("{}_1000_creates", profile.label()), |b| {
+            b.iter_batched(
+                || profile.open("write-heavy"),
+                |(_dir, db)| {
+                    for i in 0..WRITES {
+                        black_box(
+                            db.execute(&format!("CREATE (:N {{v: {i}}})"), opts())
+                                .unwrap(),
+                        );
+                    }
+                    black_box(db.node_count());
+                    if profile.is_persistent() {
+                        drop(db);
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    for profile in EngineProfile::ALL {
+        group.bench_function(format!("{}_batch_1000", profile.label()), |b| {
+            b.iter_batched(
+                || profile.open("write-heavy-batch"),
+                |(_dir, db)| {
                     black_box(
-                        db.execute(&format!("CREATE (:N {{v: {i}}})"), opts())
+                        db.execute("UNWIND range(1, 1000) AS i CREATE (:N {v: i})", opts())
                             .unwrap(),
                     );
-                }
-                black_box(db.node_count());
-            },
-            BatchSize::SmallInput,
-        );
-    });
-
-    group.bench_function("lora_archive_1000_creates", |b| {
-        b.iter_batched(
-            || {
-                let dir = ScratchDir::new("named-archive");
-                let db = Database::open_named(
-                    "bench",
-                    DatabaseOpenOptions::default().with_database_dir(&dir.path),
-                )
-                .unwrap();
-                (dir, db)
-            },
-            |(_dir, db)| {
-                for i in 0..WRITES {
-                    black_box(
-                        db.execute(&format!("CREATE (:N {{v: {i}}})"), opts())
-                            .unwrap(),
-                    );
-                }
-                black_box(db.node_count());
-                drop(db);
-            },
-            BatchSize::SmallInput,
-        );
-    });
-
-    group.bench_function("memory_only_batch_1000", |b| {
-        b.iter_batched(
-            Database::in_memory,
-            |db| {
-                black_box(
-                    db.execute("UNWIND range(1, 1000) AS i CREATE (:N {v: i})", opts())
-                        .unwrap(),
-                );
-                black_box(db.node_count());
-            },
-            BatchSize::SmallInput,
-        );
-    });
-
-    group.bench_function("lora_archive_batch_1000", |b| {
-        b.iter_batched(
-            || {
-                let dir = ScratchDir::new("named-archive-batch");
-                let db = Database::open_named(
-                    "bench",
-                    DatabaseOpenOptions::default().with_database_dir(&dir.path),
-                )
-                .unwrap();
-                (dir, db)
-            },
-            |(_dir, db)| {
-                black_box(
-                    db.execute("UNWIND range(1, 1000) AS i CREATE (:N {v: i})", opts())
-                        .unwrap(),
-                );
-                black_box(db.node_count());
-                drop(db);
-            },
-            BatchSize::SmallInput,
-        );
-    });
+                    black_box(db.node_count());
+                    if profile.is_persistent() {
+                        drop(db);
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
 
     group.finish();
 }
@@ -382,65 +374,37 @@ fn bench_named_archive_write_heavy(c: &mut Criterion) {
 fn bench_named_archive_steady_state(c: &mut Criterion) {
     let mut group = c.benchmark_group("named_archive/steady_state");
 
-    group.bench_function("memory_only_create_delete", |b| {
-        let db = Database::in_memory();
-        b.iter(|| {
-            black_box(
-                db.execute("CREATE (n:Tmp {v: 1}) DELETE n", opts())
-                    .unwrap(),
-            );
-            black_box(db.node_count());
+    for profile in EngineProfile::ALL {
+        let (_dir, db) = profile.open("steady");
+        group.bench_function(format!("{}_create_delete", profile.label()), |b| {
+            b.iter(|| {
+                black_box(
+                    db.execute("CREATE (n:Tmp {v: 1}) DELETE n", opts())
+                        .unwrap(),
+                );
+                black_box(db.node_count());
+            });
         });
-    });
+    }
 
-    group.bench_function("lora_archive_create_delete", |b| {
-        let dir = ScratchDir::new("named-archive-steady");
-        let db = Database::open_named(
-            "bench",
-            DatabaseOpenOptions::default().with_database_dir(&dir.path),
-        )
-        .unwrap();
-        b.iter(|| {
-            black_box(
-                db.execute("CREATE (n:Tmp {v: 1}) DELETE n", opts())
-                    .unwrap(),
-            );
-            black_box(db.node_count());
-        });
-    });
-
-    group.bench_function("memory_only_batch_create_delete_1000", |b| {
-        let db = Database::in_memory();
-        b.iter(|| {
-            black_box(
-                db.execute(
-                    "UNWIND range(1, 1000) AS i CREATE (n:Tmp {v: i}) DELETE n",
-                    opts(),
-                )
-                .unwrap(),
-            );
-            black_box(db.node_count());
-        });
-    });
-
-    group.bench_function("lora_archive_batch_create_delete_1000", |b| {
-        let dir = ScratchDir::new("named-archive-steady-batch");
-        let db = Database::open_named(
-            "bench",
-            DatabaseOpenOptions::default().with_database_dir(&dir.path),
-        )
-        .unwrap();
-        b.iter(|| {
-            black_box(
-                db.execute(
-                    "UNWIND range(1, 1000) AS i CREATE (n:Tmp {v: i}) DELETE n",
-                    opts(),
-                )
-                .unwrap(),
-            );
-            black_box(db.node_count());
-        });
-    });
+    for profile in EngineProfile::ALL {
+        let (_dir, db) = profile.open("steady-batch");
+        group.bench_function(
+            format!("{}_batch_create_delete_1000", profile.label()),
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        db.execute(
+                            "UNWIND range(1, 1000) AS i CREATE (n:Tmp {v: i}) DELETE n",
+                            opts(),
+                        )
+                        .unwrap(),
+                    );
+                    black_box(db.node_count());
+                });
+            },
+        );
+    }
 
     group.finish();
 }

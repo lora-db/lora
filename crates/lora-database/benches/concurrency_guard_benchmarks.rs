@@ -247,14 +247,17 @@ fn bench_concurrency_guard(c: &mut Criterion) {
     }
 
     // WAL write paths without the per-iteration directory setup measured.
-    // `None` isolates WAL encoding/flush-buffer overhead; cooperative Group
-    // isolates the path that future concurrent fsync coordination will touch.
+    // GroupSync isolates WAL encoding/flush-buffer overhead plus background
+    // fsync coordination.
     {
-        let dir = ScratchDir::new("wal-none");
-        let db = Database::<InMemoryGraph>::open_with_wal(wal_config(&dir.path, SyncMode::None))
-            .unwrap();
+        let dir = ScratchDir::new("wal-group-sync");
+        let db = Database::<InMemoryGraph>::open_with_wal(wal_config(
+            &dir.path,
+            SyncMode::GroupSync { interval_ms: 50 },
+        ))
+        .unwrap();
         let mut next = 0i64;
-        group.bench_function("wal_none_create_delete_one", |b| {
+        group.bench_function("wal_group_sync_create_delete_one", |b| {
             b.iter(|| {
                 next += 1;
                 black_box(
@@ -273,7 +276,7 @@ fn bench_concurrency_guard(c: &mut Criterion) {
         let dir = ScratchDir::new("wal-group");
         let db = Database::<InMemoryGraph>::open_with_wal(wal_config(
             &dir.path,
-            SyncMode::Group { interval_ms: 50 },
+            SyncMode::GroupSync { interval_ms: 50 },
         ))
         .unwrap();
         let mut next = 0i64;

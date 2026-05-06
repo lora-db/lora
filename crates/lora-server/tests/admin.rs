@@ -210,7 +210,9 @@ async fn admin_load_reports_error_for_missing_file() {
 fn enabled(wal_dir: &std::path::Path) -> WalConfig {
     WalConfig::Enabled {
         dir: wal_dir.to_path_buf(),
-        sync_mode: SyncMode::PerCommit,
+        sync_mode: SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
         segment_target_bytes: 8 * 1024 * 1024,
     }
 }
@@ -276,6 +278,7 @@ async fn wal_status_and_checkpoint_endpoints() {
         }),
     )
     .unwrap();
+    db.sync().unwrap();
 
     let admin = AdminConfig {
         snapshot: Some(SnapshotAdminConfig {

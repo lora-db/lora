@@ -39,10 +39,8 @@ OPTIONS:
                                    `path` in the request body when no
                                    --snapshot-path default is configured.
                                    Also read from ${WAL_DIR_ENV}.
-        --wal-sync-mode <MODE>     WAL durability cadence. One of:
-                                   per-commit  fsync before each commit returns (default).
-                                   group       buffer commits, fsync periodically.
-                                   none        no fsync; rely on OS / external durability.
+        --wal-sync-mode <MODE>     WAL durability cadence. Only `group-sync`
+                                   is supported (default).
                                    Also read from ${WAL_SYNC_MODE_ENV}.
         --help                     Print this help and exit.
         --version                  Print version and exit.

@@ -25,7 +25,7 @@ impl fmt::Display for ConfigError {
             ConfigError::InvalidSyncMode(value) => {
                 write!(
                     f,
-                    "invalid `--wal-sync-mode` `{value}`: expected `per-commit`, `group`, or `none`"
+                    "invalid `--wal-sync-mode` `{value}`: expected `group-sync`"
                 )
             }
             ConfigError::UnexpectedPositional(a) => {

@@ -118,12 +118,9 @@ impl SegmentHeader {
 /// to the underlying file in a single `write_all` per [`flush`] call. The
 /// caller drives the flush cadence:
 ///
-/// - `SyncMode::PerCommit` calls `flush_and_sync()` at the end of every
-///   committed transaction, while still holding the store write lock.
-/// - `SyncMode::Group` calls `flush_buffer()` per commit and syncs
-///   cooperatively on explicit `force_fsync`, checkpoint, sync, or drop.
-/// - `SyncMode::None` calls only `flush_buffer()`; durability is
-///   provided by whatever the OS decides to flush.
+/// - `SyncMode::GroupSync` calls `flush_buffer()` per commit and syncs
+///   on the background cadence or an explicit `force_fsync`, checkpoint,
+///   sync, or drop boundary.
 ///
 /// Sealing rewrites the header in place (`flags |= SEALED`, recomputed
 /// CRC) and syncs the segment. Once sealed, [`append`] returns
@@ -170,6 +167,7 @@ impl SegmentWriter {
     /// [`SegmentReader::open`]) rather than `try_clone()` because POSIX
     /// `dup` shares the file offset, which would silently desynchronise
     /// the writer's cursor from the reader's.
+    #[cfg(test)]
     pub fn open_for_append(path: PathBuf) -> Result<(Self, Option<TornTail>), WalError> {
         let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
         let mut header_bytes = [0u8; SEGMENT_HEADER_LEN];
@@ -211,6 +209,39 @@ impl SegmentWriter {
         ))
     }
 
+    /// Re-open an existing segment for append at an offset already discovered
+    /// by replay. This keeps `Wal::open` from scanning the active segment a
+    /// second time after recovery has just decoded it.
+    pub fn open_for_append_at(path: PathBuf, offset: u64) -> Result<Self, WalError> {
+        if offset < SEGMENT_HEADER_LEN as u64 {
+            return Err(WalError::BadSegmentHeader(
+                "append offset before segment payload",
+            ));
+        }
+        let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let mut header_bytes = [0u8; SEGMENT_HEADER_LEN];
+        file.read_exact(&mut header_bytes)?;
+        let header = SegmentHeader::decode(&header_bytes)?;
+        if header.sealed {
+            return Err(WalError::BadSegmentHeader(
+                "segment is sealed; cannot append",
+            ));
+        }
+        let len = file.metadata()?.len();
+        if offset > len {
+            return Err(WalError::BadSegmentHeader(
+                "append offset past end of segment",
+            ));
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        Ok(Self {
+            file,
+            header,
+            bytes_written: offset,
+            pending: Vec::with_capacity(64 * 1024),
+        })
+    }
+
     pub fn bytes_written(&self) -> u64 {
         self.bytes_written + self.pending.len() as u64
     }
@@ -236,8 +267,7 @@ impl SegmentWriter {
         Ok(())
     }
 
-    /// Drain the in-memory buffer *and* `fsync` the file. The default
-    /// durability path under `SyncMode::PerCommit`.
+    /// Drain the in-memory buffer *and* `fsync` the file.
     pub fn flush_and_sync(&mut self) -> Result<(), WalError> {
         self.flush_buffer()?;
         sync_file(&self.file)?;

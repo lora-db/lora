@@ -24,7 +24,7 @@ export declare class Database {
   constructor(
     databaseName?: string | null,
     databaseDir?: string | null,
-    syncMode?: "group" | "perCommit" | "per_commit" | null,
+    syncMode?: "groupSync" | null,
     groupSyncIntervalMs?: number | null,
     walDir?: string | null,
     snapshotDir?: string | null,

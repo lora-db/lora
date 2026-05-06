@@ -48,7 +48,7 @@ async function withTempCwd<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 async function runKilledNativeWriter(options: {
   databaseDir: string;
-  syncMode?: "group" | "perCommit";
+  syncMode?: "groupSync";
   callSync?: boolean;
   clearAfterWrite?: boolean;
 }): Promise<void> {
@@ -59,7 +59,7 @@ async function runKilledNativeWriter(options: {
       const db = new native.Database(
         "app",
         ${JSON.stringify(options.databaseDir)},
-        ${JSON.stringify(options.syncMode ?? "group")},
+        ${JSON.stringify(options.syncMode ?? "groupSync")},
         60000
       );
       await db.execute("CREATE (:Crash {id: 1})");
@@ -263,13 +263,14 @@ describe("Database — WAL-backed initialization", () => {
     const walDir = await makeTempDir();
     const first = await createDatabase("app", {
       databaseDir: walDir,
-      syncMode: "group",
+      syncMode: "groupSync",
     });
 
     await expect(
       createDatabase("app", {
         databaseDir: walDir,
-        syncMode: "perCommit",
+        syncMode: "groupSync",
+        groupSyncIntervalMs: 2_000,
       }),
     ).rejects.toSatisfy((err) =>
       String(err).includes("already open with different persistence options"),
@@ -299,7 +300,7 @@ describe("Database — WAL-backed initialization", () => {
 
     await withTempCwd(async () => {
       const db = await createDatabase("app", {
-        syncMode: "perCommit",
+        syncMode: "groupSync",
       });
       db.dispose();
     });
@@ -316,10 +317,10 @@ describe("Database — WAL-backed initialization", () => {
     await expect(
       createDatabase("app", {
         databaseDir: walDir,
-        syncMode: "instant" as "group",
+        syncMode: "instant" as "groupSync",
       }),
     ).rejects.toSatisfy((err) =>
-      String(err).includes("expected 'group' or 'perCommit'"),
+      String(err).includes("expected 'groupSync'"),
     );
   });
 
@@ -366,12 +367,12 @@ describe("Database — WAL-backed initialization", () => {
     db.dispose();
   });
 
-  it("recovers synced group-mode writes after a killed writer process", async () => {
+  it("recovers synced groupSync writes after a killed writer process", async () => {
     const walDir = await makeTempDir();
 
     await runKilledNativeWriter({
       databaseDir: walDir,
-      syncMode: "group",
+      syncMode: "groupSync",
       callSync: true,
     });
 
@@ -394,12 +395,13 @@ describe("Database — WAL-backed initialization", () => {
     db.dispose();
   });
 
-  it("recovers per-commit writes after a killed writer process", async () => {
+  it("recovers explicitly synced writes after a killed writer process", async () => {
     const walDir = await makeTempDir();
 
     await runKilledNativeWriter({
       databaseDir: walDir,
-      syncMode: "perCommit",
+      syncMode: "groupSync",
+      callSync: true,
     });
 
     const db = await createDatabase("app", { databaseDir: walDir });

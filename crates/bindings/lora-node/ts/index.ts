@@ -120,13 +120,12 @@ export interface CreateDatabaseOptions {
   /**
    * Durability mode for archive-backed databases.
    *
-   * - `group` writes WAL bytes before `execute()` resolves and batches fsyncs
-   *   on a short background cadence. This is the default.
-   * - `perCommit` fsyncs every committed write before `execute()` resolves.
+   * - `groupSync` writes WAL bytes before `execute()` resolves and batches
+   *   fsyncs on a short background cadence. This is the default.
    */
-  syncMode?: "group" | "perCommit";
+  syncMode?: "groupSync";
   /**
-   * Background fsync cadence for `syncMode: "group"`, in milliseconds.
+   * Background fsync cadence for `syncMode: "groupSync"`, in milliseconds.
    *
    * Defaults to 1000. Must be greater than zero.
    */
@@ -152,8 +151,8 @@ export interface WalDatabaseOptions {
   /** Compression/encryption options used for managed snapshots. */
   snapshotOptions?: SnapshotCodecOptions;
   /** Durability mode for WAL commits. */
-  syncMode?: "group" | "perCommit";
-  /** Background fsync cadence for `syncMode: "group"`, in milliseconds. */
+  syncMode?: "groupSync";
+  /** Background fsync cadence for `syncMode: "groupSync"`, in milliseconds. */
   groupSyncIntervalMs?: number;
 }
 
@@ -520,11 +519,10 @@ class DatabaseImpl {
   /**
    * Force pending WAL bytes and archive updates to disk.
    *
-   * `syncMode: "perCommit"` fsyncs each committed write before `execute()`
-   * resolves. The default `group` mode writes WAL bytes before `execute()`
-   * resolves and batches fsyncs for speed; call `sync()` when you need an
-   * immediate fsync point and a current portable `.loradb` archive, for example
-   * before copying it elsewhere.
+   * The default `groupSync` mode writes WAL bytes before `execute()` resolves
+   * and batches fsyncs for speed; call `sync()` when you need an immediate
+   * fsync point and a current portable `.loradb` archive, for example before
+   * copying it elsewhere.
    */
   async sync(): Promise<void> {
     try {
