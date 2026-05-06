@@ -1,8 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use lora_store::{MutationEvent, Properties, PropertyValue};
 
@@ -310,10 +308,8 @@ fn checkpoint_marker_is_recorded_and_observed() {
 }
 
 #[test]
-fn group_mode_durable_lsn_advances_via_bg_flusher() {
+fn group_mode_is_cooperative_until_force_fsync() {
     let dir = TmpDir::new("group");
-    // 25 ms interval = bg flusher should land within one or two
-    // 50 ms slices.
     let (wal, _) = Wal::open(
         &dir.path,
         SyncMode::Group { interval_ms: 25 },
@@ -327,30 +323,14 @@ fn group_mode_durable_lsn_advances_via_bg_flusher() {
     wal.commit(begin).unwrap();
     wal.flush().unwrap(); // Group: write_buffer only; durable_lsn untouched.
 
-    // Immediately after a Group flush, durable_lsn should still
-    // be Lsn::ZERO — the bg flusher hasn't fired yet.
     assert_eq!(
         wal.durable_lsn(),
         Lsn::ZERO,
         "Group flush() must not advance durable_lsn"
     );
 
-    // Wait up to ~500 ms for the bg flusher to advance the LSN.
-    let deadline = std::time::Instant::now() + Duration::from_millis(500);
-    loop {
-        if wal.durable_lsn() > Lsn::ZERO {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "bg flusher did not advance durable_lsn within 500 ms (still at {})",
-                wal.durable_lsn()
-            );
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
+    wal.force_fsync().unwrap();
     assert_eq!(wal.durable_lsn().raw(), wal.next_lsn().raw() - 1);
-    // Wal drop should join the bg thread cleanly.
     drop(wal);
 }
 

@@ -7,13 +7,12 @@ use crate::errors::WalError;
 
 /// Whether [`super::WalRecorder::commit`] actually wrote a `TxCommit` to the
 /// log. Read-only queries — those that never trigger
-/// `MutationRecorder::record` — return [`WroteCommit::No`] so the host
-/// can skip the surrounding `flush()` and avoid a per-query `fsync`
-/// just to record an empty transaction.
+/// `MutationRecorder::record` — return [`WroteCommit::No`] so the host avoids
+/// any WAL I/O just to record an empty transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WroteCommit {
-    /// A `TxBegin` had been lazily allocated and was paired with a
-    /// matching `TxCommit`. Caller should `flush()` (under PerCommit).
+    /// A `TxBegin` and matching `TxCommit` were written through
+    /// `Wal::commit_tx`; the configured flush policy has already run.
     Yes,
     /// No mutation events fired during the query, so neither `TxBegin`
     /// nor `TxCommit` was appended. Caller can skip `flush()` entirely.

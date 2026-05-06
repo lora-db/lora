@@ -4,6 +4,11 @@
 //! `SyncMode::Group`. Held inside the [`Wal`] itself so dropping the
 //! last `Arc<Wal>` runs the handle's `Drop`, signals shutdown, and
 //! joins before the underlying state is destroyed.
+//!
+//! Not compiled on `wasm32-unknown-unknown`: the target has no real
+//! filesystem durability boundary and `std::thread::spawn` is not
+//! available there. Group mode in wasm falls back to the cooperative
+//! drop-time flush in [`Wal::drop`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};

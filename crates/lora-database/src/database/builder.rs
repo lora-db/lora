@@ -132,9 +132,8 @@ impl Database<InMemoryGraph> {
         let mirror: Arc<dyn WalMirror> = archive;
         let recorder = Arc::new(WalRecorder::new_with_mirror(wal, Some(mirror)));
         // Mark the archive dirty so a fresh named database is materialized as
-        // a portable ZIP. The archive writer coalesces this with any immediate
-        // follow-up writes and flushes it in the background, with a final flush
-        // on database drop.
+        // a portable ZIP. Follow-up writes refresh the archive on explicit
+        // `sync()` / checkpoint and on clean database drop.
         recorder.flush()?;
         Ok(Self::from_graph_with_wal(graph, recorder, None))
     }

@@ -8,6 +8,8 @@ use lora_snapshot::{read_snapshot, write_snapshot, SnapshotOptions};
 use lora_store::{InMemoryGraph, SnapshotMeta};
 use lora_wal::{Lsn, WalRecorder};
 
+use crate::durable_io::{sync_dir, sync_file};
+
 const CURRENT_FILE: &str = "CURRENT";
 const SNAPSHOT_PREFIX: &str = "snapshot-";
 const SNAPSHOT_SUFFIX: &str = ".lsnap";
@@ -154,7 +156,7 @@ impl ManagedSnapshotStore {
         };
         writer.flush()?;
         let file = writer.into_inner().map_err(|e| e.into_error())?;
-        file.sync_all()?;
+        sync_file(&file)?;
         drop(file);
 
         fs::rename(&tmp, &target)
@@ -254,7 +256,7 @@ fn write_current(dir: &Path, target: &Path) -> Result<()> {
         .open(&tmp)
         .with_context(|| format!("open temp CURRENT {}", tmp.display()))?;
     writeln!(file, "{name}")?;
-    file.sync_all()?;
+    sync_file(&file)?;
     drop(file);
     fs::rename(&tmp, &current)
         .with_context(|| format!("rename {} to {}", tmp.display(), current.display()))?;
@@ -266,16 +268,4 @@ fn tmp_path(path: &Path) -> PathBuf {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     PathBuf::from(tmp)
-}
-
-#[cfg(unix)]
-fn sync_dir(path: &Path) -> Result<()> {
-    let dir = File::open(path).with_context(|| format!("open dir {}", path.display()))?;
-    dir.sync_all()
-        .with_context(|| format!("sync dir {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn sync_dir(_path: &Path) -> Result<()> {
-    Ok(())
 }

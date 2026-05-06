@@ -21,11 +21,10 @@
 
 use std::fmt;
 use std::fs;
-#[cfg(unix)]
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use crate::errors::WalError;
+use crate::io::sync_dir;
 use crate::lsn::Lsn;
 use crate::segment::SegmentReader;
 
@@ -101,18 +100,11 @@ impl SegmentDir {
         &self.root
     }
 
-    /// Best-effort portability boundary for directory-entry durability.
-    /// Unix targets can fsync directories directly; other targets keep
-    /// the existing file-level guarantees until a platform-specific
-    /// directory sync implementation is added.
-    #[cfg(unix)]
+    /// Best-effort portability boundary for directory-entry durability. Native
+    /// Unix targets fsync directories directly; platforms without that concept
+    /// (including wasm) intentionally degrade to a no-op.
     pub fn sync_dir(&self) -> Result<(), WalError> {
-        File::open(&self.root)?.sync_all()?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    pub fn sync_dir(&self) -> Result<(), WalError> {
+        sync_dir(&self.root)?;
         Ok(())
     }
 

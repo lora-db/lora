@@ -8,6 +8,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::platform::{replace_file_atomic, sync_dir};
 use super::workspace::{make_archive_tmp_path, sorted_wal_files};
+use crate::durable_io::sync_file;
 
 const MANIFEST_NAME: &str = "manifest.json";
 const MANIFEST_JSON: &str = r#"{"format":"lora.archive","version":1}"#;
@@ -82,7 +83,7 @@ fn write_archive_tmp(wal_dir: &Path, tmp_path: &Path) -> Result<(), WalError> {
         let file = writer
             .into_inner()
             .map_err(|e| WalError::Io(e.into_error()))?;
-        file.sync_all()?;
+        sync_file(&file)?;
     }
     Ok(())
 }
@@ -126,7 +127,7 @@ pub(super) fn extract_archive(archive_path: &Path, work_dir: &Path) -> Result<()
         let path = work_dir.join(wal_name);
         let mut out = OpenOptions::new().write(true).create_new(true).open(path)?;
         io::copy(&mut entry, &mut out)?;
-        out.sync_all()?;
+        sync_file(&out)?;
     }
     if !manifest_seen {
         return Err(WalError::Malformed(

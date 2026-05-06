@@ -28,6 +28,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::errors::WalError;
+use crate::io::sync_file;
 use crate::lsn::Lsn;
 use crate::record::WalRecord;
 
@@ -117,16 +118,15 @@ impl SegmentHeader {
 /// to the underlying file in a single `write_all` per [`flush`] call. The
 /// caller drives the flush cadence:
 ///
-/// - `SyncMode::PerCommit` calls `flush()` (write_all + fsync) at the
-///   end of every committed transaction, while still holding the
-///   store write lock.
-/// - `SyncMode::Group` calls `flush_buffer()` per commit and `fsync()`
-///   on a background timer.
+/// - `SyncMode::PerCommit` calls `flush_and_sync()` at the end of every
+///   committed transaction, while still holding the store write lock.
+/// - `SyncMode::Group` calls `flush_buffer()` per commit and syncs
+///   cooperatively on explicit `force_fsync`, checkpoint, sync, or drop.
 /// - `SyncMode::None` calls only `flush_buffer()`; durability is
 ///   provided by whatever the OS decides to flush.
 ///
 /// Sealing rewrites the header in place (`flags |= SEALED`, recomputed
-/// CRC) and `fsync`s. Once sealed, [`append`] returns
+/// CRC) and syncs the segment. Once sealed, [`append`] returns
 /// [`WalError::Poisoned`] — a sealed segment is immutable.
 pub(crate) struct SegmentWriter {
     file: File,
@@ -151,7 +151,7 @@ impl SegmentWriter {
         // Flush the header to disk immediately so a crash before any
         // record appears at least leaves a recoverable, sealed-empty
         // segment behind.
-        file.sync_all()?;
+        sync_file(&file)?;
         Ok(Self {
             file,
             header,
@@ -240,7 +240,7 @@ impl SegmentWriter {
     /// durability path under `SyncMode::PerCommit`.
     pub fn flush_and_sync(&mut self) -> Result<(), WalError> {
         self.flush_buffer()?;
-        self.file.sync_all()?;
+        sync_file(&self.file)?;
         Ok(())
     }
 
@@ -258,7 +258,7 @@ impl SegmentWriter {
         // Restore the write cursor to end-of-segment so any stray
         // append errors loudly instead of corrupting the header region.
         self.file.seek(SeekFrom::Start(self.bytes_written))?;
-        self.file.sync_all()?;
+        sync_file(&self.file)?;
         Ok(())
     }
 
@@ -274,7 +274,7 @@ impl SegmentWriter {
         self.file.set_len(offset)?;
         self.file.seek(SeekFrom::Start(offset))?;
         self.bytes_written = offset;
-        self.file.sync_all()?;
+        sync_file(&self.file)?;
         Ok(())
     }
 }

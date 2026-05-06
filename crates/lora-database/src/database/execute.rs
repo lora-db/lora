@@ -68,21 +68,17 @@ where
     /// 2. The executor runs; every primitive mutation fires
     ///    `MutationRecorder::record`, which buffers events in memory.
     /// 3. On Ok, `recorder.commit()` writes `TxBegin`, one batched
-    ///    mutation record, and `TxCommit` only when mutations occurred;
-    ///    the surrounding `recorder.flush()` runs only in that case so
-    ///    a read-only query never pays an `fsync`.
+    ///    mutation record, and `TxCommit` only when mutations occurred,
+    ///    then applies the WAL's configured single-thread flush policy.
     /// 4. On Err, `recorder.abort()` clears the pending batch. The
     ///    engine has no rollback, so the in-memory state may already
     ///    be partially mutated; the live handle is quarantined while
     ///    durable recovery stays atomic because no committed batch was
     ///    written.
-    /// 5. The recorder's poisoned flag is polled once (it also
-    ///    surfaces background-flusher fsync failures from
-    ///    `SyncMode::Group`). If set, the query fails loudly with the
-    ///    durability error so the caller can act on it; the WAL
-    ///    refuses further appends until the operator restarts the
-    ///    database, which recovers from the last consistent
-    ///    snapshot + WAL.
+    /// 5. The recorder's poisoned flag is polled once. If set, the query
+    ///    fails loudly with the durability error so the caller can act on it;
+    ///    the WAL refuses further appends until the operator restarts the
+    ///    database, which recovers from the last consistent snapshot + WAL.
     pub fn execute_with_params(
         &self,
         query: &str,
@@ -157,15 +153,11 @@ where
                 .map_err(anyhow::Error::from);
         }
 
-        // Mutating path. Drop the snapshot we used for compilation and
-        // route through the optimistic auto-commit path: build the
-        // working copy + mutate without holding any lock, then take
-        // the writer Mutex only briefly to do a CAS publish (replays
-        // buffered mutation events to the durable WAL inside the
-        // critical section). Multiple auto-commit writers can run
-        // their prep work in parallel; they only serialize at the
-        // commit point. On conflict (another writer published since
-        // we took our snapshot), retry from a fresh snapshot.
+        // Mutating path. Drop the snapshot used for compilation and route
+        // through the single-writer auto-commit path. The writer mutex is held
+        // for mutate + WAL commit so live state and WAL order stay identical.
+        // The method name still says "optimistic" because this is the seam a
+        // future write-set/CAS implementation can reuse.
         drop(store);
         debug_assert!(shape.is_mutating());
 

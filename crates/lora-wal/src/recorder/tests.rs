@@ -42,7 +42,7 @@ fn arm_record_commit_round_trip_via_in_memory_graph() {
     let mut props2 = Properties::new();
     props2.insert("v".into(), PropertyValue::Int(2));
     g.create_node(vec!["N".into()], props2);
-    let outcome = recorder.commit_and_flush_if_needed().unwrap();
+    let outcome = recorder.commit().unwrap();
     assert_eq!(outcome, WroteCommit::Yes);
 
     assert!(!recorder.is_poisoned());

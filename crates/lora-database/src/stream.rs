@@ -76,7 +76,7 @@ enum StreamInner<'a> {
 
 /// Self-referential cursor that pulls rows directly from a snapshot
 /// of the live store. We hold an `Arc<InMemoryGraph>` (loaded once
-/// from the database's `ArcSwap` at open time) and the boxed
+/// from the database's `LiveStore` at open time) and the boxed
 /// `RowSource` borrows from `&*snapshot`. Drop order — `cursor`
 /// first, then `_snapshot` — guarantees the cursor never sees a
 /// freed graph.
@@ -90,10 +90,8 @@ pub(crate) struct LiveCursor {
     cursor: ManuallyDrop<Box<dyn RowSource + 'static>>,
     /// Pinned snapshot the cursor borrows from. Dropped after `cursor`.
     _snapshot: Arc<InMemoryGraph>,
-    /// Pinned ArcSwap so subsequent loads still find the database's
-    /// current state — kept for parity with the previous `_store`
-    /// field even though the cursor itself only reads from
-    /// `_snapshot`.
+    /// Pinned live-store owner so the database storage outlives the borrowed
+    /// cursor shape, even though the cursor itself only reads from `_snapshot`.
     _store: Arc<LiveStore<InMemoryGraph>>,
     /// Keeps the compiled plan alive — operator sources hold
     /// references into it (e.g. predicate `ResolvedExpr`s). Boxed

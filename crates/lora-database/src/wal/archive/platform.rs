@@ -1,6 +1,8 @@
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::Path;
+
+pub(super) use crate::durable_io::sync_dir;
 
 #[cfg(windows)]
 pub(super) fn replace_file_atomic(src: &Path, dst: &Path) -> io::Result<()> {
@@ -36,14 +38,4 @@ pub(super) fn replace_file_atomic(src: &Path, dst: &Path) -> io::Result<()> {
 #[cfg(not(windows))]
 pub(super) fn replace_file_atomic(src: &Path, dst: &Path) -> io::Result<()> {
     fs::rename(src, dst)
-}
-
-#[cfg(unix)]
-pub(super) fn sync_dir(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
-}
-
-#[cfg(not(unix))]
-pub(super) fn sync_dir(_path: &Path) -> io::Result<()> {
-    Ok(())
 }

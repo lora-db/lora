@@ -23,6 +23,7 @@ mod codec;
 mod config;
 mod dir;
 mod errors;
+mod io;
 mod lock;
 mod lsn;
 mod record;

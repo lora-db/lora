@@ -40,7 +40,7 @@ impl<'a> WalWriteScope<'a> {
     /// caller can use that to trigger managed snapshot accounting exactly once.
     pub(crate) fn finish<R>(self, result: &Result<R>) -> Result<bool> {
         let wrote_commit = match result {
-            Ok(_) => self.recorder.commit_and_flush_if_needed()?.wrote(),
+            Ok(_) => self.recorder.commit()?.wrote(),
             Err(_) => {
                 abort_armed(self.recorder, self.abort_policy)?;
                 false

@@ -28,10 +28,12 @@
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use lora_store::MutationEvent;
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::group_flusher::{spawn_group_flusher, GroupFlusherHandle};
 use crate::config::SyncMode;
 use crate::dir::{SegmentDir, SegmentId};
@@ -39,6 +41,7 @@ use crate::errors::WalError;
 use crate::lock::DirLock;
 use crate::lsn::Lsn;
 use crate::record::WalRecord;
+use crate::recorder::WroteCommit;
 use crate::replay::{replay_segments, ReplayOutcome};
 use crate::segment::SegmentWriter;
 
@@ -54,13 +57,13 @@ struct WalState {
     oldest_segment_id: SegmentId,
 }
 
-/// Latched failure from the background flusher. Wrapped in a `Mutex`
-/// instead of an `AtomicCell<Option<String>>` because failures are
-/// rare and we want the message preserved verbatim for operator-facing
-/// reporting (`/admin/wal/status` `bgFailure`). Once `Some`, every
-/// subsequent commit/flush returns [`WalError::Poisoned`] and the
-/// operator is expected to restart from the last consistent
-/// snapshot + WAL.
+/// Reserved latch for durability failures that occur outside the immediate
+/// caller path. Wrapped in a `Mutex` instead of an
+/// `AtomicCell<Option<String>>` because failures are rare and we want the
+/// message preserved verbatim for operator-facing reporting
+/// (`/admin/wal/status` `bgFailure`). Once `Some`, every subsequent
+/// commit/flush returns [`WalError::Poisoned`] and the operator is expected to
+/// restart from the last consistent snapshot + WAL.
 type BgFailure = Mutex<Option<String>>;
 
 /// Selects the durability work that [`Wal::flush_inner`] actually does.
@@ -72,8 +75,8 @@ pub(super) enum FlushKind {
     /// Honour the configured [`SyncMode`]. This is what the recorder's
     /// `flush()` calls into.
     PerConfiguredMode,
-    /// Always write the buffer + fsync + advance `durable_lsn`,
-    /// regardless of mode. Used by checkpoints and the bg flusher.
+    /// Always write the buffer + fsync + advance `durable_lsn`, regardless of
+    /// mode. Used by checkpoints, explicit sync, and clean Group-mode drop.
     ForceFsync,
 }
 
@@ -91,13 +94,14 @@ pub struct Wal {
     sync_mode: SyncMode,
     segment_target_bytes: u64,
     state: Mutex<WalState>,
-    /// Latched bg-flusher failure; surfaced via [`Wal::bg_failure`] and
-    /// propagated to commit/flush/force_fsync as
-    /// [`WalError::Poisoned`].
+    /// Latched durability failure; surfaced via [`Wal::bg_failure`] and
+    /// propagated to commit/flush/force_fsync as [`WalError::Poisoned`].
     bg_failure: Arc<BgFailure>,
     /// Background flusher for `SyncMode::Group`. `Drop` joins the
     /// thread, so a `Wal` going out of scope is a clean shutdown
-    /// signal.
+    /// signal. Absent on `wasm32`, where Group mode falls back to the
+    /// drop-time flush.
+    #[cfg(not(target_arch = "wasm32"))]
     flusher: Mutex<Option<GroupFlusherHandle>>,
     /// Held for the lifetime of the WAL so a second handle cannot append
     /// to the same active segment concurrently.
@@ -160,14 +164,17 @@ impl Wal {
             segment_target_bytes,
             state: Mutex::new(state),
             bg_failure: Arc::new(Mutex::new(None)),
+            #[cfg(not(target_arch = "wasm32"))]
             flusher: Mutex::new(None),
             _dir_lock: dir_lock,
         });
 
-        // Spawn the Group flusher *after* the Arc exists so it can
-        // hold a `Weak<Wal>` that drops when the last strong ref
-        // does. The flusher's own Drop joins the thread, so removing
-        // the field (e.g. on Wal::drop) is a clean shutdown signal.
+        // Spawn the Group flusher *after* the Arc exists so it can hold a
+        // `Weak<Wal>` that drops when the last strong ref does. The flusher's
+        // own Drop joins the thread, so removing the field on `Wal::drop` is
+        // a clean shutdown signal. Wasm has no real fsync boundary and no
+        // thread support, so Group there relies on the drop-time flush.
+        #[cfg(not(target_arch = "wasm32"))]
         if let SyncMode::Group { interval_ms } = sync_mode {
             let interval = Duration::from_millis(u64::from(interval_ms.max(1)));
             let handle = spawn_group_flusher(Arc::downgrade(&wal), interval);
@@ -241,9 +248,8 @@ impl Wal {
         self.state.lock().unwrap().durable_lsn
     }
 
-    /// Latched message from the background flusher, if it has ever
-    /// failed an `fsync`. `None` means the WAL is healthy. Once set,
-    /// every commit / flush / force_fsync starts returning
+    /// Latched durability failure, if any. `None` means the WAL is healthy.
+    /// Once set, every commit / flush / force_fsync starts returning
     /// [`WalError::Poisoned`] and the WAL stops accepting new
     /// transactions until the operator restarts from the last
     /// consistent snapshot + WAL.
@@ -254,6 +260,7 @@ impl Wal {
     /// Direct handle to the latched-failure mutex. Used by the bg
     /// flusher to record an fsync failure exactly once. Hidden from
     /// outside the module so the latch stays single-writer.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn bg_failure_slot(&self) -> &BgFailure {
         &self.bg_failure
     }
@@ -280,15 +287,26 @@ impl Wal {
         self.state.lock().unwrap().active_segment_id.raw()
     }
 
-    /// Begin a new transaction. Allocates a `TxBegin` record and
-    /// returns its LSN, which the caller must thread back through
-    /// `append` / `commit` / `abort` so replay can group the events.
+    // -------------------------------------------------------------
+    // Low-level record primitives.
+    //
+    // Production code does **not** use these directly — every commit
+    // goes through [`Self::commit_tx`], which writes the begin/batch/
+    // commit triple atomically and routes durability through the
+    // configured single-thread flush policy. The methods below remain
+    // `pub` for the crate's own integration tests and for the rare
+    // admin path (`checkpoint_marker`) that needs to insert a single record.
+    // Mixing them with `commit_tx` against the same WAL is supported
+    // but unnecessary; if you find yourself calling `begin` /
+    // `append` / `commit` from a new caller, prefer `commit_tx`
+    // unless you specifically need the partial-write shape.
+    // -------------------------------------------------------------
+
+    /// Allocate a `TxBegin` record and return its LSN. *Test/admin
+    /// primitive.* Production commits use [`Self::commit_tx`].
     ///
-    /// If the active segment has crossed `segment_target_bytes`,
-    /// rotation happens here — `TxBegin` is the only record kind
-    /// guaranteed to be a transaction boundary, so rotating just
-    /// before its append keeps every transaction wholly in one
-    /// segment.
+    /// Rotation happens here so a transaction is always wholly within
+    /// one segment.
     pub fn begin(&self) -> Result<Lsn, WalError> {
         self.check_healthy()?;
         let mut state = self.state.lock().unwrap();
@@ -296,8 +314,9 @@ impl Wal {
         Self::alloc_and_append(&mut state, |lsn| WalRecord::TxBegin { lsn })
     }
 
-    /// Append a single mutation to the in-memory pending buffer of
-    /// the active segment. Not durable until `flush()` runs.
+    /// Append a single mutation to the active segment's pending
+    /// buffer. *Test/admin primitive.* Not durable until `flush()`
+    /// runs; production commits use [`Self::commit_tx`].
     pub fn append(&self, tx_begin_lsn: Lsn, event: &MutationEvent) -> Result<Lsn, WalError> {
         self.check_healthy()?;
         let mut state = self.state.lock().unwrap();
@@ -308,9 +327,10 @@ impl Wal {
         })
     }
 
-    /// Append many mutations as one framed record. This keeps the replay
-    /// contract identical to repeated `append` calls while avoiding per-event
-    /// length/CRC/framing overhead for write-heavy statements.
+    /// Append many mutations as one framed record. *Test/admin
+    /// primitive.* Production commits use [`Self::commit_tx`], which
+    /// writes the begin/batch/commit triple in a single critical
+    /// section.
     pub fn append_batch(
         &self,
         tx_begin_lsn: Lsn,
@@ -330,21 +350,81 @@ impl Wal {
         })
     }
 
-    /// Append a `TxCommit` marker. Caller is expected to subsequently
-    /// call `flush()` (under `SyncMode::PerCommit`) to make the
-    /// commit durable before returning to its caller.
+    /// Append a standalone `TxCommit` marker. *Test/admin primitive.*
+    /// Production commits use [`Self::commit_tx`].
     pub fn commit(&self, tx_begin_lsn: Lsn) -> Result<Lsn, WalError> {
         self.check_healthy()?;
         let mut state = self.state.lock().unwrap();
         Self::alloc_and_append(&mut state, |lsn| WalRecord::TxCommit { lsn, tx_begin_lsn })
     }
 
-    /// Append a `TxAbort` marker. Replay drops the events keyed by
-    /// `tx_begin_lsn` without re-applying them.
+    /// Append a `TxAbort` marker. *Test/admin primitive.* Production
+    /// code never writes `TxAbort`: [`Self::commit_tx`] writes the
+    /// begin/batch/commit triple atomically, so an aborted query has
+    /// nothing on disk to mark as aborted.
     pub fn abort(&self, tx_begin_lsn: Lsn) -> Result<Lsn, WalError> {
         self.check_healthy()?;
         let mut state = self.state.lock().unwrap();
         Self::alloc_and_append(&mut state, |lsn| WalRecord::TxAbort { lsn, tx_begin_lsn })
+    }
+
+    /// One-shot transaction commit.
+    ///
+    /// Encodes `TxBegin` + `MutationBatch` + `TxCommit` as a single
+    /// contiguous run inside one short critical section, then applies the
+    /// configured flush policy. Compared to the legacy
+    /// `begin → append_batch → commit → flush` sequence this collapses
+    /// four separate state-lock acquisitions into one while preserving the
+    /// release's single-writer execution model. Future concurrent commit
+    /// plumbing can build around this one-shot boundary without changing the
+    /// recorder contract.
+    ///
+    /// Returns [`WroteCommit::No`] for an empty event list (no records
+    /// are written, no fsync is issued).
+    pub fn commit_tx(&self, events: Vec<MutationEvent>) -> Result<WroteCommit, WalError> {
+        self.check_healthy()?;
+        if events.is_empty() {
+            return Ok(WroteCommit::No);
+        }
+
+        // Phase 1: allocate the LSN window and encode all three
+        // records into the active segment's pending buffer in one
+        // critical section. Collapsing what was four separate state
+        // lock acquisitions (begin / append_batch / commit / flush)
+        // into one is the lock-side win that pairs with the
+        // lock-free emit short-circuit on the recorder side.
+        {
+            let mut state = self.state.lock().unwrap();
+            self.maybe_rotate(&mut state)?;
+            let begin_lsn = state.next_lsn;
+            let batch_lsn = begin_lsn.next();
+            let commit_lsn = batch_lsn.next();
+            state.next_lsn = commit_lsn.next();
+            state
+                .active_writer
+                .append(&WalRecord::TxBegin { lsn: begin_lsn })?;
+            state.active_writer.append(&WalRecord::MutationBatch {
+                lsn: batch_lsn,
+                tx_begin_lsn: begin_lsn,
+                events,
+            })?;
+            state.active_writer.append(&WalRecord::TxCommit {
+                lsn: commit_lsn,
+                tx_begin_lsn: begin_lsn,
+            })?;
+        }
+
+        // Phase 2: durability per sync mode. PerCommit fsyncs inline;
+        // Group is cooperative in this single-threaded release (no bg
+        // flusher thread); None just pushes bytes to the page cache.
+        match self.sync_mode {
+            SyncMode::PerCommit => self.flush_inner(FlushKind::ForceFsync)?,
+            SyncMode::Group { .. } | SyncMode::None => {
+                self.flush_inner(FlushKind::PerConfiguredMode)?;
+            }
+        }
+
+        Ok(WroteCommit::Yes)
     }
 
     /// Append a `Checkpoint` marker. `snapshot_lsn` should equal the
@@ -382,8 +462,9 @@ impl Wal {
     /// - `PerCommit` — write the buffer to the OS, `fsync`, and
     ///   advance `durable_lsn`. The strongest contract: every
     ///   record up to `next_lsn - 1` is on disk.
-    /// - `Group` — write the buffer to the OS, but let the background
-    ///   flusher fsync and advance `durable_lsn` on its cadence.
+    /// - `Group` — write the buffer to the OS, but leave
+    ///   `durable_lsn` unchanged until an explicit `force_fsync`,
+    ///   checkpoint, sync, or clean drop.
     /// - `None` — write the buffer to the OS only, but advance
     ///   `durable_lsn` anyway. The mode opts out of crash
     ///   durability, so the checkpoint fence reports
@@ -396,24 +477,26 @@ impl Wal {
     /// Unconditionally write the buffer to the OS, `fsync`, and
     /// advance `durable_lsn`. Used by callers that need a durability
     /// point right now regardless of the configured cadence (e.g.
-    /// checkpoint). Returns [`WalError::Poisoned`] if the bg flusher
-    /// has already failed.
+    /// checkpoint). Returns [`WalError::Poisoned`] if the WAL has already
+    /// latched a durability failure.
     pub fn force_fsync(&self) -> Result<(), WalError> {
         self.check_healthy()?;
         self.flush_inner(FlushKind::ForceFsync)
     }
 
     /// Single source of truth for the flush state machine. Skips the
-    /// `check_healthy` gate so the bg flusher can call into it
-    /// without recursing through its own latch.
+    /// `check_healthy` gate so clean shutdown can force a final Group-mode
+    /// sync even if callers are otherwise done with the handle.
     pub(super) fn flush_inner(&self, kind: FlushKind) -> Result<(), WalError> {
         let mut state = self.state.lock().unwrap();
         let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
 
-        // Decide whether this call is allowed to advance
-        // `durable_lsn`. The bg flusher's job in Group mode is to advance
-        // that fence after fsync; PerCommit and None do it inline; Group's
-        // user-driven `flush()` only pushes bytes to the OS.
+        // Decide whether this call is allowed to advance `durable_lsn`.
+        // PerCommit and forced syncs advance after the fsync boundary. None
+        // advances after write because the mode opts out of crash durability.
+        // Group is cooperative for this release: normal `flush()` writes bytes
+        // but leaves the durable fence alone until `force_fsync`, checkpoint,
+        // sync(), or drop.
         let do_fsync = matches!(
             (kind, self.sync_mode),
             (FlushKind::ForceFsync, _) | (_, SyncMode::PerCommit)
@@ -508,6 +591,7 @@ impl Drop for Wal {
         // Join the group flusher, if any, before the directory lock is
         // released. That keeps the "one live append owner" boundary intact
         // through shutdown.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Ok(slot) = self.flusher.get_mut() {
             let _ = slot.take();
         }

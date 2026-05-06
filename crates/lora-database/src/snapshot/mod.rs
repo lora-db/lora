@@ -19,14 +19,10 @@ pub use json::{snapshot_credentials_from_json, snapshot_options_from_json};
 pub(crate) use store::ManagedSnapshotStore;
 pub use store::SnapshotConfig;
 
-#[cfg(unix)]
-use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
-use anyhow::Context;
 use anyhow::Result;
 
 use lora_snapshot::{
@@ -36,6 +32,7 @@ use lora_snapshot::{
 };
 use lora_store::{InMemoryGraph, SnapshotMeta, SnapshotPayload};
 
+use crate::durable_io::{sync_dir, sync_file};
 use crate::error::{LoraError, LoraErrorCode};
 use crate::Database;
 
@@ -77,19 +74,11 @@ pub(crate) fn snapshot_tmp_path(target: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
-#[cfg(unix)]
 pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
-    let dir = File::open(parent).with_context(|| format!("open dir {}", parent.display()))?;
-    dir.sync_all()
-        .with_context(|| format!("sync dir {}", parent.display()))
-}
-
-#[cfg(not(unix))]
-pub(crate) fn sync_parent_dir(_path: &Path) -> Result<()> {
-    Ok(())
+    Ok(sync_dir(parent)?)
 }
 
 /// RAII handle that deletes its path on drop unless [`commit`] is called.
@@ -248,7 +237,7 @@ impl Database<InMemoryGraph> {
 
         writer.flush()?;
         let file = writer.into_inner().map_err(|e| e.into_error())?;
-        file.sync_all()?;
+        sync_file(&file)?;
         drop(file);
 
         std::fs::rename(&tmp, path)?;
@@ -282,9 +271,9 @@ impl Database<InMemoryGraph> {
         let (payload, info) = decode_snapshot_bytes(bytes, credentials)?;
         let meta = snapshot_info_to_meta(info);
         guard.load_snapshot_payload(payload)?;
-        // Publish the staged graph atomically into the live ArcSwap;
-        // dropping the guard without `publish` would discard the
-        // restore (rollback semantics on the writer lease).
+        // Publish the staged graph atomically into the live store; dropping
+        // the guard without `publish` would discard the restore (rollback
+        // semantics on the writer lease).
         guard.publish();
         Ok(meta)
     }
@@ -344,7 +333,7 @@ impl Database<InMemoryGraph> {
 
         writer.flush()?;
         let file = writer.into_inner().map_err(|e| e.into_error())?;
-        file.sync_all()?;
+        sync_file(&file)?;
         drop(file);
 
         std::fs::rename(&tmp, path)?;

@@ -2,29 +2,28 @@ use std::path::PathBuf;
 
 /// Durability mode for committed transactions.
 ///
-/// The engine has at most one concurrent committer at a time, so the
-/// classical group-commit win — overlapping fsyncs across many committers —
-/// does not apply here. [`SyncMode::PerCommit`] is the default. The other two
-/// modes exist for narrow operational profiles.
+/// The current release has at most one committer at a time. The enum still
+/// names the durability strategies we want long term, but no mode requires a
+/// background thread today. [`SyncMode::PerCommit`] is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncMode {
-    /// `fsync` the active segment before the committing thread releases
-    /// the store write lock. The strongest durability guarantee the WAL
-    /// offers; every observed query result is fully durable.
+    /// `fsync` the active segment before the committing thread releases the
+    /// store write lock. The strongest durability guarantee the WAL offers;
+    /// every observed query result is fully durable on native filesystems.
+    /// On `wasm32-unknown-unknown`, fsync is intentionally a no-op.
     #[default]
     PerCommit,
 
-    /// Write commit bytes to the OS immediately, then `fsync` on a fixed
-    /// cadence on a background thread. This survives ordinary process death
-    /// after `flush()` returns, but can still trade the last `interval_ms` of
-    /// commits on power loss or kernel crash for higher throughput on
-    /// bulk-load workloads.
+    /// Write commit bytes to the OS immediately, but defer `fsync` until an
+    /// explicit `force_fsync`, checkpoint, `Database::sync`, or clean WAL
+    /// drop. The interval is retained as part of the public configuration so a
+    /// later release can add a background/group flusher without changing
+    /// callers, but it is not scheduled in the single-threaded release.
     ///
-    /// A background fsync failure poisons the WAL: the next `commit` /
-    /// `flush` / `force_fsync` returns [`crate::WalError::Poisoned`] and
-    /// `Wal::bg_failure` reports the underlying cause. Operators
-    /// inspect that via `/admin/wal/status` (`bgFailure`) and recover
-    /// by restarting from the last consistent snapshot + WAL.
+    /// A future background fsync failure will poison the WAL through the
+    /// existing `Wal::bg_failure` surface. In this release, Group mode is
+    /// cooperative, so that field remains `None` unless another caller poisons
+    /// the WAL.
     Group { interval_ms: u32 },
 
     /// Append but never `fsync` from the WAL; rely on whatever the OS

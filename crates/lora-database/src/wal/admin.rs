@@ -33,10 +33,10 @@ pub trait WalAdmin: Send + Sync + 'static {
 
 /// Snapshot of WAL state returned by [`WalAdmin::wal_status`].
 ///
-/// `bg_failure` is the latched fsync error from the background flusher
-/// (only meaningful under `SyncMode::Group`). When `Some`, the WAL is
-/// poisoned and every subsequent commit will fail loudly until the
-/// operator restarts from the last consistent snapshot + WAL.
+/// `bg_failure` is the reserved latched durability-error slot for a future
+/// background/group flusher. In this single-threaded release it normally stays
+/// `None`; when `Some`, the WAL is poisoned and every subsequent commit fails
+/// loudly until the operator restarts from the last consistent snapshot + WAL.
 #[derive(Debug, Clone)]
 pub struct WalStatus {
     pub durable_lsn: u64,

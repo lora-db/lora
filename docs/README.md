@@ -24,6 +24,7 @@ Technical documentation for **contributors** to the Lora (LoraDB) engine and its
 ## Design
 
 - [Change Management](design/change-management.md) — how to evolve the system safely
+- [Concurrent Write Implementation Plan](design/concurrency-implementation-plan.md) — current concurrency state, phased implementation plan, and local performance guard usage
 - [Known Risks](design/known-risks.md) — engineering risks and recommended priorities
 
 ## Decisions
@@ -37,6 +38,7 @@ Architectural Decision Records for non-trivial design choices.
 ## Performance
 
 - [Benchmarks](performance/benchmarks.md) — performance test results and measurements
+- [Concurrency Performance Guard](performance/concurrency-guard.md) — local before/after benchmark gate for concurrency work
 - [Notes](performance/notes.md) — optimisation notes and bottlenecks
 
 ## Testing

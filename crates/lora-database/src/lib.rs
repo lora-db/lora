@@ -15,6 +15,7 @@
 //! ```
 
 mod database;
+mod durable_io;
 mod error;
 mod explain;
 mod live_store;
