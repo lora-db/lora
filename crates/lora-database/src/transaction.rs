@@ -2,8 +2,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
-
 use anyhow::Result;
 use thiserror::Error;
 
@@ -20,6 +18,7 @@ use lora_wal::WalRecorder;
 
 use crate::error::LoraError;
 use crate::explain::{OperatorMetrics, PlanShape, ProfileMetrics, QueryPlan, QueryProfile};
+use crate::live_store::LiveStore;
 use crate::snapshot::ManagedSnapshotStore;
 use crate::stream::QueryStream;
 use crate::wal::write_scope::ensure_wal_not_poisoned;
@@ -88,8 +87,8 @@ pub(crate) enum LiveStoreGuard<'db> {
 pub(crate) struct WriteLease<'db> {
     /// Held for the tx lifetime so concurrent ReadWrite txns serialize.
     pub(crate) _writer_lock: MutexGuard<'db, ()>,
-    /// Pointer back to the live `ArcSwap` so commit can publish.
-    pub(crate) store: Arc<ArcSwap<InMemoryGraph>>,
+    /// Pointer back to the live store so commit can publish.
+    pub(crate) store: Arc<LiveStore<InMemoryGraph>>,
     /// Read-only view of the graph at lease open time. The first
     /// mutating statement clones from this into `TxInner::staged`.
     pub(crate) snapshot: Arc<InMemoryGraph>,

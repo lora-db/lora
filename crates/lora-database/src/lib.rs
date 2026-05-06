@@ -17,6 +17,7 @@
 mod database;
 mod error;
 mod explain;
+mod live_store;
 mod named;
 mod plan_cache;
 mod snapshot;

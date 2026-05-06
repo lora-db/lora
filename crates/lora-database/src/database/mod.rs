@@ -2,8 +2,6 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use arc_swap::ArcSwap;
-
 use anyhow::{anyhow, Result};
 use lora_ast::{Direction, Document};
 use lora_executor::{lora_value_to_property, ExecuteOptions, LoraValue, QueryResult};
@@ -25,6 +23,7 @@ mod write_guard;
 
 use crate::error::LoraError;
 use crate::explain::{QueryPlan, QueryProfile};
+use crate::live_store::LiveStore;
 use crate::plan_cache::PlanCache;
 use crate::snapshot::ManagedSnapshotStore;
 use crate::wal::write_scope::WalAbortPolicy;
@@ -72,25 +71,25 @@ pub trait QueryRunner: Send + Sync + 'static {
 /// the WAL handle is `None` and the engine pays only the existing
 /// `MutationRecorder::record` null-pointer check per mutation.
 pub struct Database<S> {
-    /// The current authoritative store, atomically swappable. Reads call
-    /// `store.load_full()` to obtain an `Arc<S>` snapshot — no lock, no
-    /// blocking — and run their executor against `&*snapshot`. Writes
-    /// take the `writer` Mutex (for commit-order serialization), clone
-    /// the current snapshot into a working copy, mutate that copy, append
-    /// to the WAL, then `store.store(Arc::new(staged))` to publish.
-    /// Concurrent reads keep their old `Arc<S>` alive until they drop it,
-    /// which gives natural snapshot isolation.
-    pub(crate) store: Arc<ArcSwap<S>>,
-    /// Serializes commit ordering. Held only across `clone-mutate-WAL-publish`,
-    /// not around any read. Multiple readers proceed concurrently with a
-    /// writer; only writers contend with each other on this Mutex.
+    /// The current authoritative store. Reads call `store.load_full()`
+    /// to obtain an independent `Arc<S>` snapshot; writers take the
+    /// `writer` Mutex and then a brief write-lock on the inner
+    /// `RwLock<Arc<S>>`, mutating in-place via `Arc::make_mut`. When
+    /// no in-flight reader holds a snapshot Arc, `make_mut` returns
+    /// `&mut S` without cloning the graph — that's the single-writer
+    /// fast path that "CREATE one node" / "SET property" depend on
+    /// for graph-size-independent throughput. When concurrent readers
+    /// are alive, `make_mut` clones once and the readers keep
+    /// observing the pre-mutation state via their old Arc.
+    pub(crate) store: Arc<LiveStore<S>>,
+    /// Serializes commit ordering. Held across `mutate-WAL-publish` so
+    /// WAL records are appended in the same order live state advances.
+    /// Readers never touch this Mutex; only writers contend.
     pub(crate) writer: Arc<Mutex<()>>,
-    /// Per-record write locks, plumbed in Phase 4.1. Phase 4.2 keeps
-    /// the writer Mutex serialization model so the lock table sits
-    /// idle for now; it becomes load-bearing in a future phase that
-    /// drops the writer Mutex in favour of ArcSwap CAS for true
-    /// concurrent commits, where two writers with overlapping write
-    /// sets need a real serialization point.
+    /// Per-record write locks. Plumbed for a future phase that allows
+    /// concurrent commits across disjoint write sets; today the writer
+    /// Mutex provides single-writer-at-a-time semantics so this table
+    /// is idle.
     #[allow(dead_code)]
     pub(crate) lock_table: Arc<lora_store::LockTable>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
@@ -159,10 +158,12 @@ where
         self.wal.as_ref()
     }
 
-    /// Handle to the underlying shared store — useful for callers that need
-    /// to snapshot or share the graph across multiple databases.
-    pub fn store(&self) -> &Arc<ArcSwap<S>> {
-        &self.store
+    /// Snapshot the current authoritative graph. Equivalent to the
+    /// historical `database.store().load_full()` pattern, exposed here
+    /// so external callers don't need to name the internal storage
+    /// wrapper.
+    pub fn snapshot(&self) -> Arc<S> {
+        self.store.load_full()
     }
 
     /// Parse a query string into an AST without executing it.

@@ -804,7 +804,7 @@ mod pull_shape {
             )
             .unwrap();
         }
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v");
         let mut cursor = open(&store, &compiled);
 
@@ -829,7 +829,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 3 RETURN n.v AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 1);
@@ -845,7 +845,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 2 RETURN n.v AS v");
 
         let indexed = compiled.physical.nodes.iter().any(|op| {
@@ -869,7 +869,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 1.0 RETURN n.v AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 2);
@@ -878,7 +878,7 @@ mod pull_shape {
     #[test]
     fn unwind_yields_each_element_lazily() {
         let db = Database::in_memory();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "UNWIND [10, 20, 30] AS x RETURN x");
         let mut cursor = open(&store, &compiled);
 
@@ -902,7 +902,7 @@ mod pull_shape {
             )
             .unwrap();
         }
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v LIMIT 5");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 5);
@@ -918,7 +918,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v + 10 AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 3);
@@ -936,7 +936,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(
             &store,
             "MATCH (p:Person)-[:KNOWS]->(other) RETURN other.name AS name ORDER BY name",
@@ -957,7 +957,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) RETURN n.v AS v ORDER BY n.v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         // Sort yields rows in ascending order.
@@ -979,7 +979,7 @@ mod pull_shape {
             }),
         )
         .unwrap();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let compiled = compile(&store, "MATCH (n:N) RETURN sum(n.v) AS total");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 1);
@@ -989,7 +989,7 @@ mod pull_shape {
     fn classify_stream_recognises_writes() {
         use lora_executor::{classify_stream, StreamShape};
         let db = Database::in_memory();
-        let store = db.store().load_full();
+        let store = db.snapshot();
         let read = compile(&store, "MATCH (n) RETURN n");
         let write = compile(&store, "CREATE (:Foo) RETURN 1 AS one");
         assert_eq!(classify_stream(&read), StreamShape::ReadOnly);
@@ -1052,7 +1052,7 @@ mod concurrency {
         db.execute("CREATE (:T {i:1}), (:T {i:2})", rows_options())
             .unwrap();
 
-        let read_guard = db.store().load_full();
+        let read_guard = db.snapshot();
         let (tx, rx) = mpsc::channel();
         let worker = {
             let db = db.clone();
@@ -1079,7 +1079,7 @@ mod concurrency {
         db.execute("CREATE (:T {i:1}), (:T {i:2})", rows_options())
             .unwrap();
 
-        let read_guard = db.store().load_full();
+        let read_guard = db.snapshot();
         let (tx, rx) = mpsc::channel();
         let worker = {
             let db = db.clone();

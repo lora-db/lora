@@ -21,12 +21,12 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use arc_swap::ArcSwap;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationRecorder};
 use lora_wal::{replay_dir, Lsn, Wal, WalConfig, WalMirror, WalRecorder};
 
 use crate::database::Database;
 use crate::error::{LoraError, LoraErrorCode};
+use crate::live_store::LiveStore;
 use crate::named::{DatabaseName, DatabaseOpenOptions};
 use crate::plan_cache::PlanCache;
 use crate::snapshot::{ManagedSnapshotStore, SnapshotConfig};
@@ -221,7 +221,7 @@ impl Database<InMemoryGraph> {
     ) -> Self {
         graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
         Self {
-            store: Arc::new(ArcSwap::from(Arc::new(graph))),
+            store: Arc::new(LiveStore::new(Arc::new(graph))),
             writer: Arc::new(Mutex::new(())),
             lock_table: Arc::new(lora_store::LockTable::new()),
             wal: Some(recorder),
@@ -236,7 +236,7 @@ where
     S: GraphStorage + GraphStorageMut + Any + Clone + Send + Sync + 'static,
 {
     /// Build a database from a pre-wrapped, shared store.
-    pub fn new(store: Arc<ArcSwap<S>>) -> Self {
+    pub(crate) fn new(store: Arc<LiveStore<S>>) -> Self {
         Self {
             store,
             writer: Arc::new(Mutex::new(())),
@@ -249,6 +249,6 @@ where
 
     /// Build a database by taking ownership of a bare graph store.
     pub fn from_graph(graph: S) -> Self {
-        Self::new(Arc::new(ArcSwap::from(Arc::new(graph))))
+        Self::new(Arc::new(LiveStore::new(Arc::new(graph))))
     }
 }

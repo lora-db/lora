@@ -2,13 +2,12 @@ use std::collections::BTreeMap;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-
 use anyhow::{anyhow, Result};
 use lora_compiler::CompiledQuery;
 use lora_executor::{ExecResult, LoraValue, PullExecutor, Row, RowSource};
 use lora_store::InMemoryGraph;
 
+use crate::live_store::LiveStore;
 use crate::transaction::{Transaction, TxCursorLease, TxStreamOutcome};
 
 /// Owning row stream returned by [`crate::Database::stream`] and transaction
@@ -95,7 +94,7 @@ pub(crate) struct LiveCursor {
     /// current state — kept for parity with the previous `_store`
     /// field even though the cursor itself only reads from
     /// `_snapshot`.
-    _store: Arc<ArcSwap<InMemoryGraph>>,
+    _store: Arc<LiveStore<InMemoryGraph>>,
     /// Keeps the compiled plan alive — operator sources hold
     /// references into it (e.g. predicate `ResolvedExpr`s). Boxed
     /// so the plan address is stable across the move into the
@@ -111,7 +110,7 @@ impl LiveCursor {
     /// surrounding `QueryStream`, which makes the `'static`
     /// transmutes invisible.
     pub(crate) fn open(
-        store: Arc<ArcSwap<InMemoryGraph>>,
+        store: Arc<LiveStore<InMemoryGraph>>,
         compiled: CompiledQuery,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<Self> {

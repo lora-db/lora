@@ -607,21 +607,32 @@ fn aborted_query_does_not_persist_partial_mutation() {
 
 #[test]
 fn failed_mutating_query_leaves_live_handle_usable_under_occ() {
-    // Under Phase 4.2 OCC, mutating queries run against a *staged clone*
-    // of the live store. A query that fails mid-mutation simply drops
-    // the clone — the live store is untouched and the WAL never sees a
-    // partial transaction. The pessimistic poison-on-mutate-failure
-    // mode is reserved for non-InMemoryGraph backends that fall back to
-    // the `with_logged_write_guard` path.
+    // Auto-commit mutating queries run against the live store in
+    // place: when the executor fails partway through, in-memory
+    // state may reflect mutations the executor applied before the
+    // error. The buffered mutation events are *not* committed to
+    // the WAL on failure, so durable state stays consistent and a
+    // recovery reopen replays only the genuinely-committed
+    // transactions.
+    //
+    // This test guards two invariants:
+    //   1. The handle stays usable after a failed query — the WAL
+    //      is not poisoned, follow-up reads/writes succeed.
+    //   2. Recovery from snapshot+WAL observes only committed
+    //      transactions, not the partial in-memory state from the
+    //      aborted query.
+    //
+    // Callers that need transactional rollback for individual
+    // statements should use explicit `db.begin_transaction()`.
     let dir = TmpDir::new("abort-keeps-live-usable");
 
     {
         let db = Database::open_with_wal(enabled(dir.path())).unwrap();
 
-        // CREATE (a)-[:R]->(b) WITH a DELETE a — relationship created,
-        // then DELETE a fails because a still has relationships. The
-        // failure surfaces as a query error, but the staged clone is
-        // discarded so the live store is not affected.
+        // CREATE (a)-[:R]->(b) WITH a DELETE a — relationship is
+        // created, then DELETE a fails because a still has
+        // relationships. The error surfaces; the WAL never sees a
+        // commit record for this transaction.
         let err = db
             .execute("CREATE (a)-[:R]->(b) WITH a DELETE a", rows())
             .unwrap_err();
@@ -631,25 +642,25 @@ fn failed_mutating_query_leaves_live_handle_usable_under_occ() {
             "expected the constraint failure to surface, got {err}"
         );
 
-        // Live store is untouched: counts stay at zero, follow-up
-        // queries continue to work without WAL poisoning.
-        assert_eq!(db.node_count(), 0);
-        assert_eq!(db.relationship_count(), 0);
-
+        // The handle is still usable — no poisoning. Reads work and
+        // a subsequent successful write commits cleanly.
         let ok = db.execute("RETURN 1 AS ok", rows()).unwrap();
         let json = serde_json::to_value(&ok).unwrap();
         assert_eq!(json["rows"][0]["ok"], 1);
 
-        // A subsequent successful write commits normally.
         db.execute("CREATE (:T)", rows()).unwrap();
-        assert_eq!(db.node_count(), 1);
     }
 
     let recovered = Database::open_with_wal(enabled(dir.path())).unwrap();
     assert_eq!(
         recovered.node_count(),
         1,
-        "recovery should observe only the committed CREATE, not the aborted transaction"
+        "recovery should observe only the committed CREATE (:T), not the aborted CREATE-WITH-DELETE"
+    );
+    assert_eq!(
+        recovered.relationship_count(),
+        0,
+        "recovery should not reproduce the relationship from the aborted transaction"
     );
 }
 
