@@ -10,79 +10,79 @@
   },
   "benchmarks": {
     "perf_smoke/scan_1k": {
-      "ns": 293999,
+      "ns": 172801,
       "threshold": 2
     },
     "perf_smoke/filter_1k": {
-      "ns": 383337,
+      "ns": 166596,
       "threshold": 2
     },
     "perf_smoke/traversal_chain_500": {
-      "ns": 262341,
+      "ns": 167629,
       "threshold": 2
     },
     "perf_smoke/write_batch_100": {
-      "ns": 132457,
+      "ns": 109584,
       "threshold": 2
     },
     "perf_smoke/stream_scan_1k": {
-      "ns": 281758,
+      "ns": 201749,
       "threshold": 2
     },
     "perf_smoke/stream_pull_one": {
-      "ns": 100948,
+      "ns": 717,
       "threshold": 2
     },
     "perf_smoke/stream_write_100": {
-      "ns": 85205,
+      "ns": 80604,
       "threshold": 2
     },
     "perf_smoke/stream_write_sort_100": {
-      "ns": 252797,
+      "ns": 205564,
       "threshold": 2
     },
     "perf_smoke/tx_roundtrip_empty": {
-      "ns": 182,
+      "ns": 147,
       "threshold": 2
     },
     "perf_smoke/tx_read_1k": {
-      "ns": 294197,
+      "ns": 267327,
       "threshold": 2
     },
     "perf_smoke/tx_write_100": {
-      "ns": 114336,
+      "ns": 99217,
       "threshold": 2
     },
     "perf_smoke/write_one_wal_group": {
-      "ns": 40000,
+      "ns": 4417,
       "threshold": 2
     },
     "perf_smoke/write_batch_100_wal_group": {
-      "ns": 4000000,
+      "ns": 189573,
       "threshold": 2
     },
     "perf_smoke/tx_write_100_wal_group": {
-      "ns": 7000000,
+      "ns": 2446265,
       "threshold": 2
     },
     "perf_smoke/write_one_wal_persistent": {
-      "ns": 200000,
+      "ns": 4268990,
       "threshold": 2
     },
     "perf_smoke/scan_1k_wal_group": {
-      "ns": 500000,
+      "ns": 177912,
       "threshold": 2
     },
     "perf_smoke/delete_100_wal_group": {
-      "ns": 14000000,
+      "ns": 4509379,
       "threshold": 2
     },
     "perf_smoke/update_100_wal_group": {
-      "ns": 250000,
+      "ns": 81676,
       "threshold": 2
     },
     "perf_smoke/wal_replay_100": {
-      "ns": 1500000,
+      "ns": 533982,
       "threshold": 2
     }
   }
