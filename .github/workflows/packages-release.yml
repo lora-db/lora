@@ -674,20 +674,42 @@ jobs:
         with:
           destination: crates/bindings/lora-ruby
 
-      - name: Stage Gemfile.lock at repo root for cross-gem version detection
-        # cross-gem's setup step greps `Gemfile.lock` from the repo root
-        # (NOT from its `working-directory` input) to discover the pinned
-        # rb_sys version, which then drives both the host `gem install
-        # rb_sys` and the rb-sys-dock Docker tag. Our lockfile lives at
-        # crates/bindings/lora-ruby/Gemfile.lock, so without this stage
-        # the grep falls through to `gem info rb_sys --remote` and picks
-        # up the absolute latest gem release. When that newest version
-        # has not yet had its matching `rbsys/<platform>:<ver>` image
-        # pushed to Docker Hub, the docker pull fails ("manifest
-        # unknown") and the cross-build aborts.
+      - name: Stage minimal Gemfile.lock at repo root for cross-gem version detection
+        # cross-gem's "Configure environment" step runs at the repo root
+        # (NOT its `working-directory` input) and computes:
+        #   grep rb_sys Gemfile.lock | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'
+        # Whatever that prints becomes both the host `gem install
+        # rb_sys` version and the `rbsys/<platform>:<ver>` Docker tag.
+        # On fall-through it asks `gem info rb_sys --remote`, which
+        # returns the very latest release on rubygems.org — and a brand-
+        # new gem release usually lands BEFORE its matching docker image
+        # is pushed, so the docker pull fails ("manifest unknown") and
+        # the cross-build aborts.
+        #
+        # Just `cp`-ing crates/bindings/lora-ruby/Gemfile.lock here is
+        # not enough: bundler emits the gemspec's runtime dependency
+        # (`rb_sys (~> 0.9)`, no patch) in the PATH section *before* the
+        # resolved `rb_sys (0.9.X)` in the GEM section, so `head -n1`
+        # picks the constraint line, the X.Y.Z regex fails, and the
+        # action falls through to the remote lookup anyway.
+        #
+        # Synthesize a one-line lockfile carrying the resolved patch
+        # version so the grep is deterministic regardless of Bundler's
+        # section ordering.
         shell: bash
         working-directory: .
-        run: cp crates/bindings/lora-ruby/Gemfile.lock Gemfile.lock
+        run: |
+          set -euo pipefail
+          src=crates/bindings/lora-ruby/Gemfile.lock
+          ver=$(grep -oE '^\s+rb_sys \([0-9]+\.[0-9]+\.[0-9]+\)' "$src" \
+                | head -n1 \
+                | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          if [ -z "${ver:-}" ]; then
+            echo "::error::could not extract resolved rb_sys X.Y.Z from $src"
+            exit 1
+          fi
+          echo "resolved rb_sys=${ver}"
+          printf '    rb_sys (%s)\n' "$ver" > Gemfile.lock
 
       - name: Cross-build precompiled gem for ${{ matrix.platform }}
         # `cross-gem-action` runs inside rb-sys' official toolchain
