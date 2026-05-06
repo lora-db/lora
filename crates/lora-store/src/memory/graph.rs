@@ -360,23 +360,17 @@ impl InMemoryGraph {
             .filter_map(|(i, slot)| slot.as_ref().map(|r| (i as RelationshipId, r.as_ref())))
     }
 
-    /// Add `rel_id` to `node_id`'s outgoing list. Idempotent: skips the push
-    /// if the id is already present (it shouldn't be — relationship ids are
-    /// monotonic — but the guard is cheap and keeps the invariant explicit).
+    /// Add `rel_id` to `node_id`'s outgoing list. Relies on the monotonic-id
+    /// invariant: relationship ids are allocated once and never re-used, so
+    /// the bucket can never see a duplicate.
     fn outgoing_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
         self.ensure_node_slot(node_id);
-        let v = &mut self.outgoing[node_id as usize];
-        if !v.contains(&rel_id) {
-            v.push(rel_id);
-        }
+        self.outgoing[node_id as usize].push(rel_id);
     }
 
     fn incoming_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
         self.ensure_node_slot(node_id);
-        let v = &mut self.incoming[node_id as usize];
-        if !v.contains(&rel_id) {
-            v.push(rel_id);
-        }
+        self.incoming[node_id as usize].push(rel_id);
     }
 
     /// Remove `rel_id` from `node_id`'s outgoing list. `swap_remove` keeps
@@ -409,12 +403,14 @@ impl InMemoryGraph {
     }
 
     pub(super) fn insert_node_label_index(&mut self, node_id: NodeId, label: &str) {
-        let bucket = self.nodes_by_label.entry(label.to_string()).or_default();
-        // Same monotonic-id invariant as `outgoing_push`: ids never appear
-        // twice, but the `contains` guard is cheap on small buckets and
-        // makes the invariant explicit for replay paths.
-        if !bucket.contains(&node_id) {
+        // Hot path: skip the `String` alloc when the label bucket already
+        // exists. The monotonic-id invariant on the create path guarantees
+        // `node_id` is unique, so we push unconditionally; the previous
+        // `contains` guard turned bulk CREATE into O(n²).
+        if let Some(bucket) = self.nodes_by_label.get_mut(label) {
             bucket.push(node_id);
+        } else {
+            self.nodes_by_label.insert(label.to_string(), vec![node_id]);
         }
     }
 
@@ -430,12 +426,12 @@ impl InMemoryGraph {
     }
 
     fn insert_relationship_type_index(&mut self, rel_id: RelationshipId, rel_type: &str) {
-        let bucket = self
-            .relationships_by_type
-            .entry(rel_type.to_string())
-            .or_default();
-        if !bucket.contains(&rel_id) {
+        // See `insert_node_label_index` for the same hot-path rationale.
+        if let Some(bucket) = self.relationships_by_type.get_mut(rel_type) {
             bucket.push(rel_id);
+        } else {
+            self.relationships_by_type
+                .insert(rel_type.to_string(), vec![rel_id]);
         }
     }
 
