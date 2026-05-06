@@ -797,7 +797,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lora-analyzer"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "lora-ast",
  "lora-parser",
@@ -807,14 +807,14 @@ dependencies = [
 
 [[package]]
 name = "lora-ast"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "smallvec 2.0.0-alpha.12",
 ]
 
 [[package]]
 name = "lora-binding-buffer"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "lora-database",
  "lora-store",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "lora-compiler"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "lora-analyzer",
  "lora-ast",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "lora-database"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "lora-executor"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "lora-analyzer",
  "lora-ast",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "lora-ffi"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "lora-node"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "lora-parser"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "lora-ast",
  "pest",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "lora-python"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "lora-database",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "lora-server"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "lora-snapshot"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "argon2",
  "bincode",
@@ -946,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "lora-store"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "bincode",
  "crc32fast",
@@ -958,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wal"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "crc32fast",
  "lora-store",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wasm"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "lora_ruby"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "lora-database",
