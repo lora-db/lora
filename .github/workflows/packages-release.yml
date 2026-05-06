@@ -261,7 +261,14 @@ jobs:
 
       - name: Install zig for linux-arm64 cross-compile
         if: matrix.cross == 'zig'
-        uses: goto-bus-stop/setup-zig@v2
+        # `mlugg/setup-zig` is the actively-maintained successor to
+        # `goto-bus-stop/setup-zig` (which is no longer maintained and
+        # was failing here with `aborted` errors during the zig tarball
+        # download — its cache key also collided with itself, returning
+        # HTTP 400 from the GitHub cache service before falling back to
+        # a flaky direct download). mlugg's action uses a robust mirror
+        # set and proper cache keying.
+        uses: mlugg/setup-zig@v2
         with:
           version: "0.13.0"
 

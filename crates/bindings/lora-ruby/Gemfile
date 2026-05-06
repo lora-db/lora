@@ -7,4 +7,11 @@ gemspec
 # `rb_sys` gem is a runtime dep already, but we pull in `rake-compiler`
 # and the optional `rb_sys/cross` helper for building cross-compiled
 # platform gems (mac arm64, linux x64, …) in the release workflow.
-gem "rb_sys", "~> 0.9"
+#
+# Pinned below 0.9.128: upstream rb-sys published the gem at 0.9.128
+# but did not push the matching `rbsys/aarch64-linux:0.9.128` image to
+# Docker Hub (only the buildkit cache tag exists), so cross-gem-action's
+# `docker pull` aborts with "manifest unknown" on the aarch64-linux
+# platform job. Lift the upper bound once the upstream image lands or
+# a later patch release ships with a complete image set.
+gem "rb_sys", "~> 0.9.127", "< 0.9.128"
