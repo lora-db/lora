@@ -745,6 +745,22 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     ) -> ExecResult<Vec<Row>> {
         // No-group-by fast path: a single accumulator, no BTreeMap.
         if group_by.is_empty() {
+            // `count(*)`-only shortcut. The buffered immutable executor
+            // already materialised every input row into `Vec<Row>`, so the
+            // aggregate is just the row count — no need to fold per row.
+            // This is the v0.6 shape that the streaming refactor lost.
+            if specs
+                .iter()
+                .all(|s| matches!(s.kind, crate::pull::StreamableAggKind::CountAll))
+            {
+                let count = LoraValue::Int(input_rows.len() as i64);
+                let mut result = Row::new();
+                for proj in aggregates {
+                    result.insert_named(proj.output, proj.name.clone(), count.clone());
+                }
+                return Ok(vec![result]);
+            }
+
             let mut aggs: Vec<crate::pull::AggState> = specs
                 .iter()
                 .map(|s| crate::pull::AggState::seed(s.kind))

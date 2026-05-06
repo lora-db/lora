@@ -96,7 +96,9 @@ pub use traits::{collect_compiled, PullExecutor};
 // Crate-internal re-exports used by the buffered executor in
 // `crate::executor` for the streaming aggregate fast-path and for
 // the `StreamingWriteCursor` plan-shape probes.
-pub(crate) use aggregate::{classify_streamable_aggregates, AggState, StreamableAggSpec};
+pub(crate) use aggregate::{
+    classify_streamable_aggregates, AggState, StreamableAggKind, StreamableAggSpec,
+};
 pub(crate) use context::StreamCtx;
 pub(crate) use hydration::{hydrate_value, HydratingSource};
 pub(crate) use source::ArgumentSource;
