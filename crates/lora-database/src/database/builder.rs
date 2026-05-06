@@ -62,7 +62,7 @@ impl Database<InMemoryGraph> {
                 let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, Lsn::ZERO)?;
                 replay_into(&mut graph, events).map_err(LoraError::from_anyhow)?;
                 let recorder = Arc::new(WalRecorder::new(wal));
-                Ok(Self::from_graph_with_wal(graph, recorder, None))
+                Ok(Self::from_graph_with_wal(graph, recorder, None, None))
             }
         }
     }
@@ -101,6 +101,7 @@ impl Database<InMemoryGraph> {
                     graph,
                     recorder,
                     Some(snapshot_store),
+                    None,
                 ))
             }
         }
@@ -122,20 +123,32 @@ impl Database<InMemoryGraph> {
             options.max_database_bytes,
         )?);
         let mut graph = InMemoryGraph::new();
+        let snapshot_lsn = if let Some(bytes) = archive.snapshot_bytes() {
+            let (payload, info) = crate::snapshot::decode_snapshot_bytes(&bytes, None)?;
+            graph.load_snapshot_payload(payload)?;
+            info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO)
+        } else {
+            Lsn::ZERO
+        };
         let (wal, events) = Wal::open(
             archive.work_dir(),
             options.sync_mode,
             options.segment_target_bytes,
-            Lsn::ZERO,
+            snapshot_lsn,
         )?;
         replay_into(&mut graph, events).map_err(LoraError::from_anyhow)?;
-        let mirror: Arc<dyn WalMirror> = archive;
+        let mirror: Arc<dyn WalMirror> = archive.clone();
         let recorder = Arc::new(WalRecorder::new_with_mirror(wal, Some(mirror)));
         // Mark the archive dirty so a fresh named database is materialized as
-        // a portable ZIP. Follow-up writes refresh the archive on explicit
+        // a portable Lora container. Follow-up writes refresh the container on explicit
         // `sync()` / checkpoint and on clean database drop.
         recorder.flush()?;
-        Ok(Self::from_graph_with_wal(graph, recorder, None))
+        Ok(Self::from_graph_with_wal(
+            graph,
+            recorder,
+            None,
+            Some(archive),
+        ))
     }
 
     /// Restore from a snapshot file then replay any WAL records past
@@ -206,7 +219,7 @@ impl Database<InMemoryGraph> {
                 let (wal, events) = Wal::open(dir, sync_mode, segment_target_bytes, snapshot_lsn)?;
                 replay_into(&mut graph, events).map_err(LoraError::from_anyhow)?;
                 let recorder = Arc::new(WalRecorder::new(wal));
-                Ok(Self::from_graph_with_wal(graph, recorder, None))
+                Ok(Self::from_graph_with_wal(graph, recorder, None, None))
             }
         }
     }
@@ -217,6 +230,7 @@ impl Database<InMemoryGraph> {
         mut graph: InMemoryGraph,
         recorder: Arc<WalRecorder>,
         snapshots: Option<Arc<ManagedSnapshotStore>>,
+        named_archive: Option<Arc<WalArchive>>,
     ) -> Self {
         graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
         Self {
@@ -225,6 +239,7 @@ impl Database<InMemoryGraph> {
             lock_table: Arc::new(lora_store::LockTable::new()),
             wal: Some(recorder),
             snapshots,
+            named_archive,
             plan_cache: Arc::new(PlanCache::new()),
         }
     }
@@ -242,6 +257,7 @@ where
             lock_table: Arc::new(lora_store::LockTable::new()),
             wal: None,
             snapshots: None,
+            named_archive: None,
             plan_cache: Arc::new(PlanCache::new()),
         }
     }

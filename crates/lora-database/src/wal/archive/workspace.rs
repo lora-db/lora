@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lora_wal::WalError;
 
-use super::format::extract_archive;
+use super::format::{extract_archive, ExtractedArchive};
+use super::format::{read_archive_snapshot, ContainerSnapshot};
 use super::platform::sync_dir;
 
 static ARCHIVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -18,12 +19,16 @@ pub(super) fn prepare_work_dir(
     archive_path: &Path,
     work_dir: &Path,
     max_archive_bytes: u64,
-) -> Result<(), WalError> {
+) -> Result<Option<ContainerSnapshot>, WalError> {
     if has_wal_files(work_dir)? {
         // A durable sidecar means the previous process stopped before the
         // final archive flush/cleanup completed. Trust it over the archive,
         // which may intentionally lag behind the live WAL for throughput.
-        return Ok(());
+        return if archive_path.exists() {
+            Ok(read_archive_snapshot(archive_path).ok().flatten())
+        } else {
+            Ok(None)
+        };
     }
 
     if work_dir.exists() {
@@ -34,30 +39,38 @@ pub(super) fn prepare_work_dir(
         let existing_len = fs::metadata(archive_path)?.len();
         if existing_len > max_archive_bytes {
             return Err(WalError::Malformed(format!(
-                "database archive {} is {} bytes, above configured limit {}",
+                "database container {} is {} bytes, above configured limit {}",
                 archive_path.display(),
                 existing_len,
                 max_archive_bytes
             )));
         }
-        extract_archive_into_work_dir(archive_path, work_dir)?;
+        extract_archive_into_work_dir(archive_path, work_dir)
     } else {
         fs::create_dir_all(work_dir)?;
+        Ok(None)
     }
-    Ok(())
 }
 
-fn extract_archive_into_work_dir(archive_path: &Path, work_dir: &Path) -> Result<(), WalError> {
+fn extract_archive_into_work_dir(
+    archive_path: &Path,
+    work_dir: &Path,
+) -> Result<Option<ContainerSnapshot>, WalError> {
     let tmp_dir = make_extract_tmp_path(work_dir);
     let result = (|| {
         fs::create_dir_all(&tmp_dir)?;
-        extract_archive(archive_path, &tmp_dir)?;
+        let ExtractedArchive { snapshot, saw_wal } = extract_archive(archive_path, &tmp_dir)?;
         sync_dir(&tmp_dir)?;
-        fs::rename(&tmp_dir, work_dir)?;
+        if saw_wal {
+            fs::rename(&tmp_dir, work_dir)?;
+        } else {
+            fs::remove_dir_all(&tmp_dir)?;
+            fs::create_dir_all(work_dir)?;
+        }
         if let Some(parent) = work_dir.parent() {
             sync_dir(parent)?;
         }
-        Ok(())
+        Ok(snapshot)
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp_dir);

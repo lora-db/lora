@@ -257,6 +257,21 @@ impl WalRecorder {
         Ok(())
     }
 
+    /// Force only the underlying WAL to storage durability, without invoking
+    /// the optional mirror. Container-backed callers use this when they need to
+    /// build a single richer mirror refresh (for example snapshot + WAL delta)
+    /// after the WAL bytes are durable.
+    pub fn force_fsync_wal_only(&self) -> Result<(), WalError> {
+        let mut state = self.state_lock();
+        if state.poisoned.is_some() {
+            return Err(WalError::Poisoned);
+        }
+        self.wal.force_fsync().inspect_err(|e| {
+            state.poisoned = Some(e.to_string());
+        })?;
+        Ok(())
+    }
+
     /// Append a `Checkpoint` marker. Used by the checkpoint admin
     /// path after a successful snapshot rename — the marker doubles
     /// as the log-side fence the next replay will trust.

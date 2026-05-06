@@ -37,7 +37,16 @@ pub(super) fn spawn_archive_worker(
 
         if should_flush {
             let _write_guard = write_lock.lock().unwrap();
-            if let Err(err) = write_archive_atomic(&work_dir, &archive_path, max_archive_bytes) {
+            let snapshot = {
+                let (lock, _) = &*state;
+                lock.lock().unwrap().snapshot.clone()
+            };
+            if let Err(err) = write_archive_atomic(
+                &work_dir,
+                &archive_path,
+                max_archive_bytes,
+                snapshot.as_ref(),
+            ) {
                 let (lock, _) = &*state;
                 let mut guard = lock.lock().unwrap();
                 guard.failure = Some(err.to_string());

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use lora_wal::{SyncMode, WalConfig};
 
-/// Hard ceiling for one portable database archive/root.
+/// Hard ceiling for one portable database container/root.
 ///
 /// The current WAL backend still stores segment files under this root, but
 /// callers should treat the resolved `.loradb` path as the database artifact.

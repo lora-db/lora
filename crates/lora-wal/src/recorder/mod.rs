@@ -3,7 +3,7 @@
 //!
 //! Layout:
 //! - `recorder` — the [`WalRecorder`] adapter and `MutationRecorder` impl.
-//! - `mirror` — the [`WalMirror`] trait for archive-backed sidecars.
+//! - `mirror` — the [`WalMirror`] trait for container-backed sidecars.
 //! - `errors` — recorder-specific error types and [`WroteCommit`].
 //! - `tests` — recorder integration tests against a real `Wal` directory.
 

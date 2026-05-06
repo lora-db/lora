@@ -26,6 +26,7 @@ use crate::explain::{QueryPlan, QueryProfile};
 use crate::live_store::LiveStore;
 use crate::plan_cache::PlanCache;
 use crate::snapshot::ManagedSnapshotStore;
+use crate::wal::archive::WalArchive;
 
 /// Minimal abstraction any transport can depend on to run Lora queries.
 ///
@@ -93,6 +94,10 @@ pub struct Database<S> {
     pub(crate) lock_table: Arc<lora_store::LockTable>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
     pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
+    /// Present for named `.loradb` databases. Runtime state is still the
+    /// in-memory graph; this handle lets `sync()` refresh the portable
+    /// checkpointed container with a base snapshot frame plus WAL delta frames.
+    pub(crate) named_archive: Option<Arc<WalArchive>>,
     /// Cache of compiled query plans, content-keyed by raw query text. Shared
     /// across the read- and write-lock phases of a single execute (so a
     /// mutating query compiles at most once instead of twice) and across
@@ -131,8 +136,8 @@ pub(crate) const QUERY_FAILURE_POISON: &str =
     "query mutated the live graph before failing; restart from snapshot + WAL required";
 
 impl Database<InMemoryGraph> {
-    /// Force any pending WAL bytes to durable storage and, for archive-backed
-    /// databases, refresh the portable `.loradb` file before returning.
+    /// Force any pending WAL bytes to durable storage and, for container-backed
+    /// named databases, refresh the portable `.loradb` file before returning.
     ///
     /// Managed snapshot checkpoints are explicit via
     /// [`Self::checkpoint_managed`] or threshold-driven via
@@ -140,7 +145,27 @@ impl Database<InMemoryGraph> {
     /// durability operation rather than an O(graph) checkpoint.
     pub fn sync(&self) -> Result<(), LoraError> {
         if let Some(wal) = &self.wal {
-            wal.force_fsync()?;
+            if let Some(archive) = &self.named_archive {
+                let _commit_lock = self
+                    .writer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                wal.force_fsync_wal_only()?;
+                let snapshot_lsn = wal.wal().durable_lsn();
+                let graph = self.store.load_full();
+                let payload = graph.snapshot_payload();
+                let mut bytes = Vec::new();
+                let options = lora_snapshot::SnapshotOptions::default();
+                crate::snapshot::encode_snapshot_to(
+                    &mut bytes,
+                    &payload,
+                    Some(snapshot_lsn.raw()),
+                    &options,
+                )?;
+                archive.persist_snapshot_bytes(bytes)?;
+            } else {
+                wal.force_fsync()?;
+            }
         }
         Ok(())
     }

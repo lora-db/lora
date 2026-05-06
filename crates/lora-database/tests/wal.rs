@@ -68,14 +68,9 @@ fn copy_dir_all(from: &Path, to: &Path) {
 }
 
 fn write_archive_without_manifest(path: &Path) {
-    let file = std::fs::File::create(path).unwrap();
-    let mut zip = zip::ZipWriter::new(file);
-    let options = zip::write::FileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored)
-        .unix_permissions(0o644);
-    zip.start_file("wal/0000000001.wal", options).unwrap();
-    zip.write_all(b"not-a-real-wal").unwrap();
-    zip.finish().unwrap();
+    let mut file = std::fs::File::create(path).unwrap();
+    file.write_all(b"not-a-lora-container").unwrap();
+    file.sync_all().unwrap();
 }
 
 fn rows() -> Option<ExecuteOptions> {
@@ -181,18 +176,14 @@ fn named_database_persists_under_lora_root() {
 
     assert!(
         dir.path().join("app.loradb").is_file(),
-        "named databases should persist as a portable .loradb archive file"
+        "named databases should persist as a portable .loradb container file"
     );
     assert!(
         !dir.path().join("app.loradb.wal").exists(),
         "clean shutdown should remove the durable sidecar after archiving"
     );
     let bytes = std::fs::read(dir.path().join("app.loradb")).unwrap();
-    assert_eq!(&bytes[..4], b"PK\x03\x04");
-    let file = std::fs::File::open(dir.path().join("app.loradb")).unwrap();
-    let mut zip = zip::ZipArchive::new(file).unwrap();
-    assert!(zip.by_name("manifest.json").is_ok());
-    assert!(zip.by_name("wal/0000000001.wal").is_ok());
+    assert_eq!(&bytes[..8], b"LORADB2\0");
 
     let db = Database::open_named(
         "app",
@@ -358,7 +349,7 @@ fn named_database_rejects_invalid_archive_without_publishing_partial_sidecar() {
         Err(err) => err,
     };
     assert!(
-        err.to_string().contains("manifest"),
+        err.to_string().contains("container"),
         "unexpected error: {err}"
     );
     assert!(
@@ -399,7 +390,7 @@ fn named_database_rejects_concurrent_archive_open() {
 }
 
 #[test]
-fn named_database_recovers_write_burst_from_zip_archive() {
+fn named_database_recovers_write_burst_from_container() {
     let dir = TmpDir::new("named-burst");
 
     {
@@ -417,10 +408,8 @@ fn named_database_recovers_write_burst_from_zip_archive() {
 
     let archive_path = dir.path().join("burst.loradb");
     assert!(archive_path.is_file());
-    let file = std::fs::File::open(&archive_path).unwrap();
-    let mut zip = zip::ZipArchive::new(file).unwrap();
-    assert!(zip.by_name("manifest.json").is_ok());
-    assert!(zip.by_name("wal/0000000001.wal").is_ok());
+    let bytes = std::fs::read(&archive_path).unwrap();
+    assert_eq!(&bytes[..8], b"LORADB2\0");
 
     let db = Database::open_named(
         "burst",
@@ -435,6 +424,39 @@ fn named_database_recovers_write_burst_from_zip_archive() {
     let row_array = json["rows"].as_array().expect("rows array");
     assert_eq!(row_array.first().unwrap()["id"], serde_json::json!(0));
     assert_eq!(row_array.last().unwrap()["id"], serde_json::json!(249));
+}
+
+#[test]
+fn named_database_sync_embeds_snapshot_frame() {
+    let dir = TmpDir::new("named-sync-snapshot-frame");
+
+    {
+        let db = Database::open_named(
+            "snap",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        db.execute("UNWIND range(1, 50) AS i CREATE (:Snap {id: i})", rows())
+            .unwrap();
+        db.sync().unwrap();
+    }
+
+    let archive_path = dir.path().join("snap.loradb");
+    let bytes = std::fs::read(&archive_path).unwrap();
+    assert_eq!(&bytes[..8], b"LORADB2\0");
+    assert!(
+        bytes
+            .windows("snapshot.lsnap".len())
+            .any(|window| window == b"snapshot.lsnap"),
+        "sync should embed a base snapshot frame in the portable container"
+    );
+
+    let db = Database::open_named(
+        "snap",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(db.node_count(), 50);
 }
 
 #[test]

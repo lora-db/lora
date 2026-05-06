@@ -11,18 +11,18 @@ use std::thread::JoinHandle;
 
 use lora_wal::{WalError, WalMirror};
 
-use self::format::write_archive_atomic;
+use self::format::{write_archive_atomic, ContainerSnapshot};
 use self::lock::ArchiveLock;
 use self::platform::sync_dir;
 use self::worker::spawn_archive_worker;
 use self::workspace::{cleanup_stale_temp_paths, make_work_dir, prepare_work_dir};
 
-/// ZIP-backed `.loradb` database file.
+/// Container-backed `.loradb` database file.
 ///
-/// Every persist rewrites a complete ZIP archive from the current WAL work
+/// Every persist rewrites a complete Lora container from the current WAL work
 /// directory to a temp file, fsyncs it, and atomically renames it over the
-/// `.loradb` target. Any ZIP-compatible tool (WinRAR, Explorer, unzip, 7-Zip)
-/// can inspect the resulting database file.
+/// `.loradb` target. The container uses Lora-owned framing and keeps
+/// codec/encryption choices under our control.
 pub(crate) struct WalArchive {
     archive_path: PathBuf,
     work_dir: PathBuf,
@@ -34,18 +34,19 @@ pub(crate) struct WalArchive {
 }
 
 #[derive(Debug, Default)]
-struct ArchiveState {
+pub(super) struct ArchiveState {
     dirty: bool,
     force: bool,
     shutdown: bool,
     failure: Option<String>,
+    snapshot: Option<ContainerSnapshot>,
 }
 
 impl WalArchive {
     pub fn open(archive_path: PathBuf, max_archive_bytes: u64) -> Result<Self, WalError> {
         if archive_path.is_dir() {
             return Err(WalError::Malformed(format!(
-                "database archive path is a directory: {}",
+                "database container path is a directory: {}",
                 archive_path.display()
             )));
         }
@@ -56,9 +57,13 @@ impl WalArchive {
         let archive_lock = ArchiveLock::acquire(&archive_path)?;
         cleanup_stale_temp_paths(&archive_path)?;
         let work_dir = make_work_dir(&archive_path);
-        prepare_work_dir(&archive_path, &work_dir, max_archive_bytes)?;
+        let snapshot = prepare_work_dir(&archive_path, &work_dir, max_archive_bytes)?;
 
         let state = Arc::new((Mutex::new(ArchiveState::default()), Condvar::new()));
+        {
+            let (lock, _) = &*state;
+            lock.lock().unwrap().snapshot = snapshot;
+        }
         let write_lock = Arc::new(Mutex::new(()));
         let worker = Some(spawn_archive_worker(
             state.clone(),
@@ -82,13 +87,38 @@ impl WalArchive {
     pub fn work_dir(&self) -> &Path {
         &self.work_dir
     }
+
+    pub fn snapshot_bytes(&self) -> Option<Vec<u8>> {
+        let (lock, _) = &*self.state;
+        lock.lock()
+            .unwrap()
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.bytes.clone())
+    }
+
+    pub fn persist_snapshot_bytes(&self, bytes: Vec<u8>) -> Result<(), WalError> {
+        {
+            let (lock, _) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            if let Some(failure) = &state.failure {
+                return Err(WalError::Malformed(format!(
+                    "database container writer failed: {failure}"
+                )));
+            }
+            state.snapshot = Some(ContainerSnapshot { bytes });
+            state.dirty = true;
+            state.force = true;
+        }
+        self.persist_force(&self.work_dir)
+    }
 }
 
 impl WalMirror for WalArchive {
     fn persist(&self, wal_dir: &Path) -> Result<(), WalError> {
         if wal_dir != self.work_dir {
             return Err(WalError::Malformed(format!(
-                "archive mirror received unexpected WAL dir: {}",
+                "container mirror received unexpected WAL dir: {}",
                 wal_dir.display()
             )));
         }
@@ -96,7 +126,7 @@ impl WalMirror for WalArchive {
         let mut state = lock.lock().unwrap();
         if let Some(failure) = &state.failure {
             return Err(WalError::Malformed(format!(
-                "database archive writer failed: {failure}"
+                "database container writer failed: {failure}"
             )));
         }
         state.dirty = true;
@@ -107,7 +137,7 @@ impl WalMirror for WalArchive {
     fn persist_force(&self, wal_dir: &Path) -> Result<(), WalError> {
         if wal_dir != self.work_dir {
             return Err(WalError::Malformed(format!(
-                "archive mirror received unexpected WAL dir: {}",
+                "container mirror received unexpected WAL dir: {}",
                 wal_dir.display()
             )));
         }
@@ -116,7 +146,7 @@ impl WalMirror for WalArchive {
             let state = lock.lock().unwrap();
             if let Some(failure) = &state.failure {
                 return Err(WalError::Malformed(format!(
-                    "database archive writer failed: {failure}"
+                    "database container writer failed: {failure}"
                 )));
             }
         }
@@ -127,12 +157,20 @@ impl WalMirror for WalArchive {
             let state = lock.lock().unwrap();
             if let Some(failure) = &state.failure {
                 return Err(WalError::Malformed(format!(
-                    "database archive writer failed: {failure}"
+                    "database container writer failed: {failure}"
                 )));
             }
         }
-        let result =
-            write_archive_atomic(&self.work_dir, &self.archive_path, self.max_archive_bytes);
+        let snapshot = {
+            let (lock, _) = &*self.state;
+            lock.lock().unwrap().snapshot.clone()
+        };
+        let result = write_archive_atomic(
+            &self.work_dir,
+            &self.archive_path,
+            self.max_archive_bytes,
+            snapshot.as_ref(),
+        );
         let (lock, _) = &*self.state;
         let mut state = lock.lock().unwrap();
         match result {
