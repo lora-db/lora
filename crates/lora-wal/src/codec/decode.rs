@@ -81,23 +81,23 @@ impl<'a> PayloadReader<'a> {
     }
 
     fn read_i16(&mut self) -> Result<i16, WalError> {
-        Ok(i16::from_le_bytes(self.read_exact(2)?.try_into().unwrap()))
+        Ok(i16::from_le_bytes(self.read_array()?))
     }
 
     fn read_i32(&mut self) -> Result<i32, WalError> {
-        Ok(i32::from_le_bytes(self.read_exact(4)?.try_into().unwrap()))
+        Ok(i32::from_le_bytes(self.read_array()?))
     }
 
     fn read_u32(&mut self) -> Result<u32, WalError> {
-        Ok(u32::from_le_bytes(self.read_exact(4)?.try_into().unwrap()))
+        Ok(u32::from_le_bytes(self.read_array()?))
     }
 
     fn read_u64(&mut self) -> Result<u64, WalError> {
-        Ok(u64::from_le_bytes(self.read_exact(8)?.try_into().unwrap()))
+        Ok(u64::from_le_bytes(self.read_array()?))
     }
 
     fn read_i64(&mut self) -> Result<i64, WalError> {
-        Ok(i64::from_le_bytes(self.read_exact(8)?.try_into().unwrap()))
+        Ok(i64::from_le_bytes(self.read_array()?))
     }
 
     fn read_f32(&mut self) -> Result<f32, WalError> {
@@ -116,6 +116,12 @@ impl<'a> PayloadReader<'a> {
     fn read_bytes(&mut self) -> Result<&'a [u8], WalError> {
         let len = self.read_len()?;
         self.read_exact(len)
+    }
+
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], WalError> {
+        let mut out = [0u8; N];
+        out.copy_from_slice(self.read_exact(N)?);
+        Ok(out)
     }
 
     fn read_string(&mut self) -> Result<String, WalError> {

@@ -89,20 +89,20 @@ impl SegmentHeader {
         if &bytes[0..8] != SEGMENT_MAGIC {
             return Err(WalError::BadSegmentHeader("bad magic"));
         }
-        let stored_crc = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        let stored_crc = le_u32(&bytes[28..32])?;
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&bytes[..28]);
         if hasher.finalize() != stored_crc {
             return Err(WalError::BadSegmentHeader("header crc mismatch"));
         }
-        let format_version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let format_version = le_u32(&bytes[8..12])?;
         if format_version < SEGMENT_MIN_SUPPORTED_FORMAT_VERSION
             || format_version > SEGMENT_FORMAT_VERSION
         {
             return Err(WalError::BadSegmentHeader("unsupported format version"));
         }
-        let base_lsn = Lsn::new(u64::from_le_bytes(bytes[12..20].try_into().unwrap()));
-        let flags = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
+        let base_lsn = Lsn::new(le_u64(&bytes[12..20])?);
+        let flags = le_u32(&bytes[20..24])?;
         let sealed = flags & FLAG_SEALED != 0;
         Ok(Self {
             format_version,
@@ -110,6 +110,25 @@ impl SegmentHeader {
             sealed,
         })
     }
+}
+
+fn le_u32(bytes: &[u8]) -> Result<u32, WalError> {
+    let array = fixed_bytes::<4>(bytes)?;
+    Ok(u32::from_le_bytes(array))
+}
+
+fn le_u64(bytes: &[u8]) -> Result<u64, WalError> {
+    let array = fixed_bytes::<8>(bytes)?;
+    Ok(u64::from_le_bytes(array))
+}
+
+fn fixed_bytes<const N: usize>(bytes: &[u8]) -> Result<[u8; N], WalError> {
+    if bytes.len() != N {
+        return Err(WalError::BadSegmentHeader("invalid fixed-width field"));
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(bytes);
+    Ok(out)
 }
 
 /// Append-side handle to a segment.

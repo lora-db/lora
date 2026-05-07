@@ -236,8 +236,8 @@ impl WalRecord {
             }
         }
 
-        let crc_offset = remaining - 4;
-        let stored_crc = u32::from_le_bytes(rest[crc_offset..].try_into().unwrap());
+        let crc_offset = remaining - RECORD_TRAILER_LEN;
+        let stored_crc = le_u32(&rest[crc_offset..])?;
 
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&len_buf);
@@ -246,9 +246,9 @@ impl WalRecord {
 
         // Reconstruct fields from the buffer.
         let kind = RecordKind::from_byte(rest[0])?;
-        let lsn = Lsn::new(u64::from_le_bytes(rest[1..9].try_into().unwrap()));
-        let tx_begin_lsn = Lsn::new(u64::from_le_bytes(rest[9..17].try_into().unwrap()));
-        let payload = &rest[17..crc_offset];
+        let lsn = Lsn::new(le_u64(&rest[1..9])?);
+        let tx_begin_lsn = Lsn::new(le_u64(&rest[9..17])?);
+        let payload = &rest[(RECORD_HEADER_LEN - 4)..crc_offset];
 
         if stored_crc != actual_crc {
             return Err(WalError::CrcMismatch {
@@ -329,6 +329,28 @@ fn read_exact_or_eof<R: Read>(mut reader: R, buf: &mut [u8]) -> Result<ReadOutco
         }
     }
     Ok(ReadOutcome::Full)
+}
+
+fn le_u32(bytes: &[u8]) -> Result<u32, WalError> {
+    let array = fixed_bytes::<4>(bytes)?;
+    Ok(u32::from_le_bytes(array))
+}
+
+fn le_u64(bytes: &[u8]) -> Result<u64, WalError> {
+    let array = fixed_bytes::<8>(bytes)?;
+    Ok(u64::from_le_bytes(array))
+}
+
+fn fixed_bytes<const N: usize>(bytes: &[u8]) -> Result<[u8; N], WalError> {
+    if bytes.len() != N {
+        return Err(WalError::Decode(format!(
+            "expected {N} bytes in WAL record framing, got {}",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(bytes);
+    Ok(out)
 }
 
 #[cfg(test)]
