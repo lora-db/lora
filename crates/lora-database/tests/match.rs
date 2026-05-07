@@ -1488,6 +1488,20 @@ fn future_label_disjunction() {
 }
 
 #[test]
+fn label_disjunction_with_additional_label_group() {
+    let db = TestDb::new();
+    db.run("CREATE (:A:C {name:'a_c'})");
+    db.run("CREATE (:B:C {name:'b_c'})");
+    db.run("CREATE (:A {name:'a_only'})");
+    db.run("CREATE (:C {name:'c_only'})");
+
+    let rows = db.run("MATCH (n:A|B:C) RETURN n.name AS name ORDER BY name");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["name"], "a_c");
+    assert_eq!(rows[1]["name"], "b_c");
+}
+
+#[test]
 fn future_node_key_constraint_matching() {
     // Lora: node key constraint matching
     let db = TestDb::new();

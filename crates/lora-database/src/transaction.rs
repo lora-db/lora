@@ -17,7 +17,7 @@ use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::WalRecorder;
 
 use crate::error::LoraError;
-use crate::explain::{OperatorMetrics, PlanShape, ProfileMetrics, QueryPlan, QueryProfile};
+use crate::explain::{OperatorMetrics, ProfileMetrics, QueryPlan, QueryProfile};
 use crate::live_store::LiveStore;
 use crate::snapshot::ManagedSnapshotStore;
 use crate::stream::QueryStream;
@@ -292,11 +292,11 @@ impl<'db> Transaction<'db> {
         options: Option<ExecuteOptions>,
         timeout: Duration,
     ) -> Result<QueryResult, LoraError> {
-        let deadline = Instant::now()
-            .checked_add(timeout)
-            .unwrap_or_else(Instant::now);
-        let rows =
-            self.execute_rows_with_params_deadline(query, BTreeMap::new(), Some(deadline))?;
+        let rows = self.execute_rows_with_params_deadline(
+            query,
+            BTreeMap::new(),
+            Some(deadline_after(timeout)),
+        )?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
@@ -320,10 +320,8 @@ impl<'db> Transaction<'db> {
         params: BTreeMap<String, LoraValue>,
         timeout: Duration,
     ) -> Result<QueryResult, LoraError> {
-        let deadline = Instant::now()
-            .checked_add(timeout)
-            .unwrap_or_else(Instant::now);
-        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
+        let rows =
+            self.execute_rows_with_params_deadline(query, params, Some(deadline_after(timeout)))?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
@@ -362,12 +360,7 @@ impl<'db> Transaction<'db> {
         // ReadOnly tx: never clones, runs straight against live.
         if self.is_read_only_unchecked() {
             self.precheck_open_no_savepoint()?;
-            let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
-            let storage = live.as_graph();
-            let executor = Executor::with_deadline(ExecutionContext { storage, params }, deadline);
-            return executor
-                .execute_compiled_rows(compiled)
-                .map_err(anyhow::Error::from);
+            return self.execute_live_compiled(compiled, params, deadline);
         }
 
         // ReadWrite tx, lazy-clone aware.
@@ -380,51 +373,17 @@ impl<'db> Transaction<'db> {
             // sees prior in-tx writes), otherwise straight off
             // the live graph — which equals staged-as-it-would-be
             // because no writes have happened yet.
-            return match inner.staged.as_ref() {
-                Some(staged) => {
-                    let executor = Executor::with_deadline(
-                        ExecutionContext {
-                            storage: staged,
-                            params,
-                        },
-                        deadline,
-                    );
-                    executor
-                        .execute_compiled_rows(compiled)
-                        .map_err(anyhow::Error::from)
-                }
-                None => {
-                    drop(inner);
-                    let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
-                    let storage = live.as_graph();
-                    let executor =
-                        Executor::with_deadline(ExecutionContext { storage, params }, deadline);
-                    executor
-                        .execute_compiled_rows(compiled)
-                        .map_err(anyhow::Error::from)
-                }
-            };
+            return self.execute_read_statement(inner, compiled, params, deadline);
         }
 
         // Mutating statement: lazy-clone the live graph if this
         // is the first write in the tx, then capture a savepoint
         // and run the mutable executor.
-        let clone_savepoint_graph = inner.staged.is_some();
-        self.ensure_staged_locked(&mut inner)?;
-        let savepoint = Some(take_savepoint(&inner, clone_savepoint_graph));
+        let savepoint = self.prepare_mutating_statement(&mut inner)?;
 
         let exec_result: ExecResultRows = {
             let staged = inner.staged_mut()?;
-            let mut executor = MutableExecutor::with_deadline(
-                MutableExecutionContext {
-                    storage: staged,
-                    params,
-                },
-                deadline,
-            );
-            executor
-                .execute_compiled_rows(compiled)
-                .map_err(anyhow::Error::from)
+            execute_mutable_compiled(staged, compiled, params, deadline)
         };
 
         match exec_result {
@@ -563,6 +522,41 @@ impl<'db> Transaction<'db> {
         Ok(())
     }
 
+    fn execute_live_compiled(
+        &self,
+        compiled: &CompiledQuery,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<Row>> {
+        let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
+        execute_read_compiled(live.as_graph(), compiled, params, deadline)
+    }
+
+    fn execute_read_statement(
+        &self,
+        inner: MutexGuard<'_, TxInner>,
+        compiled: &CompiledQuery,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<Row>> {
+        match inner.staged.as_ref() {
+            Some(staged) => execute_read_compiled(staged, compiled, params, deadline),
+            None => {
+                drop(inner);
+                self.execute_live_compiled(compiled, params, deadline)
+            }
+        }
+    }
+
+    fn prepare_mutating_statement(
+        &self,
+        inner: &mut MutexGuard<'_, TxInner>,
+    ) -> Result<Option<Savepoint>> {
+        let clone_savepoint_graph = inner.staged.is_some();
+        self.ensure_staged_locked(inner)?;
+        Ok(Some(take_savepoint(inner, clone_savepoint_graph)))
+    }
+
     /// Compile `query` against the transaction's view of the graph and
     /// return the plan that *would* run. Never executes the query, so
     /// running `explain` on a mutating statement leaves the transaction's
@@ -573,15 +567,7 @@ impl<'db> Transaction<'db> {
         _params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
         let compiled = self.compile_in_tx(query).map_err(LoraError::from_anyhow)?;
-        let tree = plan_tree_from_compiled(&compiled);
-        let shape: PlanShape = classify_stream(&compiled).into();
-        let result_columns = plan_result_columns(&compiled.physical);
-        Ok(QueryPlan {
-            query: query.to_string(),
-            tree,
-            shape,
-            result_columns,
-        })
+        Ok(query_plan_for(query, &compiled))
     }
 
     /// Execute `query` inside the transaction and return the plan plus
@@ -598,15 +584,8 @@ impl<'db> Transaction<'db> {
     ) -> Result<QueryProfile, LoraError> {
         let params = params.unwrap_or_default();
         let compiled = self.compile_in_tx(query).map_err(LoraError::from_anyhow)?;
-        let tree = plan_tree_from_compiled(&compiled);
-        let shape: PlanShape = classify_stream(&compiled).into();
-        let result_columns = plan_result_columns(&compiled.physical);
-        let plan = QueryPlan {
-            query: query.to_string(),
-            tree,
-            shape,
-            result_columns,
-        };
+        let plan = query_plan_for(query, &compiled);
+        let shape = plan.shape;
 
         let collector = Arc::new(MetricsCollector::new());
         let _guard = CollectorGuard::install(collector.clone());
@@ -672,57 +651,13 @@ impl<'db> Transaction<'db> {
     ) -> Result<QueryStream<'static>> {
         let mut inner = self.begin_statement()?;
         let is_mutating = classify_stream(&compiled).is_mutating();
-        if matches!(inner.mode, TransactionMode::ReadOnly) && is_mutating {
-            return Err(TransactionError::ReadOnlyMutation.into());
-        }
+        ensure_stream_allowed(&inner, is_mutating)?;
 
-        // Transaction streams borrow from the staged graph. Even
-        // read-only streams materialize staging when needed so the
-        // cursor can outlive the `&mut Transaction` borrow without
-        // borrowing from the transaction-owned live write guard.
-        let clone_savepoint_graph = inner.staged.is_some();
-        self.ensure_staged_locked(&mut inner)?;
-        inner.activate_cursor();
-
-        let rollback_on_drop = is_mutating;
-        if rollback_on_drop {
-            inner.pending_savepoint = Some(take_savepoint(&inner, clone_savepoint_graph));
-        } else {
-            inner.pending_savepoint = None;
-        }
-
-        let staged_ptr: *mut InMemoryGraph = inner
-            .staged
-            .as_mut()
-            .expect("ensure_staged_locked guarantees Some")
-            as *mut _;
+        let rollback_on_drop = stream_rolls_back_on_drop(is_mutating);
+        let staged_ptr = self.prepare_stream_staging(&mut inner, rollback_on_drop)?;
         drop(inner);
 
-        let compiled_static: &'static CompiledQuery =
-            unsafe { std::mem::transmute::<&CompiledQuery, _>(compiled.as_ref()) };
-        let cursor: Result<Box<dyn RowSource + 'static>> = if is_mutating {
-            let storage_static: &'static mut InMemoryGraph = unsafe { &mut *staged_ptr };
-            MutablePullExecutor::new(storage_static, params)
-                .open_compiled(compiled_static)
-                .map(|cursor| {
-                    Box::new(StreamingCursorWithArc {
-                        cursor,
-                        _compiled: compiled.clone(),
-                    }) as Box<dyn RowSource + 'static>
-                })
-                .map_err(anyhow::Error::from)
-        } else {
-            let storage_static: &'static InMemoryGraph = unsafe { &*staged_ptr };
-            PullExecutor::new(storage_static, params)
-                .open_compiled(compiled_static)
-                .map(|cursor| {
-                    Box::new(StreamingCursorWithArc {
-                        cursor,
-                        _compiled: compiled.clone(),
-                    }) as Box<dyn RowSource + 'static>
-                })
-                .map_err(anyhow::Error::from)
-        };
+        let cursor = open_tx_stream_cursor(staged_ptr, compiled, params, is_mutating);
 
         match cursor {
             Ok(cursor) => Ok(QueryStream::for_tx_cursor(
@@ -735,6 +670,31 @@ impl<'db> Transaction<'db> {
                 Err(err)
             }
         }
+    }
+
+    fn prepare_stream_staging(
+        &self,
+        inner: &mut MutexGuard<'_, TxInner>,
+        rollback_on_drop: bool,
+    ) -> Result<*mut InMemoryGraph> {
+        // Transaction streams borrow from the staged graph. Even read-only
+        // streams materialize staging when needed so the cursor can outlive
+        // the `&mut Transaction` borrow without borrowing from the
+        // transaction-owned live write guard.
+        let clone_savepoint_graph = inner.staged.is_some();
+        self.ensure_staged_locked(inner)?;
+        inner.activate_cursor();
+
+        if rollback_on_drop {
+            inner.pending_savepoint = Some(take_savepoint(inner, clone_savepoint_graph));
+        } else {
+            inner.pending_savepoint = None;
+        }
+
+        Ok(inner
+            .staged
+            .as_mut()
+            .expect("ensure_staged_locked guarantees Some") as *mut _)
     }
 
     /// Commit the transaction and publish staged changes.
@@ -908,6 +868,99 @@ impl<'db> Transaction<'db> {
 }
 
 type ExecResultRows = Result<Vec<Row>>;
+
+fn deadline_after(timeout: Duration) -> Instant {
+    Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now)
+}
+
+fn execute_read_compiled(
+    storage: &InMemoryGraph,
+    compiled: &CompiledQuery,
+    params: BTreeMap<String, LoraValue>,
+    deadline: Option<Instant>,
+) -> Result<Vec<Row>> {
+    let executor = Executor::with_deadline(ExecutionContext { storage, params }, deadline);
+    executor
+        .execute_compiled_rows(compiled)
+        .map_err(anyhow::Error::from)
+}
+
+fn execute_mutable_compiled(
+    storage: &mut InMemoryGraph,
+    compiled: &CompiledQuery,
+    params: BTreeMap<String, LoraValue>,
+    deadline: Option<Instant>,
+) -> Result<Vec<Row>> {
+    let mut executor =
+        MutableExecutor::with_deadline(MutableExecutionContext { storage, params }, deadline);
+    executor
+        .execute_compiled_rows(compiled)
+        .map_err(anyhow::Error::from)
+}
+
+fn query_plan_for(query: &str, compiled: &CompiledQuery) -> QueryPlan {
+    QueryPlan {
+        query: query.to_string(),
+        tree: plan_tree_from_compiled(compiled),
+        shape: classify_stream(compiled).into(),
+        result_columns: plan_result_columns(&compiled.physical),
+    }
+}
+
+fn ensure_stream_allowed(inner: &TxInner, is_mutating: bool) -> Result<()> {
+    if matches!(inner.mode, TransactionMode::ReadOnly) && is_mutating {
+        Err(TransactionError::ReadOnlyMutation.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn stream_rolls_back_on_drop(is_mutating: bool) -> bool {
+    is_mutating
+}
+
+fn open_tx_stream_cursor(
+    staged_ptr: *mut InMemoryGraph,
+    compiled: Arc<CompiledQuery>,
+    params: BTreeMap<String, LoraValue>,
+    is_mutating: bool,
+) -> Result<Box<dyn RowSource + 'static>> {
+    // SAFETY: `stream_compiled` calls this only after `prepare_stream_staging`
+    // has materialized `inner.staged` and activated the cursor guard. While the
+    // guard is active, statements/commit/rollback cannot move or drop staged.
+    let compiled_static: &'static CompiledQuery =
+        unsafe { std::mem::transmute::<&CompiledQuery, _>(compiled.as_ref()) };
+
+    if is_mutating {
+        // SAFETY: see function-level note above. Mutating streams need exclusive
+        // access, and the transaction cursor token prevents any second borrow.
+        let storage_static: &'static mut InMemoryGraph = unsafe { &mut *staged_ptr };
+        MutablePullExecutor::new(storage_static, params)
+            .open_compiled(compiled_static)
+            .map(|cursor| boxed_streaming_cursor(cursor, compiled))
+            .map_err(anyhow::Error::from)
+    } else {
+        // SAFETY: see function-level note above. Read streams borrow staged
+        // immutably until the cursor lease is finalized.
+        let storage_static: &'static InMemoryGraph = unsafe { &*staged_ptr };
+        PullExecutor::new(storage_static, params)
+            .open_compiled(compiled_static)
+            .map(|cursor| boxed_streaming_cursor(cursor, compiled))
+            .map_err(anyhow::Error::from)
+    }
+}
+
+fn boxed_streaming_cursor(
+    cursor: Box<dyn RowSource + 'static>,
+    compiled: Arc<CompiledQuery>,
+) -> Box<dyn RowSource + 'static> {
+    Box::new(StreamingCursorWithArc {
+        cursor,
+        _compiled: compiled,
+    })
+}
 
 struct CommitState {
     staged: Option<InMemoryGraph>,

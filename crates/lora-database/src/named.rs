@@ -71,27 +71,7 @@ pub struct DatabaseName {
 impl DatabaseName {
     pub fn parse(value: impl AsRef<str>) -> Result<Self, DatabaseNameError> {
         let value = value.as_ref();
-        if value.is_empty() {
-            return Err(DatabaseNameError::Empty);
-        }
-
-        if value.starts_with('/') || value.starts_with('\\') || looks_like_windows_absolute(value) {
-            return Err(DatabaseNameError::AbsolutePath(value.to_string()));
-        }
-
-        let mut parts: Vec<&str> = value.split(['/', '\\']).collect();
-        if parts.iter().any(|part| part.is_empty()) {
-            return Err(DatabaseNameError::InvalidCharacters(value.to_string()));
-        }
-        while parts.first() == Some(&".") {
-            parts.remove(0);
-        }
-        while parts.last() == Some(&".") {
-            parts.pop();
-        }
-        if parts.is_empty() {
-            return Err(DatabaseNameError::Reserved(value.to_string()));
-        }
+        let parts = normalized_relative_parts(value)?;
 
         let mut path = PathBuf::new();
         for (idx, part) in parts.iter().enumerate() {
@@ -124,6 +104,34 @@ impl DatabaseName {
     }
 }
 
+fn normalized_relative_parts(value: &str) -> Result<Vec<&str>, DatabaseNameError> {
+    if value.is_empty() {
+        return Err(DatabaseNameError::Empty);
+    }
+
+    if value.starts_with('/') || value.starts_with('\\') || looks_like_windows_absolute(value) {
+        return Err(DatabaseNameError::AbsolutePath(value.to_string()));
+    }
+
+    let parts: Vec<&str> = value.split(['/', '\\']).collect();
+    if parts.iter().any(|part| part.is_empty()) {
+        return Err(DatabaseNameError::InvalidCharacters(value.to_string()));
+    }
+    let start = parts
+        .iter()
+        .position(|part| *part != ".")
+        .unwrap_or(parts.len());
+    let end = parts
+        .iter()
+        .rposition(|part| *part != ".")
+        .map_or(start, |idx| idx + 1);
+    if start == end {
+        return Err(DatabaseNameError::Reserved(value.to_string()));
+    }
+
+    Ok(parts[start..end].to_vec())
+}
+
 impl fmt::Display for DatabaseName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.raw.fmt(f)
@@ -134,6 +142,14 @@ impl TryFrom<&str> for DatabaseName {
     type Error = DatabaseNameError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl std::str::FromStr for DatabaseName {
+    type Err = DatabaseNameError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
 }
@@ -201,4 +217,16 @@ fn looks_like_windows_absolute(value: &str) -> bool {
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
         && matches!(bytes[2], b'/' | b'\\')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_with_standard_from_str_trait() {
+        let name: DatabaseName = "tenant/app".parse().unwrap();
+        assert_eq!(name.as_str(), "tenant/app");
+        assert_eq!(name.relative_path(), Path::new("tenant/app.loradb"));
+    }
 }

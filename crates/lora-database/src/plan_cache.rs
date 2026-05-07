@@ -32,11 +32,10 @@
 //! at most, paid only on cache miss.
 
 use std::collections::HashMap;
-use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use lora_compiler::CompiledQuery;
-use std::sync::Arc;
 
 /// Default capacity. 256 entries comfortably covers the working set of the
 /// realistic benchmark suites without burning memory on plans that are
@@ -53,10 +52,7 @@ pub(crate) struct PlanCache {
 }
 
 struct Inner {
-    /// `query_hash` → entry. Two different query strings could in theory
-    /// hash to the same `u64` (collision odds ~2^-32 over 4 billion entries),
-    /// so each entry also stores the original text and we re-check on lookup.
-    entries: HashMap<u64, Entry>,
+    entries: HashMap<String, Entry>,
     /// Monotonic counter used as the "last accessed" stamp for LRU eviction.
     /// Wrapping at u64 takes longer than any reasonable process lifetime, so
     /// we don't worry about overflow.
@@ -65,9 +61,14 @@ struct Inner {
 }
 
 struct Entry {
-    query: String,
     plan: Arc<CompiledQuery>,
     last_used: u64,
+}
+
+impl Default for PlanCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PlanCache {
@@ -90,19 +91,13 @@ impl PlanCache {
     /// On hit, the entry's last-used timestamp is bumped so it survives
     /// eviction longer.
     pub(crate) fn get(&self, query: &str) -> Option<Arc<CompiledQuery>> {
-        let hash = hash_query(query);
         let mut guard = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let counter = guard.counter.wrapping_add(1);
         guard.counter = counter;
-        let entry = guard.entries.get_mut(&hash)?;
-        if entry.query != query {
-            // Hash collision (vanishingly rare with SipHash). Fall through
-            // and let the caller recompile; the colliding entry stays.
-            return None;
-        }
+        let entry = guard.entries.get_mut(query)?;
         entry.last_used = counter;
         Some(entry.plan.clone())
     }
@@ -110,20 +105,21 @@ impl PlanCache {
     /// Insert a freshly-compiled plan. If the cache is at capacity, evict
     /// the entry with the oldest `last_used` stamp.
     pub(crate) fn insert(&self, query: &str, plan: Arc<CompiledQuery>) {
-        let hash = hash_query(query);
         let mut guard = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.capacity == 0 {
+            return;
+        }
         let counter = guard.counter.wrapping_add(1);
         guard.counter = counter;
-        if guard.entries.len() >= guard.capacity && !guard.entries.contains_key(&hash) {
+        if guard.entries.len() >= guard.capacity && !guard.entries.contains_key(query) {
             evict_oldest(&mut guard.entries);
         }
         guard.entries.insert(
-            hash,
+            query.to_owned(),
             Entry {
-                query: query.to_owned(),
                 plan,
                 last_used: counter,
             },
@@ -140,32 +136,20 @@ impl PlanCache {
     }
 }
 
-fn evict_oldest(entries: &mut HashMap<u64, Entry>) {
+fn evict_oldest(entries: &mut HashMap<String, Entry>) {
     let oldest_key = entries
         .iter()
         .min_by_key(|(_, e)| e.last_used)
-        .map(|(k, _)| *k);
+        .map(|(k, _)| k.clone());
     if let Some(k) = oldest_key {
-        entries.remove(&k);
+        entries.remove(k.as_str());
     }
-}
-
-fn hash_query(query: &str) -> u64 {
-    // `RandomState` would re-key per-process which is fine for security; we
-    // only need a stable hash within a single `Inner`. `BuildHasherDefault`
-    // gives us a deterministic fallback via the default `Hasher` (SipHash on
-    // current std), which is more than collision-resistant enough for plan
-    // cache use.
-    let hasher_builder = BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
-    let mut hasher = hasher_builder.build_hasher();
-    hasher.write(query.as_bytes());
-    hasher.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lora_compiler::{Compiler, PhysicalNodeId, PhysicalOp, PhysicalPlan};
+    use lora_compiler::{PhysicalOp, PhysicalPlan};
 
     fn dummy_plan() -> Arc<CompiledQuery> {
         // Minimal placeholder; we only care that the same Arc is handed out.
@@ -215,11 +199,10 @@ mod tests {
     }
 
     #[test]
-    fn unused_compiler_use_silences_warning() {
-        // Pull `Compiler` into scope so adding the cache to `lora-database`
-        // doesn't require pruning the `lora_compiler` re-exports the file
-        // already needs at runtime.
-        let _ = std::any::type_name::<Compiler>();
-        let _ = std::any::type_name::<PhysicalNodeId>();
+    fn zero_capacity_disables_storage() {
+        let cache = PlanCache::with_capacity(0);
+        cache.insert("MATCH (n) RETURN n", dummy_plan());
+        assert_eq!(cache.len(), 0);
+        assert!(cache.get("MATCH (n) RETURN n").is_none());
     }
 }
