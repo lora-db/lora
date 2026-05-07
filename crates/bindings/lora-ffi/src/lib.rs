@@ -36,6 +36,7 @@
 // is satisfied by the crate-level safety contract documented above.
 #![allow(clippy::missing_safety_doc)]
 
+use std::collections::BTreeMap;
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::os::raw::c_uchar;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -44,8 +45,8 @@ use std::sync::{Arc, Mutex};
 
 use lora_database::{
     snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
-    DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, QueryResult, ResultFormat, SnapshotConfig,
-    SnapshotCredentials, SnapshotOptions, WalConfig,
+    DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
+    SnapshotConfig, SnapshotCredentials, SnapshotOptions, WalConfig,
 };
 
 mod errors;
@@ -437,37 +438,13 @@ pub unsafe extern "C" fn lora_db_execute_json(
             return LoraStatus::NullPointer;
         }
 
-        let query = match CStr::from_ptr(query).to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                write_error(out_error, INVALID_PARAMS_PREFIX, "query is not valid UTF-8");
-                return LoraStatus::InvalidUtf8;
-            }
+        let query = match read_required_utf8(query, "query", LoraStatus::InvalidUtf8, out_error) {
+            Ok(query) => query,
+            Err(status) => return status,
         };
-
-        let params_str = if params_json.is_null() {
-            None
-        } else {
-            match CStr::from_ptr(params_json).to_str() {
-                Ok("") => None,
-                Ok(s) => Some(s),
-                Err(_) => {
-                    write_error(
-                        out_error,
-                        INVALID_PARAMS_PREFIX,
-                        "params JSON is not valid UTF-8",
-                    );
-                    return LoraStatus::InvalidParams;
-                }
-            }
-        };
-
-        let params_map = match parse_params(params_str) {
-            Ok(map) => map,
-            Err(msg) => {
-                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
-                return LoraStatus::InvalidParams;
-            }
+        let params_map = match parse_params_arg(params_json, out_error) {
+            Ok(params) => params,
+            Err(status) => return status,
         };
 
         match execute_json_payload(&(*db).inner, query, params_map) {
@@ -534,37 +511,13 @@ pub unsafe extern "C" fn lora_db_execute_buffer(
             return LoraStatus::NullPointer;
         }
 
-        let query = match CStr::from_ptr(query).to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                write_error(out_error, INVALID_PARAMS_PREFIX, "query is not valid UTF-8");
-                return LoraStatus::InvalidUtf8;
-            }
+        let query = match read_required_utf8(query, "query", LoraStatus::InvalidUtf8, out_error) {
+            Ok(query) => query,
+            Err(status) => return status,
         };
-
-        let params_str = if params_json.is_null() {
-            None
-        } else {
-            match CStr::from_ptr(params_json).to_str() {
-                Ok("") => None,
-                Ok(s) => Some(s),
-                Err(_) => {
-                    write_error(
-                        out_error,
-                        INVALID_PARAMS_PREFIX,
-                        "params JSON is not valid UTF-8",
-                    );
-                    return LoraStatus::InvalidParams;
-                }
-            }
-        };
-
-        let params_map = match parse_params(params_str) {
-            Ok(map) => map,
-            Err(msg) => {
-                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
-                return LoraStatus::InvalidParams;
-            }
+        let params_map = match parse_params_arg(params_json, out_error) {
+            Ok(params) => params,
+            Err(status) => return status,
         };
 
         // ResultFormat::Rows lets the encoder iterate the engine's
@@ -660,41 +613,13 @@ unsafe fn explain_or_profile_json(
             return LoraStatus::NullPointer;
         }
 
-        let query = match CStr::from_ptr(query).to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                write_error(out_error, INVALID_PARAMS_PREFIX, "query is not valid UTF-8");
-                return LoraStatus::InvalidUtf8;
-            }
+        let query = match read_required_utf8(query, "query", LoraStatus::InvalidUtf8, out_error) {
+            Ok(query) => query,
+            Err(status) => return status,
         };
-
-        let params_str = if params_json.is_null() {
-            None
-        } else {
-            match CStr::from_ptr(params_json).to_str() {
-                Ok("") => None,
-                Ok(s) => Some(s),
-                Err(_) => {
-                    write_error(
-                        out_error,
-                        INVALID_PARAMS_PREFIX,
-                        "params JSON is not valid UTF-8",
-                    );
-                    return LoraStatus::InvalidParams;
-                }
-            }
-        };
-
-        let params_map = match params_str {
-            None => None,
-            Some(_) => match parse_params(params_str) {
-                Ok(map) if map.is_empty() => None,
-                Ok(map) => Some(map),
-                Err(msg) => {
-                    write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
-                    return LoraStatus::InvalidParams;
-                }
-            },
+        let params_map = match parse_optional_params_arg(params_json, out_error) {
+            Ok(params) => params,
+            Err(status) => return status,
         };
 
         let payload = if profile {
@@ -874,35 +799,13 @@ pub unsafe extern "C" fn lora_db_stream_open_json(
             return LoraStatus::NullPointer;
         }
 
-        let query = match CStr::from_ptr(query).to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                write_error(out_error, INVALID_PARAMS_PREFIX, "query is not valid UTF-8");
-                return LoraStatus::InvalidUtf8;
-            }
+        let query = match read_required_utf8(query, "query", LoraStatus::InvalidUtf8, out_error) {
+            Ok(query) => query,
+            Err(status) => return status,
         };
-        let params_str = if params_json.is_null() {
-            None
-        } else {
-            match CStr::from_ptr(params_json).to_str() {
-                Ok("") => None,
-                Ok(s) => Some(s),
-                Err(_) => {
-                    write_error(
-                        out_error,
-                        INVALID_PARAMS_PREFIX,
-                        "params JSON is not valid UTF-8",
-                    );
-                    return LoraStatus::InvalidParams;
-                }
-            }
-        };
-        let params_map = match parse_params(params_str) {
-            Ok(map) => map,
-            Err(msg) => {
-                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
-                return LoraStatus::InvalidParams;
-            }
+        let params_map = match parse_params_arg(params_json, out_error) {
+            Ok(params) => params,
+            Err(status) => return status,
         };
 
         let inner = (*db).inner.clone();
@@ -1160,6 +1063,77 @@ impl LoraSnapshotMeta {
 }
 
 type FfiParseResult<T> = Result<T, (LoraStatus, &'static str, String)>;
+
+unsafe fn read_required_utf8<'a>(
+    value: *const c_char,
+    label: &str,
+    invalid_utf8_status: LoraStatus,
+    out_error: *mut *mut c_char,
+) -> Result<&'a str, LoraStatus> {
+    match CStr::from_ptr(value).to_str() {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            write_error(
+                out_error,
+                INVALID_PARAMS_PREFIX,
+                &format!("{label} is not valid UTF-8"),
+            );
+            Err(invalid_utf8_status)
+        }
+    }
+}
+
+unsafe fn read_optional_utf8<'a>(
+    value: *const c_char,
+    label: &str,
+    invalid_utf8_status: LoraStatus,
+    out_error: *mut *mut c_char,
+) -> Result<Option<&'a str>, LoraStatus> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    match read_required_utf8(value, label, invalid_utf8_status, out_error)? {
+        "" => Ok(None),
+        s => Ok(Some(s)),
+    }
+}
+
+unsafe fn parse_params_arg(
+    params_json: *const c_char,
+    out_error: *mut *mut c_char,
+) -> Result<BTreeMap<String, LoraValue>, LoraStatus> {
+    let params_str = read_optional_utf8(
+        params_json,
+        "params JSON",
+        LoraStatus::InvalidParams,
+        out_error,
+    )?;
+    parse_params(params_str).map_err(|msg| {
+        write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
+        LoraStatus::InvalidParams
+    })
+}
+
+unsafe fn parse_optional_params_arg(
+    params_json: *const c_char,
+    out_error: *mut *mut c_char,
+) -> Result<Option<BTreeMap<String, LoraValue>>, LoraStatus> {
+    let params_str = read_optional_utf8(
+        params_json,
+        "params JSON",
+        LoraStatus::InvalidParams,
+        out_error,
+    )?;
+    match params_str {
+        None => Ok(None),
+        Some(_) => parse_params(params_str)
+            .map(|map| (!map.is_empty()).then_some(map))
+            .map_err(|msg| {
+                write_error(out_error, INVALID_PARAMS_PREFIX, &msg);
+                LoraStatus::InvalidParams
+            }),
+    }
+}
 
 unsafe fn parse_optional_json_arg(
     json: *const c_char,
