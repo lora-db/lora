@@ -308,10 +308,16 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             Ok(Box::new(LimitSource::new(upstream, skip_n, limit_n)))
         }
 
-        PhysicalOp::Sort(SortExec { input, items }) => {
+        PhysicalOp::Sort(SortExec {
+            input,
+            items,
+            top_k,
+        }) => {
             let upstream = build_streaming(plan, *input, storage, params.clone())?;
             let ctx = StreamCtx::new(storage, params);
-            Ok(Box::new(SortSource::new(upstream, ctx, items)))
+            Ok(Box::new(SortSource::new_with_top_k(
+                upstream, ctx, items, *top_k,
+            )))
         }
 
         PhysicalOp::HashAggregation(HashAggregationExec {

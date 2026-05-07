@@ -37,10 +37,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use lora_analyzer::symbols::VarId;
-use lora_analyzer::{ResolvedExpr, ResolvedSortItem};
+use lora_analyzer::ResolvedExpr;
 use lora_ast::{Direction, RangeLiteral};
-use lora_compiler::physical::ProjectionExec;
-use lora_store::{GraphStorage, NodeId, Properties, PropertyValue};
+use lora_compiler::physical::{
+    ExpandExec, LimitExec, NodeByLabelScanExec, NodeByPropertyScanExec, NodeScanExec,
+    ProjectionExec, UnwindExec,
+};
+use lora_store::{GraphStorage, NodeId, Properties, PropertyValue, RelationshipId};
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
 use crate::eval::{eval_expr, eval_expr_result, eval_truthy_result, EvalContext};
@@ -104,6 +107,418 @@ pub(super) fn project_rows_checked<S: GraphStorage>(
     } else {
         out
     })
+}
+
+pub(super) fn unwind_rows<S: GraphStorage>(
+    input_rows: Vec<Row>,
+    op: &UnwindExec,
+    eval_ctx: &EvalContext<'_, S>,
+) -> Vec<Row> {
+    let mut out = Vec::new();
+
+    for row in input_rows {
+        match eval_expr(&op.expr, &row, eval_ctx) {
+            LoraValue::List(values) => {
+                for value in values {
+                    let mut new_row = row.clone();
+                    new_row.insert(op.alias, value);
+                    out.push(new_row);
+                }
+            }
+            LoraValue::Null => {}
+            other => {
+                let mut new_row = row;
+                new_row.insert(op.alias, other);
+                out.push(new_row);
+            }
+        }
+    }
+
+    out
+}
+
+pub(super) fn limit_rows<S: GraphStorage>(
+    mut rows: Vec<Row>,
+    op: &LimitExec,
+    eval_ctx: &EvalContext<'_, S>,
+) -> Vec<Row> {
+    let limit = op
+        .limit
+        .as_ref()
+        .and_then(|e| eval_expr(e, &Row::new(), eval_ctx).as_i64())
+        .unwrap_or(rows.len() as i64)
+        .max(0) as usize;
+
+    let skip = op
+        .skip
+        .as_ref()
+        .and_then(|e| eval_expr(e, &Row::new(), eval_ctx).as_i64())
+        .unwrap_or(0)
+        .max(0) as usize;
+
+    if skip >= rows.len() {
+        return Vec::new();
+    }
+
+    rows.drain(0..skip);
+    rows.truncate(limit);
+    rows
+}
+
+#[inline]
+pub(crate) fn bound_node_id_for_expand(row: &Row, var: VarId) -> ExecResult<Option<NodeId>> {
+    match row.get(var) {
+        Some(LoraValue::Node(id)) => Ok(Some(*id)),
+        Some(other) => Err(ExecutorError::ExpectedNodeForExpand {
+            var: format!("{var:?}"),
+            found: value_kind(other),
+        }),
+        None => Ok(None),
+    }
+}
+
+#[inline]
+pub(crate) fn bound_relationship_id_for_expand(
+    row: &Row,
+    var: VarId,
+) -> ExecResult<Option<RelationshipId>> {
+    match row.get(var) {
+        Some(LoraValue::Relationship(id)) => Ok(Some(*id)),
+        Some(other) => Err(ExecutorError::ExpectedRelationshipForExpand {
+            var: format!("{var:?}"),
+            found: value_kind(other),
+        }),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn node_scan_rows<S: GraphStorage>(
+    storage: &S,
+    base_rows: Vec<Row>,
+    op: &NodeScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let node_ids = storage.all_node_ids();
+    let mut out = Vec::with_capacity(base_rows.len().saturating_mul(node_ids.len()));
+
+    if deadline.is_none() {
+        for row in base_rows {
+            if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+                if storage.has_node(existing_id) {
+                    out.push(row);
+                }
+                continue;
+            }
+
+            for &id in &node_ids {
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+        return Ok(out);
+    }
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+            if storage.has_node(existing_id) {
+                out.push(row);
+            }
+            continue;
+        }
+
+        for &id in &node_ids {
+            check_optional_deadline(deadline)?;
+            let mut new_row = row.clone();
+            new_row.insert(op.var, LoraValue::Node(id));
+            out.push(new_row);
+        }
+    }
+
+    Ok(out)
+}
+
+pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
+    storage: &S,
+    base_rows: Vec<Row>,
+    op: &NodeByLabelScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let candidate_ids = scan_node_ids_for_label_groups(storage, &op.labels);
+    let candidates_prefiltered = label_group_candidates_prefiltered(&op.labels);
+    let mut out = Vec::with_capacity(base_rows.len().saturating_mul(candidate_ids.len()));
+
+    if deadline.is_none() {
+        for row in base_rows {
+            if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+                let labels_ok = storage
+                    .with_node(existing_id, |n| {
+                        node_matches_label_groups(&n.labels, &op.labels)
+                    })
+                    .unwrap_or(false);
+                if labels_ok {
+                    out.push(row);
+                }
+                continue;
+            }
+
+            for &id in &candidate_ids {
+                if !candidates_prefiltered {
+                    let labels_ok = storage
+                        .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                        .unwrap_or(false);
+                    if !labels_ok {
+                        continue;
+                    }
+                }
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+        return Ok(out);
+    }
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+            let labels_ok = storage
+                .with_node(existing_id, |n| {
+                    node_matches_label_groups(&n.labels, &op.labels)
+                })
+                .unwrap_or(false);
+            if labels_ok {
+                out.push(row);
+            }
+            continue;
+        }
+
+        for &id in &candidate_ids {
+            check_optional_deadline(deadline)?;
+            if !candidates_prefiltered {
+                let labels_ok = storage
+                    .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                    .unwrap_or(false);
+                if !labels_ok {
+                    continue;
+                }
+            }
+            let mut new_row = row.clone();
+            new_row.insert(op.var, LoraValue::Node(id));
+            out.push(new_row);
+        }
+    }
+
+    Ok(out)
+}
+
+pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &NodeByPropertyScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    if deadline.is_none() {
+        for row in base_rows {
+            let expected = eval_expr(&op.value, &row, &eval_ctx);
+
+            if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+                if node_matches_property_filter(
+                    storage,
+                    existing_id,
+                    &op.labels,
+                    &op.key,
+                    &expected,
+                ) {
+                    out.push(row);
+                }
+                continue;
+            }
+
+            let candidates =
+                indexed_node_property_candidates(storage, &op.labels, &op.key, &expected);
+            for id in candidates.ids {
+                if !candidates.prefiltered
+                    && !node_matches_property_filter(storage, id, &op.labels, &op.key, &expected)
+                {
+                    continue;
+                }
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+        return Ok(out);
+    }
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let expected = eval_expr(&op.value, &row, &eval_ctx);
+
+        if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+            if node_matches_property_filter(storage, existing_id, &op.labels, &op.key, &expected) {
+                out.push(row);
+            }
+            continue;
+        }
+
+        let candidates = indexed_node_property_candidates(storage, &op.labels, &op.key, &expected);
+        for id in candidates.ids {
+            check_optional_deadline(deadline)?;
+            if !candidates.prefiltered
+                && !node_matches_property_filter(storage, id, &op.labels, &op.key, &expected)
+            {
+                continue;
+            }
+            let mut new_row = row.clone();
+            new_row.insert(op.var, LoraValue::Node(id));
+            out.push(new_row);
+        }
+    }
+
+    Ok(out)
+}
+
+#[inline]
+fn check_optional_deadline(deadline: Option<Instant>) -> ExecResult<()> {
+    match deadline {
+        Some(deadline) => check_deadline_at(deadline),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn expand_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    input_rows: Vec<Row>,
+    op: &ExpandExec,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in input_rows {
+        let Some(src_node_id) = bound_node_id_for_expand(&row, op.src)? else {
+            continue;
+        };
+
+        let mut rel_property_filter = None;
+
+        storage.try_for_each_expand_id(
+            src_node_id,
+            op.direction,
+            &op.types,
+            |rel_id, dst_id| {
+                if let Some(expr) = op.rel_properties.as_ref() {
+                    if rel_property_filter.is_none() {
+                        let expected = eval_expr(expr, &row, &eval_ctx);
+                        let LoraValue::Map(map) = expected else {
+                            return Err(ExecutorError::ExpectedPropertyMap {
+                                found: value_kind(&expected),
+                            });
+                        };
+                        rel_property_filter = Some(map);
+                    }
+
+                    let map = rel_property_filter
+                        .as_ref()
+                        .expect("relationship property filter initialized above");
+                    let matches = storage
+                        .with_relationship(rel_id, |rel| {
+                            map.iter().all(|(key, expected)| {
+                                rel.properties
+                                    .get(key)
+                                    .map(|actual| value_matches_property_value(expected, actual))
+                                    .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false);
+                    if !matches {
+                        return Ok(());
+                    }
+                }
+
+                if let Some(existing_id) = bound_node_id_for_expand(&row, op.dst)? {
+                    if existing_id != dst_id {
+                        return Ok(());
+                    }
+                }
+
+                if let Some(rel_var) = op.rel {
+                    if let Some(existing_id) = bound_relationship_id_for_expand(&row, rel_var)? {
+                        if existing_id != rel_id {
+                            return Ok(());
+                        }
+                    }
+                }
+
+                let mut new_row = row.clone();
+                if !new_row.contains_key(op.dst) {
+                    new_row.insert(op.dst, LoraValue::Node(dst_id));
+                }
+                if let Some(rel_var) = op.rel {
+                    if !new_row.contains_key(rel_var) {
+                        new_row.insert(rel_var, LoraValue::Relationship(rel_id));
+                    }
+                }
+                out.push(new_row);
+                Ok(())
+            },
+        )?;
+    }
+
+    Ok(out)
+}
+
+pub(super) fn expand_var_len_rows<S: GraphStorage>(
+    storage: &S,
+    input_rows: Vec<Row>,
+    op: &ExpandExec,
+    range: &RangeLiteral,
+) -> ExecResult<Vec<Row>> {
+    let (min_hops, max_hops) = resolve_range(range);
+    let bind_relationships = op.rel.is_some();
+    let mut out = Vec::new();
+
+    for row in input_rows {
+        let Some(src_node_id) = bound_node_id_for_expand(&row, op.src)? else {
+            continue;
+        };
+
+        let expansions = variable_length_expand(
+            storage,
+            src_node_id,
+            op.direction,
+            &op.types,
+            min_hops,
+            max_hops,
+            bind_relationships,
+        );
+
+        for result in expansions {
+            let mut new_row = row.clone();
+            new_row.insert(op.dst, LoraValue::Node(result.dst_node_id));
+
+            if let Some(rel_var) = op.rel {
+                let rel_list = LoraValue::List(
+                    result
+                        .rel_ids
+                        .into_iter()
+                        .map(LoraValue::Relationship)
+                        .collect(),
+                );
+                new_row.insert(rel_var, rel_list);
+            }
+
+            out.push(new_row);
+        }
+    }
+
+    Ok(out)
 }
 
 pub(super) fn properties_to_value_map(props: &Properties) -> LoraValue {
@@ -429,19 +844,6 @@ fn eval_first_or_null<S: GraphStorage>(
     }
 }
 
-pub(crate) fn compare_sort_item<S: GraphStorage>(
-    item: &ResolvedSortItem,
-    a: &Row,
-    b: &Row,
-    eval_ctx: &EvalContext<'_, S>,
-) -> Ordering {
-    let av = eval_expr(&item.expr, a, eval_ctx);
-    let bv = eval_expr(&item.expr, b, eval_ctx);
-
-    let ascending = matches!(item.direction, lora_ast::SortDirection::Asc);
-    compare_values_for_sort(&av, &bv, ascending)
-}
-
 fn dedup_values(values: Vec<LoraValue>) -> Vec<LoraValue> {
     let mut seen: BTreeSet<GroupValueKey> = BTreeSet::new();
     let mut out = Vec::new();
@@ -464,22 +866,7 @@ fn as_f64_lossy(v: LoraValue) -> Option<f64> {
     }
 }
 
-fn compare_values_for_sort(a: &LoraValue, b: &LoraValue, ascending: bool) -> Ordering {
-    let ord = match (a, b) {
-        (LoraValue::Null, LoraValue::Null) => Ordering::Equal,
-        (LoraValue::Null, _) => Ordering::Greater,
-        (_, LoraValue::Null) => Ordering::Less,
-        _ => compare_values_total(a, b),
-    };
-
-    if ascending {
-        ord
-    } else {
-        ord.reverse()
-    }
-}
-
-fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
+pub(super) fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
     use LoraValue::*;
 
     match (a, b) {
@@ -634,6 +1021,23 @@ pub(crate) fn build_path_value<S: GraphStorage>(
     rel_vars: &[VarId],
     storage: &S,
 ) -> LoraValue {
+    let (raw_nodes, rels, has_var_len) = path_bindings(row, node_vars, rel_vars);
+
+    let nodes = if has_var_len && !rels.is_empty() && raw_nodes.len() == 2 {
+        reconstruct_var_len_nodes(raw_nodes[0], &rels, storage)
+    } else {
+        raw_nodes
+    };
+
+    LoraValue::Path(LoraPath { nodes, rels })
+}
+
+#[inline]
+fn path_bindings(
+    row: &Row,
+    node_vars: &[VarId],
+    rel_vars: &[VarId],
+) -> (Vec<NodeId>, Vec<RelationshipId>, bool) {
     let mut raw_nodes = Vec::new();
     let mut rels = Vec::new();
     let mut has_var_len = false;
@@ -667,27 +1071,26 @@ pub(crate) fn build_path_value<S: GraphStorage>(
         }
     }
 
-    // For variable-length paths, reconstruct the full node sequence from the
-    // relationship chain. raw_nodes typically only has [start, end] but the
-    // path needs all intermediate nodes as well.
-    let nodes = if has_var_len && !rels.is_empty() && raw_nodes.len() == 2 {
-        let start = raw_nodes[0];
-        let mut ordered = Vec::with_capacity(rels.len() + 1);
-        ordered.push(start);
-        let mut current = start;
-        for &rel_id in &rels {
-            if let Some((src, dst)) = storage.relationship_endpoints(rel_id) {
-                let next = if src == current { dst } else { src };
-                ordered.push(next);
-                current = next;
-            }
-        }
-        ordered
-    } else {
-        raw_nodes
-    };
+    (raw_nodes, rels, has_var_len)
+}
 
-    LoraValue::Path(LoraPath { nodes, rels })
+#[inline]
+fn reconstruct_var_len_nodes<S: GraphStorage>(
+    start: NodeId,
+    rels: &[RelationshipId],
+    storage: &S,
+) -> Vec<NodeId> {
+    let mut ordered = Vec::with_capacity(rels.len() + 1);
+    ordered.push(start);
+    let mut current = start;
+    for &rel_id in rels {
+        if let Some((src, dst)) = storage.relationship_endpoints(rel_id) {
+            let next = if src == current { dst } else { src };
+            ordered.push(next);
+            current = next;
+        }
+    }
+    ordered
 }
 
 fn type_rank(v: &LoraValue) -> u8 {
@@ -729,27 +1132,51 @@ pub(crate) fn scan_node_ids_for_label_groups<S: GraphStorage>(
     groups: &[Vec<String>],
 ) -> Vec<NodeId> {
     if groups.is_empty() {
-        storage.all_node_ids()
-    } else if groups.len() == 1 && groups[0].len() == 1 {
-        storage.node_ids_by_label(&groups[0][0])
-    } else if groups.len() == 1 && groups[0].len() > 1 {
-        let mut seen = BTreeSet::new();
-        let mut out = Vec::new();
-        for label in &groups[0] {
-            for id in storage.node_ids_by_label(label) {
-                if seen.insert(id) {
-                    out.push(id);
-                }
-            }
-        }
-        out
-    } else {
-        storage.node_ids_by_label(&groups[0][0])
+        return storage.all_node_ids();
     }
+    if groups.len() == 1 {
+        return label_group_candidate_ids(storage, &groups[0]);
+    }
+
+    let mut best: Option<Vec<NodeId>> = None;
+    for group in groups {
+        let ids = label_group_candidate_ids(storage, group);
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        if best
+            .as_ref()
+            .map(|current| ids.len() < current.len())
+            .unwrap_or(true)
+        {
+            best = Some(ids);
+        }
+    }
+
+    best.unwrap_or_default()
 }
 
 pub(crate) fn label_group_candidates_prefiltered(groups: &[Vec<String>]) -> bool {
     groups.len() <= 1
+}
+
+fn label_group_candidate_ids<S: GraphStorage>(storage: &S, group: &[String]) -> Vec<NodeId> {
+    match group {
+        [] => Vec::new(),
+        [label] => storage.node_ids_by_label(label),
+        labels => {
+            let mut seen = BTreeSet::new();
+            let mut out = Vec::new();
+            for label in labels {
+                for id in storage.node_ids_by_label(label) {
+                    if seen.insert(id) {
+                        out.push(id);
+                    }
+                }
+            }
+            out
+        }
+    }
 }
 
 pub(crate) fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
@@ -880,6 +1307,7 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
     types: &[String],
     min_hops: u64,
     max_hops: u64,
+    bind_relationships: bool,
 ) -> Vec<VarLenResult> {
     let mut results = Vec::new();
 
@@ -912,7 +1340,11 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
                         rel_ids.push(rel_id);
                         results.push(VarLenResult {
                             dst_node_id: neighbor_id,
-                            rel_ids,
+                            rel_ids: if bind_relationships {
+                                rel_ids
+                            } else {
+                                Vec::new()
+                            },
                         });
                     }
                     continue;
@@ -925,7 +1357,11 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
                 if depth >= min_hops {
                     results.push(VarLenResult {
                         dst_node_id: neighbor_id,
-                        rel_ids: new_rels.clone(),
+                        rel_ids: if bind_relationships {
+                            new_rels.clone()
+                        } else {
+                            Vec::new()
+                        },
                     });
                 }
 

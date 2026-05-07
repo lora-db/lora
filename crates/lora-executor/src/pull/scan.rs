@@ -9,10 +9,10 @@ use lora_analyzer::symbols::VarId;
 use lora_analyzer::ResolvedExpr;
 use lora_store::{GraphStorage, NodeId};
 
-use crate::errors::{value_kind, ExecResult, ExecutorError};
+use crate::errors::ExecResult;
 use crate::eval::eval_expr;
 use crate::executor::{
-    indexed_node_property_candidates, label_group_candidates_prefiltered,
+    bound_node_id_for_expand, indexed_node_property_candidates, label_group_candidates_prefiltered,
     node_matches_label_groups, node_matches_property_filter, scan_node_ids_for_label_groups,
 };
 use crate::value::{LoraValue, Row};
@@ -72,29 +72,19 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
 
             // Already-bound case: emit the input row once iff the
             // bound node still exists; otherwise drop it.
-            if let Some(existing) = row_ref.get(self.var) {
+            if let Some(id) = bound_node_id_for_expand(row_ref, self.var)? {
                 if self.cur_emitted {
                     self.cur_row = None;
                     continue;
                 }
                 self.cur_emitted = true;
-                match existing {
-                    LoraValue::Node(id) => {
-                        if self.storage.has_node(*id) {
-                            let row = self.cur_row.take().unwrap();
-                            self.cur_emitted = false;
-                            return Ok(Some(row));
-                        }
-                        self.cur_row = None;
-                        continue;
-                    }
-                    other => {
-                        return Err(ExecutorError::ExpectedNodeForExpand {
-                            var: format!("{:?}", self.var),
-                            found: value_kind(other),
-                        });
-                    }
+                if self.storage.has_node(id) {
+                    let row = self.cur_row.take().unwrap();
+                    self.cur_emitted = false;
+                    return Ok(Some(row));
                 }
+                self.cur_row = None;
+                continue;
             }
 
             // Unbound case: lazily snapshot all node ids for this
@@ -125,6 +115,7 @@ pub struct NodeByLabelScanSource<'a, S: GraphStorage> {
     storage: &'a S,
     var: VarId,
     labels: &'a [Vec<String>],
+    candidates_prefiltered: bool,
     cur_row: Option<Row>,
     cur_ids: Vec<NodeId>,
     cur_idx: usize,
@@ -143,6 +134,7 @@ impl<'a, S: GraphStorage> NodeByLabelScanSource<'a, S> {
             storage,
             var,
             labels,
+            candidates_prefiltered: label_group_candidates_prefiltered(labels),
             cur_row: None,
             cur_ids: Vec::new(),
             cur_idx: 0,
@@ -168,45 +160,33 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
 
             let row_ref = self.cur_row.as_ref().unwrap();
 
-            if let Some(existing) = row_ref.get(self.var) {
+            if let Some(id) = bound_node_id_for_expand(row_ref, self.var)? {
                 if self.cur_emitted {
                     self.cur_row = None;
                     continue;
                 }
                 self.cur_emitted = true;
-                match existing {
-                    LoraValue::Node(id) => {
-                        let labels_ok = self
-                            .storage
-                            .with_node(*id, |n| node_matches_label_groups(&n.labels, self.labels))
-                            .unwrap_or(false);
-                        if labels_ok {
-                            let row = self.cur_row.take().unwrap();
-                            self.cur_emitted = false;
-                            return Ok(Some(row));
-                        }
-                        self.cur_row = None;
-                        continue;
-                    }
-                    other => {
-                        return Err(ExecutorError::ExpectedNodeForExpand {
-                            var: format!("{:?}", self.var),
-                            found: value_kind(other),
-                        });
-                    }
+                let labels_ok = self
+                    .storage
+                    .with_node(id, |n| node_matches_label_groups(&n.labels, self.labels))
+                    .unwrap_or(false);
+                if labels_ok {
+                    let row = self.cur_row.take().unwrap();
+                    self.cur_emitted = false;
+                    return Ok(Some(row));
                 }
+                self.cur_row = None;
+                continue;
             }
 
             if self.cur_idx == 0 && self.cur_ids.is_empty() {
                 self.cur_ids = scan_node_ids_for_label_groups(self.storage, self.labels);
             }
 
-            // Skip non-matching ids cheaply.
-            let candidates_prefiltered = label_group_candidates_prefiltered(self.labels);
             while self.cur_idx < self.cur_ids.len() {
                 let id = self.cur_ids[self.cur_idx];
                 self.cur_idx += 1;
-                if !candidates_prefiltered {
+                if !self.candidates_prefiltered {
                     let labels_ok = self
                         .storage
                         .with_node(id, |n| node_matches_label_groups(&n.labels, self.labels))
@@ -268,6 +248,16 @@ impl<'a, S: GraphStorage> NodeByPropertyScanSource<'a, S> {
             cur_prefiltered: false,
         }
     }
+
+    #[inline]
+    fn clear_current(&mut self) {
+        self.cur_row = None;
+        self.cur_expected = None;
+        self.cur_ids.clear();
+        self.cur_idx = 0;
+        self.cur_emitted = false;
+        self.cur_prefiltered = false;
+    }
 }
 
 impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
@@ -297,41 +287,25 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
             let row_ref = self.cur_row.as_ref().unwrap();
             let expected = self.cur_expected.as_ref().unwrap();
 
-            if let Some(existing) = row_ref.get(self.var) {
+            if let Some(id) = bound_node_id_for_expand(row_ref, self.var)? {
                 if self.cur_emitted {
-                    self.cur_row = None;
-                    self.cur_expected = None;
-                    self.cur_ids.clear();
+                    self.clear_current();
                     continue;
                 }
                 self.cur_emitted = true;
-                match existing {
-                    LoraValue::Node(id) => {
-                        if node_matches_property_filter(
-                            self.ctx.storage,
-                            *id,
-                            self.labels,
-                            self.key,
-                            expected,
-                        ) {
-                            let row = self.cur_row.take().unwrap();
-                            self.cur_expected = None;
-                            self.cur_ids.clear();
-                            self.cur_emitted = false;
-                            return Ok(Some(row));
-                        }
-                        self.cur_row = None;
-                        self.cur_expected = None;
-                        self.cur_ids.clear();
-                        continue;
-                    }
-                    other => {
-                        return Err(ExecutorError::ExpectedNodeForExpand {
-                            var: format!("{:?}", self.var),
-                            found: value_kind(other),
-                        });
-                    }
+                if node_matches_property_filter(
+                    self.ctx.storage,
+                    id,
+                    self.labels,
+                    self.key,
+                    expected,
+                ) {
+                    let row = self.cur_row.take().unwrap();
+                    self.clear_current();
+                    return Ok(Some(row));
                 }
+                self.clear_current();
+                continue;
             }
 
             while self.cur_idx < self.cur_ids.len() {
@@ -353,9 +327,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                 return Ok(Some(new_row));
             }
 
-            self.cur_row = None;
-            self.cur_expected = None;
-            self.cur_ids.clear();
+            self.clear_current();
         }
     }
 }

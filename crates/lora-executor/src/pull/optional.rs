@@ -5,7 +5,8 @@ use lora_compiler::physical::{PhysicalNodeId, PhysicalPlan};
 use lora_store::GraphStorage;
 
 use crate::errors::ExecResult;
-use crate::value::{LoraValue, Row};
+use crate::executor::{merge_optional_rows, null_extend_optional_row, optional_rows_compatible};
+use crate::value::Row;
 
 use super::{build_streaming, drain, RowSource, StreamCtx};
 
@@ -20,9 +21,19 @@ pub struct OptionalMatchSource<'a, S: GraphStorage> {
     inner: PhysicalNodeId,
     new_vars: &'a [VarId],
     inner_rows: Option<Vec<Row>>,
-    cur_input: Option<Row>,
-    cur_inner_idx: usize,
-    cur_matched: bool,
+    state: OptionalMatchState,
+}
+
+// Keep `Row` inline: boxing would allocate for every upstream row on the
+// streaming hot path, and this state is stored once inside `OptionalMatchSource`.
+#[allow(clippy::large_enum_variant)]
+enum OptionalMatchState {
+    AwaitingInput,
+    Scanning {
+        input_row: Row,
+        inner_idx: usize,
+        matched: bool,
+    },
 }
 
 impl<'a, S: GraphStorage> OptionalMatchSource<'a, S> {
@@ -40,9 +51,7 @@ impl<'a, S: GraphStorage> OptionalMatchSource<'a, S> {
             inner,
             new_vars,
             inner_rows: None,
-            cur_input: None,
-            cur_inner_idx: 0,
-            cur_matched: false,
+            state: OptionalMatchState::AwaitingInput,
         }
     }
 
@@ -64,61 +73,50 @@ impl<'a, S: GraphStorage> RowSource for OptionalMatchSource<'a, S> {
     fn next_row(&mut self) -> ExecResult<Option<Row>> {
         self.ensure_inner_rows()?;
         loop {
-            if self.cur_input.is_none() {
-                match self.upstream.next_row()? {
-                    Some(input_row) => {
-                        self.cur_input = Some(input_row);
-                        self.cur_inner_idx = 0;
-                        self.cur_matched = false;
-                    }
-                    None => return Ok(None),
-                }
+            if matches!(self.state, OptionalMatchState::AwaitingInput) {
+                let Some(input_row) = self.upstream.next_row()? else {
+                    return Ok(None);
+                };
+                self.state = OptionalMatchState::Scanning {
+                    input_row,
+                    inner_idx: 0,
+                    matched: false,
+                };
             }
 
             let inner_rows = self
                 .inner_rows
                 .as_ref()
                 .expect("ensure_inner_rows initializes inner_rows");
-            let input_row = self
-                .cur_input
-                .as_ref()
-                .expect("cur_input is initialized above");
+            let OptionalMatchState::Scanning {
+                input_row,
+                inner_idx,
+                matched,
+            } = &mut self.state
+            else {
+                unreachable!("state is initialized above");
+            };
 
-            while self.cur_inner_idx < inner_rows.len() {
-                let inner_row = &inner_rows[self.cur_inner_idx];
-                self.cur_inner_idx += 1;
+            while *inner_idx < inner_rows.len() {
+                let inner_row = &inner_rows[*inner_idx];
+                *inner_idx += 1;
 
-                let compatible = input_row
-                    .iter()
-                    .all(|(var, val)| match inner_row.get(*var) {
-                        Some(inner_val) => inner_val == val,
-                        None => true,
-                    });
-                if !compatible {
+                if !optional_rows_compatible(input_row, inner_row) {
                     continue;
                 }
 
-                let mut merged = input_row.clone();
-                for (var, name, val) in inner_row.iter_named() {
-                    if !merged.contains_key(*var) {
-                        merged.insert_named(*var, name.into_owned(), val.clone());
-                    }
-                }
-                self.cur_matched = true;
-                return Ok(Some(merged));
+                *matched = true;
+                return Ok(Some(merge_optional_rows(input_row, inner_row)));
             }
 
-            let mut input_row = self
-                .cur_input
-                .take()
-                .expect("cur_input is initialized while finishing optional row");
-            if !self.cur_matched {
-                for &var_id in self.new_vars {
-                    if !input_row.contains_key(var_id) {
-                        input_row.insert(var_id, LoraValue::Null);
-                    }
-                }
-                return Ok(Some(input_row));
+            let OptionalMatchState::Scanning {
+                input_row, matched, ..
+            } = std::mem::replace(&mut self.state, OptionalMatchState::AwaitingInput)
+            else {
+                unreachable!("state is initialized above");
+            };
+            if !matched {
+                return Ok(Some(null_extend_optional_row(input_row, self.new_vars)));
             }
         }
     }

@@ -16,6 +16,10 @@
 //!   `try_match_merge_pattern`, `materialize_node_pattern`,
 //!   `materialize_relationship_pattern`) plus the SET / REMOVE
 //!   `EntityTarget` plumbing.
+//! - `aggregation` — buffered hash aggregation shared by both executors,
+//!   including the fold-only fast path reused from `crate::pull`.
+//! - `optional` — OPTIONAL MATCH row compatibility, merge, and
+//!   null-extension helpers shared by buffered and streaming execution.
 //! - `helpers` — the cross-cutting helpers used by both executors and
 //!   re-exported across the crate: structural property comparison
 //!   ([`value_matches_property_value`]), label-group / property-index
@@ -26,18 +30,23 @@
 //!   path construction ([`build_path_value`]), variable-length
 //!   expansion (`variable_length_expand`) and shortest-path
 //!   filtering (`filter_shortest_paths`),
-//!   sort / aggregate / dedup primitives
-//!   ([`compute_aggregate_expr`], [`compare_sort_item`],
+//!   aggregate / dedup primitives
+//!   ([`compute_aggregate_expr`],
 //!   `dedup_rows`, `dedup_rows_by_vars`),
 //!   record hydration
 //!   ([`hydrate_node_record`], [`hydrate_relationship_record`]),
 //!   the [`GroupValueKey`] dedup-key / aggregate-key wrapper, and
 //!   variable-length range resolution ([`resolve_range`],
 //!   `VarLenResult`).
+//! - `sort` — buffered sort comparison and top-k candidate retention
+//!   shared by buffered execution and `crate::pull::SortSource`.
 
+mod aggregation;
 mod helpers;
 mod immutable;
 mod mutable;
+mod optional;
+mod sort;
 
 pub use helpers::value_matches_property_value;
 pub use immutable::{ExecutionContext, Executor};
@@ -48,9 +57,15 @@ pub use mutable::{MutableExecutionContext, MutableExecutor};
 // each other through `super::helpers::*`). The names that remain here
 // are exactly the ones referenced as `crate::executor::*` from
 // outside `crate::executor`.
+pub(crate) use aggregation::aggregate_rows;
 pub(crate) use helpers::{
-    build_path_value, compare_sort_item, compute_aggregate_expr, hydrate_node_record,
-    hydrate_relationship_record, indexed_node_property_candidates,
-    label_group_candidates_prefiltered, node_matches_label_groups, node_matches_property_filter,
-    resolve_range, scan_node_ids_for_label_groups, GroupValueKey,
+    bound_node_id_for_expand, bound_relationship_id_for_expand, build_path_value,
+    compute_aggregate_expr, hydrate_node_record, hydrate_relationship_record,
+    indexed_node_property_candidates, label_group_candidates_prefiltered,
+    node_matches_label_groups, node_matches_property_filter, resolve_range,
+    scan_node_ids_for_label_groups, GroupValueKey,
 };
+pub(crate) use optional::{
+    merge_optional_rows, null_extend_optional_row, optional_match_rows, optional_rows_compatible,
+};
+pub(crate) use sort::sort_rows_with_top_k;

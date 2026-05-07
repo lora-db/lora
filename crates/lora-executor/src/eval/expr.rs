@@ -319,10 +319,16 @@ fn eval_exists_subquery<S: GraphStorage>(
 ) -> LoraValue {
     use lora_analyzer::ResolvedPatternElement;
 
-    // Process each pattern part. For EXISTS, any part producing a match means true.
+    if pattern.parts.is_empty() {
+        return LoraValue::Bool(exists_candidate_matches(where_, row, ctx));
+    }
+
+    // Process each pattern part. The final part short-circuits because EXISTS
+    // only cares whether at least one complete binding survives the WHERE.
     let mut candidate_rows = vec![row.clone()];
 
-    for part in &pattern.parts {
+    for (part_idx, part) in pattern.parts.iter().enumerate() {
+        let is_last_part = part_idx + 1 == pattern.parts.len();
         let mut next_rows = Vec::new();
         for current_row in &candidate_rows {
             match &part.element {
@@ -336,7 +342,17 @@ fn eval_exists_subquery<S: GraphStorage>(
                         labels: labels.clone(),
                         properties: properties.clone(),
                     };
-                    next_rows.extend(match_node_pattern(&tmp_node, current_row, ctx));
+                    let matched_rows = match_node_pattern(&tmp_node, current_row, ctx);
+                    if is_last_part {
+                        if matched_rows
+                            .iter()
+                            .any(|r| exists_candidate_matches(where_, r, ctx))
+                        {
+                            return LoraValue::Bool(true);
+                        }
+                    } else {
+                        next_rows.extend(matched_rows);
+                    }
                 }
                 ResolvedPatternElement::ShortestPath { head, chain, .. }
                 | ResolvedPatternElement::NodeChain { head, chain } => {
@@ -348,53 +364,74 @@ fn eval_exists_subquery<S: GraphStorage>(
                             for fr in &frontier {
                                 let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
                                 if let Some(sid) = src_node_id {
-                                    for (rel_id, dst_id) in ctx.storage.expand_ids(
+                                    let _ = ctx.storage.try_for_each_expand_id(
                                         sid,
                                         step.rel.direction,
                                         &step.rel.types,
-                                    ) {
-                                        let matched = ctx
-                                            .storage
-                                            .with_node(dst_id, |dst| {
-                                                node_matches_labels(&dst.labels, &step.node.labels)
-                                                    && node_matches_properties(
+                                        |rel_id, dst_id| {
+                                            let matched = ctx
+                                                .storage
+                                                .with_node(dst_id, |dst| {
+                                                    node_matches_labels(
+                                                        &dst.labels,
+                                                        &step.node.labels,
+                                                    ) && node_matches_properties(
                                                         &dst.properties,
                                                         &step.node.properties,
                                                         fr,
                                                         ctx,
                                                     )
-                                            })
-                                            .unwrap_or(false);
-                                        if !matched {
-                                            continue;
-                                        }
-                                        let mut r = fr.clone();
-                                        if let Some(rv) = step.rel.var {
-                                            r.insert(rv, LoraValue::Relationship(rel_id));
-                                        }
-                                        if let Some(nv) = step.node.var {
-                                            r.insert(nv, LoraValue::Node(dst_id));
-                                        }
-                                        step_rows.push(r);
-                                    }
+                                                })
+                                                .unwrap_or(false);
+                                            if !matched {
+                                                return Ok::<(), ()>(());
+                                            }
+                                            let mut r = fr.clone();
+                                            if let Some(rv) = step.rel.var {
+                                                r.insert(rv, LoraValue::Relationship(rel_id));
+                                            }
+                                            if let Some(nv) = step.node.var {
+                                                r.insert(nv, LoraValue::Node(dst_id));
+                                            }
+                                            step_rows.push(r);
+                                            Ok(())
+                                        },
+                                    );
                                 }
                             }
                             frontier = step_rows;
                         }
-                        next_rows.extend(frontier);
+                        if is_last_part {
+                            if frontier
+                                .iter()
+                                .any(|r| exists_candidate_matches(where_, r, ctx))
+                            {
+                                return LoraValue::Bool(true);
+                            }
+                        } else {
+                            next_rows.extend(frontier);
+                        }
                     }
                 }
             }
         }
+        if next_rows.is_empty() {
+            return LoraValue::Bool(false);
+        }
         candidate_rows = next_rows;
     }
 
-    // Apply WHERE filter if present
-    if let Some(where_expr) = where_ {
-        candidate_rows.retain(|r| eval_expr(where_expr, r, ctx).is_truthy());
-    }
+    LoraValue::Bool(false)
+}
 
-    LoraValue::Bool(!candidate_rows.is_empty())
+fn exists_candidate_matches<S: GraphStorage>(
+    where_: Option<&ResolvedExpr>,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> bool {
+    where_
+        .map(|where_expr| eval_expr(where_expr, row, ctx).is_truthy())
+        .unwrap_or(true)
 }
 
 fn eval_pattern_comprehension<S: GraphStorage>(
@@ -433,35 +470,39 @@ fn eval_pattern_comprehension<S: GraphStorage>(
                             for fr in &frontier {
                                 let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
                                 if let Some(sid) = src_node_id {
-                                    for (rel_id, dst_id) in ctx.storage.expand_ids(
+                                    let _ = ctx.storage.try_for_each_expand_id(
                                         sid,
                                         step.rel.direction,
                                         &step.rel.types,
-                                    ) {
-                                        let matched = ctx
-                                            .storage
-                                            .with_node(dst_id, |dst| {
-                                                node_matches_labels(&dst.labels, &step.node.labels)
-                                                    && node_matches_properties(
+                                        |rel_id, dst_id| {
+                                            let matched = ctx
+                                                .storage
+                                                .with_node(dst_id, |dst| {
+                                                    node_matches_labels(
+                                                        &dst.labels,
+                                                        &step.node.labels,
+                                                    ) && node_matches_properties(
                                                         &dst.properties,
                                                         &step.node.properties,
                                                         fr,
                                                         ctx,
                                                     )
-                                            })
-                                            .unwrap_or(false);
-                                        if !matched {
-                                            continue;
-                                        }
-                                        let mut r = fr.clone();
-                                        if let Some(rv) = step.rel.var {
-                                            r.insert(rv, LoraValue::Relationship(rel_id));
-                                        }
-                                        if let Some(nv) = step.node.var {
-                                            r.insert(nv, LoraValue::Node(dst_id));
-                                        }
-                                        step_rows.push(r);
-                                    }
+                                                })
+                                                .unwrap_or(false);
+                                            if !matched {
+                                                return Ok::<(), ()>(());
+                                            }
+                                            let mut r = fr.clone();
+                                            if let Some(rv) = step.rel.var {
+                                                r.insert(rv, LoraValue::Relationship(rel_id));
+                                            }
+                                            if let Some(nv) = step.node.var {
+                                                r.insert(nv, LoraValue::Node(dst_id));
+                                            }
+                                            step_rows.push(r);
+                                            Ok(())
+                                        },
+                                    );
                                 }
                             }
                             frontier = step_rows;

@@ -7,6 +7,7 @@
 use lora_store::GraphStorage;
 
 use crate::errors::ExecResult;
+use crate::executor::sort_rows_with_top_k;
 use crate::value::Row;
 
 use super::{drain, RowSource, StreamCtx};
@@ -81,21 +82,24 @@ enum SortState<'a, S: GraphStorage> {
         upstream: Box<dyn RowSource + 'a>,
         ctx: StreamCtx<'a, S>,
         items: &'a [lora_analyzer::ResolvedSortItem],
+        top_k: Option<usize>,
     },
     Yielding(std::vec::IntoIter<Row>),
 }
 
 impl<'a, S: GraphStorage> SortSource<'a, S> {
-    pub(super) fn new(
+    pub(super) fn new_with_top_k(
         upstream: Box<dyn RowSource + 'a>,
         ctx: StreamCtx<'a, S>,
         items: &'a [lora_analyzer::ResolvedSortItem],
+        top_k: Option<usize>,
     ) -> Self {
         Self {
             state: SortState::Pending {
                 upstream,
                 ctx,
                 items,
+                top_k,
             },
         }
     }
@@ -106,18 +110,11 @@ impl<'a, S: GraphStorage> SortSource<'a, S> {
         upstream: &mut Box<dyn RowSource + 'a>,
         ctx: &StreamCtx<'a, S>,
         items: &[lora_analyzer::ResolvedSortItem],
+        top_k: Option<usize>,
     ) -> ExecResult<Vec<Row>> {
         let mut rows = drain(upstream.as_mut())?;
         let eval_ctx = ctx.eval_ctx();
-        rows.sort_by(|a, b| {
-            for item in items {
-                let ord = crate::executor::compare_sort_item(item, a, b, &eval_ctx);
-                if ord != std::cmp::Ordering::Equal {
-                    return ord;
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
+        sort_rows_with_top_k(&mut rows, items, &eval_ctx, top_k);
         Ok(rows)
     }
 }
@@ -130,8 +127,9 @@ impl<'a, S: GraphStorage> RowSource for SortSource<'a, S> {
                     upstream,
                     ctx,
                     items,
+                    top_k,
                 } => {
-                    let rows = Self::materialize(upstream, ctx, items)?;
+                    let rows = Self::materialize(upstream, ctx, items, *top_k)?;
                     self.state = SortState::Yielding(rows.into_iter());
                     // fall through to the Yielding match on the next iteration.
                 }

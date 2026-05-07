@@ -5,7 +5,7 @@
 //!   yielding one matching path at a time, sharing path prefixes via
 //!   the [`PathSegment`] singly-linked structure.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::ResolvedExpr;
@@ -14,7 +14,10 @@ use lora_store::{GraphStorage, NodeId, RelationshipId};
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
 use crate::eval::eval_expr;
-use crate::executor::{resolve_range, value_matches_property_value};
+use crate::executor::{
+    bound_node_id_for_expand, bound_relationship_id_for_expand, resolve_range,
+    value_matches_property_value,
+};
 use crate::value::{LoraValue, Row};
 
 use super::{RowSource, StreamCtx};
@@ -34,6 +37,7 @@ pub struct ExpandSource<'a, S: GraphStorage> {
     rel_properties: Option<&'a ResolvedExpr>,
     cur_row: Option<Row>,
     cur_edges: Vec<(u64, NodeId)>,
+    cur_rel_property_filter: Option<BTreeMap<String, LoraValue>>,
     cur_idx: usize,
 }
 
@@ -60,8 +64,17 @@ impl<'a, S: GraphStorage> ExpandSource<'a, S> {
             rel_properties,
             cur_row: None,
             cur_edges: Vec::new(),
+            cur_rel_property_filter: None,
             cur_idx: 0,
         }
+    }
+
+    #[inline]
+    fn clear_current(&mut self) {
+        self.cur_row = None;
+        self.cur_edges.clear();
+        self.cur_rel_property_filter = None;
+        self.cur_idx = 0;
     }
 }
 
@@ -73,20 +86,26 @@ impl<'a, S: GraphStorage> RowSource for ExpandSource<'a, S> {
                     Some(row) => {
                         // Resolve src now so we can `continue` out of
                         // rows that don't bind it.
-                        let src_id = match row.get(self.src) {
-                            Some(LoraValue::Node(id)) => *id,
-                            Some(other) => {
-                                return Err(ExecutorError::ExpectedNodeForExpand {
-                                    var: format!("{:?}", self.src),
-                                    found: value_kind(other),
-                                });
-                            }
-                            None => continue,
+                        let Some(src_id) = bound_node_id_for_expand(&row, self.src)? else {
+                            continue;
                         };
                         self.cur_edges =
                             self.ctx
                                 .storage
                                 .expand_ids(src_id, self.direction, self.types);
+                        self.cur_rel_property_filter = match self.rel_properties {
+                            Some(expr) if !self.cur_edges.is_empty() => {
+                                let eval_ctx = self.ctx.eval_ctx();
+                                let expected = eval_expr(expr, &row, &eval_ctx);
+                                let LoraValue::Map(map) = expected else {
+                                    return Err(ExecutorError::ExpectedPropertyMap {
+                                        found: value_kind(&expected),
+                                    });
+                                };
+                                Some(map)
+                            }
+                            _ => None,
+                        };
                         self.cur_idx = 0;
                         self.cur_row = Some(row);
                     }
@@ -101,58 +120,37 @@ impl<'a, S: GraphStorage> RowSource for ExpandSource<'a, S> {
                 self.cur_idx += 1;
 
                 // Relationship-property prefilter.
-                if let Some(expr) = self.rel_properties {
-                    let actual = self
+                if self.rel_properties.is_some() {
+                    let Some(map) = self.cur_rel_property_filter.as_ref() else {
+                        continue;
+                    };
+                    let matches = self
                         .ctx
                         .storage
-                        .with_relationship(rel_id, |rel| rel.properties.clone());
-                    let matches = match actual {
-                        Some(props) => {
-                            let eval_ctx = self.ctx.eval_ctx();
-                            let expected = eval_expr(expr, row_ref, &eval_ctx);
-                            let LoraValue::Map(map) = expected else {
-                                return Err(ExecutorError::ExpectedPropertyMap {
-                                    found: value_kind(&expected),
-                                });
-                            };
+                        .with_relationship(rel_id, |rel| {
                             map.iter().all(|(k, v)| {
-                                props
+                                rel.properties
                                     .get(k)
                                     .map(|actual| value_matches_property_value(v, actual))
                                     .unwrap_or(false)
                             })
-                        }
-                        None => false,
-                    };
+                        })
+                        .unwrap_or(false);
                     if !matches {
                         continue;
                     }
                 }
 
                 // Existing-binding cross-checks for dst and rel.
-                if let Some(existing_dst) = row_ref.get(self.dst) {
-                    match existing_dst {
-                        LoraValue::Node(id) if *id == dst_id => {}
-                        LoraValue::Node(_) => continue,
-                        other => {
-                            return Err(ExecutorError::ExpectedNodeForExpand {
-                                var: format!("{:?}", self.dst),
-                                found: value_kind(other),
-                            });
-                        }
+                if let Some(id) = bound_node_id_for_expand(row_ref, self.dst)? {
+                    if id != dst_id {
+                        continue;
                     }
                 }
                 if let Some(rel_var) = self.rel {
-                    if let Some(existing_rel) = row_ref.get(rel_var) {
-                        match existing_rel {
-                            LoraValue::Relationship(id) if *id == rel_id => {}
-                            LoraValue::Relationship(_) => continue,
-                            other => {
-                                return Err(ExecutorError::ExpectedRelationshipForExpand {
-                                    var: format!("{:?}", rel_var),
-                                    found: value_kind(other),
-                                });
-                            }
+                    if let Some(id) = bound_relationship_id_for_expand(row_ref, rel_var)? {
+                        if id != rel_id {
+                            continue;
                         }
                     }
                 }
@@ -170,9 +168,7 @@ impl<'a, S: GraphStorage> RowSource for ExpandSource<'a, S> {
             }
 
             // Edges for the current input row exhausted.
-            self.cur_row = None;
-            self.cur_edges.clear();
-            self.cur_idx = 0;
+            self.clear_current();
         }
     }
 }
@@ -292,8 +288,13 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
     fn start_row(&mut self, row: Row, src_id: NodeId) {
         self.cur_row = Some(row);
         self.pending_zero_hop = self.min_hops == 0;
-        self.frontier.clear();
+        self.reset_search_state();
         self.frontier.push((src_id, None));
+    }
+
+    #[inline]
+    fn reset_search_state(&mut self) {
+        self.frontier.clear();
         self.frontier_idx = 0;
         self.next_frontier.clear();
         self.depth = 1;
@@ -306,14 +307,7 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
     fn clear_current_row(&mut self) {
         self.cur_row = None;
         self.pending_zero_hop = false;
-        self.frontier.clear();
-        self.frontier_idx = 0;
-        self.next_frontier.clear();
-        self.depth = 1;
-        self.cur_path_node = None;
-        self.cur_path = None;
-        self.cur_edges.clear();
-        self.cur_edge_idx = 0;
+        self.reset_search_state();
     }
 
     fn row_for_path(&self, dst_node_id: NodeId, rel_ids: &[u64]) -> Row {
@@ -355,15 +349,8 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
             if self.cur_row.is_none() {
                 match self.upstream.next_row()? {
                     Some(row) => {
-                        let src_id = match row.get(self.src) {
-                            Some(LoraValue::Node(id)) => *id,
-                            Some(other) => {
-                                return Err(ExecutorError::ExpectedNodeForExpand {
-                                    var: format!("{:?}", self.src),
-                                    found: value_kind(other),
-                                });
-                            }
-                            None => continue,
+                        let Some(src_id) = bound_node_id_for_expand(&row, self.src)? else {
+                            continue;
                         };
                         self.start_row(row, src_id);
                     }
@@ -417,6 +404,13 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                         continue;
                     }
 
+                    if self.depth == self.max_hops && self.rel.is_none() {
+                        if self.depth >= self.min_hops {
+                            return Ok(Some(self.row_for_path(neighbor_id, &[])));
+                        }
+                        continue;
+                    }
+
                     // One Arc allocation per new path. The prefix is shared
                     // structurally — `cur_path` becomes this new segment's
                     // parent via a refcount bump, no copy of the prefix.
@@ -431,11 +425,13 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                     }
 
                     if self.depth >= self.min_hops {
-                        // Materialize the path to a flat Vec only when we
-                        // actually emit a row — most edges visited during
-                        // BFS never reach this branch.
-                        let rel_ids = PathSegment::to_vec(&Some(new_path));
-                        return Ok(Some(self.row_for_path(neighbor_id, &rel_ids)));
+                        if self.rel.is_some() {
+                            // Materialize the path only when the query bound
+                            // the variable-length relationship variable.
+                            let rel_ids = PathSegment::to_vec(&Some(new_path));
+                            return Ok(Some(self.row_for_path(neighbor_id, &rel_ids)));
+                        }
+                        return Ok(Some(self.row_for_path(neighbor_id, &[])));
                     }
                 }
 
