@@ -125,6 +125,9 @@ pub struct Aggregation {
 pub struct Sort {
     pub input: PlanNodeId,
     pub items: Vec<ResolvedSortItem>,
+    /// Optional upper bound for rows the sort must retain because a parent
+    /// LIMIT will discard everything after this many sorted rows.
+    pub top_k: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

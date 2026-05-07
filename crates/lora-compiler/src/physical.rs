@@ -124,6 +124,8 @@ pub struct HashAggregationExec {
 pub struct SortExec {
     pub input: PhysicalNodeId,
     pub items: Vec<ResolvedSortItem>,
+    /// Optional upper bound for rows Sort must retain before a parent LIMIT.
+    pub top_k: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

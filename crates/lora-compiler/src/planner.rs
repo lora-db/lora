@@ -185,6 +185,7 @@ impl Planner {
             node = self.push(LogicalOp::Sort(Sort {
                 input: node,
                 items: with.order.clone(),
+                top_k: None,
             }));
         }
 
@@ -223,6 +224,7 @@ impl Planner {
             node = self.push(LogicalOp::Sort(Sort {
                 input: node,
                 items: ret.order.clone(),
+                top_k: None,
             }));
         }
 

@@ -1,7 +1,8 @@
 use crate::logical::*;
 use crate::planner::Planner;
 use lora_analyzer::{
-    ResolvedChain, ResolvedExpr, ResolvedPattern, ResolvedPatternElement, ResolvedPatternPart,
+    symbols::VarId, ResolvedChain, ResolvedExpr, ResolvedPattern, ResolvedPatternElement,
+    ResolvedPatternPart,
 };
 use lora_ast::BinaryOp;
 
@@ -66,45 +67,62 @@ impl<'a> PatternPlanner<'a> {
             } => self.plan_node(input, *var, labels, properties.as_ref()),
 
             ResolvedPatternElement::ShortestPath { head, chain, .. }
-            | ResolvedPatternElement::NodeChain { head, chain } => {
-                let mut node =
-                    self.plan_node(input, head.var, &head.labels, head.properties.as_ref());
-                // The analyzer always assigns a VarId (even for anonymous nodes),
-                // so .unwrap() is safe here.
-                let mut current_src = head.var.unwrap();
-
-                for step in chain {
-                    let dst = step.node.var.unwrap();
-
-                    node = self.plan_expand(node, current_src, dst, step);
-
-                    // Filter inline properties on chain step nodes too
-                    if let Some(props) = step.node.properties.as_ref() {
-                        if let Some(predicate) = build_property_predicate(dst, props) {
-                            node = self.planner.push(LogicalOp::Filter(Filter {
-                                input: node,
-                                predicate,
-                            }));
-                        }
-                    }
-
-                    current_src = dst;
-                }
-
-                node
-            }
+            | ResolvedPatternElement::NodeChain { head, chain } => self.plan_node_chain(
+                input,
+                head.var,
+                &head.labels,
+                head.properties.as_ref(),
+                chain,
+            ),
         }
+    }
+
+    fn plan_node_chain(
+        &mut self,
+        input: Option<PlanNodeId>,
+        head_var: Option<VarId>,
+        head_labels: &[Vec<String>],
+        head_properties: Option<&ResolvedExpr>,
+        chain: &[ResolvedChain],
+    ) -> PlanNodeId {
+        let mut node = self.plan_node(input, head_var, head_labels, head_properties);
+        let mut current_src = assigned_node_var(head_var);
+
+        for step in chain {
+            let dst = assigned_node_var(step.node.var);
+            node = self.plan_expand(node, current_src, dst, step);
+            node = self.plan_step_node_filter(node, dst, step);
+            current_src = dst;
+        }
+
+        node
+    }
+
+    fn plan_step_node_filter(
+        &mut self,
+        input: PlanNodeId,
+        node_var: VarId,
+        step: &ResolvedChain,
+    ) -> PlanNodeId {
+        let Some(props) = step.node.properties.as_ref() else {
+            return input;
+        };
+        let Some(predicate) = build_property_predicate(node_var, props) else {
+            return input;
+        };
+
+        self.planner
+            .push(LogicalOp::Filter(Filter { input, predicate }))
     }
 
     fn plan_node(
         &mut self,
         input: Option<PlanNodeId>,
-        var: Option<lora_analyzer::symbols::VarId>,
+        var: Option<VarId>,
         labels: &[Vec<String>],
         properties: Option<&ResolvedExpr>,
     ) -> PlanNodeId {
-        // The analyzer always assigns a VarId (even for anonymous nodes).
-        let var = var.unwrap();
+        let var = assigned_node_var(var);
 
         let mut node = self.planner.push(LogicalOp::NodeScan(NodeScan {
             input,
@@ -128,8 +146,8 @@ impl<'a> PatternPlanner<'a> {
     fn plan_expand(
         &mut self,
         input: PlanNodeId,
-        src: lora_analyzer::symbols::VarId,
-        dst: lora_analyzer::symbols::VarId,
+        src: VarId,
+        dst: VarId,
         step: &ResolvedChain,
     ) -> PlanNodeId {
         self.planner.push(LogicalOp::Expand(Expand {
@@ -146,12 +164,7 @@ impl<'a> PatternPlanner<'a> {
 }
 
 /// Extract node and relationship VarIds from a pattern element for path construction.
-fn collect_chain_vars(
-    el: &ResolvedPatternElement,
-) -> (
-    Vec<lora_analyzer::symbols::VarId>,
-    Vec<lora_analyzer::symbols::VarId>,
-) {
+fn collect_chain_vars(el: &ResolvedPatternElement) -> (Vec<VarId>, Vec<VarId>) {
     match el {
         ResolvedPatternElement::Node { var, .. } => {
             let node_vars = var.iter().copied().collect();
@@ -178,6 +191,10 @@ fn collect_chain_vars(
             (node_vars, rel_vars)
         }
     }
+}
+
+fn assigned_node_var(var: Option<VarId>) -> VarId {
+    var.expect("analyzer assigns a VarId to every node pattern")
 }
 
 fn build_property_predicate(

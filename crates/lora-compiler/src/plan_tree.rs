@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use lora_analyzer::ResolvedExpr;
+use lora_analyzer::{ResolvedExpr, ResolvedProjection};
 use lora_ast::Direction;
 
 use crate::physical::{PhysicalNodeId, PhysicalOp, PhysicalPlan};
@@ -57,16 +57,7 @@ pub fn plan_tree_from_compiled(compiled: &CompiledQuery) -> PlanTree {
         children.push(build_union_branch(branch));
     }
     let mut details = BTreeMap::new();
-    let all = compiled.unions.iter().all(|b| b.all);
-    let any_distinct = compiled.unions.iter().any(|b| !b.all);
-    let kind = if all && !any_distinct {
-        "ALL"
-    } else if any_distinct && compiled.unions.iter().all(|b| !b.all) {
-        "DISTINCT"
-    } else {
-        "MIXED"
-    };
-    details.insert("kind".to_string(), kind.to_string());
+    details.insert("kind".to_string(), union_kind(&compiled.unions).to_string());
     PlanTree {
         root: PlanTreeNode {
             id: SYNTHETIC_ID,
@@ -95,32 +86,65 @@ fn build_union_branch(branch: &CompiledUnionBranch) -> PlanTreeNode {
 
 fn build_node(plan: &PhysicalPlan, id: PhysicalNodeId) -> PlanTreeNode {
     let op = &plan.nodes[id];
-    let (operator, details, child_ids) = describe(op);
-    let children = child_ids
+    let description = describe(op);
+    let children = description
+        .child_ids
         .into_iter()
         .map(|cid| build_node(plan, cid))
         .collect();
     PlanTreeNode {
         id,
-        operator,
-        details,
+        operator: description.operator,
+        details: description.details,
         estimated_rows: None,
         children,
     }
 }
 
-fn describe(op: &PhysicalOp) -> (String, BTreeMap<String, String>, Vec<PhysicalNodeId>) {
+struct PlanDescription {
+    operator: String,
+    details: BTreeMap<String, String>,
+    child_ids: Vec<PhysicalNodeId>,
+}
+
+impl PlanDescription {
+    fn leaf(operator: &str) -> Self {
+        Self::new(operator, BTreeMap::new(), Vec::new())
+    }
+
+    fn with_children(
+        operator: &str,
+        details: BTreeMap<String, String>,
+        child_ids: Vec<PhysicalNodeId>,
+    ) -> Self {
+        Self::new(operator, details, child_ids)
+    }
+
+    fn new(
+        operator: &str,
+        details: BTreeMap<String, String>,
+        child_ids: Vec<PhysicalNodeId>,
+    ) -> Self {
+        Self {
+            operator: operator.to_string(),
+            details,
+            child_ids,
+        }
+    }
+}
+
+fn describe(op: &PhysicalOp) -> PlanDescription {
     let mut d = BTreeMap::new();
     match op {
-        PhysicalOp::Argument(_) => ("Argument".to_string(), d, Vec::new()),
+        PhysicalOp::Argument(_) => PlanDescription::leaf("Argument"),
         PhysicalOp::NodeScan(n) => {
             d.insert("var".to_string(), var_str(n.var));
-            ("NodeScan".to_string(), d, opt_input(n.input))
+            PlanDescription::with_children("NodeScan", d, opt_input(n.input))
         }
         PhysicalOp::NodeByLabelScan(n) => {
             d.insert("var".to_string(), var_str(n.var));
             d.insert("labels".to_string(), label_groups_str(&n.labels));
-            ("NodeByLabelScan".to_string(), d, opt_input(n.input))
+            PlanDescription::with_children("NodeByLabelScan", d, opt_input(n.input))
         }
         PhysicalOp::NodeByPropertyScan(n) => {
             d.insert("var".to_string(), var_str(n.var));
@@ -129,79 +153,29 @@ fn describe(op: &PhysicalOp) -> (String, BTreeMap<String, String>, Vec<PhysicalN
             }
             d.insert("key".to_string(), n.key.clone());
             d.insert("value".to_string(), expr_str(&n.value));
-            ("NodeByPropertyScan".to_string(), d, opt_input(n.input))
+            PlanDescription::with_children("NodeByPropertyScan", d, opt_input(n.input))
         }
-        PhysicalOp::Expand(n) => {
-            d.insert("src".to_string(), var_str(n.src));
-            d.insert("dst".to_string(), var_str(n.dst));
-            if let Some(rel) = n.rel {
-                d.insert("rel".to_string(), var_str(rel));
-            }
-            if !n.types.is_empty() {
-                d.insert("types".to_string(), n.types.join("|"));
-            }
-            d.insert(
-                "direction".to_string(),
-                direction_str(n.direction).to_string(),
-            );
-            if let Some(props) = &n.rel_properties {
-                d.insert("rel_properties".to_string(), expr_str(props));
-            }
-            if let Some(range) = &n.range {
-                d.insert("range".to_string(), format!("{:?}", range));
-            }
-            ("Expand".to_string(), d, vec![n.input])
-        }
+        PhysicalOp::Expand(n) => describe_expand(n),
         PhysicalOp::Filter(n) => {
             d.insert("predicate".to_string(), expr_str(&n.predicate));
-            ("Filter".to_string(), d, vec![n.input])
+            PlanDescription::with_children("Filter", d, vec![n.input])
         }
-        PhysicalOp::Projection(n) => {
-            d.insert("distinct".to_string(), n.distinct.to_string());
-            d.insert(
-                "include_existing".to_string(),
-                n.include_existing.to_string(),
-            );
-            d.insert(
-                "items".to_string(),
-                n.items
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            ("Projection".to_string(), d, vec![n.input])
-        }
+        PhysicalOp::Projection(n) => describe_projection(n),
         PhysicalOp::Unwind(n) => {
             d.insert("alias".to_string(), var_str(n.alias));
             d.insert("expr".to_string(), expr_str(&n.expr));
-            ("Unwind".to_string(), d, vec![n.input])
+            PlanDescription::with_children("Unwind", d, vec![n.input])
         }
-        PhysicalOp::HashAggregation(n) => {
-            d.insert(
-                "group_by".to_string(),
-                n.group_by
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            d.insert(
-                "aggregates".to_string(),
-                n.aggregates
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            ("HashAggregation".to_string(), d, vec![n.input])
-        }
+        PhysicalOp::HashAggregation(n) => describe_hash_aggregation(n),
         PhysicalOp::Sort(n) => {
             d.insert(
                 "items".to_string(),
                 format!("{} sort key(s)", n.items.len()),
             );
-            ("Sort".to_string(), d, vec![n.input])
+            if let Some(top_k) = n.top_k {
+                d.insert("top_k".to_string(), top_k.to_string());
+            }
+            PlanDescription::with_children("Sort", d, vec![n.input])
         }
         PhysicalOp::Limit(n) => {
             if let Some(skip) = &n.skip {
@@ -210,52 +184,30 @@ fn describe(op: &PhysicalOp) -> (String, BTreeMap<String, String>, Vec<PhysicalN
             if let Some(limit) = &n.limit {
                 d.insert("limit".to_string(), expr_str(limit));
             }
-            ("Limit".to_string(), d, vec![n.input])
+            PlanDescription::with_children("Limit", d, vec![n.input])
         }
         PhysicalOp::Create(n) => {
             d.insert(
                 "elements".to_string(),
                 pattern_summary(n.pattern.parts.len()),
             );
-            ("Create".to_string(), d, vec![n.input])
+            PlanDescription::with_children("Create", d, vec![n.input])
         }
-        PhysicalOp::Merge(n) => {
-            d.insert(
-                "actions".to_string(),
-                if n.actions.is_empty() {
-                    "0".to_string()
-                } else {
-                    n.actions.len().to_string()
-                },
-            );
-            let _ = &n.pattern_part;
-            ("Merge".to_string(), d, vec![n.input])
-        }
+        PhysicalOp::Merge(n) => describe_merge(n),
         PhysicalOp::Delete(n) => {
             d.insert("detach".to_string(), n.detach.to_string());
             d.insert("targets".to_string(), n.expressions.len().to_string());
-            ("Delete".to_string(), d, vec![n.input])
+            PlanDescription::with_children("Delete", d, vec![n.input])
         }
         PhysicalOp::Set(n) => {
             d.insert("items".to_string(), n.items.len().to_string());
-            ("Set".to_string(), d, vec![n.input])
+            PlanDescription::with_children("Set", d, vec![n.input])
         }
         PhysicalOp::Remove(n) => {
             d.insert("items".to_string(), n.items.len().to_string());
-            ("Remove".to_string(), d, vec![n.input])
+            PlanDescription::with_children("Remove", d, vec![n.input])
         }
-        PhysicalOp::OptionalMatch(n) => {
-            d.insert(
-                "new_vars".to_string(),
-                n.new_vars
-                    .iter()
-                    .copied()
-                    .map(var_str)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            ("OptionalMatch".to_string(), d, vec![n.input, n.inner])
-        }
+        PhysicalOp::OptionalMatch(n) => describe_optional_match(n),
         PhysicalOp::PathBuild(n) => {
             d.insert("output".to_string(), var_str(n.output));
             d.insert("nodes".to_string(), n.node_vars.len().to_string());
@@ -263,9 +215,82 @@ fn describe(op: &PhysicalOp) -> (String, BTreeMap<String, String>, Vec<PhysicalN
             if let Some(all) = n.shortest_path_all {
                 d.insert("shortest_path_all".to_string(), all.to_string());
             }
-            ("PathBuild".to_string(), d, vec![n.input])
+            PlanDescription::with_children("PathBuild", d, vec![n.input])
         }
     }
+}
+
+fn union_kind(branches: &[CompiledUnionBranch]) -> &'static str {
+    let all = branches.iter().all(|b| b.all);
+    let all_distinct = branches.iter().all(|b| !b.all);
+    if all {
+        "ALL"
+    } else if all_distinct {
+        "DISTINCT"
+    } else {
+        "MIXED"
+    }
+}
+
+fn describe_expand(n: &crate::physical::ExpandExec) -> PlanDescription {
+    let mut d = BTreeMap::new();
+    d.insert("src".to_string(), var_str(n.src));
+    d.insert("dst".to_string(), var_str(n.dst));
+    if let Some(rel) = n.rel {
+        d.insert("rel".to_string(), var_str(rel));
+    }
+    if !n.types.is_empty() {
+        d.insert("types".to_string(), n.types.join("|"));
+    }
+    d.insert(
+        "direction".to_string(),
+        direction_str(n.direction).to_string(),
+    );
+    if let Some(props) = &n.rel_properties {
+        d.insert("rel_properties".to_string(), expr_str(props));
+    }
+    if let Some(range) = &n.range {
+        d.insert("range".to_string(), format!("{:?}", range));
+    }
+    PlanDescription::with_children("Expand", d, vec![n.input])
+}
+
+fn describe_projection(n: &crate::physical::ProjectionExec) -> PlanDescription {
+    let mut d = BTreeMap::new();
+    d.insert("distinct".to_string(), n.distinct.to_string());
+    d.insert(
+        "include_existing".to_string(),
+        n.include_existing.to_string(),
+    );
+    d.insert("items".to_string(), projection_names(&n.items));
+    PlanDescription::with_children("Projection", d, vec![n.input])
+}
+
+fn describe_hash_aggregation(n: &crate::physical::HashAggregationExec) -> PlanDescription {
+    let mut d = BTreeMap::new();
+    d.insert("group_by".to_string(), projection_names(&n.group_by));
+    d.insert("aggregates".to_string(), projection_names(&n.aggregates));
+    PlanDescription::with_children("HashAggregation", d, vec![n.input])
+}
+
+fn describe_merge(n: &crate::physical::MergeExec) -> PlanDescription {
+    let mut d = BTreeMap::new();
+    d.insert("actions".to_string(), n.actions.len().to_string());
+    PlanDescription::with_children("Merge", d, vec![n.input])
+}
+
+fn describe_optional_match(n: &crate::physical::OptionalMatchExec) -> PlanDescription {
+    let mut d = BTreeMap::new();
+    d.insert(
+        "new_vars".to_string(),
+        n.new_vars
+            .iter()
+            .copied()
+            .map(var_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    PlanDescription::with_children("OptionalMatch", d, vec![n.input, n.inner])
 }
 
 fn opt_input(input: Option<PhysicalNodeId>) -> Vec<PhysicalNodeId> {
@@ -282,6 +307,14 @@ fn label_groups_str(groups: &[Vec<String>]) -> String {
         .map(|or_group| or_group.join("|"))
         .collect::<Vec<_>>()
         .join("&")
+}
+
+fn projection_names(items: &[ResolvedProjection]) -> String {
+    items
+        .iter()
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn direction_str(d: Direction) -> &'static str {
