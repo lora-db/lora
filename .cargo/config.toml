@@ -1,3 +1,9 @@
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
