@@ -263,12 +263,12 @@ LoraDB can save the in-memory graph to a single file and restore it
 later. Python has three persistence shapes:
 
 - `Database.create()` / `Database()` => in-memory
-- `Database.create("app", {"database_dir": "./data"})` / `Database("app", {"database_dir": "./data"})` => archive-backed
+- `Database.create("app", {"database_dir": "./data"})` / `Database("app", {"database_dir": "./data"})` => container-backed
 
 Async follows the same rule:
 
 - `await AsyncDatabase.create()` => in-memory
-- `await AsyncDatabase.create("app", {"database_dir": "./data"})` => archive-backed
+- `await AsyncDatabase.create("app", {"database_dir": "./data"})` => container-backed
 - `Database.open_wal("./wal", options)` / `await AsyncDatabase.open_wal("./wal", options)` => explicit WAL with optional managed snapshots
 
 ```python
@@ -328,7 +328,7 @@ asyncio.run(main())
 Both save and load process the whole graph. A crash between saves loses every
 mutation since the last save unless you opened the database with WAL.
 
-Passing a database name and directory opens or creates an archive-backed persistent
+Passing a database name and directory opens or creates an container-backed persistent
 database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. `open_wal` opens a raw WAL
 directory; when `snapshot_dir` and `snapshot_every_commits` are set,

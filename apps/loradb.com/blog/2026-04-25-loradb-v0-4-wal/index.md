@@ -30,7 +30,7 @@ The shortest mental model:
 
 - `createDatabase()` in Node is still a fresh in-memory graph.
 - `createDatabase("application", { databaseDir: "./data" })` opens a
-  persistent archive-backed graph at `./data/application.loradb`.
+  persistent container-backed graph at `./data/application.loradb`.
 - `Database.create("app", {"database_dir": "./data"})`, `lora.New("app", lora.Options{DatabaseDir: "./data"})`, and
   `LoraRuby::Database.create("app", {"database_dir": "./data"})` do the same thing on Python,
   Go, and Ruby.
@@ -71,7 +71,7 @@ in-memory graph.
 ## The Node shape is deliberately explicit
 
 The Node API is meant to read like the difference between scratch,
-archive-backed, and explicit-WAL storage:
+container-backed, and explicit-WAL storage:
 
 ```ts
 import { createDatabase, openWalDatabase } from '@loradb/lora-node';
@@ -110,7 +110,7 @@ default to:
 - `SyncMode::GroupSync`
 - `8 MiB` target segment size
 
-Node exposes `syncMode` for archive-backed and explicit WAL opens. It
+Node exposes `syncMode` for container-backed and explicit WAL opens. It
 does **not** expose WAL status or truncate helpers yet. If you need
 that operator surface today, use Rust directly or run `lora-server`.
 
@@ -195,7 +195,7 @@ The main fixes:
 
 - the embedded-binding docs now state the initialization rule
   explicitly: no argument means in-memory, name plus directory means
-  `.loradb` archive-backed, and explicit WAL helpers own raw WAL
+  `.loradb` container-backed, and explicit WAL helpers own raw WAL
   directories;
 - the HTTP server and API docs no longer describe a pre-WAL world;
 - snapshots are now documented as a standalone primitive that can also

@@ -277,7 +277,7 @@ LoraDB can save the in-memory graph to a single file and restore it
 later. Go has three persistence shapes:
 
 - `lora.New()` / `lora.NewDatabase()` => in-memory
-- `lora.New("app", lora.Options{DatabaseDir: "./data"})` / `lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` => archive-backed
+- `lora.New("app", lora.Options{DatabaseDir: "./data"})` / `lora.NewDatabase("app", lora.Options{DatabaseDir: "./data"})` => container-backed
 - `lora.OpenWal(lora.WalOptions{WalDir: "./data/wal", SnapshotDir: "./data/snapshots"})` => explicit WAL with optional managed snapshots
 
 ```go
@@ -323,7 +323,7 @@ WAL-enabled deployment. Save and load encode or decode the whole graph, so large
 snapshots can still affect latency. A crash
 between saves loses every mutation since the last save.
 
-Passing a database name and directory opens or creates an archive-backed persistent
+Passing a database name and directory opens or creates an container-backed persistent
 database at `<databaseDir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. `OpenWal` opens a raw WAL
 directory; when `SnapshotDir` and `SnapshotEveryCommits` are set, the

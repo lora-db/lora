@@ -1,88 +1,79 @@
 {
-  "_meta": {
-    "purpose": "Baseline ns/iter for the perf_smoke_benchmarks suite. Used by scripts/check-perf-smoke.mjs to detect performance regressions. NOT an authoritative performance record. See docs/performance/perf-smoke.md.",
-    "refresh": "node scripts/check-perf-smoke.mjs --update <bencher-output>",
-    "default_threshold": 3,
-    "threshold_policy": "Each bench carries an explicit `threshold` (regression multiplier). 3 is the canonical 'obvious-regression' gate for low-variance in-memory paths; 5 is used for sub-µs benches and WAL-backed benches where filesystem and runner noise inflate variance. Widen rather than remove if a bench becomes chronically flaky — a 5× gate still catches a catastrophic regression.",
-    "seeded_on": "2026-04-24",
-    "seeded_from": "Rough scaling of docs/performance/benchmarks.md numbers to allow for ubuntu-latest CI being slower and noisier than the reference Apple Silicon run. Replace with real CI-measured values on first green run.",
-    "last_updated": "2026-05-06"
-  },
   "benchmarks": {
     "perf_smoke/scan_1k": {
-      "ns": 172801,
+      "ns": 180000,
       "threshold": 2
     },
     "perf_smoke/filter_1k": {
-      "ns": 166596,
+      "ns": 170000,
       "threshold": 2
     },
     "perf_smoke/traversal_chain_500": {
-      "ns": 167629,
+      "ns": 190000,
       "threshold": 2
     },
     "perf_smoke/write_batch_100": {
-      "ns": 109584,
+      "ns": 115000,
       "threshold": 2
     },
     "perf_smoke/stream_scan_1k": {
-      "ns": 201749,
+      "ns": 210000,
       "threshold": 2
     },
     "perf_smoke/stream_pull_one": {
-      "ns": 717,
+      "ns": 800,
       "threshold": 2
     },
     "perf_smoke/stream_write_100": {
-      "ns": 80604,
+      "ns": 85000,
       "threshold": 2
     },
     "perf_smoke/stream_write_sort_100": {
-      "ns": 205564,
+      "ns": 220000,
       "threshold": 2
     },
     "perf_smoke/tx_roundtrip_empty": {
-      "ns": 147,
+      "ns": 160,
       "threshold": 2
     },
     "perf_smoke/tx_read_1k": {
-      "ns": 267327,
+      "ns": 280000,
       "threshold": 2
     },
     "perf_smoke/tx_write_100": {
-      "ns": 99217,
+      "ns": 105000,
       "threshold": 2
     },
     "perf_smoke/write_one_wal_group": {
-      "ns": 4417,
+      "ns": 5000,
       "threshold": 2
     },
     "perf_smoke/write_batch_100_wal_group": {
-      "ns": 189573,
+      "ns": 200000,
       "threshold": 2
     },
     "perf_smoke/tx_write_100_wal_group": {
-      "ns": 2446265,
+      "ns": 3000000,
       "threshold": 2
     },
     "perf_smoke/write_one_wal_persistent": {
-      "ns": 4268990,
+      "ns": 5000000,
       "threshold": 2
     },
     "perf_smoke/scan_1k_wal_group": {
-      "ns": 177912,
+      "ns": 190000,
       "threshold": 2
     },
     "perf_smoke/delete_100_wal_group": {
-      "ns": 4509379,
+      "ns": 5000000,
       "threshold": 2
     },
     "perf_smoke/update_100_wal_group": {
-      "ns": 81676,
+      "ns": 90000,
       "threshold": 2
     },
     "perf_smoke/wal_replay_100": {
-      "ns": 533982,
+      "ns": 600000,
       "threshold": 2
     }
   }

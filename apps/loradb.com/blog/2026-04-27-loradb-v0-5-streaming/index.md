@@ -36,7 +36,7 @@ The short version:
 - snapshot helper updates across bindings;
 - graph storage property indexes;
 - memory indexing improvements;
-- stronger archive-backed WAL persistence;
+- stronger container-backed WAL persistence;
 - follow-up fixes across v0.5.1 through v0.5.6 for Node handles, WAL
   working directories, temporary paths, and persistence edge cases.
 
@@ -146,7 +146,7 @@ The patch train covered:
 - Node multiple-database handle fixes;
 - WAL working-directory fixes;
 - temporary-path fixes;
-- durability updates for archive-backed opens.
+- durability updates for container-backed opens.
 
 That is part of the story worth saying plainly. Persistence is not a
 single checkbox. It becomes trustworthy through boring fixes: paths,

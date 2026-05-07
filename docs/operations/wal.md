@@ -21,7 +21,7 @@ The WAL is shipped today through:
   - `Database::recover(snapshot, WalConfig)`
   - `Database::checkpoint_to(path)`
   - `Database::open_with_wal_snapshots(wal_config, snapshot_config)`
-  - `Database::open_named(name, options)` for `.loradb` archive-backed WAL mirrors
+  - `Database::open_named(name, options)` for `.loradb` container-backed WAL mirrors
 - The **Node.js binding** through named archive databases and explicit
   `openWalDatabase(...)`.
 - The **Python, Go, and Ruby bindings** through named archive databases and raw

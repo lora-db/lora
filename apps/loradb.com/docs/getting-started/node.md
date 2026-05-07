@@ -14,7 +14,7 @@ overlap on engine snapshots; write commits still serialize. The
 surface, helpers, and type guards match the
 [WASM binding](./wasm) for query execution and result handling — the
 same query code largely ports with an import swap. Node also adds
-filesystem-backed persistence the WASM build cannot: archive-backed
+filesystem-backed persistence the WASM build cannot: container-backed
 `.loradb` files, explicit WAL directories, and path-based snapshot
 save/load.
 
@@ -56,7 +56,7 @@ const db = await createDatabase(); // in-memory by default
 ```
 
 There is no synchronous constructor and no `Database.create()` static.
-Use `createDatabase(...)` for in-memory or archive-backed `.loradb`
+Use `createDatabase(...)` for in-memory or container-backed `.loradb`
 databases, and `openWalDatabase(...)` when you want an explicit WAL
 directory.
 
@@ -77,7 +77,7 @@ const wal = await openWalDatabase({
 If you want persistence, pass a database name and `databaseDir` to
 `createDatabase(...)`, or pass `walDir` to `openWalDatabase(...)`.
 
-To open an archive-backed embedded database instead of a fresh in-memory
+To open an container-backed embedded database instead of a fresh in-memory
 one, pass a database name and `databaseDir`:
 
 ```ts
@@ -298,7 +298,7 @@ snapshots; write commits still serialize.
 LoraDB has three Node persistence shapes:
 
 - `createDatabase()` for a purely in-memory graph.
-- `createDatabase('app', { databaseDir: './data' })` for archive-backed
+- `createDatabase('app', { databaseDir: './data' })` for container-backed
   recovery between process restarts.
 - `openWalDatabase({ walDir: './data/wal', snapshotDir: './data/snapshots' })`
   for an explicit WAL directory with optional managed snapshots.

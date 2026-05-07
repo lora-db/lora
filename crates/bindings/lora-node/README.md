@@ -98,7 +98,7 @@ and batches fsyncs for write-heavy workloads. Call `await db.sync()` when you
 need an immediate durability boundary before copying the portable `.loradb`
 archive while the database is still open.
 
-Node also has an archive-backed convenience overload:
+Node also has a container-backed convenience overload:
 
 ```ts
 import { createDatabase } from "@loradb/lora-node";
@@ -257,7 +257,7 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   path would require extending the value serializer.
 - **Cancellation.** The napi `Task` abstraction does not support
   cancellation once dispatched; a runaway query runs to completion.
-- **WAL surface.** Node persistence exposes archive-backed initialization,
+- **WAL surface.** Node persistence exposes container-backed initialization,
   `syncMode: "groupSync"`, and `db.sync()`. Checkpoint, truncate,
   and status controls are not exposed yet.
 - **Archive ownership.** One archive can only be open by one writer process at a

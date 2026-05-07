@@ -62,7 +62,7 @@ export declare class Database {
     statements: Array<{ query: string; params?: Record<string, unknown> | null }>,
     mode?: "read_write" | "read_only" | "readwrite" | "readonly" | "rw" | "ro" | null,
   ): Promise<Buffer[]>;
-  /** Force pending WAL bytes and the portable archive mirror to disk. */
+  /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>;
   clear(): Promise<void>;
   nodeCount(): number;

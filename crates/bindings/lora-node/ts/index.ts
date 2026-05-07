@@ -8,7 +8,7 @@
  * shapes defined in the shared TS contract (`crates/bindings/shared-ts/types.ts`).
  *
  * **Initialization is async-only.** The canonical entry point is
- * `createDatabase(...)`, optionally with archive-backed persistence. There is no
+ * `createDatabase(...)`, optionally with container-backed persistence. There is no
  * synchronous constructor. See the docs at
  * https://loradb.com/docs/getting-started/node for the full rationale.
  */
@@ -118,7 +118,7 @@ export type NodeSnapshotSaveTarget =
 export interface CreateDatabaseOptions {
   databaseDir?: string;
   /**
-   * Durability mode for archive-backed databases.
+   * Durability mode for container-backed databases.
    *
    * - `groupSync` writes WAL bytes before `execute()` resolves and batches
    *   fsyncs on a short background cadence. This is the default.
@@ -517,7 +517,7 @@ class DatabaseImpl {
   }
 
   /**
-   * Force pending WAL bytes and archive updates to disk.
+   * Force pending WAL bytes and container updates to disk.
    *
    * The default `groupSync` mode writes WAL bytes before `execute()` resolves
    * and batches fsyncs for speed; call `sync()` when you need an immediate
@@ -562,7 +562,7 @@ class DatabaseImpl {
   /**
    * Release the native database handle. Idempotent.
    *
-   * Call this when an archive-backed database needs to be reopened in the same
+   * Call this when a container-backed database needs to be reopened in the same
    * process. New operations after disposal reject with `database is closed`.
    */
   dispose(): void {

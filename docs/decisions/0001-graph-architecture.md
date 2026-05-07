@@ -8,14 +8,14 @@ Accepted, updated to match the current implementation.
 
 LoraDB needs a graph storage engine for a Cypher-like query engine. The current
 core is intentionally in-memory and single-process, while durability is layered
-around the store through snapshots, WAL, and named archives.
+around the store through snapshots, WAL, and named containers.
 
 Key forces:
 
 1. Fast point lookup by `NodeId` / `RelationshipId`.
 2. Deterministic catalog ordering for labels, relationship types, and map keys.
 3. Cheap read snapshots for concurrent read-only queries.
-4. A mutation vocabulary that can feed WAL, recovery, archive mirrors, and future
+4. A mutation vocabulary that can feed WAL, recovery, container mirrors, and future
    CDC-style consumers.
 5. A backend trait surface that does not force every implementation to expose
    borrowed records.

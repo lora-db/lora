@@ -12,7 +12,7 @@ image: /img/blog/loradb-v0-6-columnar-checkpoints-header.png
 LoraDB v0.6 is a persistence hardening release.
 
 v0.3 introduced snapshots. v0.4 introduced WAL recovery. v0.5 made the
-engine stream results and tightened archive-backed persistence. v0.6
+engine stream results and tightened container-backed persistence. v0.6
 brings those persistence pieces into a cleaner shape: columnar snapshots,
 managed WAL checkpoints, and binding APIs that describe the same
 operational model from every runtime.
@@ -101,7 +101,7 @@ v0.6 also cleaned up the API story across the surfaces:
 - Rust exposes the reference checkpoint, snapshot, WAL, and sync-mode
   controls.
 - `lora-server` keeps the operator-facing admin routes.
-- Node, Python, Go, and Ruby can open archive-backed named databases or
+- Node, Python, Go, and Ruby can open container-backed named databases or
   explicit WAL directories.
 - WASM remains pathless and snapshot-oriented, using byte/source APIs
   because the browser has no ordinary filesystem path.

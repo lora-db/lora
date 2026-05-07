@@ -143,7 +143,7 @@ for publishing writes and explicit read-write transactions, optional WAL /
 managed snapshot state, and a plan cache. Exposes `Database` entry points for
 materialized execution, parameterized execution, cooperative timeouts, row
 streams, explicit transactions, direct graph mutations, snapshots, WAL recovery,
-managed snapshots, and named `.loradb` archive-backed databases.
+managed snapshots, and named `.loradb` container-backed databases.
 
 **Key files**:
 - `src/database/mod.rs` — `Database` struct and snapshot publishing model

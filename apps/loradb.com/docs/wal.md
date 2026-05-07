@@ -32,7 +32,7 @@ together.
 Raw WAL helpers default to `SyncMode::GroupSync` and an 8 MiB segment
 target. Archive-backed named databases default to GroupSync with a 1s
 interval. Rust can override the low-level WAL config directly;
-Node exposes `syncMode` on both archive-backed and explicit WAL opens;
+Node exposes `syncMode` on both container-backed and explicit WAL opens;
 `lora-server` exposes it through `--wal-sync-mode`.
 
 ## Pick a persistence shape
@@ -83,7 +83,7 @@ helpers yet; use Rust or `lora-server` for those operator controls.
 from lora_python import Database, AsyncDatabase
 
 scratch = Database.create()            # in-memory
-db = Database.create("app", {"database_dir": "./data"})          # archive-backed
+db = Database.create("app", {"database_dir": "./data"})          # container-backed
 also_db = Database("app", {"database_dir": "./data"})            # equivalent
 
 wal_db = Database.open_wal(
@@ -106,7 +106,7 @@ async_wal = await AsyncDatabase.open_wal(
 
 ```go
 scratch, err := lora.New()        // in-memory
-db, err := lora.New("app", lora.Options{DatabaseDir: "./data"})      // archive-backed
+db, err := lora.New("app", lora.Options{DatabaseDir: "./data"})      // container-backed
 walDb, err := lora.OpenWal(lora.WalOptions{
     WalDir:               "./data/app.wal",
     SnapshotDir:          "./data/app.snapshots",
@@ -118,7 +118,7 @@ walDb, err := lora.OpenWal(lora.WalOptions{
 
 ```ruby
 scratch = LoraRuby::Database.create          # in-memory
-db = LoraRuby::Database.create("app", {"database_dir": "./data"})      # archive-backed
+db = LoraRuby::Database.create("app", {"database_dir": "./data"})      # container-backed
 wal_db = LoraRuby::Database.open_wal(
   "./data/app.wal",
   snapshot_dir: "./data/app.snapshots",
@@ -287,7 +287,7 @@ to the WAL's current `durableLsn`.
 - **No auth on the admin surface.** Snapshot and WAL admin routes are
   off by default but unauthenticated when enabled. Put them behind
   authenticated ingress only.
-- **No shared WAL/archive root.** One live handle owns one WAL directory or
+- **No shared WAL/container root.** One live handle owns one WAL directory or
   `.loradb` archive. Opening the same root from another process, or from a second live
   handle in the same process, fails until the first handle is closed.
 - **Binding support is asymmetric.** The filesystem-backed bindings can

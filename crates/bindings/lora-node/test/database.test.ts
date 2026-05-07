@@ -324,7 +324,7 @@ describe("Database — WAL-backed initialization", () => {
     );
   });
 
-  it("sync() makes the archive file visible before dispose", async () => {
+  it("sync() makes the container file visible before dispose", async () => {
     const walDir = await makeTempDir();
     const db = await createDatabase("app", { databaseDir: walDir });
 

@@ -143,7 +143,7 @@ Three steps line up against the boundary above, in order.
 
 **A write-ahead log.** This has since landed. Rust and `lora-server`
 expose the full WAL/checkpoint/status/truncate surface; Node, Python,
-Go, and Ruby expose archive-backed opens plus explicit raw-WAL helpers.
+Go, and Ruby expose container-backed opens plus explicit raw-WAL helpers.
 WAL checkpoints are snapshots with a meaningful `walLsn`, exactly the
 shape the snapshot contract prepared for.
 

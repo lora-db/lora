@@ -13,7 +13,7 @@
  * blocking the JS event loop.
  *
  * With no constructor arg the database is purely in-memory. Passing a
- * database name enables archive-backed persistence: the binding opens or
+ * database name enables container-backed persistence: the binding opens or
  * creates the serialized `.loradb` path under `database_dir` when supplied,
  * or the current directory otherwise. It replays committed writes on boot
  * and then serves queries against the recovered graph.
@@ -23,7 +23,7 @@ export declare class Database {
    * Construct a database.
    *
    * - no args => fresh in-memory graph.
-   * - `database_name` => archive-backed graph rooted at the serialized
+   * - `database_name` => container-backed graph rooted at the serialized
    *   `.loradb` path under `database_dir`, or the current directory when no
    *   directory is provided.
    */
@@ -85,7 +85,7 @@ export declare class Database {
    * rolled back by dropping the native transaction before commit.
    */
   transaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<Buffer[]>
-  /** Force pending WAL bytes and the portable archive mirror to disk. */
+  /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>
   /**
    * Drop every node and relationship, returning the database to an empty

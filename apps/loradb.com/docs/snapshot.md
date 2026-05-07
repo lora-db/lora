@@ -227,7 +227,7 @@ filesystem I/O proportional to graph size.
 import { createDatabase, type SnapshotMeta } from '@loradb/lora-node';
 
 const db = await createDatabase(); // in-memory by default
-// const db = await createDatabase('app', { databaseDir: './data' }); // archive-backed
+// const db = await createDatabase('app', { databaseDir: './data' }); // container-backed
 await db.execute("CREATE (:Person {name: 'Ada'})");
 
 const meta: SnapshotMeta = await db.saveSnapshot('graph.bin');

@@ -377,8 +377,8 @@ fn bench_perf_smoke(c: &mut Criterion) {
     // Same shape as `write_one_wal_group` but adds an explicit
     // `Database::sync()` on each iteration, forcing the WAL through to
     // durable storage before the next commit lands. This captures the
-    // fully-durable per-commit profile (formerly `SyncMode::PerCommit`)
-    // — the gap to `write_one_wal_group` is one `fsync` per iteration.
+    // fully-durable explicit-sync profile; the gap to `write_one_wal_group`
+    // is one `fsync` per iteration.
     // A regression here without one in `write_one_wal_group` points at
     // the durability boundary path (`force_fsync` / `sync_dir`).
     {

@@ -250,7 +250,7 @@ swapping the database's `ArcSwap` store pointer.
 
 The WAL is built on `MutationEvent`. When WAL is enabled, `InMemoryGraph` has a
 `MutationRecorder`; writes are buffered into committed batches and replayed on
-recovery. Named databases use the same WAL events with a `.loradb` ZIP archive
+recovery. Named databases use the same WAL events with a `.loradb` container
 mirror.
 
 See [Snapshots](../operations/snapshots.md) and [WAL](../operations/wal.md) for

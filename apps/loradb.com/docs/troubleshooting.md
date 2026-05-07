@@ -129,7 +129,7 @@ Common mistakes:
 
 1. **Data was created on a different non-persistent handle.** Plain
    in-memory databases start empty on each process run. Use a
-   archive-backed open (`createDatabase("app", { databaseDir: "./data" })`, `Database.create("app", {"database_dir": "./data"})`,
+   container-backed open (`createDatabase("app", { databaseDir: "./data" })`, `Database.create("app", {"database_dir": "./data"})`,
    `lora.New("app", lora.Options{DatabaseDir: "./data"})`, etc.), an
    explicit WAL open (`openWalDatabase({ walDir: "./wal" })`,
    `Database.open_wal("./wal")`, `lora.OpenWal(...)`,
@@ -367,16 +367,16 @@ curl -sX POST http://127.0.0.1:4747/admin/checkpoint \
 or start the server with `--snapshot-path` so body-less checkpoints
 have a default target.
 
-### WAL/archive root is already open
+### WAL/container root is already open
 
-**Symptom:** Opening a WAL-backed or archive-backed database fails with
-an error that the WAL/archive root is already open by another live handle.
+**Symptom:** Opening a WAL-backed or container-backed database fails with
+an error that the WAL/container root is already open by another live handle.
 
 **Likely cause:** Another live process or database handle already owns
 that WAL directory or `.loradb` archive. LoraDB takes a lock so two appenders
 cannot write to the same log at once.
 
-**Fix:** Use one WAL/archive root per live database, or close the first
+**Fix:** Use one WAL/container root per live database, or close the first
 handle before reopening the same directory in the same process:
 `db.dispose()` in Node, `db.close()` / `await db.close()` in Python,
 `db.Close()` in Go, or `db.close` in Ruby.

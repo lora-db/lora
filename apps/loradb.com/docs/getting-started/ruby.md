@@ -219,7 +219,7 @@ LoraDB can save the in-memory graph to a single file and restore it
 later. Ruby has three persistence shapes:
 
 - `LoraRuby::Database.create` / `LoraRuby::Database.new` => in-memory
-- `LoraRuby::Database.create("app", {"database_dir": "./data"})` / `LoraRuby::Database.new("app", { database_dir: "./data" })` => archive-backed
+- `LoraRuby::Database.create("app", {"database_dir": "./data"})` / `LoraRuby::Database.new("app", { database_dir: "./data" })` => container-backed
 - `LoraRuby::Database.open_wal("./data/wal", snapshot_dir: "./data/snapshots")` => explicit WAL with optional managed snapshots
 
 ```ruby
@@ -254,7 +254,7 @@ mutation since the last save unless you opened the database with WAL. See
 the canonical [Snapshots guide](../snapshot) for the wire format and
 atomic-rename guarantees.
 
-Passing a database name and directory opens or creates an archive-backed persistent
+Passing a database name and directory opens or creates an container-backed persistent
 database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. `open_wal` opens a raw WAL
 directory; when `snapshot_dir` and `snapshot_every_commits` are set,

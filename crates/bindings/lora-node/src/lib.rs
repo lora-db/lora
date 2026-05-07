@@ -62,7 +62,7 @@ struct PersistentOpenOptions {
 /// blocking the JS event loop.
 ///
 /// With no constructor arg the database is purely in-memory. Passing a
-/// database name enables archive-backed persistence: the binding opens or
+/// database name enables container-backed persistence: the binding opens or
 /// creates the serialized `.loradb` path under `database_dir` when supplied,
 /// or the current directory otherwise. It replays committed writes on boot
 /// and then serves queries against the recovered graph.
@@ -78,7 +78,7 @@ impl Database {
     /// Construct a database.
     ///
     /// - no args => fresh in-memory graph.
-    /// - `database_name` => archive-backed graph rooted at the serialized
+    /// - `database_name` => container-backed graph rooted at the serialized
     ///   `.loradb` path under `database_dir`, or the current directory when no
     ///   directory is provided.
     #[napi(constructor)]
@@ -306,7 +306,7 @@ impl Database {
         }))
     }
 
-    /// Force pending WAL bytes and the portable archive mirror to disk.
+    /// Force pending WAL bytes and the portable container mirror to disk.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn sync(&self) -> Result<AsyncTask<SyncTask>> {
         Ok(AsyncTask::new(SyncTask { db: self.inner()? }))
