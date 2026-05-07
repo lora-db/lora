@@ -218,23 +218,7 @@ pub(super) fn eval_function<S: GraphStorage>(
             _ => LoraValue::Null,
         },
 
-        "sqrt" => match args.first() {
-            Some(LoraValue::Float(f)) => {
-                if *f < 0.0 {
-                    LoraValue::Null
-                } else {
-                    LoraValue::Float(f.sqrt())
-                }
-            }
-            Some(LoraValue::Int(i)) => {
-                if *i < 0 {
-                    LoraValue::Null
-                } else {
-                    LoraValue::Float((*i as f64).sqrt())
-                }
-            }
-            _ => LoraValue::Null,
-        },
+        "sqrt" => numeric_unary(args, |f| (f >= 0.0).then(|| f.sqrt())),
 
         "sign" => match args.first() {
             Some(LoraValue::Int(i)) => LoraValue::Int(i.signum()),
@@ -496,85 +480,25 @@ pub(super) fn eval_function<S: GraphStorage>(
         },
 
         // -- Trigonometric / logarithmic / constants --------------------------
-        "log" | "ln" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) if f > 0.0 => LoraValue::Float(f.ln()),
-                _ => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "log" | "ln" => numeric_unary(args, |f| (f > 0.0).then(|| f.ln())),
 
-        "log10" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) if f > 0.0 => LoraValue::Float(f.log10()),
-                _ => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "log10" => numeric_unary(args, |f| (f > 0.0).then(|| f.log10())),
 
-        "exp" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) => LoraValue::Float(f.exp()),
-                None => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "exp" => numeric_unary(args, |f| Some(f.exp())),
 
-        "sin" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) => LoraValue::Float(f.sin()),
-                None => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "sin" => numeric_unary(args, |f| Some(f.sin())),
 
-        "cos" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) => LoraValue::Float(f.cos()),
-                None => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "cos" => numeric_unary(args, |f| Some(f.cos())),
 
-        "tan" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) => LoraValue::Float(f.tan()),
-                None => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "tan" => numeric_unary(args, |f| Some(f.tan())),
 
-        "asin" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) if (-1.0..=1.0).contains(&f) => LoraValue::Float(f.asin()),
-                _ => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "asin" => numeric_unary(args, |f| (-1.0..=1.0).contains(&f).then(|| f.asin())),
 
-        "acos" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) if (-1.0..=1.0).contains(&f) => LoraValue::Float(f.acos()),
-                _ => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "acos" => numeric_unary(args, |f| (-1.0..=1.0).contains(&f).then(|| f.acos())),
 
-        "atan" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) => LoraValue::Float(f.atan()),
-                None => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "atan" => numeric_unary(args, |f| Some(f.atan())),
 
-        "atan2" => match (args.first(), args.get(1)) {
-            (Some(y_val), Some(x_val)) => match (y_val.as_f64(), x_val.as_f64()) {
-                (Some(y), Some(x)) => LoraValue::Float(y.atan2(x)),
-                _ => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "atan2" => numeric_binary(args, |y, x| Some(y.atan2(x))),
 
         "pi" => LoraValue::Float(std::f64::consts::PI),
 
@@ -594,21 +518,9 @@ pub(super) fn eval_function<S: GraphStorage>(
             LoraValue::Float((hash / u64::MAX as f64).abs())
         }
 
-        "degrees" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) => LoraValue::Float(f.to_degrees()),
-                None => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "degrees" => numeric_unary(args, |f| Some(f.to_degrees())),
 
-        "radians" => match args.first() {
-            Some(v) => match v.as_f64() {
-                Some(f) => LoraValue::Float(f.to_radians()),
-                None => LoraValue::Null,
-            },
-            _ => LoraValue::Null,
-        },
+        "radians" => numeric_unary(args, |f| Some(f.to_radians())),
 
         // -- Temporal constructors -------------------------------------------
         "date" => match args.first() {
@@ -880,6 +792,28 @@ pub(super) fn eval_function<S: GraphStorage>(
         "vector_distance" => eval_vector_distance_fn(args),
         "vector_norm" => eval_vector_norm_fn(args),
 
+        _ => LoraValue::Null,
+    }
+}
+
+#[inline]
+fn numeric_unary(args: &[LoraValue], op: impl FnOnce(f64) -> Option<f64>) -> LoraValue {
+    args.first()
+        .and_then(LoraValue::as_f64)
+        .and_then(op)
+        .map(LoraValue::Float)
+        .unwrap_or(LoraValue::Null)
+}
+
+#[inline]
+fn numeric_binary(args: &[LoraValue], op: impl FnOnce(f64, f64) -> Option<f64>) -> LoraValue {
+    match (
+        args.first().and_then(LoraValue::as_f64),
+        args.get(1).and_then(LoraValue::as_f64),
+    ) {
+        (Some(lhs), Some(rhs)) => op(lhs, rhs)
+            .map(LoraValue::Float)
+            .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
     }
 }

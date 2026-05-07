@@ -20,13 +20,14 @@ pub use types::{
     cartesian_distance, cosine_similarity_bounded, cosine_similarity_raw, days_in_month,
     dot_product, euclidean_distance, euclidean_distance_squared, euclidean_norm,
     euclidean_similarity, hamming_distance, haversine_distance, is_leap_year, manhattan_distance,
-    manhattan_norm, parse_string_values, point_distance, resolve_srid, srid_from_crs_name,
-    srid_is_3d, srid_is_geographic, srid_is_supported, ExpandedRelationship, LoraBinary, LoraDate,
-    LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime, LoraVector,
-    NodeId, NodeRecord, PointKeyFamily, Properties, PropertyValue, RawCoordinate, RelationshipId,
-    RelationshipRecord, VectorBuildError, VectorCoordinateType, VectorValues, CRS_CARTESIAN,
-    CRS_CARTESIAN_3D, CRS_WGS84_2D, CRS_WGS84_3D, MAX_VECTOR_DIMENSION, SRID_CARTESIAN,
-    SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
+    manhattan_norm, parse_string_values, point_distance, resolve_srid, resolve_srid_checked,
+    srid_from_crs_name, srid_is_3d, srid_is_geographic, srid_is_supported, ExpandedRelationship,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, NodeId, NodeRecord, ParseVectorCoordinateTypeError, PointKeyFamily,
+    Properties, PropertyValue, RawCoordinate, RelationshipId, RelationshipRecord, SridResolveError,
+    VectorBuildError, VectorCoordinateType, VectorValues, CRS_CARTESIAN, CRS_CARTESIAN_3D,
+    CRS_WGS84_2D, CRS_WGS84_3D, MAX_VECTOR_DIMENSION, SRID_CARTESIAN, SRID_CARTESIAN_3D,
+    SRID_WGS84, SRID_WGS84_3D,
 };
 
 // ---------- Storage trait surface ----------

@@ -2,68 +2,31 @@
 //! raw-coordinate input shape, the validating `try_new` constructor,
 //! and the string-form coordinate parser.
 
-use std::fmt;
-
 use super::types::{LoraVector, VectorCoordinateType, VectorValues, MAX_VECTOR_DIMENSION};
 
 /// Error returned by [`LoraVector::try_new`]. Kept as a concrete enum so
 /// the executor can render a single-line error message without inspecting
 /// the underlying cause.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum VectorBuildError {
+    #[error("vector dimension must be between 1 and {MAX_VECTOR_DIMENSION}, got {0}")]
     InvalidDimension(i64),
-    DimensionMismatch {
-        expected: usize,
-        got: usize,
-    },
+    #[error("vector value length {got} does not match declared dimension {expected}")]
+    DimensionMismatch { expected: usize, got: usize },
+    #[error("vector coordinates cannot contain nested lists")]
     NestedListNotAllowed,
+    #[error("vector coordinates must be numeric, got `{0}`")]
     NonNumericCoordinate(String),
+    #[error("vector coordinates cannot be NaN or Infinity")]
     NonFiniteCoordinate,
+    #[error("value `{value}` is out of range for coordinate type `{coordinate_type}`")]
     OutOfRange {
         coordinate_type: VectorCoordinateType,
         value: String,
     },
+    #[error("unknown vector coordinate type `{0}`")]
     UnknownCoordinateType(String),
 }
-
-impl fmt::Display for VectorBuildError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            VectorBuildError::InvalidDimension(d) => {
-                write!(
-                    f,
-                    "vector dimension must be between 1 and {MAX_VECTOR_DIMENSION}, got {d}"
-                )
-            }
-            VectorBuildError::DimensionMismatch { expected, got } => write!(
-                f,
-                "vector value length {got} does not match declared dimension {expected}"
-            ),
-            VectorBuildError::NestedListNotAllowed => {
-                write!(f, "vector coordinates cannot contain nested lists")
-            }
-            VectorBuildError::NonNumericCoordinate(kind) => {
-                write!(f, "vector coordinates must be numeric, got `{kind}`")
-            }
-            VectorBuildError::NonFiniteCoordinate => {
-                write!(f, "vector coordinates cannot be NaN or Infinity")
-            }
-            VectorBuildError::OutOfRange {
-                coordinate_type,
-                value,
-            } => write!(
-                f,
-                "value `{value}` is out of range for coordinate type `{}`",
-                coordinate_type.as_str()
-            ),
-            VectorBuildError::UnknownCoordinateType(name) => {
-                write!(f, "unknown vector coordinate type `{name}`")
-            }
-        }
-    }
-}
-
-impl std::error::Error for VectorBuildError {}
 
 /// Raw numeric input for one coordinate before it has been coerced into
 /// the destination coordinate type. Executors / binding layers feed

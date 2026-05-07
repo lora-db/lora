@@ -42,15 +42,7 @@ pub struct Compiler;
 
 impl Compiler {
     pub fn compile(query: &ResolvedQuery) -> CompiledQuery {
-        let mut planner = Planner::new();
-        let logical = planner.plan(query);
-
-        let mut optimizer = Optimizer::new();
-        let optimized = optimizer.optimize(logical);
-
-        // Lower by moving the logical plan — it is not needed after lowering.
-        let physical = optimizer.lower_to_physical(optimized);
-
+        let physical = compile_physical(query);
         let unions = query
             .unions
             .iter()
@@ -59,19 +51,24 @@ impl Compiler {
                     clauses: union_part.clauses.clone(),
                     unions: Vec::new(),
                 };
-                let mut branch_planner = Planner::new();
-                let branch_logical = branch_planner.plan(&branch_query);
-                let mut branch_optimizer = Optimizer::new();
-                let branch_optimized = branch_optimizer.optimize(branch_logical);
-                let branch_physical = branch_optimizer.lower_to_physical(branch_optimized);
-
                 CompiledUnionBranch {
                     all: union_part.all,
-                    physical: branch_physical,
+                    physical: compile_physical(&branch_query),
                 }
             })
             .collect();
 
         CompiledQuery { physical, unions }
     }
+}
+
+fn compile_physical(query: &ResolvedQuery) -> PhysicalPlan {
+    let mut planner = Planner::new();
+    let logical = planner.plan(query);
+
+    let mut optimizer = Optimizer::new();
+    let optimized = optimizer.optimize(logical);
+
+    // Lower by moving the logical plan; it is not needed after lowering.
+    optimizer.lower_to_physical(optimized)
 }

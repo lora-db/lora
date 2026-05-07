@@ -312,13 +312,13 @@ impl InMemoryGraph {
     }
 
     #[inline]
-    pub(super) fn outgoing_at(&self, id: NodeId) -> Option<&Vec<RelationshipId>> {
-        self.outgoing.get(id as usize)
+    pub(super) fn outgoing_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
+        self.outgoing.get(id as usize).map(Vec::as_slice)
     }
 
     #[inline]
-    pub(super) fn incoming_at(&self, id: NodeId) -> Option<&Vec<RelationshipId>> {
-        self.incoming.get(id as usize)
+    pub(super) fn incoming_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
+        self.incoming.get(id as usize).map(Vec::as_slice)
     }
 
     #[inline]
@@ -1255,15 +1255,21 @@ impl InMemoryGraph {
         direction: Direction,
     ) -> Vec<RelationshipId> {
         match direction {
-            Direction::Left => self.incoming_at(node_id).cloned().unwrap_or_default(),
+            Direction::Left => self
+                .incoming_at(node_id)
+                .map(<[_]>::to_vec)
+                .unwrap_or_default(),
 
-            Direction::Right => self.outgoing_at(node_id).cloned().unwrap_or_default(),
+            Direction::Right => self
+                .outgoing_at(node_id)
+                .map(<[_]>::to_vec)
+                .unwrap_or_default(),
 
             Direction::Undirected => {
                 let out = self.outgoing_at(node_id);
                 let inc = self.incoming_at(node_id);
                 let mut ids = Vec::with_capacity(
-                    out.map(Vec::len).unwrap_or(0) + inc.map(Vec::len).unwrap_or(0),
+                    out.map(<[_]>::len).unwrap_or(0) + inc.map(<[_]>::len).unwrap_or(0),
                 );
 
                 if let Some(out) = out {
@@ -1310,7 +1316,7 @@ impl InMemoryGraph {
         let out = self.outgoing_at(node_id);
         let inc = self.incoming_at(node_id);
         let mut rel_ids =
-            Vec::with_capacity(out.map(Vec::len).unwrap_or(0) + inc.map(Vec::len).unwrap_or(0));
+            Vec::with_capacity(out.map(<[_]>::len).unwrap_or(0) + inc.map(<[_]>::len).unwrap_or(0));
 
         if let Some(ids) = out {
             rel_ids.extend(ids.iter().copied());

@@ -15,9 +15,9 @@ mod srid;
 pub use distance::{cartesian_distance, haversine_distance, point_distance};
 pub use point::LoraPoint;
 pub use srid::{
-    resolve_srid, srid_from_crs_name, srid_is_3d, srid_is_geographic, srid_is_supported,
-    PointKeyFamily, CRS_CARTESIAN, CRS_CARTESIAN_3D, CRS_WGS84_2D, CRS_WGS84_3D, SRID_CARTESIAN,
-    SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
+    resolve_srid, resolve_srid_checked, srid_from_crs_name, srid_is_3d, srid_is_geographic,
+    srid_is_supported, PointKeyFamily, SridResolveError, CRS_CARTESIAN, CRS_CARTESIAN_3D,
+    CRS_WGS84_2D, CRS_WGS84_3D, SRID_CARTESIAN, SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
 };
 
 #[cfg(test)]

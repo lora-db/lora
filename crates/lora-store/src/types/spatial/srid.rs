@@ -26,6 +26,65 @@ pub enum PointKeyFamily {
     Geographic,
 }
 
+impl PointKeyFamily {
+    fn as_key_description(self) -> &'static str {
+        match self {
+            PointKeyFamily::Cartesian => "cartesian (x/y)",
+            PointKeyFamily::Geographic => "geographic (longitude/latitude)",
+        }
+    }
+
+    fn as_srid_description(self) -> &'static str {
+        match self {
+            PointKeyFamily::Cartesian => "cartesian",
+            PointKeyFamily::Geographic => "geographic",
+        }
+    }
+}
+
+/// Structured failure modes for SRID/CRS resolution.
+///
+/// [`resolve_srid`] preserves the historic `String` error contract; new
+/// library code can call [`resolve_srid_checked`] when it needs to match
+/// specific validation failures without parsing message text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SridResolveError {
+    #[error(
+        "point() got unsupported crs '{0}' \
+         (expected one of cartesian, cartesian-3D, WGS-84, WGS-84-3D)"
+    )]
+    UnsupportedCrs(String),
+
+    #[error("point() got unsupported srid {0}")]
+    SridOutOfRange(i64),
+
+    #[error(
+        "point() got unsupported srid {0} \
+         (expected one of 7203, 9157, 4326, 4979)"
+    )]
+    UnsupportedSrid(u32),
+
+    #[error("point() crs '{crs}' and srid {srid} do not agree")]
+    CrsSridConflict { crs: String, srid: u32 },
+
+    #[error(
+        "point() coordinates use {} keys but crs/srid is {}",
+        .coordinates.as_key_description(),
+        .srid.as_srid_description()
+    )]
+    FamilyMismatch {
+        coordinates: PointKeyFamily,
+        srid: PointKeyFamily,
+    },
+
+    #[error(
+        "point() dimensionality mismatch: {} coordinates but {} crs/srid",
+        if *.coordinates_3d { "3D" } else { "2D" },
+        if *.srid_3d { "3D" } else { "2D" }
+    )]
+    DimensionMismatch { coordinates_3d: bool, srid_3d: bool },
+}
+
 /// Normalise a CRS name string to its canonical SRID.
 ///
 /// Case-insensitive. Accepts "WGS-84" as an alias for the 2D form.
@@ -68,27 +127,33 @@ pub fn resolve_srid(
     family: PointKeyFamily,
     is_3d: bool,
 ) -> Result<u32, String> {
+    resolve_srid_checked(crs, srid, family, is_3d).map_err(|err| err.to_string())
+}
+
+/// Resolve a final SRID, returning a structured error for callers that need
+/// to distinguish validation failures without depending on display text.
+pub fn resolve_srid_checked(
+    crs: Option<&str>,
+    srid: Option<i64>,
+    family: PointKeyFamily,
+    is_3d: bool,
+) -> Result<u32, SridResolveError> {
     let crs_srid = match crs {
-        Some(name) => Some(srid_from_crs_name(name).ok_or_else(|| {
-            format!(
-                "point() got unsupported crs '{name}' \
-                 (expected one of cartesian, cartesian-3D, WGS-84, WGS-84-3D)"
-            )
-        })?),
+        Some(name) => Some(
+            srid_from_crs_name(name)
+                .ok_or_else(|| SridResolveError::UnsupportedCrs(name.to_string()))?,
+        ),
         None => None,
     };
 
     let explicit_srid = match srid {
         Some(n) => {
             if n < 0 || n > u32::MAX as i64 {
-                return Err(format!("point() got unsupported srid {n}"));
+                return Err(SridResolveError::SridOutOfRange(n));
             }
             let n = n as u32;
             if !srid_is_supported(n) {
-                return Err(format!(
-                    "point() got unsupported srid {n} \
-                     (expected one of 7203, 9157, 4326, 4979)"
-                ));
+                return Err(SridResolveError::UnsupportedSrid(n));
             }
             Some(n)
         }
@@ -97,11 +162,10 @@ pub fn resolve_srid(
 
     let resolved = match (crs_srid, explicit_srid) {
         (Some(a), Some(b)) if a != b => {
-            return Err(format!(
-                "point() crs '{}' and srid {} do not agree",
-                crs.unwrap(),
-                b
-            ));
+            return Err(SridResolveError::CrsSridConflict {
+                crs: crs.unwrap().to_string(),
+                srid: b,
+            });
         }
         (Some(a), _) => Some(a),
         (None, Some(b)) => Some(b),
@@ -114,23 +178,21 @@ pub fn resolve_srid(
             let srid_geo = srid_is_geographic(s);
             let family_geo = matches!(family, PointKeyFamily::Geographic);
             if srid_geo != family_geo {
-                return Err(format!(
-                    "point() coordinates use {} keys but crs/srid is {}",
-                    if family_geo {
-                        "geographic (longitude/latitude)"
+                return Err(SridResolveError::FamilyMismatch {
+                    coordinates: family,
+                    srid: if srid_geo {
+                        PointKeyFamily::Geographic
                     } else {
-                        "cartesian (x/y)"
+                        PointKeyFamily::Cartesian
                     },
-                    if srid_geo { "geographic" } else { "cartesian" }
-                ));
+                });
             }
             // Dimensionality agreement.
             if srid_is_3d(s) != is_3d {
-                return Err(format!(
-                    "point() dimensionality mismatch: {} coordinates but {} crs/srid",
-                    if is_3d { "3D" } else { "2D" },
-                    if srid_is_3d(s) { "3D" } else { "2D" }
-                ));
+                return Err(SridResolveError::DimensionMismatch {
+                    coordinates_3d: is_3d,
+                    srid_3d: srid_is_3d(s),
+                });
             }
             s
         }

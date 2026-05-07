@@ -30,6 +30,15 @@ fn parse_coordinate_type_accepts_aliases() {
 }
 
 #[test]
+fn parse_coordinate_type_implements_from_str() {
+    assert_eq!(
+        "signed integer".parse::<VectorCoordinateType>().unwrap(),
+        VectorCoordinateType::Integer64
+    );
+    assert!("bogus".parse::<VectorCoordinateType>().is_err());
+}
+
+#[test]
 fn try_new_rejects_zero_dim() {
     let err = LoraVector::try_new(vec![], 0, VectorCoordinateType::Float64).unwrap_err();
     assert!(matches!(err, VectorBuildError::InvalidDimension(0)));

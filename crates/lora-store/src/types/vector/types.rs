@@ -104,6 +104,25 @@ impl fmt::Display for VectorCoordinateType {
     }
 }
 
+impl std::str::FromStr for VectorCoordinateType {
+    type Err = ParseVectorCoordinateTypeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or(ParseVectorCoordinateTypeError)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseVectorCoordinateTypeError;
+
+impl fmt::Display for ParseVectorCoordinateTypeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown vector coordinate type")
+    }
+}
+
+impl std::error::Error for ParseVectorCoordinateTypeError {}
+
 /// Internal storage for a vector. One variant per supported coordinate
 /// type; dimension is implicit in the inner `Vec`'s length.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

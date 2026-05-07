@@ -78,6 +78,14 @@ fn resolve_srid_rejects_family_mismatch() {
 }
 
 #[test]
+fn resolve_srid_checked_exposes_structured_errors() {
+    let err = resolve_srid_checked(Some("mars-centric"), None, PointKeyFamily::Cartesian, false)
+        .unwrap_err();
+    assert_eq!(err, SridResolveError::UnsupportedCrs("mars-centric".into()));
+    assert!(err.to_string().contains("unsupported crs"));
+}
+
+#[test]
 fn cartesian_3d_distance() {
     let a = LoraPoint::cartesian_3d(0.0, 0.0, 0.0);
     let b = LoraPoint::cartesian_3d(1.0, 2.0, 2.0);

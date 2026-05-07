@@ -30,7 +30,10 @@ pub use similarity::{
     euclidean_distance_squared, euclidean_norm, euclidean_similarity, hamming_distance,
     manhattan_distance, manhattan_norm,
 };
-pub use types::{LoraVector, VectorCoordinateType, VectorValues, MAX_VECTOR_DIMENSION};
+pub use types::{
+    LoraVector, ParseVectorCoordinateTypeError, VectorCoordinateType, VectorValues,
+    MAX_VECTOR_DIMENSION,
+};
 
 #[cfg(test)]
 mod tests;

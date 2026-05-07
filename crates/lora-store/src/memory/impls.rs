@@ -120,8 +120,8 @@ impl GraphStorage for InMemoryGraph {
                 }
             }
             Direction::Undirected => {
-                let out_len = self.outgoing_at(node_id).map(Vec::len).unwrap_or(0);
-                let in_len = self.incoming_at(node_id).map(Vec::len).unwrap_or(0);
+                let out_len = self.outgoing_at(node_id).map(<[_]>::len).unwrap_or(0);
+                let in_len = self.incoming_at(node_id).map(<[_]>::len).unwrap_or(0);
                 out.reserve(out_len + in_len);
                 if let Some(adj) = self.outgoing_at(node_id) {
                     push_from(adj, false, &mut out);
@@ -257,7 +257,7 @@ impl GraphStorage for InMemoryGraph {
             Direction::Right => self.outgoing_at(node_id).map(|s| s.len()).unwrap_or(0),
             Direction::Left => self.incoming_at(node_id).map(|s| s.len()).unwrap_or(0),
             Direction::Undirected => {
-                let out_count = self.outgoing_at(node_id).map(Vec::len).unwrap_or(0);
+                let out_count = self.outgoing_at(node_id).map(<[_]>::len).unwrap_or(0);
                 let incoming_non_self = self
                     .incoming_at(node_id)
                     .into_iter()
