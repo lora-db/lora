@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
-use lora_database::{LoraErrorCode, SnapshotAdmin, WalAdmin};
+use lora_database::{LoraErrorCode, SnapshotAdmin, SnapshotMeta, WalAdmin};
 
 use super::errors::{lora_error_response, ErrorResponse};
 use super::types::{SnapshotRequest, SnapshotResponse, WalStatusResponse, WalTruncateRequest};
@@ -135,17 +135,7 @@ async fn admin_snapshot_save(
     let path = resolve_snapshot_path(&cfg, req.as_ref());
 
     match cfg.admin.save_snapshot(&path) {
-        Ok(meta) => (
-            StatusCode::OK,
-            Json(SnapshotResponse {
-                format_version: meta.format_version,
-                node_count: meta.node_count as u64,
-                relationship_count: meta.relationship_count as u64,
-                wal_lsn: meta.wal_lsn,
-                path: path.display().to_string(),
-            }),
-        )
-            .into_response(),
+        Ok(meta) => snapshot_response(meta, path),
         Err(err) => lora_error_response(err),
     }
 }
@@ -158,17 +148,7 @@ async fn admin_snapshot_load(
     let path = resolve_snapshot_path(&cfg, req.as_ref());
 
     match cfg.admin.load_snapshot(&path) {
-        Ok(meta) => (
-            StatusCode::OK,
-            Json(SnapshotResponse {
-                format_version: meta.format_version,
-                node_count: meta.node_count as u64,
-                relationship_count: meta.relationship_count as u64,
-                wal_lsn: meta.wal_lsn,
-                path: path.display().to_string(),
-            }),
-        )
-            .into_response(),
+        Ok(meta) => snapshot_response(meta, path),
         Err(err) => lora_error_response(err),
     }
 }
@@ -203,19 +183,23 @@ async fn admin_checkpoint(
     };
 
     match state.wal.checkpoint(&path) {
-        Ok(meta) => (
-            StatusCode::OK,
-            Json(SnapshotResponse {
-                format_version: meta.format_version,
-                node_count: meta.node_count as u64,
-                relationship_count: meta.relationship_count as u64,
-                wal_lsn: meta.wal_lsn,
-                path: path.display().to_string(),
-            }),
-        )
-            .into_response(),
+        Ok(meta) => snapshot_response(meta, path),
         Err(err) => lora_error_response(err),
     }
+}
+
+fn snapshot_response(meta: SnapshotMeta, path: PathBuf) -> axum::response::Response {
+    (
+        StatusCode::OK,
+        Json(SnapshotResponse {
+            format_version: meta.format_version,
+            node_count: meta.node_count as u64,
+            relationship_count: meta.relationship_count as u64,
+            wal_lsn: meta.wal_lsn,
+            path: path.display().to_string(),
+        }),
+    )
+        .into_response()
 }
 
 async fn admin_wal_status(State(state): State<WalAdminState>) -> impl IntoResponse {

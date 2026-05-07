@@ -20,6 +20,44 @@ pub struct EnvInputs {
     pub wal_sync_mode: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct CliInputs {
+    host: Option<String>,
+    port: Option<String>,
+    snapshot_path: Option<String>,
+    restore_from: Option<String>,
+    wal_dir: Option<String>,
+    wal_sync_mode: Option<String>,
+}
+
+impl CliInputs {
+    fn set(&mut self, field: CliField, value: String) {
+        match field {
+            CliField::Host => self.host = Some(value),
+            CliField::Port => self.port = Some(value),
+            CliField::SnapshotPath => self.snapshot_path = Some(value),
+            CliField::RestoreFrom => self.restore_from = Some(value),
+            CliField::WalDir => self.wal_dir = Some(value),
+            CliField::WalSyncMode => self.wal_sync_mode = Some(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CliField {
+    Host,
+    Port,
+    SnapshotPath,
+    RestoreFrom,
+    WalDir,
+    WalSyncMode,
+}
+
+enum ParsedCli {
+    Run(CliInputs),
+    Immediate(ConfigOutcome),
+}
+
 /// Resolve a [`ConfigOutcome`] from CLI args and env values.
 ///
 /// `args` includes the program name at position 0 (as produced by
@@ -28,91 +66,31 @@ pub fn resolve<I>(args: I, env: EnvInputs) -> Result<ConfigOutcome, ConfigError>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut iter = args.into_iter();
-    let _program = iter.next();
+    let cli = match parse_cli_args(args)? {
+        ParsedCli::Run(cli) => cli,
+        ParsedCli::Immediate(outcome) => return Ok(outcome),
+    };
 
-    let mut cli_host: Option<String> = None;
-    let mut cli_port: Option<String> = None;
-    let mut cli_snapshot_path: Option<String> = None;
-    let mut cli_restore_from: Option<String> = None;
-    let mut cli_wal_dir: Option<String> = None;
-    let mut cli_wal_sync_mode: Option<String> = None;
-
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--help" => return Ok(ConfigOutcome::Help(help_text())),
-            "--version" => return Ok(ConfigOutcome::Version(version_text())),
-            "--host" => {
-                let v = iter.next().ok_or(ConfigError::MissingValue("--host"))?;
-                cli_host = Some(v);
-            }
-            "--port" => {
-                let v = iter.next().ok_or(ConfigError::MissingValue("--port"))?;
-                cli_port = Some(v);
-            }
-            "--snapshot-path" => {
-                let v = iter
-                    .next()
-                    .ok_or(ConfigError::MissingValue("--snapshot-path"))?;
-                cli_snapshot_path = Some(v);
-            }
-            "--restore-from" => {
-                let v = iter
-                    .next()
-                    .ok_or(ConfigError::MissingValue("--restore-from"))?;
-                cli_restore_from = Some(v);
-            }
-            "--wal-dir" => {
-                let v = iter.next().ok_or(ConfigError::MissingValue("--wal-dir"))?;
-                cli_wal_dir = Some(v);
-            }
-            "--wal-sync-mode" => {
-                let v = iter
-                    .next()
-                    .ok_or(ConfigError::MissingValue("--wal-sync-mode"))?;
-                cli_wal_sync_mode = Some(v);
-            }
-            s if s.starts_with("--host=") => {
-                cli_host = Some(s["--host=".len()..].to_string());
-            }
-            s if s.starts_with("--port=") => {
-                cli_port = Some(s["--port=".len()..].to_string());
-            }
-            s if s.starts_with("--snapshot-path=") => {
-                cli_snapshot_path = Some(s["--snapshot-path=".len()..].to_string());
-            }
-            s if s.starts_with("--restore-from=") => {
-                cli_restore_from = Some(s["--restore-from=".len()..].to_string());
-            }
-            s if s.starts_with("--wal-dir=") => {
-                cli_wal_dir = Some(s["--wal-dir=".len()..].to_string());
-            }
-            s if s.starts_with("--wal-sync-mode=") => {
-                cli_wal_sync_mode = Some(s["--wal-sync-mode=".len()..].to_string());
-            }
-            s if s.starts_with("--") => return Err(ConfigError::UnknownArg(arg)),
-            _ => return Err(ConfigError::UnexpectedPositional(arg)),
-        }
-    }
-
-    let host = cli_host
+    let host = cli
+        .host
         .or(env.host)
         .unwrap_or_else(|| DEFAULT_HOST.to_string());
     if host.trim().is_empty() {
         return Err(ConfigError::EmptyValue("--host"));
     }
 
-    let port = match cli_port.or(env.port) {
+    let port = match cli.port.or(env.port) {
         Some(raw) => parse_port(&raw)?,
         None => DEFAULT_PORT,
     };
 
-    let snapshot_path = cli_snapshot_path
+    let snapshot_path = cli
+        .snapshot_path
         .or(env.snapshot_path)
         .and_then(non_empty_path);
-    let restore_from = cli_restore_from.and_then(non_empty_path);
-    let wal_dir = cli_wal_dir.or(env.wal_dir).and_then(non_empty_path);
-    let wal_sync_mode = match cli_wal_sync_mode.or(env.wal_sync_mode) {
+    let restore_from = cli.restore_from.and_then(non_empty_path);
+    let wal_dir = cli.wal_dir.or(env.wal_dir).and_then(non_empty_path);
+    let wal_sync_mode = match cli.wal_sync_mode.or(env.wal_sync_mode) {
         Some(raw) => parse_sync_mode(&raw)?,
         None => SyncMode::default(),
     };
@@ -125,6 +103,61 @@ where
         wal_dir,
         wal_sync_mode,
     }))
+}
+
+fn parse_cli_args<I>(args: I) -> Result<ParsedCli, ConfigError>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut iter = args.into_iter();
+    let _program = iter.next();
+
+    let mut cli = CliInputs::default();
+
+    while let Some(arg) = iter.next() {
+        if arg == "--help" {
+            return Ok(ParsedCli::Immediate(ConfigOutcome::Help(help_text())));
+        }
+        if arg == "--version" {
+            return Ok(ParsedCli::Immediate(ConfigOutcome::Version(version_text())));
+        }
+
+        if let Some((field, flag)) = cli_field_for_flag(&arg) {
+            let value = iter.next().ok_or(ConfigError::MissingValue(flag))?;
+            cli.set(field, value);
+            continue;
+        }
+
+        if let Some((field, value)) = cli_field_for_equals(&arg) {
+            cli.set(field, value.to_string());
+            continue;
+        }
+
+        if arg.starts_with("--") {
+            return Err(ConfigError::UnknownArg(arg));
+        }
+        return Err(ConfigError::UnexpectedPositional(arg));
+    }
+
+    Ok(ParsedCli::Run(cli))
+}
+
+fn cli_field_for_flag(arg: &str) -> Option<(CliField, &'static str)> {
+    match arg {
+        "--host" => Some((CliField::Host, "--host")),
+        "--port" => Some((CliField::Port, "--port")),
+        "--snapshot-path" => Some((CliField::SnapshotPath, "--snapshot-path")),
+        "--restore-from" => Some((CliField::RestoreFrom, "--restore-from")),
+        "--wal-dir" => Some((CliField::WalDir, "--wal-dir")),
+        "--wal-sync-mode" => Some((CliField::WalSyncMode, "--wal-sync-mode")),
+        _ => None,
+    }
+}
+
+fn cli_field_for_equals(arg: &str) -> Option<(CliField, &str)> {
+    let (flag, value) = arg.split_once('=')?;
+    let (field, _) = cli_field_for_flag(flag)?;
+    Some((field, value))
 }
 
 /// Resolve using the process environment and `std::env::args`.
