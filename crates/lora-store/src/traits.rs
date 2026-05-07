@@ -74,6 +74,26 @@ pub trait GraphStorage {
         types: &[String],
     ) -> Vec<(RelationshipId, NodeId)>;
 
+    /// Visit expanded `(relationship_id, other_node_id)` pairs without
+    /// forcing backends to allocate an intermediate Vec. The default keeps the
+    /// trait easy to implement; hot backends can override it.
+    fn try_for_each_expand_id<F, E>(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+        types: &[String],
+        mut visit: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
+        Self: Sized,
+    {
+        for (rel_id, other_id) in self.expand_ids(node_id, direction, types) {
+            visit(rel_id, other_id)?;
+        }
+        Ok(())
+    }
+
     // ---------- Required catalog primitives ----------
 
     fn all_labels(&self) -> Vec<String>;

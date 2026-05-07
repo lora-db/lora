@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::types::PropertyValue;
 use crate::LoraBinary;
 
-pub(super) type PropertyValueBuckets = HashMap<PropertyIndexKey, BTreeSet<u64>>;
+pub(super) type PropertyValueBuckets = HashMap<PropertyIndexKey, Vec<u64>>;
 pub(super) type PropertyIndex = HashMap<String, PropertyValueBuckets>;
 pub(super) type ScopedPropertyIndex = HashMap<String, PropertyIndex>;
 
@@ -76,7 +76,7 @@ impl PropertyIndexState {
             .or_default()
             .entry(value)
             .or_default()
-            .insert(entity_id);
+            .push(entity_id);
     }
 
     fn remove_value(
@@ -88,7 +88,9 @@ impl PropertyIndexState {
         let mut remove_key = false;
         if let Some(buckets) = values.get_mut(key) {
             if let Some(ids) = buckets.get_mut(value) {
-                ids.remove(&entity_id);
+                if let Some(pos) = ids.iter().position(|&id| id == entity_id) {
+                    ids.swap_remove(pos);
+                }
                 if ids.is_empty() {
                     buckets.remove(value);
                 }
@@ -186,11 +188,12 @@ impl PropertyIndexState {
         }
     }
 
-    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&BTreeSet<u64>> {
+    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&[u64]> {
         let indexed_value = PropertyIndexKey::from_value(value)?;
         self.values
             .get(key)
             .and_then(|values| values.get(&indexed_value))
+            .map(Vec::as_slice)
     }
 
     pub(super) fn scoped_ids_for(
@@ -198,12 +201,13 @@ impl PropertyIndexState {
         scope: &str,
         key: &str,
         value: &PropertyValue,
-    ) -> Option<&BTreeSet<u64>> {
+    ) -> Option<&[u64]> {
         let indexed_value = PropertyIndexKey::from_value(value)?;
         self.scoped_values
             .get(scope)
             .and_then(|values| values.get(key))
             .and_then(|values| values.get(&indexed_value))
+            .map(Vec::as_slice)
     }
 }
 

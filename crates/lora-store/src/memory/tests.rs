@@ -105,6 +105,23 @@ fn incoming_and_outgoing_are_distinct() {
 }
 
 #[test]
+fn undirected_self_loop_counts_once() {
+    let mut g = InMemoryGraph::new();
+
+    let n = g.create_node(vec!["Looper".into()], Properties::new());
+    let r = g
+        .create_relationship(n.id, n.id, "SELF", Properties::new())
+        .unwrap();
+
+    assert_eq!(
+        g.relationship_ids_of(n.id, Direction::Undirected),
+        vec![r.id]
+    );
+    assert_eq!(g.expand(n.id, Direction::Undirected, &[]).len(), 1);
+    assert_eq!(g.degree(n.id, Direction::Undirected), 1);
+}
+
+#[test]
 fn set_and_remove_properties() {
     let mut g = InMemoryGraph::new();
 
@@ -313,10 +330,8 @@ fn node_property_index_tracks_scoped_label_buckets() {
         g.indexes_read()
             .node_properties
             .scoped_ids_for("Person", "name", &alice_value)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<Vec<_>>(),
+            .map(|ids| ids.to_vec())
+            .unwrap_or_default(),
         vec![alice.id]
     );
 

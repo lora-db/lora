@@ -12,39 +12,40 @@ use super::types::LoraVector;
 /// `vector_distance` / `vector.similarity.*` never silently return a
 /// bogus number.
 fn check_same_dim(a: &LoraVector, b: &LoraVector) -> Option<usize> {
-    if a.dimension == b.dimension {
+    if a.dimension == b.dimension && a.values.len() == a.dimension && b.values.len() == b.dimension
+    {
         Some(a.dimension)
     } else {
         None
     }
 }
 
+fn for_each_pair_as_f32(a: &LoraVector, b: &LoraVector, mut f: impl FnMut(f32, f32)) -> Option<()> {
+    let dim = check_same_dim(a, b)?;
+    for i in 0..dim {
+        f(a.values.f32_at(i)?, b.values.f32_at(i)?);
+    }
+    Some(())
+}
+
+fn for_each_value_as_f32(v: &LoraVector, mut f: impl FnMut(f32)) -> Option<()> {
+    for i in 0..v.values.len() {
+        f(v.values.f32_at(i)?);
+    }
+    Some(())
+}
+
 /// Raw cosine similarity in the range [-1, 1]. Returns `None` when
 /// either vector has zero norm, since cosine is undefined in that case.
 pub fn cosine_similarity_raw(a: &LoraVector, b: &LoraVector) -> Option<f64> {
-    check_same_dim(a, b)?;
-    // Use f32 arithmetic for LoraDB's vector similarity implementation,
-    // then widen back to f64 for the result.
-    let av: Vec<f32> = a
-        .values
-        .as_f64_vec()
-        .into_iter()
-        .map(|x| x as f32)
-        .collect();
-    let bv: Vec<f32> = b
-        .values
-        .as_f64_vec()
-        .into_iter()
-        .map(|x| x as f32)
-        .collect();
     let mut dot = 0f32;
     let mut na = 0f32;
     let mut nb = 0f32;
-    for (x, y) in av.iter().zip(bv.iter()) {
+    for_each_pair_as_f32(a, b, |x, y| {
         dot += x * y;
         na += x * x;
         nb += y * y;
-    }
+    })?;
     if na == 0.0 || nb == 0.0 {
         return None;
     }
@@ -64,24 +65,11 @@ pub fn cosine_similarity_bounded(a: &LoraVector, b: &LoraVector) -> Option<f64> 
 /// Squared Euclidean distance (sum of squared differences). Uses f32
 /// arithmetic to match LoraDB's vector function implementation.
 pub fn euclidean_distance_squared(a: &LoraVector, b: &LoraVector) -> Option<f64> {
-    check_same_dim(a, b)?;
-    let av: Vec<f32> = a
-        .values
-        .as_f64_vec()
-        .into_iter()
-        .map(|x| x as f32)
-        .collect();
-    let bv: Vec<f32> = b
-        .values
-        .as_f64_vec()
-        .into_iter()
-        .map(|x| x as f32)
-        .collect();
     let mut sum = 0f32;
-    for (x, y) in av.iter().zip(bv.iter()) {
+    for_each_pair_as_f32(a, b, |x, y| {
         let d = x - y;
         sum += d * d;
-    }
+    })?;
     Some(sum as f64)
 }
 
@@ -92,60 +80,48 @@ pub fn euclidean_distance(a: &LoraVector, b: &LoraVector) -> Option<f64> {
 
 /// Manhattan (L1) distance.
 pub fn manhattan_distance(a: &LoraVector, b: &LoraVector) -> Option<f64> {
-    check_same_dim(a, b)?;
-    let av = a.values.as_f64_vec();
-    let bv = b.values.as_f64_vec();
     let mut sum = 0f32;
-    for (x, y) in av.iter().zip(bv.iter()) {
-        sum += ((*x as f32) - (*y as f32)).abs();
-    }
+    for_each_pair_as_f32(a, b, |x, y| {
+        sum += (x - y).abs();
+    })?;
     Some(sum as f64)
 }
 
 /// Hamming distance: count of positions where the two vectors differ.
 pub fn hamming_distance(a: &LoraVector, b: &LoraVector) -> Option<f64> {
-    check_same_dim(a, b)?;
-    let av = a.values.as_f64_vec();
-    let bv = b.values.as_f64_vec();
     let mut count = 0i64;
-    for (x, y) in av.iter().zip(bv.iter()) {
-        if (*x as f32) != (*y as f32) {
+    for_each_pair_as_f32(a, b, |x, y| {
+        if x != y {
             count += 1;
         }
-    }
+    })?;
     Some(count as f64)
 }
 
 /// Dot product (f32 arithmetic, widened back to f64).
 pub fn dot_product(a: &LoraVector, b: &LoraVector) -> Option<f64> {
-    check_same_dim(a, b)?;
-    let av = a.values.as_f64_vec();
-    let bv = b.values.as_f64_vec();
     let mut acc = 0f32;
-    for (x, y) in av.iter().zip(bv.iter()) {
-        acc += (*x as f32) * (*y as f32);
-    }
+    for_each_pair_as_f32(a, b, |x, y| {
+        acc += x * y;
+    })?;
     Some(acc as f64)
 }
 
 /// Euclidean (L2) norm.
 pub fn euclidean_norm(v: &LoraVector) -> f64 {
-    let values = v.values.as_f64_vec();
     let mut sum = 0f32;
-    for x in &values {
-        let x32 = *x as f32;
-        sum += x32 * x32;
-    }
+    let _ = for_each_value_as_f32(v, |x| {
+        sum += x * x;
+    });
     (sum.sqrt()) as f64
 }
 
 /// Manhattan (L1) norm.
 pub fn manhattan_norm(v: &LoraVector) -> f64 {
-    let values = v.values.as_f64_vec();
     let mut sum = 0f32;
-    for x in &values {
-        sum += (*x as f32).abs();
-    }
+    let _ = for_each_value_as_f32(v, |x| {
+        sum += x.abs();
+    });
     sum as f64
 }
 

@@ -131,9 +131,14 @@ impl InMemoryGraph {
         Self::default()
     }
 
-    pub fn with_capacity_hint(_nodes: usize, _relationships: usize) -> Self {
-        // BTreeMap/BTreeSet do not support capacity reservation.
-        Self::default()
+    pub fn with_capacity_hint(nodes: usize, relationships: usize) -> Self {
+        Self {
+            nodes: Vec::with_capacity(nodes),
+            relationships: Vec::with_capacity(relationships),
+            outgoing: Vec::with_capacity(nodes),
+            incoming: Vec::with_capacity(nodes),
+            ..Self::default()
+        }
     }
 
     pub fn contains_node(&self, node_id: NodeId) -> bool {
@@ -314,6 +319,98 @@ impl InMemoryGraph {
     #[inline]
     pub(super) fn incoming_at(&self, id: NodeId) -> Option<&Vec<RelationshipId>> {
         self.incoming.get(id as usize)
+    }
+
+    #[inline]
+    fn try_for_each_adjacent_slice<F, E>(
+        &self,
+        node_id: NodeId,
+        types: &[String],
+        adj: &[RelationshipId],
+        skip_self_loops: bool,
+        visit: &mut F,
+    ) -> Result<(), E>
+    where
+        F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
+    {
+        let single_type = match types {
+            [single] => Some(single.as_str()),
+            _ => None,
+        };
+        let has_type_filter = !types.is_empty();
+
+        for &rel_id in adj {
+            let Some(rel) = self.rel_at(rel_id) else {
+                continue;
+            };
+            if skip_self_loops && rel.src == node_id && rel.dst == node_id {
+                continue;
+            }
+            if let Some(single) = single_type {
+                if rel.rel_type != single {
+                    continue;
+                }
+            } else if has_type_filter && !types.iter().any(|t| t == &rel.rel_type) {
+                continue;
+            }
+            let Some(other_id) = Self::other_endpoint(rel, node_id) else {
+                continue;
+            };
+            visit(rel_id, other_id)?;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn try_for_each_adjacent_id_unchecked<F, E>(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+        types: &[String],
+        mut visit: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
+    {
+        match direction {
+            Direction::Right => {
+                if let Some(adj) = self.outgoing_at(node_id) {
+                    self.try_for_each_adjacent_slice(node_id, types, adj, false, &mut visit)?;
+                }
+            }
+            Direction::Left => {
+                if let Some(adj) = self.incoming_at(node_id) {
+                    self.try_for_each_adjacent_slice(node_id, types, adj, false, &mut visit)?;
+                }
+            }
+            Direction::Undirected => {
+                if let Some(adj) = self.outgoing_at(node_id) {
+                    self.try_for_each_adjacent_slice(node_id, types, adj, false, &mut visit)?;
+                }
+                if let Some(adj) = self.incoming_at(node_id) {
+                    self.try_for_each_adjacent_slice(node_id, types, adj, true, &mut visit)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn try_for_each_adjacent_id<F, E>(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+        types: &[String],
+        visit: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
+    {
+        if self.node_at(node_id).is_none() {
+            return Ok(());
+        }
+        self.try_for_each_adjacent_id_unchecked(node_id, direction, types, visit)
     }
 
     pub(super) fn iter_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
@@ -1020,21 +1117,59 @@ impl InMemoryGraph {
         key: &str,
         value: &PropertyValue,
     ) -> Vec<NodeRecord> {
-        let candidates: Box<dyn Iterator<Item = &NodeRecord> + '_> = match label {
-            Some(label) => Box::new(
-                self.nodes_by_label
-                    .get(label)
-                    .into_iter()
-                    .flat_map(|ids| ids.iter())
-                    .filter_map(|&id| self.node_at(id)),
-            ),
-            None => Box::new(self.iter_node_records()),
-        };
+        match label {
+            Some(label) => self
+                .nodes_by_label
+                .get(label)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|&id| self.node_at(id))
+                .filter(|node| node.properties.get(key) == Some(value))
+                .cloned()
+                .collect(),
+            None => self
+                .iter_node_records()
+                .filter(|node| node.properties.get(key) == Some(value))
+                .cloned()
+                .collect(),
+        }
+    }
 
-        candidates
-            .filter(|node| node.properties.get(key) == Some(value))
-            .cloned()
-            .collect()
+    pub(super) fn scan_node_ids_by_property(
+        &self,
+        label: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<NodeId> {
+        match label {
+            Some(label) => self
+                .nodes_by_label
+                .get(label)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|&id| {
+                    (self.node_at(id)?.properties.get(key) == Some(value)).then_some(id)
+                })
+                .collect(),
+            None => self
+                .iter_nodes()
+                .filter_map(|(id, node)| (node.properties.get(key) == Some(value)).then_some(id))
+                .collect(),
+        }
+    }
+
+    pub(super) fn any_node_by_property(
+        &self,
+        label: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> bool {
+        self.nodes_by_label
+            .get(label)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|&id| self.node_at(id))
+            .any(|node| node.properties.get(key) == Some(value))
     }
 
     pub(super) fn scan_relationships_by_property(
@@ -1043,21 +1178,59 @@ impl InMemoryGraph {
         key: &str,
         value: &PropertyValue,
     ) -> Vec<RelationshipRecord> {
-        let candidates: Box<dyn Iterator<Item = &RelationshipRecord> + '_> = match rel_type {
-            Some(rel_type) => Box::new(
-                self.relationships_by_type
-                    .get(rel_type)
-                    .into_iter()
-                    .flat_map(|ids| ids.iter())
-                    .filter_map(|&id| self.rel_at(id)),
-            ),
-            None => Box::new(self.iter_rel_records()),
-        };
+        match rel_type {
+            Some(rel_type) => self
+                .relationships_by_type
+                .get(rel_type)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|&id| self.rel_at(id))
+                .filter(|rel| rel.properties.get(key) == Some(value))
+                .cloned()
+                .collect(),
+            None => self
+                .iter_rel_records()
+                .filter(|rel| rel.properties.get(key) == Some(value))
+                .cloned()
+                .collect(),
+        }
+    }
 
-        candidates
-            .filter(|rel| rel.properties.get(key) == Some(value))
-            .cloned()
-            .collect()
+    pub(super) fn scan_relationship_ids_by_property(
+        &self,
+        rel_type: Option<&str>,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Vec<RelationshipId> {
+        match rel_type {
+            Some(rel_type) => self
+                .relationships_by_type
+                .get(rel_type)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|&id| {
+                    (self.rel_at(id)?.properties.get(key) == Some(value)).then_some(id)
+                })
+                .collect(),
+            None => self
+                .iter_rels()
+                .filter_map(|(id, rel)| (rel.properties.get(key) == Some(value)).then_some(id))
+                .collect(),
+        }
+    }
+
+    pub(super) fn any_relationship_by_property(
+        &self,
+        rel_type: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> bool {
+        self.relationships_by_type
+            .get(rel_type)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|&id| self.rel_at(id))
+            .any(|rel| rel.properties.get(key) == Some(value))
     }
 
     pub(super) fn attach_relationship(&mut self, rel: &RelationshipRecord) {
@@ -1087,16 +1260,28 @@ impl InMemoryGraph {
             Direction::Right => self.outgoing_at(node_id).cloned().unwrap_or_default(),
 
             Direction::Undirected => {
-                let mut ids = BTreeSet::new();
+                let out = self.outgoing_at(node_id);
+                let inc = self.incoming_at(node_id);
+                let mut ids = Vec::with_capacity(
+                    out.map(Vec::len).unwrap_or(0) + inc.map(Vec::len).unwrap_or(0),
+                );
 
-                if let Some(out) = self.outgoing_at(node_id) {
+                if let Some(out) = out {
                     ids.extend(out.iter().copied());
                 }
-                if let Some(inc) = self.incoming_at(node_id) {
-                    ids.extend(inc.iter().copied());
+                if let Some(inc) = inc {
+                    for &rel_id in inc {
+                        let Some(rel) = self.rel_at(rel_id) else {
+                            continue;
+                        };
+                        if rel.src == node_id && rel.dst == node_id {
+                            continue;
+                        }
+                        ids.push(rel_id);
+                    }
                 }
 
-                ids.into_iter().collect()
+                ids
             }
         }
     }
@@ -1121,14 +1306,25 @@ impl InMemoryGraph {
                 .unwrap_or(false)
     }
 
-    pub(super) fn incident_relationship_ids(&self, node_id: NodeId) -> BTreeSet<RelationshipId> {
-        let mut rel_ids = BTreeSet::new();
+    pub(super) fn incident_relationship_ids(&self, node_id: NodeId) -> Vec<RelationshipId> {
+        let out = self.outgoing_at(node_id);
+        let inc = self.incoming_at(node_id);
+        let mut rel_ids =
+            Vec::with_capacity(out.map(Vec::len).unwrap_or(0) + inc.map(Vec::len).unwrap_or(0));
 
-        if let Some(ids) = self.outgoing_at(node_id) {
+        if let Some(ids) = out {
             rel_ids.extend(ids.iter().copied());
         }
-        if let Some(ids) = self.incoming_at(node_id) {
-            rel_ids.extend(ids.iter().copied());
+        if let Some(ids) = inc {
+            for &rel_id in ids {
+                let Some(rel) = self.rel_at(rel_id) else {
+                    continue;
+                };
+                if rel.src == node_id && rel.dst == node_id {
+                    continue;
+                }
+                rel_ids.push(rel_id);
+            }
         }
 
         rel_ids

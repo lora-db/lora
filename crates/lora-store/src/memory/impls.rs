@@ -76,12 +76,27 @@ impl GraphStorage for InMemoryGraph {
         // edge against the (typically tiny) `types` slice.
         let mut out: Vec<(RelationshipId, NodeId)> = Vec::new();
 
-        let push_from = |adj: &Vec<RelationshipId>, out: &mut Vec<(RelationshipId, NodeId)>| {
+        let single_type = match types {
+            [single] => Some(single.as_str()),
+            _ => None,
+        };
+        let has_type_filter = !types.is_empty();
+
+        let push_from = |adj: &[RelationshipId],
+                         skip_self_loops: bool,
+                         out: &mut Vec<(RelationshipId, NodeId)>| {
             for &rel_id in adj {
                 let Some(rel) = self.rel_at(rel_id) else {
                     continue;
                 };
-                if !types.is_empty() && !types.iter().any(|t| t == &rel.rel_type) {
+                if skip_self_loops && rel.src == node_id && rel.dst == node_id {
+                    continue;
+                }
+                if let Some(single) = single_type {
+                    if rel.rel_type != single {
+                        continue;
+                    }
+                } else if has_type_filter && !types.iter().any(|t| t == &rel.rel_type) {
                     continue;
                 }
                 let Some(other_id) = Self::other_endpoint(rel, node_id) else {
@@ -95,13 +110,13 @@ impl GraphStorage for InMemoryGraph {
             Direction::Right => {
                 if let Some(adj) = self.outgoing_at(node_id) {
                     out.reserve(adj.len());
-                    push_from(adj, &mut out);
+                    push_from(adj, false, &mut out);
                 }
             }
             Direction::Left => {
                 if let Some(adj) = self.incoming_at(node_id) {
                     out.reserve(adj.len());
-                    push_from(adj, &mut out);
+                    push_from(adj, false, &mut out);
                 }
             }
             Direction::Undirected => {
@@ -109,29 +124,29 @@ impl GraphStorage for InMemoryGraph {
                 let in_len = self.incoming_at(node_id).map(Vec::len).unwrap_or(0);
                 out.reserve(out_len + in_len);
                 if let Some(adj) = self.outgoing_at(node_id) {
-                    push_from(adj, &mut out);
+                    push_from(adj, false, &mut out);
                 }
                 if let Some(adj) = self.incoming_at(node_id) {
-                    // Skip self-loops we already counted on the outgoing side.
-                    for &rel_id in adj {
-                        if out.iter().any(|(r, _)| *r == rel_id) {
-                            continue;
-                        }
-                        let Some(rel) = self.rel_at(rel_id) else {
-                            continue;
-                        };
-                        if !types.is_empty() && !types.iter().any(|t| t == &rel.rel_type) {
-                            continue;
-                        }
-                        let Some(other_id) = Self::other_endpoint(rel, node_id) else {
-                            continue;
-                        };
-                        out.push((rel_id, other_id));
-                    }
+                    push_from(adj, true, &mut out);
                 }
             }
         }
+
         out
+    }
+
+    fn try_for_each_expand_id<F, E>(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+        types: &[String],
+        visit: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
+        Self: Sized,
+    {
+        self.try_for_each_adjacent_id(node_id, direction, types, visit)
     }
 
     fn all_labels(&self) -> Vec<String> {
@@ -226,13 +241,34 @@ impl GraphStorage for InMemoryGraph {
             .collect()
     }
 
+    fn relationships_of(&self, node_id: NodeId, direction: Direction) -> Vec<RelationshipRecord> {
+        let mut out = Vec::new();
+        let _ = self.try_for_each_expand_id(node_id, direction, &[], |rel_id, _| {
+            if let Some(rel) = self.rel_at(rel_id) {
+                out.push(rel.clone());
+            }
+            Ok::<(), ()>(())
+        });
+        out
+    }
+
     fn degree(&self, node_id: NodeId, direction: Direction) -> usize {
         match direction {
             Direction::Right => self.outgoing_at(node_id).map(|s| s.len()).unwrap_or(0),
             Direction::Left => self.incoming_at(node_id).map(|s| s.len()).unwrap_or(0),
             Direction::Undirected => {
-                self.outgoing_at(node_id).map(|s| s.len()).unwrap_or(0)
-                    + self.incoming_at(node_id).map(|s| s.len()).unwrap_or(0)
+                let out_count = self.outgoing_at(node_id).map(Vec::len).unwrap_or(0);
+                let incoming_non_self = self
+                    .incoming_at(node_id)
+                    .into_iter()
+                    .flat_map(|ids| ids.iter())
+                    .filter(|&&rel_id| {
+                        self.rel_at(rel_id)
+                            .map(|rel| rel.src != node_id || rel.dst != node_id)
+                            .unwrap_or(false)
+                    })
+                    .count();
+                out_count + incoming_non_self
             }
         }
     }
@@ -247,27 +283,30 @@ impl GraphStorage for InMemoryGraph {
             return Vec::new();
         }
 
-        let type_filter: Option<BTreeSet<&str>> = if types.is_empty() {
-            None
-        } else {
-            Some(types.iter().map(String::as_str).collect())
-        };
+        let mut out = Vec::new();
+        let _ = self.try_for_each_expand_id(node_id, direction, types, |rel_id, other_id| {
+            if let (Some(rel), Some(other)) = (self.rel_at(rel_id), self.node_at(other_id)) {
+                out.push((rel.clone(), other.clone()));
+            }
+            Ok::<(), ()>(())
+        });
+        out
+    }
 
-        self.relationship_ids_for_direction(node_id, direction)
-            .into_iter()
-            .filter_map(|rel_id| self.rel_at(rel_id))
-            .filter(|rel| {
-                type_filter
-                    .as_ref()
-                    .map(|allowed| allowed.contains(rel.rel_type.as_str()))
-                    .unwrap_or(true)
-            })
-            .filter_map(|rel| {
-                let other_id = Self::other_endpoint(rel, node_id)?;
-                let other = self.node_at(other_id)?;
-                Some((rel.clone(), other.clone()))
-            })
-            .collect()
+    fn neighbors(
+        &self,
+        node_id: NodeId,
+        direction: Direction,
+        types: &[String],
+    ) -> Vec<NodeRecord> {
+        let mut out = Vec::new();
+        let _ = self.try_for_each_expand_id(node_id, direction, types, |_, other_id| {
+            if let Some(node) = self.node_at(other_id) {
+                out.push(node.clone());
+            }
+            Ok::<(), ()>(())
+        });
+        out
     }
 
     fn all_node_property_keys(&self) -> Vec<String> {
@@ -369,11 +408,7 @@ impl GraphStorage for InMemoryGraph {
         Self: Sized,
     {
         if PropertyIndexKey::from_value(value).is_none() {
-            return self
-                .scan_nodes_by_property(label, key, value)
-                .into_iter()
-                .map(|n| n.id)
-                .collect();
+            return self.scan_node_ids_by_property(label, key, value);
         }
 
         self.ensure_node_property_index(key);
@@ -383,12 +418,12 @@ impl GraphStorage for InMemoryGraph {
             Some(label) => indexes
                 .node_properties
                 .scoped_ids_for(label, key, value)
-                .map(|ids| ids.iter().copied().collect())
+                .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
             None => indexes
                 .node_properties
                 .ids_for(key, value)
-                .map(|ids| ids.iter().copied().collect())
+                .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
         }
     }
@@ -442,11 +477,7 @@ impl GraphStorage for InMemoryGraph {
         Self: Sized,
     {
         if PropertyIndexKey::from_value(value).is_none() {
-            return self
-                .scan_relationships_by_property(rel_type, key, value)
-                .into_iter()
-                .map(|r| r.id)
-                .collect();
+            return self.scan_relationship_ids_by_property(rel_type, key, value);
         }
 
         self.ensure_relationship_property_index(key);
@@ -456,12 +487,12 @@ impl GraphStorage for InMemoryGraph {
             Some(rel_type) => indexes
                 .relationship_properties
                 .scoped_ids_for(rel_type, key, value)
-                .map(|ids| ids.iter().copied().collect())
+                .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
             None => indexes
                 .relationship_properties
                 .ids_for(key, value)
-                .map(|ids| ids.iter().copied().collect())
+                .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
         }
     }
@@ -476,9 +507,7 @@ impl GraphStorage for InMemoryGraph {
         Self: Sized,
     {
         if PropertyIndexKey::from_value(value).is_none() {
-            return !self
-                .scan_nodes_by_property(Some(label), key, value)
-                .is_empty();
+            return self.any_node_by_property(label, key, value);
         }
 
         self.ensure_node_property_index(key);
@@ -500,9 +529,7 @@ impl GraphStorage for InMemoryGraph {
         Self: Sized,
     {
         if PropertyIndexKey::from_value(value).is_none() {
-            return !self
-                .scan_relationships_by_property(Some(rel_type), key, value)
-                .is_empty();
+            return self.any_relationship_by_property(rel_type, key, value);
         }
 
         self.ensure_relationship_property_index(key);
@@ -627,13 +654,6 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         }
 
-        let recorder_active = self.recorder.is_some();
-        let (stored_key, stored_value) = if recorder_active {
-            (Some(key.clone()), Some(value.clone()))
-        } else {
-            (None, None)
-        };
-
         let old = match self.node_at_mut(node_id) {
             Some(node) => node.properties.insert(key.clone(), value.clone()),
             None => return false,
@@ -642,8 +662,8 @@ impl GraphStorageMut for InMemoryGraph {
 
         self.emit(|| MutationEvent::SetNodeProperty {
             node_id,
-            key: stored_key.unwrap(),
-            value: stored_value.unwrap(),
+            key: key.clone(),
+            value: value.clone(),
         });
 
         true
@@ -724,13 +744,6 @@ impl GraphStorageMut for InMemoryGraph {
             return false;
         }
 
-        let recorder_active = self.recorder.is_some();
-        let (stored_key, stored_value) = if recorder_active {
-            (Some(key.clone()), Some(value.clone()))
-        } else {
-            (None, None)
-        };
-
         let old = match self.rel_at_mut(rel_id) {
             Some(rel) => rel.properties.insert(key.clone(), value.clone()),
             None => return false,
@@ -739,8 +752,8 @@ impl GraphStorageMut for InMemoryGraph {
 
         self.emit(|| MutationEvent::SetRelationshipProperty {
             rel_id,
-            key: stored_key.unwrap(),
-            value: stored_value.unwrap(),
+            key: key.clone(),
+            value: value.clone(),
         });
 
         true

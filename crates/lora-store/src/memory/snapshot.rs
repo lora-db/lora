@@ -45,11 +45,14 @@ impl InMemoryGraph {
         // commit it into `self` at the very end. If a panic fires mid-
         // rebuild (e.g. OOM on a HashMap grow) the caller's graph is
         // untouched — we never observe a half-populated store.
-        let mut rebuilt = Self {
-            next_node_id: payload.next_node_id,
-            next_rel_id: payload.next_rel_id,
-            ..Self::default()
-        };
+        let node_capacity = payload.nodes.len().max(payload.next_node_id as usize);
+        let relationship_capacity = payload
+            .relationships
+            .len()
+            .max(payload.next_rel_id as usize);
+        let mut rebuilt = Self::with_capacity_hint(node_capacity, relationship_capacity);
+        rebuilt.next_node_id = payload.next_node_id;
+        rebuilt.next_rel_id = payload.next_rel_id;
 
         for node in payload.nodes {
             let id = node.id;

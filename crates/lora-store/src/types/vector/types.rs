@@ -47,25 +47,44 @@ impl VectorCoordinateType {
     /// collapses runs of whitespace so `SIGNED INTEGER` and `signed
     /// integer` both resolve.
     pub fn parse(name: &str) -> Option<Self> {
-        let collapsed: String = name
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_ascii_uppercase();
-        match collapsed.as_str() {
+        let mut parts = name.split_whitespace();
+        let first = parts.next()?;
+        let second = parts.next();
+        if parts.next().is_some() {
+            return None;
+        }
+
+        if let Some(second) = second {
+            return (first.eq_ignore_ascii_case("SIGNED")
+                && second.eq_ignore_ascii_case("INTEGER"))
+            .then_some(VectorCoordinateType::Integer64);
+        }
+
+        match first {
             // `FLOAT` and `FLOAT64` are the two spellings the public
             // `vector()` syntax accepts. `DOUBLE` is not part of the
             // public surface; we reject it so typos surface as a clear
             // "unknown coordinate type" instead of silently mapping to
             // FLOAT64.
-            "FLOAT" | "FLOAT64" => Some(VectorCoordinateType::Float64),
-            "FLOAT32" => Some(VectorCoordinateType::Float32),
-            "INTEGER" | "INT" | "INT64" | "INTEGER64" | "SIGNED INTEGER" => {
+            value if value.eq_ignore_ascii_case("FLOAT") => Some(VectorCoordinateType::Float64),
+            value if value.eq_ignore_ascii_case("FLOAT64") => Some(VectorCoordinateType::Float64),
+            value if value.eq_ignore_ascii_case("FLOAT32") => Some(VectorCoordinateType::Float32),
+            value if value.eq_ignore_ascii_case("INTEGER") => Some(VectorCoordinateType::Integer64),
+            value if value.eq_ignore_ascii_case("INT") => Some(VectorCoordinateType::Integer64),
+            value if value.eq_ignore_ascii_case("INT64") => Some(VectorCoordinateType::Integer64),
+            value if value.eq_ignore_ascii_case("INTEGER64") => {
                 Some(VectorCoordinateType::Integer64)
             }
-            "INTEGER32" | "INT32" => Some(VectorCoordinateType::Integer32),
-            "INTEGER16" | "INT16" => Some(VectorCoordinateType::Integer16),
-            "INTEGER8" | "INT8" => Some(VectorCoordinateType::Integer8),
+            value if value.eq_ignore_ascii_case("INTEGER32") => {
+                Some(VectorCoordinateType::Integer32)
+            }
+            value if value.eq_ignore_ascii_case("INT32") => Some(VectorCoordinateType::Integer32),
+            value if value.eq_ignore_ascii_case("INTEGER16") => {
+                Some(VectorCoordinateType::Integer16)
+            }
+            value if value.eq_ignore_ascii_case("INT16") => Some(VectorCoordinateType::Integer16),
+            value if value.eq_ignore_ascii_case("INTEGER8") => Some(VectorCoordinateType::Integer8),
+            value if value.eq_ignore_ascii_case("INT8") => Some(VectorCoordinateType::Integer8),
             _ => None,
         }
     }
@@ -76,6 +95,12 @@ impl VectorCoordinateType {
             self,
             VectorCoordinateType::Float64 | VectorCoordinateType::Float32
         )
+    }
+}
+
+impl fmt::Display for VectorCoordinateType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -116,6 +141,19 @@ impl VectorValues {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Return coordinate `index` widened/narrowed to `f32`, matching the
+    /// arithmetic precision used by the vector math helpers.
+    pub(crate) fn f32_at(&self, index: usize) -> Option<f32> {
+        match self {
+            VectorValues::Float64(v) => v.get(index).map(|x| *x as f32),
+            VectorValues::Float32(v) => v.get(index).copied(),
+            VectorValues::Integer64(v) => v.get(index).map(|x| *x as f32),
+            VectorValues::Integer32(v) => v.get(index).map(|x| *x as f32),
+            VectorValues::Integer16(v) => v.get(index).map(|x| *x as f32),
+            VectorValues::Integer8(v) => v.get(index).map(|x| *x as f32),
+        }
     }
 
     /// Lossless conversion of every coordinate to `f64`. Used by every
