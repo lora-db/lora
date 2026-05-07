@@ -28,52 +28,9 @@ pub(crate) struct ColumnarSnapshot {
 impl ColumnarSnapshot {
     pub(crate) fn from_payload(payload: &SnapshotPayload, wal_lsn: Option<u64>) -> Self {
         let _ = wal_lsn;
-        let total_label_count = payload.nodes.iter().map(|node| node.labels.len()).sum();
-        let total_property_count = payload
-            .nodes
-            .iter()
-            .map(|node| node.properties.len())
-            .sum::<usize>()
-            + payload
-                .relationships
-                .iter()
-                .map(|rel| rel.properties.len())
-                .sum::<usize>();
-        let mut rel_type_ids = Vec::with_capacity(payload.relationships.len());
-        let mut rel_type_dictionary = Vec::new();
-        let mut rel_type_index = BTreeMap::<String, u32>::new();
-
-        let mut node_label_offsets = Vec::with_capacity(payload.nodes.len() + 1);
-        let mut node_labels = Vec::with_capacity(total_label_count);
-        node_label_offsets.push(0);
-        for node in &payload.nodes {
-            node_labels.extend(node.labels.iter().cloned());
-            node_label_offsets.push(node_labels.len() as u32);
-        }
-
-        for rel in &payload.relationships {
-            let id = if let Some(id) = rel_type_index.get(&rel.rel_type) {
-                *id
-            } else {
-                let id = rel_type_dictionary.len() as u32;
-                rel_type_dictionary.push(rel.rel_type.clone());
-                rel_type_index.insert(rel.rel_type.clone(), id);
-                id
-            };
-            rel_type_ids.push(id);
-        }
-
-        let mut properties = PropertyColumns::with_capacity(total_property_count);
-        for (owner_index, node) in payload.nodes.iter().enumerate() {
-            properties.push_entity(EntityKind::Node, owner_index as u64, &node.properties);
-        }
-        for (owner_index, rel) in payload.relationships.iter().enumerate() {
-            properties.push_entity(
-                EntityKind::Relationship,
-                owner_index as u64,
-                &rel.properties,
-            );
-        }
+        let (node_label_offsets, node_labels) = node_label_columns(&payload.nodes);
+        let (rel_type_ids, rel_type_dictionary) = relationship_type_columns(&payload.relationships);
+        let properties = property_columns_from_payload(payload);
 
         Self {
             next_node_id: payload.next_node_id,
@@ -91,6 +48,22 @@ impl ColumnarSnapshot {
     }
 
     pub(crate) fn into_payload(self) -> Result<SnapshotPayload> {
+        self.validate_payload_columns()?;
+        let mut nodes = self.node_records_from_columns()?;
+        let mut relationships = self.relationship_records_from_columns()?;
+
+        self.properties
+            .attach_to_entities(&mut nodes, &mut relationships)?;
+
+        Ok(SnapshotPayload {
+            next_node_id: self.next_node_id,
+            next_rel_id: self.next_rel_id,
+            nodes,
+            relationships,
+        })
+    }
+
+    fn validate_payload_columns(&self) -> Result<()> {
         if self.node_label_offsets.len() != self.node_ids.len() + 1 {
             return Err(SnapshotCodecError::Decode(
                 "node label offset length mismatch".into(),
@@ -104,7 +77,10 @@ impl ColumnarSnapshot {
                 "relationship column length mismatch".into(),
             ));
         }
+        Ok(())
+    }
 
+    fn node_records_from_columns(&self) -> Result<Vec<NodeRecord>> {
         let mut nodes = Vec::with_capacity(self.node_ids.len());
         for (index, id) in self.node_ids.iter().copied().enumerate() {
             let start = self.node_label_offsets[index] as usize;
@@ -120,7 +96,10 @@ impl ColumnarSnapshot {
                 properties: BTreeMap::new(),
             });
         }
+        Ok(nodes)
+    }
 
+    fn relationship_records_from_columns(&self) -> Result<Vec<RelationshipRecord>> {
         let mut relationships = Vec::with_capacity(self.rel_ids.len());
         for index in 0..self.rel_ids.len() {
             let type_id = self.rel_type_ids[index] as usize;
@@ -137,16 +116,7 @@ impl ColumnarSnapshot {
                 properties: BTreeMap::new(),
             });
         }
-
-        self.properties
-            .attach_to_entities(&mut nodes, &mut relationships)?;
-
-        Ok(SnapshotPayload {
-            next_node_id: self.next_node_id,
-            next_rel_id: self.next_rel_id,
-            nodes,
-            relationships,
-        })
+        Ok(relationships)
     }
 
     pub(crate) fn encode_binary(&self) -> Result<Vec<u8>> {
@@ -187,13 +157,8 @@ impl ColumnarSnapshot {
         let label_dictionary = reader.read_string_vec()?;
         let node_label_offsets = reader.read_u32_vec()?;
         let label_ids = reader.read_u32_vec()?;
-        let mut node_labels = Vec::with_capacity(label_ids.len());
-        for id in label_ids {
-            let label = label_dictionary
-                .get(id as usize)
-                .ok_or_else(|| SnapshotCodecError::Decode("invalid label dictionary id".into()))?;
-            node_labels.push(label.clone());
-        }
+        let node_labels =
+            decode_dictionary_strings(&label_dictionary, label_ids, "label dictionary")?;
 
         let rel_ids = reader.read_u64_vec()?;
         let rel_src = reader.read_u64_vec()?;
@@ -217,6 +182,80 @@ impl ColumnarSnapshot {
             properties,
         })
     }
+}
+
+fn decode_dictionary_strings(
+    dictionary: &[String],
+    ids: Vec<u32>,
+    name: &str,
+) -> Result<Vec<String>> {
+    let mut values = Vec::with_capacity(ids.len());
+    for id in ids {
+        let value = dictionary
+            .get(id as usize)
+            .ok_or_else(|| SnapshotCodecError::Decode(format!("invalid {name} id")))?;
+        values.push(value.clone());
+    }
+    Ok(values)
+}
+
+fn node_label_columns(nodes: &[NodeRecord]) -> (Vec<u32>, Vec<String>) {
+    let total_label_count = nodes.iter().map(|node| node.labels.len()).sum();
+    let mut offsets = Vec::with_capacity(nodes.len() + 1);
+    let mut labels = Vec::with_capacity(total_label_count);
+    offsets.push(0);
+    for node in nodes {
+        labels.extend(node.labels.iter().cloned());
+        offsets.push(labels.len() as u32);
+    }
+    (offsets, labels)
+}
+
+fn relationship_type_columns(relationships: &[RelationshipRecord]) -> (Vec<u32>, Vec<String>) {
+    let mut ids = Vec::with_capacity(relationships.len());
+    let mut dictionary = Vec::new();
+    let mut index = BTreeMap::<String, u32>::new();
+
+    for rel in relationships {
+        let id = if let Some(id) = index.get(&rel.rel_type) {
+            *id
+        } else {
+            let id = dictionary.len() as u32;
+            dictionary.push(rel.rel_type.clone());
+            index.insert(rel.rel_type.clone(), id);
+            id
+        };
+        ids.push(id);
+    }
+
+    (ids, dictionary)
+}
+
+fn property_columns_from_payload(payload: &SnapshotPayload) -> PropertyColumns {
+    let total_property_count = payload
+        .nodes
+        .iter()
+        .map(|node| node.properties.len())
+        .sum::<usize>()
+        + payload
+            .relationships
+            .iter()
+            .map(|rel| rel.properties.len())
+            .sum::<usize>();
+    let mut properties = PropertyColumns::with_capacity(total_property_count);
+
+    for (owner_index, node) in payload.nodes.iter().enumerate() {
+        properties.push_entity(EntityKind::Node, owner_index as u64, &node.properties);
+    }
+    for (owner_index, rel) in payload.relationships.iter().enumerate() {
+        properties.push_entity(
+            EntityKind::Relationship,
+            owner_index as u64,
+            &rel.properties,
+        );
+    }
+
+    properties
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

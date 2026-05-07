@@ -82,6 +82,12 @@ impl PasswordKdfParams {
     }
 }
 
+impl Default for PasswordKdfParams {
+    fn default() -> Self {
+        Self::interactive()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotEncryption {
     Key(EncryptionKey),
