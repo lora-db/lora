@@ -1,6 +1,6 @@
 //! Large-scale benchmarks to measure scaling behaviour at 10k–50k nodes.
 //!
-//! Run with: `cargo bench -p lora-server --bench scale_benchmarks`
+//! Run with: `cargo bench -p lora-server --bench scale`
 //!
 //! These benchmarks use longer measurement times and fewer samples because
 //! each iteration is more expensive.  They are designed to reveal O(n) vs

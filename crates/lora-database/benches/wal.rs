@@ -19,7 +19,7 @@
 //! number that bounds startup time on a fresh process.
 //!
 //! Run with:
-//!   `cargo bench -p lora-database --bench wal_benchmarks`
+//!   `cargo bench -p lora-database --bench wal`
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

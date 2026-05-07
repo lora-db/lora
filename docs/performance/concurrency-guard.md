@@ -11,12 +11,12 @@ The phase-by-phase implementation plan lives in
 ## Run It For Each Phase
 
 ```bash
-cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+cargo bench -p lora-database --bench concurrency_guard \
     -- --output-format bencher > /tmp/lora-before.bencher
 
 # make one implementation step
 
-cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+cargo bench -p lora-database --bench concurrency_guard \
     -- --output-format bencher > /tmp/lora-after.bencher
 
 node scripts/check-bench-delta.mjs \

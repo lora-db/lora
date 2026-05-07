@@ -4,9 +4,9 @@
  * current run is slower than the baseline by more than a threshold.
  *
  * Example:
- *   cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+ *   cargo bench -p lora-database --bench concurrency_guard \
  *       -- --output-format bencher > /tmp/lora-before.bencher
- *   cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+ *   cargo bench -p lora-database --bench concurrency_guard \
  *       -- --output-format bencher > /tmp/lora-after.bencher
  *   node scripts/check-bench-delta.mjs \
  *       --baseline /tmp/lora-before.bencher \

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Regression-check the perf_smoke_benchmarks suite against a checked-in
+ * Regression-check the perf_smoke suite against a checked-in
  * baseline.
  *
- *   cargo bench -p lora-database --bench perf_smoke_benchmarks \
+ *   cargo bench -p lora-database --bench perf_smoke \
  *       -- --output-format bencher \
  *     | node scripts/check-perf-smoke.mjs
  *

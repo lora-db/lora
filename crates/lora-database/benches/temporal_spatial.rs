@@ -1,6 +1,6 @@
 //! Benchmarks for temporal operations, spatial operations, and shortest paths.
 //!
-//! Run with: `cargo bench -p lora-server --bench temporal_spatial_benchmarks`
+//! Run with: `cargo bench -p lora-server --bench temporal_spatial`
 //!
 //! Categories:
 //!   1. temporal_creation — date/time/datetime/duration constructor performance

@@ -31,7 +31,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "crates/lora-database/benches/perf_smoke_benchmarks.rs"
+      - "crates/lora-database/benches/perf_smoke.rs"
       - "crates/lora-database/benches/perf_smoke_baseline.json"
       - "scripts/check-perf-smoke.mjs"
       - "scripts/summarize-benchmarks.mjs"
@@ -43,7 +43,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "crates/lora-database/benches/perf_smoke_benchmarks.rs"
+      - "crates/lora-database/benches/perf_smoke.rs"
       - "crates/lora-database/benches/perf_smoke_baseline.json"
       - "scripts/check-perf-smoke.mjs"
       - "scripts/summarize-benchmarks.mjs"
@@ -70,12 +70,12 @@ jobs:
         with:
           cache-key: perf-smoke
 
-      - name: Run perf_smoke_benchmarks
+      - name: Run perf_smoke
         shell: bash
         run: |
           set -o pipefail
           mkdir -p perf-smoke-out
-          cargo bench --locked -p lora-database --bench perf_smoke_benchmarks \
+          cargo bench --locked -p lora-database --bench perf_smoke \
               -- --output-format bencher \
             | tee perf-smoke-out/bencher.log
 

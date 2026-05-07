@@ -48,6 +48,12 @@ impl BenchDb {
         }
     }
 
+    pub fn with_capacity_hint(nodes: usize, relationships: usize) -> Self {
+        Self {
+            service: Database::from_graph(InMemoryGraph::with_capacity_hint(nodes, relationships)),
+        }
+    }
+
     /// Execute a Lora statement.  Panics on error — fine for setup code.
     pub fn run(&self, cypher: &str) {
         let options = Some(ExecuteOptions {
@@ -99,7 +105,7 @@ const RICH_BATCH: usize = 500;
 /// Create a graph with `n` isolated nodes, each labelled `:Node` with
 /// properties `{id: <i>, name: 'node_<i>', value: <i % 100>}`.
 pub fn build_node_graph(n: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(n, 0);
     // Use UNWIND for bulk creation — much faster than individual CREATEs.
     let batch = BULK_BATCH;
     let mut i = 0usize;
@@ -116,7 +122,7 @@ pub fn build_node_graph(n: usize) -> BenchDb {
 
 /// Create a linear chain: n0 -> n1 -> … -> n(len-1) with `:NEXT` edges.
 pub fn build_chain(len: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(len, len.saturating_sub(1));
     let batch = BULK_BATCH;
     let mut i = 0usize;
     while i < len {
@@ -146,7 +152,7 @@ pub fn build_chain(len: usize) -> BenchDb {
 
 /// Create a cycle: n0 -> n1 -> … -> n(len-1) -> n0 with `:LOOP` edges.
 pub fn build_cycle(len: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(len, usize::from(len > 1) * len);
     let batch = BULK_BATCH;
     let mut i = 0usize;
     while i < len {
@@ -184,7 +190,7 @@ pub fn build_cycle(len: usize) -> BenchDb {
 /// Build a star graph: one `:Hub` node with `spokes` outgoing `:ARM` edges
 /// to `:Leaf` nodes.
 pub fn build_star(spokes: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(spokes + 1, spokes);
     db.run("CREATE (:Hub {name: 'center'})");
     let batch = BULK_BATCH;
     let mut i = 0usize;
@@ -207,7 +213,8 @@ pub fn build_star(spokes: usize) -> BenchDb {
 /// * Properties: `{id, name, age, city}`
 /// * 5 distinct cities, age 20-60
 pub fn build_social_graph(n: usize, avg_friends: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let rels = n.saturating_mul(avg_friends.min(n.saturating_sub(1)));
+    let db = BenchDb::with_capacity_hint(n, rels);
     let cities = ["London", "Berlin", "Paris", "Tokyo", "Amsterdam"];
 
     // Create people
@@ -255,7 +262,8 @@ pub fn build_social_graph(n: usize, avg_friends: usize) -> BenchDb {
 /// Total nodes = (branch^(depth+1) - 1) / (branch - 1) for branch > 1.
 /// Labels: `:Tree`, relationships: `:CHILD`.
 pub fn build_tree(depth: usize, branch: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let node_hint = tree_node_count(depth, branch);
+    let db = BenchDb::with_capacity_hint(node_hint, node_hint.saturating_sub(1));
     db.run("CREATE (:Tree {id: 0, depth: 0})");
     let mut next_id = 1u64;
     let mut current_ids: Vec<u64> = vec![0];
@@ -279,10 +287,20 @@ pub fn build_tree(depth: usize, branch: usize) -> BenchDb {
     db
 }
 
+fn tree_node_count(depth: usize, branch: usize) -> usize {
+    let mut total = 1usize;
+    let mut level = 1usize;
+    for _ in 0..depth {
+        level = level.saturating_mul(branch);
+        total = total.saturating_add(level);
+    }
+    total
+}
+
 /// Build a dependency-style DAG: `n` packages, each depending on 1-3 others
 /// (deterministic). Labels: `:Package`, relationships: `:DEPENDS_ON`.
 pub fn build_dependency_graph(n: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(n, n.saturating_mul(3));
     let batch = BULK_BATCH;
     let mut i = 0usize;
     while i < n {
@@ -319,7 +337,7 @@ pub fn build_dependency_graph(n: usize) -> BenchDb {
 
 /// The org-chart graph from integration tests (12 nodes, 20 relationships).
 pub fn build_org_graph() -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(12, 20);
     // Nodes
     db.run("CREATE (:Person {name:'Alice', age:35, dept:'Engineering'})");
     db.run("CREATE (:Person {name:'Bob',   age:28, dept:'Engineering'})");
@@ -396,7 +414,7 @@ pub fn build_org_graph() -> BenchDb {
 ///
 /// Events are linked sequentially with `:FOLLOWS` relationships.
 pub fn build_temporal_graph(n: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(n, n.saturating_sub(1));
     let batch = RICH_BATCH;
     let mut i = 0usize;
     while i < n {
@@ -440,7 +458,7 @@ pub fn build_temporal_graph(n: usize) -> BenchDb {
 /// `{latitude, longitude}`.  Locations are connected to their nearest
 /// neighbours (by index) with `:CONNECTS_TO` relationships.
 pub fn build_spatial_graph(n: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let db = BenchDb::with_capacity_hint(n, n);
     let batch = RICH_BATCH;
     let mut i = 0usize;
     while i < n {
@@ -487,7 +505,13 @@ pub fn build_spatial_graph(n: usize) -> BenchDb {
 /// * `:REVIEWED` relationships with `{rating: 1..5}` (subset of purchases)
 /// * `:SIMILAR_TO` between products in the same category
 pub fn build_recommendation_graph(n_users: usize, n_products: usize) -> BenchDb {
-    let db = BenchDb::new();
+    let purchase_rels = if n_products > 0 { n_users * 5 } else { 0 };
+    let review_rels = if n_products > 0 { n_users * 2 } else { 0 };
+    let similar_rels = if n_products > 5 { n_products } else { 0 };
+    let db = BenchDb::with_capacity_hint(
+        n_users + n_products,
+        purchase_rels + review_rels + similar_rels,
+    );
     let batch = BULK_BATCH;
     let categories = ["Electronics", "Books", "Clothing", "Food", "Sports"];
 

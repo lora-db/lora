@@ -6,7 +6,7 @@ engine paths. This is a canary, not a measurement instrument.
 
 ## What it is
 
-- **Binary:** `crates/lora-database/benches/perf_smoke_benchmarks.rs`
+- **Binary:** `crates/lora-database/benches/perf_smoke.rs`
 - **Baseline:** `crates/lora-database/benches/perf_smoke_baseline.json`
 - **Check script:** `scripts/check-perf-smoke.mjs`
 - **Summary script:** `scripts/summarize-benchmarks.mjs`
@@ -35,9 +35,9 @@ runtime ≈ 3–8 min including `cargo build --release` from a warm cache.
   `ubuntu-latest` varies ±20–40% run-to-run. For reproducible numbers use
   `docs/performance/benchmarks.md` and the manual `benchmarks` workflow
   against a release tag.
-- **Not a replacement for the full benchmark suites.** `engine_benchmarks`,
-  `scale_benchmarks`, `advanced_benchmarks`, and
-  `temporal_spatial_benchmarks` still exist and are still the right tool
+- **Not a replacement for the full benchmark suites.** `engine`,
+  `scale`, `advanced`, and
+  `temporal_spatial` still exist and are still the right tool
   for real performance work.
 - **Not a tight regression gate.** The default threshold is 3× — a bench
   has to get *three times slower* before CI fails. Anything tighter
@@ -48,7 +48,7 @@ runtime ≈ 3–8 min including `cargo build --release` from a warm cache.
 
 ## How regression detection works
 
-1. CI runs `cargo bench -p lora-database --bench perf_smoke_benchmarks
+1. CI runs `cargo bench -p lora-database --bench perf_smoke
    -- --output-format bencher`.
 2. `scripts/check-perf-smoke.mjs` parses the bencher output and compares
    each benchmark's mean ns/iter against the matching entry in
@@ -66,7 +66,7 @@ runtime ≈ 3–8 min including `cargo build --release` from a warm cache.
 
 ```bash
 # Full pipeline: bench + regression check against the checked-in baseline.
-cargo bench -p lora-database --bench perf_smoke_benchmarks \
+cargo bench -p lora-database --bench perf_smoke \
     -- --output-format bencher \
   | node scripts/check-perf-smoke.mjs
 ```
@@ -74,7 +74,7 @@ cargo bench -p lora-database --bench perf_smoke_benchmarks \
 Or piece by piece:
 
 ```bash
-cargo bench -p lora-database --bench perf_smoke_benchmarks \
+cargo bench -p lora-database --bench perf_smoke \
     -- --output-format bencher > bencher.log
 node scripts/check-perf-smoke.mjs --input bencher.log
 ```
@@ -92,7 +92,7 @@ Refresh deliberately, not reflexively. Reasons a refresh is appropriate:
 
 ```bash
 # Locally: run the bench, then --update rewrites the baseline JSON in place.
-cargo bench -p lora-database --bench perf_smoke_benchmarks \
+cargo bench -p lora-database --bench perf_smoke \
     -- --output-format bencher \
   | node scripts/check-perf-smoke.mjs --update
 ```

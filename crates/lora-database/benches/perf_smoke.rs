@@ -3,14 +3,14 @@
 //! This is a deliberately tiny Criterion suite used as a CI "canary": it is
 //! meant to detect obvious, large performance regressions (≥3× slower) in
 //! core engine paths. It is **not** a source of truth for performance
-//! numbers — see `engine_benchmarks`, `scale_benchmarks`,
-//! `advanced_benchmarks`, and `temporal_spatial_benchmarks` for that.
+//! numbers — see `engine`, `scale`,
+//! `advanced`, and `temporal_spatial` for that.
 //!
 //! Run locally with:
-//!   `cargo bench -p lora-database --bench perf_smoke_benchmarks`
+//!   `cargo bench -p lora-database --bench perf_smoke`
 //!
 //! Regression-check with:
-//!   `cargo bench -p lora-database --bench perf_smoke_benchmarks \
+//!   `cargo bench -p lora-database --bench perf_smoke \
 //!        -- --output-format bencher \
 //!    | node scripts/check-perf-smoke.mjs`
 //!

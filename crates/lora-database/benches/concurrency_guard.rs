@@ -1,14 +1,14 @@
 //! Tight local performance guard for concurrency work.
 //!
-//! `perf_smoke_benchmarks` is the broad CI canary and intentionally allows
+//! `perf_smoke` is the broad CI canary and intentionally allows
 //! large runner noise. This suite is narrower and meant for phase-by-phase
 //! local checks while changing the concurrency/write/WAL plumbing:
 //!
 //! ```text
-//! cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+//! cargo bench -p lora-database --bench concurrency_guard \
 //!     -- --output-format bencher > /tmp/lora-before.bencher
 //! # make one implementation step
-//! cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+//! cargo bench -p lora-database --bench concurrency_guard \
 //!     -- --output-format bencher > /tmp/lora-after.bencher
 //! node scripts/check-bench-delta.mjs \
 //!     --baseline /tmp/lora-before.bencher \

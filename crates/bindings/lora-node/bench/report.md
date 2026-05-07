@@ -35,7 +35,7 @@ Confirmed by the `medium_scan_10k::native_only` bench (no JS decode):
 the native pipeline is ~2 450 µs and the JS decode adds ~135 µs.
 
 The remaining headroom is in the engine, not the binding. `cargo bench
-perf_smoke_benchmarks::scan_1k` reports ~170 µs for a 1 000-row scan
+perf_smoke::scan_1k` reports ~170 µs for a 1 000-row scan
 through `ResultFormat::Rows`, so 10K rows extrapolate to ~1.7 ms — the
 binding is now within ~1.06× of the engine itself for bulk reads on
 the native side, and ~1.5× end-to-end including JS decode.

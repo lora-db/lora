@@ -1,16 +1,17 @@
 ## Performance Benchmarks
 
-All numbers below come from `cargo bench` (Criterion) on the `engine_benchmarks`, `advanced_benchmarks`, and `scale_benchmarks` binaries under `crates/lora-database/benches/`. Run on Apple Silicon (`aarch64-apple-darwin`) in release mode on 2026-04-17. Throughput has been converted from Criterion's `Kelem/s` / `Melem/s` output into fully expanded numbers.
+All numbers below come from `cargo bench` (Criterion) on the `engine`, `advanced`, `realistic`, and `scale` binaries under `crates/lora-database/benches/`. Run on Apple Silicon (`aarch64-apple-darwin`) in release mode on 2026-04-17. Throughput has been converted from Criterion's `Kelem/s` / `Melem/s` output into fully expanded numbers.
 
 > ⚙️ **Note** — These numbers characterise the single-process, in-memory core. They are single-query measurements and assume the whole graph fits in RAM. For distributed throughput, write-heavy concurrency, or multi-tenant isolation, see the [LoraDB managed platform](https://loradb.com).
 
 Reproduce with:
 
 ```bash
-cargo bench --bench engine_benchmarks
-cargo bench --bench advanced_benchmarks
-cargo bench --bench scale_benchmarks
-cargo bench --bench temporal_spatial_benchmarks
+cargo bench --bench engine
+cargo bench --bench advanced
+cargo bench --bench realistic
+cargo bench --bench scale
+cargo bench --bench temporal_spatial
 ```
 
 For CI/release snapshots, the manual `benchmarks` workflow runs the full

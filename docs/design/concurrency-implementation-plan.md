@@ -28,14 +28,14 @@ Before every implementation phase, capture a local baseline from the same
 machine/session:
 
 ```bash
-cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+cargo bench -p lora-database --bench concurrency_guard \
     -- --output-format bencher > /tmp/lora-before.bencher
 ```
 
 After the phase, rerun the same benchmark and compare:
 
 ```bash
-cargo bench -p lora-database --bench concurrency_guard_benchmarks \
+cargo bench -p lora-database --bench concurrency_guard \
     -- --output-format bencher > /tmp/lora-after.bencher
 
 node scripts/check-bench-delta.mjs \
@@ -58,7 +58,7 @@ Goal: make the existing single-writer design a clean reference point.
 - Remove or keep removed orphan future-flusher code that is no longer compiled.
 - Update stale benchmark comments that still describe the old ArcSwap/CAS
   roadmap.
-- Run `concurrency_guard_benchmarks` before and after any cleanup. This phase
+- Run `concurrency_guard` before and after any cleanup. This phase
   should have near-zero performance movement.
 
 Exit criteria:
@@ -123,7 +123,7 @@ Performance guard usage:
 - Compare with a baseline from the end of Phase 2.
 - `write_set_existing_1k` is the main single-thread overhead signal.
 - `mixed_4_readers_1_writer` should not regress meaningfully.
-- Run the wider `concurrent_benchmarks` manually to confirm disjoint writers
+- Run the wider `concurrent` manually to confirm disjoint writers
   are improving, not just preserving single-thread numbers.
 
 ## Phase 4: Make ID Allocation Concurrent-Safe
@@ -187,15 +187,15 @@ slowing the embedded single-thread case.
 - Add deterministic stress tests for stable read snapshots, disjoint writes,
   overlapping conflicts, concurrent creates, WAL replay order, checkpoint
   recovery, and background sync failure poisoning.
-- Run `concurrency_guard_benchmarks` for single-thread regression control.
-- Run `concurrent_benchmarks` for scaling behavior.
-- Run `perf_smoke_benchmarks` so the broad CI canary remains healthy.
+- Run `concurrency_guard` for single-thread regression control.
+- Run `concurrent` for scaling behavior.
+- Run `perf_smoke` so the broad CI canary remains healthy.
 - Keep the current single-writer path behind a fallback flag or configuration
   until the concurrent path has enough soak time.
 
 Exit criteria:
 
 - Guard passes against the chosen final baseline.
-- Disjoint writer throughput improves under `concurrent_benchmarks`.
+- Disjoint writer throughput improves under `concurrent`.
 - Read-only and streaming read costs stay within the local threshold.
 - WAL recovery and snapshot tests pass under the new commit/file-sync model.

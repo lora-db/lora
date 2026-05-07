@@ -334,7 +334,7 @@ fn bench_mixed_read_write(c: &mut Criterion) {
 }
 
 criterion_group! {
-    name = concurrent_benchmarks;
+    name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(2));
@@ -344,4 +344,4 @@ criterion_group! {
         bench_concurrent_disjoint_sets,
         bench_mixed_read_write,
 }
-criterion_main!(concurrent_benchmarks);
+criterion_main!(benches);

@@ -1,6 +1,6 @@
 //! Benchmarks for advanced query features and additional function coverage.
 //!
-//! Run with: `cargo bench -p lora-server --bench advanced_benchmarks`
+//! Run with: `cargo bench -p lora-server --bench advanced`
 //!
 //! Categories:
 //!   1. union_queries — UNION / UNION ALL
@@ -29,7 +29,7 @@ fn opts() -> Option<ExecuteOptions> {
     })
 }
 
-/// Same timing rationale as `engine_benchmarks::bench_config`: default
+/// Same timing rationale as `engine::bench_config`: default
 /// Criterion timing was an order of magnitude more than needed.
 fn bench_config() -> Criterion {
     Criterion::default()

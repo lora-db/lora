@@ -39,7 +39,7 @@ For an apples-to-apples comparison against the engine without any binding
 overhead, run the `lora-database` criterion suite:
 
 ```sh
-cargo bench -p lora-database --bench perf_smoke_benchmarks
+cargo bench -p lora-database --bench perf_smoke
 ```
 
 The Phase 1 exit criterion is ≥2× speedup on `medium_scan_10k` against a

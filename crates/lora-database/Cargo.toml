@@ -40,33 +40,37 @@ tower.workspace = true
 criterion.workspace = true
 
 [[bench]]
-name = "engine_benchmarks"
+name = "engine"
 harness = false
 
 [[bench]]
-name = "temporal_spatial_benchmarks"
+name = "temporal_spatial"
 harness = false
 
 [[bench]]
-name = "advanced_benchmarks"
+name = "advanced"
 harness = false
 
 [[bench]]
-name = "scale_benchmarks"
+name = "realistic"
 harness = false
 
 [[bench]]
-name = "perf_smoke_benchmarks"
+name = "scale"
 harness = false
 
 [[bench]]
-name = "wal_benchmarks"
+name = "perf_smoke"
 harness = false
 
 [[bench]]
-name = "concurrent_benchmarks"
+name = "wal"
 harness = false
 
 [[bench]]
-name = "concurrency_guard_benchmarks"
+name = "concurrent"
+harness = false
+
+[[bench]]
+name = "concurrency_guard"
 harness = false

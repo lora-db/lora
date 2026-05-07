@@ -110,7 +110,7 @@ the measured save wall-time.
 **Source**: `crates/lora-snapshot`, `crates/lora-store/src/snapshot.rs`, and
 `crates/lora-database/src/snapshot/`. Round-trip coverage lives in
 `crates/lora-database/tests/snapshot.rs`; there is no dedicated benchmark file
-yet (potential future slot: `crates/lora-database/benches/snapshot_benchmarks.rs`).
+yet (potential future slot: `crates/lora-database/benches/snapshot.rs`).
 
 See also [Snapshots (operator doc)](../operations/snapshots.md) and [Data Flow → Concurrency model](../architecture/data-flow.md#concurrency-model).
 

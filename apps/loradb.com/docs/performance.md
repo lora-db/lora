@@ -123,7 +123,7 @@ jq -r '
 Run the smoke suite and produce the same JSON shape:
 
 ```bash
-cargo bench -p lora-database --bench perf_smoke_benchmarks \
+cargo bench -p lora-database --bench perf_smoke \
     -- --output-format bencher > bencher.log
 
 node scripts/summarize-benchmarks.mjs \

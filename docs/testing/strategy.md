@@ -95,22 +95,38 @@ cargo test --workspace -- --include-ignored
 cargo test --workspace -- --ignored
 ```
 
+### Cargo artifact lock waits
+
+If `cargo test` prints `Blocking waiting for file lock on artifact directory`,
+another Cargo process is compiling into the same `target/` directory. The most
+common local source is rust-analyzer checking the workspace in the editor while
+a terminal test run starts.
+
+The checked-in VS Code setting at `.vscode/settings.json` points
+rust-analyzer at `target/rust-analyzer`, so editor checks and terminal tests use
+separate artifact locks. Reload the editor after pulling that setting. If a
+test command is already blocked, wait for the current Cargo build to finish or
+stop the older Cargo task, then rerun the test. When running several focused
+tests locally, prefer one Cargo command with multiple `--test` arguments over
+parallel terminal commands so Cargo can compile once and schedule the test
+binaries itself.
+
 ## Benchmarks
 
 Located under `crates/lora-database/benches/`:
 
 | File | Focus |
 |------|-------|
-| `engine_benchmarks.rs` | Core engine: MATCH, traversal, filtering, aggregation, ordering, writes, functions, realistic workloads |
-| `scale_benchmarks.rs` | Scalability across tiny / small / medium graphs |
-| `advanced_benchmarks.rs` | Complex queries: joins, sub-patterns, deeply nested paths |
-| `temporal_spatial_benchmarks.rs` | Temporal and spatial type operations |
-| `perf_smoke_benchmarks.rs` | 4-bench CI canary for ≥3× regressions — see [perf-smoke docs](../performance/perf-smoke.md) |
+| `engine.rs` | Core engine: MATCH, traversal, filtering, aggregation, ordering, writes, functions, realistic workloads |
+| `scale.rs` | Scalability across tiny / small / medium graphs |
+| `advanced.rs` | Complex queries: joins, sub-patterns, deeply nested paths |
+| `temporal_spatial.rs` | Temporal and spatial type operations |
+| `perf_smoke.rs` | 4-bench CI canary for ≥3× regressions — see [perf-smoke docs](../performance/perf-smoke.md) |
 | `fixtures.rs` | Shared graph patterns (chains, social, org, dependency) |
 
 Run with `cargo bench --package lora-database`.
 
-The `perf_smoke_benchmarks` suite also runs automatically on every PR
+The `perf_smoke` suite also runs automatically on every PR
 via [`.github/workflows/perf-smoke.yml`](../../.github/workflows/perf-smoke.yml),
 comparing against `crates/lora-database/benches/perf_smoke_baseline.json`
 using `scripts/check-perf-smoke.mjs`. It is intentionally a canary, not
