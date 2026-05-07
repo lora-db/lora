@@ -92,12 +92,8 @@ pub(super) fn lower_list_literal(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
     let inner: Vec<_> = pair.into_inner().collect();
 
-    if inner.len() == 1 && inner[0].as_rule() == Rule::list_comprehension {
-        return lower_list_comprehension(inner.into_iter().next().unwrap(), span);
-    }
-
-    if inner.len() == 1 && inner[0].as_rule() == Rule::pattern_comprehension {
-        return lower_pattern_comprehension(inner.into_iter().next().unwrap(), span);
+    if let Some(expr) = lower_single_comprehension(inner.as_slice(), span)? {
+        return Ok(expr);
     }
 
     let mut items = Vec::new();
@@ -108,6 +104,21 @@ pub(super) fn lower_list_literal(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     }
 
     Ok(Expr::List(items, span))
+}
+
+fn lower_single_comprehension(
+    inner: &[Pair<Rule>],
+    span: Span,
+) -> Result<Option<Expr>, ParseError> {
+    let [single] = inner else {
+        return Ok(None);
+    };
+
+    match single.as_rule() {
+        Rule::list_comprehension => Ok(Some(lower_list_comprehension(single.clone(), span)?)),
+        Rule::pattern_comprehension => Ok(Some(lower_pattern_comprehension(single.clone(), span)?)),
+        _ => Ok(None),
+    }
 }
 
 pub(super) fn lower_pattern_comprehension(
