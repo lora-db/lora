@@ -116,6 +116,61 @@ fn bench_concurrency_guard(c: &mut Criterion) {
         });
     }
 
+    // Large materialized read paths. These catch whether intra-query read
+    // parallelism is actually paying off instead of just adding scheduling
+    // overhead to normal `execute()`.
+    {
+        let db = build_node_graph(Scale::LARGE);
+        group.bench_function("read_scan_50k", |b| {
+            b.iter(|| {
+                black_box(db.service.execute("MATCH (n) RETURN n.id", opts()).unwrap());
+            });
+        });
+
+        group.bench_function("read_label_project_50k", |b| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) RETURN n.id, n.name, n.value", opts())
+                        .unwrap(),
+                );
+            });
+        });
+
+        group.bench_function("read_scan_filter_project_50k", |b| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) WHERE n.value >= 0 RETURN n.id", opts())
+                        .unwrap(),
+                );
+            });
+        });
+
+        group.bench_function("read_scan_filter_half_project_50k", |b| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute("MATCH (n:Node) WHERE n.value >= 50 RETURN n.id", opts())
+                        .unwrap(),
+                );
+            });
+        });
+
+        group.bench_function("read_map_projection_50k", |b| {
+            b.iter(|| {
+                black_box(
+                    db.service
+                        .execute(
+                            "MATCH (n:Node) RETURN n { .id, .name, .value } AS node",
+                            opts(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
     // Live read stream: pins an Arc snapshot and drops after one row.
     {
         let db = build_node_graph(Scale::SMALL);

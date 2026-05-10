@@ -3,8 +3,8 @@
 //! This is a deliberately tiny Criterion suite used as a CI "canary": it is
 //! meant to detect obvious, large performance regressions (≥3× slower) in
 //! core engine paths. It is **not** a source of truth for performance
-//! numbers — see `engine`, `scale`,
-//! `advanced`, and `temporal_spatial` for that.
+//! numbers — see `query_implementations`, `scale`, `realistic`, and the
+//! WAL/concurrency suites for that.
 //!
 //! Run locally with:
 //!   `cargo bench -p lora-database --bench perf_smoke`
