@@ -5,7 +5,49 @@ line_comment = _{ "//" ~ (!"\n" ~ ANY)* }
 query = { SOI ~ statement ~ semicolon? ~ EOI }
 semicolon = _{ ";" }
 
-statement = { regular_query | standalone_call }
+statement = { schema_command | regular_query | standalone_call }
+
+schema_command = { create_index_command | drop_index_command | show_indexes_command }
+
+create_index_command = {
+    CREATE ~ index_kind? ~ INDEX ~ index_name_spec? ~ if_not_exists?
+    ~ FOR ~ index_pattern ~ ON ~ index_property_spec ~ index_options?
+}
+
+index_kind = { TEXT | POINT | LOOKUP | RANGE }
+// Negative lookahead so `CREATE INDEX FOR ...` and `CREATE INDEX IF NOT EXISTS ...`
+// don't bind `FOR` / `IF` as the (optional) index name.
+index_name_spec = { !(FOR | IF) ~ (parameter | symbolic_name) }
+if_not_exists = { IF ~ NOT ~ EXISTS }
+
+index_pattern = {
+    indexed_node_pattern
+  | indexed_rel_pattern
+  | lookup_node_pattern
+  | lookup_rel_pattern
+}
+indexed_node_pattern = { lparen ~ index_var ~ colon ~ label_name ~ rparen }
+indexed_rel_pattern = {
+    lparen ~ rparen ~ dash ~ lbrack ~ index_var ~ colon ~ rel_type_name ~ rbrack
+    ~ dash ~ right_arrow? ~ lparen ~ rparen
+}
+lookup_node_pattern = { lparen ~ index_var ~ rparen }
+lookup_rel_pattern = {
+    lparen ~ rparen ~ dash ~ lbrack ~ index_var ~ rbrack ~ dash ~ right_arrow? ~ lparen ~ rparen
+}
+index_var = { symbolic_name }
+
+index_property_spec = { index_property_list | index_token_lookup }
+index_property_list = { lparen ~ index_property ~ (comma ~ index_property)* ~ rparen }
+index_property = { index_var ~ dot ~ property_key_name }
+index_token_lookup = { EACH ~ index_token_func }
+index_token_func = { (LABELS_FN | TYPE_FN) ~ lparen ~ index_var ~ rparen }
+index_options = { OPTIONS ~ map_literal }
+
+show_indexes_command = { SHOW ~ (INDEXES | INDEX) }
+
+drop_index_command = { DROP_KW ~ INDEX ~ index_name_spec ~ if_exists? }
+if_exists = { IF ~ EXISTS }
 
 regular_query = { single_query ~ (union_clause ~ single_query)* }
 union_clause = { UNION ~ ALL? }
@@ -367,5 +409,20 @@ index_op = { lbrack ~ expression ~ rbrack }
 
 SHORTEST_PATH = @{ ^"shortestPath" ~ !ident_part }
 ALL_SHORTEST_PATHS = @{ ^"allShortestPaths" ~ !ident_part }
+
+INDEX = @{ ^"INDEX" ~ !ident_part }
+INDEXES = @{ ^"INDEXES" ~ !ident_part }
+RANGE = @{ ^"RANGE" ~ !ident_part }
+TEXT = @{ ^"TEXT" ~ !ident_part }
+POINT = @{ ^"POINT" ~ !ident_part }
+LOOKUP = @{ ^"LOOKUP" ~ !ident_part }
+FOR = @{ ^"FOR" ~ !ident_part }
+IF = @{ ^"IF" ~ !ident_part }
+EACH = @{ ^"EACH" ~ !ident_part }
+OPTIONS = @{ ^"OPTIONS" ~ !ident_part }
+SHOW = @{ ^"SHOW" ~ !ident_part }
+DROP_KW = @{ ^"DROP" ~ !ident_part }
+LABELS_FN = @{ ^"labels" ~ !ident_part }
+TYPE_FN = @{ ^"type" ~ !ident_part }
 
 STAR = @{ "*" }

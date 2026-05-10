@@ -1,11 +1,10 @@
-use serde::{Deserialize, Serialize};
-
+use crate::body::{write_bytes, write_string, write_u32, write_u64, BodyReader};
 use crate::codec::SnapshotInfo;
 use crate::errors::{Result, SnapshotCodecError};
 use crate::format::{FORMAT_VERSION, HEADER_LEN, MAGIC};
 use crate::options::{Compression, PasswordKdfParams};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub(crate) struct Manifest {
     pub(crate) format_version: u32,
     pub(crate) wal_lsn: Option<u64>,
@@ -16,7 +15,7 @@ pub(crate) struct Manifest {
     pub(crate) body_len: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub(crate) enum EncryptionManifest {
     None,
     ChaCha20Poly1305 {
@@ -49,8 +48,7 @@ pub(crate) fn encode_envelope(
         body_len: body.len() as u64,
     };
     let info = manifest_info(&manifest)?;
-    let manifest_bytes =
-        bincode::serialize(&manifest).map_err(|e| SnapshotCodecError::Encode(e.to_string()))?;
+    let manifest_bytes = encode_manifest(&manifest)?;
     if manifest_bytes.len() > u32::MAX as usize {
         return Err(SnapshotCodecError::Encode("manifest too large".into()));
     }
@@ -107,9 +105,147 @@ pub(crate) fn decode_envelope_borrowed(bytes: &[u8]) -> Result<(Manifest, &[u8])
         return Err(SnapshotCodecError::ChecksumMismatch);
     }
 
-    let manifest: Manifest = bincode::deserialize(manifest_bytes)
-        .map_err(|e| SnapshotCodecError::Decode(e.to_string()))?;
+    let manifest = decode_manifest(manifest_bytes)?;
     Ok((manifest, body))
+}
+
+const COMPRESSION_NONE: u8 = 0;
+const COMPRESSION_GZIP: u8 = 1;
+
+const ENCRYPTION_NONE: u8 = 0;
+const ENCRYPTION_CHACHA20_POLY1305: u8 = 1;
+const ENCRYPTION_PASSWORD_CHACHA20_POLY1305: u8 = 2;
+
+fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    write_u32(&mut out, manifest.format_version);
+    match manifest.wal_lsn {
+        Some(lsn) => {
+            out.push(1);
+            write_u64(&mut out, lsn);
+        }
+        None => out.push(0),
+    }
+    write_u64(&mut out, manifest.node_count);
+    write_u64(&mut out, manifest.relationship_count);
+    write_compression(&mut out, manifest.compression);
+    write_encryption(&mut out, &manifest.encryption)?;
+    write_u64(&mut out, manifest.body_len);
+    Ok(out)
+}
+
+fn decode_manifest(bytes: &[u8]) -> Result<Manifest> {
+    let mut reader = BodyReader::new(bytes);
+    let format_version = reader.read_u32()?;
+    let wal_lsn = match reader.read_u8()? {
+        0 => None,
+        1 => Some(reader.read_u64()?),
+        tag => {
+            return Err(SnapshotCodecError::Decode(format!(
+                "invalid wal_lsn presence tag {tag}"
+            )));
+        }
+    };
+    let manifest = Manifest {
+        format_version,
+        wal_lsn,
+        node_count: reader.read_u64()?,
+        relationship_count: reader.read_u64()?,
+        compression: read_compression(&mut reader)?,
+        encryption: read_encryption(&mut reader)?,
+        body_len: reader.read_u64()?,
+    };
+    reader.finish()?;
+    Ok(manifest)
+}
+
+fn write_compression(out: &mut Vec<u8>, compression: Compression) {
+    match compression {
+        Compression::None => out.push(COMPRESSION_NONE),
+        Compression::Gzip { level } => {
+            out.push(COMPRESSION_GZIP);
+            write_u32(out, level);
+        }
+    }
+}
+
+fn read_compression(reader: &mut BodyReader<'_>) -> Result<Compression> {
+    match reader.read_u8()? {
+        COMPRESSION_NONE => Ok(Compression::None),
+        COMPRESSION_GZIP => Ok(Compression::Gzip {
+            level: reader.read_u32()?,
+        }),
+        tag => Err(SnapshotCodecError::Decode(format!(
+            "invalid compression tag {tag}"
+        ))),
+    }
+}
+
+fn write_encryption(out: &mut Vec<u8>, encryption: &EncryptionManifest) -> Result<()> {
+    match encryption {
+        EncryptionManifest::None => out.push(ENCRYPTION_NONE),
+        EncryptionManifest::ChaCha20Poly1305 { key_id, nonce } => {
+            out.push(ENCRYPTION_CHACHA20_POLY1305);
+            write_string(out, key_id)?;
+            write_bytes(out, nonce)?;
+        }
+        EncryptionManifest::PasswordChaCha20Poly1305 {
+            key_id,
+            nonce,
+            salt,
+            params,
+        } => {
+            out.push(ENCRYPTION_PASSWORD_CHACHA20_POLY1305);
+            write_string(out, key_id)?;
+            write_bytes(out, nonce)?;
+            write_bytes(out, salt)?;
+            write_password_params(out, *params);
+        }
+    }
+    Ok(())
+}
+
+fn read_encryption(reader: &mut BodyReader<'_>) -> Result<EncryptionManifest> {
+    match reader.read_u8()? {
+        ENCRYPTION_NONE => Ok(EncryptionManifest::None),
+        ENCRYPTION_CHACHA20_POLY1305 => Ok(EncryptionManifest::ChaCha20Poly1305 {
+            key_id: reader.read_string()?,
+            nonce: read_fixed_bytes(reader, "nonce")?,
+        }),
+        ENCRYPTION_PASSWORD_CHACHA20_POLY1305 => Ok(EncryptionManifest::PasswordChaCha20Poly1305 {
+            key_id: reader.read_string()?,
+            nonce: read_fixed_bytes(reader, "nonce")?,
+            salt: read_fixed_bytes(reader, "salt")?,
+            params: read_password_params(reader)?,
+        }),
+        tag => Err(SnapshotCodecError::Decode(format!(
+            "invalid encryption tag {tag}"
+        ))),
+    }
+}
+
+fn write_password_params(out: &mut Vec<u8>, params: PasswordKdfParams) {
+    write_u32(out, params.memory_cost_kib);
+    write_u32(out, params.time_cost);
+    write_u32(out, params.parallelism);
+}
+
+fn read_password_params(reader: &mut BodyReader<'_>) -> Result<PasswordKdfParams> {
+    Ok(PasswordKdfParams {
+        memory_cost_kib: reader.read_u32()?,
+        time_cost: reader.read_u32()?,
+        parallelism: reader.read_u32()?,
+    })
+}
+
+fn read_fixed_bytes<const N: usize>(reader: &mut BodyReader<'_>, field: &str) -> Result<[u8; N]> {
+    let bytes = reader.read_bytes()?;
+    bytes.try_into().map_err(|_| {
+        SnapshotCodecError::Decode(format!(
+            "invalid {field} length: expected {N}, got {}",
+            bytes.len()
+        ))
+    })
 }
 
 fn read_header_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N]> {

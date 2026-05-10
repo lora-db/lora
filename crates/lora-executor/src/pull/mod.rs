@@ -13,6 +13,7 @@
 //! * [`ArgumentSource`]
 //! * [`NodeScanSource`]
 //! * [`NodeByLabelScanSource`]
+//! * catalog-backed index scans for range/text/point predicates
 //! * [`ExpandSource`] (single-hop)
 //! * [`VariableLengthExpandSource`]
 //! * [`FilterSource`]
@@ -49,7 +50,7 @@
 //!   machinery ([`StreamingWriteCursor`], [`MutableUnionSource`]).
 //! - `shape` — [`StreamShape`] and [`classify_stream`].
 //! - `columns` — [`plan_result_columns`] / [`compiled_result_columns`].
-//! - `scan` — node scan operator sources ([`NodeScanSource`],
+//! - `scan` — node and index scan operator sources ([`NodeScanSource`],
 //!   [`NodeByLabelScanSource`], [`NodeByPropertyScanSource`]).
 //! - `expand` — single-hop and variable-length expansion
 //!   ([`ExpandSource`], [`VariableLengthExpandSource`]).

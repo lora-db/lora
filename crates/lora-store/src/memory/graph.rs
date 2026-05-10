@@ -9,13 +9,23 @@ use std::sync::{Arc, RwLock, RwLockWriteGuard};
 use lora_ast::Direction;
 
 use crate::{
-    MutationEvent, MutationRecorder, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId,
-    RelationshipRecord,
+    LoraPoint, MutationEvent, MutationRecorder, NodeId, NodeRecord, Properties, PropertyValue,
+    RelationshipId, RelationshipRecord,
 };
 
+use super::index_catalog::IndexConfigValue;
+use super::index_catalog::{
+    CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
+    IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind, StoredIndexState,
+};
+use super::point_index::PointRegistry;
 #[cfg(test)]
 use super::property_index::PropertyIndexState;
 use super::property_index::{PropertyIndexKey, PropertyIndexRegistry};
+use super::secondary_index_maintenance::SecondaryIndexMutation;
+use super::sorted_property_index::SortedPropertyIndex;
+use super::stats::GraphStats;
+use super::text_index::TrigramRegistry;
 
 #[derive(Default)]
 pub struct InMemoryGraph {
@@ -65,6 +75,30 @@ pub struct InMemoryGraph {
     pub(super) active_node_property_indexes: AtomicUsize,
     pub(super) active_relationship_property_indexes: AtomicUsize,
 
+    /// Catalog of explicitly-created indexes (CREATE INDEX). Lives next
+    /// to the lazy property-index registry above; the catalog records
+    /// metadata while the registry holds the actual buckets. RANGE
+    /// catalog entries also force the matching property-index keys to
+    /// be activated so equality lookups go through the index from the
+    /// moment the DDL commits.
+    pub(super) index_catalog: RwLock<IndexCatalog>,
+    /// Trigram inverted indexes for `TEXT` catalog entries. One
+    /// registry per entity-kind so node and relationship indexes
+    /// don't collide on the same `(label, property)` shape.
+    pub(super) node_text_indexes: RwLock<TrigramRegistry>,
+    pub(super) relationship_text_indexes: RwLock<TrigramRegistry>,
+
+    /// Sorted (BTreeMap-backed) property indexes used to answer range
+    /// predicates on RANGE catalog entries. The hash-bucket
+    /// [`PropertyIndexRegistry`] above still answers equality.
+    pub(super) node_sorted_indexes: RwLock<SortedPropertyIndex>,
+    pub(super) relationship_sorted_indexes: RwLock<SortedPropertyIndex>,
+
+    /// Grid-bucket spatial indexes used to answer `point.withinBBox` /
+    /// `point.distance(...) <= d` predicates on POINT catalog entries.
+    pub(super) node_point_indexes: RwLock<PointRegistry>,
+    pub(super) relationship_point_indexes: RwLock<PointRegistry>,
+
     /// Optional mutation observer. When `Some`, every committed mutation
     /// fans out to this recorder *after* the in-memory state has been
     /// updated. The recorder is not part of the graph's identity, so Clone
@@ -91,6 +125,14 @@ impl std::fmt::Debug for InMemoryGraph {
             .field(
                 "active_relationship_property_indexes",
                 &self.active_relationship_property_index_count(),
+            )
+            .field(
+                "index_catalog_entries",
+                &self
+                    .index_catalog
+                    .read()
+                    .map(|c| c.list().len())
+                    .unwrap_or(0),
             )
             .field("recorder", &self.recorder.as_ref().map(|_| "installed"))
             .finish()
@@ -120,6 +162,26 @@ impl Clone for InMemoryGraph {
             active_node_property_indexes: AtomicUsize::new(self.active_node_property_index_count()),
             active_relationship_property_indexes: AtomicUsize::new(
                 self.active_relationship_property_index_count(),
+            ),
+            index_catalog: RwLock::new(self.index_catalog_read().clone()),
+            node_text_indexes: RwLock::new(self.text_indexes_read(StoredIndexEntity::Node).clone()),
+            relationship_text_indexes: RwLock::new(
+                self.text_indexes_read(StoredIndexEntity::Relationship)
+                    .clone(),
+            ),
+            node_sorted_indexes: RwLock::new(
+                self.sorted_indexes_read(StoredIndexEntity::Node).clone(),
+            ),
+            relationship_sorted_indexes: RwLock::new(
+                self.sorted_indexes_read(StoredIndexEntity::Relationship)
+                    .clone(),
+            ),
+            node_point_indexes: RwLock::new(
+                self.point_indexes_read(StoredIndexEntity::Node).clone(),
+            ),
+            relationship_point_indexes: RwLock::new(
+                self.point_indexes_read(StoredIndexEntity::Relationship)
+                    .clone(),
             ),
             recorder: None,
         }
@@ -646,6 +708,475 @@ impl InMemoryGraph {
         }
     }
 
+    pub(super) fn index_catalog_read(&self) -> std::sync::RwLockReadGuard<'_, IndexCatalog> {
+        self.index_catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(super) fn index_catalog_write(&self) -> RwLockWriteGuard<'_, IndexCatalog> {
+        self.index_catalog
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Register an explicitly-declared index in the catalog and, when
+    /// applicable, force the underlying property-index buckets to be
+    /// populated so equality lookups can use them immediately.
+    ///
+    /// Named with a `register_` prefix to avoid colliding with the
+    /// trait method `GraphStorageMut::create_index` — the trait impl
+    /// in `impls.rs` delegates here.
+    pub(super) fn register_index(
+        &self,
+        request: IndexRequest,
+        if_not_exists: bool,
+    ) -> Result<CreateIndexOutcome, CreateIndexError> {
+        let request_for_event = request.clone();
+        let outcome = {
+            let mut catalog = self.index_catalog_write();
+            catalog.try_create(request, if_not_exists)?
+        };
+
+        if let CreateIndexOutcome::Created(def) = &outcome {
+            self.populate_index_data(def);
+        }
+
+        // Both Created and NoOpExists are committed catalog states; we
+        // log only Created because NoOpExists implies a redundant DDL
+        // that adds nothing to durable state.
+        if matches!(outcome, CreateIndexOutcome::Created(_)) {
+            self.emit(|| crate::MutationEvent::CreateIndex {
+                request: request_for_event,
+                if_not_exists,
+            });
+        }
+
+        Ok(outcome)
+    }
+
+    /// Replay a CreateIndex event against an empty graph. Mirrors the
+    /// `replay_create_node` shape: callers must invoke before installing
+    /// a recorder so we don't re-emit during recovery.
+    #[doc(hidden)]
+    pub fn replay_create_index(
+        &mut self,
+        request: IndexRequest,
+        if_not_exists: bool,
+    ) -> Result<(), String> {
+        if self.recorder.is_some() {
+            return Err("cannot replay create_index while a mutation recorder is installed".into());
+        }
+        self.register_index(request, if_not_exists)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Replay a DropIndex event.
+    #[doc(hidden)]
+    pub fn replay_drop_index(&mut self, name: &str, if_exists: bool) -> Result<(), String> {
+        if self.recorder.is_some() {
+            return Err("cannot replay drop_index while a mutation recorder is installed".into());
+        }
+        self.drop_named_index(name, if_exists)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Inverse of [`Self::register_index`]. Removes the catalog entry
+    /// and (for RANGE) leaves the underlying property-index buckets in
+    /// place — they may still be needed for lazy-activation lookups
+    /// even after the explicit DDL declaration is gone.
+    pub(super) fn drop_named_index(
+        &self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<DropIndexOutcome, DropIndexError> {
+        let outcome = {
+            let mut catalog = self.index_catalog_write();
+            catalog.try_drop(name, if_exists)?
+        };
+        if let DropIndexOutcome::Dropped(def) = &outcome {
+            // Release backing structures keyed off the dropped def.
+            match def.kind {
+                StoredIndexKind::Text => {
+                    if let Some(label) = def.label.as_deref() {
+                        for prop in &def.properties {
+                            self.deactivate_text_scope(def.entity, label, prop);
+                        }
+                    }
+                }
+                StoredIndexKind::Range => {
+                    if let Some(label) = def.label.as_deref() {
+                        for prop in &def.properties {
+                            self.deactivate_sorted_scope(def.entity, label, prop);
+                        }
+                    }
+                }
+                StoredIndexKind::Point => {
+                    if let Some(label) = def.label.as_deref() {
+                        for prop in &def.properties {
+                            self.deactivate_point_scope(def.entity, label, prop);
+                        }
+                    }
+                }
+                StoredIndexKind::Lookup => {}
+            }
+            self.emit(|| crate::MutationEvent::DropIndex {
+                name: name.to_string(),
+                if_exists,
+            });
+        }
+        Ok(outcome)
+    }
+
+    fn populate_index_data(&self, def: &IndexDefinition) {
+        // RANGE: piggy-back on the existing lazy property-index buckets.
+        // TEXT: build a trigram inverted index over the existing entity
+        //       data for the (label, property) tuple.
+        // POINT: build a grid-bucket spatial index over the existing
+        //        entity data.
+        // LOOKUP: catalog-only; existing label/type indexes already
+        //         answer the predicates.
+        match def.kind {
+            StoredIndexKind::Range => {
+                for key in &def.properties {
+                    match def.entity {
+                        StoredIndexEntity::Node => self.ensure_node_property_index(key),
+                        StoredIndexEntity::Relationship => {
+                            self.ensure_relationship_property_index(key)
+                        }
+                    }
+                    if let Some(label) = def.label.as_deref() {
+                        self.activate_sorted_scope(def.entity, label, key);
+                    }
+                }
+            }
+            StoredIndexKind::Text => {
+                let label = match def.label.as_deref() {
+                    Some(l) => l,
+                    None => return,
+                };
+                for property in &def.properties {
+                    self.activate_text_scope(def.entity, label, property);
+                }
+            }
+            StoredIndexKind::Point => {
+                let label = match def.label.as_deref() {
+                    Some(l) => l,
+                    None => return,
+                };
+                let cell_size = point_cell_size_from_options(&def.options);
+                for property in &def.properties {
+                    self.activate_point_scope(def.entity, label, property, cell_size);
+                }
+            }
+            StoredIndexKind::Lookup => {}
+        }
+    }
+
+    pub(super) fn text_indexes_read(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> std::sync::RwLockReadGuard<'_, TrigramRegistry> {
+        match entity {
+            StoredIndexEntity::Node => self
+                .node_text_indexes
+                .read()
+                .unwrap_or_else(|p| p.into_inner()),
+            StoredIndexEntity::Relationship => self
+                .relationship_text_indexes
+                .read()
+                .unwrap_or_else(|p| p.into_inner()),
+        }
+    }
+
+    pub(super) fn text_indexes_write(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> RwLockWriteGuard<'_, TrigramRegistry> {
+        match entity {
+            StoredIndexEntity::Node => self
+                .node_text_indexes
+                .write()
+                .unwrap_or_else(|p| p.into_inner()),
+            StoredIndexEntity::Relationship => self
+                .relationship_text_indexes
+                .write()
+                .unwrap_or_else(|p| p.into_inner()),
+        }
+    }
+
+    fn activate_text_scope(&self, entity: StoredIndexEntity, label: &str, property: &str) {
+        if !self.text_indexes_write(entity).add_scope(label, property) {
+            return;
+        }
+
+        let backfill: Vec<(u64, String)> = match entity {
+            StoredIndexEntity::Node => self
+                .iter_nodes()
+                .filter(|(_, node)| node.labels.iter().any(|l| l == label))
+                .filter_map(|(id, node)| match node.properties.get(property) {
+                    Some(PropertyValue::String(value)) => Some((id, value.clone())),
+                    _ => None,
+                })
+                .collect(),
+            StoredIndexEntity::Relationship => self
+                .iter_rels()
+                .filter(|(_, rel)| rel.rel_type == label)
+                .filter_map(|(id, rel)| match rel.properties.get(property) {
+                    Some(PropertyValue::String(value)) => Some((id, value.clone())),
+                    _ => None,
+                })
+                .collect(),
+        };
+
+        let mut registry = self.text_indexes_write(entity);
+        for (id, value) in backfill {
+            registry.insert(label, property, id, &value);
+        }
+    }
+
+    /// Drop a (label, property) text scope, decrementing the refcount.
+    pub(super) fn deactivate_text_scope(
+        &self,
+        entity: StoredIndexEntity,
+        label: &str,
+        property: &str,
+    ) {
+        self.text_indexes_write(entity)
+            .remove_scope(label, property);
+    }
+
+    pub(super) fn sorted_indexes_read(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> std::sync::RwLockReadGuard<'_, SortedPropertyIndex> {
+        match entity {
+            StoredIndexEntity::Node => self
+                .node_sorted_indexes
+                .read()
+                .unwrap_or_else(|p| p.into_inner()),
+            StoredIndexEntity::Relationship => self
+                .relationship_sorted_indexes
+                .read()
+                .unwrap_or_else(|p| p.into_inner()),
+        }
+    }
+
+    pub(super) fn sorted_indexes_write(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> RwLockWriteGuard<'_, SortedPropertyIndex> {
+        match entity {
+            StoredIndexEntity::Node => self
+                .node_sorted_indexes
+                .write()
+                .unwrap_or_else(|p| p.into_inner()),
+            StoredIndexEntity::Relationship => self
+                .relationship_sorted_indexes
+                .write()
+                .unwrap_or_else(|p| p.into_inner()),
+        }
+    }
+
+    fn activate_sorted_scope(&self, entity: StoredIndexEntity, label: &str, property: &str) {
+        if !self.sorted_indexes_write(entity).add_scope(label, property) {
+            return;
+        }
+
+        let backfill: Vec<(u64, PropertyValue)> = match entity {
+            StoredIndexEntity::Node => self
+                .iter_nodes()
+                .filter(|(_, node)| node.labels.iter().any(|l| l == label))
+                .filter_map(|(id, node)| {
+                    node.properties
+                        .get(property)
+                        .map(|value| (id, value.clone()))
+                })
+                .collect(),
+            StoredIndexEntity::Relationship => self
+                .iter_rels()
+                .filter(|(_, rel)| rel.rel_type == label)
+                .filter_map(|(id, rel)| {
+                    rel.properties
+                        .get(property)
+                        .map(|value| (id, value.clone()))
+                })
+                .collect(),
+        };
+
+        let mut registry = self.sorted_indexes_write(entity);
+        for (id, value) in backfill {
+            registry.insert(label, property, id, &value);
+        }
+    }
+
+    pub(super) fn deactivate_sorted_scope(
+        &self,
+        entity: StoredIndexEntity,
+        label: &str,
+        property: &str,
+    ) {
+        self.sorted_indexes_write(entity)
+            .remove_scope(label, property);
+    }
+
+    pub(super) fn point_indexes_read(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> std::sync::RwLockReadGuard<'_, PointRegistry> {
+        match entity {
+            StoredIndexEntity::Node => self
+                .node_point_indexes
+                .read()
+                .unwrap_or_else(|p| p.into_inner()),
+            StoredIndexEntity::Relationship => self
+                .relationship_point_indexes
+                .read()
+                .unwrap_or_else(|p| p.into_inner()),
+        }
+    }
+
+    pub(super) fn point_indexes_write(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> RwLockWriteGuard<'_, PointRegistry> {
+        match entity {
+            StoredIndexEntity::Node => self
+                .node_point_indexes
+                .write()
+                .unwrap_or_else(|p| p.into_inner()),
+            StoredIndexEntity::Relationship => self
+                .relationship_point_indexes
+                .write()
+                .unwrap_or_else(|p| p.into_inner()),
+        }
+    }
+
+    fn activate_point_scope(
+        &self,
+        entity: StoredIndexEntity,
+        label: &str,
+        property: &str,
+        cell_size: Option<f64>,
+    ) {
+        if !self
+            .point_indexes_write(entity)
+            .add_scope(label, property, cell_size)
+        {
+            return;
+        }
+
+        let backfill: Vec<(u64, LoraPoint)> = match entity {
+            StoredIndexEntity::Node => self
+                .iter_nodes()
+                .filter(|(_, node)| node.labels.iter().any(|l| l == label))
+                .filter_map(|(id, node)| match node.properties.get(property) {
+                    Some(PropertyValue::Point(point)) => Some((id, point.clone())),
+                    _ => None,
+                })
+                .collect(),
+            StoredIndexEntity::Relationship => self
+                .iter_rels()
+                .filter(|(_, rel)| rel.rel_type == label)
+                .filter_map(|(id, rel)| match rel.properties.get(property) {
+                    Some(PropertyValue::Point(point)) => Some((id, point.clone())),
+                    _ => None,
+                })
+                .collect(),
+        };
+
+        let mut registry = self.point_indexes_write(entity);
+        for (id, point) in backfill {
+            registry.insert(label, property, id, point);
+        }
+    }
+
+    pub(super) fn deactivate_point_scope(
+        &self,
+        entity: StoredIndexEntity,
+        label: &str,
+        property: &str,
+    ) {
+        self.point_indexes_write(entity)
+            .remove_scope(label, property);
+    }
+
+    /// Snapshot of cardinality stats. Cheap: derived from already-tracked
+    /// `nodes_by_label` / `relationships_by_type` lengths and the active
+    /// property-index buckets. The cost model uses this to populate
+    /// `estimated_rows` on plan-tree nodes.
+    pub fn graph_stats(&self) -> GraphStats {
+        let mut stats = GraphStats {
+            node_count: self.live_node_count,
+            relationship_count: self.live_rel_count,
+            ..Default::default()
+        };
+        for (label, ids) in &self.nodes_by_label {
+            stats.nodes_by_label.insert(label.clone(), ids.len());
+        }
+        for (rel_type, ids) in &self.relationships_by_type {
+            stats
+                .relationships_by_type
+                .insert(rel_type.clone(), ids.len());
+        }
+        // Distinct values per (label, property): pulled from the
+        // property-index scoped buckets, where we already track the
+        // per-scope value distribution. Empty for properties without
+        // an active hash-index — the cost model falls back to a
+        // conservative estimate in that case.
+        let prop_indexes = self.indexes_read();
+        for (scope, props) in &prop_indexes.node_properties.scoped_values {
+            for (key, values) in props {
+                stats
+                    .node_distinct_values
+                    .insert((scope.clone(), key.clone()), values.len());
+            }
+        }
+        for (scope, props) in &prop_indexes.relationship_properties.scoped_values {
+            for (key, values) in props {
+                stats
+                    .relationship_distinct_values
+                    .insert((scope.clone(), key.clone()), values.len());
+            }
+        }
+
+        for def in self.index_catalog_read().list() {
+            if def.state != StoredIndexState::Online {
+                continue;
+            }
+            let Some(label) = def.label else {
+                continue;
+            };
+            for property in def.properties {
+                let scope = (label.clone(), property);
+                match (def.entity, def.kind) {
+                    (StoredIndexEntity::Node, StoredIndexKind::Range) => {
+                        stats.node_range_indexes.insert(scope);
+                    }
+                    (StoredIndexEntity::Node, StoredIndexKind::Text) => {
+                        stats.node_text_indexes.insert(scope);
+                    }
+                    (StoredIndexEntity::Node, StoredIndexKind::Point) => {
+                        stats.node_point_indexes.insert(scope);
+                    }
+                    (StoredIndexEntity::Relationship, StoredIndexKind::Range) => {
+                        stats.relationship_range_indexes.insert(scope);
+                    }
+                    (StoredIndexEntity::Relationship, StoredIndexKind::Text) => {
+                        stats.relationship_text_indexes.insert(scope);
+                    }
+                    (StoredIndexEntity::Relationship, StoredIndexKind::Point) => {
+                        stats.relationship_point_indexes.insert(scope);
+                    }
+                    (_, StoredIndexKind::Lookup) => {}
+                }
+            }
+        }
+        stats
+    }
+
     pub(super) fn rebuild_property_indexes(&mut self) {
         let mut indexes = PropertyIndexRegistry::default();
 
@@ -695,6 +1226,7 @@ impl InMemoryGraph {
             node.labels.iter().map(String::as_str),
             &node.properties,
         );
+        self.maintain_node_secondary_indexes(node, SecondaryIndexMutation::Insert);
     }
 
     pub(super) fn on_node_replayed(&mut self, node: &NodeRecord) {
@@ -706,6 +1238,7 @@ impl InMemoryGraph {
             node.labels.iter().map(String::as_str),
             &node.properties,
         );
+        self.maintain_node_secondary_indexes(node, SecondaryIndexMutation::Insert);
     }
 
     pub(super) fn on_node_property_set(
@@ -715,23 +1248,35 @@ impl InMemoryGraph {
         old: Option<&PropertyValue>,
         new: &PropertyValue,
     ) {
-        if !self.node_property_index_is_active(key) {
-            return;
-        }
-
         let Some(labels) = self.node_at(node_id).map(|node| node.labels.clone()) else {
             return;
         };
 
-        if let Some(old) = old {
-            self.unindex_node_property_if_active(
+        if self.node_property_index_is_active(key) {
+            if let Some(old) = old {
+                self.unindex_node_property_if_active(
+                    node_id,
+                    labels.iter().map(String::as_str),
+                    key,
+                    old,
+                );
+            }
+            self.index_node_property_if_active(
                 node_id,
                 labels.iter().map(String::as_str),
                 key,
-                old,
+                new,
             );
         }
-        self.index_node_property_if_active(node_id, labels.iter().map(String::as_str), key, new);
+
+        self.update_secondary_property(
+            StoredIndexEntity::Node,
+            labels.iter().map(String::as_str),
+            node_id,
+            key,
+            old,
+            Some(new),
+        );
     }
 
     pub(super) fn on_node_property_removed(
@@ -740,40 +1285,67 @@ impl InMemoryGraph {
         key: &str,
         old: &PropertyValue,
     ) {
-        if !self.node_property_index_is_active(key) {
-            return;
-        }
-
         let Some(labels) = self.node_at(node_id).map(|node| node.labels.clone()) else {
             return;
         };
-        self.unindex_node_property_if_active(node_id, labels.iter().map(String::as_str), key, old);
+        if self.node_property_index_is_active(key) {
+            self.unindex_node_property_if_active(
+                node_id,
+                labels.iter().map(String::as_str),
+                key,
+                old,
+            );
+        }
+        self.update_secondary_property(
+            StoredIndexEntity::Node,
+            labels.iter().map(String::as_str),
+            node_id,
+            key,
+            Some(old),
+            None,
+        );
     }
 
     pub(super) fn on_node_label_added(&mut self, node_id: NodeId, label: &str) {
         self.insert_node_label_index(node_id, label);
 
-        if self.active_node_property_index_count() == 0 {
-            return;
-        }
-
         let Some(properties) = self.node_at(node_id).map(|node| node.properties.clone()) else {
             return;
         };
-        self.index_node_scope_properties_if_active(node_id, label, &properties);
+        if self.active_node_property_index_count() != 0 {
+            self.index_node_scope_properties_if_active(node_id, label, &properties);
+        }
+        for (key, value) in &properties {
+            self.update_secondary_property(
+                StoredIndexEntity::Node,
+                [label],
+                node_id,
+                key,
+                None,
+                Some(value),
+            );
+        }
     }
 
     pub(super) fn on_node_label_removed(&mut self, node_id: NodeId, label: &str) {
         self.remove_node_label_index(node_id, label);
 
-        if self.active_node_property_index_count() == 0 {
-            return;
-        }
-
         let Some(properties) = self.node_at(node_id).map(|node| node.properties.clone()) else {
             return;
         };
-        self.unindex_node_scope_properties_if_active(node_id, label, &properties);
+        if self.active_node_property_index_count() != 0 {
+            self.unindex_node_scope_properties_if_active(node_id, label, &properties);
+        }
+        for (key, value) in &properties {
+            self.update_secondary_property(
+                StoredIndexEntity::Node,
+                [label],
+                node_id,
+                key,
+                Some(value),
+                None,
+            );
+        }
     }
 
     pub(super) fn on_node_deleted(&mut self, node: &NodeRecord) {
@@ -785,6 +1357,7 @@ impl InMemoryGraph {
             node.labels.iter().map(String::as_str),
             &node.properties,
         );
+        self.maintain_node_secondary_indexes(node, SecondaryIndexMutation::Remove);
     }
 
     pub(super) fn on_relationship_created(&mut self, rel: &RelationshipRecord) {
@@ -794,11 +1367,13 @@ impl InMemoryGraph {
             [rel.rel_type.as_str()],
             &rel.properties,
         );
+        self.maintain_relationship_secondary_indexes(rel, SecondaryIndexMutation::Insert);
     }
 
     pub(super) fn on_relationship_replayed(&mut self, rel: &RelationshipRecord) {
         self.attach_relationship(rel);
         self.index_relationship_properties_eager(rel.id, [rel.rel_type.as_str()], &rel.properties);
+        self.maintain_relationship_secondary_indexes(rel, SecondaryIndexMutation::Insert);
     }
 
     pub(super) fn on_relationship_property_set(
@@ -808,18 +1383,25 @@ impl InMemoryGraph {
         old: Option<&PropertyValue>,
         new: &PropertyValue,
     ) {
-        if !self.relationship_property_index_is_active(key) {
-            return;
-        }
-
         let Some(rel_type) = self.rel_at(rel_id).map(|rel| rel.rel_type.clone()) else {
             return;
         };
 
-        if let Some(old) = old {
-            self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
+        if self.relationship_property_index_is_active(key) {
+            if let Some(old) = old {
+                self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
+            }
+            self.index_relationship_property_if_active(rel_id, [rel_type.as_str()], key, new);
         }
-        self.index_relationship_property_if_active(rel_id, [rel_type.as_str()], key, new);
+
+        self.update_secondary_property(
+            StoredIndexEntity::Relationship,
+            [rel_type.as_str()],
+            rel_id,
+            key,
+            old,
+            Some(new),
+        );
     }
 
     pub(super) fn on_relationship_property_removed(
@@ -828,14 +1410,20 @@ impl InMemoryGraph {
         key: &str,
         old: &PropertyValue,
     ) {
-        if !self.relationship_property_index_is_active(key) {
-            return;
-        }
-
         let Some(rel_type) = self.rel_at(rel_id).map(|rel| rel.rel_type.clone()) else {
             return;
         };
-        self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
+        if self.relationship_property_index_is_active(key) {
+            self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
+        }
+        self.update_secondary_property(
+            StoredIndexEntity::Relationship,
+            [rel_type.as_str()],
+            rel_id,
+            key,
+            Some(old),
+            None,
+        );
     }
 
     pub(super) fn on_relationship_deleted(&mut self, rel: &RelationshipRecord) {
@@ -845,6 +1433,7 @@ impl InMemoryGraph {
             [rel.rel_type.as_str()],
             &rel.properties,
         );
+        self.maintain_relationship_secondary_indexes(rel, SecondaryIndexMutation::Remove);
     }
 
     fn index_node_property_eager<'a>(
@@ -1485,5 +2074,19 @@ impl InMemoryGraph {
             indexes.relationship_properties.scoped_values, expected_relationships.scoped_values,
             "relationship property scoped index values diverged from scan"
         );
+    }
+}
+
+/// Read the optional `cell_size` from a POINT index `OPTIONS` map.
+/// Falls back to the registry's default when the key is missing,
+/// not numeric, or non-positive.
+fn point_cell_size_from_options(
+    options: &std::collections::BTreeMap<String, IndexConfigValue>,
+) -> Option<f64> {
+    let raw = options.get("cellSize")?;
+    match raw {
+        IndexConfigValue::Number(v) if *v > 0.0 && v.is_finite() => Some(*v),
+        IndexConfigValue::Integer(v) if *v > 0 => Some(*v as f64),
+        _ => None,
     }
 }

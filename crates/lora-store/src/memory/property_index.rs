@@ -211,9 +211,18 @@ impl PropertyIndexState {
     }
 }
 
-/// Hashable image of a [`PropertyValue`]. `None` from
-/// [`PropertyIndexKey::from_value`] means "no stable hash" — temporal,
+/// Hashable & sortable image of a [`PropertyValue`]. `None` from
+/// [`PropertyIndexKey::from_value`] means "no stable image" — temporal,
 /// spatial, and vector values fall through to the scan fallback today.
+///
+/// `Ord` is hand-rolled (not derived) because [`crate::LoraBinary`]
+/// doesn't expose `Ord` on its segmented byte representation. The
+/// custom impl walks variants in their declaration order and falls
+/// through to lexicographic ordering of inner data.
+///
+/// Floats use a sortable IEEE-754 bit projection, so range indexes
+/// preserve numeric ordering across negative and positive values.
+/// `f64::NAN` is rejected upstream by `from_value`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum PropertyIndexKey {
     Null,
@@ -226,6 +235,51 @@ pub(super) enum PropertyIndexKey {
     Map(BTreeMap<String, PropertyIndexKey>),
 }
 
+impl PartialOrd for PropertyIndexKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PropertyIndexKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let tag = |k: &PropertyIndexKey| match k {
+            PropertyIndexKey::Null => 0,
+            PropertyIndexKey::Bool(_) => 1,
+            PropertyIndexKey::Int(_) => 2,
+            PropertyIndexKey::Float(_) => 3,
+            PropertyIndexKey::String(_) => 4,
+            PropertyIndexKey::Binary(_) => 5,
+            PropertyIndexKey::List(_) => 6,
+            PropertyIndexKey::Map(_) => 7,
+        };
+        match tag(self).cmp(&tag(other)) {
+            Ordering::Equal => match (self, other) {
+                (PropertyIndexKey::Null, PropertyIndexKey::Null) => Ordering::Equal,
+                (PropertyIndexKey::Bool(a), PropertyIndexKey::Bool(b)) => a.cmp(b),
+                (PropertyIndexKey::Int(a), PropertyIndexKey::Int(b)) => a.cmp(b),
+                (PropertyIndexKey::Float(a), PropertyIndexKey::Float(b)) => a.cmp(b),
+                (PropertyIndexKey::String(a), PropertyIndexKey::String(b)) => a.cmp(b),
+                (PropertyIndexKey::Binary(a), PropertyIndexKey::Binary(b)) => {
+                    // Lexicographic byte comparison across segments.
+                    // Allocates only when LoraBinary doesn't expose a
+                    // contiguous view; for sorted-index inserts this
+                    // happens once per insertion and is bounded by the
+                    // value size.
+                    let aa: Vec<u8> = a.segments().iter().flatten().copied().collect();
+                    let bb: Vec<u8> = b.segments().iter().flatten().copied().collect();
+                    aa.cmp(&bb)
+                }
+                (PropertyIndexKey::List(a), PropertyIndexKey::List(b)) => a.cmp(b),
+                (PropertyIndexKey::Map(a), PropertyIndexKey::Map(b)) => a.cmp(b),
+                _ => Ordering::Equal, // unreachable given equal tags
+            },
+            ord => ord,
+        }
+    }
+}
+
 impl PropertyIndexKey {
     pub(super) fn from_value(value: &PropertyValue) -> Option<Self> {
         match value {
@@ -235,10 +289,8 @@ impl PropertyIndexKey {
             PropertyValue::Float(v) => {
                 if v.is_nan() {
                     None
-                } else if *v == 0.0 {
-                    Some(Self::Float(0.0f64.to_bits()))
                 } else {
-                    Some(Self::Float(v.to_bits()))
+                    Some(Self::Float(sortable_f64_bits(*v)))
                 }
             }
             PropertyValue::String(v) => Some(Self::String(v.clone())),
@@ -265,5 +317,18 @@ impl PropertyIndexKey {
             | PropertyValue::Point(_)
             | PropertyValue::Vector(_) => None,
         }
+    }
+}
+
+fn sortable_f64_bits(value: f64) -> u64 {
+    let bits = if value == 0.0 {
+        0.0f64.to_bits()
+    } else {
+        value.to_bits()
+    };
+    if bits & (1 << 63) == 0 {
+        bits | (1 << 63)
+    } else {
+        !bits
     }
 }

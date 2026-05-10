@@ -155,6 +155,186 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             d.insert("value".to_string(), expr_str(&n.value));
             PlanDescription::with_children("NodeByPropertyScan", d, opt_input(n.input))
         }
+        PhysicalOp::NodeByPropertyRangeScan(n) => {
+            d.insert("var".to_string(), var_str(n.var));
+            if !n.labels.is_empty() {
+                d.insert("labels".to_string(), label_groups_str(&n.labels));
+            }
+            d.insert("key".to_string(), n.key.clone());
+            if let Some(lo) = &n.lo {
+                d.insert(
+                    "lo".to_string(),
+                    format!(
+                        "{} {}",
+                        if n.lo_inclusive { ">=" } else { ">" },
+                        expr_str(lo)
+                    ),
+                );
+            }
+            if let Some(hi) = &n.hi {
+                d.insert(
+                    "hi".to_string(),
+                    format!(
+                        "{} {}",
+                        if n.hi_inclusive { "<=" } else { "<" },
+                        expr_str(hi)
+                    ),
+                );
+            }
+            PlanDescription::with_children("NodeByPropertyRangeScan", d, opt_input(n.input))
+        }
+        PhysicalOp::NodeByPointScan(n) => {
+            d.insert("var".to_string(), var_str(n.var));
+            if !n.labels.is_empty() {
+                d.insert("labels".to_string(), label_groups_str(&n.labels));
+            }
+            d.insert("key".to_string(), n.key.clone());
+            match &n.predicate {
+                crate::PointPredicate::WithinBBox {
+                    lower_left,
+                    upper_right,
+                } => {
+                    d.insert("predicate".to_string(), "withinBBox".to_string());
+                    d.insert("lowerLeft".to_string(), expr_str(lower_left));
+                    d.insert("upperRight".to_string(), expr_str(upper_right));
+                }
+                crate::PointPredicate::WithinDistance {
+                    center,
+                    max_distance,
+                    inclusive,
+                } => {
+                    d.insert(
+                        "predicate".to_string(),
+                        if *inclusive {
+                            "distance<="
+                        } else {
+                            "distance<"
+                        }
+                        .to_string(),
+                    );
+                    d.insert("center".to_string(), expr_str(center));
+                    d.insert("maxDistance".to_string(), expr_str(max_distance));
+                }
+            }
+            PlanDescription::with_children("NodeByPointScan", d, opt_input(n.input))
+        }
+        PhysicalOp::NodeByTextScan(n) => {
+            d.insert("var".to_string(), var_str(n.var));
+            if !n.labels.is_empty() {
+                d.insert("labels".to_string(), label_groups_str(&n.labels));
+            }
+            d.insert("key".to_string(), n.key.clone());
+            d.insert(
+                "predicate".to_string(),
+                match n.predicate {
+                    crate::TextPredicate::StartsWith => "STARTS WITH",
+                    crate::TextPredicate::EndsWith => "ENDS WITH",
+                    crate::TextPredicate::Contains => "CONTAINS",
+                }
+                .to_string(),
+            );
+            d.insert("query".to_string(), expr_str(&n.query));
+            PlanDescription::with_children("NodeByTextScan", d, opt_input(n.input))
+        }
+        PhysicalOp::RelByPropertyRangeScan(n) => {
+            d.insert("rel".to_string(), var_str(n.rel));
+            d.insert("src".to_string(), var_str(n.src));
+            d.insert("dst".to_string(), var_str(n.dst));
+            if !n.types.is_empty() {
+                d.insert("types".to_string(), n.types.join("|"));
+            }
+            d.insert(
+                "direction".to_string(),
+                direction_str(n.direction).to_string(),
+            );
+            d.insert("key".to_string(), n.key.clone());
+            if let Some(lo) = &n.lo {
+                d.insert(
+                    "lo".to_string(),
+                    format!(
+                        "{} {}",
+                        if n.lo_inclusive { ">=" } else { ">" },
+                        expr_str(lo)
+                    ),
+                );
+            }
+            if let Some(hi) = &n.hi {
+                d.insert(
+                    "hi".to_string(),
+                    format!(
+                        "{} {}",
+                        if n.hi_inclusive { "<=" } else { "<" },
+                        expr_str(hi)
+                    ),
+                );
+            }
+            PlanDescription::with_children("RelByPropertyRangeScan", d, opt_input(n.input))
+        }
+        PhysicalOp::RelByTextScan(n) => {
+            d.insert("rel".to_string(), var_str(n.rel));
+            d.insert("src".to_string(), var_str(n.src));
+            d.insert("dst".to_string(), var_str(n.dst));
+            if !n.types.is_empty() {
+                d.insert("types".to_string(), n.types.join("|"));
+            }
+            d.insert(
+                "direction".to_string(),
+                direction_str(n.direction).to_string(),
+            );
+            d.insert("key".to_string(), n.key.clone());
+            d.insert(
+                "predicate".to_string(),
+                match n.predicate {
+                    crate::TextPredicate::StartsWith => "STARTS WITH",
+                    crate::TextPredicate::EndsWith => "ENDS WITH",
+                    crate::TextPredicate::Contains => "CONTAINS",
+                }
+                .to_string(),
+            );
+            d.insert("query".to_string(), expr_str(&n.query));
+            PlanDescription::with_children("RelByTextScan", d, opt_input(n.input))
+        }
+        PhysicalOp::RelByPointScan(n) => {
+            d.insert("rel".to_string(), var_str(n.rel));
+            d.insert("src".to_string(), var_str(n.src));
+            d.insert("dst".to_string(), var_str(n.dst));
+            if !n.types.is_empty() {
+                d.insert("types".to_string(), n.types.join("|"));
+            }
+            d.insert(
+                "direction".to_string(),
+                direction_str(n.direction).to_string(),
+            );
+            d.insert("key".to_string(), n.key.clone());
+            match &n.predicate {
+                crate::PointPredicate::WithinBBox {
+                    lower_left,
+                    upper_right,
+                } => {
+                    d.insert("predicate".to_string(), "withinBBox".to_string());
+                    d.insert("lowerLeft".to_string(), expr_str(lower_left));
+                    d.insert("upperRight".to_string(), expr_str(upper_right));
+                }
+                crate::PointPredicate::WithinDistance {
+                    center,
+                    max_distance,
+                    inclusive,
+                } => {
+                    d.insert(
+                        "predicate".to_string(),
+                        if *inclusive {
+                            "distance<="
+                        } else {
+                            "distance<"
+                        }
+                        .to_string(),
+                    );
+                    d.insert("center".to_string(), expr_str(center));
+                    d.insert("maxDistance".to_string(), expr_str(max_distance));
+                }
+            }
+            PlanDescription::with_children("RelByPointScan", d, opt_input(n.input))
+        }
         PhysicalOp::Expand(n) => describe_expand(n),
         PhysicalOp::Filter(n) => {
             d.insert("predicate".to_string(), expr_str(&n.predicate));

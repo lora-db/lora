@@ -489,19 +489,24 @@ impl<'db> Transaction<'db> {
     /// either way.
     fn compile_in_tx(&self, query: &str) -> Result<CompiledQuery> {
         let document = parse_query(query)?;
-        let resolved = {
+        let (resolved, stats) = {
             let inner = self.lock_inner_unchecked();
             if let Some(staged) = &inner.staged {
                 let mut analyzer = Analyzer::new(staged);
-                analyzer.analyze(&document)?
+                let resolved = analyzer.analyze(&document)?;
+                let stats = staged.graph_stats();
+                (resolved, stats)
             } else {
                 drop(inner);
                 let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
-                let mut analyzer = Analyzer::new(live.as_graph());
-                analyzer.analyze(&document)?
+                let graph = live.as_graph();
+                let mut analyzer = Analyzer::new(graph);
+                let resolved = analyzer.analyze(&document)?;
+                let stats = graph.graph_stats();
+                (resolved, stats)
             }
         };
-        Ok(Compiler::compile(&resolved))
+        Ok(Compiler::compile(&resolved, &stats))
     }
 
     /// Materialize `inner.staged` if it doesn't exist yet —

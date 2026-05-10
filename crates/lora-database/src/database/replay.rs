@@ -138,6 +138,19 @@ pub(crate) fn replay_into(graph: &mut InMemoryGraph, events: Vec<MutationEvent>)
             MutationEvent::Clear => {
                 graph.clear();
             }
+            MutationEvent::CreateIndex {
+                request,
+                if_not_exists,
+            } => {
+                graph
+                    .replay_create_index(request, if_not_exists)
+                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+            }
+            MutationEvent::DropIndex { name, if_exists } => {
+                graph
+                    .replay_drop_index(&name, if_exists)
+                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+            }
         }
     }
     Ok(())

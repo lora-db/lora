@@ -30,6 +30,7 @@ mod expressions;
 mod literals;
 mod patterns;
 mod query;
+mod schema;
 mod util;
 
 #[cfg(test)]
@@ -37,6 +38,7 @@ mod tests;
 
 use clauses::lower_standalone_call;
 use query::lower_regular_query;
+use schema::lower_schema_command;
 use util::{pair_span, unexpected_rule};
 
 #[derive(pest_derive::Parser)]
@@ -77,6 +79,7 @@ fn lower_statement(pair: Pair<Rule>) -> Result<Statement, ParseError> {
         Rule::standalone_call => Ok(Statement::Query(Query::StandaloneCall(
             lower_standalone_call(inner)?,
         ))),
+        Rule::schema_command => Ok(Statement::Schema(lower_schema_command(inner)?)),
         _ => Err(unexpected_rule("statement", inner)),
     }
 }

@@ -58,12 +58,14 @@ pub use mutable::{MutableExecutionContext, MutableExecutor};
 // are exactly the ones referenced as `crate::executor::*` from
 // outside `crate::executor`.
 pub(crate) use aggregation::aggregate_rows;
+#[allow(unused_imports)]
 pub(crate) use helpers::{
     bound_node_id_for_expand, bound_relationship_id_for_expand, build_path_value,
     compute_aggregate_expr, hydrate_node_record, hydrate_relationship_record,
-    indexed_node_property_candidates, label_group_candidates_prefiltered,
-    node_matches_label_groups, node_matches_property_filter, resolve_range,
-    scan_node_ids_for_label_groups, GroupValueKey,
+    indexed_node_property_candidates, label_group_candidates_prefiltered, node_by_point_scan_rows,
+    node_by_property_range_scan_rows, node_by_text_scan_rows, node_matches_label_groups,
+    node_matches_property_filter, rel_by_point_scan_rows, rel_by_property_range_scan_rows,
+    rel_by_text_scan_rows, resolve_range, scan_node_ids_for_label_groups, GroupValueKey,
 };
 pub(crate) use optional::{
     merge_optional_rows, null_extend_optional_row, optional_match_rows, optional_rows_compatible,

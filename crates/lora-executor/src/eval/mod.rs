@@ -16,6 +16,8 @@
 //!   spatial / vector functions.
 //! - `point` — the `point()` map decoder and the named-timezone
 //!   offset table used by `datetime({ timezone: "..." })`.
+//! - `regex` — cached full-match regex evaluation for the `=~`
+//!   predicate operator.
 //! - `vector` — the `vector()` constructor and the
 //!   `vector.similarity.*` / `vector_distance` / `vector_norm`
 //!   helpers, including the list-and-vector coercions they share.
@@ -29,6 +31,7 @@ mod errors;
 mod expr;
 mod functions;
 mod point;
+mod regex;
 mod vector;
 
 pub use errors::clear_eval_error;

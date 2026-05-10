@@ -778,7 +778,7 @@ mod pull_shape {
             let mut analyzer = lora_analyzer::Analyzer::new(store);
             analyzer.analyze(&document).unwrap()
         };
-        Compiler::compile(&resolved)
+        Compiler::compile(&resolved, &store.graph_stats())
     }
 
     fn open<'a>(
@@ -873,6 +873,70 @@ mod pull_shape {
         let compiled = compile(&store, "MATCH (n:N) WHERE n.v = 1.0 RETURN n.v AS v");
         let rows = drain(open(&store, &compiled).as_mut()).unwrap();
         assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn range_index_scan_has_pull_source() {
+        let db = Database::in_memory();
+        db.execute("CREATE INDEX n_v_idx FOR (n:N) ON (n.v)", None)
+            .unwrap();
+        db.execute(
+            "CREATE (:N {v:1}), (:N {v:2}), (:N {v:3})",
+            Some(lora_database::ExecuteOptions {
+                format: lora_database::ResultFormat::Rows,
+            }),
+        )
+        .unwrap();
+        let store = db.snapshot();
+        let compiled = compile(&store, "MATCH (n:N) WHERE n.v > 1 RETURN n.v AS v");
+
+        let indexed = compiled.physical.nodes.iter().any(|op| {
+            matches!(
+                op,
+                lora_compiler::PhysicalOp::NodeByPropertyRangeScan(scan)
+                    if scan.key == "v"
+                        && scan.labels == vec![vec!["N".to_string()]]
+            )
+        });
+        assert!(indexed, "expected range predicate to use indexed scan");
+
+        let rows = drain(open(&store, &compiled).as_mut()).unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn relationship_range_index_scan_has_pull_source() {
+        let db = Database::in_memory();
+        db.execute(
+            "CREATE INDEX rel_weight_idx FOR ()-[r:LINKS]-() ON (r.weight)",
+            None,
+        )
+        .unwrap();
+        db.execute(
+            "CREATE (:P {id:1})-[:LINKS {weight:1}]->(:P {id:2}),
+                    (:P {id:3})-[:LINKS {weight:5}]->(:P {id:4})",
+            Some(lora_database::ExecuteOptions {
+                format: lora_database::ResultFormat::Rows,
+            }),
+        )
+        .unwrap();
+        let store = db.snapshot();
+        let compiled = compile(
+            &store,
+            "MATCH ()-[r:LINKS]->() WHERE r.weight > 1 RETURN r.weight AS weight",
+        );
+
+        let indexed = compiled.physical.nodes.iter().any(|op| {
+            matches!(
+                op,
+                lora_compiler::PhysicalOp::RelByPropertyRangeScan(scan)
+                    if scan.key == "weight"
+            )
+        });
+        assert!(indexed, "expected rel range predicate to use indexed scan");
+
+        let rows = drain(open(&store, &compiled).as_mut()).unwrap();
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]

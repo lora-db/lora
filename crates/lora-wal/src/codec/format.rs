@@ -14,6 +14,9 @@ pub(super) const TAG_DELETE_RELATIONSHIP: u8 = 9;
 pub(super) const TAG_DELETE_NODE: u8 = 10;
 pub(super) const TAG_DETACH_DELETE_NODE: u8 = 11;
 pub(super) const TAG_CLEAR: u8 = 12;
+/// Catalog DDL: payload is a length-prefixed store-codec IndexRequest.
+pub(super) const TAG_CREATE_INDEX: u8 = 13;
+pub(super) const TAG_DROP_INDEX: u8 = 14;
 
 pub(super) const VALUE_NULL: u8 = 0;
 pub(super) const VALUE_BOOL: u8 = 1;

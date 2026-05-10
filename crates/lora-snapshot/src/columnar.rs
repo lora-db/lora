@@ -1,6 +1,12 @@
 use std::collections::BTreeMap;
 
-use lora_store::{NodeRecord, PropertyValue, RelationshipRecord, SnapshotPayload};
+use lora_store::{
+    codec::{
+        decode_index_definitions, decode_property_value, encode_index_definitions,
+        encode_property_value,
+    },
+    IndexDefinition, NodeRecord, PropertyValue, RelationshipRecord, SnapshotPayload,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::body::{
@@ -8,7 +14,7 @@ use crate::body::{
     write_u64_vec, BodyReader,
 };
 use crate::errors::{Result, SnapshotCodecError};
-use crate::format::BODY_FORMAT_VERSION;
+use crate::format::{BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ColumnarSnapshot {
@@ -23,6 +29,10 @@ pub(crate) struct ColumnarSnapshot {
     rel_type_ids: Vec<u32>,
     rel_type_dictionary: Vec<String>,
     properties: PropertyColumns,
+    /// Catalog of explicitly-declared indexes. Defaulted to empty so
+    /// older `BODY_FORMAT_VERSION_V2` snapshots load with no entries.
+    #[serde(default)]
+    indexes: Vec<IndexDefinition>,
 }
 
 impl ColumnarSnapshot {
@@ -44,6 +54,7 @@ impl ColumnarSnapshot {
             rel_type_ids,
             rel_type_dictionary,
             properties,
+            indexes: payload.indexes.clone(),
         }
     }
 
@@ -60,6 +71,7 @@ impl ColumnarSnapshot {
             next_rel_id: self.next_rel_id,
             nodes,
             relationships,
+            indexes: self.indexes,
         })
     }
 
@@ -139,17 +151,25 @@ impl ColumnarSnapshot {
         write_u32_vec(&mut out, &self.rel_type_ids);
 
         self.properties.encode_binary(&mut out)?;
+
+        // v3 trailer: catalog of explicitly-declared indexes. The catalog
+        // uses the store-owned binary codec so WAL and snapshots agree on
+        // the shape without pulling in a general-purpose serializer.
+        let catalog_bytes = encode_index_definitions(&self.indexes)
+            .map_err(|e| SnapshotCodecError::Encode(format!("catalog: {e}")))?;
+        write_bytes(&mut out, &catalog_bytes)?;
         Ok(out)
     }
 
     pub(crate) fn decode_binary(bytes: &[u8]) -> Result<Self> {
         let mut reader = BodyReader::new(bytes);
         let version = reader.read_u32()?;
-        if version != BODY_FORMAT_VERSION {
+        if version != BODY_FORMAT_VERSION && version != BODY_FORMAT_VERSION_V2 {
             return Err(SnapshotCodecError::Decode(format!(
                 "unsupported snapshot body format version {version}"
             )));
         }
+        let has_catalog = version >= BODY_FORMAT_VERSION;
         let next_node_id = reader.read_u64()?;
         let next_rel_id = reader.read_u64()?;
         let node_ids = reader.read_u64_vec()?;
@@ -166,6 +186,15 @@ impl ColumnarSnapshot {
         let rel_type_dictionary = reader.read_string_vec()?;
         let rel_type_ids = reader.read_u32_vec()?;
         let properties = PropertyColumns::decode_binary(&mut reader)?;
+
+        let indexes = if has_catalog {
+            let catalog_bytes = reader.read_bytes()?.to_vec();
+            decode_index_definitions(&catalog_bytes)
+                .map_err(|e| SnapshotCodecError::Decode(format!("catalog: {e}")))?
+        } else {
+            Vec::new()
+        };
+
         reader.finish()?;
 
         Ok(Self {
@@ -180,6 +209,7 @@ impl ColumnarSnapshot {
             rel_type_ids,
             rel_type_dictionary,
             properties,
+            indexes,
         })
     }
 }
@@ -517,7 +547,7 @@ impl ValueCell {
             }
             Self::Extension(value) => {
                 out.push(7);
-                let bytes = bincode::serialize(value)
+                let bytes = encode_property_value(value)
                     .map_err(|e| SnapshotCodecError::Encode(e.to_string()))?;
                 write_bytes(out, &bytes)?;
             }
@@ -558,7 +588,7 @@ impl ValueCell {
             }
             7 => {
                 let bytes = reader.read_bytes()?;
-                let value = bincode::deserialize(bytes)
+                let value = decode_property_value(bytes)
                     .map_err(|e| SnapshotCodecError::Decode(e.to_string()))?;
                 Ok(Self::Extension(value))
             }

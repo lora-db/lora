@@ -720,7 +720,7 @@ pub(super) fn eval_function<S: GraphStorage>(
             }
         },
 
-        "distance" => match (args.first(), args.get(1)) {
+        "distance" | "point.distance" => match (args.first(), args.get(1)) {
             (Some(LoraValue::Point(a)), Some(LoraValue::Point(b))) => match point_distance(a, b) {
                 Some(d) => LoraValue::Float(d),
                 None => {
@@ -730,6 +730,30 @@ pub(super) fn eval_function<S: GraphStorage>(
                     LoraValue::Null
                 }
             },
+            _ => LoraValue::Null,
+        },
+
+        "point.withinbbox" => match (args.first(), args.get(1), args.get(2)) {
+            (Some(LoraValue::Point(p)), Some(LoraValue::Point(ll)), Some(LoraValue::Point(ur))) => {
+                if p.srid != ll.srid || p.srid != ur.srid {
+                    set_eval_error(
+                        "point.withinBBox requires the point and the bbox corners to share an SRID"
+                            .to_string(),
+                    );
+                    return LoraValue::Null;
+                }
+                let in_x = p.x >= ll.x.min(ur.x) && p.x <= ll.x.max(ur.x);
+                let in_y = p.y >= ll.y.min(ur.y) && p.y <= ll.y.max(ur.y);
+                let in_z = match (p.z, ll.z, ur.z) {
+                    (Some(pz), Some(lz), Some(uz)) => pz >= lz.min(uz) && pz <= lz.max(uz),
+                    // Mixed dimensionality: 2D vs 3D corners are not
+                    // comparable. Match Neo4j by returning null rather
+                    // than silently coercing.
+                    (None, None, None) => true,
+                    _ => return LoraValue::Null,
+                };
+                LoraValue::Bool(in_x && in_y && in_z)
+            }
             _ => LoraValue::Null,
         },
 

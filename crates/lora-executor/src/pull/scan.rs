@@ -7,13 +7,19 @@
 
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::ResolvedExpr;
+use lora_compiler::physical::{
+    NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByTextScanExec, RelByPointScanExec,
+    RelByPropertyRangeScanExec, RelByTextScanExec,
+};
 use lora_store::{GraphStorage, NodeId};
 
 use crate::errors::ExecResult;
 use crate::eval::eval_expr;
 use crate::executor::{
     bound_node_id_for_expand, indexed_node_property_candidates, label_group_candidates_prefiltered,
-    node_matches_label_groups, node_matches_property_filter, scan_node_ids_for_label_groups,
+    node_by_point_scan_rows, node_by_property_range_scan_rows, node_by_text_scan_rows,
+    node_matches_label_groups, node_matches_property_filter, rel_by_point_scan_rows,
+    rel_by_property_range_scan_rows, rel_by_text_scan_rows, scan_node_ids_for_label_groups,
 };
 use crate::value::{LoraValue, Row};
 
@@ -328,6 +334,137 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
             }
 
             self.clear_current();
+        }
+    }
+}
+
+/// Streams the newer catalog-backed index scans one upstream row at a
+/// time. Each refill delegates to the buffered helper for a single row,
+/// so predicate semantics stay centralized while callers above this
+/// source still get pull-shaped backpressure between upstream rows.
+pub struct BufferedIndexScanSource<'a, S: GraphStorage> {
+    upstream: Box<dyn RowSource + 'a>,
+    ctx: StreamCtx<'a, S>,
+    op: BufferedIndexScanOp<'a>,
+    pending: std::vec::IntoIter<Row>,
+}
+
+enum BufferedIndexScanOp<'a> {
+    NodeRange(&'a NodeByPropertyRangeScanExec),
+    NodeText(&'a NodeByTextScanExec),
+    NodePoint(&'a NodeByPointScanExec),
+    RelRange(&'a RelByPropertyRangeScanExec),
+    RelText(&'a RelByTextScanExec),
+    RelPoint(&'a RelByPointScanExec),
+}
+
+impl<'a, S: GraphStorage> BufferedIndexScanSource<'a, S> {
+    pub(super) fn node_range(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a NodeByPropertyRangeScanExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::NodeRange(op))
+    }
+
+    pub(super) fn node_text(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a NodeByTextScanExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::NodeText(op))
+    }
+
+    pub(super) fn node_point(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a NodeByPointScanExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::NodePoint(op))
+    }
+
+    pub(super) fn rel_range(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a RelByPropertyRangeScanExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::RelRange(op))
+    }
+
+    pub(super) fn rel_text(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a RelByTextScanExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::RelText(op))
+    }
+
+    pub(super) fn rel_point(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a RelByPointScanExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::RelPoint(op))
+    }
+
+    fn new(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: BufferedIndexScanOp<'a>,
+    ) -> Self {
+        Self {
+            upstream,
+            ctx,
+            op,
+            pending: Vec::new().into_iter(),
+        }
+    }
+
+    fn refill(&mut self, row: Row) -> ExecResult<()> {
+        let rows = match self.op {
+            BufferedIndexScanOp::NodeRange(op) => node_by_property_range_scan_rows(
+                self.ctx.storage,
+                &self.ctx.params,
+                vec![row],
+                op,
+                None,
+            )?,
+            BufferedIndexScanOp::NodeText(op) => {
+                node_by_text_scan_rows(self.ctx.storage, &self.ctx.params, vec![row], op, None)?
+            }
+            BufferedIndexScanOp::NodePoint(op) => {
+                node_by_point_scan_rows(self.ctx.storage, &self.ctx.params, vec![row], op, None)?
+            }
+            BufferedIndexScanOp::RelRange(op) => rel_by_property_range_scan_rows(
+                self.ctx.storage,
+                &self.ctx.params,
+                vec![row],
+                op,
+                None,
+            )?,
+            BufferedIndexScanOp::RelText(op) => {
+                rel_by_text_scan_rows(self.ctx.storage, &self.ctx.params, vec![row], op, None)?
+            }
+            BufferedIndexScanOp::RelPoint(op) => {
+                rel_by_point_scan_rows(self.ctx.storage, &self.ctx.params, vec![row], op, None)?
+            }
+        };
+        self.pending = rows.into_iter();
+        Ok(())
+    }
+}
+
+impl<'a, S: GraphStorage> RowSource for BufferedIndexScanSource<'a, S> {
+    fn next_row(&mut self) -> ExecResult<Option<Row>> {
+        loop {
+            if let Some(row) = self.pending.next() {
+                return Ok(Some(row));
+            }
+
+            let Some(row) = self.upstream.next_row()? else {
+                return Ok(None);
+            };
+            self.refill(row)?;
         }
     }
 }

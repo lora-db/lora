@@ -32,6 +32,9 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     pub fn analyze(&mut self, doc: &Document) -> Result<ResolvedQuery, SemanticError> {
         match &doc.statement {
             Statement::Query(q) => self.analyze_query(q),
+            Statement::Schema(_) => Err(SemanticError::UnsupportedFeature(
+                "schema commands are dispatched outside the analyzer".to_string(),
+            )),
         }
     }
 

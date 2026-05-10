@@ -25,6 +25,7 @@ impl InMemoryGraph {
             next_rel_id: self.next_rel_id,
             nodes: self.iter_node_records().cloned().collect(),
             relationships: self.iter_rel_records().cloned().collect(),
+            indexes: self.index_catalog_read().list(),
         }
     }
 
@@ -69,6 +70,30 @@ impl InMemoryGraph {
             rebuilt.put_rel(id, rel);
         }
         rebuilt.rebuild_property_indexes();
+
+        // Re-register every index in the catalog. Going through
+        // `register_index` re-populates RANGE buckets and keeps the
+        // `populate_index_data` invariant aligned with the catalog —
+        // skipping it would leave RANGE indexes registered but never
+        // populated. Recorder is None on `rebuilt`, so no events are
+        // emitted during restore.
+        for def in payload.indexes {
+            // Errors here would mean the snapshot itself is corrupt or
+            // ambiguous; map them into Decode rather than panicking.
+            rebuilt
+                .register_index(
+                    crate::memory::IndexRequest {
+                        explicit_name: Some(def.name.clone()),
+                        kind: def.kind,
+                        entity: def.entity,
+                        label: def.label.clone(),
+                        properties: def.properties.clone(),
+                        options: def.options.clone(),
+                    },
+                    /*if_not_exists*/ true,
+                )
+                .map_err(|e| SnapshotError::Decode(format!("index `{}`: {e}", def.name)))?;
+        }
 
         // Preserve the existing recorder across the swap — observers of the
         // store's identity should not be silently detached by a restore,

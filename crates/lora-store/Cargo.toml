@@ -14,7 +14,6 @@ categories = ["database-implementations", "data-structures"]
 [dependencies]
 lora-ast.workspace = true
 serde.workspace = true
-bincode.workspace = true
 crc32fast.workspace = true
 thiserror.workspace = true
 

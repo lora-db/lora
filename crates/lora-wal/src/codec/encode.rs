@@ -1,6 +1,8 @@
 //! Encode side of the WAL mutation payload codec.
 
-use lora_store::{LoraVector, MutationEvent, Properties, PropertyValue, VectorValues};
+use lora_store::{
+    codec::encode_index_request, LoraVector, MutationEvent, Properties, PropertyValue, VectorValues,
+};
 
 use super::format::*;
 use crate::errors::WalError;
@@ -127,6 +129,21 @@ fn write_event(out: &mut Vec<u8>, event: &MutationEvent) -> Result<(), WalError>
             write_u64(out, *node_id);
         }
         MutationEvent::Clear => out.push(TAG_CLEAR),
+        MutationEvent::CreateIndex {
+            request,
+            if_not_exists,
+        } => {
+            out.push(TAG_CREATE_INDEX);
+            let bytes = encode_index_request(request)
+                .map_err(|e| WalError::Encode(format!("CreateIndex encode failed: {e}")))?;
+            write_bytes(out, &bytes)?;
+            out.push(u8::from(*if_not_exists));
+        }
+        MutationEvent::DropIndex { name, if_exists } => {
+            out.push(TAG_DROP_INDEX);
+            write_string(out, name)?;
+            out.push(u8::from(*if_exists));
+        }
     }
     Ok(())
 }
@@ -426,6 +443,19 @@ fn size_event(size: &mut usize, event: &MutationEvent) -> Result<(), WalError> {
             size_u64(size)?;
         }
         MutationEvent::Clear => {}
+        MutationEvent::CreateIndex { request, .. } => {
+            // Size = bytes-prefix + payload + if_not_exists flag.
+            let payload_len = encode_index_request(request)
+                .map_err(|e| WalError::Encode(format!("CreateIndex encode failed: {e}")))?
+                .len();
+            size_len(size, payload_len)?;
+            add_size(size, payload_len)?;
+            add_size(size, 1)?;
+        }
+        MutationEvent::DropIndex { name, .. } => {
+            size_string(size, name)?;
+            add_size(size, 1)?;
+        }
     }
     Ok(())
 }

@@ -29,7 +29,15 @@ fn plan_has_early_limit(plan: &PhysicalPlan) -> bool {
 
 fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
     match &plan.nodes[node_id] {
-        PhysicalOp::Sort(_) | PhysicalOp::HashAggregation(_) | PhysicalOp::OptionalMatch(_) => true,
+        PhysicalOp::Sort(_)
+        | PhysicalOp::HashAggregation(_)
+        | PhysicalOp::OptionalMatch(_)
+        | PhysicalOp::NodeByPropertyRangeScan(_)
+        | PhysicalOp::NodeByTextScan(_)
+        | PhysicalOp::NodeByPointScan(_)
+        | PhysicalOp::RelByPropertyRangeScan(_)
+        | PhysicalOp::RelByTextScan(_)
+        | PhysicalOp::RelByPointScan(_) => true,
         PhysicalOp::Argument(_)
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)

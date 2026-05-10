@@ -1,4 +1,4 @@
-//! Compiled-plan cache keyed by raw query text.
+//! Compiled-plan cache keyed by raw query text plus graph-stats fingerprint.
 //!
 //! Parse + analyze + compile costs the same handful of microseconds for every
 //! `Database::execute_with_params` call, even when the query text is reused
@@ -6,23 +6,22 @@
 //! `CompiledQuery` collapses that cost to a hashmap lookup on the steady-state
 //! hot path.
 //!
-//! # Why this is safe without invalidation
+//! # Why this is safe
 //!
-//! The compiled plan is a pure function of the parsed `Document`:
+//! The compiled plan is a pure function of the parsed `Document` plus the
+//! cardinality snapshot read at compile time:
 //! - The analyzer reads the store only to validate that label /
 //!   relationship-type / property-key names exist (analyzer.rs:1110–1170);
 //!   it does not embed any store-derived data into the resolved query.
-//! - The optimizer is fully store-agnostic (optimizer.rs:20–25): its
-//!   rewrites and physical lowering depend only on the resolved query.
-//! - Index decisions are made dynamically by the storage layer at execution
-//!   time (e.g. `indexed_node_property_candidates` in
-//!   `lora-store/src/memory.rs`), not baked into the plan.
-//!
-//! Consequence: once a plan compiles successfully, replaying it against any
-//! later store state produces correct results. The most aggressive thing that
-//! can happen is `db.clear()` — a cached plan that referenced labels which
-//! no longer exist will simply return zero rows, which is the same answer it
-//! would give if recompiled.
+//! - The optimizer reads `GraphStats` for cost-based selection between
+//!   competing index rewrites (`use_indexed_node_scans` in
+//!   `lora-compiler/src/optimizer.rs`). The cache key includes the
+//!   stats fingerprint, so cardinality shifts and catalog changes
+//!   compile into a fresh entry instead of reusing stale operator
+//!   choices.
+//! - The storage layer still has the final say on index contents at
+//!   execution time; the cache only avoids redoing analysis and planning
+//!   while the stats/catalog fingerprint remains unchanged.
 //!
 //! # Eviction
 //!
@@ -42,7 +41,8 @@ use lora_compiler::CompiledQuery;
 /// allocated once and never reused.
 const DEFAULT_CAPACITY: usize = 256;
 
-/// Content-addressed cache mapping query text → compiled plan.
+/// Content-addressed cache mapping `(query text, stats fingerprint)` →
+/// compiled plan.
 ///
 /// Cloning a `PlanCache` is meaningful: callers wrap it in `Arc` so all
 /// `Database` clones (and the read/write phases of a single `execute`) share
@@ -52,7 +52,7 @@ pub(crate) struct PlanCache {
 }
 
 struct Inner {
-    entries: HashMap<String, Entry>,
+    entries: HashMap<CacheKey, Entry>,
     /// Monotonic counter used as the "last accessed" stamp for LRU eviction.
     /// Wrapping at u64 takes longer than any reasonable process lifetime, so
     /// we don't worry about overflow.
@@ -63,6 +63,21 @@ struct Inner {
 struct Entry {
     plan: Arc<CompiledQuery>,
     last_used: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    query: String,
+    stats_fingerprint: u64,
+}
+
+impl CacheKey {
+    fn new(query: &str, stats_fingerprint: u64) -> Self {
+        Self {
+            query: query.to_owned(),
+            stats_fingerprint,
+        }
+    }
 }
 
 impl Default for PlanCache {
@@ -86,25 +101,28 @@ impl PlanCache {
         }
     }
 
-    /// Look up a cached plan for `query`. Returns `None` on miss.
+    /// Look up a cached plan for `query` under `stats_fingerprint`.
+    /// Returns `None` on miss.
     ///
     /// On hit, the entry's last-used timestamp is bumped so it survives
     /// eviction longer.
-    pub(crate) fn get(&self, query: &str) -> Option<Arc<CompiledQuery>> {
+    pub(crate) fn get(&self, query: &str, stats_fingerprint: u64) -> Option<Arc<CompiledQuery>> {
         let mut guard = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let counter = guard.counter.wrapping_add(1);
         guard.counter = counter;
-        let entry = guard.entries.get_mut(query)?;
+        let entry = guard
+            .entries
+            .get_mut(&CacheKey::new(query, stats_fingerprint))?;
         entry.last_used = counter;
         Some(entry.plan.clone())
     }
 
     /// Insert a freshly-compiled plan. If the cache is at capacity, evict
     /// the entry with the oldest `last_used` stamp.
-    pub(crate) fn insert(&self, query: &str, plan: Arc<CompiledQuery>) {
+    pub(crate) fn insert(&self, query: &str, stats_fingerprint: u64, plan: Arc<CompiledQuery>) {
         let mut guard = self
             .inner
             .lock()
@@ -114,11 +132,12 @@ impl PlanCache {
         }
         let counter = guard.counter.wrapping_add(1);
         guard.counter = counter;
-        if guard.entries.len() >= guard.capacity && !guard.entries.contains_key(query) {
+        let key = CacheKey::new(query, stats_fingerprint);
+        if guard.entries.len() >= guard.capacity && !guard.entries.contains_key(&key) {
             evict_oldest(&mut guard.entries);
         }
         guard.entries.insert(
-            query.to_owned(),
+            key,
             Entry {
                 plan,
                 last_used: counter,
@@ -136,13 +155,13 @@ impl PlanCache {
     }
 }
 
-fn evict_oldest(entries: &mut HashMap<String, Entry>) {
+fn evict_oldest(entries: &mut HashMap<CacheKey, Entry>) {
     let oldest_key = entries
         .iter()
         .min_by_key(|(_, e)| e.last_used)
         .map(|(k, _)| k.clone());
     if let Some(k) = oldest_key {
-        entries.remove(k.as_str());
+        entries.remove(&k);
     }
 }
 
@@ -166,43 +185,54 @@ mod tests {
     fn miss_then_hit() {
         let cache = PlanCache::new();
         let q = "MATCH (n) RETURN n";
-        assert!(cache.get(q).is_none());
-        cache.insert(q, dummy_plan());
-        let hit = cache.get(q).expect("expected cache hit");
+        assert!(cache.get(q, 1).is_none());
+        cache.insert(q, 1, dummy_plan());
+        let hit = cache.get(q, 1).expect("expected cache hit");
         // Inserting again should not duplicate the entry.
-        cache.insert(q, hit.clone());
+        cache.insert(q, 1, hit.clone());
         assert_eq!(cache.len(), 1);
     }
 
     #[test]
     fn distinct_queries_are_independent() {
         let cache = PlanCache::new();
-        cache.insert("MATCH (n) RETURN n", dummy_plan());
-        cache.insert("MATCH (m) RETURN m", dummy_plan());
+        cache.insert("MATCH (n) RETURN n", 1, dummy_plan());
+        cache.insert("MATCH (m) RETURN m", 1, dummy_plan());
         assert_eq!(cache.len(), 2);
-        assert!(cache.get("MATCH (n) RETURN n").is_some());
-        assert!(cache.get("MATCH (m) RETURN m").is_some());
+        assert!(cache.get("MATCH (n) RETURN n", 1).is_some());
+        assert!(cache.get("MATCH (m) RETURN m", 1).is_some());
+    }
+
+    #[test]
+    fn distinct_stats_fingerprints_are_independent() {
+        let cache = PlanCache::new();
+        let q = "MATCH (n) RETURN n";
+        cache.insert(q, 1, dummy_plan());
+        cache.insert(q, 2, dummy_plan());
+        assert_eq!(cache.len(), 2);
+        assert!(cache.get(q, 1).is_some());
+        assert!(cache.get(q, 2).is_some());
     }
 
     #[test]
     fn lru_evicts_oldest() {
         let cache = PlanCache::with_capacity(2);
-        cache.insert("a", dummy_plan());
-        cache.insert("b", dummy_plan());
+        cache.insert("a", 1, dummy_plan());
+        cache.insert("b", 1, dummy_plan());
         // Touch "a" so "b" becomes the LRU.
-        let _ = cache.get("a");
-        cache.insert("c", dummy_plan());
+        let _ = cache.get("a", 1);
+        cache.insert("c", 1, dummy_plan());
         assert_eq!(cache.len(), 2);
-        assert!(cache.get("a").is_some());
-        assert!(cache.get("b").is_none());
-        assert!(cache.get("c").is_some());
+        assert!(cache.get("a", 1).is_some());
+        assert!(cache.get("b", 1).is_none());
+        assert!(cache.get("c", 1).is_some());
     }
 
     #[test]
     fn zero_capacity_disables_storage() {
         let cache = PlanCache::with_capacity(0);
-        cache.insert("MATCH (n) RETURN n", dummy_plan());
+        cache.insert("MATCH (n) RETURN n", 1, dummy_plan());
         assert_eq!(cache.len(), 0);
-        assert!(cache.get("MATCH (n) RETURN n").is_none());
+        assert!(cache.get("MATCH (n) RETURN n", 1).is_none());
     }
 }

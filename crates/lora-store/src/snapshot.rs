@@ -1,15 +1,17 @@
 //! Snapshot value types — the portable payload + metadata + error
 //! vocabulary every backend speaks.
 //!
-//! The on-disk codec lives in the [`lora-snapshot`] crate (column-
-//! oriented, optionally compressed and authenticated). `lora-store` is
-//! deliberately codec-free: backends produce a [`SnapshotPayload`]
-//! through their inherent helpers (e.g. [`super::InMemoryGraph::snapshot_payload`]),
-//! the database layer encodes it via `lora-snapshot`.
+//! The on-disk snapshot container lives in the [`lora-snapshot`] crate
+//! (column-oriented, optionally compressed and authenticated). Backends
+//! produce a [`SnapshotPayload`] through their inherent helpers (e.g.
+//! [`super::InMemoryGraph::snapshot_payload`]); `lora-snapshot` encodes
+//! that payload and reuses the small store-owned binary codec for nested
+//! value/catalog records.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::memory::IndexDefinition;
 use crate::{NodeId, NodeRecord, RelationshipId, RelationshipRecord};
 
 /// Portable representation of an entire store state.
@@ -22,6 +24,10 @@ pub struct SnapshotPayload {
     pub next_rel_id: RelationshipId,
     pub nodes: Vec<NodeRecord>,
     pub relationships: Vec<RelationshipRecord>,
+    /// Catalog of explicitly-declared indexes. Defaulted to empty so
+    /// older snapshots that lack the trailer round-trip cleanly.
+    #[serde(default)]
+    pub indexes: Vec<IndexDefinition>,
 }
 
 impl SnapshotPayload {
@@ -31,6 +37,7 @@ impl SnapshotPayload {
             next_rel_id: 0,
             nodes: Vec::new(),
             relationships: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 }

@@ -981,6 +981,376 @@ pub(crate) struct NodePropertyCandidates {
     pub(crate) prefiltered: bool,
 }
 
+pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::NodeByPropertyRangeScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let lo_value = op.lo.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
+        let hi_value = op.hi.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
+        let lo_prop = lo_value
+            .clone()
+            .and_then(|v| lora_value_to_property(v).ok());
+        let hi_prop = hi_value
+            .clone()
+            .and_then(|v| lora_value_to_property(v).ok());
+        let filter = NodeRangeFilter {
+            labels: &op.labels,
+            key: &op.key,
+            lo: lo_value.as_ref(),
+            lo_inclusive: op.lo_inclusive,
+            hi: hi_value.as_ref(),
+            hi_inclusive: op.hi_inclusive,
+        };
+
+        if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+            if node_matches_range_filter(storage, existing_id, &filter) {
+                out.push(row);
+            }
+            continue;
+        }
+
+        let candidate_ids = match single_label_hint(&op.labels) {
+            Some(label) => storage
+                .node_range_candidates(label, &op.key, lo_prop.as_ref(), hi_prop.as_ref())
+                .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
+            None => scan_node_ids_for_label_groups(storage, &op.labels),
+        };
+
+        for id in candidate_ids {
+            check_optional_deadline(deadline)?;
+            if node_matches_range_filter(storage, id, &filter) {
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+pub(crate) fn node_by_text_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::NodeByTextScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let query = eval_expr(&op.query, &row, &eval_ctx);
+        let LoraValue::String(query_str) = &query else {
+            // Non-string query → predicate cannot match anything;
+            // skip the row entirely (matches scan + filter behaviour).
+            continue;
+        };
+
+        if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+            if node_matches_text_filter(
+                storage,
+                existing_id,
+                &op.labels,
+                &op.key,
+                op.predicate,
+                query_str,
+            ) {
+                out.push(row);
+            }
+            continue;
+        }
+
+        let candidate_ids = match single_label_hint(&op.labels) {
+            Some(label) => storage
+                .node_text_candidates(label, &op.key, query_str)
+                .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
+            None => scan_node_ids_for_label_groups(storage, &op.labels),
+        };
+
+        for id in candidate_ids {
+            check_optional_deadline(deadline)?;
+            if node_matches_text_filter(storage, id, &op.labels, &op.key, op.predicate, query_str) {
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+struct NodeRangeFilter<'a> {
+    labels: &'a [Vec<String>],
+    key: &'a str,
+    lo: Option<&'a LoraValue>,
+    lo_inclusive: bool,
+    hi: Option<&'a LoraValue>,
+    hi_inclusive: bool,
+}
+
+fn node_matches_range_filter<S: GraphStorage>(
+    storage: &S,
+    id: NodeId,
+    filter: &NodeRangeFilter<'_>,
+) -> bool {
+    storage
+        .with_node(id, |n| {
+            if !node_matches_label_groups(&n.labels, filter.labels) {
+                return false;
+            }
+            let Some(actual) = n.properties.get(filter.key) else {
+                return false;
+            };
+            let actual_lv = lora_store_property_to_value(actual);
+            range_predicate_holds(
+                &actual_lv,
+                filter.lo,
+                filter.lo_inclusive,
+                filter.hi,
+                filter.hi_inclusive,
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn node_matches_text_filter<S: GraphStorage>(
+    storage: &S,
+    id: NodeId,
+    labels: &[Vec<String>],
+    key: &str,
+    predicate: lora_compiler::TextPredicate,
+    query: &str,
+) -> bool {
+    storage
+        .with_node(id, |n| {
+            if !node_matches_label_groups(&n.labels, labels) {
+                return false;
+            }
+            let Some(PropertyValue::String(actual)) = n.properties.get(key) else {
+                return false;
+            };
+            text_predicate_holds(actual, predicate, query)
+        })
+        .unwrap_or(false)
+}
+
+fn text_predicate_holds(
+    actual: &str,
+    predicate: lora_compiler::TextPredicate,
+    query: &str,
+) -> bool {
+    match predicate {
+        lora_compiler::TextPredicate::StartsWith => actual.starts_with(query),
+        lora_compiler::TextPredicate::EndsWith => actual.ends_with(query),
+        lora_compiler::TextPredicate::Contains => actual.contains(query),
+    }
+}
+
+fn range_predicate_holds(
+    actual: &LoraValue,
+    lo: Option<&LoraValue>,
+    lo_inclusive: bool,
+    hi: Option<&LoraValue>,
+    hi_inclusive: bool,
+) -> bool {
+    if let Some(lo) = lo {
+        match range_comparison(actual, lo) {
+            None => return false,
+            Some(Ordering::Less) => return false,
+            Some(Ordering::Equal) if !lo_inclusive => return false,
+            _ => {}
+        }
+    }
+    if let Some(hi) = hi {
+        match range_comparison(actual, hi) {
+            None => return false,
+            Some(Ordering::Greater) => return false,
+            Some(Ordering::Equal) if !hi_inclusive => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn range_comparison(actual: &LoraValue, bound: &LoraValue) -> Option<Ordering> {
+    match (actual, bound) {
+        (LoraValue::Null, _) | (_, LoraValue::Null) => None,
+        (LoraValue::String(a), LoraValue::String(b)) => Some(a.cmp(b)),
+        (LoraValue::Date(a), LoraValue::Date(b)) => Some(a.to_epoch_days().cmp(&b.to_epoch_days())),
+        (LoraValue::DateTime(a), LoraValue::DateTime(b)) => {
+            Some(a.to_epoch_millis().cmp(&b.to_epoch_millis()))
+        }
+        (LoraValue::Duration(a), LoraValue::Duration(b)) => a
+            .total_seconds_approx()
+            .partial_cmp(&b.total_seconds_approx()),
+        _ => actual.as_f64()?.partial_cmp(&bound.as_f64()?),
+    }
+}
+
+fn lora_store_property_to_value(value: &PropertyValue) -> LoraValue {
+    LoraValue::from(value)
+}
+
+pub(crate) fn node_by_point_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::NodeByPointScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+
+        // Resolve the predicate's literal/scalar inputs against the
+        // current row. These end up as captured `LoraValue`s used both
+        // to probe the spatial index and to refilter every candidate.
+        let probe = match &op.predicate {
+            lora_compiler::PointPredicate::WithinBBox {
+                lower_left,
+                upper_right,
+            } => {
+                let ll = eval_expr(lower_left, &row, &eval_ctx);
+                let ur = eval_expr(upper_right, &row, &eval_ctx);
+                match (ll, ur) {
+                    (LoraValue::Point(a), LoraValue::Point(b)) => {
+                        Probe::WithinBBox { ll: a, ur: b }
+                    }
+                    _ => continue,
+                }
+            }
+            lora_compiler::PointPredicate::WithinDistance {
+                center,
+                max_distance,
+                inclusive,
+            } => {
+                let c = eval_expr(center, &row, &eval_ctx);
+                let d = eval_expr(max_distance, &row, &eval_ctx);
+                match (c, d) {
+                    (LoraValue::Point(c), LoraValue::Float(d)) => Probe::WithinDistance {
+                        center: c,
+                        max: d,
+                        inclusive: *inclusive,
+                    },
+                    (LoraValue::Point(c), LoraValue::Int(d)) => Probe::WithinDistance {
+                        center: c,
+                        max: d as f64,
+                        inclusive: *inclusive,
+                    },
+                    _ => continue,
+                }
+            }
+        };
+
+        if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
+            if node_matches_point_filter(storage, existing_id, &op.labels, &op.key, &probe) {
+                out.push(row);
+            }
+            continue;
+        }
+
+        let candidate_ids = match single_label_hint(&op.labels) {
+            Some(label) => match &probe {
+                Probe::WithinBBox { ll, ur } => storage
+                    .node_point_within_bbox(label, &op.key, (ll.x, ll.y), (ur.x, ur.y))
+                    .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
+                Probe::WithinDistance { center, max, .. } => storage
+                    .node_point_within_distance(label, &op.key, (center.x, center.y), *max)
+                    .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
+            },
+            None => scan_node_ids_for_label_groups(storage, &op.labels),
+        };
+
+        for id in candidate_ids {
+            check_optional_deadline(deadline)?;
+            if node_matches_point_filter(storage, id, &op.labels, &op.key, &probe) {
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn node_matches_point_filter<S: GraphStorage>(
+    storage: &S,
+    id: NodeId,
+    labels: &[Vec<String>],
+    key: &str,
+    probe: &Probe,
+) -> bool {
+    storage
+        .with_node(id, |n| {
+            if !node_matches_label_groups(&n.labels, labels) {
+                return false;
+            }
+            let Some(PropertyValue::Point(point)) = n.properties.get(key) else {
+                return false;
+            };
+            point_predicate_holds(point, probe)
+        })
+        .unwrap_or(false)
+}
+
+enum Probe {
+    WithinBBox {
+        ll: lora_store::LoraPoint,
+        ur: lora_store::LoraPoint,
+    },
+    WithinDistance {
+        center: lora_store::LoraPoint,
+        max: f64,
+        inclusive: bool,
+    },
+}
+
+fn point_predicate_holds(actual: &lora_store::LoraPoint, probe: &Probe) -> bool {
+    match probe {
+        Probe::WithinBBox { ll, ur } => {
+            if actual.srid != ll.srid || actual.srid != ur.srid {
+                return false;
+            }
+            let in_x = actual.x >= ll.x.min(ur.x) && actual.x <= ll.x.max(ur.x);
+            let in_y = actual.y >= ll.y.min(ur.y) && actual.y <= ll.y.max(ur.y);
+            let in_z = match (actual.z, ll.z, ur.z) {
+                (Some(pz), Some(lz), Some(uz)) => pz >= lz.min(uz) && pz <= lz.max(uz),
+                (None, None, None) => true,
+                _ => return false,
+            };
+            in_x && in_y && in_z
+        }
+        Probe::WithinDistance {
+            center,
+            max,
+            inclusive,
+        } => {
+            let Some(d) = lora_store::point_distance(actual, center) else {
+                return false;
+            };
+            if *inclusive {
+                d <= *max
+            } else {
+                d < *max
+            }
+        }
+    }
+}
+
 pub(crate) fn indexed_node_property_candidates<S: GraphStorage>(
     storage: &S,
     labels: &[Vec<String>],
@@ -1420,4 +1790,307 @@ pub(crate) fn filter_shortest_paths(rows: Vec<Row>, path_var: VarId, all: bool) 
     }
 
     result
+}
+
+// ---------- Rel scans ----------
+//
+// Mirror of the `node_by_*_scan_rows` helpers above for the
+// relationship-targeted index operators. Each helper resolves the
+// candidate set via the corresponding `relationship_*_candidates`
+// trait method (falling back to `rel_ids_by_type` when no scope is
+// active), refilters with the precise predicate, and emits one row
+// per matching relationship per input row.
+//
+// Direction handling: the optimizer only emits a Rel*Scan when both
+// endpoints of the pattern have no upstream constraint. With a
+// directed pattern (Direction::Right), each rel is bound as
+// (src=stored_src, rel, dst=stored_dst). With Direction::Left those
+// are swapped. With Direction::Undirected we emit both orientations
+// to preserve parity with the Expand-based plan it replaces.
+
+fn emit_rel_rows(
+    direction: Direction,
+    src_var: VarId,
+    rel_var: VarId,
+    dst_var: VarId,
+    rel: &lora_store::RelationshipRecord,
+    base: &Row,
+    out: &mut Vec<Row>,
+) -> ExecResult<()> {
+    match direction {
+        Direction::Right => {
+            emit_one_rel_row(
+                src_var, rel_var, dst_var, rel.src, rel.id, rel.dst, base, out,
+            )?;
+        }
+        Direction::Left => {
+            emit_one_rel_row(
+                src_var, rel_var, dst_var, rel.dst, rel.id, rel.src, base, out,
+            )?;
+        }
+        Direction::Undirected => {
+            emit_one_rel_row(
+                src_var, rel_var, dst_var, rel.src, rel.id, rel.dst, base, out,
+            )?;
+            // Self-loops produce a single row even under undirected
+            // semantics — emitting two copies of (a=a, b=a) for
+            // a=stored_src=stored_dst would double-count.
+            if rel.src != rel.dst {
+                emit_one_rel_row(
+                    src_var, rel_var, dst_var, rel.dst, rel.id, rel.src, base, out,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_one_rel_row(
+    src_var: VarId,
+    rel_var: VarId,
+    dst_var: VarId,
+    src_id: NodeId,
+    rel_id: RelationshipId,
+    dst_id: NodeId,
+    base: &Row,
+    out: &mut Vec<Row>,
+) -> ExecResult<()> {
+    let mut row = base.clone();
+    if bind_node_value(&mut row, src_var, src_id)?
+        && bind_relationship_value(&mut row, rel_var, rel_id)?
+        && bind_node_value(&mut row, dst_var, dst_id)?
+    {
+        out.push(row);
+    }
+    Ok(())
+}
+
+fn bind_node_value(row: &mut Row, var: VarId, id: NodeId) -> ExecResult<bool> {
+    match row.get(var) {
+        Some(LoraValue::Node(existing)) => Ok(*existing == id),
+        Some(other) => Err(ExecutorError::ExpectedNodeForExpand {
+            var: format!("{var:?}"),
+            found: value_kind(other),
+        }),
+        None => {
+            row.insert(var, LoraValue::Node(id));
+            Ok(true)
+        }
+    }
+}
+
+fn bind_relationship_value(row: &mut Row, var: VarId, id: RelationshipId) -> ExecResult<bool> {
+    match row.get(var) {
+        Some(LoraValue::Relationship(existing)) => Ok(*existing == id),
+        Some(other) => Err(ExecutorError::ExpectedRelationshipForExpand {
+            var: format!("{var:?}"),
+            found: value_kind(other),
+        }),
+        None => {
+            row.insert(var, LoraValue::Relationship(id));
+            Ok(true)
+        }
+    }
+}
+
+fn rel_candidate_ids<S, F>(storage: &S, types: &[String], indexed: F) -> Vec<RelationshipId>
+where
+    S: GraphStorage,
+    F: Fn(&str) -> Option<Vec<RelationshipId>>,
+{
+    if types.is_empty() {
+        // No type constraint → no rel-typed scope to probe; fall back
+        // to scanning every relationship.
+        return storage.all_rel_ids();
+    }
+    let mut all = Vec::new();
+    let mut seen = BTreeSet::new();
+    for ty in types {
+        let ids = indexed(ty).unwrap_or_else(|| storage.rel_ids_by_type(ty));
+        for id in ids {
+            if seen.insert(id) {
+                all.push(id);
+            }
+        }
+    }
+    all
+}
+
+pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::RelByPropertyRangeScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let lo_value = op.lo.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
+        let hi_value = op.hi.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
+        let lo_prop = lo_value
+            .clone()
+            .and_then(|v| lora_value_to_property(v).ok());
+        let hi_prop = hi_value
+            .clone()
+            .and_then(|v| lora_value_to_property(v).ok());
+
+        let candidate_ids = rel_candidate_ids(storage, &op.types, |ty| {
+            storage.relationship_range_candidates(ty, &op.key, lo_prop.as_ref(), hi_prop.as_ref())
+        });
+
+        for rel_id in candidate_ids {
+            check_optional_deadline(deadline)?;
+            if let Some(result) = storage.with_relationship(rel_id, |rel| {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                    return Ok(());
+                }
+                let Some(actual) = rel.properties.get(&op.key) else {
+                    return Ok(());
+                };
+                let actual_lv = LoraValue::from(actual);
+                if !range_predicate_holds(
+                    &actual_lv,
+                    lo_value.as_ref(),
+                    op.lo_inclusive,
+                    hi_value.as_ref(),
+                    op.hi_inclusive,
+                ) {
+                    return Ok(());
+                }
+                emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)
+            }) {
+                result?;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+pub(crate) fn rel_by_text_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::RelByTextScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let query = eval_expr(&op.query, &row, &eval_ctx);
+        let LoraValue::String(query_str) = &query else {
+            continue;
+        };
+
+        let candidate_ids = rel_candidate_ids(storage, &op.types, |ty| {
+            storage.relationship_text_candidates(ty, &op.key, query_str)
+        });
+
+        for rel_id in candidate_ids {
+            check_optional_deadline(deadline)?;
+            if let Some(result) = storage.with_relationship(rel_id, |rel| {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                    return Ok(());
+                }
+                let Some(PropertyValue::String(actual)) = rel.properties.get(&op.key) else {
+                    return Ok(());
+                };
+                if !text_predicate_holds(actual, op.predicate, query_str) {
+                    return Ok(());
+                }
+                emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)
+            }) {
+                result?;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::RelByPointScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+
+        let probe = match &op.predicate {
+            lora_compiler::PointPredicate::WithinBBox {
+                lower_left,
+                upper_right,
+            } => {
+                let ll = eval_expr(lower_left, &row, &eval_ctx);
+                let ur = eval_expr(upper_right, &row, &eval_ctx);
+                match (ll, ur) {
+                    (LoraValue::Point(a), LoraValue::Point(b)) => {
+                        Probe::WithinBBox { ll: a, ur: b }
+                    }
+                    _ => continue,
+                }
+            }
+            lora_compiler::PointPredicate::WithinDistance {
+                center,
+                max_distance,
+                inclusive,
+            } => {
+                let c = eval_expr(center, &row, &eval_ctx);
+                let d = eval_expr(max_distance, &row, &eval_ctx);
+                match (c, d) {
+                    (LoraValue::Point(c), LoraValue::Float(d)) => Probe::WithinDistance {
+                        center: c,
+                        max: d,
+                        inclusive: *inclusive,
+                    },
+                    (LoraValue::Point(c), LoraValue::Int(d)) => Probe::WithinDistance {
+                        center: c,
+                        max: d as f64,
+                        inclusive: *inclusive,
+                    },
+                    _ => continue,
+                }
+            }
+        };
+
+        let candidate_ids = rel_candidate_ids(storage, &op.types, |ty| match &probe {
+            Probe::WithinBBox { ll, ur } => {
+                storage.relationship_point_within_bbox(ty, &op.key, (ll.x, ll.y), (ur.x, ur.y))
+            }
+            Probe::WithinDistance { center, max, .. } => {
+                storage.relationship_point_within_distance(ty, &op.key, (center.x, center.y), *max)
+            }
+        });
+
+        for rel_id in candidate_ids {
+            check_optional_deadline(deadline)?;
+            if let Some(result) = storage.with_relationship(rel_id, |rel| {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                    return Ok(());
+                }
+                let Some(PropertyValue::Point(actual)) = rel.properties.get(&op.key) else {
+                    return Ok(());
+                };
+                if !point_predicate_holds(actual, &probe) {
+                    return Ok(());
+                }
+                emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)
+            }) {
+                result?;
+            }
+        }
+    }
+
+    Ok(out)
 }

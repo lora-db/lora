@@ -11,6 +11,10 @@ description = "Query-plan executor for LoraDB's Cypher implementation."
 keywords = ["loradb", "cypher", "executor", "graph", "query"]
 categories = ["database-implementations", "algorithms"]
 
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
 [dependencies]
 lora-compiler.workspace = true
 lora-store.workspace = true
@@ -21,3 +25,6 @@ smallvec.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 regex.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { workspace = true, optional = true }

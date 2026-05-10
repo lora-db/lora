@@ -18,6 +18,12 @@ pub enum LogicalOp {
     Argument(Argument),
     NodeScan(NodeScan),
     NodeByPropertyScan(NodeByPropertyScan),
+    NodeByPropertyRangeScan(NodeByPropertyRangeScan),
+    NodeByTextScan(NodeByTextScan),
+    NodeByPointScan(NodeByPointScan),
+    RelByPropertyRangeScan(RelByPropertyRangeScan),
+    RelByTextScan(RelByTextScan),
+    RelByPointScan(RelByPointScan),
     Expand(Expand),
     Filter(Filter),
     Projection(Projection),
@@ -79,6 +85,118 @@ pub struct NodeByPropertyScan {
     pub labels: Vec<Vec<String>>,
     pub key: String,
     pub value: ResolvedExpr,
+}
+
+/// Range-bounded property scan rewritten from `Filter(NodeScan, var.prop CMP value)`
+/// patterns. `lo == None` means `-∞`, `hi == None` means `+∞`. Inclusivity flags
+/// distinguish `>` from `>=` and `<` from `<=`. Both bounds combined cover
+/// `BETWEEN`-style queries (`a < x AND x <= b`).
+#[derive(Debug, Clone)]
+pub struct NodeByPropertyRangeScan {
+    pub input: Option<PlanNodeId>,
+    pub var: VarId,
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub lo: Option<ResolvedExpr>,
+    pub lo_inclusive: bool,
+    pub hi: Option<ResolvedExpr>,
+    pub hi_inclusive: bool,
+}
+
+/// Trigram-backed property scan rewritten from `Filter(NodeScan, var.prop OP "literal")`
+/// where OP is `STARTS WITH`, `ENDS WITH`, or `CONTAINS`. The executor consults
+/// the trigram registry for candidates and re-verifies the predicate.
+#[derive(Debug, Clone)]
+pub struct NodeByTextScan {
+    pub input: Option<PlanNodeId>,
+    pub var: VarId,
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub predicate: TextPredicate,
+    pub query: ResolvedExpr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextPredicate {
+    StartsWith,
+    EndsWith,
+    Contains,
+}
+
+/// Spatial-index scan rewritten from `Filter(NodeScan, predicate)`
+/// where the predicate is `point.withinBBox(n.prop, ll, ur)` or
+/// `point.distance(n.prop, c) OP d`. Index probe is conservative;
+/// the executor refilters with the precise predicate (including the
+/// inclusivity of distance comparisons and the z-axis when the point
+/// is 3D).
+#[derive(Debug, Clone)]
+pub struct NodeByPointScan {
+    pub input: Option<PlanNodeId>,
+    pub var: VarId,
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub predicate: PointPredicate,
+}
+
+#[derive(Debug, Clone)]
+pub enum PointPredicate {
+    WithinBBox {
+        lower_left: ResolvedExpr,
+        upper_right: ResolvedExpr,
+    },
+    WithinDistance {
+        center: ResolvedExpr,
+        max_distance: ResolvedExpr,
+        inclusive: bool,
+    },
+}
+
+/// Range-bounded relationship scan, the rel-side mirror of
+/// [`NodeByPropertyRangeScan`]. Produces one row per indexed
+/// relationship of `types`, binding `src`, `rel`, `dst` to the stored
+/// endpoints. The optimizer only emits this operator for patterns
+/// with anonymous endpoints (no upstream label/property constraints
+/// on src/dst), since the operator does not refilter endpoints.
+#[derive(Debug, Clone)]
+pub struct RelByPropertyRangeScan {
+    pub input: Option<PlanNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub lo: Option<ResolvedExpr>,
+    pub lo_inclusive: bool,
+    pub hi: Option<ResolvedExpr>,
+    pub hi_inclusive: bool,
+}
+
+/// Trigram-backed relationship scan. Mirror of [`NodeByTextScan`].
+#[derive(Debug, Clone)]
+pub struct RelByTextScan {
+    pub input: Option<PlanNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub predicate: TextPredicate,
+    pub query: ResolvedExpr,
+}
+
+/// Spatial-index relationship scan. Mirror of [`NodeByPointScan`].
+#[derive(Debug, Clone)]
+pub struct RelByPointScan {
+    pub input: Option<PlanNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub predicate: PointPredicate,
 }
 
 #[derive(Debug, Clone)]

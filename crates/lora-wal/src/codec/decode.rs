@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, MutationEvent, Properties, PropertyValue, VectorValues,
+    codec::decode_index_request, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime,
+    LoraLocalTime, LoraPoint, LoraTime, LoraVector, MutationEvent, Properties, PropertyValue,
+    VectorValues,
 };
 
 use super::format::*;
@@ -369,6 +370,20 @@ impl<'a> PayloadReader<'a> {
                 node_id: self.read_u64()?,
             },
             TAG_CLEAR => MutationEvent::Clear,
+            TAG_CREATE_INDEX => {
+                let bytes = self.read_bytes()?;
+                let request = decode_index_request(bytes)
+                    .map_err(|e| WalError::Decode(format!("CreateIndex decode failed: {e}")))?;
+                let if_not_exists = self.read_u8()? != 0;
+                MutationEvent::CreateIndex {
+                    request,
+                    if_not_exists,
+                }
+            }
+            TAG_DROP_INDEX => MutationEvent::DropIndex {
+                name: self.read_string()?,
+                if_exists: self.read_u8()? != 0,
+            },
             tag => return Err(WalError::Decode(format!("unknown WAL mutation tag {tag}"))),
         })
     }

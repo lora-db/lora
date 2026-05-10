@@ -7,8 +7,9 @@ use std::collections::BTreeSet;
 use lora_ast::Direction;
 
 use crate::{
-    BorrowedGraphStorage, GraphStorage, GraphStorageMut, MutationEvent, NodeId, NodeRecord,
-    Properties, PropertyValue, RelationshipId, RelationshipRecord,
+    BorrowedGraphStorage, CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome,
+    GraphStats, GraphStorage, GraphStorageMut, IndexDefinition, IndexRequest, MutationEvent,
+    NodeId, NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord,
 };
 
 use super::property_index::PropertyIndexKey;
@@ -16,6 +17,115 @@ use super::InMemoryGraph;
 
 impl GraphStorage for InMemoryGraph {
     // ---------- Required primitives ----------
+
+    fn list_indexes(&self) -> Vec<IndexDefinition> {
+        self.index_catalog_read().list()
+    }
+
+    fn get_index(&self, name: &str) -> Option<IndexDefinition> {
+        self.index_catalog_read().get(name).cloned()
+    }
+
+    fn graph_stats(&self) -> GraphStats {
+        InMemoryGraph::graph_stats(self)
+    }
+
+    fn node_text_candidates(
+        &self,
+        label: &str,
+        property: &str,
+        query: &str,
+    ) -> Option<Vec<NodeId>> {
+        let registry = self.text_indexes_read(crate::StoredIndexEntity::Node);
+        let candidates = registry.candidates(label, property, query)?;
+        Some(candidates.into_iter().collect())
+    }
+
+    fn node_range_candidates(
+        &self,
+        label: &str,
+        property: &str,
+        lo: Option<&PropertyValue>,
+        hi: Option<&PropertyValue>,
+    ) -> Option<Vec<NodeId>> {
+        let registry = self.sorted_indexes_read(crate::StoredIndexEntity::Node);
+        // The sorted index returns a [lo, hi] inclusive candidate set.
+        // The executor refilters each id against the precise predicate
+        // (handling `>` vs `>=`, `<` vs `<=`).
+        let candidates = registry.range_candidates(label, property, lo, hi)?;
+        Some(candidates.into_iter().collect())
+    }
+
+    fn node_point_within_bbox(
+        &self,
+        label: &str,
+        property: &str,
+        ll: (f64, f64),
+        ur: (f64, f64),
+    ) -> Option<Vec<NodeId>> {
+        let registry = self.point_indexes_read(crate::StoredIndexEntity::Node);
+        let candidates = registry.within_bbox(label, property, ll, ur)?;
+        Some(candidates.into_iter().collect())
+    }
+
+    fn node_point_within_distance(
+        &self,
+        label: &str,
+        property: &str,
+        center: (f64, f64),
+        max_distance: f64,
+    ) -> Option<Vec<NodeId>> {
+        let registry = self.point_indexes_read(crate::StoredIndexEntity::Node);
+        let candidates = registry.within_distance(label, property, center, max_distance)?;
+        Some(candidates.into_iter().collect())
+    }
+
+    fn relationship_text_candidates(
+        &self,
+        rel_type: &str,
+        property: &str,
+        query: &str,
+    ) -> Option<Vec<RelationshipId>> {
+        let registry = self.text_indexes_read(crate::StoredIndexEntity::Relationship);
+        let candidates = registry.candidates(rel_type, property, query)?;
+        Some(candidates.into_iter().collect())
+    }
+
+    fn relationship_range_candidates(
+        &self,
+        rel_type: &str,
+        property: &str,
+        lo: Option<&PropertyValue>,
+        hi: Option<&PropertyValue>,
+    ) -> Option<Vec<RelationshipId>> {
+        let registry = self.sorted_indexes_read(crate::StoredIndexEntity::Relationship);
+        let candidates = registry.range_candidates(rel_type, property, lo, hi)?;
+        Some(candidates.into_iter().collect())
+    }
+
+    fn relationship_point_within_bbox(
+        &self,
+        rel_type: &str,
+        property: &str,
+        ll: (f64, f64),
+        ur: (f64, f64),
+    ) -> Option<Vec<RelationshipId>> {
+        let registry = self.point_indexes_read(crate::StoredIndexEntity::Relationship);
+        let candidates = registry.within_bbox(rel_type, property, ll, ur)?;
+        Some(candidates.into_iter().collect())
+    }
+
+    fn relationship_point_within_distance(
+        &self,
+        rel_type: &str,
+        property: &str,
+        center: (f64, f64),
+        max_distance: f64,
+    ) -> Option<Vec<RelationshipId>> {
+        let registry = self.point_indexes_read(crate::StoredIndexEntity::Relationship);
+        let candidates = registry.within_distance(rel_type, property, center, max_distance)?;
+        Some(candidates.into_iter().collect())
+    }
 
     fn contains_node(&self, id: NodeId) -> bool {
         self.node_at(id).is_some()
@@ -853,5 +963,26 @@ impl GraphStorageMut for InMemoryGraph {
         *self = Self::default();
         self.recorder = recorder;
         self.emit(|| MutationEvent::Clear);
+    }
+
+    fn create_index(
+        &mut self,
+        request: IndexRequest,
+        if_not_exists: bool,
+    ) -> Result<CreateIndexOutcome, CreateIndexError> {
+        // `register_index` only needs `&self` (catalog + property-index
+        // registries are behind RwLock for interior mutability), but we
+        // keep the trait signature `&mut self` so downstream callers can
+        // hold a uniquely-owned mutation lock. That mirrors the pattern
+        // used for property writes elsewhere in this impl.
+        self.register_index(request, if_not_exists)
+    }
+
+    fn drop_index(
+        &mut self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<DropIndexOutcome, DropIndexError> {
+        self.drop_named_index(name, if_exists)
     }
 }

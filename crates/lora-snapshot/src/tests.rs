@@ -49,6 +49,7 @@ fn payload() -> SnapshotPayload {
             rel_type: "KNOWS".into(),
             properties: rel_props,
         }],
+        indexes: Vec::new(),
     }
 }
 
@@ -229,6 +230,7 @@ fn large_columnar_roundtrip() {
         next_rel_id: 999,
         nodes,
         relationships,
+        indexes: Vec::new(),
     };
     let options = SnapshotOptions {
         compression: Compression::Gzip { level: 1 },

@@ -4,7 +4,7 @@
 //! the store owns the canonical in-memory records, the WAL owns ordered
 //! mutation recovery, and this crate owns compact point-in-time state images.
 //!
-//! The current format is column-oriented rather than bincode-over-struct:
+//! The current format is column-oriented rather than serde-over-struct:
 //! nodes, labels, relationships, relationship types, and properties are stored
 //! in separate columns. That keeps the format friendly to future Arrow /
 //! Parquet backends while avoiding those heavy dependencies in the first

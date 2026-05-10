@@ -19,6 +19,12 @@ pub enum PhysicalOp {
     NodeScan(NodeScanExec),
     NodeByLabelScan(NodeByLabelScanExec),
     NodeByPropertyScan(NodeByPropertyScanExec),
+    NodeByPropertyRangeScan(NodeByPropertyRangeScanExec),
+    NodeByTextScan(NodeByTextScanExec),
+    NodeByPointScan(NodeByPointScanExec),
+    RelByPropertyRangeScan(RelByPropertyRangeScanExec),
+    RelByTextScan(RelByTextScanExec),
+    RelByPointScan(RelByPointScanExec),
     Expand(ExpandExec),
     Filter(FilterExec),
     Projection(ProjectionExec),
@@ -78,6 +84,77 @@ pub struct NodeByPropertyScanExec {
     pub labels: Vec<Vec<String>>,
     pub key: String,
     pub value: ResolvedExpr,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeByPropertyRangeScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub var: VarId,
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub lo: Option<ResolvedExpr>,
+    pub lo_inclusive: bool,
+    pub hi: Option<ResolvedExpr>,
+    pub hi_inclusive: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeByTextScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub var: VarId,
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub predicate: crate::logical::TextPredicate,
+    pub query: ResolvedExpr,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeByPointScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub var: VarId,
+    pub labels: Vec<Vec<String>>,
+    pub key: String,
+    pub predicate: crate::logical::PointPredicate,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelByPropertyRangeScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub lo: Option<ResolvedExpr>,
+    pub lo_inclusive: bool,
+    pub hi: Option<ResolvedExpr>,
+    pub hi_inclusive: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelByTextScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub predicate: crate::logical::TextPredicate,
+    pub query: ResolvedExpr,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelByPointScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub predicate: crate::logical::PointPredicate,
 }
 
 #[derive(Debug, Clone)]

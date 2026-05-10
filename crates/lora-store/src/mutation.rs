@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::memory::IndexRequest;
 use crate::{NodeId, Properties, PropertyValue, RelationshipId};
 
 /// A durable, replayable mutation against a graph store.
@@ -82,6 +83,18 @@ pub enum MutationEvent {
         node_id: NodeId,
     },
     Clear,
+    /// Catalog-level mutation: register an index in the catalog. Replay
+    /// re-applies via the same `register_index` path with the recorder
+    /// detached, so events do not duplicate themselves.
+    CreateIndex {
+        request: IndexRequest,
+        if_not_exists: bool,
+    },
+    /// Catalog-level mutation: drop an index by name.
+    DropIndex {
+        name: String,
+        if_exists: bool,
+    },
 }
 
 /// Observer that receives every successful mutation in the order the store
@@ -195,6 +208,13 @@ impl MutationWriteSet {
                 }
                 MutationEvent::Clear => {
                     self.cleared = true;
+                }
+                MutationEvent::CreateIndex { .. } | MutationEvent::DropIndex { .. } => {
+                    // Catalog mutations don't touch node/rel write
+                    // sets — they live next to the graph slabs but
+                    // don't share record locks. The single-writer
+                    // `writer` mutex on the database serialises them
+                    // against everything else.
                 }
             }
         }

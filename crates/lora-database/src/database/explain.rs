@@ -12,9 +12,9 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
-use lora_compiler::plan_tree_from_compiled;
+use lora_compiler::{plan_tree_from_compiled, PlanTree, PlanTreeNode};
 use lora_executor::{classify_stream, plan_result_columns, LoraValue};
-use lora_store::{GraphStorage, GraphStorageMut};
+use lora_store::{GraphStats, GraphStorage, GraphStorageMut};
 
 use crate::database::Database;
 use crate::error::LoraError;
@@ -44,7 +44,9 @@ where
         let compiled = self
             .compile_query_cached(query, &*store)
             .map_err(LoraError::from_anyhow)?;
-        let tree = plan_tree_from_compiled(&compiled);
+        let mut tree = plan_tree_from_compiled(&compiled);
+        let stats = store.graph_stats();
+        annotate_estimated_rows(&mut tree, &stats);
         let shape: PlanShape = classify_stream(&compiled).into();
         let result_columns = plan_result_columns(&compiled.physical);
         Ok(QueryPlan {
@@ -54,4 +56,49 @@ where
             result_columns,
         })
     }
+}
+
+/// Walk a `PlanTree` and fill `estimated_rows` for the operators whose
+/// cardinality is derivable from the cheap [`GraphStats`] snapshot.
+/// Currently:
+/// * `NodeScan` → `node_count`
+/// * `NodeByLabelScan` → sum of per-label counts (handles `:A|B`)
+/// * `NodeByPropertyScan` → uniform-distribution heuristic from
+///   distinct-value count, when both label and property are recorded
+///
+/// Operators that aren't covered keep the existing `None`. The
+/// optimizer doesn't *use* these numbers yet — it's `EXPLAIN`-only —
+/// but populating them now is what unlocks the cost model in a
+/// follow-up.
+pub(crate) fn annotate_estimated_rows(tree: &mut PlanTree, stats: &GraphStats) {
+    annotate_node(&mut tree.root, stats);
+}
+
+fn annotate_node(node: &mut PlanTreeNode, stats: &GraphStats) {
+    node.estimated_rows = match node.operator.as_str() {
+        "NodeScan" => Some(stats.node_count as u64),
+        "NodeByLabelScan" => labels_estimate(node, stats),
+        "NodeByPropertyScan" => property_equality_estimate(node, stats),
+        _ => None,
+    };
+    for child in &mut node.children {
+        annotate_node(child, stats);
+    }
+}
+
+fn labels_estimate(node: &PlanTreeNode, stats: &GraphStats) -> Option<u64> {
+    let labels = node.details.get("labels")?;
+    // `labels` is a humanised string from `label_groups_str`; we only
+    // attempt the simple `:Foo` form for v1 cost.
+    let trimmed = labels.trim_start_matches(':');
+    let bare = trimmed.split('|').next()?.trim();
+    stats.label_count(bare)
+}
+
+fn property_equality_estimate(node: &PlanTreeNode, stats: &GraphStats) -> Option<u64> {
+    let property = node.details.get("key")?;
+    let labels = node.details.get("labels")?;
+    let trimmed = labels.trim_start_matches(':');
+    let bare = trimmed.split('|').next()?.trim();
+    stats.estimate_node_property_equality(bare, property)
 }

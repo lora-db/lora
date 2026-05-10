@@ -14,10 +14,22 @@
 
 mod graph;
 mod impls;
+mod index_catalog;
+mod point_index;
 mod property_index;
+mod secondary_index_maintenance;
 mod snapshot;
+mod sorted_property_index;
+mod stats;
+mod text_index;
 
 #[cfg(test)]
 mod tests;
 
 pub use graph::InMemoryGraph;
+pub use index_catalog::{
+    CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
+    IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind,
+    StoredIndexState,
+};
+pub use stats::GraphStats;

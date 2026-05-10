@@ -21,6 +21,89 @@ pub struct Document {
 #[derive(Debug, Clone)]
 pub enum Statement {
     Query(Query),
+    Schema(SchemaCommand),
+}
+
+#[derive(Debug, Clone)]
+pub enum SchemaCommand {
+    CreateIndex(CreateIndex),
+    DropIndex(DropIndex),
+    ShowIndexes(ShowIndexes),
+}
+
+#[derive(Debug, Clone)]
+pub struct DropIndex {
+    pub name: IndexNameSpec,
+    pub if_exists: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateIndex {
+    pub kind: IndexKind,
+    pub name: Option<IndexNameSpec>,
+    pub if_not_exists: bool,
+    pub entity: IndexEntityKind,
+    /// Pattern variable in the FOR clause (`n` for `(n:Person)`, `r` for `()-[r:KNOWS]-()`).
+    pub variable: String,
+    /// `Some(label_or_type)` for property indexes; `None` for `LOOKUP` token indexes
+    /// where the label/type is the wildcard captured by `labels(n)` / `type(r)`.
+    pub label: Option<String>,
+    /// Property keys covered by the index. Empty for `LOOKUP` token indexes.
+    pub properties: Vec<String>,
+    pub options: Option<IndexOptions>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexKind {
+    Range,
+    Text,
+    Point,
+    Lookup,
+}
+
+impl IndexKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            IndexKind::Range => "RANGE",
+            IndexKind::Text => "TEXT",
+            IndexKind::Point => "POINT",
+            IndexKind::Lookup => "LOOKUP",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexEntityKind {
+    Node,
+    Relationship,
+}
+
+impl IndexEntityKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            IndexEntityKind::Node => "NODE",
+            IndexEntityKind::Relationship => "RELATIONSHIP",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum IndexNameSpec {
+    Literal(String),
+    Parameter(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexOptions {
+    pub config: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowIndexes {
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -919,3 +919,53 @@ fn checkpoint_requires_wal() {
     let err = db.checkpoint_to(&snap_path).unwrap_err();
     assert!(err.to_string().contains("WAL"));
 }
+
+#[test]
+fn catalog_survives_crash_and_recovers_via_wal() {
+    let dir = TmpDir::new("catalog-wal");
+    {
+        let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+        db.execute(
+            "CREATE INDEX node_idx FOR (n:Person) ON (n.surname)",
+            rows(),
+        )
+        .unwrap();
+        db.execute(
+            "CREATE TEXT INDEX text_idx FOR (n:Person) ON (n.bio)",
+            rows(),
+        )
+        .unwrap();
+        db.execute(
+            "CREATE LOOKUP INDEX label_lookup FOR (n) ON EACH labels(n)",
+            rows(),
+        )
+        .unwrap();
+        db.execute("DROP INDEX label_lookup", rows()).unwrap();
+        db.sync().unwrap();
+    }
+
+    // Re-open: WAL replay must restore the surviving catalog entries.
+    let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+    let result = db.execute("SHOW INDEXES", rows()).unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    let names: Vec<String> = json["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n| *n == "node_idx").count(),
+        1,
+        "node_idx should survive WAL replay"
+    );
+    assert_eq!(
+        names.iter().filter(|n| *n == "text_idx").count(),
+        1,
+        "text_idx should survive WAL replay"
+    );
+    assert!(
+        !names.iter().any(|n| n == "label_lookup"),
+        "label_lookup should have been removed by the DROP replay"
+    );
+}

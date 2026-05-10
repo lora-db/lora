@@ -10,8 +10,10 @@ use std::sync::Arc;
 
 use lora_compiler::physical::{
     ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByLabelScanExec,
-    NodeByPropertyScanExec, NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId,
-    PhysicalOp, PhysicalPlan, ProjectionExec, SortExec, UnwindExec,
+    NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByPropertyScanExec, NodeByTextScanExec,
+    NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp, PhysicalPlan,
+    ProjectionExec, RelByPointScanExec, RelByPropertyRangeScanExec, RelByTextScanExec, SortExec,
+    UnwindExec,
 };
 use lora_compiler::CompiledQuery;
 use lora_store::GraphStorage;
@@ -28,7 +30,9 @@ use super::filter::FilterSource;
 use super::optional::OptionalMatchSource;
 use super::path::PathBuildSource;
 use super::projection::{DistinctSource, ProjectionSource, UnwindSource};
-use super::scan::{NodeByLabelScanSource, NodeByPropertyScanSource, NodeScanSource};
+use super::scan::{
+    BufferedIndexScanSource, NodeByLabelScanSource, NodeByPropertyScanSource, NodeScanSource,
+};
 use super::sort::{LimitSource, SortSource};
 use super::union::UnionSource;
 use super::{drain, ArgumentSource, BufferedRowSource, HydratingSource, RowSource, StreamCtx};
@@ -101,6 +105,12 @@ pub(super) fn is_streaming_op(op: &PhysicalOp) -> bool {
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)
         | PhysicalOp::NodeByPropertyScan(_)
+        | PhysicalOp::NodeByPropertyRangeScan(_)
+        | PhysicalOp::NodeByTextScan(_)
+        | PhysicalOp::NodeByPointScan(_)
+        | PhysicalOp::RelByPropertyRangeScan(_)
+        | PhysicalOp::RelByTextScan(_)
+        | PhysicalOp::RelByPointScan(_)
         | PhysicalOp::Filter(_)
         | PhysicalOp::Unwind(_)
         | PhysicalOp::Limit(_)
@@ -159,6 +169,12 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::NodeScan(o) => o.input,
         PhysicalOp::NodeByLabelScan(o) => o.input,
         PhysicalOp::NodeByPropertyScan(o) => o.input,
+        PhysicalOp::NodeByPropertyRangeScan(o) => o.input,
+        PhysicalOp::NodeByTextScan(o) => o.input,
+        PhysicalOp::NodeByPointScan(o) => o.input,
+        PhysicalOp::RelByPropertyRangeScan(o) => o.input,
+        PhysicalOp::RelByTextScan(o) => o.input,
+        PhysicalOp::RelByPointScan(o) => o.input,
         PhysicalOp::Filter(o) => Some(o.input),
         PhysicalOp::Unwind(o) => Some(o.input),
         PhysicalOp::Limit(o) => Some(o.input),
@@ -224,6 +240,54 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(NodeByPropertyScanSource::new(
                 upstream, ctx, *var, labels, key, value,
+            )))
+        }
+
+        PhysicalOp::NodeByPropertyRangeScan(op @ NodeByPropertyRangeScanExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::node_range(
+                upstream, ctx, op,
+            )))
+        }
+
+        PhysicalOp::NodeByTextScan(op @ NodeByTextScanExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::node_text(
+                upstream, ctx, op,
+            )))
+        }
+
+        PhysicalOp::NodeByPointScan(op @ NodeByPointScanExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::node_point(
+                upstream, ctx, op,
+            )))
+        }
+
+        PhysicalOp::RelByPropertyRangeScan(op @ RelByPropertyRangeScanExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::rel_range(
+                upstream, ctx, op,
+            )))
+        }
+
+        PhysicalOp::RelByTextScan(op @ RelByTextScanExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::rel_text(
+                upstream, ctx, op,
+            )))
+        }
+
+        PhysicalOp::RelByPointScan(op @ RelByPointScanExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::rel_point(
+                upstream, ctx, op,
             )))
         }
 

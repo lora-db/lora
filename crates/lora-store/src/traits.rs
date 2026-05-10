@@ -9,6 +9,10 @@ use std::collections::BTreeSet;
 
 use lora_ast::Direction;
 
+use crate::memory::{
+    CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, GraphStats,
+    IndexDefinition, IndexRequest,
+};
 use crate::types::{
     ExpandedRelationship, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId,
     RelationshipRecord,
@@ -562,6 +566,136 @@ pub trait GraphStorage {
                 .unwrap_or(false)
         })
     }
+
+    // ---------- Defaulted: index catalog ----------
+    //
+    // Backends that maintain an index catalog (currently the in-memory
+    // backend) override these. Backends without catalog support keep
+    // the no-op defaults so callers can list / look up safely.
+
+    fn list_indexes(&self) -> Vec<IndexDefinition> {
+        Vec::new()
+    }
+
+    fn get_index(&self, _name: &str) -> Option<IndexDefinition> {
+        None
+    }
+
+    /// Cardinality snapshot used by the cost model. Backends without
+    /// per-label / per-type indexes return [`GraphStats::default()`],
+    /// which the planner treats as "no information available".
+    fn graph_stats(&self) -> GraphStats {
+        GraphStats::default()
+    }
+
+    /// Trigram-index candidates for `query` on `label.property`.
+    ///
+    /// Semantics:
+    /// * `Some(ids)` → these node ids *might* match (refilter required).
+    /// * `None` → no trigram scope for `(label, property)`; caller must
+    ///   fall back to a full scan.
+    ///
+    /// Backends without text-index support always return `None`.
+    fn node_text_candidates(
+        &self,
+        _label: &str,
+        _property: &str,
+        _query: &str,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// Sorted-index candidates for a `[lo, hi]` range on `label.property`.
+    /// Both bounds are inclusive at this layer; the caller refilters with
+    /// the precise predicate inclusivity (`>` vs `>=`, `<` vs `<=`).
+    ///
+    /// Returns `None` when no scope exists — caller falls back to scan.
+    fn node_range_candidates(
+        &self,
+        _label: &str,
+        _property: &str,
+        _lo: Option<&PropertyValue>,
+        _hi: Option<&PropertyValue>,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// Spatial-index candidates inside the closed `[ll, ur]` 2D
+    /// bounding box. The executor refilters every id with the precise
+    /// predicate, including the z-coordinate when the indexed point
+    /// is 3D.
+    fn node_point_within_bbox(
+        &self,
+        _label: &str,
+        _property: &str,
+        _ll: (f64, f64),
+        _ur: (f64, f64),
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// Spatial-index candidates within `max_distance` of `(x, y)`. The
+    /// candidate set is conservative — the actual great-circle /
+    /// cartesian distance check is the executor's responsibility.
+    fn node_point_within_distance(
+        &self,
+        _label: &str,
+        _property: &str,
+        _center: (f64, f64),
+        _max_distance: f64,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// Trigram-index candidates for relationships of `rel_type` whose
+    /// `property` value matches `query` (substring/prefix/suffix). Mirror
+    /// of [`Self::node_text_candidates`] for relationship-target indexes.
+    fn relationship_text_candidates(
+        &self,
+        _rel_type: &str,
+        _property: &str,
+        _query: &str,
+    ) -> Option<Vec<RelationshipId>> {
+        None
+    }
+
+    /// Sorted-index candidates for relationships of `rel_type` on the
+    /// closed `[lo, hi]` range. Mirror of [`Self::node_range_candidates`].
+    fn relationship_range_candidates(
+        &self,
+        _rel_type: &str,
+        _property: &str,
+        _lo: Option<&PropertyValue>,
+        _hi: Option<&PropertyValue>,
+    ) -> Option<Vec<RelationshipId>> {
+        None
+    }
+
+    /// Spatial-index candidates inside the closed `[ll, ur]` 2D bounding
+    /// box, scoped to relationships of `rel_type`. Mirror of
+    /// [`Self::node_point_within_bbox`].
+    fn relationship_point_within_bbox(
+        &self,
+        _rel_type: &str,
+        _property: &str,
+        _ll: (f64, f64),
+        _ur: (f64, f64),
+    ) -> Option<Vec<RelationshipId>> {
+        None
+    }
+
+    /// Spatial-index candidates within `max_distance` of `(x, y)`,
+    /// scoped to relationships of `rel_type`. Mirror of
+    /// [`Self::node_point_within_distance`].
+    fn relationship_point_within_distance(
+        &self,
+        _rel_type: &str,
+        _property: &str,
+        _center: (f64, f64),
+        _max_distance: f64,
+    ) -> Option<Vec<RelationshipId>> {
+        None
+    }
 }
 
 // ============================================================================
@@ -708,6 +842,36 @@ pub trait GraphStorageMut: GraphStorage {
     /// Future snapshot / WAL / restore entry points will also hang off the
     /// `GraphStorageMut` surface — `clear` is the first of them.
     fn clear(&mut self);
+
+    /// Register an explicitly-declared index in the catalog. Backends that
+    /// don't maintain a catalog return [`CreateIndexError::Unsupported`].
+    ///
+    /// `if_not_exists` collapses both name and schema-equivalence
+    /// conflicts into [`CreateIndexOutcome::NoOpExists`] instead of
+    /// surfacing them as errors.
+    fn create_index(
+        &mut self,
+        _request: IndexRequest,
+        _if_not_exists: bool,
+    ) -> Result<CreateIndexOutcome, CreateIndexError> {
+        Err(CreateIndexError::Unsupported(
+            "this backend does not maintain an index catalog",
+        ))
+    }
+
+    /// Remove an explicitly-declared index from the catalog. Backends
+    /// without catalog support return [`DropIndexError::Unsupported`].
+    /// `if_exists` collapses missing-index errors into
+    /// [`DropIndexOutcome::NoOpMissing`].
+    fn drop_index(
+        &mut self,
+        _name: &str,
+        _if_exists: bool,
+    ) -> Result<DropIndexOutcome, DropIndexError> {
+        Err(DropIndexError::Unsupported(
+            "this backend does not maintain an index catalog",
+        ))
+    }
 
     // ---------- Defaulted convenience helpers ----------
 

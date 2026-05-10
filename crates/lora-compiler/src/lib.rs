@@ -10,19 +10,22 @@ pub use plan_tree::{plan_tree_from_compiled, PlanTree, PlanTreeNode};
 
 pub use logical::{
     Aggregation, Argument, Create, Delete, Expand, Filter, Limit, LogicalOp, LogicalPlan, Merge,
-    NodeByPropertyScan, NodeScan, OptionalMatch, PathBuild, PlanNodeId, Projection, Remove, Set,
-    Sort, Unwind,
+    NodeByPointScan, NodeByPropertyRangeScan, NodeByPropertyScan, NodeByTextScan, NodeScan,
+    OptionalMatch, PathBuild, PlanNodeId, PointPredicate, Projection, RelByPointScan,
+    RelByPropertyRangeScan, RelByTextScan, Remove, Set, Sort, TextPredicate, Unwind,
 };
 pub use optimizer::Optimizer;
 pub use physical::{
     ArgumentExec, CreateExec, DeleteExec, ExpandExec, FilterExec, HashAggregationExec, LimitExec,
-    MergeExec, NodeByLabelScanExec, NodeByPropertyScanExec, NodeScanExec, OptionalMatchExec,
-    PathBuildExec, PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, RemoveExec, SetExec,
-    SortExec, UnwindExec,
+    MergeExec, NodeByLabelScanExec, NodeByPointScanExec, NodeByPropertyRangeScanExec,
+    NodeByPropertyScanExec, NodeByTextScanExec, NodeScanExec, OptionalMatchExec, PathBuildExec,
+    PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, RelByPointScanExec,
+    RelByPropertyRangeScanExec, RelByTextScanExec, RemoveExec, SetExec, SortExec, UnwindExec,
 };
 pub use planner::Planner;
 
 use lora_analyzer::resolved::ResolvedQuery;
+use lora_store::GraphStats;
 
 #[derive(Debug, Clone)]
 pub struct CompiledQuery {
@@ -41,8 +44,13 @@ pub struct CompiledUnionBranch {
 pub struct Compiler;
 
 impl Compiler {
-    pub fn compile(query: &ResolvedQuery) -> CompiledQuery {
-        let physical = compile_physical(query);
+    /// Compile a resolved query into an executable plan, using `stats`
+    /// for cost-based rewrite selection. Pass [`GraphStats::default()`]
+    /// when no cardinality information is available — the optimizer
+    /// then falls back to the conservative "commit any matching
+    /// rewrite" behaviour that the runtime executor handles safely.
+    pub fn compile(query: &ResolvedQuery, stats: &GraphStats) -> CompiledQuery {
+        let physical = compile_physical(query, stats);
         let unions = query
             .unions
             .iter()
@@ -53,7 +61,7 @@ impl Compiler {
                 };
                 CompiledUnionBranch {
                     all: union_part.all,
-                    physical: compile_physical(&branch_query),
+                    physical: compile_physical(&branch_query, stats),
                 }
             })
             .collect();
@@ -62,12 +70,12 @@ impl Compiler {
     }
 }
 
-fn compile_physical(query: &ResolvedQuery) -> PhysicalPlan {
+fn compile_physical(query: &ResolvedQuery, stats: &GraphStats) -> PhysicalPlan {
     let mut planner = Planner::new();
     let logical = planner.plan(query);
 
     let mut optimizer = Optimizer::new();
-    let optimized = optimizer.optimize(logical);
+    let optimized = optimizer.optimize(logical, stats);
 
     // Lower by moving the logical plan; it is not needed after lowering.
     optimizer.lower_to_physical(optimized)

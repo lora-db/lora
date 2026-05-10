@@ -13,10 +13,12 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use lora_ast::Statement;
 use lora_executor::{
     classify_stream, collect_compiled, project_rows, ExecuteOptions, LoraValue,
     MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
 };
+use lora_parser::parse_query;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph};
 
 use crate::database::{Database, QUERY_FAILURE_POISON};
@@ -126,6 +128,20 @@ where
         params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
+        // Schema commands (CREATE INDEX, SHOW INDEXES) are catalog-level
+        // mutations and don't share the row-producing pipeline. A cheap
+        // textual prefix check routes them out before the parser cache and
+        // analyzer get involved.
+        if Self::is_schema_command_text(query) {
+            let document = parse_query(query)?;
+            if let Statement::Schema(cmd) = &document.statement {
+                return self.execute_schema_command(cmd, params, deadline);
+            }
+            // Fall through if the prefix matched but the parser disagreed —
+            // shouldn't happen given the grammar, but the regular path
+            // below will surface a parse error coherently.
+        }
+
         // Compile (or fetch from the plan cache) under the read lock. The
         // read lock is also what the read-only fast path runs under, so we
         // can reuse it without a release/reacquire when the plan turns out
@@ -149,7 +165,7 @@ where
                 deadline,
             );
             return executor
-                .execute_compiled_rows(&compiled)
+                .execute_compiled_rows_parallel_safe(&compiled)
                 .map_err(anyhow::Error::from);
         }
 

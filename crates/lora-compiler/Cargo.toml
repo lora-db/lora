@@ -14,3 +14,4 @@ categories = ["compilers", "database-implementations"]
 [dependencies]
 lora-analyzer.workspace = true
 lora-ast.workspace = true
+lora-store.workspace = true

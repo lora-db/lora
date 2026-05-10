@@ -13,6 +13,7 @@ use lora_store::LoraDuration;
 use crate::value::LoraValue;
 
 use super::errors::set_eval_error;
+use super::regex;
 
 pub(super) fn eval_unary(op: UnaryOp, value: LoraValue) -> LoraValue {
     match op {
@@ -147,12 +148,9 @@ pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> Lora
 
         BinaryOp::RegexMatch => match (lhs, rhs) {
             (LoraValue::Null, _) | (_, LoraValue::Null) => LoraValue::Null,
-            (LoraValue::String(s), LoraValue::String(pattern)) => {
-                match regex::Regex::new(&format!("^(?:{pattern})$")) {
-                    Ok(re) => LoraValue::Bool(re.is_match(&s)),
-                    Err(_) => LoraValue::Null,
-                }
-            }
+            (LoraValue::String(s), LoraValue::String(pattern)) => regex::full_match(&s, &pattern)
+                .map(LoraValue::Bool)
+                .unwrap_or(LoraValue::Null),
             _ => LoraValue::Bool(false),
         },
     }

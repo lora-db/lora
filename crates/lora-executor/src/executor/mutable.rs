@@ -182,6 +182,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             PhysicalOp::NodeScan(op) => self.exec_node_scan(plan, op),
             PhysicalOp::NodeByLabelScan(op) => self.exec_node_by_label_scan(plan, op),
             PhysicalOp::NodeByPropertyScan(op) => self.exec_node_by_property_scan(plan, op),
+            PhysicalOp::NodeByPropertyRangeScan(op) => {
+                self.exec_node_by_property_range_scan(plan, op)
+            }
+            PhysicalOp::NodeByTextScan(op) => self.exec_node_by_text_scan(plan, op),
+            PhysicalOp::NodeByPointScan(op) => self.exec_node_by_point_scan(plan, op),
+            PhysicalOp::RelByPropertyRangeScan(op) => {
+                self.exec_rel_by_property_range_scan(plan, op)
+            }
+            PhysicalOp::RelByTextScan(op) => self.exec_rel_by_text_scan(plan, op),
+            PhysicalOp::RelByPointScan(op) => self.exec_rel_by_point_scan(plan, op),
             PhysicalOp::Expand(op) => self.exec_expand(plan, op),
             PhysicalOp::Filter(op) => self.exec_filter(plan, op),
             PhysicalOp::Projection(op) => self.exec_projection(plan, op),
@@ -246,6 +256,114 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         };
 
         node_by_property_scan_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_node_by_property_range_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::NodeByPropertyRangeScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::node_by_property_range_scan_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_node_by_text_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::NodeByTextScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::node_by_text_scan_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_node_by_point_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::NodeByPointScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::node_by_point_scan_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_rel_by_property_range_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::RelByPropertyRangeScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::rel_by_property_range_scan_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_rel_by_text_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::RelByTextScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::rel_by_text_scan_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_rel_by_point_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::RelByPointScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::rel_by_point_scan_rows(
             &*self.ctx.storage,
             &self.ctx.params,
             base_rows,

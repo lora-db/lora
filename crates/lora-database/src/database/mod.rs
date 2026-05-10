@@ -18,6 +18,7 @@ mod occ;
 mod profile;
 mod pull_mode;
 mod replay;
+mod schema;
 mod stream;
 mod write_guard;
 

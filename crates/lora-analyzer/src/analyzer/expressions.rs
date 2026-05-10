@@ -451,7 +451,8 @@ fn function_arity(name: &str) -> Option<(usize, Option<usize>)> {
         }
         // Spatial
         "point" => Some((1, Some(1))),
-        "distance" => Some((2, Some(2))),
+        "distance" | "point.distance" => Some((2, Some(2))),
+        "point.withinbbox" => Some((3, Some(3))),
         // Vector
         "vector" => Some((3, Some(3))),
         "tointegerlist" | "tofloatlist" => Some((1, Some(1))),

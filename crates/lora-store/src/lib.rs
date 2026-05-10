@@ -4,6 +4,7 @@
 //! Public surface is laid out here so the full export of the crate is
 //! readable in one place.
 
+pub mod codec;
 mod lock_table;
 mod memory;
 mod mutation;
@@ -35,6 +36,13 @@ pub use traits::{BorrowedGraphStorage, GraphCatalog, GraphStorage, GraphStorageM
 
 // ---------- In-memory backend ----------
 pub use memory::InMemoryGraph;
+
+// ---------- Index catalog (CREATE INDEX surface) ----------
+pub use memory::{
+    CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, GraphStats,
+    IndexCatalog, IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity,
+    StoredIndexKind, StoredIndexState,
+};
 
 // ---------- Mutation stream + write-set vocabulary ----------
 pub use mutation::{ClosureRecorder, MutationEvent, MutationRecorder, MutationWriteSet};

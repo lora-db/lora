@@ -14,6 +14,13 @@ categories = ["database-implementations", "database"]
 [lib]
 bench = false
 
+[features]
+# `parallel` enables the executor's large read-only materialization path.
+# It is default-on for native builds; wasm consumers can opt out with
+# `default-features = false`.
+default = ["parallel"]
+parallel = ["lora-executor/parallel"]
+
 [dependencies]
 anyhow.workspace = true
 arc-swap.workspace = true
@@ -27,7 +34,7 @@ lora-ast.workspace = true
 lora-parser.workspace = true
 lora-analyzer.workspace = true
 lora-compiler.workspace = true
-lora-executor.workspace = true
+lora-executor = { workspace = true, default-features = false }
 lora-store.workspace = true
 lora-snapshot.workspace = true
 lora-wal.workspace = true
@@ -38,6 +45,10 @@ tower.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+
+[[bench]]
+name = "query_implementations"
+harness = false
 
 [[bench]]
 name = "engine"
@@ -73,4 +84,8 @@ harness = false
 
 [[bench]]
 name = "concurrency_guard"
+harness = false
+
+[[bench]]
+name = "index_acceleration"
 harness = false

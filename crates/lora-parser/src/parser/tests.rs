@@ -1388,3 +1388,117 @@ fn parse_semicolon() {
     let sp = as_regular_single_part(doc);
     assert!(sp.return_clause.is_some());
 }
+
+// ---------- CREATE INDEX / SHOW INDEXES ----------
+
+fn as_schema_command(doc: Document) -> SchemaCommand {
+    let Statement::Schema(cmd) = doc.statement else {
+        panic!("expected schema command");
+    };
+    cmd
+}
+
+#[test]
+fn parse_create_range_index_default_kind() {
+    let doc =
+        parse_query("CREATE INDEX node_range_index_name FOR (n:Person) ON (n.surname)").unwrap();
+    let SchemaCommand::CreateIndex(ci) = as_schema_command(doc) else {
+        panic!("expected create index");
+    };
+    assert_eq!(ci.kind, IndexKind::Range);
+    assert_eq!(ci.entity, IndexEntityKind::Node);
+    assert_eq!(ci.label.as_deref(), Some("Person"));
+    assert_eq!(ci.properties, vec!["surname"]);
+    assert!(!ci.if_not_exists);
+    assert!(matches!(
+        ci.name,
+        Some(IndexNameSpec::Literal(ref n)) if n == "node_range_index_name"
+    ));
+}
+
+#[test]
+fn parse_create_text_index_relationship() {
+    let doc =
+        parse_query("CREATE TEXT INDEX rel_text_index_name FOR ()-[r:KNOWS]-() ON (r.interest)")
+            .unwrap();
+    let SchemaCommand::CreateIndex(ci) = as_schema_command(doc) else {
+        panic!("expected create index");
+    };
+    assert_eq!(ci.kind, IndexKind::Text);
+    assert_eq!(ci.entity, IndexEntityKind::Relationship);
+    assert_eq!(ci.label.as_deref(), Some("KNOWS"));
+    assert_eq!(ci.properties, vec!["interest"]);
+}
+
+#[test]
+fn parse_create_lookup_index_node() {
+    let doc = parse_query("CREATE LOOKUP INDEX node_label_lookup_index FOR (n) ON EACH labels(n)")
+        .unwrap();
+    let SchemaCommand::CreateIndex(ci) = as_schema_command(doc) else {
+        panic!("expected create index");
+    };
+    assert_eq!(ci.kind, IndexKind::Lookup);
+    assert!(ci.label.is_none());
+    assert!(ci.properties.is_empty());
+}
+
+#[test]
+fn parse_create_index_if_not_exists() {
+    let doc = parse_query(
+        "CREATE INDEX node_range_index_name IF NOT EXISTS FOR (n:Person) ON (n.surname)",
+    )
+    .unwrap();
+    let SchemaCommand::CreateIndex(ci) = as_schema_command(doc) else {
+        panic!("expected create index");
+    };
+    assert!(ci.if_not_exists);
+}
+
+#[test]
+fn parse_create_composite_index() {
+    let doc = parse_query("CREATE INDEX comp FOR (n:Person) ON (n.age, n.country)").unwrap();
+    let SchemaCommand::CreateIndex(ci) = as_schema_command(doc) else {
+        panic!("expected create index");
+    };
+    assert_eq!(ci.properties, vec!["age", "country"]);
+}
+
+#[test]
+fn parse_create_index_with_parameter_name() {
+    let doc = parse_query("CREATE INDEX $name FOR (n:Person) ON (n.firstname)").unwrap();
+    let SchemaCommand::CreateIndex(ci) = as_schema_command(doc) else {
+        panic!("expected create index");
+    };
+    assert!(matches!(
+        ci.name,
+        Some(IndexNameSpec::Parameter(ref n)) if n == "name"
+    ));
+}
+
+#[test]
+fn parse_show_indexes() {
+    let doc = parse_query("SHOW INDEXES").unwrap();
+    assert!(matches!(
+        doc.statement,
+        Statement::Schema(SchemaCommand::ShowIndexes(_))
+    ));
+}
+
+#[test]
+fn parse_drop_index_named() {
+    let doc = parse_query("DROP INDEX my_index").unwrap();
+    let Statement::Schema(SchemaCommand::DropIndex(di)) = doc.statement else {
+        panic!("expected drop index");
+    };
+    assert!(matches!(di.name, IndexNameSpec::Literal(ref n) if n == "my_index"));
+    assert!(!di.if_exists);
+}
+
+#[test]
+fn parse_drop_index_if_exists() {
+    let doc = parse_query("DROP INDEX my_index IF EXISTS").unwrap();
+    let Statement::Schema(SchemaCommand::DropIndex(di)) = doc.statement else {
+        panic!("expected drop index");
+    };
+    assert!(di.if_exists);
+}
