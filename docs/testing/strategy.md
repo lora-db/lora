@@ -2,15 +2,18 @@
 
 ## Test suite summary
 
-**1698 passing tests, 0 failing, 58 ignored** across the workspace (as of the most recent `cargo test --workspace` run).
+The workspace has Rust unit/integration tests, binding tests, server tests, and
+Criterion benches. Run `cargo test --workspace` before publishing exact counts;
+this file tracks where coverage lives rather than freezing a count that changes
+on nearly every feature branch.
 
 ## Test locations
 
 | Crate | Test type | Location | What it covers |
 |-------|-----------|----------|---------------|
-| `lora-store` | Unit tests | `src/memory.rs` (`#[cfg(test)]`) | Node / relationship CRUD, label normalization, adjacency, property mutation, delete semantics, schema helpers |
+| `lora-store` | Unit tests | `src/memory/` (`#[cfg(test)]`) | Node / relationship CRUD, label normalization, adjacency, property mutation, delete semantics, index catalog helpers |
 | `lora-analyzer` | Unit tests | `src/analyzer.rs` (`#[cfg(test)]`) | Semantic validation (for example, unknown rel type in MATCH vs CREATE) |
-| `lora-parser` | Unit tests | `tests/parser.rs` *(plus the file in lora-database)* | Grammar rules: match, where, return, create, delete, set, remove, merge, unwind, union, call, with, case, literals, parameters, relationships, ranges, star, order / skip / limit, string escapes, operators |
+| `lora-parser` | Unit tests | `tests/parser.rs` *(plus parser module tests)* | Grammar rules: match, where, return, create, delete, set, remove, merge, unwind, union, call, with, schema/index DDL, case, literals, parameters, relationships, ranges, star, order / skip / limit, string escapes, operators |
 | `lora-database` | Integration tests | `tests/*.rs` | Full pipeline (parse → analyze → compile → execute) for all Cypher features, plus snapshot save / load / format-version compatibility |
 | `lora-server` | HTTP tests | `tests/{http,admin}.rs` | Axum routing, health, query endpoint, parse-error response, create-then-match flow, opt-in admin snapshot endpoints |
 | `lora-go` | Go tests | `crates/bindings/lora-go/*_test.go` | cgo round-trip over `lora-ffi`, execute + params, typed value shapes, error codes, context cancellation semantics. CI: `.github/workflows/lora-go.yml` (`go vet` + `go test -race` + `go run ./examples/basic`) |
@@ -30,6 +33,8 @@
 | `merge.rs` | `MERGE` node / relationship, `ON MATCH SET`, `ON CREATE SET`, idempotency |
 | `ordering.rs` | `ORDER BY` asc / desc, multi-key sort, null ordering, computed expressions |
 | `parameters.rs` | Named / numeric parameters, all value types, parameters in WHERE / CREATE / RETURN |
+| `schema.rs` | `CREATE INDEX`, `DROP INDEX`, `SHOW INDEXES`, `IF [NOT] EXISTS`, conflict errors, parameterized index names |
+| `index_acceleration.rs` | Optimizer rewrites and result correctness for node/relationship RANGE, TEXT, and POINT index scans |
 | `paths.rs` | Variable-length traversal, fixed / unbounded ranges, zero-hop, direction, cycles, chains, diamonds, fan patterns, `shortestPath`, `allShortestPaths` |
 | `projection.rs` | `RETURN` expressions, aliases, star, distinct, literals, computed columns, map projection |
 | `temporal.rs` | `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration` — construction, component access, comparison, arithmetic |
@@ -39,7 +44,8 @@
 | `update.rs` | `SET` property / label / replace / merge, `REMOVE` property / label, `DELETE`, `DETACH DELETE` |
 | `where_clause.rs` | Comparison, boolean, string predicates, null checks, `IN`, regex, list predicates, arithmetic, relationship properties |
 | `with.rs` | Variable piping, renaming, filtering, aggregation, star, ordering, pagination |
-| `snapshot.rs` | Snapshot round-trip, atomic rename + `.tmp` cleanup, format-version gating, checksum failure, `MutationRecorder` replay shape |
+| `snapshot.rs` | Snapshot round-trip, atomic rename + `.tmp` cleanup, format-version gating, checksum failure, catalog trailer, `MutationRecorder` replay shape |
+| `wal.rs` | WAL recovery, sync/checkpoint behavior, catalog DDL replay |
 | `seeds.rs` | Shared seed-graph builders (social, org, transport, knowledge, …) |
 | `test_helpers.rs` | `TestDb` helper with `run` / `assert` / `column` / `scalar` utilities |
 | `advanced_queries.rs` | Complex multi-clause queries and forward-looking features (most are `#[ignore]`) |
@@ -58,7 +64,7 @@ All ignored tests carry an explicit reason via `#[ignore = "..."]`. Categories:
 
 | Reason | Count | Category |
 |--------|-------|----------|
-| `pending implementation` | ~45 | Forward-looking: `CALL { … }` subqueries, `FOREACH`, DDL, some pattern / aggregation edge cases |
+| `pending implementation` | ~45 | Forward-looking: `CALL { … }` subqueries, `FOREACH`, constraints, some pattern / aggregation edge cases |
 | `stored procedures: CALL db.labels() not yet implemented` | 1 | Procedures |
 | `FOREACH clause not yet in grammar` | 1 | Clause |
 | `temporal types: date/time functions not yet implemented` | 2 | Historical — most temporal tests now pass |
@@ -117,10 +123,14 @@ Located under `crates/lora-database/benches/`:
 
 | File | Focus |
 |------|-------|
-| `engine.rs` | Core engine: MATCH, traversal, filtering, aggregation, ordering, writes, functions, realistic workloads |
+| `query_implementations.rs` | Query feature coverage aligned with integration tests: parser, explain/profile, MATCH, paths, filtering, projection, ordering, aggregation, WITH, UNION, UNWIND, writes, expressions, functions, typed values, and advanced query shapes |
+| `index_acceleration.rs` | Before/after comparisons for RANGE/TEXT index rewrites on node and relationship predicates |
 | `scale.rs` | Scalability across tiny / small / medium graphs |
-| `advanced.rs` | Complex queries: joins, sub-patterns, deeply nested paths |
-| `temporal_spatial.rs` | Temporal and spatial type operations |
+| `realistic.rs` | Domain-shaped workloads that combine multiple operators |
+| `wal.rs` | Durability and recovery overhead |
+| `concurrent.rs` | Concurrent read/write workload behavior |
+| `concurrency_guard.rs` | Focused concurrency guardrail suite |
+| `engine.rs`, `advanced.rs`, `temporal_spatial.rs` | Older deep-dive suites retained for historical comparison; prefer `query_implementations.rs` for new query-feature coverage |
 | `perf_smoke.rs` | 4-bench CI canary for ≥3× regressions — see [perf-smoke docs](../performance/perf-smoke.md) |
 | `fixtures.rs` | Shared graph patterns (chains, social, org, dependency) |
 
@@ -142,7 +152,7 @@ authoritative performance tooling.
 
 ## Recommended testing improvements
 
-1. **Optimizer tests** — verify plan transformations (filter push-down has no dedicated test)
+1. **Optimizer tests** — continue expanding plan-transformation coverage beyond the index acceleration suite
 2. **Concurrency tests** — exercise store lock behavior under parallel requests
 3. **Property-based testing** — generate random Cypher queries to stress the parser / executor
 4. **Property-based snapshot round-trips** — generate random graphs, save, load, assert structural equality

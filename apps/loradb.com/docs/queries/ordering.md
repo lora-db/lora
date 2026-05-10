@@ -305,9 +305,9 @@ Returns zero rows — never an error.
 
 - `ORDER BY` sorts the full projected result set in memory. Combine with
   [`LIMIT`](./ordering) when the input is large.
-- There are no user-managed or sorted property indexes (see
-  [Limitations](../limitations#storage)), so `ORDER BY n.prop` sorts
-  the matched rows in memory rather than walking a pre-sorted index.
+- `ORDER BY n.prop` sorts the matched rows in memory. RANGE indexes can
+  narrow predicates before the sort, but the current engine does not walk
+  an index in sorted order to satisfy `ORDER BY` directly.
 - Pair `LIMIT` with a stable key (like an id) so re-running the same
   query yields the same rows.
 

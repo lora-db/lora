@@ -658,9 +658,9 @@ ORDER BY lat
 
 #### Explanation
 
-LoraDB has no `point.withinBBox()` — compose the four bounds
-explicitly with `>=` / `<=`. `BETWEEN` is also unsupported. See
-[Limitations](./limitations#operators-and-expressions).
+Use `point.withinBBox()` for same-SRID bounding boxes. Add a POINT
+index for hot location filters, and keep the component-level `>=` /
+`<=` form only when you need custom fallback logic.
 
 #### Variations
 

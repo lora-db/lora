@@ -42,8 +42,8 @@ Notes:
 
 Snapshots (see [../operations/snapshots.md](../operations/snapshots.md)) are
 encoded through the `lora-snapshot` columnar codec. The envelope magic is
-`LORACOL1`; the manifest is bincode-encoded, the body uses the snapshot crate's
-body format, and the envelope is protected by a BLAKE3 checksum. The value model
+`LORACOL1`; the manifest uses the snapshot crate's explicit binary encoding,
+the body uses the snapshot crate's body format, and the envelope is protected by a BLAKE3 checksum. The value model
 is still a **wire-format contract**: any change to stored records or
 `PropertyValue` variants must be reflected in the snapshot body format and
 backward-compatibility plan.
@@ -133,12 +133,20 @@ Maintained by `InMemoryGraph`:
 | Outgoing adjacency | `Vec<Vec<RelationshipId>>` | Right / undirected expand |
 | Incoming adjacency | `Vec<Vec<RelationshipId>>` | Left / undirected expand |
 | Property indexes | Lazy exact-match registry | Equality property lookup for indexable values |
+| Index catalog | `IndexCatalog` | User-visible RANGE/TEXT/POINT/LOOKUP definitions |
+| Sorted property indexes | Catalog-backed sorted scopes | Range predicates on declared RANGE indexes |
+| Text indexes | Trigram candidate registry | `STARTS WITH`, `CONTAINS`, `ENDS WITH` predicates |
+| Point indexes | Grid-bucket spatial registry | `point.withinBBox`, radius predicates |
 
-The property index is internal and exact-match only. It covers `null`,
-booleans, integers, finite floats, strings, binary values, and nested lists/maps
-made only from indexable values. Temporal, spatial, vector, and `NaN` values
-fall back to scans. There is no uniqueness constraint, composite index, range
-index, full-text index, vector index, or Cypher DDL for index management.
+The lazy property index covers `null`, booleans, integers, finite floats,
+strings, binary values, and nested lists/maps made only from indexable values.
+Temporal values, vectors, and `NaN` values fall back to scans. Spatial points
+use the catalog-backed POINT registry when a POINT index exists.
+
+Explicit index DDL is intentionally performance-oriented rather than
+schema-enforcing. RANGE, TEXT, POINT, and LOOKUP definitions are cataloged and
+visible through `SHOW INDEXES`; uniqueness constraints, vector/ANN indexes, and
+full-text scoring are not implemented.
 
 ## Spatial points
 

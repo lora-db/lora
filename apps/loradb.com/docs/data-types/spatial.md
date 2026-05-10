@@ -114,13 +114,13 @@ LIMIT 5
 
 ### Filter by bounding box
 
-There's no `withinBBox`; compose with component access. LoraDB doesn't
-support the `BETWEEN` keyword — use explicit `>=` / `<=`:
-
 ```cypher
 MATCH (c:City)
-WHERE c.location.latitude  >= 50 AND c.location.latitude  <= 55
-  AND c.location.longitude >=  3 AND c.location.longitude <=  7
+WHERE point.withinBBox(
+  c.location,
+  point({longitude: 3, latitude: 50}),
+  point({longitude: 7, latitude: 55})
+)
 RETURN c
 ```
 
@@ -211,8 +211,8 @@ RETURN c
 ORDER BY metres
 ```
 
-LoraDB has no `BETWEEN` keyword — use explicit `>=` / `<=`. See
-[Limitations → Operators](../limitations#operators-and-expressions).
+For hot spatial predicates, add a POINT index on the top-level point
+property. See [Queries → Indexes](../queries/indexes).
 
 ## Edge cases
 
@@ -259,8 +259,8 @@ between computed points — use `distance(a, b) < epsilon` instead.
 
 - **WGS-84 3D `distance` ignores `height`** — surface great-circle only.
 - **Cross-SRID `distance`** returns `null` (no CRS transforms).
-- **No `withinBBox` / WKT I/O** — build those with component access or
-  in the host language.
+- **No WKT I/O** — parse WKT host-side. Use `point.withinBBox` for
+  same-SRID bounding-box predicates.
 - **No custom SRIDs** — only the four listed above.
 - **`BETWEEN`** keyword is not supported — use `>=` / `<=`.
 

@@ -17,6 +17,7 @@ storage, [parameters](../queries/parameters), and results.
 |---|---|
 | Construct a point | [<CypherCode code="point({…})" />](#constructors) |
 | Distance between two points | [<CypherCode code="distance(a, b)" />](#distance) |
+| Bounding-box test | [<CypherCode code="point.withinBBox(p, ll, ur)" />](#pointwithinbbox) |
 | Access components | <CypherCode code="p.x" />, <CypherCode code="p.y" />, <CypherCode code="p.z" />, <CypherCode code="p.latitude" />, <CypherCode code="p.longitude" />, <CypherCode code="p.height" /> |
 | SRID / CRS metadata | <CypherCode code="p.srid" />, <CypherCode code="p.crs" /> |
 | Filter by radius | [<CypherCode code="distance(p, centre) < r" />](#storing-points) |
@@ -94,6 +95,33 @@ RETURN distance(
 `distance` on points with different SRIDs returns `null`. That covers
 Cartesian-vs-geographic, 2D-vs-3D mismatches, and any custom SRID.
 
+## point.withinBBox
+
+`point.withinBBox(p, lowerLeft, upperRight)` returns `true` when `p`
+falls inside the closed bounding box formed by the two corner points.
+All three points must share an SRID. For 3D points, all three must carry
+the third coordinate; mixed 2D/3D inputs return `null`.
+
+```cypher
+MATCH (v:Venue)
+WHERE point.withinBBox(
+  v.location,
+  point({longitude: 4.7, latitude: 52.2}),
+  point({longitude: 5.1, latitude: 52.5})
+)
+RETURN v
+```
+
+POINT indexes can accelerate bounding-box and radius predicates when
+the query is scoped to a matching label or relationship type:
+
+```cypher
+CREATE POINT INDEX venue_location FOR (v:Venue) ON (v.location)
+MATCH (v:Venue)
+WHERE point.withinBBox(v.location, $southwest, $northeast)
+RETURN v
+```
+
 ## Component access
 
 | Accessor | 2D Cart | 3D Cart | WGS-84 2D | WGS-84 3D |
@@ -148,13 +176,13 @@ RETURN v
 
 ### Bounding-box filter
 
-There's no `withinBBox`; compose with component access. LoraDB doesn't
-support the `BETWEEN` keyword — use explicit `>=` / `<=`:
-
 ```cypher
 MATCH (c:City)
-WHERE c.location.latitude  >= 50 AND c.location.latitude  <= 55
-  AND c.location.longitude >=  3 AND c.location.longitude <=  7
+WHERE point.withinBBox(
+  c.location,
+  point({longitude: 3, latitude: 50}),
+  point({longitude: 7, latitude: 55})
+)
 RETURN c
 ```
 
@@ -312,7 +340,8 @@ used with `distance`.
   distance is not implemented.
 - **Cross-SRID distance** returns `null`. There is no built-in CRS
   transformation.
-- **`point.withinBBox()`** is not implemented.
+- **No WKT I/O or CRS transforms.** Convert WKT host-side and keep all
+  compared points in the same SRID.
 - **`point.fromWKT()` / WKT output** is not implemented.
 - No custom SRIDs — only the four listed above.
 

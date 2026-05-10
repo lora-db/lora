@@ -40,6 +40,19 @@ WHERE p.tier IN ['gold', 'platinum']
 
 More: [WHERE](./where).
 
+## Indexes
+
+```cypher
+CREATE INDEX user_email FOR (u:User) ON (u.email)
+CREATE TEXT INDEX user_name FOR (u:User) ON (u.name)
+CREATE POINT INDEX place_location FOR (p:Place) ON (p.location)
+CREATE INDEX rel_since FOR ()-[r:FOLLOWS]-() ON (r.since)
+SHOW INDEXES
+DROP INDEX user_email IF EXISTS
+```
+
+More: [Indexes](./indexes).
+
 ## Project
 
 ```cypher

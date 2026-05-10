@@ -1,6 +1,10 @@
 ## Performance Benchmarks
 
-All numbers below come from `cargo bench` (Criterion) on the `engine`, `advanced`, `realistic`, and `scale` binaries under `crates/lora-database/benches/`. Run on Apple Silicon (`aarch64-apple-darwin`) in release mode on 2026-04-17. Throughput has been converted from Criterion's `Kelem/s` / `Melem/s` output into fully expanded numbers.
+The representative numbers below come from Criterion benchmark runs under
+`crates/lora-database/benches/`. They include older `engine`, `advanced`,
+`realistic`, `scale`, and `temporal_spatial` suites and should be read as a
+historical baseline. New query-feature work should add coverage to
+`query_implementations`; index work should use `index_acceleration`.
 
 > ⚙️ **Note** — These numbers characterise the single-process, in-memory core. They are single-query measurements and assume the whole graph fits in RAM. For distributed throughput, write-heavy concurrency, or multi-tenant isolation, see the [LoraDB managed platform](https://loradb.com).
 
@@ -12,6 +16,8 @@ cargo bench --bench advanced
 cargo bench --bench realistic
 cargo bench --bench scale
 cargo bench --bench temporal_spatial
+cargo bench -p lora-database --bench query_implementations
+cargo bench -p lora-database --bench index_acceleration
 ```
 
 For CI/release snapshots, the manual `benchmarks` workflow runs the full
@@ -372,7 +378,11 @@ One query per iteration; throughput reads as *queries per second*.
 ### Notes & caveats
 
 - **All benches are in-memory.** The live store is a slot-indexed `InMemoryGraph` published through `ArcSwap`. Numbers will not translate directly to a disk-backed engine — there is no buffer pool, and WAL/snapshot I/O is outside these query benches unless a benchmark opts into it explicitly.
-- **Partial indexes.** Equality lookups on indexable stored properties use the in-memory property index. Other predicates, string operators, temporal/spatial/vector values, and planner-selected filters still scan.
+- **Index coverage.** Equality lookups on indexable stored properties use the
+  in-memory property index. Declared RANGE/TEXT/POINT indexes can accelerate
+  matching node and relationship predicates. Regex, vector similarity, nested
+  map paths, non-indexed predicates, and sorted `ORDER BY` walks still scan or
+  sort candidate rows.
 - **Single-query measurements.** Benchmarks report one query at a time; they are not a measurement of concurrent read throughput.
 - **Microbenchmark vs. workload.** The *functions*, *parse_compile*, *temporal_creation*, and *spatial_creation* tables are microbenchmarks that stabilise in a few µs; they measure constant-factor cost of the evaluator and planner. The *realistic*, *recommendation*, *scale_social*, and *shortest_path* tables are representative whole-query workloads.
 - **Variable-length path hop cap.** Unbounded `*` paths are capped at `MAX_VAR_LEN_HOPS = 100`; the `varlen_unbounded_chain/500` number reflects that cap.

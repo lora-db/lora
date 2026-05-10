@@ -14,8 +14,8 @@ HTTP Request
 2. ANALYZE       lora-analyzer   Document -> ResolvedQuery
     |                              (validates against live graph state)
     v
-3. COMPILE       lora-compiler   ResolvedQuery -> LogicalPlan -> PhysicalPlan
-    |                              (includes optimizer pass)
+3. COMPILE       lora-compiler   ResolvedQuery + GraphStats -> LogicalPlan -> PhysicalPlan
+    |                              (includes optimizer pass and index selection)
     v
 4. EXECUTE       lora-executor     PhysicalPlan -> Vec<Row>
     |                              (reads/writes InMemoryGraph)
@@ -94,13 +94,23 @@ Inline property maps (for example `(n:User {id: 1})`) are converted into `Filter
 Current rules:
 
 - **Filter push-down**: move `Filter` below `Projection` when safe (not `DISTINCT`, not star projection)
-- Additional rule slots exist (`remove_redundant_limit`) as placeholders
+- **Catalog-backed index selection**: rewrite eligible `Filter(NodeScan)` and
+  relationship scan sites to RANGE/TEXT/POINT physical scans when an online
+  matching catalog entry exists and the cost model prefers it over the base
+  scan. Equality predicates can still use the existing property scan path.
+- **Top-k sort annotation**: mark `ORDER BY ... LIMIT k` shapes so the
+  executor can use the bounded sort implementation.
+- **Limit cleanup**: remove redundant limit nodes where planning produced no
+  effective limit.
 
 #### Physical lowering
 
 Maps logical operators to physical operators with minor specialization:
 
 - `NodeScan` with a label becomes `NodeByLabelScan`
+- Indexed predicates can lower to `NodeByPropertyScan`,
+  `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan`,
+  `RelByPropertyRangeScan`, `RelByTextScan`, or `RelByPointScan`
 - `Aggregation` becomes `HashAggregation`
 - `PathBuild` carries a `shortest_path_all: Option<bool>` flag: `None` = normal path, `Some(false)` = `shortestPath()`, `Some(true)` = `allShortestPaths()`
 
@@ -113,7 +123,12 @@ Maps logical operators to physical operators with minor specialization:
 The executor uses a **Volcano-style pull model** — each operator is evaluated recursively from the root. The `execute_node` method dispatches on the `PhysicalOp` variant.
 
 **Physical operators** (in `lora-compiler/src/physical.rs`):
-- `Argument`, `NodeScan`, `NodeByLabelScan`, `Expand` (variable-length aware), `Filter`, `Projection`, `Unwind`, `HashAggregation`, `Sort`, `Limit`, `Create`, `Merge`, `Delete`, `Set`, `Remove`, `OptionalMatch`, `PathBuild`
+- `Argument`, `NodeScan`, `NodeByLabelScan`, `NodeByPropertyScan`,
+  `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan`,
+  `RelByPropertyRangeScan`, `RelByTextScan`, `RelByPointScan`, `Expand`
+  (variable-length aware), `Filter`, `Projection`, `Unwind`,
+  `HashAggregation`, `Sort`, `Limit`, `Create`, `Merge`, `Delete`, `Set`,
+  `Remove`, `OptionalMatch`, `PathBuild`
 
 Two executor structs exist:
 

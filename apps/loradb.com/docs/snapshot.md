@@ -466,19 +466,21 @@ version. The previous `LORASNAP` legacy format has been retired.
 
 ```
 [0..8)     magic         "LORACOL1"
-[8..12)    format        u32 — envelope format, currently 1
+[8..12)    format        u32 — envelope format, currently 2
 [12..16)   manifest_len  u32
 [16..24)   body_len      u64
 [24..56)   checksum      BLAKE3(manifest || body)
-[56..)     manifest      bincode-serialized manifest
-[...end)   body          column-oriented graph payload
+[56..)     manifest      explicit binary manifest
+[...end)   body          column-oriented graph payload plus index catalog trailer
 ```
 
 The manifest carries `walLsn`, node and relationship counts,
 compression, encryption metadata, and the body length. The body stores
 nodes, labels, relationships, relationship types, and properties in
-separate columns, then applies compression and authenticated
-encryption if requested.
+separate columns. The current body format also stores explicitly declared
+indexes so `SHOW INDEXES` state survives snapshot save/load. Older
+catalog-free `LORACOL1` bodies still load with an empty index list. The body
+then applies compression and authenticated encryption if requested.
 
 Readers validate the magic bytes, the format version, total length,
 and BLAKE3 checksum before decoding the payload. A file that fails any

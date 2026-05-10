@@ -286,20 +286,21 @@ CREATE (:Item {stock: '5'})    -- legal but will surprise you
 Use [`valueType`](../functions/overview#type-conversion-and-checking)
 to detect at query time; or always normalise on write.
 
-### No indexes
+### Indexes and nested values
 
-Property filters without a label are `O(n)` full scans. Always scope
-to a label when you can:
+Property filters without a label are broad scans. Always scope to a
+label when you can, and add an explicit index for hot top-level
+properties:
 
 ```cypher
--- Good
+CREATE INDEX user_email FOR (u:User) ON (u.email)
 MATCH (u:User {email: $email}) RETURN u
 
--- Scans every node
+-- Broad scan
 MATCH ({email: $email}) RETURN
 ```
 
-See [Limitations → Storage](../limitations#storage).
+See [Queries → Indexes](../queries/indexes).
 
 ### Deep property paths
 
@@ -310,8 +311,9 @@ MATCH (c:City)
 RETURN c.location.latitude, c.tags[0]
 ```
 
-But nothing about the inner map is indexed. For frequent inner-key
-filters, promote to a dedicated property at write time.
+But explicit indexes target top-level entity properties, not inner map
+paths. For frequent inner-key filters, promote to a dedicated property
+at write time.
 
 ## Notes
 

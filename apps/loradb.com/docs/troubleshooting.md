@@ -433,9 +433,10 @@ Use `bigint` parameters or string-encoded ids for large values. See
 
 ### Query is slow on a big graph
 
-- Internal exact-match property indexes help indexable equality predicates, but
-  there is no user-managed range/sorted/vector index. Scope to a label
-  (`MATCH (n:L {id: 1})`) to narrow candidate rows.
+- Explicit RANGE, TEXT, and POINT indexes help common property, string, and
+  point predicates when the query is scoped to the matching label or
+  relationship type. Scope to a label (`MATCH (n:L {id: 1})`) and add an
+  index for hot predicates. Vector similarity remains exhaustive.
 - Unbounded variable-length traversals explode fast. Cap with a max
   depth: `[:R*1..6]`.
 - `ORDER BY` on a huge unbounded result requires a full sort. Pair

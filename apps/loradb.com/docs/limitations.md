@@ -29,15 +29,15 @@ in the internal documentation.
 
 | Theme | Biggest gaps |
 |---|---|
-| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; internal exact-match property indexes only; no constraints |
+| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; explicit RANGE/TEXT/POINT/LOOKUP indexes exist; no constraints or vector/ANN indexes |
 | Concurrency | Snapshot reads can overlap; write commits and explicit read-write transactions serialize; timeout coverage is API-dependent |
-| Clauses | No `CALL`, `FOREACH`, `LOAD CSV`, DDL |
+| Clauses | No `CALL`, `FOREACH`, `LOAD CSV`, constraints |
 | Patterns | No quantified path patterns |
 | Operators | No `BETWEEN`; cross-type comparisons return `null` |
 | Aggregates | No `GROUP BY` / `HAVING` keywords |
 | Functions | No APOC; ASCII-only case ops |
 | Parameters | No HTTP-level params; no parse-time type check |
-| Spatial | No WKT I/O, no CRS transforms, no bbox predicate |
+| Spatial | No WKT I/O, no CRS transforms; `point.withinBBox` exists for same-SRID boxes |
 | Vectors | No indexes / ANN; no embedding generation; no list-of-vectors properties |
 
 ## Clauses
@@ -47,7 +47,7 @@ in the internal documentation.
 | `CALL` (standalone) | Not supported — parses, analyzer rejects with `UnsupportedFeature` |
 | `CALL … YIELD` | Not supported — parses, analyzer rejects with `UnsupportedFeature` |
 | `FOREACH` | Not supported |
-| `CREATE INDEX` / `DROP INDEX` | Not supported |
+| `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | Supported for RANGE, TEXT, POINT, and LOOKUP indexes; see [Indexes](./queries/indexes) |
 | `CREATE CONSTRAINT` / `DROP CONSTRAINT` | Not supported |
 | `LOAD CSV` | Not supported |
 | `USE <graph>` (multi-database) | Not supported |
@@ -101,7 +101,7 @@ in the internal documentation.
 | Feature | Status |
 |---|---|
 | WGS-84 3D [`distance`](./functions/spatial#distance) honouring `height` | Not yet supported — computes surface great-circle only |
-| `point.withinBBox()` | Not yet supported |
+| `point.withinBBox()` | Supported for same-SRID 2D/3D bounding boxes; mixed dimensionality returns `null` |
 | `point.fromWKT()` / WKT output | Not yet supported |
 | CRS transformation between SRIDs | Not yet supported — cross-SRID `distance` returns `null` |
 | Custom SRIDs | Not supported — only `7203`, `9157`, `4326`, `4979` |
@@ -133,7 +133,7 @@ in the internal documentation.
 | WAL controls are not uniform across bindings | Rust and `lora-server` expose the full [WAL](./wal) surface. Node exposes archive/raw WAL opens plus sync-mode control. Python, Go, and Ruby expose archive/raw WAL opens with managed snapshot options. WASM remains snapshot-only. |
 | Time-based checkpoint scheduler — not yet supported | Explicit WAL helpers can write managed snapshots after N committed transactions, and Rust / `lora-server` expose explicit checkpoints. Nothing schedules checkpoints by wall-clock time in the background for you. |
 | Uniqueness constraints — not supported | Duplicates can be created silently; enforce in application code or match before creating |
-| User-managed indexes — not supported | Internal lazy exact-match property indexes exist for indexable values, but there is no `CREATE INDEX`, composite, range, full-text, or vector index |
+| Index coverage is scoped | `CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `DROP INDEX`, and `SHOW INDEXES` exist. No uniqueness constraints, vector/ANN index, or full-text ranking surface yet. Composite RANGE indexes are cataloged, but current planner rewrites are single-property. |
 | Explicit transactions are surface-dependent | Rust and in-process bindings expose transaction APIs; HTTP has no multi-query transaction endpoint |
 | ID reuse — not supported | Deleting an entity does not free its `u64` id |
 
@@ -169,11 +169,11 @@ in the internal documentation.
 | `BETWEEN a AND b` | `x >= a AND x <= b` |
 | `HAVING` | [`WITH … WHERE`](./queries/return-with#having-style-filtering-with) |
 | `GROUP BY cols` | Non-aggregated columns in `RETURN` / `WITH` |
-| `CREATE INDEX ON :L(prop)` | Scope to a label in `MATCH (n:L {…})` |
+| `CREATE INDEX ON :L(prop)` | Use `CREATE INDEX name FOR (n:L) ON (n.prop)` |
 | `CONSTRAINT UNIQUE` | [`MERGE`](./queries/unwind-merge#merge) on the key + `SET` |
 | `LOAD CSV` | Parse on host, pass as `$rows`, [`UNWIND $rows`](./queries/unwind-merge#unwind) |
 | `CALL apoc.…` | Re-implement in the host language |
-| `point.withinBBox()` | Explicit `lat/lon` `>=` / `<=` |
+| `point.withinBBox()` | Use `point.withinBBox(p, lowerLeft, upperRight)` with matching SRIDs |
 | `point.fromWKT()` | Parse host-side, pass as a [point param](./functions/spatial#parameters) |
 | `GROUP BY year` | `RETURN e.at.year AS year, count(*)` |
 | `IF/THEN/ELSE` expressions | [`CASE … WHEN … THEN … END`](./queries/return-with#case-expressions) |
@@ -187,7 +187,7 @@ roadmap:
 
 - Stored procedures (`CALL` family)
 - `LOAD CSV`-based ingestion
-- Schema constraints / indexes at the DDL level
+- Schema constraints at the DDL level
 - Multi-database `USE`
 
 See [Why LoraDB](./why) for the project's intended direction.

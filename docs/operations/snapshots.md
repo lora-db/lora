@@ -14,17 +14,20 @@ recovery replays only the records past the fence.
 
 ```
 [0..8)    magic         "LORACOL1"
-[8..12)   format        u32 — envelope format, currently 1
+[8..12)   format        u32 — envelope format, currently 2
 [12..16)  manifest_len  u32
 [16..24)  body_len      u64
 [24..56)  checksum      BLAKE3 over manifest + body
-[56..)    manifest      bincode-serialized manifest
+[56..)    manifest      explicit binary manifest
 [...]     body          columnar SnapshotPayload body
 ```
 
 The manifest carries the snapshot format version, optional `wal_lsn`, node and
 relationship counts, compression mode, encryption metadata, and body length. The
 current body format version is tracked in `crates/lora-snapshot/src/format.rs`.
+Body format v3 appends the explicit index catalog trailer so snapshots preserve
+`CREATE INDEX` / `DROP INDEX` state. The reader still accepts v2 bodies, which
+load with an empty index catalog.
 
 `wal_lsn` marks a checkpoint produced by `Database::checkpoint_to`, managed
 snapshot checkpointing, or HTTP `POST /admin/checkpoint`. It carries the WAL's
@@ -58,7 +61,7 @@ All API surfaces return a `SnapshotMeta` describing the file:
 
 ```json
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "nodeCount": 1024,
   "relationshipCount": 4096,
   "walLsn": null

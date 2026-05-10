@@ -479,9 +479,11 @@ file does not define explicit index DDL. It only contains index-adjacent pieces:
 - `CONSTRAINT` and `UNIQUE` as pre-reserved words, not implemented statement
   rules in this grammar dump.
 
-So for ISO-shaped GQL schema work, indexes should initially be an implementation
-detail derived from graph data and graph type metadata, not a parsed GQL
-catalog statement.
+So for ISO-shaped GQL schema work, indexes should initially be treated as
+implementation metadata derived from graph data and graph type metadata. Current
+LoraDB also supports a non-standard, Cypher-shaped `CREATE INDEX` surface for
+performance-oriented index catalog entries; keep that path separate from ISO
+catalog grammar work.
 
 Current LoraDB already maintains useful physical indexes:
 
@@ -670,10 +672,11 @@ RETURN u.email AS email
 ORDER BY email
 ```
 
-### Non-Standard Index DDL Sketch
+### Non-Standard Index DDL
 
-The examples in this subsection are **not from `gql.yml`**. They are only a
-possible LoraDB extension if explicit index management becomes necessary.
+The examples in this subsection are **not from `gql.yml`**. LoraDB implements
+the non-unique forms as an engine-specific index catalog surface; uniqueness
+and constraint enforcement remain future work.
 
 ```gql
 CREATE INDEX user_email_index
@@ -911,8 +914,7 @@ RETURN p
 7. Derive label/type/property index policy from graph type metadata.
 8. Enforce `NOT NULL`, scalar property types, labels, and edge endpoints.
 9. Expand value type enforcement to lists, records, temporal values, and unions.
-10. Consider non-standard explicit index DDL only after automatic schema-backed
-    indexes are working.
+10. Keep non-standard explicit index DDL isolated from ISO schema catalog work.
 
 ## Recommended First Cut
 

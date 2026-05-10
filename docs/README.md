@@ -55,6 +55,7 @@ Architectural Decision Records for non-trivial design choices.
 ## Reference
 
 - [Cypher Support Matrix](reference/cypher-support-matrix.md) — machine-checkable feature-by-feature support status (source of truth; mirrored on the user docs as capability callouts)
+- User-facing index DDL reference: [`apps/loradb.com/docs/queries/indexes.md`](../apps/loradb.com/docs/queries/indexes.md)
 
 ---
 

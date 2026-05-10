@@ -686,7 +686,7 @@ curl -s http://127.0.0.1:4747/query \
 - **Ordering by a vector column is unspecified** — order by a scalar
   score instead.
 
-See also the [Cypher support matrix (§13a)](https://github.com/lora-db/lora/blob/main/docs/reference/cypher-support-matrix.md#13a-vector-types-and-functions)
+See also the [Cypher support matrix (§13b)](https://github.com/lora-db/lora/blob/main/docs/reference/cypher-support-matrix.md#13b-vector-types-and-functions)
 for the engine-side behaviour grid.
 
 ## See also

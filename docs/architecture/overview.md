@@ -61,9 +61,10 @@ Defines the Cypher grammar in PEG notation (pest) and lowers parse trees into th
 
 Defines the `GraphStorage` (read), `BorrowedGraphStorage`, `GraphCatalog`, and
 `GraphStorageMut` (write) traits and provides `InMemoryGraph`, a slot-indexed
-in-memory implementation with adjacency vectors, label/type indexes, and lazy
-exact-match property indexes. Also defines the binary, temporal, spatial, and
-vector value types (`LoraBinary`, `LoraDate`, `LoraTime`, `LoraLocalTime`,
+in-memory implementation with adjacency vectors, label/type indexes, lazy
+exact-match property indexes, and catalog-backed RANGE/TEXT/POINT/LOOKUP
+indexes. Also defines the binary, temporal, spatial, and vector value types
+(`LoraBinary`, `LoraDate`, `LoraTime`, `LoraLocalTime`,
 `LoraDateTime`, `LoraLocalDateTime`, `LoraDuration`, `LoraPoint`, `LoraVector`)
 shared between the store and the executor. Owns the `MutationEvent` /
 `MutationRecorder` surface that the WAL and archive layers build on.
@@ -73,14 +74,15 @@ shared between the store and the executor. Owns the `MutationEvent` /
 - `src/types/graph.rs` — `NodeRecord`, `RelationshipRecord`, identifiers
 - `src/types/property_value.rs` — `PropertyValue`
 - `src/types/binary/`, `src/types/temporal/`, `src/types/spatial/`, `src/types/vector/` — typed property values
-- `src/memory/` — `InMemoryGraph`, mutation implementation, property indexes
+- `src/memory/` — `InMemoryGraph`, mutation implementation, index catalog, property/text/point indexes
+- `src/codec.rs` — small store-owned binary codec shared by WAL and snapshots
 - `src/snapshot.rs` — `SnapshotPayload` bridge consumed by `lora-snapshot`
 - `src/mutation.rs` — `MutationEvent` enum, `MutationRecorder` trait
 
 ### lora-snapshot
 
 Columnar snapshot codec. Encodes full graph payloads into the current
-`LORACOL1` envelope with a bincode manifest, BLAKE3 checksum, optional gzip
+`LORACOL1` envelope with an explicit binary manifest, BLAKE3 checksum, optional gzip
 compression, and optional ChaCha20-Poly1305 encryption.
 
 **Key files**:

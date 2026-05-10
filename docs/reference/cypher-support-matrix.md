@@ -39,7 +39,8 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `CALL` (standalone) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `CALL ... YIELD` (in-query) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `FOREACH` | **Not yet implemented** | Not in grammar |
-| `CREATE INDEX` / `CREATE CONSTRAINT` | **Not yet implemented** | Not in grammar |
+| `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | **Supported** | RANGE/TEXT/POINT/LOOKUP indexes for nodes and relationships |
+| `CREATE CONSTRAINT` | **Not yet implemented** | Not in grammar |
 | `LOAD CSV` | **Not yet implemented** | Not in grammar |
 | `USE <graph>` | **Not yet implemented** | Not in grammar |
 
@@ -244,8 +245,29 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | `distance(a, b)` | **Supported** | Euclidean for Cartesian, Haversine for geographic (Earth radius 6,371 km) |
 | Component access: `p.x`, `p.y`, `p.latitude`, `p.longitude`, `p.srid` | **Supported** | Via property access on Point |
 | 3D points (Cartesian SRID 9157, WGS-84 SRID 4979) | **Supported** | `z` / `height` exposed via property access; `distance()` on WGS-84-3D ignores height and falls back to great-circle |
+| `point.withinBBox(p, ll, ur)` | **Supported** | Same-SRID closed bounding box; mixed 2D/3D inputs return `null` |
 
-## 13a. Vector types and functions
+## 13a. Index DDL and optimizer rewrites
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `CREATE INDEX name FOR (n:Label) ON (n.prop)` | **Supported** | RANGE index; name may be omitted or supplied by string parameter |
+| `CREATE INDEX name FOR ()-[r:TYPE]-() ON (r.prop)` | **Supported** | Relationship RANGE index |
+| `CREATE TEXT INDEX` | **Supported** | Node and relationship scopes; accelerates `STARTS WITH`, `CONTAINS`, `ENDS WITH` |
+| `CREATE POINT INDEX` | **Supported** | Node and relationship scopes; accelerates `point.withinBBox` and `point.distance(...) <= radius` candidates |
+| `CREATE LOOKUP INDEX ... ON EACH labels(n)` | **Supported** | Catalog-visible token index for labels |
+| `CREATE LOOKUP INDEX ... ON EACH type(r)` | **Supported** | Catalog-visible token index for relationship types |
+| `IF NOT EXISTS` | **Supported** | Duplicate name or equivalent schema becomes a no-op |
+| `DROP INDEX name [IF EXISTS]` | **Supported** | Missing index without `IF EXISTS` returns `42N51` |
+| `SHOW INDEXES` / `SHOW INDEX` | **Supported** | Returns name, type, entityType, labelsOrTypes, properties, state, populationPercent |
+| Duplicate index name | **Supported error** | Returns GQLSTATUS-shaped `22N71` |
+| Equivalent index under another name | **Supported error** | Returns GQLSTATUS-shaped `22N70` |
+| Composite RANGE index catalog entries | **Partial** | Accepted and shown; current optimizer rewrites are single-property |
+| Unique constraints / unique indexes | **Not yet implemented** | No constraint-enforcing DDL |
+| Vector / ANN index | **Not yet implemented** | Exhaustive kNN only |
+| Full-text scoring | **Not yet implemented** | TEXT indexes accelerate string predicates but do not expose ranking |
+
+## 13b. Vector types and functions
 
 ### Coordinate types
 
@@ -310,7 +332,7 @@ Alias matching is case-insensitive and collapses runs of whitespace.
 | Path | **Supported** | Alternating nodes and relationships |
 | Date / Time / LocalTime / DateTime / LocalDateTime / Duration | **Supported** | See §12 |
 | Point (Cartesian, WGS-84) | **Supported** | See §13 |
-| Vector (typed coordinates, dim ≤ 4096) | **Supported** | See §13a |
+| Vector (typed coordinates, dim <= 4096) | **Supported** | See §13b |
 
 ## 15. Parameter binding
 
@@ -398,7 +420,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | `CALL` (standalone and YIELD) | Clause | Analyzer rejects with `UnsupportedFeature` |
 | `EXPLAIN` / `PROFILE` (as Cypher keywords) | Clause | Not in grammar — exposed instead as the `db.explain()` / `db.profile()` API methods so callers must explicitly request plan-only or instrumented execution. |
 | `FOREACH` | Clause | Not in grammar |
-| `CREATE INDEX` / `CREATE CONSTRAINT` | DDL | Not in grammar |
+| `CREATE CONSTRAINT` | DDL | Not in grammar |
 | `LOAD CSV` | DDL | Not in grammar |
 | `USE <graph>` (multi-database) | Clause | Not in grammar |
 | Quantified path patterns | Pattern | Future openCypher syntax |
@@ -408,7 +430,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | Parameter type checking at parse time | Parameters | |
 | Parameters over HTTP | Transport | In-process bindings only |
 | APOC-style utilities | Functions | No compatibility layer |
-| DDL/user-managed indexes and constraints | Storage | Internal exact-match property indexes exist, but no Cypher DDL |
+| Uniqueness constraints | Storage | Index DDL exists, but no constraint-enforcing catalog entries |
 | Authentication / TLS | Server | See [`../operations/security.md`](../operations/security.md) |
 
 ---

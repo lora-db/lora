@@ -25,6 +25,10 @@ InMemoryGraph
 ├── nodes_by_label:         BTreeMap<String, Vec<NodeId>>
 ├── relationships_by_type:  BTreeMap<String, Vec<RelationshipId>>
 ├── indexes:                RwLock<PropertyIndexRegistry>
+├── index_catalog:          RwLock<IndexCatalog>
+├── text_indexes:           RwLock<TextIndexRegistry>
+├── sorted_indexes:         RwLock<SortedPropertyIndexRegistry>
+├── point_indexes:          RwLock<PointIndexRegistry>
 ├── next_node_id:           u64
 ├── next_rel_id:            u64
 ├── live_node_count:        usize
@@ -105,7 +109,7 @@ deterministic key ordering through `BTreeMap`; the ID lists may contain gaps onl
 when the corresponding records have been deleted and filtered out by the read
 helpers.
 
-### Property indexes
+### Property and catalog-backed indexes
 
 `InMemoryGraph` has lazy exact-match property indexes for nodes and
 relationships. A call to `find_nodes_by_property` or
@@ -127,8 +131,18 @@ Scan fallback:
 - `NaN` floats
 - nested lists/maps containing any non-indexable value
 
-The index is internal only. There is no Cypher DDL such as `CREATE INDEX`, no
-composite/range/full-text/vector index, and no user-visible index catalog.
+The explicit index catalog is separate from the lazy hash registry. `CREATE
+INDEX` / `CREATE RANGE INDEX` records a RANGE definition and activates the
+matching equality and sorted-property scopes. `CREATE TEXT INDEX` activates a
+trigram candidate index. `CREATE POINT INDEX` activates a grid-bucket spatial
+index. `CREATE LOOKUP INDEX` is catalog-only because label and relationship
+type token indexes are always maintained.
+
+Catalog entries are user-visible through `SHOW INDEXES`, participate in the
+optimizer's cost model, and are durable through snapshots and WAL/archive
+mutation events. Dropping a TEXT/RANGE/POINT catalog entry releases its
+catalog-backed scope; the lazy equality buckets may remain available for
+ordinary exact-match lookups.
 
 ### Adjacency indexes
 
@@ -232,8 +246,10 @@ the executor uses `with_node` / `with_relationship` closures where possible.
   storage engine.
 - **Tombstones, no compaction** — deleted IDs leave gaps in the slot vectors.
 - **No uniqueness constraints** — duplicate labels/properties are allowed.
-- **Internal exact-match property indexes only** — no DDL, composite, range,
-  full-text, or vector indexes.
+- **Scoped index surface** — RANGE, TEXT, POINT, and LOOKUP index DDL exists;
+  there are no uniqueness constraints, vector/ANN indexes, or text-ranking
+  operators yet. Composite RANGE definitions are cataloged, but current
+  optimizer rewrites target one property at a time.
 - **Clone compatibility APIs** — bulk read helpers allocate owned records even
   though executor hot paths avoid many clones.
 - **Vectors cannot be stored inside list properties** — a vector can be a direct
@@ -243,8 +259,8 @@ the executor uses `with_node` / `with_relationship` closures where possible.
 ## Durability
 
 Snapshots are encoded by the `lora-snapshot` columnar codec. The current file
-magic is `LORACOL1`; the envelope contains a bincode manifest, a BLAKE3 checksum,
-and an optional compressed/encrypted body. `lora-database` writes snapshots via
+magic is `LORACOL1`; the envelope contains an explicit binary manifest, a
+BLAKE3 checksum, and an optional compressed/encrypted body. `lora-database` writes snapshots via
 an atomic `<path>.tmp` + rename protocol and publishes loaded snapshots by
 swapping the database's `ArcSwap` store pointer.
 

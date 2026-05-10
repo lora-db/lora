@@ -50,8 +50,12 @@ bulk compatibility APIs still return owned records.
 
 ### Property index coverage
 
-`InMemoryGraph` now keeps hash-based secondary indexes for equality lookups on
-node and relationship properties:
+`InMemoryGraph` keeps two layers of secondary indexes:
+
+- lazy hash indexes for exact equality lookups on indexable node and
+  relationship properties;
+- catalog-backed RANGE/TEXT/POINT indexes declared through `CREATE INDEX`,
+  `CREATE TEXT INDEX`, and `CREATE POINT INDEX`.
 
 ```cypher
 MATCH (n:User {email: 'alice@example.com'}) RETURN n
@@ -63,11 +67,14 @@ intersect with the label / relationship-type index when one is present. The
 index currently covers `null`, booleans, integers, non-NaN floats, strings, and
 nested lists/maps that contain only those values.
 
-Temporal, spatial, vector, and NaN float values deliberately fall back to the
-old scan path until the storage crate has a stable hash representation that
-matches their equality semantics.
+Temporal values, vector values, regex predicates, nested map paths, and NaN
+float values deliberately fall back to scans. Spatial predicates can use POINT
+indexes when the point is stored as a top-level property and the query is
+scoped to the indexed label or relationship type.
 
-**Source**: `crates/lora-store/src/memory.rs` (`InMemoryGraph::find_nodes_by_property`, `InMemoryGraph::find_relationships_by_property`)
+**Source**: `crates/lora-store/src/memory/` (`impls.rs`,
+`property_index.rs`, `sorted_property_index.rs`, `text_index.rs`,
+`point_index.rs`)
 
 ### Partially streaming execution
 
@@ -143,7 +150,7 @@ panic = "abort"
 
 ## Query optimizer
 
-The optimizer currently implements one rule:
+The optimizer currently implements several local rewrite rules:
 
 ### Filter push-down
 
@@ -160,14 +167,30 @@ Conditions for push-down:
 
 **Source**: `crates/lora-compiler/src/optimizer.rs` (`push_filter_below_projection`)
 
+### Catalog-backed index selection
+
+For eligible scan/filter sites, the optimizer can replace the base scan with a
+specialized physical operator when an online catalog entry exists and the
+estimated cost beats the label/type scan:
+
+- `NodeByPropertyScan` / `NodeByPropertyRangeScan`
+- `NodeByTextScan`
+- `NodeByPointScan`
+- `RelByPropertyRangeScan`
+- `RelByTextScan`
+- `RelByPointScan`
+
+The original predicate remains above conservative TEXT/POINT candidate scans,
+so correctness does not depend on the secondary structure being exact.
+
 ### Not implemented
 
 | Optimization | Description |
 |-------------|-------------|
 | Join ordering | No cost-based optimization for multi-pattern queries |
-| Index selection | Equality lookups can use in-memory property indexes; the compiler still has no cost-based index selection |
 | Predicate decomposition | Compound `AND` predicates are not split for selective push-down |
 | Limit push-down | `LIMIT` is not pushed to scan operators |
+| Sorted-index ordering | RANGE indexes narrow filters, but `ORDER BY n.prop` still sorts rows in memory |
 | Redundant scan elimination | Rescanning the same label is not detected |
 | Short-circuit evaluation | Filters evaluate all predicates regardless |
 | Common subexpression elimination | Not implemented |
@@ -208,7 +231,7 @@ scalar and scalar-container properties.
 
 1. **Write publication windows** -- continue shrinking serialized commit/checkpoint/restore windows for write-heavy paths
 2. **Borrowing APIs** -- migrate more executor internals from owned `GraphStorage` helpers onto `with_node` / `with_relationship` and other borrowed hooks
-3. **Property indexes** -- extend the current hash indexes to temporal / spatial / vector values once canonical hash keys are available
+3. **Index coverage** -- add uniqueness constraints, vector/ANN indexes, and sorted-index ORDER BY planning
 4. **Streaming coverage** -- keep moving remaining blocking internals toward cursor-shaped sources where semantics allow it
 5. **Query timeout coverage** -- extend deadline cancellation into streaming APIs and more fine-grained executor loops
 6. **HashMap option** -- consider `HashMap` for primary storage when ordering is not needed

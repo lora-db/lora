@@ -32,7 +32,7 @@ An in-process graph store with a Cypher-like query engine — small enough to em
 
 ## Overview
 
-LoraDB is an embeddable property-graph database written in Rust. It parses, analyzes, compiles, and executes a Cypher-like query language against an in-process graph store — with no daemons, no clusters, and no schema migrations. Optional snapshots, WAL directories, and named `.loradb` archives provide local durability on filesystem-backed surfaces. `VECTOR` is a first-class value type, so embeddings live next to the graph they describe.
+LoraDB is an embeddable property-graph database written in Rust. It parses, analyzes, compiles, and executes a Cypher-like query language against an in-process graph store - with no daemons, no clusters, and no schema migrations. Optional `CREATE INDEX` / `DROP INDEX` DDL lets you declare secondary indexes for hot predicates without changing the schema-free data model. Optional snapshots, WAL directories, and named `.loradb` archives provide local durability on filesystem-backed surfaces. `VECTOR` is a first-class value type, so embeddings live next to the graph they describe.
 
 The graph belongs inside your process. Reach for LoraDB when you're building:
 
@@ -132,6 +132,21 @@ const result = await db.execute(`
 console.log(result.rows);
 ```
 
+### Index hot predicates
+
+```cypher
+CREATE INDEX user_email FOR (u:User) ON (u.email);
+CREATE TEXT INDEX user_name FOR (u:User) ON (u.name);
+CREATE POINT INDEX venue_location FOR (v:Venue) ON (v.location);
+
+SHOW INDEXES;
+```
+
+The optimizer can use declared RANGE, TEXT, and POINT indexes for matching
+node or relationship predicates such as equality/range comparisons, string
+prefix/substring/suffix filters, and `point.withinBBox(...)` /
+`point.distance(...) <= radius`.
+
 ### Python
 
 ```python
@@ -220,6 +235,7 @@ In-repo references:
 | Architecture overview | [docs/architecture/overview.md](docs/architecture/overview.md) |
 | Graph engine internals | [docs/architecture/graph-engine.md](docs/architecture/graph-engine.md) |
 | Cypher support matrix | [docs/reference/cypher-support-matrix.md](docs/reference/cypher-support-matrix.md) |
+| Query indexes | [apps/loradb.com/docs/queries/indexes.md](apps/loradb.com/docs/queries/indexes.md) |
 | Value model | [docs/internals/value-model.md](docs/internals/value-model.md) |
 | Adding Cypher features | [docs/internals/cypher-development.md](docs/internals/cypher-development.md) |
 | Known limitations | [docs/design/known-risks.md](docs/design/known-risks.md) |

@@ -32,6 +32,8 @@ Key forces:
 - `BTreeMap<String, Vec<NodeId>>` for labels
 - `BTreeMap<String, Vec<RelationshipId>>` for relationship types
 - lazy exact-match property indexes for indexable property values
+- an explicit index catalog plus RANGE/TEXT/POINT backing registries for
+  declared secondary indexes
 
 IDs are monotonic `u64`s and are never reused. Deletes leave tombstones in the
 slot vectors. Records are held behind `Arc` so database snapshots and staged
@@ -73,8 +75,9 @@ audit, CDC, and replication work later.
 - Point lookup by ID is direct, but tombstones mean slot vectors can grow after
   heavy delete/create workloads.
 - Exact-match property lookups on indexable values can use internal lazy
-  indexes, but there is no Cypher DDL, no uniqueness constraint, and no
-  composite/range/full-text/vector index.
+  indexes, and declared RANGE/TEXT/POINT/LOOKUP indexes can guide the
+  optimizer for scoped predicates. There is still no uniqueness constraint,
+  vector/ANN index, or text-ranking surface.
 - Bulk compatibility APIs that return owned records still allocate; executor hot
   paths use borrowed closure hooks where possible.
 

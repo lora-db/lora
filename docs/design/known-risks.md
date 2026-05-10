@@ -17,7 +17,6 @@
 | `CALL` (standalone) | Parsed to AST | Analyzer returns `SemanticError::UnsupportedFeature` | Low — clear error |
 | `CALL ... YIELD` (in-query) | Parsed to AST | Analyzer returns `SemanticError::UnsupportedFeature` | Low — clear error |
 | `FOREACH` | Not in grammar | N/A | Low — parse error |
-| `CREATE INDEX` / `DROP INDEX` | Not in grammar | N/A | Low |
 | `CREATE CONSTRAINT` | Not in grammar | N/A | Low |
 | `LOAD CSV` | Not in grammar | N/A | Low |
 | `USE <graph>` (multi-database) | Not in grammar | N/A | Low |
@@ -48,6 +47,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Pattern comprehension | Tests in `tests/expressions.rs` |
 | Map projection | Tests in `tests/projection.rs` |
 | Parameter binding (`$name`, `$1`) via the Rust API | Tests in `tests/parameters.rs` |
+| Index DDL (`CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE LOOKUP INDEX`, `DROP INDEX`, `SHOW INDEXES`) | Tests in `tests/schema.rs` |
 
 ---
 
@@ -59,7 +59,7 @@ The following features were listed as gaps in earlier revisions of this document
 |-----|---------------|------|
 | WAL/operator controls are not uniform across surfaces | Observed | **Low–Medium** — Rust and `lora-server` expose explicit checkpoint/status/truncate controls. Node, Python, Go, and Ruby can open filesystem-backed WAL databases; WASM remains snapshot-only. See [WAL](../operations/wal.md). |
 | No uniqueness constraints | Observed | **Medium** — duplicate data can be created silently |
-| Property indexes are internal exact-match only | Observed | **Medium** — equality filters on indexable values can use lazy in-memory indexes; range/prefix/composite/vector predicates still scan |
+| Index coverage is scoped | Observed | **Medium** — RANGE/TEXT/POINT catalog indexes accelerate matching predicates; composite multi-property seeks, uniqueness constraints, vector/ANN indexes, and full-text scoring are still absent |
 | Transaction isolation is conservative | Observed | **Medium** — auto-commit writes publish optimistically under a writer mutex; explicit read-write transactions serialize for their full lifetime; read-only transactions pin snapshots |
 | Node / relationship IDs are never reused | Observed | Low — `u64` counter will not overflow in practice |
 | Tombstones and clone-heavy compatibility APIs | Observed | **Low–Medium** — deleted IDs leave slot gaps; hot executor paths use borrow closures, but `all_nodes()` and other record-returning scans still allocate |
@@ -95,10 +95,10 @@ The following features were listed as gaps in earlier revisions of this document
 | Issue | Classification | Impact |
 |-------|---------------|--------|
 | Write publication still serializes | Observed | Read-only auto-commit queries load Arc snapshots without a store lock; write commits and explicit read-write transactions serialize through the database writer mutex |
-| Property indexes do not cover range/prefix predicates | Observed | Non-equality property filters still scan candidate records |
+| Some predicates still scan | Observed | Vector similarity, regex, non-indexed properties, nested map paths, and unsupported composite seek shapes scan candidate records |
 | Clone-heavy read API | Observed | Allocation overhead proportional to result set |
 | Query timeout coverage is partial | Observed | Rust materialized execute paths have cooperative deadlines; streaming and language bindings still need surfaces |
-| Optimizer has only filter push-down | Observed | No join ordering, no index selection, no cardinality estimation |
+| Optimizer is still local | Observed | Cost-based index selection exists for scan/filter sites, but no join ordering, global cardinality search, or sorted-index ORDER BY planning |
 
 ---
 
@@ -126,7 +126,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 5. Expand timeout coverage to streaming APIs, HTTP, and language bindings
 6. Add authentication middleware to the HTTP server
-7. Add richer index support for range and prefix filters
+7. Add uniqueness constraints and vector/ANN index support
 8. ~~Introduce borrowing iterators on `GraphStorage`~~ — partially addressed: `with_node` / `with_relationship` closures now cover the executor's hot paths without requiring `&NodeRecord` access from every backend. Still open: streaming iterators for bulk scans
 
 ### Long term (capability)
@@ -136,7 +136,7 @@ The following features were listed as gaps in earlier revisions of this document
     filesystem-backed surfaces, and Rust / `lora-server` expose explicit
     checkpoint/admin controls. Remaining work is operational polish,
     scheduled checkpoints, and richer multi-process/process-manager guidance.
-11. Richer optimizer: join ordering, limit push-down, index selection
+11. Richer optimizer: join ordering, sorted-index ORDER BY planning, broader cardinality estimation
 12. `CALL` / procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`)
 13. `FOREACH`
 14. Quantified path patterns

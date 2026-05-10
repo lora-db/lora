@@ -22,7 +22,7 @@ Snapshots use the `lora-snapshot` codec and the current envelope magic
 [12..16)  manifest_len  u32
 [16..24)  body_len      u64
 [24..56)  checksum      BLAKE3(manifest || body)
-[56..)    manifest      bincode-serialized manifest
+[56..)    manifest      explicit binary manifest
 [...]     body          columnar graph payload
 ```
 

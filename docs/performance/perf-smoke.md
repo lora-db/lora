@@ -35,10 +35,10 @@ runtime ≈ 3–8 min including `cargo build --release` from a warm cache.
   `ubuntu-latest` varies ±20–40% run-to-run. For reproducible numbers use
   `docs/performance/benchmarks.md` and the manual `benchmarks` workflow
   against a release tag.
-- **Not a replacement for the full benchmark suites.** `engine`,
-  `scale`, `advanced`, and
-  `temporal_spatial` still exist and are still the right tool
-  for real performance work.
+- **Not a replacement for the full benchmark suites.** Use
+  `query_implementations` for query-feature coverage, and `scale`,
+  `realistic`, `wal`, `concurrent`, or `concurrency_guard` for deeper
+  workload-specific performance work.
 - **Not a tight regression gate.** The default threshold is 3× — a bench
   has to get *three times slower* before CI fails. Anything tighter
   flakes on shared-runner noise.

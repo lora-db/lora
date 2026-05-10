@@ -7,7 +7,8 @@ An in-memory property graph database with a Cypher-like query language (a broad,
 - A PEG-based Cypher parser (pest) covering the supported subset
 - Semantic analysis with variable scoping and schema validation
 - A query compiler with logical and physical plan stages
-- An optimizer framework (currently filter push-down)
+- An optimizer framework with filter push-down, top-k sort annotation, and
+  catalog-backed index selection
 - A row-at-a-time physical plan executor
 - An in-memory graph store with secondary indexes
 - Multiple ways to reach the engine: direct embedding from Rust, an HTTP/JSON server, and language bindings for Node, WebAssembly, Python, Go (via a shared C ABI), and Ruby

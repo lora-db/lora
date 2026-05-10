@@ -285,7 +285,8 @@ See [CASE expressions](./return-with#case-expressions).
 
 ### `CREATE` over empty graph
 
-Works unconditionally — there's no DDL step and no schema to validate
+Works unconditionally — there's no schema migration step and no entity
+schema to validate
 against. Labels and relationship types come into existence implicitly on
 first use. See [Graph model → Schema-free](../concepts/graph-model#schema-free).
 

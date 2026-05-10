@@ -38,6 +38,14 @@ MATCH (n:User) WHERE n.name = 'alice'               RETURN n
 MATCH (n:User) WHERE n.name <> 'bob'                RETURN n
 ```
 
+RANGE indexes can accelerate equality and range comparisons when the
+predicate is scoped to a matching label or relationship type:
+
+```cypher
+CREATE INDEX user_age FOR (u:User) ON (u.age)
+MATCH (u:User) WHERE u.age >= 18 AND u.age < 65 RETURN u
+```
+
 Comparison returns `null` (not `false`) when either operand is `null` or
 when the types mismatch — see [Scalars → Null](../data-types/scalars#null)
 and [Limitations](../limitations#operators-and-expressions).
@@ -82,6 +90,13 @@ or `toUpper` on both sides.
 MATCH (n) WHERE n.name STARTS WITH 'a'   RETURN n
 MATCH (n) WHERE n.name ENDS   WITH 'z'   RETURN n
 MATCH (n) WHERE n.name CONTAINS 'al'     RETURN n
+```
+
+TEXT indexes can accelerate these string predicates:
+
+```cypher
+CREATE TEXT INDEX user_name FOR (u:User) ON (u.name)
+MATCH (u:User) WHERE u.name STARTS WITH 'Al' RETURN u
 ```
 
 ```cypher

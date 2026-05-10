@@ -15,7 +15,13 @@ Every Cypher feature touches up to six crates in a fixed order:
 6. lora-database    Add integration tests under tests/
 ```
 
-Not every feature requires changes in every crate. A new function only needs executor changes (plus tests). A new clause needs all six. `lora-server` is a transport and rarely needs updating for language features.
+Not every feature requires changes in every crate. A new function only needs
+executor changes (plus tests). A new row-producing clause usually needs all
+six. Schema commands are the main exception: `CREATE INDEX`, `DROP INDEX`, and
+`SHOW INDEXES` parse into `Statement::Schema` and are routed by
+`lora-database/src/database/schema.rs` directly to the store catalog instead of
+going through analyzer/compiler/executor operators. `lora-server` is a transport
+and rarely needs updating for language features.
 
 ## Walkthrough: Adding a new clause
 
