@@ -160,16 +160,16 @@ pub fn resolve_srid_checked(
         None => None,
     };
 
-    let resolved = match (crs_srid, explicit_srid) {
-        (Some(a), Some(b)) if a != b => {
+    let resolved = match (crs, crs_srid, explicit_srid) {
+        (Some(crs_name), Some(a), Some(b)) if a != b => {
             return Err(SridResolveError::CrsSridConflict {
-                crs: crs.unwrap().to_string(),
+                crs: crs_name.to_string(),
                 srid: b,
             });
         }
-        (Some(a), _) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
+        (_, Some(a), _) => Some(a),
+        (_, None, Some(b)) => Some(b),
+        (_, None, None) => None,
     };
 
     let final_srid = match resolved {
