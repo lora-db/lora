@@ -7,6 +7,7 @@ pub struct Span {
 }
 
 impl Span {
+    #[must_use]
     pub const fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
@@ -29,6 +30,215 @@ pub enum SchemaCommand {
     CreateIndex(CreateIndex),
     DropIndex(DropIndex),
     ShowIndexes(ShowIndexes),
+    CreateConstraint(CreateConstraint),
+    DropConstraint(DropConstraint),
+    ShowConstraints(ShowConstraints),
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateConstraint {
+    pub name: ConstraintNameSpec,
+    pub if_not_exists: bool,
+    pub entity: IndexEntityKind,
+    /// Pattern variable in the `FOR` clause (`n`, `r`).
+    pub variable: String,
+    /// Label / rel-type. Always present — constraints don't accept the
+    /// wildcard form that LOOKUP indexes do.
+    pub label: String,
+    pub properties: Vec<String>,
+    pub kind: ConstraintKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct DropConstraint {
+    pub name: ConstraintNameSpec,
+    pub if_exists: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowConstraints {
+    pub pipeline: Option<ShowPipeline>,
+    pub span: Span,
+}
+
+/// `SHOW INDEXES YIELD … [WHERE …] [RETURN …]` tail. Modelled after the
+/// Neo4j syntax: YIELD is the anchor, optional WHERE filters the
+/// yielded rows, optional RETURN reprojects them. ORDER BY / SKIP /
+/// LIMIT can appear on either YIELD or RETURN — semantically applied
+/// to the rows at that stage.
+#[derive(Debug, Clone)]
+pub struct ShowPipeline {
+    pub yield_part: ShowYield,
+    pub where_: Option<Expr>,
+    pub return_part: Option<ShowReturn>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowYield {
+    /// `YIELD *` — pass every catalog column through unchanged.
+    pub star: bool,
+    /// `YIELD a, b AS x` items (empty when `star` is true).
+    pub items: Vec<YieldItem>,
+    pub order: Vec<SortItem>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowReturn {
+    pub items: Vec<ProjectionItem>,
+    pub order: Vec<SortItem>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
+    pub span: Span,
+}
+
+/// Type filter for `SHOW [TYPE] INDEXES`. `All` is the explicit
+/// unfiltered form; `Fulltext` and `Vector` parse but yield no rows
+/// because those index types aren't backed by anything in the catalog
+/// yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexKindFilter {
+    All,
+    Range,
+    Text,
+    Point,
+    Lookup,
+    Fulltext,
+    Vector,
+}
+
+#[derive(Debug, Clone)]
+pub enum ConstraintNameSpec {
+    Literal(String),
+    Parameter(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstraintKind {
+    /// `IS UNIQUE` — single or composite.
+    Unique,
+    /// `IS NOT NULL` — single property only.
+    Existence,
+    /// `IS NODE KEY` — single or composite, node only.
+    NodeKey,
+    /// `IS RELATIONSHIP KEY` — single or composite, relationship only.
+    RelationshipKey,
+    /// `IS :: Type` — single property only.
+    PropertyType(PropertyTypeExpr),
+}
+
+impl ConstraintKind {
+    /// Human-readable tag for SHOW CONSTRAINTS and diagnostics.
+    #[must_use]
+    pub fn type_tag(&self, entity: IndexEntityKind) -> &'static str {
+        match (self, entity) {
+            (ConstraintKind::Unique, IndexEntityKind::Node) => "NODE_PROPERTY_UNIQUENESS",
+            (ConstraintKind::Unique, IndexEntityKind::Relationship) => {
+                "RELATIONSHIP_PROPERTY_UNIQUENESS"
+            }
+            (ConstraintKind::Existence, IndexEntityKind::Node) => "NODE_PROPERTY_EXISTENCE",
+            (ConstraintKind::Existence, IndexEntityKind::Relationship) => {
+                "RELATIONSHIP_PROPERTY_EXISTENCE"
+            }
+            (ConstraintKind::NodeKey, _) => "NODE_KEY",
+            (ConstraintKind::RelationshipKey, _) => "RELATIONSHIP_KEY",
+            (ConstraintKind::PropertyType(_), IndexEntityKind::Node) => "NODE_PROPERTY_TYPE",
+            (ConstraintKind::PropertyType(_), IndexEntityKind::Relationship) => {
+                "RELATIONSHIP_PROPERTY_TYPE"
+            }
+        }
+    }
+}
+
+/// A closed dynamic union of property types: `T1 | T2 | ...`. A single
+/// type is represented as a one-element union.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropertyTypeExpr {
+    pub alternatives: Vec<PropertyTypeTerm>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyTypeTerm {
+    Scalar(ScalarType),
+    List {
+        inner: Box<PropertyTypeTerm>,
+        /// `LIST<X NOT NULL>` is the only fully-supported list shape in
+        /// Neo4j compatibility mode; we keep the flag for grammar fidelity
+        /// even though we reject `LIST<X>` (nullable elements) at the
+        /// catalog layer.
+        not_null: bool,
+    },
+    Vector {
+        coord: VectorCoordType,
+        dimension: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarType {
+    Boolean,
+    String,
+    Integer,
+    Float,
+    Date,
+    LocalTime,
+    ZonedTime,
+    LocalDateTime,
+    ZonedDateTime,
+    Duration,
+    Point,
+    Map,
+    Any,
+}
+
+impl ScalarType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ScalarType::Boolean => "BOOLEAN",
+            ScalarType::String => "STRING",
+            ScalarType::Integer => "INTEGER",
+            ScalarType::Float => "FLOAT",
+            ScalarType::Date => "DATE",
+            ScalarType::LocalTime => "LOCAL TIME",
+            ScalarType::ZonedTime => "ZONED TIME",
+            ScalarType::LocalDateTime => "LOCAL DATETIME",
+            ScalarType::ZonedDateTime => "ZONED DATETIME",
+            ScalarType::Duration => "DURATION",
+            ScalarType::Point => "POINT",
+            ScalarType::Map => "MAP",
+            ScalarType::Any => "ANY",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorCoordType {
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Float32,
+    Float64,
+}
+
+impl VectorCoordType {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            VectorCoordType::Int8 => "INT8",
+            VectorCoordType::Int16 => "INT16",
+            VectorCoordType::Int32 => "INT32",
+            VectorCoordType::Int64 => "INT64",
+            VectorCoordType::Float32 => "FLOAT32",
+            VectorCoordType::Float64 => "FLOAT64",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +258,12 @@ pub struct CreateIndex {
     pub variable: String,
     /// `Some(label_or_type)` for property indexes; `None` for `LOOKUP` token indexes
     /// where the label/type is the wildcard captured by `labels(n)` / `type(r)`.
+    /// For `FULLTEXT` (which accepts `:A|B|C`) this carries the first label; the
+    /// rest live in `additional_labels`.
     pub label: Option<String>,
+    /// Extra labels beyond `label`. Only populated for `FULLTEXT` indexes
+    /// declared with the `(n:A|B|C)` pattern.
+    pub additional_labels: Vec<String>,
     /// Property keys covered by the index. Empty for `LOOKUP` token indexes.
     pub properties: Vec<String>,
     pub options: Option<IndexOptions>,
@@ -61,15 +276,20 @@ pub enum IndexKind {
     Text,
     Point,
     Lookup,
+    Vector,
+    Fulltext,
 }
 
 impl IndexKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             IndexKind::Range => "RANGE",
             IndexKind::Text => "TEXT",
             IndexKind::Point => "POINT",
             IndexKind::Lookup => "LOOKUP",
+            IndexKind::Vector => "VECTOR",
+            IndexKind::Fulltext => "FULLTEXT",
         }
     }
 }
@@ -81,6 +301,7 @@ pub enum IndexEntityKind {
 }
 
 impl IndexEntityKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             IndexEntityKind::Node => "NODE",
@@ -103,6 +324,11 @@ pub struct IndexOptions {
 
 #[derive(Debug, Clone)]
 pub struct ShowIndexes {
+    /// Optional index-type filter (e.g. `SHOW RANGE INDEXES`). `None`
+    /// means no filter clause was written; `Some(IndexKindFilter::All)`
+    /// is the explicit `SHOW ALL INDEXES` form (semantically the same).
+    pub filter: Option<IndexKindFilter>,
+    pub pipeline: Option<ShowPipeline>,
     pub span: Span,
 }
 
@@ -543,6 +769,7 @@ pub enum ListPredicateKind {
 }
 
 impl Expr {
+    #[must_use]
     pub fn span(&self) -> Span {
         match self {
             Expr::Variable(v) => v.span,

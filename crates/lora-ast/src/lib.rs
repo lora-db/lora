@@ -8,13 +8,15 @@
 pub mod ast;
 
 pub use ast::{
-    BinaryOp, Create, CreateIndex, Delete, Direction, Document, DropIndex, Expr, InQueryCall,
-    IndexEntityKind, IndexKind, IndexNameSpec, IndexOptions, ListPredicateKind,
-    MapProjectionSelector, Match, Merge, MergeAction, MultiPartQuery, NodePattern, Pattern,
-    PatternElement, PatternElementChain, PatternPart, ProcedureInvocation, ProcedureInvocationKind,
-    ProcedureName, ProjectionBody, ProjectionItem, Query, QueryPart, RangeLiteral, ReadingClause,
-    RegularQuery, RelationshipDetail, RelationshipPattern, Remove, RemoveItem, Return,
-    SchemaCommand, Set, SetItem, ShowIndexes, SinglePartQuery, SingleQuery, SortDirection,
-    SortItem, Span, StandaloneCall, Statement, UnaryOp, UnionPart, Unwind, UpdatingClause,
-    Variable, With, YieldItem,
+    BinaryOp, ConstraintKind, ConstraintNameSpec, Create, CreateConstraint, CreateIndex, Delete,
+    Direction, Document, DropConstraint, DropIndex, Expr, InQueryCall, IndexEntityKind, IndexKind,
+    IndexKindFilter, IndexNameSpec, IndexOptions, ListPredicateKind, MapProjectionSelector, Match,
+    Merge, MergeAction, MultiPartQuery, NodePattern, Pattern, PatternElement, PatternElementChain,
+    PatternPart, ProcedureInvocation, ProcedureInvocationKind, ProcedureName, ProjectionBody,
+    ProjectionItem, PropertyTypeExpr, PropertyTypeTerm, Query, QueryPart, RangeLiteral,
+    ReadingClause, RegularQuery, RelationshipDetail, RelationshipPattern, Remove, RemoveItem,
+    Return, ScalarType, SchemaCommand, Set, SetItem, ShowConstraints, ShowIndexes, ShowPipeline,
+    ShowReturn, ShowYield, SinglePartQuery, SingleQuery, SortDirection, SortItem, Span,
+    StandaloneCall, Statement, UnaryOp, UnionPart, Unwind, UpdatingClause, Variable,
+    VectorCoordType, With, YieldItem,
 };
