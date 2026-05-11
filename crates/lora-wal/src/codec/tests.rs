@@ -5,6 +5,7 @@ use lora_store::{
 
 use super::decode::{decode_event, decode_events};
 use super::encode::{encode_event, encode_events, encoded_event_len, encoded_events_len};
+use super::format::PAYLOAD_MAGIC;
 use crate::errors::WalError;
 
 fn sample_event() -> MutationEvent {
@@ -164,6 +165,17 @@ fn event_batch_round_trip() {
     let encoded = encode_events(&events).unwrap();
     assert_eq!(encoded_events_len(&events).unwrap(), encoded.len());
     assert_eq!(decode_events(&encoded).unwrap(), events);
+}
+
+#[test]
+fn event_batch_rejects_oversized_event_count() {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(PAYLOAD_MAGIC);
+    encoded.extend_from_slice(&u64::MAX.to_le_bytes());
+
+    let err = decode_events(&encoded).unwrap_err();
+    assert!(matches!(err, WalError::Decode(_)));
+    assert!(err.to_string().contains("exceeds remaining WAL payload"));
 }
 
 #[test]

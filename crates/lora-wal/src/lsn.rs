@@ -31,15 +31,17 @@ impl Lsn {
         self.0 == 0
     }
 
+    /// Returns the next LSN, or `None` if the counter is exhausted.
+    pub fn checked_next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+
     /// Returns the next LSN. Panics on `u64::MAX` — saturating would
     /// silently violate monotonicity, and overflow at this scale means a
     /// trillion records per second for ~580 million years.
     pub fn next(self) -> Self {
-        Self(
-            self.0
-                .checked_add(1)
-                .expect("Lsn overflowed; the WAL has been continuously running for ~580 My"),
-        )
+        self.checked_next()
+            .expect("Lsn overflowed; the WAL has been continuously running for ~580 My")
     }
 }
 

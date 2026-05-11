@@ -17,6 +17,9 @@ pub(super) const TAG_CLEAR: u8 = 12;
 /// Catalog DDL: payload is a length-prefixed store-codec IndexRequest.
 pub(super) const TAG_CREATE_INDEX: u8 = 13;
 pub(super) const TAG_DROP_INDEX: u8 = 14;
+/// Constraint DDL: payload is a length-prefixed store-codec ConstraintRequest.
+pub(super) const TAG_CREATE_CONSTRAINT: u8 = 15;
+pub(super) const TAG_DROP_CONSTRAINT: u8 = 16;
 
 pub(super) const VALUE_NULL: u8 = 0;
 pub(super) const VALUE_BOOL: u8 = 1;

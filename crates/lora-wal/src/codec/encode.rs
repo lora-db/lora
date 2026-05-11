@@ -1,7 +1,8 @@
 //! Encode side of the WAL mutation payload codec.
 
 use lora_store::{
-    codec::encode_index_request, LoraVector, MutationEvent, Properties, PropertyValue, VectorValues,
+    codec::{encode_constraint_request, encode_index_request},
+    LoraVector, MutationEvent, Properties, PropertyValue, VectorValues,
 };
 
 use super::format::*;
@@ -141,6 +142,21 @@ fn write_event(out: &mut Vec<u8>, event: &MutationEvent) -> Result<(), WalError>
         }
         MutationEvent::DropIndex { name, if_exists } => {
             out.push(TAG_DROP_INDEX);
+            write_string(out, name)?;
+            out.push(u8::from(*if_exists));
+        }
+        MutationEvent::CreateConstraint {
+            request,
+            if_not_exists,
+        } => {
+            out.push(TAG_CREATE_CONSTRAINT);
+            let bytes = encode_constraint_request(request)
+                .map_err(|e| WalError::Encode(format!("CreateConstraint encode failed: {e}")))?;
+            write_bytes(out, &bytes)?;
+            out.push(u8::from(*if_not_exists));
+        }
+        MutationEvent::DropConstraint { name, if_exists } => {
+            out.push(TAG_DROP_CONSTRAINT);
             write_string(out, name)?;
             out.push(u8::from(*if_exists));
         }
@@ -453,6 +469,18 @@ fn size_event(size: &mut usize, event: &MutationEvent) -> Result<(), WalError> {
             add_size(size, 1)?;
         }
         MutationEvent::DropIndex { name, .. } => {
+            size_string(size, name)?;
+            add_size(size, 1)?;
+        }
+        MutationEvent::CreateConstraint { request, .. } => {
+            let payload_len = encode_constraint_request(request)
+                .map_err(|e| WalError::Encode(format!("CreateConstraint encode failed: {e}")))?
+                .len();
+            size_len(size, payload_len)?;
+            add_size(size, payload_len)?;
+            add_size(size, 1)?;
+        }
+        MutationEvent::DropConstraint { name, .. } => {
             size_string(size, name)?;
             add_size(size, 1)?;
         }

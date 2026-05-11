@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use lora_store::{
-    codec::decode_index_request, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime,
-    LoraLocalTime, LoraPoint, LoraTime, LoraVector, MutationEvent, Properties, PropertyValue,
-    VectorValues,
+    codec::{decode_constraint_request, decode_index_request},
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
+    LoraVector, MutationEvent, Properties, PropertyValue, VectorValues,
 };
 
 use super::format::*;
@@ -30,8 +30,8 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Result<Vec<MutationEvent>, WalError
         ));
     }
     let mut reader = PayloadReader::new(&bytes[PAYLOAD_MAGIC.len()..]);
-    let len = reader.read_len()?;
-    let mut events = Vec::with_capacity(len);
+    let len = reader.read_len_bounded("WAL event")?;
+    let mut events = reader.vec_with_capacity(len, "WAL event")?;
     for _ in 0..len {
         events.push(reader.read_event()?);
     }
@@ -114,6 +114,28 @@ impl<'a> PayloadReader<'a> {
             .map_err(|_| WalError::Decode("length overflows usize".into()))
     }
 
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+
+    fn read_len_bounded(&mut self, label: &str) -> Result<usize, WalError> {
+        let len = self.read_len()?;
+        if len > self.remaining() {
+            return Err(WalError::Decode(format!(
+                "{label} count {len} exceeds remaining WAL payload"
+            )));
+        }
+        Ok(len)
+    }
+
+    fn vec_with_capacity<T>(&self, len: usize, label: &str) -> Result<Vec<T>, WalError> {
+        let mut values = Vec::new();
+        values.try_reserve(len).map_err(|_| {
+            WalError::Decode(format!("{label} count {len} is too large to allocate"))
+        })?;
+        Ok(values)
+    }
+
     fn read_bytes(&mut self) -> Result<&'a [u8], WalError> {
         let len = self.read_len()?;
         self.read_exact(len)
@@ -133,8 +155,8 @@ impl<'a> PayloadReader<'a> {
     }
 
     fn read_string_vec(&mut self) -> Result<Vec<String>, WalError> {
-        let len = self.read_len()?;
-        let mut values = Vec::with_capacity(len);
+        let len = self.read_len_bounded("string")?;
+        let mut values = self.vec_with_capacity(len, "string")?;
         for _ in 0..len {
             values.push(self.read_string()?);
         }
@@ -142,7 +164,7 @@ impl<'a> PayloadReader<'a> {
     }
 
     fn read_properties(&mut self) -> Result<Properties, WalError> {
-        let len = self.read_len()?;
+        let len = self.read_len_bounded("property")?;
         let mut properties = BTreeMap::new();
         for _ in 0..len {
             let key = self.read_string()?;
@@ -161,15 +183,15 @@ impl<'a> PayloadReader<'a> {
             VALUE_STRING => PropertyValue::String(self.read_string()?),
             VALUE_BINARY => PropertyValue::Binary(self.read_binary()?),
             VALUE_LIST => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("property list value")?;
+                let mut values = self.vec_with_capacity(len, "property list value")?;
                 for _ in 0..len {
                     values.push(self.read_value()?);
                 }
                 PropertyValue::List(values)
             }
             VALUE_MAP => {
-                let len = self.read_len()?;
+                let len = self.read_len_bounded("property map entry")?;
                 let mut values = BTreeMap::new();
                 for _ in 0..len {
                     let key = self.read_string()?;
@@ -253,48 +275,48 @@ impl<'a> PayloadReader<'a> {
         let dimension = self.read_len()?;
         let values = match self.read_u8()? {
             VECTOR_FLOAT64 => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("float64 vector value")?;
+                let mut values = self.vec_with_capacity(len, "float64 vector value")?;
                 for _ in 0..len {
                     values.push(self.read_f64()?);
                 }
                 VectorValues::Float64(values)
             }
             VECTOR_FLOAT32 => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("float32 vector value")?;
+                let mut values = self.vec_with_capacity(len, "float32 vector value")?;
                 for _ in 0..len {
                     values.push(self.read_f32()?);
                 }
                 VectorValues::Float32(values)
             }
             VECTOR_INTEGER64 => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("int64 vector value")?;
+                let mut values = self.vec_with_capacity(len, "int64 vector value")?;
                 for _ in 0..len {
                     values.push(self.read_i64()?);
                 }
                 VectorValues::Integer64(values)
             }
             VECTOR_INTEGER32 => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("int32 vector value")?;
+                let mut values = self.vec_with_capacity(len, "int32 vector value")?;
                 for _ in 0..len {
                     values.push(self.read_i32()?);
                 }
                 VectorValues::Integer32(values)
             }
             VECTOR_INTEGER16 => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("int16 vector value")?;
+                let mut values = self.vec_with_capacity(len, "int16 vector value")?;
                 for _ in 0..len {
                     values.push(self.read_i16()?);
                 }
                 VectorValues::Integer16(values)
             }
             VECTOR_INTEGER8 => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("int8 vector value")?;
+                let mut values = self.vec_with_capacity(len, "int8 vector value")?;
                 for _ in 0..len {
                     values.push(self.read_i8()?);
                 }
@@ -312,8 +334,8 @@ impl<'a> PayloadReader<'a> {
     }
 
     fn read_binary(&mut self) -> Result<lora_store::LoraBinary, WalError> {
-        let len = self.read_len()?;
-        let mut segments = Vec::with_capacity(len);
+        let len = self.read_len_bounded("binary segment")?;
+        let mut segments = self.vec_with_capacity(len, "binary segment")?;
         for _ in 0..len {
             segments.push(self.read_bytes()?.to_vec());
         }
@@ -381,6 +403,21 @@ impl<'a> PayloadReader<'a> {
                 }
             }
             TAG_DROP_INDEX => MutationEvent::DropIndex {
+                name: self.read_string()?,
+                if_exists: self.read_u8()? != 0,
+            },
+            TAG_CREATE_CONSTRAINT => {
+                let bytes = self.read_bytes()?;
+                let request = decode_constraint_request(bytes).map_err(|e| {
+                    WalError::Decode(format!("CreateConstraint decode failed: {e}"))
+                })?;
+                let if_not_exists = self.read_u8()? != 0;
+                MutationEvent::CreateConstraint {
+                    request,
+                    if_not_exists,
+                }
+            }
+            TAG_DROP_CONSTRAINT => MutationEvent::DropConstraint {
                 name: self.read_string()?,
                 if_exists: self.read_u8()? != 0,
             },

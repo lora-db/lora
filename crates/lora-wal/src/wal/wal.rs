@@ -27,7 +27,7 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -138,7 +138,10 @@ impl Wal {
         let next_lsn = if replay.max_lsn.is_zero() {
             Lsn::new(1)
         } else {
-            replay.max_lsn.next()
+            replay
+                .max_lsn
+                .checked_next()
+                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?
         };
         // Treat everything readable at open time as the recovered
         // durability fence. This does not prove the bytes were
@@ -178,7 +181,7 @@ impl Wal {
             let SyncMode::GroupSync { interval_ms } = sync_mode;
             let interval = Duration::from_millis(u64::from(interval_ms.max(1)));
             let handle = spawn_group_flusher(Arc::downgrade(&wal), interval);
-            *wal.flusher.lock().unwrap() = Some(handle);
+            *wal.flusher.lock().map_err(|_| WalError::Poisoned)? = Some(handle);
         }
 
         Ok((wal, replay.committed_events))
@@ -216,7 +219,9 @@ impl Wal {
         // The active segment is whichever file has the highest
         // numeric id — segment file names are self-describing, so
         // there is no separate CURRENT pointer.
-        let active = entries.last().expect("entries non-empty in open_existing");
+        let active = entries
+            .last()
+            .ok_or_else(|| WalError::Malformed("WAL directory has no segments".into()))?;
         let mut writer = SegmentWriter::open_for_append_at(
             segments.path_for(active.id),
             replay.last_good_offset,
@@ -248,7 +253,10 @@ impl Wal {
     }
 
     pub fn durable_lsn(&self) -> Lsn {
-        self.state.lock().unwrap().durable_lsn
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .durable_lsn
     }
 
     /// Latched durability failure, if any. `None` means the WAL is healthy.
@@ -257,7 +265,10 @@ impl Wal {
     /// transactions until the operator restarts from the last
     /// consistent snapshot + WAL.
     pub fn bg_failure(&self) -> Option<String> {
-        self.bg_failure.lock().unwrap().clone()
+        self.bg_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Direct handle to the latched-failure mutex. Used by the bg
@@ -269,7 +280,12 @@ impl Wal {
     }
 
     fn check_healthy(&self) -> Result<(), WalError> {
-        if self.bg_failure.lock().unwrap().is_some() {
+        if self
+            .bg_failure
+            .lock()
+            .map_err(|_| WalError::Poisoned)?
+            .is_some()
+        {
             return Err(WalError::Poisoned);
         }
         Ok(())
@@ -279,15 +295,26 @@ impl Wal {
     /// Exposed for tests and for sanity checks at boot; not part of
     /// any durability contract.
     pub fn next_lsn(&self) -> Lsn {
-        self.state.lock().unwrap().next_lsn
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .next_lsn
     }
 
     pub fn oldest_segment_id(&self) -> u64 {
-        self.state.lock().unwrap().oldest_segment_id.raw()
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .oldest_segment_id
+            .raw()
     }
 
     pub fn active_segment_id(&self) -> u64 {
-        self.state.lock().unwrap().active_segment_id.raw()
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .active_segment_id
+            .raw()
     }
 
     // -------------------------------------------------------------
@@ -312,7 +339,7 @@ impl Wal {
     /// one segment.
     pub fn begin(&self) -> Result<Lsn, WalError> {
         self.check_healthy()?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         self.maybe_rotate(&mut state)?;
         Self::alloc_and_append(&mut state, |lsn| WalRecord::TxBegin { lsn })
     }
@@ -322,7 +349,7 @@ impl Wal {
     /// runs; production commits use [`Self::commit_tx`].
     pub fn append(&self, tx_begin_lsn: Lsn, event: &MutationEvent) -> Result<Lsn, WalError> {
         self.check_healthy()?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         Self::alloc_and_append(&mut state, |lsn| WalRecord::Mutation {
             lsn,
             tx_begin_lsn,
@@ -345,7 +372,7 @@ impl Wal {
                 "mutation batch must contain at least one event".into(),
             ));
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         Self::alloc_and_append(&mut state, |lsn| WalRecord::MutationBatch {
             lsn,
             tx_begin_lsn,
@@ -357,7 +384,7 @@ impl Wal {
     /// Production commits use [`Self::commit_tx`].
     pub fn commit(&self, tx_begin_lsn: Lsn) -> Result<Lsn, WalError> {
         self.check_healthy()?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         Self::alloc_and_append(&mut state, |lsn| WalRecord::TxCommit { lsn, tx_begin_lsn })
     }
 
@@ -367,7 +394,7 @@ impl Wal {
     /// nothing on disk to mark as aborted.
     pub fn abort(&self, tx_begin_lsn: Lsn) -> Result<Lsn, WalError> {
         self.check_healthy()?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         Self::alloc_and_append(&mut state, |lsn| WalRecord::TxAbort { lsn, tx_begin_lsn })
     }
 
@@ -397,12 +424,19 @@ impl Wal {
         // into one is the lock-side win that pairs with the
         // lock-free emit short-circuit on the recorder side.
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state()?;
             self.maybe_rotate(&mut state)?;
             let begin_lsn = state.next_lsn;
-            let batch_lsn = begin_lsn.next();
-            let commit_lsn = batch_lsn.next();
-            state.next_lsn = commit_lsn.next();
+            let batch_lsn = begin_lsn
+                .checked_next()
+                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
+            let commit_lsn = batch_lsn
+                .checked_next()
+                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
+            let next_lsn = commit_lsn
+                .checked_next()
+                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
+            state.next_lsn = next_lsn;
             state
                 .active_writer
                 .append(&WalRecord::TxBegin { lsn: begin_lsn })?;
@@ -430,7 +464,7 @@ impl Wal {
     /// it to defend against the snapshot-rename-but-no-marker race.
     pub fn checkpoint_marker(&self, snapshot_lsn: Lsn) -> Result<Lsn, WalError> {
         self.check_healthy()?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         Self::alloc_and_append(&mut state, |lsn| WalRecord::Checkpoint {
             lsn,
             snapshot_lsn,
@@ -448,8 +482,11 @@ impl Wal {
         build: impl FnOnce(Lsn) -> WalRecord,
     ) -> Result<Lsn, WalError> {
         let lsn = state.next_lsn;
-        state.next_lsn = lsn.next();
+        let next_lsn = lsn
+            .checked_next()
+            .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
         state.active_writer.append(&build(lsn))?;
+        state.next_lsn = next_lsn;
         Ok(lsn)
     }
 
@@ -477,7 +514,7 @@ impl Wal {
     /// `check_healthy` gate so clean shutdown can force a final GroupSync
     /// sync even if callers are otherwise done with the handle.
     pub(super) fn flush_inner(&self, kind: FlushKind) -> Result<(), WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
 
         if matches!(kind, FlushKind::ForceFsync) {
@@ -498,7 +535,7 @@ impl Wal {
     /// is also kept as a tombstone so a subsequent crash before the
     /// next checkpoint still finds a self-describing log start.
     pub fn truncate_up_to(&self, fence_lsn: Lsn) -> Result<(), WalError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state()?;
         let active_id = state.active_segment_id;
         let entries = self.segments.list()?;
 
@@ -524,7 +561,9 @@ impl Wal {
         for entry in to_drop {
             fs::remove_file(&entry.path)?;
             if entry.id >= state.oldest_segment_id {
-                state.oldest_segment_id = entry.id.next();
+                state.oldest_segment_id = entry.id.checked_next().ok_or_else(|| {
+                    WalError::Malformed("WAL segment id space is exhausted".into())
+                })?;
             }
         }
         if state.oldest_segment_id != entries.first().map(|e| e.id).unwrap_or(active_id) {
@@ -545,12 +584,19 @@ impl Wal {
         // names line up with the record LSNs they contain.
         state.active_writer.seal()?;
 
-        let next_id = state.active_segment_id.next();
+        let next_id = state
+            .active_segment_id
+            .checked_next()
+            .ok_or_else(|| WalError::Malformed("WAL segment id space is exhausted".into()))?;
         let writer = SegmentWriter::create(self.segments.path_for(next_id), state.next_lsn)?;
         self.segments.sync_dir()?;
         state.active_writer = writer;
         state.active_segment_id = next_id;
         Ok(())
+    }
+
+    fn lock_state(&self) -> Result<MutexGuard<'_, WalState>, WalError> {
+        self.state.lock().map_err(|_| WalError::Poisoned)
     }
 }
 

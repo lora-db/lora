@@ -102,9 +102,17 @@ impl WalRecorder {
     }
 
     fn state_lock(&self) -> MutexGuard<'_, RecorderState> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                state.poisoned.get_or_insert_with(|| {
+                    "WalRecorder state lock was poisoned; buffered durability state is suspect"
+                        .into()
+                });
+                state
+            }
+        }
     }
 
     /// Mark the recorder as inside a query critical section. No WAL

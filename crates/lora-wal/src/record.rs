@@ -35,6 +35,12 @@ pub const RECORD_HEADER_LEN: usize = 4 + 1 + 8 + 8;
 /// Length of the trailing CRC32.
 pub const RECORD_TRAILER_LEN: usize = 4;
 
+/// Maximum accepted WAL record size, including the length prefix and CRC.
+///
+/// A corrupt length prefix is otherwise enough to make replay allocate up to
+/// 4 GiB before it can discover the record is truncated or has a bad CRC.
+pub const MAX_RECORD_LEN: usize = 256 * 1024 * 1024;
+
 /// Discriminant byte for the record kind.
 ///
 /// `Mutation` carries one `MutationEvent`, `MutationBatch` carries a vector of
@@ -174,10 +180,18 @@ impl WalRecord {
             .checked_add(payload_len)
             .and_then(|n| n.checked_add(RECORD_TRAILER_LEN))
             .ok_or_else(|| WalError::Encode("record larger than usize::MAX".into()))?;
+        if total > MAX_RECORD_LEN {
+            return Err(WalError::Encode(format!(
+                "record length {total} exceeds maximum {MAX_RECORD_LEN}"
+            )));
+        }
         let length = u32::try_from(total)
             .map_err(|_| WalError::Encode("record larger than 4 GiB".into()))?;
 
-        let mut framed = Vec::with_capacity(total);
+        let mut framed = Vec::new();
+        framed.try_reserve_exact(total).map_err(|_| {
+            WalError::Encode(format!("record length {total} is too large to allocate"))
+        })?;
         framed.extend_from_slice(&length.to_le_bytes());
         framed.push(self.kind() as u8);
         framed.extend_from_slice(&self.lsn().raw().to_le_bytes());
@@ -214,10 +228,20 @@ impl WalRecord {
             }
             ReadOutcome::Full => {}
         }
-        let length = u32::from_le_bytes(len_buf) as usize;
+        let raw_length = u32::from_le_bytes(len_buf);
+        let length = usize::try_from(raw_length).map_err(|_| {
+            WalError::Decode(format!(
+                "record length {raw_length} does not fit in usize on this platform"
+            ))
+        })?;
         if length < RECORD_HEADER_LEN + RECORD_TRAILER_LEN {
             return Err(WalError::Decode(format!(
                 "record length {length} smaller than fixed framing"
+            )));
+        }
+        if length > MAX_RECORD_LEN {
+            return Err(WalError::Decode(format!(
+                "record length {length} exceeds maximum {MAX_RECORD_LEN}"
             )));
         }
 
@@ -225,13 +249,23 @@ impl WalRecord {
         // the record into a single buffer so the CRC can be checked over
         // [length..crc) without seeking back.
         let remaining = length - 4;
-        let mut rest = vec![0u8; remaining];
+        let mut rest = Vec::new();
+        rest.try_reserve_exact(remaining).map_err(|_| {
+            WalError::Decode(format!("record length {length} is too large to allocate"))
+        })?;
+        rest.resize(remaining, 0);
         match read_exact_or_eof(&mut reader, &mut rest)? {
             ReadOutcome::Full => {}
-            ReadOutcome::Eof | ReadOutcome::Partial(_) => {
+            ReadOutcome::Eof => {
                 return Err(WalError::Truncated {
                     expected: remaining,
                     actual: 0,
+                });
+            }
+            ReadOutcome::Partial(actual) => {
+                return Err(WalError::Truncated {
+                    expected: remaining,
+                    actual,
                 });
             }
         }
@@ -438,6 +472,16 @@ mod tests {
         buf.truncate(buf.len() - 8);
         let err = WalRecord::decode(&buf[..]).unwrap_err();
         assert!(matches!(err, WalError::Truncated { .. }));
+    }
+
+    #[test]
+    fn oversized_record_length_is_rejected_before_allocation() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        let err = WalRecord::decode(&buf[..]).unwrap_err();
+        assert!(matches!(err, WalError::Decode(_)));
+        assert!(err.to_string().contains("exceeds maximum"));
     }
 
     #[test]

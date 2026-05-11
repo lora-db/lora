@@ -10,7 +10,7 @@
 //! available there. GroupSync mode in wasm falls back to the cooperative
 //! drop-time flush in [`Wal::drop`].
 
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -75,7 +75,10 @@ pub(super) fn spawn_group_flusher(weak: Weak<Wal>, interval: Duration) -> GroupF
                     // restarting from the last consistent
                     // snapshot + WAL.
                     if let Err(err) = wal.flush_inner(FlushKind::ForceFsync) {
-                        let mut slot = wal.bg_failure_slot().lock().unwrap();
+                        let mut slot = wal
+                            .bg_failure_slot()
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
                         if slot.is_none() {
                             *slot = Some(format!("bg fsync failed: {err}"));
                         }
