@@ -167,7 +167,10 @@ Finding the right function for a task:
 ## Not supported
 
 - **APOC-style utilities** (`apoc.*`) — no compatibility layer.
-- **Procedures** (`CALL db.labels()` etc.) — rejected at analysis time.
+- **General-purpose procedures** (`CALL db.labels()` etc.) — rejected at
+  analysis time. The supported `CALL` surface today is limited to the
+  vector and full-text index query procedures documented in
+  [Indexes](../queries/indexes).
 - **User-defined functions** — no registration surface.
 
 Full list in [Limitations](../limitations).

@@ -275,8 +275,8 @@ Keys are always case-sensitive strings. `user.Name` ≠ `user.name`.
 
 ### Type drift
 
-There's no type constraint — the same key can hold different types on
-different entities:
+Without a property type constraint, the same key can hold different
+types on different entities:
 
 ```cypher
 CREATE (:Item {stock: 5})
@@ -284,7 +284,9 @@ CREATE (:Item {stock: '5'})    -- legal but will surprise you
 ```
 
 Use [`valueType`](../functions/overview#type-conversion-and-checking)
-to detect at query time; or always normalise on write.
+to detect at query time, normalise on write, or add a
+[property type constraint](../queries/constraints#property-types) for
+labels or relationship types that need a fixed shape.
 
 ### Indexes and nested values
 
@@ -319,8 +321,9 @@ at write time.
 
 - Property keys are case-sensitive strings.
 - A single entity can hold any number of properties.
-- There are no required properties and no type constraints —
-  different nodes with the same label can have different property sets.
+- Required properties and property types are optional constraints; when
+  no constraint is present, different nodes with the same label can have
+  different property sets.
 - For the full type catalogue see [Data Types](../data-types/overview).
 
 ## See also
@@ -330,5 +333,7 @@ at write time.
 - [**Data Types**](../data-types/overview) — value types.
 - [**SET / REMOVE / DELETE**](../queries/set-delete) — mutation clauses.
 - [**WHERE**](../queries/where) — property-based filters.
+- [**Constraints**](../queries/constraints) — required properties,
+  uniqueness, keys, and property types.
 - [**Functions → Entity introspection**](../functions/overview#entity-introspection)
   — `keys`, `properties`, `id`.

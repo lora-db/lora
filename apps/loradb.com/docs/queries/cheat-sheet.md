@@ -46,12 +46,31 @@ More: [WHERE](./where).
 CREATE INDEX user_email FOR (u:User) ON (u.email)
 CREATE TEXT INDEX user_name FOR (u:User) ON (u.name)
 CREATE POINT INDEX place_location FOR (p:Place) ON (p.location)
+CREATE VECTOR INDEX doc_embedding FOR (d:Doc) ON (d.embedding)
+  OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}}
+CREATE FULLTEXT INDEX article_search FOR (a:Article) ON EACH [a.title, a.body]
 CREATE INDEX rel_since FOR ()-[r:FOLLOWS]-() ON (r.since)
+CALL db.index.vector.queryNodes('doc_embedding', 5, $query) YIELD node, score
+CALL db.index.fulltext.queryNodes('article_search', 'graph') YIELD node, score
 SHOW INDEXES
 DROP INDEX user_email IF EXISTS
 ```
 
 More: [Indexes](./indexes).
+
+## Constraints
+
+```cypher
+CREATE CONSTRAINT user_email FOR (u:User) REQUIRE u.email IS UNIQUE
+CREATE CONSTRAINT author_name FOR (a:Author) REQUIRE a.name IS NOT NULL
+CREATE CONSTRAINT actor_name FOR (a:Actor) REQUIRE (a.first, a.last) IS NODE KEY
+CREATE CONSTRAINT owns_id FOR ()-[o:OWNS]-() REQUIRE o.ownershipId IS RELATIONSHIP KEY
+CREATE CONSTRAINT doc_embedding FOR (d:Doc) REQUIRE d.embedding IS :: VECTOR<FLOAT32>(1536)
+SHOW CONSTRAINTS
+DROP CONSTRAINT user_email IF EXISTS
+```
+
+More: [Constraints](./constraints).
 
 ## Project
 

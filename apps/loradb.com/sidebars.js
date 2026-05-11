@@ -52,6 +52,7 @@ module.exports = {
         'queries/create',
         'queries/where',
         'queries/indexes',
+        'queries/constraints',
         'queries/return-with',
         'queries/set-delete',
         'queries/unwind-merge',

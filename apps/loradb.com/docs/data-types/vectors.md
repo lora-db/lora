@@ -1,15 +1,15 @@
 ---
 title: Vector Values
 sidebar_label: Vectors
-description: First-class VECTOR values in LoraDB — construction in Cypher, property storage, binding round-trips, and the built-in vector math functions for exhaustive kNN retrieval.
+description: First-class VECTOR values in LoraDB — construction in Cypher, property storage, binding round-trips, vector indexes, and built-in vector math functions.
 ---
 
 # Vector Values
 
 LoraDB treats `VECTOR` as a first-class value type. Vectors can be
 constructed in Cypher, stored as node or relationship properties,
-returned through every binding, and used as input to built-in vector
-math functions for exhaustive kNN-style retrieval.
+returned through every binding, indexed through `CREATE VECTOR INDEX`,
+and used as input to built-in vector math functions.
 
 A `VECTOR` has three fixed attributes:
 
@@ -18,11 +18,11 @@ A `VECTOR` has three fixed attributes:
 - a **values** array whose length always equals `dimension`.
 
 :::info Scope
-Vector **indexes** and approximate-nearest-neighbour search are **not
-yet implemented**. Similarity and distance functions are exhaustive —
-they score every matched candidate linearly. This is fine for demos,
-tests, small corpora, and internal tools; it is not yet a substitute
-for an index-backed vector search service at scale.
+`CREATE VECTOR INDEX` and `db.index.vector.queryNodes` /
+`queryRelationships` are supported. The current query procedure uses
+the index definition for scope, dimensions, and scoring, then performs
+a flat scan over matching entities. Approximate nearest-neighbour
+structures such as HNSW are not implemented yet.
 
 LoraDB also has no plugin system today, so there is no built-in
 embedding generation. Produce embeddings in your application (hosted
@@ -153,16 +153,60 @@ CREATE (:Doc {meta: {embeddings: [vector([1,2,3], 3, INTEGER)]}})
 
 If you need many embeddings per document, hang them off separate
 nodes connected by a relationship, each with its own vector property
-— that is also the shape a future vector index would be built on.
+— that is also the shape vector indexes expect.
 
 Lists of vectors are still perfectly legal **inside a query** (in a
 `RETURN`, `WITH`, `UNWIND`, or `collect(...)`). The restriction applies
 only to the write path.
 
+## Vector Index Search
+
+Create a vector index on a single node or relationship property:
+
+```cypher
+CREATE VECTOR INDEX doc_embedding
+FOR (d:Doc)
+ON (d.embedding)
+OPTIONS {indexConfig: {
+  `vector.dimensions`: 384,
+  `vector.similarity_function`: 'cosine'
+}};
+```
+
+Required options:
+
+- `vector.dimensions` - integer dimension in `1..=4096`;
+- `vector.similarity_function` - `'cosine'` or `'euclidean'`.
+
+Query the indexed node scope with `db.index.vector.queryNodes`:
+
+```cypher
+CALL db.index.vector.queryNodes('doc_embedding', 10, $query)
+YIELD node, score;
+```
+
+Relationship vector indexes use the relationship procedure and yield
+`relationship`:
+
+```cypher
+CALL db.index.vector.queryRelationships('rel_embedding', 10, vector([1, 0, 0], 3, FLOAT32))
+YIELD relationship, score;
+```
+
+The procedure returns the yielded columns directly, sorted by
+descending score. The query vector can be a `VECTOR`, a `vector(...)`
+call, a numeric list, or a parameter containing a vector. Numeric lists
+are coerced to `FLOAT32` vectors. `k` must be positive, and the query
+dimension must match the configured index dimension.
+
+The current implementation still scans the indexed label/type scope
+linearly. Use selective labels or relationship types while the ANN
+structure is future work.
+
 ## Exhaustive kNN
 
-Until vector indexes land, approximate nearest-neighbour is expressed
-as `ORDER BY … LIMIT k` over the full candidate set:
+You can also express similarity directly with `ORDER BY … LIMIT k`
+over the full candidate set:
 
 ```cypher
 MATCH (d:Doc)
@@ -182,8 +226,7 @@ LIMIT 2
 ```
 
 Every `MATCH` candidate is scored, so cost is `O(n)` in the number of
-matched nodes. Fine for small datasets; for large corpora you'll want
-a proper vector index (not yet implemented in LoraDB).
+matched nodes.
 
 ### Graph-filtered retrieval
 
@@ -473,10 +516,11 @@ when you need host-side vectors. See
 
 ## Limitations
 
-- **Vector indexes — not yet supported.** Every similarity /
-  distance call scans every candidate linearly.
-- **Approximate nearest-neighbour (ANN) — not yet supported.**
-  Implied by the above: retrieval is exhaustive today.
+- **ANN structures — not yet supported.** Vector indexes are cataloged
+  and queryable, but `db.index.vector.*` performs a flat scan today.
+- **Similarity / distance functions are exhaustive.** Direct
+  `vector.similarity.*` and `vector_distance(...)` calls score every
+  candidate matched by the query.
 - **Embedding generation — not supported.** LoraDB has no plugin
   surface; generate embeddings in application code.
 - **List-of-vectors as a property — not supported.** See

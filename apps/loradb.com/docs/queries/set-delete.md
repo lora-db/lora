@@ -332,12 +332,12 @@ boundary. If a query fails partway through execution, partial writes are
 possible — keep mutations scoped and small where possible. See
 [Queries → Execution model](./#execution-model).
 
-### No uniqueness enforcement
+### Constraint enforcement
 
-`SET` can set a property to a value that already exists on another node.
-LoraDB has no uniqueness constraints — see
-[Limitations → Storage](../limitations#storage). Enforce uniqueness in
-the host application or by matching before writing.
+`SET`, `REMOVE`, and property replacement are checked against matching
+[constraints](./constraints). A write that duplicates a unique value,
+removes a required property, or changes a property to the wrong
+declared type fails.
 
 ## See also
 

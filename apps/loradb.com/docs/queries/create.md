@@ -167,15 +167,24 @@ MATCH (a:User {id: e.from}), (b:User {id: e.to})
 CREATE (a)-[:FOLLOWS {since: e.since}]->(b)
 ```
 
-## No uniqueness check
+## Uniqueness
 
 `CREATE` **never** deduplicates. Running the same `CREATE` twice
-produces two distinct nodes with the same labels and properties.
+produces two distinct nodes with the same labels and properties unless
+a matching uniqueness or key constraint rejects the second write.
 
 ```cypher
 CREATE (:User {id: 1})
 CREATE (:User {id: 1})
 -- now there are two :User {id: 1} nodes
+```
+
+To reject duplicates, add a [uniqueness constraint](./constraints):
+
+```cypher
+CREATE CONSTRAINT user_id
+FOR (u:User)
+REQUIRE u.id IS UNIQUE
 ```
 
 For create-if-not-exists semantics use [`MERGE`](./unwind-merge#merge):

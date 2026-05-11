@@ -29,26 +29,26 @@ in the internal documentation.
 
 | Theme | Biggest gaps |
 |---|---|
-| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; explicit RANGE/TEXT/POINT/LOOKUP indexes exist; no constraints or vector/ANN indexes |
+| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; explicit RANGE/TEXT/POINT/LOOKUP/VECTOR/FULLTEXT indexes and schema constraints exist; no ANN structure |
 | Concurrency | Snapshot reads can overlap; write commits and explicit read-write transactions serialize; timeout coverage is API-dependent |
-| Clauses | No `CALL`, `FOREACH`, `LOAD CSV`, constraints |
+| Clauses | No general-purpose `CALL`, `FOREACH`, `LOAD CSV` |
 | Patterns | No quantified path patterns |
 | Operators | No `BETWEEN`; cross-type comparisons return `null` |
 | Aggregates | No `GROUP BY` / `HAVING` keywords |
 | Functions | No APOC; ASCII-only case ops |
 | Parameters | No HTTP-level params; no parse-time type check |
 | Spatial | No WKT I/O, no CRS transforms; `point.withinBBox` exists for same-SRID boxes |
-| Vectors | No indexes / ANN; no embedding generation; no list-of-vectors properties |
+| Vectors | VECTOR indexes are cataloged and queryable through flat-scan procedures; no ANN structure; no embedding generation; no list-of-vectors properties |
 
 ## Clauses
 
 | Feature | Status |
 |---|---|
-| `CALL` (standalone) | Not supported — parses, analyzer rejects with `UnsupportedFeature` |
-| `CALL … YIELD` | Not supported — parses, analyzer rejects with `UnsupportedFeature` |
+| General-purpose `CALL` | Not supported — analyzer rejects ordinary procedures such as `CALL db.labels()` |
+| Index procedure `CALL` | Supported for `db.index.vector.queryNodes`, `db.index.vector.queryRelationships`, `db.index.fulltext.queryNodes`, and `db.index.fulltext.queryRelationships` |
 | `FOREACH` | Not supported |
-| `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | Supported for RANGE, TEXT, POINT, and LOOKUP indexes; see [Indexes](./queries/indexes) |
-| `CREATE CONSTRAINT` / `DROP CONSTRAINT` | Not supported |
+| `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | Supported for RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT indexes; see [Indexes](./queries/indexes) |
+| `CREATE CONSTRAINT` / `DROP CONSTRAINT` / `SHOW CONSTRAINTS` | Supported for uniqueness, existence, node key, relationship key, and property type constraints; see [Constraints](./queries/constraints) |
 | `LOAD CSV` | Not supported |
 | `USE <graph>` (multi-database) | Not supported |
 | `EXPLAIN` / `PROFILE` Cypher keywords | Not supported — use the explicit binding methods (`db.explain`, `db.profile`, `Explain`, `Profile`) or HTTP `/explain` and `/profile` endpoints |
@@ -110,7 +110,7 @@ in the internal documentation.
 
 | Feature | Status |
 |---|---|
-| Vector indexes / approximate nearest neighbour | Not yet supported — every similarity / distance call is a linear scan over matched candidates |
+| Vector ANN structure | Not yet supported — `db.index.vector.*` procedures use the cataloged index scope but still perform a flat scan over matching entities |
 | Built-in embedding generation | Not supported — no plugin surface; generate embeddings in host code |
 | [List-of-vectors as a property](./data-types/vectors#restriction-no-list-of-vectors-as-a-property) | Not supported — rejected at write time; hang many embeddings off separate nodes |
 | Dimension > 4096 | Not supported — rejected at construction time |
@@ -132,8 +132,8 @@ in the internal documentation.
 |---|---|
 | WAL controls are not uniform across bindings | Rust and `lora-server` expose the full [WAL](./wal) surface. Node exposes archive/raw WAL opens plus sync-mode control. Python, Go, and Ruby expose archive/raw WAL opens with managed snapshot options. WASM remains snapshot-only. |
 | Time-based checkpoint scheduler — not yet supported | Explicit WAL helpers can write managed snapshots after N committed transactions, and Rust / `lora-server` expose explicit checkpoints. Nothing schedules checkpoints by wall-clock time in the background for you. |
-| Uniqueness constraints — not supported | Duplicates can be created silently; enforce in application code or match before creating |
-| Index coverage is scoped | `CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `DROP INDEX`, and `SHOW INDEXES` exist. No uniqueness constraints, vector/ANN index, or full-text ranking surface yet. Composite RANGE indexes are cataloged, but current planner rewrites are single-property. |
+| Constraint coverage is scoped | Uniqueness, existence, node key, relationship key, and property type constraints exist for a label or relationship type. There is no database-wide uniqueness constraint, and existence constraints are single-property only. |
+| Index coverage is scoped | `CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`, `DROP INDEX`, and `SHOW INDEXES` exist. Composite RANGE indexes are cataloged, but current planner rewrites are single-property. Vector procedures are flat scans today, not ANN. |
 | Explicit transactions are surface-dependent | Rust and in-process bindings expose transaction APIs; HTTP has no multi-query transaction endpoint |
 | ID reuse — not supported | Deleting an entity does not free its `u64` id |
 
@@ -170,7 +170,7 @@ in the internal documentation.
 | `HAVING` | [`WITH … WHERE`](./queries/return-with#having-style-filtering-with) |
 | `GROUP BY cols` | Non-aggregated columns in `RETURN` / `WITH` |
 | `CREATE INDEX ON :L(prop)` | Use `CREATE INDEX name FOR (n:L) ON (n.prop)` |
-| `CONSTRAINT UNIQUE` | [`MERGE`](./queries/unwind-merge#merge) on the key + `SET` |
+| `CONSTRAINT UNIQUE` shorthand | `CREATE CONSTRAINT name FOR (n:Label) REQUIRE n.key IS UNIQUE` |
 | `LOAD CSV` | Parse on host, pass as `$rows`, [`UNWIND $rows`](./queries/unwind-merge#unwind) |
 | `CALL apoc.…` | Re-implement in the host language |
 | `point.withinBBox()` | Use `point.withinBBox(p, lowerLeft, upperRight)` with matching SRIDs |
@@ -185,9 +185,9 @@ in the internal documentation.
 These are part of standard Cypher but **not** on the short-term
 roadmap:
 
-- Stored procedures (`CALL` family)
+- General-purpose stored procedures (`CALL` family), except the supported
+  index query procedures
 - `LOAD CSV`-based ingestion
-- Schema constraints at the DDL level
 - Multi-database `USE`
 
 See [Why LoraDB](./why) for the project's intended direction.

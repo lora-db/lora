@@ -288,8 +288,8 @@ RETURN u
 LIMIT 1
 ```
 
-LoraDB has no uniqueness constraints (see [Limitations](../limitations)),
-so `LIMIT 1` is a belt-and-braces guard against duplicates.
+If you have not added a [uniqueness constraint](./constraints), `LIMIT 1`
+is a belt-and-braces guard against duplicates.
 
 ### Filter chain
 

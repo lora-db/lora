@@ -45,7 +45,8 @@ sees the rows produced by the previous one.
 | [**MATCH**](./match) | Find patterns of nodes and relationships |
 | [**CREATE**](./create) | Create nodes and relationships |
 | [**WHERE**](./where) | Filter rows |
-| [**Indexes**](./indexes) | Declare, inspect, and drop secondary indexes |
+| [**Indexes**](./indexes) | Declare, inspect, query, and drop secondary indexes |
+| [**Constraints**](./constraints) | Add uniqueness, existence, key, and type checks |
 | [**RETURN / WITH**](./return-with) | Project, rename, order, and page results |
 | [**ORDER BY / SKIP / LIMIT**](./ordering) | Sort and paginate |
 | [**SET / REMOVE / DELETE**](./set-delete) | Mutate existing entities |
@@ -75,6 +76,7 @@ see the [**Cheat sheet**](./cheat-sheet).
 | HAVING-style filter | [<CypherCode code="WITH … WHERE" />](./return-with#having-style-filtering-with) |
 | Anti-join | [<CypherCode code="NOT EXISTS" />](./where#pattern-existence) |
 | Speed up common predicates | [<CypherCode code="CREATE INDEX" />](./indexes) |
+| Enforce uniqueness or property shape | [<CypherCode code="CREATE CONSTRAINT" />](./constraints) |
 | Shortest path | [<CypherCode code="shortestPath" />](./paths#shortest-paths) |
 | Inline related list | [Pattern comprehension](../functions/list#pattern-comprehension) |
 | Per-row conditional value | [CASE expressions](./return-with#case-expressions) |
@@ -144,9 +146,9 @@ query. They also let the query planner cache plans across invocations.
 ## What's not supported
 
 See [**Limitations**](../limitations) for the full list. Short
-version: no `CALL`, no `FOREACH`, no `LOAD CSV`, no constraints, no
-multi-database (`USE`). Index DDL is supported for performance-oriented
-catalog entries; see [Indexes](./indexes).
+version: no general-purpose `CALL`, no `FOREACH`, no `LOAD CSV`, and no
+multi-database (`USE`). Index and constraint DDL are supported for scoped
+catalog entries; see [Indexes](./indexes) and [Constraints](./constraints).
 
 ## See also
 

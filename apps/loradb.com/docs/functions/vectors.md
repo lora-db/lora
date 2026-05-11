@@ -1,7 +1,7 @@
 ---
 title: Vector Functions (Similarity, Distance, Norms)
 sidebar_label: Vector
-description: Vector functions in LoraDB — vector() construction, cosine and Euclidean similarity, signed distance metrics (EUCLIDEAN, EUCLIDEAN_SQUARED, MANHATTAN, COSINE, DOT, HAMMING), vector_norm, dimension introspection, and many kNN / graph-filtered retrieval examples.
+description: Vector functions in LoraDB — vector() construction, cosine and Euclidean similarity, signed distance metrics, vector_norm, dimension introspection, and vector retrieval examples.
 ---
 
 # Vector Functions (Similarity, Distance, Norms)
@@ -10,9 +10,11 @@ LoraDB has a first-class [`VECTOR`](../data-types/vectors) value type
 with a compact set of built-in functions for constructing vectors,
 measuring similarity, computing signed distances under standard
 metrics, and inspecting shape. Every similarity / distance
-computation is **exhaustive** — vector indexes are not yet
-implemented — so retrieval is expressed as `ORDER BY … LIMIT k` over
-the matched candidate set.
+computation is **exhaustive** when called directly in a query. For a
+cataloged vector search surface, use
+[`CREATE VECTOR INDEX`](../queries/indexes#vector-indexes) with
+`db.index.vector.queryNodes` or `queryRelationships`; those procedures
+currently use flat scan execution over the indexed label/type scope.
 
 All similarity / distance math uses `f32` internally: coordinates
 are converted into `f32` before accumulation, then the scalar result
@@ -671,12 +673,35 @@ curl -s http://127.0.0.1:4747/query \
 
 — or use one of the in-process bindings, which all support parameters.
 
+## Index-backed retrieval
+
+For the supported index procedure surface, create a vector index and
+query it with `CALL`:
+
+```cypher
+CREATE VECTOR INDEX doc_embedding
+FOR (d:Doc)
+ON (d.embedding)
+OPTIONS {indexConfig: {
+  `vector.dimensions`: 384,
+  `vector.similarity_function`: 'cosine'
+}};
+
+CALL db.index.vector.queryNodes('doc_embedding', 10, $query)
+YIELD node, score;
+```
+
+This returns the top `k` rows by descending score. `k` must be
+positive, and the query vector dimension must match the index
+configuration. See [Queries → Indexes → Vector indexes](../queries/indexes#vector-indexes)
+for relationship indexes and option details.
+
 ## Limitations
 
-- **No vector indexes yet** — every call scans the matched candidate
-  set linearly. Keep `MATCH` filters tight.
-- **No approximate nearest neighbour (ANN)** — a direct consequence of
-  the above.
+- **No ANN structure yet** — vector index procedures are supported, but
+  currently scan the indexed label/type scope linearly.
+- **Direct vector function calls are exhaustive** — keep `MATCH`
+  filters tight when using `ORDER BY vector.similarity.* LIMIT k`.
 - **No embedding generation** — LoraDB has no plugin surface. Produce
   embeddings host-side and pass them in.
 - **No list-of-vectors as a property** — store each vector on its own

@@ -93,9 +93,10 @@ labels and relationship types against the live graph. The full rules
 — and the trade-offs that come with "no schema" — live on their own
 page: [**Schema-free writes and soft validation**](./schema-free).
 
-Handle the lack of constraints in application code, or by matching
-before writing, or with [`MERGE`](../queries/unwind-merge#merge) for
-idempotent writes.
+When a label or relationship type needs stronger guarantees, add an
+optional [constraint](../queries/constraints) for uniqueness,
+existence, key, or property type checks. For lighter idempotent writes,
+[`MERGE`](../queries/unwind-merge#merge) is still useful.
 
 ## Relationship semantics
 
@@ -243,12 +244,11 @@ values churn or when you carry status metadata
 ## What is _not_ modeled
 
 - Hyperedges (a relationship connects exactly two nodes).
-- Typed schemas with required properties — LoraDB will happily create
-  two `:Person` nodes with different property sets.
-- Uniqueness constraints — nothing prevents two nodes with identical
-  labels and properties. Enforce uniqueness in your application code,
-  or by matching before creating, or with
-  [`MERGE`](../queries/unwind-merge#merge).
+- Global typed schemas — constraints are optional and scoped to a label
+  or relationship type, not to the whole database.
+- Multi-entity or database-wide uniqueness — use
+  [property uniqueness constraints](../queries/constraints#constraint-kinds)
+  for one label/type scope at a time.
 - Weighted relationships as a native primitive —
   [shortest paths](../queries/paths#shortest-paths) count hops
   regardless of any `weight` property.

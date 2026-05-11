@@ -162,12 +162,20 @@ ORDER BY n DESC
 
 ### Ensure uniqueness at write time
 
-LoraDB has no uniqueness constraints — enforce it yourself with
-`MERGE`:
+Use `MERGE` for idempotent writes:
 
 ```cypher
 MERGE (u:User {email: $email})
 ON CREATE SET u.created_at = timestamp()
+```
+
+When duplicate values must be rejected across all `:User` nodes, add a
+uniqueness constraint:
+
+```cypher
+CREATE CONSTRAINT user_email
+FOR (u:User)
+REQUIRE u.email IS UNIQUE
 ```
 
 ### Pattern-match on one label, filter on another

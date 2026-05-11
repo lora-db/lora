@@ -112,7 +112,7 @@ Common mistakes:
 |---|---|
 | `Unknown label :Foo` | No node with that label exists yet; populate the graph first or use [`CREATE`](./queries/create). |
 | `Unknown variable x` | `x` wasn't introduced by an earlier clause, or it was dropped by a [`WITH`](./queries/return-with#with) that didn't project it. |
-| `Unsupported feature: CALL` | `CALL` / procedures aren't implemented — see [Limitations](./limitations). |
+| `Unsupported feature: CALL` | General-purpose procedures are not implemented. The supported `CALL` surface is limited to vector and full-text index query procedures; see [Indexes](./queries/indexes). |
 | `Unknown function 'foo'` | Not in the built-in list. See [Functions](./functions/overview). |
 | `WrongArity` | Function exists but was called with the wrong number of arguments. |
 | `Aggregate in WHERE` | Aggregates aren't allowed in [`WHERE`](./queries/where). Use [`WITH … WHERE`](./queries/return-with#having-style-filtering-with). |

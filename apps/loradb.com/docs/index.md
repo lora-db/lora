@@ -133,7 +133,7 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**Snapshots**](./snapshot) | Save / load the full graph as a file or byte payload — every binding, plus the opt-in HTTP admin surface. |
 | [**WAL & checkpoints**](./wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — with full operator controls on Rust and the server. |
 | [**Performance**](./performance) | Benchmark tables, CI `benchmark-summary.json`, and how to read regression signals. |
-| [**Limitations**](./limitations) | What's not supported - binding-level WAL-control asymmetry, no constraints, no `CALL`, etc. |
+| [**Limitations**](./limitations) | What's not supported - binding-level WAL-control asymmetry, limited `CALL`, no HTTP parameters, etc. |
 | [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 
 ## The engine's boundaries
@@ -147,11 +147,14 @@ Every item below is a deliberate trade-off, not an oversight:
   snapshot-only and pathless. The engine is still an in-memory,
   single-process system — not a separate persistent storage tier.
 - **Indexes are explicit but scoped.** `CREATE INDEX`, `CREATE TEXT INDEX`,
-  `CREATE POINT INDEX`, `DROP INDEX`, and `SHOW INDEXES` exist for node and
-  relationship predicates. There are still no uniqueness constraints,
-  vector/ANN indexes, or full-text scoring.
-- **No uniqueness constraints.** Use [`MERGE`](./queries/unwind-merge#merge)
-  on a key, or enforce in application code.
+  `CREATE POINT INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`,
+  `DROP INDEX`, and `SHOW INDEXES` exist for node and relationship scopes.
+  Vector search currently uses flat scan execution from the indexed scope;
+  a dedicated ANN structure is still future work.
+- **Constraints are optional.** Use
+  [`CREATE CONSTRAINT`](./queries/constraints) for uniqueness, existence,
+  node keys, relationship keys, and property type checks when a label or
+  relationship type needs stronger guarantees.
 - **Single-process concurrency.** Auto-commit reads can overlap on Arc snapshots;
   write commits and explicit read-write transactions serialize.
 - **No HTTP auth / TLS.** Bind the server to localhost or put it behind
