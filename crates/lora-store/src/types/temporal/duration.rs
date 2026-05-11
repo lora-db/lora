@@ -58,42 +58,66 @@ impl LoraDuration {
                     let n: i64 = num_buf
                         .parse()
                         .map_err(|_| format!("Invalid duration: {s}"))?;
-                    months += n * 12;
+                    let years = n
+                        .checked_mul(12)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
+                    months = months
+                        .checked_add(years)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                     num_buf.clear();
                 }
                 'M' if !in_time => {
                     let n: i64 = num_buf
                         .parse()
                         .map_err(|_| format!("Invalid duration: {s}"))?;
-                    months += n;
+                    months = months
+                        .checked_add(n)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                     num_buf.clear();
                 }
                 'W' if !in_time => {
                     let n: i64 = num_buf
                         .parse()
                         .map_err(|_| format!("Invalid duration: {s}"))?;
-                    days += n * 7;
+                    let weeks = n
+                        .checked_mul(7)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
+                    days = days
+                        .checked_add(weeks)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                     num_buf.clear();
                 }
                 'D' => {
                     let n: i64 = num_buf
                         .parse()
                         .map_err(|_| format!("Invalid duration: {s}"))?;
-                    days += n;
+                    days = days
+                        .checked_add(n)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                     num_buf.clear();
                 }
                 'H' if in_time => {
                     let n: i64 = num_buf
                         .parse()
                         .map_err(|_| format!("Invalid duration: {s}"))?;
-                    seconds += n * 3600;
+                    let hours = n
+                        .checked_mul(3600)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
+                    seconds = seconds
+                        .checked_add(hours)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                     num_buf.clear();
                 }
                 'M' if in_time => {
                     let n: i64 = num_buf
                         .parse()
                         .map_err(|_| format!("Invalid duration: {s}"))?;
-                    seconds += n * 60;
+                    let minutes = n
+                        .checked_mul(60)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
+                    seconds = seconds
+                        .checked_add(minutes)
+                        .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                     num_buf.clear();
                 }
                 'S' if in_time => {
@@ -101,16 +125,22 @@ impl LoraDuration {
                         let n: f64 = num_buf
                             .parse()
                             .map_err(|_| format!("Invalid duration: {s}"))?;
-                        seconds += n.floor() as i64;
+                        seconds = seconds
+                            .checked_add(n.floor() as i64)
+                            .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                         let frac = n - n.floor();
                         if frac > 0.0 {
-                            nanoseconds += (frac * 1_000_000_000.0) as i64;
+                            nanoseconds = nanoseconds
+                                .checked_add((frac * 1_000_000_000.0) as i64)
+                                .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                         }
                     } else {
                         let n: i64 = num_buf
                             .parse()
                             .map_err(|_| format!("Invalid duration: {s}"))?;
-                        seconds += n;
+                        seconds = seconds
+                            .checked_add(n)
+                            .ok_or_else(|| format!("Duration component overflow: {s}"))?;
                     }
                     num_buf.clear();
                 }
@@ -131,42 +161,77 @@ impl LoraDuration {
     }
 
     pub fn negate(&self) -> Self {
+        self.try_negate().unwrap_or_else(|| Self {
+            months: self.months.saturating_neg(),
+            days: self.days.saturating_neg(),
+            seconds: self.seconds.saturating_neg(),
+            nanoseconds: self.nanoseconds.saturating_neg(),
+        })
+    }
+
+    pub fn try_negate(&self) -> Option<Self> {
         Self {
-            months: -self.months,
-            days: -self.days,
-            seconds: -self.seconds,
-            nanoseconds: -self.nanoseconds,
+            months: self.months.checked_neg()?,
+            days: self.days.checked_neg()?,
+            seconds: self.seconds.checked_neg()?,
+            nanoseconds: self.nanoseconds.checked_neg()?,
         }
+        .into()
     }
 
     pub fn add(&self, other: &Self) -> Self {
+        self.try_add(other).unwrap_or_else(|| Self {
+            months: self.months.saturating_add(other.months),
+            days: self.days.saturating_add(other.days),
+            seconds: self.seconds.saturating_add(other.seconds),
+            nanoseconds: self.nanoseconds.saturating_add(other.nanoseconds),
+        })
+    }
+
+    pub fn try_add(&self, other: &Self) -> Option<Self> {
         Self {
-            months: self.months + other.months,
-            days: self.days + other.days,
-            seconds: self.seconds + other.seconds,
-            nanoseconds: self.nanoseconds + other.nanoseconds,
+            months: self.months.checked_add(other.months)?,
+            days: self.days.checked_add(other.days)?,
+            seconds: self.seconds.checked_add(other.seconds)?,
+            nanoseconds: self.nanoseconds.checked_add(other.nanoseconds)?,
         }
+        .into()
     }
 
     pub fn mul_int(&self, n: i64) -> Self {
+        self.try_mul_int(n).unwrap_or_else(|| Self {
+            months: self.months.saturating_mul(n),
+            days: self.days.saturating_mul(n),
+            seconds: self.seconds.saturating_mul(n),
+            nanoseconds: self.nanoseconds.saturating_mul(n),
+        })
+    }
+
+    pub fn try_mul_int(&self, n: i64) -> Option<Self> {
         Self {
-            months: self.months * n,
-            days: self.days * n,
-            seconds: self.seconds * n,
-            nanoseconds: self.nanoseconds * n,
+            months: self.months.checked_mul(n)?,
+            days: self.days.checked_mul(n)?,
+            seconds: self.seconds.checked_mul(n)?,
+            nanoseconds: self.nanoseconds.checked_mul(n)?,
         }
+        .into()
     }
 
     pub fn div_int(&self, n: i64) -> Self {
+        self.try_div_int(n).unwrap_or_else(Self::zero)
+    }
+
+    pub fn try_div_int(&self, n: i64) -> Option<Self> {
         if n == 0 {
-            return Self::zero();
+            return None;
         }
         Self {
-            months: self.months / n,
-            days: self.days / n,
-            seconds: self.seconds / n,
-            nanoseconds: self.nanoseconds / n,
+            months: self.months.checked_div(n)?,
+            days: self.days.checked_div(n)?,
+            seconds: self.seconds.checked_div(n)?,
+            nanoseconds: self.nanoseconds.checked_div(n)?,
         }
+        .into()
     }
 
     /// Duration from date1 to date2 expressed as months + days.
@@ -312,5 +377,38 @@ impl fmt::Display for LoraDuration {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rejects_component_overflow() {
+        let err = LoraDuration::parse("P9223372036854775807Y").unwrap_err();
+        assert!(err.contains("Duration component overflow"));
+    }
+
+    #[test]
+    fn checked_arithmetic_reports_overflow() {
+        let duration = LoraDuration {
+            months: i64::MAX,
+            days: 0,
+            seconds: 0,
+            nanoseconds: 0,
+        };
+
+        assert!(duration.try_add(&duration).is_none());
+        assert!(duration.try_mul_int(2).is_none());
+        assert!(duration.try_negate().is_some());
+
+        let min_duration = LoraDuration {
+            months: i64::MIN,
+            days: 0,
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        assert!(min_duration.try_negate().is_none());
     }
 }

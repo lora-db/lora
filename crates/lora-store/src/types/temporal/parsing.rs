@@ -5,6 +5,10 @@
 /// Parse a time string returning (hour, minute, second, nanosecond,
 /// optional offset_seconds).
 pub(super) fn parse_time_string(s: &str) -> Result<(u32, u32, u32, u32, Option<i32>), String> {
+    if !s.is_ascii() {
+        return Err(format!("Invalid time: {s}"));
+    }
+
     // Find offset suffix: Z, +HH:MM, -HH:MM
     let (time_str, offset) = if let Some(stripped) = s.strip_suffix('Z') {
         (stripped, Some(0i32))
@@ -55,9 +59,14 @@ fn parse_seconds_and_fraction(s: &str) -> Result<(u32, u32), String> {
             .parse::<u32>()
             .map_err(|_| format!("Invalid seconds: {s}"))?;
         let frac = &s[dot_pos + 1..];
+        if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("Invalid fractional seconds: {s}"));
+        }
         // Pad/truncate to 9 digits for nanoseconds
         let padded = format!("{:0<9}", frac);
-        let ns = padded[..9].parse::<u32>().unwrap_or(0);
+        let ns = padded[..9]
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid fractional seconds: {s}"))?;
         Ok((sec, ns))
     } else {
         let sec = s

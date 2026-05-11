@@ -75,19 +75,32 @@ impl LoraDate {
     }
 
     pub fn add_duration(&self, dur: &LoraDuration) -> Self {
-        // Add months first
-        let total_months = self.year as i64 * 12 + (self.month as i64 - 1) + dur.months;
-        let new_year = total_months.div_euclid(12) as i32;
+        self.try_add_duration(dur)
+            .unwrap_or_else(|| clamp_duration_overflow(dur))
+    }
+
+    pub fn try_add_duration(&self, dur: &LoraDuration) -> Option<Self> {
+        let current_months = (self.year as i64)
+            .checked_mul(12)?
+            .checked_add(self.month as i64 - 1)?;
+        let total_months = current_months.checked_add(dur.months)?;
+        let year = total_months.div_euclid(12);
+        let new_year = i32::try_from(year).ok()?;
         let new_month = (total_months.rem_euclid(12) + 1) as u32;
         let max_day = days_in_month(new_year, new_month);
         let new_day = self.day.min(max_day);
-        // Then add days
-        let epoch = days_from_civil(new_year, new_month, new_day) + dur.days;
-        Self::from_epoch_days(epoch)
+        let epoch = days_from_civil(new_year, new_month, new_day).checked_add(dur.days)?;
+        let (year, month, day) = civil_from_days_checked(epoch)?;
+        Some(Self { year, month, day })
     }
 
     pub fn sub_duration(&self, dur: &LoraDuration) -> Self {
-        self.add_duration(&dur.negate())
+        self.try_sub_duration(dur)
+            .unwrap_or_else(|| clamp_duration_overflow(&dur.negate()))
+    }
+
+    pub fn try_sub_duration(&self, dur: &LoraDuration) -> Option<Self> {
+        self.try_add_duration(&dur.try_negate()?)
     }
 
     pub fn truncate_to_month(&self) -> Self {
@@ -95,6 +108,37 @@ impl LoraDate {
             year: self.year,
             month: self.month,
             day: 1,
+        }
+    }
+}
+
+fn civil_from_days_checked(days: i64) -> Option<(i32, u32, u32)> {
+    let z = days.checked_add(719_468)?;
+    let era = if z >= 0 { z } else { z.checked_sub(146_096)? }.checked_div(146_097)?;
+    let era_days = era.checked_mul(146_097)?;
+    let doe = u64::try_from(z.checked_sub(era_days)?).ok()?;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64).checked_add(era.checked_mul(400)?)?;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y.checked_add(1)? } else { y };
+    Some((i32::try_from(y).ok()?, m as u32, d as u32))
+}
+
+fn clamp_duration_overflow(dur: &LoraDuration) -> LoraDate {
+    if dur.months < 0 || (dur.months == 0 && dur.days < 0) {
+        LoraDate {
+            year: i32::MIN,
+            month: 1,
+            day: 1,
+        }
+    } else {
+        LoraDate {
+            year: i32::MAX,
+            month: 12,
+            day: 31,
         }
     }
 }
@@ -117,5 +161,27 @@ impl Ord for LoraDate {
 impl fmt::Display for LoraDate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_duration_add_rejects_year_overflow() {
+        let date = LoraDate {
+            year: i32::MAX,
+            month: 12,
+            day: 31,
+        };
+        let duration = LoraDuration {
+            months: 1,
+            days: 0,
+            seconds: 0,
+            nanoseconds: 0,
+        };
+
+        assert!(date.try_add_duration(&duration).is_none());
     }
 }

@@ -119,3 +119,14 @@ impl fmt::Display for LoraLocalTime {
         format_subsecond(f, self.nanosecond)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_fractional_seconds() {
+        assert!(LoraLocalTime::parse("12:34:56.abc").is_err());
+        assert!(LoraLocalTime::parse("12:34:56.").is_err());
+    }
+}
