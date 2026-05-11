@@ -151,6 +151,19 @@ pub(crate) fn replay_into(graph: &mut InMemoryGraph, events: Vec<MutationEvent>)
                     .replay_drop_index(&name, if_exists)
                     .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
             }
+            MutationEvent::CreateConstraint {
+                request,
+                if_not_exists,
+            } => {
+                graph
+                    .replay_create_constraint(request, if_not_exists)
+                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+            }
+            MutationEvent::DropConstraint { name, if_exists } => {
+                graph
+                    .replay_drop_constraint(&name, if_exists)
+                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+            }
         }
     }
     Ok(())
