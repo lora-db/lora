@@ -293,3 +293,254 @@ fn create_index_error_carries_gql_status() {
         .expect_err("duplicate name should fail");
     assert!(err.to_string().contains("22N71"));
 }
+
+// ---------- SHOW INDEXES type filter ----------
+
+fn seed_mixed_indexes(db: &TestDb) {
+    db.run("CREATE RANGE INDEX r1 FOR (n:Person) ON (n.surname)");
+    db.run("CREATE TEXT INDEX t1 FOR (n:Person) ON (n.name)");
+    db.run("CREATE POINT INDEX p1 FOR (n:Place) ON (n.location)");
+    db.run("CREATE LOOKUP INDEX l1 FOR (n) ON EACH labels(n)");
+}
+
+fn index_names(rows: &[JsonValue]) -> Vec<String> {
+    rows.iter()
+        .filter_map(|r| r.get("name").and_then(|v| v.as_str()).map(String::from))
+        .collect()
+}
+
+#[test]
+fn show_range_indexes_filters_by_type() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run("SHOW RANGE INDEXES");
+    let names = index_names(&rows);
+    assert_eq!(names, vec!["r1"], "got {names:?}");
+}
+
+#[test]
+fn show_text_indexes_filters_by_type() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let names = index_names(&db.run("SHOW TEXT INDEXES"));
+    assert_eq!(names, vec!["t1"], "got {names:?}");
+}
+
+#[test]
+fn show_point_indexes_filters_by_type() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let names = index_names(&db.run("SHOW POINT INDEXES"));
+    assert_eq!(names, vec!["p1"], "got {names:?}");
+}
+
+#[test]
+fn show_lookup_indexes_filters_by_type() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let names = index_names(&db.run("SHOW LOOKUP INDEXES"));
+    assert_eq!(names, vec!["l1"], "got {names:?}");
+}
+
+#[test]
+fn show_all_indexes_returns_every_kind() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run("SHOW ALL INDEXES");
+    assert_eq!(rows.len(), 4);
+}
+
+#[test]
+fn show_vector_indexes_is_empty_when_unsupported() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    assert!(db.run("SHOW VECTOR INDEXES").is_empty());
+}
+
+#[test]
+fn show_fulltext_indexes_is_empty_when_unsupported() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    assert!(db.run("SHOW FULLTEXT INDEXES").is_empty());
+}
+
+#[test]
+fn create_fulltext_index_now_supported() {
+    let db = TestDb::new();
+    db.run("CREATE FULLTEXT INDEX names FOR (n:Person) ON EACH [n.name]");
+    let listed = db.run("SHOW INDEXES");
+    let entry = listed
+        .iter()
+        .find(|r| r.get("name").and_then(|v| v.as_str()) == Some("names"))
+        .expect("fulltext index listed");
+    assert_eq!(entry["type"], JsonValue::String("FULLTEXT".into()));
+}
+
+#[test]
+fn show_index_filter_also_accepts_singular_keyword() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let names = index_names(&db.run("SHOW RANGE INDEX"));
+    assert_eq!(names, vec!["r1"]);
+}
+
+// ---------- SHOW INDEXES YIELD / WHERE / RETURN ----------
+
+#[test]
+fn show_indexes_yield_columns_only() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run("SHOW INDEXES YIELD name, type");
+    assert!(!rows.is_empty());
+    for row in &rows {
+        let obj = row.as_object().expect("row is object");
+        // YIELD restricts the output to just the listed columns.
+        assert_eq!(obj.len(), 2, "row has unexpected columns: {obj:?}");
+        assert!(obj.contains_key("name"));
+        assert!(obj.contains_key("type"));
+    }
+}
+
+#[test]
+fn show_indexes_yield_with_alias() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run("SHOW INDEXES YIELD name AS idx_name");
+    for row in &rows {
+        let obj = row.as_object().unwrap();
+        assert!(obj.contains_key("idx_name"));
+        assert!(!obj.contains_key("name"));
+    }
+}
+
+#[test]
+fn show_indexes_yield_star_is_pass_through() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let pre = db.run("SHOW INDEXES");
+    let post = db.run("SHOW INDEXES YIELD *");
+    assert_eq!(pre.len(), post.len());
+    // Same column shape on both sides.
+    let pre_keys: std::collections::BTreeSet<String> =
+        pre[0].as_object().unwrap().keys().cloned().collect();
+    let post_keys: std::collections::BTreeSet<String> =
+        post[0].as_object().unwrap().keys().cloned().collect();
+    assert_eq!(pre_keys, post_keys);
+}
+
+#[test]
+fn show_indexes_where_filters_yielded_rows() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run("SHOW INDEXES YIELD name, type WHERE type = 'RANGE'");
+    assert_eq!(index_names(&rows), vec!["r1"]);
+}
+
+#[test]
+fn show_indexes_yield_order_by_limit() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run("SHOW INDEXES YIELD name ORDER BY name LIMIT 2");
+    let names = index_names(&rows);
+    assert_eq!(names, vec!["l1", "p1"], "got {names:?}");
+}
+
+#[test]
+fn show_indexes_yield_skip() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run("SHOW INDEXES YIELD name ORDER BY name SKIP 2");
+    let names = index_names(&rows);
+    assert_eq!(names, vec!["r1", "t1"], "got {names:?}");
+}
+
+#[test]
+fn show_indexes_yield_where_return() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let rows = db.run(
+        "SHOW INDEXES YIELD name, type, entityType \
+         WHERE entityType = 'NODE' \
+         RETURN name ORDER BY name LIMIT 2",
+    );
+    let names = index_names(&rows);
+    assert_eq!(names, vec!["l1", "p1"]);
+    // RETURN projected only `name`.
+    for row in &rows {
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj.keys().collect::<Vec<_>>(), vec!["name"]);
+    }
+}
+
+#[test]
+fn show_indexes_filter_combined_with_yield_pipeline() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let names = index_names(
+        &db.run("SHOW RANGE INDEXES YIELD name, type WHERE type = 'RANGE' RETURN name"),
+    );
+    assert_eq!(names, vec!["r1"]);
+}
+
+#[test]
+fn show_indexes_yield_parameter_in_limit() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let mut params = BTreeMap::new();
+    params.insert("lim".into(), LoraValue::Int(2));
+    let rows = db.run_with_params("SHOW INDEXES YIELD name ORDER BY name LIMIT $lim", params);
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn show_indexes_return_without_yield_fails_to_parse() {
+    let db = TestDb::new();
+    let err = db.run_err("SHOW INDEXES RETURN name");
+    assert!(
+        err.to_lowercase().contains("parse") || err.to_lowercase().contains("syntax"),
+        "expected parse error, got: {err}"
+    );
+}
+
+#[test]
+fn show_indexes_yield_starts_with_predicate() {
+    let db = TestDb::new();
+    seed_mixed_indexes(&db);
+    let names =
+        index_names(&db.run("SHOW INDEXES YIELD name WHERE name STARTS WITH 'r' RETURN name"));
+    assert_eq!(names, vec!["r1"]);
+}
+
+// ---------- SHOW CONSTRAINTS pipeline ----------
+
+#[test]
+fn show_constraints_yield_where_return() {
+    let db = TestDb::new();
+    db.run("CREATE CONSTRAINT u FOR (n:Book) REQUIRE n.isbn IS UNIQUE");
+    db.run("CREATE CONSTRAINT e FOR (a:Author) REQUIRE a.name IS NOT NULL");
+    db.run("CREATE CONSTRAINT t FOR (m:Movie) REQUIRE m.title IS :: STRING");
+    let rows = db.run(
+        "SHOW CONSTRAINTS YIELD name, type \
+         WHERE type = 'NODE_PROPERTY_UNIQUENESS' \
+         RETURN name",
+    );
+    let names: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.get("name").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    assert_eq!(names, vec!["u"]);
+}
+
+#[test]
+fn show_constraints_yield_order_by_skip_limit() {
+    let db = TestDb::new();
+    db.run("CREATE CONSTRAINT c1 FOR (n:A) REQUIRE n.x IS UNIQUE");
+    db.run("CREATE CONSTRAINT c2 FOR (n:B) REQUIRE n.y IS UNIQUE");
+    db.run("CREATE CONSTRAINT c3 FOR (n:C) REQUIRE n.z IS UNIQUE");
+    let rows = db.run("SHOW CONSTRAINTS YIELD name ORDER BY name SKIP 1 LIMIT 1");
+    let names: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.get("name").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    assert_eq!(names, vec!["c2"]);
+}
