@@ -26,7 +26,9 @@ impl<'a> PatternPlanner<'a> {
             last = Some(self.plan_part(last, part));
         }
 
-        last.expect("pattern produced no plan")
+        last.unwrap_or_else(|| {
+            input.unwrap_or_else(|| self.planner.push(LogicalOp::Argument(Argument)))
+        })
     }
 
     fn plan_part(&mut self, input: Option<PlanNodeId>, part: &ResolvedPatternPart) -> PlanNodeId {

@@ -40,7 +40,11 @@ impl Optimizer {
                 _ => continue,
             };
 
-            if !can_push_filter_below_projection(&plan.nodes[i], &plan.nodes[input_id]) {
+            let Some(input) = plan.nodes.get(input_id) else {
+                continue;
+            };
+
+            if !can_push_filter_below_projection(&plan.nodes[i], input) {
                 continue;
             }
 
@@ -170,14 +174,13 @@ fn push_filter_below_projection_at(
     filter_id: PlanNodeId,
     projection_id: PlanNodeId,
 ) {
-    let placeholder = || LogicalOp::Argument(Argument);
-    let filter = match std::mem::replace(&mut plan.nodes[filter_id], placeholder()) {
-        LogicalOp::Filter(f) => f,
-        _ => unreachable!(),
+    let filter = match plan.nodes.get(filter_id).cloned() {
+        Some(LogicalOp::Filter(f)) => f,
+        _ => return,
     };
-    let proj = match std::mem::replace(&mut plan.nodes[projection_id], placeholder()) {
-        LogicalOp::Projection(p) => p,
-        _ => unreachable!(),
+    let proj = match plan.nodes.get(projection_id).cloned() {
+        Some(LogicalOp::Projection(p)) => p,
+        _ => return,
     };
 
     plan.nodes[projection_id] = LogicalOp::Filter(Filter {
