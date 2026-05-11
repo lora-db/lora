@@ -142,12 +142,24 @@ where
             // below will surface a parse error coherently.
         }
 
+        // Procedure calls we route ourselves (vector kNN today; full-text
+        // queries land here too once they ship). These bypass the
+        // analyzer/compiler, which doesn't yet model standalone CALL.
+        if super::procedures::is_procedure_call_text(query) {
+            let document = parse_query(query)?;
+            if let lora_ast::Statement::Query(lora_ast::Query::StandaloneCall(call)) =
+                &document.statement
+            {
+                return self.execute_procedure_call(call, params);
+            }
+        }
+
         // Compile (or fetch from the plan cache) under the read lock. The
         // read lock is also what the read-only fast path runs under, so we
         // can reuse it without a release/reacquire when the plan turns out
         // to be a pure read.
-        let store = self.read_store_deadline(deadline)?;
-        let compiled = self.compile_query_cached(query, &*store)?;
+        let (store, store_epoch) = self.read_store_with_epoch_deadline(deadline)?;
+        let compiled = self.compile_query_cached(query, &*store, store_epoch)?;
         let shape = classify_stream(&compiled);
 
         if matches!(shape, StreamShape::ReadOnly) {

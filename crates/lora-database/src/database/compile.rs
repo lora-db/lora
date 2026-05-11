@@ -24,17 +24,22 @@ where
     }
 
     /// Return a cached compiled plan for `query`, or compile + cache one
-    /// against the supplied store. Cache hits still read a cheap stats
-    /// fingerprint so catalog/cardinality changes get fresh cost-based
-    /// operator choices.
+    /// against the supplied store.
+    ///
+    /// The cache key is `(query, write_epoch)`. The write epoch is a
+    /// cheap atomic counter bumped by every publish/in-place write on
+    /// the live store, so cache hits avoid the O(labels + types +
+    /// scoped properties + indexes) `GraphStats` rebuild + BTreeMap
+    /// hash that the old "compute fingerprint on every execute" path
+    /// paid. On miss we build full stats once and hand them to the
+    /// optimizer.
     pub(crate) fn compile_query_cached(
         &self,
         query: &str,
         store: &S,
+        store_epoch: u64,
     ) -> Result<Arc<CompiledQuery>> {
-        let stats = store.graph_stats();
-        let stats_fingerprint = stats.fingerprint();
-        if let Some(plan) = self.plan_cache.get(query, stats_fingerprint) {
+        if let Some(plan) = self.plan_cache.get(query, store_epoch) {
             return Ok(plan);
         }
         let document = parse_query(query)?;
@@ -42,9 +47,9 @@ where
             let mut analyzer = Analyzer::new(store);
             analyzer.analyze(&document)?
         };
+        let stats = store.graph_stats();
         let plan = Arc::new(Self::compile_resolved_with_stats(&resolved, &stats));
-        self.plan_cache
-            .insert(query, stats_fingerprint, plan.clone());
+        self.plan_cache.insert(query, store_epoch, plan.clone());
         Ok(plan)
     }
 }

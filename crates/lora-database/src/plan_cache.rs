@@ -1,4 +1,4 @@
-//! Compiled-plan cache keyed by raw query text plus graph-stats fingerprint.
+//! Compiled-plan cache keyed by raw query text plus live-store epoch.
 //!
 //! Parse + analyze + compile costs the same handful of microseconds for every
 //! `Database::execute_with_params` call, even when the query text is reused
@@ -9,19 +9,19 @@
 //! # Why this is safe
 //!
 //! The compiled plan is a pure function of the parsed `Document` plus the
-//! cardinality snapshot read at compile time:
+//! graph/catalog snapshot read at compile time:
 //! - The analyzer reads the store only to validate that label /
 //!   relationship-type / property-key names exist (analyzer.rs:1110–1170);
 //!   it does not embed any store-derived data into the resolved query.
 //! - The optimizer reads `GraphStats` for cost-based selection between
 //!   competing index rewrites (`use_indexed_node_scans` in
 //!   `lora-compiler/src/optimizer.rs`). The cache key includes the
-//!   stats fingerprint, so cardinality shifts and catalog changes
-//!   compile into a fresh entry instead of reusing stale operator
-//!   choices.
+//!   live-store epoch, which bumps after every write, so cardinality shifts
+//!   and catalog changes compile into a fresh entry instead of reusing stale
+//!   operator choices.
 //! - The storage layer still has the final say on index contents at
 //!   execution time; the cache only avoids redoing analysis and planning
-//!   while the stats/catalog fingerprint remains unchanged.
+//!   while the graph/catalog epoch remains unchanged.
 //!
 //! # Eviction
 //!
@@ -41,7 +41,7 @@ use lora_compiler::CompiledQuery;
 /// allocated once and never reused.
 const DEFAULT_CAPACITY: usize = 256;
 
-/// Content-addressed cache mapping `(query text, stats fingerprint)` →
+/// Content-addressed cache mapping `(query text, live-store epoch)` →
 /// compiled plan.
 ///
 /// Cloning a `PlanCache` is meaningful: callers wrap it in `Arc` so all
@@ -52,32 +52,19 @@ pub(crate) struct PlanCache {
 }
 
 struct Inner {
-    entries: HashMap<CacheKey, Entry>,
+    entries: HashMap<String, Vec<Entry>>,
     /// Monotonic counter used as the "last accessed" stamp for LRU eviction.
     /// Wrapping at u64 takes longer than any reasonable process lifetime, so
     /// we don't worry about overflow.
     counter: u64,
     capacity: usize,
+    len: usize,
 }
 
 struct Entry {
+    store_epoch: u64,
     plan: Arc<CompiledQuery>,
     last_used: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CacheKey {
-    query: String,
-    stats_fingerprint: u64,
-}
-
-impl CacheKey {
-    fn new(query: &str, stats_fingerprint: u64) -> Self {
-        Self {
-            query: query.to_owned(),
-            stats_fingerprint,
-        }
-    }
 }
 
 impl Default for PlanCache {
@@ -97,16 +84,17 @@ impl PlanCache {
                 entries: HashMap::with_capacity(capacity),
                 counter: 0,
                 capacity,
+                len: 0,
             }),
         }
     }
 
-    /// Look up a cached plan for `query` under `stats_fingerprint`.
+    /// Look up a cached plan for `query` under a live-store epoch.
     /// Returns `None` on miss.
     ///
     /// On hit, the entry's last-used timestamp is bumped so it survives
     /// eviction longer.
-    pub(crate) fn get(&self, query: &str, stats_fingerprint: u64) -> Option<Arc<CompiledQuery>> {
+    pub(crate) fn get(&self, query: &str, store_epoch: u64) -> Option<Arc<CompiledQuery>> {
         let mut guard = self
             .inner
             .lock()
@@ -115,14 +103,16 @@ impl PlanCache {
         guard.counter = counter;
         let entry = guard
             .entries
-            .get_mut(&CacheKey::new(query, stats_fingerprint))?;
+            .get_mut(query)?
+            .iter_mut()
+            .find(|entry| entry.store_epoch == store_epoch)?;
         entry.last_used = counter;
         Some(entry.plan.clone())
     }
 
     /// Insert a freshly-compiled plan. If the cache is at capacity, evict
     /// the entry with the oldest `last_used` stamp.
-    pub(crate) fn insert(&self, query: &str, stats_fingerprint: u64, plan: Arc<CompiledQuery>) {
+    pub(crate) fn insert(&self, query: &str, store_epoch: u64, plan: Arc<CompiledQuery>) {
         let mut guard = self
             .inner
             .lock()
@@ -132,17 +122,31 @@ impl PlanCache {
         }
         let counter = guard.counter.wrapping_add(1);
         guard.counter = counter;
-        let key = CacheKey::new(query, stats_fingerprint);
-        if guard.entries.len() >= guard.capacity && !guard.entries.contains_key(&key) {
-            evict_oldest(&mut guard.entries);
+        if let Some(entries) = guard.entries.get_mut(query) {
+            if let Some(entry) = entries
+                .iter_mut()
+                .find(|entry| entry.store_epoch == store_epoch)
+            {
+                entry.plan = plan;
+                entry.last_used = counter;
+                return;
+            }
         }
-        guard.entries.insert(
-            key,
-            Entry {
+
+        if guard.len >= guard.capacity {
+            evict_oldest(&mut guard);
+        }
+
+        guard
+            .entries
+            .entry(query.to_owned())
+            .or_default()
+            .push(Entry {
+                store_epoch,
                 plan,
                 last_used: counter,
-            },
-        );
+            });
+        guard.len += 1;
     }
 
     #[cfg(test)]
@@ -150,18 +154,30 @@ impl PlanCache {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entries
-            .len()
+            .len
     }
 }
 
-fn evict_oldest(entries: &mut HashMap<CacheKey, Entry>) {
-    let oldest_key = entries
+fn evict_oldest(guard: &mut Inner) {
+    let oldest = guard
+        .entries
         .iter()
-        .min_by_key(|(_, e)| e.last_used)
-        .map(|(k, _)| k.clone());
-    if let Some(k) = oldest_key {
-        entries.remove(&k);
+        .flat_map(|(query, entries)| {
+            entries
+                .iter()
+                .enumerate()
+                .map(move |(idx, entry)| (query.clone(), idx, entry.last_used))
+        })
+        .min_by_key(|(_, _, last_used)| *last_used);
+
+    if let Some((query, idx, _)) = oldest {
+        if let Some(entries) = guard.entries.get_mut(&query) {
+            entries.swap_remove(idx);
+            guard.len = guard.len.saturating_sub(1);
+            if entries.is_empty() {
+                guard.entries.remove(&query);
+            }
+        }
     }
 }
 
@@ -204,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn distinct_stats_fingerprints_are_independent() {
+    fn distinct_store_epochs_are_independent() {
         let cache = PlanCache::new();
         let q = "MATCH (n) RETURN n";
         cache.insert(q, 1, dummy_plan());

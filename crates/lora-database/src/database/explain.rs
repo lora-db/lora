@@ -40,9 +40,9 @@ where
         query: &str,
         _params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
-        let store = self.read_store();
+        let (store, store_epoch) = self.read_store_with_epoch_deadline(None)?;
         let compiled = self
-            .compile_query_cached(query, &*store)
+            .compile_query_cached(query, &*store, store_epoch)
             .map_err(LoraError::from_anyhow)?;
         let mut tree = plan_tree_from_compiled(&compiled);
         let stats = store.graph_stats();

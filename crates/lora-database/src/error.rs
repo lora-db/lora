@@ -324,7 +324,8 @@ fn transaction_code(err: &TransactionError) -> LoraErrorCode {
         | TransactionError::NoGraphGuard
         | TransactionError::NoStagedGraph
         | TransactionError::CursorActiveCommit
-        | TransactionError::CursorActiveStatement => LoraErrorCode::Internal,
+        | TransactionError::CursorActiveStatement
+        | TransactionError::Poisoned => LoraErrorCode::Internal,
     }
 }
 

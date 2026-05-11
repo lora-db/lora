@@ -15,10 +15,13 @@ mod execute;
 mod explain;
 mod graph_api;
 mod occ;
+mod procedures;
 mod profile;
 mod pull_mode;
 mod replay;
+mod row_projection;
 mod schema;
+mod show_pipeline;
 mod stream;
 mod write_guard;
 

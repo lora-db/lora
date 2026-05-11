@@ -123,7 +123,7 @@ impl Database<InMemoryGraph> {
             options.max_database_bytes,
         )?);
         let mut graph = InMemoryGraph::new();
-        let snapshot_lsn = if let Some(bytes) = archive.snapshot_bytes() {
+        let snapshot_lsn = if let Some(bytes) = archive.snapshot_bytes()? {
             let (payload, info) = crate::snapshot::decode_snapshot_bytes(&bytes, None)?;
             graph.load_snapshot_payload(payload)?;
             info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO)

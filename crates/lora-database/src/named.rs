@@ -113,7 +113,7 @@ fn normalized_relative_parts(value: &str) -> Result<Vec<&str>, DatabaseNameError
         return Err(DatabaseNameError::AbsolutePath(value.to_string()));
     }
 
-    let parts: Vec<&str> = value.split(['/', '\\']).collect();
+    let mut parts: Vec<&str> = value.split(['/', '\\']).collect();
     if parts.iter().any(|part| part.is_empty()) {
         return Err(DatabaseNameError::InvalidCharacters(value.to_string()));
     }
@@ -129,7 +129,9 @@ fn normalized_relative_parts(value: &str) -> Result<Vec<&str>, DatabaseNameError
         return Err(DatabaseNameError::Reserved(value.to_string()));
     }
 
-    Ok(parts[start..end].to_vec())
+    parts.truncate(end);
+    parts.drain(..start);
+    Ok(parts)
 }
 
 impl fmt::Display for DatabaseName {

@@ -49,9 +49,9 @@ where
         // result whether execution succeeds or not. (Errors during
         // compile flow through the same `LoraError` path as
         // `execute()`, so the caller sees consistent error codes.)
-        let store = self.read_store();
+        let (store, store_epoch) = self.read_store_with_epoch_deadline(None)?;
         let compiled = self
-            .compile_query_cached(query, &*store)
+            .compile_query_cached(query, &*store, store_epoch)
             .map_err(LoraError::from_anyhow)?;
         let tree = plan_tree_from_compiled(&compiled);
         let shape: PlanShape = classify_stream(&compiled).into();

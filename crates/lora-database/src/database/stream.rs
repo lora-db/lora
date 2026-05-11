@@ -90,8 +90,8 @@ impl Database<InMemoryGraph> {
         // the hidden transaction, so we no longer recompile against the
         // staged graph — and the read-only branch reuses the cached plan
         // for every subsequent stream.
-        let store_guard = self.read_store();
-        let compiled_arc = self.compile_query_cached(query, &*store_guard)?;
+        let (store_guard, store_epoch) = self.read_store_with_epoch_deadline(None)?;
+        let compiled_arc = self.compile_query_cached(query, &*store_guard, store_epoch)?;
         let columns = compiled_result_columns(&compiled_arc);
         let shape = classify_stream(&compiled_arc);
         // Release the analyzer's lock before either branch

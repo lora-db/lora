@@ -116,11 +116,13 @@ where
         }
     }
 
-    pub(crate) fn read_store_deadline(&self, _deadline: Option<Instant>) -> Result<Arc<S>> {
-        // Reads only take the LiveStore read lock long enough to clone the
-        // current Arc. Timeout-aware read lock acquisition can be added here
-        // if reader starvation ever shows up in practice.
-        Ok(self.store.load_full())
+    pub(crate) fn read_store_with_epoch_deadline(
+        &self,
+        _deadline: Option<Instant>,
+    ) -> Result<(Arc<S>, u64)> {
+        // Same lock profile as `read_store_deadline`, but includes the
+        // coherent epoch needed for cheap plan-cache keys.
+        Ok(self.store.load_full_with_epoch())
     }
 
     pub(crate) fn write_store_deadline(

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,9 @@ pub enum TransactionError {
 
     #[error("read-only transaction cannot publish staged graph")]
     ReadOnlyCommit,
+
+    #[error("transaction state lock is poisoned")]
+    Poisoned,
 }
 
 /// Transaction execution mode.
@@ -171,18 +175,20 @@ impl Drop for TxCursorLease {
 /// pre-statement length; transaction rollback drops it entirely.
 pub(crate) struct BufferingRecorder {
     buffer: Arc<Mutex<Vec<MutationEvent>>>,
+    failed: Arc<AtomicBool>,
 }
 
 impl BufferingRecorder {
-    pub(crate) fn new(buffer: Arc<Mutex<Vec<MutationEvent>>>) -> Self {
-        Self { buffer }
+    pub(crate) fn new(buffer: Arc<Mutex<Vec<MutationEvent>>>, failed: Arc<AtomicBool>) -> Self {
+        Self { buffer, failed }
     }
 }
 
 impl MutationRecorder for BufferingRecorder {
     fn record(&self, event: MutationEvent) {
-        if let Ok(mut buf) = self.buffer.lock() {
-            buf.push(event);
+        match self.buffer.lock() {
+            Ok(mut buf) => buf.push(event),
+            Err(_) => self.failed.store(true, Ordering::Release),
         }
     }
 }
@@ -200,6 +206,10 @@ pub(crate) struct TxInner {
     /// installed on `staged`. Replayed into the real WAL exactly once
     /// at commit time.
     pub(crate) buffer: Arc<Mutex<Vec<MutationEvent>>>,
+    /// Latched if a mutation event could not be appended to `buffer`.
+    /// Commit must fail rather than publishing a graph whose WAL event stream
+    /// is incomplete.
+    pub(crate) buffer_failed: Arc<AtomicBool>,
     /// Per-statement savepoint snapshot. Set when a statement opens,
     /// cleared on successful completion, restored on
     /// failure/premature drop.
@@ -255,6 +265,7 @@ impl<'db> Transaction<'db> {
         let inner = TxInner {
             staged: None,
             buffer: Arc::new(Mutex::new(Vec::new())),
+            buffer_failed: Arc::new(AtomicBool::new(false)),
             pending_savepoint: None,
             cursor_active: false,
             closed: false,
@@ -442,7 +453,7 @@ impl<'db> Transaction<'db> {
         let staged_ptr: *mut InMemoryGraph = inner
             .staged
             .as_mut()
-            .expect("ensure_staged_locked guarantees Some")
+            .ok_or(TransactionError::NoStagedGraph)?
             as *mut _;
         drop(inner);
 
@@ -490,7 +501,7 @@ impl<'db> Transaction<'db> {
     fn compile_in_tx(&self, query: &str) -> Result<CompiledQuery> {
         let document = parse_query(query)?;
         let (resolved, stats) = {
-            let inner = self.lock_inner_unchecked();
+            let inner = self.lock_inner()?;
             if let Some(staged) = &inner.staged {
                 let mut analyzer = Analyzer::new(staged);
                 let resolved = analyzer.analyze(&document)?;
@@ -519,9 +530,10 @@ impl<'db> Transaction<'db> {
         let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
         let mut staged: InMemoryGraph = live.as_graph().clone();
         if matches!(inner.mode, TransactionMode::ReadWrite) && inner.buffer_mutations {
-            staged.set_mutation_recorder(Some(
-                Arc::new(BufferingRecorder::new(inner.buffer.clone())) as Arc<dyn MutationRecorder>,
-            ));
+            staged.set_mutation_recorder(Some(Arc::new(BufferingRecorder::new(
+                inner.buffer.clone(),
+                inner.buffer_failed.clone(),
+            )) as Arc<dyn MutationRecorder>));
         }
         inner.staged = Some(staged);
         Ok(())
@@ -699,7 +711,7 @@ impl<'db> Transaction<'db> {
         Ok(inner
             .staged
             .as_mut()
-            .expect("ensure_staged_locked guarantees Some") as *mut _)
+            .ok_or(TransactionError::NoStagedGraph)? as *mut _)
     }
 
     /// Commit the transaction and publish staged changes.
@@ -723,7 +735,7 @@ impl<'db> Transaction<'db> {
     }
 
     fn take_commit_state(&self) -> Result<CommitState> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner()?;
         if inner.cursor_active {
             return Err(TransactionError::CursorActiveCommit.into());
         }
@@ -732,11 +744,21 @@ impl<'db> Transaction<'db> {
         }
 
         let mode = inner.mode;
+        if inner.buffer_failed.load(Ordering::Acquire) {
+            inner.closed = true;
+            return Err(TransactionError::Poisoned.into());
+        }
+        let buffer_events = {
+            let mut buffer = inner
+                .buffer
+                .lock()
+                .map_err(|_| TransactionError::Poisoned)?;
+            std::mem::take(&mut *buffer)
+        };
         // Both modes can have `staged = None`: ReadOnly never clones,
         // and ReadWrite transactions that performed no writes leave
         // staging unmaterialized too.
         let staged = inner.staged.take();
-        let buffer_events = std::mem::take(&mut *inner.buffer.lock().unwrap());
         inner.closed = true;
 
         Ok(CommitState {
@@ -812,7 +834,7 @@ impl<'db> Transaction<'db> {
     /// Roll back the transaction. Staged graph changes and buffered
     /// mutations are discarded; the WAL is never armed.
     pub fn rollback(mut self) -> Result<(), LoraError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner()?;
         if inner.closed {
             return Err(TransactionError::AlreadyClosed.into());
         }
@@ -828,7 +850,7 @@ impl<'db> Transaction<'db> {
     /// defer the staging clone until the first mutating statement
     /// (see [`Transaction::ensure_staged_locked`]).
     fn begin_statement(&self) -> Result<MutexGuard<'_, TxInner>> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner()?;
         if inner.closed {
             return Err(TransactionError::AlreadyClosed.into());
         }
@@ -842,7 +864,7 @@ impl<'db> Transaction<'db> {
     /// cursor_active. No staged-graph check — ReadOnly tx has no
     /// staged graph by construction.
     fn precheck_open_no_savepoint(&self) -> Result<()> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner()?;
         if inner.closed {
             return Err(TransactionError::AlreadyClosed.into());
         }
@@ -859,10 +881,10 @@ impl<'db> Transaction<'db> {
         matches!(self.mode, TransactionMode::ReadOnly)
     }
 
-    fn lock_inner_unchecked(&self) -> MutexGuard<'_, TxInner> {
+    fn lock_inner(&self) -> Result<MutexGuard<'_, TxInner>> {
         self.inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .map_err(|_| TransactionError::Poisoned.into())
     }
 
     pub(crate) fn release_streaming_cursor(&self) {
@@ -1046,12 +1068,20 @@ fn discard_transaction_state(inner: &mut TxInner) {
     inner.staged = None;
     if let Ok(mut buf) = inner.buffer.lock() {
         buf.clear();
+    } else {
+        inner.buffer_failed.store(true, Ordering::Release);
     }
     inner.closed = true;
 }
 
 fn take_savepoint(inner: &TxInner, clone_staged: bool) -> Savepoint {
-    let buffer_len = inner.buffer.lock().ok().map(|b| b.len()).unwrap_or(0);
+    let buffer_len = match inner.buffer.lock() {
+        Ok(buffer) => buffer.len(),
+        Err(_) => {
+            inner.buffer_failed.store(true, Ordering::Release);
+            0
+        }
+    };
     Savepoint {
         staged: if clone_staged {
             inner.staged.as_ref().cloned()
@@ -1071,6 +1101,8 @@ fn restore_savepoint(inner: &mut TxInner, savepoint: Option<Savepoint>) {
 fn apply_savepoint(inner: &mut TxInner, sp: Savepoint) {
     if let Ok(mut buf) = inner.buffer.lock() {
         buf.truncate(sp.buffer_len);
+    } else {
+        inner.buffer_failed.store(true, Ordering::Release);
     }
 
     let Some(mut graph) = sp.staged else {
@@ -1082,9 +1114,10 @@ fn apply_savepoint(inner: &mut TxInner, sp: Savepoint) {
     // buffering recorder. `InMemoryGraph::clone` deliberately drops
     // recorders, so the snapshot has none until we put it back.
     if matches!(inner.mode, TransactionMode::ReadWrite) && inner.buffer_mutations {
-        graph.set_mutation_recorder(Some(
-            Arc::new(BufferingRecorder::new(inner.buffer.clone())) as Arc<dyn MutationRecorder>
-        ));
+        graph.set_mutation_recorder(Some(Arc::new(BufferingRecorder::new(
+            inner.buffer.clone(),
+            inner.buffer_failed.clone(),
+        )) as Arc<dyn MutationRecorder>));
     }
     inner.staged = Some(graph);
 }
@@ -1108,5 +1141,30 @@ impl Drop for Transaction<'_> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn buffering_recorder_latches_poisoned_buffer() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let failed = Arc::new(AtomicBool::new(false));
+
+        let poisoned_buffer = buffer.clone();
+        let _ = thread::spawn(move || {
+            let _guard = poisoned_buffer.lock().unwrap();
+            panic!("poison mutation buffer");
+        })
+        .join();
+
+        let recorder = BufferingRecorder::new(buffer, failed.clone());
+        recorder.record(MutationEvent::Clear);
+
+        assert!(failed.load(Ordering::Acquire));
     }
 }

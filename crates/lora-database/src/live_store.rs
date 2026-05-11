@@ -21,18 +21,26 @@
 //! win on the write side is many microseconds per mutating query at
 //! 10k+ node graphs.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 /// Authoritative graph state. Reads obtain an independent `Arc<S>`
 /// snapshot; writes obtain exclusive in-place access.
+///
+/// The `epoch` field is a monotonic write counter: every published
+/// mutation (via [`Self::store`] or a dropped [`WriteHandle`]) bumps it.
+/// Read-mostly callers (the plan cache) use it as a cheap fingerprint
+/// instead of recomputing the full [`GraphStats`] hash on every execute.
 pub(crate) struct LiveStore<S> {
     inner: RwLock<Arc<S>>,
+    epoch: AtomicU64,
 }
 
 impl<S> LiveStore<S> {
     pub(crate) fn new(value: Arc<S>) -> Self {
         Self {
             inner: RwLock::new(value),
+            epoch: AtomicU64::new(1),
         }
     }
 
@@ -44,11 +52,24 @@ impl<S> LiveStore<S> {
         Arc::clone(&*self.inner.read().unwrap_or_else(|p| p.into_inner()))
     }
 
+    /// Snapshot the current state together with the epoch that protects it.
+    /// The epoch is read while holding the same read lock as the Arc clone, so
+    /// callers can safely use it as a cache key for work derived from this
+    /// exact snapshot.
+    pub(crate) fn load_full_with_epoch(&self) -> (Arc<S>, u64) {
+        let guard = self.inner.read().unwrap_or_else(|p| p.into_inner());
+        let snapshot = Arc::clone(&*guard);
+        let epoch = self.epoch.load(Ordering::Acquire);
+        (snapshot, epoch)
+    }
+
     /// Replace the inner `Arc<S>` wholesale. Used at publish points
     /// that already produced a finished new state — snapshot restore,
     /// transaction commit's merged state, etc.
     pub(crate) fn store(&self, value: Arc<S>) {
-        *self.inner.write().unwrap_or_else(|p| p.into_inner()) = value;
+        let mut guard = self.inner.write().unwrap_or_else(|p| p.into_inner());
+        *guard = value;
+        self.epoch.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -64,7 +85,10 @@ impl<S: Clone> LiveStore<S> {
     /// post-mutation state becomes the live state.
     pub(crate) fn write(&self) -> WriteHandle<'_, S> {
         let guard = self.inner.write().unwrap_or_else(|p| p.into_inner());
-        WriteHandle { guard }
+        WriteHandle {
+            guard,
+            epoch: &self.epoch,
+        }
     }
 }
 
@@ -73,6 +97,7 @@ impl<S: Clone> LiveStore<S> {
 /// already live, so there's no explicit "publish" step.
 pub(crate) struct WriteHandle<'a, S> {
     guard: RwLockWriteGuard<'a, Arc<S>>,
+    epoch: &'a AtomicU64,
 }
 
 impl<S: Clone> WriteHandle<'_, S> {
@@ -88,5 +113,16 @@ impl<S: Clone> WriteHandle<'_, S> {
     /// `observe_commit` while the writer mutex is still held.
     pub(crate) fn snapshot(&self) -> Arc<S> {
         Arc::clone(&*self.guard)
+    }
+}
+
+impl<S> Drop for WriteHandle<'_, S> {
+    /// Every write handle that goes out of scope bumps the epoch so the
+    /// plan cache reliably refreshes after any in-place mutation. The
+    /// occasional unnecessary bump (handle acquired, no mutation) only
+    /// invalidates plan cache entries — never a correctness issue, and
+    /// in practice `write()` is only acquired on confirmed write paths.
+    fn drop(&mut self) {
+        self.epoch.fetch_add(1, Ordering::Release);
     }
 }
