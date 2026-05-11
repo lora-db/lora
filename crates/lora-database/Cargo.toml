@@ -23,7 +23,6 @@ parallel = ["lora-executor/parallel"]
 
 [dependencies]
 anyhow.workspace = true
-arc-swap.workspace = true
 chacha20poly1305.workspace = true
 crc32fast.workspace = true
 flate2.workspace = true
@@ -41,7 +40,6 @@ lora-wal.workspace = true
 
 serde_json.workspace = true
 tracing.workspace = true
-tower.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
