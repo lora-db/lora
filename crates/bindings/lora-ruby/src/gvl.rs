@@ -1,7 +1,39 @@
 //! Global VM Lock release primitive.
 
 use std::ffi::c_void;
+use std::fmt;
 use std::mem::MaybeUninit;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+pub(crate) struct GvlPanic {
+    payload: Box<dyn std::any::Any + Send>,
+}
+
+impl GvlPanic {
+    fn new(payload: Box<dyn std::any::Any + Send>) -> Self {
+        Self { payload }
+    }
+
+    fn message(&self) -> &str {
+        if let Some(s) = self.payload.downcast_ref::<&'static str>() {
+            s
+        } else if let Some(s) = self.payload.downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "non-string panic payload"
+        }
+    }
+}
+
+impl fmt::Display for GvlPanic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "engine panicked while Ruby GVL was released: {}",
+            self.message()
+        )
+    }
+}
 
 /// Run `f` with Ruby's Global VM Lock released.
 ///
@@ -11,7 +43,7 @@ use std::mem::MaybeUninit;
 /// keeping all such work on the calling thread. Everything inside
 /// `database_execute`'s closure is pure Rust on pre-extracted data, so
 /// this is sound.
-pub(crate) fn without_gvl<F, R>(f: F) -> R
+pub(crate) fn without_gvl<F, R>(f: F) -> Result<R, GvlPanic>
 where
     F: FnOnce() -> R,
     F: Send,
@@ -19,7 +51,7 @@ where
 {
     struct Data<F, R> {
         func: Option<F>,
-        result: MaybeUninit<R>,
+        result: MaybeUninit<std::thread::Result<R>>,
     }
 
     unsafe extern "C" fn trampoline<F, R>(data: *mut c_void) -> *mut c_void
@@ -27,11 +59,13 @@ where
         F: FnOnce() -> R,
     {
         let data = &mut *(data as *mut Data<F, R>);
-        let f = data
-            .func
-            .take()
-            .expect("without_gvl: closure already taken");
-        data.result.write(f());
+        let result = match data.func.take() {
+            Some(f) => catch_unwind(AssertUnwindSafe(f)),
+            None => {
+                Err(Box::new("without_gvl: closure already taken") as Box<dyn std::any::Any + Send>)
+            }
+        };
+        data.result.write(result);
         std::ptr::null_mut()
     }
 
@@ -50,6 +84,6 @@ where
             None,
             std::ptr::null_mut(),
         );
-        data.result.assume_init()
+        data.result.assume_init().map_err(GvlPanic::new)
     }
 }

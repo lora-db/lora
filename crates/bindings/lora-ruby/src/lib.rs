@@ -146,8 +146,7 @@ impl Database {
 // cost-equivalent.
 fn database_new(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
     let (database_name, options) = database_open_args(ruby, args)?;
-    let db = without_gvl(move || open_database(database_name, options))
-        .map_err(|e| query_error(ruby, e))?;
+    let db = without_gvl_string_result(ruby, move || open_database(database_name, options))?;
     Ok(Database::from_db(db))
 }
 
@@ -180,7 +179,7 @@ fn database_open_wal(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusErro
         ));
     }
     options.wal_dir = Some(wal_dir);
-    let db = without_gvl(move || open_wal_database(options)).map_err(|e| query_error(ruby, e))?;
+    let db = without_gvl_string_result(ruby, move || open_wal_database(options))?;
     Ok(Database::from_db(db))
 }
 
@@ -229,8 +228,9 @@ fn database_save_snapshot(
 ) -> Result<RHash, MagnusError> {
     let (path, options) = snapshot_file_args(ruby, args)?;
     let db = database_inner(ruby, rb_self)?;
-    let meta = without_gvl(move || db.save_snapshot_to_with_options(&path, &options))
-        .map_err(|e| query_error_from_anyhow(ruby, e))?;
+    let meta = without_gvl_lora_result(ruby, move || {
+        db.save_snapshot_to_with_options(&path, &options)
+    })?;
     snapshot_meta_to_rhash(ruby, meta)
 }
 
@@ -241,9 +241,9 @@ fn database_load_snapshot(
 ) -> Result<RHash, MagnusError> {
     let (path, credentials) = snapshot_load_file_args(ruby, args)?;
     let db = database_inner(ruby, rb_self)?;
-    let meta =
-        without_gvl(move || db.load_snapshot_from_with_credentials(&path, credentials.as_ref()))
-            .map_err(|e| query_error_from_anyhow(ruby, e))?;
+    let meta = without_gvl_lora_result(ruby, move || {
+        db.load_snapshot_from_with_credentials(&path, credentials.as_ref())
+    })?;
     snapshot_meta_to_rhash(ruby, meta)
 }
 
@@ -456,6 +456,31 @@ fn database_inner(
         .ok_or_else(|| query_error(ruby, "database is closed"))
 }
 
+fn without_gvl_string_result<T>(
+    ruby: &Ruby,
+    f: impl FnOnce() -> Result<T, String> + Send,
+) -> Result<T, MagnusError>
+where
+    T: Send,
+{
+    without_gvl(f)
+        .map_err(|panic| query_error(ruby, panic.to_string()))?
+        .map_err(|e| query_error(ruby, e))
+}
+
+fn without_gvl_lora_result<T, E>(
+    ruby: &Ruby,
+    f: impl FnOnce() -> Result<T, E> + Send,
+) -> Result<T, MagnusError>
+where
+    T: Send,
+    E: Into<lora_database::LoraError> + Send,
+{
+    without_gvl(f)
+        .map_err(|panic| query_error(ruby, panic.to_string()))?
+        .map_err(|e| query_error_from_anyhow(ruby, e))
+}
+
 /// `execute(query, params = nil)` — `-1` arity so `params` is optional and
 /// we can distinguish "not passed" from `nil`/`{}` (both map to empty
 /// params). Everything that touches Ruby values happens under the GVL;
@@ -494,17 +519,16 @@ fn database_execute(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<R
     // is pure Rust — no Ruby values cross the boundary — which keeps this
     // sound.
     let db = database_inner(ruby, rb_self)?;
-    let exec_result = without_gvl(move || {
+    let exec_result = without_gvl_lora_result(ruby, move || {
         let options = ExecuteOptions {
             format: ResultFormat::RowArrays,
         };
         db.execute_with_params(&query, Some(options), params_map)
-    });
+    })?;
 
     let row_arrays = match exec_result {
-        Ok(QueryResult::RowArrays(r)) => r,
-        Ok(_) => return Err(query_error(ruby, "expected RowArrays result")),
-        Err(e) => return Err(query_error_from_anyhow(ruby, e)),
+        QueryResult::RowArrays(r) => r,
+        _ => return Err(query_error(ruby, "expected RowArrays result")),
     };
 
     let out = ruby.hash_new();
@@ -536,8 +560,7 @@ fn database_explain(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<R
         None => None,
     };
     let db = database_inner(ruby, rb_self)?;
-    let plan = without_gvl(move || db.explain(&query, params_map))
-        .map_err(|e| query_error_from_anyhow(ruby, e))?;
+    let plan = without_gvl_lora_result(ruby, move || db.explain(&query, params_map))?;
     query_plan_to_ruby(ruby, &plan)
 }
 
@@ -554,8 +577,7 @@ fn database_profile(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<R
         None => None,
     };
     let db = database_inner(ruby, rb_self)?;
-    let prof = without_gvl(move || db.profile(&query, params_map))
-        .map_err(|e| query_error_from_anyhow(ruby, e))?;
+    let prof = without_gvl_lora_result(ruby, move || db.profile(&query, params_map))?;
     query_profile_to_ruby(ruby, &prof)
 }
 
