@@ -88,6 +88,12 @@ pub enum ExecutorError {
     #[error("query deadline exceeded")]
     QueryTimeout,
 
+    /// A registered constraint rejected a proposed mutation. The
+    /// payload already includes the GQLSTATUS code (22N77/78/79) so the
+    /// outer error format is just the inner message.
+    #[error("{0}")]
+    ConstraintViolation(String),
+
     #[error("{0}")]
     RuntimeError(String),
 }

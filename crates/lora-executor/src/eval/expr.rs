@@ -178,7 +178,13 @@ pub fn eval_expr<S: GraphStorage>(
             match (base, idx) {
                 (LoraValue::List(items), LoraValue::Int(i)) => {
                     let i = if i < 0 {
-                        (items.len() as i64 + i) as usize
+                        match i64::try_from(items.len())
+                            .ok()
+                            .and_then(|len| len.checked_add(i))
+                        {
+                            Some(i) if i >= 0 => i as usize,
+                            _ => return LoraValue::Null,
+                        }
                     } else {
                         i as usize
                     };

@@ -173,7 +173,9 @@ pub(super) fn eval_function<S: GraphStorage>(
 
         "tointeger" | "toint" => match args.first() {
             Some(LoraValue::Int(i)) => LoraValue::Int(*i),
-            Some(LoraValue::Float(f)) => LoraValue::Int(*f as i64),
+            Some(LoraValue::Float(f)) => f64_to_i64(*f)
+                .map(LoraValue::Int)
+                .unwrap_or(LoraValue::Null),
             Some(LoraValue::String(s)) => s
                 .parse::<i64>()
                 .ok()
@@ -194,26 +196,35 @@ pub(super) fn eval_function<S: GraphStorage>(
         },
 
         "abs" => match args.first() {
-            Some(LoraValue::Int(i)) => LoraValue::Int(i.abs()),
+            Some(LoraValue::Int(i)) => i
+                .checked_abs()
+                .map(LoraValue::Int)
+                .unwrap_or(LoraValue::Null),
             Some(LoraValue::Float(f)) => LoraValue::Float(f.abs()),
             _ => LoraValue::Null,
         },
 
         // -- Math functions ------------------------------------------------
         "ceil" => match args.first() {
-            Some(LoraValue::Float(f)) => LoraValue::Int(f.ceil() as i64),
+            Some(LoraValue::Float(f)) => f64_to_i64(f.ceil())
+                .map(LoraValue::Int)
+                .unwrap_or(LoraValue::Null),
             Some(LoraValue::Int(i)) => LoraValue::Int(*i),
             _ => LoraValue::Null,
         },
 
         "floor" => match args.first() {
-            Some(LoraValue::Float(f)) => LoraValue::Int(f.floor() as i64),
+            Some(LoraValue::Float(f)) => f64_to_i64(f.floor())
+                .map(LoraValue::Int)
+                .unwrap_or(LoraValue::Null),
             Some(LoraValue::Int(i)) => LoraValue::Int(*i),
             _ => LoraValue::Null,
         },
 
         "round" => match args.first() {
-            Some(LoraValue::Float(f)) => LoraValue::Int(f.round() as i64),
+            Some(LoraValue::Float(f)) => f64_to_i64(f.round())
+                .map(LoraValue::Int)
+                .unwrap_or(LoraValue::Null),
             Some(LoraValue::Int(i)) => LoraValue::Int(*i),
             _ => LoraValue::Null,
         },
@@ -409,11 +420,9 @@ pub(super) fn eval_function<S: GraphStorage>(
         // -- toBoolean --------------------------------------------------------
         "toboolean" | "tobooleanornull" => match args.first() {
             Some(LoraValue::Bool(b)) => LoraValue::Bool(*b),
-            Some(LoraValue::String(s)) => match s.to_ascii_lowercase().as_str() {
-                "true" => LoraValue::Bool(true),
-                "false" => LoraValue::Bool(false),
-                _ => LoraValue::Null,
-            },
+            Some(LoraValue::String(s)) if s.eq_ignore_ascii_case("true") => LoraValue::Bool(true),
+            Some(LoraValue::String(s)) if s.eq_ignore_ascii_case("false") => LoraValue::Bool(false),
+            Some(LoraValue::String(_)) => LoraValue::Null,
             Some(LoraValue::Int(i)) => match *i {
                 0 => LoraValue::Bool(false),
                 _ => LoraValue::Bool(true),
@@ -432,10 +441,8 @@ pub(super) fn eval_function<S: GraphStorage>(
             Some(LoraValue::Binary(_)) => LoraValue::String("BINARY".to_string()),
             Some(LoraValue::List(items)) => {
                 // Determine element type for homogeneous lists
-                let elem_type = if items.is_empty() {
-                    "ANY"
-                } else {
-                    let first_type = match &items[0] {
+                let elem_type = if let Some(first) = items.first() {
+                    let first_type = match first {
                         LoraValue::Int(_) => "INTEGER",
                         LoraValue::Float(_) => "FLOAT",
                         LoraValue::String(_) => "STRING",
@@ -457,6 +464,8 @@ pub(super) fn eval_function<S: GraphStorage>(
                     } else {
                         "ANY"
                     }
+                } else {
+                    "ANY"
                 };
                 LoraValue::String(format!("LIST<{elem_type}>"))
             }
@@ -839,5 +848,24 @@ fn numeric_binary(args: &[LoraValue], op: impl FnOnce(f64, f64) -> Option<f64>) 
             .map(LoraValue::Float)
             .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
+    }
+}
+
+#[inline]
+fn f64_to_i64(value: f64) -> Option<i64> {
+    (value.is_finite() && value >= i64::MIN as f64 && value < 9_223_372_036_854_775_808.0)
+        .then_some(value as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_to_integer_conversion_rejects_non_finite_and_out_of_range() {
+        assert_eq!(f64_to_i64(42.0), Some(42));
+        assert_eq!(f64_to_i64(f64::NAN), None);
+        assert_eq!(f64_to_i64(f64::INFINITY), None);
+        assert_eq!(f64_to_i64(9_223_372_036_854_775_808.0), None);
     }
 }

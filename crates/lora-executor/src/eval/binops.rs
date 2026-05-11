@@ -26,7 +26,10 @@ pub(super) fn eval_unary(op: UnaryOp, value: LoraValue) -> LoraValue {
         }
         UnaryOp::Pos => value,
         UnaryOp::Neg => match value {
-            LoraValue::Int(v) => LoraValue::Int(-v),
+            LoraValue::Int(v) => match v.checked_neg() {
+                Some(out) => LoraValue::Int(out),
+                None => arithmetic_overflow("integer negation"),
+            },
             LoraValue::Float(v) => LoraValue::Float(-v),
             _ => LoraValue::Null,
         },
@@ -100,7 +103,10 @@ pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> Lora
                 BinaryOp::Gt => cmp_numeric_or_string(lhs, rhs, |a, b| a > b, |a, b| a > b),
                 BinaryOp::Le => cmp_numeric_or_string(lhs, rhs, |a, b| a <= b, |a, b| a <= b),
                 BinaryOp::Ge => cmp_numeric_or_string(lhs, rhs, |a, b| a >= b, |a, b| a >= b),
-                _ => unreachable!(),
+                _ => {
+                    set_eval_error("invalid comparison operator dispatch".to_string());
+                    LoraValue::Null
+                }
             }
         }
 
@@ -218,22 +224,36 @@ fn cmp_numeric_or_string(
 
 fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (lhs, rhs) {
-        (LoraValue::Int(a), LoraValue::Int(b)) => LoraValue::Int(a + b),
+        (LoraValue::Int(a), LoraValue::Int(b)) => match a.checked_add(b) {
+            Some(out) => LoraValue::Int(out),
+            None => arithmetic_overflow("integer addition"),
+        },
         (LoraValue::String(a), LoraValue::String(b)) => LoraValue::String(a + &b),
         (LoraValue::List(mut a), LoraValue::List(b)) => {
             a.extend(b);
             LoraValue::List(a)
         }
         // Temporal + Duration
-        (LoraValue::Date(d), LoraValue::Duration(dur)) => LoraValue::Date(d.add_duration(&dur)),
-        (LoraValue::Duration(dur), LoraValue::Date(d)) => LoraValue::Date(d.add_duration(&dur)),
-        (LoraValue::DateTime(dt), LoraValue::Duration(dur)) => {
-            LoraValue::DateTime(dt.add_duration(&dur))
-        }
-        (LoraValue::Duration(dur), LoraValue::DateTime(dt)) => {
-            LoraValue::DateTime(dt.add_duration(&dur))
-        }
-        (LoraValue::Duration(a), LoraValue::Duration(b)) => LoraValue::Duration(a.add(&b)),
+        (LoraValue::Date(d), LoraValue::Duration(dur)) => match d.try_add_duration(&dur) {
+            Some(out) => LoraValue::Date(out),
+            None => arithmetic_overflow("date duration addition"),
+        },
+        (LoraValue::Duration(dur), LoraValue::Date(d)) => match d.try_add_duration(&dur) {
+            Some(out) => LoraValue::Date(out),
+            None => arithmetic_overflow("date duration addition"),
+        },
+        (LoraValue::DateTime(dt), LoraValue::Duration(dur)) => match dt.try_add_duration(&dur) {
+            Some(out) => LoraValue::DateTime(out),
+            None => arithmetic_overflow("datetime duration addition"),
+        },
+        (LoraValue::Duration(dur), LoraValue::DateTime(dt)) => match dt.try_add_duration(&dur) {
+            Some(out) => LoraValue::DateTime(out),
+            None => arithmetic_overflow("datetime duration addition"),
+        },
+        (LoraValue::Duration(a), LoraValue::Duration(b)) => match a.try_add(&b) {
+            Some(out) => LoraValue::Duration(out),
+            None => arithmetic_overflow("duration addition"),
+        },
         // Type errors for temporal + non-duration
         (LoraValue::Date(_), _) | (_, LoraValue::Date(_)) => {
             set_eval_error("Cannot add non-duration to date".to_string());
@@ -252,12 +272,22 @@ fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
 
 fn sub_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (lhs, rhs) {
-        (LoraValue::Int(a), LoraValue::Int(b)) => LoraValue::Int(a - b),
+        (LoraValue::Int(a), LoraValue::Int(b)) => match a.checked_sub(b) {
+            Some(out) => LoraValue::Int(out),
+            None => arithmetic_overflow("integer subtraction"),
+        },
         // Temporal - Duration
-        (LoraValue::Date(d), LoraValue::Duration(dur)) => LoraValue::Date(d.sub_duration(&dur)),
-        (LoraValue::DateTime(dt), LoraValue::Duration(dur)) => {
-            LoraValue::DateTime(dt.add_duration(&dur.negate()))
-        }
+        (LoraValue::Date(d), LoraValue::Duration(dur)) => match d.try_sub_duration(&dur) {
+            Some(out) => LoraValue::Date(out),
+            None => arithmetic_overflow("date duration subtraction"),
+        },
+        (LoraValue::DateTime(dt), LoraValue::Duration(dur)) => match dur.try_negate() {
+            Some(negated) => match dt.try_add_duration(&negated) {
+                Some(out) => LoraValue::DateTime(out),
+                None => arithmetic_overflow("datetime duration subtraction"),
+            },
+            None => arithmetic_overflow("duration negation"),
+        },
         // Temporal - Temporal -> Duration
         (LoraValue::Date(d1), LoraValue::Date(d2)) => {
             LoraValue::Duration(LoraDuration::in_days(&d2, &d1))
@@ -266,7 +296,12 @@ fn sub_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
             LoraValue::Duration(LoraDuration::between_datetimes(&dt2, &dt1))
         }
         // Duration - Duration
-        (LoraValue::Duration(a), LoraValue::Duration(b)) => LoraValue::Duration(a.add(&b.negate())),
+        (LoraValue::Duration(a), LoraValue::Duration(b)) => {
+            match b.try_negate().and_then(|b| a.try_add(&b)) {
+                Some(out) => LoraValue::Duration(out),
+                None => arithmetic_overflow("duration subtraction"),
+            }
+        }
         (a, b) => match (a.as_f64(), b.as_f64()) {
             (Some(a), Some(b)) => LoraValue::Float(a - b),
             _ => LoraValue::Null,
@@ -276,9 +311,18 @@ fn sub_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
 
 fn mul_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (lhs, rhs) {
-        (LoraValue::Int(a), LoraValue::Int(b)) => LoraValue::Int(a * b),
-        (LoraValue::Duration(d), LoraValue::Int(n)) => LoraValue::Duration(d.mul_int(n)),
-        (LoraValue::Int(n), LoraValue::Duration(d)) => LoraValue::Duration(d.mul_int(n)),
+        (LoraValue::Int(a), LoraValue::Int(b)) => match a.checked_mul(b) {
+            Some(out) => LoraValue::Int(out),
+            None => arithmetic_overflow("integer multiplication"),
+        },
+        (LoraValue::Duration(d), LoraValue::Int(n)) => match d.try_mul_int(n) {
+            Some(out) => LoraValue::Duration(out),
+            None => arithmetic_overflow("duration multiplication"),
+        },
+        (LoraValue::Int(n), LoraValue::Duration(d)) => match d.try_mul_int(n) {
+            Some(out) => LoraValue::Duration(out),
+            None => arithmetic_overflow("duration multiplication"),
+        },
         (a, b) => match (a.as_f64(), b.as_f64()) {
             (Some(a), Some(b)) => LoraValue::Float(a * b),
             _ => LoraValue::Null,
@@ -289,7 +333,10 @@ fn mul_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
 fn div_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (&lhs, &rhs) {
         (LoraValue::Duration(d), LoraValue::Int(n)) if *n != 0 => {
-            return LoraValue::Duration(d.div_int(*n));
+            return match d.try_div_int(*n) {
+                Some(out) => LoraValue::Duration(out),
+                None => arithmetic_overflow("duration division"),
+            };
         }
         _ => {}
     }
@@ -303,21 +350,122 @@ fn div_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
 fn mod_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (lhs, rhs) {
         (LoraValue::Int(_), LoraValue::Int(0)) => LoraValue::Null,
-        (LoraValue::Int(a), LoraValue::Int(b)) => LoraValue::Int(a % b),
+        (LoraValue::Int(a), LoraValue::Int(b)) => match a.checked_rem(b) {
+            Some(out) => LoraValue::Int(out),
+            None => arithmetic_overflow("integer modulo"),
+        },
         _ => LoraValue::Null,
     }
+}
+
+fn arithmetic_overflow(op: &str) -> LoraValue {
+    set_eval_error(format!("{op} overflowed"));
+    LoraValue::Null
 }
 
 fn pow_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (lhs.as_f64(), rhs.as_f64()) {
         (Some(a), Some(b)) => {
             let out = a.powf(b);
-            if out.fract() == 0.0 {
+            if !out.is_finite() {
+                LoraValue::Null
+            } else if out.fract() == 0.0 && f64_fits_i64(out) {
                 LoraValue::Int(out as i64)
             } else {
                 LoraValue::Float(out)
             }
         }
         _ => LoraValue::Null,
+    }
+}
+
+#[inline]
+fn f64_fits_i64(value: f64) -> bool {
+    value >= i64::MIN as f64 && value < 9_223_372_036_854_775_808.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eval::errors::{clear_eval_error, take_eval_error};
+
+    fn take_overflow_from(value: LoraValue) -> String {
+        assert!(matches!(value, LoraValue::Null));
+        take_eval_error().expect("overflow should set eval error")
+    }
+
+    #[test]
+    fn integer_overflow_returns_null_with_error() {
+        clear_eval_error();
+        let err = take_overflow_from(eval_binary(
+            &BinaryOp::Add,
+            LoraValue::Int(i64::MAX),
+            LoraValue::Int(1),
+        ));
+        assert!(err.contains("integer addition overflowed"));
+
+        clear_eval_error();
+        let err = take_overflow_from(eval_unary(UnaryOp::Neg, LoraValue::Int(i64::MIN)));
+        assert!(err.contains("integer negation overflowed"));
+
+        clear_eval_error();
+        let err = take_overflow_from(eval_binary(
+            &BinaryOp::Mod,
+            LoraValue::Int(i64::MIN),
+            LoraValue::Int(-1),
+        ));
+        assert!(err.contains("integer modulo overflowed"));
+    }
+
+    #[test]
+    fn duration_overflow_returns_null_with_error() {
+        let duration = LoraDuration {
+            months: i64::MAX,
+            days: 0,
+            seconds: 0,
+            nanoseconds: 0,
+        };
+
+        clear_eval_error();
+        let err = take_overflow_from(eval_binary(
+            &BinaryOp::Add,
+            LoraValue::Duration(duration.clone()),
+            LoraValue::Duration(duration),
+        ));
+        assert!(err.contains("duration addition overflowed"));
+    }
+
+    #[test]
+    fn temporal_duration_overflow_returns_null_with_error() {
+        let date = lora_store::LoraDate {
+            year: i32::MAX,
+            month: 12,
+            day: 31,
+        };
+
+        clear_eval_error();
+        let err = take_overflow_from(eval_binary(
+            &BinaryOp::Add,
+            LoraValue::Date(date),
+            LoraValue::Duration(LoraDuration {
+                months: 1,
+                days: 0,
+                seconds: 0,
+                nanoseconds: 0,
+            }),
+        ));
+        assert!(err.contains("date duration addition overflowed"));
+    }
+
+    #[test]
+    fn pow_rejects_non_finite_results() {
+        assert!(matches!(
+            eval_binary(
+                &BinaryOp::Pow,
+                LoraValue::Float(f64::MAX),
+                LoraValue::Int(2),
+            ),
+            LoraValue::Null
+        ));
     }
 }
