@@ -5,6 +5,16 @@ use lora_store::GraphCatalog;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
+    fn with_child_scope<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, SemanticError>,
+    ) -> Result<T, SemanticError> {
+        self.scopes.push();
+        let result = f(self);
+        self.scopes.pop();
+        result
+    }
+
     /// Analyze an expression, but allow resolution of projection aliases
     /// (used for ORDER BY which can reference aliases from RETURN/WITH).
     pub(super) fn analyze_expr_with_aliases(
@@ -188,10 +198,10 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             } => {
                 let list = self.analyze_expr(list)?;
                 let var_id = self.symbols.new_var();
-                self.scopes.push();
-                self.scopes.declare(variable.name.clone(), var_id);
-                let predicate = self.analyze_expr(predicate)?;
-                self.scopes.pop();
+                let predicate = self.with_child_scope(|this| {
+                    this.scopes.declare(variable.name.clone(), var_id);
+                    this.analyze_expr(predicate)
+                })?;
 
                 Ok(ResolvedExpr::ListPredicate {
                     kind: *kind,
@@ -210,14 +220,15 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             } => {
                 let list = self.analyze_expr(list)?;
                 let var_id = self.symbols.new_var();
-                self.scopes.push();
-                self.scopes.declare(variable.name.clone(), var_id);
-                let filter = filter.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
-                let map_expr = map_expr
-                    .as_ref()
-                    .map(|e| self.analyze_expr(e))
-                    .transpose()?;
-                self.scopes.pop();
+                let (filter, map_expr) = self.with_child_scope(|this| {
+                    this.scopes.declare(variable.name.clone(), var_id);
+                    let filter = filter.as_ref().map(|e| this.analyze_expr(e)).transpose()?;
+                    let map_expr = map_expr
+                        .as_ref()
+                        .map(|e| this.analyze_expr(e))
+                        .transpose()?;
+                    Ok((filter, map_expr))
+                })?;
 
                 Ok(ResolvedExpr::ListComprehension {
                     variable: var_id,
@@ -239,11 +250,11 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 let list = self.analyze_expr(list)?;
                 let acc_id = self.symbols.new_var();
                 let var_id = self.symbols.new_var();
-                self.scopes.push();
-                self.scopes.declare(accumulator.name.clone(), acc_id);
-                self.scopes.declare(variable.name.clone(), var_id);
-                let expr = self.analyze_expr(expr)?;
-                self.scopes.pop();
+                let expr = self.with_child_scope(|this| {
+                    this.scopes.declare(accumulator.name.clone(), acc_id);
+                    this.scopes.declare(variable.name.clone(), var_id);
+                    this.analyze_expr(expr)
+                })?;
 
                 Ok(ResolvedExpr::Reduce {
                     accumulator: acc_id,
@@ -489,7 +500,9 @@ fn try_vector_enum_literal(fn_name: &str, arg_idx: usize, expr: &Expr) -> Option
 }
 
 fn is_aggregate_function(name: &str) -> bool {
-    AGGREGATE_FUNCTIONS.contains(&name.to_ascii_lowercase().as_str())
+    AGGREGATE_FUNCTIONS
+        .iter()
+        .any(|function| name.eq_ignore_ascii_case(function))
 }
 
 fn validate_function_name(name: &str, start: usize, end: usize) -> Result<(), SemanticError> {

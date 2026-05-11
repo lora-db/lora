@@ -300,3 +300,20 @@ fn dotted_similarity_typo_is_rejected() {
             if name == "vector.similarity.manhattan"
     ));
 }
+
+#[test]
+fn list_expression_scope_is_popped_after_analysis_error() {
+    let graph = InMemoryGraph::new();
+    let bad = parse_query("RETURN any(x IN [1] WHERE missing) AS ok").unwrap();
+    let mut analyzer = Analyzer::new(&graph);
+    assert!(matches!(
+        analyzer.analyze(&bad),
+        Err(SemanticError::UnknownVariable(name)) if name == "missing"
+    ));
+
+    let leaked = parse_query("RETURN x AS leaked").unwrap();
+    assert!(matches!(
+        analyzer.analyze(&leaked),
+        Err(SemanticError::UnknownVariable(name)) if name == "x"
+    ));
+}
