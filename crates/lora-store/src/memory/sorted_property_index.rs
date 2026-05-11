@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::types::PropertyValue;
 
+use super::entity_index_store::ScopedPropertyKey;
 use super::property_index::PropertyIndexKey;
 
 /// Sorted bucket: every value seen for an indexed property mapped to
@@ -34,13 +35,7 @@ use super::property_index::PropertyIndexKey;
 /// across labels.
 #[derive(Debug, Default, Clone)]
 pub(super) struct SortedPropertyIndex {
-    by_scope: BTreeMap<SortedScopeKey, SortedScope>,
-}
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
-pub(super) struct SortedScopeKey {
-    pub label: String,
-    pub property: String,
+    by_scope: BTreeMap<ScopedPropertyKey, SortedScope>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -55,10 +50,7 @@ impl SortedPropertyIndex {
     pub(super) fn add_scope(&mut self, label: &str, property: &str) -> bool {
         let entry = self
             .by_scope
-            .entry(SortedScopeKey {
-                label: label.to_string(),
-                property: property.to_string(),
-            })
+            .entry(ScopedPropertyKey::new(label, property))
             .or_default();
         let was_empty = entry.refcount == 0;
         entry.refcount = entry.refcount.saturating_add(1);
@@ -66,10 +58,7 @@ impl SortedPropertyIndex {
     }
 
     pub(super) fn remove_scope(&mut self, label: &str, property: &str) {
-        let key = SortedScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        };
+        let key = ScopedPropertyKey::new(label, property);
         if let Some(scope) = self.by_scope.get_mut(&key) {
             scope.refcount = scope.refcount.saturating_sub(1);
             if scope.refcount == 0 {
@@ -82,10 +71,10 @@ impl SortedPropertyIndex {
         let Some(key) = PropertyIndexKey::from_value(value) else {
             return;
         };
-        if let Some(scope) = self.by_scope.get_mut(&SortedScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        }) {
+        if let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        {
             scope.by_value.entry(key).or_default().insert(id);
         }
     }
@@ -98,10 +87,10 @@ impl SortedPropertyIndex {
         old: Option<&PropertyValue>,
         new: Option<&PropertyValue>,
     ) {
-        let Some(scope) = self.by_scope.get_mut(&SortedScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        }) else {
+        let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        else {
             return;
         };
         if let Some(old) = old.and_then(PropertyIndexKey::from_value) {
@@ -124,10 +113,9 @@ impl SortedPropertyIndex {
         lo: Option<&PropertyValue>,
         hi: Option<&PropertyValue>,
     ) -> Option<BTreeSet<u64>> {
-        let scope = self.by_scope.get(&SortedScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        })?;
+        let scope = self
+            .by_scope
+            .get(&ScopedPropertyKey::new(label, property))?;
         let lo_key = lo.and_then(PropertyIndexKey::from_value);
         let hi_key = hi.and_then(PropertyIndexKey::from_value);
         let mut out = BTreeSet::new();

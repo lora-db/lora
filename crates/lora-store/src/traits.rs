@@ -10,8 +10,9 @@ use std::collections::BTreeSet;
 use lora_ast::Direction;
 
 use crate::memory::{
-    CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, GraphStats,
-    IndexDefinition, IndexRequest,
+    ConstraintDefinition, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
+    CreateIndexError, CreateIndexOutcome, DropConstraintError, DropConstraintOutcome,
+    DropIndexError, DropIndexOutcome, GraphStats, IndexDefinition, IndexRequest,
 };
 use crate::types::{
     ExpandedRelationship, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId,
@@ -581,6 +582,119 @@ pub trait GraphStorage {
         None
     }
 
+    /// Run a FULLTEXT index query against the named index. Returns
+    /// `(entity_id, score)` pairs sorted descending by score. Backends
+    /// without fulltext support return an empty vector; the caller is
+    /// expected to have validated that the index exists via the
+    /// catalog first.
+    fn fulltext_search(&self, _name: &str, _query: &str) -> Vec<(u64, f64)> {
+        Vec::new()
+    }
+
+    /// List explicitly-declared constraints. Backends without a
+    /// constraint catalog return the empty vector.
+    fn list_constraints(&self) -> Vec<ConstraintDefinition> {
+        Vec::new()
+    }
+
+    fn get_constraint(&self, _name: &str) -> Option<ConstraintDefinition> {
+        None
+    }
+
+    /// Mutation-time pre-check: would creating a node with these
+    /// `labels` and `properties` violate any registered constraint?
+    /// Default returns `Ok(())` so backends without a constraint
+    /// catalog pay nothing. The in-memory backend overrides this and
+    /// the call is virtually free when the catalog is empty.
+    fn check_node_create_against_constraints(
+        &self,
+        _labels: &[String],
+        _properties: &Properties,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mutation-time pre-check for `CREATE ()-[r:TYPE { ... }]->()`.
+    fn check_relationship_create_against_constraints(
+        &self,
+        _rel_type: &str,
+        _properties: &Properties,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mutation-time pre-check: would setting `key = value` on this
+    /// node violate any registered constraint? Default `Ok(())`.
+    fn check_node_set_property_against_constraints(
+        &self,
+        _node_id: NodeId,
+        _key: &str,
+        _value: &PropertyValue,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mutation-time pre-check: would removing `key` on this node
+    /// violate an existence / key constraint? Default `Ok(())`.
+    fn check_node_remove_property_against_constraints(
+        &self,
+        _node_id: NodeId,
+        _key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mutation-time pre-check: would replacing all properties on this
+    /// node leave it in violation of any registered constraint? Default
+    /// `Ok(())`.
+    fn check_node_replace_properties_against_constraints(
+        &self,
+        _node_id: NodeId,
+        _properties: &Properties,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mutation-time pre-check: equivalent for relationship
+    /// property writes.
+    fn check_relationship_set_property_against_constraints(
+        &self,
+        _rel_id: RelationshipId,
+        _key: &str,
+        _value: &PropertyValue,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn check_relationship_remove_property_against_constraints(
+        &self,
+        _rel_id: RelationshipId,
+        _key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mutation-time pre-check: would replacing all properties on this
+    /// relationship leave it in violation of any registered constraint?
+    /// Default `Ok(())`.
+    fn check_relationship_replace_properties_against_constraints(
+        &self,
+        _rel_id: RelationshipId,
+        _properties: &Properties,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mutation-time pre-check: would adding `label` to this node
+    /// activate a constraint the node currently violates?
+    fn check_node_add_label_against_constraints(
+        &self,
+        _node_id: NodeId,
+        _label: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Cardinality snapshot used by the cost model. Backends without
     /// per-label / per-type indexes return [`GraphStats::default()`],
     /// which the planner treats as "no information available".
@@ -849,6 +963,7 @@ pub trait GraphStorageMut: GraphStorage {
     /// `if_not_exists` collapses both name and schema-equivalence
     /// conflicts into [`CreateIndexOutcome::NoOpExists`] instead of
     /// surfacing them as errors.
+    #[allow(clippy::result_large_err)]
     fn create_index(
         &mut self,
         _request: IndexRequest,
@@ -870,6 +985,32 @@ pub trait GraphStorageMut: GraphStorage {
     ) -> Result<DropIndexOutcome, DropIndexError> {
         Err(DropIndexError::Unsupported(
             "this backend does not maintain an index catalog",
+        ))
+    }
+
+    /// Register an explicitly-declared constraint. Backends without
+    /// catalog support return [`CreateConstraintError::Unsupported`].
+    /// Uniqueness/key kinds may transparently register a backing range
+    /// index of the same name.
+    fn create_constraint(
+        &mut self,
+        _request: ConstraintRequest,
+        _if_not_exists: bool,
+    ) -> Result<CreateConstraintOutcome, CreateConstraintError> {
+        Err(CreateConstraintError::Unsupported(
+            "this backend does not maintain a constraint catalog",
+        ))
+    }
+
+    /// Drop a named constraint. Cascades to the backing index if the
+    /// constraint owned one.
+    fn drop_constraint(
+        &mut self,
+        _name: &str,
+        _if_exists: bool,
+    ) -> Result<DropConstraintOutcome, DropConstraintError> {
+        Err(DropConstraintError::Unsupported(
+            "this backend does not maintain a constraint catalog",
         ))
     }
 

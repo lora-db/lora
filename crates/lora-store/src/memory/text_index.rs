@@ -27,19 +27,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::entity_index_store::ScopedPropertyKey;
+
 /// Registry of trigram scopes for either nodes or relationships.
 #[derive(Debug, Default, Clone)]
 pub(super) struct TrigramRegistry {
-    by_scope: HashMap<TrigramScopeKey, TrigramScope>,
-}
-
-/// Scope = `(label_or_type, property)`. We key by both because a TEXT
-/// index is always declared with an explicit label/type and a single
-/// property; cross-label uses a separate scope.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub(super) struct TrigramScopeKey {
-    pub label: String,
-    pub property: String,
+    by_scope: HashMap<ScopedPropertyKey, TrigramScope>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -58,10 +51,7 @@ impl TrigramRegistry {
     /// `true` if the scope was freshly created (caller should
     /// backfill it from existing data).
     pub(super) fn add_scope(&mut self, label: &str, property: &str) -> bool {
-        let key = TrigramScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        };
+        let key = ScopedPropertyKey::new(label, property);
         let entry = self.by_scope.entry(key).or_default();
         let was_empty = entry.refcount == 0;
         entry.refcount = entry.refcount.saturating_add(1);
@@ -71,10 +61,7 @@ impl TrigramRegistry {
     /// Decrement the refcount on a scope. The scope is removed once
     /// the last reference is gone.
     pub(super) fn remove_scope(&mut self, label: &str, property: &str) {
-        let key = TrigramScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        };
+        let key = ScopedPropertyKey::new(label, property);
         if let Some(scope) = self.by_scope.get_mut(&key) {
             scope.refcount = scope.refcount.saturating_sub(1);
             if scope.refcount == 0 {
@@ -85,27 +72,25 @@ impl TrigramRegistry {
 
     #[cfg(test)]
     pub(super) fn has_scope(&self, label: &str, property: &str) -> bool {
-        self.by_scope.contains_key(&TrigramScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        })
+        self.by_scope
+            .contains_key(&ScopedPropertyKey::new(label, property))
     }
 
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, value: &str) {
-        if let Some(scope) = self.by_scope.get_mut(&TrigramScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        }) {
+        if let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        {
             scope.insert(id, value);
         }
     }
 
     #[cfg(test)]
     pub(super) fn remove(&mut self, label: &str, property: &str, id: u64, value: &str) {
-        if let Some(scope) = self.by_scope.get_mut(&TrigramScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        }) {
+        if let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        {
             scope.remove(id, value);
         }
     }
@@ -118,10 +103,10 @@ impl TrigramRegistry {
         old: Option<&str>,
         new: Option<&str>,
     ) {
-        let Some(scope) = self.by_scope.get_mut(&TrigramScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        }) else {
+        let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        else {
             return;
         };
         if let Some(old) = old {
@@ -141,10 +126,9 @@ impl TrigramRegistry {
         property: &str,
         query: &str,
     ) -> Option<BTreeSet<u64>> {
-        let scope = self.by_scope.get(&TrigramScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        })?;
+        let scope = self
+            .by_scope
+            .get(&ScopedPropertyKey::new(label, property))?;
         scope.candidates(query)
     }
 }

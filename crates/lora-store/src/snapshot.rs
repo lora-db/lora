@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::memory::IndexDefinition;
+use crate::memory::{ConstraintDefinition, IndexDefinition};
 use crate::{NodeId, NodeRecord, RelationshipId, RelationshipRecord};
 
 /// Portable representation of an entire store state.
@@ -28,6 +28,11 @@ pub struct SnapshotPayload {
     /// older snapshots that lack the trailer round-trip cleanly.
     #[serde(default)]
     pub indexes: Vec<IndexDefinition>,
+    /// Catalog of explicitly-declared constraints. Defaulted to empty
+    /// so snapshots from versions before constraint support survive
+    /// the round-trip.
+    #[serde(default)]
+    pub constraints: Vec<ConstraintDefinition>,
 }
 
 impl SnapshotPayload {
@@ -38,6 +43,7 @@ impl SnapshotPayload {
             nodes: Vec::new(),
             relationships: Vec::new(),
             indexes: Vec::new(),
+            constraints: Vec::new(),
         }
     }
 }

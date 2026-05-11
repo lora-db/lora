@@ -40,6 +40,12 @@ pub struct GraphStats {
     /// Online catalog-backed point indexes by `(label_or_type, property)`.
     pub node_point_indexes: BTreeSet<(String, String)>,
     pub relationship_point_indexes: BTreeSet<(String, String)>,
+    /// Online catalog-backed vector indexes by `(label_or_type, property)`.
+    /// Tracked alongside the other index scopes so the optimizer / planner
+    /// can see them in stats fingerprints, though kNN currently goes
+    /// through a flat per-query scan rather than a dedicated structure.
+    pub node_vector_indexes: BTreeSet<(String, String)>,
+    pub relationship_vector_indexes: BTreeSet<(String, String)>,
 }
 
 impl GraphStats {
@@ -84,6 +90,8 @@ impl GraphStats {
         self.relationship_text_indexes.hash(&mut hasher);
         self.node_point_indexes.hash(&mut hasher);
         self.relationship_point_indexes.hash(&mut hasher);
+        self.node_vector_indexes.hash(&mut hasher);
+        self.relationship_vector_indexes.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -114,6 +122,16 @@ impl GraphStats {
 
     pub fn has_relationship_point_index(&self, rel_type: &str, property: &str) -> bool {
         self.relationship_point_indexes
+            .contains(&(rel_type.to_owned(), property.to_owned()))
+    }
+
+    pub fn has_node_vector_index(&self, label: &str, property: &str) -> bool {
+        self.node_vector_indexes
+            .contains(&(label.to_owned(), property.to_owned()))
+    }
+
+    pub fn has_relationship_vector_index(&self, rel_type: &str, property: &str) -> bool {
+        self.relationship_vector_indexes
             .contains(&(rel_type.to_owned(), property.to_owned()))
     }
 }

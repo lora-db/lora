@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::memory::IndexRequest;
+use crate::memory::{ConstraintRequest, IndexRequest};
 use crate::{NodeId, Properties, PropertyValue, RelationshipId};
 
 /// A durable, replayable mutation against a graph store.
@@ -92,6 +92,17 @@ pub enum MutationEvent {
     },
     /// Catalog-level mutation: drop an index by name.
     DropIndex {
+        name: String,
+        if_exists: bool,
+    },
+    /// Catalog-level mutation: register a constraint in the catalog.
+    CreateConstraint {
+        request: ConstraintRequest,
+        if_not_exists: bool,
+    },
+    /// Catalog-level mutation: drop a constraint by name. The store
+    /// cascades to the backing index when the constraint owned one.
+    DropConstraint {
         name: String,
         if_exists: bool,
     },
@@ -209,7 +220,10 @@ impl MutationWriteSet {
                 MutationEvent::Clear => {
                     self.cleared = true;
                 }
-                MutationEvent::CreateIndex { .. } | MutationEvent::DropIndex { .. } => {
+                MutationEvent::CreateIndex { .. }
+                | MutationEvent::DropIndex { .. }
+                | MutationEvent::CreateConstraint { .. }
+                | MutationEvent::DropConstraint { .. } => {
                     // Catalog mutations don't touch node/rel write
                     // sets — they live next to the graph slabs but
                     // don't share record locks. The single-writer

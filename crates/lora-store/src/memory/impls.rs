@@ -7,9 +7,11 @@ use std::collections::BTreeSet;
 use lora_ast::Direction;
 
 use crate::{
-    BorrowedGraphStorage, CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome,
-    GraphStats, GraphStorage, GraphStorageMut, IndexDefinition, IndexRequest, MutationEvent,
-    NodeId, NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord,
+    BorrowedGraphStorage, ConstraintDefinition, ConstraintRequest, CreateConstraintError,
+    CreateConstraintOutcome, CreateIndexError, CreateIndexOutcome, DropConstraintError,
+    DropConstraintOutcome, DropIndexError, DropIndexOutcome, GraphStats, GraphStorage,
+    GraphStorageMut, IndexDefinition, IndexRequest, MutationEvent, NodeId, NodeRecord, Properties,
+    PropertyValue, RelationshipId, RelationshipRecord, StoredIndexEntity,
 };
 
 use super::property_index::PropertyIndexKey;
@@ -24,6 +26,163 @@ impl GraphStorage for InMemoryGraph {
 
     fn get_index(&self, name: &str) -> Option<IndexDefinition> {
         self.index_catalog_read().get(name).cloned()
+    }
+
+    fn fulltext_search(&self, name: &str, query: &str) -> Vec<(u64, f64)> {
+        // The index lives on exactly one entity scope; check both.
+        let node_hits = self
+            .fulltext_indexes_read(StoredIndexEntity::Node)
+            .get(name)
+            .map(|idx| idx.query(query));
+        if let Some(hits) = node_hits {
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
+        let rel_hits = self
+            .fulltext_indexes_read(StoredIndexEntity::Relationship)
+            .get(name)
+            .map(|idx| idx.query(query));
+        rel_hits.unwrap_or_default()
+    }
+
+    fn list_constraints(&self) -> Vec<ConstraintDefinition> {
+        self.constraint_catalog_read().list()
+    }
+
+    fn get_constraint(&self, name: &str) -> Option<ConstraintDefinition> {
+        self.constraint_catalog_read().get(name).cloned()
+    }
+
+    fn check_node_create_against_constraints(
+        &self,
+        labels: &[String],
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_create(&catalog, self, labels, properties)
+            .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_create_against_constraints(
+        &self,
+        rel_type: &str,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_create(
+            &catalog, self, rel_type, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_node_set_property_against_constraints(
+        &self,
+        node_id: NodeId,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_set_property(
+            &catalog, self, node_id, key, value,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_node_remove_property_against_constraints(
+        &self,
+        node_id: NodeId,
+        key: &str,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_remove_property(&catalog, self, node_id, key)
+            .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_node_replace_properties_against_constraints(
+        &self,
+        node_id: NodeId,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_replace_properties(
+            &catalog, self, node_id, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_set_property_against_constraints(
+        &self,
+        rel_id: RelationshipId,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_set_property(
+            &catalog, self, rel_id, key, value,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_remove_property_against_constraints(
+        &self,
+        rel_id: RelationshipId,
+        key: &str,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_remove_property(
+            &catalog, self, rel_id, key,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_replace_properties_against_constraints(
+        &self,
+        rel_id: RelationshipId,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_replace_properties(
+            &catalog, self, rel_id, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_node_add_label_against_constraints(
+        &self,
+        node_id: NodeId,
+        label: &str,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_add_label(&catalog, self, node_id, label)
+            .map_err(|e| format!("[{}] {e}", e.gql_status()))
     }
 
     fn graph_stats(&self) -> GraphStats {
@@ -695,7 +854,7 @@ impl BorrowedGraphStorage for InMemoryGraph {
 
 impl GraphStorageMut for InMemoryGraph {
     fn create_node(&mut self, labels: Vec<String>, properties: Properties) -> NodeRecord {
-        let id = self.alloc_node_id();
+        let (id, idx) = self.reserve_next_node_slot();
         let labels = Self::normalize_labels(labels);
 
         let node = NodeRecord {
@@ -704,9 +863,9 @@ impl GraphStorageMut for InMemoryGraph {
             properties,
         };
 
-        self.on_node_created(&node);
+        self.put_node_at_slot(idx, node.clone());
 
-        self.put_node(id, node.clone());
+        self.on_node_created(&node);
 
         // ensure_node_slot grew both adjacency Vecs to cover this id when
         // we put_node above.
@@ -736,7 +895,7 @@ impl GraphStorageMut for InMemoryGraph {
             return None;
         }
 
-        let id = self.alloc_rel_id();
+        let (id, idx) = self.try_reserve_next_rel_slot()?;
         let rel = RelationshipRecord {
             id,
             src,
@@ -745,8 +904,8 @@ impl GraphStorageMut for InMemoryGraph {
             properties,
         };
 
+        self.put_rel_at_slot(idx, rel.clone());
         self.on_relationship_created(&rel);
-        self.put_rel(id, rel.clone());
 
         self.emit(|| MutationEvent::CreateRelationship {
             id,
@@ -984,5 +1143,21 @@ impl GraphStorageMut for InMemoryGraph {
         if_exists: bool,
     ) -> Result<DropIndexOutcome, DropIndexError> {
         self.drop_named_index(name, if_exists)
+    }
+
+    fn create_constraint(
+        &mut self,
+        request: ConstraintRequest,
+        if_not_exists: bool,
+    ) -> Result<CreateConstraintOutcome, CreateConstraintError> {
+        self.register_constraint(request, if_not_exists)
+    }
+
+    fn drop_constraint(
+        &mut self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<DropConstraintOutcome, DropConstraintError> {
+        self.drop_named_constraint(name, if_exists)
     }
 }

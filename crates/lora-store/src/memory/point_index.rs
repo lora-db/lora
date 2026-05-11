@@ -32,6 +32,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::types::spatial::LoraPoint;
 
+use super::entity_index_store::ScopedPropertyKey;
+
 /// Default cell side. Tuned for cartesian space at world scale; WGS-84
 /// users with denser data should use `OPTIONS { indexConfig: { ... } }`
 /// to override (config plumbed in [`super::index_catalog`]).
@@ -40,13 +42,7 @@ const MAX_CELLS_TO_ENUMERATE: u128 = 100_000;
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct PointRegistry {
-    by_scope: HashMap<PointScopeKey, PointScope>,
-}
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub(super) struct PointScopeKey {
-    pub label: String,
-    pub property: String,
+    by_scope: HashMap<ScopedPropertyKey, PointScope>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,10 +160,7 @@ impl PointRegistry {
         property: &str,
         cell_size: Option<f64>,
     ) -> bool {
-        let key = PointScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        };
+        let key = ScopedPropertyKey::new(label, property);
         let entry = self.by_scope.entry(key).or_insert_with(|| PointScope {
             grid: PointGrid::with_cell_size(cell_size.unwrap_or(DEFAULT_CELL_SIZE)),
             refcount: 0,
@@ -178,10 +171,7 @@ impl PointRegistry {
     }
 
     pub(super) fn remove_scope(&mut self, label: &str, property: &str) {
-        let key = PointScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        };
+        let key = ScopedPropertyKey::new(label, property);
         if let Some(scope) = self.by_scope.get_mut(&key) {
             scope.refcount = scope.refcount.saturating_sub(1);
             if scope.refcount == 0 {
@@ -192,17 +182,15 @@ impl PointRegistry {
 
     #[cfg(test)]
     pub(super) fn has_scope(&self, label: &str, property: &str) -> bool {
-        self.by_scope.contains_key(&PointScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        })
+        self.by_scope
+            .contains_key(&ScopedPropertyKey::new(label, property))
     }
 
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, point: LoraPoint) {
-        if let Some(scope) = self.by_scope.get_mut(&PointScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        }) {
+        if let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        {
             scope.grid.insert(point, id);
         }
     }
@@ -215,10 +203,10 @@ impl PointRegistry {
         old: Option<&LoraPoint>,
         new: Option<&LoraPoint>,
     ) {
-        let Some(scope) = self.by_scope.get_mut(&PointScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        }) else {
+        let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        else {
             return;
         };
         if let Some(old) = old {
@@ -239,10 +227,9 @@ impl PointRegistry {
         ll: (f64, f64),
         ur: (f64, f64),
     ) -> Option<BTreeSet<u64>> {
-        let scope = self.by_scope.get(&PointScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        })?;
+        let scope = self
+            .by_scope
+            .get(&ScopedPropertyKey::new(label, property))?;
         Some(scope.grid.candidates_in_bbox(
             ll.0.min(ur.0),
             ll.1.min(ur.1),
@@ -262,10 +249,9 @@ impl PointRegistry {
         center: (f64, f64),
         max_distance: f64,
     ) -> Option<BTreeSet<u64>> {
-        let scope = self.by_scope.get(&PointScopeKey {
-            label: label.to_string(),
-            property: property.to_string(),
-        })?;
+        let scope = self
+            .by_scope
+            .get(&ScopedPropertyKey::new(label, property))?;
         // Conservative bounding box: a square of side 2 * max_distance.
         // For WGS-84 this overcollects near the poles (the square in
         // (lat, lon) space is wider than the actual great-circle

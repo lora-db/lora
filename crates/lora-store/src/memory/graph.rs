@@ -13,6 +13,12 @@ use crate::{
     RelationshipId, RelationshipRecord,
 };
 
+use super::constraint_catalog::{
+    ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
+    DropConstraintError, DropConstraintOutcome,
+};
+use super::entity_index_store::IndexBundle;
+use super::fulltext_index::FulltextRegistry;
 use super::index_catalog::IndexConfigValue;
 use super::index_catalog::{
     CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
@@ -71,33 +77,26 @@ pub struct InMemoryGraph {
     /// tree-of-pointers, and removes via `swap_remove` stay O(degree-of-label).
     pub(super) nodes_by_label: BTreeMap<String, Vec<NodeId>>,
     pub(super) relationships_by_type: BTreeMap<String, Vec<RelationshipId>>,
-    pub(super) indexes: RwLock<PropertyIndexRegistry>,
-    pub(super) active_node_property_indexes: AtomicUsize,
-    pub(super) active_relationship_property_indexes: AtomicUsize,
 
-    /// Catalog of explicitly-created indexes (CREATE INDEX). Lives next
-    /// to the lazy property-index registry above; the catalog records
-    /// metadata while the registry holds the actual buckets. RANGE
-    /// catalog entries also force the matching property-index keys to
-    /// be activated so equality lookups go through the index from the
-    /// moment the DDL commits.
-    pub(super) index_catalog: RwLock<IndexCatalog>,
-    /// Trigram inverted indexes for `TEXT` catalog entries. One
-    /// registry per entity-kind so node and relationship indexes
-    /// don't collide on the same `(label, property)` shape.
-    pub(super) node_text_indexes: RwLock<TrigramRegistry>,
-    pub(super) relationship_text_indexes: RwLock<TrigramRegistry>,
+    /// All index machinery — the declared-index catalog, hash-bucket
+    /// property registry, and the per-entity-kind secondary index
+    /// registries (text, sorted, point, fulltext) plus their active
+    /// counters — collapsed into one bundle. See [`IndexBundle`] for
+    /// the rationale. The bundle is a packaging-only abstraction:
+    /// every field accessed through `self.indexes.<x>` lives at the
+    /// same address it would have as a top-level field.
+    pub(super) indexes: IndexBundle,
 
-    /// Sorted (BTreeMap-backed) property indexes used to answer range
-    /// predicates on RANGE catalog entries. The hash-bucket
-    /// [`PropertyIndexRegistry`] above still answers equality.
-    pub(super) node_sorted_indexes: RwLock<SortedPropertyIndex>,
-    pub(super) relationship_sorted_indexes: RwLock<SortedPropertyIndex>,
-
-    /// Grid-bucket spatial indexes used to answer `point.withinBBox` /
-    /// `point.distance(...) <= d` predicates on POINT catalog entries.
-    pub(super) node_point_indexes: RwLock<PointRegistry>,
-    pub(super) relationship_point_indexes: RwLock<PointRegistry>,
+    /// Catalog of explicitly-created constraints (CREATE CONSTRAINT).
+    /// Deliberately not part of [`IndexBundle`] — constraints describe
+    /// data invariants, not indexed access. The fact that uniqueness /
+    /// key constraints back range indexes is handled in the
+    /// constraint code path, not by the bundle's layout.
+    pub(super) constraint_catalog: RwLock<ConstraintCatalog>,
+    /// Fast-path counter for mutation-time constraint checks. Most
+    /// workloads have no constraints installed; this lets the executor
+    /// skip taking the catalog lock in that case.
+    pub(super) active_constraints: AtomicUsize,
 
     /// Optional mutation observer. When `Some`, every committed mutation
     /// fans out to this recorder *after* the in-memory state has been
@@ -129,10 +128,16 @@ impl std::fmt::Debug for InMemoryGraph {
             .field(
                 "index_catalog_entries",
                 &self
-                    .index_catalog
+                    .indexes
+                    .catalog
                     .read()
                     .map(|c| c.list().len())
                     .unwrap_or(0),
+            )
+            .field("active_constraints", &self.active_constraint_count())
+            .field(
+                "active_fulltext_indexes",
+                &self.active_fulltext_index_count(),
             )
             .field("recorder", &self.recorder.as_ref().map(|_| "installed"))
             .finish()
@@ -154,35 +159,14 @@ impl Clone for InMemoryGraph {
             incoming: self.incoming.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
             relationships_by_type: self.relationships_by_type.clone(),
-            indexes: RwLock::new(if self.has_active_property_indexes() {
-                self.indexes_read().clone()
-            } else {
-                PropertyIndexRegistry::default()
-            }),
-            active_node_property_indexes: AtomicUsize::new(self.active_node_property_index_count()),
-            active_relationship_property_indexes: AtomicUsize::new(
-                self.active_relationship_property_index_count(),
-            ),
-            index_catalog: RwLock::new(self.index_catalog_read().clone()),
-            node_text_indexes: RwLock::new(self.text_indexes_read(StoredIndexEntity::Node).clone()),
-            relationship_text_indexes: RwLock::new(
-                self.text_indexes_read(StoredIndexEntity::Relationship)
-                    .clone(),
-            ),
-            node_sorted_indexes: RwLock::new(
-                self.sorted_indexes_read(StoredIndexEntity::Node).clone(),
-            ),
-            relationship_sorted_indexes: RwLock::new(
-                self.sorted_indexes_read(StoredIndexEntity::Relationship)
-                    .clone(),
-            ),
-            node_point_indexes: RwLock::new(
-                self.point_indexes_read(StoredIndexEntity::Node).clone(),
-            ),
-            relationship_point_indexes: RwLock::new(
-                self.point_indexes_read(StoredIndexEntity::Relationship)
-                    .clone(),
-            ),
+            // IndexBundle::clone deep-copies every owned registry under
+            // its locks, mirroring what the old per-field clones did.
+            // The hash-bucket registry skip-on-empty optimisation is
+            // preserved: `PropertyIndexRegistry::clone` itself is cheap
+            // when no entries exist.
+            indexes: self.indexes.clone(),
+            constraint_catalog: RwLock::new(self.constraint_catalog_read().clone()),
+            active_constraints: AtomicUsize::new(self.active_constraint_count()),
             recorder: None,
         }
     }
@@ -234,18 +218,6 @@ impl InMemoryGraph {
         }
     }
 
-    pub(super) fn alloc_node_id(&mut self) -> NodeId {
-        let id = self.next_node_id;
-        self.next_node_id += 1;
-        id
-    }
-
-    pub(super) fn alloc_rel_id(&mut self) -> RelationshipId {
-        let id = self.next_rel_id;
-        self.next_rel_id += 1;
-        id
-    }
-
     fn bump_next_node_id_past(&mut self, id: NodeId) -> Result<(), String> {
         let next = id
             .checked_add(1)
@@ -262,6 +234,23 @@ impl InMemoryGraph {
         Ok(())
     }
 
+    pub(super) fn reserve_next_node_slot(&mut self) -> (NodeId, usize) {
+        let id = self.next_node_id;
+        let idx = self
+            .ensure_node_slot_checked(id)
+            .expect("next node id should fit in memory-backed slab");
+        self.bump_next_node_id_past(id)
+            .expect("next node id should leave a valid successor");
+        (id, idx)
+    }
+
+    pub(super) fn try_reserve_next_rel_slot(&mut self) -> Option<(RelationshipId, usize)> {
+        let id = self.next_rel_id;
+        let idx = self.ensure_rel_slot_checked(id).ok()?;
+        self.bump_next_rel_id_past(id).ok()?;
+        Some((id, idx))
+    }
+
     // ---------- Slab access helpers ----------
     //
     // Stand-in for the BTreeMap API the previous storage used. They keep the
@@ -270,7 +259,7 @@ impl InMemoryGraph {
     #[inline]
     pub(super) fn node_at(&self, id: NodeId) -> Option<&NodeRecord> {
         self.nodes
-            .get(id as usize)
+            .get(Self::slot_index(id)?)
             .and_then(|s| s.as_ref())
             .map(|arc| arc.as_ref())
     }
@@ -282,7 +271,7 @@ impl InMemoryGraph {
     #[inline]
     pub(super) fn node_at_mut(&mut self, id: NodeId) -> Option<&mut NodeRecord> {
         self.nodes
-            .get_mut(id as usize)
+            .get_mut(Self::slot_index(id)?)
             .and_then(|s| s.as_mut())
             .map(Arc::make_mut)
     }
@@ -290,7 +279,7 @@ impl InMemoryGraph {
     #[inline]
     pub(super) fn rel_at(&self, id: RelationshipId) -> Option<&RelationshipRecord> {
         self.relationships
-            .get(id as usize)
+            .get(Self::slot_index(id)?)
             .and_then(|s| s.as_ref())
             .map(|arc| arc.as_ref())
     }
@@ -298,7 +287,7 @@ impl InMemoryGraph {
     #[inline]
     pub(super) fn rel_at_mut(&mut self, id: RelationshipId) -> Option<&mut RelationshipRecord> {
         self.relationships
-            .get_mut(id as usize)
+            .get_mut(Self::slot_index(id)?)
             .and_then(|s| s.as_mut())
             .map(Arc::make_mut)
     }
@@ -306,42 +295,96 @@ impl InMemoryGraph {
     /// Resize the node-keyed Vecs so `id as usize` is in range. Adjacency
     /// lists are kept in lockstep with `nodes`, so a freshly-grown slot has
     /// empty outgoing/incoming Vecs ready to receive edges.
-    fn ensure_node_slot(&mut self, id: NodeId) {
-        let target = id as usize + 1;
+    fn slot_len_for_id(id: u64, kind: &str) -> Result<usize, String> {
+        let idx = usize::try_from(id)
+            .map_err(|_| format!("{kind} id {id} does not fit in usize on this platform"))?;
+        idx.checked_add(1)
+            .ok_or_else(|| format!("{kind} id {id} leaves no valid slab slot"))
+    }
+
+    #[inline]
+    fn slot_index(id: u64) -> Option<usize> {
+        usize::try_from(id).ok()
+    }
+
+    fn ensure_node_slot_checked(&mut self, id: NodeId) -> Result<usize, String> {
+        let target = Self::slot_len_for_id(id, "node")?;
         if self.nodes.len() < target {
+            let additional = target - self.nodes.len();
+            self.nodes.try_reserve_exact(additional).map_err(|e| {
+                format!("node id {id} requires {target} slots, but allocation failed: {e}")
+            })?;
+            self.outgoing.try_reserve_exact(additional).map_err(|e| {
+                format!(
+                    "node id {id} requires {target} adjacency slots, but allocation failed: {e}"
+                )
+            })?;
+            self.incoming.try_reserve_exact(additional).map_err(|e| {
+                format!(
+                    "node id {id} requires {target} adjacency slots, but allocation failed: {e}"
+                )
+            })?;
             self.nodes.resize_with(target, || None);
             self.outgoing.resize_with(target, Vec::new);
             self.incoming.resize_with(target, Vec::new);
         }
+        Ok(target - 1)
     }
 
-    fn ensure_rel_slot(&mut self, id: RelationshipId) {
-        let target = id as usize + 1;
+    fn ensure_rel_slot_checked(&mut self, id: RelationshipId) -> Result<usize, String> {
+        let target = Self::slot_len_for_id(id, "relationship")?;
         if self.relationships.len() < target {
+            self.relationships
+                .try_reserve_exact(target - self.relationships.len())
+                .map_err(|e| {
+                    format!(
+                        "relationship id {id} requires {target} slots, but allocation failed: {e}"
+                    )
+                })?;
             self.relationships.resize_with(target, || None);
         }
+        Ok(target - 1)
     }
 
-    pub(super) fn put_node(&mut self, id: NodeId, node: NodeRecord) {
-        self.ensure_node_slot(id);
-        let was_present = self.nodes[id as usize].is_some();
-        self.nodes[id as usize] = Some(Arc::new(node));
+    fn ensure_node_slot(&mut self, id: NodeId) -> usize {
+        self.ensure_node_slot_checked(id)
+            .expect("node id should fit in memory-backed slab")
+    }
+
+    pub(super) fn put_node_checked(&mut self, id: NodeId, node: NodeRecord) -> Result<(), String> {
+        let idx = self.ensure_node_slot_checked(id)?;
+        self.put_node_at_slot(idx, node);
+        Ok(())
+    }
+
+    pub(super) fn put_rel_checked(
+        &mut self,
+        id: RelationshipId,
+        rel: RelationshipRecord,
+    ) -> Result<(), String> {
+        let idx = self.ensure_rel_slot_checked(id)?;
+        self.put_rel_at_slot(idx, rel);
+        Ok(())
+    }
+
+    pub(super) fn put_node_at_slot(&mut self, idx: usize, node: NodeRecord) {
+        let was_present = self.nodes[idx].is_some();
+        self.nodes[idx] = Some(Arc::new(node));
         if !was_present {
             self.live_node_count += 1;
         }
     }
 
-    pub(super) fn put_rel(&mut self, id: RelationshipId, rel: RelationshipRecord) {
-        self.ensure_rel_slot(id);
-        let was_present = self.relationships[id as usize].is_some();
-        self.relationships[id as usize] = Some(Arc::new(rel));
+    pub(super) fn put_rel_at_slot(&mut self, idx: usize, rel: RelationshipRecord) {
+        let was_present = self.relationships[idx].is_some();
+        self.relationships[idx] = Some(Arc::new(rel));
         if !was_present {
             self.live_rel_count += 1;
         }
     }
 
     pub(super) fn take_node(&mut self, id: NodeId) -> Option<NodeRecord> {
-        let idx = id as usize;
+        let idx = Self::slot_index(id)?;
         let removed = self.nodes.get_mut(idx).and_then(|s| s.take());
         if removed.is_some() {
             self.live_node_count -= 1;
@@ -365,7 +408,7 @@ impl InMemoryGraph {
     }
 
     pub(super) fn take_rel(&mut self, id: RelationshipId) -> Option<RelationshipRecord> {
-        let idx = id as usize;
+        let idx = Self::slot_index(id)?;
         let removed = self.relationships.get_mut(idx).and_then(|s| s.take());
         if removed.is_some() {
             self.live_rel_count -= 1;
@@ -375,12 +418,12 @@ impl InMemoryGraph {
 
     #[inline]
     pub(super) fn outgoing_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
-        self.outgoing.get(id as usize).map(Vec::as_slice)
+        self.outgoing.get(Self::slot_index(id)?).map(Vec::as_slice)
     }
 
     #[inline]
     pub(super) fn incoming_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
-        self.incoming.get(id as usize).map(Vec::as_slice)
+        self.incoming.get(Self::slot_index(id)?).map(Vec::as_slice)
     }
 
     #[inline]
@@ -523,19 +566,19 @@ impl InMemoryGraph {
     /// invariant: relationship ids are allocated once and never re-used, so
     /// the bucket can never see a duplicate.
     fn outgoing_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        self.ensure_node_slot(node_id);
-        self.outgoing[node_id as usize].push(rel_id);
+        let idx = self.ensure_node_slot(node_id);
+        self.outgoing[idx].push(rel_id);
     }
 
     fn incoming_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        self.ensure_node_slot(node_id);
-        self.incoming[node_id as usize].push(rel_id);
+        let idx = self.ensure_node_slot(node_id);
+        self.incoming[idx].push(rel_id);
     }
 
     /// Remove `rel_id` from `node_id`'s outgoing list. `swap_remove` keeps
     /// the operation O(1) — adjacency order doesn't carry semantic meaning.
     fn outgoing_remove(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        if let Some(v) = self.outgoing.get_mut(node_id as usize) {
+        if let Some(v) = Self::slot_index(node_id).and_then(|idx| self.outgoing.get_mut(idx)) {
             if let Some(pos) = v.iter().position(|&id| id == rel_id) {
                 v.swap_remove(pos);
             }
@@ -543,7 +586,7 @@ impl InMemoryGraph {
     }
 
     fn incoming_remove(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        if let Some(v) = self.incoming.get_mut(node_id as usize) {
+        if let Some(v) = Self::slot_index(node_id).and_then(|idx| self.incoming.get_mut(idx)) {
             if let Some(pos) = v.iter().position(|&id| id == rel_id) {
                 v.swap_remove(pos);
             }
@@ -607,37 +650,57 @@ impl InMemoryGraph {
 
     pub(super) fn indexes_read(&self) -> std::sync::RwLockReadGuard<'_, PropertyIndexRegistry> {
         self.indexes
+            .properties
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(super) fn indexes_write(&self) -> RwLockWriteGuard<'_, PropertyIndexRegistry> {
         self.indexes
+            .properties
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(super) fn indexes_mut(&mut self) -> &mut PropertyIndexRegistry {
         self.indexes
+            .properties
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[inline]
     pub(super) fn active_node_property_index_count(&self) -> usize {
-        self.active_node_property_indexes.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub(super) fn active_relationship_property_index_count(&self) -> usize {
-        self.active_relationship_property_indexes
+        self.indexes
+            .active_node_property_indexes
             .load(Ordering::Relaxed)
     }
 
     #[inline]
-    pub(super) fn has_active_property_indexes(&self) -> bool {
-        self.active_node_property_index_count() != 0
-            || self.active_relationship_property_index_count() != 0
+    pub(super) fn active_relationship_property_index_count(&self) -> usize {
+        self.indexes
+            .active_relationship_property_indexes
+            .load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(super) fn active_constraint_count(&self) -> usize {
+        self.active_constraints.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(super) fn has_active_constraints(&self) -> bool {
+        self.active_constraint_count() != 0
+    }
+
+    #[inline]
+    pub(super) fn active_fulltext_index_count(&self) -> usize {
+        self.indexes.active_fulltext_indexes.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(super) fn has_active_fulltext_indexes(&self) -> bool {
+        self.active_fulltext_index_count() != 0
     }
 
     pub(super) fn node_property_index_is_active(&mut self, key: &str) -> bool {
@@ -674,7 +737,8 @@ impl InMemoryGraph {
             }
         }
         if indexes.node_properties.activate(key) {
-            self.active_node_property_indexes
+            self.indexes
+                .active_node_property_indexes
                 .fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -703,19 +767,36 @@ impl InMemoryGraph {
             }
         }
         if indexes.relationship_properties.activate(key) {
-            self.active_relationship_property_indexes
+            self.indexes
+                .active_relationship_property_indexes
                 .fetch_add(1, Ordering::Relaxed);
         }
     }
 
     pub(super) fn index_catalog_read(&self) -> std::sync::RwLockReadGuard<'_, IndexCatalog> {
-        self.index_catalog
+        self.indexes
+            .catalog
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(super) fn index_catalog_write(&self) -> RwLockWriteGuard<'_, IndexCatalog> {
-        self.index_catalog
+        self.indexes
+            .catalog
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(super) fn constraint_catalog_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, ConstraintCatalog> {
+        self.constraint_catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(super) fn constraint_catalog_write(&self) -> RwLockWriteGuard<'_, ConstraintCatalog> {
+        self.constraint_catalog
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -727,12 +808,23 @@ impl InMemoryGraph {
     /// Named with a `register_` prefix to avoid colliding with the
     /// trait method `GraphStorageMut::create_index` — the trait impl
     /// in `impls.rs` delegates here.
+    #[allow(clippy::result_large_err)]
     pub(super) fn register_index(
         &self,
         request: IndexRequest,
         if_not_exists: bool,
     ) -> Result<CreateIndexOutcome, CreateIndexError> {
-        let request_for_event = request.clone();
+        self.register_index_with_recording(request, if_not_exists, true)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn register_index_with_recording(
+        &self,
+        request: IndexRequest,
+        if_not_exists: bool,
+        record_event: bool,
+    ) -> Result<CreateIndexOutcome, CreateIndexError> {
+        let request_for_event = record_event.then(|| request.clone());
         let outcome = {
             let mut catalog = self.index_catalog_write();
             catalog.try_create(request, if_not_exists)?
@@ -746,10 +838,12 @@ impl InMemoryGraph {
         // log only Created because NoOpExists implies a redundant DDL
         // that adds nothing to durable state.
         if matches!(outcome, CreateIndexOutcome::Created(_)) {
-            self.emit(|| crate::MutationEvent::CreateIndex {
-                request: request_for_event,
-                if_not_exists,
-            });
+            if let Some(request_for_event) = request_for_event {
+                self.emit(|| crate::MutationEvent::CreateIndex {
+                    request: request_for_event,
+                    if_not_exists,
+                });
+            }
         }
 
         Ok(outcome)
@@ -783,6 +877,192 @@ impl InMemoryGraph {
             .map_err(|e| e.to_string())
     }
 
+    /// Register a constraint. For uniqueness/key kinds this also
+    /// registers a backing RANGE index in the index catalog under the
+    /// same name. Validation of existing data is the caller's
+    /// responsibility (the enforcement layer runs a pre-create scan
+    /// before this method commits).
+    pub(super) fn register_constraint(
+        &self,
+        request: ConstraintRequest,
+        if_not_exists: bool,
+    ) -> Result<CreateConstraintOutcome, CreateConstraintError> {
+        // Constraint-level conflicts (22N65/66/67) take precedence over
+        // index-catalog conflicts: if the request collides with an
+        // existing *constraint* shape or name, we never get to the
+        // backing-index step.
+        {
+            let constraint_catalog = self.constraint_catalog_read();
+            if let Some(existing) = constraint_catalog.find_equivalent(&request) {
+                let cloned = existing.clone();
+                drop(constraint_catalog);
+                if if_not_exists {
+                    return Ok(CreateConstraintOutcome::NoOpExists(cloned));
+                }
+                return Err(CreateConstraintError::EquivalentConstraintExists(
+                    cloned.name,
+                ));
+            }
+            if let Some(existing) = constraint_catalog.get(&request.name) {
+                let cloned = existing.clone();
+                drop(constraint_catalog);
+                if if_not_exists {
+                    return Ok(CreateConstraintOutcome::NoOpExists(cloned));
+                }
+                return Err(CreateConstraintError::DuplicateName(cloned.name));
+            }
+            if let Some(existing) = constraint_catalog.find_same_schema(&request) {
+                let cloned = existing.clone();
+                drop(constraint_catalog);
+                if super::constraint_catalog::kinds_conflict_for_validation(
+                    &cloned.kind,
+                    &request.kind,
+                ) {
+                    if if_not_exists {
+                        return Ok(CreateConstraintOutcome::NoOpExists(cloned));
+                    }
+                    return Err(CreateConstraintError::ConflictingConstraint(cloned.name));
+                }
+            }
+        }
+
+        // Index-catalog conflicts only matter for constraints that need
+        // a backing range index. The catalog won't yet own one for this
+        // request — that registration happens below — so any existing
+        // entry under the same name or schema is from a foreign index.
+        if request.kind.requires_backing_index() {
+            let idx_catalog = self.index_catalog_read();
+            if idx_catalog.get(&request.name).is_some() {
+                return Err(CreateConstraintError::DuplicateIndexName(
+                    request.name.clone(),
+                ));
+            }
+            let conflict = idx_catalog.list().into_iter().find(|def| {
+                def.kind == StoredIndexKind::Range
+                    && def.entity == request.entity
+                    && def.label.as_deref() == Some(request.label.as_str())
+                    && def.properties == request.properties
+                    && def.name != request.name
+            });
+            drop(idx_catalog);
+            if let Some(def) = conflict {
+                return Err(CreateConstraintError::BackingIndexConflict(format!(
+                    "(:{} {{{}}}) already covered by index `{}`",
+                    request.label,
+                    request.properties.join(", "),
+                    def.name,
+                )));
+            }
+        }
+
+        let owns_backing = request.kind.requires_backing_index();
+        let request_for_event = request.clone();
+        let outcome = {
+            let mut catalog = self.constraint_catalog_write();
+            catalog.try_create(request, if_not_exists)?
+        };
+
+        if let CreateConstraintOutcome::Created(def) = &outcome {
+            // Pre-create data scan: if the live graph already violates
+            // the constraint, fail and roll back the catalog write.
+            // Matches Neo4j's "creating constraints when there exists
+            // conflicting data will fail" behaviour (22N77/79/80).
+            if let Err(violation) = self.validate_existing_data_for_constraint(def) {
+                let mut catalog = self.constraint_catalog_write();
+                let _ = catalog.try_drop(&def.name, true);
+                return Err(CreateConstraintError::DataViolation(violation.to_string()));
+            }
+        }
+
+        if let CreateConstraintOutcome::Created(def) = &outcome {
+            if owns_backing {
+                // Register a backing RANGE index under the same name. This
+                // is an implementation detail of the constraint, so WAL and
+                // snapshot replay record only the constraint mutation.
+                let idx_request = IndexRequest {
+                    explicit_name: Some(def.name.clone()),
+                    kind: StoredIndexKind::Range,
+                    entity: def.entity,
+                    label: Some(def.label.clone()),
+                    additional_labels: Vec::new(),
+                    properties: def.properties.clone(),
+                    options: Default::default(),
+                };
+                // Errors from the backing-index registration unwind the
+                // constraint registration to keep the two catalogs in
+                // step.
+                if let Err(err) = self.register_index_with_recording(idx_request, true, false) {
+                    let mut catalog = self.constraint_catalog_write();
+                    let _ = catalog.try_drop(&def.name, true);
+                    return Err(CreateConstraintError::BackingIndexConflict(err.to_string()));
+                }
+            }
+            self.emit(|| crate::MutationEvent::CreateConstraint {
+                request: request_for_event,
+                if_not_exists,
+            });
+            self.active_constraints.fetch_add(1, Ordering::Relaxed);
+        }
+
+        Ok(outcome)
+    }
+
+    /// Replay a CreateConstraint event against a recorder-detached graph.
+    #[doc(hidden)]
+    pub fn replay_create_constraint(
+        &mut self,
+        request: ConstraintRequest,
+        if_not_exists: bool,
+    ) -> Result<(), String> {
+        if self.recorder.is_some() {
+            return Err(
+                "cannot replay create_constraint while a mutation recorder is installed".into(),
+            );
+        }
+        self.register_constraint(request, if_not_exists)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Replay a DropConstraint event.
+    #[doc(hidden)]
+    pub fn replay_drop_constraint(&mut self, name: &str, if_exists: bool) -> Result<(), String> {
+        if self.recorder.is_some() {
+            return Err(
+                "cannot replay drop_constraint while a mutation recorder is installed".into(),
+            );
+        }
+        self.drop_named_constraint(name, if_exists)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Inverse of [`Self::register_constraint`]. Cascades to the backing
+    /// range index when one is owned.
+    pub(super) fn drop_named_constraint(
+        &self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<DropConstraintOutcome, DropConstraintError> {
+        let outcome = {
+            let mut catalog = self.constraint_catalog_write();
+            catalog.try_drop(name, if_exists)?
+        };
+        if let DropConstraintOutcome::Dropped(def) = &outcome {
+            if let Some(index_name) = def.owned_index.as_deref() {
+                // The backing index is owned exclusively by the
+                // constraint, so dropping it is unconditional.
+                let _ = self.drop_named_index_inner(index_name, true, false);
+            }
+            self.active_constraints.fetch_sub(1, Ordering::Relaxed);
+            self.emit(|| crate::MutationEvent::DropConstraint {
+                name: name.to_string(),
+                if_exists,
+            });
+        }
+        Ok(outcome)
+    }
+
     /// Inverse of [`Self::register_index`]. Removes the catalog entry
     /// and (for RANGE) leaves the underlying property-index buckets in
     /// place — they may still be needed for lazy-activation lookups
@@ -792,6 +1072,26 @@ impl InMemoryGraph {
         name: &str,
         if_exists: bool,
     ) -> Result<DropIndexOutcome, DropIndexError> {
+        self.drop_named_index_inner(name, if_exists, true)
+    }
+
+    fn drop_named_index_inner(
+        &self,
+        name: &str,
+        if_exists: bool,
+        emit_event: bool,
+    ) -> Result<DropIndexOutcome, DropIndexError> {
+        if let Some(owner) = self
+            .constraint_catalog_read()
+            .constraint_owning_index(name)
+            .cloned()
+        {
+            return Err(DropIndexError::ConstraintOwned {
+                index: name.to_string(),
+                constraint: owner.name,
+            });
+        }
+
         let outcome = {
             let mut catalog = self.index_catalog_write();
             catalog.try_drop(name, if_exists)?
@@ -820,12 +1120,20 @@ impl InMemoryGraph {
                         }
                     }
                 }
-                StoredIndexKind::Lookup => {}
+                StoredIndexKind::Lookup | StoredIndexKind::Vector => {
+                    // VECTOR uses a flat per-query scan today; no
+                    // backing structure to release.
+                }
+                StoredIndexKind::Fulltext => {
+                    self.deactivate_fulltext_index(def.entity, &def.name);
+                }
             }
-            self.emit(|| crate::MutationEvent::DropIndex {
-                name: name.to_string(),
-                if_exists,
-            });
+            if emit_event {
+                self.emit(|| crate::MutationEvent::DropIndex {
+                    name: name.to_string(),
+                    if_exists,
+                });
+            }
         }
         Ok(outcome)
     }
@@ -871,7 +1179,17 @@ impl InMemoryGraph {
                     self.activate_point_scope(def.entity, label, property, cell_size);
                 }
             }
-            StoredIndexKind::Lookup => {}
+            StoredIndexKind::Fulltext => {
+                let labels: Vec<String> = def.all_labels().map(String::from).collect();
+                if labels.is_empty() {
+                    return;
+                }
+                self.activate_fulltext_index(def.entity, &def.name, &labels, &def.properties);
+            }
+            // LOOKUP rides on the label/type indexes maintained eagerly.
+            // VECTOR runs flat scans per query — no precomputed structure
+            // to populate here.
+            StoredIndexKind::Lookup | StoredIndexKind::Vector => {}
         }
     }
 
@@ -879,32 +1197,29 @@ impl InMemoryGraph {
         &self,
         entity: StoredIndexEntity,
     ) -> std::sync::RwLockReadGuard<'_, TrigramRegistry> {
-        match entity {
-            StoredIndexEntity::Node => self
-                .node_text_indexes
-                .read()
-                .unwrap_or_else(|p| p.into_inner()),
-            StoredIndexEntity::Relationship => self
-                .relationship_text_indexes
-                .read()
-                .unwrap_or_else(|p| p.into_inner()),
-        }
+        self.indexes.text.read(entity)
     }
 
     pub(super) fn text_indexes_write(
         &self,
         entity: StoredIndexEntity,
     ) -> RwLockWriteGuard<'_, TrigramRegistry> {
-        match entity {
-            StoredIndexEntity::Node => self
-                .node_text_indexes
-                .write()
-                .unwrap_or_else(|p| p.into_inner()),
-            StoredIndexEntity::Relationship => self
-                .relationship_text_indexes
-                .write()
-                .unwrap_or_else(|p| p.into_inner()),
-        }
+        self.indexes.text.write(entity)
+    }
+
+    pub(super) fn fulltext_indexes_read(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> std::sync::RwLockReadGuard<'_, FulltextRegistry> {
+        self.indexes.fulltext.read(entity)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn fulltext_indexes_write(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> RwLockWriteGuard<'_, FulltextRegistry> {
+        self.indexes.fulltext.write(entity)
     }
 
     fn activate_text_scope(&self, entity: StoredIndexEntity, label: &str, property: &str) {
@@ -948,36 +1263,77 @@ impl InMemoryGraph {
             .remove_scope(label, property);
     }
 
+    fn activate_fulltext_index(
+        &self,
+        entity: StoredIndexEntity,
+        name: &str,
+        labels: &[String],
+        properties: &[String],
+    ) {
+        use super::fulltext_index::{term_counts_for_properties, TermCounts};
+
+        {
+            let mut registry = self.fulltext_indexes_write(entity);
+            registry.register(name.to_string(), labels.to_vec(), properties.to_vec());
+        }
+        self.indexes
+            .active_fulltext_indexes
+            .fetch_add(1, Ordering::Relaxed);
+
+        // Backfill: walk every entity matching any label, tokenise covered
+        // string properties, install one posting batch per entity.
+        let backfill: Vec<(u64, TermCounts)> = match entity {
+            StoredIndexEntity::Node => self
+                .iter_nodes()
+                .filter(|(_, node)| {
+                    labels
+                        .iter()
+                        .any(|wanted| node.labels.iter().any(|l| l == wanted))
+                })
+                .map(|(id, node)| {
+                    let counts = term_counts_for_properties(&node.properties, properties);
+                    (id, counts)
+                })
+                .filter(|(_, c)| !c.is_empty())
+                .collect(),
+            StoredIndexEntity::Relationship => self
+                .iter_rels()
+                .filter(|(_, rel)| labels.iter().any(|wanted| wanted == &rel.rel_type))
+                .map(|(id, rel)| {
+                    let counts = term_counts_for_properties(&rel.properties, properties);
+                    (id, counts)
+                })
+                .filter(|(_, c)| !c.is_empty())
+                .collect(),
+        };
+
+        let mut registry = self.fulltext_indexes_write(entity);
+        if let Some(index) = registry.get_mut(name) {
+            for (id, counts) in backfill {
+                index.reindex_entity(id, counts);
+            }
+        }
+    }
+
+    pub(super) fn deactivate_fulltext_index(&self, entity: StoredIndexEntity, name: &str) {
+        self.fulltext_indexes_write(entity).deregister(name);
+        self.indexes
+            .active_fulltext_indexes
+            .fetch_sub(1, Ordering::Relaxed);
+    }
+
     pub(super) fn sorted_indexes_read(
         &self,
         entity: StoredIndexEntity,
     ) -> std::sync::RwLockReadGuard<'_, SortedPropertyIndex> {
-        match entity {
-            StoredIndexEntity::Node => self
-                .node_sorted_indexes
-                .read()
-                .unwrap_or_else(|p| p.into_inner()),
-            StoredIndexEntity::Relationship => self
-                .relationship_sorted_indexes
-                .read()
-                .unwrap_or_else(|p| p.into_inner()),
-        }
+        self.indexes.sorted.read(entity)
     }
 
     pub(super) fn sorted_indexes_write(
         &self,
         entity: StoredIndexEntity,
     ) -> RwLockWriteGuard<'_, SortedPropertyIndex> {
-        match entity {
-            StoredIndexEntity::Node => self
-                .node_sorted_indexes
-                .write()
-                .unwrap_or_else(|p| p.into_inner()),
-            StoredIndexEntity::Relationship => self
-                .relationship_sorted_indexes
-                .write()
-                .unwrap_or_else(|p| p.into_inner()),
-        }
+        self.indexes.sorted.write(entity)
     }
 
     fn activate_sorted_scope(&self, entity: StoredIndexEntity, label: &str, property: &str) {
@@ -1026,32 +1382,14 @@ impl InMemoryGraph {
         &self,
         entity: StoredIndexEntity,
     ) -> std::sync::RwLockReadGuard<'_, PointRegistry> {
-        match entity {
-            StoredIndexEntity::Node => self
-                .node_point_indexes
-                .read()
-                .unwrap_or_else(|p| p.into_inner()),
-            StoredIndexEntity::Relationship => self
-                .relationship_point_indexes
-                .read()
-                .unwrap_or_else(|p| p.into_inner()),
-        }
+        self.indexes.point.read(entity)
     }
 
     pub(super) fn point_indexes_write(
         &self,
         entity: StoredIndexEntity,
     ) -> RwLockWriteGuard<'_, PointRegistry> {
-        match entity {
-            StoredIndexEntity::Node => self
-                .node_point_indexes
-                .write()
-                .unwrap_or_else(|p| p.into_inner()),
-            StoredIndexEntity::Relationship => self
-                .relationship_point_indexes
-                .write()
-                .unwrap_or_else(|p| p.into_inner()),
-        }
+        self.indexes.point.write(entity)
     }
 
     fn activate_point_scope(
@@ -1170,7 +1508,13 @@ impl InMemoryGraph {
                     (StoredIndexEntity::Relationship, StoredIndexKind::Point) => {
                         stats.relationship_point_indexes.insert(scope);
                     }
-                    (_, StoredIndexKind::Lookup) => {}
+                    (StoredIndexEntity::Node, StoredIndexKind::Vector) => {
+                        stats.node_vector_indexes.insert(scope);
+                    }
+                    (StoredIndexEntity::Relationship, StoredIndexKind::Vector) => {
+                        stats.relationship_vector_indexes.insert(scope);
+                    }
+                    (_, StoredIndexKind::Lookup | StoredIndexKind::Fulltext) => {}
                 }
             }
         }
@@ -1211,9 +1555,11 @@ impl InMemoryGraph {
         let node_index_count = indexes.node_properties.active_keys.len();
         let relationship_index_count = indexes.relationship_properties.active_keys.len();
         *self.indexes_mut() = indexes;
-        self.active_node_property_indexes
+        self.indexes
+            .active_node_property_indexes
             .store(node_index_count, Ordering::Relaxed);
-        self.active_relationship_property_indexes
+        self.indexes
+            .active_relationship_property_indexes
             .store(relationship_index_count, Ordering::Relaxed);
     }
 
@@ -1456,7 +1802,8 @@ impl InMemoryGraph {
             activated
         };
         if activated {
-            self.active_node_property_indexes
+            self.indexes
+                .active_node_property_indexes
                 .fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1481,7 +1828,8 @@ impl InMemoryGraph {
             activated
         };
         if activated {
-            self.active_relationship_property_indexes
+            self.indexes
+                .active_relationship_property_indexes
                 .fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1943,6 +2291,8 @@ impl InMemoryGraph {
         if self.node_at(id).is_some() {
             return Err(format!("node id {id} already exists"));
         }
+        let idx = self.ensure_node_slot_checked(id)?;
+        self.bump_next_node_id_past(id)?;
 
         let labels = Self::normalize_labels(labels);
         let node = NodeRecord {
@@ -1951,11 +2301,8 @@ impl InMemoryGraph {
             properties,
         };
 
+        self.put_node_at_slot(idx, node.clone());
         self.on_node_replayed(&node);
-        self.put_node(id, node.clone());
-        // ensure_node_slot grew both adjacency Vecs to cover this id when
-        // we put_node above.
-        self.bump_next_node_id_past(id)?;
 
         Ok(node)
     }
@@ -1995,6 +2342,8 @@ impl InMemoryGraph {
         if trimmed.is_empty() {
             return Err(format!("relationship {id} has an empty type"));
         }
+        let idx = self.ensure_rel_slot_checked(id)?;
+        self.bump_next_rel_id_past(id)?;
 
         let rel = RelationshipRecord {
             id,
@@ -2004,9 +2353,8 @@ impl InMemoryGraph {
             properties,
         };
 
+        self.put_rel_at_slot(idx, rel.clone());
         self.on_relationship_replayed(&rel);
-        self.put_rel(id, rel.clone());
-        self.bump_next_rel_id_past(id)?;
 
         Ok(rel)
     }

@@ -310,6 +310,27 @@ fn replay_create_eagerly_activates_property_indexes() {
 }
 
 #[test]
+fn replay_rejects_invalid_relationship_before_advancing_next_id() {
+    let mut g = InMemoryGraph::new();
+    let alice = g
+        .replay_create_node(0, vec!["Person".into()], Properties::new())
+        .unwrap();
+    let bob = g
+        .replay_create_node(1, vec!["Person".into()], Properties::new())
+        .unwrap();
+
+    let err = g
+        .replay_create_relationship(5, alice.id, bob.id, "   ", Properties::new())
+        .unwrap_err();
+    assert!(err.contains("empty type"));
+
+    let rel = g
+        .create_relationship(alice.id, bob.id, "KNOWS", Properties::new())
+        .unwrap();
+    assert_eq!(rel.id, 0);
+}
+
+#[test]
 fn node_property_index_tracks_scoped_label_buckets() {
     let mut g = InMemoryGraph::new();
     let alice = g.create_node(
@@ -729,6 +750,34 @@ fn snapshot_roundtrip_preserves_graph_state() {
     // Counters carry over so new IDs don't collide with pre-snapshot IDs.
     let c = restored.create_node(vec!["Person".into()], Properties::new());
     assert_eq!(c.id, b.id + 1);
+}
+
+#[test]
+fn snapshot_load_rejects_invalid_ids_without_mutating_target() {
+    let mut original = InMemoryGraph::new();
+    original.create_node(vec!["Person".into()], Properties::new());
+    let mut payload = original.snapshot_payload();
+    payload.nodes[0].id = payload.next_node_id;
+
+    let mut target = InMemoryGraph::new();
+    let existing = target.create_node(vec!["Existing".into()], Properties::new());
+    let err = target.load_snapshot_payload(payload).unwrap_err();
+
+    assert!(err.to_string().contains("not below next node id"));
+    assert_eq!(target.node_count(), 1);
+    assert!(target.node(existing.id).is_some());
+}
+
+#[test]
+fn snapshot_load_rejects_unallocatable_next_id_without_large_allocation() {
+    let mut payload = InMemoryGraph::new().snapshot_payload();
+    payload.next_node_id = u64::MAX;
+
+    let mut target = InMemoryGraph::new();
+    let err = target.load_snapshot_payload(payload).unwrap_err();
+
+    assert!(err.to_string().contains("next node id"));
+    assert_eq!(target.node_count(), 0);
 }
 
 #[test]
