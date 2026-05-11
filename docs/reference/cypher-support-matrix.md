@@ -39,8 +39,8 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `CALL` (standalone) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `CALL ... YIELD` (in-query) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
 | `FOREACH` | **Not yet implemented** | Not in grammar |
-| `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | **Supported** | RANGE/TEXT/POINT/LOOKUP indexes for nodes and relationships |
-| `CREATE CONSTRAINT` | **Not yet implemented** | Not in grammar |
+| `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | **Supported** | RANGE/TEXT/POINT/LOOKUP/VECTOR indexes for nodes and relationships |
+| `CREATE CONSTRAINT` / `DROP CONSTRAINT` / `SHOW CONSTRAINTS` | **Supported** | Property uniqueness (single + composite), property existence (`IS NOT NULL`), node key, relationship key, and property type (`IS :: <TYPE>`) constraints — see §11 |
 | `LOAD CSV` | **Not yet implemented** | Not in grammar |
 | `USE <graph>` | **Not yet implemented** | Not in grammar |
 
@@ -259,13 +259,16 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | `CREATE LOOKUP INDEX ... ON EACH type(r)` | **Supported** | Catalog-visible token index for relationship types |
 | `IF NOT EXISTS` | **Supported** | Duplicate name or equivalent schema becomes a no-op |
 | `DROP INDEX name [IF EXISTS]` | **Supported** | Missing index without `IF EXISTS` returns `42N51` |
-| `SHOW INDEXES` / `SHOW INDEX` | **Supported** | Returns name, type, entityType, labelsOrTypes, properties, state, populationPercent |
+| `SHOW INDEXES` / `SHOW INDEX` | **Supported** | Returns name, type, entityType, labelsOrTypes, properties, state, populationPercent. Accepts type filter (`SHOW {ALL\|RANGE\|TEXT\|POINT\|LOOKUP\|FULLTEXT\|VECTOR} INDEXES`); `FULLTEXT` parses but returns empty until a full-text catalog kind exists. Accepts a YIELD-anchored tail: `YIELD {*\|items} [ORDER BY ...] [SKIP n] [LIMIT n] [WHERE expr] [RETURN items [ORDER BY ...] [SKIP n] [LIMIT n]]`. Same tail also accepted on `SHOW CONSTRAINTS`. |
 | Duplicate index name | **Supported error** | Returns GQLSTATUS-shaped `22N71` |
 | Equivalent index under another name | **Supported error** | Returns GQLSTATUS-shaped `22N70` |
 | Composite RANGE index catalog entries | **Partial** | Accepted and shown; current optimizer rewrites are single-property |
-| Unique constraints / unique indexes | **Not yet implemented** | No constraint-enforcing DDL |
-| Vector / ANN index | **Not yet implemented** | Exhaustive kNN only |
-| Full-text scoring | **Not yet implemented** | TEXT indexes accelerate string predicates but do not expose ranking |
+| Property uniqueness constraints | **Supported** | Single + composite; backed by a RANGE index of the same name; mutation-time enforcement returns `22N79` |
+| Property existence constraints (`IS NOT NULL`) | **Supported** | Single property only; rejects CREATE missing the prop, REMOVE of the prop, and SET-label that would activate it on an incomplete node; returns `22N77` |
+| Node / relationship key constraints | **Supported** | Composition of existence + uniqueness; single + composite; node-key uses `IS NODE KEY`, rel-key uses `IS RELATIONSHIP KEY` |
+| Property type constraints (`IS :: T`) | **Supported** | Scalar (`BOOLEAN`/`STRING`/`INTEGER`/`FLOAT`/`DATE`/`LOCAL TIME`/`ZONED TIME`/`LOCAL DATETIME`/`ZONED DATETIME`/`DURATION`/`POINT`), `LIST<T NOT NULL>`, `VECTOR<COORD>(DIM)`, and closed dynamic unions (`T1 \| T2`); `MAP`/`ANY` rejected with `22N90` |
+| Vector index / ANN index | **Partial** | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS {indexConfig: {vector.dimensions, vector.similarity_function}}` (node + rel). Procedures `db.index.vector.queryNodes` / `queryRelationships` execute a flat scan over label-matching entities; ANN structure (HNSW) is a follow-up. |
+| Full-text indexing | **Supported (standard analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default); others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + non-alphanumeric split, intersect posting lists (AND semantics), score by summed TF, return `(node\|relationship, score)` rows sorted descending. |
 
 ## 13b. Vector types and functions
 
@@ -420,7 +423,6 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | `CALL` (standalone and YIELD) | Clause | Analyzer rejects with `UnsupportedFeature` |
 | `EXPLAIN` / `PROFILE` (as Cypher keywords) | Clause | Not in grammar — exposed instead as the `db.explain()` / `db.profile()` API methods so callers must explicitly request plan-only or instrumented execution. |
 | `FOREACH` | Clause | Not in grammar |
-| `CREATE CONSTRAINT` | DDL | Not in grammar |
 | `LOAD CSV` | DDL | Not in grammar |
 | `USE <graph>` (multi-database) | Clause | Not in grammar |
 | Quantified path patterns | Pattern | Future openCypher syntax |
@@ -430,7 +432,6 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | Parameter type checking at parse time | Parameters | |
 | Parameters over HTTP | Transport | In-process bindings only |
 | APOC-style utilities | Functions | No compatibility layer |
-| Uniqueness constraints | Storage | Index DDL exists, but no constraint-enforcing catalog entries |
 | Authentication / TLS | Server | See [`../operations/security.md`](../operations/security.md) |
 
 ---
