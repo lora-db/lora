@@ -9,9 +9,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::{
-    IndexConfigValue, IndexDefinition, IndexRequest, LoraBinary, LoraDate, LoraDateTime,
-    LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime, LoraVector, PropertyValue,
-    StoredIndexEntity, StoredIndexKind, StoredIndexState, VectorValues,
+    ConstraintDefinition, ConstraintRequest, IndexConfigValue, IndexDefinition, IndexRequest,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
+    LoraTime, LoraVector, PropertyValue, StoredConstraintKind, StoredIndexEntity, StoredIndexKind,
+    StoredIndexState, StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType,
+    StoredVectorCoordType, VectorValues,
 };
 
 type Result<T> = std::result::Result<T, StoreCodecError>;
@@ -59,6 +61,39 @@ pub fn decode_index_request(bytes: &[u8]) -> Result<IndexRequest> {
     Ok(request)
 }
 
+pub fn encode_constraint_request(request: &ConstraintRequest) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    write_constraint_request(&mut out, request)?;
+    Ok(out)
+}
+
+pub fn decode_constraint_request(bytes: &[u8]) -> Result<ConstraintRequest> {
+    let mut reader = Reader::new(bytes);
+    let request = reader.read_constraint_request()?;
+    reader.finish()?;
+    Ok(request)
+}
+
+pub fn encode_constraint_definitions(defs: &[ConstraintDefinition]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    write_len(&mut out, defs.len())?;
+    for def in defs {
+        write_constraint_definition(&mut out, def)?;
+    }
+    Ok(out)
+}
+
+pub fn decode_constraint_definitions(bytes: &[u8]) -> Result<Vec<ConstraintDefinition>> {
+    let mut reader = Reader::new(bytes);
+    let len = reader.read_len_bounded("constraint definition")?;
+    let mut defs = reader.vec_with_capacity(len, "constraint definition")?;
+    for _ in 0..len {
+        defs.push(reader.read_constraint_definition()?);
+    }
+    reader.finish()?;
+    Ok(defs)
+}
+
 pub fn encode_index_definitions(defs: &[IndexDefinition]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     write_len(&mut out, defs.len())?;
@@ -70,8 +105,8 @@ pub fn encode_index_definitions(defs: &[IndexDefinition]) -> Result<Vec<u8>> {
 
 pub fn decode_index_definitions(bytes: &[u8]) -> Result<Vec<IndexDefinition>> {
     let mut reader = Reader::new(bytes);
-    let len = reader.read_len()?;
-    let mut defs = Vec::with_capacity(len);
+    let len = reader.read_len_bounded("index definition")?;
+    let mut defs = reader.vec_with_capacity(len, "index definition")?;
     for _ in 0..len {
         defs.push(reader.read_index_definition()?);
     }
@@ -107,6 +142,8 @@ const INDEX_KIND_RANGE: u8 = 1;
 const INDEX_KIND_TEXT: u8 = 2;
 const INDEX_KIND_POINT: u8 = 3;
 const INDEX_KIND_LOOKUP: u8 = 4;
+const INDEX_KIND_VECTOR: u8 = 5;
+const INDEX_KIND_FULLTEXT: u8 = 6;
 
 const INDEX_ENTITY_NODE: u8 = 1;
 const INDEX_ENTITY_RELATIONSHIP: u8 = 2;
@@ -122,11 +159,43 @@ const CONFIG_LIST: u8 = 5;
 const CONFIG_MAP: u8 = 6;
 const CONFIG_NULL: u8 = 7;
 
+const CONSTRAINT_KIND_UNIQUE: u8 = 1;
+const CONSTRAINT_KIND_EXISTENCE: u8 = 2;
+const CONSTRAINT_KIND_NODE_KEY: u8 = 3;
+const CONSTRAINT_KIND_RELATIONSHIP_KEY: u8 = 4;
+const CONSTRAINT_KIND_PROPERTY_TYPE: u8 = 5;
+
+const PROPERTY_TYPE_TERM_SCALAR: u8 = 1;
+const PROPERTY_TYPE_TERM_LIST: u8 = 2;
+const PROPERTY_TYPE_TERM_VECTOR: u8 = 3;
+
+const SCALAR_BOOLEAN: u8 = 1;
+const SCALAR_STRING: u8 = 2;
+const SCALAR_INTEGER: u8 = 3;
+const SCALAR_FLOAT: u8 = 4;
+const SCALAR_DATE: u8 = 5;
+const SCALAR_LOCAL_TIME: u8 = 6;
+const SCALAR_ZONED_TIME: u8 = 7;
+const SCALAR_LOCAL_DATETIME: u8 = 8;
+const SCALAR_ZONED_DATETIME: u8 = 9;
+const SCALAR_DURATION: u8 = 10;
+const SCALAR_POINT: u8 = 11;
+const SCALAR_MAP: u8 = 12;
+const SCALAR_ANY: u8 = 13;
+
+const VCOORD_INT8: u8 = 1;
+const VCOORD_INT16: u8 = 2;
+const VCOORD_INT32: u8 = 3;
+const VCOORD_INT64: u8 = 4;
+const VCOORD_FLOAT32: u8 = 5;
+const VCOORD_FLOAT64: u8 = 6;
+
 fn write_index_request(out: &mut Vec<u8>, request: &IndexRequest) -> Result<()> {
     write_optional_string(out, request.explicit_name.as_deref())?;
     write_index_kind(out, request.kind);
     write_index_entity(out, request.entity);
     write_optional_string(out, request.label.as_deref())?;
+    write_string_vec(out, &request.additional_labels)?;
     write_string_vec(out, &request.properties)?;
     write_config_map(out, &request.options)
 }
@@ -136,6 +205,7 @@ fn write_index_definition(out: &mut Vec<u8>, def: &IndexDefinition) -> Result<()
     write_index_kind(out, def.kind);
     write_index_entity(out, def.entity);
     write_optional_string(out, def.label.as_deref())?;
+    write_string_vec(out, &def.additional_labels)?;
     write_string_vec(out, &def.properties)?;
     write_config_map(out, &def.options)?;
     write_index_state(out, def.state);
@@ -148,6 +218,8 @@ fn write_index_kind(out: &mut Vec<u8>, kind: StoredIndexKind) {
         StoredIndexKind::Text => INDEX_KIND_TEXT,
         StoredIndexKind::Point => INDEX_KIND_POINT,
         StoredIndexKind::Lookup => INDEX_KIND_LOOKUP,
+        StoredIndexKind::Vector => INDEX_KIND_VECTOR,
+        StoredIndexKind::Fulltext => INDEX_KIND_FULLTEXT,
     });
 }
 
@@ -163,6 +235,94 @@ fn write_index_state(out: &mut Vec<u8>, state: StoredIndexState) {
         StoredIndexState::Online => INDEX_STATE_ONLINE,
         StoredIndexState::Populating => INDEX_STATE_POPULATING,
     });
+}
+
+fn write_constraint_request(out: &mut Vec<u8>, request: &ConstraintRequest) -> Result<()> {
+    write_string(out, &request.name)?;
+    write_constraint_kind(out, &request.kind)?;
+    write_index_entity(out, request.entity);
+    write_string(out, &request.label)?;
+    write_string_vec(out, &request.properties)
+}
+
+fn write_constraint_definition(out: &mut Vec<u8>, def: &ConstraintDefinition) -> Result<()> {
+    write_string(out, &def.name)?;
+    write_constraint_kind(out, &def.kind)?;
+    write_index_entity(out, def.entity);
+    write_string(out, &def.label)?;
+    write_string_vec(out, &def.properties)?;
+    write_optional_string(out, def.owned_index.as_deref())
+}
+
+fn write_constraint_kind(out: &mut Vec<u8>, kind: &StoredConstraintKind) -> Result<()> {
+    match kind {
+        StoredConstraintKind::Unique => out.push(CONSTRAINT_KIND_UNIQUE),
+        StoredConstraintKind::Existence => out.push(CONSTRAINT_KIND_EXISTENCE),
+        StoredConstraintKind::NodeKey => out.push(CONSTRAINT_KIND_NODE_KEY),
+        StoredConstraintKind::RelationshipKey => out.push(CONSTRAINT_KIND_RELATIONSHIP_KEY),
+        StoredConstraintKind::PropertyType(t) => {
+            out.push(CONSTRAINT_KIND_PROPERTY_TYPE);
+            write_property_type(out, t)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_property_type(out: &mut Vec<u8>, t: &StoredPropertyType) -> Result<()> {
+    write_len(out, t.alternatives.len())?;
+    for term in &t.alternatives {
+        write_property_type_term(out, term)?;
+    }
+    Ok(())
+}
+
+fn write_property_type_term(out: &mut Vec<u8>, term: &StoredPropertyTypeTerm) -> Result<()> {
+    match term {
+        StoredPropertyTypeTerm::Scalar(s) => {
+            out.push(PROPERTY_TYPE_TERM_SCALAR);
+            out.push(scalar_tag(*s));
+        }
+        StoredPropertyTypeTerm::List { inner, not_null } => {
+            out.push(PROPERTY_TYPE_TERM_LIST);
+            out.push(u8::from(*not_null));
+            write_property_type_term(out, inner)?;
+        }
+        StoredPropertyTypeTerm::Vector { coord, dimension } => {
+            out.push(PROPERTY_TYPE_TERM_VECTOR);
+            out.push(vector_coord_tag(*coord));
+            write_u32(out, *dimension);
+        }
+    }
+    Ok(())
+}
+
+fn scalar_tag(s: StoredScalarType) -> u8 {
+    match s {
+        StoredScalarType::Boolean => SCALAR_BOOLEAN,
+        StoredScalarType::String => SCALAR_STRING,
+        StoredScalarType::Integer => SCALAR_INTEGER,
+        StoredScalarType::Float => SCALAR_FLOAT,
+        StoredScalarType::Date => SCALAR_DATE,
+        StoredScalarType::LocalTime => SCALAR_LOCAL_TIME,
+        StoredScalarType::ZonedTime => SCALAR_ZONED_TIME,
+        StoredScalarType::LocalDateTime => SCALAR_LOCAL_DATETIME,
+        StoredScalarType::ZonedDateTime => SCALAR_ZONED_DATETIME,
+        StoredScalarType::Duration => SCALAR_DURATION,
+        StoredScalarType::Point => SCALAR_POINT,
+        StoredScalarType::Map => SCALAR_MAP,
+        StoredScalarType::Any => SCALAR_ANY,
+    }
+}
+
+fn vector_coord_tag(c: StoredVectorCoordType) -> u8 {
+    match c {
+        StoredVectorCoordType::Int8 => VCOORD_INT8,
+        StoredVectorCoordType::Int16 => VCOORD_INT16,
+        StoredVectorCoordType::Int32 => VCOORD_INT32,
+        StoredVectorCoordType::Int64 => VCOORD_INT64,
+        StoredVectorCoordType::Float32 => VCOORD_FLOAT32,
+        StoredVectorCoordType::Float64 => VCOORD_FLOAT64,
+    }
 }
 
 fn write_config_map(out: &mut Vec<u8>, values: &BTreeMap<String, IndexConfigValue>) -> Result<()> {
@@ -536,6 +696,28 @@ impl<'a> Reader<'a> {
             .map_err(|_| StoreCodecError::Decode("length overflows usize".into()))
     }
 
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+
+    fn read_len_bounded(&mut self, label: &str) -> Result<usize> {
+        let len = self.read_len()?;
+        if len > self.remaining() {
+            return Err(StoreCodecError::Decode(format!(
+                "{label} count {len} exceeds remaining input"
+            )));
+        }
+        Ok(len)
+    }
+
+    fn vec_with_capacity<T>(&self, len: usize, label: &str) -> Result<Vec<T>> {
+        let mut values = Vec::new();
+        values.try_reserve(len).map_err(|_| {
+            StoreCodecError::Decode(format!("{label} count {len} is too large to allocate"))
+        })?;
+        Ok(values)
+    }
+
     fn read_bytes(&mut self) -> Result<&'a [u8]> {
         let len = self.read_len()?;
         self.read_exact(len)
@@ -549,8 +731,8 @@ impl<'a> Reader<'a> {
     }
 
     fn read_string_vec(&mut self) -> Result<Vec<String>> {
-        let len = self.read_len()?;
-        let mut values = Vec::with_capacity(len);
+        let len = self.read_len_bounded("string")?;
+        let mut values = self.vec_with_capacity(len, "string")?;
         for _ in 0..len {
             values.push(self.read_string()?);
         }
@@ -573,6 +755,7 @@ impl<'a> Reader<'a> {
             kind: self.read_index_kind()?,
             entity: self.read_index_entity()?,
             label: self.read_optional_string()?,
+            additional_labels: self.read_string_vec()?,
             properties: self.read_string_vec()?,
             options: self.read_config_map()?,
         })
@@ -584,6 +767,7 @@ impl<'a> Reader<'a> {
             kind: self.read_index_kind()?,
             entity: self.read_index_entity()?,
             label: self.read_optional_string()?,
+            additional_labels: self.read_string_vec()?,
             properties: self.read_string_vec()?,
             options: self.read_config_map()?,
             state: self.read_index_state()?,
@@ -596,6 +780,8 @@ impl<'a> Reader<'a> {
             INDEX_KIND_TEXT => Ok(StoredIndexKind::Text),
             INDEX_KIND_POINT => Ok(StoredIndexKind::Point),
             INDEX_KIND_LOOKUP => Ok(StoredIndexKind::Lookup),
+            INDEX_KIND_VECTOR => Ok(StoredIndexKind::Vector),
+            INDEX_KIND_FULLTEXT => Ok(StoredIndexKind::Fulltext),
             tag => Err(StoreCodecError::Decode(format!(
                 "invalid index kind tag {tag}"
             ))),
@@ -622,8 +808,109 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn read_constraint_request(&mut self) -> Result<ConstraintRequest> {
+        Ok(ConstraintRequest {
+            name: self.read_string()?,
+            kind: self.read_constraint_kind()?,
+            entity: self.read_index_entity()?,
+            label: self.read_string()?,
+            properties: self.read_string_vec()?,
+        })
+    }
+
+    fn read_constraint_definition(&mut self) -> Result<ConstraintDefinition> {
+        Ok(ConstraintDefinition {
+            name: self.read_string()?,
+            kind: self.read_constraint_kind()?,
+            entity: self.read_index_entity()?,
+            label: self.read_string()?,
+            properties: self.read_string_vec()?,
+            owned_index: self.read_optional_string()?,
+        })
+    }
+
+    fn read_constraint_kind(&mut self) -> Result<StoredConstraintKind> {
+        match self.read_u8()? {
+            CONSTRAINT_KIND_UNIQUE => Ok(StoredConstraintKind::Unique),
+            CONSTRAINT_KIND_EXISTENCE => Ok(StoredConstraintKind::Existence),
+            CONSTRAINT_KIND_NODE_KEY => Ok(StoredConstraintKind::NodeKey),
+            CONSTRAINT_KIND_RELATIONSHIP_KEY => Ok(StoredConstraintKind::RelationshipKey),
+            CONSTRAINT_KIND_PROPERTY_TYPE => Ok(StoredConstraintKind::PropertyType(
+                self.read_property_type()?,
+            )),
+            tag => Err(StoreCodecError::Decode(format!(
+                "invalid constraint kind tag {tag}"
+            ))),
+        }
+    }
+
+    fn read_property_type(&mut self) -> Result<StoredPropertyType> {
+        let len = self.read_len_bounded("property type alternative")?;
+        let mut alternatives = self.vec_with_capacity(len, "property type alternative")?;
+        for _ in 0..len {
+            alternatives.push(self.read_property_type_term()?);
+        }
+        Ok(StoredPropertyType { alternatives })
+    }
+
+    fn read_property_type_term(&mut self) -> Result<StoredPropertyTypeTerm> {
+        match self.read_u8()? {
+            PROPERTY_TYPE_TERM_SCALAR => {
+                Ok(StoredPropertyTypeTerm::Scalar(self.read_scalar_type()?))
+            }
+            PROPERTY_TYPE_TERM_LIST => {
+                let not_null = self.read_u8()? != 0;
+                let inner = Box::new(self.read_property_type_term()?);
+                Ok(StoredPropertyTypeTerm::List { inner, not_null })
+            }
+            PROPERTY_TYPE_TERM_VECTOR => {
+                let coord = self.read_vector_coord_type()?;
+                let dimension = self.read_u32()?;
+                Ok(StoredPropertyTypeTerm::Vector { coord, dimension })
+            }
+            tag => Err(StoreCodecError::Decode(format!(
+                "invalid property-type term tag {tag}"
+            ))),
+        }
+    }
+
+    fn read_scalar_type(&mut self) -> Result<StoredScalarType> {
+        match self.read_u8()? {
+            SCALAR_BOOLEAN => Ok(StoredScalarType::Boolean),
+            SCALAR_STRING => Ok(StoredScalarType::String),
+            SCALAR_INTEGER => Ok(StoredScalarType::Integer),
+            SCALAR_FLOAT => Ok(StoredScalarType::Float),
+            SCALAR_DATE => Ok(StoredScalarType::Date),
+            SCALAR_LOCAL_TIME => Ok(StoredScalarType::LocalTime),
+            SCALAR_ZONED_TIME => Ok(StoredScalarType::ZonedTime),
+            SCALAR_LOCAL_DATETIME => Ok(StoredScalarType::LocalDateTime),
+            SCALAR_ZONED_DATETIME => Ok(StoredScalarType::ZonedDateTime),
+            SCALAR_DURATION => Ok(StoredScalarType::Duration),
+            SCALAR_POINT => Ok(StoredScalarType::Point),
+            SCALAR_MAP => Ok(StoredScalarType::Map),
+            SCALAR_ANY => Ok(StoredScalarType::Any),
+            tag => Err(StoreCodecError::Decode(format!(
+                "invalid scalar type tag {tag}"
+            ))),
+        }
+    }
+
+    fn read_vector_coord_type(&mut self) -> Result<StoredVectorCoordType> {
+        match self.read_u8()? {
+            VCOORD_INT8 => Ok(StoredVectorCoordType::Int8),
+            VCOORD_INT16 => Ok(StoredVectorCoordType::Int16),
+            VCOORD_INT32 => Ok(StoredVectorCoordType::Int32),
+            VCOORD_INT64 => Ok(StoredVectorCoordType::Int64),
+            VCOORD_FLOAT32 => Ok(StoredVectorCoordType::Float32),
+            VCOORD_FLOAT64 => Ok(StoredVectorCoordType::Float64),
+            tag => Err(StoreCodecError::Decode(format!(
+                "invalid vector coord type tag {tag}"
+            ))),
+        }
+    }
+
     fn read_config_map(&mut self) -> Result<BTreeMap<String, IndexConfigValue>> {
-        let len = self.read_len()?;
+        let len = self.read_len_bounded("index config map entry")?;
         let mut values = BTreeMap::new();
         for _ in 0..len {
             values.insert(self.read_string()?, self.read_config_value()?);
@@ -638,8 +925,8 @@ impl<'a> Reader<'a> {
             CONFIG_STRING => IndexConfigValue::String(self.read_string()?),
             CONFIG_BOOL => IndexConfigValue::Bool(self.read_u8()? != 0),
             CONFIG_LIST => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("index config list value")?;
+                let mut values = self.vec_with_capacity(len, "index config list value")?;
                 for _ in 0..len {
                     values.push(self.read_config_value()?);
                 }
@@ -663,15 +950,15 @@ impl<'a> Reader<'a> {
             VALUE_FLOAT => PropertyValue::Float(self.read_f64()?),
             VALUE_STRING => PropertyValue::String(self.read_string()?),
             VALUE_LIST => {
-                let len = self.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = self.read_len_bounded("property list value")?;
+                let mut values = self.vec_with_capacity(len, "property list value")?;
                 for _ in 0..len {
                     values.push(self.read_property_value()?);
                 }
                 PropertyValue::List(values)
             }
             VALUE_MAP => {
-                let len = self.read_len()?;
+                let len = self.read_len_bounded("property map entry")?;
                 let mut values = BTreeMap::new();
                 for _ in 0..len {
                     values.insert(self.read_string()?, self.read_property_value()?);
@@ -787,8 +1074,8 @@ impl<'a> Reader<'a> {
     }
 
     fn read_binary(&mut self) -> Result<LoraBinary> {
-        let len = self.read_len()?;
-        let mut segments = Vec::with_capacity(len);
+        let len = self.read_len_bounded("binary segment")?;
+        let mut segments = self.vec_with_capacity(len, "binary segment")?;
         for _ in 0..len {
             segments.push(self.read_bytes()?.to_vec());
         }
@@ -801,7 +1088,12 @@ fn read_vec<T>(
     mut read_one: impl FnMut(&mut Reader<'_>) -> Result<T>,
 ) -> Result<Vec<T>> {
     let len = reader.read_len()?;
-    let mut values = Vec::with_capacity(len);
+    if len > reader.remaining() {
+        return Err(StoreCodecError::Decode(format!(
+            "vector value count {len} exceeds remaining input"
+        )));
+    }
+    let mut values = reader.vec_with_capacity(len, "vector value")?;
     for _ in 0..len {
         values.push(read_one(reader)?);
     }
@@ -828,12 +1120,23 @@ mod tests {
     }
 
     #[test]
+    fn property_value_rejects_oversized_list_length() {
+        let mut bytes = vec![VALUE_LIST];
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+
+        let err = decode_property_value(&bytes).unwrap_err();
+        assert!(matches!(err, StoreCodecError::Decode(_)));
+        assert!(err.to_string().contains("exceeds remaining input"));
+    }
+
+    #[test]
     fn index_request_roundtrips_options() {
         let request = IndexRequest {
             explicit_name: Some("idx_person_name".into()),
             kind: StoredIndexKind::Text,
             entity: StoredIndexEntity::Node,
             label: Some("Person".into()),
+            additional_labels: Vec::new(),
             properties: vec!["name".into()],
             options: BTreeMap::from([(
                 "indexConfig".into(),
@@ -855,6 +1158,7 @@ mod tests {
             kind: StoredIndexKind::Range,
             entity: StoredIndexEntity::Node,
             label: Some("Person".into()),
+            additional_labels: Vec::new(),
             properties: vec!["age".into()],
             options: BTreeMap::new(),
             state: StoredIndexState::Online,
