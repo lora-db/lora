@@ -35,9 +35,24 @@ pub struct IndexDefinition {
     /// indexes the label/type is the wildcard captured by `labels(n)`
     /// or `type(r)` and is recorded as `None`.
     pub label: Option<String>,
+    /// Extra labels beyond `label`. Only populated for FULLTEXT indexes
+    /// declared with the `(n:A|B|C)` form. `all_labels()` walks the union.
+    #[serde(default)]
+    pub additional_labels: Vec<String>,
     pub properties: Vec<String>,
     pub options: BTreeMap<String, IndexConfigValue>,
     pub state: StoredIndexState,
+}
+
+impl IndexDefinition {
+    /// Iterate every label / rel-type this index covers. For non-fulltext
+    /// kinds this is at most one element.
+    pub fn all_labels(&self) -> impl Iterator<Item = &str> {
+        self.label
+            .as_deref()
+            .into_iter()
+            .chain(self.additional_labels.iter().map(String::as_str))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +61,8 @@ pub enum StoredIndexKind {
     Text,
     Point,
     Lookup,
+    Vector,
+    Fulltext,
 }
 
 impl StoredIndexKind {
@@ -55,6 +72,8 @@ impl StoredIndexKind {
             StoredIndexKind::Text => "TEXT",
             StoredIndexKind::Point => "POINT",
             StoredIndexKind::Lookup => "LOOKUP",
+            StoredIndexKind::Vector => "VECTOR",
+            StoredIndexKind::Fulltext => "FULLTEXT",
         }
     }
 }
@@ -146,6 +165,10 @@ pub enum DropIndexError {
     /// 42N51 — referenced index does not exist.
     #[error("no index named `{0}` exists in the catalog")]
     NotFound(String),
+    /// Index belongs to a constraint and must be removed by dropping
+    /// the owning constraint.
+    #[error("index `{index}` is owned by constraint `{constraint}` and cannot be dropped directly; use DROP CONSTRAINT instead")]
+    ConstraintOwned { index: String, constraint: String },
     #[error("{0}")]
     Unsupported(&'static str),
 }
@@ -154,6 +177,7 @@ impl DropIndexError {
     pub const fn gql_status(&self) -> &'static str {
         match self {
             DropIndexError::NotFound(_) => "42N51",
+            DropIndexError::ConstraintOwned { .. } => "22N73",
             DropIndexError::Unsupported(_) => "0A000",
         }
     }
@@ -220,6 +244,7 @@ impl IndexCatalog {
         name
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn try_create(
         &mut self,
         request: IndexRequest,
@@ -256,6 +281,7 @@ impl IndexCatalog {
             kind: request.kind,
             entity: request.entity,
             label: request.label,
+            additional_labels: request.additional_labels,
             properties: request.properties,
             options: request.options,
             state: StoredIndexState::Online,
@@ -283,6 +309,11 @@ fn equivalent(def: &IndexDefinition, request: &IndexRequest) -> bool {
     }
     match request.kind {
         StoredIndexKind::Lookup => true, // one per (kind, entity)
+        StoredIndexKind::Fulltext => {
+            def.label == request.label
+                && def.additional_labels == request.additional_labels
+                && def.properties == request.properties
+        }
         _ => def.label == request.label && def.properties == request.properties,
     }
 }
@@ -296,6 +327,9 @@ pub struct IndexRequest {
     pub kind: StoredIndexKind,
     pub entity: StoredIndexEntity,
     pub label: Option<String>,
+    /// Extra labels beyond `label`. Only populated for FULLTEXT requests.
+    #[serde(default)]
+    pub additional_labels: Vec<String>,
     pub properties: Vec<String>,
     pub options: BTreeMap<String, IndexConfigValue>,
 }
