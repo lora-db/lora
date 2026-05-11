@@ -4,14 +4,15 @@ use super::util::{pair_span, single_inner, unexpected_rule};
 use super::Rule;
 use crate::errors::ParseError;
 use lora_ast::*;
-use pest::iterators::Pair;
+use pest::iterators::{Pair, Pairs};
 
 pub(super) fn lower_literal(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     match pair.as_rule() {
         Rule::number_literal => lower_literal(single_inner(pair)?),
         Rule::integer_literal => {
-            let v = lower_integer_literal(pair.clone())?;
-            Ok(Expr::Integer(v, pair_span(&pair)))
+            let span = pair_span(&pair);
+            let v = lower_integer_literal(pair)?;
+            Ok(Expr::Integer(v, span))
         }
         Rule::double_literal => {
             let s = pair.as_str();
@@ -90,13 +91,31 @@ pub(super) fn lower_map_literal(pair: Pair<Rule>) -> Result<Expr, ParseError> {
 
 pub(super) fn lower_list_literal(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
-    let inner: Vec<_> = pair.into_inner().collect();
+    let mut inner = pair.into_inner();
+    let mut items = Vec::new();
 
-    if let Some(expr) = lower_single_comprehension(inner.as_slice(), span)? {
-        return Ok(expr);
+    let Some(first) = inner.next() else {
+        return Ok(Expr::List(items, span));
+    };
+
+    match first.as_rule() {
+        Rule::list_comprehension if inner.peek().is_none() => {
+            return lower_list_comprehension(first, span);
+        }
+        Rule::pattern_comprehension if inner.peek().is_none() => {
+            return lower_pattern_comprehension(first, span);
+        }
+        Rule::list_comprehension | Rule::pattern_comprehension => {
+            return Err(ParseError::new(
+                "invalid list literal",
+                span.start,
+                span.end,
+            ));
+        }
+        Rule::expression => items.push(lower_expression(first)?),
+        _ => {}
     }
 
-    let mut items = Vec::new();
     for p in inner {
         if p.as_rule() == Rule::expression {
             items.push(lower_expression(p)?);
@@ -104,21 +123,6 @@ pub(super) fn lower_list_literal(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     }
 
     Ok(Expr::List(items, span))
-}
-
-fn lower_single_comprehension(
-    inner: &[Pair<Rule>],
-    span: Span,
-) -> Result<Option<Expr>, ParseError> {
-    let [single] = inner else {
-        return Ok(None);
-    };
-
-    match single.as_rule() {
-        Rule::list_comprehension => Ok(Some(lower_list_comprehension(single.clone(), span)?)),
-        Rule::pattern_comprehension => Ok(Some(lower_pattern_comprehension(single.clone(), span)?)),
-        _ => Ok(None),
-    }
 }
 
 pub(super) fn lower_pattern_comprehension(
@@ -183,8 +187,7 @@ pub(super) fn lower_list_comprehension(
         .ok_or_else(|| ParseError::new("expected variable", outer_span.start, outer_span.end))?;
     let variable = lower_variable(var_pair)?;
 
-    // skip IN
-    let _in_kw = inner.next();
+    expect_next_rule(&mut inner, Rule::IN, "expected IN", outer_span)?;
 
     let list_pair = inner.next().ok_or_else(|| {
         ParseError::new("expected list expression", outer_span.start, outer_span.end)
@@ -230,10 +233,10 @@ pub(super) fn lower_list_comprehension(
     })
 }
 
-pub(super) fn lower_parameter(pair: Pair<Rule>) -> Result<Expr, ParseError> {
+pub(super) fn lower_parameter(pair: Pair<Rule>) -> Expr {
     let span = pair_span(&pair);
     let raw = pair.as_str();
-    Ok(Expr::Parameter(raw[1..].to_string(), span))
+    Expr::Parameter(raw[1..].to_string(), span)
 }
 
 pub(super) fn lower_list_predicate(pair: Pair<Rule>) -> Result<Expr, ParseError> {
@@ -262,16 +265,14 @@ pub(super) fn lower_list_predicate(pair: Pair<Rule>) -> Result<Expr, ParseError>
         .ok_or_else(|| ParseError::new("expected variable", span.start, span.end))?;
     let variable = lower_variable(var_pair)?;
 
-    // skip IN keyword
-    let _in_kw = inner.next();
+    expect_next_rule(&mut inner, Rule::IN, "expected IN", span)?;
 
     let list_pair = inner
         .next()
         .ok_or_else(|| ParseError::new("expected list expression", span.start, span.end))?;
     let list = lower_expression(list_pair)?;
 
-    // skip WHERE keyword
-    let _where_kw = inner.next();
+    expect_next_rule(&mut inner, Rule::WHERE, "expected WHERE", span)?;
 
     let pred_pair = inner
         .next()
@@ -291,16 +292,14 @@ pub(super) fn lower_reduce_expression(pair: Pair<Rule>) -> Result<Expr, ParseErr
     let span = pair_span(&pair);
     let mut inner = pair.into_inner();
 
-    // skip REDUCE keyword
-    let _reduce_kw = inner.next();
+    expect_next_rule(&mut inner, Rule::REDUCE, "expected REDUCE", span)?;
 
     let acc_pair = inner
         .next()
         .ok_or_else(|| ParseError::new("expected accumulator variable", span.start, span.end))?;
     let accumulator = lower_variable(acc_pair)?;
 
-    // skip = (eq)
-    let _eq = inner.next();
+    expect_next_rule(&mut inner, Rule::eq, "expected =", span)?;
 
     let init_pair = inner
         .next()
@@ -314,15 +313,15 @@ pub(super) fn lower_reduce_expression(pair: Pair<Rule>) -> Result<Expr, ParseErr
         .ok_or_else(|| ParseError::new("expected variable", span.start, span.end))?;
     let variable = lower_variable(var_pair)?;
 
-    // skip IN
-    let _in_kw = inner.next();
+    expect_next_rule(&mut inner, Rule::IN, "expected IN", span)?;
 
     let list_pair = inner
         .next()
         .ok_or_else(|| ParseError::new("expected list expression", span.start, span.end))?;
     let list = lower_expression(list_pair)?;
 
-    // skip pipe (already consumed by pest)
+    // `pipe` is a silent rule (`_{ "|" }`) — pest consumes the `|`
+    // but does not surface it as an inner pair, so we just skip it.
 
     let expr_pair = inner
         .next()
@@ -337,6 +336,22 @@ pub(super) fn lower_reduce_expression(pair: Pair<Rule>) -> Result<Expr, ParseErr
         expr: Box::new(expr),
         span,
     })
+}
+
+fn expect_next_rule(
+    inner: &mut Pairs<'_, Rule>,
+    expected: Rule,
+    message: &'static str,
+    span: Span,
+) -> Result<(), ParseError> {
+    let Some(pair) = inner.next() else {
+        return Err(ParseError::new(message, span.start, span.end));
+    };
+    if pair.as_rule() == expected {
+        Ok(())
+    } else {
+        Err(ParseError::new(message, span.start, span.end))
+    }
 }
 
 pub(super) fn lower_exists_subquery(pair: Pair<Rule>) -> Result<Expr, ParseError> {
