@@ -1512,12 +1512,23 @@ pub unsafe extern "C" fn lora_string_free(s: *mut c_char) {
 // ============================================================================
 
 fn to_c_string(s: String) -> *mut c_char {
+    string_to_c_string_lossy(s).into_raw()
+}
+
+fn string_to_c_string_lossy(s: String) -> CString {
     match CString::new(s) {
-        Ok(c) => c.into_raw(),
-        // `CString::new` only fails when the string contains an interior
-        // NUL byte. Serialised JSON never does, so this is unreachable in
-        // practice; returning null keeps the ABI simple for the caller.
-        Err(_) => ptr::null_mut(),
+        Ok(c) => c,
+        Err(err) => {
+            let sanitized = err
+                .into_vec()
+                .into_iter()
+                .map(|byte| if byte == 0 { b' ' } else { byte })
+                .collect::<Vec<_>>();
+            CString::new(sanitized).unwrap_or_else(|_| {
+                CString::new("LORA_INTERNAL: failed to allocate C string")
+                    .expect("static fallback has no interior NUL")
+            })
+        }
     }
 }
 
@@ -1538,6 +1549,12 @@ mod tests {
         assert_eq!(s, LoraStatus::Ok as c_int);
         assert!(!db.is_null());
         db
+    }
+
+    #[test]
+    fn c_string_helper_sanitizes_interior_nul() {
+        let c = string_to_c_string_lossy("a\0b".to_string());
+        assert_eq!(c.to_str().unwrap(), "a b");
     }
 
     fn tempdir(tag: &str) -> PathBuf {
