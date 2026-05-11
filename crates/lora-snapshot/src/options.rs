@@ -73,6 +73,7 @@ pub struct PasswordKdfParams {
 }
 
 impl PasswordKdfParams {
+    #[must_use]
     pub fn interactive() -> Self {
         Self {
             memory_cost_kib: 19 * 1024,

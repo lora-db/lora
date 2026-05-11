@@ -65,7 +65,7 @@ fn encode_snapshot_body(
     wal_lsn: Option<u64>,
     options: &SnapshotOptions,
 ) -> Result<(Vec<u8>, EncryptionManifest)> {
-    let columns = ColumnarSnapshot::from_payload(payload, wal_lsn);
+    let columns = ColumnarSnapshot::from_payload(payload, wal_lsn)?;
     let body = columns.encode_binary()?;
     let body = compress(body, options.compression)?;
     encrypt_snapshot_body(body, options.encryption.as_ref())

@@ -7,4 +7,7 @@ pub(crate) const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 32;
 /// `2` was the last release before the catalog trailer; readable on this branch
 /// for forward compatibility with older snapshots that lack indexes.
 pub(crate) const BODY_FORMAT_VERSION_V2: u32 = 2;
-pub(crate) const BODY_FORMAT_VERSION: u32 = 3;
+/// `3` introduced the index-catalog trailer.
+pub(crate) const BODY_FORMAT_VERSION_V3: u32 = 3;
+/// `4` added the constraint-catalog trailer (after indexes).
+pub(crate) const BODY_FORMAT_VERSION: u32 = 4;

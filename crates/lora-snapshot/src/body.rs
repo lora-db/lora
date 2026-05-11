@@ -113,6 +113,28 @@ impl<'a> BodyReader<'a> {
             .map_err(|_| SnapshotCodecError::Decode("length overflows usize".into()))
     }
 
+    pub(crate) fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+
+    pub(crate) fn read_len_bounded(&mut self, label: &str) -> Result<usize> {
+        let len = self.read_len()?;
+        if len > self.remaining() {
+            return Err(SnapshotCodecError::Decode(format!(
+                "{label} count {len} exceeds remaining snapshot body"
+            )));
+        }
+        Ok(len)
+    }
+
+    pub(crate) fn vec_with_capacity<T>(&self, len: usize, label: &str) -> Result<Vec<T>> {
+        let mut values = Vec::new();
+        values.try_reserve(len).map_err(|_| {
+            SnapshotCodecError::Decode(format!("{label} count {len} is too large to allocate"))
+        })?;
+        Ok(values)
+    }
+
     pub(crate) fn read_bytes(&mut self) -> Result<&'a [u8]> {
         let len = self.read_len()?;
         self.read_exact(len)
@@ -121,13 +143,13 @@ impl<'a> BodyReader<'a> {
     pub(crate) fn read_string(&mut self) -> Result<String> {
         let bytes = self.read_bytes()?;
         std::str::from_utf8(bytes)
-            .map(|value| value.to_string())
+            .map(str::to_string)
             .map_err(|e| SnapshotCodecError::Decode(format!("invalid UTF-8 string: {e}")))
     }
 
     pub(crate) fn read_string_vec(&mut self) -> Result<Vec<String>> {
-        let len = self.read_len()?;
-        let mut values = Vec::with_capacity(len);
+        let len = self.read_len_bounded("string")?;
+        let mut values = self.vec_with_capacity(len, "string")?;
         for _ in 0..len {
             values.push(self.read_string()?);
         }
@@ -135,8 +157,8 @@ impl<'a> BodyReader<'a> {
     }
 
     pub(crate) fn read_string_table_view(&mut self) -> Result<StringTableView<'a>> {
-        let len = self.read_len()?;
-        let mut entries = Vec::with_capacity(len);
+        let len = self.read_len_bounded("string table entry")?;
+        let mut entries = self.vec_with_capacity(len, "string table entry")?;
         for _ in 0..len {
             let bytes = self.read_bytes()?;
             let value = std::str::from_utf8(bytes)
@@ -147,8 +169,8 @@ impl<'a> BodyReader<'a> {
     }
 
     pub(crate) fn read_u32_vec(&mut self) -> Result<Vec<u32>> {
-        let len = self.read_len()?;
-        let mut values = Vec::with_capacity(len);
+        let len = self.read_len_bounded("u32 value")?;
+        let mut values = self.vec_with_capacity(len, "u32 value")?;
         for _ in 0..len {
             values.push(self.read_u32()?);
         }
@@ -165,8 +187,8 @@ impl<'a> BodyReader<'a> {
     }
 
     pub(crate) fn read_u64_vec(&mut self) -> Result<Vec<u64>> {
-        let len = self.read_len()?;
-        let mut values = Vec::with_capacity(len);
+        let len = self.read_len_bounded("u64 value")?;
+        let mut values = self.vec_with_capacity(len, "u64 value")?;
         for _ in 0..len {
             values.push(self.read_u64()?);
         }
@@ -180,5 +202,20 @@ impl<'a> BodyReader<'a> {
             .ok_or_else(|| SnapshotCodecError::Decode("u64 column byte length overflow".into()))?;
         let bytes = self.read_exact(byte_len)?;
         Ok(U64ColumnView::new(bytes, len))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_vec_rejects_oversized_count() {
+        let bytes = u64::MAX.to_le_bytes();
+        let mut reader = BodyReader::new(&bytes);
+
+        let err = reader.read_string_vec().unwrap_err();
+        assert!(matches!(err, SnapshotCodecError::Decode(_)));
+        assert!(err.to_string().contains("exceeds remaining snapshot body"));
     }
 }

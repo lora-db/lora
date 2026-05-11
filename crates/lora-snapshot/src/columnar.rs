@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 
 use lora_store::{
     codec::{
-        decode_index_definitions, decode_property_value, encode_index_definitions,
-        encode_property_value,
+        decode_constraint_definitions, decode_index_definitions, decode_property_value,
+        encode_constraint_definitions, encode_index_definitions, encode_property_value,
     },
-    IndexDefinition, NodeRecord, PropertyValue, RelationshipRecord, SnapshotPayload,
+    ConstraintDefinition, IndexDefinition, NodeRecord, PropertyValue, RelationshipRecord,
+    SnapshotPayload,
 };
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +15,7 @@ use crate::body::{
     write_u64_vec, BodyReader,
 };
 use crate::errors::{Result, SnapshotCodecError};
-use crate::format::{BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2};
+use crate::format::{BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2, BODY_FORMAT_VERSION_V3};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ColumnarSnapshot {
@@ -33,16 +34,21 @@ pub(crate) struct ColumnarSnapshot {
     /// older `BODY_FORMAT_VERSION_V2` snapshots load with no entries.
     #[serde(default)]
     indexes: Vec<IndexDefinition>,
+    /// Catalog of explicitly-declared constraints. Defaulted to empty
+    /// so snapshots from before the constraint trailer was added still
+    /// round-trip.
+    #[serde(default)]
+    constraints: Vec<ConstraintDefinition>,
 }
 
 impl ColumnarSnapshot {
-    pub(crate) fn from_payload(payload: &SnapshotPayload, wal_lsn: Option<u64>) -> Self {
-        let _ = wal_lsn;
-        let (node_label_offsets, node_labels) = node_label_columns(&payload.nodes);
-        let (rel_type_ids, rel_type_dictionary) = relationship_type_columns(&payload.relationships);
+    pub(crate) fn from_payload(payload: &SnapshotPayload, _wal_lsn: Option<u64>) -> Result<Self> {
+        let (node_label_offsets, node_labels) = node_label_columns(&payload.nodes)?;
+        let (rel_type_ids, rel_type_dictionary) =
+            relationship_type_columns(&payload.relationships)?;
         let properties = property_columns_from_payload(payload);
 
-        Self {
+        Ok(Self {
             next_node_id: payload.next_node_id,
             next_rel_id: payload.next_rel_id,
             node_ids: payload.nodes.iter().map(|node| node.id).collect(),
@@ -55,7 +61,8 @@ impl ColumnarSnapshot {
             rel_type_dictionary,
             properties,
             indexes: payload.indexes.clone(),
-        }
+            constraints: payload.constraints.clone(),
+        })
     }
 
     pub(crate) fn into_payload(self) -> Result<SnapshotPayload> {
@@ -72,11 +79,17 @@ impl ColumnarSnapshot {
             nodes,
             relationships,
             indexes: self.indexes,
+            constraints: self.constraints,
         })
     }
 
     fn validate_payload_columns(&self) -> Result<()> {
-        if self.node_label_offsets.len() != self.node_ids.len() + 1 {
+        let expected_offsets = self
+            .node_ids
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| SnapshotCodecError::Decode("node column length overflow".into()))?;
+        if self.node_label_offsets.len() != expected_offsets {
             return Err(SnapshotCodecError::Decode(
                 "node label offset length mismatch".into(),
             ));
@@ -95,8 +108,8 @@ impl ColumnarSnapshot {
     fn node_records_from_columns(&self) -> Result<Vec<NodeRecord>> {
         let mut nodes = Vec::with_capacity(self.node_ids.len());
         for (index, id) in self.node_ids.iter().copied().enumerate() {
-            let start = self.node_label_offsets[index] as usize;
-            let end = self.node_label_offsets[index + 1] as usize;
+            let start = u32_to_usize(self.node_label_offsets[index], "node label offset")?;
+            let end = u32_to_usize(self.node_label_offsets[index + 1], "node label offset")?;
             if start > end || end > self.node_labels.len() {
                 return Err(SnapshotCodecError::Decode(
                     "invalid node label offset".into(),
@@ -114,7 +127,7 @@ impl ColumnarSnapshot {
     fn relationship_records_from_columns(&self) -> Result<Vec<RelationshipRecord>> {
         let mut relationships = Vec::with_capacity(self.rel_ids.len());
         for index in 0..self.rel_ids.len() {
-            let type_id = self.rel_type_ids[index] as usize;
+            let type_id = u32_to_usize(self.rel_type_ids[index], "relationship type id")?;
             let rel_type = self
                 .rel_type_dictionary
                 .get(type_id)
@@ -158,18 +171,27 @@ impl ColumnarSnapshot {
         let catalog_bytes = encode_index_definitions(&self.indexes)
             .map_err(|e| SnapshotCodecError::Encode(format!("catalog: {e}")))?;
         write_bytes(&mut out, &catalog_bytes)?;
+
+        // v4 trailer: catalog of explicitly-declared constraints.
+        let constraint_bytes = encode_constraint_definitions(&self.constraints)
+            .map_err(|e| SnapshotCodecError::Encode(format!("constraint catalog: {e}")))?;
+        write_bytes(&mut out, &constraint_bytes)?;
         Ok(out)
     }
 
     pub(crate) fn decode_binary(bytes: &[u8]) -> Result<Self> {
         let mut reader = BodyReader::new(bytes);
         let version = reader.read_u32()?;
-        if version != BODY_FORMAT_VERSION && version != BODY_FORMAT_VERSION_V2 {
+        if version != BODY_FORMAT_VERSION
+            && version != BODY_FORMAT_VERSION_V3
+            && version != BODY_FORMAT_VERSION_V2
+        {
             return Err(SnapshotCodecError::Decode(format!(
                 "unsupported snapshot body format version {version}"
             )));
         }
-        let has_catalog = version >= BODY_FORMAT_VERSION;
+        let has_catalog = version >= BODY_FORMAT_VERSION_V3;
+        let has_constraints = version >= BODY_FORMAT_VERSION;
         let next_node_id = reader.read_u64()?;
         let next_rel_id = reader.read_u64()?;
         let node_ids = reader.read_u64_vec()?;
@@ -188,9 +210,17 @@ impl ColumnarSnapshot {
         let properties = PropertyColumns::decode_binary(&mut reader)?;
 
         let indexes = if has_catalog {
-            let catalog_bytes = reader.read_bytes()?.to_vec();
-            decode_index_definitions(&catalog_bytes)
+            let catalog_bytes = reader.read_bytes()?;
+            decode_index_definitions(catalog_bytes)
                 .map_err(|e| SnapshotCodecError::Decode(format!("catalog: {e}")))?
+        } else {
+            Vec::new()
+        };
+
+        let constraints = if has_constraints {
+            let bytes = reader.read_bytes()?;
+            decode_constraint_definitions(bytes)
+                .map_err(|e| SnapshotCodecError::Decode(format!("constraint catalog: {e}")))?
         } else {
             Vec::new()
         };
@@ -210,6 +240,7 @@ impl ColumnarSnapshot {
             rel_type_dictionary,
             properties,
             indexes,
+            constraints,
         })
     }
 }
@@ -221,44 +252,69 @@ fn decode_dictionary_strings(
 ) -> Result<Vec<String>> {
     let mut values = Vec::with_capacity(ids.len());
     for id in ids {
+        let index = u32_to_usize(id, name)?;
         let value = dictionary
-            .get(id as usize)
+            .get(index)
             .ok_or_else(|| SnapshotCodecError::Decode(format!("invalid {name} id")))?;
         values.push(value.clone());
     }
     Ok(values)
 }
 
-fn node_label_columns(nodes: &[NodeRecord]) -> (Vec<u32>, Vec<String>) {
-    let total_label_count = nodes.iter().map(|node| node.labels.len()).sum();
-    let mut offsets = Vec::with_capacity(nodes.len() + 1);
-    let mut labels = Vec::with_capacity(total_label_count);
+fn node_label_columns(nodes: &[NodeRecord]) -> Result<(Vec<u32>, Vec<String>)> {
+    let total_label_count = nodes.iter().try_fold(0usize, |total, node| {
+        total
+            .checked_add(node.labels.len())
+            .ok_or_else(|| SnapshotCodecError::Encode("node label count overflows usize".into()))
+    })?;
+    let offset_count = nodes
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| SnapshotCodecError::Encode("node count overflows usize".into()))?;
+    let mut offsets = Vec::new();
+    offsets.try_reserve_exact(offset_count).map_err(|_| {
+        SnapshotCodecError::Encode("node label offsets are too large to allocate".into())
+    })?;
+    let mut labels = Vec::new();
+    labels
+        .try_reserve_exact(total_label_count)
+        .map_err(|_| SnapshotCodecError::Encode("node labels are too large to allocate".into()))?;
     offsets.push(0);
     for node in nodes {
         labels.extend(node.labels.iter().cloned());
-        offsets.push(labels.len() as u32);
+        offsets.push(u32::try_from(labels.len()).map_err(|_| {
+            SnapshotCodecError::Encode("node label offset exceeds u32 range".into())
+        })?);
     }
-    (offsets, labels)
+    Ok((offsets, labels))
 }
 
-fn relationship_type_columns(relationships: &[RelationshipRecord]) -> (Vec<u32>, Vec<String>) {
-    let mut ids = Vec::with_capacity(relationships.len());
+fn relationship_type_columns(
+    relationships: &[RelationshipRecord],
+) -> Result<(Vec<u32>, Vec<String>)> {
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(relationships.len()).map_err(|_| {
+        SnapshotCodecError::Encode("relationship type ids are too large to allocate".into())
+    })?;
     let mut dictionary = Vec::new();
-    let mut index = BTreeMap::<String, u32>::new();
+    let mut index = BTreeMap::<&str, u32>::new();
 
     for rel in relationships {
-        let id = if let Some(id) = index.get(&rel.rel_type) {
+        let rel_type = rel.rel_type.as_str();
+        let id = if let Some(id) = index.get(rel_type) {
             *id
         } else {
-            let id = dictionary.len() as u32;
+            let id = u32::try_from(dictionary.len()).map_err(|_| {
+                SnapshotCodecError::Encode("relationship type dictionary too large".into())
+            })?;
             dictionary.push(rel.rel_type.clone());
-            index.insert(rel.rel_type.clone(), id);
+            index.insert(rel_type, id);
             id
         };
         ids.push(id);
     }
 
-    (ids, dictionary)
+    Ok((ids, dictionary))
 }
 
 fn property_columns_from_payload(payload: &SnapshotPayload) -> PropertyColumns {
@@ -332,25 +388,27 @@ impl PropertyColumns {
             ));
         }
 
-        for index in 0..len {
-            let key = self.key[index].clone();
-            let value: PropertyValue = self.value[index].clone().into();
-            match self.owner_kind[index] {
+        for (((owner_kind, owner_index), key), value) in self
+            .owner_kind
+            .into_iter()
+            .zip(self.owner_index)
+            .zip(self.key)
+            .zip(self.value)
+        {
+            let value: PropertyValue = value.into();
+            match owner_kind {
                 EntityKind::Node => {
-                    let node =
-                        nodes
-                            .get_mut(self.owner_index[index] as usize)
-                            .ok_or_else(|| {
-                                SnapshotCodecError::Decode("invalid node property owner".into())
-                            })?;
+                    let owner_index = u64_to_usize(owner_index, "node property owner")?;
+                    let node = nodes.get_mut(owner_index).ok_or_else(|| {
+                        SnapshotCodecError::Decode("invalid node property owner".into())
+                    })?;
                     node.properties.insert(key, value);
                 }
                 EntityKind::Relationship => {
-                    let rel = relationships
-                        .get_mut(self.owner_index[index] as usize)
-                        .ok_or_else(|| {
-                            SnapshotCodecError::Decode("invalid relationship property owner".into())
-                        })?;
+                    let owner_index = u64_to_usize(owner_index, "relationship property owner")?;
+                    let rel = relationships.get_mut(owner_index).ok_or_else(|| {
+                        SnapshotCodecError::Decode("invalid relationship property owner".into())
+                    })?;
                     rel.properties.insert(key, value);
                 }
             }
@@ -387,8 +445,8 @@ impl PropertyColumns {
     }
 
     fn decode_binary(reader: &mut BodyReader<'_>) -> Result<Self> {
-        let len = reader.read_len()?;
-        let mut owner_kind = Vec::with_capacity(len);
+        let len = reader.read_len_bounded("property owner")?;
+        let mut owner_kind = reader.vec_with_capacity(len, "property owner")?;
         for _ in 0..len {
             owner_kind.push(match reader.read_u8()? {
                 0 => EntityKind::Node,
@@ -414,9 +472,10 @@ impl PropertyColumns {
                 "property key id length mismatch".into(),
             ));
         }
-        let mut key = Vec::with_capacity(len);
+        let mut key = reader.vec_with_capacity(len, "property key")?;
         for id in key_ids {
-            let value = key_dictionary.get(id as usize).ok_or_else(|| {
+            let index = u32_to_usize(id, "property key dictionary id")?;
+            let value = key_dictionary.get(index).ok_or_else(|| {
                 SnapshotCodecError::Decode("invalid property key dictionary id".into())
             })?;
             key.push(value.clone());
@@ -428,7 +487,7 @@ impl PropertyColumns {
                 "property value length mismatch".into(),
             ));
         }
-        let mut value = Vec::with_capacity(len);
+        let mut value = reader.vec_with_capacity(len, "property value")?;
         for _ in 0..value_len {
             value.push(ValueCell::decode_binary(reader)?);
         }
@@ -563,24 +622,24 @@ impl ValueCell {
             3 => Ok(Self::Float(f64::from_bits(reader.read_u64()?))),
             4 => Ok(Self::String(reader.read_string()?)),
             8 => {
-                let len = reader.read_len()?;
-                let mut segments = Vec::with_capacity(len);
+                let len = reader.read_len_bounded("binary segment")?;
+                let mut segments = reader.vec_with_capacity(len, "binary segment")?;
                 for _ in 0..len {
                     segments.push(reader.read_bytes()?.to_vec());
                 }
                 Ok(Self::Binary(segments))
             }
             5 => {
-                let len = reader.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = reader.read_len_bounded("list value")?;
+                let mut values = reader.vec_with_capacity(len, "list value")?;
                 for _ in 0..len {
                     values.push(Self::decode_binary(reader)?);
                 }
                 Ok(Self::List(values))
             }
             6 => {
-                let len = reader.read_len()?;
-                let mut values = Vec::with_capacity(len);
+                let len = reader.read_len_bounded("map entry")?;
+                let mut values = reader.vec_with_capacity(len, "map entry")?;
                 for _ in 0..len {
                     values.push((reader.read_string()?, Self::decode_binary(reader)?));
                 }
@@ -599,10 +658,23 @@ impl ValueCell {
     }
 }
 
+fn u32_to_usize(value: u32, label: &str) -> Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| SnapshotCodecError::Decode(format!("{label} does not fit in usize")))
+}
+
+fn u64_to_usize(value: u64, label: &str) -> Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| SnapshotCodecError::Decode(format!("{label} does not fit in usize")))
+}
+
 fn dictionary_encode_strings(values: &[String]) -> Result<(Vec<String>, Vec<u32>)> {
     let mut dictionary = Vec::new();
     let mut index = BTreeMap::<&str, u32>::new();
-    let mut ids = Vec::with_capacity(values.len());
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(values.len()).map_err(|_| {
+        SnapshotCodecError::Encode("string dictionary ids are too large to allocate".into())
+    })?;
     for value in values {
         let id = if let Some(id) = index.get(value.as_str()) {
             *id

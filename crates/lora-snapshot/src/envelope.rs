@@ -38,14 +38,20 @@ pub(crate) fn encode_envelope(
     compression: Compression,
     encryption: EncryptionManifest,
 ) -> Result<(Vec<u8>, SnapshotInfo)> {
+    let node_count = u64::try_from(node_count)
+        .map_err(|_| SnapshotCodecError::Encode("node count does not fit in u64".into()))?;
+    let relationship_count = u64::try_from(relationship_count)
+        .map_err(|_| SnapshotCodecError::Encode("relationship count does not fit in u64".into()))?;
+    let body_len = u64::try_from(body.len())
+        .map_err(|_| SnapshotCodecError::Encode("snapshot body too large".into()))?;
     let manifest = Manifest {
         format_version: FORMAT_VERSION,
         wal_lsn,
-        node_count: node_count as u64,
-        relationship_count: relationship_count as u64,
+        node_count,
+        relationship_count,
         compression,
         encryption,
-        body_len: body.len() as u64,
+        body_len,
     };
     let info = manifest_info(&manifest)?;
     let manifest_bytes = encode_manifest(&manifest)?;
@@ -58,11 +64,17 @@ pub(crate) fn encode_envelope(
     checksum_hasher.update(&body);
     let checksum = *checksum_hasher.finalize().as_bytes();
 
-    let mut out = Vec::with_capacity(HEADER_LEN + manifest_bytes.len() + body.len());
+    let total_len = HEADER_LEN
+        .checked_add(manifest_bytes.len())
+        .and_then(|len| len.checked_add(body.len()))
+        .ok_or_else(|| SnapshotCodecError::Encode("snapshot length overflow".into()))?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(total_len)
+        .map_err(|_| SnapshotCodecError::Encode("snapshot too large to allocate".into()))?;
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(body.len() as u64).to_le_bytes());
+    out.extend_from_slice(&body_len.to_le_bytes());
     out.extend_from_slice(&checksum);
     out.extend_from_slice(&manifest_bytes);
     out.extend_from_slice(&body);
@@ -82,8 +94,10 @@ pub(crate) fn decode_envelope_borrowed(bytes: &[u8]) -> Result<(Manifest, &[u8])
     if format_version != FORMAT_VERSION {
         return Err(SnapshotCodecError::UnsupportedVersion(format_version));
     }
-    let manifest_len = u32::from_le_bytes(read_header_array::<4>(bytes, 12)?) as usize;
-    let body_len = u64::from_le_bytes(read_header_array::<8>(bytes, 16)?) as usize;
+    let manifest_len = usize::try_from(u32::from_le_bytes(read_header_array::<4>(bytes, 12)?))
+        .map_err(|_| SnapshotCodecError::Decode("manifest length overflows usize".into()))?;
+    let body_len = usize::try_from(u64::from_le_bytes(read_header_array::<8>(bytes, 16)?))
+        .map_err(|_| SnapshotCodecError::Decode("body length overflows usize".into()))?;
     let checksum = read_header_array::<32>(bytes, 24)?;
     let expected_len = HEADER_LEN
         .checked_add(manifest_len)
@@ -106,6 +120,13 @@ pub(crate) fn decode_envelope_borrowed(bytes: &[u8]) -> Result<(Manifest, &[u8])
     }
 
     let manifest = decode_manifest(manifest_bytes)?;
+    if manifest.body_len != body.len() as u64 {
+        return Err(SnapshotCodecError::Decode(format!(
+            "snapshot manifest body length mismatch: manifest says {}, header says {}",
+            manifest.body_len,
+            body.len()
+        )));
+    }
     Ok((manifest, body))
 }
 
@@ -275,4 +296,41 @@ pub(crate) fn manifest_info(manifest: &Manifest) -> Result<SnapshotInfo> {
             EncryptionManifest::PasswordChaCha20Poly1305 { key_id, .. } => Some(key_id.clone()),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_body_len_must_match_header_body_len() {
+        let manifest = Manifest {
+            format_version: FORMAT_VERSION,
+            wal_lsn: None,
+            node_count: 0,
+            relationship_count: 0,
+            compression: Compression::None,
+            encryption: EncryptionManifest::None,
+            body_len: 1,
+        };
+        let manifest_bytes = encode_manifest(&manifest).unwrap();
+        let body = Vec::new();
+
+        let mut checksum_hasher = blake3::Hasher::new();
+        checksum_hasher.update(&manifest_bytes);
+        checksum_hasher.update(&body);
+        let checksum = *checksum_hasher.finalize().as_bytes();
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&checksum);
+        bytes.extend_from_slice(&manifest_bytes);
+
+        let err = decode_envelope_borrowed(&bytes).unwrap_err();
+        assert!(matches!(err, SnapshotCodecError::Decode(_)));
+        assert!(err.to_string().contains("body length mismatch"));
+    }
 }
