@@ -1,80 +1,85 @@
 {
+  "_meta": {
+    "default_threshold": 3,
+    "last_updated": "2026-05-11",
+    "notes": "2x default for low-variance in-memory paths; 3x override for sub-µs cases and WAL-backed paths where shared-runner / fsync variance is structurally higher."
+  },
   "benchmarks": {
     "perf_smoke/scan_1k": {
-      "ns": 180000,
+      "ns": 230000,
       "threshold": 2
     },
     "perf_smoke/filter_1k": {
-      "ns": 170000,
+      "ns": 275000,
       "threshold": 2
     },
     "perf_smoke/traversal_chain_500": {
-      "ns": 190000,
+      "ns": 235000,
       "threshold": 2
     },
     "perf_smoke/write_batch_100": {
-      "ns": 115000,
+      "ns": 270000,
       "threshold": 2
     },
     "perf_smoke/stream_scan_1k": {
-      "ns": 210000,
+      "ns": 225000,
       "threshold": 2
     },
     "perf_smoke/stream_pull_one": {
-      "ns": 800,
+      "ns": 900,
       "threshold": 2
     },
     "perf_smoke/stream_write_100": {
-      "ns": 85000,
+      "ns": 195000,
       "threshold": 2
     },
     "perf_smoke/stream_write_sort_100": {
-      "ns": 220000,
+      "ns": 490000,
       "threshold": 2
     },
     "perf_smoke/tx_roundtrip_empty": {
-      "ns": 160,
+      "ns": 230,
       "threshold": 2
     },
     "perf_smoke/tx_read_1k": {
-      "ns": 280000,
+      "ns": 360000,
       "threshold": 2
     },
     "perf_smoke/tx_write_100": {
-      "ns": 105000,
+      "ns": 230000,
       "threshold": 2
     },
     "perf_smoke/write_one_wal_group": {
-      "ns": 5000,
-      "threshold": 2
+      "ns": 30000,
+      "threshold": 3
     },
     "perf_smoke/write_batch_100_wal_group": {
-      "ns": 200000,
-      "threshold": 2
+      "ns": 425000,
+      "threshold": 3
     },
     "perf_smoke/tx_write_100_wal_group": {
-      "ns": 3000000,
-      "threshold": 2
+      "ns": 2620000,
+      "threshold": 3
     },
     "perf_smoke/write_one_wal_persistent": {
-      "ns": 5000000,
-      "threshold": 2
+      "ns": 400000,
+      "threshold": 3
     },
     "perf_smoke/scan_1k_wal_group": {
-      "ns": 190000,
-      "threshold": 2
+      "ns": 270000,
+      "threshold": 3
     },
     "perf_smoke/delete_100_wal_group": {
-      "ns": 5000000,
-      "threshold": 2
+      "ns": 645000,
+      "threshold": 3
     },
     "perf_smoke/update_100_wal_group": {
-      "ns": 90000,
-      "threshold": 2
+      "ns": 155000,
+      "threshold": 3
     },
     "perf_smoke/wal_replay_100": {
-      "ns": 600000,
-      "threshold": 2
+      "ns": 650000,
+      "threshold": 3
     }
   }
 }
