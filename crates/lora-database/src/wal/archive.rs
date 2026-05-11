@@ -6,7 +6,7 @@ mod workspace;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use lora_wal::{WalError, WalMirror};
@@ -42,6 +42,17 @@ pub(super) struct ArchiveState {
     snapshot: Option<ContainerSnapshot>,
 }
 
+fn lock_archive_state(
+    state: &Arc<(Mutex<ArchiveState>, Condvar)>,
+) -> Result<MutexGuard<'_, ArchiveState>, WalError> {
+    let (lock, _) = &**state;
+    lock.lock().map_err(|_| WalError::Poisoned)
+}
+
+fn archive_writer_failure(failure: &str) -> WalError {
+    WalError::Malformed(format!("database container writer failed: {failure}"))
+}
+
 impl WalArchive {
     pub fn open(archive_path: PathBuf, max_archive_bytes: u64) -> Result<Self, WalError> {
         if archive_path.is_dir() {
@@ -61,8 +72,7 @@ impl WalArchive {
 
         let state = Arc::new((Mutex::new(ArchiveState::default()), Condvar::new()));
         {
-            let (lock, _) = &*state;
-            lock.lock().unwrap().snapshot = snapshot;
+            lock_archive_state(&state)?.snapshot = snapshot;
         }
         let write_lock = Arc::new(Mutex::new(()));
         let worker = Some(spawn_archive_worker(
@@ -88,23 +98,18 @@ impl WalArchive {
         &self.work_dir
     }
 
-    pub fn snapshot_bytes(&self) -> Option<Vec<u8>> {
-        let (lock, _) = &*self.state;
-        lock.lock()
-            .unwrap()
+    pub fn snapshot_bytes(&self) -> Result<Option<Vec<u8>>, WalError> {
+        Ok(lock_archive_state(&self.state)?
             .snapshot
             .as_ref()
-            .map(|snapshot| snapshot.bytes.clone())
+            .map(|snapshot| snapshot.bytes.clone()))
     }
 
     pub fn persist_snapshot_bytes(&self, bytes: Vec<u8>) -> Result<(), WalError> {
         {
-            let (lock, _) = &*self.state;
-            let mut state = lock.lock().unwrap();
+            let mut state = lock_archive_state(&self.state)?;
             if let Some(failure) = &state.failure {
-                return Err(WalError::Malformed(format!(
-                    "database container writer failed: {failure}"
-                )));
+                return Err(archive_writer_failure(failure));
             }
             state.snapshot = Some(ContainerSnapshot { bytes });
             state.dirty = true;
@@ -122,12 +127,10 @@ impl WalMirror for WalArchive {
                 wal_dir.display()
             )));
         }
-        let (lock, cv) = &*self.state;
-        let mut state = lock.lock().unwrap();
+        let (_, cv) = &*self.state;
+        let mut state = lock_archive_state(&self.state)?;
         if let Some(failure) = &state.failure {
-            return Err(WalError::Malformed(format!(
-                "database container writer failed: {failure}"
-            )));
+            return Err(archive_writer_failure(failure));
         }
         state.dirty = true;
         cv.notify_one();
@@ -142,37 +145,27 @@ impl WalMirror for WalArchive {
             )));
         }
         {
-            let (lock, _) = &*self.state;
-            let state = lock.lock().unwrap();
+            let state = lock_archive_state(&self.state)?;
             if let Some(failure) = &state.failure {
-                return Err(WalError::Malformed(format!(
-                    "database container writer failed: {failure}"
-                )));
+                return Err(archive_writer_failure(failure));
             }
         }
 
-        let _write_guard = self.write_lock.lock().unwrap();
+        let _write_guard = self.write_lock.lock().map_err(|_| WalError::Poisoned)?;
         {
-            let (lock, _) = &*self.state;
-            let state = lock.lock().unwrap();
+            let state = lock_archive_state(&self.state)?;
             if let Some(failure) = &state.failure {
-                return Err(WalError::Malformed(format!(
-                    "database container writer failed: {failure}"
-                )));
+                return Err(archive_writer_failure(failure));
             }
         }
-        let snapshot = {
-            let (lock, _) = &*self.state;
-            lock.lock().unwrap().snapshot.clone()
-        };
+        let snapshot = lock_archive_state(&self.state)?.snapshot.clone();
         let result = write_archive_atomic(
             &self.work_dir,
             &self.archive_path,
             self.max_archive_bytes,
             snapshot.as_ref(),
         );
-        let (lock, _) = &*self.state;
-        let mut state = lock.lock().unwrap();
+        let mut state = lock_archive_state(&self.state)?;
         match result {
             Ok(()) => {
                 state.dirty = false;
@@ -191,15 +184,26 @@ impl Drop for WalArchive {
     fn drop(&mut self) {
         {
             let (lock, cv) = &*self.state;
-            let mut state = lock.lock().unwrap();
-            // The async archive worker may not have observed the latest dirty
-            // flag yet. Drop runs after the WAL handle is dropped, so always
-            // take one final archive snapshot from the fully flushed work
-            // directory.
-            state.dirty = true;
-            state.shutdown = true;
-            state.force = true;
-            cv.notify_one();
+            match lock.lock() {
+                Ok(mut state) => {
+                    // The async archive worker may not have observed the latest dirty
+                    // flag yet. Drop runs after the WAL handle is dropped, so always
+                    // take one final archive snapshot from the fully flushed work
+                    // directory.
+                    state.dirty = true;
+                    state.shutdown = true;
+                    state.force = true;
+                    cv.notify_one();
+                }
+                Err(mut poisoned) => {
+                    let state = poisoned.get_mut();
+                    state.failure.get_or_insert_with(|| {
+                        "database container state lock was poisoned during shutdown".into()
+                    });
+                    state.shutdown = true;
+                    cv.notify_one();
+                }
+            }
         }
         let mut shutdown_cleanly = true;
         if let Some(worker) = self.worker.take() {
@@ -207,8 +211,10 @@ impl Drop for WalArchive {
         }
         {
             let (lock, _) = &*self.state;
-            let state = lock.lock().unwrap();
-            shutdown_cleanly &= state.failure.is_none();
+            match lock.lock() {
+                Ok(state) => shutdown_cleanly &= state.failure.is_none(),
+                Err(_) => shutdown_cleanly = false,
+            }
         }
         if shutdown_cleanly {
             let _ = fs::remove_dir_all(&self.work_dir);

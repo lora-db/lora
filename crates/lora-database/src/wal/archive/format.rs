@@ -279,13 +279,11 @@ fn read_archive_frames(
     let mut saw_wal = false;
     let mut snapshot = None;
     while let Some(header) = read_frame_header(&mut reader)? {
-        let mut name = vec![0u8; header.name_len as usize];
-        reader.read_exact(&mut name)?;
+        let name = read_exact_vec(&mut reader, u64::from(header.name_len), "frame name")?;
         let name = String::from_utf8(name).map_err(|_| {
             WalError::Malformed("database container frame name is not UTF-8".into())
         })?;
-        let mut body = vec![0u8; header.body_len as usize];
-        reader.read_exact(&mut body)?;
+        let body = read_exact_vec(&mut reader, header.body_len, "frame body")?;
         validate_frame_crc(&header, name.as_bytes(), &body)?;
         let raw = codec.decode_body(&name, &header, body)?;
 
@@ -328,6 +326,26 @@ fn read_archive_frames(
     Ok(ExtractedArchive { snapshot, saw_wal })
 }
 
+fn read_exact_vec(input: &mut impl Read, len: u64, field: &str) -> Result<Vec<u8>, WalError> {
+    let len = usize::try_from(len)
+        .map_err(|_| WalError::Malformed(format!("database container {field} is too large")))?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| {
+        WalError::Malformed(format!(
+            "database container {field} is too large to allocate"
+        ))
+    })?;
+    bytes.resize(len, 0);
+    input.read_exact(&mut bytes).map_err(|e| {
+        if e.kind() == io::ErrorKind::UnexpectedEof {
+            WalError::Malformed(format!("database container {field} is truncated"))
+        } else {
+            WalError::Io(e)
+        }
+    })?;
+    Ok(bytes)
+}
+
 fn write_container_header(out: &mut impl Write) -> Result<(), WalError> {
     out.write_all(CONTAINER_MAGIC)?;
     out.write_all(&CONTAINER_VERSION.to_le_bytes())?;
@@ -351,13 +369,13 @@ fn read_container_header(input: &mut impl Read) -> Result<(), WalError> {
             "database container has invalid magic".into(),
         ));
     }
-    let version = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    let version = read_u32_field(&header, 8, "container version")?;
     if version != CONTAINER_VERSION {
         return Err(WalError::Malformed(format!(
             "unsupported database container version {version}"
         )));
     }
-    let flags = u32::from_le_bytes(header[12..16].try_into().unwrap());
+    let flags = read_u32_field(&header, 12, "container flags")?;
     if flags != 0 {
         return Err(WalError::Malformed(format!(
             "unsupported database container flags {flags}"
@@ -407,16 +425,16 @@ fn read_frame_header(input: &mut impl Read) -> Result<Option<FrameHeader>, WalEr
             "database container frame has invalid magic".into(),
         ));
     }
-    let name_len = u16::from_le_bytes(header[12..14].try_into().unwrap());
-    let reserved = u16::from_le_bytes(header[14..16].try_into().unwrap());
+    let name_len = read_u16_field(&header, 12, "frame name length")?;
+    let reserved = read_u16_field(&header, 14, "frame reserved")?;
     if reserved != 0 {
         return Err(WalError::Malformed(
             "database container frame reserved bytes are non-zero".into(),
         ));
     }
-    let body_len = u64::from_le_bytes(header[16..24].try_into().unwrap());
-    let raw_len = u64::from_le_bytes(header[24..32].try_into().unwrap());
-    let crc32 = u32::from_le_bytes(header[32..36].try_into().unwrap());
+    let body_len = read_u64_field(&header, 16, "frame body length")?;
+    let raw_len = read_u64_field(&header, 24, "frame raw length")?;
+    let crc32 = read_u32_field(&header, 32, "frame checksum")?;
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&header[36..48]);
     Ok(Some(FrameHeader {
@@ -430,6 +448,32 @@ fn read_frame_header(input: &mut impl Read) -> Result<Option<FrameHeader>, WalEr
         crc32,
         nonce,
     }))
+}
+
+fn read_u16_field(bytes: &[u8], start: usize, field: &str) -> Result<u16, WalError> {
+    Ok(u16::from_le_bytes(read_fixed_field(bytes, start, field)?))
+}
+
+fn read_u32_field(bytes: &[u8], start: usize, field: &str) -> Result<u32, WalError> {
+    Ok(u32::from_le_bytes(read_fixed_field(bytes, start, field)?))
+}
+
+fn read_u64_field(bytes: &[u8], start: usize, field: &str) -> Result<u64, WalError> {
+    Ok(u64::from_le_bytes(read_fixed_field(bytes, start, field)?))
+}
+
+fn read_fixed_field<const N: usize>(
+    bytes: &[u8],
+    start: usize,
+    field: &str,
+) -> Result<[u8; N], WalError> {
+    let end = start.checked_add(N).ok_or_else(|| {
+        WalError::Malformed(format!("database container {field} offset overflow"))
+    })?;
+    bytes
+        .get(start..end)
+        .and_then(|field_bytes| field_bytes.try_into().ok())
+        .ok_or_else(|| WalError::Malformed(format!("database container {field} is truncated")))
 }
 
 fn validate_frame_crc(header: &FrameHeader, name: &[u8], body: &[u8]) -> Result<(), WalError> {

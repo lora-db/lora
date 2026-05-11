@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -18,15 +18,17 @@ pub(super) fn spawn_archive_worker(
     thread::spawn(move || loop {
         let should_flush = {
             let (lock, cv) = &*state;
-            let mut guard = lock.lock().unwrap();
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
             while !guard.dirty && !guard.shutdown {
-                guard = cv.wait(guard).unwrap();
+                guard = cv.wait(guard).unwrap_or_else(PoisonError::into_inner);
             }
             if guard.shutdown && !guard.dirty {
                 return;
             }
             if !guard.force && !guard.shutdown {
-                let (next_guard, _) = cv.wait_timeout(guard, ARCHIVE_FLUSH_DEBOUNCE).unwrap();
+                let (next_guard, _) = cv
+                    .wait_timeout(guard, ARCHIVE_FLUSH_DEBOUNCE)
+                    .unwrap_or_else(PoisonError::into_inner);
                 guard = next_guard;
             }
             let should_flush = guard.dirty;
@@ -36,10 +38,13 @@ pub(super) fn spawn_archive_worker(
         };
 
         if should_flush {
-            let _write_guard = write_lock.lock().unwrap();
+            let _write_guard = write_lock.lock().unwrap_or_else(PoisonError::into_inner);
             let snapshot = {
                 let (lock, _) = &*state;
-                lock.lock().unwrap().snapshot.clone()
+                lock.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .snapshot
+                    .clone()
             };
             if let Err(err) = write_archive_atomic(
                 &work_dir,
@@ -48,7 +53,7 @@ pub(super) fn spawn_archive_worker(
                 snapshot.as_ref(),
             ) {
                 let (lock, _) = &*state;
-                let mut guard = lock.lock().unwrap();
+                let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 guard.failure = Some(err.to_string());
             }
         }
