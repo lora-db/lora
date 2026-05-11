@@ -7,21 +7,30 @@ semicolon = _{ ";" }
 
 statement = { schema_command | regular_query | standalone_call }
 
-schema_command = { create_index_command | drop_index_command | show_indexes_command }
+schema_command = {
+    create_index_command
+  | drop_index_command
+  | show_indexes_command
+  | create_constraint_command
+  | drop_constraint_command
+  | show_constraints_command
+}
 
 create_index_command = {
     CREATE ~ index_kind? ~ INDEX ~ index_name_spec? ~ if_not_exists?
     ~ FOR ~ index_pattern ~ ON ~ index_property_spec ~ index_options?
 }
 
-index_kind = { TEXT | POINT | LOOKUP | RANGE }
+index_kind = { TEXT | POINT | LOOKUP | RANGE | VECTOR | FULLTEXT }
 // Negative lookahead so `CREATE INDEX FOR ...` and `CREATE INDEX IF NOT EXISTS ...`
 // don't bind `FOR` / `IF` as the (optional) index name.
 index_name_spec = { !(FOR | IF) ~ (parameter | symbolic_name) }
 if_not_exists = { IF ~ NOT ~ EXISTS }
 
 index_pattern = {
-    indexed_node_pattern
+    fulltext_node_pattern
+  | fulltext_rel_pattern
+  | indexed_node_pattern
   | indexed_rel_pattern
   | lookup_node_pattern
   | lookup_rel_pattern
@@ -31,23 +40,125 @@ indexed_rel_pattern = {
     lparen ~ rparen ~ dash ~ lbrack ~ index_var ~ colon ~ rel_type_name ~ rbrack
     ~ dash ~ right_arrow? ~ lparen ~ rparen
 }
+// `(n:A|B|C)` and `()-[r:A|B|C]-()` — only used by FULLTEXT today.
+// The parser layer enforces the single-label restriction for other kinds.
+fulltext_node_pattern = {
+    lparen ~ index_var ~ colon ~ label_name ~ (pipe ~ label_name)+ ~ rparen
+}
+fulltext_rel_pattern = {
+    lparen ~ rparen ~ dash ~ lbrack ~ index_var ~ colon ~ rel_type_name
+    ~ (pipe ~ rel_type_name)+ ~ rbrack ~ dash ~ right_arrow? ~ lparen ~ rparen
+}
 lookup_node_pattern = { lparen ~ index_var ~ rparen }
 lookup_rel_pattern = {
     lparen ~ rparen ~ dash ~ lbrack ~ index_var ~ rbrack ~ dash ~ right_arrow? ~ lparen ~ rparen
 }
 index_var = { symbolic_name }
 
-index_property_spec = { index_property_list | index_token_lookup }
+index_property_spec = {
+    index_property_list
+  | index_property_each
+  | index_token_lookup
+}
 index_property_list = { lparen ~ index_property ~ (comma ~ index_property)* ~ rparen }
+// FULLTEXT spelling: `ON EACH [n.p1, n.p2]`.
+index_property_each = {
+    EACH ~ lbrack ~ index_property ~ (comma ~ index_property)* ~ rbrack
+}
 index_property = { index_var ~ dot ~ property_key_name }
 index_token_lookup = { EACH ~ index_token_func }
 index_token_func = { (LABELS_FN | TYPE_FN) ~ lparen ~ index_var ~ rparen }
 index_options = { OPTIONS ~ map_literal }
 
-show_indexes_command = { SHOW ~ (INDEXES | INDEX) }
+show_indexes_command = {
+    SHOW ~ show_index_filter? ~ (INDEXES | INDEX) ~ show_pipeline?
+}
+// Type filter for SHOW INDEXES. `ALL` is the explicit unfiltered form;
+// `FULLTEXT` parses but returns empty (not yet implemented).
+show_index_filter = { ALL | FULLTEXT | LOOKUP | POINT | RANGE | TEXT | VECTOR }
+
+// YIELD [* | items [ORDER BY ...] [SKIP ...] [LIMIT ...]]
+// [WHERE expr]
+// [RETURN items [ORDER BY ...] [SKIP ...] [LIMIT ...]]
+//
+// Neo4j requires that RETURN only appear when YIELD is present, so the
+// pipeline is anchored on YIELD.
+show_pipeline = { show_yield ~ where_clause? ~ show_return? }
+show_yield = {
+    YIELD ~ (STAR | yield_items) ~ order_clause? ~ skip_clause? ~ limit_clause?
+}
+show_return = {
+    RETURN ~ projection_items ~ order_clause? ~ skip_clause? ~ limit_clause?
+}
 
 drop_index_command = { DROP_KW ~ INDEX ~ index_name_spec ~ if_exists? }
 if_exists = { IF ~ EXISTS }
+
+// ---------- CREATE / DROP / SHOW CONSTRAINT ----------
+// Constraint name is required (matches CREATE CONSTRAINT name FOR ...).
+// The pattern is reused from the index grammar (same shape).
+create_constraint_command = {
+    CREATE ~ CONSTRAINT ~ constraint_name_spec ~ if_not_exists?
+    ~ FOR ~ constraint_pattern
+    ~ REQUIRE ~ constraint_property_spec ~ constraint_requirement
+}
+
+constraint_name_spec = { !(FOR | IF) ~ (parameter | symbolic_name) }
+
+constraint_pattern = { constraint_node_pattern | constraint_rel_pattern }
+constraint_node_pattern = { lparen ~ index_var ~ colon ~ label_name ~ rparen }
+constraint_rel_pattern = {
+    lparen ~ rparen ~ dash ~ lbrack ~ index_var ~ colon ~ rel_type_name ~ rbrack
+    ~ dash ~ right_arrow? ~ lparen ~ rparen
+}
+
+// REQUIRE n.prop IS UNIQUE  -> single property without parens
+// REQUIRE (n.a, n.b) IS UNIQUE -> composite, must be parenthesized
+constraint_property_spec = { constraint_property_group | constraint_property }
+constraint_property_group = { lparen ~ constraint_property ~ (comma ~ constraint_property)* ~ rparen }
+constraint_property = { index_var ~ dot ~ property_key_name }
+
+constraint_requirement = {
+      IS ~ UNIQUE
+    | IS ~ NODE ~ KEY
+    | IS ~ RELATIONSHIP ~ KEY
+    | IS ~ NOT ~ NULL
+    | IS ~ type_predicate ~ constraint_type_expr
+}
+type_predicate = { "::" }
+
+// Closed dynamic union: `STRING | LIST<STRING NOT NULL>` — recursion via `pipe`.
+constraint_type_expr = { constraint_type_term ~ (pipe ~ constraint_type_term)* }
+constraint_type_term = {
+      constraint_vector_type
+    | constraint_list_type
+    | constraint_scalar_type
+}
+constraint_vector_type = {
+    VECTOR ~ "<" ~ vector_coord_type ~ ">" ~ lparen ~ integer_literal ~ rparen
+}
+vector_coord_type = { INT8 | INT16 | INT32 | INT64 | FLOAT32 | FLOAT64 }
+constraint_list_type = {
+    LIST ~ "<" ~ constraint_type_term ~ (NOT ~ NULL)? ~ ">"
+}
+constraint_scalar_type = {
+      LOCAL_DATETIME
+    | ZONED_DATETIME
+    | LOCAL_TIME
+    | ZONED_TIME
+    | BOOLEAN
+    | STRING
+    | INTEGER
+    | FLOAT
+    | DATE
+    | DURATION
+    | POINT
+    | MAP_T
+    | ANY_T
+}
+
+drop_constraint_command = { DROP_KW ~ CONSTRAINT ~ constraint_name_spec ~ if_exists? }
+show_constraints_command = { SHOW ~ (CONSTRAINTS | CONSTRAINT) ~ show_pipeline? }
 
 regular_query = { single_query ~ (union_clause ~ single_query)* }
 union_clause = { UNION ~ ALL? }
@@ -416,6 +527,7 @@ RANGE = @{ ^"RANGE" ~ !ident_part }
 TEXT = @{ ^"TEXT" ~ !ident_part }
 POINT = @{ ^"POINT" ~ !ident_part }
 LOOKUP = @{ ^"LOOKUP" ~ !ident_part }
+FULLTEXT = @{ ^"FULLTEXT" ~ !ident_part }
 FOR = @{ ^"FOR" ~ !ident_part }
 IF = @{ ^"IF" ~ !ident_part }
 EACH = @{ ^"EACH" ~ !ident_part }
@@ -424,5 +536,39 @@ SHOW = @{ ^"SHOW" ~ !ident_part }
 DROP_KW = @{ ^"DROP" ~ !ident_part }
 LABELS_FN = @{ ^"labels" ~ !ident_part }
 TYPE_FN = @{ ^"type" ~ !ident_part }
+
+CONSTRAINT = @{ ^"CONSTRAINT" ~ !ident_part }
+CONSTRAINTS = @{ ^"CONSTRAINTS" ~ !ident_part }
+REQUIRE = @{ ^"REQUIRE" ~ !ident_part }
+UNIQUE = @{ ^"UNIQUE" ~ !ident_part }
+NODE = @{ ^"NODE" ~ !ident_part }
+KEY = @{ ^"KEY" ~ !ident_part }
+RELATIONSHIP = @{ ^"RELATIONSHIP" ~ !ident_part }
+
+// Property-type keywords. `LOCAL_DATETIME` / `ZONED_DATETIME` etc. are
+// space-separated in source; ordered alternation makes the longer
+// multi-word form win over the bare `LOCAL` / `ZONED`. Single-word forms
+// (`BOOLEAN`, `STRING`, ...) ride alongside.
+LOCAL_DATETIME = @{ ^"LOCAL" ~ (" " | "\t" | "\r" | "\n")+ ~ ^"DATETIME" ~ !ident_part }
+ZONED_DATETIME = @{ ^"ZONED" ~ (" " | "\t" | "\r" | "\n")+ ~ ^"DATETIME" ~ !ident_part }
+LOCAL_TIME = @{ ^"LOCAL" ~ (" " | "\t" | "\r" | "\n")+ ~ ^"TIME" ~ !ident_part }
+ZONED_TIME = @{ ^"ZONED" ~ (" " | "\t" | "\r" | "\n")+ ~ ^"TIME" ~ !ident_part }
+BOOLEAN = @{ ^"BOOLEAN" ~ !ident_part }
+STRING = @{ ^"STRING" ~ !ident_part }
+INTEGER = @{ ^"INTEGER" ~ !ident_part }
+FLOAT = @{ ^"FLOAT" ~ !ident_part }
+DATE = @{ ^"DATE" ~ !ident_part }
+DURATION = @{ ^"DURATION" ~ !ident_part }
+LIST = @{ ^"LIST" ~ !ident_part }
+VECTOR = @{ ^"VECTOR" ~ !ident_part }
+MAP_T = @{ ^"MAP" ~ !ident_part }
+ANY_T = @{ ^"ANY" ~ !ident_part }
+
+INT8 = @{ ^"INT8" ~ !ident_part }
+INT16 = @{ ^"INT16" ~ !ident_part }
+INT32 = @{ ^"INT32" ~ !ident_part }
+INT64 = @{ ^"INT64" ~ !ident_part }
+FLOAT32 = @{ ^"FLOAT32" ~ !ident_part }
+FLOAT64 = @{ ^"FLOAT64" ~ !ident_part }
 
 STAR = @{ "*" }
