@@ -13,7 +13,7 @@ use lora_compiler::physical::{
 };
 use lora_store::{GraphStorage, NodeId};
 
-use crate::errors::ExecResult;
+use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr;
 use crate::executor::{
     bound_node_id_for_expand, indexed_node_property_candidates, label_group_candidates_prefiltered,
@@ -74,7 +74,12 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
                 }
             }
 
-            let row_ref = self.cur_row.as_ref().unwrap();
+            let Some(row_ref) = self.cur_row.as_ref() else {
+                self.cur_ids.clear();
+                self.cur_idx = 0;
+                self.cur_emitted = false;
+                continue;
+            };
 
             // Already-bound case: emit the input row once iff the
             // bound node still exists; otherwise drop it.
@@ -85,7 +90,10 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
                 }
                 self.cur_emitted = true;
                 if self.storage.has_node(id) {
-                    let row = self.cur_row.take().unwrap();
+                    let Some(row) = self.cur_row.take() else {
+                        self.cur_emitted = false;
+                        continue;
+                    };
                     self.cur_emitted = false;
                     return Ok(Some(row));
                 }
@@ -103,7 +111,11 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
                 self.cur_ids.clear();
                 continue;
             }
-            let id = self.cur_ids[self.cur_idx];
+            let Some(&id) = self.cur_ids.get(self.cur_idx) else {
+                self.cur_row = None;
+                self.cur_ids.clear();
+                continue;
+            };
             self.cur_idx += 1;
             let mut new_row = row_ref.clone();
             new_row.insert(self.var, LoraValue::Node(id));
@@ -164,7 +176,12 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
                 }
             }
 
-            let row_ref = self.cur_row.as_ref().unwrap();
+            let Some(row_ref) = self.cur_row.as_ref() else {
+                self.cur_ids.clear();
+                self.cur_idx = 0;
+                self.cur_emitted = false;
+                continue;
+            };
 
             if let Some(id) = bound_node_id_for_expand(row_ref, self.var)? {
                 if self.cur_emitted {
@@ -177,7 +194,10 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
                     .with_node(id, |n| node_matches_label_groups(&n.labels, self.labels))
                     .unwrap_or(false);
                 if labels_ok {
-                    let row = self.cur_row.take().unwrap();
+                    let Some(row) = self.cur_row.take() else {
+                        self.cur_emitted = false;
+                        continue;
+                    };
                     self.cur_emitted = false;
                     return Ok(Some(row));
                 }
@@ -190,7 +210,11 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
             }
 
             while self.cur_idx < self.cur_ids.len() {
-                let id = self.cur_ids[self.cur_idx];
+                let Some(&id) = self.cur_ids.get(self.cur_idx) else {
+                    return Err(ExecutorError::RuntimeError(
+                        "label scan cursor index moved past candidate ids".into(),
+                    ));
+                };
                 self.cur_idx += 1;
                 if !self.candidates_prefiltered {
                     let labels_ok = self
@@ -290,8 +314,12 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                 }
             }
 
-            let row_ref = self.cur_row.as_ref().unwrap();
-            let expected = self.cur_expected.as_ref().unwrap();
+            let (Some(row_ref), Some(expected)) =
+                (self.cur_row.as_ref(), self.cur_expected.as_ref())
+            else {
+                self.clear_current();
+                continue;
+            };
 
             if let Some(id) = bound_node_id_for_expand(row_ref, self.var)? {
                 if self.cur_emitted {
@@ -306,7 +334,10 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                     self.key,
                     expected,
                 ) {
-                    let row = self.cur_row.take().unwrap();
+                    let Some(row) = self.cur_row.take() else {
+                        self.clear_current();
+                        continue;
+                    };
                     self.clear_current();
                     return Ok(Some(row));
                 }
@@ -315,7 +346,11 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
             }
 
             while self.cur_idx < self.cur_ids.len() {
-                let id = self.cur_ids[self.cur_idx];
+                let Some(&id) = self.cur_ids.get(self.cur_idx) else {
+                    return Err(ExecutorError::RuntimeError(
+                        "property scan cursor index moved past candidate ids".into(),
+                    ));
+                };
                 self.cur_idx += 1;
                 if !self.cur_prefiltered
                     && !node_matches_property_filter(

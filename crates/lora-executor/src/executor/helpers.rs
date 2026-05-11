@@ -37,11 +37,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use lora_analyzer::symbols::VarId;
-use lora_analyzer::ResolvedExpr;
+use lora_analyzer::{ResolvedExpr, ResolvedMapSelector};
 use lora_ast::{Direction, RangeLiteral};
 use lora_compiler::physical::{
-    ExpandExec, LimitExec, NodeByLabelScanExec, NodeByPropertyScanExec, NodeScanExec,
-    ProjectionExec, UnwindExec,
+    ExpandExec, HashAggregationExec, LimitExec, NodeByLabelScanExec, NodeByPropertyScanExec,
+    NodeScanExec, PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, UnwindExec,
 };
 use lora_store::{GraphStorage, NodeId, Properties, PropertyValue, RelationshipId};
 
@@ -392,6 +392,150 @@ fn check_optional_deadline(deadline: Option<Instant>) -> ExecResult<()> {
     }
 }
 
+pub(crate) fn plan_may_need_hydration(plan: &PhysicalPlan) -> bool {
+    op_may_need_hydration(plan, plan.root)
+}
+
+pub(crate) fn count_all_scan_aggregation_rows<S: GraphStorage>(
+    storage: &S,
+    plan: &PhysicalPlan,
+    op: &HashAggregationExec,
+) -> Option<Vec<Row>> {
+    if !op.group_by.is_empty() {
+        return None;
+    }
+    let specs = crate::pull::classify_streamable_aggregates(&op.aggregates)?;
+    if !specs
+        .iter()
+        .all(|spec| matches!(spec.kind, crate::pull::StreamableAggKind::CountAll))
+    {
+        return None;
+    }
+
+    let count = count_rows_for_scan_subtree(storage, plan, op.input)? as i64;
+    let value = LoraValue::Int(count);
+    let mut row = Row::new();
+    for proj in &op.aggregates {
+        row.insert_named(proj.output, proj.name.clone(), value.clone());
+    }
+    Some(vec![row])
+}
+
+fn count_rows_for_scan_subtree<S: GraphStorage>(
+    storage: &S,
+    plan: &PhysicalPlan,
+    node_id: PhysicalNodeId,
+) -> Option<usize> {
+    match &plan.nodes[node_id] {
+        PhysicalOp::NodeScan(op) if scan_input_is_argument(plan, op.input) => {
+            Some(storage.node_count())
+        }
+        PhysicalOp::NodeByLabelScan(op) if scan_input_is_argument(plan, op.input) => {
+            let ids = scan_node_ids_for_label_groups(storage, &op.labels);
+            if label_group_candidates_prefiltered(&op.labels) {
+                return Some(ids.len());
+            }
+            Some(
+                ids.into_iter()
+                    .filter(|&id| {
+                        storage
+                            .with_node(id, |node| {
+                                node_matches_label_groups(&node.labels, &op.labels)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .count(),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn scan_input_is_argument(plan: &PhysicalPlan, input: Option<PhysicalNodeId>) -> bool {
+    match input {
+        None => true,
+        Some(id) => matches!(plan.nodes.get(id), Some(PhysicalOp::Argument(_))),
+    }
+}
+
+fn op_may_need_hydration(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
+    match &plan.nodes[node_id] {
+        PhysicalOp::Projection(op) if !op.include_existing => op
+            .items
+            .iter()
+            .any(|item| expr_may_produce_hydratable_value(&item.expr)),
+        PhysicalOp::HashAggregation(op) => {
+            op.group_by
+                .iter()
+                .any(|item| expr_may_produce_hydratable_value(&item.expr))
+                || op
+                    .aggregates
+                    .iter()
+                    .any(|item| expr_may_produce_hydratable_value(&item.expr))
+        }
+        PhysicalOp::Sort(op) => op_may_need_hydration(plan, op.input),
+        PhysicalOp::Limit(op) => op_may_need_hydration(plan, op.input),
+        PhysicalOp::Filter(op) => op_may_need_hydration(plan, op.input),
+        PhysicalOp::Unwind(op) => op_may_need_hydration(plan, op.input),
+        PhysicalOp::PathBuild(op) => op_may_need_hydration(plan, op.input),
+        _ => true,
+    }
+}
+
+fn expr_may_produce_hydratable_value(expr: &ResolvedExpr) -> bool {
+    match expr {
+        ResolvedExpr::Variable(_) | ResolvedExpr::Parameter(_) => true,
+        ResolvedExpr::Literal(_)
+        | ResolvedExpr::Property { .. }
+        | ResolvedExpr::ExistsSubquery { .. }
+        | ResolvedExpr::Binary { .. }
+        | ResolvedExpr::Unary { .. }
+        | ResolvedExpr::ListPredicate { .. } => false,
+        ResolvedExpr::Function { name, args, .. } => {
+            function_may_produce_hydratable_value(name, args)
+        }
+        ResolvedExpr::List(items) => items.iter().any(expr_may_produce_hydratable_value),
+        ResolvedExpr::Map(items) => items
+            .iter()
+            .any(|(_, value)| expr_may_produce_hydratable_value(value)),
+        ResolvedExpr::Case {
+            alternatives,
+            else_expr,
+            ..
+        } => {
+            alternatives
+                .iter()
+                .any(|(_, value)| expr_may_produce_hydratable_value(value))
+                || else_expr
+                    .as_deref()
+                    .is_some_and(expr_may_produce_hydratable_value)
+        }
+        ResolvedExpr::ListComprehension { map_expr, .. } => map_expr
+            .as_deref()
+            .map(expr_may_produce_hydratable_value)
+            .unwrap_or(true),
+        ResolvedExpr::Reduce { expr, .. } => expr_may_produce_hydratable_value(expr),
+        ResolvedExpr::MapProjection { selectors, .. } => selectors.iter().any(|selector| {
+            matches!(selector, ResolvedMapSelector::Literal(_, expr) if expr_may_produce_hydratable_value(expr))
+        }),
+        ResolvedExpr::Index { expr, .. } | ResolvedExpr::Slice { expr, .. } => {
+            expr_may_produce_hydratable_value(expr)
+        }
+        ResolvedExpr::PatternComprehension { map_expr, .. } => {
+            expr_may_produce_hydratable_value(map_expr)
+        }
+    }
+}
+
+fn function_may_produce_hydratable_value(name: &str, args: &[ResolvedExpr]) -> bool {
+    match name.to_ascii_lowercase().as_str() {
+        "nodes" | "relationships" | "head" | "last" => true,
+        "coalesce" | "collect" => args.iter().any(expr_may_produce_hydratable_value),
+        "tail" | "reverse" => args.first().is_some_and(expr_may_produce_hydratable_value),
+        _ => false,
+    }
+}
+
 pub(super) fn expand_rows<S: GraphStorage>(
     storage: &S,
     params: &BTreeMap<String, LoraValue>,
@@ -424,9 +568,9 @@ pub(super) fn expand_rows<S: GraphStorage>(
                         rel_property_filter = Some(map);
                     }
 
-                    let map = rel_property_filter
-                        .as_ref()
-                        .expect("relationship property filter initialized above");
+                    let Some(map) = rel_property_filter.as_ref() else {
+                        return Ok(());
+                    };
                     let matches = storage
                         .with_relationship(rel_id, |rel| {
                             map.iter().all(|(key, expected)| {
@@ -760,6 +904,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     let percentile = eval_expr_result(&args[1], first, eval_ctx)
                         .map_err(ExecutorError::RuntimeError)?
                         .as_f64()
+                        .map(normalize_percentile)
                         .unwrap_or(0.5);
                     let mut nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
                         .into_iter()
@@ -798,6 +943,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     let percentile = eval_expr_result(&args[1], first, eval_ctx)
                         .map_err(ExecutorError::RuntimeError)?
                         .as_f64()
+                        .map(normalize_percentile)
                         .unwrap_or(0.5);
                     let mut nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
                         .into_iter()
@@ -831,6 +977,14 @@ fn eval_aggregate_arg_values<S: GraphStorage>(
     rows.iter()
         .map(|row| eval_expr_result(expr, row, eval_ctx).map_err(ExecutorError::RuntimeError))
         .collect()
+}
+
+fn normalize_percentile(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.5
+    }
 }
 
 fn eval_first_or_null<S: GraphStorage>(

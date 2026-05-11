@@ -61,10 +61,11 @@ pub(crate) use aggregation::aggregate_rows;
 #[allow(unused_imports)]
 pub(crate) use helpers::{
     bound_node_id_for_expand, bound_relationship_id_for_expand, build_path_value,
-    compute_aggregate_expr, hydrate_node_record, hydrate_relationship_record,
-    indexed_node_property_candidates, label_group_candidates_prefiltered, node_by_point_scan_rows,
-    node_by_property_range_scan_rows, node_by_text_scan_rows, node_matches_label_groups,
-    node_matches_property_filter, rel_by_point_scan_rows, rel_by_property_range_scan_rows,
+    compute_aggregate_expr, count_all_scan_aggregation_rows, hydrate_node_record,
+    hydrate_relationship_record, indexed_node_property_candidates,
+    label_group_candidates_prefiltered, node_by_point_scan_rows, node_by_property_range_scan_rows,
+    node_by_text_scan_rows, node_matches_label_groups, node_matches_property_filter,
+    plan_may_need_hydration, rel_by_point_scan_rows, rel_by_property_range_scan_rows,
     rel_by_text_scan_rows, resolve_range, scan_node_ids_for_label_groups, GroupValueKey,
 };
 pub(crate) use optional::{

@@ -28,7 +28,7 @@ use super::helpers::{
     build_path_value, check_deadline_at, dedup_rows, expand_rows, expand_var_len_rows,
     filter_rows_checked, filter_shortest_paths, hydrate_node_record, hydrate_relationship_record,
     limit_rows, node_by_label_scan_rows, node_by_property_scan_rows, node_scan_rows,
-    project_rows_checked, unwind_rows,
+    plan_may_need_hydration, project_rows_checked, unwind_rows,
 };
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 use super::helpers::{
@@ -149,6 +149,9 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         clear_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
+        if !plan_may_need_hydration(plan) {
+            return Ok(rows);
+        }
         Ok(rows
             .into_iter()
             .map(|row| self.hydrate_row(row))
@@ -231,6 +234,9 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         clear_eval_error();
 
         let rows = self.execute_node_parallel_safe(plan, plan.root)?;
+        if !plan_may_need_hydration(plan) {
+            return Ok(rows);
+        }
         if rows.len() < PARALLEL_ROW_THRESHOLD {
             return Ok(rows
                 .into_iter()
@@ -264,7 +270,9 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             }
             PhysicalOp::Filter(op) => self.exec_filter_parallel_safe(plan, op),
             PhysicalOp::Projection(op) => self.exec_projection_parallel_safe(plan, op),
-            _ => unreachable!("parallel-safe executor called with unsupported operator"),
+            _ => Err(ExecutorError::RuntimeError(
+                "parallel-safe executor called with unsupported operator".into(),
+            )),
         }
     }
 
@@ -288,7 +296,11 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
 
         use rayon::prelude::*;
         if base_rows.len() == 1 {
-            let row = base_rows.into_iter().next().expect("len checked above");
+            let Some(row) = base_rows.into_iter().next() else {
+                return Err(ExecutorError::RuntimeError(
+                    "parallel node scan expected one base row".into(),
+                ));
+            };
             if let Some(existing_id) = super::helpers::bound_node_id_for_expand(&row, op.var)? {
                 return Ok(if self.ctx.storage.has_node(existing_id) {
                     vec![row]
@@ -360,7 +372,11 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let candidates_prefiltered = label_group_candidates_prefiltered(&op.labels);
         use rayon::prelude::*;
         if base_rows.len() == 1 {
-            let row = base_rows.into_iter().next().expect("len checked above");
+            let Some(row) = base_rows.into_iter().next() else {
+                return Err(ExecutorError::RuntimeError(
+                    "parallel label scan expected one base row".into(),
+                ));
+            };
             if let Some(existing_id) = super::helpers::bound_node_id_for_expand(&row, op.var)? {
                 let labels_ok = self
                     .ctx
@@ -459,7 +475,11 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         use rayon::prelude::*;
 
         if base_rows.len() == 1 {
-            let row = base_rows.into_iter().next().expect("len checked above");
+            let Some(row) = base_rows.into_iter().next() else {
+                return Err(ExecutorError::RuntimeError(
+                    "parallel property scan expected one base row".into(),
+                ));
+            };
             if let Some(deadline) = self.deadline {
                 check_deadline_at(deadline)?;
             }
@@ -916,6 +936,12 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         plan: &PhysicalPlan,
         op: &HashAggregationExec,
     ) -> ExecResult<Vec<Row>> {
+        if let Some(rows) =
+            super::helpers::count_all_scan_aggregation_rows(self.ctx.storage, plan, op)
+        {
+            return Ok(rows);
+        }
+
         let input_rows = self.execute_node(plan, op.input)?;
         let eval_ctx = EvalContext {
             storage: self.ctx.storage,

@@ -158,12 +158,13 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for MutableUnionSourc
                 self.current = Some(self.open_branch(self.branch_idx)?);
             }
 
-            match self
-                .current
-                .as_mut()
-                .expect("current branch initialized above")
-                .next_row()?
-            {
+            let Some(current) = self.current.as_mut() else {
+                return Err(ExecutorError::RuntimeError(
+                    "mutable UNION cursor lost its current branch".into(),
+                ));
+            };
+
+            match current.next_row()? {
                 Some(row) => {
                     if self.needs_dedup {
                         let key = row

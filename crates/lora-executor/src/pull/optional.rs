@@ -4,7 +4,7 @@ use lora_analyzer::symbols::VarId;
 use lora_compiler::physical::{PhysicalNodeId, PhysicalPlan};
 use lora_store::GraphStorage;
 
-use crate::errors::ExecResult;
+use crate::errors::{ExecResult, ExecutorError};
 use crate::executor::{merge_optional_rows, null_extend_optional_row, optional_rows_compatible};
 use crate::value::Row;
 
@@ -84,17 +84,20 @@ impl<'a, S: GraphStorage> RowSource for OptionalMatchSource<'a, S> {
                 };
             }
 
-            let inner_rows = self
-                .inner_rows
-                .as_ref()
-                .expect("ensure_inner_rows initializes inner_rows");
+            let Some(inner_rows) = self.inner_rows.as_ref() else {
+                return Err(ExecutorError::RuntimeError(
+                    "OPTIONAL MATCH inner rows were not initialized".into(),
+                ));
+            };
             let OptionalMatchState::Scanning {
                 input_row,
                 inner_idx,
                 matched,
             } = &mut self.state
             else {
-                unreachable!("state is initialized above");
+                return Err(ExecutorError::RuntimeError(
+                    "OPTIONAL MATCH cursor entered an invalid state".into(),
+                ));
             };
 
             while *inner_idx < inner_rows.len() {
@@ -113,7 +116,9 @@ impl<'a, S: GraphStorage> RowSource for OptionalMatchSource<'a, S> {
                 input_row, matched, ..
             } = std::mem::replace(&mut self.state, OptionalMatchState::AwaitingInput)
             else {
-                unreachable!("state is initialized above");
+                return Err(ExecutorError::RuntimeError(
+                    "OPTIONAL MATCH cursor entered an invalid state".into(),
+                ));
             };
             if !matched {
                 return Ok(Some(null_extend_optional_row(input_row, self.new_vars)));

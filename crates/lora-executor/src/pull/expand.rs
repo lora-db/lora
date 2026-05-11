@@ -113,7 +113,11 @@ impl<'a, S: GraphStorage> RowSource for ExpandSource<'a, S> {
                 }
             }
 
-            let row_ref = self.cur_row.as_ref().unwrap();
+            let Some(row_ref) = self.cur_row.as_ref() else {
+                return Err(ExecutorError::RuntimeError(
+                    "EXPAND cursor lost its current input row".into(),
+                ));
+            };
 
             while self.cur_idx < self.cur_edges.len() {
                 let (rel_id, dst_id) = self.cur_edges[self.cur_idx];
@@ -310,12 +314,13 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
         self.reset_search_state();
     }
 
-    fn row_for_path(&self, dst_node_id: NodeId, rel_ids: &[u64]) -> Row {
-        let mut new_row = self
-            .cur_row
-            .as_ref()
-            .expect("cur_row is set while yielding variable-length results")
-            .clone();
+    fn row_for_path(&self, dst_node_id: NodeId, rel_ids: &[u64]) -> ExecResult<Row> {
+        let Some(cur_row) = self.cur_row.as_ref() else {
+            return Err(ExecutorError::RuntimeError(
+                "variable-length EXPAND cursor lost its current input row".into(),
+            ));
+        };
+        let mut new_row = cur_row.clone();
         new_row.insert(self.dst, LoraValue::Node(dst_node_id));
 
         if let Some(rel_var) = self.rel {
@@ -327,7 +332,7 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
             new_row.insert(rel_var, LoraValue::List(rels));
         }
 
-        new_row
+        Ok(new_row)
     }
 
     fn advance_frontier(&mut self) -> bool {
@@ -360,13 +365,13 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
 
             if self.pending_zero_hop {
                 self.pending_zero_hop = false;
-                if let Some(LoraValue::Node(src_id)) = self
-                    .cur_row
-                    .as_ref()
-                    .expect("cur_row is initialized before zero-hop yield")
-                    .get(self.src)
-                {
-                    return Ok(Some(self.row_for_path(*src_id, &[])));
+                let Some(cur_row) = self.cur_row.as_ref() else {
+                    return Err(ExecutorError::RuntimeError(
+                        "variable-length EXPAND cursor lost its zero-hop input row".into(),
+                    ));
+                };
+                if let Some(LoraValue::Node(src_id)) = cur_row.get(self.src) {
+                    return Ok(Some(self.row_for_path(*src_id, &[])?));
                 }
             }
 
@@ -406,7 +411,7 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
 
                     if self.depth == self.max_hops && self.rel.is_none() {
                         if self.depth >= self.min_hops {
-                            return Ok(Some(self.row_for_path(neighbor_id, &[])));
+                            return Ok(Some(self.row_for_path(neighbor_id, &[])?));
                         }
                         continue;
                     }
@@ -429,9 +434,9 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                             // Materialize the path only when the query bound
                             // the variable-length relationship variable.
                             let rel_ids = PathSegment::to_vec(&Some(new_path));
-                            return Ok(Some(self.row_for_path(neighbor_id, &rel_ids)));
+                            return Ok(Some(self.row_for_path(neighbor_id, &rel_ids)?));
                         }
-                        return Ok(Some(self.row_for_path(neighbor_id, &[])));
+                        return Ok(Some(self.row_for_path(neighbor_id, &[])?));
                     }
                 }
 

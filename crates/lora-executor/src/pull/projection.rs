@@ -110,11 +110,12 @@ impl<'a, S: GraphStorage> RowSource for UnwindSource<'a, S> {
             if self.cur_idx < self.cur_values.len() {
                 let value = self.cur_values[self.cur_idx].clone();
                 self.cur_idx += 1;
-                let mut new_row = self
-                    .cur_row
-                    .as_ref()
-                    .expect("cur_values is non-empty implies cur_row is set")
-                    .clone();
+                let Some(cur_row) = self.cur_row.as_ref() else {
+                    return Err(ExecutorError::RuntimeError(
+                        "UNWIND cursor lost its current input row".into(),
+                    ));
+                };
+                let mut new_row = cur_row.clone();
                 new_row.insert(self.alias, value);
                 return Ok(Some(new_row));
             }

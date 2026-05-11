@@ -33,8 +33,9 @@ use super::helpers::{
     build_path_value, check_deadline_at, dedup_rows, eval_properties_expr, expand_rows,
     expand_var_len_rows, filter_rows_checked, filter_shortest_paths, flatten_label_groups,
     hydrate_node_record, hydrate_relationship_record, limit_rows, node_by_label_scan_rows,
-    node_by_property_scan_rows, node_matches_label_groups, node_scan_rows, project_rows_checked,
-    scan_node_ids_for_label_groups, unwind_rows, value_matches_property_value,
+    node_by_property_scan_rows, node_matches_label_groups, node_scan_rows, plan_may_need_hydration,
+    project_rows_checked, scan_node_ids_for_label_groups, unwind_rows,
+    value_matches_property_value,
 };
 use super::optional_match_rows;
 use super::sort_rows_with_top_k;
@@ -105,6 +106,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         clear_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
+        if !plan_may_need_hydration(plan) {
+            return Ok(rows);
+        }
         Ok(rows
             .into_iter()
             .map(|row| self.hydrate_row(row))
@@ -156,6 +160,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     fn execute_and_hydrate(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
         let rows = self.execute_node(plan, plan.root)?;
+        if !plan_may_need_hydration(plan) {
+            return Ok(rows);
+        }
         Ok(rows.into_iter().map(|row| self.hydrate_row(row)).collect())
     }
 
@@ -450,6 +457,12 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         plan: &PhysicalPlan,
         op: &HashAggregationExec,
     ) -> ExecResult<Vec<Row>> {
+        if let Some(rows) =
+            super::helpers::count_all_scan_aggregation_rows(&*self.ctx.storage, plan, op)
+        {
+            return Ok(rows);
+        }
+
         let input_rows = self.execute_node(plan, op.input)?;
         let eval_ctx = EvalContext {
             storage: &*self.ctx.storage,
@@ -1068,6 +1081,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 Some(LoraValue::Node(node_id)) => {
                     let node_id = *node_id;
                     for label in labels {
+                        if let Err(msg) = self
+                            .ctx
+                            .storage
+                            .check_node_add_label_against_constraints(node_id, label)
+                        {
+                            return Err(ExecutorError::ConstraintViolation(msg));
+                        }
                         self.ctx.storage.add_node_label(node_id, label);
                     }
                     Ok(())
@@ -1104,6 +1124,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             LoraValue::Node(node_id) => {
                 let prop = lora_value_to_property(new_value)
                     .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_node_set_property_against_constraints(node_id, property, &prop)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
                 self.ctx
                     .storage
                     .set_node_property(node_id, property.clone(), prop);
@@ -1112,6 +1139,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             LoraValue::Relationship(rel_id) => {
                 let prop = lora_value_to_property(new_value)
                     .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_relationship_set_property_against_constraints(rel_id, property, &prop)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
                 self.ctx
                     .storage
                     .set_relationship_property(rel_id, property.clone(), prop);
@@ -1142,10 +1176,24 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         match owner {
             LoraValue::Node(node_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_node_remove_property_against_constraints(node_id, property)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
                 self.ctx.storage.remove_node_property(node_id, property);
                 Ok(())
             }
             LoraValue::Relationship(rel_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_relationship_remove_property_against_constraints(rel_id, property)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
                 self.ctx
                     .storage
                     .remove_relationship_property(rel_id, property);
@@ -1177,9 +1225,23 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         match target {
             EntityTarget::Node(node_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_node_replace_properties_against_constraints(node_id, &props)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
                 self.ctx.storage.replace_node_properties(node_id, props);
             }
             EntityTarget::Relationship(rel_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_relationship_replace_properties_against_constraints(rel_id, &props)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
                 self.ctx
                     .storage
                     .replace_relationship_properties(rel_id, props);
@@ -1204,6 +1266,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 for (k, v) in map {
                     let prop = lora_value_to_property(v)
                         .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                    if let Err(msg) = self
+                        .ctx
+                        .storage
+                        .check_node_set_property_against_constraints(node_id, &k, &prop)
+                    {
+                        return Err(ExecutorError::ConstraintViolation(msg));
+                    }
                     self.ctx.storage.set_node_property(node_id, k, prop);
                 }
             }
@@ -1211,6 +1280,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 for (k, v) in map {
                     let prop = lora_value_to_property(v)
                         .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+                    if let Err(msg) = self
+                        .ctx
+                        .storage
+                        .check_relationship_set_property_against_constraints(rel_id, &k, &prop)
+                    {
+                        return Err(ExecutorError::ConstraintViolation(msg));
+                    }
                     self.ctx.storage.set_relationship_property(rel_id, k, prop);
                 }
             }
@@ -1399,6 +1475,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         let flat_labels = flatten_label_groups(labels);
         debug!("creating node with labels={flat_labels:?}");
+        if let Err(msg) = self
+            .ctx
+            .storage
+            .check_node_create_against_constraints(&flat_labels, &properties)
+        {
+            return Err(ExecutorError::ConstraintViolation(msg));
+        }
         let created = self.ctx.storage.create_node(flat_labels, properties);
 
         if let Some(var_id) = var {
@@ -1457,6 +1540,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         };
 
         debug!("creating relationship: src={src}, dst={dst}, type={rel_type}");
+
+        if let Err(msg) = self
+            .ctx
+            .storage
+            .check_relationship_create_against_constraints(rel_type, &properties)
+        {
+            return Err(ExecutorError::ConstraintViolation(msg));
+        }
 
         let created = self
             .ctx

@@ -18,9 +18,9 @@ use lora_compiler::physical::{
 use lora_compiler::CompiledQuery;
 use lora_store::GraphStorage;
 
-use crate::errors::ExecResult;
+use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::{clear_eval_error, eval_expr};
-use crate::executor::{ExecutionContext, Executor};
+use crate::executor::{plan_may_need_hydration, ExecutionContext, Executor};
 use crate::profile::wrap_metered;
 use crate::value::{LoraValue, Row};
 
@@ -62,6 +62,9 @@ pub(super) fn compiled_to_streaming<'a, S: GraphStorage + 'a>(
     if compiled.unions.is_empty() {
         let plan = &compiled.physical;
         let inner = build_streaming(plan, plan.root, storage, params)?;
+        if !plan_may_need_hydration(plan) {
+            return Ok(inner);
+        }
         return Ok(Box::new(HydratingSource::new(inner, storage)));
     }
 
@@ -73,7 +76,11 @@ pub(super) fn compiled_to_streaming<'a, S: GraphStorage + 'a>(
         storage,
         params.clone(),
     )?;
-    branches.push(Box::new(HydratingSource::new(head_inner, storage)));
+    if plan_may_need_hydration(&compiled.physical) {
+        branches.push(Box::new(HydratingSource::new(head_inner, storage)));
+    } else {
+        branches.push(head_inner);
+    }
 
     let mut needs_dedup = false;
     for branch in &compiled.unions {
@@ -83,7 +90,11 @@ pub(super) fn compiled_to_streaming<'a, S: GraphStorage + 'a>(
             storage,
             params.clone(),
         )?;
-        branches.push(Box::new(HydratingSource::new(inner, storage)));
+        if plan_may_need_hydration(&branch.physical) {
+            branches.push(Box::new(HydratingSource::new(inner, storage)));
+        } else {
+            branches.push(inner);
+        }
         if !branch.all {
             needs_dedup = true;
         }
@@ -427,8 +438,11 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             )))
         }
 
-        // Already filtered out by `is_streaming_op`.
-        _ => unreachable!("non-streaming op reached streaming branch: {op:?}"),
+        // Already filtered out by `is_streaming_op`; keep this fallible in case
+        // planner/executor capabilities drift.
+        _ => Err(ExecutorError::RuntimeError(format!(
+            "non-streaming op reached streaming branch: {op:?}"
+        ))),
     }
 }
 
