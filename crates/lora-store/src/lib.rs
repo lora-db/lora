@@ -44,6 +44,14 @@ pub use memory::{
     StoredIndexKind, StoredIndexState,
 };
 
+// ---------- Constraint catalog (CREATE CONSTRAINT surface) ----------
+pub use memory::{
+    ConstraintCatalog, ConstraintDefinition, ConstraintRequest, ConstraintViolation,
+    CreateConstraintError, CreateConstraintOutcome, DropConstraintError, DropConstraintOutcome,
+    StoredConstraintKind, StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType,
+    StoredVectorCoordType,
+};
+
 // ---------- Mutation stream + write-set vocabulary ----------
 pub use mutation::{ClosureRecorder, MutationEvent, MutationRecorder, MutationWriteSet};
 

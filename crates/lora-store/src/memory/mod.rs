@@ -12,6 +12,11 @@
 //!   [`crate::SnapshotPayload`] vocabulary.
 //! - `tests` — unit tests covering the in-memory backend.
 
+mod constraint_catalog;
+mod constraint_enforce;
+mod entity_index_store;
+#[allow(dead_code)]
+mod fulltext_index;
 mod graph;
 mod impls;
 mod index_catalog;
@@ -26,6 +31,12 @@ mod text_index;
 #[cfg(test)]
 mod tests;
 
+pub use constraint_catalog::{
+    ConstraintCatalog, ConstraintDefinition, ConstraintRequest, CreateConstraintError,
+    CreateConstraintOutcome, DropConstraintError, DropConstraintOutcome, StoredConstraintKind,
+    StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType, StoredVectorCoordType,
+};
+pub use constraint_enforce::ConstraintViolation;
 pub use graph::InMemoryGraph;
 pub use index_catalog::{
     CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
