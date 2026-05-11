@@ -24,11 +24,9 @@ pub(super) fn lower_regular_query(pair: Pair<Rule>) -> Result<RegularQuery, Pars
             .next()
             .ok_or_else(|| ParseError::new("expected query after UNION", span.start, span.end))?;
 
-        let all = union_pair
-            .clone()
-            .into_inner()
-            .any(|p| p.as_rule() == Rule::ALL);
-        let union_span = Span::new(union_pair.as_span().start(), uq.as_span().end());
+        let union_start = union_pair.as_span().start();
+        let all = union_pair.into_inner().any(|p| p.as_rule() == Rule::ALL);
+        let union_span = Span::new(union_start, uq.as_span().end());
 
         unions.push(UnionPart {
             all,

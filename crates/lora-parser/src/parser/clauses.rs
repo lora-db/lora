@@ -140,14 +140,22 @@ pub(super) fn lower_set(pair: Pair<Rule>) -> Result<Set, ParseError> {
 }
 pub(super) fn lower_set_item(pair: Pair<Rule>) -> Result<SetItem, ParseError> {
     let span = pair_span(&pair);
-    let inner: Vec<_> = pair.into_inner().collect();
+    let mut inner = pair.into_inner();
+    let Some(first) = inner.next() else {
+        return Err(ParseError::new("invalid SET item", span.start, span.end));
+    };
+    let second = inner.next();
+    let third = inner.next();
+    if inner.next().is_some() {
+        return Err(ParseError::new("invalid SET item", span.start, span.end));
+    }
 
-    match inner.as_slice() {
-        [var, labels]
+    match (first, second, third) {
+        (var, Some(labels), None)
             if var.as_rule() == Rule::variable && labels.as_rule() == Rule::node_labels =>
         {
-            let variable = lower_variable(var.clone())?;
-            let labels: Vec<String> = lower_node_labels(labels.clone())?
+            let variable = lower_variable(var)?;
+            let labels: Vec<String> = lower_node_labels(labels)?
                 .into_iter()
                 .flat_map(|g| g.into_iter())
                 .collect();
@@ -158,13 +166,13 @@ pub(super) fn lower_set_item(pair: Pair<Rule>) -> Result<SetItem, ParseError> {
             })
         }
 
-        [var, op, value]
+        (var, Some(op), Some(value))
             if var.as_rule() == Rule::variable
                 && op.as_rule() == Rule::plus_eq
                 && value.as_rule() == Rule::expression =>
         {
-            let variable = lower_variable(var.clone())?;
-            let value = lower_expression(value.clone())?;
+            let variable = lower_variable(var)?;
+            let value = lower_expression(value)?;
             Ok(SetItem::MutateVariable {
                 variable,
                 value,
@@ -172,13 +180,13 @@ pub(super) fn lower_set_item(pair: Pair<Rule>) -> Result<SetItem, ParseError> {
             })
         }
 
-        [var, op, value]
+        (var, Some(op), Some(value))
             if var.as_rule() == Rule::variable
                 && op.as_rule() == Rule::eq
                 && value.as_rule() == Rule::expression =>
         {
-            let variable = lower_variable(var.clone())?;
-            let value = lower_expression(value.clone())?;
+            let variable = lower_variable(var)?;
+            let value = lower_expression(value)?;
             Ok(SetItem::SetVariable {
                 variable,
                 value,
@@ -186,13 +194,13 @@ pub(super) fn lower_set_item(pair: Pair<Rule>) -> Result<SetItem, ParseError> {
             })
         }
 
-        [target, op, value]
+        (target, Some(op), Some(value))
             if target.as_rule() == Rule::property_set_target
                 && op.as_rule() == Rule::eq
                 && value.as_rule() == Rule::expression =>
         {
-            let target = lower_property_set_target(target.clone())?;
-            let value = lower_expression(value.clone())?;
+            let target = lower_property_set_target(target)?;
+            let value = lower_expression(value)?;
             Ok(SetItem::SetProperty {
                 target,
                 value,
@@ -252,32 +260,36 @@ pub(super) fn lower_remove(pair: Pair<Rule>) -> Result<Remove, ParseError> {
 
 pub(super) fn lower_remove_item(pair: Pair<Rule>) -> Result<RemoveItem, ParseError> {
     let span = pair_span(&pair);
-    let inner: Vec<_> = pair.into_inner().collect();
-
-    if inner.len() == 2
-        && inner[0].as_rule() == Rule::variable
-        && inner[1].as_rule() == Rule::node_labels
-    {
-        let variable = lower_variable(inner[0].clone())?;
-        let labels: Vec<String> = lower_node_labels(inner[1].clone())?
-            .into_iter()
-            .flat_map(|g| g.into_iter())
-            .collect();
-        return Ok(RemoveItem::Labels {
-            variable,
-            labels,
-            span,
-        });
+    let mut inner = pair.into_inner();
+    let Some(first) = inner.next() else {
+        return Err(ParseError::new("invalid REMOVE item", span.start, span.end));
+    };
+    let second = inner.next();
+    if inner.next().is_some() {
+        return Err(ParseError::new("invalid REMOVE item", span.start, span.end));
     }
 
-    if inner.len() == 1 {
-        return Ok(RemoveItem::Property {
-            expr: lower_expression(inner[0].clone())?,
+    match (first, second) {
+        (variable, Some(labels))
+            if variable.as_rule() == Rule::variable && labels.as_rule() == Rule::node_labels =>
+        {
+            let variable = lower_variable(variable)?;
+            let labels: Vec<String> = lower_node_labels(labels)?
+                .into_iter()
+                .flat_map(|g| g.into_iter())
+                .collect();
+            Ok(RemoveItem::Labels {
+                variable,
+                labels,
+                span,
+            })
+        }
+        (expr, None) => Ok(RemoveItem::Property {
+            expr: lower_expression(expr)?,
             span,
-        });
+        }),
+        _ => Err(ParseError::new("invalid REMOVE item", span.start, span.end)),
     }
-
-    Err(ParseError::new("invalid REMOVE item", span.start, span.end))
 }
 
 pub(super) fn lower_in_query_call(pair: Pair<Rule>) -> Result<InQueryCall, ParseError> {

@@ -288,7 +288,7 @@ pub(super) fn lower_properties(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let inner = single_inner(pair)?;
     match inner.as_rule() {
         Rule::map_literal => lower_map_literal(inner),
-        Rule::parameter => lower_parameter(inner),
+        Rule::parameter => Ok(lower_parameter(inner)),
         _ => Err(unexpected_rule("properties", inner)),
     }
 }

@@ -1502,3 +1502,207 @@ fn parse_drop_index_if_exists() {
     };
     assert!(di.if_exists);
 }
+
+// ---------- CREATE / DROP / SHOW CONSTRAINT ----------
+
+#[test]
+fn parse_create_unique_constraint_node_single() {
+    let doc =
+        parse_query("CREATE CONSTRAINT book_isbn FOR (book:Book) REQUIRE book.isbn IS UNIQUE")
+            .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    assert!(matches!(cc.name, ConstraintNameSpec::Literal(ref n) if n == "book_isbn"));
+    assert_eq!(cc.entity, IndexEntityKind::Node);
+    assert_eq!(cc.label, "Book");
+    assert_eq!(cc.properties, vec!["isbn"]);
+    assert!(matches!(cc.kind, ConstraintKind::Unique));
+    assert!(!cc.if_not_exists);
+}
+
+#[test]
+fn parse_create_unique_constraint_composite_relationship() {
+    let doc = parse_query(
+        "CREATE CONSTRAINT prequels FOR ()-[seq:SEQUEL_OF]-() REQUIRE (seq.order, seq.author) IS UNIQUE",
+    )
+    .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    assert_eq!(cc.entity, IndexEntityKind::Relationship);
+    assert_eq!(cc.label, "SEQUEL_OF");
+    assert_eq!(cc.properties, vec!["order", "author"]);
+    assert!(matches!(cc.kind, ConstraintKind::Unique));
+}
+
+#[test]
+fn parse_create_existence_constraint_node() {
+    let doc =
+        parse_query("CREATE CONSTRAINT author_name FOR (a:Author) REQUIRE a.name IS NOT NULL")
+            .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    assert!(matches!(cc.kind, ConstraintKind::Existence));
+    assert_eq!(cc.properties, vec!["name"]);
+}
+
+#[test]
+fn parse_create_existence_constraint_composite_rejected() {
+    let err = parse_query("CREATE CONSTRAINT bad FOR (a:Author) REQUIRE (a.x, a.y) IS NOT NULL")
+        .unwrap_err();
+    assert!(format!("{err}").contains("exactly one property"));
+}
+
+#[test]
+fn parse_create_node_key_constraint_composite() {
+    let doc = parse_query(
+        "CREATE CONSTRAINT actor_fullname FOR (a:Actor) REQUIRE (a.firstname, a.surname) IS NODE KEY",
+    )
+    .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    assert!(matches!(cc.kind, ConstraintKind::NodeKey));
+    assert_eq!(cc.properties, vec!["firstname", "surname"]);
+}
+
+#[test]
+fn parse_create_relationship_key_constraint() {
+    let doc = parse_query(
+        "CREATE CONSTRAINT ownership FOR ()-[o:OWNS]-() REQUIRE o.ownershipId IS RELATIONSHIP KEY",
+    )
+    .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    assert!(matches!(cc.kind, ConstraintKind::RelationshipKey));
+}
+
+#[test]
+fn parse_create_property_type_constraint_string() {
+    let doc =
+        parse_query("CREATE CONSTRAINT movie_title FOR (m:Movie) REQUIRE m.title IS :: STRING")
+            .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    let ConstraintKind::PropertyType(t) = cc.kind else {
+        panic!("expected property type constraint");
+    };
+    assert_eq!(t.alternatives.len(), 1);
+    assert!(matches!(
+        t.alternatives[0],
+        PropertyTypeTerm::Scalar(ScalarType::String)
+    ));
+}
+
+#[test]
+fn parse_create_property_type_constraint_union() {
+    let doc = parse_query(
+        "CREATE CONSTRAINT t FOR (m:Movie) REQUIRE m.tagline IS :: STRING | LIST<STRING NOT NULL>",
+    )
+    .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    let ConstraintKind::PropertyType(t) = cc.kind else {
+        panic!("expected property type constraint");
+    };
+    assert_eq!(t.alternatives.len(), 2);
+    assert!(matches!(
+        t.alternatives[0],
+        PropertyTypeTerm::Scalar(ScalarType::String)
+    ));
+    assert!(matches!(
+        t.alternatives[1],
+        PropertyTypeTerm::List { not_null: true, .. }
+    ));
+}
+
+#[test]
+fn parse_create_property_type_constraint_vector() {
+    let doc = parse_query(
+        "CREATE CONSTRAINT v FOR (n:Movie) REQUIRE n.embedding IS :: VECTOR<INT32>(42)",
+    )
+    .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    let ConstraintKind::PropertyType(t) = cc.kind else {
+        panic!("expected property type constraint");
+    };
+    assert!(matches!(
+        t.alternatives[0],
+        PropertyTypeTerm::Vector {
+            coord: VectorCoordType::Int32,
+            dimension: 42,
+        }
+    ));
+}
+
+#[test]
+fn parse_create_constraint_if_not_exists() {
+    let doc =
+        parse_query("CREATE CONSTRAINT x IF NOT EXISTS FOR (n:Book) REQUIRE n.isbn IS UNIQUE")
+            .unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    assert!(cc.if_not_exists);
+}
+
+#[test]
+fn parse_create_constraint_parameterized_name() {
+    let doc = parse_query("CREATE CONSTRAINT $name FOR (n:Book) REQUIRE n.isbn IS UNIQUE").unwrap();
+    let SchemaCommand::CreateConstraint(cc) = as_schema_command(doc) else {
+        panic!("expected create constraint");
+    };
+    assert!(matches!(cc.name, ConstraintNameSpec::Parameter(ref n) if n == "name"));
+}
+
+#[test]
+fn parse_drop_constraint() {
+    let doc = parse_query("DROP CONSTRAINT my_constraint").unwrap();
+    let Statement::Schema(SchemaCommand::DropConstraint(dc)) = doc.statement else {
+        panic!("expected drop constraint");
+    };
+    assert!(matches!(dc.name, ConstraintNameSpec::Literal(ref n) if n == "my_constraint"));
+    assert!(!dc.if_exists);
+}
+
+#[test]
+fn parse_drop_constraint_if_exists() {
+    let doc = parse_query("DROP CONSTRAINT my_constraint IF EXISTS").unwrap();
+    let Statement::Schema(SchemaCommand::DropConstraint(dc)) = doc.statement else {
+        panic!("expected drop constraint");
+    };
+    assert!(dc.if_exists);
+}
+
+#[test]
+fn parse_show_constraints() {
+    let doc = parse_query("SHOW CONSTRAINTS").unwrap();
+    assert!(matches!(
+        doc.statement,
+        Statement::Schema(SchemaCommand::ShowConstraints(_))
+    ));
+}
+
+#[test]
+fn parse_invalid_node_key_on_relationship_rejected() {
+    let err =
+        parse_query("CREATE CONSTRAINT x FOR ()-[r:R]-() REQUIRE r.a IS NODE KEY").unwrap_err();
+    assert!(format!("{err}").contains("NODE KEY can only be used on nodes"));
+}
+
+#[test]
+fn parse_invalid_composite_must_be_parenthesized() {
+    // A bare comma list without parentheses isn't a valid spec; the
+    // grammar simply won't match a comma after the bare property —
+    // the parser error message is shape-dependent. The point is that
+    // it fails.
+    let err = parse_query("CREATE CONSTRAINT x FOR (n:L) REQUIRE n.a, n.b IS UNIQUE").unwrap_err();
+    let _ = err;
+}

@@ -35,7 +35,7 @@ pub(super) fn lower_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
         Rule::reduce_expression => lower_reduce_expression(pair),
         Rule::variable => Ok(Expr::Variable(lower_variable(pair)?)),
         Rule::literal => lower_literal(single_inner(pair)?),
-        Rule::parameter => lower_parameter(pair),
+        Rule::parameter => Ok(lower_parameter(pair)),
         Rule::function_invocation => lower_function_invocation(pair),
         Rule::parenthesized_expression => {
             let span = pair_span(&pair);
@@ -138,60 +138,7 @@ pub(super) fn lower_comparison_expression(pair: Pair<Rule>) -> Result<Expr, Pars
         }
 
         let tail_span = pair_span(&tail);
-        let parts: Vec<_> = tail.into_inner().collect();
-
-        let (op, rhs): (BinaryOp, Option<Expr>) = match parts.as_slice() {
-            [p0, p1] if p0.as_rule() == Rule::comparison_op => {
-                let op = match p0.as_str() {
-                    "=" => BinaryOp::Eq,
-                    "<>" => BinaryOp::Ne,
-                    "<" => BinaryOp::Lt,
-                    ">" => BinaryOp::Gt,
-                    "<=" => BinaryOp::Le,
-                    ">=" => BinaryOp::Ge,
-                    _ => {
-                        return Err(ParseError::new(
-                            "unknown comparison operator",
-                            tail_span.start,
-                            tail_span.end,
-                        ))
-                    }
-                };
-                (op, Some(lower_expression(p1.clone())?))
-            }
-            [p0, p1] if p0.as_rule() == Rule::IN => {
-                (BinaryOp::In, Some(lower_expression(p1.clone())?))
-            }
-            [p0, p1, p2] if p0.as_rule() == Rule::STARTS && p1.as_rule() == Rule::WITH => {
-                (BinaryOp::StartsWith, Some(lower_expression(p2.clone())?))
-            }
-            [p0, p1, p2] if p0.as_rule() == Rule::ENDS && p1.as_rule() == Rule::WITH => {
-                (BinaryOp::EndsWith, Some(lower_expression(p2.clone())?))
-            }
-            [p0, p1] if p0.as_rule() == Rule::CONTAINS => {
-                (BinaryOp::Contains, Some(lower_expression(p1.clone())?))
-            }
-            [p0, p1] if p0.as_rule() == Rule::IS && p1.as_rule() == Rule::NULL => {
-                (BinaryOp::IsNull, None)
-            }
-            [p0, p1, p2]
-                if p0.as_rule() == Rule::IS
-                    && p1.as_rule() == Rule::NOT
-                    && p2.as_rule() == Rule::NULL =>
-            {
-                (BinaryOp::IsNotNull, None)
-            }
-            [p0, p1] if p0.as_rule() == Rule::regex_match => {
-                (BinaryOp::RegexMatch, Some(lower_expression(p1.clone())?))
-            }
-            _ => {
-                return Err(ParseError::new(
-                    "invalid comparison tail",
-                    tail_span.start,
-                    tail_span.end,
-                ))
-            }
-        };
+        let (op, rhs) = lower_comparison_tail(tail, tail_span)?;
 
         match rhs {
             Some(rhs) => {
@@ -217,6 +164,131 @@ pub(super) fn lower_comparison_expression(pair: Pair<Rule>) -> Result<Expr, Pars
     }
 
     Ok(expr)
+}
+
+fn lower_comparison_tail(
+    tail: Pair<Rule>,
+    tail_span: Span,
+) -> Result<(BinaryOp, Option<Expr>), ParseError> {
+    let mut parts = tail.into_inner();
+    let Some(first) = parts.next() else {
+        return Err(ParseError::new(
+            "invalid comparison tail",
+            tail_span.start,
+            tail_span.end,
+        ));
+    };
+
+    let (op, rhs) = match first.as_rule() {
+        Rule::comparison_op => {
+            let op = match first.as_str() {
+                "=" => BinaryOp::Eq,
+                "<>" => BinaryOp::Ne,
+                "<" => BinaryOp::Lt,
+                ">" => BinaryOp::Gt,
+                "<=" => BinaryOp::Le,
+                ">=" => BinaryOp::Ge,
+                _ => {
+                    return Err(ParseError::new(
+                        "unknown comparison operator",
+                        tail_span.start,
+                        tail_span.end,
+                    ));
+                }
+            };
+            (op, Some(lower_required_tail_expr(&mut parts, tail_span)?))
+        }
+        Rule::IN => (
+            BinaryOp::In,
+            Some(lower_required_tail_expr(&mut parts, tail_span)?),
+        ),
+        Rule::STARTS => {
+            expect_tail_rule(&mut parts, Rule::WITH, tail_span)?;
+            (
+                BinaryOp::StartsWith,
+                Some(lower_required_tail_expr(&mut parts, tail_span)?),
+            )
+        }
+        Rule::ENDS => {
+            expect_tail_rule(&mut parts, Rule::WITH, tail_span)?;
+            (
+                BinaryOp::EndsWith,
+                Some(lower_required_tail_expr(&mut parts, tail_span)?),
+            )
+        }
+        Rule::CONTAINS => (
+            BinaryOp::Contains,
+            Some(lower_required_tail_expr(&mut parts, tail_span)?),
+        ),
+        Rule::IS => match parts.next().map(|p| p.as_rule()) {
+            Some(Rule::NULL) => (BinaryOp::IsNull, None),
+            Some(Rule::NOT) => {
+                expect_tail_rule(&mut parts, Rule::NULL, tail_span)?;
+                (BinaryOp::IsNotNull, None)
+            }
+            _ => {
+                return Err(ParseError::new(
+                    "invalid comparison tail",
+                    tail_span.start,
+                    tail_span.end,
+                ));
+            }
+        },
+        Rule::regex_match => (
+            BinaryOp::RegexMatch,
+            Some(lower_required_tail_expr(&mut parts, tail_span)?),
+        ),
+        _ => {
+            return Err(ParseError::new(
+                "invalid comparison tail",
+                tail_span.start,
+                tail_span.end,
+            ));
+        }
+    };
+
+    if parts.next().is_some() {
+        return Err(ParseError::new(
+            "invalid comparison tail",
+            tail_span.start,
+            tail_span.end,
+        ));
+    }
+
+    Ok((op, rhs))
+}
+
+fn lower_required_tail_expr(
+    parts: &mut pest::iterators::Pairs<'_, Rule>,
+    tail_span: Span,
+) -> Result<Expr, ParseError> {
+    let expr = parts
+        .next()
+        .ok_or_else(|| ParseError::new("expected expression", tail_span.start, tail_span.end))?;
+    lower_expression(expr)
+}
+
+fn expect_tail_rule(
+    parts: &mut pest::iterators::Pairs<'_, Rule>,
+    expected: Rule,
+    tail_span: Span,
+) -> Result<(), ParseError> {
+    let Some(next) = parts.next() else {
+        return Err(ParseError::new(
+            "invalid comparison tail",
+            tail_span.start,
+            tail_span.end,
+        ));
+    };
+    if next.as_rule() == expected {
+        Ok(())
+    } else {
+        Err(ParseError::new(
+            "invalid comparison tail",
+            tail_span.start,
+            tail_span.end,
+        ))
+    }
 }
 
 pub(super) fn lower_add_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
@@ -386,11 +458,10 @@ pub(super) fn lower_postfix_expression(pair: Pair<Rule>) -> Result<Expr, ParseEr
                         let inner_op = single_inner(inner_pair)?;
                         match inner_op.as_rule() {
                             Rule::slice_op => {
-                                let parts: Vec<_> = inner_op.into_inner().collect();
                                 let mut from_expr = None;
                                 let mut to_expr = None;
                                 let mut seen_dots = false;
-                                for p in parts {
+                                for p in inner_op.into_inner() {
                                     if p.as_rule() == Rule::slice_dots {
                                         seen_dots = true;
                                     } else if p.as_rule() == Rule::expression {
@@ -454,29 +525,38 @@ pub(super) fn lower_postfix_expression(pair: Pair<Rule>) -> Result<Expr, ParseEr
 pub(super) fn lower_map_projection_selector(
     pair: Pair<Rule>,
 ) -> Result<MapProjectionSelector, ParseError> {
-    let parts: Vec<_> = pair.into_inner().collect();
+    let span = pair_span(&pair);
+    let mut parts = pair.into_inner();
+    let Some(first) = parts.next() else {
+        return Err(ParseError::new(
+            "invalid map projection selector",
+            span.start,
+            span.end,
+        ));
+    };
 
-    // .* (dot + STAR)
-    if parts.len() == 1 && parts[0].as_rule() == Rule::STAR {
-        return Ok(MapProjectionSelector::AllProperties);
-    }
-
-    // .name (dot is consumed, only property_key_name remains)
-    if parts.len() == 1 && parts[0].as_rule() == Rule::property_key_name {
-        let name = lower_schema_name(parts[0].clone())?;
-        return Ok(MapProjectionSelector::Property(name));
-    }
-
-    // key: expr (property_key_name + expression)
-    if parts.len() >= 2 && parts[0].as_rule() == Rule::property_key_name {
-        let key = lower_schema_name(parts[0].clone())?;
-        let expr_pair = parts.into_iter().find(|p| p.as_rule() == Rule::expression);
-        if let Some(ep) = expr_pair {
-            return Ok(MapProjectionSelector::Literal(key, lower_expression(ep)?));
+    match first.as_rule() {
+        Rule::STAR if parts.next().is_none() => Ok(MapProjectionSelector::AllProperties),
+        Rule::property_key_name => {
+            let key = lower_schema_name(first)?;
+            match parts.next() {
+                None => Ok(MapProjectionSelector::Property(key)),
+                Some(expr) if expr.as_rule() == Rule::expression && parts.next().is_none() => {
+                    Ok(MapProjectionSelector::Literal(key, lower_expression(expr)?))
+                }
+                _ => Err(ParseError::new(
+                    "invalid map projection selector",
+                    span.start,
+                    span.end,
+                )),
+            }
         }
+        _ => Err(ParseError::new(
+            "invalid map projection selector",
+            span.start,
+            span.end,
+        )),
     }
-
-    Err(ParseError::new("invalid map projection selector", 0, 0))
 }
 
 pub(super) fn lower_simple_case_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
