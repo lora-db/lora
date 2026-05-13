@@ -321,25 +321,6 @@ impl Planner {
     }
 }
 
-const AGGREGATE_FUNCTIONS: &[&str] = &[
-    "count",
-    "sum",
-    "avg",
-    "min",
-    "max",
-    "collect",
-    "stdev",
-    "stdevp",
-    "percentilecont",
-    "percentiledisc",
-];
-
-fn is_aggregate_function(name: &str) -> bool {
-    AGGREGATE_FUNCTIONS
-        .iter()
-        .any(|&f| f.eq_ignore_ascii_case(name))
-}
-
 /// Collect all VarIds introduced by a pattern (node vars, relationship vars).
 fn collect_pattern_vars(pattern: &ResolvedPattern) -> Vec<VarId> {
     let mut vars = Vec::new();
@@ -374,8 +355,8 @@ fn collect_pattern_vars(pattern: &ResolvedPattern) -> Vec<VarId> {
 
 fn expr_contains_aggregate(expr: &ResolvedExpr) -> bool {
     match expr {
-        ResolvedExpr::Function { name, args, .. } => {
-            if is_aggregate_function(name) {
+        ResolvedExpr::Function { function, args, .. } => {
+            if function.is_aggregate() {
                 return true;
             }
             args.iter().any(expr_contains_aggregate)

@@ -767,8 +767,8 @@ fn is_tautological_point(candidate: &PointCandidate) -> bool {
     }
 }
 
-/// `point({longitude: -180, latitude: -90})` to
-/// `point({longitude: 180, latitude: 90})` covers every WGS-84 point.
+/// `{longitude: -180, latitude: -90}::POINT` to
+/// `{longitude: 180, latitude: 90}::POINT` covers every WGS-84 point.
 /// Detecting the literal form avoids a trigram lookup that would yield
 /// every indexed row only to be re-filtered to the same set.
 fn is_world_bbox(lower_left: &ResolvedExpr, upper_right: &ResolvedExpr) -> bool {
@@ -792,15 +792,7 @@ fn is_world_bbox(lower_left: &ResolvedExpr, upper_right: &ResolvedExpr) -> bool 
     }
 
     fn point_lon_lat(expr: &ResolvedExpr) -> Option<(f64, f64)> {
-        let ResolvedExpr::Function { name, args, .. } = expr else {
-            return None;
-        };
-        if !name.eq_ignore_ascii_case("point") || args.len() != 1 {
-            return None;
-        }
-        let ResolvedExpr::Map(items) = &args[0] else {
-            return None;
-        };
+        let items = point_literal_map(expr)?;
         let mut lon: Option<f64> = None;
         let mut lat: Option<f64> = None;
         for (key, value) in items {
@@ -821,6 +813,30 @@ fn is_world_bbox(lower_left: &ResolvedExpr, upper_right: &ResolvedExpr) -> bool 
         return false;
     };
     ll_lon <= -180.0 && ll_lat <= -90.0 && ur_lon >= 180.0 && ur_lat >= 90.0
+}
+
+fn point_literal_map(expr: &ResolvedExpr) -> Option<&Vec<(String, ResolvedExpr)>> {
+    let ResolvedExpr::Function { function, args, .. } = expr else {
+        return None;
+    };
+    if function.eq_ignore_ascii_case("geo.point") && args.len() == 1 {
+        let ResolvedExpr::Map(items) = &args[0] else {
+            return None;
+        };
+        return Some(items);
+    }
+    if function.eq_ignore_ascii_case("cast.to") && args.len() == 2 {
+        let ResolvedExpr::Map(items) = &args[0] else {
+            return None;
+        };
+        let ResolvedExpr::Literal(LiteralValue::TypeName(target)) = &args[1] else {
+            return None;
+        };
+        if target.eq_ignore_ascii_case("POINT") {
+            return Some(items);
+        }
+    }
+    None
 }
 
 struct RangeBounds {
@@ -1021,9 +1037,9 @@ fn point_predicate_for_var(predicate: &ResolvedExpr, var: VarId) -> Option<Point
         return point_predicate_for_var(lhs, var).or_else(|| point_predicate_for_var(rhs, var));
     }
 
-    // point.withinBBox(n.prop, ll, ur)
-    if let ResolvedExpr::Function { name, args, .. } = predicate {
-        if name.eq_ignore_ascii_case("point.withinbbox") && args.len() == 3 {
+    // geo.within_bbox(n.prop, ll, ur)
+    if let ResolvedExpr::Function { function, args, .. } = predicate {
+        if function.eq_ignore_ascii_case("geo.within_bbox") && args.len() == 3 {
             if let Some(key) = property_access_for_var(&args[0], var) {
                 if !collect_vars(&args[1]).contains(&var) && !collect_vars(&args[2]).contains(&var)
                 {
@@ -1058,10 +1074,10 @@ fn point_predicate_for_var(predicate: &ResolvedExpr, var: VarId) -> Option<Point
         _ => return None,
     };
 
-    let ResolvedExpr::Function { name, args, .. } = &call_side else {
+    let ResolvedExpr::Function { function, args, .. } = &call_side else {
         return None;
     };
-    if !(name.eq_ignore_ascii_case("point.distance") || name.eq_ignore_ascii_case("distance")) {
+    if !function.eq_ignore_ascii_case("geo.distance") {
         return None;
     }
     if args.len() != 2 {
@@ -1328,12 +1344,16 @@ mod tests {
 
     fn point_lonlat(lon: f64, lat: f64) -> ResolvedExpr {
         ResolvedExpr::Function {
-            name: "point".to_string(),
+            function: lora_analyzer::FunctionId::builtin("cast.to")
+                .expect("cast.to builtin exists"),
             distinct: false,
-            args: vec![ResolvedExpr::Map(vec![
-                ("longitude".to_string(), lit_float(lon)),
-                ("latitude".to_string(), lit_float(lat)),
-            ])],
+            args: vec![
+                ResolvedExpr::Map(vec![
+                    ("longitude".to_string(), lit_float(lon)),
+                    ("latitude".to_string(), lit_float(lat)),
+                ]),
+                ResolvedExpr::Literal(LiteralValue::TypeName("POINT".to_string())),
+            ],
         }
     }
 
