@@ -67,12 +67,12 @@ pub fn eval_expr<S: GraphStorage>(
         }
 
         ResolvedExpr::Function {
-            name,
+            function,
             distinct: _,
             args,
         } => {
             let args: Vec<LoraValue> = args.iter().map(|a| eval_expr(a, row, ctx)).collect();
-            eval_function(name, &args, ctx)
+            eval_function(*function, &args, ctx)
         }
 
         ResolvedExpr::Parameter(name) => ctx.params.get(name).cloned().unwrap_or(LoraValue::Null),
@@ -661,6 +661,7 @@ fn eval_literal(lit: &LiteralValue) -> LoraValue {
         LiteralValue::Integer(v) => LoraValue::Int(*v),
         LiteralValue::Float(v) => LoraValue::Float(*v),
         LiteralValue::String(v) => LoraValue::String(v.clone()),
+        LiteralValue::TypeName(v) => LoraValue::String(v.clone()),
         LiteralValue::Bool(v) => LoraValue::Bool(*v),
         LiteralValue::Null => LoraValue::Null,
     }

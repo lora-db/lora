@@ -27,6 +27,7 @@
 //!   infallible `eval_expr` return type.
 
 mod binops;
+mod builtins;
 mod errors;
 mod expr;
 mod functions;

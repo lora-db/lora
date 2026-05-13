@@ -34,7 +34,7 @@ pub(super) fn build_point_from_map(
     // ignoring typos like `{lon: 4, lat: 52}`.
     for k in map.keys() {
         if !KNOWN_KEYS.iter().any(|known| known.eq_ignore_ascii_case(k)) {
-            return Err(format!("point() got unknown key '{k}'"));
+            return Err(format!("CAST( AS POINT) got unknown key '{k}'"));
         }
     }
 
@@ -78,7 +78,7 @@ pub(super) fn build_point_from_map(
     let has_geographic = longitude.is_some() || latitude.is_some();
     if has_cartesian && has_geographic {
         return Err(
-            "point() cannot mix cartesian (x/y) and geographic (longitude/latitude) keys"
+            "CAST( AS POINT) cannot mix cartesian (x/y) and geographic (longitude/latitude) keys"
                 .to_string(),
         );
     }
@@ -86,18 +86,19 @@ pub(super) fn build_point_from_map(
     let (family, first, second) = if has_geographic {
         (
             PointKeyFamily::Geographic,
-            longitude.ok_or_else(|| "point() is missing longitude".to_string())?,
-            latitude.ok_or_else(|| "point() is missing latitude".to_string())?,
+            longitude.ok_or_else(|| "CAST( AS POINT) is missing longitude".to_string())?,
+            latitude.ok_or_else(|| "CAST( AS POINT) is missing latitude".to_string())?,
         )
     } else if has_cartesian {
         (
             PointKeyFamily::Cartesian,
-            x.ok_or_else(|| "point() is missing x".to_string())?,
-            y.ok_or_else(|| "point() is missing y".to_string())?,
+            x.ok_or_else(|| "CAST( AS POINT) is missing x".to_string())?,
+            y.ok_or_else(|| "CAST( AS POINT) is missing y".to_string())?,
         )
     } else {
         return Err(
-            "point() requires coordinates — either {x, y} or {longitude, latitude}".to_string(),
+            "CAST( AS POINT) requires coordinates — either {x, y} or {longitude, latitude}"
+                .to_string(),
         );
     };
 
@@ -106,7 +107,8 @@ pub(super) fn build_point_from_map(
     let third = match (z, height) {
         (Some(_), Some(_)) => {
             return Err(
-                "point() cannot specify both 'z' and 'height' — they are aliases".to_string(),
+                "CAST( AS POINT) cannot specify both 'z' and 'height' — they are aliases"
+                    .to_string(),
             );
         }
         (Some(v), None) | (None, Some(v)) => Some(v),
@@ -145,7 +147,7 @@ fn take_numeric(
         Some(LoraValue::Int(v)) => Ok(Some(Some(*v as f64))),
         Some(LoraValue::Float(v)) => Ok(Some(Some(*v))),
         Some(other) => Err(format!(
-            "point() field '{key}' must be numeric, got {}",
+            "CAST( AS POINT) field '{key}' must be numeric, got {}",
             crate::errors::value_kind(other)
         )),
     }
@@ -160,7 +162,7 @@ fn take_string(
         Some(LoraValue::Null) => Ok(Some(None)),
         Some(LoraValue::String(s)) => Ok(Some(Some(s.clone()))),
         Some(other) => Err(format!(
-            "point() field '{key}' must be a string, got {}",
+            "CAST( AS POINT) field '{key}' must be a string, got {}",
             crate::errors::value_kind(other)
         )),
     }
@@ -175,7 +177,7 @@ fn take_integer(
         Some(LoraValue::Null) => Ok(Some(None)),
         Some(LoraValue::Int(v)) => Ok(Some(Some(*v))),
         Some(other) => Err(format!(
-            "point() field '{key}' must be an integer, got {}",
+            "CAST( AS POINT) field '{key}' must be an integer, got {}",
             crate::errors::value_kind(other)
         )),
     }

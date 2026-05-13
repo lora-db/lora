@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use lora_analyzer::symbols::VarId;
-use lora_analyzer::{ResolvedExpr, ResolvedMapSelector};
+use lora_analyzer::{AggregateFunction, FunctionId, ResolvedExpr, ResolvedMapSelector};
 use lora_ast::{Direction, RangeLiteral};
 use lora_compiler::physical::{
     ExpandExec, HashAggregationExec, LimitExec, NodeByLabelScanExec, NodeByPropertyScanExec,
@@ -491,8 +491,8 @@ fn expr_may_produce_hydratable_value(expr: &ResolvedExpr) -> bool {
         | ResolvedExpr::Binary { .. }
         | ResolvedExpr::Unary { .. }
         | ResolvedExpr::ListPredicate { .. } => false,
-        ResolvedExpr::Function { name, args, .. } => {
-            function_may_produce_hydratable_value(name, args)
+        ResolvedExpr::Function { function, args, .. } => {
+            function_may_produce_hydratable_value(*function, args)
         }
         ResolvedExpr::List(items) => items.iter().any(expr_may_produce_hydratable_value),
         ResolvedExpr::Map(items) => items
@@ -527,11 +527,17 @@ fn expr_may_produce_hydratable_value(expr: &ResolvedExpr) -> bool {
     }
 }
 
-fn function_may_produce_hydratable_value(name: &str, args: &[ResolvedExpr]) -> bool {
-    match name.to_ascii_lowercase().as_str() {
-        "nodes" | "relationships" | "head" | "last" => true,
-        "coalesce" | "collect" => args.iter().any(expr_may_produce_hydratable_value),
-        "tail" | "reverse" => args.first().is_some_and(expr_may_produce_hydratable_value),
+fn function_may_produce_hydratable_value(function: FunctionId, args: &[ResolvedExpr]) -> bool {
+    match function.name() {
+        "path.nodes" | "path.edges" | "path.first" | "path.last" | "list.first" | "list.last" => {
+            true
+        }
+        "value.coalesce" | "value.first_non_null" | "collect" => {
+            args.iter().any(expr_may_produce_hydratable_value)
+        }
+        "list.rest" | "value.reverse" | "list.reverse" => {
+            args.first().is_some_and(expr_may_produce_hydratable_value)
+        }
         _ => false,
     }
 }
@@ -744,14 +750,13 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
 ) -> ExecResult<LoraValue> {
     match expr {
         ResolvedExpr::Function {
-            name,
+            function,
             distinct,
             args,
         } => {
-            let func = name.to_ascii_lowercase();
-
-            match func.as_str() {
-                "count" => {
+            let func = function.as_aggregate();
+            match func {
+                Some(AggregateFunction::Count) => {
                     if args.is_empty() {
                         return Ok(LoraValue::Int(rows.len() as i64));
                     }
@@ -766,7 +771,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     Ok(LoraValue::Int(values.len() as i64))
                 }
 
-                "collect" => {
+                Some(AggregateFunction::Collect) => {
                     if args.is_empty() {
                         return Ok(LoraValue::List(Vec::new()));
                     }
@@ -780,7 +785,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     Ok(LoraValue::List(values))
                 }
 
-                "sum" => {
+                Some(AggregateFunction::Sum) => {
                     if args.is_empty() {
                         return Ok(LoraValue::Null);
                     }
@@ -805,7 +810,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     }
                 }
 
-                "avg" => {
+                Some(AggregateFunction::Avg) => {
                     if args.is_empty() {
                         return Ok(LoraValue::Null);
                     }
@@ -830,7 +835,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     }
                 }
 
-                "min" => {
+                Some(AggregateFunction::Min) => {
                     if args.is_empty() {
                         return Ok(LoraValue::Null);
                     }
@@ -848,7 +853,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         .unwrap_or(LoraValue::Null))
                 }
 
-                "max" => {
+                Some(AggregateFunction::Max) => {
                     if args.is_empty() {
                         return Ok(LoraValue::Null);
                     }
@@ -866,7 +871,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         .unwrap_or(LoraValue::Null))
                 }
 
-                "stdev" | "stdevp" => {
+                Some(AggregateFunction::Stdev | AggregateFunction::Stdevp) => {
                     if args.is_empty() {
                         return Ok(LoraValue::Null);
                     }
@@ -876,7 +881,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         .filter_map(as_f64_lossy)
                         .collect();
 
-                    let is_population = func == "stdevp";
+                    let is_population = matches!(func, Some(AggregateFunction::Stdevp));
 
                     if nums.is_empty() || (!is_population && nums.len() < 2) {
                         return Ok(LoraValue::Float(0.0));
@@ -892,7 +897,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     Ok(LoraValue::Float((variance_sum / denom).sqrt()))
                 }
 
-                "percentilecont" => {
+                Some(AggregateFunction::PercentileCont) => {
                     if args.len() < 2 {
                         return Ok(LoraValue::Null);
                     }
@@ -931,7 +936,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     }
                 }
 
-                "percentiledisc" => {
+                Some(AggregateFunction::PercentileDisc) => {
                     if args.len() < 2 {
                         return Ok(LoraValue::Null);
                     }

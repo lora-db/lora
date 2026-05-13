@@ -773,7 +773,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lora-analyzer"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "lora-ast",
  "lora-parser",
@@ -783,14 +783,14 @@ dependencies = [
 
 [[package]]
 name = "lora-ast"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "smallvec 2.0.0-alpha.12",
 ]
 
 [[package]]
 name = "lora-binding-buffer"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "lora-database",
  "lora-store",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "lora-compiler"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "lora-analyzer",
  "lora-ast",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "lora-database"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -830,8 +830,12 @@ dependencies = [
 
 [[package]]
 name = "lora-executor"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
+ "blake3",
+ "crc32fast",
+ "flate2",
+ "getrandom",
  "lora-analyzer",
  "lora-ast",
  "lora-compiler",
@@ -839,14 +843,16 @@ dependencies = [
  "rayon",
  "regex",
  "serde",
+ "serde_json",
  "smallvec 2.0.0-alpha.12",
  "thiserror",
  "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]
 name = "lora-ffi"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -858,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "lora-node"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -873,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "lora-parser"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "lora-ast",
  "pest",
@@ -884,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "lora-python"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "lora-database",
@@ -896,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "lora-server"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -910,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "lora-snapshot"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -924,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "lora-store"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "crc32fast",
  "js-sys",
@@ -935,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wal"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "crc32fast",
  "lora-store",
@@ -945,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wasm"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -961,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "lora_ruby"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "lora-database",
@@ -1675,6 +1681,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
+dependencies = [
+ "tinyvec_macros",
+]
+
+[[package]]
+name = "tinyvec_macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
 name = "tokio"
 version = "1.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1776,6 +1797,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

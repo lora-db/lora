@@ -21,10 +21,16 @@ lora-store.workspace = true
 lora-analyzer.workspace = true
 lora-ast.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 regex.workspace = true
+unicode-normalization.workspace = true
+blake3.workspace = true
+crc32fast.workspace = true
+flate2.workspace = true
+getrandom.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { workspace = true, optional = true }

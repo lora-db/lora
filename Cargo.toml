@@ -21,7 +21,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.8.5"
+version = "0.9.0"
 license = "BUSL-1.1"
 authors = ["LoraDB, Inc."]
 repository = "https://github.com/lora-db/lora"
@@ -32,16 +32,16 @@ rust-version = "1.87"
 # Internal crates — versions are kept in lockstep with [workspace.package].version
 # by `scripts/sync-versions.mjs`. Both `path` and `version` are set so that
 # `cargo publish` works (crates.io cannot resolve path-only deps).
-lora-ast = { path = "crates/lora-ast", version = "=0.8.5" }
-lora-parser = { path = "crates/lora-parser", version = "=0.8.5" }
-lora-analyzer = { path = "crates/lora-analyzer", version = "=0.8.5" }
-lora-compiler = { path = "crates/lora-compiler", version = "=0.8.5" }
-lora-store = { path = "crates/lora-store", version = "=0.8.5" }
-lora-snapshot = { path = "crates/lora-snapshot", version = "=0.8.5", default-features = false }
-lora-wal = { path = "crates/lora-wal", version = "=0.8.5" }
-lora-executor = { path = "crates/lora-executor", version = "=0.8.5", default-features = false }
-lora-database = { path = "crates/lora-database", version = "=0.8.5" }
-lora-binding-buffer = { path = "crates/bindings/lora-binding-buffer", version = "=0.8.5" }
+lora-ast = { path = "crates/lora-ast", version = "=0.9.0" }
+lora-parser = { path = "crates/lora-parser", version = "=0.9.0" }
+lora-analyzer = { path = "crates/lora-analyzer", version = "=0.9.0" }
+lora-compiler = { path = "crates/lora-compiler", version = "=0.9.0" }
+lora-store = { path = "crates/lora-store", version = "=0.9.0" }
+lora-snapshot = { path = "crates/lora-snapshot", version = "=0.9.0", default-features = false }
+lora-wal = { path = "crates/lora-wal", version = "=0.9.0" }
+lora-executor = { path = "crates/lora-executor", version = "=0.9.0", default-features = false }
+lora-database = { path = "crates/lora-database", version = "=0.9.0" }
+lora-binding-buffer = { path = "crates/bindings/lora-binding-buffer", version = "=0.9.0" }
 
 # External crates.
 anyhow = "1"
@@ -55,6 +55,7 @@ pest_derive = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.149"
 regex = "1"
+unicode-normalization = "0.1"
 tower = "0.5.3"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 crc32fast = "1.4"

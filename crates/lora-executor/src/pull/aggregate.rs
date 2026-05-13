@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use lora_analyzer::{ResolvedExpr, ResolvedProjection};
+use lora_analyzer::{AggregateFunction, ResolvedExpr, ResolvedProjection};
 use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
@@ -206,21 +206,20 @@ pub(crate) fn classify_streamable_aggregates(
 fn streamable_spec(expr: &ResolvedExpr) -> Option<StreamableAggSpec> {
     match expr {
         ResolvedExpr::Function {
-            name,
+            function,
             distinct,
             args,
         } => {
             if *distinct {
                 return None;
             }
-            let name = name.to_ascii_lowercase();
-            let kind = match name.as_str() {
-                "count" if args.is_empty() => StreamableAggKind::CountAll,
-                "count" if args.len() == 1 => StreamableAggKind::CountField,
-                "sum" if args.len() == 1 => StreamableAggKind::Sum,
-                "min" if args.len() == 1 => StreamableAggKind::Min,
-                "max" if args.len() == 1 => StreamableAggKind::Max,
-                "avg" if args.len() == 1 => StreamableAggKind::Avg,
+            let kind = match function.as_aggregate() {
+                Some(AggregateFunction::Count) if args.is_empty() => StreamableAggKind::CountAll,
+                Some(AggregateFunction::Count) if args.len() == 1 => StreamableAggKind::CountField,
+                Some(AggregateFunction::Sum) if args.len() == 1 => StreamableAggKind::Sum,
+                Some(AggregateFunction::Min) if args.len() == 1 => StreamableAggKind::Min,
+                Some(AggregateFunction::Max) if args.len() == 1 => StreamableAggKind::Max,
+                Some(AggregateFunction::Avg) if args.len() == 1 => StreamableAggKind::Avg,
                 _ => return None,
             };
             let arg = if args.is_empty() {
