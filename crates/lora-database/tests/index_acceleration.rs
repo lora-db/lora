@@ -303,7 +303,7 @@ fn explain_rewrites_within_bbox_to_point_scan() {
     let plan = db
         .service
         .explain(
-            "MATCH (n:Place) WHERE point.withinBBox(n.loc, point({x: 0, y: 0}), point({x: 100, y: 100})) RETURN n",
+            "MATCH (n:Place) WHERE geo.within_bbox(n.loc, {x: 0, y: 0}::POINT, {x: 100, y: 100}::POINT) RETURN n",
             None,
         )
         .unwrap();
@@ -321,7 +321,7 @@ fn explain_rewrites_distance_le_to_point_scan() {
     let plan = db
         .service
         .explain(
-            "MATCH (n:Place) WHERE point.distance(n.loc, point({x: 0, y: 0})) <= 100 RETURN n",
+            "MATCH (n:Place) WHERE geo.distance(n.loc, {x: 0, y: 0}::POINT) <= 100 RETURN n",
             None,
         )
         .unwrap();
@@ -332,12 +332,12 @@ fn explain_rewrites_distance_le_to_point_scan() {
 fn point_scan_returns_within_bbox_correctly() {
     let db = TestDb::new();
     db.run("CREATE POINT INDEX loc_idx FOR (n:Place) ON (n.loc)");
-    db.run("CREATE (:Place {id: 1, loc: point({x: 50, y: 50})})");
-    db.run("CREATE (:Place {id: 2, loc: point({x: 150, y: 150})})");
-    db.run("CREATE (:Place {id: 3, loc: point({x: 1000, y: 1000})})");
+    db.run("CREATE (:Place {id: 1, loc: {x: 50, y: 50}::POINT})");
+    db.run("CREATE (:Place {id: 2, loc: {x: 150, y: 150}::POINT})");
+    db.run("CREATE (:Place {id: 3, loc: {x: 1000, y: 1000}::POINT})");
 
     let rows = db.run(
-        "MATCH (n:Place) WHERE point.withinBBox(n.loc, point({x: 0, y: 0}), point({x: 200, y: 200})) RETURN n ORDER BY n.id",
+        "MATCH (n:Place) WHERE geo.within_bbox(n.loc, {x: 0, y: 0}::POINT, {x: 200, y: 200}::POINT) RETURN n ORDER BY n.id",
     );
     let ids = pluck_node_id(&rows, "id");
     assert_eq!(ids, vec![1, 2]);
@@ -347,12 +347,12 @@ fn point_scan_returns_within_bbox_correctly() {
 fn point_scan_returns_within_distance_correctly() {
     let db = TestDb::new();
     db.run("CREATE POINT INDEX loc_idx FOR (n:Place) ON (n.loc)");
-    db.run("CREATE (:Place {id: 1, loc: point({x: 0, y: 0})})");
-    db.run("CREATE (:Place {id: 2, loc: point({x: 30, y: 40})})"); // distance 50
-    db.run("CREATE (:Place {id: 3, loc: point({x: 300, y: 400})})"); // distance 500
+    db.run("CREATE (:Place {id: 1, loc: {x: 0, y: 0}::POINT})");
+    db.run("CREATE (:Place {id: 2, loc: {x: 30, y: 40}::POINT})"); // distance 50
+    db.run("CREATE (:Place {id: 3, loc: {x: 300, y: 400}::POINT})"); // distance 500
 
     let rows = db.run(
-        "MATCH (n:Place) WHERE point.distance(n.loc, point({x: 0, y: 0})) <= 60 RETURN n ORDER BY n.id",
+        "MATCH (n:Place) WHERE geo.distance(n.loc, {x: 0, y: 0}::POINT) <= 60 RETURN n ORDER BY n.id",
     );
     let ids = pluck_node_id(&rows, "id");
     assert_eq!(ids, vec![1, 2]);
@@ -361,20 +361,20 @@ fn point_scan_returns_within_distance_correctly() {
 #[test]
 fn point_scan_falls_back_when_no_index() {
     let db = TestDb::new();
-    db.run("CREATE (:Place {id: 1, loc: point({x: 50, y: 50})})");
-    db.run("CREATE (:Place {id: 2, loc: point({x: 1000, y: 1000})})");
+    db.run("CREATE (:Place {id: 1, loc: {x: 50, y: 50}::POINT})");
+    db.run("CREATE (:Place {id: 2, loc: {x: 1000, y: 1000}::POINT})");
 
     let plan = db
         .service
         .explain(
-            "MATCH (n:Place) WHERE point.withinBBox(n.loc, point({x: 0, y: 0}), point({x: 100, y: 100})) RETURN n",
+            "MATCH (n:Place) WHERE geo.within_bbox(n.loc, {x: 0, y: 0}::POINT, {x: 100, y: 100}::POINT) RETURN n",
             None,
         )
         .unwrap();
     assert!(!contains_operator(&plan.tree.root, "NodeByPointScan"));
 
     let rows = db.run(
-        "MATCH (n:Place) WHERE point.withinBBox(n.loc, point({x: 0, y: 0}), point({x: 100, y: 100})) RETURN n ORDER BY n.id",
+        "MATCH (n:Place) WHERE geo.within_bbox(n.loc, {x: 0, y: 0}::POINT, {x: 100, y: 100}::POINT) RETURN n ORDER BY n.id",
     );
     let ids = pluck_node_id(&rows, "id");
     assert_eq!(ids, vec![1]);
@@ -384,17 +384,17 @@ fn point_scan_falls_back_when_no_index() {
 fn point_scan_correctly_filters_after_property_update() {
     let db = TestDb::new();
     db.run("CREATE POINT INDEX loc_idx FOR (n:Place) ON (n.loc)");
-    db.run("CREATE (:Place {id: 1, loc: point({x: 50, y: 50})})");
+    db.run("CREATE (:Place {id: 1, loc: {x: 50, y: 50}::POINT})");
 
     let inside = db.run(
-        "MATCH (n:Place) WHERE point.withinBBox(n.loc, point({x: 0, y: 0}), point({x: 100, y: 100})) RETURN n",
+        "MATCH (n:Place) WHERE geo.within_bbox(n.loc, {x: 0, y: 0}::POINT, {x: 100, y: 100}::POINT) RETURN n",
     );
     assert_eq!(inside.len(), 1);
 
-    db.run("MATCH (n:Place {id: 1}) SET n.loc = point({x: 1000, y: 1000})");
+    db.run("MATCH (n:Place {id: 1}) SET n.loc = {x: 1000, y: 1000}::POINT");
 
     let still_inside = db.run(
-        "MATCH (n:Place) WHERE point.withinBBox(n.loc, point({x: 0, y: 0}), point({x: 100, y: 100})) RETURN n",
+        "MATCH (n:Place) WHERE geo.within_bbox(n.loc, {x: 0, y: 0}::POINT, {x: 100, y: 100}::POINT) RETURN n",
     );
     assert!(
         still_inside.is_empty(),
@@ -402,7 +402,7 @@ fn point_scan_correctly_filters_after_property_update() {
     );
 
     let now_outside = db.run(
-        "MATCH (n:Place) WHERE point.withinBBox(n.loc, point({x: 500, y: 500}), point({x: 1500, y: 1500})) RETURN n",
+        "MATCH (n:Place) WHERE geo.within_bbox(n.loc, {x: 500, y: 500}::POINT, {x: 1500, y: 1500}::POINT) RETURN n",
     );
     assert_eq!(now_outside.len(), 1);
 }
@@ -459,15 +459,15 @@ fn cost_model_keeps_label_scan_for_starts_with_empty_string() {
 fn cost_model_keeps_label_scan_for_world_bbox() {
     let db = TestDb::new();
     db.run("CREATE POINT INDEX loc_idx FOR (n:Place) ON (n.loc)");
-    db.run("CREATE (:Place {id: 1, loc: point({x: 50, y: 50})})");
+    db.run("CREATE (:Place {id: 1, loc: {x: 50, y: 50}::POINT})");
 
     let plan = db
         .service
         .explain(
             "MATCH (n:Place) \
-             WHERE point.withinBBox(n.loc, \
-                point({longitude: -180, latitude: -90}), \
-                point({longitude: 180, latitude: 90})) \
+             WHERE geo.within_bbox(n.loc, \
+                {longitude: -180, latitude: -90}::POINT, \
+                {longitude: 180, latitude: 90}::POINT) \
              RETURN n",
             None,
         )
@@ -810,7 +810,7 @@ fn explain_rewrites_rel_bbox_to_rel_point_scan() {
         .service
         .explain(
             "MATCH ()-[r:DELIVERED]->() \
-             WHERE point.withinBBox(r.loc, point({x: 0, y: 0}), point({x: 100, y: 100})) \
+             WHERE geo.within_bbox(r.loc, {x: 0, y: 0}::POINT, {x: 100, y: 100}::POINT) \
              RETURN r",
             None,
         )
@@ -830,16 +830,16 @@ fn rel_point_scan_returns_within_bbox_correctly() {
     db.run("CREATE (:P {id: 2})");
     db.run(
         "MATCH (a:P {id: 1}), (b:P {id: 2}) \
-         CREATE (a)-[:DELIVERED {loc: point({x: 50, y: 50})}]->(b)",
+         CREATE (a)-[:DELIVERED {loc: {x: 50, y: 50}::POINT}]->(b)",
     );
     db.run(
         "MATCH (a:P {id: 1}), (b:P {id: 2}) \
-         CREATE (a)-[:DELIVERED {loc: point({x: 150, y: 150})}]->(b)",
+         CREATE (a)-[:DELIVERED {loc: {x: 150, y: 150}::POINT}]->(b)",
     );
 
     let rows = db.run(
         "MATCH ()-[r:DELIVERED]->() \
-         WHERE point.withinBBox(r.loc, point({x: 0, y: 0}), point({x: 100, y: 100})) \
+         WHERE geo.within_bbox(r.loc, {x: 0, y: 0}::POINT, {x: 100, y: 100}::POINT) \
          RETURN r",
     );
     assert_eq!(rows.len(), 1);

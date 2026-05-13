@@ -243,7 +243,7 @@ fn return_multiple_aliases_different_expressions() {
 fn return_function_in_projection() {
     let db = TestDb::new();
     db.run("CREATE (:Tag {label:'IMPORTANT'})");
-    let rows = db.run("MATCH (t:Tag) RETURN toLower(t.label) AS lower");
+    let rows = db.run("MATCH (t:Tag) RETURN string.lower(t.label) AS lower");
     assert_eq!(rows[0]["lower"], "important");
 }
 
@@ -339,11 +339,11 @@ fn return_literal_and_variable_mix() {
 
 #[test]
 fn return_relationship_type_in_projection() {
-    // Returning relationship type() in projection
+    // Returning relationship edge.type() in projection
     let db = TestDb::new();
     db.seed_social_graph();
     let rows = db
-        .run("MATCH (a:User {name:'Alice'})-[r]->(b) RETURN type(r) AS rel_type ORDER BY type(r)");
+        .run("MATCH (a:User {name:'Alice'})-[r]->(b) RETURN edge.type(r) AS rel_type ORDER BY edge.type(r)");
     // Alice has FOLLOWS->Bob and KNOWS->Carol
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["rel_type"], "FOLLOWS");
@@ -545,7 +545,7 @@ fn return_coalesce_with_default() {
     db.run("CREATE (:P {name: 'Alice', title: 'Dr.'})");
     db.run("CREATE (:P {name: 'Bob'})");
     let rows = db.run(
-        "MATCH (p:P) RETURN p.name AS name, coalesce(p.title, 'N/A') AS title ORDER BY p.name",
+        "MATCH (p:P) RETURN p.name AS name, value.first_non_null(p.title, 'N/A') AS title ORDER BY p.name",
     );
     assert_eq!(rows[0]["title"], "Dr.");
     assert_eq!(rows[1]["title"], "N/A");
@@ -576,7 +576,7 @@ fn return_distinct_with_nulls() {
 fn return_labels_function_in_projection() {
     let db = TestDb::new();
     db.run("CREATE (:Person:Admin {name: 'Alice'})");
-    let rows = db.run("MATCH (n:Person) RETURN n.name AS name, labels(n) AS labels");
+    let rows = db.run("MATCH (n:Person) RETURN n.name AS name, node.labels(n) AS labels");
     let labels = rows[0]["labels"].as_array().unwrap();
     assert!(labels.contains(&serde_json::json!("Person")));
     assert!(labels.contains(&serde_json::json!("Admin")));
@@ -586,7 +586,7 @@ fn return_labels_function_in_projection() {
 fn return_keys_function_in_projection() {
     let db = TestDb::new();
     db.run("CREATE (:Item {name: 'Widget', price: 10, color: 'red'})");
-    let rows = db.run("MATCH (i:Item) RETURN keys(i) AS k");
+    let rows = db.run("MATCH (i:Item) RETURN value.keys(i) AS k");
     let keys = rows[0]["k"].as_array().unwrap();
     assert_eq!(keys.len(), 3);
 }

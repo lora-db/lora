@@ -149,7 +149,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
                 black_box(
                     db.service
                         .execute(
-                            "UNWIND range(1, 100) AS i CREATE (:B {id: i, val: i * 2})",
+                            "UNWIND list.range(1, 100) AS i CREATE (:B {id: i, val: i * 2})",
                             opts(),
                         )
                         .unwrap(),
@@ -209,7 +209,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
             |db| {
                 let stream = db
                     .service
-                    .stream("UNWIND range(1, 100) AS i CREATE (:B {id: i}) RETURN i")
+                    .stream("UNWIND list.range(1, 100) AS i CREATE (:B {id: i}) RETURN i")
                     .unwrap();
                 let mut count = 0usize;
                 for row in stream {
@@ -237,7 +237,10 @@ fn bench_perf_smoke(c: &mut Criterion) {
             |db| {
                 // Pre-seed 100 source nodes so the MATCH has work to do.
                 db.service
-                    .execute("UNWIND range(1, 100) AS i CREATE (:Src {i: i})", opts())
+                    .execute(
+                        "UNWIND list.range(1, 100) AS i CREATE (:Src {i: i})",
+                        opts(),
+                    )
                     .unwrap();
                 let stream = db
                     .service
@@ -302,7 +305,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
                     .begin_transaction(TransactionMode::ReadWrite)
                     .unwrap();
                 black_box(
-                    tx.execute("UNWIND range(1, 100) AS i CREATE (:B {id: i})", opts())
+                    tx.execute("UNWIND list.range(1, 100) AS i CREATE (:B {id: i})", opts())
                         .unwrap(),
                 );
                 tx.commit().unwrap();
@@ -343,7 +346,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
             b.iter(|| {
                 black_box(
                     db.execute(
-                        "UNWIND range(1, 100) AS i CREATE (:B {id: i, val: i * 2})",
+                        "UNWIND list.range(1, 100) AS i CREATE (:B {id: i, val: i * 2})",
                         opts(),
                     )
                     .unwrap(),
@@ -364,7 +367,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
             b.iter(|| {
                 let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
                 black_box(
-                    tx.execute("UNWIND range(1, 100) AS i CREATE (:B {id: i})", opts())
+                    tx.execute("UNWIND list.range(1, 100) AS i CREATE (:B {id: i})", opts())
                         .unwrap(),
                 );
                 tx.commit().unwrap();
@@ -401,7 +404,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
     {
         let (_dir, db) = open_wal_group("scan-wal");
         db.execute(
-            "UNWIND range(1, 1000) AS i CREATE (:Node {id: i, value: i % 100})",
+            "UNWIND list.range(1, 1000) AS i CREATE (:Node {id: i, value: i % 100})",
             opts(),
         )
         .unwrap();
@@ -422,7 +425,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let (dir, db) = open_wal_group("delete-100");
-                db.execute("UNWIND range(1, 100) AS i CREATE (:D {id: i})", opts())
+                db.execute("UNWIND list.range(1, 100) AS i CREATE (:D {id: i})", opts())
                     .unwrap();
                 (dir, db)
             },
@@ -441,7 +444,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
     // batched commit record, giving a steady-state cost per iteration.
     {
         let (_dir, db) = open_wal_group("update-100");
-        db.execute("UNWIND range(1, 100) AS i CREATE (:U {id: i})", opts())
+        db.execute("UNWIND list.range(1, 100) AS i CREATE (:U {id: i})", opts())
             .unwrap();
         group.bench_function("update_100_wal_group", |b| {
             b.iter(|| {

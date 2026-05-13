@@ -181,7 +181,7 @@ fn open_smoke_db(profile: SmokeProfile) -> (Option<ScratchDir>, Database<InMemor
 
 fn seed_smoke_nodes(db: &Database<InMemoryGraph>) {
     db.execute(
-        "UNWIND range(1, 1000) AS i CREATE (:Node {id: i, value: i % 100})",
+        "UNWIND list.range(1, 1000) AS i CREATE (:Node {id: i, value: i % 100})",
         opts(),
     )
     .unwrap();
@@ -206,7 +206,7 @@ fn bench_perf_smoke_profiles(c: &mut Criterion) {
             b.iter(|| {
                 black_box(
                     db.execute(
-                        "UNWIND range(1, 100) AS i CREATE (n:B {id: i, val: i * 2}) DELETE n",
+                        "UNWIND list.range(1, 100) AS i CREATE (n:B {id: i, val: i * 2}) DELETE n",
                         opts(),
                     )
                     .unwrap(),
@@ -223,7 +223,7 @@ fn bench_perf_smoke_profiles(c: &mut Criterion) {
                 let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
                 black_box(
                     tx.execute(
-                        "UNWIND range(1, 100) AS i CREATE (n:B {id: i}) DELETE n",
+                        "UNWIND list.range(1, 100) AS i CREATE (n:B {id: i}) DELETE n",
                         opts(),
                     )
                     .unwrap(),
@@ -355,7 +355,7 @@ fn bench_named_archive_write_heavy(c: &mut Criterion) {
                 || profile.open("write-heavy-batch"),
                 |(_dir, db)| {
                     black_box(
-                        db.execute("UNWIND range(1, 1000) AS i CREATE (:N {v: i})", opts())
+                        db.execute("UNWIND list.range(1, 1000) AS i CREATE (:N {v: i})", opts())
                             .unwrap(),
                     );
                     black_box(db.node_count());
@@ -395,7 +395,7 @@ fn bench_named_archive_steady_state(c: &mut Criterion) {
                 b.iter(|| {
                     black_box(
                         db.execute(
-                            "UNWIND range(1, 1000) AS i CREATE (n:Tmp {v: i}) DELETE n",
+                            "UNWIND list.range(1, 1000) AS i CREATE (n:Tmp {v: i}) DELETE n",
                             opts(),
                         )
                         .unwrap(),

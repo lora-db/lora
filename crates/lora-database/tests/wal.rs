@@ -436,8 +436,11 @@ fn named_database_sync_embeds_snapshot_frame() {
             DatabaseOpenOptions::default().with_database_dir(dir.path()),
         )
         .unwrap();
-        db.execute("UNWIND range(1, 50) AS i CREATE (:Snap {id: i})", rows())
-            .unwrap();
+        db.execute(
+            "UNWIND list.range(1, 50) AS i CREATE (:Snap {id: i})",
+            rows(),
+        )
+        .unwrap();
         db.sync().unwrap();
     }
 
@@ -936,7 +939,7 @@ fn catalog_survives_crash_and_recovers_via_wal() {
         )
         .unwrap();
         db.execute(
-            "CREATE LOOKUP INDEX label_lookup FOR (n) ON EACH labels(n)",
+            "CREATE LOOKUP INDEX label_lookup FOR (n) ON EACH node.labels(n)",
             rows(),
         )
         .unwrap();

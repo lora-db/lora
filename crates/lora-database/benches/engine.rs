@@ -823,7 +823,7 @@ fn bench_write_operations(c: &mut Criterion) {
                     BenchDb::new,
                     |db| {
                         let q = format!(
-                            "UNWIND range(1, {size}) AS i CREATE (:Batch {{id: i, val: i * 2}})"
+                            "UNWIND list.range(1, {size}) AS i CREATE (:Batch {{id: i, val: i * 2}})"
                         );
                         black_box(db.service.execute(&q, opts()).unwrap());
                     },
@@ -914,7 +914,7 @@ fn bench_write_operations(c: &mut Criterion) {
             || {
                 let db = BenchDb::new();
                 db.run("CREATE (:Hub {id: 1})");
-                db.run("UNWIND range(1,5) AS i MATCH (h:Hub) CREATE (h)-[:E]->(:Leaf {id:i})");
+                db.run("UNWIND list.range(1,5) AS i MATCH (h:Hub) CREATE (h)-[:E]->(:Leaf {id:i})");
                 db
             },
             |db| {
@@ -961,7 +961,7 @@ fn bench_functions(c: &mut Criterion) {
             black_box(
                 db_empty
                     .service
-                    .execute("RETURN toLower('HELLO WORLD') AS r", opts())
+                    .execute("RETURN string.lower('HELLO WORLD') AS r", opts())
                     .unwrap(),
             );
         });
@@ -973,7 +973,7 @@ fn bench_functions(c: &mut Criterion) {
                 db_empty
                     .service
                     .execute(
-                        "RETURN replace('hello world', 'world', 'bench') AS r",
+                        "RETURN string.replace('hello world', 'world', 'bench') AS r",
                         opts(),
                     )
                     .unwrap(),
@@ -988,7 +988,10 @@ fn bench_functions(c: &mut Criterion) {
             black_box(
                 db_tiny
                     .service
-                    .execute("MATCH (n:Node) RETURN toLower(n.name) AS lower", opts())
+                    .execute(
+                        "MATCH (n:Node) RETURN string.lower(n.name) AS lower",
+                        opts(),
+                    )
                     .unwrap(),
             );
         });
@@ -1001,7 +1004,7 @@ fn bench_functions(c: &mut Criterion) {
             black_box(
                 db_empty
                     .service
-                    .execute("RETURN abs(-42) AS a, sqrt(144) AS s", opts())
+                    .execute("RETURN math.abs(-42) AS a, math.sqrt(144) AS s", opts())
                     .unwrap(),
             );
         });
@@ -1014,7 +1017,7 @@ fn bench_functions(c: &mut Criterion) {
                 db_tiny
                     .service
                     .execute(
-                        "MATCH (n:Node) RETURN n.id, abs(n.value - 50) AS diff",
+                        "MATCH (n:Node) RETURN n.id, math.abs(n.value - 50) AS diff",
                         opts(),
                     )
                     .unwrap(),
@@ -1031,7 +1034,7 @@ fn bench_functions(c: &mut Criterion) {
                     .service
                     .execute(
                         "MATCH (p:Person)-[r:WORKS_AT]->(c:Company) \
-                         RETURN labels(p) AS l, keys(p) AS k, type(r) AS t",
+                         RETURN node.labels(p) AS l, value.keys(p) AS k, type.of(r) AS t",
                         opts(),
                     )
                     .unwrap(),
@@ -1060,7 +1063,10 @@ fn bench_functions(c: &mut Criterion) {
             black_box(
                 db_empty
                     .service
-                    .execute("RETURN coalesce(null, null, 42, 99) AS r", opts())
+                    .execute(
+                        "RETURN value.first_non_null(null, null, 42, 99) AS r",
+                        opts(),
+                    )
                     .unwrap(),
             );
         });
@@ -1074,7 +1080,7 @@ fn bench_functions(c: &mut Criterion) {
                 db_empty
                     .service
                     .execute(
-                        "WITH range(1, 100) AS nums RETURN [x IN nums WHERE x % 2 = 0 | x * x] AS evens",
+                        "WITH list.range(1, 100) AS nums RETURN [x IN nums WHERE x % 2 = 0 | x * x] AS evens",
                         opts(),
                     )
                     .unwrap(),
@@ -1088,7 +1094,7 @@ fn bench_functions(c: &mut Criterion) {
                 db_empty
                     .service
                     .execute(
-                        "RETURN reduce(acc = 0, x IN range(1, 100) | acc + x) AS total",
+                        "RETURN reduce(acc = 0, x IN list.range(1, 100) | acc + x) AS total",
                         opts(),
                     )
                     .unwrap(),

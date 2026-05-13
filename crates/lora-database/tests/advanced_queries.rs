@@ -153,7 +153,7 @@ fn knowledge_entity_connections() {
     // How many different types of relationships does Einstein have?
     let rows = db.run(
         "MATCH (e:Entity {name:'Albert Einstein'})-[r]->() \
-         RETURN type(r) AS rel_type, count(*) AS cnt \
+         RETURN edge.type(r) AS rel_type, count(*) AS cnt \
          ORDER BY cnt DESC",
     );
     assert!(rows.len() >= 3);
@@ -250,12 +250,12 @@ fn case_with_aggregation() {
 #[test]
 fn temporal_create_and_filter_events() {
     let db = TestDb::new();
-    db.run("CREATE (:Event {name: 'Conference', date: date('2024-06-15')})");
-    db.run("CREATE (:Event {name: 'Workshop', date: date('2024-03-01')})");
-    db.run("CREATE (:Event {name: 'Meetup', date: date('2024-09-20')})");
+    db.run("CREATE (:Event {name: 'Conference', date: '2024-06-15'::DATE})");
+    db.run("CREATE (:Event {name: 'Workshop', date: '2024-03-01'::DATE})");
+    db.run("CREATE (:Event {name: 'Meetup', date: '2024-09-20'::DATE})");
     let rows = db.run(
         "MATCH (e:Event) \
-         WHERE e.date >= date('2024-04-01') AND e.date <= date('2024-08-31') \
+         WHERE e.date >= '2024-04-01'::DATE AND e.date <= '2024-08-31'::DATE \
          RETURN e.name AS name ORDER BY e.date",
     );
     assert_eq!(rows.len(), 1);
@@ -265,8 +265,8 @@ fn temporal_create_and_filter_events() {
 #[test]
 fn temporal_duration_between_events() {
     let db = TestDb::new();
-    db.run("CREATE (:Milestone {name: 'Start', date: date('2024-01-01')})");
-    db.run("CREATE (:Milestone {name: 'End', date: date('2024-07-01')})");
+    db.run("CREATE (:Milestone {name: 'Start', date: '2024-01-01'::DATE})");
+    db.run("CREATE (:Milestone {name: 'End', date: '2024-07-01'::DATE})");
     let rows = db.run(
         "MATCH (s:Milestone {name:'Start'}), (e:Milestone {name:'End'}) \
          RETURN e.date - s.date AS gap",
@@ -281,12 +281,12 @@ fn temporal_duration_between_events() {
 #[test]
 fn spatial_nearest_neighbors() {
     let db = TestDb::new();
-    db.run("CREATE (:Store {name: 'A', loc: point({x: 0.0, y: 0.0})})");
-    db.run("CREATE (:Store {name: 'B', loc: point({x: 3.0, y: 4.0})})");
-    db.run("CREATE (:Store {name: 'C', loc: point({x: 10.0, y: 10.0})})");
+    db.run("CREATE (:Store {name: 'A', loc: {x: 0.0, y: 0.0}::POINT})");
+    db.run("CREATE (:Store {name: 'B', loc: {x: 3.0, y: 4.0}::POINT})");
+    db.run("CREATE (:Store {name: 'C', loc: {x: 10.0, y: 10.0}::POINT})");
     let rows = db.run(
         "MATCH (s:Store) \
-         WITH s, distance(s.loc, point({x: 0.0, y: 0.0})) AS dist \
+         WITH s, geo.distance(s.loc, {x: 0.0, y: 0.0}::POINT) AS dist \
          RETURN s.name AS name, dist \
          ORDER BY dist LIMIT 2",
     );
@@ -314,7 +314,7 @@ fn unwind_nested_with_index() {
     let db = TestDb::new();
     let rows = db.run(
         "WITH ['a', 'b', 'c'] AS items \
-         UNWIND range(0, size(items) - 1) AS idx \
+         UNWIND list.range(0, value.size(items) - 1) AS idx \
          RETURN idx, items[idx] AS val",
     );
     assert_eq!(rows.len(), 3);
@@ -398,7 +398,7 @@ fn large_property_values() {
     let db = TestDb::new();
     let long_string = "x".repeat(10000);
     db.run(&format!("CREATE (:Big {{data: '{long_string}'}})"));
-    let rows = db.run("MATCH (b:Big) RETURN size(b.data) AS len");
+    let rows = db.run("MATCH (b:Big) RETURN value.size(b.data) AS len");
     assert_eq!(rows[0]["len"], 10000);
 }
 
@@ -555,7 +555,7 @@ fn social_reciprocal_follows() {
     // Find pairs where A follows B AND B follows A (mutual follows)
     let rows = db.run(
         "MATCH (a:Person)-[:FOLLOWS]->(b:Person)-[:FOLLOWS]->(a) \
-         WHERE id(a) < id(b) \
+         WHERE value.id(a) < value.id(b) \
          RETURN a.name AS a, b.name AS b",
     );
     // Bob follows Alice, but Alice does not follow Bob
@@ -574,7 +574,7 @@ fn social_common_interests() {
     // Pairs of people who share at least 2 common interests
     let rows = db.run(
         "MATCH (a:Person)-[:INTERESTED_IN]->(i:Interest)<-[:INTERESTED_IN]-(b:Person) \
-         WHERE id(a) < id(b) \
+         WHERE value.id(a) < value.id(b) \
          WITH a.name AS p1, b.name AS p2, count(i) AS shared \
          WHERE shared >= 2 \
          RETURN p1, p2, shared ORDER BY shared DESC",
@@ -700,9 +700,9 @@ fn reduce_string_concatenation() {
 #[test]
 fn temporal_chronological_event_query() {
     let db = TestDb::new();
-    db.run("CREATE (:Event {name: 'Launch', date: date('2024-03-15')})");
-    db.run("CREATE (:Event {name: 'Release', date: date('2024-06-01')})");
-    db.run("CREATE (:Event {name: 'Review', date: date('2024-09-10')})");
+    db.run("CREATE (:Event {name: 'Launch', date: '2024-03-15'::DATE})");
+    db.run("CREATE (:Event {name: 'Release', date: '2024-06-01'::DATE})");
+    db.run("CREATE (:Event {name: 'Review', date: '2024-09-10'::DATE})");
     let rows = db.run("MATCH (e:Event) RETURN e.name AS name, e.date AS d ORDER BY e.date ASC");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], "Launch");
@@ -729,7 +729,7 @@ fn exists_subquery_in_return() {
 #[ignore = "pending implementation"]
 fn call_in_transactions() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 1000) AS i CREATE (:Bulk {id: i})");
+    db.run("UNWIND list.range(1, 1000) AS i CREATE (:Bulk {id: i})");
     let _rows =
         db.run("CALL { MATCH (b:Bulk) SET b.processed = true } IN TRANSACTIONS OF 100 ROWS");
 }

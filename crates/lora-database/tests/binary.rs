@@ -21,7 +21,7 @@ fn binary_parameter_returns_tagged_shape() {
     let mut params = BTreeMap::new();
     params.insert("b".into(), blob_value());
 
-    let rows = TestDb::new().run_with_params("RETURN $b AS b, valueType($b) AS t", params);
+    let rows = TestDb::new().run_with_params("RETURN $b AS b, type.of($b) AS t", params);
     let b = &rows[0]["b"];
     assert_eq!(b["kind"], "binary");
     assert_eq!(b["length"], 10);

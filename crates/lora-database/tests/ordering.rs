@@ -716,7 +716,7 @@ fn order_by_string_function() {
     db.run("CREATE (:W {name: 'Charlie'})");
     db.run("CREATE (:W {name: 'alice'})");
     db.run("CREATE (:W {name: 'Bob'})");
-    let rows = db.run("MATCH (w:W) RETURN w.name AS name ORDER BY toLower(w.name) ASC");
+    let rows = db.run("MATCH (w:W) RETURN w.name AS name ORDER BY string.lower(w.name) ASC");
     // Alphabetical case-insensitive: alice, Bob, Charlie
     assert_eq!(rows[0]["name"], "alice");
     assert_eq!(rows[1]["name"], "Bob");

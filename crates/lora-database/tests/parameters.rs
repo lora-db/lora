@@ -576,7 +576,7 @@ fn parameter_list_in_unwind_create() {
 #[ignore = "pending implementation"]
 fn parameter_in_skip_limit() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 10) AS i CREATE (:N {id: i})");
+    db.run("UNWIND list.range(1, 10) AS i CREATE (:N {id: i})");
     let _rows = db.run_with_params(
         "MATCH (n:N) RETURN n.id AS id ORDER BY id SKIP $skip LIMIT $limit",
         params(&[("skip", LoraValue::Int(2)), ("limit", LoraValue::Int(3))]),

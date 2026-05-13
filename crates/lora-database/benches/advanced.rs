@@ -8,9 +8,9 @@
 //!   3. list_predicates — any(), all(), none(), single()
 //!   4. string_functions — substring, split, trim, toUpper, left, right, etc.
 //!   5. math_functions — ceil, floor, round, sign, pow, log, trig
-//!   6. type_conversion — toInteger, toFloat, toBoolean, toString, valueType
+//!   6. type_conversion — type.cast and type.of
 //!   7. list_functions — head, tail, last, reverse, range, size
-//!   8. path_functions — nodes(), relationships(), length() on paths
+//!   8. path_functions — path.nodes(), path.edges(), value.size() on paths
 //!   9. regex_matching — =~ operator
 //!  10. with_piping — multipart queries with WITH chaining
 //!  11. recommendation — realistic recommendation/e-commerce workloads
@@ -346,7 +346,7 @@ fn bench_list_predicates(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "WITH range(1, 200) AS nums \
+                        "WITH list.range(1, 200) AS nums \
                          RETURN [x IN nums WHERE x % 3 = 0 | x * x] AS squares",
                         opts(),
                     )
@@ -362,7 +362,8 @@ fn bench_list_predicates(c: &mut Criterion) {
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::new("reduce_sum", size), &size, |b, &size| {
             let db = BenchDb::new();
-            let q = format!("RETURN reduce(acc = 0, x IN range(1, {size}) | acc + x) AS total");
+            let q =
+                format!("RETURN reduce(acc = 0, x IN list.range(1, {size}) | acc + x) AS total");
             b.iter(|| {
                 black_box(db.service.execute(&q, opts()).unwrap());
             });
@@ -389,7 +390,7 @@ fn bench_string_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN toUpper('hello world') AS r", opts())
+                    .execute("RETURN string.upper('hello world') AS r", opts())
                     .unwrap(),
             );
         });
@@ -399,7 +400,7 @@ fn bench_string_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN trim('  hello  ') AS r", opts())
+                    .execute("RETURN string.trim('  hello  ') AS r", opts())
                     .unwrap(),
             );
         });
@@ -410,7 +411,7 @@ fn bench_string_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN ltrim('  hello') AS l, rtrim('hello  ') AS r",
+                        "RETURN string.trim_left('  hello') AS l, string.trim_right('hello  ') AS r",
                         opts(),
                     )
                     .unwrap(),
@@ -422,7 +423,7 @@ fn bench_string_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN substring('hello world', 6, 5) AS r", opts())
+                    .execute("RETURN string.slice('hello world', 6, 5) AS r", opts())
                     .unwrap(),
             );
         });
@@ -432,7 +433,7 @@ fn bench_string_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN split('a,b,c,d,e', ',') AS parts", opts())
+                    .execute("RETURN string.split('a,b,c,d,e', ',') AS parts", opts())
                     .unwrap(),
             );
         });
@@ -443,7 +444,7 @@ fn bench_string_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN left('hello world', 5) AS l, right('hello world', 5) AS r",
+                        "RETURN string.prefix('hello world', 5) AS l, string.suffix('hello world', 5) AS r",
                         opts(),
                     )
                     .unwrap(),
@@ -455,7 +456,7 @@ fn bench_string_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN reverse('abcdefghij') AS r", opts())
+                    .execute("RETURN value.reverse('abcdefghij') AS r", opts())
                     .unwrap(),
             );
         });
@@ -465,7 +466,7 @@ fn bench_string_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN char_length('hello world') AS len", opts())
+                    .execute("RETURN string.length('hello world') AS len", opts())
                     .unwrap(),
             );
         });
@@ -482,9 +483,9 @@ fn bench_string_functions(c: &mut Criterion) {
                         .service
                         .execute(
                             "MATCH (n:Node) \
-                             RETURN toUpper(n.name) AS upper, \
-                                    substring(n.name, 0, 4) AS prefix, \
-                                    size(n.name) AS len",
+                             RETURN string.upper(n.name) AS upper, \
+                                    string.slice(n.name, 0, 4) AS prefix, \
+                                    value.size(n.name) AS len",
                             opts(),
                         )
                         .unwrap(),
@@ -515,7 +516,7 @@ fn bench_math_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN ceil(3.14) AS c, floor(3.14) AS f, round(3.5) AS r",
+                        "RETURN math.ceil(3.14) AS c, math.floor(3.14) AS f, math.round(3.5) AS r",
                         opts(),
                     )
                     .unwrap(),
@@ -528,7 +529,7 @@ fn bench_math_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN sign(-42) AS neg, sign(0) AS zero, sign(42) AS pos",
+                        "RETURN math.sign(-42) AS neg, math.sign(0) AS zero, math.sign(42) AS pos",
                         opts(),
                     )
                     .unwrap(),
@@ -541,7 +542,7 @@ fn bench_math_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN exp(1) AS e, log(10) AS ln, log10(100) AS lg",
+                        "RETURN math.exp(1) AS e, math.log(10) AS ln, math.log10(100) AS lg",
                         opts(),
                     )
                     .unwrap(),
@@ -554,7 +555,10 @@ fn bench_math_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN sin(1.0) AS s, cos(1.0) AS c, tan(0.5) AS t", opts())
+                    .execute(
+                        "RETURN math.sin(1.0) AS s, math.cos(1.0) AS c, math.tan(0.5) AS t",
+                        opts(),
+                    )
                     .unwrap(),
             );
         });
@@ -565,7 +569,7 @@ fn bench_math_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN asin(0.5) AS as, acos(0.5) AS ac, atan(1.0) AS at, atan2(1.0, 1.0) AS at2",
+                        "RETURN math.asin(0.5) AS as, math.acos(0.5) AS ac, math.atan(1.0) AS at, math.atan2(1.0, 1.0) AS at2",
                         opts(),
                     )
                     .unwrap(),
@@ -578,7 +582,7 @@ fn bench_math_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN degrees(pi()) AS deg, radians(180) AS rad, pi() AS pi, e() AS euler",
+                        "RETURN math.degrees(math.pi()) AS deg, math.radians(180) AS rad, math.pi() AS pi, math.e() AS euler",
                         opts(),
                     )
                     .unwrap(),
@@ -598,9 +602,9 @@ fn bench_math_functions(c: &mut Criterion) {
                         .execute(
                             "MATCH (n:Node) \
                              RETURN n.id, \
-                                    ceil(toFloat(n.value) / 3.0) AS bucket, \
-                                    sqrt(toFloat(n.value)) AS root, \
-                                    sign(n.value - 50) AS half",
+                                    math.ceil(type.cast(n.value, FLOAT) / 3.0) AS bucket, \
+                                    math.sqrt(type.cast(n.value, FLOAT)) AS root, \
+                                    math.sign(n.value - 50) AS half",
                             opts(),
                         )
                         .unwrap(),
@@ -613,7 +617,7 @@ fn bench_math_functions(c: &mut Criterion) {
 }
 
 // ===================================================================
-// 6. TYPE CONVERSION — toInteger, toFloat, toBoolean, toString, valueType
+// 6. TYPE CONVERSION — type.cast and type.of
 // ===================================================================
 
 fn bench_type_conversion(c: &mut Criterion) {
@@ -625,53 +629,53 @@ fn bench_type_conversion(c: &mut Criterion) {
 
     let db = BenchDb::new();
 
-    group.bench_function("toInteger_from_string", |b| {
+    group.bench_function("value_cast_integer_from_string", |b| {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN toInteger('42') AS i", opts())
+                    .execute("RETURN type.cast('42', INTEGER) AS i", opts())
                     .unwrap(),
             );
         });
     });
 
-    group.bench_function("toFloat_from_string", |b| {
+    group.bench_function("value_cast_float_from_string", |b| {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN toFloat('3.14') AS f", opts())
+                    .execute("RETURN type.cast('3.14', FLOAT) AS f", opts())
                     .unwrap(),
             );
         });
     });
 
-    group.bench_function("toBoolean_from_string", |b| {
+    group.bench_function("value_cast_boolean_from_string", |b| {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN toBoolean('true') AS b", opts())
+                    .execute("RETURN type.cast('true', BOOLEAN) AS b", opts())
                     .unwrap(),
             );
         });
     });
 
-    group.bench_function("toString_from_int", |b| {
+    group.bench_function("value_cast_string_from_int", |b| {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN toString(42) AS s", opts())
+                    .execute("RETURN type.cast(42, STRING) AS s", opts())
                     .unwrap(),
             );
         });
     });
 
-    group.bench_function("valueType", |b| {
+    group.bench_function("value_kind", |b| {
         b.iter(|| {
             black_box(
                 db.service
                     .execute(
-                        "RETURN valueType(42) AS t1, valueType('hello') AS t2, \
-                                valueType(3.14) AS t3, valueType(true) AS t4",
+                        "RETURN type.of(42) AS t1, type.of('hello') AS t2, \
+                                type.of(3.14) AS t3, type.of(true) AS t4",
                         opts(),
                     )
                     .unwrap(),
@@ -690,8 +694,8 @@ fn bench_type_conversion(c: &mut Criterion) {
                         .service
                         .execute(
                             "MATCH (n:Node) \
-                             RETURN toString(n.id) AS sid, \
-                                    toFloat(n.value) AS fval",
+                             RETURN type.cast(n.id, STRING) AS sid, \
+                                    type.cast(n.value, FLOAT) AS fval",
                             opts(),
                         )
                         .unwrap(),
@@ -722,7 +726,7 @@ fn bench_list_functions(c: &mut Criterion) {
                 db.service
                     .execute(
                         "WITH [1, 2, 3, 4, 5] AS lst \
-                         RETURN head(lst) AS h, tail(lst) AS t, last(lst) AS l",
+                         RETURN list.first(lst) AS h, list.rest(lst) AS t, list.last(lst) AS l",
                         opts(),
                     )
                     .unwrap(),
@@ -736,20 +740,20 @@ fn bench_list_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN reverse(range(1, 100)) AS rev", opts())
+                    .execute("RETURN value.reverse(list.range(1, 100)) AS rev", opts())
                     .unwrap(),
             );
         });
     });
 
-    // range generates 1000 elements (twice, size() is O(1) on Vec).
+    // range generates 1000 elements (twice, value.size() is O(1) on Vec).
     group.throughput(Throughput::Elements(1000));
     group.bench_function("range_generation", |b| {
         b.iter(|| {
             black_box(
                 db.service
                     .execute(
-                        "RETURN range(1, 1000) AS nums, size(range(1, 1000)) AS len",
+                        "RETURN list.range(1, 1000) AS nums, value.size(list.range(1, 1000)) AS len",
                         opts(),
                     )
                     .unwrap(),
@@ -763,19 +767,22 @@ fn bench_list_functions(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN range(0, 100, 3) AS nums", opts())
+                    .execute("RETURN list.range(0, 100, 3) AS nums", opts())
                     .unwrap(),
             );
         });
     });
 
-    // size() of a 500-element list (generation dominates cost).
+    // value.size() of a 500-element list (generation dominates cost).
     group.throughput(Throughput::Elements(500));
     group.bench_function("size_of_list", |b| {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("WITH range(1, 500) AS lst RETURN size(lst) AS s", opts())
+                    .execute(
+                        "WITH list.range(1, 500) AS lst RETURN value.size(lst) AS s",
+                        opts(),
+                    )
                     .unwrap(),
             );
         });
@@ -788,9 +795,9 @@ fn bench_list_functions(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "WITH range(1, 50) AS nums \
-                         RETURN head(tail(reverse(nums))) AS second_to_last, \
-                                size(nums) AS len",
+                        "WITH list.range(1, 50) AS nums \
+                         RETURN list.first(list.rest(value.reverse(nums))) AS second_to_last, \
+                                value.size(nums) AS len",
                         opts(),
                     )
                     .unwrap(),
@@ -802,7 +809,7 @@ fn bench_list_functions(c: &mut Criterion) {
 }
 
 // ===================================================================
-// 8. PATH FUNCTIONS — nodes(), relationships(), length() on paths
+// 8. PATH FUNCTIONS — path.nodes(), path.edges(), value.size() on paths
 // ===================================================================
 
 fn bench_path_functions(c: &mut Criterion) {
@@ -810,7 +817,7 @@ fn bench_path_functions(c: &mut Criterion) {
 
     // Throughput unit: *paths produced per iteration*.
 
-    // --- nodes() on path --- bounded *1..5 → 5 paths from idx=0
+    // --- path.nodes() on path --- bounded *1..5 → 5 paths from idx=0
     {
         let db = build_chain(100);
         group.throughput(Throughput::Elements(5));
@@ -820,7 +827,7 @@ fn bench_path_functions(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH p = (a:Chain {idx:0})-[:NEXT*1..5]->(b) \
-                             RETURN nodes(p) AS path_nodes, length(p) AS len",
+                             RETURN path.nodes(p) AS path_nodes, value.size(p) AS len",
                             opts(),
                         )
                         .unwrap(),
@@ -829,7 +836,7 @@ fn bench_path_functions(c: &mut Criterion) {
         });
     }
 
-    // --- relationships() on path ---
+    // --- path.edges() on path ---
     {
         let db = build_chain(100);
         group.throughput(Throughput::Elements(5));
@@ -839,7 +846,7 @@ fn bench_path_functions(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH p = (a:Chain {idx:0})-[:NEXT*1..5]->(b) \
-                             RETURN relationships(p) AS rels, length(p) AS len",
+                             RETURN path.edges(p) AS rels, value.size(p) AS len",
                             opts(),
                         )
                         .unwrap(),
@@ -858,7 +865,7 @@ fn bench_path_functions(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH p = (a:Person {id:0})-[:KNOWS*1..3]->(b) \
-                             RETURN length(p) AS len, size(nodes(p)) AS node_count \
+                             RETURN value.size(p) AS len, value.size(path.nodes(p)) AS node_count \
                              LIMIT 50",
                             opts(),
                         )

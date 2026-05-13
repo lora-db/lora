@@ -271,7 +271,7 @@ fn unwind_create_batch() {
 fn unwind_create_with_relationship() {
     let db = TestDb::new();
     db.run("CREATE (:Hub {name:'center'})");
-    db.run("UNWIND range(1, 3) AS i MATCH (h:Hub) CREATE (h)-[:SPOKE]->(s:Spoke {idx: i})");
+    db.run("UNWIND list.range(1, 3) AS i MATCH (h:Hub) CREATE (h)-[:SPOKE]->(s:Spoke {idx: i})");
     db.assert_count("MATCH (h:Hub)-[:SPOKE]->(s:Spoke) RETURN h, s", 3);
 }
 
@@ -364,7 +364,7 @@ fn create_relationship_reusing_matched_variable() {
 #[test]
 fn create_large_batch_via_unwind() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 50) AS i CREATE (:Batch {id: i})");
+    db.run("UNWIND list.range(1, 50) AS i CREATE (:Batch {id: i})");
     db.assert_count("MATCH (b:Batch) RETURN b", 50);
 }
 
@@ -438,7 +438,7 @@ fn create_diamond_graph_in_single_statement() {
 fn create_star_graph_hub_with_five_spokes_via_unwind() {
     let db = TestDb::new();
     db.run("CREATE (:Star {name:'hub'})");
-    db.run("UNWIND range(1, 5) AS i MATCH (h:Star {name:'hub'}) CREATE (h)-[:ARM]->(s:Star {name:'spoke', idx: i})");
+    db.run("UNWIND list.range(1, 5) AS i MATCH (h:Star {name:'hub'}) CREATE (h)-[:ARM]->(s:Star {name:'spoke', idx: i})");
     db.assert_count("MATCH (h:Star {name:'hub'})-[:ARM]->(s) RETURN s", 5);
     db.assert_count("MATCH (n:Star) RETURN n", 6); // hub + 5 spokes
 }
@@ -520,7 +520,7 @@ fn create_chain_and_verify_hop_count() {
 #[test]
 fn create_n_nodes_and_count_them_via_aggregation() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 20) AS i CREATE (:Counter {val: i})");
+    db.run("UNWIND list.range(1, 20) AS i CREATE (:Counter {val: i})");
     let rows = db.run("MATCH (c:Counter) RETURN count(c) AS total");
     assert_eq!(rows[0]["total"], 20);
 }
@@ -578,7 +578,7 @@ fn foreach_create_from_list() {
 #[ignore = "pending implementation"]
 fn create_with_temporal_properties() {
     let db = TestDb::new();
-    db.run("CREATE (:Event {name: 'Launch', date: date('2025-01-15'), ts: datetime('2025-01-15T10:00:00')})");
+    db.run("CREATE (:Event {name: 'Launch', date: '2025-01-15'::DATE, ts: '2025-01-15T10:00:00'::DATETIME})");
     let rows = db.run("MATCH (e:Event {name: 'Launch'}) RETURN e.date AS d");
     assert_eq!(rows.len(), 1);
 }
@@ -588,7 +588,7 @@ fn create_with_temporal_properties() {
 #[ignore = "pending implementation"]
 fn create_with_spatial_properties() {
     let db = TestDb::new();
-    db.run("CREATE (:Location {name: 'HQ', pos: point({latitude: 52.37, longitude: 4.89})})");
+    db.run("CREATE (:Location {name: 'HQ', pos: {latitude: 52.37, longitude: 4.89}::POINT})");
     let rows = db.run("MATCH (l:Location {name: 'HQ'}) RETURN l.pos AS pos");
     assert_eq!(rows.len(), 1);
 }
@@ -648,7 +648,7 @@ fn create_complete_graph_k4() {
 #[test]
 fn create_with_case_expression_value() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 6) AS i \
+    db.run("UNWIND list.range(1, 6) AS i \
             CREATE (:Graded {id: i, grade: CASE WHEN i <= 2 THEN 'A' WHEN i <= 4 THEN 'B' ELSE 'C' END})");
     db.assert_count("MATCH (g:Graded {grade: 'A'}) RETURN g", 2);
     db.assert_count("MATCH (g:Graded {grade: 'B'}) RETURN g", 2);
@@ -674,7 +674,7 @@ fn create_multiple_disconnected_patterns() {
 #[test]
 fn create_batch_then_verify_statistics() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 100) AS i CREATE (:Stat {val: i % 10})");
+    db.run("UNWIND list.range(1, 100) AS i CREATE (:Stat {val: i % 10})");
     let rows = db.run(
         "MATCH (s:Stat) \
          RETURN count(s) AS total, count(DISTINCT s.val) AS unique_vals, min(s.val) AS lo, max(s.val) AS hi",

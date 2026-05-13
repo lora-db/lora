@@ -444,8 +444,9 @@ fn multiple_aggregates_grouped() {
 fn count_relationships_grouped_by_type() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let rows =
-        db.run("MATCH (a)-[r]->(b) RETURN type(r) AS rel_type, count(r) AS cnt ORDER BY type(r)");
+    let rows = db.run(
+        "MATCH (a)-[r]->(b) RETURN edge.type(r) AS rel_type, count(r) AS cnt ORDER BY edge.type(r)",
+    );
     // ASSIGNED_TO=4, LIVES_IN=6, MANAGES=4, WORKS_AT=6
     assert!(rows.len() >= 4);
 }
@@ -1101,7 +1102,7 @@ fn agg_collect_then_size() {
     let rows = db.run(
         "MATCH (p:Person)-[:INTERESTED_IN]->(i:Interest) \
          WITH p.name AS name, collect(i.name) AS interests \
-         RETURN name, size(interests) AS cnt ORDER BY cnt DESC, name ASC",
+         RETURN name, value.size(interests) AS cnt ORDER BY cnt DESC, name ASC",
     );
     // Most people have 2 interests, Frank has 1
     assert_eq!(rows.len(), 6);

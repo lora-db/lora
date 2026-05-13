@@ -270,7 +270,7 @@ fn union_all_same_query_both_branches_doubles() {
 #[test]
 fn union_all_large_result() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 20) AS i CREATE (:Num {val: i})");
+    db.run("UNWIND list.range(1, 20) AS i CREATE (:Num {val: i})");
     let rows = db.run(
         "MATCH (n:Num) RETURN n.val AS v \
          UNION ALL \
@@ -369,8 +369,8 @@ fn union_with_order_by_on_final_result() {
 #[test]
 fn union_all_with_skip_and_limit_on_final_result() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 5) AS i CREATE (:Num {val: i})");
-    db.run("UNWIND range(6, 10) AS i CREATE (:Num2 {val: i})");
+    db.run("UNWIND list.range(1, 5) AS i CREATE (:Num {val: i})");
+    db.run("UNWIND list.range(6, 10) AS i CREATE (:Num2 {val: i})");
     let vals = db.sorted_ints(
         "MATCH (n:Num) RETURN n.val AS v \
          UNION ALL \

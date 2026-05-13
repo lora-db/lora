@@ -3,6 +3,10 @@
 mod test_helpers;
 use test_helpers::TestDb;
 
+use std::collections::BTreeMap;
+
+use lora_database::LoraValue;
+use lora_store::{LoraVector, RawCoordinate, VectorCoordinateType};
 use serde_json::Value as JsonValue;
 
 fn index_named<'a>(rows: &'a [JsonValue], name: &str) -> Option<&'a JsonValue> {
@@ -164,11 +168,12 @@ fn create_index(db: &TestDb, sim: &str) {
 fn seed_movies(db: &TestDb) {
     // Three vectors in 3D. Target [1,0,0] — closest first under cosine
     // similarity: identical, then near-axis, then perpendicular.
-    db.run("CREATE (:Movie {title: 'A', embedding: vector([1.0, 0.0, 0.0], 3, FLOAT32)})");
-    db.run("CREATE (:Movie {title: 'B', embedding: vector([0.9, 0.1, 0.0], 3, FLOAT32)})");
-    db.run("CREATE (:Movie {title: 'C', embedding: vector([0.0, 1.0, 0.0], 3, FLOAT32)})");
+    db.run("CREATE (:Movie {title: 'A', embedding: [1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3)})");
+    db.run("CREATE (:Movie {title: 'B', embedding: [0.9, 0.1, 0.0]::VECTOR<FLOAT32>(3)})");
+    db.run("CREATE (:Movie {title: 'C', embedding: [0.0, 1.0, 0.0]::VECTOR<FLOAT32>(3)})");
     db.run("CREATE (:Movie {title: 'D'})"); // no embedding — should be ignored
-    db.run("CREATE (:Other {embedding: vector([1.0, 0.0, 0.0], 3, FLOAT32)})"); // wrong label
+    db.run("CREATE (:Other {embedding: [1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3)})");
+    // wrong label
 }
 
 #[test]
@@ -273,8 +278,8 @@ fn vector_query_relationships_top_k() {
     );
     db.run(
         "CREATE (a:Doc), (b:Doc), (c:Doc), \
-         (a)-[:CONTAINS {embedding: vector([1.0, 0.0, 0.0], 3, FLOAT32)}]->(b), \
-         (b)-[:CONTAINS {embedding: vector([0.9, 0.1, 0.0], 3, FLOAT32)}]->(c)",
+         (a)-[:CONTAINS {embedding: [1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3)}]->(b), \
+         (b)-[:CONTAINS {embedding: [0.9, 0.1, 0.0]::VECTOR<FLOAT32>(3)}]->(c)",
     );
     let rows = db.run(
         "CALL db.index.vector.queryRelationships('rel_emb', 2, [1.0, 0.0, 0.0]) \
@@ -302,9 +307,25 @@ fn vector_query_accepts_vector_arg() {
     let db = TestDb::new();
     create_index(&db, "cosine");
     seed_movies(&db);
-    let rows = db.run(
-        "CALL db.index.vector.queryNodes('movie_emb', 1, vector([1.0, 0.0, 0.0], 3, FLOAT32)) \
-         YIELD node, score",
+    let mut params = BTreeMap::new();
+    params.insert(
+        "q".to_string(),
+        LoraValue::Vector(
+            LoraVector::try_new(
+                vec![
+                    RawCoordinate::Float(1.0),
+                    RawCoordinate::Float(0.0),
+                    RawCoordinate::Float(0.0),
+                ],
+                3,
+                VectorCoordinateType::Float32,
+            )
+            .unwrap(),
+        ),
+    );
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('movie_emb', 1, $q) YIELD node, score",
+        params,
     );
     assert_eq!(rows.len(), 1);
     // Still ranks the identical vector first.
@@ -316,11 +337,11 @@ fn vector_query_top_k_orders_correctly_across_many() {
     let db = TestDb::new();
     create_index(&db, "cosine");
     // 5 vectors at decreasing similarity to [1,0,0].
-    db.run("CREATE (:Movie {id: 1, embedding: vector([1.0, 0.0, 0.0], 3, FLOAT32)})");
-    db.run("CREATE (:Movie {id: 2, embedding: vector([0.8, 0.6, 0.0], 3, FLOAT32)})");
-    db.run("CREATE (:Movie {id: 3, embedding: vector([0.6, 0.8, 0.0], 3, FLOAT32)})");
-    db.run("CREATE (:Movie {id: 4, embedding: vector([0.0, 1.0, 0.0], 3, FLOAT32)})");
-    db.run("CREATE (:Movie {id: 5, embedding: vector([-1.0, 0.0, 0.0], 3, FLOAT32)})");
+    db.run("CREATE (:Movie {id: 1, embedding: [1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3)})");
+    db.run("CREATE (:Movie {id: 2, embedding: [0.8, 0.6, 0.0]::VECTOR<FLOAT32>(3)})");
+    db.run("CREATE (:Movie {id: 3, embedding: [0.6, 0.8, 0.0]::VECTOR<FLOAT32>(3)})");
+    db.run("CREATE (:Movie {id: 4, embedding: [0.0, 1.0, 0.0]::VECTOR<FLOAT32>(3)})");
+    db.run("CREATE (:Movie {id: 5, embedding: [-1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3)})");
     let rows = db
         .run("CALL db.index.vector.queryNodes('movie_emb', 5, [1.0, 0.0, 0.0]) YIELD node, score");
     // Read node ids by score order (descending).

@@ -56,8 +56,8 @@ fn build_super_large_graph(db: &Database<lora_database::InMemoryGraph>) {
         let end = (i + BULK_BATCH).min(CATEGORY_COUNT);
         db.execute(
             &format!(
-                "UNWIND range({i}, {}) AS k \
-                 CREATE (:Category {{idx: k, name: 'cat_' + toString(k)}})",
+                "UNWIND list.range({i}, {}) AS k \
+                 CREATE (:Category {{idx: k, name: 'cat_' + type.cast(k, STRING)}})",
                 end - 1
             ),
             rows(),
@@ -73,7 +73,7 @@ fn build_super_large_graph(db: &Database<lora_database::InMemoryGraph>) {
         let end = (i + BULK_BATCH).min(ITEM_COUNT);
         db.execute(
             &format!(
-                "UNWIND range({i}, {}) AS k \
+                "UNWIND list.range({i}, {}) AS k \
                  CREATE (:Item {{id: k, value: k, kind: k % 10}})",
                 end - 1
             ),
@@ -91,7 +91,7 @@ fn build_super_large_graph(db: &Database<lora_database::InMemoryGraph>) {
         let end = (i + BULK_BATCH).min(EDGE_COUNT);
         db.execute(
             &format!(
-                "UNWIND range({i}, {}) AS k \
+                "UNWIND list.range({i}, {}) AS k \
                  MATCH (it:Item {{id: k}}), (c:Category {{idx: k % {CATEGORY_COUNT}}}) \
                  CREATE (it)-[:BELONGS_TO]->(c)",
                 end - 1

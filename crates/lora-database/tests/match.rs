@@ -1459,7 +1459,7 @@ fn future_variable_length_with_inline_where() {
     let db = TestDb::new();
     db.seed_rich_social_graph();
     let _rows = db.run(
-        "MATCH (a:Person {name:'Alice'})-[:KNOWS*1..3 WHERE ALL(n IN nodes(path) WHERE n.age > 20)]->(b:Person) \
+        "MATCH (a:Person {name:'Alice'})-[:KNOWS*1..3 WHERE ALL(n IN path.nodes(path) WHERE n.age > 20)]->(b:Person) \
          RETURN b.name AS name",
     );
     assert!(!_rows.is_empty());
@@ -1520,7 +1520,7 @@ fn match_triangle_pattern_extended() {
     // Find triangles: A knows B knows C knows A
     let rows = db.run(
         "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) \
-         WHERE id(a) < id(b) AND id(b) < id(c) \
+         WHERE value.id(a) < value.id(b) AND value.id(b) < value.id(c) \
          RETURN a.name AS a, b.name AS b, c.name AS c",
     );
     // There may or may not be triangles depending on the exact graph;
@@ -1644,7 +1644,7 @@ fn match_count_with_group_by_label() {
     db.seed_org_graph();
     let rows = db.run(
         "MATCH (n) \
-         WITH labels(n) AS lbls, n \
+         WITH node.labels(n) AS lbls, n \
          UNWIND lbls AS lbl \
          RETURN lbl, count(n) AS cnt \
          ORDER BY lbl",
@@ -1671,7 +1671,7 @@ fn match_with_where_on_relationship_type() {
     db.seed_rich_social_graph();
     let rows = db.run(
         "MATCH (a:Person {name:'Alice'})-[r]->(b:Person) \
-         WHERE type(r) = 'KNOWS' \
+         WHERE edge.type(r) = 'KNOWS' \
          RETURN b.name AS name ORDER BY name",
     );
     assert!(!rows.is_empty());
@@ -1710,7 +1710,7 @@ fn match_pattern_with_where_on_path() {
     db.seed_chain(5);
     let _rows = db.run(
         "MATCH p = (:Chain {idx:0})-[:NEXT*]->(:Chain {idx:4}) \
-         WHERE length(p) = 4 \
+         WHERE value.size(p) = 4 \
          RETURN p",
     );
 }
@@ -1871,7 +1871,7 @@ fn multi_hop_four_entities_chain() {
 fn large_fan_out_hub_20_spokes() {
     let db = TestDb::new();
     db.run("CREATE (:Center {name:'hub'})");
-    db.run("UNWIND range(1, 20) AS i MATCH (h:Center) CREATE (h)-[:SPOKE]->(:Leaf {id: i})");
+    db.run("UNWIND list.range(1, 20) AS i MATCH (h:Center) CREATE (h)-[:SPOKE]->(:Leaf {id: i})");
     db.assert_count("MATCH (:Center)-[:SPOKE]->(l:Leaf) RETURN l", 20);
     // Count from the hub
     let rows = db.run("MATCH (h:Center)-[r:SPOKE]->(l:Leaf) RETURN count(r) AS cnt");
@@ -1882,7 +1882,7 @@ fn large_fan_out_hub_20_spokes() {
 fn large_fan_in_many_to_one() {
     let db = TestDb::new();
     db.run("CREATE (:Sink {name:'target'})");
-    db.run("UNWIND range(1, 15) AS i MATCH (s:Sink) CREATE (:Source {id: i})-[:FEEDS]->(s)");
+    db.run("UNWIND list.range(1, 15) AS i MATCH (s:Sink) CREATE (:Source {id: i})-[:FEEDS]->(s)");
     db.assert_count("MATCH (src:Source)-[:FEEDS]->(sink:Sink) RETURN src", 15);
 }
 
@@ -1908,7 +1908,7 @@ fn bipartite_graph_pattern() {
     // Find workers who share at least one task
     let rows = db.run(
         "MATCH (w1:Worker)-[:ASSIGNED]->(t:Task)<-[:ASSIGNED]-(w2:Worker) \
-         WHERE id(w1) < id(w2) \
+         WHERE value.id(w1) < value.id(w2) \
          RETURN DISTINCT w1.id AS w1, w2.id AS w2 ORDER BY w1.id, w2.id",
     );
     // All pairs share tasks: (1,2) share task2, (1,3) share task1, (2,3) share task3
@@ -2011,7 +2011,7 @@ fn match_shortest_path() {
     db.seed_transport_graph();
     let _rows = db.run(
         "MATCH p = shortestPath((a:Station {name:'Amsterdam'})-[:ROUTE*]-(b:Station {name:'Eindhoven'})) \
-         RETURN length(p) AS hops",
+         RETURN value.size(p) AS hops",
     );
 }
 
@@ -2023,7 +2023,7 @@ fn match_all_shortest_paths() {
     db.seed_transport_graph();
     let _rows = db.run(
         "MATCH p = allShortestPaths((a:Station {name:'Amsterdam'})-[:ROUTE*]-(b:Station {name:'Den Haag'})) \
-         RETURN length(p) AS hops, [n IN nodes(p) | n.name] AS route",
+         RETURN value.size(p) AS hops, [n IN path.nodes(p) | n.name] AS route",
     );
 }
 

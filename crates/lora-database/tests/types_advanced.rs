@@ -200,42 +200,45 @@ fn list_of_mixed_types() {
 
 #[test]
 fn head_of_list() {
-    assert_eq!(TestDb::new().scalar("RETURN head([10, 20, 30])"), 10);
+    assert_eq!(TestDb::new().scalar("RETURN list.first([10, 20, 30])"), 10);
 }
 
 #[test]
 fn tail_of_list() {
-    let v = TestDb::new().scalar("RETURN tail([10, 20, 30])");
+    let v = TestDb::new().scalar("RETURN list.rest([10, 20, 30])");
     assert_eq!(v.as_array().unwrap(), &[20, 30]);
 }
 
 #[test]
 fn tail_of_single_element() {
-    let v = TestDb::new().scalar("RETURN tail([42])");
+    let v = TestDb::new().scalar("RETURN list.rest([42])");
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
 
 #[test]
 fn tail_of_empty_list_is_null() {
-    assert!(TestDb::new().scalar("RETURN tail([])").is_null());
+    assert!(TestDb::new().scalar("RETURN list.rest([])").is_null());
 }
 
 #[test]
 fn reverse_list_values() {
-    let v = TestDb::new().scalar("RETURN reverse([1, 2, 3])");
+    let v = TestDb::new().scalar("RETURN value.reverse([1, 2, 3])");
     assert_eq!(v.as_array().unwrap(), &[3, 2, 1]);
 }
 
 #[test]
 fn reverse_empty_list() {
-    let v = TestDb::new().scalar("RETURN reverse([])");
+    let v = TestDb::new().scalar("RETURN value.reverse([])");
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
 
 #[test]
 fn size_of_nested_list() {
     // size counts top-level elements only
-    assert_eq!(TestDb::new().scalar("RETURN size([[1,2], [3,4], [5]])"), 3);
+    assert_eq!(
+        TestDb::new().scalar("RETURN value.size([[1,2], [3,4], [5]])"),
+        3
+    );
 }
 
 // ============================================================
@@ -244,31 +247,31 @@ fn size_of_nested_list() {
 
 #[test]
 fn range_ascending() {
-    let v = TestDb::new().scalar("RETURN range(1, 5)");
+    let v = TestDb::new().scalar("RETURN list.range(1, 5)");
     assert_eq!(v.as_array().unwrap(), &[1, 2, 3, 4, 5]);
 }
 
 #[test]
 fn range_with_step() {
-    let v = TestDb::new().scalar("RETURN range(0, 10, 3)");
+    let v = TestDb::new().scalar("RETURN list.range(0, 10, 3)");
     assert_eq!(v.as_array().unwrap(), &[0, 3, 6, 9]);
 }
 
 #[test]
 fn range_descending() {
-    let v = TestDb::new().scalar("RETURN range(5, 1, -1)");
+    let v = TestDb::new().scalar("RETURN list.range(5, 1, -1)");
     assert_eq!(v.as_array().unwrap(), &[5, 4, 3, 2, 1]);
 }
 
 #[test]
 fn range_single_element() {
-    let v = TestDb::new().scalar("RETURN range(3, 3)");
+    let v = TestDb::new().scalar("RETURN list.range(3, 3)");
     assert_eq!(v.as_array().unwrap(), &[3]);
 }
 
 #[test]
 fn range_zero_step_returns_null() {
-    assert!(TestDb::new().scalar("RETURN range(1, 5, 0)").is_null());
+    assert!(TestDb::new().scalar("RETURN list.range(1, 5, 0)").is_null());
 }
 
 // ============================================================
@@ -333,7 +336,7 @@ fn map_with_list_value() {
 
 #[test]
 fn keys_of_map() {
-    let v = TestDb::new().scalar("RETURN keys({name: 'Alice', age: 30})");
+    let v = TestDb::new().scalar("RETURN value.keys({name: 'Alice', age: 30})");
     let keys = v.as_array().unwrap();
     // keys should be sorted (BTreeMap)
     assert_eq!(keys.len(), 2);
@@ -462,17 +465,17 @@ fn map_with_null_value() {
 
 #[test]
 fn head_of_null_list() {
-    assert!(TestDb::new().scalar("RETURN head(null)").is_null());
+    assert!(TestDb::new().scalar("RETURN list.first(null)").is_null());
 }
 
 #[test]
 fn size_of_null() {
-    assert!(TestDb::new().scalar("RETURN size(null)").is_null());
+    assert!(TestDb::new().scalar("RETURN value.size(null)").is_null());
 }
 
 #[test]
 fn keys_of_null() {
-    assert!(TestDb::new().scalar("RETURN keys(null)").is_null());
+    assert!(TestDb::new().scalar("RETURN value.keys(null)").is_null());
 }
 
 // ============================================================
@@ -606,7 +609,7 @@ fn regex_null_returns_null() {
 fn properties_of_node() {
     let db = TestDb::new();
     db.run("CREATE (:Item {name: 'Widget', price: 42})");
-    let rows = db.run("MATCH (i:Item) RETURN properties(i) AS props");
+    let rows = db.run("MATCH (i:Item) RETURN value.properties(i) AS props");
     let props = rows[0]["props"].as_object().unwrap();
     assert_eq!(props["name"], "Widget");
     assert_eq!(props["price"], 42);
@@ -614,7 +617,7 @@ fn properties_of_node() {
 
 #[test]
 fn properties_of_map() {
-    let v = TestDb::new().scalar("RETURN properties({a: 1, b: 2})");
+    let v = TestDb::new().scalar("RETURN value.properties({a: 1, b: 2})");
     let obj = v.as_object().unwrap();
     assert_eq!(obj["a"], 1);
     assert_eq!(obj["b"], 2);
@@ -626,7 +629,8 @@ fn properties_of_map() {
 
 #[test]
 fn list_comprehension_filter_and_transform() {
-    let v = TestDb::new().scalar("RETURN [x IN range(1, 10) WHERE x % 3 = 0 | x * x] AS squares");
+    let v =
+        TestDb::new().scalar("RETURN [x IN list.range(1, 10) WHERE x % 3 = 0 | x * x] AS squares");
     // 3, 6, 9 -> 9, 36, 81
     assert_eq!(v.as_array().unwrap(), &[9, 36, 81]);
 }
@@ -640,7 +644,7 @@ fn list_comprehension_identity() {
 
 #[test]
 fn list_comprehension_with_strings() {
-    let v = TestDb::new().scalar("RETURN [x IN ['hello', 'world'] | toUpper(x)] AS upper");
+    let v = TestDb::new().scalar("RETURN [x IN ['hello', 'world'] | string.upper(x)] AS upper");
     let arr = v.as_array().unwrap();
     assert_eq!(arr[0], "HELLO");
     assert_eq!(arr[1], "WORLD");
@@ -778,7 +782,7 @@ fn unwind_with_index() {
     let db = TestDb::new();
     let rows = db.run(
         "WITH ['a', 'b', 'c'] AS items \
-         UNWIND range(0, size(items) - 1) AS i \
+         UNWIND list.range(0, value.size(items) - 1) AS i \
          RETURN i, items[i] AS val",
     );
     assert_eq!(rows.len(), 3);
@@ -800,38 +804,38 @@ fn unwind_then_collect() {
 
 #[test]
 fn type_name_of_integer() {
-    // Lora: valueType() or type introspection
-    let v = TestDb::new().scalar("RETURN valueType(42)");
+    // Lora: type.of() or type introspection
+    let v = TestDb::new().scalar("RETURN type.of(42)");
     assert_eq!(v, "INTEGER");
 }
 
 #[test]
 fn type_name_of_string() {
-    let v = TestDb::new().scalar("RETURN valueType('hello')");
+    let v = TestDb::new().scalar("RETURN type.of('hello')");
     assert_eq!(v, "STRING");
 }
 
 #[test]
 fn type_name_of_list() {
-    let v = TestDb::new().scalar("RETURN valueType([1, 2, 3])");
+    let v = TestDb::new().scalar("RETURN type.of([1, 2, 3])");
     assert_eq!(v, "LIST<INTEGER>");
 }
 
 #[test]
 fn type_name_of_null() {
-    let v = TestDb::new().scalar("RETURN valueType(null)");
+    let v = TestDb::new().scalar("RETURN type.of(null)");
     assert_eq!(v, "NULL");
 }
 
 #[test]
 fn type_name_of_boolean() {
-    let v = TestDb::new().scalar("RETURN valueType(true)");
+    let v = TestDb::new().scalar("RETURN type.of(true)");
     assert_eq!(v, "BOOLEAN");
 }
 
 #[test]
 fn type_name_of_float() {
-    let v = TestDb::new().scalar("RETURN valueType(3.14)");
+    let v = TestDb::new().scalar("RETURN type.of(3.14)");
     assert_eq!(v, "FLOAT");
 }
 
@@ -841,59 +845,66 @@ fn type_name_of_float() {
 
 #[test]
 fn tointeger_from_bool_true() {
-    // Lora: toInteger(true) = 1
+    // Lora: type.cast(true, INTEGER) = 1
     // Engine may or may not support this yet
-    let v = TestDb::new().scalar("RETURN toInteger(1)");
+    let v = TestDb::new().scalar("RETURN type.cast(1, INTEGER)");
     assert_eq!(v, 1);
 }
 
 #[test]
 fn tofloat_from_int() {
-    let v = TestDb::new().scalar("RETURN toFloat(42)").as_f64().unwrap();
+    let v = TestDb::new()
+        .scalar("RETURN type.cast(42, FLOAT)")
+        .as_f64()
+        .unwrap();
     assert!((v - 42.0).abs() < 0.001);
 }
 
 #[test]
 fn tointeger_invalid_string_returns_null() {
     assert!(TestDb::new()
-        .scalar("RETURN toInteger('not_a_number')")
+        .scalar("RETURN type.try_cast('not_a_number', INTEGER)")
         .is_null());
 }
 
 #[test]
 fn tofloat_invalid_string_returns_null() {
     assert!(TestDb::new()
-        .scalar("RETURN toFloat('not_a_number')")
+        .scalar("RETURN type.try_cast('not_a_number', FLOAT)")
         .is_null());
 }
 
 #[test]
 fn tostring_of_null() {
-    assert!(TestDb::new().scalar("RETURN toString(null)").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN type.cast(null, STRING)")
+        .is_null());
 }
 
 #[test]
 fn toboolean_from_string_true() {
-    let v = TestDb::new().scalar("RETURN toBoolean('true')");
+    let v = TestDb::new().scalar("RETURN type.cast('true', BOOLEAN)");
     assert_eq!(v, true);
 }
 
 #[test]
 fn toboolean_from_string_false() {
-    let v = TestDb::new().scalar("RETURN toBoolean('false')");
+    let v = TestDb::new().scalar("RETURN type.cast('false', BOOLEAN)");
     assert_eq!(v, false);
 }
 
 #[test]
 fn toboolean_invalid_returns_null() {
-    assert!(TestDb::new().scalar("RETURN toBoolean('maybe')").is_null());
+    assert!(TestDb::new()
+        .scalar("RETURN type.try_cast('maybe', BOOLEAN)")
+        .is_null());
 }
 
 #[test]
 fn toboolean_from_integer() {
-    // Lora: toBoolean(0) = false, toBoolean(1) = true
-    assert_eq!(TestDb::new().scalar("RETURN toBoolean(1)"), true);
-    assert_eq!(TestDb::new().scalar("RETURN toBoolean(0)"), false);
+    // Lora: type.cast(0, BOOLEAN) = false, type.cast(1, BOOLEAN) = true
+    assert_eq!(TestDb::new().scalar("RETURN type.cast(1, BOOLEAN)"), true);
+    assert_eq!(TestDb::new().scalar("RETURN type.cast(0, BOOLEAN)"), false);
 }
 
 // ============================================================
@@ -1019,7 +1030,7 @@ fn collect_distinct() {
 #[test]
 fn coalesce_chain() {
     assert_eq!(
-        TestDb::new().scalar("RETURN coalesce(null, null, null, 'found')"),
+        TestDb::new().scalar("RETURN value.first_non_null(null, null, null, 'found')"),
         "found"
     );
 }
@@ -1027,7 +1038,7 @@ fn coalesce_chain() {
 #[test]
 fn coalesce_first_non_null_wins() {
     assert_eq!(
-        TestDb::new().scalar("RETURN coalesce('first', 'second', 'third')"),
+        TestDb::new().scalar("RETURN value.first_non_null('first', 'second', 'third')"),
         "first"
     );
 }
@@ -1035,7 +1046,7 @@ fn coalesce_first_non_null_wins() {
 #[test]
 fn coalesce_all_null() {
     assert!(TestDb::new()
-        .scalar("RETURN coalesce(null, null)")
+        .scalar("RETURN value.first_non_null(null, null)")
         .is_null());
 }
 
@@ -1069,27 +1080,27 @@ fn xor_null() {
 
 #[test]
 fn point_2d_creation() {
-    let v = TestDb::new().scalar("RETURN point({x: 3.0, y: 4.0}) AS p");
+    let v = TestDb::new().scalar("RETURN {x: 3.0, y: 4.0}::POINT AS p");
     assert!(!v.is_null());
 }
 
 #[test]
 fn point_geographic_creation() {
-    let v = TestDb::new().scalar("RETURN point({latitude: 52.37, longitude: 4.89}) AS p");
+    let v = TestDb::new().scalar("RETURN {latitude: 52.37, longitude: 4.89}::POINT AS p");
     assert!(!v.is_null());
 }
 
 #[test]
 fn distance_between_points() {
-    let v =
-        TestDb::new().scalar("RETURN distance(point({x: 0.0, y: 0.0}), point({x: 3.0, y: 4.0}))");
+    let v = TestDb::new()
+        .scalar("RETURN geo.distance({x: 0.0, y: 0.0}::POINT, {x: 3.0, y: 4.0}::POINT)");
     let d = v.as_f64().unwrap();
     assert!((d - 5.0).abs() < 0.001);
 }
 
 #[test]
 fn point_property_access() {
-    let v = TestDb::new().scalar("RETURN point({x: 3.0, y: 4.0}).x");
+    let v = TestDb::new().scalar("RETURN {x: 3.0, y: 4.0}::POINT.x");
     let x = v.as_f64().unwrap();
     assert!((x - 3.0).abs() < 0.001);
 }
@@ -1097,7 +1108,7 @@ fn point_property_access() {
 #[test]
 fn point_equality() {
     assert_eq!(
-        TestDb::new().scalar("RETURN point({x: 1.0, y: 2.0}) = point({x: 1.0, y: 2.0})"),
+        TestDb::new().scalar("RETURN {x: 1.0, y: 2.0}::POINT = {x: 1.0, y: 2.0}::POINT"),
         true
     );
 }
@@ -1105,7 +1116,7 @@ fn point_equality() {
 #[test]
 fn create_node_with_point_property() {
     let db = TestDb::new();
-    db.run("CREATE (:Location {name: 'HQ', pos: point({latitude: 52.37, longitude: 4.89})})");
+    db.run("CREATE (:Location {name: 'HQ', pos: {latitude: 52.37, longitude: 4.89}::POINT})");
     let rows = db.run("MATCH (l:Location) RETURN l.pos AS pos");
     assert_eq!(rows.len(), 1);
     assert!(!rows[0]["pos"].is_null());
@@ -1114,12 +1125,12 @@ fn create_node_with_point_property() {
 #[test]
 fn filter_by_distance() {
     let db = TestDb::new();
-    db.run("CREATE (:Place {name: 'A', pos: point({latitude: 52.37, longitude: 4.89})})");
-    db.run("CREATE (:Place {name: 'B', pos: point({latitude: 48.85, longitude: 2.35})})");
+    db.run("CREATE (:Place {name: 'A', pos: {latitude: 52.37, longitude: 4.89}::POINT})");
+    db.run("CREATE (:Place {name: 'B', pos: {latitude: 48.85, longitude: 2.35}::POINT})");
     let rows = db.run(
-        "WITH point({latitude: 52.0, longitude: 4.5}) AS origin \
+        "WITH {latitude: 52.0, longitude: 4.5}::POINT AS origin \
          MATCH (p:Place) \
-         WHERE distance(p.pos, origin) < 100000 \
+         WHERE geo.distance(p.pos, origin) < 100000 \
          RETURN p.name AS name",
     );
     // Only 'A' should be within 100km
@@ -1133,7 +1144,7 @@ fn filter_by_distance() {
 
 #[test]
 fn point_y_property_access() {
-    let v = TestDb::new().scalar("RETURN point({x: 3.0, y: 4.0}).y");
+    let v = TestDb::new().scalar("RETURN {x: 3.0, y: 4.0}::POINT.y");
     let y = v.as_f64().unwrap();
     assert!((y - 4.0).abs() < 0.001);
 }
@@ -1141,8 +1152,8 @@ fn point_y_property_access() {
 #[test]
 fn point_latitude_longitude_access() {
     let db = TestDb::new();
-    let lat = db.scalar("RETURN point({latitude: 52.37, longitude: 4.89}).latitude");
-    let lon = db.scalar("RETURN point({latitude: 52.37, longitude: 4.89}).longitude");
+    let lat = db.scalar("RETURN {latitude: 52.37, longitude: 4.89}::POINT.latitude");
+    let lon = db.scalar("RETURN {latitude: 52.37, longitude: 4.89}::POINT.longitude");
     assert!((lat.as_f64().unwrap() - 52.37).abs() < 0.001);
     assert!((lon.as_f64().unwrap() - 4.89).abs() < 0.001);
 }
@@ -1150,15 +1161,15 @@ fn point_latitude_longitude_access() {
 #[test]
 fn point_inequality() {
     assert_eq!(
-        TestDb::new().scalar("RETURN point({x: 1.0, y: 2.0}) = point({x: 3.0, y: 4.0})"),
+        TestDb::new().scalar("RETURN {x: 1.0, y: 2.0}::POINT = {x: 3.0, y: 4.0}::POINT"),
         false
     );
 }
 
 #[test]
 fn distance_zero_same_point() {
-    let v =
-        TestDb::new().scalar("RETURN distance(point({x: 5.0, y: 5.0}), point({x: 5.0, y: 5.0}))");
+    let v = TestDb::new()
+        .scalar("RETURN geo.distance({x: 5.0, y: 5.0}::POINT, {x: 5.0, y: 5.0}::POINT)");
     let d = v.as_f64().unwrap();
     assert!(d.abs() < 0.001);
 }
@@ -1167,8 +1178,8 @@ fn distance_zero_same_point() {
 fn distance_geographic_known_value() {
     // Amsterdam to Paris ~430km
     let v = TestDb::new().scalar(
-        "RETURN distance(point({latitude: 52.37, longitude: 4.89}), \
-                         point({latitude: 48.85, longitude: 2.35}))",
+        "RETURN geo.distance({latitude: 52.37, longitude: 4.89}::POINT, \
+                         {latitude: 48.85, longitude: 2.35}::POINT)",
     );
     let d = v.as_f64().unwrap();
     // Should be roughly 430km (430_000m)
@@ -1178,11 +1189,11 @@ fn distance_geographic_known_value() {
 #[test]
 fn point_in_where_with_comparison() {
     let db = TestDb::new();
-    db.run("CREATE (:Spot {name: 'A', loc: point({x: 1.0, y: 1.0})})");
-    db.run("CREATE (:Spot {name: 'B', loc: point({x: 10.0, y: 10.0})})");
+    db.run("CREATE (:Spot {name: 'A', loc: {x: 1.0, y: 1.0}::POINT})");
+    db.run("CREATE (:Spot {name: 'B', loc: {x: 10.0, y: 10.0}::POINT})");
     let rows = db.run(
         "MATCH (s:Spot) \
-         WHERE distance(s.loc, point({x: 0.0, y: 0.0})) < 5.0 \
+         WHERE geo.distance(s.loc, {x: 0.0, y: 0.0}::POINT) < 5.0 \
          RETURN s.name AS name",
     );
     assert_eq!(rows.len(), 1);
@@ -1192,23 +1203,23 @@ fn point_in_where_with_comparison() {
 #[test]
 fn point_srid_property() {
     let db = TestDb::new();
-    let srid_cart = db.scalar("RETURN point({x: 1.0, y: 2.0}).srid");
-    let srid_geo = db.scalar("RETURN point({latitude: 52.0, longitude: 4.0}).srid");
+    let srid_cart = db.scalar("RETURN {x: 1.0, y: 2.0}::POINT.srid");
+    let srid_geo = db.scalar("RETURN {latitude: 52.0, longitude: 4.0}::POINT.srid");
     assert_eq!(srid_cart, 7203);
     assert_eq!(srid_geo, 4326);
 }
 
 #[test]
 fn point_valuetype() {
-    let v = TestDb::new().scalar("RETURN valueType(point({x: 1.0, y: 2.0}))");
+    let v = TestDb::new().scalar("RETURN type.of({x: 1.0, y: 2.0}::POINT)");
     assert_eq!(v, "POINT");
 }
 
 #[test]
 fn point_collect_in_list() {
     let db = TestDb::new();
-    db.run("CREATE (:Pin {loc: point({x: 1.0, y: 1.0})})");
-    db.run("CREATE (:Pin {loc: point({x: 2.0, y: 2.0})})");
+    db.run("CREATE (:Pin {loc: {x: 1.0, y: 1.0}::POINT})");
+    db.run("CREATE (:Pin {loc: {x: 2.0, y: 2.0}::POINT})");
     let rows = db.run("MATCH (p:Pin) RETURN collect(p.loc) AS locs");
     let locs = rows[0]["locs"].as_array().unwrap();
     assert_eq!(locs.len(), 2);
@@ -1217,13 +1228,13 @@ fn point_collect_in_list() {
 #[test]
 fn point_order_by_distance() {
     let db = TestDb::new();
-    db.run("CREATE (:City {name: 'Far', loc: point({x: 100.0, y: 100.0})})");
-    db.run("CREATE (:City {name: 'Near', loc: point({x: 1.0, y: 1.0})})");
-    db.run("CREATE (:City {name: 'Mid', loc: point({x: 50.0, y: 50.0})})");
+    db.run("CREATE (:City {name: 'Far', loc: {x: 100.0, y: 100.0}::POINT})");
+    db.run("CREATE (:City {name: 'Near', loc: {x: 1.0, y: 1.0}::POINT})");
+    db.run("CREATE (:City {name: 'Mid', loc: {x: 50.0, y: 50.0}::POINT})");
     let rows = db.run(
         "MATCH (c:City) \
          RETURN c.name AS name \
-         ORDER BY distance(c.loc, point({x: 0.0, y: 0.0})) ASC",
+         ORDER BY geo.distance(c.loc, {x: 0.0, y: 0.0}::POINT) ASC",
     );
     assert_eq!(rows[0]["name"], "Near");
     assert_eq!(rows[1]["name"], "Mid");

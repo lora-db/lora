@@ -391,7 +391,7 @@ fn bench_scale_write(c: &mut Criterion) {
             &size,
             |b, &size| {
                 let q = format!(
-                    "UNWIND range(1, {size}) AS i CREATE (:Batch {{id: i, val: i * 2, name: 'item_' + toString(i)}})"
+                    "UNWIND list.range(1, {size}) AS i CREATE (:Batch {{id: i, val: i * 2, name: 'item_' + type.cast(i, STRING)}})"
                 );
                 b.iter_batched(
                     BenchDb::new,
@@ -417,12 +417,14 @@ fn bench_scale_write(c: &mut Criterion) {
                     BenchDb::new,
                     |db| {
                         // Create nodes
-                        let q =
-                            format!("UNWIND range(0, {}) AS i CREATE (:W {{idx: i}})", size - 1);
+                        let q = format!(
+                            "UNWIND list.range(0, {}) AS i CREATE (:W {{idx: i}})",
+                            size - 1
+                        );
                         black_box(db.service.execute(&q, opts()).unwrap());
                         // Create chain edges
                         let q2 = format!(
-                            "UNWIND range(0, {}) AS i \
+                            "UNWIND list.range(0, {}) AS i \
                              MATCH (a:W {{idx: i}}), (b:W {{idx: i + 1}}) \
                              CREATE (a)-[:LINK]->(b)",
                             size - 2

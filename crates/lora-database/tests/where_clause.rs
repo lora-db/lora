@@ -1166,7 +1166,7 @@ fn where_collect_subquery() {
     db.seed_org_graph();
     let _rows = db.run(
         "MATCH (p:Person) \
-         WHERE size(COLLECT { MATCH (p)-[:MANAGES]->(s) RETURN s }) > 0 \
+         WHERE value.size(COLLECT { MATCH (p)-[:MANAGES]->(s) RETURN s }) > 0 \
          RETURN p.name AS name",
     );
 }

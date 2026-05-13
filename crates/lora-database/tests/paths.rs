@@ -196,7 +196,7 @@ fn path_length_function() {
     let db = TestDb::new();
     db.seed_social_graph();
     let rows = db.run(
-        "MATCH p = (a:User {name: 'Alice'})-[:FOLLOWS]->(b)-[:FOLLOWS]->(c) RETURN length(p) AS len",
+        "MATCH p = (a:User {name: 'Alice'})-[:FOLLOWS]->(b)-[:FOLLOWS]->(c) RETURN value.size(p) AS len",
     );
     assert_eq!(rows[0]["len"], 2);
 }
@@ -206,7 +206,7 @@ fn path_length_on_matched_path() {
     let db = TestDb::new();
     db.seed_chain(4);
     let rows = db.run(
-        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain) RETURN length(p) AS len, b.idx AS idx",
+        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain) RETURN value.size(p) AS len, b.idx AS idx",
     );
     assert!(rows.len() >= 3);
 }
@@ -215,7 +215,8 @@ fn path_length_on_matched_path() {
 fn path_nodes_function() {
     let db = TestDb::new();
     db.seed_social_graph();
-    let rows = db.run("MATCH p = (a:User {name: 'Alice'})-[:FOLLOWS]->(b) RETURN nodes(p) AS ns");
+    let rows =
+        db.run("MATCH p = (a:User {name: 'Alice'})-[:FOLLOWS]->(b) RETURN path.nodes(p) AS ns");
     let ns = rows[0]["ns"].as_array().unwrap();
     assert_eq!(ns.len(), 2);
 }
@@ -224,7 +225,7 @@ fn path_nodes_function() {
 fn path_nodes_extraction() {
     let db = TestDb::new();
     db.seed_chain(3);
-    let rows = db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN nodes(p) AS ns");
+    let rows = db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN path.nodes(p) AS ns");
     assert!(!rows.is_empty());
 }
 
@@ -232,8 +233,7 @@ fn path_nodes_extraction() {
 fn path_relationships_extraction() {
     let db = TestDb::new();
     db.seed_chain(3);
-    let rows =
-        db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN relationships(p) AS rels");
+    let rows = db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..2]->(b) RETURN path.edges(p) AS rels");
     assert!(!rows.is_empty());
 }
 
@@ -252,7 +252,7 @@ fn varlen_diamond_multiple_paths() {
     db.run("MATCH (t:D {name:'top'}), (r:D {name:'right'}) CREATE (t)-[:E]->(r)");
     db.run("MATCH (l:D {name:'left'}), (b:D {name:'bottom'}) CREATE (l)-[:E]->(b)");
     db.run("MATCH (r:D {name:'right'}), (b:D {name:'bottom'}) CREATE (r)-[:E]->(b)");
-    // Variable-length 1..2 from top should find: left(1), right(1), bottom(2), bottom(2) = 4 unique paths
+    // Variable-length 1..2 from top should find: string.prefix(1), string.suffix(1), bottom(2), bottom(2) = 4 unique paths
     let count = db
         .exec_count("MATCH (src:D {name:'top'})-[:E*1..2]->(d:D) RETURN d.name AS name")
         .unwrap();
@@ -356,7 +356,7 @@ fn shortest_path_between_two_nodes() {
     db.seed_transport_graph();
     let _rows = db.run(
         "MATCH p = shortestPath((:Station {name:'Amsterdam'})-[:ROUTE*]->(:Station {name:'Den Haag'})) \
-         RETURN length(p) AS hops",
+         RETURN value.size(p) AS hops",
     );
 }
 
@@ -605,33 +605,34 @@ fn path_variable_as_structured_return_value() {
 
 #[test]
 fn path_length_returns_hop_count() {
-    // Lora: length(path) returns hop count
+    // Lora: value.size(path) returns hop count
     let db = TestDb::new();
     db.seed_chain(5);
     let rows = db.run(
-        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b) RETURN length(p) AS hops, b.idx AS idx",
+        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b) RETURN value.size(p) AS hops, b.idx AS idx",
     );
     assert_eq!(rows.len(), 3);
 }
 
 #[test]
 fn path_nodes_returns_ordered_node_list() {
-    // Lora: nodes(path) returns ordered node list
+    // Lora: path.nodes(path) returns ordered node list
     let db = TestDb::new();
     db.seed_chain(4);
-    let rows =
-        db.run("MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain {idx:3}) RETURN nodes(p) AS ns");
+    let rows = db.run(
+        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain {idx:3}) RETURN path.nodes(p) AS ns",
+    );
     let ns = rows[0]["ns"].as_array().unwrap();
     assert_eq!(ns.len(), 4); // nodes 0, 1, 2, 3
 }
 
 #[test]
 fn path_relationships_returns_ordered_rel_list() {
-    // Lora: relationships(path) returns ordered relationship list
+    // Lora: path.edges(path) returns ordered relationship list
     let db = TestDb::new();
     db.seed_chain(4);
     let rows = db.run(
-        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain {idx:3}) RETURN relationships(p) AS rels",
+        "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain {idx:3}) RETURN path.edges(p) AS rels",
     );
     let rels = rows[0]["rels"].as_array().unwrap();
     assert_eq!(rels.len(), 3); // 3 NEXT relationships
@@ -644,7 +645,7 @@ fn path_binding_with_variable_length() {
     db.seed_rich_social_graph();
     let rows = db.run(
         "MATCH p = (a:Person {name:'Alice'})-[:KNOWS*1..3]->(b:Person {name:'Eve'}) \
-         RETURN length(p) AS hops",
+         RETURN value.size(p) AS hops",
     );
     // Alice->Carol->Eve = 2 hops
     assert!(!rows.is_empty());
@@ -659,8 +660,8 @@ fn comparing_path_lengths() {
     let rows = db.run(
         "MATCH p1 = (a:Entity {name:'Albert Einstein'})-[*]->(x:Entity {name:'General Relativity'}), \
                p2 = (a)-[:AUTHORED]->(d:Document)-[:ABOUT]->(x) \
-         WHERE length(p1) <= length(p2) \
-         RETURN length(p1) AS direct, length(p2) AS indirect",
+         WHERE value.size(p1) <= value.size(p2) \
+         RETURN value.size(p1) AS direct, value.size(p2) AS indirect",
     );
     assert!(!rows.is_empty());
 }
@@ -672,7 +673,7 @@ fn shortest_path_between_nodes_knowledge_graph() {
     db.seed_knowledge_graph();
     let rows = db.run(
         "MATCH p = shortestPath((a:Entity {name:'Albert Einstein'})-[*]-(b:Entity {name:'Marie Curie'})) \
-         RETURN length(p) AS hops",
+         RETURN value.size(p) AS hops",
     );
     assert!(!rows.is_empty());
 }
@@ -703,7 +704,7 @@ fn shortest_path_returns_minimum_hops() {
     // shortestPath should find 2 hops
     let rows = db.run(
         "MATCH p = shortestPath((:Station {name:'Amsterdam'})-[:ROUTE*]->(:Station {name:'Den Haag'})) \
-         RETURN length(p) AS hops",
+         RETURN value.size(p) AS hops",
     );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["hops"], 2);
@@ -735,7 +736,7 @@ fn all_shortest_paths_may_return_multiple() {
     db.run("MATCH (c:N {name:'C'}), (d:N {name:'D'}) CREATE (c)-[:E]->(d)");
     let rows = db.run(
         "MATCH p = allShortestPaths((:N {name:'A'})-[:E*]->(:N {name:'D'})) \
-         RETURN length(p) AS hops",
+         RETURN value.size(p) AS hops",
     );
     // Both paths are 2 hops — allShortestPaths should find both
     assert_eq!(rows.len(), 2);
@@ -767,7 +768,7 @@ fn shortest_path_undirected() {
     // A->B<-C with undirected traversal: A-B-C = 2 hops
     let rows = db.run(
         "MATCH p = shortestPath((:W {name:'A'})-[:L*]-(:W {name:'C'})) \
-         RETURN length(p) AS hops",
+         RETURN value.size(p) AS hops",
     );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["hops"], 2);
@@ -783,7 +784,7 @@ fn shortest_path_with_path_nodes_function() {
     db.run("MATCH (b:S {name:'B'}), (c:S {name:'C'}) CREATE (b)-[:R]->(c)");
     let rows = db.run(
         "MATCH p = shortestPath((:S {name:'A'})-[:R*]->(:S {name:'C'})) \
-         RETURN length(p) AS hops, nodes(p) AS ns",
+         RETURN value.size(p) AS hops, path.nodes(p) AS ns",
     );
     assert_eq!(rows[0]["hops"], 2);
     let ns = rows[0]["ns"].as_array().unwrap();

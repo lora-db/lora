@@ -74,8 +74,8 @@ fn seed_graph(db: &BenchDb, nodes: usize, rels: usize) {
     while i < nodes {
         let end = (i + SEED_BATCH).min(nodes);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
-             CREATE (:Person {{id: i, age: i % 100, name: 'p_' + toString(i)}})",
+            "UNWIND list.range({i}, {}) AS i \
+             CREATE (:Person {{id: i, age: i % 100, name: 'p_' + type.cast(i, STRING)}})",
             end - 1
         ));
         i = end;
@@ -85,9 +85,9 @@ fn seed_graph(db: &BenchDb, nodes: usize, rels: usize) {
     while j < rels {
         let end = (j + SEED_BATCH).min(rels);
         db.run(&format!(
-            "UNWIND range({j}, {}) AS i \
+            "UNWIND list.range({j}, {}) AS i \
              MATCH (a:Person {{id: i % {nodes}}}), (b:Person {{id: (i * 7 + 3) % {nodes}}}) \
-             CREATE (a)-[:KNOWS {{since: 1990 + i % 41, note: 'note_' + toString(i % 100), idx: i}}]->(b)",
+             CREATE (a)-[:KNOWS {{since: 1990 + i % 41, note: 'note_' + type.cast(i % 100, STRING), idx: i}}]->(b)",
             end - 1
         ));
         j = end;

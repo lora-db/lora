@@ -152,7 +152,7 @@ fn create_point_index_with_options() {
 #[test]
 fn create_lookup_index_node() {
     let db = TestDb::new();
-    db.run("CREATE LOOKUP INDEX node_label_lookup_index FOR (n) ON EACH labels(n)");
+    db.run("CREATE LOOKUP INDEX node_label_lookup_index FOR (n) ON EACH node.labels(n)");
     let listed = db.run("SHOW INDEXES");
     let entry = rows_for_index_named(&listed, "node_label_lookup_index").unwrap();
     assert_eq!(entry["type"], JsonValue::String("LOOKUP".into()));
@@ -163,7 +163,7 @@ fn create_lookup_index_node() {
 #[test]
 fn create_lookup_index_relationship() {
     let db = TestDb::new();
-    db.run("CREATE LOOKUP INDEX rel_type_lookup_index FOR ()-[r]-() ON EACH type(r)");
+    db.run("CREATE LOOKUP INDEX rel_type_lookup_index FOR ()-[r]-() ON EACH edge.type(r)");
     let listed = db.run("SHOW INDEXES");
     let entry = rows_for_index_named(&listed, "rel_type_lookup_index").unwrap();
     assert_eq!(entry["type"], JsonValue::String("LOOKUP".into()));
@@ -300,7 +300,7 @@ fn seed_mixed_indexes(db: &TestDb) {
     db.run("CREATE RANGE INDEX r1 FOR (n:Person) ON (n.surname)");
     db.run("CREATE TEXT INDEX t1 FOR (n:Person) ON (n.name)");
     db.run("CREATE POINT INDEX p1 FOR (n:Place) ON (n.location)");
-    db.run("CREATE LOOKUP INDEX l1 FOR (n) ON EACH labels(n)");
+    db.run("CREATE LOOKUP INDEX l1 FOR (n) ON EACH node.labels(n)");
 }
 
 fn index_names(rows: &[JsonValue]) -> Vec<String> {

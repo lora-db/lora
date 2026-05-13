@@ -312,7 +312,7 @@ fn labels_preserved_after_set_property() {
     let db = TestDb::new();
     db.run("CREATE (:Person:Admin {name:'Alice', age:30})");
     db.run("MATCH (n:Person {name:'Alice'}) SET n.age = 31");
-    let rows = db.run("MATCH (n:Person:Admin) RETURN labels(n) AS lbls");
+    let rows = db.run("MATCH (n:Person:Admin) RETURN node.labels(n) AS lbls");
     assert_eq!(rows.len(), 1);
     let labels = rows[0]["lbls"].as_array().unwrap();
     assert!(labels.contains(&serde_json::json!("Person")));
@@ -328,7 +328,7 @@ fn relationship_type_preserved_after_set_property() {
     let db = TestDb::new();
     db.run("CREATE (:A {id:1})-[:LINK {weight: 1}]->(:B {id:2})");
     db.run("MATCH (a)-[r:LINK]->(b) SET r.weight = 2");
-    let rows = db.run("MATCH (a)-[r:LINK]->(b) RETURN type(r) AS t, r.weight AS w");
+    let rows = db.run("MATCH (a)-[r:LINK]->(b) RETURN edge.type(r) AS t, r.weight AS w");
     assert_eq!(rows[0]["t"], "LINK");
     assert_eq!(rows[0]["w"], 2);
 }
@@ -375,7 +375,7 @@ fn graph_valid_after_many_merges() {
 #[test]
 fn large_graph_create_and_query() {
     let db = TestDb::new();
-    db.run("UNWIND range(0, 99) AS i CREATE (:LargeNode {id: i})");
+    db.run("UNWIND list.range(0, 99) AS i CREATE (:LargeNode {id: i})");
     db.assert_count("MATCH (n:LargeNode) RETURN n", 100);
     // Filtered query
     db.assert_count("MATCH (n:LargeNode) WHERE n.id >= 50 RETURN n", 50);
@@ -488,7 +488,7 @@ fn property_types_preserved_after_set() {
 fn node_count_consistency_through_create_delete_cycles() {
     let db = TestDb::new();
     // Create 5, delete 3, create 2, delete 1 — should have 3 remaining
-    db.run("UNWIND range(1, 5) AS i CREATE (:Cycle {id: i})");
+    db.run("UNWIND list.range(1, 5) AS i CREATE (:Cycle {id: i})");
     db.assert_count("MATCH (c:Cycle) RETURN c", 5);
     db.run("MATCH (c:Cycle) WHERE c.id <= 3 DELETE c");
     db.assert_count("MATCH (c:Cycle) RETURN c", 2);
@@ -621,8 +621,8 @@ fn constraint_violation_rollback() {
 #[test]
 fn node_ids_unique_across_creates() {
     let db = TestDb::new();
-    db.run("UNWIND range(1, 50) AS i CREATE (:ID {i: i})");
-    let rows = db.run("MATCH (n:ID) RETURN id(n) AS nid");
+    db.run("UNWIND list.range(1, 50) AS i CREATE (:ID {i: i})");
+    let rows = db.run("MATCH (n:ID) RETURN value.id(n) AS nid");
     let mut ids: Vec<i64> = rows.iter().map(|r| r["nid"].as_i64().unwrap()).collect();
     ids.sort();
     ids.dedup();
@@ -633,10 +633,10 @@ fn node_ids_unique_across_creates() {
 fn node_id_stable_after_set() {
     let db = TestDb::new();
     db.run("CREATE (:Stable {val: 1})");
-    let rows = db.run("MATCH (n:Stable) RETURN id(n) AS nid");
+    let rows = db.run("MATCH (n:Stable) RETURN value.id(n) AS nid");
     let id_before = rows[0]["nid"].as_i64().unwrap();
     db.run("MATCH (n:Stable) SET n.val = 2");
-    let rows = db.run("MATCH (n:Stable) RETURN id(n) AS nid");
+    let rows = db.run("MATCH (n:Stable) RETURN value.id(n) AS nid");
     let id_after = rows[0]["nid"].as_i64().unwrap();
     assert_eq!(id_before, id_after);
 }
@@ -649,7 +649,7 @@ fn node_id_stable_after_set() {
 fn fan_out_50_spokes_query_performance() {
     let db = TestDb::new();
     db.run("CREATE (:Hub {name:'center'})");
-    db.run("UNWIND range(1, 50) AS i MATCH (h:Hub) CREATE (h)-[:SPOKE]->(:Leaf {id: i})");
+    db.run("UNWIND list.range(1, 50) AS i MATCH (h:Hub) CREATE (h)-[:SPOKE]->(:Leaf {id: i})");
     // Verify all spokes
     db.assert_count("MATCH (:Hub)-[:SPOKE]->(l:Leaf) RETURN l", 50);
     // Aggregation over fan-out

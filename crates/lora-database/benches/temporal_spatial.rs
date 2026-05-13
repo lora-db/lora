@@ -51,7 +51,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN date('2024-06-15') AS d", opts())
+                    .execute("RETURN '2024-06-15'::DATE AS d", opts())
                     .unwrap(),
             );
         });
@@ -63,7 +63,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN date({year: 2024, month: 6, day: 15}) AS d", opts())
+                    .execute("RETURN {year: 2024, month: 6, day: 15}::DATE AS d", opts())
                     .unwrap(),
             );
         });
@@ -75,7 +75,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN time('14:30:00') AS t", opts())
+                    .execute("RETURN '14:30:00'::TIME AS t", opts())
                     .unwrap(),
             );
         });
@@ -87,7 +87,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN datetime('2024-06-15T14:30:00Z') AS dt", opts())
+                    .execute("RETURN '2024-06-15T14:30:00Z'::DATETIME AS dt", opts())
                     .unwrap(),
             );
         });
@@ -100,7 +100,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN datetime({year: 2024, month: 6, day: 15, hour: 14, minute: 30}) AS dt",
+                        "RETURN {year: 2024, month: 6, day: 15, hour: 14, minute: 30}::DATETIME AS dt",
                         opts(),
                     )
                     .unwrap(),
@@ -114,7 +114,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN duration('P1Y2M3DT4H') AS dur", opts())
+                    .execute("RETURN 'P1Y2M3DT4H'::DURATION AS dur", opts())
                     .unwrap(),
             );
         });
@@ -127,7 +127,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN duration({years: 1, months: 2, days: 3, hours: 4}) AS dur",
+                        "RETURN {years: 1, months: 2, days: 3, hours: 4}::DURATION AS dur",
                         opts(),
                     )
                     .unwrap(),
@@ -143,10 +143,10 @@ fn bench_temporal_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN date('2024-01-01') AS d, \
-                         time('10:30:00') AS t, \
-                         datetime('2024-06-15T14:30:00Z') AS dt, \
-                         duration('P30D') AS dur",
+                        "RETURN '2024-01-01'::DATE AS d, \
+                         '10:30:00'::TIME AS t, \
+                         '2024-06-15T14:30:00Z'::DATETIME AS dt, \
+                         'P30D'::DURATION AS dur",
                         opts(),
                     )
                     .unwrap(),
@@ -162,7 +162,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "WITH date('2024-06-15') AS d \
+                        "WITH '2024-06-15'::DATE AS d \
                          RETURN d.year AS y, d.month AS m, d.day AS day, \
                                 d.dayOfWeek AS dow, d.dayOfYear AS doy",
                         opts(),
@@ -180,7 +180,7 @@ fn bench_temporal_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "WITH datetime('2024-06-15T14:30:45Z') AS dt \
+                        "WITH '2024-06-15T14:30:45Z'::DATETIME AS dt \
                          RETURN dt.year AS y, dt.month AS m, dt.day AS d, \
                                 dt.hour AS h, dt.minute AS min, dt.second AS s",
                         opts(),
@@ -223,7 +223,7 @@ fn bench_temporal_filtering(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH (e:Event) \
-                             WHERE e.event_date > date('2024-01-14') \
+                             WHERE e.event_date > '2024-01-14'::DATE \
                              RETURN e.id, e.event_date",
                             opts(),
                         )
@@ -243,8 +243,8 @@ fn bench_temporal_filtering(c: &mut Criterion) {
                     .service
                     .execute(
                         "MATCH (e:Event) \
-                         WHERE e.event_date >= date('2024-01-05') \
-                           AND e.event_date <= date('2024-01-20') \
+                         WHERE e.event_date >= '2024-01-05'::DATE \
+                           AND e.event_date <= '2024-01-20'::DATE \
                          RETURN e.id, e.name",
                         opts(),
                     )
@@ -260,7 +260,7 @@ fn bench_temporal_filtering(c: &mut Criterion) {
                     .service
                     .execute(
                         "MATCH (e:Event) \
-                         WHERE e.event_date = date('2024-01-15') \
+                         WHERE e.event_date = '2024-01-15'::DATE \
                          RETURN e.id",
                         opts(),
                     )
@@ -310,8 +310,8 @@ fn bench_temporal_filtering(c: &mut Criterion) {
                 black_box(
                     db.service
                         .execute(
-                            "UNWIND range(1, 28) AS d \
-                             WITH date('2024-01-' + CASE WHEN d < 10 THEN '0' + toString(d) ELSE toString(d) END) AS dt \
+                            "UNWIND list.range(1, 28) AS d \
+                             WITH ('2024-01-' + CASE WHEN d < 10 THEN '0' + type.cast(d, STRING) ELSE type.cast(d, STRING) END)::DATE AS dt \
                              RETURN dt.year AS y, dt.month AS m, dt.day AS day",
                             opts(),
                         )
@@ -342,7 +342,7 @@ fn bench_temporal_arithmetic(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN date('2024-01-15') + duration('P30D') AS future_date",
+                        "RETURN '2024-01-15'::DATE + 'P30D'::DURATION AS future_date",
                         opts(),
                     )
                     .unwrap(),
@@ -357,7 +357,7 @@ fn bench_temporal_arithmetic(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN date('2024-06-15') - duration('P2M') AS past_date",
+                        "RETURN '2024-06-15'::DATE - 'P2M'::DURATION AS past_date",
                         opts(),
                     )
                     .unwrap(),
@@ -372,7 +372,7 @@ fn bench_temporal_arithmetic(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN duration.between(date('2024-01-01'), date('2024-12-31')) AS span",
+                        "RETURN temporal.between('2024-01-01'::DATE, '2024-12-31'::DATE) AS span",
                         opts(),
                     )
                     .unwrap(),
@@ -386,7 +386,7 @@ fn bench_temporal_arithmetic(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN duration('P1Y') + duration('P6M') AS total", opts())
+                    .execute("RETURN 'P1Y'::DURATION + 'P6M'::DURATION AS total", opts())
                     .unwrap(),
             );
         });
@@ -404,7 +404,7 @@ fn bench_temporal_arithmetic(c: &mut Criterion) {
                     .service
                     .execute(
                         "MATCH (e:Event) \
-                         RETURN e.id, e.event_date + duration('P7D') AS next_week",
+                         RETURN e.id, e.event_date + 'P7D'::DURATION AS next_week",
                         opts(),
                     )
                     .unwrap(),
@@ -419,7 +419,7 @@ fn bench_temporal_arithmetic(c: &mut Criterion) {
                     .service
                     .execute(
                         "MATCH (e:Event) \
-                         RETURN e.id, e.created_at + duration('P30D') AS expiry",
+                         RETURN e.id, e.created_at + 'P30D'::DURATION AS expiry",
                         opts(),
                     )
                     .unwrap(),
@@ -446,7 +446,7 @@ fn bench_spatial_creation(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 db.service
-                    .execute("RETURN point({x: 3.0, y: 4.0}) AS p", opts())
+                    .execute("RETURN {x: 3.0, y: 4.0}::POINT AS p", opts())
                     .unwrap(),
             );
         });
@@ -459,7 +459,7 @@ fn bench_spatial_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN point({latitude: 48.8566, longitude: 2.3522}) AS p",
+                        "RETURN {latitude: 48.8566, longitude: 2.3522}::POINT AS p",
                         opts(),
                     )
                     .unwrap(),
@@ -475,7 +475,7 @@ fn bench_spatial_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "WITH point({latitude: 48.8566, longitude: 2.3522}) AS p \
+                        "WITH {latitude: 48.8566, longitude: 2.3522}::POINT AS p \
                          RETURN p.latitude AS lat, p.longitude AS lon, p.srid AS srid",
                         opts(),
                     )
@@ -492,9 +492,9 @@ fn bench_spatial_creation(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN point({x: 1.0, y: 2.0}) AS p1, \
-                                point({x: 3.0, y: 4.0}) AS p2, \
-                                point({latitude: 51.5, longitude: -0.1}) AS p3",
+                        "RETURN {x: 1.0, y: 2.0}::POINT AS p1, \
+                                {x: 3.0, y: 4.0}::POINT AS p2, \
+                                {latitude: 51.5, longitude: -0.1}::POINT AS p3",
                         opts(),
                     )
                     .unwrap(),
@@ -523,7 +523,7 @@ fn bench_spatial_distance(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN distance(point({x: 0.0, y: 0.0}), point({x: 3.0, y: 4.0})) AS d",
+                        "RETURN geo.distance({x: 0.0, y: 0.0}::POINT, {x: 3.0, y: 4.0}::POINT) AS d",
                         opts(),
                     )
                     .unwrap(),
@@ -538,9 +538,9 @@ fn bench_spatial_distance(c: &mut Criterion) {
             black_box(
                 db.service
                     .execute(
-                        "RETURN distance(\
-                           point({latitude: 48.8566, longitude: 2.3522}), \
-                           point({latitude: 51.5074, longitude: -0.1278})\
+                        "RETURN geo.distance(\
+                           {latitude: 48.8566, longitude: 2.3522}::POINT, \
+                           {latitude: 51.5074, longitude: -0.1278}::POINT\
                          ) AS d",
                         opts(),
                     )
@@ -562,7 +562,7 @@ fn bench_spatial_distance(c: &mut Criterion) {
                         db.service
                             .execute(
                                 "MATCH (a:Location)-[:CONNECTS_TO]->(b:Location) \
-                                 RETURN a.id, b.id, distance(a.pos, b.pos) AS dist",
+                                 RETURN a.id, b.id, geo.distance(a.pos, b.pos) AS dist",
                                 opts(),
                             )
                             .unwrap(),
@@ -582,7 +582,7 @@ fn bench_spatial_distance(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH (a:Location)-[:CONNECTS_TO]->(b:Location) \
-                             RETURN a.id, b.id, distance(a.geo, b.geo) AS meters",
+                             RETURN a.id, b.id, geo.distance(a.geo, b.geo) AS meters",
                             opts(),
                         )
                         .unwrap(),
@@ -615,7 +615,7 @@ fn bench_spatial_filtering(c: &mut Criterion) {
                     .service
                     .execute(
                         "MATCH (a:Location {id: 0}), (b:Location) \
-                         WHERE a <> b AND distance(a.pos, b.pos) < 20.0 \
+                         WHERE a <> b AND geo.distance(a.pos, b.pos) < 20.0 \
                          RETURN b.id, b.name",
                         opts(),
                     )
@@ -633,7 +633,7 @@ fn bench_spatial_filtering(c: &mut Criterion) {
                     .execute(
                         "MATCH (a:Location {id: 0}), (b:Location) \
                          WHERE a <> b \
-                         RETURN b.id, distance(a.pos, b.pos) AS dist \
+                         RETURN b.id, geo.distance(a.pos, b.pos) AS dist \
                          ORDER BY dist ASC LIMIT 10",
                         opts(),
                     )
@@ -651,7 +651,7 @@ fn bench_spatial_filtering(c: &mut Criterion) {
                     .execute(
                         "MATCH (a:Location {id: 0}), (b:Location) \
                          WHERE b.category = 'restaurant' \
-                           AND distance(a.pos, b.pos) < 30.0 \
+                           AND geo.distance(a.pos, b.pos) < 30.0 \
                          RETURN b.id, b.name",
                         opts(),
                     )
@@ -691,7 +691,7 @@ fn bench_shortest_path(c: &mut Criterion) {
                         db.service
                             .execute(
                                 "MATCH p = shortestPath((a:Chain {idx:0})-[:NEXT*]->(b:Chain {idx:10})) \
-                                 RETURN length(p) AS len",
+                                 RETURN value.size(p) AS len",
                                 opts(),
                             )
                             .unwrap(),
@@ -713,7 +713,7 @@ fn bench_shortest_path(c: &mut Criterion) {
                         db.service
                             .execute(
                                 "MATCH p = shortestPath((a:Person {id:0})-[:KNOWS*1..6]->(b:Person {id:10})) \
-                                 RETURN length(p) AS len",
+                                 RETURN value.size(p) AS len",
                                 opts(),
                             )
                             .unwrap(),
@@ -732,7 +732,7 @@ fn bench_shortest_path(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH p = allShortestPaths((a:Person {id:0})-[:KNOWS*1..6]->(b:Person {id:10})) \
-                             RETURN length(p) AS len",
+                             RETURN value.size(p) AS len",
                             opts(),
                         )
                         .unwrap(),
@@ -750,7 +750,7 @@ fn bench_shortest_path(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH p = shortestPath((root:Tree {id:0})-[:CHILD*1..4]->(leaf:Tree {depth:4})) \
-                             RETURN length(p) AS len",
+                             RETURN value.size(p) AS len",
                             opts(),
                         )
                         .unwrap(),
@@ -768,7 +768,7 @@ fn bench_shortest_path(c: &mut Criterion) {
                     db.service
                         .execute(
                             "MATCH p = shortestPath((a:Package {id:99})-[:DEPENDS_ON*1..10]->(b:Package {id:0})) \
-                             RETURN length(p) AS len",
+                             RETURN value.size(p) AS len",
                             opts(),
                         )
                         .unwrap(),

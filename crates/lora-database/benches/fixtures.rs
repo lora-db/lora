@@ -112,7 +112,7 @@ pub fn build_node_graph(n: usize) -> BenchDb {
     while i < n {
         let end = (i + batch).min(n);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i CREATE (:Node {{id: i, name: 'node_' + toString(i), value: i % 100}})",
+            "UNWIND list.range({i}, {}) AS i CREATE (:Node {{id: i, name: 'node_' + type.cast(i, STRING), value: i % 100}})",
             end - 1
         ));
         i = end;
@@ -128,7 +128,7 @@ pub fn build_chain(len: usize) -> BenchDb {
     while i < len {
         let end = (i + batch).min(len);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i CREATE (:Chain {{idx: i}})",
+            "UNWIND list.range({i}, {}) AS i CREATE (:Chain {{idx: i}})",
             end - 1
         ));
         i = end;
@@ -139,7 +139,7 @@ pub fn build_chain(len: usize) -> BenchDb {
         while i < len - 1 {
             let end = (i + batch).min(len - 1);
             db.run(&format!(
-                "UNWIND range({i}, {}) AS i \
+                "UNWIND list.range({i}, {}) AS i \
                  MATCH (a:Chain {{idx: i}}), (b:Chain {{idx: i + 1}}) \
                  CREATE (a)-[:NEXT]->(b)",
                 end - 1
@@ -158,7 +158,7 @@ pub fn build_cycle(len: usize) -> BenchDb {
     while i < len {
         let end = (i + batch).min(len);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i CREATE (:Ring {{idx: i}})",
+            "UNWIND list.range({i}, {}) AS i CREATE (:Ring {{idx: i}})",
             end - 1
         ));
         i = end;
@@ -169,7 +169,7 @@ pub fn build_cycle(len: usize) -> BenchDb {
         while i < len - 1 {
             let end = (i + batch).min(len - 1);
             db.run(&format!(
-                "UNWIND range({i}, {}) AS i \
+                "UNWIND list.range({i}, {}) AS i \
                  MATCH (a:Ring {{idx: i}}), (b:Ring {{idx: i + 1}}) \
                  CREATE (a)-[:LOOP]->(b)",
                 end - 1
@@ -197,7 +197,7 @@ pub fn build_star(spokes: usize) -> BenchDb {
     while i < spokes {
         let end = (i + batch).min(spokes);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
+            "UNWIND list.range({i}, {}) AS i \
              MATCH (h:Hub) CREATE (h)-[:ARM]->(:Leaf {{id: i}})",
             end - 1
         ));
@@ -223,8 +223,8 @@ pub fn build_social_graph(n: usize, avg_friends: usize) -> BenchDb {
     while i < n {
         let end = (i + batch).min(n);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
-             CREATE (:Person {{id: i, name: 'person_' + toString(i), age: 20 + (i % 41), city: CASE i % 5 \
+            "UNWIND list.range({i}, {}) AS i \
+             CREATE (:Person {{id: i, name: 'person_' + type.cast(i, STRING), age: 20 + (i % 41), city: CASE i % 5 \
                 WHEN 0 THEN '{c0}' WHEN 1 THEN '{c1}' WHEN 2 THEN '{c2}' \
                 WHEN 3 THEN '{c3}' ELSE '{c4}' END}})",
             end - 1,
@@ -245,7 +245,7 @@ pub fn build_social_graph(n: usize, avg_friends: usize) -> BenchDb {
             let end = (i + batch).min(n);
             for j in 1..=avg_friends.min(n - 1) {
                 db.run(&format!(
-                    "UNWIND range({i}, {}) AS i \
+                    "UNWIND list.range({i}, {}) AS i \
                      MATCH (a:Person {{id: i}}), (b:Person {{id: (i + {j}) % {n}}}) \
                      CREATE (a)-[:KNOWS {{strength: (i + {j}) % 10}}]->(b)",
                     end - 1,
@@ -306,8 +306,8 @@ pub fn build_dependency_graph(n: usize) -> BenchDb {
     while i < n {
         let end = (i + batch).min(n);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
-             CREATE (:Package {{id: i, name: 'pkg_' + toString(i), version: '1.' + toString(i % 10)}})",
+            "UNWIND list.range({i}, {}) AS i \
+             CREATE (:Package {{id: i, name: 'pkg_' + type.cast(i, STRING), version: '1.' + type.cast(i % 10, STRING)}})",
             end - 1
         ));
         i = end;
@@ -409,8 +409,8 @@ pub fn build_org_graph() -> BenchDb {
 /// Build a graph of `:Event` nodes with temporal properties.
 ///
 /// Each event has:
-///   `{id, name, event_date: date('2024-01-DD'), start_time: time('HH:00:00'),
-///    created_at: datetime('2024-MM-DDT10:00:00Z')}`
+///   `{id, name, event_date: '2024-01-DD'::DATE, start_time: 'HH:00:00'::TIME,
+///    created_at: '2024-MM-DDT10:00:00Z'::DATETIME}`
 ///
 /// Events are linked sequentially with `:FOLLOWS` relationships.
 pub fn build_temporal_graph(n: usize) -> BenchDb {
@@ -420,12 +420,12 @@ pub fn build_temporal_graph(n: usize) -> BenchDb {
     while i < n {
         let end = (i + batch).min(n);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
+            "UNWIND list.range({i}, {}) AS i \
              CREATE (:Event {{id: i, \
-                name: 'event_' + toString(i), \
-                event_date: date('2024-01-' + CASE WHEN (i % 28) + 1 < 10 THEN '0' + toString((i % 28) + 1) ELSE toString((i % 28) + 1) END), \
-                start_time: time(CASE WHEN i % 24 < 10 THEN '0' + toString(i % 24) ELSE toString(i % 24) END + ':00:00'), \
-                created_at: datetime('2024-' + CASE WHEN (i % 12) + 1 < 10 THEN '0' + toString((i % 12) + 1) ELSE toString((i % 12) + 1) END + '-15T10:00:00Z'), \
+                name: 'event_' + type.cast(i, STRING), \
+                event_date: ('2024-01-' + CASE WHEN (i % 28) + 1 < 10 THEN '0' + type.cast((i % 28) + 1, STRING) ELSE type.cast((i % 28) + 1, STRING) END)::DATE, \
+                start_time: (CASE WHEN i % 24 < 10 THEN '0' + type.cast(i % 24, STRING) ELSE type.cast(i % 24, STRING) END + ':00:00')::TIME, \
+                created_at: ('2024-' + CASE WHEN (i % 12) + 1 < 10 THEN '0' + type.cast((i % 12) + 1, STRING) ELSE type.cast((i % 12) + 1, STRING) END + '-15T10:00:00Z')::DATETIME, \
                 priority: i % 5}})",
             end - 1
         ));
@@ -437,7 +437,7 @@ pub fn build_temporal_graph(n: usize) -> BenchDb {
         while i < n - 1 {
             let end = (i + batch).min(n - 1);
             db.run(&format!(
-                "UNWIND range({i}, {}) AS i \
+                "UNWIND list.range({i}, {}) AS i \
                  MATCH (a:Event {{id: i}}), (b:Event {{id: i + 1}}) \
                  CREATE (a)-[:FOLLOWS {{gap_days: (i % 7) + 1}}]->(b)",
                 end - 1
@@ -465,11 +465,11 @@ pub fn build_spatial_graph(n: usize) -> BenchDb {
         let end = (i + batch).min(n);
         // Distribute points in a grid pattern for deterministic distances
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
+            "UNWIND list.range({i}, {}) AS i \
              CREATE (:Location {{id: i, \
-                name: 'loc_' + toString(i), \
-                pos: point({{x: toFloat(i % 100), y: toFloat(i / 100)}}), \
-                geo: point({{latitude: 48.0 + toFloat(i % 50) / 10.0, longitude: 2.0 + toFloat(i / 50) / 10.0}}), \
+                name: 'loc_' + type.cast(i, STRING), \
+                pos: {{x: type.cast(i % 100, FLOAT), y: type.cast(i / 100, FLOAT)}}::POINT, \
+                geo: {{latitude: 48.0 + type.cast(i % 50, FLOAT) / 10.0, longitude: 2.0 + type.cast(i / 50, FLOAT) / 10.0}}::POINT, \
                 category: CASE i % 4 WHEN 0 THEN 'restaurant' WHEN 1 THEN 'hotel' WHEN 2 THEN 'museum' ELSE 'park' END \
              }})",
             end - 1
@@ -482,7 +482,7 @@ pub fn build_spatial_graph(n: usize) -> BenchDb {
         while i < n {
             let end = (i + batch).min(n);
             db.run(&format!(
-                "UNWIND range({i}, {}) AS i \
+                "UNWIND list.range({i}, {}) AS i \
                  MATCH (a:Location {{id: i}}), (b:Location {{id: (i + 1) % {n}}}) \
                  CREATE (a)-[:CONNECTS_TO {{weight: (i % 10) + 1}}]->(b)",
                 end - 1
@@ -520,9 +520,9 @@ pub fn build_recommendation_graph(n_users: usize, n_products: usize) -> BenchDb 
     while i < n_users {
         let end = (i + batch).min(n_users);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
+            "UNWIND list.range({i}, {}) AS i \
              CREATE (:User {{id: i, \
-                name: 'user_' + toString(i), \
+                name: 'user_' + type.cast(i, STRING), \
                 age: 18 + (i % 50), \
                 tier: CASE i % 3 WHEN 0 THEN 'gold' WHEN 1 THEN 'silver' ELSE 'bronze' END \
              }})",
@@ -536,9 +536,9 @@ pub fn build_recommendation_graph(n_users: usize, n_products: usize) -> BenchDb 
     while i < n_products {
         let end = (i + batch).min(n_products);
         db.run(&format!(
-            "UNWIND range({i}, {}) AS i \
+            "UNWIND list.range({i}, {}) AS i \
              CREATE (:Product {{id: i, \
-                name: 'product_' + toString(i), \
+                name: 'product_' + type.cast(i, STRING), \
                 price: 10 + (i % 200), \
                 category: CASE i % 5 \
                     WHEN 0 THEN '{c0}' WHEN 1 THEN '{c1}' WHEN 2 THEN '{c2}' \
@@ -562,7 +562,7 @@ pub fn build_recommendation_graph(n_users: usize, n_products: usize) -> BenchDb 
             let n_buys = 5; // fixed for determinism
             for b in 0..n_buys {
                 db.run(&format!(
-                    "UNWIND range({i}, {}) AS i \
+                    "UNWIND list.range({i}, {}) AS i \
                      MATCH (u:User {{id: i}}), (p:Product {{id: (i * {n_buys} + {b}) % {n_products}}}) \
                      CREATE (u)-[:BOUGHT {{quantity: (i + {b}) % 5 + 1}}]->(p)",
                     end - 1,
@@ -571,7 +571,7 @@ pub fn build_recommendation_graph(n_users: usize, n_products: usize) -> BenchDb 
             // Reviews for a subset (first 2 purchases)
             for b in 0..2usize {
                 db.run(&format!(
-                    "UNWIND range({i}, {}) AS i \
+                    "UNWIND list.range({i}, {}) AS i \
                      MATCH (u:User {{id: i}}), (p:Product {{id: (i * {n_buys} + {b}) % {n_products}}}) \
                      CREATE (u)-[:REVIEWED {{rating: (i + {b}) % 5 + 1}}]->(p)",
                     end - 1,
@@ -588,10 +588,10 @@ pub fn build_recommendation_graph(n_users: usize, n_products: usize) -> BenchDb 
             let end = (i + batch).min(n_products);
             // Connect products that share a category (those 5 apart)
             db.run(&format!(
-                "UNWIND range({i}, {}) AS i \
+                "UNWIND list.range({i}, {}) AS i \
                  MATCH (a:Product {{id: i}}), (b:Product {{id: (i + 5) % {n_products}}}) \
                  WHERE a.category = b.category \
-                 CREATE (a)-[:SIMILAR_TO {{score: toFloat((i % 10) + 1) / 10.0}}]->(b)",
+                 CREATE (a)-[:SIMILAR_TO {{score: type.cast((i % 10) + 1, FLOAT) / 10.0}}]->(b)",
                 end.min(n_products) - 1,
             ));
             i = end;

@@ -173,7 +173,7 @@ fn bench_match_and_paths(c: &mut Criterion) {
         ),
         (
             "path_materialization",
-            "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain) RETURN length(p) AS len, nodes(p) AS ns",
+            "MATCH p = (a:Chain {idx:0})-[:NEXT*1..3]->(b:Chain) RETURN value.size(p) AS len, path.nodes(p) AS ns",
         ),
     ] {
         group.bench_function(name, |b| {
@@ -276,7 +276,7 @@ fn bench_aggregation_with_union_unwind(c: &mut Criterion) {
         ),
         (
             "unwind_literal_pipeline",
-            "UNWIND range(1, 1000) AS i WITH i WHERE i % 2 = 0 RETURN count(i) AS even",
+            "UNWIND list.range(1, 1000) AS i WITH i WHERE i % 2 = 0 RETURN count(i) AS even",
         ),
     ] {
         group.bench_function(name, |b| {
@@ -406,7 +406,12 @@ fn bench_writes(c: &mut Criterion) {
     group.bench_function("batch_create_unwind_100", |b| {
         b.iter_batched(
             BenchDb::new,
-            |db| run(&db, "UNWIND range(1, 100) AS i CREATE (:Batch {id: i})"),
+            |db| {
+                run(
+                    &db,
+                    "UNWIND list.range(1, 100) AS i CREATE (:Batch {id: i})",
+                )
+            },
             BatchSize::SmallInput,
         );
     });
@@ -430,23 +435,23 @@ fn bench_expressions_and_functions(c: &mut Criterion) {
         ),
         (
             "string_pipeline",
-            "MATCH (n:Node) RETURN toUpper(substring(n.name, 0, 6)) AS prefix, size(n.name) AS len",
+            "MATCH (n:Node) RETURN string.upper(string.slice(n.name, 0, 6)) AS prefix, value.size(n.name) AS len",
         ),
         (
             "math_pipeline",
-            "MATCH (n:Node) RETURN ceil(toFloat(n.value) / 3.0) AS c, abs(n.value - 50) AS d",
+            "MATCH (n:Node) RETURN math.ceil(type.cast(n.value, FLOAT) / 3.0) AS c, math.abs(n.value - 50) AS d",
         ),
         (
             "type_conversion",
-            "MATCH (n:Node) RETURN toString(n.id) AS id, toFloat(n.value) AS value, valueType(n.name) AS typ",
+            "MATCH (n:Node) RETURN type.cast(n.id, STRING) AS id, type.cast(n.value, FLOAT) AS value, type.of(n.name) AS typ",
         ),
         (
             "list_functions",
-            "RETURN head(range(1, 100)), tail(range(1, 20)), reverse(range(1, 20)), size(range(1, 100))",
+            "RETURN list.first(list.range(1, 100)), list.rest(list.range(1, 20)), value.reverse(list.range(1, 20)), value.size(list.range(1, 100))",
         ),
         (
             "list_predicates",
-            "WITH range(1, 100) AS nums RETURN any(x IN nums WHERE x > 90), all(x IN nums WHERE x > 0), none(x IN nums WHERE x < 0)",
+            "WITH list.range(1, 100) AS nums RETURN any(x IN nums WHERE x > 90), all(x IN nums WHERE x > 0), none(x IN nums WHERE x < 0)",
         ),
         (
             "regex_filter",
@@ -470,7 +475,7 @@ fn bench_typed_values(c: &mut Criterion) {
         b.iter(|| {
             run(
                 &temporal,
-                "MATCH (e:Event) WHERE e.event_date >= date('2024-01-15') RETURN e.name, duration.between(date('2024-01-01'), e.event_date) AS age",
+                "MATCH (e:Event) WHERE e.event_date >= '2024-01-15'::DATE RETURN e.name, temporal.between('2024-01-01'::DATE, e.event_date) AS age",
             );
         });
     });
@@ -480,18 +485,18 @@ fn bench_typed_values(c: &mut Criterion) {
         b.iter(|| {
             run(
                 &spatial,
-                "MATCH (l:Location) WITH l, distance(l.pos, point({x: 0.0, y: 0.0})) AS dist WHERE dist < 100.0 RETURN l.name, dist ORDER BY dist LIMIT 10",
+                "MATCH (l:Location) WITH l, geo.distance(l.pos, {x: 0.0, y: 0.0}::POINT) AS dist WHERE dist < 100.0 RETURN l.name, dist ORDER BY dist LIMIT 10",
             );
         });
     });
 
     let vector_db = BenchDb::new();
-    vector_db.run("CREATE (:Doc {id: 1, embedding: vector([1, 2, 3], 3, INTEGER)})");
+    vector_db.run("CREATE (:Doc {id: 1, embedding: [1, 2, 3]::VECTOR<INTEGER>(3)})");
     group.bench_function("vector_construct_and_similarity", |b| {
         b.iter(|| {
             run(
                 &vector_db,
-                "MATCH (d:Doc) RETURN vector.similarity.cosine(d.embedding, vector([1, 2, 3], 3, INTEGER)) AS score",
+                "MATCH (d:Doc) RETURN vector.similarity(d.embedding, [1, 2, 3]::VECTOR<INTEGER>(3)) AS score",
             );
         });
     });
@@ -500,7 +505,7 @@ fn bench_typed_values(c: &mut Criterion) {
         b.iter(|| {
             run_params(
                 &vector_db,
-                "RETURN vector($values, 5, INTEGER8) AS v",
+                "RETURN $values::VECTOR<INTEGER8>(5) AS v",
                 BTreeMap::from([(
                     "values".into(),
                     LoraValue::List(vec![
@@ -524,7 +529,7 @@ fn bench_typed_values(c: &mut Criterion) {
         b.iter(|| {
             run_params(
                 &binary_db,
-                "MATCH (d:Doc {payload: $payload}) RETURN d.payload AS payload, valueType($payload) AS typ",
+                "MATCH (d:Doc {payload: $payload}) RETURN d.payload AS payload, type.of($payload) AS typ",
                 BTreeMap::from([("payload".into(), binary_value())]),
             );
         });

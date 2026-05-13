@@ -550,14 +550,14 @@ fn error_unknown_function() {
 #[test]
 fn error_invalid_date_string() {
     let db = TestDb::new();
-    let err = db.run_err("RETURN date('not-a-date')");
+    let err = db.run_err("RETURN 'not-a-date'::DATE");
     assert!(!err.is_empty());
 }
 
 #[test]
 fn error_invalid_point_missing_coords() {
     let db = TestDb::new();
-    let err = db.run_err("RETURN point({z: 1.0})");
+    let err = db.run_err("RETURN {z: 1.0}::POINT");
     assert!(!err.is_empty());
 }
 
@@ -699,7 +699,7 @@ fn error_nested_division_by_zero() {
 
 #[test]
 fn error_size_no_argument() {
-    let err = TestDb::new().run_err("RETURN size()");
+    let err = TestDb::new().run_err("RETURN value.size()");
     assert!(!err.is_empty());
 }
 

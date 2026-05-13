@@ -780,7 +780,7 @@ fn remove_label_and_verify() {
     let db = TestDb::new();
     db.run("CREATE (:A:B {name: 'both'})");
     db.run("MATCH (n:A:B) REMOVE n:B");
-    let rows = db.run("MATCH (n:A) RETURN labels(n) AS l");
+    let rows = db.run("MATCH (n:A) RETURN node.labels(n) AS l");
     let labels = rows[0]["l"].as_array().unwrap();
     assert!(!labels.iter().any(|l| l == "B"));
 }
@@ -883,7 +883,7 @@ fn set_conditional_via_case_bucketing() {
 fn detach_delete_hub_in_star_preserves_leaves() {
     let db = TestDb::new();
     db.run("CREATE (:Hub {name:'center'})");
-    db.run("UNWIND range(1, 10) AS i MATCH (h:Hub) CREATE (h)-[:ARM]->(:Leaf {id: i})");
+    db.run("UNWIND list.range(1, 10) AS i MATCH (h:Hub) CREATE (h)-[:ARM]->(:Leaf {id: i})");
     db.assert_count("MATCH (:Hub)-[:ARM]->(:Leaf) RETURN 1 AS x", 10);
     db.run("MATCH (h:Hub) DETACH DELETE h");
     db.assert_count("MATCH (l:Leaf) RETURN l", 10);

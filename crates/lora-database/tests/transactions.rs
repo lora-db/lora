@@ -78,7 +78,7 @@ fn database_stream_returns_rows_and_columns() {
 fn execute_with_timeout_cancels_before_work_continues() {
     let db = Database::in_memory();
     db.execute(
-        "UNWIND range(1,100) AS i CREATE (:T {i: i})",
+        "UNWIND list.range(1,100) AS i CREATE (:T {i: i})",
         rows_options(),
     )
     .unwrap();
@@ -429,7 +429,7 @@ fn tx_stream_drop_after_transaction_handle_drop_discards_staged_state() {
 
     let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
     let mut stream = tx
-        .stream("UNWIND range(1, 3) AS i CREATE (:Dropped {i: i}) RETURN i AS i")
+        .stream("UNWIND list.range(1, 3) AS i CREATE (:Dropped {i: i}) RETURN i AS i")
         .unwrap();
     assert!(stream.next_row().unwrap().is_some());
 
@@ -456,13 +456,13 @@ fn tx_stream_runtime_error_releases_cursor_and_stays_terminal() {
 
     let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
     let mut stream = tx
-        .stream("MATCH (p:Person) RETURN point({x: p.name, y: 1}) AS pt")
+        .stream("MATCH (p:Person) RETURN {x: p.name, y: 1}::POINT AS pt")
         .unwrap();
 
     let err = stream.next_row().unwrap_err();
     assert!(
-        format!("{err:#}").contains("point() field 'x'"),
-        "expected point() validation error, got: {err:#}"
+        format!("{err:#}").contains("CAST( AS POINT) field 'x'"),
+        "expected CAST( AS POINT) validation error, got: {err:#}"
     );
 
     let terminal = stream.next_row().unwrap_err();
@@ -632,14 +632,14 @@ fn auto_commit_write_stream_open_failure_rolls_back_cleanly() {
 
     let err = db
         .stream(
-            "MATCH (t:T) WHERE point({x: t.x, y: 1}) IS NOT NULL \
+            "MATCH (t:T) WHERE {x: t.x, y: 1}::POINT IS NOT NULL \
              SET t.marker = true \
              RETURN t.ord AS ord",
         )
         .unwrap_err();
     assert!(
-        format!("{err:#}").contains("point() field 'x'"),
-        "expected point() validation error, got: {err:#}"
+        format!("{err:#}").contains("CAST( AS POINT) field 'x'"),
+        "expected CAST( AS POINT) validation error, got: {err:#}"
     );
 
     let rows = rows_json(
@@ -697,7 +697,7 @@ fn auto_commit_write_stream_with_wal_rolls_back_partial_consumption() {
     {
         let db = Database::open_with_wal(WalConfig::enabled(dir.path.clone())).unwrap();
         let mut stream = db
-            .stream("UNWIND range(1, 3) AS i CREATE (:Partial {i: i}) RETURN i AS i")
+            .stream("UNWIND list.range(1, 3) AS i CREATE (:Partial {i: i}) RETURN i AS i")
             .unwrap();
         assert!(stream.next_row().unwrap().is_some());
         drop(stream);
@@ -1254,8 +1254,11 @@ mod concurrency {
     #[test]
     fn live_read_stream_sees_snapshot_under_concurrent_writer() {
         let db = Arc::new(Database::in_memory());
-        db.execute("UNWIND range(1,10) AS i CREATE (:T {i: i})", rows_options())
-            .unwrap();
+        db.execute(
+            "UNWIND list.range(1,10) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
 
         // Open a Live read stream and pull one row to confirm it's
         // streaming (not a buffered fallback) and is mid-iteration.
@@ -1296,8 +1299,11 @@ mod concurrency {
     #[test]
     fn live_read_stream_sees_snapshot_under_auto_commit_write() {
         let db = Arc::new(Database::in_memory());
-        db.execute("UNWIND range(1,10) AS i CREATE (:T {i: i})", rows_options())
-            .unwrap();
+        db.execute(
+            "UNWIND list.range(1,10) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
 
         let mut stream = db.stream("MATCH (t:T) RETURN t.i AS i").unwrap();
         assert!(stream.next_row().unwrap().is_some());
@@ -1407,7 +1413,7 @@ mod streaming_writes {
 
     use super::{rows_json, rows_options};
 
-    /// `UNWIND range(...) AS i CREATE (:T {i: i})` exercises the
+    /// `UNWIND list.range(...) AS i CREATE (:T {i: i})` exercises the
     /// streaming-input path (Argument → Unwind → Create). Verify
     /// every node is created and the property values are correct.
     #[test]
@@ -1415,7 +1421,7 @@ mod streaming_writes {
         let db = Database::in_memory();
         let n: i64 = 5_000;
         db.execute(
-            &format!("UNWIND range(1, {n}) AS i CREATE (:T {{i: i}})"),
+            &format!("UNWIND list.range(1, {n}) AS i CREATE (:T {{i: i}})"),
             rows_options(),
         )
         .unwrap();
@@ -1443,7 +1449,7 @@ mod streaming_writes {
     fn match_filter_create_streams_input_correctly() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 200) AS i CREATE (:Src {i: i})",
+            "UNWIND list.range(1, 200) AS i CREATE (:Src {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1470,7 +1476,7 @@ mod streaming_writes {
     fn create_after_sort_with_limit_streams_correctly() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 50) AS i CREATE (:Src {i: i})",
+            "UNWIND list.range(1, 50) AS i CREATE (:Src {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1499,7 +1505,9 @@ mod streaming_writes {
         let db = Database::in_memory();
         let n = 250usize;
         let stream = db
-            .stream(&format!("UNWIND range(1, {n}) AS i CREATE (:T {{i: i}})"))
+            .stream(&format!(
+                "UNWIND list.range(1, {n}) AS i CREATE (:T {{i: i}})"
+            ))
             .unwrap();
         let count = stream.count();
         assert_eq!(count, n);
@@ -1516,7 +1524,7 @@ mod streaming_writes {
     fn auto_commit_stream_writes_lazily_then_rolls_back_on_drop() {
         let db = Database::in_memory();
         let mut stream = db
-            .stream("UNWIND range(1, 1000) AS i CREATE (n:T {i: i}) RETURN n.i AS i")
+            .stream("UNWIND list.range(1, 1000) AS i CREATE (n:T {i: i}) RETURN n.i AS i")
             .unwrap();
 
         // Pull a single row — exactly one CREATE should have happened
@@ -1542,7 +1550,7 @@ mod streaming_writes {
     fn auto_commit_stream_commits_on_full_exhaustion() {
         let db = Database::in_memory();
         let stream = db
-            .stream("UNWIND range(1, 100) AS i CREATE (n:T {i: i}) RETURN n.i AS i")
+            .stream("UNWIND list.range(1, 100) AS i CREATE (n:T {i: i}) RETURN n.i AS i")
             .unwrap();
 
         // Drain. After the last `next_row`, the guard runs `commit`.
@@ -1567,7 +1575,7 @@ mod streaming_writes {
         let n = 10_000usize;
         let stream = db
             .stream(&format!(
-                "UNWIND range(1, {n}) AS i CREATE (n:T {{i: i}}) RETURN n.i AS i"
+                "UNWIND list.range(1, {n}) AS i CREATE (n:T {{i: i}}) RETURN n.i AS i"
             ))
             .unwrap();
         let count = stream.count();
@@ -1588,7 +1596,7 @@ mod streaming_writes {
         let db = Database::in_memory();
         let n: i64 = 1_000;
         db.execute(
-            &format!("UNWIND range(1, {n}) AS i CREATE (:T {{i: i}})"),
+            &format!("UNWIND list.range(1, {n}) AS i CREATE (:T {{i: i}})"),
             rows_options(),
         )
         .unwrap();
@@ -1614,7 +1622,7 @@ mod streaming_writes {
     fn delete_with_streamable_input_removes_all_targets() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 500) AS i CREATE (:T {i: i})",
+            "UNWIND list.range(1, 500) AS i CREATE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1629,7 +1637,7 @@ mod streaming_writes {
     fn remove_with_streamable_input_completes() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 200) AS i CREATE (:T {i: i, scratch: 'x'})",
+            "UNWIND list.range(1, 200) AS i CREATE (:T {i: i, scratch: 'x'})",
             rows_options(),
         )
         .unwrap();
@@ -1657,7 +1665,7 @@ mod streaming_writes {
     fn auto_commit_set_stream_writes_lazily() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 100) AS i CREATE (:T {i: i})",
+            "UNWIND list.range(1, 100) AS i CREATE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1682,7 +1690,7 @@ mod streaming_writes {
     fn auto_commit_set_stream_commits_on_exhaustion() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 100) AS i CREATE (:T {i: i, marked: false})",
+            "UNWIND list.range(1, 100) AS i CREATE (:T {i: i, marked: false})",
             rows_options(),
         )
         .unwrap();
@@ -1712,7 +1720,7 @@ mod streaming_writes {
     fn auto_commit_delete_stream_rolls_back_on_drop() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 100) AS i CREATE (:T {i: i})",
+            "UNWIND list.range(1, 100) AS i CREATE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1731,7 +1739,7 @@ mod streaming_writes {
     fn auto_commit_delete_stream_commits_on_exhaustion() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 100) AS i CREATE (:T {i: i})",
+            "UNWIND list.range(1, 100) AS i CREATE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1748,7 +1756,7 @@ mod streaming_writes {
     fn auto_commit_merge_stream_writes_lazily() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 50) AS i CREATE (:T {i: i})",
+            "UNWIND list.range(1, 50) AS i CREATE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1756,7 +1764,7 @@ mod streaming_writes {
         // MERGE over 1..100: half should bind existing, half create.
         // Drop after one row → rollback discards everything.
         let mut stream = db
-            .stream("UNWIND range(1, 100) AS i MERGE (t:T {i: i}) RETURN t.i AS i")
+            .stream("UNWIND list.range(1, 100) AS i MERGE (t:T {i: i}) RETURN t.i AS i")
             .unwrap();
         assert!(stream.next_row().unwrap().is_some());
         drop(stream);
@@ -1769,13 +1777,13 @@ mod streaming_writes {
     fn auto_commit_merge_stream_commits_on_exhaustion() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 50) AS i CREATE (:T {i: i})",
+            "UNWIND list.range(1, 50) AS i CREATE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
 
         let stream = db
-            .stream("UNWIND range(1, 100) AS i MERGE (t:T {i: i}) RETURN t.i AS i")
+            .stream("UNWIND list.range(1, 100) AS i MERGE (t:T {i: i}) RETURN t.i AS i")
             .unwrap();
         let collected: Vec<i64> = stream
             .filter_map(|row| {
@@ -1797,7 +1805,7 @@ mod streaming_writes {
     fn auto_commit_sort_then_create_rolls_back_on_drop() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 100) AS i CREATE (:Src {i: i})",
+            "UNWIND list.range(1, 100) AS i CREATE (:Src {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1830,7 +1838,7 @@ mod streaming_writes {
         let db = Database::in_memory();
         // 100 nodes split across 5 distinct `kind` values.
         db.execute(
-            "UNWIND range(1, 100) AS i CREATE (:Src {kind: i % 5})",
+            "UNWIND list.range(1, 100) AS i CREATE (:Src {kind: i % 5})",
             rows_options(),
         )
         .unwrap();
@@ -1859,10 +1867,13 @@ mod streaming_writes {
     #[test]
     fn union_all_read_stream_yields_both_branches() {
         let db = Database::in_memory();
-        db.execute("UNWIND range(1, 5) AS i CREATE (:T {i: i})", rows_options())
-            .unwrap();
         db.execute(
-            "UNWIND range(10, 12) AS i CREATE (:U {i: i})",
+            "UNWIND list.range(1, 5) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+        db.execute(
+            "UNWIND list.range(10, 12) AS i CREATE (:U {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -1892,10 +1903,16 @@ mod streaming_writes {
     #[test]
     fn union_dedup_collapses_overlap() {
         let db = Database::in_memory();
-        db.execute("UNWIND range(1, 5) AS i CREATE (:T {i: i})", rows_options())
-            .unwrap();
-        db.execute("UNWIND range(3, 7) AS i CREATE (:U {i: i})", rows_options())
-            .unwrap();
+        db.execute(
+            "UNWIND list.range(1, 5) AS i CREATE (:T {i: i})",
+            rows_options(),
+        )
+        .unwrap();
+        db.execute(
+            "UNWIND list.range(3, 7) AS i CREATE (:U {i: i})",
+            rows_options(),
+        )
+        .unwrap();
 
         let stream = db
             .stream(
@@ -1985,7 +2002,7 @@ mod streaming_writes {
     fn auto_commit_sort_then_create_commits_on_exhaustion() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 100) AS i CREATE (:Src {i: i})",
+            "UNWIND list.range(1, 100) AS i CREATE (:Src {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -2017,7 +2034,7 @@ mod streaming_writes {
     fn auto_commit_remove_stream_rolls_back_on_drop() {
         let db = Database::in_memory();
         db.execute(
-            "UNWIND range(1, 50) AS i CREATE (:T:Tagged {i: i})",
+            "UNWIND list.range(1, 50) AS i CREATE (:T:Tagged {i: i})",
             rows_options(),
         )
         .unwrap();
@@ -2042,14 +2059,14 @@ mod streaming_writes {
         // Pre-seed half the keys so MERGE has a mix of matches and
         // creates inside one streaming pass.
         db.execute(
-            "UNWIND range(1, 50) AS i CREATE (:T {i: i})",
+            "UNWIND list.range(1, 50) AS i CREATE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
 
         // UNWIND → Merge: input subtree is streamable.
         db.execute(
-            "UNWIND range(1, 100) AS i MERGE (:T {i: i})",
+            "UNWIND list.range(1, 100) AS i MERGE (:T {i: i})",
             rows_options(),
         )
         .unwrap();
