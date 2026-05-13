@@ -89,7 +89,7 @@ fn resolve_srid_checked_exposes_structured_errors() {
 fn cartesian_3d_distance() {
     let a = LoraPoint::cartesian_3d(0.0, 0.0, 0.0);
     let b = LoraPoint::cartesian_3d(1.0, 2.0, 2.0);
-    // sqrt(1 + 4 + 4) = 3
+    // math.sqrt(1 + 4 + 4) = 3
     assert!((cartesian_distance(&a, &b) - 3.0).abs() < 1e-9);
 }
 

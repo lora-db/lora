@@ -37,7 +37,7 @@ use super::InMemoryGraph;
 use crate::types::{NodeId, Properties, PropertyValue, RelationshipId};
 
 /// Why a mutation was rejected by a constraint check. The codes match
-/// the Neo4j GQLSTATUS shapes:
+/// the GQLSTATUS-style shapes:
 ///
 /// * 22N77 — property presence verification failed.
 /// * 22N78 — property type verification failed.
@@ -210,7 +210,7 @@ fn validate_record_against_constraint(
 
     // 3) Uniqueness checks. Only constraints that require uniqueness
     // run this; we still skip records that don't carry the full
-    // property tuple (matches Neo4j's "uniqueness only applies when
+    // property tuple (matches the "uniqueness only applies when
     // all constrained properties are present" rule for plain
     // uniqueness; key constraints always require existence so the
     // tuple is guaranteed present by step 1).

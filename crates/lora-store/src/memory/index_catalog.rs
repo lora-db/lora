@@ -250,7 +250,7 @@ impl IndexCatalog {
         request: IndexRequest,
         if_not_exists: bool,
     ) -> Result<CreateIndexOutcome, CreateIndexError> {
-        // 1) name conflict trumps schema conflict (matches Neo4j precedence).
+        // 1) name conflict trumps schema conflict.
         let provided_name = request.explicit_name.clone();
         if let Some(name) = provided_name.as_ref() {
             if let Some(existing) = self.by_name.get(name) {

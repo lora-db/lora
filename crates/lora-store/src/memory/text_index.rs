@@ -9,7 +9,7 @@
 //!
 //! ## Why byte-level trigrams
 //!
-//! The Neo4j reference talks about *Unicode code-point* trigrams.
+//! Some references describe *Unicode code-point* trigrams.
 //! Byte-level trigrams over UTF-8 yield the same set of valid
 //! 3-byte aligned windows for pure-ASCII text and a strict
 //! superset for multibyte text — the index *over*-collects, the

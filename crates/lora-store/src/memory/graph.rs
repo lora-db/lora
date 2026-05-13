@@ -965,8 +965,8 @@ impl InMemoryGraph {
         if let CreateConstraintOutcome::Created(def) = &outcome {
             // Pre-create data scan: if the live graph already violates
             // the constraint, fail and roll back the catalog write.
-            // Matches Neo4j's "creating constraints when there exists
-            // conflicting data will fail" behaviour (22N77/79/80).
+            // Creating constraints when conflicting data exists fails
+            // before the catalog change is retained (22N77/79/80).
             if let Err(violation) = self.validate_existing_data_for_constraint(def) {
                 let mut catalog = self.constraint_catalog_write();
                 let _ = catalog.try_drop(&def.name, true);

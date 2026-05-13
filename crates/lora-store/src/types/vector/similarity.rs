@@ -57,7 +57,7 @@ pub fn cosine_similarity_raw(a: &LoraVector, b: &LoraVector) -> Option<f64> {
 }
 
 /// Cosine similarity squashed into [0, 1]. Matches the documented
-/// `vector.similarity.cosine` behaviour.
+/// `vector.similarity(..., "cosine")` behaviour.
 pub fn cosine_similarity_bounded(a: &LoraVector, b: &LoraVector) -> Option<f64> {
     cosine_similarity_raw(a, b).map(|raw| ((raw + 1.0) / 2.0).clamp(0.0, 1.0))
 }

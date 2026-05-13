@@ -110,7 +110,7 @@ fn main() {
             println!("0,{}", rss_kb());
             for k in 1..=iters {
                 svc.execute(
-                    "UNWIND range(1, 100) AS i CREATE (:Tmp {id: i, name: 'x' + toString(i)})",
+                    "UNWIND list.range(1, 100) AS i CREATE (:Tmp {id: i, name: 'x' + type.cast(i, STRING)})",
                     opts(),
                 )
                 .unwrap();
@@ -136,7 +136,7 @@ fn main() {
             // Build a small social graph
             let svc = Database::in_memory();
             svc.execute(
-                "UNWIND range(0, 49) AS i CREATE (:Person {id: i, name: 'p_' + toString(i)})",
+                "UNWIND list.range(0, 49) AS i CREATE (:Person {id: i, name: 'p_' + type.cast(i, STRING)})",
                 opts(),
             )
             .unwrap();

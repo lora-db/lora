@@ -191,7 +191,7 @@ impl VectorValues {
 
     /// Convert every coordinate to `i64`, truncating fractional parts for
     /// float-backed vectors. Matches the semantics required by
-    /// `toIntegerList(vector)`.
+    /// `vector.coordinates(vector, INTEGER)`.
     pub fn to_i64_vec(&self) -> Vec<i64> {
         match self {
             VectorValues::Float64(v) => v.iter().map(|x| *x as i64).collect(),

@@ -1,6 +1,6 @@
 //! Post-processing for `SHOW INDEXES` / `SHOW CONSTRAINTS` tails.
 //!
-//! Neo4j allows a YIELD-anchored pipeline on these DDL commands:
+//! These DDL commands allow a YIELD-anchored pipeline:
 //!
 //! ```cypher
 //! SHOW INDEXES

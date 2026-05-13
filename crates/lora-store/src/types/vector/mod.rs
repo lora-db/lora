@@ -4,9 +4,8 @@
 //! collections. A `LoraVector` can be stored directly as a node or
 //! relationship property, returned through every binding, compared for
 //! equality, and used as input to the built-in vector math functions
-//! (`vector.similarity.cosine`, `vector.similarity.euclidean`,
-//! `vector_distance`, `vector_norm`, `vector_dimension_count`,
-//! `toIntegerList`, `toFloatList`).
+//! (`vector.similarity`, `vector.distance`, `vector.norm`, `vector.dim`,
+//! `vector.coordinates`).
 //!
 //! Layout:
 //!

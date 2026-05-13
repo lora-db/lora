@@ -430,7 +430,11 @@ fn resolve_literal(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<
 }
 
 fn matches_vector_ctor(name: &[String]) -> bool {
-    matches!(name, [n] if n.eq_ignore_ascii_case("vector"))
+    match name {
+        [n] if n.eq_ignore_ascii_case("vector") => true,
+        [ns, op] if ns.eq_ignore_ascii_case("vector") && op.eq_ignore_ascii_case("new") => true,
+        _ => false,
+    }
 }
 
 /// Inline support for `vector(list, dim, COORD_TYPE)` literal calls

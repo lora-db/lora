@@ -1,6 +1,6 @@
 //! Catalog of explicitly-declared constraints (CREATE CONSTRAINT). Sibling
 //! to [`super::index_catalog::IndexCatalog`]. Conflict detection mirrors
-//! Neo4j's GQLSTATUS codes:
+//! GQLSTATUS-style codes:
 //!
 //! - 22N65 — equivalent constraint exists (same kind + schema).
 //! - 22N66 — conflicting constraint exists (same schema, different kind
@@ -385,12 +385,12 @@ impl ConstraintCatalog {
         }
 
         // 2) Duplicate name (different shape, same name) — never swallowed,
-        // matches Neo4j 22N67 precedence even under IF NOT EXISTS when the
+        // matches 22N67 precedence even under IF NOT EXISTS when the
         // existing entry doesn't match the requested shape.
         if let Some(existing) = self.by_name.get(&request.name) {
             let existing_clone = existing.clone();
             if if_not_exists {
-                // The Neo4j docs treat same-name-but-different-shape as a
+                // Same-name-but-different-shape is treated as a
                 // no-op notification under IF NOT EXISTS. Match that.
                 return Ok(CreateConstraintOutcome::NoOpExists(existing_clone));
             }
@@ -443,7 +443,7 @@ impl ConstraintCatalog {
 }
 
 /// Two constraint kinds on the same schema "conflict" when both cannot
-/// coexist. The rules from the Neo4j reference:
+/// coexist. The rules:
 ///
 /// - Uniqueness on the same schema as a key constraint (or vice-versa)
 ///   — both would back the same range index but with different
