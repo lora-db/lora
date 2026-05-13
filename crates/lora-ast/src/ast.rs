@@ -63,8 +63,8 @@ pub struct ShowConstraints {
     pub span: Span,
 }
 
-/// `SHOW INDEXES YIELD … [WHERE …] [RETURN …]` tail. Modelled after the
-/// Neo4j syntax: YIELD is the anchor, optional WHERE filters the
+/// `SHOW INDEXES YIELD … [WHERE …] [RETURN …]` tail. Modelled after
+/// Cypher-style catalog syntax: YIELD is the anchor, optional WHERE filters the
 /// yielded rows, optional RETURN reprojects them. ORDER BY / SKIP /
 /// LIMIT can appear on either YIELD or RETURN — semantically applied
 /// to the rows at that stage.
@@ -168,7 +168,7 @@ pub enum PropertyTypeTerm {
     List {
         inner: Box<PropertyTypeTerm>,
         /// `LIST<X NOT NULL>` is the only fully-supported list shape in
-        /// Neo4j compatibility mode; we keep the flag for grammar fidelity
+        /// Cypher compatibility mode; we keep the flag for grammar fidelity
         /// even though we reject `LIST<X>` (nullable elements) at the
         /// catalog layer.
         not_null: bool,
@@ -693,6 +693,12 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    TypeCast {
+        expr: Box<Expr>,
+        target: LiteralTypeExpr,
+        try_cast: bool,
+        span: Span,
+    },
     Case {
         input: Option<Box<Expr>>,
         alternatives: Vec<(Expr, Expr)>,
@@ -750,6 +756,34 @@ pub enum Expr {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiteralTypeExpr {
+    Named {
+        name: String,
+        span: Span,
+    },
+    List {
+        inner: Box<LiteralTypeExpr>,
+        span: Span,
+    },
+    Vector {
+        coordinate: String,
+        dimension: u32,
+        span: Span,
+    },
+}
+
+impl LiteralTypeExpr {
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            LiteralTypeExpr::Named { span, .. }
+            | LiteralTypeExpr::List { span, .. }
+            | LiteralTypeExpr::Vector { span, .. } => *span,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum MapProjectionSelector {
     /// `.propertyName` — include a specific property
@@ -785,6 +819,7 @@ impl Expr {
             | Expr::Binary { span: s, .. }
             | Expr::Unary { span: s, .. }
             | Expr::FunctionCall { span: s, .. }
+            | Expr::TypeCast { span: s, .. }
             | Expr::Case { span: s, .. }
             | Expr::ListPredicate { span: s, .. }
             | Expr::ListComprehension { span: s, .. }

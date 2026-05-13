@@ -1030,6 +1030,201 @@ fn parse_namespaced_function_call() {
 }
 
 #[test]
+fn parse_parenthesized_type_cast() {
+    let doc = parse_query("RETURN ('42' AS INTEGER) AS n").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast {
+            expr,
+            target,
+            try_cast,
+            ..
+        } => {
+            assert!(!try_cast);
+            assert!(matches!(expr.as_ref(), Expr::String(s, _) if s == "42"));
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Named { name, .. } if name == "INTEGER"
+            ));
+        }
+        other => panic!("expected type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_duckdb_cast_call_expression() {
+    let doc = parse_query("RETURN CAST('42' AS INTEGER) AS n").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast {
+            expr,
+            target,
+            try_cast,
+            ..
+        } => {
+            assert!(!try_cast);
+            assert!(matches!(expr.as_ref(), Expr::String(s, _) if s == "42"));
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Named { name, .. } if name == "INTEGER"
+            ));
+        }
+        other => panic!("expected type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_duckdb_try_cast_call_expression() {
+    let doc = parse_query("RETURN TRY_CAST('bad' AS INTEGER) AS n").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast {
+            expr,
+            target,
+            try_cast,
+            ..
+        } => {
+            assert!(try_cast);
+            assert!(matches!(expr.as_ref(), Expr::String(s, _) if s == "bad"));
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Named { name, .. } if name == "INTEGER"
+            ));
+        }
+        other => panic!("expected try cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_duckdb_postfix_type_cast() {
+    let doc = parse_query("RETURN '42'::INTEGER AS n").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast {
+            expr,
+            target,
+            try_cast,
+            ..
+        } => {
+            assert!(!try_cast);
+            assert!(matches!(expr.as_ref(), Expr::String(s, _) if s == "42"));
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Named { name, .. } if name == "INTEGER"
+            ));
+        }
+        other => panic!("expected postfix type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_vector_type_cast() {
+    let doc = parse_query("RETURN ([1, 2, 3] AS VECTOR<INTEGER>(3)) AS v").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast { expr, target, .. } => {
+            assert!(matches!(expr.as_ref(), Expr::List(_, _)));
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Vector {
+                    coordinate,
+                    dimension: 3,
+                    ..
+                } if coordinate == "INTEGER"
+            ));
+        }
+        other => panic!("expected vector type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_type_cast_keeps_inner_expression_shape() {
+    let doc = parse_query("RETURN (1 + 2 AS STRING) AS s").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast { expr, target, .. } => {
+            assert!(matches!(
+                expr.as_ref(),
+                Expr::Binary {
+                    op: BinaryOp::Add,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Named { name, .. } if name == "STRING"
+            ));
+        }
+        other => panic!("expected type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_temporal_keyword_type_cast() {
+    let doc = parse_query("RETURN ('2024-01-15T10:30:00' AS LOCAL DATETIME) AS dt").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast { target, .. } => {
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Named { name, .. } if name == "LOCAL_DATETIME"
+            ));
+        }
+        other => panic!("expected type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_nested_list_type_cast() {
+    let doc = parse_query("RETURN ([[1], [2]] AS LIST<LIST<INTEGER>>) AS xs").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast { expr, target, .. } => {
+            assert!(matches!(expr.as_ref(), Expr::List(_, _)));
+            let LiteralTypeExpr::List { inner, .. } = target else {
+                panic!("expected outer LIST target, got {target:?}");
+            };
+            let LiteralTypeExpr::List { inner, .. } = inner.as_ref() else {
+                panic!("expected inner LIST target, got {inner:?}");
+            };
+            assert!(matches!(
+                inner.as_ref(),
+                LiteralTypeExpr::Named { name, .. } if name == "INTEGER"
+            ));
+        }
+        other => panic!("expected type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_vector_type_cast_canonicalizes_runtime_aliases() {
+    let doc = parse_query("RETURN ([1.0, 2.0] AS VECTOR<FLOAT>(2)) AS v").unwrap();
+    let sp = as_regular_single_part(doc);
+
+    match first_return_expr(&sp) {
+        Expr::TypeCast { target, .. } => {
+            assert!(matches!(
+                target,
+                LiteralTypeExpr::Vector {
+                    coordinate,
+                    dimension: 2,
+                    ..
+                } if coordinate == "FLOAT64"
+            ));
+        }
+        other => panic!("expected vector type cast expression, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_parameter_and_property_lookup() {
     let doc = parse_query("MATCH (n) WHERE n.age >= $minAge RETURN n.name").unwrap();
     let sp = as_regular_single_part(doc);
@@ -1432,8 +1627,9 @@ fn parse_create_text_index_relationship() {
 
 #[test]
 fn parse_create_lookup_index_node() {
-    let doc = parse_query("CREATE LOOKUP INDEX node_label_lookup_index FOR (n) ON EACH labels(n)")
-        .unwrap();
+    let doc =
+        parse_query("CREATE LOOKUP INDEX node_label_lookup_index FOR (n) ON EACH node.labels(n)")
+            .unwrap();
     let SchemaCommand::CreateIndex(ci) = as_schema_command(doc) else {
         panic!("expected create index");
     };

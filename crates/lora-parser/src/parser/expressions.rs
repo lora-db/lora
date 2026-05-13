@@ -37,6 +37,9 @@ pub(super) fn lower_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
         Rule::literal => lower_literal(single_inner(pair)?),
         Rule::parameter => Ok(lower_parameter(pair)),
         Rule::function_invocation => lower_function_invocation(pair),
+        Rule::type_cast_expression => lower_type_cast_expression(pair),
+        Rule::cast_call_expression => lower_type_cast_call_expression(pair, false),
+        Rule::try_cast_call_expression => lower_type_cast_call_expression(pair, true),
         Rule::parenthesized_expression => {
             let span = pair_span(&pair);
             let expr = pair
@@ -48,6 +51,150 @@ pub(super) fn lower_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
         Rule::exists_subquery => lower_exists_subquery(pair),
         _ => Err(unexpected_rule("expression", pair)),
     }
+}
+
+fn lower_type_cast_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
+    let span = pair_span(&pair);
+    let mut value = None;
+    let mut target = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::expression => value = Some(lower_expression(p)?),
+            Rule::literal_type_expr => target = Some(lower_literal_type_expr(p)?),
+            Rule::AS => {}
+            _ => return Err(unexpected_rule("type_cast_expression", p)),
+        }
+    }
+
+    Ok(Expr::TypeCast {
+        expr: Box::new(
+            value.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?,
+        ),
+        target: target
+            .ok_or_else(|| ParseError::new("expected type after AS", span.start, span.end))?,
+        try_cast: false,
+        span,
+    })
+}
+
+fn lower_type_cast_call_expression(pair: Pair<Rule>, try_cast: bool) -> Result<Expr, ParseError> {
+    let span = pair_span(&pair);
+    let mut value = None;
+    let mut target = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::expression => value = Some(lower_expression(p)?),
+            Rule::literal_type_expr => target = Some(lower_literal_type_expr(p)?),
+            Rule::CAST | Rule::TRY_CAST | Rule::AS => {}
+            _ => return Err(unexpected_rule("cast_call_expression", p)),
+        }
+    }
+
+    Ok(Expr::TypeCast {
+        expr: Box::new(
+            value.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?,
+        ),
+        target: target
+            .ok_or_else(|| ParseError::new("expected type after AS", span.start, span.end))?,
+        try_cast,
+        span,
+    })
+}
+
+fn lower_literal_type_expr(pair: Pair<Rule>) -> Result<LiteralTypeExpr, ParseError> {
+    let span = pair_span(&pair);
+    let inner = single_inner(pair)?;
+    match inner.as_rule() {
+        Rule::literal_named_type => lower_literal_named_type(inner),
+        Rule::literal_list_type => lower_literal_list_type(inner, span),
+        Rule::literal_vector_type => lower_literal_vector_type(inner, span),
+        _ => Err(unexpected_rule("literal_type_expr", inner)),
+    }
+}
+
+fn lower_literal_named_type(pair: Pair<Rule>) -> Result<LiteralTypeExpr, ParseError> {
+    let span = pair_span(&pair);
+    let inner = single_inner(pair)?;
+    let name = match inner.as_rule() {
+        Rule::LOCAL_DATETIME => "LOCAL_DATETIME".to_string(),
+        Rule::ZONED_DATETIME => "DATETIME".to_string(),
+        Rule::LOCAL_TIME => "LOCAL_TIME".to_string(),
+        Rule::ZONED_TIME => "TIME".to_string(),
+        Rule::symbolic_name => lower_schema_name(inner)?.to_ascii_uppercase(),
+        _ => return Err(unexpected_rule("literal_named_type", inner)),
+    };
+    Ok(LiteralTypeExpr::Named { name, span })
+}
+
+fn lower_literal_list_type(pair: Pair<Rule>, span: Span) -> Result<LiteralTypeExpr, ParseError> {
+    let mut inner_type = None;
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::literal_type_expr => inner_type = Some(lower_literal_type_expr(p)?),
+            Rule::LIST => {}
+            _ => return Err(unexpected_rule("literal_list_type", p)),
+        }
+    }
+    Ok(LiteralTypeExpr::List {
+        inner: Box::new(inner_type.ok_or_else(|| {
+            ParseError::new("LIST<...> requires an inner type", span.start, span.end)
+        })?),
+        span,
+    })
+}
+
+fn lower_literal_vector_type(pair: Pair<Rule>, span: Span) -> Result<LiteralTypeExpr, ParseError> {
+    let mut coordinate = None;
+    let mut dimension = None;
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::vector_coord_type => coordinate = Some(lower_vector_coord_type_name(p)?),
+            Rule::integer_literal => {
+                let parsed: u32 = p.as_str().parse().map_err(|_| {
+                    ParseError::new(
+                        "VECTOR dimension must be a positive integer",
+                        span.start,
+                        span.end,
+                    )
+                })?;
+                if parsed == 0 || parsed > 4096 {
+                    return Err(ParseError::new(
+                        "VECTOR dimension must be in 1..=4096",
+                        span.start,
+                        span.end,
+                    ));
+                }
+                dimension = Some(parsed);
+            }
+            Rule::VECTOR => {}
+            _ => return Err(unexpected_rule("literal_vector_type", p)),
+        }
+    }
+    Ok(LiteralTypeExpr::Vector {
+        coordinate: coordinate.ok_or_else(|| {
+            ParseError::new("VECTOR requires a coordinate type", span.start, span.end)
+        })?,
+        dimension: dimension
+            .ok_or_else(|| ParseError::new("VECTOR requires a dimension", span.start, span.end))?,
+        span,
+    })
+}
+
+fn lower_vector_coord_type_name(pair: Pair<Rule>) -> Result<String, ParseError> {
+    let inner = single_inner(pair)?;
+    let name = match inner.as_rule() {
+        Rule::INTEGER8 | Rule::INT8 => "INTEGER8",
+        Rule::INTEGER16 | Rule::INT16 => "INTEGER16",
+        Rule::INTEGER32 | Rule::INT32 => "INTEGER32",
+        Rule::INTEGER64 | Rule::INT64 | Rule::INT | Rule::INTEGER => "INTEGER",
+        Rule::FLOAT32 => "FLOAT32",
+        Rule::FLOAT64 => "FLOAT64",
+        Rule::FLOAT => "FLOAT64",
+        _ => return Err(unexpected_rule("vector_coord_type", inner)),
+    };
+    Ok(name.to_string())
 }
 
 pub(super) fn lower_left_assoc(
@@ -495,6 +642,27 @@ pub(super) fn lower_postfix_expression(pair: Pair<Rule>) -> Result<Expr, ParseEr
                             }
                             _ => {}
                         }
+                    }
+                    Rule::type_cast_postfix => {
+                        let cast_span = pair_span(&inner_pair);
+                        let target_pair = inner_pair
+                            .into_inner()
+                            .find(|q| q.as_rule() == Rule::literal_type_expr)
+                            .ok_or_else(|| {
+                                ParseError::new(
+                                    "expected type after ::",
+                                    cast_span.start,
+                                    cast_span.end,
+                                )
+                            })?;
+                        let target = lower_literal_type_expr(target_pair)?;
+                        let merged = merge_spans(expr.span(), cast_span);
+                        expr = Expr::TypeCast {
+                            expr: Box::new(expr),
+                            target,
+                            try_cast: false,
+                            span: merged,
+                        };
                     }
                     _ => {}
                 }

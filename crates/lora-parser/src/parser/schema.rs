@@ -894,8 +894,10 @@ fn lower_vector_coord_type(pair: Pair<Rule>) -> Result<VectorCoordType, ParseErr
         Rule::INT16 => VectorCoordType::Int16,
         Rule::INT32 => VectorCoordType::Int32,
         Rule::INT64 => VectorCoordType::Int64,
+        Rule::INTEGER => VectorCoordType::Int64,
         Rule::FLOAT32 => VectorCoordType::Float32,
         Rule::FLOAT64 => VectorCoordType::Float64,
+        Rule::FLOAT => VectorCoordType::Float64,
         _ => return Err(unexpected_rule("vector_coord_type", inner)),
     })
 }

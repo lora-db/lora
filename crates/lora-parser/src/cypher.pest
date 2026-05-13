@@ -81,8 +81,8 @@ show_index_filter = { ALL | FULLTEXT | LOOKUP | POINT | RANGE | TEXT | VECTOR }
 // [WHERE expr]
 // [RETURN items [ORDER BY ...] [SKIP ...] [LIMIT ...]]
 //
-// Neo4j requires that RETURN only appear when YIELD is present, so the
-// pipeline is anchored on YIELD.
+// RETURN only appears when YIELD is present, so the pipeline is anchored on
+// YIELD.
 show_pipeline = { show_yield ~ where_clause? ~ show_return? }
 show_yield = {
     YIELD ~ (STAR | yield_items) ~ order_clause? ~ skip_clause? ~ limit_clause?
@@ -137,7 +137,12 @@ constraint_type_term = {
 constraint_vector_type = {
     VECTOR ~ "<" ~ vector_coord_type ~ ">" ~ lparen ~ integer_literal ~ rparen
 }
-vector_coord_type = { INT8 | INT16 | INT32 | INT64 | FLOAT32 | FLOAT64 }
+vector_coord_type = {
+    INTEGER8 | INTEGER16 | INTEGER32 | INTEGER64
+    | INT8 | INT16 | INT32 | INT64 | INT
+    | INTEGER
+    | FLOAT32 | FLOAT64 | FLOAT
+}
 constraint_list_type = {
     LIST ~ "<" ~ constraint_type_term ~ (NOT ~ NULL)? ~ ">"
 }
@@ -301,7 +306,9 @@ unary_expression = { (add | sub)* ~ postfix_expression }
 
 postfix_expression = { atom ~ postfix_op* }
 
-postfix_op = { property_lookup | map_projection_postfix | index_or_slice }
+postfix_op = { type_cast_postfix | property_lookup | map_projection_postfix | index_or_slice }
+
+type_cast_postfix = { double_colon ~ literal_type_expr }
 
 property_lookup = { dot ~ property_key_name }
 
@@ -323,6 +330,9 @@ atom = {
     | exists_subquery
     | list_predicate
     | reduce_expression
+    | cast_call_expression
+    | try_cast_call_expression
+    | type_cast_expression
     | function_invocation
     | literal
     | parameter
@@ -346,6 +356,40 @@ list_predicate = {
 }
 
 parenthesized_expression = { lparen ~ expression ~ rparen }
+
+type_cast_expression = {
+    lparen ~ expression ~ AS ~ literal_type_expr ~ rparen
+}
+
+cast_call_expression = {
+    CAST ~ lparen ~ expression ~ AS ~ literal_type_expr ~ rparen
+}
+
+try_cast_call_expression = {
+    TRY_CAST ~ lparen ~ expression ~ AS ~ literal_type_expr ~ rparen
+}
+
+literal_type_expr = {
+      literal_vector_type
+    | literal_list_type
+    | literal_named_type
+}
+
+literal_vector_type = {
+    VECTOR ~ "<" ~ vector_coord_type ~ ">" ~ lparen ~ integer_literal ~ rparen
+}
+
+literal_list_type = {
+    LIST ~ "<" ~ literal_type_expr ~ ">"
+}
+
+literal_named_type = {
+      LOCAL_DATETIME
+    | ZONED_DATETIME
+    | LOCAL_TIME
+    | ZONED_TIME
+    | symbolic_name
+}
 
 function_invocation = {
     function_name ~ lparen ~ DISTINCT? ~ (STAR | expression ~ (comma ~ expression)*)? ~ rparen
@@ -439,6 +483,7 @@ dot = _{ "." }
 pipe = _{ "|" }
 colon = _{ ":" }
 colon_sep = _{ ":" }
+double_colon = { "::" }
 dotdot = _{ ".." }
 
 eq = { "=" }
@@ -506,6 +551,8 @@ THEN = @{ ^"THEN" ~ !ident_part }
 ELSE = @{ ^"ELSE" ~ !ident_part }
 END = @{ ^"END" ~ !ident_part }
 COUNT = @{ ^"COUNT" ~ !ident_part }
+CAST = @{ ^"CAST" ~ !ident_part }
+TRY_CAST = @{ ^"TRY_CAST" ~ !ident_part }
 ANY_ = @{ ^"ANY" ~ !ident_part }
 NONE = @{ ^"NONE" ~ !ident_part }
 SINGLE = @{ ^"SINGLE" ~ !ident_part }
@@ -534,8 +581,11 @@ EACH = @{ ^"EACH" ~ !ident_part }
 OPTIONS = @{ ^"OPTIONS" ~ !ident_part }
 SHOW = @{ ^"SHOW" ~ !ident_part }
 DROP_KW = @{ ^"DROP" ~ !ident_part }
-LABELS_FN = @{ ^"labels" ~ !ident_part }
-TYPE_FN = @{ ^"type" ~ !ident_part }
+// LOOKUP-INDEX token-functions: accept the canonical namespaced names
+// (`node.labels`, `edge.type`). The legacy bare
+// names (`labels(n)`, `type(r)`) are gone with the namespace migration.
+LABELS_FN = @{ ^"node.labels" ~ !ident_part }
+TYPE_FN = @{ ^"edge.type" ~ !ident_part }
 
 CONSTRAINT = @{ ^"CONSTRAINT" ~ !ident_part }
 CONSTRAINTS = @{ ^"CONSTRAINTS" ~ !ident_part }
@@ -564,10 +614,15 @@ VECTOR = @{ ^"VECTOR" ~ !ident_part }
 MAP_T = @{ ^"MAP" ~ !ident_part }
 ANY_T = @{ ^"ANY" ~ !ident_part }
 
+INTEGER8 = @{ ^"INTEGER8" ~ !ident_part }
+INTEGER16 = @{ ^"INTEGER16" ~ !ident_part }
+INTEGER32 = @{ ^"INTEGER32" ~ !ident_part }
+INTEGER64 = @{ ^"INTEGER64" ~ !ident_part }
 INT8 = @{ ^"INT8" ~ !ident_part }
 INT16 = @{ ^"INT16" ~ !ident_part }
 INT32 = @{ ^"INT32" ~ !ident_part }
 INT64 = @{ ^"INT64" ~ !ident_part }
+INT = @{ ^"INT" ~ !ident_part }
 FLOAT32 = @{ ^"FLOAT32" ~ !ident_part }
 FLOAT64 = @{ ^"FLOAT64" ~ !ident_part }
 
