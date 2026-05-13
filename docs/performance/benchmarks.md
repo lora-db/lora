@@ -138,7 +138,7 @@ Single-entity write benches use `iter_batched` (fresh DB per iteration). Through
 | `write/set_property` | 7.33 µs | 136,453 | ops/sec | `MATCH (n:Target) SET n.val = 42` |
 | `write/delete_node` | 6.37 µs | 156,954 | ops/sec | `MATCH (n:Temp) DELETE n` |
 | `write/detach_delete` | 7.56 µs | 132,275 | ops/sec | hub + 5 leaves, `DETACH DELETE` |
-| `write/batch_create_unwind/10` | 25.42 µs | 393,414 | nodes/sec | `UNWIND range(1, N) CREATE …` |
+| `write/batch_create_unwind/10` | 25.42 µs | 393,414 | nodes/sec | `UNWIND list.range(1, N) CREATE …` |
 | `write/batch_create_unwind/50` | 67.69 µs | 738,714 | nodes/sec | |
 | `write/batch_create_unwind/100` | 122.57 µs | 815,830 | nodes/sec | |
 | `write/batch_create_unwind/500` | 554.79 µs | 901,238 | nodes/sec | steady state for `UNWIND` insertion |
@@ -147,34 +147,34 @@ Single-entity write benches use `iter_batched` (fresh DB per iteration). Through
 
 | Benchmark | Mean time | Throughput | Unit | Notes |
 |---|---|---|---|---|
-| `functions/string_toLower` | 4.29 µs | 232,963 | evals/sec | `RETURN toLower('HELLO WORLD')` |
-| `functions/string_replace` | 6.35 µs | 157,541 | evals/sec | `RETURN replace(…)` |
-| `functions/toLower_on_100_nodes` | 42.44 µs | 2,356,490 | evals/sec | `toLower(n.name)` over 100 nodes |
-| `functions/math_abs_sqrt` | 6.38 µs | 156,820 | evals/sec | `RETURN abs(-42), sqrt(144)` |
-| `functions/math_on_100_nodes` | 56.93 µs | 1,756,502 | evals/sec | `abs(n.value - 50)` over 100 rows |
+| `functions/string_toLower` | 4.29 µs | 232,963 | evals/sec | `RETURN string.lower('HELLO WORLD')` |
+| `functions/string_replace` | 6.35 µs | 157,541 | evals/sec | `RETURN string.replace(…)` |
+| `functions/toLower_on_100_nodes` | 42.44 µs | 2,356,490 | evals/sec | `string.lower(n.name)` over 100 nodes |
+| `functions/math_abs_sqrt` | 6.38 µs | 156,820 | evals/sec | `RETURN math.abs(-42), math.sqrt(144)` |
+| `functions/math_on_100_nodes` | 56.93 µs | 1,756,502 | evals/sec | `math.abs(n.value - 50)` over 100 rows |
 | `functions/labels_keys_type` | 17.63 µs | 340,303 | evals/sec | `labels(p), keys(p), type(r)` over 6 rows |
 | `functions/case_expression_100` | 43.46 µs | 2,301,150 | evals/sec | `CASE WHEN … THEN …` over 100 rows |
 | `functions/coalesce` | 6.97 µs | 143,405 | evals/sec | `coalesce(null, null, 42, 99)` |
-| `functions/list_comprehension` | 19.55 µs | 5,113,910 | elems/sec | `[x IN range(1,100) WHERE … | x*x]` |
-| `functions/reduce_sum` | 12.37 µs | 8,086,668 | elems/sec | `reduce(acc, x IN range(1,100) | acc+x)` |
+| `functions/list_comprehension` | 19.55 µs | 5,113,910 | elems/sec | `[x IN list.range(1,100) WHERE … | x*x]` |
+| `functions/reduce_sum` | 12.37 µs | 8,086,668 | elems/sec | `reduce(acc, x IN list.range(1,100) | acc+x)` |
 | `string_functions/toUpper` | 4.18 µs | 239,031 | evals/sec | |
 | `string_functions/trim` | 4.10 µs | 244,158 | evals/sec | |
 | `string_functions/substring` | 6.10 µs | 163,856 | evals/sec | |
-| `string_functions/split` | 5.40 µs | 185,220 | evals/sec | `split('a,b,c,d,e', ',')` |
-| `string_functions/string_pipeline_100_nodes` | 101.71 µs | 983,227 | evals/sec | `toUpper` + `substring` + `size` per row |
-| `math_functions/trig_sin_cos_tan` | 8.67 µs | 115,350 | evals/sec | three trig calls combined |
-| `math_functions/math_pipeline_100_nodes` | 115.63 µs | 864,856 | evals/sec | `ceil`, `sqrt`, `sign` per row |
+| `string_functions/split` | 5.40 µs | 185,220 | evals/sec | `string.split('a,b,c,d,e', ',')` |
+| `string_functions/string_pipeline_100_nodes` | 101.71 µs | 983,227 | evals/sec | `string.upper` + `string.slice` + `value.size` per row |
+| `math_functions/trig_sin_cos_tan` | 8.67 µs | 115,350 | evals/sec | three `math.*` trig calls combined |
+| `math_functions/math_pipeline_100_nodes` | 115.63 µs | 864,856 | evals/sec | `math.ceil`, `math.sqrt`, `math.sign` per row |
 | `type_conversion/toInteger_from_string` | 4.17 µs | 239,970 | evals/sec | |
 | `type_conversion/conversions_on_100_nodes` | 63.46 µs | 1,575,683 | evals/sec | `toString(n.id), toFloat(n.value)` per row |
-| `list_functions/range_generation` | 21.86 µs | 45,749,369 | elems/sec | `range(1, 1000)` |
-| `list_functions/reverse_list` | 7.62 µs | 13,115,177 | elems/sec | `reverse(range(1, 100))` |
-| `list_functions/size_of_list` | 13.25 µs | 37,730,804 | elems/sec | `size(range(1, 500))` |
+| `list_functions/range_generation` | 21.86 µs | 45,749,369 | elems/sec | `list.range(1, 1000)` |
+| `list_functions/reverse_list` | 7.62 µs | 13,115,177 | elems/sec | `value.reverse(list.range(1, 100))` |
+| `list_functions/size_of_list` | 13.25 µs | 37,730,804 | elems/sec | `value.size(list.range(1, 500))` |
 | `list_predicates/any_in_list` | 13.24 µs | 377,727 | evals/sec | `any(x IN list WHERE x > 3)` |
 | `list_predicates/all_in_list` | 12.85 µs | 311,281 | evals/sec | `all(x IN list WHERE x%2 = 0)` |
-| `list_predicates/reduce_sum/500` | 23.26 µs | 21,496,659 | elems/sec | `reduce(…, range(1, 500) | …)` |
-| `path_functions/nodes_on_path_chain_100` | 32.72 µs | 152,816 | paths/sec | `nodes(p), length(p)` |
-| `path_functions/relationships_on_path_chain_100` | 31.65 µs | 157,992 | paths/sec | `relationships(p)` |
-| `path_functions/path_extract_social_200` | 79.01 µs | 632,819 | paths/sec | `size(nodes(p))` over 50 paths |
+| `list_predicates/reduce_sum/500` | 23.26 µs | 21,496,659 | elems/sec | `reduce(…, list.range(1, 500) | …)` |
+| `path_functions/nodes_on_path_chain_100` | 32.72 µs | 152,816 | paths/sec | `path.nodes(p), path.length(p)` |
+| `path_functions/relationships_on_path_chain_100` | 31.65 µs | 157,992 | paths/sec | `path.edges(p)` |
+| `path_functions/path_extract_social_200` | 79.01 µs | 632,819 | paths/sec | `value.size(path.nodes(p))` over 50 paths |
 | `regex/regex_simple_literal` | 43.86 µs | 22,802 | evals/sec | `'…' =~ '.*World.*'` |
 | `regex/regex_filter_1k` | 33.53 ms | 29,822 | nodes/sec | `WHERE n.name =~ 'node_[5-9].*'` |
 | `regex/regex_complex_pattern_1k` | 9.78 ms | 102,282 | nodes/sec | `=~ 'node_[0-9]{2,3}'` |
@@ -319,24 +319,24 @@ Fewer samples (15), longer measurement window. `Scale::MEDIUM` = 10 000, `Scale:
 
 | Benchmark | Mean time | Throughput | Unit | Notes |
 |---|---|---|---|---|
-| `temporal_creation/date_from_string` | 4.42 µs | 226,201 | evals/sec | `date('2024-01-15')` |
-| `temporal_creation/date_from_map` | 7.78 µs | 128,562 | evals/sec | `date({year: 2024, month: 1, day: 15})` |
-| `temporal_creation/time_from_string` | 4.42 µs | 226,125 | evals/sec | `time('14:30:00')` |
-| `temporal_creation/datetime_from_string` | 4.54 µs | 220,450 | evals/sec | `datetime('2024-01-15T14:30:00Z')` |
+| `temporal_creation/date_from_string` | 4.42 µs | 226,201 | evals/sec | `'2024-01-15'::DATE` |
+| `temporal_creation/date_from_map` | 7.78 µs | 128,562 | evals/sec | `{year: 2024, month: 1, day: 15}::DATE` |
+| `temporal_creation/time_from_string` | 4.42 µs | 226,125 | evals/sec | `'14:30:00'::TIME` |
+| `temporal_creation/datetime_from_string` | 4.54 µs | 220,450 | evals/sec | `'2024-01-15T14:30:00Z'::DATETIME` |
 | `temporal_creation/datetime_from_map` | 10.41 µs | 96,097 | evals/sec | |
-| `temporal_creation/duration_from_string` | 4.40 µs | 227,177 | evals/sec | `duration('P1Y2M3DT4H5M6S')` |
+| `temporal_creation/duration_from_string` | 4.40 µs | 227,177 | evals/sec | `'P1Y2M3DT4H5M6S'::DURATION` |
 | `temporal_creation/duration_from_map` | 9.07 µs | 110,258 | evals/sec | |
-| `temporal_creation/multi_temporal_creation` | 12.49 µs | 320,173 | evals/sec | 4 constructors combined |
+| `temporal_creation/multi_temporal_creation` | 12.49 µs | 320,173 | evals/sec | 4 temporal casts combined |
 | `temporal_creation/date_component_access` | 14.76 µs | 338,846 | evals/sec | `.year`, `.month`, etc. on `date` |
 | `temporal_creation/datetime_component_access` | 16.32 µs | 367,716 | evals/sec | 6-component access on `datetime` |
-| `temporal_filtering/date_greater_than/100` | 108.40 µs | 922,490 | rows/sec | `WHERE n.created > date('…')` |
+| `temporal_filtering/date_greater_than/100` | 108.40 µs | 922,490 | rows/sec | `WHERE n.created > '…'::DATE` |
 | `temporal_filtering/date_greater_than/500` | 488.24 µs | 1,024,088 | rows/sec | |
 | `temporal_filtering/date_greater_than/1000` | 973.74 µs | 1,026,969 | rows/sec | |
 | `temporal_filtering/date_equality_500` | 331.31 µs | 1,509,166 | rows/sec | |
 | `temporal_filtering/date_range_500` | 708.59 µs | 705,631 | rows/sec | both-sided range predicate |
 | `temporal_filtering/order_by_date_500` | 670.43 µs | 745,794 | rows/sec | `ORDER BY date_prop` |
 | `temporal_filtering/group_by_priority_500` | 200.83 µs | 2,489,624 | rows/sec | |
-| `temporal_filtering/date_component_inline` | 39.76 µs | 704,304 | rows/sec | `WHERE date(n.x).year = 2024` |
+| `temporal_filtering/date_component_inline` | 39.76 µs | 704,304 | rows/sec | `WHERE n.x::DATE.year = 2024` |
 | `temporal_arithmetic/date_plus_duration` | 6.47 µs | 154,660 | evals/sec | `date + duration` |
 | `temporal_arithmetic/date_minus_duration` | 6.47 µs | 154,621 | evals/sec | |
 | `temporal_arithmetic/duration_add` | 6.29 µs | 158,898 | evals/sec | `duration + duration` |
@@ -348,8 +348,8 @@ Fewer samples (15), longer measurement window. `Scale::MEDIUM` = 10 000, `Scale:
 
 | Benchmark | Mean time | Throughput | Unit | Notes |
 |---|---|---|---|---|
-| `spatial_creation/point_cartesian` | 6.89 µs | 145,204 | evals/sec | `point({x, y})` — SRID 7203 |
-| `spatial_creation/point_geographic` | 6.86 µs | 145,760 | evals/sec | `point({latitude, longitude})` — SRID 4326 |
+| `spatial_creation/point_cartesian` | 6.89 µs | 145,204 | evals/sec | `{x, y}::POINT` — SRID 7203 |
+| `spatial_creation/point_geographic` | 6.86 µs | 145,760 | evals/sec | `{latitude, longitude}::POINT` — SRID 4326 |
 | `spatial_creation/multi_point_creation` | 16.26 µs | 184,551 | evals/sec | 3 points in one query |
 | `spatial_creation/point_component_access` | 13.96 µs | 214,847 | evals/sec | `.x`, `.y`, `.crs` |
 | `spatial_distance/distance_cartesian` | 12.94 µs | 77,254 | evals/sec | Euclidean distance |
@@ -357,8 +357,8 @@ Fewer samples (15), longer measurement window. `Scale::MEDIUM` = 10 000, `Scale:
 | `spatial_distance/pairwise_distance_graph/100` | 152.74 µs | 654,696 | rows/sec | distance per row, 100 nodes |
 | `spatial_distance/pairwise_distance_graph/500` | 713.35 µs | 700,916 | rows/sec | 500 nodes |
 | `spatial_distance/geo_distance_graph_200` | 293.54 µs | 681,340 | rows/sec | geographic distance over 200 rows |
-| `spatial_filtering/distance_threshold_200` | 234.30 µs | 853,596 | rows/sec | `WHERE distance(a, b) < threshold` |
-| `spatial_filtering/nearest_sorted_200` | 166.16 µs | 1,203,693 | rows/sec | `ORDER BY distance` |
+| `spatial_filtering/distance_threshold_200` | 234.30 µs | 853,596 | rows/sec | `WHERE geo.distance(a, b) < threshold` |
+| `spatial_filtering/nearest_sorted_200` | 166.16 µs | 1,203,693 | rows/sec | `ORDER BY geo.distance(...)` |
 | `spatial_filtering/category_distance_filter_500` | 705.17 µs | 709,053 | rows/sec | compound spatial + label predicate |
 
 ### 14. Shortest path — shortestPath() / allShortestPaths()

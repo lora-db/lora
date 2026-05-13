@@ -38,7 +38,7 @@ on nearly every feature branch.
 | `paths.rs` | Variable-length traversal, fixed / unbounded ranges, zero-hop, direction, cycles, chains, diamonds, fan patterns, `shortestPath`, `allShortestPaths` |
 | `projection.rs` | `RETURN` expressions, aliases, star, distinct, literals, computed columns, map projection |
 | `temporal.rs` | `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration` — construction, component access, comparison, arithmetic |
-| `vectors.rs` | `VECTOR` construction, storage, `toIntegerList` / `toFloatList`, similarity / distance / norm functions, exhaustive kNN via `ORDER BY … LIMIT k` |
+| `vectors.rs` | `VECTOR` construction, storage, `vector.coordinates(v, INTEGER)` / `vector.coordinates(v, FLOAT)`, similarity / distance / norm functions, exhaustive kNN via `ORDER BY … LIMIT k` |
 | `types_advanced.rs` | List indexing / slicing / concatenation / equality, map operations, null semantics, type coercion, mixed types |
 | `union.rs` | `UNION`, `UNION ALL`, deduplication, multi-branch, `ORDER BY` on result |
 | `update.rs` | `SET` property / label / replace / merge, `REMOVE` property / label, `DELETE`, `DETACH DELETE` |
@@ -69,7 +69,7 @@ All ignored tests carry an explicit reason via `#[ignore = "..."]`. Categories:
 | `FOREACH clause not yet in grammar` | 1 | Clause |
 | `temporal types: date/time functions not yet implemented` | 2 | Historical — most temporal tests now pass |
 | `duration type: duration arithmetic not yet implemented` | 1 | Specific duration edge case |
-| `APOC utilities: apoc-like utility functions not yet implemented` | 1 | Functions |
+| `utility functions: compatibility utilities not yet implemented` | 1 | Functions |
 | `constraint violation rollback: rollback on constraint error not yet implemented` | 1 | Transactions |
 | `type validation: type mismatch in comparison not yet detected` | 1 | Validation |
 | `parameter as label: dynamic labels via parameters not standard Cypher` | 1 | Parameters |

@@ -245,11 +245,11 @@ the executor uses `with_node` / `with_relationship` closures where possible.
 - **Single-process memory store** — there is no disk-backed buffer pool or remote
   storage engine.
 - **Tombstones, no compaction** — deleted IDs leave gaps in the slot vectors.
-- **No uniqueness constraints** — duplicate labels/properties are allowed.
-- **Scoped index surface** — RANGE, TEXT, POINT, and LOOKUP index DDL exists;
-  there are no uniqueness constraints, vector/ANN indexes, or text-ranking
-  operators yet. Composite RANGE definitions are cataloged, but current
-  optimizer rewrites target one property at a time.
+- **Scoped constraint/index surface** — uniqueness, existence, type, key,
+  RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT surfaces exist. Composite
+  RANGE definitions are cataloged, but current optimizer rewrites target one
+  property at a time, and vector procedures still use flat scans rather than
+  ANN execution.
 - **Clone compatibility APIs** — bulk read helpers allocate owned records even
   though executor hot paths avoid many clones.
 - **Vectors cannot be stored inside list properties** — a vector can be a direct

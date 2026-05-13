@@ -29,15 +29,14 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `DELETE` / `DETACH DELETE` | **Supported** | Plain delete requires no incident relationships |
 | `MERGE` | **Supported** | Node and relationship merge, ON MATCH / ON CREATE |
 | `WITH` | **Supported** | Variable piping, renaming, filtering, aggregation, star |
-| `UNWIND` | **Supported** | List unwinding, empty/null handling, `range()` |
+| `UNWIND` | **Supported** | List unwinding, empty/null handling, `list.range()` |
 | `UNION` / `UNION ALL` | **Supported** | Deduplication, multi-branch, ORDER BY / LIMIT on result |
 | `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering |
 | `SKIP` / `LIMIT` | **Supported** | Pagination patterns |
 | `DISTINCT` | **Supported** | In RETURN and WITH |
 | `EXPLAIN` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.explain(query, params?)`; deliberately not exposed as a Cypher keyword. |
 | `PROFILE` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.profile(query, params?)`; runs the query and reports per-operator timing. |
-| `CALL` (standalone) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
-| `CALL ... YIELD` (in-query) | **Not yet implemented** | Parsed; analyzer returns `SemanticError::UnsupportedFeature` |
+| `CALL` / `CALL ... YIELD` | **Partial** | Supported for documented index procedures: `db.index.vector.queryNodes`, `db.index.vector.queryRelationships`, `db.index.fulltext.queryNodes`, and `db.index.fulltext.queryRelationships`. General-purpose procedures still return an unsupported-feature error. |
 | `FOREACH` | **Not yet implemented** | Not in grammar |
 | `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | **Supported** | RANGE/TEXT/POINT/LOOKUP/VECTOR indexes for nodes and relationships |
 | `CREATE CONSTRAINT` / `DROP CONSTRAINT` / `SHOW CONSTRAINTS` | **Supported** | Property uniqueness (single + composite), property existence (`IS NOT NULL`), node key, relationship key, and property type (`IS :: <TYPE>`) constraints — see §11 |
@@ -58,7 +57,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Multiple patterns (cross-product) | **Supported** | `MATCH (a), (b)` |
 | Variable-length paths | **Supported** | Fixed range, unbounded, zero-hop, direction, cycle handling |
 | Path binding | **Supported** | `MATCH p = (a)-[*]->(b)` |
-| Path functions | **Supported** | `length(p)`, `nodes(p)`, `relationships(p)` |
+| Path functions | **Supported** | `path.length(p)`, `path.nodes(p)`, `path.edges(p)` |
 | Multi-hop explicit patterns | **Supported** | Tested through 6-hop chains |
 | Self-loops / parallel edges | **Supported** | |
 | `shortestPath()` | **Supported** | Returns one shortest path, empty if none exists |
@@ -137,52 +136,58 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `keys(node \| rel \| map)` | **Supported** |
 | `properties(node \| rel \| map)` | **Supported** |
 | `coalesce(expr, ...)` | **Supported** |
-| `timestamp()` | **Supported** |
-| `valueType(expr)` | **Supported** |
+| `temporal.timestamp()` / `timestamp()` | **Supported** |
+| `temporal.timezone()` / `timezone()` | **Supported** |
+| `uuid.new()` / `new()` | **Supported** |
+| `type.of(expr)` | **Supported** |
 
-`valueType` returns one of the scalar/graph type names, including `"NULL"`,
+`type.of` returns one of the scalar/graph type names, including `"NULL"`,
 `"BOOLEAN"`, `"INTEGER"`, `"FLOAT"`, `"STRING"`, `"BINARY"`, `"LIST<T>"`,
 `"MAP"`, `"NODE"`, `"RELATIONSHIP"`, `"PATH"`, temporal names, `"POINT"`, and
 `"VECTOR<COORD>(N)"`.
 
 ## 7. String functions
 
-All ASCII-based. Unicode normalization is a no-op placeholder.
+String helpers operate on UTF-8 strings. Case conversion uses Unicode
+case mapping, `string.length` counts Unicode code points, and
+normalization supports NFC/NFD/NFKC/NFKD.
 
 | Function | Status |
 |----------|--------|
-| `toLower`, `toUpper` | **Supported** (ASCII only) |
-| `trim`, `lTrim`, `rTrim` | **Supported** |
-| `replace(str, find, repl)` | **Supported** |
-| `substring(str, start[, len])` | **Supported** |
-| `left(str, n)`, `right(str, n)` | **Supported** |
-| `split(str, delim)` | **Supported** |
-| `reverse(str)` | **Supported** (also on lists) |
-| `size(str)`, `length(str)`, `char_length(str)` | **Supported** |
-| `lpad(str, len, pad)`, `rpad(str, len, pad)` | **Supported** |
+| `string.lower`, `string.upper` (`toLower`, `toUpper` aliases) | **Supported** |
+| `string.trim`, `string.trim_left`, `string.trim_right` | **Supported** |
+| `string.replace(str, find, repl)` | **Supported** |
+| `string.slice(str, start[, len])` | **Supported** |
+| `string.prefix(str, n)`, `string.suffix(str, n)` | **Supported** |
+| `string.find`, `string.count`, `string.before`, `string.after` | **Supported** |
+| `string.split(str, delim)`, `string.join(list, delim)`, `string.words(str)` | **Supported** |
+| `string.slugify`, `string.escape`, `string.url_encode`, `string.url_decode` | **Supported** |
+| `string.reverse(str)` / `value.reverse(str)` | **Supported** |
+| `string.length(str)`, `value.size(str)` / `size(str)` | **Supported** |
+| `string.pad_left(str, len, pad)`, `string.pad_right(str, len, pad)` | **Supported** |
 | `toString`, `toInteger`, `toFloat`, `toBoolean` | **Supported** |
-| `normalize(str)` | **Partial** (ASCII passthrough, no Unicode NFC) |
+| `string.normalize(str[, form])` | **Supported** (NFC/NFD/NFKC/NFKD) |
 
 ## 8. Math functions
 
 | Function | Status |
 |----------|--------|
-| `abs`, `ceil`, `floor`, `round`, `sign` | **Supported** |
-| `sqrt` | **Supported** (negative input → null) |
-| `log` / `ln`, `log10`, `exp` | **Supported** |
-| `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` | **Supported** |
-| `degrees`, `radians` | **Supported** |
-| `pi()`, `e()` | **Supported** |
-| `rand()` | **Supported** (`[0, 1)` based on system-time nanos) |
+| `math.abs`, `math.ceil`, `math.floor`, `math.round`, `math.sign` | **Supported** |
+| `math.sqrt` | **Supported** (negative input → null) |
+| `math.log` / `math.ln`, `math.log10`, `math.exp` | **Supported** |
+| `math.sin`, `math.cos`, `math.tan`, `math.asin`, `math.acos`, `math.atan`, `math.atan2` | **Supported** |
+| `math.degrees`, `math.radians` | **Supported** |
+| `math.pi()`, `math.e()` | **Supported** |
+| `math.random()` / `random()` | **Supported** (`[0, 1)` based on system-time nanos) |
 
 ## 9. List functions
 
 | Function | Status |
 |----------|--------|
-| `size(list)` | **Supported** |
-| `head`, `tail`, `last` | **Supported** |
-| `reverse(list)` | **Supported** |
-| `range(start, end[, step])` | **Supported** |
+| `value.size(list)` / `size(list)` | **Supported** |
+| `list.first` / `head`, `list.rest`, `list.last` / `last` | **Supported** |
+| `value.reverse(list)` / `reverse(list)` | **Supported** |
+| `list.range(start, end[, step])` | **Supported** |
 | `reduce(acc = init, x IN list \| expr)` | **Supported** |
 | List comprehension `[x IN list WHERE p \| e]` | **Supported** |
 
@@ -199,9 +204,9 @@ All ASCII-based. Unicode normalization is a no-op placeholder.
 
 | Function | Status |
 |----------|--------|
-| `length(path)` | **Supported** |
-| `nodes(path)` | **Supported** |
-| `relationships(path)` | **Supported** |
+| `path.length(path)` | **Supported** |
+| `path.nodes(path)` | **Supported** |
+| `path.edges(path)` | **Supported** |
 
 ## 12. Temporal types and functions
 
@@ -218,16 +223,17 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `date()` / `date(string)` / `date({year, month, day})` | **Supported** | ISO string, map, or current day |
-| `datetime()` / `datetime(string \| map)` | **Supported** | ISO string or map with optional timezone |
-| `time(string)` | **Supported** | ISO string |
-| `localtime(string)` | **Supported** | ISO string |
-| `localdatetime(string \| map)` | **Supported** | |
-| `duration(string \| map)` | **Supported** | ISO 8601 or `{years, months, days, hours, minutes, seconds}` |
-| `date.truncate(unit, date)` | **Partial** | Supported units: `"year"`, `"month"` |
-| `datetime.truncate(unit, datetime)` | **Partial** | Supported units: `"day"`, `"hour"`, `"month"` |
-| `duration.between(a, b)` | **Supported** | Between dates or datetimes |
-| `duration.inDays(a, b)` | **Supported** | |
+| `temporal.today()` / `'...'::DATE` / `{year, month, day}::DATE` | **Supported** | ISO string, map, or current day |
+| `temporal.now()` / `now()` / `temporal.now(kind)` / `'...'::DATETIME` / `{...}::DATETIME` | **Supported** | Current `DATETIME` by default; `kind` accepts `"date"`, `"time"`, `"local_time"`, `"local_datetime"` |
+| `'...'::TIME` | **Supported** | ISO string |
+| `'...'::LOCAL_TIME` | **Supported** | ISO string |
+| `'...'::LOCAL_DATETIME` / `{...}::LOCAL_DATETIME` | **Supported** | |
+| `'...'::DURATION` / `{...}::DURATION` | **Supported** | ISO 8601 or `{years, months, days, hours, minutes, seconds}` |
+| `CAST(value AS TYPE)` / `TRY_CAST(value AS TYPE)` | **Supported** | Cast syntax in the Cypher grammar; `TRY_CAST` returns `null` on failed conversion |
+| `temporal.truncate(unit, date)` | **Partial** | Supported units: `"year"`, `"month"` |
+| `temporal.truncate(unit, datetime)` | **Partial** | Supported units: `"year"`, `"month"`, `"day"`, `"hour"` |
+| `temporal.between(a, b)` | **Supported** | Between dates or datetimes |
+| `temporal.in_days(a, b)` | **Supported** | `DATE` values |
 
 Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
 
@@ -240,12 +246,12 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `point({x, y})` | **Supported** | Cartesian 2D |
-| `point({latitude, longitude})` | **Supported** | WGS-84 geographic 2D |
-| `distance(a, b)` | **Supported** | Euclidean for Cartesian, Haversine for geographic (Earth radius 6,371 km) |
+| `{x, y}::POINT` | **Supported** | Cartesian 2D |
+| `{latitude, longitude}::POINT` | **Supported** | WGS-84 geographic 2D |
+| `geo.distance(a, b)` | **Supported** | Euclidean for Cartesian, Haversine for geographic (Earth radius 6,371 km) |
 | Component access: `p.x`, `p.y`, `p.latitude`, `p.longitude`, `p.srid` | **Supported** | Via property access on Point |
-| 3D points (Cartesian SRID 9157, WGS-84 SRID 4979) | **Supported** | `z` / `height` exposed via property access; `distance()` on WGS-84-3D ignores height and falls back to great-circle |
-| `point.withinBBox(p, ll, ur)` | **Supported** | Same-SRID closed bounding box; mixed 2D/3D inputs return `null` |
+| 3D points (Cartesian SRID 9157, WGS-84 SRID 4979) | **Supported** | `z` / `height` exposed via property access; `geo.distance()` on WGS-84-3D ignores height and falls back to great-circle |
+| `geo.within_bbox(p, ll, ur)` | **Supported** | Same-SRID closed bounding box; mixed 2D/3D inputs return `null` |
 
 ## 13a. Index DDL and optimizer rewrites
 
@@ -254,7 +260,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | `CREATE INDEX name FOR (n:Label) ON (n.prop)` | **Supported** | RANGE index; name may be omitted or supplied by string parameter |
 | `CREATE INDEX name FOR ()-[r:TYPE]-() ON (r.prop)` | **Supported** | Relationship RANGE index |
 | `CREATE TEXT INDEX` | **Supported** | Node and relationship scopes; accelerates `STARTS WITH`, `CONTAINS`, `ENDS WITH` |
-| `CREATE POINT INDEX` | **Supported** | Node and relationship scopes; accelerates `point.withinBBox` and `point.distance(...) <= radius` candidates |
+| `CREATE POINT INDEX` | **Supported** | Node and relationship scopes; accelerates `geo.within_bbox` and `geo.distance(...) <= radius` candidates |
 | `CREATE LOOKUP INDEX ... ON EACH labels(n)` | **Supported** | Catalog-visible token index for labels |
 | `CREATE LOOKUP INDEX ... ON EACH type(r)` | **Supported** | Catalog-visible token index for relationship types |
 | `IF NOT EXISTS` | **Supported** | Duplicate name or equivalent schema becomes a no-op |
@@ -278,12 +284,12 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 |------|--------|---------|---------------------------|
 | `VECTOR<FLOAT64>`   | **Supported** | `Vec<f64>` | `FLOAT`, `FLOAT64` |
 | `VECTOR<FLOAT32>`   | **Supported** | `Vec<f32>` | `FLOAT32` |
-| `VECTOR<INTEGER>`   | **Supported** | `Vec<i64>` | `INTEGER`, `INT`, `INT64`, `INTEGER64`, `SIGNED INTEGER` |
+| `VECTOR<INTEGER>`   | **Supported** | `Vec<i64>` | `INTEGER`, `INT`, `INT64`, `INTEGER64` |
 | `VECTOR<INTEGER32>` | **Supported** | `Vec<i32>` | `INTEGER32`, `INT32` |
 | `VECTOR<INTEGER16>` | **Supported** | `Vec<i16>` | `INTEGER16`, `INT16` |
 | `VECTOR<INTEGER8>`  | **Supported** | `Vec<i8>`  | `INTEGER8`, `INT8` |
 
-Alias matching is case-insensitive and collapses runs of whitespace.
+Alias matching is case-insensitive.
 `DOUBLE` is **rejected** explicitly so typos surface as a clear
 "unknown coordinate type" error rather than silently mapping to
 `FLOAT64`. Dimension is capped at `1..=4096`.
@@ -292,17 +298,17 @@ Alias matching is case-insensitive and collapses runs of whitespace.
 
 | Function | Arity | Status | Notes |
 |----------|-------|--------|-------|
-| `vector(value, dimension, coordinateType)` | 3 | **Supported** | `value`: `LIST<NUMBER>` or `STRING` like `"[1.0, 2.0]"`. `dimension`: integer or whole-number float. `coordinateType`: bare identifier (rewritten to string in analysis), quoted string, or `$param` (passed through). Null `value` / `dimension` → `null`; null `coordinateType` → error. |
-| `vector.similarity.cosine(a, b)` | 2 | **Supported** | Accepts `VECTOR` or `LIST<NUMBER>`; list coerced to `FLOAT32` vector. Bounded to `[0, 1]` as `(1 + raw_cosine)/2`. Zero-norm vector → `null`. `f32` arithmetic. |
-| `vector.similarity.euclidean(a, b)` | 2 | **Supported** | Same input acceptance; returns `1 / (1 + d²)`. |
-| `vector_distance(a, b, metric)` | 3 | **Supported** | Both operands must be `VECTOR` (plain list rejected). Metrics: `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `COSINE` (= `1 - raw_cosine`), `DOT` (= `-(a·b)`), `HAMMING` (f32 comparison). Case-insensitive; identifier or string. |
-| `vector_norm(v, metric)` | 2 | **Supported** | `EUCLIDEAN` or `MANHATTAN`. Case-insensitive. |
-| `vector_dimension_count(v)` | 1 | **Supported** | Returns `dimension`. |
-| `size(v)` / `length(v)` on a `VECTOR` | 1 | **Supported** | Returns `dimension` — identical to `vector_dimension_count`. |
-| `valueType(vector(...))` | 1 | **Supported** | Returns `"VECTOR<COORD>(N)"`. |
-| `toIntegerList(v)` | 1 | **Supported** | Rejects non-vector; float coordinates truncate toward zero. |
-| `toFloatList(v)` | 1 | **Supported** | Rejects non-vector. |
-| Vector indexes / approximate kNN | — | **Not yet implemented** | Exhaustive kNN works today via `ORDER BY vector.similarity.* LIMIT k`. |
+| `value::VECTOR<COORD>(DIM)` | — | **Supported** | Cast-based construction from a numeric list or string like `"[1.0, 2.0]"`. `CAST(value AS VECTOR<COORD>(DIM))` and `TRY_CAST(value AS VECTOR<COORD>(DIM))` are also supported. |
+| `vector.similarity(a, b)` | 2 | **Supported** | Accepts `VECTOR` or `LIST<NUMBER>`; list coerced to `FLOAT32` vector. Bounded to `[0, 1]` as `(1 + raw_cosine)/2`. Zero-norm vector → `null`. `f32` arithmetic. |
+| `vector.similarity(a, b, 'euclidean')` | 3 | **Supported** | Same input acceptance; returns `1 / (1 + d²)`. |
+| `vector.distance(a, b, metric)` | 3 | **Supported** | Both operands must be `VECTOR` (plain list rejected). Metrics: `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `COSINE` (= `1 - raw_cosine`), `DOT` (= `-(a·b)`), `HAMMING` (f32 comparison). Case-insensitive; identifier or string. |
+| `vector.norm(v, metric)` | 2 | **Supported** | `EUCLIDEAN` or `MANHATTAN`. Case-insensitive. |
+| `vector.dimension(v)` | 1 | **Supported** | Returns `dimension`. |
+| `value.size(v)` on a `VECTOR` | 1 | **Supported** | Returns `dimension` — identical to `vector.dimension`. |
+| `type.of(v)` | 1 | **Supported** | Returns `"VECTOR<COORD>(N)"`. |
+| `vector.coordinates(v, INTEGER)` | 2 | **Supported** | Rejects non-vector; float coordinates truncate toward zero. |
+| `vector.coordinates(v, FLOAT)` | 2 | **Supported** | Rejects non-vector. |
+| Vector index procedures / approximate kNN | — | **Partial** | `db.index.vector.queryNodes` / `queryRelationships` query the cataloged index scope but still execute a flat scan. Dedicated ANN execution is not yet implemented. Exhaustive kNN also works via `ORDER BY vector.similarity(...) LIMIT k`. |
 | Built-in embedding / plugin integration | — | **Not yet implemented** | LoraDB has no plugin surface — produce embeddings host-side. |
 
 ### Storage semantics
@@ -431,7 +437,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | Parameter as label | Parameters | Non-standard |
 | Parameter type checking at parse time | Parameters | |
 | Parameters over HTTP | Transport | In-process bindings only |
-| APOC-style utilities | Functions | No compatibility layer |
+| Compatibility utility functions | Functions | No compatibility layer |
 | Authentication / TLS | Server | See [`../operations/security.md`](../operations/security.md) |
 
 ---

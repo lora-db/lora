@@ -76,8 +76,9 @@ audit, CDC, and replication work later.
   heavy delete/create workloads.
 - Exact-match property lookups on indexable values can use internal lazy
   indexes, and declared RANGE/TEXT/POINT/LOOKUP indexes can guide the
-  optimizer for scoped predicates. There is still no uniqueness constraint,
-  vector/ANN index, or text-ranking surface.
+  optimizer for scoped predicates. Constraint DDL, VECTOR indexes, and
+  FULLTEXT indexes now exist; vector procedures still use flat scans rather
+  than ANN execution.
 - Bulk compatibility APIs that return owned records still allocate; executor hot
   paths use borrowed closure hooks where possible.
 

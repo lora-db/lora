@@ -20,7 +20,7 @@ touch:
 | `perf_smoke/scan_1k` | `MATCH (n:Node) RETURN n.id` on 1 000 nodes — full scan + projection |
 | `perf_smoke/filter_1k` | `MATCH (n:Node) WHERE n.value > 50 RETURN n.id` — predicate evaluation |
 | `perf_smoke/traversal_chain_500` | `(:Chain)-[:NEXT]->(:Chain)` on a 500-node chain — edge iteration |
-| `perf_smoke/write_batch_100` | `UNWIND range(1,100) CREATE (:B {...})` on a fresh DB — write path |
+| `perf_smoke/write_batch_100` | `UNWIND list.range(1,100) CREATE (:B {...})` on a fresh DB — write path |
 | `perf_smoke/stream_*` | Streaming read/write surfaces, including lazy pull and `ORDER BY` into write |
 | `perf_smoke/tx_*` | Explicit transaction round-trip, read, and write paths |
 | `perf_smoke/*_wal_group` | Auto-commit / batched / explicit-tx writes against a WAL-backed DB with `SyncMode::GroupSync` — catches regressions on the durability path |

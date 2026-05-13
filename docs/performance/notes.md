@@ -231,7 +231,7 @@ scalar and scalar-container properties.
 
 1. **Write publication windows** -- continue shrinking serialized commit/checkpoint/restore windows for write-heavy paths
 2. **Borrowing APIs** -- migrate more executor internals from owned `GraphStorage` helpers onto `with_node` / `with_relationship` and other borrowed hooks
-3. **Index coverage** -- add uniqueness constraints, vector/ANN indexes, and sorted-index ORDER BY planning
+3. **Index coverage** -- add ANN execution for vector indexes, broader composite-index rewrites, and sorted-index ORDER BY planning
 4. **Streaming coverage** -- keep moving remaining blocking internals toward cursor-shaped sources where semantics allow it
 5. **Query timeout coverage** -- extend deadline cancellation into streaming APIs and more fine-grained executor loops
 6. **HashMap option** -- consider `HashMap` for primary storage when ordering is not needed

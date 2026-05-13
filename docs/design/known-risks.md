@@ -14,10 +14,9 @@
 
 | Feature | Parse status | Execution status | Risk |
 |---------|-------------|-----------------|------|
-| `CALL` (standalone) | Parsed to AST | Analyzer returns `SemanticError::UnsupportedFeature` | Low — clear error |
-| `CALL ... YIELD` (in-query) | Parsed to AST | Analyzer returns `SemanticError::UnsupportedFeature` | Low — clear error |
+| General-purpose `CALL` | Parsed to AST | Only documented `db.index.vector.*` and `db.index.fulltext.*` procedures are supported; other procedures return an unsupported-feature error | Low — clear error |
+| General-purpose `CALL ... YIELD` | Parsed to AST | Only documented index query procedures are supported | Low — clear error |
 | `FOREACH` | Not in grammar | N/A | Low — parse error |
-| `CREATE CONSTRAINT` | Not in grammar | N/A | Low |
 | `LOAD CSV` | Not in grammar | N/A | Low |
 | `USE <graph>` (multi-database) | Not in grammar | N/A | Low |
 | `EXPLAIN` / `PROFILE` (Cypher keywords) | Not in grammar | API-only | Low — exposed as `db.explain()` / `db.profile()` API methods rather than Cypher syntax. `PROFILE` runs the query for real (including writes); `EXPLAIN` is plan-only. |
@@ -26,7 +25,7 @@
 | Type mismatch detection between comparable types | Accepted | Compared without error | Low — 1 ignored test |
 | Parameter as a label or relationship type | N/A | Not implemented | Low — not standard Cypher |
 | HTTP `POST /query` with a `params` field | N/A | Not wired up | **Medium** — Rust API supports parameters, HTTP layer does not |
-| Vector indexes / approximate kNN | N/A | Not implemented — `vector.similarity.*` / `vector_distance` run as exhaustive scans | **Medium** — fine for demos and small corpora; blocks production-scale semantic retrieval |
+| Vector ANN execution | N/A | `CREATE VECTOR INDEX` and `db.index.vector.*` procedures are queryable, but they use flat scans over the indexed scope | **Medium** — fine for demos and small corpora; dedicated ANN execution is still needed for production-scale semantic retrieval |
 | List-of-`VECTOR` as a property | Parsed | Rejected at write time (`PropertyConversionError::NestedVectorInList`) | Low — loud error; shape decision to keep future indexing viable |
 
 ### Implemented since initial audit
@@ -37,7 +36,7 @@ The following features were listed as gaps in earlier revisions of this document
 |---------|----------|
 | Temporal types (`Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration`) | 89 passing tests in `tests/temporal.rs` |
 | Spatial types (`Point`: Cartesian 2D/3D and WGS-84 2D/3D — SRIDs 7203, 9157, 4326, 4979) | Tests in `tests/functions_extended.rs` and `tests/types_advanced.rs` |
-| `VECTOR` value type (six coordinate tags; `vector()` constructor; property storage on nodes and relationships; similarity / distance / norm functions; exhaustive kNN via `ORDER BY … LIMIT k`) | Tests in `tests/vectors.rs` |
+| `VECTOR` value type (six coordinate tags; cast-based construction; property storage on nodes and relationships; similarity / distance / norm functions; exhaustive kNN via `ORDER BY … LIMIT k`; cataloged vector index procedures with flat-scan execution) | Tests in `tests/vectors.rs` |
 | `shortestPath()` / `allShortestPaths()` | Tests in `tests/paths.rs` |
 | Advanced aggregates: `stdev`, `stdevp`, `percentileCont`, `percentileDisc` | Tests in `tests/aggregation.rs` |
 | Trigonometry: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians` | Tests in `tests/functions_extended.rs` |
@@ -47,19 +46,23 @@ The following features were listed as gaps in earlier revisions of this document
 | Pattern comprehension | Tests in `tests/expressions.rs` |
 | Map projection | Tests in `tests/projection.rs` |
 | Parameter binding (`$name`, `$1`) via the Rust API | Tests in `tests/parameters.rs` |
-| Index DDL (`CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE LOOKUP INDEX`, `DROP INDEX`, `SHOW INDEXES`) | Tests in `tests/schema.rs` |
+| Index and constraint DDL (`CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE LOOKUP INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`, `CREATE CONSTRAINT`, `DROP`, `SHOW`) | Tests in `tests/schema.rs`, vector/full-text index tests, and constraint tests |
 
 ---
 
 ## Storage and data integrity
 
-> 🚀 **Production note** — The gaps in this section (persistence, uniqueness, indexes, transaction isolation) are by design for the in-memory core. They are addressed in the [LoraDB managed platform](https://loradb.com) — use the table below to decide whether a self-hosted deployment is viable, or whether the managed option is the better starting point.
+> 🚀 **Production note** — The gaps in this section (operator controls,
+> scoped index coverage, and transaction isolation behavior) are by design
+> for the in-memory core. They are addressed in the [LoraDB managed
+> platform](https://loradb.com) — use the table below to decide whether a
+> self-hosted deployment is viable, or whether the managed option is the
+> better starting point.
 
 | Gap | Classification | Risk |
 |-----|---------------|------|
 | WAL/operator controls are not uniform across surfaces | Observed | **Low–Medium** — Rust and `lora-server` expose explicit checkpoint/status/truncate controls. Node, Python, Go, and Ruby can open filesystem-backed WAL databases; WASM remains snapshot-only. See [WAL](../operations/wal.md). |
-| No uniqueness constraints | Observed | **Medium** — duplicate data can be created silently |
-| Index coverage is scoped | Observed | **Medium** — RANGE/TEXT/POINT catalog indexes accelerate matching predicates; composite multi-property seeks, uniqueness constraints, vector/ANN indexes, and full-text scoring are still absent |
+| Constraint/index coverage is scoped | Observed | **Medium** — uniqueness, existence, type, key, RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT surfaces exist; composite multi-property seeks and ANN vector execution are still absent |
 | Transaction isolation is conservative | Observed | **Medium** — auto-commit writes publish optimistically under a writer mutex; explicit read-write transactions serialize for their full lifetime; read-only transactions pin snapshots |
 | Node / relationship IDs are never reused | Observed | Low — `u64` counter will not overflow in practice |
 | Tombstones and clone-heavy compatibility APIs | Observed | **Low–Medium** — deleted IDs leave slot gaps; hot executor paths use borrow closures, but `all_nodes()` and other record-returning scans still allocate |
@@ -70,8 +73,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 | Issue | Classification | Risk |
 |-------|---------------|------|
-| `toLower` / `toUpper` use ASCII only | Observed | **Medium** — non-ASCII strings are unchanged |
-| `normalize` is a no-op placeholder (no Unicode NFC) | Observed | Low |
+| `toLower` / `toUpper` are not locale-aware | Observed | Low — Unicode case mapping is supported, locale-specific folding is host-side |
 | Integer overflow not explicitly handled | Inferred | Low — Rust panics in debug, wraps in release |
 | Float comparison uses IEEE 754 | Observed | Low — `NaN != NaN` is standard |
 | Variable-length undirected traversal does not guard against reciprocal edges | Inferred | Low — visited-node tracking avoids repeats |
@@ -126,7 +128,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 5. Expand timeout coverage to streaming APIs, HTTP, and language bindings
 6. Add authentication middleware to the HTTP server
-7. Add uniqueness constraints and vector/ANN index support
+7. Add ANN execution for vector indexes and broader composite-index optimizer rewrites
 8. ~~Introduce borrowing iterators on `GraphStorage`~~ — partially addressed: `with_node` / `with_relationship` closures now cover the executor's hot paths without requiring `&NodeRecord` access from every backend. Still open: streaming iterators for bulk scans
 
 ### Long term (capability)

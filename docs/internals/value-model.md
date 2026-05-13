@@ -136,17 +136,18 @@ Maintained by `InMemoryGraph`:
 | Index catalog | `IndexCatalog` | User-visible RANGE/TEXT/POINT/LOOKUP definitions |
 | Sorted property indexes | Catalog-backed sorted scopes | Range predicates on declared RANGE indexes |
 | Text indexes | Trigram candidate registry | `STARTS WITH`, `CONTAINS`, `ENDS WITH` predicates |
-| Point indexes | Grid-bucket spatial registry | `point.withinBBox`, radius predicates |
+| Point indexes | Grid-bucket spatial registry | `geo.within_bbox`, radius predicates |
 
 The lazy property index covers `null`, booleans, integers, finite floats,
 strings, binary values, and nested lists/maps made only from indexable values.
 Temporal values, vectors, and `NaN` values fall back to scans. Spatial points
 use the catalog-backed POINT registry when a POINT index exists.
 
-Explicit index DDL is intentionally performance-oriented rather than
-schema-enforcing. RANGE, TEXT, POINT, and LOOKUP definitions are cataloged and
-visible through `SHOW INDEXES`; uniqueness constraints, vector/ANN indexes, and
-full-text scoring are not implemented.
+Explicit index DDL is intentionally performance-oriented. RANGE, TEXT,
+POINT, LOOKUP, VECTOR, and FULLTEXT definitions are cataloged and visible
+through `SHOW INDEXES`; vector and full-text query procedures are
+available. Constraint DDL covers uniqueness, existence, type, and key
+constraints. ANN execution for vector indexes is still future work.
 
 ## Spatial points
 
@@ -157,7 +158,7 @@ full-text scoring are not implemented.
 | 4326 | WGS-84 geographic 2D | `longitude`, `latitude` |
 | 4979 | WGS-84 geographic 3D | `longitude`, `latitude`, `height` |
 
-`distance(a, b)` is Euclidean for Cartesian and Haversine (Earth radius
+`geo.distance(a, b)` is Euclidean for Cartesian and Haversine (Earth radius
 6 371 km) for WGS-84. Cross-SRID `distance` returns `null`. WGS-84-3D
 `distance` ignores height today — great-circle only.
 
@@ -244,15 +245,16 @@ host-built vectors as to Cypher-built ones.
   every math function so the f32 accumulator can run irrespective of
   the underlying storage.
 - `VectorValues::to_i64_vec` — truncate-toward-zero on floats, pass
-  through on ints; matches the `toIntegerList(vector)` semantics.
+  through on ints; matches the `vector.coordinates(vector)` semantics.
 - `RawCoordinate::Int(i64)` / `RawCoordinate::Float(f64)` — the single
   entry point for user-supplied coordinates. The executor
   (`eval.rs::coerce_list_to_raw_coords`) and every binding funnel
   values through `RawCoordinate` so the coercion rules live in one
   place.
-- `parse_string_values` — parses `vector("[1, 2, 3]", 3, INT)` style
-  strings. Integer-looking tokens are preferred over float parsing so
-  integer-backed vectors don't truncate unnecessarily.
+- `parse_string_values` — parses string inputs used by casts such as
+  `"[1, 2, 3]"::VECTOR<INTEGER>(3)`. Integer-looking tokens are
+  preferred over float parsing so integer-backed vectors don't
+  truncate unnecessarily.
 
 ### Storage semantics
 
@@ -293,7 +295,7 @@ as a standalone value, not as a list entry.
 
 - Equality is defined on `PartialEq` over `LoraVector` — coordinate
   type, dimension, and every value must match.
-  `vector([1,2,3], 3, INTEGER) = vector([1,2,3], 3, INTEGER8)` is
+  `[1,2,3]::VECTOR<INTEGER>(3) = [1,2,3]::VECTOR<INTEGER8>(3)` is
   `false` because the coordinate types differ.
 - `LoraVector::to_key_string` returns
   `"{coordinateType}|{dimension}|v0,v1,…"` (values rendered via `{:?}`
@@ -303,7 +305,7 @@ as a standalone value, not as a list entry.
   type.
 - `ORDER BY` on a vector column runs deterministically but the order
   is implementation-defined. Primary sort should be a scalar score
-  (`vector.similarity.cosine(...)`); vector columns serve as
+  (`vector.similarity(...)`); vector columns serve as
   tie-breakers only.
 
 ### Function surface
@@ -314,16 +316,16 @@ All analyzed in `lora-analyzer/src/analyzer.rs` (`KNOWN_FUNCTIONS`,
 
 | Cypher | Arity | Notes |
 |---|---|---|
-| `vector(value, dimension, coordinateType)` | 3 | value: `LIST<NUMBER>` or `STRING`; dimension: integer (or whole-number float); coordinate type: string, bare identifier (rewritten), or `$param` (preserved). Null value/dimension → null; null coordinate type → error. |
-| `vector.similarity.cosine(a, b)` | 2 | Accepts `VECTOR` or `LIST<NUMBER>` on either side; list is coerced to a `FLOAT32` vector of matching dimension. Zero-norm vector → `null`. Bounded to `[0, 1]`: `(1 + raw_cosine) / 2`. |
-| `vector.similarity.euclidean(a, b)` | 2 | Same input acceptance. Returns `1 / (1 + d²)`. |
-| `vector_distance(a, b, metric)` | 3 | Both sides must be `VECTOR`; plain list is rejected. Metric: `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `COSINE` (= `1 - raw_cosine`), `DOT` (= `-(a·b)`), `HAMMING`; case-insensitive; bare identifier or quoted string. |
-| `vector_norm(v, metric)` | 2 | `EUCLIDEAN` or `MANHATTAN`. |
-| `vector_dimension_count(v)` | 1 | Returns `dimension`. |
-| `size(v)` / `length(v)` | 1 | Same as `vector_dimension_count` for a `VECTOR` input; dispatch lives in the generic `size`/`length` handler in `eval.rs`. |
-| `valueType(v)` | 1 | Returns `"VECTOR<COORD>(N)"`. |
-| `toIntegerList(v)` | 1 | Rejects non-vector; float coordinates truncate toward zero. |
-| `toFloatList(v)` | 1 | Rejects non-vector. |
+| `value::VECTOR<COORD>(DIM)` / `CAST(value AS VECTOR<COORD>(DIM))` | — | value: `LIST<NUMBER>` or `STRING`; dimension: integer in the type; coordinate type in the type. Null value → null. |
+| `vector.similarity(a, b)` | 2 | Accepts `VECTOR` or `LIST<NUMBER>` on either side; list is coerced to a `FLOAT32` vector of matching dimension. Zero-norm vector → `null`. Defaults to cosine, bounded to `[0, 1]`: `(1 + raw_cosine) / 2`. |
+| `vector.similarity(a, b, 'euclidean')` | 3 | Same input acceptance. Returns `1 / (1 + d²)`. |
+| `vector.distance(a, b, metric)` | 3 | Both sides must be `VECTOR`; plain list is rejected. Metric: `EUCLIDEAN`, `EUCLIDEAN_SQUARED`, `MANHATTAN`, `COSINE` (= `1 - raw_cosine`), `DOT` (= `-(a·b)`), `HAMMING`; case-insensitive; bare identifier or quoted string. |
+| `vector.norm(v, metric)` | 2 | `EUCLIDEAN` or `MANHATTAN`. |
+| `vector.dimension(v)` | 1 | Returns `dimension`. |
+| `value.size(v)` | 1 | Same as `vector.dimension` for a `VECTOR` input. |
+| `type.of(v)` | 1 | Returns `"VECTOR<COORD>(N)"`. |
+| `vector.coordinates(v, INTEGER)` | 2 | Rejects non-vector; float coordinates truncate toward zero. |
+| `vector.coordinates(v, FLOAT)` | 2 | Rejects non-vector. |
 
 All similarity/distance math uses `f32` arithmetic internally, widened
 back to `f64` for the result — this matches the reference spec and
@@ -331,17 +333,17 @@ keeps the numerics predictable across storage types.
 
 ### Parser / analyzer quirks
 
-- **No `vector` keyword.** `vector(...)` is parsed as an ordinary
-  function call; the special-casing lives entirely in the analyzer.
+- **Vector construction is a cast.** `VECTOR<COORD>(DIM)` is a
+  literal type expression used by postfix casts and `CAST(...)`.
 - **Bare-identifier enum slots.**
-  `try_vector_enum_literal(fn_name, arg_idx, expr)` rewrites a bare
-  `Expr::Variable` to `ResolvedExpr::Literal(LiteralValue::String(...))`
-  in three places only:
+  The analyzer rewrites a bare `Expr::Variable` to
+  `ResolvedExpr::Literal(LiteralValue::String(...))` in metric/target
+  slots:
   | Function | Slot |
   |---|---|
-  | `vector` | argument 2 (coordinate type) |
-  | `vector_distance` | argument 2 (metric) |
-  | `vector_norm` | argument 1 (metric) |
+  | `vector.distance` | argument 2 (metric) |
+  | `vector.norm` | argument 1 (metric) |
+  | `vector.coordinates` | argument 1 (target coordinate shape) |
   Every other slot falls through to normal variable resolution — so a
   local variable `COSINE` coming out of an `UNWIND` binds normally
   when it's not in an enum slot.
@@ -349,27 +351,29 @@ keeps the numerics predictable across storage types.
   slot is **not** rewritten — it flows through as `Parameter("type")`
   so callers can pass the coordinate type / metric from host code.
 - **Quoted strings pass through unchanged** in enum slots, so
-  `vector([1,2,3], 3, 'SIGNED INTEGER')` works the same as
-  `vector([1,2,3], 3, INTEGER)` where the alias has no space.
+  `vector.distance(a, b, 'EUCLIDEAN')` works the same as
+  `vector.distance(a, b, EUCLIDEAN)`.
 - **Arity is enforced.** `function_arity` pins every vector function
   to its exact count; wrong arity produces `SemanticError::WrongArity`
   at analysis time.
-- **Unknown `vector.similarity.*` names are caught.** `vector.bogus(...)`
+- **Unknown vector function names are caught.** `vector.bogus(...)`
   and `vector.similarity.manhattan(...)` both fail
   `validate_function_name` with `SemanticError::UnknownFunction`.
 
 ### What's not implemented
 
-- **Vector indexes** (`CREATE VECTOR INDEX`) and any ANN execution
-  path.
+- **ANN execution for vector indexes** — `CREATE VECTOR INDEX` and
+  `db.index.vector.*` procedures exist, but the current procedure path
+  is a flat scan over the indexed scope.
 - **Built-in embedding generation** — no plugin system.
 - **Extra metrics** beyond those listed above. Adding one is
   mechanical: implement in `vector.rs`, wire into
-  `eval_vector_distance_fn` / `eval_vector_norm_fn`, add a test in
+  `eval_vector.distance_fn` / `eval_vector.norm_fn`, add a test in
   `crates/lora-database/tests/vectors.rs`.
 - **HTTP parameter forwarding.** `lora-server` does not accept a
   `params` body — vectors passed over HTTP have to be embedded as
-  `vector(...)` literals inside the query string.
+  cast expressions such as `[1,2,3]::VECTOR<INTEGER>(3)` inside the
+  query string.
 
 ## Schema validation
 
