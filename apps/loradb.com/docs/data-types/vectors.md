@@ -32,14 +32,17 @@ API, local model, batch job) and pass them in as parameters.
 ## Construction
 
 ```cypher
-RETURN vector([1, 2, 3], 3, INTEGER) AS v
-RETURN vector([1.05, 0.123, 5], 3, FLOAT32) AS v
-RETURN vector($embedding, 384, FLOAT32) AS v
-RETURN vector('[1.05e+00, 0.123, 5]', 3, FLOAT) AS v
+RETURN [1, 2, 3]::VECTOR<INTEGER>(3) AS v
+RETURN [1.05, 0.123, 5]::VECTOR<FLOAT32>(3) AS v
+RETURN $embedding::VECTOR<FLOAT32>(384) AS v
+RETURN CAST('[1.05e+00, 0.123, 5]' AS VECTOR<FLOAT>(3)) AS v
 ```
 
-`vector(value, dimension, coordinateType)` takes exactly three
-arguments:
+Use `value::VECTOR<COORD>(DIM)` for compact handwritten Cypher, or
+`CAST(value AS VECTOR<COORD>(DIM))` when that reads better in generated
+or parenthesized expressions. `TRY_CAST(value AS
+VECTOR<COORD>(DIM))` returns `null` instead of reporting a conversion
+error. The cast input may be:
 
 - **value** — `LIST<INTEGER | FLOAT>` **or** a string like
   `"[1, 2, 3]"` (numbers separated by commas, decimal or scientific
@@ -47,13 +50,9 @@ arguments:
   coordinates, which then has to match a zero-dimension declaration —
   but dimension `0` is rejected, so an empty vector is never
   constructible.
-- **dimension** — an integer in `1..=4096`. Whole-number floats
-  (`3.0`) are accepted for convenience; fractional floats error.
-- **coordinateType** — one of the six canonical tags below, or any
-  accepted alias.
-
-Wrong arity is rejected at analysis time; anything outside the valid
-ranges is rejected at evaluation time with a clear error.
+The dimension is part of the target type and must be in `1..=4096`.
+Anything outside the valid ranges is rejected at evaluation time with a
+clear error.
 
 ### Coordinate types
 
@@ -61,35 +60,24 @@ ranges is rejected at evaluation time with a clear error.
 |---|---|
 | `FLOAT64` | `FLOAT` |
 | `FLOAT32` | — |
-| `INTEGER` | `INT`, `INT64`, `INTEGER64`, `SIGNED INTEGER` *(as a string)* |
+| `INTEGER` | `INT`, `INT64`, `INTEGER64` |
 | `INTEGER32` | `INT32` |
 | `INTEGER16` | `INT16` |
 | `INTEGER8` | `INT8` |
 
-Alias matching is case-insensitive and collapses runs of whitespace, so
-`signed integer`, `SIGNED   INTEGER`, and `Signed  Integer` all
-resolve to `INTEGER`. Output always emits the canonical tag.
+Alias matching is case-insensitive. Output always emits the canonical
+tag.
 
 `DOUBLE` is **not** accepted; typos surface as a clear
 `unknown vector coordinate type '…'` error rather than silently
 mapping to `FLOAT64`.
 
-The third argument can be written as a bare identifier
-(`vector([1,2,3], 3, INTEGER)`) or as a string literal
-(`vector([1,2,3], 3, 'INTEGER')`). The analyzer rewrites a bare
-identifier in this specific slot to a string literal, so normal
-variable resolution is unaffected elsewhere in the query — a local
-variable named `COSINE` or `INTEGER` outside the enum slot continues
-to resolve normally. Because the multi-word alias `SIGNED INTEGER`
-contains a space, it only works as a string:
-`vector([1,2,3], 3, 'SIGNED INTEGER')`.
-
-A parameter in the coordinate-type slot is preserved verbatim — the
-analyzer does **not** rewrite `$type` to a string, so callers can
-pass the coordinate type from host code:
+The coordinate type is written inside `VECTOR<...>`. If the coordinate
+type or dimension must come from host code dynamically, build a type
+string and use the lower-level dynamic helper:
 
 ```cypher
-RETURN vector($values, 3, $type) AS v
+RETURN cast.to($values, $type_name) AS v
 ```
 
 ### Coercion rules
@@ -100,42 +88,39 @@ RETURN vector($values, 3, $type) AS v
 - Float inputs go into integer-typed vectors with truncation **toward
   zero** (`1.9 → 1`, `-1.9 → -1`, `0.999 → 0`, `-0.999 → 0`).
 - Out-of-range values error loudly —
-  `vector([128], 1, INT8)` is an error because `128` does not fit in
-  `INTEGER8`; `vector([2e39], 1, FLOAT32)` is rejected because the
+  `[128]::VECTOR<INT8>(1)` is an error because `128` does not fit in
+  `INTEGER8`; `[2e39]::VECTOR<FLOAT32>(1)` is rejected because the
   value overflows `f32`; a float bigger than `i64::MAX` for an
   integer-backed vector errors rather than saturating.
 - `NaN`, `Infinity`, and `-Infinity` coordinates are errors.
-- Nested-list coordinates are errors (`vector([[1,2]], 1, INTEGER)`).
-- Non-numeric coordinates are errors (`vector([1, 'two', 3], …)`).
+- Nested-list coordinates are errors (`[[1,2]]::VECTOR<INTEGER>(1)`).
+- Non-numeric coordinates are errors (`[1, 'two', 3]::VECTOR<FLOAT32>(3)`).
 - An unknown `coordinateType` is an error.
 
 ### Null propagation
 
-- `vector(null, 3, FLOAT32)` returns `null`.
-- `vector([1,2,3], null, INTEGER)` returns `null`.
-- `vector([1], 1, null)` is an **error** — coordinate-type `null` is
-  never ambiguous, so it's rejected loudly rather than hidden as
-  `null`.
+- `null::VECTOR<FLOAT32>(3)` returns `null`.
+- `CAST(null AS VECTOR<FLOAT32>(3))` returns `null`.
 
 ## Storage
 
 Vectors can be stored directly as node or relationship properties:
 
 ```cypher
-CREATE (:Doc {id: 1, embedding: vector([1, 2, 3], 3, INTEGER)})
+CREATE (:Doc {id: 1, embedding: [1, 2, 3]::VECTOR<INTEGER>(3)})
 
 MATCH (a:Doc {id: 1}), (b:Doc {id: 2})
-CREATE (a)-[:SIM {score: vector([0.9, 0.1], 2, FLOAT32)}]->(b)
+CREATE (a)-[:SIM {score: [0.9, 0.1]::VECTOR<FLOAT32>(2)}]->(b)
 
-MATCH (d:Doc {id: 1}) SET d.embedding = vector([0.1, 0.2], 2, FLOAT32)
-MATCH (d:Doc {id: 1}) SET d += {embedding: vector([1, 2], 2, FLOAT32)}
+MATCH (d:Doc {id: 1}) SET d.embedding = [0.1, 0.2]::VECTOR<FLOAT32>(2)
+MATCH (d:Doc {id: 1}) SET d += {embedding: [1, 2]::VECTOR<FLOAT32>(2)}
 ```
 
 A vector is also a legal map value — a property map containing a
 vector is stored intact:
 
 ```cypher
-CREATE (:Doc {id: 1, meta: {embedding: vector([1, 2, 3], 3, INTEGER)}})
+CREATE (:Doc {id: 1, meta: {embedding: [1, 2, 3]::VECTOR<INTEGER>(3)}})
 ```
 
 ### Restriction: no list-of-vectors as a property
@@ -147,8 +132,8 @@ shape decision, not an oversight:
 
 ```cypher
 -- Rejected:
-CREATE (:Doc {embeddings: [vector([1,2,3], 3, INTEGER)]})
-CREATE (:Doc {meta: {embeddings: [vector([1,2,3], 3, INTEGER)]}})
+CREATE (:Doc {embeddings: [[1,2,3]::VECTOR<INTEGER>(3)]})
+CREATE (:Doc {meta: {embeddings: [[1,2,3]::VECTOR<INTEGER>(3)]}})
 ```
 
 If you need many embeddings per document, hang them off separate
@@ -189,13 +174,13 @@ Relationship vector indexes use the relationship procedure and yield
 `relationship`:
 
 ```cypher
-CALL db.index.vector.queryRelationships('rel_embedding', 10, vector([1, 0, 0], 3, FLOAT32))
+CALL db.index.vector.queryRelationships('rel_embedding', 10, [1, 0, 0]::VECTOR<FLOAT32>(3))
 YIELD relationship, score;
 ```
 
 The procedure returns the yielded columns directly, sorted by
-descending score. The query vector can be a `VECTOR`, a `vector(...)`
-call, a numeric list, or a parameter containing a vector. Numeric lists
+descending score. The query vector can be a `VECTOR`, a numeric list,
+or a parameter containing a vector. Numeric lists
 are coerced to `FLOAT32` vectors. `k` must be positive, and the query
 dimension must match the configured index dimension.
 
@@ -211,7 +196,7 @@ over the full candidate set:
 ```cypher
 MATCH (d:Doc)
 RETURN d.id AS id
-ORDER BY vector.similarity.cosine(d.embedding, $query) DESC
+ORDER BY vector.similarity(d.embedding, $query) DESC
 LIMIT 10
 ```
 
@@ -219,7 +204,7 @@ Or, using `WITH` to carry the score forward:
 
 ```cypher
 MATCH (n:Node)
-WITH n, vector.similarity.euclidean($query, n.vector) AS score
+WITH n, vector.similarity($query, n.vector, 'euclidean') AS score
 RETURN n.id AS id, score
 ORDER BY score DESC
 LIMIT 2
@@ -235,7 +220,7 @@ similarity, then use relationships to explain or filter them:
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 MATCH (d)-[:MENTIONS]->(e:Entity)
 WHERE e.type = $entity_type
 RETURN d.id, d.title, score, collect(e.name) AS entities
@@ -273,20 +258,19 @@ await db.execute(
 
 | Expression | Returns |
 |---|---|
-| `valueType(vector([1,2,3], 3, INTEGER))` | `"VECTOR<INTEGER>(3)"` |
-| `size(vector([1,2,3,4], 4, FLOAT32))` | `4` (dimension) |
-| `length(vector([1,2,3], 3, INTEGER))` | `3` (dimension) |
-| `vector_dimension_count(vector([1,2,3], 3, INTEGER8))` | `3` |
-| `toIntegerList(vector([1.9, -1.9, 3], 3, FLOAT32))` | `[1, -1, 3]` |
-| `toFloatList(vector([1, 2, 3], 3, INT8))` | `[1.0, 2.0, 3.0]` |
+| `type.of([1,2,3]::VECTOR<INTEGER>(3))` | `"VECTOR<INTEGER>(3)"` |
+| `value.size([1,2,3,4]::VECTOR<FLOAT32>(4))` | `4` (dimension) |
+| `vector.dimension([1,2,3]::VECTOR<INTEGER8>(3))` | `3` |
+| `vector.coordinates([1.9, -1.9, 3]::VECTOR<FLOAT32>(3), INTEGER)` | `[1, -1, 3]` |
+| `vector.coordinates([1, 2, 3]::VECTOR<INT8>(3), FLOAT)` | `[1.0, 2.0, 3.0]` |
 
-`size` on a `VECTOR` returns its dimension — identical to
-`vector_dimension_count` for convenience. `valueType` returns the
+`value.size` on a `VECTOR` returns its dimension — identical to
+`vector.dimension` for convenience. `type.of` returns the
 parameterised tag `VECTOR<TYPE>(DIMENSION)` so runtime inspection can
 see both the coordinate type and the size.
 
-`toIntegerList` on a float vector truncates toward zero (same rule as
-`vector()` construction). Both converters propagate `null` and error
+`vector.coordinates` on a float vector truncates toward zero (same rule as
+cast-based vector construction). Both converters propagate `null` and error
 on non-`VECTOR` inputs.
 
 ## Similarity and distance
@@ -298,8 +282,8 @@ before accumulation, then widened back to `f64` for the result).
 ### Bounded similarity in `[0, 1]`
 
 ```cypher
-vector.similarity.cosine(a, b)
-vector.similarity.euclidean(a, b)
+vector.similarity(a, b)
+vector.similarity(a, b, 'euclidean')
 ```
 
 Both accept a `VECTOR` **or** a `LIST<NUMBER>` on either side. Lists
@@ -311,7 +295,7 @@ the list's length. Higher = more similar.
   `null` (cosine is undefined).
 - `euclidean`: `1 / (1 + d²)`, where `d²` is the squared L2 distance.
   Documented example:
-  `vector.similarity.euclidean([4,5,6], [2,8,3]) ≈ 0.04348`
+  `vector.similarity([4,5,6], [2,8,3], 'euclidean') ≈ 0.04348`
   (because `d² = 2² + 3² + 3² = 22`, so `1 / 23 ≈ 0.0435`).
 
 Both functions `null`-propagate: any `null` argument returns `null`.
@@ -321,12 +305,12 @@ error.
 ### Signed distance metrics
 
 ```cypher
-vector_distance(a, b, EUCLIDEAN)
-vector_distance(a, b, EUCLIDEAN_SQUARED)
-vector_distance(a, b, MANHATTAN)
-vector_distance(a, b, COSINE)
-vector_distance(a, b, DOT)
-vector_distance(a, b, HAMMING)
+vector.distance(a, b, EUCLIDEAN)
+vector.distance(a, b, EUCLIDEAN_SQUARED)
+vector.distance(a, b, MANHATTAN)
+vector.distance(a, b, COSINE)
+vector.distance(a, b, DOT)
+vector.distance(a, b, HAMMING)
 ```
 
 Both operands must be `VECTOR` values with matching dimensions — a
@@ -349,8 +333,8 @@ metric name is an error. A dimension mismatch is an error.
 ### Vector norms
 
 ```cypher
-vector_norm(v, EUCLIDEAN)   -- sqrt(Σ xᵢ²)
-vector_norm(v, MANHATTAN)   -- Σ |xᵢ|
+vector.norm(v, EUCLIDEAN)   -- sqrt(Σ xᵢ²)
+vector.norm(v, MANHATTAN)   -- Σ |xᵢ|
 ```
 
 Metric matching is case-insensitive; identifiers and quoted strings
@@ -360,7 +344,7 @@ metric errors.
 ## Equality, DISTINCT, and ordering
 
 - **Equality** compares coordinate type, dimension, and every value.
-  `vector([1,2,3], 3, INTEGER) = vector([1,2,3], 3, INTEGER8)` is
+  `[1,2,3]::VECTOR<INTEGER>(3) = [1,2,3]::VECTOR<INTEGER8>(3)` is
   `false` — different coordinate types are never equal, even with
   numerically identical values.
 - **`DISTINCT`** uses a stable key (coordinate type + dimension +
@@ -369,7 +353,7 @@ metric errors.
 - **`ORDER BY`** on a vector column is accepted and runs without
   panicking, but the ordering is implementation-defined — use it for
   tie-breaking, not primary sort. Order by a scalar score
-  (`vector.similarity.cosine(...)`) when intent matters.
+  (`vector.similarity(...)`) when intent matters.
 
 ## Passing vectors as parameters
 
@@ -421,7 +405,7 @@ const query = vector([0.1, 0.2, 0.3], 3, "FLOAT32");
 await db.execute(
   `MATCH (d:Doc)
    RETURN d.id AS id
-   ORDER BY vector.similarity.cosine(d.embedding, $q) DESC
+   ORDER BY vector.similarity(d.embedding, $q) DESC
    LIMIT 10`,
   { q: query },
 );
@@ -436,7 +420,7 @@ db = Database.create()
 q = vector([0.1, 0.2, 0.3], 3, "FLOAT32")
 
 db.execute(
-    "RETURN vector.similarity.cosine($a, $b) AS s",
+    "RETURN vector.similarity($a, $b) AS s",
     {"a": q, "b": [0.1, 0.2, 0.3]},   # list is coerced to FLOAT32
 )
 ```
@@ -450,7 +434,7 @@ q := lora.Vector(
     lora.VectorCoordTypeFloat32,
 )
 db.Execute(
-    "MATCH (d:Doc) RETURN d.id ORDER BY vector.similarity.cosine(d.embedding, $q) DESC LIMIT 10",
+    "MATCH (d:Doc) RETURN d.id ORDER BY vector.similarity(d.embedding, $q) DESC LIMIT 10",
     lora.Params{"q": q},
 )
 ```
@@ -462,7 +446,7 @@ require "lora_ruby"
 
 q = LoraRuby.vector([0.1, 0.2, 0.3], 3, "FLOAT32")
 db.execute(
-  "MATCH (d:Doc) RETURN d.id ORDER BY vector.similarity.cosine(d.embedding, $q) DESC LIMIT 10",
+  "MATCH (d:Doc) RETURN d.id ORDER BY vector.similarity(d.embedding, $q) DESC LIMIT 10",
   { q: q },
 )
 ```
@@ -492,7 +476,7 @@ params.insert(
 );
 
 db.execute_with_params(
-    "MATCH (d:Doc) RETURN d.id ORDER BY vector.similarity.cosine(d.embedding, $q) DESC LIMIT 10",
+    "MATCH (d:Doc) RETURN d.id ORDER BY vector.similarity(d.embedding, $q) DESC LIMIT 10",
     None,
     params,
 )?;
@@ -507,7 +491,7 @@ vector literally in the query string —
 ```bash
 curl -s http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
-  -d '{"query":"RETURN vector([0.1,0.2,0.3], 3, FLOAT32) AS v"}'
+  -d '{"query":"RETURN [0.1,0.2,0.3]::VECTOR<FLOAT32>(3) AS v"}'
 ```
 
 — or run the engine through one of the in-process bindings above
@@ -519,7 +503,7 @@ when you need host-side vectors. See
 - **ANN structures — not yet supported.** Vector indexes are cataloged
   and queryable, but `db.index.vector.*` performs a flat scan today.
 - **Similarity / distance functions are exhaustive.** Direct
-  `vector.similarity.*` and `vector_distance(...)` calls score every
+  `vector.similarity(...)` and `vector.distance(...)` calls score every
   candidate matched by the query.
 - **Embedding generation — not supported.** LoraDB has no plugin
   surface; generate embeddings in application code.

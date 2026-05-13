@@ -10,7 +10,7 @@ import styles from './index.module.scss';
 
 const SAMPLE = `MATCH (a:Agent)-[:REMEMBERS]->(c:Context)
       -[:ABOUT]->(e:Entity)
-WHERE c.updated_at > datetime() - duration('PT1H')
+WHERE c.updated_at > temporal.now() - 'PT1H'::DURATION
 RETURN e.id, collect(c.summary) AS recent_context`;
 
 // Multi-language quickstart snippets. Intentionally aligned in shape

@@ -38,7 +38,7 @@ Set multiple keys in one clause by chaining with commas:
 
 ```cypher
 MATCH (n:User {name: 'Alice'})
-SET n.age = 33, n.updated = timestamp()
+SET n.age = 33, n.updated = temporal.timestamp()
 RETURN n
 ```
 
@@ -84,7 +84,7 @@ functions, do arithmetic.
 ```cypher
 MATCH (n:User) SET n.doubled = n.age * 2       RETURN n
 MATCH (n:User) SET n.greeting = 'Hello ' + n.name RETURN n
-MATCH (n:User) SET n.updated = timestamp()     RETURN n
+MATCH (n:User) SET n.updated = temporal.timestamp()     RETURN n
 ```
 
 ### Clear a property
@@ -208,8 +208,8 @@ expose a `clear()` helper that is faster and clearer — see
 
 ```cypher
 MERGE (u:User {id: $id})
-  ON CREATE SET u.created = timestamp()
-  SET u.name = $name, u.updated = timestamp()
+  ON CREATE SET u.created = temporal.timestamp()
+  SET u.name = $name, u.updated = temporal.timestamp()
 RETURN u
 ```
 
@@ -230,7 +230,7 @@ Safe pattern for partial updates from a client payload.
 
 ```cypher
 MATCH (n:User {id: $id})
-SET n.last_seen = timestamp()
+SET n.last_seen = temporal.timestamp()
 ```
 
 ### Convert / migrate a property
@@ -278,8 +278,8 @@ Pairs cleanly with `MERGE`:
 
 ```cypher
 MERGE (u:User {id: $id})
-  ON CREATE SET u.tier = 'bronze', u.created = timestamp()
-  SET u.last_seen = timestamp(),
+  ON CREATE SET u.tier = 'bronze', u.created = temporal.timestamp()
+  SET u.last_seen = temporal.timestamp(),
       u.tier      = CASE
                       WHEN u.score >= 100 THEN 'gold'
                       ELSE                       coalesce(u.tier, 'bronze')

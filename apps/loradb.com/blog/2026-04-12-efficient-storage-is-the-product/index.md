@@ -55,7 +55,7 @@ around many systems: too much memory overhead for small graphs, too much
 operational weight for local workloads, too much indirection when the graph was
 supposed to be close to the application.
 
-Neo4j and other graph databases are built for broad, durable, server-side
+Many graph databases are built for broad, durable, server-side
 workloads. That comes with real strengths. It also means they carry machinery
 that a fast embedded or in-process graph engine may not need.
 

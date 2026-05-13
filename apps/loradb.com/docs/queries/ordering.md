@@ -259,11 +259,11 @@ LIMIT $size
 ```cypher
 MATCH (n)
 RETURN n
-ORDER BY rand()
+ORDER BY math.random()
 LIMIT 10
 ```
 
-[`rand()`](../functions/math#random) is re-evaluated per row — good for
+[`math.random()`](../functions/math#random) is re-evaluated per row — good for
 a rough sample, but don't rely on it for cryptographic randomness.
 
 ## Edge cases
@@ -316,5 +316,5 @@ Returns zero rows — never an error.
 - [**RETURN / WITH**](./return-with) — where ordering attaches.
 - [**Aggregation**](./aggregation) — aggregation runs before ordering.
 - [**Query Examples**](./examples) — copy-paste Top-N / pagination.
-- [**Math → rand**](../functions/math#random) — random sampling.
+- [**Math → random**](../functions/math#random) — random sampling.
 - [**Temporal Functions**](../functions/temporal) — ordering dates.

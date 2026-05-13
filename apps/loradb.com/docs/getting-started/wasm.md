@@ -187,7 +187,7 @@ const params = {
 await db.explain(
   `MATCH (c:City)
    WHERE c.founded >= $since
-     AND distance(c.location, $near) < $radius
+     AND geo.distance(c.location, $near) < $radius
    RETURN c.name AS name`,
   params
 );
@@ -195,7 +195,7 @@ await db.explain(
 await db.profile(
   `MATCH (c:City)
    WHERE c.founded >= $since
-     AND distance(c.location, $near) < $radius
+     AND geo.distance(c.location, $near) < $radius
    RETURN c.name AS name`,
   params
 );
@@ -453,7 +453,7 @@ bubble to a generic handler.
   separate graphs or stronger UI isolation.
 - **Integer precision.** Same 2^53 limit as `lora-node` — `i64`
   values outside the safe integer range lose precision.
-- **Wall-clock resolution.** `date()` / `datetime()` without
+- **Wall-clock resolution.** `temporal.today()` / `temporal.now()` without
   arguments use `performance.now()` / `Date.now()` at millisecond
   granularity — the nanosecond field is zero.
 - **Bundle size.** Each target is ~2 MB uncompressed. For

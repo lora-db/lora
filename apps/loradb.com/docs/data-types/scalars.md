@@ -177,10 +177,10 @@ RETURN 0.0 / 0.0          -- NaN
 See [Math → Rounding](../functions/math#rounding-and-absolute-value):
 
 ```cypher
-RETURN round(3.5)        -- 4
-RETURN round(2.5)        -- 2        (banker's rounding)
-RETURN ceil(0.1)         -- 1
-RETURN floor(-0.1)       -- -1
+RETURN math.round(3.5)        -- 4
+RETURN math.round(2.5)        -- 3        (default half-up rounding)
+RETURN math.ceil(0.1)         -- 1
+RETURN math.floor(-0.1)       -- -1
 ```
 
 ### Use as a ratio / rate
@@ -217,33 +217,33 @@ See [String Functions](../functions/string) for the full reference.
 Highlights:
 
 ```cypher
-RETURN toLower('LoraDB'),           -- 'loradb'
-       split('a,b,c', ','),         -- ['a', 'b', 'c']
-       substring('LoraDB', 0, 4),   -- 'Lora'
-       replace('aba', 'a', 'x')     -- 'xbx'
+RETURN string.lower('LoraDB'),           -- 'loradb'
+       string.split('a,b,c', ','),         -- ['a', 'b', 'c']
+       string.slice('LoraDB', 0, 4),   -- 'Lora'
+       string.replace('aba', 'a', 'x')     -- 'xbx'
 ```
 
 ### Comparison
 
 Strings sort byte-lexicographically. Case-sensitive comparisons are
-the default; normalise with `toLower` / `toUpper` for case-insensitive
+the default; normalise with `string.lower` / `string.upper` for case-insensitive
 matching — see [WHERE → string matching](../queries/where#string-matching).
 
 ```cypher
 MATCH (u:User)
-WHERE toLower(u.name) = toLower($search)
+WHERE string.lower(u.name) = string.lower($search)
 RETURN u
 ```
 
 ### Lengths: bytes vs code points
 
 ```cypher
-RETURN size('café'),        -- may be 4 or 5 depending on encoding nuances
-       char_length('café')  -- 4  (code points)
+RETURN value.size('café'),      -- string size
+       string.length('café')    -- 4  (code points)
 ```
 
-For display-length, prefer `char_length`. For serialisation sizes,
-prefer `size`.
+For display-length, prefer `string.length`. For general polymorphic
+size checks, use `value.size`.
 
 ## Parameters
 
@@ -293,7 +293,7 @@ RETURN a, b
 
 ```cypher
 MATCH (u:User)
-WHERE toLower(u.email) CONTAINS toLower($q)
+WHERE string.lower(u.email) CONTAINS string.lower($q)
 RETURN u
 ```
 

@@ -3,7 +3,7 @@
 // This is not a full parser. It's a deterministic pattern-matcher tuned to
 // the kinds of short strings that appear inline in prose:
 //
-//   - function calls:             `date()`, `count(DISTINCT n)`
+//   - function calls:             `temporal.today()`, `count(DISTINCT n)`
 //   - property / attribute access: `n.name`, `dt.year`
 //   - clause keywords:             `MATCH (n:Person)`, `WITH *`
 //   - simple expressions:          `n.age > 30`, `date + duration`

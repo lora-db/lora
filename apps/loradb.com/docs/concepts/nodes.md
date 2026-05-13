@@ -108,9 +108,9 @@ Any [supported data type](../data-types/overview):
 CREATE (c:City {
   name:       'Amsterdam',
   population: 918000,
-  founded:    date('1275-10-27'),
+  founded:    '1275-10-27'::DATE,
   tags:       ['capital', 'port'],
-  location:   point({latitude: 52.37, longitude: 4.89})
+  location:   {latitude: 52.37, longitude: 4.89}::POINT
 })
 ```
 
@@ -120,7 +120,7 @@ Read, patch, and remove with [`SET` / `REMOVE`](../queries/set-delete):
 MATCH (c:City {name: 'Amsterdam'}) RETURN c.population, c.tags
 
 MATCH (c:City {name: 'Amsterdam'})
-SET c.population = 920000, c.updated = timestamp()
+SET c.population = 920000, c.updated = temporal.timestamp()
 RETURN c
 ```
 
@@ -134,8 +134,8 @@ to run different side-effects per branch:
 
 ```cypher
 MERGE (u:User {email: $email})
-  ON CREATE SET u.created_at = timestamp()
-  SET u.last_seen = timestamp()
+  ON CREATE SET u.created_at = temporal.timestamp()
+  SET u.last_seen = temporal.timestamp()
 RETURN u
 ```
 
@@ -166,7 +166,7 @@ Use `MERGE` for idempotent writes:
 
 ```cypher
 MERGE (u:User {email: $email})
-ON CREATE SET u.created_at = timestamp()
+ON CREATE SET u.created_at = temporal.timestamp()
 ```
 
 When duplicate values must be rejected across all `:User` nodes, add a
@@ -221,7 +221,7 @@ MATCH (src:Person {id: $src}), (dst:Person {id: $dst})
 SET dst += properties(src)
 REMOVE src:Person
 SET src:Archived
-SET src.archived_at = timestamp()
+SET src.archived_at = temporal.timestamp()
 ```
 
 ### Split one node into two

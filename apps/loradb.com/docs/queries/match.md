@@ -212,12 +212,12 @@ Bind the whole traversal to a variable with `p = …`. See also
 ```cypher
 MATCH p = (a)-[r:FOLLOWS]->(b)
 RETURN p,
-       length(p)          AS hops,
-       nodes(p)           AS via,
-       relationships(p)   AS rels
+       path.length(p)          AS hops,
+       path.nodes(p)           AS via,
+       path.edges(p)   AS rels
 ```
 
-`length(p)` is the hop count; `nodes(p)` and `relationships(p)` return
+`path.length(p)` is the hop count; `path.nodes(p)` and `path.edges(p)` return
 lists (see [List Functions](../functions/list)).
 
 ## Progressive patterns

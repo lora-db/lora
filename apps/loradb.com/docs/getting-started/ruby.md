@@ -138,7 +138,7 @@ params = {
 query = <<~CYPHER
   MATCH (c:City)
   WHERE c.founded >= $since
-    AND distance(c.location, $near) < $radius
+    AND geo.distance(c.location, $near) < $radius
   RETURN c.name AS name
 CYPHER
 

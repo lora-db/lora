@@ -105,7 +105,7 @@ round-trip per event. Cypher makes the rules readable:
 
 ```cypher
 MATCH (u:User {id: $user})-[:PLACED]->(o:Order)-[:CONTAINS]->(p:Product)
-WHERE o.placed_at >= datetime() - duration('P7D')
+WHERE o.placed_at >= temporal.now() - 'P7D'::DURATION
 RETURN p.category, count(*) AS recent
 ```
 

@@ -121,12 +121,12 @@ RETURN p.name
 ```
 
 Two rows: Ada, Alan. Run through
-[`toLower`](../functions/string#tolower--toupper) if you want
+[`string.lower`](../functions/string#tolower--toupper) if you want
 case-insensitive matching:
 
 ```cypher
 MATCH (p:Person)
-WHERE toLower(p.name) CONTAINS 'a'
+WHERE string.lower(p.name) CONTAINS 'a'
 RETURN p.name
 ```
 
@@ -226,12 +226,12 @@ You can bind the whole [path](../queries/paths) and read its length:
 
 ```cypher
 MATCH p = (linus:Person {name: 'Linus'})-[:FOLLOWS*1..3]->(ada:Person {name: 'Ada'})
-RETURN length(p), nodes(p)
+RETURN path.length(p), path.nodes(p)
 ```
 
 `*1..3` means "between 1 and 3 hops along `:FOLLOWS` edges" — see
 [variable-length patterns](../queries/paths#variable-length-relationships).
-`length(p)` is the hop count; `nodes(p)` is the list of nodes on that
+`path.length(p)` is the hop count; `path.nodes(p)` is the list of nodes on that
 path.
 
 ### Shortest path
@@ -240,7 +240,7 @@ path.
 MATCH p = shortestPath(
   (linus:Person {name: 'Linus'})-[:FOLLOWS*]->(ada:Person {name: 'Ada'})
 )
-RETURN length(p) AS hops, [n IN nodes(p) | n.name] AS via
+RETURN path.length(p) AS hops, [n IN path.nodes(p) | n.name] AS via
 ```
 
 ## Step 7 — Update and delete
@@ -266,8 +266,8 @@ missing":
 
 ```cypher
 MERGE (p:Person {name: 'Ada'})
-  ON MATCH  SET p.updated = timestamp()
-  ON CREATE SET p.created = timestamp()
+  ON MATCH  SET p.updated = temporal.timestamp()
+  ON CREATE SET p.created = temporal.timestamp()
 RETURN p.name, p.updated, p.created
 ```
 

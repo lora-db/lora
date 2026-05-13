@@ -53,7 +53,7 @@ CREATE INDEX $name FOR (u:User) ON (u.email);
 |---|---|---|
 | RANGE | `CREATE INDEX ...` or `CREATE RANGE INDEX ...` | `=`, `<`, `<=`, `>`, `>=`, bounded ranges |
 | TEXT | `CREATE TEXT INDEX ...` | `STARTS WITH`, `CONTAINS`, `ENDS WITH` |
-| POINT | `CREATE POINT INDEX ...` | `point.withinBBox(...)`, `point.distance(...) <= radius` |
+| POINT | `CREATE POINT INDEX ...` | `geo.within_bbox(...)`, `geo.distance(...) <= radius` |
 | LOOKUP | `CREATE LOOKUP INDEX ...` | Catalog-visible label/type token indexes |
 | VECTOR | `CREATE VECTOR INDEX ... OPTIONS {indexConfig: {...}}` | `db.index.vector.queryNodes`, `db.index.vector.queryRelationships` |
 | FULLTEXT | `CREATE FULLTEXT INDEX ... ON EACH [...]` | `db.index.fulltext.queryNodes`, `db.index.fulltext.queryRelationships` |
@@ -92,8 +92,8 @@ OPTIONS {indexConfig: {
   `vector.similarity_function`: 'cosine'
 }};
 
-CREATE (:Movie {title: 'A', embedding: vector([1.0, 0.0, 0.0], 3, FLOAT32)});
-CREATE (:Movie {title: 'B', embedding: vector([0.9, 0.1, 0.0], 3, FLOAT32)});
+CREATE (:Movie {title: 'A', embedding: [1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3)});
+CREATE (:Movie {title: 'B', embedding: [0.9, 0.1, 0.0]::VECTOR<FLOAT32>(3)});
 
 CALL db.index.vector.queryNodes('movie_embedding', 2, [1.0, 0.0, 0.0])
 YIELD node, score;
@@ -108,7 +108,7 @@ YIELD relationship, score;
 ```
 
 `k` must be positive. The query argument can be a `VECTOR`, a
-`vector(...)` call, a numeric list, or a parameter containing a vector.
+`[...]::VECTOR<COORD>(DIM)` cast, a numeric list, or a parameter containing a vector.
 Numeric lists are coerced to `FLOAT32` vectors. The query dimension
 must match the index dimension.
 
@@ -246,10 +246,10 @@ MATCH (p:Person) WHERE p.name STARTS WITH 'Al' RETURN p
 -- NodeByTextScan
 
 MATCH (p:Place)
-WHERE point.withinBBox(
+WHERE geo.within_bbox(
   p.location,
-  point({x: 0, y: 0}),
-  point({x: 100, y: 100})
+  {x: 0, y: 0}::POINT,
+  {x: 100, y: 100}::POINT
 )
 RETURN p
 -- NodeByPointScan

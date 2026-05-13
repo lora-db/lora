@@ -122,6 +122,11 @@ More detail: [Ruby → Parameterised query](../getting-started/ruby#parameterise
 | `wgs84()` / `cartesian()` helper | [`Point`](../data-types/spatial) |
 | `vector()` helper / tagged object | [`Vector`](../data-types/vectors) |
 
+These helper names are host-language APIs, not query constructors. In
+query text, prefer casts such as `'2026-05-01'::DATE`,
+`{longitude: 4.89, latitude: 52.37}::POINT`, and
+`[1, 2, 3]::VECTOR<INTEGER>(3)`.
+
 Missing entries resolve to `null`. The engine doesn't raise on an
 unbound parameter — it silently filters everything out. Audit bindings
 when a query returns no rows. See
@@ -198,7 +203,7 @@ const q = vector(embedding, 384, 'FLOAT32');
 await db.execute(
   `MATCH (d:Doc)
    RETURN d.id AS id
-   ORDER BY vector.similarity.cosine(d.embedding, $q) DESC
+   ORDER BY vector.similarity(d.embedding, $q) DESC
    LIMIT 10`,
   { q },
 );
@@ -208,7 +213,7 @@ The same helper exists in every in-process binding — see the
 [Vectors → Passing vectors as parameters](../data-types/vectors#passing-vectors-as-parameters)
 table for Python, Go, Ruby, and Rust shapes.
 
-`vector.similarity.cosine` and `vector.similarity.euclidean` also
+`vector.similarity` also
 accept a plain `LIST<NUMBER>` on either side, so for a one-off query
 you can skip the helper and pass `{ q: [0.1, 0.2, 0.3] }` — the list
 is coerced to a `FLOAT32` vector whose dimension equals its length.
@@ -216,9 +221,10 @@ The full tagged helper is required only when the vector will be
 **stored** as a property, because property storage needs the complete
 `{kind, dimension, coordinateType, values}` shape.
 
-Vector indexes are not implemented yet, so the query above is a linear
-scan over every matched `Doc` — fine for small datasets, not for
-production-scale retrieval until index support ships.
+`CREATE VECTOR INDEX` and `db.index.vector.queryNodes` /
+`queryRelationships` are supported, but the current procedure execution
+is still a flat scan over the indexed label/type scope. Use selective
+labels and filters today; a dedicated ANN structure is future work.
 
 ### Default a missing value host-side
 

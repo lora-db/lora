@@ -60,8 +60,8 @@ Return constants, function calls, arithmetic:
 
 ```cypher
 RETURN 1 + 2 AS three
-RETURN timestamp() AS now_ms
-RETURN datetime() AS now, date() AS today
+RETURN temporal.timestamp() AS now_ms
+RETURN temporal.now() AS now, temporal.today() AS today
 RETURN 'hello, ' + $name AS greeting
 ```
 

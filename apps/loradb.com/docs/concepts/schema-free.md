@@ -112,21 +112,24 @@ MATCH (s:NeverWritten) RETURN s;  -- analysis error on a populated graph
 
 ## `MERGE` for idempotent writes
 
-`MERGE` is the closest thing LoraDB has to a uniqueness constraint —
-it matches on the given pattern, creating only if missing:
+`MERGE` is the write-side idempotency tool: it matches on the given
+pattern, creating only if missing. Add a uniqueness constraint when you
+also need the database to reject duplicate keys:
 
 ```cypher
 MERGE (u:User {email: $email})
-  ON CREATE SET u.created = timestamp()
-  ON MATCH  SET u.last_seen = timestamp()
+  ON CREATE SET u.created = temporal.timestamp()
+  ON MATCH  SET u.last_seen = temporal.timestamp()
 ```
 
 It's an important building block for schema-free writes:
 
 - **Safe upsert** — a repeated run won't create duplicates.
-- **No indexes required** — `MERGE` does a full-label scan on the key
-  map, which is fine for moderate scales. See
-  [Limitations → Storage](../limitations#storage).
+- **Constraint-friendly** — a matching uniqueness constraint rejects
+  competing duplicate writes. See [Constraints](../queries/constraints).
+- **No index required** — without a supporting index or constraint,
+  `MERGE` scans the label/type scope for the key map, which is fine for
+  moderate scales. See [Limitations → Storage](../limitations#storage).
 
 See [MERGE](../queries/unwind-merge#merge) for the full reference.
 
@@ -137,12 +140,12 @@ declared — you occasionally need to verify it at query time:
 
 ```cypher
 MATCH (r:Record)
-WHERE valueType(r.id) = 'INTEGER'
+WHERE type.of(r.id) = 'INTEGER'
 RETURN r
 ```
 
 See [Functions → type conversion and checking](../functions/overview#type-conversion-and-checking)
-for `valueType`, `toInteger`, `toString`, and friends.
+for `type.of`, `toInteger`, `toString`, and friends.
 
 ## Trade-offs at a glance
 
@@ -178,5 +181,5 @@ net back, where it's cheap.
 - [Properties](./properties) — missing vs null, value typing.
 - [Troubleshooting → Semantic errors](../troubleshooting#semantic-errors)
   — typo-catching on reads.
-- [Limitations → Storage](../limitations#storage) — no indexes, no
-  constraints.
+- [Limitations → Storage](../limitations#storage) — scoped index and
+  constraint coverage.

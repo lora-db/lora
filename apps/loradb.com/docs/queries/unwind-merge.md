@@ -31,7 +31,7 @@ one row per element.
 UNWIND [1, 2, 3] AS n RETURN n
 -- 1, 2, 3
 
-UNWIND range(1, 5) AS n RETURN n
+UNWIND list.range(1, 5) AS n RETURN n
 -- 1, 2, 3, 4, 5
 
 UNWIND [] AS n RETURN n
@@ -153,8 +153,8 @@ had to be created.
 
 ```cypher
 MERGE (n:User {id: 1002})
-  ON MATCH  SET n.updated = timestamp()
-  ON CREATE SET n.created = timestamp()
+  ON MATCH  SET n.updated = temporal.timestamp()
+  ON CREATE SET n.created = temporal.timestamp()
 RETURN n
 ```
 
@@ -167,8 +167,8 @@ fields that always change:
 
 ```cypher
 MERGE (u:User {id: $id})
-  ON CREATE SET u.created = timestamp()
-  SET u.name = $name, u.updated = timestamp()
+  ON CREATE SET u.created = temporal.timestamp()
+  SET u.name = $name, u.updated = temporal.timestamp()
 RETURN u
 ```
 
@@ -205,11 +205,11 @@ If a `:User {id: 1}` exists with no `status` property, this `MERGE`
 
 ```cypher
 -- Bad — 'updated_at' is part of the match key
-MERGE (u:User {id: $id, updated_at: datetime()})
+MERGE (u:User {id: $id, updated_at: temporal.now()})
 
 -- Good — identity inside, payload via SET
 MERGE (u:User {id: $id})
-  SET u.updated_at = datetime()
+  SET u.updated_at = temporal.now()
 RETURN u
 ```
 
@@ -237,8 +237,8 @@ MERGE (a)-[:FOLLOWS]->(b)
 ```cypher
 UNWIND $rows AS row
 MERGE (u:User {id: row.id})
-  ON CREATE SET u.created = timestamp()
-  SET u += row.fields, u.updated = timestamp()
+  ON CREATE SET u.created = temporal.timestamp()
+  SET u += row.fields, u.updated = temporal.timestamp()
 ```
 
 Every row becomes a "find-or-create then update" pass.
@@ -298,8 +298,8 @@ RETURN avg(s) AS mean, min(s) AS worst, max(s) AS best, count(*) AS n
 UNWIND $edges AS e
 MATCH (a:User {id: e.from}), (b:User {id: e.to})
 MERGE (a)-[r:FOLLOWS]->(b)
-  ON CREATE SET r.since = coalesce(e.since, timestamp())
-  SET r.last_activity = timestamp()
+  ON CREATE SET r.since = coalesce(e.since, temporal.timestamp())
+  SET r.last_activity = temporal.timestamp()
 ```
 
 ### Conditional MERGE via CASE

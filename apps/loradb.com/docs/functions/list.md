@@ -1,7 +1,7 @@
 ---
 title: List Functions
 sidebar_label: List
-description: List functions in LoraDB — size, head, tail, last, range, reverse, reduce, and friends — with 0-based indexing, negative indices, and null-propagation semantics.
+description: List functions in LoraDB — value.size, list.first, list.rest, list.last, list.range, value.reverse, reduce, and friends — with 0-based indexing, negative indices, and null-propagation semantics.
 ---
 
 # List Functions
@@ -14,10 +14,15 @@ List functions generally return `null` on `null` input.
 
 | Goal | Function / Syntax |
 |---|---|
-| Size | [<CypherCode code="size(list)" />](#size--head--tail--last) |
-| First, rest, last | [<CypherCode code="head" />, <CypherCode code="tail" />, <CypherCode code="last" />](#size--head--tail--last) |
-| Reverse | [<CypherCode code="reverse(list)" />](#reverse) |
-| Range | [<CypherCode code="range(start, end[, step])" />](#range) |
+| Size | [<CypherCode code="value.size(list)" />](#size--head--tail--last) |
+| First, rest, last | [<CypherCode code="list.first" />, <CypherCode code="list.rest" />, <CypherCode code="list.last" />](#size--head--tail--last) |
+| Safe index / slice | [<CypherCode code="list.at(list, i)" />, <CypherCode code="list.slice(list, from[, to])" />](#function-indexing-and-slicing) |
+| Reverse | [<CypherCode code="value.reverse(list)" />](#reverse) |
+| Range | [<CypherCode code="list.range(start, end[, step])" />](#range) |
+| Take / drop | [<CypherCode code="list.take" />, <CypherCode code="list.drop" />, <CypherCode code="list.take_last" />, <CypherCode code="list.drop_last" />](#selection-and-reshaping) |
+| Append / prepend / concat | [<CypherCode code="list.append" />, <CypherCode code="list.prepend" />, <CypherCode code="list.concat" />](#functional-concatenation) |
+| Deduplicate | [<CypherCode code="list.unique(list)" />](#deduplicate-and-set-operations) |
+| Per-list numeric summaries | [<CypherCode code="list.sum" />, <CypherCode code="list.avg" />, <CypherCode code="list.median" />](#numeric-summaries) |
 | Fold | [`reduce(acc, x IN list | …)`](#reduce) |
 | Index / slice | [<CypherCode code="list[i]" />, <CypherCode code="list[a..b]" />](#indexing-and-slicing) |
 | Concat | [<CypherCode code="list + list" />, <CypherCode code="list + x" />, <CypherCode code="x + list" />](#concatenation) |
@@ -27,57 +32,96 @@ List functions generally return `null` on `null` input.
 | Collect rows | [<CypherCode code="collect(expr)" />](./aggregation#collect) |
 | Unwind rows | [<CypherCode code="UNWIND list AS row" />](../queries/unwind-merge#unwind) |
 
-## size / head / tail / last
+## value.size / list.first / list.rest / list.last {#size--head--tail--last}
 
 | Function | Behaviour |
 |---|---|
-| `size(list)` | Number of elements; `null` → `null` |
-| `head(list)` | First element; empty list → `null` |
-| `tail(list)` | All but first; empty list → `null` |
-| `last(list)` | Last element; empty list → `null` |
+| `value.size(list)` | Number of elements; `null` → `null` |
+| `list.first(list)` | First element; empty list → `null` |
+| `list.rest(list)` | All but first; empty list → `null` |
+| `list.last(list)` | Last element; empty list → `null` |
 
 ```cypher
-RETURN size([1, 2, 3])            -- 3
-RETURN head([1, 2, 3])            -- 1
-RETURN tail([1, 2, 3])            -- [2, 3]
-RETURN last([1, 2, 3])            -- 3
-RETURN head([])                   -- null
-RETURN size([])                   -- 0
+RETURN value.size([1, 2, 3])            -- 3
+RETURN list.first([1, 2, 3])            -- 1
+RETURN list.rest([1, 2, 3])            -- [2, 3]
+RETURN list.last([1, 2, 3])            -- 3
+RETURN list.first([])                   -- null
+RETURN value.size([])                   -- 0
 ```
 
-`size` also works on strings — see
-[`String Functions → size`](./string#size--length--char_length).
+`value.size` also works on strings — see
+[`String Functions → size`](./string#stringlength--valuesize).
 
 ## reverse
 
 Works on lists and strings.
 
 ```cypher
-RETURN reverse([1, 2, 3])         -- [3, 2, 1]
-RETURN reverse('abc')             -- 'cba'
+RETURN value.reverse([1, 2, 3])         -- [3, 2, 1]
+RETURN value.reverse('abc')             -- 'cba'
 ```
 
 ## range
 
-`range(start, end[, step])` — inclusive, integers only.
+`list.range(start, end[, step])` — inclusive, integers only.
 
 ```cypher
-RETURN range(1, 5)                -- [1, 2, 3, 4, 5]
-RETURN range(0, 10, 2)            -- [0, 2, 4, 6, 8, 10]
-RETURN range(10, 1, -1)           -- [10, 9, 8, …, 1]
-RETURN range(1, 5, 0)             -- null  (zero step)
+RETURN list.range(1, 5)                -- [1, 2, 3, 4, 5]
+RETURN list.range(0, 10, 2)            -- [0, 2, 4, 6, 8, 10]
+RETURN list.range(10, 1, -1)           -- [10, 9, 8, …, 1]
+RETURN list.range(1, 5, 0)             -- null  (zero step)
 ```
 
 ### Common uses
 
 ```cypher
 // Pagination helper: generate page numbers
-RETURN range(1, toInteger(ceil($total / $size))) AS pages
+RETURN list.range(1, toInteger(math.ceil($total / $size))) AS pages
 
 // Simple synthetic data
-UNWIND range(1, 100) AS i
-CREATE (:Point {id: i, x: rand() * 100, y: rand() * 100})
+UNWIND list.range(1, 100) AS i
+CREATE (:Point {id: i, x: math.random() * 100, y: math.random() * 100})
 ```
+
+## Selection and Reshaping
+
+These functions transform one list value inside a row. They do not
+change row cardinality; use `UNWIND` when you want one output row per
+element.
+
+| Function | Behaviour |
+|---|---|
+| `list.take(xs, n)` | First `n` items; negative or zero `n` returns `[]` |
+| `list.drop(xs, n)` | Everything after the first `n` items; negative or zero `n` returns the original list |
+| `list.take_last(xs, n)` | Last `n` items; negative or zero `n` returns `[]` |
+| `list.drop_last(xs, n)` | Everything except the last `n` items; negative or zero `n` returns the original list |
+| `list.flatten(xs[, depth])` | Flattens nested lists to the given depth; default `1` |
+| `list.compact(xs)` | Removes `null` elements |
+| `list.chunks(xs, size)` | Consecutive fixed-size chunks; the last chunk may be shorter |
+| `list.windows(xs, size[, step])` | Sliding fixed-size windows |
+| `list.zip(a, b)` | Pairs elements until the shorter list is exhausted |
+| `list.append(xs, value)` | Returns a new list with `value` added at the end |
+| `list.prepend(xs, value)` | Returns a new list with `value` added at the beginning |
+| `list.concat(a, b, ...)` | Concatenates two or more lists |
+
+```cypher
+RETURN list.take([1, 2, 3, 4], 2)              -- [1, 2]
+RETURN list.drop([1, 2, 3, 4], 2)              -- [3, 4]
+RETURN list.take_last([1, 2, 3, 4], 2)         -- [3, 4]
+RETURN list.drop_last([1, 2, 3, 4], 1)         -- [1, 2, 3]
+RETURN list.flatten([[1, 2], [3, [4]]], 2)     -- [1, 2, 3, 4]
+RETURN list.chunks([1, 2, 3, 4, 5], 2)         -- [[1, 2], [3, 4], [5]]
+RETURN list.windows([1, 2, 3, 4], 2)           -- [[1, 2], [2, 3], [3, 4]]
+RETURN list.zip(['a', 'b'], [1, 2, 3])         -- [['a', 1], ['b', 2]]
+RETURN list.append(['a', 'b'], 'c')            -- ['a', 'b', 'c']
+RETURN list.prepend(['b', 'c'], 'a')           -- ['a', 'b', 'c']
+RETURN list.concat([1, 2], [3], [4, 5])        -- [1, 2, 3, 4, 5]
+```
+
+Use `list.sample(xs[, n])` or `list.shuffle(xs)` for lightweight random
+sampling. They are not cryptographically secure and are intended for
+exploration, demos, and approximate picks.
 
 ## reduce
 
@@ -131,6 +175,45 @@ RETURN [1, 2, 3, 4, 5][3..]    -- [4, 5]
 RETURN [1, 2, 3, 4, 5][-2..]   -- [4, 5]
 ```
 
+## Function Indexing And Slicing
+
+Use `list.at(list, index)` and `list.slice(list, from[, to])` when a
+query builder needs regular function calls instead of postfix syntax.
+Both use the same 0-based, negative-from-end convention as list
+indexing.
+
+```cypher
+RETURN list.at([10, 20, 30], 1)          -- 20
+RETURN list.at([10, 20, 30], -1)         -- 30
+RETURN list.at([10, 20, 30], 99)         -- null
+
+RETURN list.slice([10, 20, 30, 40], 1, 3)   -- [20, 30]
+RETURN list.slice([10, 20, 30, 40], -3, -1) -- [20, 30]
+RETURN list.slice([10, 20, 30], 2, 1)       -- []
+```
+
+## Numeric Summaries
+
+The `list.*` summary helpers work inside a single row. They skip
+`null` values and return `null` if a non-numeric value appears where a
+number is required.
+
+| Function | Behaviour |
+|---|---|
+| `list.sum(list)` | Sum of numeric items; empty/all-null list returns `0` |
+| `list.avg(list)` | Average of numeric items; empty/all-null list returns `null` |
+| `list.min(list)` / `list.max(list)` | Smallest/largest comparable value |
+| `list.product(list)` | Product of numeric items; empty/all-null list returns `1` |
+| `list.stdev(list)` | Sample standard deviation; fewer than two values returns `null` |
+| `list.median(list)` | Median numeric value as a float |
+
+```cypher
+RETURN list.sum([1, 2, 3])       -- 6
+RETURN list.avg([1, 2, null, 5]) -- 2.6666…
+RETURN list.median([1, 10, 20])  -- 10.0
+RETURN list.product([2, 3, 4])   -- 24
+```
+
 ### Slicing recipes
 
 ```cypher
@@ -152,6 +235,21 @@ RETURN 0 + [1, 2]                -- [0, 1, 2]
 RETURN [1, 2] + 3                -- [1, 2, 3]
 ```
 
+## Functional Concatenation
+
+Use the function forms when generated queries or nested expressions are
+easier to build with regular calls than with `+`.
+
+```cypher
+RETURN list.concat([1, 2], [3], [4, 5])   -- [1, 2, 3, 4, 5]
+RETURN list.append([1, 2], 3)             -- [1, 2, 3]
+RETURN list.prepend([2, 3], 1)            -- [1, 2, 3]
+```
+
+`list.append` and `list.prepend` can add any value, including `null`.
+`list.concat` requires every argument to be a list; a non-list argument
+returns `null`.
+
 ## List comprehension
 
 ```cypher
@@ -170,7 +268,7 @@ RETURN [x IN [1, 2, 3, 4] WHERE x > 2 | x * 10]   -- [30, 40]
 ```cypher
 MATCH (u:User)
 RETURN u.name,
-       [t IN u.tags WHERE size(t) > 3] AS long_tags
+       [t IN u.tags WHERE value.size(t) > 3] AS long_tags
 ```
 
 ### Nested comprehension
@@ -246,12 +344,12 @@ RETURN n
 
 ### Predicates on paths
 
-`nodes(p)` and `relationships(p)` are lists, so path predicates work
+`path.nodes(p)` and `path.edges(p)` are lists, so path predicates work
 too:
 
 ```cypher
 MATCH p = (a)-[:FOLLOWS*1..3]->(b)
-WHERE all(r IN relationships(p) WHERE r.active)
+WHERE all(r IN path.edges(p) WHERE r.active)
 RETURN p
 ```
 
@@ -259,32 +357,32 @@ See [Paths](../queries/paths#path-functions).
 
 ## Common patterns
 
-### Distinct values from a list
+### Deduplicate And Set Operations
 
-There's no built-in `distinct(list)`. Use
-[`UNWIND`](../queries/unwind-merge#unwind) +
-[`collect(DISTINCT …)`](./aggregation#collect):
+Use `list.unique(list)` to keep the first occurrence of each value
+inside one row. Use set-style helpers when comparing two lists.
 
 ```cypher
-UNWIND [1, 2, 2, 3, 3, 3] AS x
-RETURN collect(DISTINCT x)   -- [1, 2, 3]
+RETURN list.unique([1, 2, 2, 3, 3, 3])          -- [1, 2, 3]
+RETURN list.union([1, 2], [2, 3])               -- [1, 2, 3]
+RETURN list.intersect([1, 2, 3], [2, 3, 4])     -- [2, 3]
+RETURN list.diff([1, 2, 3], [2])                -- [1, 3]
 ```
 
 ### Sort a list
 
-No in-place sort. Unwind, order, re-collect:
+Use `list.sort(list[, 'desc'])` for scalar lists in a single row. For
+row-level ordering, sort rows before collecting.
 
 ```cypher
-UNWIND [3, 1, 4, 1, 5, 9, 2, 6] AS x
-WITH x ORDER BY x
-RETURN collect(x)   -- [1, 1, 2, 3, 4, 5, 6, 9]
+RETURN list.sort([3, 1, 4, 1, 5, 9, 2, 6])
+-- [1, 1, 2, 3, 4, 5, 6, 9]
 ```
 
-### Zip two lists (best effort)
+### Zip two lists
 
 ```cypher
-WITH ['a', 'b', 'c'] AS keys, [1, 2, 3] AS vals
-RETURN [i IN range(0, size(keys) - 1) | [keys[i], vals[i]]]
+RETURN list.zip(['a', 'b', 'c'], [1, 2, 3])
 -- [['a', 1], ['b', 2], ['c', 3]]
 ```
 
@@ -329,13 +427,13 @@ WITH [{name: 'a', score: 9},
       {name: 'c', score: 7}] AS rows
 RETURN reduce(
   best = rows[0],
-  r IN tail(rows) |
+  r IN list.rest(rows) |
   CASE WHEN r.score < best.score THEN r ELSE best END
 ) AS winner
 -- {name: 'b', score: 3}
 ```
 
-Start with the first element as `best`, walk `tail(rows)`, and on
+Start with the first element as `best`, walk `list.rest(rows)`, and on
 each step keep whichever of `best` vs. `r` has the smaller `score`.
 The [`CASE`](../queries/return-with#case-expressions) expression
 returns a whole map — the same shape as `best` — so the accumulator
@@ -382,10 +480,10 @@ RETURN [1, 2, 3, 4][3..1]   -- []   (empty, not null, not an error)
 
 ### Operations on null lists
 
-Every list function returns `null` on a `null` input, including `size`.
+Every list function returns `null` on a `null` input, including `value.size`.
 
 ```cypher
-RETURN size(null), head(null), tail(null)    -- null, null, null
+RETURN value.size(null), list.first(null), list.rest(null)    -- null, null, null
 ```
 
 ### Heterogeneous lists
@@ -396,24 +494,25 @@ Nothing enforces element-type uniformity.
 RETURN [1, 'two', true, null]
 ```
 
-Use a [`valueType`](./overview#type-conversion-and-checking) check in
+Use a [`type.of`](./overview#type-conversion-and-checking) check in
 `all(… WHERE …)` if you need a guarantee.
 
 ## Limitations
 
 - List element types are not enforced — `[1, 'two', true]` is a
   perfectly valid list. Use
-  `all(x IN list WHERE valueType(x) = 'INTEGER')` if you need
+  `all(x IN list WHERE type.of(x) = 'INTEGER')` if you need
   homogeneity.
 - `reduce` has no short-circuit — the whole list is visited even if a
   condition could stop it early.
-- No built-in `distinct(list)` helper — use `collect(DISTINCT x)` on an
-  unwound list.
+- `list.sort` only sorts directly comparable scalar values. For maps,
+  nodes, or custom sort keys, sort rows with `ORDER BY` before
+  collecting.
 
 ## See also
 
 - [**Lists & Maps**](../data-types/lists-and-maps) — the data-type side.
 - [**Aggregation → collect**](./aggregation#collect) — produce lists from rows.
 - [**UNWIND**](../queries/unwind-merge#unwind) — lists back into rows.
-- [**Paths**](../queries/paths) — `nodes()` / `relationships()` produce lists.
+- [**Paths**](../queries/paths) — `path.nodes()` / `path.edges()` produce lists.
 - [**WHERE → list predicates**](../queries/where#list-predicates).

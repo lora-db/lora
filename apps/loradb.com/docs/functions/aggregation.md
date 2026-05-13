@@ -178,7 +178,7 @@ order.
 UNWIND ['banana', 'apple', 'cherry'] AS s
 RETURN min(s), max(s)         -- 'apple', 'cherry'
 
-UNWIND [date('2024-01-01'), date('2024-06-30'), date('2024-12-15')] AS d
+UNWIND ['2024-01-01'::DATE, '2024-06-30'::DATE, '2024-12-15'::DATE] AS d
 RETURN min(d), max(d)
 -- 2024-01-01, 2024-12-15
 
@@ -289,12 +289,12 @@ RETURN count(region) AS regions,
 
 ```cypher
 MATCH (e:Event)
-RETURN date.truncate('month', e.at) AS month,
+RETURN temporal.truncate('month', e.at) AS month,
        count(*) AS events
 ORDER BY month
 ```
 
-Uses [`date.truncate`](./temporal#truncation).
+Uses [`temporal.truncate`](./temporal#truncation).
 
 ### Percentile per group
 

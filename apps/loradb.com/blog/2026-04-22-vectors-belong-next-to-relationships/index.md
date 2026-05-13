@@ -78,11 +78,11 @@ A small version looks like this:
 CREATE (d:Doc {
   id:        'doc-17',
   title:     'Onboarding checklist',
-  embedding: vector($embedding, 384, FLOAT32)
+  embedding: $embedding::VECTOR<FLOAT32>(384)
 })
 CREATE (e:Entity {name: 'Alice'})
 CREATE (d)-[:MENTIONS]->(e)
-CREATE (o:Observation {session: 's1', ts: datetime()})
+CREATE (o:Observation {session: 's1', ts: temporal.now()})
 CREATE (o)-[:OBSERVED_IN]->(d)
 ```
 
@@ -93,7 +93,7 @@ to rank or filter":
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 MATCH (d)-[:MENTIONS]->(e:Entity)
 RETURN d.id, d.title, score, collect(e.name) AS entities
 ORDER BY score DESC
@@ -122,9 +122,9 @@ A `LoraVector` has:
 
 It can appear anywhere a value can appear:
 
-- as a node property: `CREATE (:Doc {embedding: vector([...], 384, FLOAT32)})`
-- as a relationship property: `CREATE (a)-[:SIM {score: vector([...], 3, FLOAT32)}]->(b)`
-- as a Cypher parameter: `vector(value, dimension, coordinateType)`
+- as a node property: `CREATE (:Doc {embedding: [...]::VECTOR<FLOAT32>(384)})`
+- as a relationship property: `CREATE (a)-[:SIM {score: [...]::VECTOR<FLOAT32>(3)}]->(b)`
+- as a Cypher parameter: pass a binding helper value or cast a list parameter in the query
 - inside a `RETURN`, `WITH`, `ORDER BY`, or `WHERE` clause.
 
 Every binding speaks the same canonical tagged shape:
@@ -159,7 +159,7 @@ deliberate line.
 
 What works today is exhaustive similarity search. You write a `MATCH`
 that produces a candidate set, you score every candidate with
-`vector.similarity.cosine(...)` or `vector.similarity.euclidean(...)`,
+`vector.similarity(...)` or `vector.distance(...)`,
 you `ORDER BY score DESC LIMIT k`. The engine scans every matched
 node.
 
@@ -175,9 +175,9 @@ change later:
 - the `VECTOR` value type and its coordinate rules;
 - the tagged wire shape that every binding speaks;
 - the property-storage semantics;
-- the function surface (`vector.similarity.*`, `vector_distance`,
-  `vector_norm`, `toIntegerList`, `toFloatList`,
-  `vector_dimension_count`, `size(vector)`);
+- the function surface (`vector.similarity`, `vector.distance`,
+  `vector.norm`, `vector.coordinates`, `vector.dimension`,
+  `value.size(vector)`);
 - the Cypher ergonomics, including the bare-identifier rewrite that
   lets you write `INTEGER8` and `EUCLIDEAN` without declaring them as
   variables.
@@ -213,7 +213,7 @@ one I wanted for adopting LoraDB at all.
    there is structure around the items they want to find.
 2. They generate embeddings in application code and store them on
    graph nodes with a single `CREATE`.
-3. They run `vector.similarity.cosine(...)` against a small local
+3. They run `vector.similarity(...)` against a small local
    dataset. The query shape is ordinary Cypher.
 4. They add `MATCH` patterns that filter or explain the results using
    relationships.
@@ -271,5 +271,5 @@ Canonical references:
   — how each binding passes a `VECTOR` in.
 - [Cookbook → Vector-retrieval patterns](/docs/cookbook#vector-retrieval-patterns)
   — top-k and graph-filtered retrieval recipes.
-- [Limitations → Vectors](/docs/limitations#vectors) — no indexes, no ANN,
-  no embedding generation today.
+- [Limitations → Vectors](/docs/limitations#vectors) — flat-scan vector
+  index procedures, no ANN structure, no embedding generation today.

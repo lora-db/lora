@@ -185,7 +185,7 @@ params := lora.Params{
 plan, err := db.Explain(
     `MATCH (c:City)
      WHERE c.founded >= $since
-       AND distance(c.location, $near) < $radius
+       AND geo.distance(c.location, $near) < $radius
      RETURN c.name AS name`,
     params,
 )
@@ -194,7 +194,7 @@ if err != nil { log.Fatal(err) }
 prof, err := db.Profile(
     `MATCH (c:City)
      WHERE c.founded >= $since
-       AND distance(c.location, $near) < $radius
+       AND geo.distance(c.location, $near) < $radius
      RETURN c.name AS name`,
     params,
 )

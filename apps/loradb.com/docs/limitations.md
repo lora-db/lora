@@ -35,9 +35,9 @@ in the internal documentation.
 | Patterns | No quantified path patterns |
 | Operators | No `BETWEEN`; cross-type comparisons return `null` |
 | Aggregates | No `GROUP BY` / `HAVING` keywords |
-| Functions | No APOC; ASCII-only case ops |
+| Functions | No external utility compatibility layer; case conversion is Unicode-aware but not locale-specific |
 | Parameters | No HTTP-level params; no parse-time type check |
-| Spatial | No WKT I/O, no CRS transforms; `point.withinBBox` exists for same-SRID boxes |
+| Spatial | No WKT I/O, no CRS transforms; `geo.within_bbox` exists for same-SRID boxes |
 | Vectors | VECTOR indexes are cataloged and queryable through flat-scan procedures; no ANN structure; no embedding generation; no list-of-vectors properties |
 
 ## Clauses
@@ -80,12 +80,12 @@ in the internal documentation.
 
 | Feature | Status |
 |---|---|
-| APOC-style utilities (`apoc.*`) | Not supported — no compatibility layer |
+| External utility compatibility layer | Not supported |
 | User-defined functions | Not supported — no registration surface |
-| [`date.truncate`](./functions/temporal#truncation) units | Only `"year"` and `"month"`; `"quarter"` / `"week"` / `"day"` not yet supported |
-| [`datetime.truncate`](./functions/temporal#truncation) units | Only `"day"`, `"hour"`, and `"month"`; sub-hour units not yet supported |
-| [`toLower` / `toUpper`](./functions/string#tolower--toupper) | ASCII-only — Unicode case folding not yet supported |
-| [`normalize(str)`](./functions/string#normalize) | Not yet implemented — placeholder returns its input unchanged |
+| [`temporal.truncate`](./functions/temporal#truncation) units | Only `"year"` and `"month"`; `"quarter"` / `"week"` / `"day"` not yet supported |
+| [`temporal.truncate`](./functions/temporal#truncation) units | Only `"day"`, `"hour"`, and `"month"`; sub-hour units not yet supported |
+| [`string.lower` / `string.upper`](./functions/string#tolower--toupper) | Unicode case mapping is supported; locale-specific case folding is not |
+| [`string.normalize(str[, form])`](./functions/string#normalize) | Unicode NFC/NFD/NFKC/NFKD normalization is supported; locale-specific transliteration is not |
 
 ## Data types
 
@@ -100,10 +100,10 @@ in the internal documentation.
 
 | Feature | Status |
 |---|---|
-| WGS-84 3D [`distance`](./functions/spatial#distance) honouring `height` | Not yet supported — computes surface great-circle only |
-| `point.withinBBox()` | Supported for same-SRID 2D/3D bounding boxes; mixed dimensionality returns `null` |
+| WGS-84 3D [`geo.distance`](./functions/spatial#geodistance) honouring `height` | Not yet supported — computes surface great-circle only |
+| `geo.within_bbox()` | Supported for same-SRID 2D/3D bounding boxes; mixed dimensionality returns `null` |
 | `point.fromWKT()` / WKT output | Not yet supported |
-| CRS transformation between SRIDs | Not yet supported — cross-SRID `distance` returns `null` |
+| CRS transformation between SRIDs | Not yet supported — cross-SRID `geo.distance` returns `null` |
 | Custom SRIDs | Not supported — only `7203`, `9157`, `4326`, `4979` |
 
 ## Vectors
@@ -116,7 +116,7 @@ in the internal documentation.
 | Dimension > 4096 | Not supported — rejected at construction time |
 | `ORDER BY` on a `VECTOR` column | Deterministic but implementation-defined; order by a scalar score instead |
 | Metric extensions (e.g. Minkowski, Chebyshev) | Not yet supported — current metrics are listed in [Vectors → Signed distance metrics](./data-types/vectors#signed-distance-metrics) |
-| Passing a `VECTOR` parameter over HTTP | Blocked by the HTTP parameters limitation below — build the vector with `vector(...)` in the query string or use an in-process binding |
+| Passing a `VECTOR` parameter over HTTP | Blocked by the HTTP parameters limitation below — build the vector with `[...]::VECTOR<COORD>(DIM)` in the query string or use an in-process binding |
 
 ## Parameters
 
@@ -172,8 +172,8 @@ in the internal documentation.
 | `CREATE INDEX ON :L(prop)` | Use `CREATE INDEX name FOR (n:L) ON (n.prop)` |
 | `CONSTRAINT UNIQUE` shorthand | `CREATE CONSTRAINT name FOR (n:Label) REQUIRE n.key IS UNIQUE` |
 | `LOAD CSV` | Parse on host, pass as `$rows`, [`UNWIND $rows`](./queries/unwind-merge#unwind) |
-| `CALL apoc.…` | Re-implement in the host language |
-| `point.withinBBox()` | Use `point.withinBBox(p, lowerLeft, upperRight)` with matching SRIDs |
+| External utility procedures | Re-implement in the host language |
+| `geo.within_bbox()` | Use `geo.within_bbox(p, lowerLeft, upperRight)` with matching SRIDs |
 | `point.fromWKT()` | Parse host-side, pass as a [point param](./functions/spatial#parameters) |
 | `GROUP BY year` | `RETURN e.at.year AS year, count(*)` |
 | `IF/THEN/ELSE` expressions | [`CASE … WHEN … THEN … END`](./queries/return-with#case-expressions) |

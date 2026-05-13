@@ -12,7 +12,7 @@ it in any `.md` / `.mdx` file without an import.
 Keep reaching for `<CypherCode>` when the fragment is Cypher:
 
 - clauses — `<CypherCode code="MATCH (n:Person)" />`
-- functions — `<CypherCode code="date()" />`, `<CypherCode code="count(*)" />`
+- functions — `<CypherCode code="temporal.today()" />`, `<CypherCode code="count(*)" />`
 - property / attribute access — `<CypherCode code="n.name" />`, `<CypherCode code="dt.year" />`
 - operators and expressions — `<CypherCode code="date + duration" />`
 - short query fragments — `<CypherCode code="WITH n.name AS name" />`
@@ -38,9 +38,9 @@ rendered as `<CypherCode code="$id" />` next to a plain backtick
 Both are supported; pick whichever reads better:
 
 ```mdx
-Use <CypherCode code="date()" /> to get the current date.
+Use <CypherCode code="temporal.today()" /> to get the current date.
 
-Use <CypherCode>date()</CypherCode> to get the current date.
+Use <CypherCode>temporal.today()</CypherCode> to get the current date.
 ```
 
 Prefer the `code` prop in table cells and dense reference content —

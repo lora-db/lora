@@ -148,8 +148,8 @@ impl UserService {
         params.insert("name".into(), LoraValue::String(name.into()));
         self.db.execute_with_params(
             "MERGE (u:User {id: $id})
-             ON CREATE SET u.created = timestamp()
-             SET u.name = $name, u.updated = timestamp()",
+             ON CREATE SET u.created = temporal.timestamp()
+             SET u.name = $name, u.updated = temporal.timestamp()",
             None,
             params,
         )?;

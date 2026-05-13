@@ -126,7 +126,7 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**Tutorial**](./getting-started/tutorial) | A ten-minute guided tour — create, match, filter, aggregate, paths, CASE. |
 | [**Concepts**](./concepts/graph-model) | Graph model, nodes, relationships, properties, [schema-free](./concepts/schema-free), [result formats](./concepts/result-formats). |
 | [**Queries**](./queries/) | Clause reference, [parameters](./queries/parameters), [cheat sheet](./queries/cheat-sheet). |
-| [**Functions**](./functions/overview) | String, math, list, temporal, spatial, aggregation. |
+| [**Functions**](./functions/overview) | String, math, list, aggregation, temporal, spatial, vector, type, and cast helpers. |
 | [**Data types**](./data-types/overview) | Scalars, lists, maps, temporals, spatial points, [vectors](./data-types/vectors) — how each round-trips. |
 | [**HTTP API**](./api/http) | Endpoint reference for `lora-server`. |
 | [**Cookbook**](./cookbook) | Scenario-driven recipes: social graphs, e-commerce, events, geospatial, [backup and restore](./cookbook#backup-and-restore). |

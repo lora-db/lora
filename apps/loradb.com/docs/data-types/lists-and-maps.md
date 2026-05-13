@@ -75,7 +75,7 @@ MATCH (n) WHERE single(x IN n.roles WHERE x = 'owner') RETURN n
 ### More list functions
 
 See [List Functions](../functions/list) for the full list — includes
-`size`, `head`, `tail`, `range`, `reduce`, comprehensions, and pattern
+`value.size`, `list.first`, `list.rest`, `list.range`, `reduce`, comprehensions, and pattern
 comprehensions.
 
 ### Parameters
@@ -189,6 +189,21 @@ RETURN p {.name, friends: [(p)-[:KNOWS]->(f) | f.name]}
 The last form embeds a [pattern comprehension](../functions/list#pattern-comprehension)
 inline.
 
+### Map functions
+
+Use [Map Functions](../functions/map) when a query needs to inspect or
+reshape a map value.
+
+```cypher
+RETURN map.get({name: 'Ada'}, 'name')                    -- 'Ada'
+RETURN map.has_key({name: 'Ada', email: null}, 'email')  -- true
+RETURN map.pick({id: 1, name: 'Ada', secret: 'x'}, ['id', 'name'])
+RETURN map.rename({first_name: 'Ada'}, 'first_name', 'name')
+```
+
+These helpers return new maps. They do not mutate stored properties
+unless you pass the result to a write clause such as `SET`.
+
 ### `keys` and `properties`
 
 ```cypher
@@ -237,7 +252,7 @@ Nested lists and maps round-trip cleanly. Typed values inside
 
 ```cypher
 WITH ['a', 'b', 'c'] AS keys, [1, 2, 3] AS vals
-RETURN [i IN range(0, size(keys) - 1) | [keys[i], vals[i]]]
+RETURN [i IN list.range(0, value.size(keys) - 1) | [keys[i], vals[i]]]
 ```
 
 ### Distinct list
@@ -305,11 +320,11 @@ RETURN CASE WHEN new_x IN xs THEN xs ELSE xs + new_x END
 
 ```cypher
 WITH ['a', 'b', 'c', 'd'] AS xs, 'c' AS needle
-RETURN head([i IN range(0, size(xs) - 1) WHERE xs[i] = needle])
+RETURN list.first([i IN list.range(0, value.size(xs) - 1) WHERE xs[i] = needle])
 -- 2
 ```
 
-Uses a list comprehension to filter and [`head`](../functions/list#size--head--tail--last)
+Uses a list comprehension to filter and [`list.first`](../functions/list#size--head--tail--last)
 to pick the first.
 
 ### Merge nested maps
@@ -329,8 +344,8 @@ RETURN base + patch + {nested: base.nested + patch.nested}
 ### Empty list / empty map
 
 ```cypher
-RETURN size([]), size({})    -- 0, 0
-RETURN head([])              -- null
+RETURN value.size([]), value.size({})    -- 0, 0
+RETURN list.first([])              -- null
 ```
 
 `UNWIND []` emits zero rows. Watch for unbound parameters — an unset
@@ -340,7 +355,7 @@ See [UNWIND → empty list](../queries/unwind-merge#empty-list).
 ### Heterogeneous lists
 
 Nothing enforces uniform element types. Use
-[`valueType`](../functions/overview#type-conversion-and-checking) in
+[`type.of`](../functions/overview#type-conversion-and-checking) in
 `all(… WHERE …)` if you need a guarantee.
 
 ### Missing map keys

@@ -33,23 +33,23 @@ The short list:
 
 - `VECTOR` is a first-class value type, alongside scalars, lists,
   maps, temporal values, and spatial points.
-- A new `vector(value, dimension, coordinateType)` constructor.
+- Cast-based vector construction with `value::VECTOR<COORD>(DIM)`.
 - Six supported coordinate types:
   - `FLOAT` / `FLOAT64`
   - `FLOAT32`
-  - `INTEGER` / `INT` / `INT64` / `INTEGER64` / `SIGNED INTEGER`
+  - `INTEGER` / `INT` / `INT64` / `INTEGER64`
   - `INTEGER32` / `INT32`
   - `INTEGER16` / `INT16`
   - `INTEGER8` / `INT8`
 - Storage as node and relationship properties.
-- `toIntegerList(v)` and `toFloatList(v)` for converting coordinates
-  back to lists.
-- `vector_dimension_count(v)` and `size(v)` for introspection.
-- `vector.similarity.cosine(a, b)` — bounded to `[0, 1]`.
-- `vector.similarity.euclidean(a, b)` — bounded to `[0, 1]`.
-- `vector_distance(a, b, metric)` — signed distance under one of six
+- `vector.coordinates(v, INTEGER)` and `vector.coordinates(v, FLOAT)`
+  for converting coordinates back to lists.
+- `vector.dimension(v)` and `value.size(v)` for introspection.
+- `vector.similarity(a, b)` — cosine similarity bounded to `[0, 1]`.
+- `vector.similarity(a, b, 'euclidean')` — Euclidean similarity bounded to `[0, 1]`.
+- `vector.distance(a, b, metric)` — signed distance under one of six
   metrics.
-- `vector_norm(v, metric)` — Euclidean or Manhattan norm.
+- `vector.norm(v, metric)` — Euclidean or Manhattan norm.
 - Parameter support through every binding.
 - A canonical tagged wire shape:
 
@@ -90,7 +90,7 @@ hand.
 Putting `VECTOR` into LoraDB as a value type collapses that
 separation. The embedding is a property on the same node that carries
 the label, the text, and the relationships. You score with
-`vector.similarity.cosine(...)` and walk with `MATCH` in the same
+`vector.similarity(...)` and walk with `MATCH` in the same
 Cypher.
 
 That is the whole argument. Similarity finds candidates. The graph
@@ -104,15 +104,13 @@ explains them.
 CREATE (d:Doc {
   id:        1,
   title:     'Onboarding checklist',
-  embedding: vector([0.1, 0.2, 0.3], 3, FLOAT32)
+  embedding: [0.1, 0.2, 0.3]::VECTOR<FLOAT32>(3)
 })
 ```
 
-The third argument can be a bare identifier (`INTEGER`, `FLOAT32`,
-`INT8`) or a string literal (`'INTEGER'`, `'SIGNED INTEGER'`). Bare
-identifiers are rewritten to string literals by the analyzer only in
-this specific argument position, so normal variable resolution is
-unaffected elsewhere in the query.
+The coordinate tag and dimension live in the target type:
+`VECTOR<FLOAT32>(3)`, `VECTOR<INTEGER>(384)`, and so on. `CAST(value AS
+VECTOR<COORD>(DIM))` is the equivalent compatibility form.
 
 ### Passing A Vector As A Parameter
 
@@ -127,7 +125,7 @@ const query = vector(embedding, 384, "FLOAT32");
 await db.execute(
   `MATCH (d:Doc)
    RETURN d.id AS id
-   ORDER BY vector.similarity.cosine(d.embedding, $q) DESC
+   ORDER BY vector.similarity(d.embedding, $q) DESC
    LIMIT 10`,
   { q: query },
 );
@@ -198,7 +196,7 @@ batch in one query, so the per-row overhead is a map extraction and a
 ```cypher
 MATCH (d:Doc)
 RETURN d.id AS id
-ORDER BY vector.similarity.cosine(d.embedding, $query) DESC
+ORDER BY vector.similarity(d.embedding, $query) DESC
 LIMIT 10
 ```
 
@@ -215,7 +213,7 @@ like this:
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 MATCH (d)-[:MENTIONS]->(e:Entity)
 WHERE e.type = $entity_type
 RETURN d.id, d.title, score, collect(e.name) AS entities
@@ -232,8 +230,8 @@ Both live in one query and one engine.
 Vectors round-trip through storage unchanged:
 
 ```cypher
-CREATE (:Doc {id: 1, embedding: vector([1, 2, 3], 3, INTEGER)})
-MATCH (d:Doc {id: 1}) SET d.embedding = vector([0.1, 0.2], 2, FLOAT32)
+CREATE (:Doc {id: 1, embedding: [1, 2, 3]::VECTOR<INTEGER>(3)})
+MATCH (d:Doc {id: 1}) SET d.embedding = [0.1, 0.2]::VECTOR<FLOAT32>(2)
 MATCH (d:Doc {id: 1}) RETURN d.embedding AS e
 ```
 
@@ -324,7 +322,7 @@ Then try a vector query from `curl` or any binding:
 ```bash
 curl -X POST http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
-  -d '{"query":"RETURN vector([1,2,3], 3, INTEGER) AS v"}'
+  -d '{"query":"RETURN [1,2,3]::VECTOR<INTEGER>(3) AS v"}'
 ```
 
 The docs site has a dedicated page for the value type, the coordinate
@@ -343,7 +341,7 @@ been updated to match.
 Three directions stand out after v0.2:
 
 1. **A vector index.** The Cypher shape stays the same
-   (`ORDER BY vector.similarity.* LIMIT k`); the executor starts
+   (`ORDER BY vector.similarity(...) LIMIT k`); the executor starts
    routing scored candidates through an index instead of a linear
    scan. The design depends on the workloads people actually bring.
 2. **More metrics and norms as real usage demands them.** The

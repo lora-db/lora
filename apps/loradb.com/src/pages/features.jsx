@@ -59,14 +59,14 @@ const CYPHER_COVERAGE = [
   {
     label: 'Writing data',
     snippet:
-      "MERGE (u:User {email: $email})\nON CREATE SET u.created = datetime()\nON MATCH  SET u.last_seen = datetime()",
+      "MERGE (u:User {email: $email})\nON CREATE SET u.created = temporal.now()\nON MATCH  SET u.last_seen = temporal.now()",
     to: '/docs/queries/unwind-merge',
     linkLabel: 'MERGE reference',
   },
   {
     label: 'Variable-length paths',
     snippet:
-      'MATCH p = shortestPath(\n  (a:Stop {code: $from})-[:CONNECTS*..6]->(b:Stop {code: $to})\n)\nRETURN length(p) AS hops, [n IN nodes(p) | n.code] AS via',
+      'MATCH p = shortestPath(\n  (a:Stop {code: $from})-[:CONNECTS*..6]->(b:Stop {code: $to})\n)\nRETURN path.length(p) AS hops, [n IN path.nodes(p) | n.code] AS via',
     to: '/docs/queries/paths',
     linkLabel: 'Paths reference',
   },
@@ -80,14 +80,14 @@ const CYPHER_COVERAGE = [
   {
     label: 'Temporal predicates',
     snippet:
-      "MATCH (e:Event)\nWHERE e.at >= datetime() - duration('P7D')\nRETURN date(e.at) AS day, count(*) AS events\nORDER BY day",
+      "MATCH (e:Event)\nWHERE e.at >= temporal.now() - 'P7D'::DURATION\nRETURN temporal.truncate('day', e.at) AS day, count(*) AS events\nORDER BY day",
     to: '/docs/data-types/temporal',
     linkLabel: 'Temporal types',
   },
   {
     label: 'Spatial distance',
     snippet:
-      "WITH point({latitude: 52.52, longitude: 13.405}) AS origin\nMATCH (s:Store)\nWHERE distance(s.loc, origin) < 5000\nRETURN s.name, distance(s.loc, origin) AS metres\nORDER BY metres",
+      "WITH {latitude: 52.52, longitude: 13.405}::POINT AS origin\nMATCH (s:Store)\nWHERE geo.distance(s.loc, origin) < 5000\nRETURN s.name, geo.distance(s.loc, origin) AS metres\nORDER BY metres",
     to: '/docs/data-types/spatial',
     linkLabel: 'Spatial types',
   },
@@ -99,7 +99,9 @@ const FUNCTION_CATEGORIES = [
   { label: 'Aggregation', to: '/docs/functions/aggregation' },
   { label: 'String', to: '/docs/functions/string' },
   { label: 'Math', to: '/docs/functions/math' },
+  { label: 'Number', to: '/docs/functions/number' },
   { label: 'List', to: '/docs/functions/list' },
+  { label: 'Map', to: '/docs/functions/map' },
   { label: 'Temporal', to: '/docs/functions/temporal' },
   { label: 'Spatial', to: '/docs/functions/spatial' },
   { label: 'Vector', to: '/docs/functions/vectors' },

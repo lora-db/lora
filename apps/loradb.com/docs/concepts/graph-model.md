@@ -123,10 +123,10 @@ Cartesian and WGS-84).
 CREATE (:Trip {
   from:     'AMS',
   to:       'LHR',
-  when:     datetime('2026-04-20T08:00:00Z'),
-  duration: duration('PT75M'),
+  when:     '2026-04-20T08:00:00Z'::DATETIME,
+  duration: 'PT75M'::DURATION,
   route:    ['AMS', 'LHR'],
-  origin:   point({latitude: 52.31, longitude: 4.76})
+  origin:   {latitude: 52.31, longitude: 4.76}::POINT
 })
 ```
 
@@ -204,10 +204,10 @@ other edges:
 
 ```cypher
 -- Edge carrying a little data — fine
-CREATE (a)-[:RATED {stars: 4, at: datetime()}]->(b)
+CREATE (a)-[:RATED {stars: 4, at: temporal.now()}]->(b)
 
 -- Edge with further lifecycle / attachments — promote to node
-CREATE (a)-[:WROTE]->(r:Review {stars: 4, body: '…', at: datetime()})
+CREATE (a)-[:WROTE]->(r:Review {stars: 4, body: '…', at: temporal.now()})
 CREATE (r)-[:ABOUT]->(b)
 CREATE (r)-[:IN_LANG]->(:Language {code: 'en'})
 ```

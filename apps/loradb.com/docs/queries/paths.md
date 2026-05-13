@@ -85,27 +85,27 @@ path functions to inspect it.
 
 ```cypher
 MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
-RETURN length(p)        AS hops,
-       nodes(p)         AS via,
-       relationships(p) AS rels
+RETURN path.length(p)        AS hops,
+       path.nodes(p)         AS via,
+       path.edges(p) AS rels
 ```
 
 ### Path functions
 
 | Function | Returns |
 |---|---|
-| `length(p)` | Number of relationships on the path (`Int`) |
-| `nodes(p)` | List of nodes, start to end |
-| `relationships(p)` | List of relationships, in traversal order |
+| `path.length(p)` | Number of relationships on the path (`Int`) |
+| `path.nodes(p)` | List of nodes, start to end |
+| `path.edges(p)` | List of relationships, in traversal order |
 
-`length(p)` for a zero-hop path is `0`; `nodes(p)` has one element; `relationships(p)` is empty.
+`path.length(p)` for a zero-hop path is `0`; `path.nodes(p)` has one element; `path.edges(p)` is empty.
 
 ### Project intermediate nodes
 
 ```cypher
 MATCH p = (a:City {name: 'Amsterdam'})-[:ROUTE*2..3]->(b:City)
 RETURN a.name, b.name,
-       [n IN nodes(p) | n.name] AS via
+       [n IN path.nodes(p) | n.name] AS via
 ```
 
 ## Shortest paths
@@ -118,7 +118,7 @@ Returns one path of minimum length per `(start, end)` pair.
 MATCH p = shortestPath(
   (a:Station {name: 'Amsterdam'})-[:ROUTE*]->(b:Station {name: 'Den Haag'})
 )
-RETURN p, length(p)
+RETURN p, path.length(p)
 ```
 
 Hop count here is the number of `:ROUTE` relationships traversed —
@@ -136,14 +136,14 @@ Returns every path tied for the minimum length.
 MATCH p = allShortestPaths(
   (a:Station {name: 'Amsterdam'})-[:ROUTE*]->(b:Station {name: 'Den Haag'})
 )
-RETURN p, length(p)
+RETURN p, path.length(p)
 ```
 
 ### Reachability check
 
 ```cypher
 MATCH p = shortestPath((a:Node {id: $src})-[*]-(b:Node {id: $dst}))
-RETURN length(p) AS hops
+RETURN path.length(p) AS hops
 ```
 
 One row back when a path exists; **zero rows** when nothing connects
@@ -158,7 +158,7 @@ back with `hops = null` for the unreachable case.
 MATCH p = shortestPath(
   (a:User {id: $from})-[:FOLLOWS*]->(b:User {id: $to})
 )
-RETURN length(p)
+RETURN path.length(p)
 ```
 
 Only `:FOLLOWS` edges count as hops.
@@ -229,7 +229,7 @@ component — keep a cap.
 MATCH p = shortestPath(
   (a:City {name: $from})-[:ROAD*]->(b:City {name: $to})
 )
-RETURN length(p) AS hops
+RETURN path.length(p) AS hops
 ```
 
 ### All nearby neighbors of each node
@@ -244,7 +244,7 @@ RETURN n,
 
 ```cypher
 MATCH p = (a:User {id: $from})-[:FOLLOWS*1..3]->(b:User {id: $to})
-WHERE all(r IN relationships(p) WHERE r.active)
+WHERE all(r IN path.edges(p) WHERE r.active)
 RETURN p
 ```
 
@@ -255,8 +255,8 @@ like `all`, `any`, `none`.
 
 ```cypher
 MATCH p = (a:Station {code: $from})-[:ROUTE*1..6]->(b:Station {code: $to})
-WHERE all(r IN relationships(p) WHERE r.status = 'open')
-WITH p, reduce(cost = 0, r IN relationships(p) | cost + r.km) AS km
+WHERE all(r IN path.edges(p) WHERE r.status = 'open')
+WITH p, reduce(cost = 0, r IN path.edges(p) | cost + r.km) AS km
 ORDER BY km ASC
 LIMIT 1
 RETURN p, km
@@ -270,7 +270,7 @@ the relationship list yourself, then pick the minimum.
 
 ```cypher
 MATCH p = (a:User {id: $from})-[:FOLLOWS*]->(b:User {id: $to})
-WHERE none(n IN nodes(p) WHERE n.blocked)
+WHERE none(n IN path.nodes(p) WHERE n.blocked)
 RETURN p
 ```
 
@@ -304,7 +304,7 @@ CREATE
 
 ```cypher
 MATCH p = (:Stop {code: 'A'})-[:NEXT*1..4]->(end)
-RETURN [n IN nodes(p) | n.code] AS path
+RETURN [n IN path.nodes(p) | n.code] AS path
 ```
 
 | path |
@@ -326,12 +326,12 @@ occurrence is at their own index":
 ```cypher
 MATCH p = (:Stop {code: 'A'})-[:NEXT*1..4]->(end)
 WITH p,
-     [n IN nodes(p) | id(n)]                                        AS ids
+     [n IN path.nodes(p) | id(n)]                                        AS ids
 WITH p, ids,
-     [i IN range(0, size(ids) - 1) WHERE NOT ids[i] IN ids[..i]
+     [i IN list.range(0, value.size(ids) - 1) WHERE NOT ids[i] IN ids[..i]
       | ids[i]]                                                     AS unique_ids
-WHERE size(ids) = size(unique_ids)
-RETURN [n IN nodes(p) | n.code] AS path
+WHERE value.size(ids) = value.size(unique_ids)
+RETURN [n IN path.nodes(p) | n.code] AS path
 ```
 
 Same graph:
@@ -345,10 +345,10 @@ Cycles filtered.
 
 #### Mental model
 
-Treat `nodes(p)` as a list. Every list-level operation you'd reach for
+Treat `path.nodes(p)` as a list. Every list-level operation you'd reach for
 in the [List Functions](../functions/list) page works on it. When a
 query asks "are all elements unique?" there's no single function
-— you express it by comparing `size(list)` with the size of the
+— you express it by comparing `value.size(list)` with the size of the
 filtered "first-occurrence-only" form.
 
 #### Why this is awkward (and a future-facing note)
@@ -358,7 +358,7 @@ filtered "first-occurrence-only" form.
 > literal list**. `collect(DISTINCT …)` is an aggregate and only
 > applies to rows. A future helper — for example `distinct_list(xs)`
 > — would let the pattern collapse to
-> `WHERE size(ids) = size(distinct_list(ids))`. Until then, the
+> `WHERE value.size(ids) = value.size(distinct_list(ids))`. Until then, the
 > comprehension form above is idiomatic.
 
 See [Limitations](../limitations) for the current list-function gaps.
@@ -369,7 +369,7 @@ See [Limitations](../limitations) for the current list-function gaps.
   syntax used for the "first-occurrence-only" filter.
 - [`collect(DISTINCT …)`](../functions/aggregation#collect) — distinct
   values when *rows* are your input, not a literal list.
-- [`UNWIND + collect(DISTINCT …)`](../functions/list#distinct-values-from-a-list)
+- [`list.unique` and set-style helpers](../functions/list#deduplicate-and-set-operations)
   — the row-level workaround.
 - [DISTINCT on `RETURN`](./return-with#distinct) — dedup whole output
   rows.
@@ -384,9 +384,9 @@ and sort:
 ```cypher
 MATCH p = (a:User {id: $id})-[:FOLLOWS*1..5]->(b:User)
 WITH a, b, p
-ORDER BY length(p) DESC
+ORDER BY path.length(p) DESC
 LIMIT 1
-RETURN p, length(p) AS hops
+RETURN p, path.length(p) AS hops
 ```
 
 Expensive on dense graphs — prefer a bounded variable-length match
@@ -397,13 +397,13 @@ with a small `*..N` cap.
 ### Disconnected nodes
 
 If no path connects `a` and `b`, the `MATCH` emits zero rows. A
-following [`RETURN length(p)`](#path-functions) never runs. Wrap with
+following [`RETURN path.length(p)`](#path-functions) never runs. Wrap with
 [`OPTIONAL MATCH`](./match#optional-match) if you still want a row:
 
 ```cypher
 MATCH (a:User {id: $from}), (b:User {id: $to})
 OPTIONAL MATCH p = shortestPath((a)-[:FOLLOWS*]->(b))
-RETURN a, b, length(p) AS hops    -- hops = null if unreachable
+RETURN a, b, path.length(p) AS hops    -- hops = null if unreachable
 ```
 
 ### Self-loops
@@ -427,7 +427,7 @@ MATCH (a)-[:KNOWS*]-(b) …
 ### Zero-hop semantics
 
 `[:R*0..N]` includes the start node itself as a valid `b` via a
-zero-hop "path". `nodes(p)` has one element, `relationships(p)` is
+zero-hop "path". `path.nodes(p)` has one element, `path.edges(p)` is
 empty. Useful when the answer may be "myself plus my neighbors within
 N".
 
@@ -435,13 +435,13 @@ N".
 
 - **Weighted shortest paths.** `shortestPath` treats every relationship
   as cost 1 — no cost argument, no Dijkstra-style weighting. Compute
-  weighted paths in host code (or via `reduce` over `relationships(p)`).
+  weighted paths in host code (or via `reduce` over `path.edges(p)`).
 - **Quantified path patterns** (`((:X)-[:R]->(:Y)){1,3}`) — not in
   the grammar.
-- **Procedures** like `apoc.path.*` — no `CALL` surface.
+- **Path utility procedures** — no `CALL` surface.
 - **Inline `WHERE` inside `*` patterns** — parsed but not evaluated.
-  Move the predicate into a standalone `WHERE` using `nodes(p)` /
-  `relationships(p)`.
+  Move the predicate into a standalone `WHERE` using `path.nodes(p)` /
+  `path.edges(p)`.
 
 See [Limitations](../limitations) for the full list.
 

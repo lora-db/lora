@@ -83,8 +83,8 @@ MATCH (n) WHERE n.a OR (n.b AND n.c)     RETURN n
 ## String matching
 
 All string operators are **case-sensitive**. For case-insensitive
-matching, normalise with [`toLower`](../functions/string#tolower--toupper)
-or `toUpper` on both sides.
+matching, normalise with [`string.lower`](../functions/string#tolower--toupper)
+or `string.upper` on both sides.
 
 ```cypher
 MATCH (n) WHERE n.name STARTS WITH 'a'   RETURN n
@@ -101,7 +101,7 @@ MATCH (u:User) WHERE u.name STARTS WITH 'Al' RETURN u
 
 ```cypher
 MATCH (u:User)
-WHERE toLower(u.name) STARTS WITH toLower($query)
+WHERE string.lower(u.name) STARTS WITH string.lower($query)
 RETURN u
 ```
 
@@ -134,7 +134,7 @@ Common guard: require a property to exist _and_ be non-empty:
 
 ```cypher
 MATCH (u:User)
-WHERE u.email IS NOT NULL AND size(u.email) > 0
+WHERE u.email IS NOT NULL AND string.length(u.email) > 0
 RETURN u
 ```
 
@@ -257,7 +257,7 @@ the full syntax.
 
 ```cypher
 MATCH (u:User)
-WHERE toLower(u.name) STARTS WITH toLower($query)
+WHERE string.lower(u.name) STARTS WITH string.lower($query)
 RETURN u
 ORDER BY u.name
 LIMIT 20
@@ -275,13 +275,13 @@ RETURN p
 
 ```cypher
 MATCH (e:Event)
-WHERE e.at >= date('2024-01-01') AND e.at < date('2025-01-01')
+WHERE e.at >= '2024-01-01'::DATE AND e.at < '2025-01-01'::DATE
 RETURN e
 ORDER BY e.at
 ```
 
-See [Temporal Functions](../functions/temporal) for constructors and
-arithmetic.
+See [Temporal Functions](../functions/temporal) for cast-based
+temporal construction and arithmetic.
 
 ### "Has at least one of each"
 
@@ -310,7 +310,7 @@ stage only sees what it needs:
 MATCH (u:User)
 WITH u, coalesce(u.score, 0) AS s
 WHERE s >= 50
-WITH u, s, (u.last_seen >= datetime() - duration('P30D')) AS recent
+WITH u, s, (u.last_seen >= temporal.now() - 'P30D'::DURATION) AS recent
 WHERE recent
 RETURN u.handle, s
 ```

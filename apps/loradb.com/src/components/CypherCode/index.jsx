@@ -11,8 +11,8 @@ import styles from './styles.module.scss';
  *
  * Two equivalent APIs — pick whichever reads better:
  *
- *   <CypherCode code="date()" />
- *   <CypherCode>date()</CypherCode>
+ *   <CypherCode code="temporal.today()" />
+ *   <CypherCode>temporal.today()</CypherCode>
  *
  * Children must be a plain string; anything non-string is rendered as-is
  * without tokenization (avoids surprises with nested JSX).

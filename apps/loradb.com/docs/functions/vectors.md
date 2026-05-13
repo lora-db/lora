@@ -1,15 +1,15 @@
 ---
 title: Vector Functions (Similarity, Distance, Norms)
 sidebar_label: Vector
-description: Vector functions in LoraDB — vector() construction, cosine and Euclidean similarity, signed distance metrics, vector_norm, dimension introspection, and vector retrieval examples.
+description: Vector functions in LoraDB — cast-based vector construction, cosine and Euclidean similarity, signed distance metrics, vector.norm, dimension introspection, and vector retrieval examples.
 ---
 
 # Vector Functions (Similarity, Distance, Norms)
 
 LoraDB has a first-class [`VECTOR`](../data-types/vectors) value type
-with a compact set of built-in functions for constructing vectors,
-measuring similarity, computing signed distances under standard
-metrics, and inspecting shape. Every similarity / distance
+with a compact set of built-in functions for measuring similarity,
+computing signed distances under standard metrics, and inspecting
+shape. Vector values are constructed with casts. Every similarity / distance
 computation is **exhaustive** when called directly in a query. For a
 cataloged vector search surface, use
 [`CREATE VECTOR INDEX`](../queries/indexes#vector-indexes) with
@@ -25,65 +25,65 @@ coordinate type.
 
 | Goal | Function |
 |---|---|
-| Construct a vector | [<CypherCode code="vector(values, dim, type)" />](#constructor) |
-| Bounded similarity (higher = closer, in `[0, 1]`) | [<CypherCode code="vector.similarity.cosine(a, b)" />, <CypherCode code="vector.similarity.euclidean(a, b)" />](#bounded-similarity) |
-| Signed distance under a named metric (smaller = closer) | [<CypherCode code="vector_distance(a, b, METRIC)" />](#signed-distance) |
-| Magnitude of a vector | [<CypherCode code="vector_norm(v, METRIC)" />](#norms) |
-| Dimension | [<CypherCode code="vector_dimension_count(v)" />](#introspection), <CypherCode code="size(v)" />, <CypherCode code="length(v)" /> |
-| Runtime type tag | [<CypherCode code="valueType(v)" />](#introspection) |
-| Back to a `LIST` | [<CypherCode code="toIntegerList(v)" />, <CypherCode code="toFloatList(v)" />](#list-conversion) |
+| Construct a vector | [<CypherCode code="[1, 2, 3]::VECTOR<INTEGER>(3)" />](#construction) |
+| Bounded similarity (higher = closer, in `[0, 1]`) | [<CypherCode code="vector.similarity(a, b)" />, <CypherCode code="vector.similarity(a, b, 'euclidean')" />](#bounded-similarity) |
+| Signed distance under a named metric (smaller = closer) | [<CypherCode code="vector.distance(a, b, METRIC)" />](#signed-distance) |
+| Magnitude of a vector | [<CypherCode code="vector.norm(v, METRIC)" />](#norms) |
+| Dimension | [<CypherCode code="vector.dimension(v)" />](#introspection), <CypherCode code="value.size(v)" /> |
+| Runtime type tag | [<CypherCode code="type.of(v)" />](#introspection) |
+| Back to a `LIST` | [<CypherCode code="vector.coordinates(v, INTEGER)" />, <CypherCode code="vector.coordinates(v, FLOAT)" />](#list-conversion) |
 
-`vector.similarity.*` also accepts a plain `LIST<NUMBER>` on either
+`vector.similarity` also accepts a plain `LIST<NUMBER>` on either
 side — the list is coerced to a `FLOAT32` vector of the same length.
-`vector_distance` and `vector_norm` require real `VECTOR` values.
+`vector.distance` and `vector.norm` require real `VECTOR` values.
 
-## Constructor
+## Construction
 
-`vector(values, dimension, coordinateType)` — three arguments, no
-more, no less. See [Data Types → Vectors → Construction](../data-types/vectors#construction)
-for the full rules; the examples below cover the common shapes.
+Construct vectors with `value::VECTOR<COORD>(DIM)` or
+`CAST(value AS VECTOR<COORD>(DIM))`. See [Data Types → Vectors →
+Construction](../data-types/vectors#construction) for the full rules;
+the examples below cover the common shapes.
 
 ```cypher
 -- Integer-backed
-RETURN vector([1, 2, 3], 3, INTEGER) AS v        -- VECTOR<INTEGER>(3)
-RETURN vector([1, 2, 3], 3, INT8)    AS v        -- VECTOR<INTEGER8>(3)
-RETURN vector([1, 2, 3], 3, INT16)   AS v        -- VECTOR<INTEGER16>(3)
-RETURN vector([1, 2, 3], 3, INT32)   AS v        -- VECTOR<INTEGER32>(3)
+RETURN [1, 2, 3]::VECTOR<INTEGER>(3) AS v        -- VECTOR<INTEGER>(3)
+RETURN [1, 2, 3]::VECTOR<INT8>(3)    AS v        -- VECTOR<INTEGER8>(3)
+RETURN [1, 2, 3]::VECTOR<INT16>(3)   AS v        -- VECTOR<INTEGER16>(3)
+RETURN [1, 2, 3]::VECTOR<INT32>(3)   AS v        -- VECTOR<INTEGER32>(3)
 
 -- Float-backed
-RETURN vector([0.1, 0.2, 0.3], 3, FLOAT32) AS v  -- VECTOR<FLOAT32>(3)
-RETURN vector([0.1, 0.2, 0.3], 3, FLOAT64) AS v  -- VECTOR<FLOAT64>(3)
-RETURN vector([0.1, 0.2, 0.3], 3, FLOAT)   AS v  -- FLOAT is an alias for FLOAT64
+RETURN [0.1, 0.2, 0.3]::VECTOR<FLOAT32>(3) AS v  -- VECTOR<FLOAT32>(3)
+RETURN [0.1, 0.2, 0.3]::VECTOR<FLOAT64>(3) AS v  -- VECTOR<FLOAT64>(3)
+RETURN [0.1, 0.2, 0.3]::VECTOR<FLOAT>(3)   AS v  -- FLOAT is an alias for FLOAT64
 
--- String form (useful for HTTP where parameters aren't yet forwarded)
-RETURN vector('[1.05, 0.123, 5]', 3, FLOAT64) AS v
-RETURN vector('[1e-2, 2e-2, 3e-2]', 3, FLOAT32) AS v
+-- CAST(...) form, useful when the value is already parenthesized
+RETURN CAST('[1.05, 0.123, 5]' AS VECTOR<FLOAT64>(3)) AS v
+RETURN CAST('[1e-2, 2e-2, 3e-2]' AS VECTOR<FLOAT32>(3)) AS v
 ```
 
 ### Coordinate-type tag forms
 
-The third argument accepts a **bare identifier**, a **quoted string**,
-or a **parameter**. Matching is case-insensitive and collapses
-internal whitespace, so `"signed integer"`, `"SIGNED   INTEGER"`,
-and `"Signed Integer"` all resolve to `INTEGER`.
+The coordinate tag appears inside the `VECTOR<...>(...)` type. Matching
+is case-insensitive and accepts aliases such as `FLOAT` for `FLOAT64`
+and `INT8` for `INTEGER8`.
 
 ```cypher
-RETURN vector([1, 2, 3], 3, INTEGER)           -- bare identifier
-RETURN vector([1, 2, 3], 3, 'INTEGER')         -- quoted string
-RETURN vector([1, 2, 3], 3, 'SIGNED INTEGER')  -- multi-word alias → must quote
-RETURN vector($values, 3, $type)               -- host-provided tag
+RETURN [1, 2, 3]::VECTOR<INTEGER>(3)
+RETURN [1, 2, 3]::VECTOR<INT8>(3)
+RETURN [1, 2, 3]::VECTOR<FLOAT>(3)      -- FLOAT aliases FLOAT64
 ```
 
 ### From a parameter
 
 ```cypher
-RETURN vector($embedding, 384, FLOAT32) AS query_vec
+RETURN $embedding::VECTOR<FLOAT32>(384) AS query_vec
+RETURN CAST($embedding AS VECTOR<FLOAT32>(384)) AS query_vec
 ```
 
 ```ts
 // Node / TypeScript
 await db.execute(
-  'RETURN vector($embedding, 384, FLOAT32) AS q',
+  'RETURN $embedding::VECTOR<FLOAT32>(384) AS q',
   { embedding: myFloat32Array },
 );
 ```
@@ -91,7 +91,7 @@ await db.execute(
 ```python
 # Python
 db.execute(
-    "RETURN vector($embedding, 384, FLOAT32) AS q",
+    "RETURN $embedding::VECTOR<FLOAT32>(384) AS q",
     {"embedding": embedding_list},
 )
 ```
@@ -100,86 +100,85 @@ db.execute(
 
 ```cypher
 -- Integers promoted to float-backed vectors (exact for small magnitudes)
-RETURN vector([1, 2, 3], 3, FLOAT32)            -- [1.0, 2.0, 3.0]
+RETURN [1, 2, 3]::VECTOR<FLOAT32>(3)            -- [1.0, 2.0, 3.0]
 
 -- Floats truncate toward zero into integer-backed vectors
-RETURN vector([1.9, -1.9, 0.999, -0.999], 4, INTEGER)
+RETURN [1.9, -1.9, 0.999, -0.999]::VECTOR<INTEGER>(4)
        -- [1, -1, 0, 0]
 
 -- Out-of-range errors loudly (no silent saturation)
-RETURN vector([128], 1, INT8)                   -- error: value 128 overflows INTEGER8
-RETURN vector([2e39], 1, FLOAT32)               -- error: value overflows FLOAT32
+RETURN [128]::VECTOR<INT8>(1)                   -- error: value 128 overflows INTEGER8
+RETURN [2e39]::VECTOR<FLOAT32>(1)               -- error: value overflows FLOAT32
 
 -- NaN / Infinity / mixed types / nested lists all error
-RETURN vector([1, 'two', 3], 3, FLOAT32)        -- error: non-numeric coordinate
+RETURN [1, 'two', 3]::VECTOR<FLOAT32>(3)        -- error: non-numeric coordinate
 ```
 
 ### Null propagation
 
 ```cypher
-RETURN vector(null, 3, FLOAT32)      -- null
-RETURN vector([1,2,3], null, FLOAT32) -- null
-RETURN vector([1], 1, null)           -- error: coordinate-type null is rejected
+RETURN null::VECTOR<FLOAT32>(3)      -- null
+RETURN CAST(null AS VECTOR<FLOAT32>(3)) -- null
 ```
 
 ## Bounded similarity
 
-Both `vector.similarity.cosine` and `vector.similarity.euclidean`
-return a scalar in `[0, 1]` where **higher = more similar**. Both
-accept a `VECTOR` **or** a `LIST<NUMBER>` on either side; lists are
-coerced to a `FLOAT32` vector of matching length.
+`vector.similarity(a, b)` defaults to cosine. Pass `'euclidean'` as the
+third argument for bounded Euclidean similarity. Both forms return a
+scalar in `[0, 1]` where **higher = more similar** and accept a `VECTOR`
+or a `LIST<NUMBER>` on either side.
 
 ```cypher
 -- Cosine: (1 + raw_cosine) / 2
-RETURN vector.similarity.cosine([1, 0, 0], [1, 0, 0])    -- 1.0     (identical direction)
-RETURN vector.similarity.cosine([1, 0, 0], [0, 1, 0])    -- 0.5     (orthogonal)
-RETURN vector.similarity.cosine([1, 0, 0], [-1, 0, 0])   -- 0.0     (opposite)
-RETURN vector.similarity.cosine([1, 2, 3], [2, 4, 6])    -- 1.0     (colinear)
+RETURN vector.similarity([1, 0, 0], [1, 0, 0])    -- 1.0     (identical direction)
+RETURN vector.similarity([1, 0, 0], [0, 1, 0])    -- 0.5     (orthogonal)
+RETURN vector.similarity([1, 0, 0], [-1, 0, 0])   -- 0.0     (opposite)
+RETURN vector.similarity([1, 2, 3], [2, 4, 6])    -- 1.0     (colinear)
 
 -- Euclidean: 1 / (1 + d²)
-RETURN vector.similarity.euclidean([4, 5, 6], [2, 8, 3]) -- ≈ 0.04348  (d² = 22)
-RETURN vector.similarity.euclidean([0, 0, 0], [0, 0, 0]) -- 1.0         (identical)
+RETURN vector.similarity([4, 5, 6], [2, 8, 3], 'euclidean') -- ≈ 0.04348
+RETURN vector.similarity([0, 0, 0], [0, 0, 0], 'euclidean') -- 1.0
 ```
 
 ### Mixing lists and vectors
 
 ```cypher
 -- Pure VECTOR on both sides
-WITH vector([0.1, 0.2, 0.3], 3, FLOAT32) AS a,
-     vector([0.2, 0.2, 0.2], 3, FLOAT32) AS b
-RETURN vector.similarity.cosine(a, b) AS score
+WITH [0.1, 0.2, 0.3]::VECTOR<FLOAT32>(3) AS a,
+     [0.2, 0.2, 0.2]::VECTOR<FLOAT32>(3) AS b
+RETURN vector.similarity(a, b) AS score
 
 -- VECTOR vs LIST: list is coerced to FLOAT32
 MATCH (d:Doc)
 RETURN d.id,
-       vector.similarity.cosine(d.embedding, [0.1, 0.2, 0.3]) AS score
+       vector.similarity(d.embedding, [0.1, 0.2, 0.3]) AS score
 ORDER BY score DESC
 LIMIT 10
 
 -- LIST vs LIST: both coerced, useful for ad-hoc debugging
-RETURN vector.similarity.cosine([1, 2, 3], [1, 2, 3]) AS score
+RETURN vector.similarity([1, 2, 3], [1, 2, 3]) AS score
 ```
 
 ### Null / error semantics
 
 ```cypher
 -- null on either side → null
-RETURN vector.similarity.cosine(null, [1, 2, 3])            -- null
-RETURN vector.similarity.euclidean(vector([1,2], 2, FLOAT32), null)  -- null
+RETURN vector.similarity(null, [1, 2, 3])            -- null
+RETURN vector.similarity([1,2]::VECTOR<FLOAT32>(2), null)  -- null
 
 -- zero-norm argument to cosine → null (cosine is undefined)
-RETURN vector.similarity.cosine([0, 0, 0], [1, 2, 3])        -- null
+RETURN vector.similarity([0, 0, 0], [1, 2, 3])        -- null
 
 -- dimension mismatch → error
-RETURN vector.similarity.cosine([1, 2, 3], [1, 2])           -- error
+RETURN vector.similarity([1, 2, 3], [1, 2])           -- error
 
 -- empty list → error
-RETURN vector.similarity.cosine([], [1, 2, 3])               -- error
+RETURN vector.similarity([], [1, 2, 3])               -- error
 ```
 
 ## Signed distance
 
-`vector_distance(a, b, METRIC)` — **smaller = more similar**. Both
+`vector.distance(a, b, METRIC)` — **smaller = more similar**. Both
 arguments must be real `VECTOR` values with matching dimensions; a
 plain list is rejected here (unlike the bounded-similarity functions).
 
@@ -196,67 +195,67 @@ Metric names are case-insensitive and may be passed as bare
 identifiers or quoted strings.
 
 ```cypher
-WITH vector([1, 2, 3], 3, FLOAT32) AS a,
-     vector([4, 6, 8], 3, FLOAT32) AS b
-RETURN vector_distance(a, b, EUCLIDEAN)          AS l2,          -- ≈ 7.0711
-       vector_distance(a, b, EUCLIDEAN_SQUARED)  AS l2_squared,  -- 50.0
-       vector_distance(a, b, MANHATTAN)          AS l1,          -- 12.0
-       vector_distance(a, b, COSINE)             AS cos_dist,
-       vector_distance(a, b, DOT)                AS neg_dot,
-       vector_distance(a, b, HAMMING)            AS hamming      -- 3 (all positions differ)
+WITH [1, 2, 3]::VECTOR<FLOAT32>(3) AS a,
+     [4, 6, 8]::VECTOR<FLOAT32>(3) AS b
+RETURN vector.distance(a, b, EUCLIDEAN)          AS l2,          -- ≈ 7.0711
+       vector.distance(a, b, EUCLIDEAN_SQUARED)  AS l2_squared,  -- 50.0
+       vector.distance(a, b, MANHATTAN)          AS l1,          -- 12.0
+       vector.distance(a, b, COSINE)             AS cos_dist,
+       vector.distance(a, b, DOT)                AS neg_dot,
+       vector.distance(a, b, HAMMING)            AS hamming      -- 3 (all positions differ)
 ```
 
 ### Pick the right metric
 
 ```cypher
 -- L2 / Euclidean — generic "closeness", respects magnitude.
-WITH vector([1, 0], 2, FLOAT32) AS a, vector([3, 0], 2, FLOAT32) AS b
-RETURN vector_distance(a, b, EUCLIDEAN)          -- 2.0
+WITH [1, 0]::VECTOR<FLOAT32>(2) AS a, [3, 0]::VECTOR<FLOAT32>(2) AS b
+RETURN vector.distance(a, b, EUCLIDEAN)          -- 2.0
 
 -- Squared L2 — same ranking as L2, cheaper (no sqrt). Use for ORDER BY.
-WITH vector([1, 0], 2, FLOAT32) AS a, vector([3, 0], 2, FLOAT32) AS b
-RETURN vector_distance(a, b, EUCLIDEAN_SQUARED)  -- 4.0
+WITH [1, 0]::VECTOR<FLOAT32>(2) AS a, [3, 0]::VECTOR<FLOAT32>(2) AS b
+RETURN vector.distance(a, b, EUCLIDEAN_SQUARED)  -- 4.0
 
 -- Cosine — magnitude-invariant; parallel vectors are "the same".
-WITH vector([1, 2, 3], 3, FLOAT32) AS a,
-     vector([2, 4, 6], 3, FLOAT32) AS b
-RETURN vector_distance(a, b, COSINE)             -- ≈ 0.0   (colinear)
+WITH [1, 2, 3]::VECTOR<FLOAT32>(3) AS a,
+     [2, 4, 6]::VECTOR<FLOAT32>(3) AS b
+RETURN vector.distance(a, b, COSINE)             -- ≈ 0.0   (colinear)
 
 -- Dot — raw inner product, negated so "smaller is closer".
 -- Useful when embeddings are already unit-normalised.
-WITH vector([1, 0], 2, FLOAT32) AS a, vector([1, 0], 2, FLOAT32) AS b
-RETURN vector_distance(a, b, DOT)                -- -1.0
+WITH [1, 0]::VECTOR<FLOAT32>(2) AS a, [1, 0]::VECTOR<FLOAT32>(2) AS b
+RETURN vector.distance(a, b, DOT)                -- -1.0
 
 -- Hamming — positionwise difference count. Handy for binary / quantised vectors.
-WITH vector([1, 0, 1, 1], 4, INT8) AS a,
-     vector([1, 1, 1, 0], 4, INT8) AS b
-RETURN vector_distance(a, b, HAMMING)            -- 2
+WITH [1, 0, 1, 1]::VECTOR<INT8>(4) AS a,
+     [1, 1, 1, 0]::VECTOR<INT8>(4) AS b
+RETURN vector.distance(a, b, HAMMING)            -- 2
 ```
 
 ### Null / error semantics
 
 ```cypher
 -- null vectors or null metric → null
-RETURN vector_distance(null, vector([1,2,3], 3, FLOAT32), EUCLIDEAN)   -- null
-RETURN vector_distance(vector([1,2,3], 3, FLOAT32), null, EUCLIDEAN)   -- null
-RETURN vector_distance(vector([1,2,3], 3, FLOAT32),
-                       vector([4,5,6], 3, FLOAT32), null)              -- null
+RETURN vector.distance(null, [1,2,3]::VECTOR<FLOAT32>(3), EUCLIDEAN)   -- null
+RETURN vector.distance([1,2,3]::VECTOR<FLOAT32>(3), null, EUCLIDEAN)   -- null
+RETURN vector.distance([1,2,3]::VECTOR<FLOAT32>(3),
+                       [4,5,6]::VECTOR<FLOAT32>(3), null)              -- null
 
--- Plain list → error (unlike vector.similarity.*)
-RETURN vector_distance([1,2,3], vector([4,5,6], 3, FLOAT32), EUCLIDEAN)  -- error
+-- Plain list → error (unlike vector.similarity)
+RETURN vector.distance([1,2,3], [4,5,6]::VECTOR<FLOAT32>(3), EUCLIDEAN)  -- error
 
 -- Dimension mismatch → error
-RETURN vector_distance(vector([1,2], 2, FLOAT32),
-                       vector([1,2,3], 3, FLOAT32), EUCLIDEAN)          -- error
+RETURN vector.distance([1,2]::VECTOR<FLOAT32>(2),
+                       [1,2,3]::VECTOR<FLOAT32>(3), EUCLIDEAN)          -- error
 
 -- Unknown metric → error
-RETURN vector_distance(vector([1,2,3], 3, FLOAT32),
-                       vector([4,5,6], 3, FLOAT32), 'MAHALANOBIS')      -- error
+RETURN vector.distance([1,2,3]::VECTOR<FLOAT32>(3),
+                       [4,5,6]::VECTOR<FLOAT32>(3), 'MAHALANOBIS')      -- error
 ```
 
 ## Norms
 
-`vector_norm(v, METRIC)` — magnitude of a single vector.
+`vector.norm(v, METRIC)` — magnitude of a single vector.
 
 | Metric | Formula |
 |---|---|
@@ -264,67 +263,65 @@ RETURN vector_distance(vector([1,2,3], 3, FLOAT32),
 | `MANHATTAN` | `Σ \|xᵢ\|` — L1 length |
 
 ```cypher
-WITH vector([3, 4], 2, FLOAT32) AS v
-RETURN vector_norm(v, EUCLIDEAN)   -- 5.0    (3² + 4² = 25)
-WITH vector([3, 4], 2, FLOAT32) AS v
-RETURN vector_norm(v, MANHATTAN)   -- 7.0
+WITH [3, 4]::VECTOR<FLOAT32>(2) AS v
+RETURN vector.norm(v, EUCLIDEAN)   -- 5.0    (3² + 4² = 25)
+WITH [3, 4]::VECTOR<FLOAT32>(2) AS v
+RETURN vector.norm(v, MANHATTAN)   -- 7.0
 
-WITH vector([1, -2, 2], 3, FLOAT32) AS v
-RETURN vector_norm(v, EUCLIDEAN)   -- 3.0    (sqrt(9))
+WITH [1, -2, 2]::VECTOR<FLOAT32>(3) AS v
+RETURN vector.norm(v, EUCLIDEAN)   -- 3.0    (sqrt(9))
 
 -- null propagates
-RETURN vector_norm(null, EUCLIDEAN)                                -- null
-RETURN vector_norm(vector([1,2,3], 3, FLOAT32), null)              -- null
-RETURN vector_norm(vector([1,2,3], 3, FLOAT32), 'MAHALANOBIS')     -- error
+RETURN vector.norm(null, EUCLIDEAN)                                -- null
+RETURN vector.norm([1,2,3]::VECTOR<FLOAT32>(3), null)              -- null
+RETURN vector.norm([1,2,3]::VECTOR<FLOAT32>(3), 'MAHALANOBIS')     -- error
 ```
 
 ### Unit-normalisation pattern
 
-There's no built-in `vector_normalize` — compose with a list and
-`vector()` re-construction:
+There's no built-in `vector.normalize` — compose with a list and cast
+the rebuilt coordinates:
 
 ```cypher
-WITH vector([3, 0, 4], 3, FLOAT32) AS v
-WITH v, vector_norm(v, EUCLIDEAN) AS n, toFloatList(v) AS coords
-RETURN vector([coords[0] / n, coords[1] / n, coords[2] / n], 3, FLOAT32) AS unit
+WITH [3, 0, 4]::VECTOR<FLOAT32>(3) AS v
+WITH v, vector.norm(v, EUCLIDEAN) AS n, vector.coordinates(v, FLOAT) AS coords
+RETURN [coords[0] / n, coords[1] / n, coords[2] / n]::VECTOR<FLOAT32>(3) AS unit
        -- [0.6, 0.0, 0.8]
 ```
 
 For variable-dimension unit-normalisation, this is easier to keep
-host-side — the client languages all ship a vector constructor.
+host-side — the client languages all ship vector parameter helpers.
 
 ## Introspection
 
 | Expression | Returns | Notes |
 |---|---|---|
-| `valueType(v)` | `String` — `"VECTOR<TYPE>(DIM)"` | Only type whose tag encodes structure |
-| `size(v)` | `Int` — dimension | Same as `vector_dimension_count` |
-| `length(v)` | `Int` — dimension | Alias of `size` on vectors |
-| `vector_dimension_count(v)` | `Int` — dimension | Explicit name |
+| `type.of(v)` | `String` — `"VECTOR<TYPE>(DIM)"` | Only type whose tag encodes structure |
+| `value.size(v)` | `Int` — dimension | Same as `vector.dimension` |
+| `vector.dimension(v)` | `Int` — dimension | Explicit name |
 
 ```cypher
-WITH vector([1, 2, 3, 4], 4, FLOAT32) AS v
-RETURN valueType(v)                 AS t,   -- 'VECTOR<FLOAT32>(4)'
-       size(v)                      AS s,   -- 4
-       length(v)                    AS l,   -- 4
-       vector_dimension_count(v)    AS d    -- 4
+WITH [1, 2, 3, 4]::VECTOR<FLOAT32>(4) AS v
+RETURN type.of(v)                 AS t,   -- 'VECTOR<FLOAT32>(4)'
+       value.size(v)               AS s,   -- 4
+       vector.dimension(v)         AS d    -- 4
 
--- Coordinate type is part of the valueType tag
-RETURN valueType(vector([1,2,3], 3, INTEGER))   -- 'VECTOR<INTEGER>(3)'
-RETURN valueType(vector([1,2,3], 3, INT8))      -- 'VECTOR<INTEGER8>(3)'
+-- Coordinate type is part of the type tag
+RETURN type.of([1,2,3]::VECTOR<INTEGER>(3))   -- 'VECTOR<INTEGER>(3)'
+RETURN type.of([1,2,3]::VECTOR<INT8>(3))      -- 'VECTOR<INTEGER8>(3)'
 ```
 
 ### Guarding by shape
 
 ```cypher
 MATCH (d:Doc)
-WHERE valueType(d.embedding) = 'VECTOR<FLOAT32>(384)'
+WHERE type.of(d.embedding) = 'VECTOR<FLOAT32>(384)'
 RETURN d.id AS id
 ```
 
 ```cypher
 MATCH (d:Doc)
-WHERE vector_dimension_count(d.embedding) = 384
+WHERE vector.dimension(d.embedding) = 384
 RETURN count(*) AS docs_with_384d
 ```
 
@@ -332,19 +329,21 @@ RETURN count(*) AS docs_with_384d
 
 | Function | From | To |
 |---|---|---|
-| `toIntegerList(v)` | any `VECTOR` | `LIST<INTEGER>` — truncates toward zero |
-| `toFloatList(v)` | any `VECTOR` | `LIST<FLOAT>` — widens exact |
+| `vector.coordinates(v, INTEGER)` | any `VECTOR` | `LIST<INTEGER>` — truncates toward zero |
+| `vector.coordinates(v, FLOAT)` | any `VECTOR` | `LIST<FLOAT>` — widens exact |
 
 ```cypher
-RETURN toIntegerList(vector([1.9, -1.9, 3.0], 3, FLOAT32))  -- [1, -1, 3]
-RETURN toFloatList  (vector([1, 2, 3],        3, INT8))     -- [1.0, 2.0, 3.0]
+RETURN vector.coordinates([1.9, -1.9, 3.0]::VECTOR<FLOAT32>(3), INTEGER)
+       -- [1, -1, 3]
+RETURN vector.coordinates([1, 2, 3]::VECTOR<INT8>(3), FLOAT)
+       -- [1.0, 2.0, 3.0]
 
 -- null propagates
-RETURN toIntegerList(null)         -- null
-RETURN toFloatList(null)           -- null
+RETURN vector.coordinates(null, INTEGER)   -- null
+RETURN vector.coordinates(null, FLOAT)     -- null
 
 -- non-VECTOR input errors
-RETURN toIntegerList([1, 2, 3])    -- error
+RETURN vector.coordinates([1, 2, 3], FLOAT) -- error
 ```
 
 Both converters round-trip cleanly through the binding layer — use
@@ -357,7 +356,7 @@ them when you need to hand off to a caller that wants a plain array.
 ```cypher
 MATCH (d:Doc)
 RETURN d.id AS id, d.title AS title
-ORDER BY vector.similarity.cosine(d.embedding, $query) DESC
+ORDER BY vector.similarity(d.embedding, $query) DESC
 LIMIT 10
 ```
 
@@ -365,7 +364,7 @@ LIMIT 10
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 RETURN d.id AS id, d.title AS title, score
 ORDER BY score DESC
 LIMIT 10
@@ -375,7 +374,7 @@ LIMIT 10
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector_distance(d.embedding, $query, EUCLIDEAN) AS dist
+WITH d, vector.distance(d.embedding, $query, EUCLIDEAN) AS dist
 RETURN d.id AS id, dist
 ORDER BY dist ASC
 LIMIT 10
@@ -387,7 +386,7 @@ The rankings are identical; `EUCLIDEAN_SQUARED` skips the `sqrt`.
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector_distance(d.embedding, $query, EUCLIDEAN_SQUARED) AS d2
+WITH d, vector.distance(d.embedding, $query, EUCLIDEAN_SQUARED) AS d2
 RETURN d.id AS id
 ORDER BY d2 ASC
 LIMIT 20
@@ -400,8 +399,8 @@ and `WHERE` before scoring.
 
 ```cypher
 MATCH (d:Doc {tenant: $tenant})
-WHERE d.language = 'en' AND d.published_at >= date('2026-01-01')
-WITH  d, vector.similarity.cosine(d.embedding, $query) AS score
+WHERE d.language = 'en' AND d.published_at >= '2026-01-01'::DATE
+WITH  d, vector.similarity(d.embedding, $query) AS score
 RETURN d.id, score
 ORDER BY score DESC
 LIMIT 10
@@ -411,7 +410,7 @@ LIMIT 10
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 WHERE score >= 0.75
 RETURN d.id, score
 ORDER BY score DESC
@@ -424,7 +423,7 @@ relationships to explain or filter.
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 MATCH (d)-[:MENTIONS]->(e:Entity)
 WHERE e.type = $entity_type
 RETURN d.id, d.title, score, collect(e.name) AS entities
@@ -438,7 +437,7 @@ Pull the local graph context around each hit:
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 ORDER BY score DESC
 LIMIT 10
 MATCH (d)-[:CITED_BY]->(citing:Doc)
@@ -450,7 +449,7 @@ RETURN d.id AS hit, score, collect(citing.id) AS citations
 ```cypher
 MATCH (d:Doc)
 WITH d, d.category AS category,
-     vector.similarity.cosine(d.embedding, $query) AS score
+     vector.similarity(d.embedding, $query) AS score
 ORDER BY score DESC
 WITH category, collect({d: d, score: score})[0] AS top
 RETURN category, top.d.id AS id, top.score AS score
@@ -464,11 +463,11 @@ special function required:
 
 ```cypher
 MATCH (d:Doc)
-WHERE toLower(d.title) CONTAINS toLower($q)
-   OR toLower(d.body)  CONTAINS toLower($q)
+WHERE string.lower(d.title) CONTAINS string.lower($q)
+   OR string.lower(d.body)  CONTAINS string.lower($q)
 WITH d,
-     vector.similarity.cosine(d.embedding, $query) AS vec_score,
-     CASE WHEN toLower(d.title) CONTAINS toLower($q) THEN 0.2 ELSE 0.0 END AS title_boost
+     vector.similarity(d.embedding, $query) AS vec_score,
+     CASE WHEN string.lower(d.title) CONTAINS string.lower($q) THEN 0.2 ELSE 0.0 END AS title_boost
 RETURN d.id AS id,
        vec_score + title_boost AS score
 ORDER BY score DESC
@@ -484,7 +483,7 @@ rank by similarity to the query vector:
 MATCH (seed:Doc {id: $seed_id})-[:SIMILAR_TO*1..2]-(candidate:Doc)
 WHERE candidate.id <> $seed_id
 WITH DISTINCT candidate,
-              vector.similarity.cosine(candidate.embedding, $query) AS score
+              vector.similarity(candidate.embedding, $query) AS score
 RETURN candidate.id, score
 ORDER BY score DESC
 LIMIT 10
@@ -497,7 +496,7 @@ Score each document against several query vectors and keep the best:
 ```cypher
 UNWIND $queries AS q
 MATCH (d:Doc)
-WITH d, max(vector.similarity.cosine(d.embedding, q)) AS best
+WITH d, max(vector.similarity(d.embedding, q)) AS best
 RETURN d.id, best
 ORDER BY best DESC
 LIMIT 10
@@ -514,7 +513,7 @@ WITH [$q1, $q2, $q3] AS qs
 MATCH (d:Doc)
 WITH d, reduce(acc = 0.0,
                q IN qs |
-               acc + vector.similarity.cosine(d.embedding, q) / size(qs)) AS score
+               acc + vector.similarity(d.embedding, q) / value.size(qs)) AS score
 RETURN d.id, score
 ORDER BY score DESC
 LIMIT 10
@@ -525,23 +524,23 @@ LIMIT 10
 Useful during debugging — show every metric for one candidate:
 
 ```cypher
-WITH vector([0.10, 0.20, 0.30], 3, FLOAT32) AS q
+WITH [0.10, 0.20, 0.30]::VECTOR<FLOAT32>(3) AS q
 MATCH (d:Doc {id: $id})
 RETURN d.id,
-       vector.similarity.cosine    (d.embedding, q)               AS cos_bounded,
-       vector.similarity.euclidean (d.embedding, q)               AS euc_bounded,
-       vector_distance(d.embedding, q, EUCLIDEAN)                 AS l2,
-       vector_distance(d.embedding, q, EUCLIDEAN_SQUARED)         AS l2_sq,
-       vector_distance(d.embedding, q, MANHATTAN)                 AS l1,
-       vector_distance(d.embedding, q, COSINE)                    AS cos_dist,
-       vector_distance(d.embedding, q, DOT)                       AS neg_dot
+       vector.similarity    (d.embedding, q)               AS cos_bounded,
+       vector.similarity(d.embedding, q, 'euclidean')       AS euc_bounded,
+       vector.distance(d.embedding, q, EUCLIDEAN)                 AS l2,
+       vector.distance(d.embedding, q, EUCLIDEAN_SQUARED)         AS l2_sq,
+       vector.distance(d.embedding, q, MANHATTAN)                 AS l1,
+       vector.distance(d.embedding, q, COSINE)                    AS cos_dist,
+       vector.distance(d.embedding, q, DOT)                       AS neg_dot
 ```
 
 ### Count above threshold
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 WHERE score >= $threshold
 RETURN count(*) AS hits
 ```
@@ -550,7 +549,7 @@ RETURN count(*) AS hits
 
 ```cypher
 MATCH (d:Doc)
-WITH vector.similarity.cosine(d.embedding, $query) AS score
+WITH vector.similarity(d.embedding, $query) AS score
 WITH CASE
        WHEN score >= 0.9 THEN 'very-close'
        WHEN score >= 0.7 THEN 'close'
@@ -565,7 +564,7 @@ ORDER BY n DESC
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 ORDER BY score DESC
 WITH d.fingerprint AS fp, collect({d: d, score: score})[0] AS best
 RETURN best.d.id AS id, best.score AS score
@@ -608,9 +607,9 @@ even with numerically identical values:
 
 ```cypher
 UNWIND [
-  vector([1, 2, 3], 3, INTEGER),
-  vector([1, 2, 3], 3, INTEGER),
-  vector([1, 2, 3], 3, INTEGER8)
+  [1, 2, 3]::VECTOR<INTEGER>(3),
+  [1, 2, 3]::VECTOR<INTEGER>(3),
+  [1, 2, 3]::VECTOR<INTEGER8>(3)
 ] AS v
 RETURN DISTINCT v
 -- returns two rows: one INTEGER, one INTEGER8
@@ -629,19 +628,19 @@ MATCH (d:Doc) RETURN d ORDER BY d.embedding LIMIT 5
 -- Use this instead.
 MATCH (d:Doc)
 RETURN d
-ORDER BY vector.similarity.cosine(d.embedding, $query) DESC
+ORDER BY vector.similarity(d.embedding, $query) DESC
 LIMIT 5
 ```
 
 ### Zero vectors and cosine
 
 Cosine on a zero-norm vector is undefined, so
-`vector.similarity.cosine([0,…], anything)` returns `null`. Filter
+`vector.similarity([0,…], anything)` returns `null`. Filter
 or coalesce explicitly:
 
 ```cypher
 MATCH (d:Doc)
-WITH d, coalesce(vector.similarity.cosine(d.embedding, $query), 0.0) AS score
+WITH d, coalesce(vector.similarity(d.embedding, $query), 0.0) AS score
 RETURN d.id, score
 ORDER BY score DESC
 LIMIT 10
@@ -654,8 +653,8 @@ ranking behaviour to a `FLOAT32` vector with the same values, modulo
 precision loss for magnitudes that don't fit in the mantissa.
 
 ```cypher
-RETURN vector.similarity.cosine(vector([1,2,3], 3, INT8),
-                                vector([2,4,6], 3, INT8))
+RETURN vector.similarity([1,2,3]::VECTOR<INT8>(3),
+                                [2,4,6]::VECTOR<INT8>(3))
        -- 1.0 (colinear, same result as FLOAT32)
 ```
 
@@ -668,7 +667,7 @@ in the query — using the string form makes this practical —
 ```bash
 curl -s http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
-  -d '{"query":"RETURN vector([0.1,0.2,0.3], 3, FLOAT32) AS v"}'
+  -d '{"query":"RETURN [0.1,0.2,0.3]::VECTOR<FLOAT32>(3) AS v"}'
 ```
 
 — or use one of the in-process bindings, which all support parameters.
@@ -701,7 +700,7 @@ for relationship indexes and option details.
 - **No ANN structure yet** — vector index procedures are supported, but
   currently scan the indexed label/type scope linearly.
 - **Direct vector function calls are exhaustive** — keep `MATCH`
-  filters tight when using `ORDER BY vector.similarity.* LIMIT k`.
+  filters tight when using `ORDER BY vector.similarity(...) LIMIT k`.
 - **No embedding generation** — LoraDB has no plugin surface. Produce
   embeddings host-side and pass them in.
 - **No list-of-vectors as a property** — store each vector on its own

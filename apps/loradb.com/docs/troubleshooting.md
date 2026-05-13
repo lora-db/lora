@@ -231,7 +231,7 @@ want a row:
 ```cypher
 MATCH (a:User {id: $from}), (b:User {id: $to})
 OPTIONAL MATCH p = shortestPath((a)-[:FOLLOWS*]->(b))
-RETURN a, b, length(p) AS hops
+RETURN a, b, path.length(p) AS hops
 ```
 
 ## Snapshots
@@ -901,11 +901,11 @@ substring matching.
 ### Case-sensitive when you meant insensitive
 
 All string operators (`=`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`)
-are case-sensitive. Normalise both sides with `toLower`.
+are case-sensitive. Normalise both sides with `string.lower`.
 
 ```cypher
 MATCH (u:User)
-WHERE toLower(u.email) = toLower($candidate)
+WHERE string.lower(u.email) = string.lower($candidate)
 RETURN u
 ```
 

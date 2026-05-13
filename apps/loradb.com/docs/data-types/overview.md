@@ -24,7 +24,7 @@ Every value in LoraDB — stored as a
 
 ## At-a-glance table
 
-| Type | Literal | `valueType` |
+| Type | Example | `type.of` |
 |---|---|---|
 | `Null` | `null` | `"NULL"` |
 | `Boolean` | `true`, `false` | `"BOOLEAN"` |
@@ -33,10 +33,10 @@ Every value in LoraDB — stored as a
 | `String` | `'hi'`, `"there"` | `"STRING"` |
 | `List` | `[1, 2, 3]` | `"LIST<T>"` |
 | `Map` | `{k: v}` | `"MAP"` |
-| `Date`, `Time`, `DateTime`, `LocalTime`, `LocalDateTime` | via constructor | `"DATE"`, `"TIME"`, … |
-| `Duration` | `duration('P30D')` | `"DURATION"` |
-| `Point` | `point({x, y})` | `"POINT"` |
-| `Vector` | `vector([1,2,3], 3, INTEGER)` | `"VECTOR<INTEGER>(3)"` |
+| `Date`, `Time`, `DateTime`, `LocalTime`, `LocalDateTime` | `'2024-01-15'::DATE`, `'12:00:00'::TIME` | `"DATE"`, `"TIME"`, … |
+| `Duration` | `'P30D'::DURATION` | `"DURATION"` |
+| `Point` | `{x, y}::POINT` | `"POINT"` |
+| `Vector` | `[1,2,3]::VECTOR<INTEGER>(3)` | `"VECTOR<INTEGER>(3)"` |
 | `Node`, `Relationship`, `Path` | produced by queries | `"NODE"`, … |
 
 ## Where each type shows up
@@ -79,18 +79,18 @@ Narrow graph-typed results in host code with `isNode` /
 
 ## Runtime type checking
 
-Use [`valueType(x)`](../functions/overview#type-conversion-and-checking)
+Use [`type.of(x)`](../functions/overview#type-conversion-and-checking)
 to discover a value's type at query time.
 
 ```cypher
-RETURN valueType(1),                                -- 'INTEGER'
-       valueType([1, 2, 3]),                        -- 'LIST<INTEGER>'
-       valueType(date('2024-01-15')),               -- 'DATE'
-       valueType(point({x: 1, y: 2})),              -- 'POINT'
-       valueType(vector([1,2,3], 3, INTEGER))       -- 'VECTOR<INTEGER>(3)'
+RETURN type.of(1),                                -- 'INTEGER'
+       type.of([1, 2, 3]),                        -- 'LIST<INTEGER>'
+       type.of('2024-01-15'::DATE),               -- 'DATE'
+       type.of({x: 1, y: 2}::POINT),              -- 'POINT'
+       type.of([1,2,3]::VECTOR<INTEGER>(3))       -- 'VECTOR<INTEGER>(3)'
 ```
 
-`VECTOR` is the only built-in type whose `valueType` tag encodes
+`VECTOR` is the only built-in type whose `type.of` tag encodes
 structural detail (coordinate type + dimension). Everything else
 returns a plain tag like `INTEGER` or `LIST<INTEGER>`.
 
@@ -100,7 +100,7 @@ Useful on heterogeneous list properties:
 
 ```cypher
 MATCH (n:Record)
-WHERE all(x IN n.values WHERE valueType(x) = 'INTEGER')
+WHERE all(x IN n.values WHERE type.of(x) = 'INTEGER')
 RETURN n
 ```
 
@@ -108,7 +108,7 @@ RETURN n
 
 ```cypher
 MATCH (n)
-RETURN valueType(n) AS t, count(*) ORDER BY count(*) DESC
+RETURN type.of(n) AS t, count(*) ORDER BY count(*) DESC
 -- typically all NODE, but useful for generic projections
 ```
 
@@ -139,8 +139,12 @@ binding's "Parameters" section for specifics:
 | `str` / `String` | `String` |
 | `list` / `array` / `Vec` | `List` |
 | `dict` / `object` / `BTreeMap` | `Map` |
-| helpers (`date()`, `wgs84()`, …) | `Date`, `Point`, etc. |
+| host helpers (`date()`, `wgs84()`, …) | `Date`, `Point`, etc. |
 | `vector()` helper / tagged `{kind: "vector", …}` object | `Vector` |
+
+Those helpers belong to the host binding APIs. In Cypher query text,
+construct typed values with casts such as `'2026-05-01'::DATE`,
+`{x: 1, y: 2}::POINT`, or `[1, 2, 3]::VECTOR<INTEGER>(3)`.
 
 Details: [Rust](../getting-started/rust#parameterised-query),
 [Node](../getting-started/node#parameterised-query),
@@ -156,7 +160,7 @@ Every type has a single sentinel `Null` value — there's no
 
 - `null = null` is **not** `true` — it's `null`. Use
   [`IS NULL`](../queries/where#null-checks).
-- `valueType(null)` is `'NULL'`, not `'NULL<INTEGER>'`.
+- `type.of(null)` is `'NULL'`, not `'NULL<INTEGER>'`.
 - Missing map keys and missing properties return `null`, so
   a null property and an absent property are indistinguishable. See
   [Properties → Missing vs null](../concepts/properties#missing-vs-null).
@@ -198,7 +202,7 @@ See [Limitations](../limitations#data-types) for the full list.
 
 - [**Scalars**](./scalars), [**Lists & Maps**](./lists-and-maps),
   [**Temporal**](./temporal), [**Spatial**](./spatial) — per-type reference.
-- [**Functions → Overview**](../functions/overview) — `toString`, `coalesce`, `valueType`.
+- [**Functions → Overview**](../functions/overview) — casts, `coalesce`, `type.of`.
 - [**Properties**](../concepts/properties) — how types attach to entities.
 - [**Queries → Parameters**](../queries/parameters) — binding typed values from the host.
 - [**Result formats**](../concepts/result-formats) — how these types

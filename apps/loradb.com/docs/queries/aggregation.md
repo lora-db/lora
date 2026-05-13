@@ -411,11 +411,11 @@ RETURN u.name, last_three
 
 ```cypher
 MATCH (e:Event)
-RETURN date.truncate('month', e.at) AS month, count(*) AS events
+RETURN temporal.truncate('month', e.at) AS month, count(*) AS events
 ORDER BY month
 ```
 
-Uses [`date.truncate`](../functions/temporal#truncation).
+Uses [`temporal.truncate`](../functions/temporal#truncation).
 
 ### Average per category, HAVING filter
 
@@ -469,8 +469,8 @@ the grand total from the same pipeline.
 
 ```cypher
 MATCH (e:Event)
-WHERE e.at >= datetime() - duration('P1Y')
-RETURN date.truncate('month', e.at)  AS month,
+WHERE e.at >= temporal.now() - 'P1Y'::DURATION
+RETURN temporal.truncate('month', e.at)  AS month,
        count(*)                       AS events,
        count(DISTINCT e.user_id)      AS unique_users,
        avg(e.duration_ms) / 1000.0    AS avg_seconds

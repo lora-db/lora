@@ -73,10 +73,13 @@ module.exports = {
         'functions/aggregation',
         'functions/string',
         'functions/math',
+        'functions/number',
         'functions/list',
+        'functions/map',
         'functions/temporal',
         'functions/spatial',
         'functions/vectors',
+        'functions/utility',
       ],
     },
     {

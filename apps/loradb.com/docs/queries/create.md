@@ -66,8 +66,8 @@ CREATE (c:City {
   name:       'Amsterdam',
   population: 918000,
   tags:       ['capital', 'port'],
-  founded:    date('1275-10-27'),
-  location:   point({latitude: 52.37, longitude: 4.89})
+  founded:    '1275-10-27'::DATE,
+  location:   {latitude: 52.37, longitude: 4.89}::POINT
 })
 ```
 
@@ -220,8 +220,8 @@ addressing.
 
 ```cypher
 MERGE (u:User {id: $id})
-  ON CREATE SET u.created = timestamp()
-  SET u.name = $name, u.updated = timestamp()
+  ON CREATE SET u.created = temporal.timestamp()
+  SET u.name = $name, u.updated = temporal.timestamp()
 RETURN u
 ```
 
@@ -284,7 +284,7 @@ CREATE (u:User {
   id:       $id,
   email:    $email,
   tier:     CASE WHEN $paying THEN 'pro' ELSE 'free' END,
-  created:  timestamp()
+  created:  temporal.timestamp()
 })
 ```
 

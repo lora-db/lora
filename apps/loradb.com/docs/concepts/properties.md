@@ -33,8 +33,8 @@ case-sensitive strings; values are any of the
 CREATE (:City {
   name:       'Amsterdam',
   population: 918000,
-  location:   point({latitude: 52.37, longitude: 4.89}),
-  founded:    date('1275-10-27'),
+  location:   {latitude: 52.37, longitude: 4.89}::POINT,
+  founded:    '1275-10-27'::DATE,
   tags:       ['capital', 'port']
 })
 ```
@@ -109,7 +109,7 @@ RETURN c {.name, density: c.population / c.area}
 
 ```cypher
 MATCH (c:City {name: 'Amsterdam'})
-SET c += {updated_at: datetime(), active: true}
+SET c += {updated_at: temporal.now(), active: true}
 RETURN c
 ```
 
@@ -168,7 +168,7 @@ nickname get it under `display` and everyone else falls back to
 
 ```cypher
 MATCH (u:User {id: $id})
-SET u.last_seen = timestamp()
+SET u.last_seen = temporal.timestamp()
 ```
 
 ### Migrate a property
@@ -189,8 +189,8 @@ skipped.
 
 ```cypher
 MERGE (u:User {id: $id})
-  ON CREATE SET u.created = timestamp()
-  SET u.updated = timestamp()
+  ON CREATE SET u.created = temporal.timestamp()
+  SET u.updated = temporal.timestamp()
 ```
 
 ### Copy properties from one entity to another
@@ -283,7 +283,7 @@ CREATE (:Item {stock: 5})
 CREATE (:Item {stock: '5'})    -- legal but will surprise you
 ```
 
-Use [`valueType`](../functions/overview#type-conversion-and-checking)
+Use [`type.of`](../functions/overview#type-conversion-and-checking)
 to detect at query time, normalise on write, or add a
 [property type constraint](../queries/constraints#property-types) for
 labels or relationship types that need a fixed shape.

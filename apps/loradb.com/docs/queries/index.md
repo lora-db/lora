@@ -141,7 +141,11 @@ query. They also let the query planner cache plans across invocations.
 | `str` / `String` | [`String`](../data-types/scalars#string) |
 | list / array / `Vec` | [`List`](../data-types/lists-and-maps#lists) |
 | dict / object / `BTreeMap` | [`Map`](../data-types/lists-and-maps#maps) |
-| helpers (`date()`, `wgs84()`, …) | [`Date`](../data-types/temporal), [`Point`](../data-types/spatial), etc. |
+| host helpers (`date()`, `wgs84()`, …) | [`Date`](../data-types/temporal), [`Point`](../data-types/spatial), etc. |
+
+Host helpers are binding APIs. In query text, use cast syntax for
+typed construction, for example `'2026-05-01'::DATE` or
+`{x: 1, y: 2}::POINT`.
 
 ## What's not supported
 

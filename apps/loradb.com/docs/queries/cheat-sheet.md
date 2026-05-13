@@ -90,7 +90,7 @@ More: [RETURN / WITH](./return-with),
 ```cypher
 WITH u, count(p) AS posts              -- group + pipe forward
 WITH u WHERE u.active                  -- HAVING-style filter
-WITH *, toLower(u.handle) AS key       -- pass-through plus computed
+WITH *, string.lower(u.handle) AS key       -- pass-through plus computed
 ```
 
 More: [WITH](./return-with#with).
@@ -113,8 +113,8 @@ CREATE (:Person {name: 'Ada', born: 1815})
 CREATE (a)-[:FOLLOWS {since: 2020}]->(b)
 
 MERGE (u:User {email: $email})
-  ON CREATE SET u.created = timestamp()
-  ON MATCH  SET u.last_seen = timestamp()
+  ON CREATE SET u.created = temporal.timestamp()
+  ON MATCH  SET u.last_seen = temporal.timestamp()
 
 SET n.prop = value                     -- one key
 SET n += {a: 1, b: 2}                  -- merge into map
@@ -178,7 +178,7 @@ More: [CASE expressions](./return-with#case-expressions).
 ```cypher
 MATCH p = (a)-[:R*1..3]->(b)           -- 1 to 3 hops
 MATCH p = shortestPath((a)-[:R*]->(b))
-RETURN length(p), nodes(p), relationships(p)
+RETURN path.length(p), path.nodes(p), path.edges(p)
 ```
 
 More: [Paths](./paths).
@@ -186,12 +186,12 @@ More: [Paths](./paths).
 ## Strings
 
 ```cypher
-toLower(s), toUpper(s)
-trim(s), ltrim(s), rtrim(s)
-substring(s, 0, 3), left(s, 2), right(s, 2)
-replace(s, 'a', 'b'), reverse(s)
-split(s, ','), size(s)
-lpad(s, 10, '0'), rpad(s, 10, ' ')
+string.lower(s), string.upper(s)
+string.trim(s), string.trim_left(s), string.trim_right(s)
+string.slice(s, 0, 3), string.prefix(s, 2), string.suffix(s, 2)
+string.replace(s, 'a', 'b'), value.reverse(s)
+string.split(s, ','), value.size(s)
+string.pad_left(s, 10, '0'), string.pad_right(s, 10, ' ')
 ```
 
 More: [String functions](../functions/string).
@@ -199,12 +199,12 @@ More: [String functions](../functions/string).
 ## Math
 
 ```cypher
-abs(x), ceil(x), floor(x), round(x)
-sqrt(x), sign(x)
-log(x), log10(x), exp(x)
-sin(x), cos(x), tan(x), atan2(y, x)
-radians(x), degrees(x)
-pi(), e(), rand()
+math.abs(x), math.ceil(x), math.floor(x), math.round(x)
+math.sqrt(x), math.sign(x)
+math.log(x), math.log10(x), math.exp(x)
+math.sin(x), math.cos(x), math.tan(x), math.atan2(y, x)
+math.radians(x), math.degrees(x)
+math.pi(), math.e(), math.random()
 ```
 
 More: [Math functions](../functions/math).
@@ -212,8 +212,8 @@ More: [Math functions](../functions/math).
 ## Lists
 
 ```cypher
-size(xs), head(xs), tail(xs), last(xs)
-reverse(xs), range(1, 10), range(1, 10, 2)
+value.size(xs), list.first(xs), list.rest(xs), list.last(xs)
+value.reverse(xs), list.range(1, 10), list.range(1, 10, 2)
 xs[0], xs[-1], xs[..3], xs[2..5]
 [x IN xs WHERE x > 0]                  -- filter
 [x IN xs | x * x]                      -- map
@@ -224,16 +224,16 @@ More: [List functions](../functions/list).
 ## Temporal
 
 ```cypher
-date('2026-04-20')
-time('12:00:00')
-datetime('2026-04-20T12:00:00Z')
-localdatetime('2026-04-20T12:00:00')
-duration('P30D'), duration({days: 30})
-date.truncate('month', d)
-datetime.truncate('hour', dt)
-duration.between(a, b)
+'2026-04-20'::DATE
+'12:00:00'::TIME
+'2026-04-20T12:00:00Z'::DATETIME
+'2026-04-20T12:00:00'::LOCAL_DATETIME
+'P30D'::DURATION, {days: 30}::DURATION
+temporal.truncate('month', d)
+temporal.truncate('hour', dt)
+temporal.between(a, b)
 dt.year, dt.month, dt.day, dt.hour
-dt + duration('P1D')
+dt + 'P1D'::DURATION
 ```
 
 More: [Temporal types](../data-types/temporal),
@@ -242,11 +242,11 @@ More: [Temporal types](../data-types/temporal),
 ## Spatial
 
 ```cypher
-point({x: 1, y: 2})                                   -- Cartesian 2D
-point({x: 1, y: 2, z: 3})                             -- Cartesian 3D
-point({latitude: 52.37, longitude: 4.89})             -- WGS-84 2D
-point({latitude: 52.37, longitude: 4.89, height: 5})  -- WGS-84 3D
-distance(a, b)                                        -- same SRID only
+{x: 1, y: 2}::POINT                                   -- Cartesian 2D
+{x: 1, y: 2, z: 3}::POINT                             -- Cartesian 3D
+{latitude: 52.37, longitude: 4.89}::POINT             -- WGS-84 2D
+{latitude: 52.37, longitude: 4.89, height: 5}::POINT  -- WGS-84 3D
+geo.distance(a, b)                                        -- same SRID only
 p.x, p.y, p.latitude, p.longitude, p.z, p.height
 ```
 
@@ -256,7 +256,7 @@ More: [Spatial types](../data-types/spatial),
 ## Type checks and conversions
 
 ```cypher
-valueType(x)                           -- 'INTEGER', 'STRING', 'NODE', …
+type.of(x)                           -- 'INTEGER', 'STRING', 'NODE', …
 toInteger(s), toFloat(s), toString(n), toBoolean(s)
 coalesce(a, b, c)
 ```
@@ -269,7 +269,7 @@ More: [Type functions](../functions/overview#type-conversion-and-checking).
 id(n), id(r)
 labels(n), type(r)
 keys(n), properties(n)
-nodes(p), relationships(p), length(p)
+path.nodes(p), path.edges(p), path.length(p)
 ```
 
 More: [Entity / path functions](../functions/overview#entity-introspection).

@@ -86,7 +86,7 @@ The undirected dash matches both `a -> b` and `a <- b` — see
 [`WHERE`](./where) runs after `MATCH` and can reference anything the
 match bound. [String operators](../functions/string#string-operators-in-where)
 like `STARTS WITH` and `CONTAINS` are case-sensitive — pass through
-[`toLower`](../functions/string#tolower--toupper) / `toUpper` for
+[`string.lower`](../functions/string#tolower--toupper) / `string.upper` for
 case-insensitive checks.
 
 ```cypher
@@ -374,8 +374,8 @@ useful to avoid accidental duplicates.
 
 ```cypher
 MERGE (u:User {id: $id})
-  ON MATCH  SET u.last_seen = timestamp()
-  ON CREATE SET u.created   = timestamp()
+  ON MATCH  SET u.last_seen = temporal.timestamp()
+  ON CREATE SET u.created   = temporal.timestamp()
 RETURN u
 ```
 
@@ -383,7 +383,7 @@ RETURN u
 
 ```cypher
 UNWIND $rows AS row
-CREATE (:Event {id: row.id, at: datetime(row.at), kind: row.kind})
+CREATE (:Event {id: row.id, at: row.at::DATETIME, kind: row.kind})
 ```
 
 One row per element of the `$rows` parameter list — see
@@ -396,7 +396,7 @@ or thousands of records in a single query.
 MATCH p = shortestPath(
   (a:Station {name: $from})-[:ROUTE*]->(b:Station {name: $to})
 )
-RETURN length(p) AS hops, [n IN nodes(p) | n.name] AS via
+RETURN path.length(p) AS hops, [n IN path.nodes(p) | n.name] AS via
 ```
 
 ---
@@ -411,7 +411,7 @@ something that looks like a real application query.
 ```cypher
 // 10 most-read posts this week, each with author
 MATCH (u:User)-[:WROTE]->(p:Post)
-WHERE p.published_at >= datetime() - duration('P7D')
+WHERE p.published_at >= temporal.now() - 'P7D'::DURATION
 RETURN p.title   AS title,
        p.views   AS views,
        u.handle  AS author
@@ -424,7 +424,7 @@ LIMIT 10
 MATCH (u:User)
 WHERE NOT EXISTS {
   (u)-[:WROTE]->(p:Post)
-  WHERE p.published_at >= datetime() - duration('P30D')
+  WHERE p.published_at >= temporal.now() - 'P30D'::DURATION
 }
 RETURN u.handle
 ```
@@ -464,8 +464,8 @@ RETURN c.name, a.name, b.name
 ```cypher
 // Events per month for the past year
 MATCH (e:Event)
-WHERE e.at >= datetime() - duration('P1Y')
-RETURN date.truncate('month', e.at) AS month,
+WHERE e.at >= temporal.now() - 'P1Y'::DURATION
+RETURN temporal.truncate('month', e.at) AS month,
        count(*)                      AS events
 ORDER BY month
 ```
@@ -477,7 +477,7 @@ ORDER BY month
 MATCH (ams:City {name: 'Amsterdam'}), (other:City)
 WHERE other.name <> 'Amsterdam'
 RETURN other.name,
-       distance(ams.location, other.location) AS metres
+       geo.distance(ams.location, other.location) AS metres
 ORDER BY metres ASC
 LIMIT 5
 ```

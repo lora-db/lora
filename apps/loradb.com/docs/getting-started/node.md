@@ -197,7 +197,7 @@ const params = {
 const plan = await db.explain(
   `MATCH (c:City)
    WHERE c.founded >= $since
-     AND distance(c.location, $near) < $radius
+     AND geo.distance(c.location, $near) < $radius
    RETURN c.name AS name`,
   params
 );
@@ -205,7 +205,7 @@ const plan = await db.explain(
 const profile = await db.profile(
   `MATCH (c:City)
    WHERE c.founded >= $since
-     AND distance(c.location, $near) < $radius
+     AND geo.distance(c.location, $near) < $radius
    RETURN c.name AS name`,
   params
 );
@@ -429,8 +429,8 @@ export class UserRepo {
   async upsert(id: number, handle: string) {
     await this.db.execute(
       `MERGE (u:User {id: $id})
-         ON CREATE SET u.created = timestamp()
-         SET u.handle = $handle, u.updated = timestamp()`,
+         ON CREATE SET u.created = temporal.timestamp()
+         SET u.handle = $handle, u.updated = temporal.timestamp()`,
       { id, handle }
     );
   }

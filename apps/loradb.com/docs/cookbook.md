@@ -17,7 +17,7 @@ Each recipe names a real problem, states its assumed data model,
 gives a query, and explains why it works — then lists useful
 variations and related concepts. Recipes are grouped by domain:
 social, e-commerce, events, geospatial, vector retrieval. Every
-query is idiomatic LoraDB — no APOC, no `CALL`, no window functions
+query is idiomatic LoraDB — no external utility procedures, no `CALL`, no window functions
 — and when a SQL idiom doesn't translate, the recipe shows the
 Cypher-native shape.
 
@@ -202,10 +202,11 @@ paths. Bounded at two hops to stay tractable.
 
 #### Variations
 
-- Replace `reacher` with `count(DISTINCT length(p))` paths of
+- Replace `reacher` with `count(DISTINCT path.length(p))` paths of
   different lengths to reveal reach-at-each-distance.
 - Combine with `:FOLLOWS {since}` weights:
-  `sum(exp(-duration.inDays(r.since, datetime()) * 0.02))`.
+  `sum(math.exp(-temporal.in_days(r.since, temporal.today()) * 0.02))`
+  when `since` is a `DATE`.
 
 #### Related concepts
 
@@ -233,7 +234,7 @@ paths. Bounded at two hops to stay tractable.
 ```cypher
 MATCH (o:Order)-[c:CONTAINS]->(p:Product)
 WHERE o.status = 'paid'
-  AND o.placed_at >= date.truncate('month', date())
+  AND o.placed_at >= temporal.truncate('month', temporal.today())
 RETURN p.name,
        sum(c.quantity * p.price) AS revenue,
        sum(c.quantity)           AS units,
@@ -255,7 +256,7 @@ many items), distinct from the total `units` sold.
   pick-first within each using
   [`collect(…)[..1]`](./queries/aggregation#top-contributor-per-group-pipeline-trick).
 - Year-to-date: replace the date filter with
-  `o.placed_at >= date.truncate('year', date())`.
+  `o.placed_at >= temporal.truncate('year', temporal.today())`.
 
 #### Related concepts
 
@@ -372,7 +373,7 @@ WITH u, c, count(i) AS items
 WHERE items > $n
   AND NOT EXISTS {
     (u)-[:PLACED]->(o:Order)
-    WHERE o.placed_at >= datetime() - duration('P30D')
+    WHERE o.placed_at >= temporal.now() - 'P30D'::DURATION
   }
 RETURN u.email, c.id, items
 ORDER BY items DESC
@@ -387,7 +388,7 @@ carts above the threshold size.
 #### Variations
 
 - Add recency of cart update:
-  `AND c.updated_at >= datetime() - duration('P7D')` for "stale but
+  `AND c.updated_at >= temporal.now() - 'P7D'::DURATION` for "stale but
   not abandoned".
 - Compute total cart value: `sum(i.price * i.quantity) AS total`.
 
@@ -417,7 +418,7 @@ for whether the event is sold out."
 
 ```cypher
 MATCH (e:Event)
-WHERE e.starts_at >= datetime()
+WHERE e.starts_at >= temporal.now()
 OPTIONAL MATCH (u:User)-[r:RSVP {status: 'yes'}]->(e)
 WITH e, count(u) AS going
 RETURN e.id,
@@ -469,8 +470,8 @@ their host."
 
 ```cypher
 MATCH (host:User)-[:HOSTS]->(e:Event)
-WHERE e.starts_at >= datetime()
-  AND e.starts_at <  datetime() + duration({days: $horizon_days})
+WHERE e.starts_at >= temporal.now()
+  AND e.starts_at <  temporal.now() + {days: $horizon_days}::DURATION
 RETURN e.id,
        e.starts_at,
        host.handle
@@ -479,14 +480,14 @@ ORDER BY e.starts_at
 
 #### Explanation
 
-`duration({days: $horizon_days})` accepts a bound integer —
-`duration('P7D')` only works with a literal string. Use the map
+`{days: $horizon_days}::DURATION` accepts a bound integer —
+`'P7D'::DURATION` only works with a literal string. Use the map
 form whenever the window size is dynamic.
 
 #### Variations
 
 - Hour-bucket count to drive a chart:
-  `datetime.truncate('hour', e.starts_at)` grouped with `count(*)` —
+  `temporal.truncate('hour', e.starts_at)` grouped with `count(*)` —
   see [Temporal → bucketing](./functions/temporal#bucketing-rows).
 - Timezone-specific: store `starts_at` as `DateTime` (UTC-offset
   aware) — see [Temporal types](./data-types/temporal).
@@ -515,10 +516,10 @@ this year, list the events they shared."
 ```cypher
 MATCH (a:User)-[:ATTENDED]->(e:Event)<-[:ATTENDED]-(b:User)
 WHERE id(a) < id(b)
-  AND e.at >= date.truncate('year', date())
+  AND e.at >= temporal.truncate('year', temporal.today())
 WITH a, b, collect(DISTINCT e.id) AS shared
-WHERE size(shared) >= $n
-RETURN a.handle, b.handle, shared, size(shared) AS n_shared
+WHERE value.size(shared) >= $n
+RETURN a.handle, b.handle, shared, value.size(shared) AS n_shared
 ORDER BY n_shared DESC
 ```
 
@@ -532,7 +533,7 @@ double-count in more complex schemas).
 
 #### Variations
 
-- Use `count(DISTINCT e)` instead of `size(collect(…))` for a
+- Use `count(DISTINCT e)` instead of `value.size(collect(…))` for a
   cheaper pairwise score when you don't need the event ids.
 - Weight events by `e.importance`.
 
@@ -560,9 +561,9 @@ during the last 30 days?"
 
 ```cypher
 MATCH (u:User)
-WITH date.truncate('month', u.created) AS cohort, u
+WITH temporal.truncate('month', u.created) AS cohort, u
 OPTIONAL MATCH (u)-[:LOGGED_IN]->(l:Login)
-WHERE l.at >= datetime() - duration('P30D')
+WHERE l.at >= temporal.now() - 'P30D'::DURATION
 RETURN cohort,
        count(DISTINCT u)                                   AS total,
        count(DISTINCT CASE WHEN l IS NOT NULL THEN u END)  AS active_30d,
@@ -608,7 +609,7 @@ yields retention between 0 and 1.
 
 ```cypher
 MATCH (v:Venue)
-WITH v, distance(v.location, $here) AS metres
+WITH v, geo.distance(v.location, $here) AS metres
 WHERE metres IS NOT NULL            -- guard cross-SRID
 RETURN v.name, metres
 ORDER BY metres
@@ -617,7 +618,7 @@ LIMIT 10
 
 #### Explanation
 
-[`distance`](./functions/spatial#distance) on same-SRID WGS-84
+[`geo.distance`](./functions/spatial#geodistance) on same-SRID WGS-84
 points returns metres. The null guard catches cases where some
 venues were stored with a different SRID — cross-SRID distance
 returns `null`.
@@ -631,7 +632,7 @@ returns `null`.
 
 #### Related concepts
 
-- [Spatial functions → distance](./functions/spatial#distance)
+- [Spatial functions → distance](./functions/spatial#geodistance)
 - [Spatial data types](./data-types/spatial)
 
 ---
@@ -658,7 +659,7 @@ ORDER BY lat
 
 #### Explanation
 
-Use `point.withinBBox()` for same-SRID bounding boxes. Add a POINT
+Use `geo.within_bbox()` for same-SRID bounding boxes. Add a POINT
 index for hot location filters, and keep the component-level `>=` /
 `<=` form only when you need custom fallback logic.
 
@@ -691,7 +692,7 @@ index for hot location filters, and keep the component-level `>=` /
 
 ```cypher
 MATCH (s:Shop)
-WITH s.category AS category, s, distance(s.location, $here) AS metres
+WITH s.category AS category, s, geo.distance(s.location, $here) AS metres
 ORDER BY metres ASC
 WITH category, collect({s: s, metres: metres})[0] AS nearest
 RETURN category,
@@ -734,8 +735,8 @@ group-level "pick one" idiom — LoraDB has no window functions.
 ```cypher
 MATCH (a:Sensor), (b:Sensor)
 WHERE id(a) < id(b)
-  AND distance(a.location, b.location) < 500
-RETURN a.id, b.id, distance(a.location, b.location) AS metres
+  AND geo.distance(a.location, b.location) < 500
+RETURN a.id, b.id, geo.distance(a.location, b.location) AS metres
 ORDER BY metres
 ```
 
@@ -777,28 +778,31 @@ pair duplicates.
 ```cypher
 MATCH (d:Doc)
 RETURN d.id AS id, d.title AS title
-ORDER BY vector.similarity.cosine(d.embedding, $query) DESC
+ORDER BY vector.similarity(d.embedding, $query) DESC
 LIMIT 10
 ```
 
-Pass `$query` either as a tagged vector (`vector([...], 384, FLOAT32)`
+Pass `$query` either as a tagged vector (`[...]::VECTOR<FLOAT32>(384)`
 on the host) or as a plain numeric list — both are accepted by the
 similarity function. See
 [Vectors → Passing vectors as parameters](./data-types/vectors#passing-vectors-as-parameters).
 
 #### Explanation
 
-Vector indexes are not implemented yet, so every matched node is
-scored linearly. Keep the `MATCH` as narrow as possible (label,
-property filter) to shrink the candidate set before similarity runs.
+`CREATE VECTOR INDEX` and the `db.index.vector.*` procedures are
+available, but the current implementation still scores linearly within
+the indexed label/type scope. Keep `MATCH` as narrow as possible
+(label, property filter) to shrink the candidate set before similarity
+runs, or use the vector index procedures when the indexed scope matches
+your query shape.
 
 #### Variations
 
 - **Score in a `WITH` stage** if the score is reused downstream:
-  `WITH d, vector.similarity.cosine(d.embedding, $query) AS score`.
+  `WITH d, vector.similarity(d.embedding, $query) AS score`.
 - **Swap the metric** for Euclidean-bounded similarity
-  (`vector.similarity.euclidean`) or a signed distance
-  (`vector_distance(d.embedding, $query, EUCLIDEAN)`, then
+  (`vector.similarity(d.embedding, $query, 'euclidean')`) or a signed
+  distance (`vector.distance(d.embedding, $query, EUCLIDEAN)`, then
   `ORDER BY … ASC`).
 
 #### Related concepts
@@ -825,7 +829,7 @@ entity names in the result."
 
 ```cypher
 MATCH (d:Doc)
-WITH d, vector.similarity.cosine(d.embedding, $query) AS score
+WITH d, vector.similarity(d.embedding, $query) AS score
 MATCH (d)-[:MENTIONS]->(e:Entity)
 WHERE e.type = $entity_type
 RETURN d.id, d.title, score, collect(e.name) AS entities
