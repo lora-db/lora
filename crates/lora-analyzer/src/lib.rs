@@ -4,7 +4,10 @@ pub mod resolved;
 pub mod scope;
 pub mod symbols;
 
-pub use analyzer::Analyzer;
+pub use analyzer::{
+    accepts_enum_literal, accepts_type_literal, builtin_spec, namespaced_arity, resolve_function,
+    AggregateFunction, Analyzer, FunctionId, BUILTIN_SPECS,
+};
 pub use errors::SemanticError;
 pub use resolved::{
     LiteralValue, ResolvedChain, ResolvedClause, ResolvedCreate, ResolvedDelete, ResolvedExpr,

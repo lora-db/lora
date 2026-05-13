@@ -1,6 +1,7 @@
 use super::state::{Analyzer, PatternContext};
+use crate::analyzer::FunctionId;
 use crate::{errors::*, resolved::*, symbols::*};
-use lora_ast::{Expr, MapProjectionSelector, Pattern, PatternPart};
+use lora_ast::{Expr, LiteralTypeExpr, MapProjectionSelector, Pattern, PatternPart};
 use lora_store::GraphCatalog;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,26 +63,46 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 span,
             } => {
                 let fn_name = name.join(".");
-                validate_function_name(&fn_name, span.start, span.end)?;
-                validate_function_arity(&fn_name, args.len())?;
+                let legacy_cast = legacy_cast_target(&fn_name);
+                let resolve_name = legacy_cast.map_or(fn_name.as_str(), |(name, _)| name);
+                let function = resolve_function_name(resolve_name, span.start, span.end)?;
+                if legacy_cast.is_some() {
+                    validate_fixed_arity(&fn_name, args.len(), 1)?;
+                } else {
+                    validate_function_arity(function, &fn_name, args.len())?;
+                }
 
-                let args = args
+                let mut args = args
                     .iter()
                     .enumerate()
                     .map(|(idx, a)| {
-                        if let Some(lit) = try_vector_enum_literal(&fn_name, idx, a) {
+                        if let Some(lit) = try_builtin_literal(resolve_name, idx, a) {
                             Ok(lit)
                         } else {
                             self.analyze_expr_with_aliases(a, aliases)
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                if let Some((_, target)) = legacy_cast {
+                    args.push(ResolvedExpr::Literal(LiteralValue::TypeName(
+                        target.to_string(),
+                    )));
+                }
 
                 Ok(ResolvedExpr::Function {
-                    name: fn_name,
+                    function,
                     distinct: *distinct,
                     args,
                 })
+            }
+            Expr::TypeCast {
+                expr,
+                target,
+                try_cast,
+                span,
+            } => {
+                let expr = self.analyze_expr_with_aliases(expr, aliases)?;
+                lower_type_cast_expr(expr, target, *try_cast, span.start, span.end)
             }
             _ => self.analyze_expr(expr),
         }
@@ -167,26 +188,46 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 ..
             } => {
                 let fn_name = name.join(".");
-                validate_function_name(&fn_name, span.start, span.end)?;
-                validate_function_arity(&fn_name, args.len())?;
+                let legacy_cast = legacy_cast_target(&fn_name);
+                let resolve_name = legacy_cast.map_or(fn_name.as_str(), |(name, _)| name);
+                let function = resolve_function_name(resolve_name, span.start, span.end)?;
+                if legacy_cast.is_some() {
+                    validate_fixed_arity(&fn_name, args.len(), 1)?;
+                } else {
+                    validate_function_arity(function, &fn_name, args.len())?;
+                }
 
-                let args = args
+                let mut args = args
                     .iter()
                     .enumerate()
                     .map(|(idx, a)| {
-                        if let Some(lit) = try_vector_enum_literal(&fn_name, idx, a) {
+                        if let Some(lit) = try_builtin_literal(resolve_name, idx, a) {
                             Ok(lit)
                         } else {
                             self.analyze_expr(a)
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                if let Some((_, target)) = legacy_cast {
+                    args.push(ResolvedExpr::Literal(LiteralValue::TypeName(
+                        target.to_string(),
+                    )));
+                }
 
                 Ok(ResolvedExpr::Function {
-                    name: fn_name,
+                    function,
                     distinct: *distinct,
                     args,
                 })
+            }
+            Expr::TypeCast {
+                expr,
+                target,
+                try_cast,
+                span,
+            } => {
+                let expr = self.analyze_expr(expr)?;
+                lower_type_cast_expr(expr, target, *try_cast, span.start, span.end)
             }
 
             Expr::ListPredicate {
@@ -396,154 +437,155 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     }
 }
 
-const AGGREGATE_FUNCTIONS: &[&str] = &[
-    "count",
-    "sum",
-    "avg",
-    "min",
-    "max",
-    "collect",
-    "stdev",
-    "stdevp",
-    "percentilecont",
-    "percentiledisc",
-];
-
-/// Returns (min_args, max_args) for known functions. `None` means no upper bound (variadic).
-fn function_arity(name: &str) -> Option<(usize, Option<usize>)> {
-    match name {
-        // Aggregate — all take exactly 1 argument (count can take 0 for count(*))
-        "count" => Some((0, Some(1))),
-        "sum" | "avg" | "min" | "max" | "collect" | "stdev" | "stdevp" => Some((1, Some(1))),
-        "percentilecont" | "percentiledisc" => Some((2, Some(2))),
-        // Entity introspection — exactly 1
-        "id" | "type" | "labels" | "keys" | "properties" | "nodes" | "relationships" => {
-            Some((1, Some(1)))
-        }
-        // String — 1 arg
-        "tolower" | "toupper" | "trim" | "ltrim" | "rtrim" | "reverse" => Some((1, Some(1))),
-        // String — 2 args
-        "split" | "left" | "right" => Some((2, Some(2))),
-        // String — 3 args
-        "replace" => Some((3, Some(3))),
-        // substring: 2 or 3 args
-        "substring" => Some((2, Some(3))),
-        // Type conversion — exactly 1
-        "tostring" | "tointeger" | "toint" | "tofloat" | "toboolean" | "tobooleanornull"
-        | "valuetype" => Some((1, Some(1))),
-        // String — lpad/rpad take 3
-        "lpad" | "rpad" => Some((3, Some(3))),
-        // String — char_length/normalize take 1
-        "char_length" | "normalize" => Some((1, Some(1))),
-        // Math — exactly 1
-        "abs" | "ceil" | "floor" | "round" | "sqrt" | "sign" => Some((1, Some(1))),
-        // Math — trig / logarithmic (1 arg)
-        "log" | "ln" | "log10" | "exp" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
-        | "degrees" | "radians" => Some((1, Some(1))),
-        // Math — atan2 (2 args)
-        "atan2" => Some((2, Some(2))),
-        // Math — constants (0 args)
-        "pi" | "e" | "rand" => Some((0, Some(0))),
-        // List / size
-        "size" | "length" | "head" | "tail" | "last" => Some((1, Some(1))),
-        // range: 2 or 3
-        "range" => Some((2, Some(3))),
-        // coalesce: 1+
-        "coalesce" => Some((1, None)),
-        // timestamp: 0
-        "timestamp" => Some((0, Some(0))),
-        // Temporal constructors: 0 or 1
-        "date" | "datetime" | "time" | "localtime" | "localdatetime" => Some((0, Some(1))),
-        // duration: exactly 1
-        "duration" => Some((1, Some(1))),
-        // Temporal namespace functions: exactly 2
-        "date.truncate" | "datetime.truncate" | "duration.between" | "duration.indays" => {
-            Some((2, Some(2)))
-        }
-        // Spatial
-        "point" => Some((1, Some(1))),
-        "distance" | "point.distance" => Some((2, Some(2))),
-        "point.withinbbox" => Some((3, Some(3))),
-        // Vector
-        "vector" => Some((3, Some(3))),
-        "tointegerlist" | "tofloatlist" => Some((1, Some(1))),
-        "vector_dimension_count" => Some((1, Some(1))),
-        "vector_norm" => Some((2, Some(2))),
-        "vector_distance" => Some((3, Some(3))),
-        "vector.similarity.cosine" | "vector.similarity.euclidean" => Some((2, Some(2))),
-        _ => None,
-    }
-}
-
-/// Special-case the literal-enum arguments of vector construction and
-/// metric functions. Bare identifiers like `INTEGER` or `COSINE` parse
-/// as `Expr::Variable` today; for these specific slots we treat a bare
-/// identifier as a string literal rather than resolving it against the
-/// scope. Strings are passed through untouched, and any other expression
-/// shape falls through to the normal analyzer so runtime type errors
-/// still surface cleanly.
-fn try_vector_enum_literal(fn_name: &str, arg_idx: usize, expr: &Expr) -> Option<ResolvedExpr> {
+/// Special-case builtin literal slots. Bare identifiers like `INTEGER`
+/// or `COSINE` parse as `Expr::Variable` today; for these specific slots
+/// we treat them as type or enum literals rather than resolving them
+/// against the scope. Strings are passed through untouched, and any
+/// other expression shape falls through to the normal analyzer so runtime
+/// type errors still surface cleanly.
+fn try_builtin_literal(fn_name: &str, arg_idx: usize, expr: &Expr) -> Option<ResolvedExpr> {
     let fn_lower = fn_name.to_ascii_lowercase();
-    let takes_enum_here = match fn_lower.as_str() {
-        "vector" => arg_idx == 2,
-        "vector_distance" => arg_idx == 2,
-        "vector_norm" => arg_idx == 1,
-        _ => false,
-    };
-    if !takes_enum_here {
-        return None;
-    }
     if let Expr::Variable(v) = expr {
-        return Some(ResolvedExpr::Literal(LiteralValue::String(v.name.clone())));
+        if super::builtin_signatures::accepts_type_literal(&fn_lower, arg_idx) {
+            return Some(ResolvedExpr::Literal(LiteralValue::TypeName(
+                v.name.clone(),
+            )));
+        }
+        if super::builtin_signatures::accepts_enum_literal(&fn_lower, arg_idx) {
+            return Some(ResolvedExpr::Literal(LiteralValue::String(v.name.clone())));
+        }
     }
     None
 }
 
-fn is_aggregate_function(name: &str) -> bool {
-    AGGREGATE_FUNCTIONS
-        .iter()
-        .any(|function| name.eq_ignore_ascii_case(function))
+fn lower_type_cast_expr(
+    expr: ResolvedExpr,
+    target: &LiteralTypeExpr,
+    try_cast: bool,
+    start: usize,
+    end: usize,
+) -> Result<ResolvedExpr, SemanticError> {
+    let (name, args) = type_cast_lowering(expr, target, try_cast);
+    let function = resolve_function_name(&name, start, end)?;
+    Ok(ResolvedExpr::Function {
+        function,
+        distinct: false,
+        args,
+    })
 }
 
-fn validate_function_name(name: &str, start: usize, end: usize) -> Result<(), SemanticError> {
-    let lower = name.to_ascii_lowercase();
-    if function_arity(&lower).is_some() {
-        Ok(())
-    } else {
-        Err(SemanticError::UnknownFunction(name.to_string(), start, end))
+fn type_cast_lowering(
+    expr: ResolvedExpr,
+    target: &LiteralTypeExpr,
+    try_cast: bool,
+) -> (String, Vec<ResolvedExpr>) {
+    let name = if try_cast { "cast.try" } else { "cast.to" };
+    (
+        name.to_string(),
+        vec![
+            expr,
+            ResolvedExpr::Literal(LiteralValue::TypeName(format_literal_type(target))),
+        ],
+    )
+}
+
+fn normalize_literal_type_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .map(|ch| match ch {
+            '-' => '_',
+            ch if ch.is_whitespace() => '_',
+            _ => ch.to_ascii_uppercase(),
+        })
+        .collect()
+}
+
+fn format_literal_type(target: &LiteralTypeExpr) -> String {
+    match target {
+        LiteralTypeExpr::Named { name, .. } => normalize_literal_type_name(name),
+        LiteralTypeExpr::List { inner, .. } => format!("LIST<{}>", format_literal_type(inner)),
+        LiteralTypeExpr::Vector {
+            coordinate,
+            dimension,
+            ..
+        } => format!("VECTOR<{coordinate}>({dimension})"),
     }
 }
 
-fn validate_function_arity(name: &str, arg_count: usize) -> Result<(), SemanticError> {
-    let lower = name.to_ascii_lowercase();
-    if let Some((min, max)) = function_arity(&lower) {
-        if arg_count < min {
-            let expected = if max == Some(min) {
+fn legacy_cast_target(fn_name: &str) -> Option<(&'static str, &'static str)> {
+    let lower = fn_name.to_ascii_lowercase();
+    Some(match lower.as_str() {
+        "tostring" => ("cast.to", "STRING"),
+        "tointeger" => ("cast.to", "INTEGER"),
+        "tofloat" => ("cast.to", "FLOAT"),
+        "toboolean" => ("cast.to", "BOOLEAN"),
+        "tostringornull" => ("cast.try", "STRING"),
+        "tointegerornull" => ("cast.try", "INTEGER"),
+        "tofloatornull" => ("cast.try", "FLOAT"),
+        "tobooleanornull" => ("cast.try", "BOOLEAN"),
+        _ => return None,
+    })
+}
+
+fn resolve_function_name(
+    name: &str,
+    start: usize,
+    end: usize,
+) -> Result<FunctionId, SemanticError> {
+    super::builtin_signatures::resolve_function(name)
+        .ok_or_else(|| SemanticError::UnknownFunction(name.to_string(), start, end))
+}
+
+fn validate_fixed_arity(
+    source_name: &str,
+    arg_count: usize,
+    expected: usize,
+) -> Result<(), SemanticError> {
+    if arg_count == expected {
+        Ok(())
+    } else {
+        Err(SemanticError::WrongArity(
+            source_name.to_string(),
+            expected.to_string(),
+            arg_count,
+        ))
+    }
+}
+
+fn validate_function_arity(
+    function: FunctionId,
+    source_name: &str,
+    arg_count: usize,
+) -> Result<(), SemanticError> {
+    let arity = function.arity();
+    let min = arity.min;
+    let max = arity.max;
+    if arg_count < min {
+        let expected = if max == Some(min) {
+            format!("{min}")
+        } else if let Some(mx) = max {
+            format!("{min}..{mx}")
+        } else {
+            format!("at least {min}")
+        };
+        return Err(SemanticError::WrongArity(
+            source_name.to_string(),
+            expected,
+            arg_count,
+        ));
+    }
+    if let Some(mx) = max {
+        if arg_count > mx {
+            let expected = if mx == min {
                 format!("{min}")
-            } else if let Some(mx) = max {
-                format!("{min}..{mx}")
             } else {
-                format!("at least {min}")
+                format!("{min}..{mx}")
             };
             return Err(SemanticError::WrongArity(
-                name.to_string(),
+                source_name.to_string(),
                 expected,
                 arg_count,
             ));
-        }
-        if let Some(mx) = max {
-            if arg_count > mx {
-                let expected = if mx == min {
-                    format!("{min}")
-                } else {
-                    format!("{min}..{mx}")
-                };
-                return Err(SemanticError::WrongArity(
-                    name.to_string(),
-                    expected,
-                    arg_count,
-                ));
-            }
         }
     }
     Ok(())
@@ -552,8 +594,8 @@ fn validate_function_arity(name: &str, arg_count: usize) -> Result<(), SemanticE
 /// Returns true if the resolved expression contains any aggregate function call.
 pub(super) fn expr_contains_aggregate(expr: &ResolvedExpr) -> bool {
     match expr {
-        ResolvedExpr::Function { name, args, .. } => {
-            if is_aggregate_function(name) {
+        ResolvedExpr::Function { function, args, .. } => {
+            if function.is_aggregate() {
                 return true;
             }
             args.iter().any(expr_contains_aggregate)

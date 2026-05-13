@@ -1,4 +1,4 @@
-use crate::symbols::*;
+use crate::{analyzer::FunctionId, symbols::*};
 use lora_ast::{
     BinaryOp, Direction, ListPredicateKind, RangeLiteral, SortDirection, Span, UnaryOp,
 };
@@ -217,7 +217,7 @@ pub enum ResolvedExpr {
         expr: Box<ResolvedExpr>,
     },
     Function {
-        name: String,
+        function: FunctionId,
         distinct: bool,
         args: Vec<ResolvedExpr>,
     },
@@ -284,6 +284,7 @@ pub enum LiteralValue {
     Integer(i64),
     Float(f64),
     String(String),
+    TypeName(String),
     Bool(bool),
     Null,
 }

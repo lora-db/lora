@@ -19,10 +19,11 @@
 //!   `format_label_groups` for duplicate-variable detection.
 //! - `expressions` — expression analysis (`analyze_expr`,
 //!   `analyze_expr_with_aliases`), function-name / arity validation,
-//!   the vector enum-literal rewrite, and `expr_contains_aggregate`
+//!   builtin enum/type literal rewrites, and `expr_contains_aggregate`
 //!   used by WHERE to reject aggregations.
 //! - `tests` — analyzer unit tests.
 
+mod builtin_signatures;
 mod clauses;
 mod expressions;
 mod patterns;
@@ -31,4 +32,8 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+pub use builtin_signatures::{
+    accepts_enum_literal, accepts_type_literal, builtin_spec, namespaced_arity, resolve_function,
+    AggregateFunction, FunctionId, BUILTIN_SPECS,
+};
 pub use state::Analyzer;
