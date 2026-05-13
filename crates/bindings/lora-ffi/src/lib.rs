@@ -1811,7 +1811,7 @@ mod tests {
         let db = new_db();
 
         // Construct a vector and read the resulting JSON.
-        let (s, r, _) = unsafe { exec(db, "RETURN vector([1,2,3], 3, INTEGER) AS v", None) };
+        let (s, r, _) = unsafe { exec(db, "RETURN [1,2,3]::VECTOR<INTEGER>(3) AS v", None) };
         assert_eq!(s, LoraStatus::Ok as c_int);
         let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
         let v = &payload["rows"][0]["v"];
@@ -1956,7 +1956,7 @@ mod tests {
     fn vector_json_shape_is_deterministic() {
         // Every binding depends on this exact tagged shape — pin it down.
         let db = new_db();
-        let (s, r, _) = unsafe { exec(db, "RETURN vector([1, 2, 3], 3, INTEGER16) AS v", None) };
+        let (s, r, _) = unsafe { exec(db, "RETURN [1, 2, 3]::VECTOR<INTEGER16>(3) AS v", None) };
         assert_eq!(s, LoraStatus::Ok as c_int);
         let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
         let v = &payload["rows"][0]["v"];

@@ -94,7 +94,7 @@ class TestParams < Minitest::Test
   def test_vector_parameter_in_similarity_function
     q = LoraRuby.vector([1.0, 0.0, 0.0], 3, "FLOAT32")
     r = @db.execute(
-      "RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+      "RETURN vector.similarity([1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3), $q) AS s",
       { q: q },
     )
     assert_in_delta 1.0, r["rows"][0]["s"], 1e-6

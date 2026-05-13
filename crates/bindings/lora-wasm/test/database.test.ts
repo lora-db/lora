@@ -412,12 +412,12 @@ describe("Database — vector values (wasm)", () => {
     expect(isVector(v2)).toBe(true);
   });
 
-  it("uses a vector() parameter inside vector.similarity.cosine (wasm)", async () => {
+  it("uses a vector() parameter inside vector.similarity (wasm)", async () => {
     const db = await createDatabase();
     const { vector } = await import("../ts/types.js");
     const query = vector([1.0, 0.0, 0.0], 3, "FLOAT32");
     const { rows } = await db.execute<{ s: number }>(
-      "RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+      "RETURN vector.similarity([1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3), $q) AS s",
       { q: query },
     );
     expect(Math.abs((rows[0]!.s as number) - 1.0)).toBeLessThan(1e-6);

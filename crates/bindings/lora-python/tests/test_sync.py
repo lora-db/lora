@@ -441,7 +441,7 @@ def test_vector_parameter_used_in_similarity_function() -> None:
     db = Database.create()
     query = vector([1.0, 0.0, 0.0], 3, "FLOAT32")
     r = db.execute(
-        "RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+        "RETURN vector.similarity([1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3), $q) AS s",
         {"q": query},
     )
     assert abs(r["rows"][0]["s"] - 1.0) < 1e-6

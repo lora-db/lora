@@ -631,7 +631,7 @@ func TestBinaryParameterRoundTrip(t *testing.T) {
 	}
 }
 
-// A vector parameter flows into Cypher's vector.similarity.cosine and
+// A vector parameter flows into Cypher's vector.similarity and
 // produces the expected similarity score.
 func TestVectorParameterInSimilarityFunction(t *testing.T) {
 	db := newDB(t)
@@ -642,7 +642,7 @@ func TestVectorParameterInSimilarityFunction(t *testing.T) {
 	)
 	r := mustExec(t,
 		db,
-		"RETURN vector.similarity.cosine(vector([1.0, 0.0, 0.0], 3, FLOAT32), $q) AS s",
+		"RETURN vector.similarity([1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3), $q) AS s",
 		lora.Params{"q": q},
 	)
 	s := rowAt(t, r, 0)["s"]
