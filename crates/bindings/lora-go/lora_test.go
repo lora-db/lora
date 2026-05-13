@@ -97,7 +97,7 @@ func TestCreateAndReturnNodeWithProperties(t *testing.T) {
 func TestStreamAndTransactionHelpers(t *testing.T) {
 	db := newDB(t)
 	results, err := db.Transaction([]lora.TransactionStatement{
-		{Query: "UNWIND range(1, 3) AS i CREATE (:S {i: i})"},
+		{Query: "UNWIND list.range(1, 3) AS i CREATE (:S {i: i})"},
 		{Query: "MATCH (n:S) RETURN n.i AS i ORDER BY i"},
 	}, lora.TransactionReadWrite)
 	if err != nil {
@@ -130,7 +130,7 @@ func TestStreamAndTransactionHelpers(t *testing.T) {
 		t.Fatalf("stream rows = %v", seen)
 	}
 
-	early, err := db.Stream("UNWIND range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i", nil)
+	early, err := db.Stream("UNWIND list.range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i", nil)
 	if err != nil {
 		t.Fatalf("early Stream: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestPathInvariant(t *testing.T) {
 
 func TestTaggedDateAsCypherLiteral(t *testing.T) {
 	db := newDB(t)
-	mustExec(t, db, "CREATE (:E {d: date('2025-03-14')})", nil)
+	mustExec(t, db, "CREATE (:E {d: cast.to('2025-03-14', DATE)})", nil)
 	rows := mustExec(t, db, "MATCH (n:E) RETURN n.d AS d", nil).Rows
 	d := rows[0]["d"]
 	if !lora.IsTemporal(d) {
@@ -329,7 +329,7 @@ func TestTemporalNowFunctions(t *testing.T) {
 	// Every no-arg temporal constructor must return a tagged value
 	// and not error out — mirrors lora-python test_temporal_now_functions_work.
 	r := mustExec(t, db,
-		"RETURN date() AS d, datetime() AS dt, time() AS t, localdatetime() AS ldt, localtime() AS lt",
+		"RETURN temporal.now('date') AS d, temporal.now('datetime') AS dt, temporal.now('time') AS t, temporal.now('local_datetime') AS ldt, temporal.now('local_time') AS lt",
 		nil,
 	)
 	row := rowAt(t, r, 0)
@@ -405,7 +405,7 @@ func TestTaggedPointValues3D(t *testing.T) {
 
 func TestPointFromCypherConstructorRoundTrips(t *testing.T) {
 	db := newDB(t)
-	r := mustExec(t, db, "RETURN point({x: 1.0, y: 2.0, z: 3.0}) AS p", nil)
+	r := mustExec(t, db, "RETURN cast.to({x: 1.0, y: 2.0, z: 3.0}, POINT) AS p", nil)
 	p := rowAt(t, r, 0)["p"].(map[string]any)
 	if p["srid"] != int64(lora.SRIDCartesian3D) || p["crs"] != "cartesian-3D" {
 		t.Fatalf("3D ctor srid/crs = %v/%v", p["srid"], p["crs"])
@@ -561,7 +561,7 @@ func errTestf(format string, args ...any) error {
 
 func TestVectorReturnHasTaggedShape(t *testing.T) {
 	db := newDB(t)
-	r := mustExec(t, db, "RETURN vector([1,2,3], 3, INTEGER) AS v", nil)
+	r := mustExec(t, db, "RETURN [1,2,3]::VECTOR<INTEGER>(3) AS v", nil)
 	v, ok := rowAt(t, r, 0)["v"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected vector map, got %T", rowAt(t, r, 0)["v"])
@@ -720,6 +720,95 @@ func TestIsVectorOnlyAcceptsVectorMaps(t *testing.T) {
 	}
 	if !lora.IsVector(good) {
 		t.Errorf("IsVector on tagged vector map returned false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// v0.10 namespaced built-ins
+//
+// `<namespace>.<operation>` is the canonical Cypher surface; Cypher's
+// historical spellings (`head`, `coalesce`, `toLower`, …) resolve
+// through the analyzer's alias table to the same canonical
+// implementations. These tests pin both shapes through the binding.
+// ---------------------------------------------------------------------------
+
+func TestNamespacedStringListMathValueBuiltins(t *testing.T) {
+	db := newDB(t)
+	r := mustExec(t, db,
+		`RETURN string.upper('hello')              AS upper,
+		        string.lower('WORLD')              AS lower,
+		        list.first([10, 20, 30])           AS head,
+		        math.clamp($x, 0, 100)             AS bounded,
+		        value.coalesce($maybe, 'fallback') AS pick`,
+		lora.Params{"x": 250, "maybe": nil},
+	)
+	row := rowAt(t, r, 0)
+	if row["upper"] != "HELLO" {
+		t.Fatalf(`upper = %v, want "HELLO"`, row["upper"])
+	}
+	if row["lower"] != "world" {
+		t.Fatalf(`lower = %v, want "world"`, row["lower"])
+	}
+	if v, _ := row["head"].(int64); v != 10 {
+		t.Fatalf("head = %v, want 10", row["head"])
+	}
+	if v, _ := row["bounded"].(int64); v != 100 {
+		t.Fatalf("bounded = %v, want 100", row["bounded"])
+	}
+	if row["pick"] != "fallback" {
+		t.Fatalf(`pick = %v, want "fallback"`, row["pick"])
+	}
+}
+
+func TestCypherAliasesResolveToCanonicalBuiltins(t *testing.T) {
+	db := newDB(t)
+	r := mustExec(t, db,
+		`RETURN head([10, 20, 30])             AS head_alias,
+		        toLower('WORLD')               AS lower_alias,
+		        coalesce(null, 'fallback')     AS pick_alias,
+		        substring('hello-world', 6, 5) AS sub,
+		        toInteger('42')                AS as_int`,
+		nil,
+	)
+	row := rowAt(t, r, 0)
+	if v, _ := row["head_alias"].(int64); v != 10 {
+		t.Fatalf("head_alias = %v, want 10", row["head_alias"])
+	}
+	if row["lower_alias"] != "world" {
+		t.Fatalf(`lower_alias = %v, want "world"`, row["lower_alias"])
+	}
+	if row["pick_alias"] != "fallback" {
+		t.Fatalf(`pick_alias = %v, want "fallback"`, row["pick_alias"])
+	}
+	if row["sub"] != "world" {
+		t.Fatalf(`sub = %v, want "world"`, row["sub"])
+	}
+	if v, _ := row["as_int"].(int64); v != 42 {
+		t.Fatalf("as_int = %v, want 42", row["as_int"])
+	}
+}
+
+func TestTypeAndCastNamespaces(t *testing.T) {
+	db := newDB(t)
+	r := mustExec(t, db,
+		`RETURN type.of($x)                       AS kind,
+		        type.is($x, INTEGER)              AS is_int,
+		        cast.to('99', INTEGER)            AS cast_ok,
+		        cast.try('not-a-number', INTEGER) AS try_bad`,
+		lora.Params{"x": 7},
+	)
+	row := rowAt(t, r, 0)
+	if row["kind"] != "INTEGER" {
+		t.Fatalf(`kind = %v, want "INTEGER"`, row["kind"])
+	}
+	if row["is_int"] != true {
+		t.Fatalf("is_int = %v, want true", row["is_int"])
+	}
+	if v, _ := row["cast_ok"].(int64); v != 99 {
+		t.Fatalf("cast_ok = %v, want 99", row["cast_ok"])
+	}
+	if row["try_bad"] != nil {
+		t.Fatalf("try_bad = %v, want nil", row["try_bad"])
 	}
 }
 

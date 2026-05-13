@@ -163,7 +163,7 @@ async def test_async_stream_and_transaction_helpers() -> None:
     db = await AsyncDatabase.create()
     results = await db.transaction(
         [
-            {"query": "UNWIND range(1, 3) AS i CREATE (:S {i: i})"},
+            {"query": "UNWIND list.range(1, 3) AS i CREATE (:S {i: i})"},
             {"query": "MATCH (n:S) RETURN n.i AS i ORDER BY i"},
         ]
     )

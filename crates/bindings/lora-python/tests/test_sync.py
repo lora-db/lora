@@ -279,7 +279,7 @@ def test_roundtrips_nested_map() -> None:
 
 def test_tagged_date_values() -> None:
     db = Database.create()
-    db.execute("CREATE (:E {d: date('2025-03-14')})")
+    db.execute("CREATE (:E {d: cast.to('2025-03-14', DATE)})")
     rows = db.execute("MATCH (n:E) RETURN n.d AS d")["rows"]
     d = rows[0]["d"]
     assert is_temporal(d)
@@ -356,7 +356,9 @@ def test_tagged_point_values_3d() -> None:
 def test_point_from_cypher_constructor_round_trips() -> None:
     """3D points built inside Cypher emit the canonical external shape."""
     db = Database.create()
-    rows = db.execute("RETURN point({x: 1.0, y: 2.0, z: 3.0}) AS p")["rows"]
+    rows = db.execute(
+        "RETURN cast.to({x: 1.0, y: 2.0, z: 3.0}, POINT) AS p",
+    )["rows"]
     p = rows[0]["p"]
     assert is_point(p)
     assert p == {
@@ -391,11 +393,15 @@ def test_invalid_temporal_param_raises_invalid_params_error() -> None:
 
 
 def test_temporal_now_functions_work() -> None:
-    # `date()`, `datetime()`, … no-arg forms use the wall clock; they must
-    # not raise inside the PyO3 extension.
+    # `temporal.now('<kind>')` no-arg-bound forms use the wall clock; they
+    # must not raise inside the PyO3 extension.
     db = Database.create()
     r = db.execute(
-        "RETURN date() AS d, datetime() AS dt, time() AS t, localdatetime() AS ldt, localtime() AS lt",
+        "RETURN temporal.now('date')           AS d,"
+        "       temporal.now('datetime')       AS dt,"
+        "       temporal.now('time')           AS t,"
+        "       temporal.now('local_datetime') AS ldt,"
+        "       temporal.now('local_time')     AS lt",
     )
     row = r["rows"][0]
     for key in ("d", "dt", "t", "ldt", "lt"):
@@ -413,7 +419,7 @@ def test_vector_return_has_tagged_shape() -> None:
     from lora_python import is_vector
 
     db = Database.create()
-    r = db.execute("RETURN vector([1, 2, 3], 3, INTEGER) AS v")
+    r = db.execute("RETURN [1, 2, 3]::VECTOR<INTEGER>(3) AS v")
     v = r["rows"][0]["v"]
     assert is_vector(v)
     assert v["dimension"] == 3
@@ -498,7 +504,7 @@ def test_stream_and_transaction_helpers() -> None:
     db = Database.create()
     results = db.transaction(
         [
-            {"query": "UNWIND range(1, 3) AS i CREATE (:S {i: i})"},
+            {"query": "UNWIND list.range(1, 3) AS i CREATE (:S {i: i})"},
             {"query": "MATCH (n:S) RETURN n.i AS i ORDER BY i"},
         ]
     )
@@ -508,7 +514,7 @@ def test_stream_and_transaction_helpers() -> None:
         2,
         3,
     ]
-    stream = db.stream("UNWIND range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i")
+    stream = db.stream("UNWIND list.range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i")
     assert next(stream)["i"] == 1
     stream.close()
     assert db.node_count == 3
@@ -536,3 +542,61 @@ def test_is_vector_returns_false_for_non_vectors() -> None:
     assert is_vector({"kind": "node", "id": 1}) is False
     assert is_vector(42) is False
     assert is_vector("vector") is False
+
+
+# -- v0.10 namespaced built-ins ------------------------------------------------
+#
+# The Cypher surface ships a namespaced built-in library (`<namespace>.<op>`)
+# with Cypher historical spellings resolving through the analyzer's alias
+# table. These tests pin both shapes through the binding.
+
+
+def test_namespaced_string_list_math_value_builtins() -> None:
+    db = Database.create()
+    r = db.execute(
+        """RETURN string.upper('hello')              AS upper,
+                  string.lower('WORLD')              AS lower,
+                  list.first([10, 20, 30])           AS head,
+                  math.clamp($x, 0, 100)             AS bounded,
+                  value.coalesce($maybe, 'fallback') AS pick""",
+        {"x": 250, "maybe": None},
+    )
+    row = r["rows"][0]
+    assert row["upper"] == "HELLO"
+    assert row["lower"] == "world"
+    assert row["head"] == 10
+    assert row["bounded"] == 100
+    assert row["pick"] == "fallback"
+
+
+def test_cypher_aliases_resolve_to_canonical_builtins() -> None:
+    db = Database.create()
+    r = db.execute(
+        """RETURN head([10, 20, 30])             AS head_alias,
+                  toLower('WORLD')               AS lower_alias,
+                  coalesce(null, 'fallback')     AS pick_alias,
+                  substring('hello-world', 6, 5) AS sub,
+                  toInteger('42')                AS as_int""",
+    )
+    row = r["rows"][0]
+    assert row["head_alias"] == 10
+    assert row["lower_alias"] == "world"
+    assert row["pick_alias"] == "fallback"
+    assert row["sub"] == "world"
+    assert row["as_int"] == 42
+
+
+def test_type_and_cast_namespaces() -> None:
+    db = Database.create()
+    r = db.execute(
+        """RETURN type.of($x)                       AS kind,
+                  type.is($x, INTEGER)              AS is_int,
+                  cast.to('99', INTEGER)            AS cast_ok,
+                  cast.try('not-a-number', INTEGER) AS try_bad""",
+        {"x": 7},
+    )
+    row = r["rows"][0]
+    assert row["kind"] == "INTEGER"
+    assert row["is_int"] is True
+    assert row["cast_ok"] == 99
+    assert row["try_bad"] is None

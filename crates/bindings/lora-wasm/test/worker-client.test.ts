@@ -167,7 +167,7 @@ describe("WorkerDatabase — message protocol", () => {
 
   it("supports stream and transaction helpers over the worker protocol", async () => {
     await db.transaction([
-      { query: "UNWIND range(1, 3) AS i CREATE (:W {i: i})" },
+      { query: "UNWIND list.range(1, 3) AS i CREATE (:W {i: i})" },
     ]);
 
     const seen: number[] = [];

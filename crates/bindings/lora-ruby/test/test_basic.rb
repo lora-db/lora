@@ -203,11 +203,15 @@ class TestBasic < Minitest::Test
   end
 
   def test_temporal_now_functions_work
-    # date() / datetime() / ... no-arg forms use the wall clock; they
-    # must not raise inside the extension.
-    r = @db.execute(
-      "RETURN date() AS d, datetime() AS dt, time() AS t, localdatetime() AS ldt, localtime() AS lt",
-    )
+    # `temporal.now('<kind>')` no-arg-bound forms use the wall clock;
+    # they must not raise inside the extension.
+    r = @db.execute(<<~CYPHER)
+      RETURN temporal.now('date')           AS d,
+             temporal.now('datetime')       AS dt,
+             temporal.now('time')           AS t,
+             temporal.now('local_datetime') AS ldt,
+             temporal.now('local_time')     AS lt
+    CYPHER
     row = r["rows"][0]
     %w[d dt t ldt lt].each do |k|
       assert LoraRuby.temporal?(row[k]), "#{k} should be a tagged temporal hash"

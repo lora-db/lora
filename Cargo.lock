@@ -773,7 +773,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lora-analyzer"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "lora-ast",
  "lora-parser",
@@ -783,14 +783,14 @@ dependencies = [
 
 [[package]]
 name = "lora-ast"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "smallvec 2.0.0-alpha.12",
 ]
 
 [[package]]
 name = "lora-binding-buffer"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "lora-database",
  "lora-store",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "lora-compiler"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "lora-analyzer",
  "lora-ast",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "lora-database"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "lora-executor"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "lora-ffi"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "lora-node"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "lora-parser"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "lora-ast",
  "pest",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "lora-python"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "lora-database",
@@ -901,8 +901,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lora-query-wasm"
+version = "0.10.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "lora-ast",
+ "lora-parser",
+ "serde",
+ "serde-wasm-bindgen",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "lora-server"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -916,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "lora-snapshot"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -930,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "lora-store"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "crc32fast",
  "js-sys",
@@ -941,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wal"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "crc32fast",
  "lora-store",
@@ -951,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wasm"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -967,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "lora_ruby"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "lora-database",

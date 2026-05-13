@@ -10,7 +10,7 @@ class TestTypes < Minitest::Test
   # ---- temporal ----------------------------------------------------
 
   def test_tagged_date_value
-    @db.execute("CREATE (:E {d: date('2025-03-14')})")
+    @db.execute("CREATE (:E {d: cast.to('2025-03-14', DATE)})")
     rows = @db.execute("MATCH (n:E) RETURN n.d AS d")["rows"]
     d = rows[0]["d"]
     assert LoraRuby.temporal?(d)
@@ -93,7 +93,9 @@ class TestTypes < Minitest::Test
   def test_point_from_cypher_constructor_round_trips
     # 3D points built inside Cypher also emit the canonical external
     # shape — same contract as lora-python's equivalent test.
-    rows = @db.execute("RETURN point({x: 1.0, y: 2.0, z: 3.0}) AS p")["rows"]
+    rows = @db.execute(
+      "RETURN cast.to({x: 1.0, y: 2.0, z: 3.0}, POINT) AS p",
+    )["rows"]
     p = rows[0]["p"]
     assert LoraRuby.point?(p)
     assert_equal({

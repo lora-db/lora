@@ -74,7 +74,7 @@ class TestParams < Minitest::Test
   end
 
   def test_vector_return_has_tagged_shape
-    r = @db.execute("RETURN vector([1,2,3], 3, INTEGER) AS v")
+    r = @db.execute("RETURN [1,2,3]::VECTOR<INTEGER>(3) AS v")
     v = r["rows"][0]["v"]
     assert LoraRuby.vector?(v)
     assert_equal 3, v["dimension"]
@@ -141,5 +141,63 @@ class TestParams < Minitest::Test
     refute LoraRuby.vector?({ "kind" => "node", "id" => 1 })
     refute LoraRuby.vector?(42)
     refute LoraRuby.vector?("vector")
+  end
+
+  # -- v0.10 namespaced built-ins ---------------------------------------------
+  #
+  # `<namespace>.<operation>` is the canonical surface; Cypher's historical
+  # spellings (`head`, `coalesce`, `toLower`, …) resolve through the
+  # analyzer's alias table to the same canonical implementations.
+
+  def test_namespaced_string_list_math_value_builtins
+    r = @db.execute(
+      <<~CYPHER,
+        RETURN string.upper('hello')              AS upper,
+               string.lower('WORLD')              AS lower,
+               list.first([10, 20, 30])           AS head,
+               math.clamp($x, 0, 100)             AS bounded,
+               value.coalesce($maybe, 'fallback') AS pick
+      CYPHER
+      { x: 250, maybe: nil },
+    )
+    row = r["rows"][0]
+    assert_equal "HELLO", row["upper"]
+    assert_equal "world", row["lower"]
+    assert_equal 10, row["head"]
+    assert_equal 100, row["bounded"]
+    assert_equal "fallback", row["pick"]
+  end
+
+  def test_cypher_aliases_resolve_to_canonical_builtins
+    r = @db.execute(<<~CYPHER)
+      RETURN head([10, 20, 30])             AS head_alias,
+             toLower('WORLD')               AS lower_alias,
+             coalesce(null, 'fallback')     AS pick_alias,
+             substring('hello-world', 6, 5) AS sub,
+             toInteger('42')                AS as_int
+    CYPHER
+    row = r["rows"][0]
+    assert_equal 10, row["head_alias"]
+    assert_equal "world", row["lower_alias"]
+    assert_equal "fallback", row["pick_alias"]
+    assert_equal "world", row["sub"]
+    assert_equal 42, row["as_int"]
+  end
+
+  def test_type_and_cast_namespaces
+    # The Ruby binding marshals Ruby Integers as Cypher FLOATs, so the
+    # inspected type is taken from a Cypher literal here rather than from
+    # a parameter. The cast.* checks still exercise the runtime path.
+    r = @db.execute(<<~CYPHER)
+      RETURN type.of(7)                        AS kind,
+             type.is(7, INTEGER)               AS is_int,
+             cast.to('99', INTEGER)            AS cast_ok,
+             cast.try('not-a-number', INTEGER) AS try_bad
+    CYPHER
+    row = r["rows"][0]
+    assert_equal "INTEGER", row["kind"]
+    assert_equal true, row["is_int"]
+    assert_equal 99, row["cast_ok"]
+    assert_nil row["try_bad"]
   end
 end

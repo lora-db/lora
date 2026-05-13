@@ -1987,4 +1987,68 @@ mod tests {
         };
         assert_eq!(s, LoraStatus::NullPointer as c_int);
     }
+
+    // -- v0.10 namespaced built-ins -----------------------------------------
+    //
+    // `<namespace>.<operation>` is the canonical Cypher surface; Cypher's
+    // historical spellings (`head`, `coalesce`, `toLower`, …) resolve
+    // through the analyzer's alias table to the same canonical
+    // implementations. The FFI test pins both shapes through the C API
+    // because every other binding rides on top of it.
+
+    #[test]
+    fn namespaced_builtins_round_trip_through_ffi() {
+        let db = new_db();
+        let (s, r, _) = unsafe {
+            exec(
+                db,
+                "RETURN string.upper('hello')              AS upper, \
+                        string.lower('WORLD')              AS lower, \
+                        list.first([10, 20, 30])           AS head, \
+                        math.clamp(250, 0, 100)            AS bounded, \
+                        value.coalesce(null, 'fallback')   AS pick, \
+                        type.of(7)                         AS kind, \
+                        cast.to('99', INTEGER)             AS cast_ok, \
+                        cast.try('not-a-number', INTEGER)  AS try_bad",
+                None,
+            )
+        };
+        assert_eq!(s, LoraStatus::Ok as c_int);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        let row = &payload["rows"][0];
+        assert_eq!(row["upper"], "HELLO");
+        assert_eq!(row["lower"], "world");
+        assert_eq!(row["head"], 10);
+        assert_eq!(row["bounded"], 100);
+        assert_eq!(row["pick"], "fallback");
+        assert_eq!(row["kind"], "INTEGER");
+        assert_eq!(row["cast_ok"], 99);
+        assert!(row["try_bad"].is_null());
+        unsafe { lora_db_free(db) };
+    }
+
+    #[test]
+    fn cypher_aliases_round_trip_through_ffi() {
+        let db = new_db();
+        let (s, r, _) = unsafe {
+            exec(
+                db,
+                "RETURN head([10, 20, 30])             AS head_alias, \
+                        toLower('WORLD')               AS lower_alias, \
+                        coalesce(null, 'fallback')     AS pick_alias, \
+                        substring('hello-world', 6, 5) AS sub, \
+                        toInteger('42')                AS as_int",
+                None,
+            )
+        };
+        assert_eq!(s, LoraStatus::Ok as c_int);
+        let payload: serde_json::Value = serde_json::from_str(&r.unwrap()).unwrap();
+        let row = &payload["rows"][0];
+        assert_eq!(row["head_alias"], 10);
+        assert_eq!(row["lower_alias"], "world");
+        assert_eq!(row["pick_alias"], "fallback");
+        assert_eq!(row["sub"], "world");
+        assert_eq!(row["as_int"], 42);
+        unsafe { lora_db_free(db) };
+    }
 }

@@ -680,7 +680,7 @@ describe("Database — value model", () => {
 
   it("returns tagged date values from stored properties", async () => {
     const db = await createDatabase();
-    await db.execute("CREATE (:E {d: date('2025-03-14')})");
+    await db.execute("CREATE (:E {d: cast.to('2025-03-14', DATE)})");
     const { rows } = await db.execute("MATCH (n:E) RETURN n.d AS d");
     const d = rows[0]!.d;
     expect(isTemporal(d)).toBe(true);
@@ -758,7 +758,7 @@ describe("Database — value model", () => {
   it("3D point constructed via point() Cypher round-trips unchanged", async () => {
     const db = await createDatabase();
     const { rows } = await db.execute(
-      "RETURN point({x: 1.0, y: 2.0, z: 3.0}) AS p",
+      "RETURN cast.to({x: 1.0, y: 2.0, z: 3.0}, POINT) AS p",
     );
     const p = rows[0]!.p;
     if (!isPoint(p)) throw new Error("expected point");
@@ -787,6 +787,85 @@ describe("Database — errors", () => {
     await expect(
       db.execute("RETURN $d AS d", { d: { kind: "date", iso: "not-a-date" } }),
     ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS");
+  });
+});
+
+describe("Database — namespaced built-ins", () => {
+  // v0.10 reorganised the built-in function library around
+  // <namespace>.<operation>. Cypher historical spellings (`head`, `coalesce`,
+  // `toLower`, `substring`, `toInteger`, …) resolve through the analyzer's
+  // alias table to the same canonical implementations. These tests pin both
+  // shapes through the bindings.
+
+  it("resolves namespaced string, list, math, and value built-ins", async () => {
+    const db = await createDatabase();
+    const { rows } = await db.execute<{
+      upper: string;
+      lower: string;
+      head: number;
+      bounded: number;
+      pick: string;
+    }>(
+      `RETURN string.upper('hello')                AS upper,
+              string.lower('WORLD')                AS lower,
+              list.first([10, 20, 30])             AS head,
+              math.clamp($x, 0, 100)               AS bounded,
+              value.coalesce($maybe, 'fallback')   AS pick`,
+      { x: 250, maybe: null },
+    );
+    expect(rows[0]).toEqual({
+      upper: "HELLO",
+      lower: "world",
+      head: 10,
+      bounded: 100,
+      pick: "fallback",
+    });
+  });
+
+  it("Cypher-style aliases resolve to the same canonical implementations", async () => {
+    const db = await createDatabase();
+    const { rows } = await db.execute<{
+      head_alias: number;
+      lower_alias: string;
+      pick_alias: string;
+      sub: string;
+      as_int: number;
+    }>(
+      `RETURN head([10, 20, 30])              AS head_alias,
+              toLower('WORLD')                AS lower_alias,
+              coalesce(null, 'fallback')      AS pick_alias,
+              substring('hello-world', 6, 5)  AS sub,
+              toInteger('42')                 AS as_int`,
+    );
+    expect(rows[0]).toEqual({
+      head_alias: 10,
+      lower_alias: "world",
+      pick_alias: "fallback",
+      sub: "world",
+      as_int: 42,
+    });
+  });
+
+  it("type.* and cast.* expose runtime type inspection and explicit conversion", async () => {
+    const db = await createDatabase();
+    const { rows } = await db.execute<{
+      kind: string;
+      is_int: boolean;
+      cast_ok: number;
+      try_bad: number | null;
+    }>(
+      `RETURN type.of($x)                AS kind,
+              type.is($x, INTEGER)       AS is_int,
+              cast.to('99', INTEGER)     AS cast_ok,
+              cast.try('not-a-number', INTEGER) AS try_bad`,
+      { x: 7 },
+    );
+    expect(rows[0]).toEqual({
+      kind: "INTEGER",
+      is_int: true,
+      cast_ok: 99,
+      try_bad: null,
+    });
   });
 });
 
@@ -867,7 +946,7 @@ describe("Database — vector values", () => {
   it("returns a tagged VECTOR from vector()", async () => {
     const db = await createDatabase();
     const { rows } = await db.execute<{ v: LoraValue }>(
-      "RETURN vector([1,2,3], 3, INTEGER) AS v",
+      "RETURN [1,2,3]::VECTOR<INTEGER>(3) AS v",
     );
     const { isVector } = await import("../ts/types.js");
     const v = rows[0]!.v;
@@ -954,7 +1033,7 @@ describe("Database — vector values", () => {
 
   it("streams rows with async iteration and toArray", async () => {
     const db = await createDatabase();
-    await db.execute("UNWIND range(1, 3) AS i CREATE (:S {i: i})");
+    await db.execute("UNWIND list.range(1, 3) AS i CREATE (:S {i: i})");
 
     const seen: number[] = [];
     for await (const row of db.stream<{ i: number }>(
@@ -973,7 +1052,7 @@ describe("Database — vector values", () => {
   it("rolls back a mutating stream when closed before exhaustion", async () => {
     const db = await createDatabase();
     const stream = db.stream<{ i: number }>(
-      "UNWIND range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i",
+      "UNWIND list.range(1, 3) AS i CREATE (:EarlyClose {i: i}) RETURN i",
     );
     expect((await stream.next()).value?.i).toBe(1);
     stream.close();
