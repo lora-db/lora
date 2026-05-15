@@ -119,14 +119,14 @@ jobs:
         with:
           version: "v0.14.0"
 
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
 
       - name: yarn install (immutable)
         working-directory: .
@@ -185,15 +185,15 @@ jobs:
         with:
           version: "v0.14.0"
 
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
@@ -243,13 +243,13 @@ jobs:
         with:
           version: "v0.14.0"
 
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
-
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
 
       - name: yarn install (immutable)
         run: yarn install --immutable
@@ -305,14 +305,14 @@ jobs:
         with:
           version: "v0.14.0"
 
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
@@ -354,13 +354,13 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
-
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
 
       - name: yarn install (immutable)
         run: yarn install --immutable
@@ -410,14 +410,14 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
@@ -502,14 +502,14 @@ jobs:
         with:
           version: "0.13.0"
 
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
 
       - name: yarn install (immutable)
         working-directory: .
@@ -572,15 +572,15 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest

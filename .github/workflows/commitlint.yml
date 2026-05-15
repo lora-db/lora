@@ -29,14 +29,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'yarn'
-
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
 
       - name: yarn install (immutable)
         run: yarn install --immutable

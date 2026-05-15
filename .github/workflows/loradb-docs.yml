@@ -53,14 +53,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "yarn"
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
 
       - name: yarn install (immutable)
         working-directory: .

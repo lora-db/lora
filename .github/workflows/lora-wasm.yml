@@ -67,6 +67,10 @@ jobs:
         with:
           version: "v0.14.0"
 
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
@@ -79,10 +83,6 @@ jobs:
       - name: cargo check (wasm32)
         working-directory: .
         run: cargo check -p lora-wasm --target wasm32-unknown-unknown --locked
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
 
       - name: yarn install (immutable)
         working-directory: .
