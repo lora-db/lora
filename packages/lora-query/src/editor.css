@@ -1,0 +1,275 @@
+/* Default styling for @loradb/lora-query.
+ *
+ * Every visual choice is driven by a CSS variable on `.lora-query`.
+ * The React `theme` prop overrides them inline; host CSS can
+ * override them too. Values here MUST mirror `src/palettes.ts` —
+ * that file is the single source of truth.
+ *
+ * Color scheme resolution (highest priority wins):
+ *   1. inline `style="--lq-*: ..."` from the `theme` prop
+ *   2. `.lora-query[data-color-scheme="light|dark"]` (set by the
+ *      `colorScheme` prop)
+ *   3. the light defaults below
+ *
+ * The light palette is always the baseline — dark is opt-in, never
+ * implicit. Hosts that want auto-switching can pass
+ * `colorScheme={prefersDark ? "dark" : "light"}` themselves.
+ */
+
+/* ─── Light palette (Catppuccin Latte) — the baseline. ──────────── */
+.lora-query {
+  --lq-bg: #eff1f5;
+  --lq-fg: #4c4f69;
+  --lq-muted: #6c6f85;
+  --lq-border: #ccd0da;
+  --lq-accent: #1e66f5;
+  --lq-active-line: #e6e9ef;
+  --lq-gutter-bg: #e6e9ef;
+  --lq-gutter-fg: #8c8fa1;
+  --lq-cursor: #4c4f69;
+  --lq-selection-bg: rgba(30, 102, 245, 0.18);
+
+  --lq-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --lq-mono-font: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  --lq-font-size: 13px;
+  --lq-popup-font-size: 12px;
+
+  --lq-color-keyword: #d20f39;
+  --lq-color-function: #fe640b;
+  --lq-color-namespace: #fe640b;
+  --lq-color-label: #40a02b;
+  --lq-color-rel-type: #df8e1d;
+  --lq-color-parameter: #8839ef;
+  --lq-color-property: #ea76cb;
+  --lq-color-variable: #1e66f5;
+  --lq-color-string: #179299;
+  --lq-color-number: #8839ef;
+  --lq-color-bool: #d20f39;
+  --lq-color-null: #d20f39;
+  --lq-color-operator: #6c6f85;
+  --lq-color-punct: inherit;
+  --lq-color-comment: #8c8fa1;
+
+  --lq-popup-bg: #eff1f5;
+  --lq-popup-fg: #4c4f69;
+  --lq-popup-border: #ccd0da;
+  --lq-popup-selected-bg: #1e66f5;
+  --lq-popup-selected-fg: #eff1f5;
+  --lq-popup-shadow: 0 4px 12px rgba(76, 79, 105, 0.15);
+
+  --lq-error: #d20f39;
+  --lq-warning: #df8e1d;
+  --lq-info: #1e66f5;
+
+  /* Layout — fill whatever the host gives us. */
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 180px;
+  box-sizing: border-box;
+
+  border: 1px solid var(--lq-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--lq-bg);
+  color: var(--lq-fg);
+  font-family: var(--lq-font);
+  /* Tell form controls + native scrollbars to track our scheme. */
+  color-scheme: light;
+}
+
+/* ─── Dark palette (GitHub Dark hues on VS-Code #1e1e1e surface). ─
+ * Opt in by setting `colorScheme="dark"` on the React component (or
+ * `data-color-scheme="dark"` if you're configuring via plain HTML).
+ */
+.lora-query[data-color-scheme="dark"] {
+  --lq-bg: #1e1e1e;
+  --lq-fg: #e6e6e6;
+  --lq-muted: #9d9d9d;
+  --lq-border: #3a3a3a;
+  --lq-accent: #1f6feb;
+  --lq-active-line: #2a2a2a;
+  --lq-gutter-bg: #1e1e1e;
+  --lq-gutter-fg: #6e7681;
+  --lq-cursor: #e6e6e6;
+  --lq-selection-bg: rgba(31, 111, 235, 0.28);
+
+  --lq-color-keyword: #ff7b72;
+  --lq-color-function: #d2a8ff;
+  --lq-color-namespace: #ffa657;
+  --lq-color-label: #7ee787;
+  --lq-color-rel-type: #ffa657;
+  --lq-color-parameter: #d2a8ff;
+  --lq-color-property: #ffa657;
+  --lq-color-variable: #79c0ff;
+  --lq-color-string: #a5d6ff;
+  --lq-color-number: #79c0ff;
+  --lq-color-bool: #ff7b72;
+  --lq-color-null: #ff7b72;
+  --lq-color-operator: #9d9d9d;
+  --lq-color-comment: #7d8590;
+
+  --lq-popup-bg: #161b22;
+  --lq-popup-fg: #e6e6e6;
+  --lq-popup-border: #30363d;
+  --lq-popup-selected-bg: #1f6feb;
+  --lq-popup-selected-fg: #ffffff;
+  --lq-popup-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+
+  --lq-error: #f85149;
+  --lq-warning: #d29922;
+  --lq-info: #58a6ff;
+
+  color-scheme: dark;
+}
+
+/* ─── CodeMirror surface ───────────────────────────────────────── */
+.lora-query .cm-editor {
+  flex: 1 1 auto;
+  height: 100%;
+  font-family: var(--lq-mono-font);
+  font-size: var(--lq-font-size);
+}
+.lora-query .cm-scroller {
+  height: 100%;
+  padding-block: 6px;
+}
+.lora-query .cm-gutters {
+  background: var(--lq-gutter-bg);
+  border-right: 1px solid var(--lq-border);
+  color: var(--lq-gutter-fg);
+}
+.lora-query .cm-activeLine,
+.lora-query .cm-activeLineGutter {
+  background: var(--lq-active-line);
+}
+.lora-query .cm-cursor,
+.lora-query .cm-dropCursor {
+  border-left-color: var(--lq-cursor);
+}
+.lora-query .cm-selectionBackground,
+.lora-query.cm-focused .cm-selectionBackground,
+.lora-query ::selection {
+  background: var(--lq-selection-bg);
+}
+
+/* ─── Semantic token classes ───────────────────────────────────────
+ * Emitted by the AST decoration plugin AND reused by the
+ * StreamLanguage highlight style in extensions.ts, so synchronous
+ * keyword / string / number / comment / operator tokens share the
+ * same palette as the AST-driven decorations.
+ */
+.lora-query .cm-lora-keyword { color: var(--lq-color-keyword); font-weight: 600; }
+.lora-query .cm-lora-variable { color: var(--lq-color-variable); }
+.lora-query .cm-lora-parameter { color: var(--lq-color-parameter); font-style: italic; }
+.lora-query .cm-lora-label { color: var(--lq-color-label); font-weight: 600; }
+.lora-query .cm-lora-rel-type { color: var(--lq-color-rel-type); font-weight: 600; }
+.lora-query .cm-lora-property-key { color: var(--lq-color-property); }
+.lora-query .cm-lora-function { color: var(--lq-color-function); font-weight: 600; }
+.lora-query .cm-lora-namespace { color: var(--lq-color-namespace); }
+.lora-query .cm-lora-string { color: var(--lq-color-string); }
+.lora-query .cm-lora-number { color: var(--lq-color-number); }
+.lora-query .cm-lora-bool { color: var(--lq-color-bool); font-weight: 600; }
+.lora-query .cm-lora-null { color: var(--lq-color-null); font-weight: 600; }
+.lora-query .cm-lora-operator { color: var(--lq-color-operator); }
+/* Punctuation inherits text colour, dimmed to keep brackets/dots
+ * from competing with semantic tokens. */
+.lora-query .cm-lora-punct { opacity: 0.7; }
+.lora-query .cm-lora-comment { color: var(--lq-color-comment); font-style: italic; }
+
+/* ─── Active variable references ───────────────────────────────────
+ * Applied to every occurrence of the variable currently under the
+ * caret. Stays subtle — a translucent tint so the references read as
+ * "the same name" without obscuring the underlying syntax colour.
+ * Uses the same hue as `--lq-color-variable` so light and dark
+ * themes inherit a consistent accent without extra plumbing.
+ */
+.lora-query .cm-lora-variable-active {
+  background-color: color-mix(in srgb, var(--lq-color-variable) 22%, transparent);
+  border-radius: 2px;
+  box-shadow: inset 0 -1px 0 0 color-mix(in srgb, var(--lq-color-variable) 55%, transparent);
+}
+
+/* ─── Popups (autocomplete, hover, lint) ──────────────────────────
+ * CodeMirror renders tooltips into `document.body`, so they don't
+ * inherit our container's CSS vars. The JS-side `popupTheme`
+ * extension writes explicit values for the per-editor tooltip
+ * class; these rules are belt-and-braces fallbacks for plain
+ * tooltip selectors that ship without the JS scope.
+ */
+.cm-tooltip.cm-tooltip-autocomplete,
+.cm-tooltip.cm-tooltip-lora-query,
+.cm-tooltip.cm-tooltip-hover,
+.cm-tooltip.cm-tooltip-lint {
+  background: var(--lq-popup-bg, #ffffff);
+  color: var(--lq-popup-fg, #1f2328);
+  border: 1px solid var(--lq-popup-border, #d0d7de);
+  border-radius: 6px;
+  box-shadow: var(--lq-popup-shadow, 0 4px 12px rgba(0, 0, 0, 0.12));
+  font-family: var(--lq-font, ui-sans-serif, system-ui, sans-serif);
+  font-size: var(--lq-popup-font-size, 12px);
+}
+
+.cm-tooltip-autocomplete ul li[aria-selected="true"] {
+  background: var(--lq-popup-selected-bg, #0969da);
+  color: var(--lq-popup-selected-fg, #ffffff);
+}
+.cm-tooltip-autocomplete .cm-completionDetail {
+  color: var(--lq-muted, #6e7781);
+  font-style: italic;
+}
+.cm-tooltip-autocomplete .cm-completionInfo {
+  background: var(--lq-popup-bg, #ffffff);
+  color: var(--lq-popup-fg, #1f2328);
+  border: 1px solid var(--lq-popup-border, #d0d7de);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--lq-font, ui-sans-serif, system-ui, sans-serif);
+  font-size: var(--lq-popup-font-size, 12px);
+  max-width: 360px;
+}
+
+/* Hover tooltip. */
+.cm-tooltip-lora-query {
+  padding: 8px 10px;
+  max-width: 360px;
+  line-height: 1.4;
+}
+.cm-tooltip-lora-query__title { margin-bottom: 4px; }
+.cm-tooltip-lora-query__title code {
+  font-family: var(--lq-mono-font, ui-monospace, Menlo, monospace);
+  background: rgba(110, 119, 129, 0.12);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.cm-tooltip-lora-query__body { color: var(--lq-muted, #6e7781); }
+
+/* Linter tooltip body. */
+.cm-lora-diagnostic {
+  font-size: var(--lq-popup-font-size, 12px);
+  line-height: 1.45;
+  max-width: 460px;
+}
+.cm-lora-diagnostic__summary { font-weight: 600; }
+.cm-lora-diagnostic__summary > div { font-weight: 400; }
+.cm-lora-diagnostic__summary > div:first-child { font-weight: 600; }
+.cm-lora-diagnostic__hint { margin-top: 6px; color: var(--lq-muted, #6e7781); }
+.cm-lora-diagnostic__examples { margin: 4px 0 6px 16px; padding: 0; }
+.cm-lora-diagnostic__examples li { margin-bottom: 2px; }
+.cm-lora-diagnostic__examples code {
+  font-family: var(--lq-mono-font, ui-monospace, Menlo, monospace);
+  background: rgba(110, 119, 129, 0.12);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.cm-lora-diagnostic__details {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(207, 34, 46, 0.06);
+  border-left: 3px solid var(--lq-error, #cf222e);
+  font-family: var(--lq-mono-font, ui-monospace, Menlo, monospace);
+  font-size: 11px;
+  white-space: pre;
+  overflow-x: auto;
+}

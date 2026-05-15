@@ -16,7 +16,7 @@ members = [
     "crates/bindings/lora-python",
     "crates/bindings/lora-ffi",
     "crates/bindings/lora-ruby",
-    "crates/lora-query-wasm",
+    "packages/lora-query",
 ]
 resolver = "2"
 

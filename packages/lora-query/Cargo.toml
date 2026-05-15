@@ -8,6 +8,10 @@ publish = false
 description = "WASM build of the LoraDB Cypher pest parser, used by @loradb/lora-query for in-browser validation and formatting."
 
 [lib]
+# The package directory doubles as a React/TS workspace, so the default
+# `src/lib.rs` location is already taken by the TS sources. Keep the
+# Rust crate under `rust/` and point Cargo at it explicitly.
+path = "rust/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
