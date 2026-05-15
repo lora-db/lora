@@ -246,6 +246,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: "yarn"
 
       - name: Enable corepack (yarn v4)
         run: corepack enable
@@ -307,6 +308,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
 
       - name: Enable corepack (yarn v4)
@@ -355,6 +357,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: "yarn"
 
       - name: Enable corepack (yarn v4)
         run: corepack enable
@@ -410,6 +413,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
 
       - name: Enable corepack (yarn v4)
@@ -524,7 +528,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           ZIG: ${{ matrix.cross == 'zig' && '--zig' || '' }}
         run: |
-          yarn exec napi -- build --platform --release --js false --target "$TARGET" $ZIG
+          yarn exec napi build --platform --release --js false --target "$TARGET" $ZIG
 
       - name: Verify the expected .node file exists
         shell: bash
@@ -606,10 +610,10 @@ jobs:
         run: ls -la artifacts
 
       - name: Create per-triple npm subpackage scaffolds
-        run: yarn exec napi -- create-npm-dir -t .
+        run: yarn exec napi create-npm-dir -t .
 
       - name: Move .node binaries into subpackage dirs
-        run: yarn exec napi -- artifacts --dir artifacts --dist npm
+        run: yarn exec napi artifacts --dir artifacts --dist npm
 
       - name: Verify every triple subpackage now has its binary
         shell: bash

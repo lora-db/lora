@@ -104,7 +104,7 @@ jobs:
         run: yarn run test
 
       - name: install Playwright browsers
-        run: yarn exec playwright -- install --with-deps chromium
+        run: yarn exec playwright install --with-deps chromium
 
       - name: Playwright browser smoke test
         run: yarn run test:browser
