@@ -68,30 +68,34 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: crates/bindings/lora-node/package-lock.json
+          cache: "yarn"
 
       - name: cargo check
         working-directory: .
         run: cargo check -p lora-node --locked
 
-      - name: npm install
-        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
 
       - name: verify shared TS types are in sync
-        run: npm run verify:types
+        run: yarn run verify:types
 
       - name: build native (napi)
-        run: npm run build:native
+        run: yarn run build:native
 
       - name: build TS
-        run: npm run build:ts
+        run: yarn run build:ts
 
       - name: typecheck
-        run: npm run typecheck
+        run: yarn run typecheck
 
       - name: vitest (includes non-blocking event-loop test)
-        run: npm test
+        run: yarn run test
 
       - name: npm pack (dry-run)
         run: npm pack --dry-run

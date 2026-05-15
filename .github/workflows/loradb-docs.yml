@@ -56,14 +56,18 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: apps/loradb.com/package-lock.json
+          cache: "yarn"
 
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
 
       - name: Build site
-        run: npm run build
+        run: yarn run build
 
       - name: Verify CNAME is in build output
         run: test -f build/CNAME && grep -qx loradb.com build/CNAME

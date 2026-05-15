@@ -122,21 +122,25 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: crates/bindings/lora-wasm/package-lock.json
+          cache: "yarn"
 
-      - name: npm install
-        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
           destination: crates/bindings/lora-wasm
 
       - name: Build (WASM + TS)
-        run: npm run build
+        run: yarn run build
 
       - name: Typecheck
-        run: npm run typecheck
+        run: yarn run typecheck
 
       - name: npm pack (dry-run, inspection)
         run: npm pack --dry-run
@@ -184,22 +188,26 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: crates/bindings/lora-wasm/package-lock.json
+          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
 
-      - name: npm install
-        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
           destination: crates/bindings/lora-wasm
 
       - name: Build (WASM + TS)
-        run: npm run build
+        run: yarn run build
 
       - name: Publish to npm
         run: npm publish --provenance --access public --ignore-scripts
@@ -493,14 +501,18 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: crates/bindings/lora-node/package-lock.json
+          cache: "yarn"
 
-      - name: npm install
-        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
 
       - name: Verify shared TS types are in sync
-        run: npm run verify:types
+        run: yarn run verify:types
 
       - uses: ./.github/actions/copy-license
         with:
@@ -512,7 +524,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           ZIG: ${{ matrix.cross == 'zig' && '--zig' || '' }}
         run: |
-          npx napi build --platform --release --js false --target "$TARGET" $ZIG
+          yarn exec napi -- build --platform --release --js false --target "$TARGET" $ZIG
 
       - name: Verify the expected .node file exists
         shell: bash
@@ -559,21 +571,25 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: crates/bindings/lora-node/package-lock.json
+          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
 
-      - name: npm install (@napi-rs/cli + tsc are needed below)
-        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: yarn install (immutable; @napi-rs/cli + tsc are needed below)
+        working-directory: .
+        run: yarn install --immutable
 
       - name: Sync + typecheck + build TS (the root package's dist/)
         run: |
-          npm run sync:types
-          npm run typecheck
-          npm run build:ts
+          yarn run sync:types
+          yarn run typecheck
+          yarn run build:ts
 
       - uses: ./.github/actions/copy-license
         with:
@@ -590,10 +606,10 @@ jobs:
         run: ls -la artifacts
 
       - name: Create per-triple npm subpackage scaffolds
-        run: npx napi create-npm-dir -t .
+        run: yarn exec napi -- create-npm-dir -t .
 
       - name: Move .node binaries into subpackage dirs
-        run: npx napi artifacts --dir artifacts --dist npm
+        run: yarn exec napi -- artifacts --dir artifacts --dist npm
 
       - name: Verify every triple subpackage now has its binary
         shell: bash

@@ -70,8 +70,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: crates/bindings/lora-wasm/package-lock.json
+          cache: "yarn"
 
       - name: cargo check (host)
         working-directory: .
@@ -81,29 +80,34 @@ jobs:
         working-directory: .
         run: cargo check -p lora-wasm --target wasm32-unknown-unknown --locked
 
-      - name: npm install
-        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: corepack enable
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
 
       - name: verify shared TS types are in sync
-        run: npm run verify:types
+        run: yarn run verify:types
 
       - name: build WASM (node + bundler + web)
-        run: npm run build:wasm
+        run: yarn run build:wasm
 
       - name: build TS
-        run: npm run build:ts
+        run: yarn run build:ts
 
       - name: typecheck (tests, examples, configs)
-        run: npm run typecheck
+        run: yarn run typecheck
 
       - name: vitest
-        run: npm test
+        run: yarn run test
 
       - name: install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: yarn exec playwright -- install --with-deps chromium
 
       - name: Playwright browser smoke test
-        run: npm run test:browser
+        run: yarn run test:browser
 
       - name: npm pack (dry-run)
         run: npm pack --dry-run
