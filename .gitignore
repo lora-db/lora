@@ -104,6 +104,16 @@ node_modules/
 dist/
 build/
 
+# Yarn v4 (Berry) — keep releases / plugins / sdks committed, ignore caches.
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+.yarn/install-state.gz
+
 # napi-rs / wasm-pack build outputs
 *.node
 pkg-node/

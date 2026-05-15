@@ -13,7 +13,8 @@
     "docusaurus": "docusaurus",
     "serve": "docusaurus serve",
     "start": "docusaurus start",
-    "swizzle": "docusaurus swizzle"
+    "swizzle": "docusaurus swizzle",
+    "lint": "eslint src"
   },
   "browserslist": {
     "production": [

@@ -2,15 +2,38 @@
   "name": "@loradb/workspace",
   "version": "0.0.0",
   "private": true,
-  "description": "Repo-level dev tooling (commitlint + husky) for the Lora workspace.",
+  "description": "Lora workspace: Rust crates, npm bindings, the docs site, and reusable JS/TS packages.",
   "license": "BUSL-1.1",
+  "packageManager": "yarn@4.5.1",
+  "workspaces": [
+    "apps/*",
+    "crates/bindings/lora-node",
+    "crates/bindings/lora-wasm",
+    "packages/*"
+  ],
   "scripts": {
     "prepare": "husky",
-    "commitlint": "commitlint --edit"
+    "commitlint": "commitlint --edit",
+    "build": "yarn workspaces foreach -A -pt --include '@loradb/*' --include 'loradb-*' run build",
+    "test": "yarn workspaces foreach -A -p --include '@loradb/*' --include 'loradb-*' run test",
+    "typecheck": "yarn workspaces foreach -A -p --include '@loradb/*' --include 'loradb-*' run typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@commitlint/cli": "^19.5.0",
     "@commitlint/config-conventional": "^19.5.0",
-    "husky": "^9.1.6"
+    "@eslint/js": "^9.15.0",
+    "eslint": "^9.15.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.37.0",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "globals": "^15.12.0",
+    "husky": "^9.1.6",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.15.0"
   }
 }

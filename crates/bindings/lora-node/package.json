@@ -76,6 +76,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "eslint ts test",
     "bench": "node bench/run.mjs",
     "artifacts": "napi artifacts",
     "create-npm-dirs": "napi create-npm-dir -t .",

@@ -1,0 +1,33 @@
+# Generated artifacts
+**/node_modules/**
+**/dist/**
+**/build/**
+**/target/**
+**/wasm/**
+**/pkg-node/**
+**/pkg-bundler/**
+**/pkg-web/**
+**/storybook-static/**
+**/.docusaurus/**
+**/.yarn/**
+
+# Lockfiles
+yarn.lock
+package-lock.json
+Cargo.lock
+
+# Rust formatted by rustfmt
+**/*.rs
+
+# Pest grammar
+**/*.pest
+
+# Existing Docusaurus content — keep author formatting until we explicitly
+# adopt prettier across the docs site.
+apps/loradb.com/blog/**
+apps/loradb.com/docs/**
+apps/loradb.com/static/**
+
+# Generated CHANGELOGs
+CHANGELOG.md
+**/CHANGELOG.md
