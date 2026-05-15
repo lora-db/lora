@@ -35,8 +35,8 @@ use super::helpers::{
     dedup_rows_by_vars, indexed_node_property_candidates, label_group_candidates_prefiltered,
     node_matches_label_groups, node_matches_property_filter, scan_node_ids_for_label_groups,
 };
-use super::optional_match_rows;
 use super::sort_rows_with_top_k;
+use super::{merge_optional_rows, optional_match_rows};
 
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 const PARALLEL_ROW_THRESHOLD: usize = 20_000;
@@ -206,6 +206,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             PhysicalOp::Sort(op) => self.exec_sort(plan, op),
             PhysicalOp::Limit(op) => self.exec_limit(plan, op),
             PhysicalOp::OptionalMatch(op) => self.exec_optional_match(plan, op),
+            PhysicalOp::CallSubquery(op) => self.exec_call_subquery(plan, op),
             PhysicalOp::PathBuild(op) => self.exec_path_build(plan, op),
             PhysicalOp::Create(_) => Err(ExecutorError::ReadOnlyCreate { node_id }),
             PhysicalOp::Merge(_) => Err(ExecutorError::ReadOnlyMerge { node_id }),
@@ -979,6 +980,30 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         Ok(limit_rows(rows, op, &eval_ctx))
     }
 
+    fn exec_call_subquery(
+        &self,
+        plan: &PhysicalPlan,
+        op: &CallSubqueryExec,
+    ) -> ExecResult<Vec<Row>> {
+        let input_rows = self.execute_node(plan, op.input)?;
+        let mut out = Vec::with_capacity(input_rows.len());
+        let params = std::sync::Arc::new(self.ctx.params.clone());
+        for outer_row in input_rows {
+            let mut inner_source = crate::pull::build_streaming_seeded(
+                plan,
+                op.inner,
+                self.ctx.storage,
+                params.clone(),
+                outer_row.clone(),
+            )?;
+            let inner_rows = crate::pull::drain(inner_source.as_mut())?;
+            for inner_row in inner_rows {
+                out.push(merge_optional_rows(&outer_row, &inner_row));
+            }
+        }
+        Ok(out)
+    }
+
     fn exec_optional_match(
         &self,
         plan: &PhysicalPlan,
@@ -1053,6 +1078,7 @@ fn subtree_is_parallel_safe(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> boo
         | PhysicalOp::Set(_)
         | PhysicalOp::Remove(_)
         | PhysicalOp::OptionalMatch(_)
-        | PhysicalOp::PathBuild(_) => false,
+        | PhysicalOp::PathBuild(_)
+        | PhysicalOp::CallSubquery(_) => false,
     }
 }

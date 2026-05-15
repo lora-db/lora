@@ -164,7 +164,54 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             ReadingClause::Match(m) => Ok(ResolvedClause::Match(self.analyze_match(m)?)),
             ReadingClause::Unwind(u) => Ok(ResolvedClause::Unwind(self.analyze_unwind(u)?)),
             ReadingClause::InQueryCall(c) => self.analyze_in_query_call(c),
+            ReadingClause::CallSubquery(c) => {
+                Ok(ResolvedClause::CallSubquery(self.analyze_call_subquery(c)?))
+            }
         }
+    }
+
+    /// Analyze a CALL { ... } subquery. The inner body is analyzed
+    /// with the outer scope visible (so MATCH inside the CALL can
+    /// reference outer-bound variables). After analysis the outer
+    /// scope is restored and the inner final RETURN's projection
+    /// aliases are injected as new bindings.
+    fn analyze_call_subquery(
+        &mut self,
+        call: &lora_ast::CallSubquery,
+    ) -> Result<ResolvedCallSubquery, SemanticError> {
+        let outer = self.visible_bindings();
+
+        if !call.body.unions.is_empty() {
+            return Err(SemanticError::UnsupportedFeature(
+                "UNION inside CALL { ... } is not yet supported".into(),
+            ));
+        }
+
+        let inner_clauses = self.analyze_single_query(&call.body.head)?;
+
+        let return_items: Vec<(String, VarId)> = match inner_clauses.last() {
+            Some(ResolvedClause::Return(ret)) => ret
+                .items
+                .iter()
+                .map(|p| (p.name.clone(), p.output))
+                .collect(),
+            _ => {
+                return Err(SemanticError::UnsupportedFeature(
+                    "CALL { ... } subquery must end with RETURN".into(),
+                ));
+            }
+        };
+
+        let mut new_scope = outer;
+        for (name, id) in &return_items {
+            new_scope.insert(name.clone(), *id);
+        }
+        self.replace_scope(new_scope);
+
+        Ok(ResolvedCallSubquery {
+            clauses: inner_clauses,
+            return_vars: return_items.into_iter().map(|(_, id)| id).collect(),
+        })
     }
 
     fn analyze_updating_clause(

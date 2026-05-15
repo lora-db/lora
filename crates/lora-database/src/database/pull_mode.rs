@@ -32,6 +32,7 @@ fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::Sort(_)
         | PhysicalOp::HashAggregation(_)
         | PhysicalOp::OptionalMatch(_)
+        | PhysicalOp::CallSubquery(_)
         | PhysicalOp::NodeByPropertyRangeScan(_)
         | PhysicalOp::NodeByTextScan(_)
         | PhysicalOp::NodeByPointScan(_)

@@ -388,6 +388,18 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             PlanDescription::with_children("Remove", d, vec![n.input])
         }
         PhysicalOp::OptionalMatch(n) => describe_optional_match(n),
+        PhysicalOp::CallSubquery(n) => {
+            d.insert(
+                "new_vars".to_string(),
+                n.new_vars
+                    .iter()
+                    .copied()
+                    .map(var_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            PlanDescription::with_children("CallSubquery", d, vec![n.input, n.inner])
+        }
         PhysicalOp::PathBuild(n) => {
             d.insert("output".to_string(), var_str(n.output));
             d.insert("nodes".to_string(), n.node_vars.len().to_string());

@@ -369,12 +369,27 @@ fn eval_exists_subquery<S: GraphStorage>(
                             let mut step_rows = Vec::new();
                             for fr in &frontier {
                                 let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
+                                // If the destination variable is already
+                                // bound (e.g. via the outer scope), restrict
+                                // expansion to that node id so EXISTS /
+                                // NOT EXISTS check connectivity to the
+                                // pre-bound endpoint rather than to any
+                                // arbitrary neighbour.
+                                let dst_bound = step.node.var.and_then(|v| match fr.get(v) {
+                                    Some(LoraValue::Node(id)) => Some(*id),
+                                    _ => None,
+                                });
                                 if let Some(sid) = src_node_id {
                                     let _ = ctx.storage.try_for_each_expand_id(
                                         sid,
                                         step.rel.direction,
                                         &step.rel.types,
                                         |rel_id, dst_id| {
+                                            if let Some(bound) = dst_bound {
+                                                if dst_id != bound {
+                                                    return Ok::<(), ()>(());
+                                                }
+                                            }
                                             let matched = ctx
                                                 .storage
                                                 .with_node(dst_id, |dst| {

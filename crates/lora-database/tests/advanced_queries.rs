@@ -4,6 +4,7 @@
 /// These test the interaction between multiple Lora clauses, query pipelining,
 /// and realistic data scenarios that go beyond single-feature tests.
 mod test_helpers;
+use lora_database::LoraValue;
 use test_helpers::TestDb;
 
 // ============================================================
@@ -723,6 +724,165 @@ fn exists_subquery_in_return() {
          RETURN p.name AS name, \
                 EXISTS { MATCH (p)-[:MANAGES]->() } AS is_manager",
     );
+}
+
+#[test]
+fn call_subquery_collect_per_outer_row() {
+    let db = TestDb::new();
+    db.seed_org_graph();
+    // For each manager, collect the names of people they manage via
+    // a CALL subquery. The aggregation must run per outer row, not
+    // globally — Frank manages 3, Carol manages 1.
+    let rows = db.run(
+        "MATCH (m:Manager) \
+         CALL { \
+           WITH m \
+           MATCH (m)-[:MANAGES]->(s:Person) \
+           RETURN collect(s.name) AS reports \
+         } \
+         RETURN m.name AS manager, reports \
+         ORDER BY manager",
+    );
+    assert_eq!(rows.len(), 1, "only Frank carries the :Manager label");
+    let frank = &rows[0];
+    assert_eq!(frank["manager"], "Frank");
+    let mut frank_reports: Vec<String> = frank["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    frank_reports.sort();
+    assert_eq!(frank_reports, vec!["Alice", "Bob", "Eve"]);
+}
+
+#[test]
+fn call_subquery_with_outer_correlation_and_not_exists() {
+    // Smaller version of the user's recommendation flow: for each
+    // person, build the set of departments they currently work in,
+    // then find other people in those departments that they do NOT
+    // already manage. Exercises CALL { WITH ... } + NOT EXISTS { ... }.
+    let db = TestDb::new();
+    db.seed_org_graph();
+    let rows = db.run(
+        "MATCH (p:Person {name:'Frank'}) \
+         CALL { \
+           WITH p \
+           MATCH (p)-[:WORKS_AT]->(c:Company) \
+           RETURN collect(c.name) AS companies \
+         } \
+         MATCH (rec:Person) \
+         WHERE rec.dept = p.dept \
+           AND rec.name <> p.name \
+           AND NOT EXISTS { (p)-[:MANAGES]->(rec) } \
+         RETURN rec.name AS name, companies \
+         ORDER BY name",
+    );
+    // Frank's department is Engineering. Alice/Bob/Eve are managed →
+    // excluded. That leaves no other engineers, so the result is empty.
+    assert!(rows.is_empty(), "expected no recs, got {rows:?}");
+
+    // Now run the same shape for Carol (Marketing, manages Dave):
+    let rows = db.run(
+        "MATCH (p:Person {name:'Carol'}) \
+         CALL { \
+           WITH p \
+           MATCH (p)-[:WORKS_AT]->(c:Company) \
+           RETURN collect(c.name) AS companies \
+         } \
+         MATCH (rec:Person) \
+         WHERE rec.dept = p.dept \
+           AND rec.name <> p.name \
+           AND NOT EXISTS { (p)-[:MANAGES]->(rec) } \
+         RETURN rec.name AS name, companies \
+         ORDER BY name",
+    );
+    // Carol manages Dave; no other Marketing folk → empty.
+    assert!(rows.is_empty(), "expected no recs, got {rows:?}");
+}
+
+#[test]
+fn call_subquery_movie_recommendation() {
+    // End-to-end version of the recommendation query the user asked
+    // about: import outer `user` into the CALL block, aggregate
+    // preferred genres, then return unrated movies ranked by genre
+    // overlap. Uses CALL { ... } and NOT EXISTS { ... } together.
+    let db = TestDb::new();
+    db.run("CREATE (:Person {name:'Alice'})");
+    db.run("CREATE (:Movie {title:'A', genre:['action','thriller']})");
+    db.run("CREATE (:Movie {title:'B', genre:['drama','romance']})");
+    db.run("CREATE (:Movie {title:'C', genre:['action','sci-fi']})");
+    db.run("CREATE (:Movie {title:'D', genre:['comedy']})");
+    db.run("CREATE (:Movie {title:'E', genre:['action','thriller','sci-fi']})");
+
+    // Alice has rated A and B. So her preferredGenres are derived
+    // from A (action, thriller) and B (drama, romance).
+    db.run("MATCH (p:Person {name:'Alice'}), (m:Movie {title:'A'}) CREATE (p)-[:RATED]->(m)");
+    db.run("MATCH (p:Person {name:'Alice'}), (m:Movie {title:'B'}) CREATE (p)-[:RATED]->(m)");
+
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("user".to_string(), LoraValue::String("Alice".to_string()));
+
+    // Sanity: the CALL block isolated — preferredGenres is the
+    // collected list of rated movies' genre values (each itself a
+    // list of strings here, since we modelled `Movie.genre` as a
+    // list property).
+    {
+        let mut p = std::collections::BTreeMap::new();
+        p.insert("user".to_string(), LoraValue::String("Alice".to_string()));
+        let inner = db.run_with_params(
+            "MATCH (user:Person {name: $user}) \
+             CALL { \
+               WITH user \
+               MATCH (user)-[:RATED]->(m:Movie) \
+               RETURN collect(m.genre) AS preferredGenres \
+             } \
+             RETURN preferredGenres",
+            p,
+        );
+        assert_eq!(
+            inner.len(),
+            1,
+            "CALL should preserve 1 outer row: {inner:?}"
+        );
+        let pg = &inner[0]["preferredGenres"];
+        let pg_arr = pg.as_array().expect("preferredGenres array");
+        assert_eq!(pg_arr.len(), 2, "two rated movies: {pg:?}");
+    }
+
+    // Recommendation flow mirroring the user's query verbatim, with
+    // the inner CALL block flattened to a list of genres via UNWIND
+    // so the outer list-comprehension `g IN rec.genre WHERE g IN
+    // preferredGenres` produces a sensible overlap.
+    let rows = db.run_with_params(
+        "MATCH (user:Person {name: $user}) \
+         CALL { \
+           WITH user \
+           MATCH (user)-[:RATED]->(m:Movie) \
+           UNWIND m.genre AS g \
+           RETURN collect(DISTINCT g) AS preferredGenres \
+         } \
+         MATCH (rec:Movie) \
+         WHERE NOT EXISTS { (user)-[:RATED]->(rec) } \
+         WITH rec, preferredGenres, \
+              [g IN rec.genre WHERE g IN preferredGenres | g] AS overlap \
+         WHERE size(overlap) > 0 \
+         RETURN rec.title AS title, size(overlap) AS score \
+         ORDER BY size(overlap) DESC, rec.title ASC \
+         LIMIT 10",
+        params,
+    );
+
+    // C: action overlaps → 1
+    // E: action, thriller overlap → 2
+    // D: comedy doesn't overlap → excluded
+    let titles: Vec<String> = rows
+        .iter()
+        .map(|r| r["title"].as_str().unwrap().to_string())
+        .collect();
+    let scores: Vec<i64> = rows.iter().map(|r| r["score"].as_i64().unwrap()).collect();
+    assert_eq!(titles, vec!["E".to_string(), "C".to_string()]);
+    assert_eq!(scores, vec![2, 1]);
 }
 
 #[test]

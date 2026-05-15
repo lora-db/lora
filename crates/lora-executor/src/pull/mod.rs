@@ -67,6 +67,7 @@
 //! - `union` — read-side UNION ([`UnionSource`]).
 
 mod aggregate;
+mod call_subquery;
 mod columns;
 mod context;
 mod expand;
@@ -103,4 +104,4 @@ pub(crate) use aggregate::{
 pub(crate) use context::StreamCtx;
 pub(crate) use hydration::{hydrate_value, HydratingSource};
 pub(crate) use source::ArgumentSource;
-pub(crate) use traits::{build_streaming, subtree_is_fully_streaming};
+pub(crate) use traits::{build_streaming, build_streaming_seeded, subtree_is_fully_streaming};

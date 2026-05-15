@@ -39,6 +39,15 @@ pub enum PhysicalOp {
     Remove(RemoveExec),
     OptionalMatch(OptionalMatchExec),
     PathBuild(PathBuildExec),
+    CallSubquery(CallSubqueryExec),
+}
+
+/// `CALL { ... }` subquery executor node. See [`crate::logical::CallSubquery`].
+#[derive(Debug, Clone)]
+pub struct CallSubqueryExec {
+    pub input: PhysicalNodeId,
+    pub inner: PhysicalNodeId,
+    pub new_vars: Vec<VarId>,
 }
 
 #[derive(Debug, Clone)]

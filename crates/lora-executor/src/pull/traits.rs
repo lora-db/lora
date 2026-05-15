@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lora_compiler::physical::{
-    ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByLabelScanExec,
+    CallSubqueryExec, ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByLabelScanExec,
     NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByPropertyScanExec, NodeByTextScanExec,
     NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp, PhysicalPlan,
     ProjectionExec, RelByPointScanExec, RelByPropertyRangeScanExec, RelByTextScanExec, SortExec,
@@ -25,6 +25,7 @@ use crate::profile::wrap_metered;
 use crate::value::{LoraValue, Row};
 
 use super::aggregate::HashAggregationSource;
+use super::call_subquery::CallSubquerySource;
 use super::expand::{ExpandSource, VariableLengthExpandSource};
 use super::filter::FilterSource;
 use super::optional::OptionalMatchSource;
@@ -135,6 +136,7 @@ pub(super) fn is_streaming_op(op: &PhysicalOp) -> bool {
         | PhysicalOp::HashAggregation(_)
         | PhysicalOp::OptionalMatch(_)
         | PhysicalOp::PathBuild(_)
+        | PhysicalOp::CallSubquery(_)
         // Projection (both `DISTINCT` and non-`DISTINCT`). The
         // `DISTINCT` form drains + dedups internally and yields
         // lazily via `DistinctSource`.
@@ -194,6 +196,7 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::Sort(o) => Some(o.input),
         PhysicalOp::HashAggregation(o) => Some(o.input),
         PhysicalOp::OptionalMatch(o) => Some(o.input),
+        PhysicalOp::CallSubquery(o) => Some(o.input),
         PhysicalOp::PathBuild(o) => Some(o.input),
         // Already filtered by is_streaming_op above.
         _ => return false,
@@ -210,7 +213,31 @@ pub(crate) fn build_streaming<'a, S: GraphStorage + 'a>(
     storage: &'a S,
     params: Arc<BTreeMap<String, LoraValue>>,
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
-    build_streaming_inner(plan, node_id, storage, params).map(|src| wrap_metered(node_id, src))
+    build_streaming_dispatch(plan, node_id, storage, params, None)
+}
+
+/// Like [`build_streaming`], but seeds the bottom `Argument` source
+/// with `seed` instead of an empty row. Used by `CallSubquerySource`
+/// to drive the inner sub-plan once per outer row.
+pub(crate) fn build_streaming_seeded<'a, S: GraphStorage + 'a>(
+    plan: &'a PhysicalPlan,
+    node_id: PhysicalNodeId,
+    storage: &'a S,
+    params: Arc<BTreeMap<String, LoraValue>>,
+    seed: Row,
+) -> ExecResult<Box<dyn RowSource + 'a>> {
+    build_streaming_dispatch(plan, node_id, storage, params, Some(seed))
+}
+
+fn build_streaming_dispatch<'a, S: GraphStorage + 'a>(
+    plan: &'a PhysicalPlan,
+    node_id: PhysicalNodeId,
+    storage: &'a S,
+    params: Arc<BTreeMap<String, LoraValue>>,
+    seed: Option<Row>,
+) -> ExecResult<Box<dyn RowSource + 'a>> {
+    build_streaming_inner(plan, node_id, storage, params, seed)
+        .map(|src| wrap_metered(node_id, src))
 }
 
 fn build_streaming_inner<'a, S: GraphStorage + 'a>(
@@ -218,6 +245,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
     node_id: PhysicalNodeId,
     storage: &'a S,
     params: Arc<BTreeMap<String, LoraValue>>,
+    seed: Option<Row>,
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
     let op = &plan.nodes[node_id];
 
@@ -226,15 +254,18 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
     }
 
     match op {
-        PhysicalOp::Argument(_) => Ok(Box::new(ArgumentSource::new())),
+        PhysicalOp::Argument(_) => match seed {
+            Some(seed_row) => Ok(Box::new(BufferedRowSource::new(vec![seed_row]))),
+            None => Ok(Box::new(ArgumentSource::new())),
+        },
 
         PhysicalOp::NodeScan(NodeScanExec { input, var }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             Ok(Box::new(NodeScanSource::new(upstream, storage, *var)))
         }
 
         PhysicalOp::NodeByLabelScan(NodeByLabelScanExec { input, var, labels }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             Ok(Box::new(NodeByLabelScanSource::new(
                 upstream, storage, *var, labels,
             )))
@@ -247,7 +278,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             key,
             value,
         }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(NodeByPropertyScanSource::new(
                 upstream, ctx, *var, labels, key, value,
@@ -255,7 +286,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::NodeByPropertyRangeScan(op @ NodeByPropertyRangeScanExec { input, .. }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::node_range(
                 upstream, ctx, op,
@@ -263,7 +294,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::NodeByTextScan(op @ NodeByTextScanExec { input, .. }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::node_text(
                 upstream, ctx, op,
@@ -271,7 +302,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::NodeByPointScan(op @ NodeByPointScanExec { input, .. }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::node_point(
                 upstream, ctx, op,
@@ -279,7 +310,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::RelByPropertyRangeScan(op @ RelByPropertyRangeScanExec { input, .. }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::rel_range(
                 upstream, ctx, op,
@@ -287,7 +318,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::RelByTextScan(op @ RelByTextScanExec { input, .. }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::rel_text(
                 upstream, ctx, op,
@@ -295,7 +326,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::RelByPointScan(op @ RelByPointScanExec { input, .. }) => {
-            let upstream = open_input(plan, *input, storage, params.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::rel_point(
                 upstream, ctx, op,
@@ -312,7 +343,8 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             rel_properties,
             range,
         }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             match range.as_ref() {
                 Some(range) => Ok(Box::new(VariableLengthExpandSource::new(
@@ -332,7 +364,8 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::Filter(FilterExec { input, predicate }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(FilterSource::new(upstream, ctx, predicate)))
         }
@@ -343,7 +376,8 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             items,
             include_existing,
         }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             let proj: Box<dyn RowSource + 'a> = Box::new(ProjectionSource::new(
                 upstream,
@@ -359,13 +393,15 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::Unwind(UnwindExec { input, expr, alias }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(UnwindSource::new(upstream, ctx, expr, *alias)))
         }
 
         PhysicalOp::Limit(LimitExec { input, skip, limit }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             // Skip / limit expressions are evaluated against an
             // empty row (matching the buffered executor semantics).
             let ctx = StreamCtx::new(storage, params);
@@ -388,7 +424,8 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             items,
             top_k,
         }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(SortSource::new_with_top_k(
                 upstream, ctx, items, *top_k,
@@ -400,7 +437,8 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             group_by,
             aggregates,
         }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(HashAggregationSource::new(
                 upstream, ctx, group_by, aggregates,
@@ -412,10 +450,22 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             inner,
             new_vars,
         }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(OptionalMatchSource::new(
                 upstream, ctx, plan, *inner, new_vars,
+            )))
+        }
+
+        PhysicalOp::CallSubquery(CallSubqueryExec {
+            input,
+            inner,
+            new_vars,
+        }) => {
+            let upstream = build_streaming_dispatch(plan, *input, storage, params.clone(), seed)?;
+            Ok(Box::new(CallSubquerySource::new(
+                upstream, plan, *inner, storage, params, new_vars,
             )))
         }
 
@@ -426,7 +476,8 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             rel_vars,
             shortest_path_all,
         }) => {
-            let upstream = build_streaming(plan, *input, storage, params.clone())?;
+            let upstream =
+                build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(PathBuildSource::new(
                 upstream,
@@ -454,10 +505,14 @@ fn open_input<'a, S: GraphStorage + 'a>(
     input: Option<PhysicalNodeId>,
     storage: &'a S,
     params: Arc<BTreeMap<String, LoraValue>>,
+    seed: Option<Row>,
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
     match input {
-        Some(input) => build_streaming(plan, input, storage, params),
-        None => Ok(Box::new(ArgumentSource::new())),
+        Some(input) => build_streaming_dispatch(plan, input, storage, params, seed),
+        None => match seed {
+            Some(seed_row) => Ok(Box::new(BufferedRowSource::new(vec![seed_row]))),
+            None => Ok(Box::new(ArgumentSource::new())),
+        },
     }
 }
 

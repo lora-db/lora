@@ -5,9 +5,9 @@ use crate::{
 };
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::{
-    ResolvedClause, ResolvedCreate, ResolvedDelete, ResolvedExpr, ResolvedMatch, ResolvedMerge,
-    ResolvedPattern, ResolvedPatternElement, ResolvedProjection, ResolvedQuery, ResolvedRemove,
-    ResolvedReturn, ResolvedSet, ResolvedUnwind, ResolvedWith,
+    ResolvedCallSubquery, ResolvedClause, ResolvedCreate, ResolvedDelete, ResolvedExpr,
+    ResolvedMatch, ResolvedMerge, ResolvedPattern, ResolvedPatternElement, ResolvedProjection,
+    ResolvedQuery, ResolvedRemove, ResolvedReturn, ResolvedSet, ResolvedUnwind, ResolvedWith,
 };
 
 pub struct Planner {
@@ -86,10 +86,31 @@ impl Planner {
                     let upstream = input.unwrap_or_else(|| self.plan_unit_input());
                     self.plan_return(upstream, r)
                 }
+
+                ResolvedClause::CallSubquery(c) => {
+                    let upstream = input.unwrap_or_else(|| self.plan_unit_input());
+                    self.plan_call_subquery(upstream, c)
+                }
             });
         }
 
         input.unwrap_or_else(|| self.plan_unit_input())
+    }
+
+    /// Plan a `CALL { ... }` subquery: build the inner plan starting
+    /// from a fresh `Argument`, then wrap it with `CallSubquery` to
+    /// drive it per outer row.
+    fn plan_call_subquery(&mut self, input: PlanNodeId, call: &ResolvedCallSubquery) -> PlanNodeId {
+        let inner_query = ResolvedQuery {
+            clauses: call.clauses.clone(),
+            unions: Vec::new(),
+        };
+        let inner = self.plan_query(&inner_query);
+        self.push(LogicalOp::CallSubquery(crate::logical::CallSubquery {
+            input,
+            inner,
+            new_vars: call.return_vars.clone(),
+        }))
     }
 
     fn plan_match(&mut self, input: Option<PlanNodeId>, m: &ResolvedMatch) -> PlanNodeId {

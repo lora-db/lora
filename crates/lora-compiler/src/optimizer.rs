@@ -367,6 +367,12 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
             rel_vars: pb.rel_vars,
             shortest_path_all: pb.shortest_path_all,
         }),
+
+        LogicalOp::CallSubquery(cs) => PhysicalOp::CallSubquery(CallSubqueryExec {
+            input: cs.input,
+            inner: cs.inner,
+            new_vars: cs.new_vars,
+        }),
     }
 }
 

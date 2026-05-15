@@ -30,6 +30,20 @@ pub enum ResolvedClause {
     Remove(ResolvedRemove),
     Return(ResolvedReturn),
     With(ResolvedWith),
+    CallSubquery(ResolvedCallSubquery),
+}
+
+/// `CALL { ... }` subquery body. The inner clause list reads from
+/// the outer scope (variables visible at the call site are still
+/// visible inside the subquery), runs once per outer row, and
+/// projects the variables named in its final RETURN back into the
+/// outer scope.
+#[derive(Debug, Clone)]
+pub struct ResolvedCallSubquery {
+    pub clauses: Vec<ResolvedClause>,
+    /// VarIds produced by the inner final RETURN that become
+    /// available in the outer scope after the CALL.
+    pub return_vars: Vec<VarId>,
 }
 
 #[derive(Debug, Clone)]

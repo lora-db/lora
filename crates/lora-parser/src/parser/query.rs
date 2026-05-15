@@ -122,8 +122,26 @@ pub(super) fn lower_reading_clause(pair: Pair<Rule>) -> Result<ReadingClause, Pa
         Rule::match_clause => Ok(ReadingClause::Match(lower_match(inner)?)),
         Rule::unwind_clause => Ok(ReadingClause::Unwind(lower_unwind(inner)?)),
         Rule::in_query_call => Ok(ReadingClause::InQueryCall(lower_in_query_call(inner)?)),
+        Rule::call_subquery => Ok(ReadingClause::CallSubquery(lower_call_subquery_pair(
+            inner,
+        )?)),
         _ => Err(unexpected_rule("reading_clause", inner)),
     }
+}
+
+fn lower_call_subquery_pair(pair: Pair<Rule>) -> Result<CallSubquery, ParseError> {
+    let span = pair_span(&pair);
+    let body_pair = pair
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::regular_query)
+        .ok_or_else(|| {
+            ParseError::new("expected query body in CALL { ... }", span.start, span.end)
+        })?;
+    let body = lower_regular_query(body_pair)?;
+    Ok(CallSubquery {
+        body: Box::new(body),
+        span,
+    })
 }
 
 pub(super) fn lower_updating_clause(pair: Pair<Rule>) -> Result<UpdatingClause, ParseError> {

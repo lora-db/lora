@@ -28,6 +28,9 @@ fn plan_columns_at(plan: &PhysicalPlan, node: PhysicalNodeId) -> Option<Vec<Stri
         PhysicalOp::Sort(p) => plan_columns_at(plan, p.input),
         PhysicalOp::PathBuild(p) => plan_columns_at(plan, p.input),
         PhysicalOp::OptionalMatch(p) => plan_columns_at(plan, p.input),
+        // CALL { ... } emits an outer×inner row pair; the visible result
+        // columns are still whatever the surrounding pipeline named.
+        PhysicalOp::CallSubquery(p) => plan_columns_at(plan, p.input),
         PhysicalOp::Filter(p) => plan_columns_at(plan, p.input),
         PhysicalOp::Unwind(p) => plan_columns_at(plan, p.input),
         PhysicalOp::Create(p) => plan_columns_at(plan, p.input),

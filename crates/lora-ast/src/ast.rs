@@ -386,6 +386,13 @@ pub enum ReadingClause {
     Match(Match),
     Unwind(Unwind),
     InQueryCall(InQueryCall),
+    CallSubquery(CallSubquery),
+}
+
+#[derive(Debug, Clone)]
+pub struct CallSubquery {
+    pub body: Box<RegularQuery>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

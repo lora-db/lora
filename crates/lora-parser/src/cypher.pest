@@ -177,7 +177,7 @@ single_part_query = {
     | (reading_clause* ~ updating_clause+ ~ return_clause?)
 }
 
-reading_clause = { match_clause | unwind_clause | in_query_call }
+reading_clause = { match_clause | unwind_clause | call_subquery | in_query_call }
 updating_clause = { create_clause | merge_clause | delete_clause | set_clause | remove_clause }
 
 match_clause = { OPTIONAL? ~ MATCH ~ pattern ~ where_clause? }
@@ -207,6 +207,10 @@ remove_item = {
 
 in_query_call = { CALL ~ procedure_invocation ~ yield_clause? ~ where_clause? }
 standalone_call = { CALL ~ (procedure_invocation | procedure_name) ~ yield_clause? }
+// CALL { ... } subquery. Body is a regular query (head + UNIONs); the
+// alternative comes before `in_query_call` in `reading_clause` so PEG
+// commits to the brace form when it sees one.
+call_subquery = { CALL ~ lbrace ~ regular_query ~ rbrace }
 
 yield_clause = { YIELD ~ (STAR | yield_items) }
 yield_items = { yield_item ~ (comma ~ yield_item)* }

@@ -212,6 +212,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             PhysicalOp::Set(op) => self.exec_set(plan, op),
             PhysicalOp::Remove(op) => self.exec_remove(plan, op),
             PhysicalOp::OptionalMatch(op) => self.exec_optional_match(plan, op),
+            PhysicalOp::CallSubquery(op) => self.exec_call_subquery(plan, op),
             PhysicalOp::PathBuild(op) => self.exec_path_build(plan, op),
         };
 
@@ -511,6 +512,31 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         let inner_rows = self.execute_node(plan, op.inner)?;
 
         Ok(optional_match_rows(input_rows, &inner_rows, &op.new_vars))
+    }
+
+    fn exec_call_subquery(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &CallSubqueryExec,
+    ) -> ExecResult<Vec<Row>> {
+        let input_rows = self.execute_node(plan, op.input)?;
+        let mut out = Vec::with_capacity(input_rows.len());
+        let params = std::sync::Arc::new(self.ctx.params.clone());
+        let storage_ref: &S = &*self.ctx.storage;
+        for outer_row in input_rows {
+            let mut inner_source = crate::pull::build_streaming_seeded(
+                plan,
+                op.inner,
+                storage_ref,
+                params.clone(),
+                outer_row.clone(),
+            )?;
+            let inner_rows = crate::pull::drain(inner_source.as_mut())?;
+            for inner_row in inner_rows {
+                out.push(crate::executor::merge_optional_rows(&outer_row, &inner_row));
+            }
+        }
+        Ok(out)
     }
 
     fn exec_path_build(&mut self, plan: &PhysicalPlan, op: &PathBuildExec) -> ExecResult<Vec<Row>> {

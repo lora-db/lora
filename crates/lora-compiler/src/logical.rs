@@ -38,6 +38,19 @@ pub enum LogicalOp {
     Create(Create),
     OptionalMatch(OptionalMatch),
     PathBuild(PathBuild),
+    CallSubquery(CallSubquery),
+}
+
+/// `CALL { ... }` subquery: for each upstream row, runs the inner
+/// sub-plan with the upstream row as its initial argument, then
+/// emits the cartesian product of `(upstream row, inner row)` for
+/// each inner row produced. `new_vars` are the VarIds the inner
+/// RETURN exposes to the outer scope.
+#[derive(Debug, Clone)]
+pub struct CallSubquery {
+    pub input: PlanNodeId,
+    pub inner: PlanNodeId,
+    pub new_vars: Vec<VarId>,
 }
 
 /// Assembles a path value from matched node and relationship VarIds.
