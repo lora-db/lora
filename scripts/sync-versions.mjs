@@ -11,6 +11,8 @@
 //   - Cargo.toml                                     [workspace.package].version
 //   - crates/bindings/lora-node/package.json         .version
 //   - crates/bindings/lora-wasm/package.json         .version
+//   - packages/lora-query/package.json               .version
+//   - packages/lora-graph-canvas/package.json        .version
 //   - apps/loradb.com/package.json                   .version
 //   - crates/bindings/lora-python/pyproject.toml     [project].version
 //   - crates/bindings/lora-ruby/lib/lora_ruby/version.rb  LoraRuby::VERSION
@@ -55,6 +57,8 @@ const targets = [
   { path: 'Cargo.toml', kind: 'cargo-workspace' },
   { path: 'crates/bindings/lora-node/package.json', kind: 'package-json' },
   { path: 'crates/bindings/lora-wasm/package.json', kind: 'package-json' },
+  { path: 'packages/lora-query/package.json', kind: 'package-json' },
+  { path: 'packages/lora-graph-canvas/package.json', kind: 'package-json' },
   { path: 'apps/loradb.com/package.json', kind: 'package-json' },
   { path: 'crates/bindings/lora-python/pyproject.toml', kind: 'pyproject' },
   { path: 'crates/bindings/lora-ruby/lib/lora_ruby/version.rb', kind: 'ruby-version' },

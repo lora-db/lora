@@ -1,0 +1,270 @@
+/* Lora Graph Canvas — CSS-variable theme.
+ *
+ * Override any of these on the `.lora-graph-canvas` element (or via the
+ * `theme` prop) to re-skin the chrome. The kapsule engine paints to its
+ * own canvas using the prop-level `backgroundColor` accessor, so these
+ * variables drive the React-rendered toolbar / context menu / tooltip
+ * only. */
+
+.lora-graph-canvas {
+  --lgc-bg: transparent;
+  --lgc-fg: #1c1f23;
+  --lgc-border: #d8dde3;
+  --lgc-accent: #4f8ef7;
+
+  --lgc-toolbar-bg: rgba(255, 255, 255, 0.92);
+  --lgc-toolbar-fg: var(--lgc-fg);
+  --lgc-toolbar-border: var(--lgc-border);
+  --lgc-tool-active-bg: rgba(79, 142, 247, 0.18);
+  --lgc-tool-hover-bg: rgba(0, 0, 0, 0.05);
+
+  --lgc-tooltip-bg: rgba(28, 31, 35, 0.9);
+  --lgc-tooltip-fg: #ffffff;
+
+  --lgc-menu-bg: #ffffff;
+  --lgc-menu-fg: var(--lgc-fg);
+  --lgc-menu-hover-bg: rgba(0, 0, 0, 0.06);
+
+  --lgc-font:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --lgc-font-size: 13px;
+
+  position: relative;
+  overflow: hidden;
+  background: var(--lgc-bg);
+  color: var(--lgc-fg);
+  font-family: var(--lgc-font);
+  font-size: var(--lgc-font-size);
+}
+
+.lora-graph-canvas .lgc-engine-mount {
+  position: absolute;
+  inset: 0;
+}
+
+.lora-graph-canvas .lgc-engine-mount > canvas {
+  display: block;
+}
+
+/* ─── Toolbar ─────────────────────────────────────────────────── */
+
+.lora-graph-canvas .lgc-toolbar {
+  position: absolute;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--lgc-toolbar-bg);
+  color: var(--lgc-toolbar-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  z-index: 2;
+}
+
+.lora-graph-canvas .lgc-toolbar--top,
+.lora-graph-canvas .lgc-toolbar--top-right,
+.lora-graph-canvas .lgc-toolbar--top-left {
+  top: 12px;
+}
+.lora-graph-canvas .lgc-toolbar--top {
+  left: 50%;
+  transform: translateX(-50%);
+}
+.lora-graph-canvas .lgc-toolbar--top-right {
+  right: 12px;
+}
+.lora-graph-canvas .lgc-toolbar--top-left {
+  left: 12px;
+}
+.lora-graph-canvas .lgc-toolbar--bottom {
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.lora-graph-canvas .lgc-tool {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background-color 90ms ease,
+    color 90ms ease;
+}
+
+.lora-graph-canvas .lgc-tool:hover {
+  background: var(--lgc-tool-hover-bg);
+}
+
+.lora-graph-canvas .lgc-tool--active {
+  background: var(--lgc-tool-active-bg);
+  color: var(--lgc-accent);
+}
+
+.lora-graph-canvas .lgc-tool--disabled,
+.lora-graph-canvas .lgc-tool:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.lora-graph-canvas .lgc-tool--disabled:hover,
+.lora-graph-canvas .lgc-tool:disabled:hover {
+  background: transparent;
+}
+
+.lora-graph-canvas .lgc-tool:focus-visible {
+  outline: 2px solid var(--lgc-accent);
+  outline-offset: 1px;
+}
+
+/* ─── Selection panel (top-left summary widget) ───────────────── */
+
+.lora-graph-canvas .lgc-selpanel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 10px;
+  background: var(--lgc-toolbar-bg);
+  color: var(--lgc-toolbar-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  font-size: 12px;
+  z-index: 2;
+}
+
+.lora-graph-canvas .lgc-selpanel-label {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.lora-graph-canvas .lgc-selpanel-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--lgc-toolbar-border);
+  margin: 0 2px;
+}
+
+.lora-graph-canvas .lgc-selpanel-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 90ms ease;
+}
+
+.lora-graph-canvas .lgc-selpanel-btn:hover {
+  background: var(--lgc-tool-hover-bg);
+}
+
+.lora-graph-canvas .lgc-selpanel-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.lora-graph-canvas .lgc-selpanel-btn:disabled:hover {
+  background: transparent;
+}
+
+/* ─── Marquee (box-select) ─────────────────────────────────────── */
+
+.lora-graph-canvas .lgc-marquee {
+  position: absolute;
+  border: 1px dashed var(--lgc-accent);
+  background: color-mix(in srgb, var(--lgc-accent) 12%, transparent);
+  border-radius: 2px;
+  z-index: 2;
+}
+
+/* Inline node rename input — positioned via inline style, themed
+ * through CSS vars. */
+.lora-graph-canvas .lgc-rename-input {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 2px 6px;
+  border: 1px solid var(--lgc-accent);
+  border-radius: 4px;
+  background: var(--lgc-menu-bg);
+  color: var(--lgc-menu-fg);
+  font: inherit;
+  z-index: 4;
+  min-width: 80px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+
+.lora-graph-canvas .lgc-rename-input:focus {
+  outline: none;
+  border-color: var(--lgc-accent);
+}
+
+/* ─── Hover tooltip ───────────────────────────────────────────── */
+
+.lora-graph-canvas .lgc-tooltip {
+  position: absolute;
+  max-width: 280px;
+  padding: 4px 8px;
+  background: var(--lgc-tooltip-bg);
+  color: var(--lgc-tooltip-fg);
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 4;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+/* ─── Context menu ─────────────────────────────────────────────── */
+
+.lora-graph-canvas .lgc-menu {
+  position: absolute;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--lgc-menu-bg);
+  color: var(--lgc-menu-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  z-index: 3;
+}
+
+.lora-graph-canvas .lgc-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.lora-graph-canvas .lgc-menu-item:hover {
+  background: var(--lgc-menu-hover-bg);
+}
+
+.lora-graph-canvas .lgc-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--lgc-toolbar-border);
+}
