@@ -1,0 +1,141 @@
+name: lora-query
+
+# CI gate for @loradb/lora-query — the React + CodeMirror editor whose
+# parser is a WASM build of the embedded Rust crate at
+# `packages/lora-query/` (crate name: `lora-query-wasm`).
+#
+# What runs on every PR / push to main:
+#   1. cargo check on the WASM crate (host + wasm32 target);
+#   2. cargo test -p lora-query-wasm (the Rust unit tests);
+#   3. yarn install at the monorepo root (yarn v4 workspaces);
+#   4. yarn workspace @loradb/lora-query build:wasm   → wasm-pack output
+#   5. yarn workspace @loradb/lora-query typecheck    → strict tsc
+#   6. yarn workspace @loradb/lora-query lint         → eslint flat config
+#   7. yarn workspace @loradb/lora-query test         → vitest (parser +
+#      React component + 60-case completion suite)
+#   8. yarn workspace @loradb/lora-query build        → vite library build
+#   9. yarn workspace @loradb/lora-query build:storybook (smoke; the
+#      Storybook output is uploaded as a CI artifact)
+#  10. yarn pack --dry-run (sanity check on the published file set)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/lora-query/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "yarn.lock"
+      - ".yarnrc.yml"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/lora-query.yml"
+  pull_request:
+    paths:
+      - "packages/lora-query/**"
+      - "crates/lora-ast/**"
+      - "crates/lora-parser/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "yarn.lock"
+      - ".yarnrc.yml"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/lora-query.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: build, typecheck, test, pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-query-ubuntu
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.14.0"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
+      - name: yarn install (monorepo root)
+        run: yarn install --immutable
+
+      - name: cargo check (host) for lora-query-wasm
+        run: cargo check -p lora-query-wasm --locked
+
+      - name: cargo check (wasm32) for lora-query-wasm
+        run: cargo check -p lora-query-wasm --target wasm32-unknown-unknown --locked
+
+      - name: cargo test for lora-query-wasm
+        run: cargo test -p lora-query-wasm --locked
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-query
+
+      - name: Build WASM via wasm-pack
+        run: yarn workspace @loradb/lora-query build:wasm
+
+      - name: ESLint
+        run: yarn workspace @loradb/lora-query lint
+
+      - name: Typecheck
+        run: yarn workspace @loradb/lora-query typecheck
+
+      - name: Vitest
+        run: yarn workspace @loradb/lora-query test
+
+      - name: Build library (vite)
+        run: yarn workspace @loradb/lora-query build:lib
+
+      - name: Build Storybook (smoke + artifact)
+        run: yarn workspace @loradb/lora-query build:storybook
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-query-storybook
+          path: packages/lora-query/storybook-static
+          if-no-files-found: error
+          retention-days: 14
+
+      # `npm pack` produces the conventional `loradb-lora-query-<ver>.tgz`
+      # filename that downstream tooling (artifact patterns, registry
+      # uploads) expects. Yarn is only used for dep resolution / build
+      # orchestration here.
+      - name: Inspect publish payload (npm pack --dry-run)
+        working-directory: packages/lora-query
+        run: npm pack --dry-run
+
+      - name: Produce tarball
+        working-directory: packages/lora-query
+        run: npm pack
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-query-tarball
+          path: packages/lora-query/loradb-lora-query-*.tgz
+          if-no-files-found: error
+          retention-days: 14

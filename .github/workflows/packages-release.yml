@@ -210,6 +210,224 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # ──────────────────────────────────────────────────────────────────────
+  # @loradb/lora-query
+  # Single tarball that ships dist/ + wasm/. The Rust crate lives at
+  # `packages/lora-query/` and is built into WASM via wasm-pack; the
+  # React surface is built with Vite. yarn (v4 workspaces) drives both.
+  # ──────────────────────────────────────────────────────────────────────
+
+  build-query:
+    name: build @loradb/lora-query
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-query-release-ubuntu
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.14.0"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
+      - name: yarn install (immutable)
+        run: yarn install --immutable
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-query
+
+      - name: Build (WASM + TS)
+        run: yarn workspace @loradb/lora-query build
+
+      - name: Typecheck
+        run: yarn workspace @loradb/lora-query typecheck
+
+      - name: npm pack (produce tarball)
+        working-directory: packages/lora-query
+        run: npm pack
+
+      - name: Stage tarball at workspace root for clean artifact layout
+        run: mv packages/lora-query/loradb-lora-query-*.tgz .
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-query-tarball
+          path: loradb-lora-query-*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-query:
+    name: publish @loradb/lora-query
+    needs: [verify-versions, build-query]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/lora-query
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-query-release-ubuntu
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.14.0"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
+      - name: Update npm to a version that supports --provenance (>=9.5)
+        run: npm install -g npm@latest
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-query
+
+      - name: Build (WASM + TS)
+        working-directory: .
+        run: yarn workspace @loradb/lora-query build
+
+      - name: Publish to npm
+        # `yarn publish` (Berry) only handles workspace-aware semantics
+        # for private registries; use `npm publish` so we get
+        # --provenance / OIDC trusted publishing on npmjs.com. The Vite
+        # build above already produced `dist/` + `wasm/`.
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # @loradb/lora-graph-canvas
+  # Pure-TS React component package (no WASM). Vite builds dist/; yarn v4
+  # workspaces drive the build.
+  # ──────────────────────────────────────────────────────────────────────
+
+  build-graph-canvas:
+    name: build @loradb/lora-graph-canvas
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
+      - name: yarn install (immutable)
+        run: yarn install --immutable
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-graph-canvas
+
+      - name: Build (TS)
+        run: yarn workspace @loradb/lora-graph-canvas build
+
+      - name: Typecheck
+        run: yarn workspace @loradb/lora-graph-canvas typecheck
+
+      - name: Test
+        run: yarn workspace @loradb/lora-graph-canvas test
+
+      - name: npm pack (produce tarball)
+        working-directory: packages/lora-graph-canvas
+        run: npm pack
+
+      - name: Stage tarball at workspace root for clean artifact layout
+        run: mv packages/lora-graph-canvas/loradb-lora-graph-canvas-*.tgz .
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-graph-canvas-tarball
+          path: loradb-lora-graph-canvas-*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-graph-canvas:
+    name: publish @loradb/lora-graph-canvas
+    needs: [verify-versions, build-graph-canvas]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/lora-graph-canvas
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        run: corepack enable
+
+      - name: Update npm to a version that supports --provenance (>=9.5)
+        run: npm install -g npm@latest
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: yarn install --immutable
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-graph-canvas
+
+      - name: Build (TS)
+        working-directory: .
+        run: yarn workspace @loradb/lora-graph-canvas build
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ──────────────────────────────────────────────────────────────────────
   # @loradb/lora-node
   # One root package (JS + TS + loader) plus one platform subpackage per
   # napi triple. Native binaries are built in parallel matrix jobs and
@@ -988,12 +1206,16 @@ jobs:
     needs:
       - verify-versions
       - build-wasm
+      - build-query
+      - build-graph-canvas
       - build-node
       - build-python-wheels
       - build-python-sdist
       - build-ruby-source
       - build-ruby-platform
       - publish-wasm
+      - publish-query
+      - publish-graph-canvas
       - publish-node
       - publish-python
       - publish-ruby
@@ -1019,7 +1241,7 @@ jobs:
           fi
           # In non-dry-run mode, publish jobs must have succeeded.
           if [ "$DRY" != "true" ]; then
-            for pub in publish-wasm publish-node publish-python publish-ruby; do
+            for pub in publish-wasm publish-query publish-graph-canvas publish-node publish-python publish-ruby; do
               result=$(echo "$NEEDS_JSON" | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(j['$pub'].result)")
               if [ "$result" != "success" ]; then
                 echo "::error::${pub} did not succeed (result=${result})"
