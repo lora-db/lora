@@ -43,6 +43,16 @@ runs:
       if: inputs.cache-key != ''
       uses: Swatinem/rust-cache@v2
       with:
+        # v2 prefix invalidates pre-2026-05 caches whose ~/.cargo/bin/
+        # contents were restored by Swatinem with broken rustup-proxy
+        # binaries on macOS (cargo, rustc et al. resolved as bare
+        # rustup-init). Bump the prefix again if a similar class of cache
+        # corruption surfaces in future.
+        prefix-key: "v2-rust"
         shared-key: ${{ inputs.cache-key }}
         workspaces: ${{ inputs.workspaces }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
+        # Skip caching ~/.cargo/bin/ going forward — dtolnay/rust-toolchain
+        # reinstalls these in ~1s and avoids re-introducing the corruption
+        # class described above.
+        cache-bin: "false"
