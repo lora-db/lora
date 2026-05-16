@@ -1,0 +1,27 @@
+.graph-info-msg {
+  top: 50%;
+  width: 100%;
+  text-align: center;
+  color: lavender;
+  opacity: 0.7;
+  font-size: 22px;
+  position: absolute;
+  font-family: Sans-serif;
+}
+
+.scene-container .clickable {
+  cursor: pointer;
+}
+
+.scene-container .grabbable {
+  cursor: move;
+  cursor: grab;
+  cursor: -moz-grab;
+  cursor: -webkit-grab;
+}
+
+.scene-container .grabbable:active {
+  cursor: grabbing;
+  cursor: -moz-grabbing;
+  cursor: -webkit-grabbing;
+}

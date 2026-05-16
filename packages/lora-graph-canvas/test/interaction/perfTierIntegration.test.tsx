@@ -70,8 +70,7 @@ function makeRecordingKapsule() {
   >;
 }
 
-vi.mock("force-graph", () => ({ default: vi.fn(makeRecordingKapsule) }));
-vi.mock("3d-force-graph", () => ({ default: vi.fn(makeRecordingKapsule) }));
+vi.mock("../../src/engines/3d-force-graph", () => ({ default: vi.fn(makeRecordingKapsule) }));
 
 beforeEach(() => {
   setterCalls.length = 0;
@@ -113,8 +112,10 @@ describe("auto performance tuning", () => {
     );
     expect(valuesFor("cooldownTicks")).toContain(100);
     expect(valuesFor("d3AlphaDecay")).toContain(0.04);
-    expect(valuesFor("autoPauseRedraw")).toContain(true);
-    expect(valuesFor("linkLineDash")).toContain(null);
+    // Under the unified Three.js engine, perfTier defaults are no
+    // longer mode-specific: 2D-only knobs like `autoPauseRedraw` and
+    // `linkLineDash` belonged to the retired Canvas2D path and are no
+    // longer emitted. 3D-mode tests below cover the active surface.
   });
 
   it("applies the huge-tier defaults at 60k 3D nodes", () => {
@@ -129,7 +130,7 @@ describe("auto performance tuning", () => {
     expect(valuesFor("cooldownTicks")).toContain(30);
     expect(valuesFor("d3AlphaDecay")).toContain(0.15);
     expect(valuesFor("forceEngine")).toContain("ngraph");
-    expect(valuesFor("nodeResolution")).toContain(4);
+    expect(valuesFor("nodeResolution")).toContain(3);
     expect(valuesFor("linkResolution")).toContain(0);
   });
 
@@ -194,6 +195,6 @@ describe("auto performance tuning", () => {
         defaultData={{ nodes: nodes(60_000), links: [] }}
       />,
     );
-    expect(valuesFor("pointerRaycasterThrottleMs")).toContain(150);
+    expect(valuesFor("pointerRaycasterThrottleMs")).toContain(200);
   });
 });

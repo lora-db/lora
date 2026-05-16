@@ -108,7 +108,18 @@ export function useGraphKeybindings<
         case "A":
           if (e.metaKey || e.ctrlKey) {
             p.selection.set(p.dataApi.data.nodes.map((n) => n.id));
-            p.setSelectedLinkIds([]);
+            // Include every link with an id, too — Ctrl-A is a
+            // "select everything" gesture, and the delete / duplicate
+            // pipelines already accept mixed node + link selections.
+            // Links without an id can't be addressed by the selection
+            // model, so they get dropped silently.
+            p.setSelectedLinkIds(
+              p.dataApi.data.links
+                .map((l) => l.id)
+                .filter(
+                  (id): id is string | number => id !== undefined,
+                ),
+            );
             e.preventDefault();
           }
           break;

@@ -65,14 +65,19 @@ describe("perfTierDefaults", () => {
     expect(xlarge).toBeLessThan(huge);
   });
 
-  it("only injects 3D-specific knobs in 3D mode", () => {
+  it("injects 3D-renderer knobs in both modes under the unified engine", () => {
+    // The unified engine renders both modes via Three.js, so the
+    // 3D-renderer perf knobs (forceEngine, nodeResolution, etc.) are
+    // valid for either mode. The retired Canvas2D-only knobs
+    // (autoPauseRedraw, linkLineDash) are no longer emitted.
     const twoD = perfTierDefaults("xlarge", "2d");
-    expect(twoD.forceEngine).toBeUndefined();
-    expect(twoD.nodeResolution).toBeUndefined();
-    expect(twoD.linkResolution).toBeUndefined();
-    // 2D-specific should be present.
-    expect(twoD.autoPauseRedraw).toBe(true);
-    expect(twoD.linkLineDash).toBeNull();
+    expect(twoD.forceEngine).toBe("ngraph");
+    expect(twoD.nodeResolution).toBeDefined();
+    expect(twoD.linkResolution).toBeDefined();
+    expect(twoD.nodeOpacity).toBe(1);
+    expect(twoD.linkOpacity).toBe(1);
+    expect(twoD.autoPauseRedraw).toBeUndefined();
+    expect(twoD.linkLineDash).toBeUndefined();
 
     const threeD = perfTierDefaults("xlarge", "3d");
     expect(threeD.forceEngine).toBe("ngraph");
@@ -80,8 +85,6 @@ describe("perfTierDefaults", () => {
     expect(threeD.linkResolution).toBeDefined();
     expect(threeD.nodeOpacity).toBe(1);
     expect(threeD.linkOpacity).toBe(1);
-    // 2D-specific should not leak.
-    expect(threeD.autoPauseRedraw).toBeUndefined();
   });
 
   it("drops 3D resolution as the tier escalates", () => {

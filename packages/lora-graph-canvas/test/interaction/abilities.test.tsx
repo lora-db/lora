@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createRef } from "react";
 import { render, act } from "@testing-library/react";
 
-const handlers2D: Record<string, (...a: unknown[]) => void> = {};
+const handlers3D: Record<string, (...a: unknown[]) => void> = {};
 
 function makeFakeKapsule(captureBag: Record<string, (...a: unknown[]) => void>) {
   const captureSetters = new Set([
@@ -56,15 +56,12 @@ function makeFakeKapsule(captureBag: Record<string, (...a: unknown[]) => void>) 
   >;
 }
 
-vi.mock("force-graph", () => ({
-  default: vi.fn(() => makeFakeKapsule(handlers2D)),
-}));
-vi.mock("3d-force-graph", () => ({
+vi.mock("../../src/engines/3d-force-graph", () => ({
   default: vi.fn(() => makeFakeKapsule({})),
 }));
 
 beforeEach(() => {
-  for (const k of Object.keys(handlers2D)) delete handlers2D[k];
+  for (const k of Object.keys(handlers3D)) delete handlers3D[k];
 });
 
 const { LoraGraphCanvas } = await import("../../src/LoraGraphCanvas");
@@ -165,7 +162,7 @@ describe("link click → selection", () => {
       />,
     );
     act(() => {
-      handlers2D.onLinkClick?.(
+      handlers3D.onLinkClick?.(
         { source: "a", target: "b", id: "l1" },
         new MouseEvent("click"),
       );

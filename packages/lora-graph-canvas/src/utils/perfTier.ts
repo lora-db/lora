@@ -75,30 +75,34 @@ export function perfTierDefaults<
     linkDirectionalArrowLength: 0,
   };
 
-  if (mode === "3d") {
-    // ngraph is ~3× faster than d3 once you cross a few thousand
-    // nodes — switch to it whenever the user hasn't picked an engine.
-    out.forceEngine = "ngraph";
-    // Lower-poly node spheres and link cylinders. The kapsule's
-    // defaults are 8 / 6 — overkill at this density.
-    out.nodeResolution = tier === "large" ? 8 : tier === "xlarge" ? 6 : 4;
-    out.linkResolution = tier === "large" ? 4 : tier === "xlarge" ? 2 : 0;
-    // Full-opaque materials skip the alpha blending pass.
-    out.nodeOpacity = 1;
-    out.linkOpacity = 1;
-    // Raycast on every frame is wasted work — bump the throttle so
-    // hover / click hit-tests run at most a handful of times per
-    // second. Selection / hover still feel instant because the
-    // raycast happens on the very next tick anyway.
-    out.pointerRaycasterThrottleMs =
-      tier === "large" ? 32 : tier === "xlarge" ? 75 : 150;
-  } else {
-    // 2D: keep the renderer paused while idle (kapsule default is
-    // already true, but be explicit), and skip the expensive
-    // dashed-line code path.
-    out.autoPauseRedraw = true;
-    out.linkLineDash = null;
-  }
+  // The unified engine always renders via Three.js (the "mode" the
+  // host sees is a presentation overlay — top-down camera + z-pin in
+  // 2D mode, orbit camera in 3D — but the underlying engine is one
+  // and the same). So perf knobs are universal: nothing here is
+  // mode-specific anymore. ngraph swap, sphere/cylinder resolution,
+  // opacity, and raycaster throttle all apply in both modes.
+  void mode;
+  out.forceEngine = "ngraph";
+  // Sphere segment count by tier. The visible difference between 6
+  // and 4 is hard to see at typical node sizes, while the triangle
+  // count halves — so xlarge drops to 4 for the geometry savings.
+  out.nodeResolution =
+    tier === "large" ? 8 : tier === "xlarge" ? 4 : 3;
+  // `linkResolution: 0` renders links as 1px THREE.LineSegments
+  // instead of cylinders. At 10k+ links the cylinder geometry path
+  // builds 10k tiny meshes — each one a draw call, vertex buffer and
+  // material rebind. Lines coalesce into a single buffer geometry
+  // (one draw call total), which is the single biggest geometry win
+  // available without going to instancing. We give up cylinder
+  // thickness (which already wasn't legible at this density anyway).
+  out.linkResolution = tier === "large" ? 4 : 0;
+  out.nodeOpacity = 1;
+  out.linkOpacity = 1;
+  // Higher throttle = less raycaster work. At xlarge/huge the
+  // pointer-pick is octree-broadphase but the per-frame budget is
+  // tight; we'd rather miss a 100 ms hover than drop frames.
+  out.pointerRaycasterThrottleMs =
+    tier === "large" ? 32 : tier === "xlarge" ? 100 : 200;
 
   return out;
 }

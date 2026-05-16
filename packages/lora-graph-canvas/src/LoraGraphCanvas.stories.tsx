@@ -457,3 +457,118 @@ function EmitParticleStory() {
 }
 export const EmitParticle: Story = { render: () => <EmitParticleStory /> };
 EmitParticle.storyName = "emitParticle() — periodic flow ping";
+
+// 16. Random topology — orphan nodes + at least one hub
+function makeRandomGraph(): GraphData {
+  const NODE_COUNT = 30;
+  const ORPHAN_COUNT = 6;
+  const HUB_COUNT = 2;
+  const HUB_FANOUT = 8;
+  const EXTRA_LINKS = 14;
+
+  const nodes = Array.from({ length: NODE_COUNT }, (_, i) => ({
+    id: i,
+    group: i % 5,
+  }));
+
+  // Shuffle indices, then carve out a disjoint pool of orphans vs
+  // linkable nodes. Anyone in the first `ORPHAN_COUNT` slots stays
+  // unlinked; the rest are eligible for the hub fan-outs and random
+  // edges below.
+  const indices = nodes.map((n) => Number(n.id));
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j]!, indices[i]!];
+  }
+  const linkable = indices.slice(ORPHAN_COUNT);
+  const hubs = linkable.slice(0, HUB_COUNT);
+
+  const links: GraphData["links"] = [];
+  const seen = new Set<string>();
+  const addLink = (a: number, b: number) => {
+    if (a === b) return;
+    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    links.push({ source: a, target: b });
+  };
+
+  // Each hub gets a fan-out so it visibly anchors a small cluster.
+  for (const hub of hubs) {
+    for (let k = 0; k < HUB_FANOUT; k++) {
+      const other = linkable[Math.floor(Math.random() * linkable.length)]!;
+      addLink(hub, other);
+    }
+  }
+  // A handful of extra edges between random non-orphan nodes for noise.
+  for (let k = 0; k < EXTRA_LINKS; k++) {
+    const a = linkable[Math.floor(Math.random() * linkable.length)]!;
+    const b = linkable[Math.floor(Math.random() * linkable.length)]!;
+    addLink(a, b);
+  }
+
+  return { nodes, links };
+}
+
+function RandomGraph() {
+  const data = useMemo(() => makeRandomGraph(), []);
+  return (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={data}
+        nodeLabel="id"
+        nodeAutoColorBy="group"
+        backgroundColor="#fafbfc"
+      />
+    </div>
+  );
+}
+export const RandomGraphStory: Story = { render: () => <RandomGraph /> };
+RandomGraphStory.storyName = "Random topology (orphans + hub)";
+
+// 17. Labeled nodes and links — caption comes from the `label` field
+// on each datum (no `nodeLabel` / `linkLabel` accessor wired). Links
+// without a `label` fall back to the canonical "source → target"
+// caption so the demo also shows the precedence in action.
+const LABELED_GRAPH: GraphData = {
+  nodes: [
+    { id: "u1", label: "Alice",   group: "user" },
+    { id: "u2", label: "Bob",     group: "user" },
+    { id: "u3", label: "Carol",   group: "user" },
+    { id: "t1", label: "Roadmap", group: "team" },
+    { id: "t2", label: "Infra",   group: "team" },
+    { id: "p1", label: "lora-graph-canvas", group: "project" },
+    { id: "p2", label: "lora-node",         group: "project" },
+  ],
+  links: [
+    { source: "u1", target: "t1", label: "leads" },
+    { source: "u2", target: "t1", label: "member of" },
+    { source: "u3", target: "t2", label: "leads" },
+    { source: "t1", target: "p1", label: "owns" },
+    { source: "t2", target: "p2", label: "owns" },
+    // No `label` — falls back to "u1 → p2".
+    { source: "u1", target: "p2" },
+  ],
+};
+
+export const LabeledStory: Story = {
+  render: () => (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={LABELED_GRAPH}
+        nodeAutoColorBy="group"
+        showLabels
+        backgroundColor="#fafbfc"
+      />
+    </div>
+  ),
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Nodes and links carry their own `label` field — no `nodeLabel` / `linkLabel` accessor is wired. The renderer prefers `label` over the id-based fallback, so `Alice` renders instead of `u1` and `leads` renders instead of `u1 → t1`. The last link omits `label` and falls back to the canonical `source → target` caption.",
+      },
+    },
+  },
+};
+LabeledStory.storyName = "Labels on nodes & links";

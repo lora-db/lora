@@ -5,7 +5,6 @@ import { render, act } from "@testing-library/react";
 
 // Capture the event handlers the engines receive so we can drive them
 // from the test. The mock engine writes them to module-level slots.
-const handlers2D: Record<string, (...a: unknown[]) => void> = {};
 const handlers3D: Record<string, (...a: unknown[]) => void> = {};
 
 function makeFakeKapsule(captureBag: Record<string, (...a: unknown[]) => void>) {
@@ -53,15 +52,11 @@ function makeFakeKapsule(captureBag: Record<string, (...a: unknown[]) => void>) 
   >;
 }
 
-vi.mock("force-graph", () => ({
-  default: vi.fn(() => makeFakeKapsule(handlers2D)),
-}));
-vi.mock("3d-force-graph", () => ({
+vi.mock("../../src/engines/3d-force-graph", () => ({
   default: vi.fn(() => makeFakeKapsule(handlers3D)),
 }));
 
 beforeEach(() => {
-  for (const k of Object.keys(handlers2D)) delete handlers2D[k];
   for (const k of Object.keys(handlers3D)) delete handlers3D[k];
 });
 
@@ -93,7 +88,7 @@ describe("add-node tool", () => {
     // Simulate the engine reporting a background click. (Our mock
     // captured the handler the React layer wired up.)
     act(() => {
-      handlers2D.onBackgroundClick?.(
+      handlers3D.onBackgroundClick?.(
         new MouseEvent("click", { clientX: 50, clientY: 60 }),
       );
     });
@@ -113,7 +108,7 @@ describe("add-node tool", () => {
       />,
     );
     act(() => {
-      handlers2D.onBackgroundClick?.(
+      handlers3D.onBackgroundClick?.(
         new MouseEvent("click", { clientX: 50, clientY: 60 }),
       );
     });
@@ -141,13 +136,13 @@ describe("add-link tool", () => {
     });
     // Click node A (source), then node B (target).
     act(() => {
-      handlers2D.onNodeClick?.(
+      handlers3D.onNodeClick?.(
         { id: "a" },
         new MouseEvent("click"),
       );
     });
     act(() => {
-      handlers2D.onNodeClick?.(
+      handlers3D.onNodeClick?.(
         { id: "b" },
         new MouseEvent("click"),
       );
@@ -171,10 +166,10 @@ describe("add-link tool", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "l" }));
     });
     act(() => {
-      handlers2D.onNodeClick?.({ id: "a" }, new MouseEvent("click"));
+      handlers3D.onNodeClick?.({ id: "a" }, new MouseEvent("click"));
     });
     act(() => {
-      handlers2D.onNodeClick?.({ id: "a" }, new MouseEvent("click"));
+      handlers3D.onNodeClick?.({ id: "a" }, new MouseEvent("click"));
     });
     expect(ref.current?.getData().links).toHaveLength(0);
   });

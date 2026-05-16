@@ -67,9 +67,15 @@
     "three": ">=0.150.0"
   },
   "dependencies": {
-    "3d-force-graph": "^1.79.0",
+    "d3-array": "^3.2.0",
+    "d3-drag": "^3.0.0",
     "d3-force-3d": "^3.0.0",
-    "force-graph": "^1.51.0"
+    "d3-scale": "^4.0.0",
+    "d3-scale-chromatic": "^3.0.0",
+    "d3-selection": "^3.0.0",
+    "d3-zoom": "^3.0.0",
+    "three-forcegraph": "^1.43.0",
+    "three-render-objects": "^1.41.0"
   },
   "devDependencies": {
     "@storybook/addon-essentials": "^8.3.0",

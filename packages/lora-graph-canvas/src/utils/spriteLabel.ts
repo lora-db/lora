@@ -94,6 +94,20 @@ export interface SpriteLabelUserData {
   selectedTexture?: Texture;
 }
 
+/** Release every GPU resource (both textures + the material) owned by
+ *  a label sprite. Call when removing the sprite from the scene for
+ *  good — without this the CanvasTextures stay resident in GPU memory
+ *  forever, which on a heavily-edited 10k+-node graph accumulates
+ *  into hundreds of MB of orphaned textures. */
+export function disposeLabelSprite(sprite: Sprite): void {
+  const material = sprite.material as SpriteMaterial;
+  const data = sprite.userData as SpriteLabelUserData;
+  if (data.normalTexture) data.normalTexture.dispose();
+  if (data.selectedTexture) data.selectedTexture.dispose();
+  material.dispose();
+  if (sprite.parent) sprite.parent.remove(sprite);
+}
+
 /** Build a billboarded text sprite for use as a 3D label.
  *
  *  Rasterises the text once into a `CanvasTexture` and wraps it in

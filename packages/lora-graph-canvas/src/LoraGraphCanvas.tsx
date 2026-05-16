@@ -72,6 +72,8 @@ function LoraGraphCanvasInner<
     showGrid = false,
     showLabels = false,
     enableClipboard = true,
+    enableTooltip = false,
+    introZoom = true,
     focusOnClick = false,
     highlightNeighborsOnHover = true,
     // Highlight has nothing to walk without `_neighbors`/`_links` on
@@ -176,6 +178,7 @@ function LoraGraphCanvasInner<
   });
   const {
     hoverNodeId,
+    hoverLinkId,
     liveHoverNodeIdRef,
     highlightedNodeIds,
     highlightedLinkIds,
@@ -772,6 +775,7 @@ function LoraGraphCanvasInner<
     highlightedNodeIds,
     highlightedLinkIds,
     hoverNodeId,
+    hoverLinkId,
     hiddenGroups,
   });
 
@@ -823,149 +827,145 @@ function LoraGraphCanvasInner<
   // of one) so the camera doesn't pan/rotate alongside the rectangle.
   const suppressNav = mode === "3d" && (shiftHeld || marquee !== null);
 
-  const engineProps = useMemo<LoraGraphCanvasProps<N, L>>(
-    () => ({
-      // 3D mode defaults — the kapsule renders links as 1px lines with
-      // linkColor=#f0f0f0 and linkOpacity=0.2, which is effectively
-      // invisible on a light background. Inject readable defaults; host
-      // props still win via the `...props` spread below.
-      //
-      // `nodeOpacity: 1` (default kapsule value is 0.75) so the accent
-      // colour applied to selected nodes by `wrappedNodeColor` reads at
-      // full strength, not faded through the global material alpha.
-      ...(mode === "3d"
-        ? {
-            linkColor: "rgba(80,80,80,0.7)",
-            linkOpacity: 1,
-            nodeOpacity: 1,
-          }
-        : {}),
+  // Resolve the canvas background once for both modes. The unified
+  // engine renders through the 3D kapsule in BOTH presentation modes,
+  // so its `#000011` navy default bleeds through unless we always
+  // override. Computed up here so the memo below doesn't have to
+  // re-derive it inline. Host's `backgroundColor` prop wins; otherwise
+  // fall back to the theme background (skipping `"transparent"` since
+  // WebGL needs a concrete clear colour) and finally white.
+  const resolvedBackgroundColor = useMemo(() => {
+    if (backgroundColor !== undefined) return backgroundColor;
+    if (theme?.background && theme.background !== "transparent") {
+      return theme.background;
+    }
+    return "#ffffff";
+  }, [backgroundColor, theme?.background]);
+
+  const engineProps = useMemo<LoraGraphCanvasProps<N, L>>(() => {
+    // Build the prop bag imperatively so we can fill engine-canvas
+    // defaults AFTER the host's `...props` spread without those
+    // defaults getting clobbered by `props.<key> === undefined` (which
+    // a destructured-but-unset prop still spreads through). This was
+    // the source of two visual gotchas:
+    //
+    //   1. `backgroundColor` defaulting to the 3D kapsule's `#000011`
+    //      navy in 2D presentation (engine is always the 3D kapsule),
+    //      causing a dark→light flash on the first 2D→3D toggle.
+    //   2. `linkColor` reverting to the kapsule's faint `#f0f0f0` at
+    //      opacity 0.2 whenever no selection / hover overlay was
+    //      active, in either mode.
+    const out: Record<string, unknown> = {
       ...perfDefaults,
       ...props,
       // DAG orientation is owned by the options menu (seeded from
       // `props.dagMode` on mount); pass the live value through so a UI
       // change re-lays-out the graph immediately.
       dagMode: internalDagMode as Exclude<typeof internalDagMode, undefined>,
-      // The 3D kapsule defaults its backgroundColor to a dark navy.
-      // Without this override the user would see a jarring dark canvas
-      // the first time they toggle into 3D. We prefer the theme's
-      // background, falling back to white.
-      ...(mode === "3d" && backgroundColor === undefined
-        ? {
-            backgroundColor:
-              theme?.background && theme.background !== "transparent"
-                ? theme.background
-                : "#ffffff",
-          }
-        : {}),
-      // Color / width wrappers are conditional — when there's nothing
-      // to overlay (no selection, no hover-highlight) the memo returns
-      // the host's accessor (or undefined) so we don't inject a
-      // per-frame wrapper for nothing.
-      ...(accessors.nodeColor !== undefined
-        ? { nodeColor: accessors.nodeColor }
-        : {}),
-      ...(accessors.linkColor !== undefined
-        ? { linkColor: accessors.linkColor }
-        : {}),
-      ...(accessors.linkWidth !== undefined
-        ? { linkWidth: accessors.linkWidth }
-        : {}),
-      ...(accessors.nodeVal !== undefined
-        ? { nodeVal: accessors.nodeVal }
-        : {}),
-      ...(accessors.nodePointerAreaPaint !== undefined
-        ? { nodePointerAreaPaint: accessors.nodePointerAreaPaint }
-        : {}),
-      // On-canvas label rendering: draw text beneath each node. Mode
-      // "after" so the engine's default circle is drawn first, our
-      // label sits on top.
-      //
-      // IMPORTANT: pass the mode as a *function*, not a string. The
-      // kapsule's accessor-fn helper treats string values as
-      // per-node property-name lookups (`node["after"]`), so passing
-      // `"after"` resolves to undefined for every node and the
-      // canvas object is never invoked.
-      ...(nodeLabelRenderer.canvasObject
-        ? {
-            nodeCanvasObject: nodeLabelRenderer.canvasObject,
-            nodeCanvasObjectMode: (() => "after") as () => "after",
-          }
-        : {}),
-      // Same pattern for links — draw a small label along the link
-      // when a link is selected (or all links when showLabels is on).
-      ...(linkLabelRenderer.canvasObject
-        ? {
-            linkCanvasObject: linkLabelRenderer.canvasObject,
-            linkCanvasObjectMode: (() => "after") as () => "after",
-          }
-        : {}),
-      // 3D node label sprite under the sphere — extend keeps the
-      // default node mesh visible and adds our caption as a child.
-      ...(nodeLabelRenderer.threeObject
-        ? {
-            nodeThreeObject: nodeLabelRenderer.threeObject,
-            nodeThreeObjectExtend: true as const,
-          }
-        : {}),
-      // 3D link label sprite at the midpoint. Position update keeps
-      // the sprite glued to the live link coords each tick; extend
-      // preserves the kapsule's default line/cylinder rendering.
-      ...(linkLabelRenderer.threeObject
-        ? {
-            linkThreeObject: linkLabelRenderer.threeObject,
-            linkThreeObjectExtend: true as const,
-            ...(linkLabelRenderer.positionUpdate
-              ? { linkPositionUpdate: linkLabelRenderer.positionUpdate }
-              : {}),
-          }
-        : {}),
-      // Generous hit area for thin links — without this, edges are
-      // hard to click. Hosts can override by passing their own value.
-      linkHoverPrecision: linkHoverPrecision ?? 8,
-      enableNavigationControls: suppressNav
-        ? false
-        : (enableNavigationControls ?? true),
-      onNodeClick: handleNodeClick,
-      onNodeRightClick: handleNodeRightClick,
-      onLinkClick: handleLinkClick,
-      onLinkRightClick: handleLinkRightClick,
-      onBackgroundClick: handleBackgroundClick,
-      onBackgroundRightClick: handleBackgroundRightClick,
-      onNodeDrag: handleNodeDrag,
-      onNodeDragEnd: handleNodeDragEnd,
-      // Swallow the engine's HTML tooltip — we render our own.
-      nodeLabel: () => "",
-      linkLabel: () => "",
-      onNodeHover: handleNodeHover,
-      onLinkHover: handleLinkHover,
-      // Background grid via the render-frame-pre hook. Wraps any
-      // user-provided callback so we don't clobber it.
-      ...(showGrid
-        ? {
-            onRenderFramePre: (
-              ctx: CanvasRenderingContext2D,
-              scale: number,
-            ) => {
-              const opts = typeof showGrid === "object" ? showGrid : {};
-              drawBackgroundGrid(ctx, scale, opts);
-              onRenderFramePre?.(ctx, scale);
-            },
-          }
-        : {}),
-      // Group-legend visibility: only inject the wrapped accessor when
-      // either the legend filter is in use or the host has supplied
-      // their own nodeVisibility. Otherwise leave the prop alone so
-      // the kapsule uses its default.
-      ...(accessors.nodeVisibility
-        ? { nodeVisibility: accessors.nodeVisibility }
-        : {}),
-    }),
-    [
+    };
+    // Fill kapsule-default holes only when the host didn't supply a
+    // value. Same defaults in both presentation modes — the engine is
+    // the 3D kapsule throughout, so its dim defaults bleed through
+    // identically in 2D and 3D and must be overridden uniformly.
+    if (out.backgroundColor === undefined) {
+      out.backgroundColor = resolvedBackgroundColor;
+    }
+    if (out.linkColor === undefined) {
+      // Kept in lock-step with `LINK_DEFAULT` inside
+      // useAccessorOverrides — otherwise the un-stateful link colour
+      // would shift the instant any selection appears (when the
+      // wrapper takes over and returns its own default).
+      out.linkColor = "rgba(96, 102, 110, 0.55)";
+    }
+    if (out.linkOpacity === undefined) out.linkOpacity = 1;
+    if (out.nodeOpacity === undefined) out.nodeOpacity = 1;
+    // Selection / hover overlay wrappers — when active they win over
+    // any host-supplied accessor or the canvas defaults above. When
+    // inactive the memo returns the host's accessor (or undefined) so
+    // we don't inject a per-frame wrapper for nothing.
+    if (accessors.nodeColor !== undefined) out.nodeColor = accessors.nodeColor;
+    if (accessors.linkColor !== undefined) out.linkColor = accessors.linkColor;
+    if (accessors.linkWidth !== undefined) out.linkWidth = accessors.linkWidth;
+    if (accessors.nodeVal !== undefined) out.nodeVal = accessors.nodeVal;
+    if (accessors.nodePointerAreaPaint !== undefined) {
+      out.nodePointerAreaPaint = accessors.nodePointerAreaPaint;
+    }
+    // On-canvas label rendering: draw text beneath each node. Mode
+    // "after" so the engine's default circle is drawn first, our label
+    // sits on top.
+    //
+    // IMPORTANT: pass the mode as a *function*, not a string. The
+    // kapsule's accessor-fn helper treats string values as per-node
+    // property-name lookups (`node["after"]`), so passing `"after"`
+    // resolves to undefined for every node and the canvas object is
+    // never invoked.
+    if (nodeLabelRenderer.canvasObject) {
+      out.nodeCanvasObject = nodeLabelRenderer.canvasObject;
+      out.nodeCanvasObjectMode = (() => "after") as () => "after";
+    }
+    // Same pattern for links — draw a small label along the link when
+    // a link is selected (or all links when showLabels is on).
+    if (linkLabelRenderer.canvasObject) {
+      out.linkCanvasObject = linkLabelRenderer.canvasObject;
+      out.linkCanvasObjectMode = (() => "after") as () => "after";
+    }
+    // 3D node label sprite under the sphere — extend keeps the
+    // default node mesh visible and adds our caption as a child.
+    if (nodeLabelRenderer.threeObject) {
+      out.nodeThreeObject = nodeLabelRenderer.threeObject;
+      out.nodeThreeObjectExtend = true;
+    }
+    // 3D link label sprite at the midpoint. Position update keeps the
+    // sprite glued to the live link coords each tick; extend preserves
+    // the kapsule's default line/cylinder rendering.
+    if (linkLabelRenderer.threeObject) {
+      out.linkThreeObject = linkLabelRenderer.threeObject;
+      out.linkThreeObjectExtend = true;
+      if (linkLabelRenderer.positionUpdate) {
+        out.linkPositionUpdate = linkLabelRenderer.positionUpdate;
+      }
+    }
+    // Generous hit area for thin links — without this, edges are hard
+    // to click. Hosts can override by passing their own value.
+    out.linkHoverPrecision = linkHoverPrecision ?? 8;
+    out.enableNavigationControls = suppressNav
+      ? false
+      : (enableNavigationControls ?? true);
+    out.onNodeClick = handleNodeClick;
+    out.onNodeRightClick = handleNodeRightClick;
+    out.onLinkClick = handleLinkClick;
+    out.onLinkRightClick = handleLinkRightClick;
+    out.onBackgroundClick = handleBackgroundClick;
+    out.onBackgroundRightClick = handleBackgroundRightClick;
+    out.onNodeDrag = handleNodeDrag;
+    out.onNodeDragEnd = handleNodeDragEnd;
+    // Swallow the engine's HTML tooltip — we render our own.
+    out.nodeLabel = () => "";
+    out.linkLabel = () => "";
+    out.onNodeHover = handleNodeHover;
+    out.onLinkHover = handleLinkHover;
+    // Background grid via the render-frame-pre hook. Wraps any
+    // user-provided callback so we don't clobber it.
+    if (showGrid) {
+      out.onRenderFramePre = (
+        ctx: CanvasRenderingContext2D,
+        scale: number,
+      ) => {
+        const gridOpts = typeof showGrid === "object" ? showGrid : {};
+        drawBackgroundGrid(ctx, scale, gridOpts);
+        onRenderFramePre?.(ctx, scale);
+      };
+    }
+    // Group-legend visibility: only inject the wrapped accessor when
+    // either the legend filter is in use or the host has supplied
+    // their own nodeVisibility. Otherwise leave the prop alone so the
+    // kapsule uses its default.
+    if (accessors.nodeVisibility) out.nodeVisibility = accessors.nodeVisibility;
+    return out as LoraGraphCanvasProps<N, L>;
+  }, [
       props,
       internalDagMode,
-      mode,
-      theme?.background,
+      resolvedBackgroundColor,
       backgroundColor,
       accessors.nodeColor,
       accessors.linkColor,
@@ -1032,6 +1032,42 @@ function LoraGraphCanvasInner<
     // (e.g. "Switch to 3D / 2D") are stale relative to the new mode.
     setMenu(null);
   };
+
+  // ─── First-load intro zoom ──────────────────────────────────────
+  // Pull the camera back proportional to node count, then tween into
+  // the fitted view. Fires exactly once per component lifetime — a
+  // ref gates the effect so subsequent data mutations or mode flips
+  // don't re-play the intro (the user has their own camera by then).
+  const hasPlayedIntroRef = useRef(false);
+  const nodeCount = dataApi.data.nodes.length;
+  useEffect(() => {
+    if (!introZoom) return;
+    if (!engine) return;
+    if (hasPlayedIntroRef.current) return;
+    if (nodeCount === 0) return;
+    hasPlayedIntroRef.current = true;
+    // Pull-back factor. Log-shaped so the intro feels proportional
+    // to scene complexity: a 5-node demo reveals from ~×3 out, a
+    // 1k graph from ~×5.3, a 10k stress graph from ~×6.3. Smaller
+    // graphs don't need (and would feel slow with) the bigger pull.
+    const pullBack = 2.3 + Math.log10(Math.max(nodeCount, 1));
+    // Give the kapsule a frame to run its own auto-fit so the bbox
+    // we tween toward is sensible — calling fit() before warmup
+    // ticks have populated node positions would fit to a near-zero
+    // bbox and the intro would look like a flat snap.
+    const timer = setTimeout(() => {
+      const eng = engineRef.current;
+      if (!eng) return;
+      // engine.zoom(scale, 0) — scale < 1 pulls the camera away
+      // from origin along its current direction vector. Works in
+      // both 2D (top-down, locked z-axis) and 3D (orbit).
+      eng.zoom(1 / pullBack, 0);
+      // Tween into the fitted bbox. ~1s reads as a deliberate
+      // reveal without dragging.
+      requestAnimationFrame(() => engineRef.current?.fit(1000, 40));
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [engine, introZoom, nodeCount]);
 
   useGraphForces<N, L>({
     engine,
@@ -1117,7 +1153,11 @@ function LoraGraphCanvasInner<
           break;
         case "select-all":
           selection.set(dataApi.data.nodes.map((n) => n.id));
-          setSelectedLinkIds([]);
+          setSelectedLinkIds(
+            dataApi.data.links
+              .map((l) => l.id)
+              .filter((id): id is string | number => id !== undefined),
+          );
           break;
         case "fit":
           engine?.fit(400, 40);
@@ -1282,7 +1322,9 @@ function LoraGraphCanvasInner<
           onClose={() => setMenu(null)}
         />
       ) : null}
-      <HoverTooltip content={tooltipContent} hostRef={hostRef} />
+      {enableTooltip ? (
+        <HoverTooltip content={tooltipContent} hostRef={hostRef} />
+      ) : null}
       <MarqueeOverlay rect={marquee} />
       {showLegend && nodeAutoColorBy ? (
         <GroupLegend

@@ -5,7 +5,7 @@ import { render, act } from "@testing-library/react";
 
 // Capture d3Force / emitParticle calls and the engine handlers so we
 // can verify that the React layer hooks them up correctly.
-const handlers2D: Record<string, (...a: unknown[]) => void> = {};
+const handlers3D: Record<string, (...a: unknown[]) => void> = {};
 const d3ForceCalls: Array<{ name: string; fn: unknown }> = [];
 const emitParticleCalls: unknown[] = [];
 
@@ -75,17 +75,14 @@ function makeFakeKapsule(
   >;
 }
 
-vi.mock("force-graph", () => ({
+vi.mock("../../src/engines/3d-force-graph", () => ({
   default: vi.fn(() =>
-    makeFakeKapsule(handlers2D, d3ForceCalls, emitParticleCalls),
+    makeFakeKapsule(handlers3D, d3ForceCalls, emitParticleCalls),
   ),
-}));
-vi.mock("3d-force-graph", () => ({
-  default: vi.fn(() => makeFakeKapsule({}, [], [])),
 }));
 
 beforeEach(() => {
-  for (const k of Object.keys(handlers2D)) delete handlers2D[k];
+  for (const k of Object.keys(handlers3D)) delete handlers3D[k];
   d3ForceCalls.length = 0;
   emitParticleCalls.length = 0;
 });

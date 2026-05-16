@@ -15,6 +15,73 @@ export function readAccessor<T, In>(
   return accessor;
 }
 
+/** Resolve a node's display caption. Precedence:
+ *    1. Host accessor (`nodeLabel`) when it returns a non-empty value.
+ *       Strings pass through; HTMLElements yield their textContent;
+ *       other primitives (e.g. numeric `nodeLabel="id"`) are stringified.
+ *    2. The node's own `label` field, if it's a non-empty string.
+ *    3. The node id, stringified.
+ *  Returns "" when nothing resolves — callers should treat that as
+ *  "skip drawing". */
+export function resolveNodeLabelText<
+  N extends { id?: string | number; label?: unknown },
+>(
+  accessor:
+    | string
+    | HTMLElement
+    | ((n: N) => string | HTMLElement)
+    | undefined,
+  node: N,
+): string {
+  const raw = readAccessor<string | HTMLElement, N>(accessor, node);
+  if (typeof raw === "string") return raw;
+  if (typeof HTMLElement !== "undefined" && raw instanceof HTMLElement) {
+    return raw.textContent ?? "";
+  }
+  if (raw !== null && raw !== undefined) return String(raw);
+  if (typeof node.label === "string" && node.label.length > 0) return node.label;
+  return node.id !== undefined ? String(node.id) : "";
+}
+
+/** Resolve a link's display caption. Same precedence as
+ *  `resolveNodeLabelText`, with the id-based fallback rendering as
+ *  `source → target` using the resolved endpoint ids. Returns "" when
+ *  no caption can be formed. */
+export function resolveLinkLabelText<
+  L extends {
+    label?: unknown;
+    source: unknown;
+    target: unknown;
+  },
+>(
+  accessor:
+    | string
+    | HTMLElement
+    | ((l: L) => string | HTMLElement)
+    | undefined,
+  link: L,
+): string {
+  const raw = readAccessor<string | HTMLElement, L>(accessor, link);
+  if (typeof raw === "string") return raw;
+  if (typeof HTMLElement !== "undefined" && raw instanceof HTMLElement) {
+    return raw.textContent ?? "";
+  }
+  if (raw !== null && raw !== undefined) return String(raw);
+  if (typeof link.label === "string" && link.label.length > 0) return link.label;
+  const src = link.source as { id?: string | number } | string | number;
+  const tgt = link.target as { id?: string | number } | string | number;
+  const sId =
+    typeof src === "object" && src !== null
+      ? src.id
+      : (src as string | number | undefined);
+  const tId =
+    typeof tgt === "object" && tgt !== null
+      ? tgt.id
+      : (tgt as string | number | undefined);
+  if (sId === undefined && tId === undefined) return "";
+  return `${sId ?? ""} → ${tId ?? ""}`;
+}
+
 /** Adjust a CSS color string toward the given alpha. Best-effort —
  *  passes through unrecognised inputs untouched. Used by the
  *  neighbour-highlight code to dim non-hovered neighbours. */

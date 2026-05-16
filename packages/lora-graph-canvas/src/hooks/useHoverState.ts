@@ -15,6 +15,23 @@ import type { Accessor, LinkObject, NodeObject } from "../types";
 // without the hover state flickering off in between.
 const HOVER_GRACE_MS = 250;
 
+// String-accessor shortcuts (`nodeLabel="id"`) resolve to whatever
+// type the underlying property is — a numeric `id`, a boolean flag,
+// etc. The tooltip can only render a string or an HTMLElement, and
+// HoverTooltip's non-string branch calls `appendChild(content)` —
+// which throws "parameter 1 is not of type 'Node'" the moment a
+// number or object slips through. Coerce at this boundary so the
+// tooltip's invariant holds regardless of what shape the host's
+// data is in.
+function coerceLabel(v: unknown): string | HTMLElement | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") return v;
+  if (typeof HTMLElement !== "undefined" && v instanceof HTMLElement) {
+    return v;
+  }
+  return String(v);
+}
+
 export interface UseHoverStateParams<
   N extends NodeObject,
   L extends LinkObject,
@@ -192,7 +209,7 @@ export function useHoverState<
         setHoverNodeId(node.id);
       }
       const label = readAccessor<string | HTMLElement, N>(nodeLabel, node);
-      setTooltipContent(label ?? null);
+      setTooltipContent(coerceLabel(label));
     },
     [onNodeHover, nodeLabel, highlightNeighborsOnHover],
   );
@@ -217,7 +234,7 @@ export function useHoverState<
       }
       setHoverLinkId(link.id ?? null);
       const label = readAccessor<string | HTMLElement, L>(linkLabel, link);
-      setTooltipContent(label ?? null);
+      setTooltipContent(coerceLabel(label));
     },
     [onLinkHover, linkLabel],
   );

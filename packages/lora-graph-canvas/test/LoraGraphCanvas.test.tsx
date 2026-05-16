@@ -3,20 +3,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createRef } from "react";
 import { render, act } from "@testing-library/react";
 
-// The kapsule engines call into canvas / WebGL on construction. Mock
-// both to thin spies so we can mount the React layer without a real
-// rendering surface.
-const fake2DInstance = makeFakeKapsule();
-const fake3DInstance = makeFakeKapsule();
+// The unified engine instantiates a real Three.js renderer on
+// construction, which crashes jsdom's canvas. Mock 3d-force-graph
+// (the only renderer the unified engine touches) to a thin spy so we
+// can mount the React layer without a rendering surface.
+const fakeInstance = makeFakeKapsule();
 
-vi.mock("force-graph", () => {
+vi.mock("../src/engines/3d-force-graph", () => {
   return {
-    default: vi.fn(() => fake2DInstance),
-  };
-});
-vi.mock("3d-force-graph", () => {
-  return {
-    default: vi.fn(() => fake3DInstance),
+    default: vi.fn(() => fakeInstance),
   };
 });
 

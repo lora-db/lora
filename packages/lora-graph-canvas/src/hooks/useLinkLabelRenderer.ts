@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef } from "react";
-import { Object3D, Sprite, type SpriteMaterial } from "three";
-import { readAccessor } from "../utils/accessor";
+import { Group, Object3D, Sprite, type SpriteMaterial } from "three";
+import { resolveLinkLabelText } from "../utils/accessor";
 import {
   createTextSprite,
+  disposeLabelSprite,
   type SpriteLabelUserData,
 } from "../utils/spriteLabel";
 import type {
@@ -142,19 +143,12 @@ export function useLinkLabelRenderer<L extends LinkObject>(
       const tgt = link.target as NodeObject | string | number;
       if (typeof src !== "object" || typeof tgt !== "object") return;
 
-      const label = readAccessor<string | HTMLElement, L>(linkLabel, link);
-      const explicit =
-        typeof label === "string"
-          ? label
-          : label instanceof HTMLElement
-            ? (label.textContent ?? "")
-            : "";
-      // Fall back to "source → target" using the resolved node ids
-      // (matches the canonical force-graph text-links example) so the
-      // user sees *something* without having to wire `linkLabel`.
-      const text =
-        explicit ||
-        `${(src as NodeObject).id ?? ""} → ${(tgt as NodeObject).id ?? ""}`;
+      // resolveLinkLabelText handles the precedence: explicit linkLabel
+      // accessor first, then the link's own `label` field, finally a
+      // "source → target" caption from the resolved node ids (matches
+      // the canonical force-graph text-links example) so the user
+      // sees *something* without having to wire `linkLabel`.
+      const text = resolveLinkLabelText(linkLabel, link);
       if (!text || text === " → ") return;
       const sx = src.x;
       const sy = src.y;
@@ -236,22 +230,40 @@ export function useLinkLabelRenderer<L extends LinkObject>(
     showLabels || selectedLinkSet.size > 0 || hoverSize2D > 0;
   const canvasObject = hasAnyLinkLabel ? stableLinkCanvasObject : undefined;
 
-  // Per-instance registry of live link-label sprites, keyed by link
-  // id. Populated by the threeObject accessor; an effect below walks
-  // it to flip `sprite.visible` whenever the gating state changes.
-  // Same rationale as `useLabelRenderer`: setting `sprite.visible =
-  // false` lets three.js skip hidden sprites during scene traversal
-  // entirely, where zeroing material.opacity would still pay matrix /
-  // transparent-sort / draw-call cost per sprite per frame. The
-  // tradeoff is that `onBeforeRender` doesn't fire for invisible
-  // sprites, so we have to drive visibility from this effect rather
-  // than from inside the render loop.
-  const linkSpriteRegistry = useRef<Map<string | number, Sprite>>(
+  // Per-link registry — every link gets a Group up-front (cheap), and
+  // the sprite inside is minted on demand. Two sites can mint:
+  //
+  //   1. The threeObject accessor itself (eager) — covers the case
+  //      where the kapsule rebuilds link meshes mid-state-change
+  //      (i.e. every digest re-run, which under the current overlay-
+  //      state-in-deps wiring happens on every selection/hover tick).
+  //      Without eager creation the new Group would render one full
+  //      frame with no sprite and labels visibly vanish during
+  //      interaction.
+  //   2. The visibility effect (backup) — covers state changes that
+  //      don't trigger a kapsule digest (e.g. a fresh sprite needed
+  //      after the visible-set widened), and handles flipping
+  //      `sprite.visible` + selected-texture swap for sprites that
+  //      already exist.
+  //
+  // Either way, sprite creation is paid only for links that actually
+  // have to show their caption — at 10k+ links and zero labels visible,
+  // the registry still costs only 10k empty Groups (skipped by the
+  // renderer's scene traversal), not 10k canvases + 10k GPU textures.
+  interface LinkLabelEntry {
+    group: Group;
+    sprite: Sprite | null;
+    text: string;
+  }
+  const linkLabelRegistry = useRef<Map<string | number, LinkLabelEntry>>(
     new Map(),
   );
-  // Live ref so a newly-created sprite seeds its visibility from the
-  // *current* state on first frame, without dragging selection /
-  // hover sets into the accessor memo's deps.
+
+  // Live ref so the threeObject accessor can sample current visibility
+  // state at digest-time without depending on it in deps (which would
+  // cause every hover tick to invalidate the accessor's identity and
+  // force the kapsule to recreate every link mesh from scratch — an
+  // O(N) tear-down every mouse-move).
   const linkVisibilityRef = useRef({
     showLabels,
     selectedLinkSet,
@@ -263,89 +275,71 @@ export function useLinkLabelRenderer<L extends LinkObject>(
     hoveredLinkSet,
   };
 
-  // 3D variant: spawn a billboarded sprite per link. We extend
-  // (rather than replace) the kapsule's default link object, so the
-  // line / cylinder still renders alongside the label. The position
-  // update places the sprite at the link's midpoint each tick.
-  const threeObject = useMemo<LinkLabelRenderer<L>["threeObject"]>(() => {
-    if (mode !== "3d") return undefined;
-    if (hostLinkThreeObject) return undefined;
-    const fontFamily = theme?.fontFamily ?? "system-ui, sans-serif";
-    const registry = linkSpriteRegistry.current;
-    return (link: L) => {
-      const src = link.source as NodeObject | string | number;
-      const tgt = link.target as NodeObject | string | number;
-      const label = readAccessor<string | HTMLElement, L>(linkLabel, link);
-      const explicit =
-        typeof label === "string"
-          ? label
-          : label instanceof HTMLElement
-            ? (label.textContent ?? "")
-            : "";
-      // Same source→target fallback as the 2D path so labels show
-      // without the host having to wire `linkLabel`.
-      const sId =
-        typeof src === "object"
-          ? (src as NodeObject).id
-          : (src as string | number);
-      const tId =
-        typeof tgt === "object"
-          ? (tgt as NodeObject).id
-          : (tgt as string | number);
-      const text = explicit || `${sId ?? ""} → ${tId ?? ""}`;
-      if (!text || text === " → ") return new Object3D();
-      // Constant-screen-size via `pixelHeight: 22` — same auto-scaling
-      // path as the node label (`pixelHeight: 28`), just a couple of
-      // pixels smaller so edge captions sit visually secondary to node
-      // names without competing for attention. Both labels grow / shrink
-      // in lock-step with the camera, matching the proportional feel of
-      // 2D's `fontSize / globalScale` trick.
-      //
-      // A second "selected" texture is baked alongside the default so
-      // the registry effect below can flip `material.map` when the link
-      // becomes selected — mirrors the 2D link label (accent fill +
-      // white text on selection) and the 3D node label, so the cue is
-      // uniform across both modes and both label kinds.
-      const sprite = createTextSprite({
-        text,
-        fontFamily,
-        fontSize: 48,
-        color: tooltipFg,
-        backgroundColor: tooltipBg,
-        selectedColor: "#ffffff",
-        selectedBackgroundColor: accentColor,
-        pixelHeight: 22,
-      });
-      // Link labels read as secondary annotations: depth-tested so
-      // closer geometry (node spheres, nearer link tubes) occludes
-      // them — this is the "behind" treatment that distinguishes
-      // them from node labels (which sit on top via `depthTest =
-      // false` + a very high `renderOrder`). `renderOrder = 10` lifts
-      // link labels above the default-0 kapsule geometry so two link
-      // labels at similar depth resolve predictably; node labels
-      // still win on overlap because they're depth-test-disabled and
-      // render much later in the transparent pass.
-      (sprite.material as SpriteMaterial).depthTest = true;
-      sprite.renderOrder = 10;
-      // Seed visibility from current state so a freshly-added link
-      // appears (or stays hidden) on its first rendered frame
-      // without waiting for the next state change to trigger the
-      // registry effect.
-      const vState = linkVisibilityRef.current;
-      const isSelectedNow =
-        link.id !== undefined && vState.selectedLinkSet.has(link.id);
-      const isHoveredNow =
-        link.id !== undefined &&
-        vState.hoveredLinkSet?.has(link.id) === true;
-      sprite.visible =
-        vState.showLabels || isSelectedNow || isHoveredNow;
-      if (link.id !== undefined) {
-        registry.set(link.id, sprite);
+  // Mount-scoped cleanup so we don't leak CanvasTextures across remounts.
+  useEffect(() => {
+    const registry = linkLabelRegistry.current;
+    return () => {
+      for (const entry of registry.values()) {
+        if (entry.sprite) disposeLabelSprite(entry.sprite);
       }
-      return sprite;
+      registry.clear();
+    };
+  }, []);
+
+  // Sprite variant — always-installed under the unified engine (the
+  // 2D canvas-object path is dead under propBindings' `only2d` gate).
+  // Eagerly mints a sprite for any link that's currently in a visible
+  // state at the moment the accessor runs.
+  const threeObject = useMemo<LinkLabelRenderer<L>["threeObject"]>(() => {
+    if (hostLinkThreeObject) return undefined;
+    const registry = linkLabelRegistry.current;
+    const fontFamily = theme?.fontFamily ?? "system-ui, sans-serif";
+    return (link: L) => {
+      const text = resolveLinkLabelText(linkLabel, link);
+      const group = new Group();
+      const id = link.id;
+      if (id !== undefined && text && text !== " → ") {
+        const entry: LinkLabelEntry = { group, sprite: null, text };
+        registry.set(id, entry);
+        // Eager mint when the link is already in a visible state at
+        // digest-time. Without this, the new Group spends a frame
+        // with no child sprite — visible to the user as the label
+        // briefly disappearing whenever the kapsule rebuilds link
+        // meshes (which is on every overlay state change now that the
+        // wrappers correctly invalidate per-state).
+        const v = linkVisibilityRef.current;
+        const isSelected = v.selectedLinkSet.has(id);
+        const isHovered = v.hoveredLinkSet?.has(id) === true;
+        if (v.showLabels || isSelected || isHovered) {
+          const sprite = createTextSprite({
+            text,
+            fontFamily,
+            fontSize: 48,
+            color: tooltipFg,
+            backgroundColor: tooltipBg,
+            selectedColor: "#ffffff",
+            selectedBackgroundColor: accentColor,
+            pixelHeight: 22,
+          });
+          (sprite.material as SpriteMaterial).depthTest = false;
+          sprite.renderOrder = 500;
+          // Apply the selected texture if appropriate so the first
+          // rendered frame doesn't flash the wrong style.
+          if (isSelected) {
+            const data = sprite.userData as SpriteLabelUserData;
+            if (data.selectedTexture) {
+              const mat = sprite.material as SpriteMaterial;
+              mat.map = data.selectedTexture;
+              mat.needsUpdate = true;
+            }
+          }
+          group.add(sprite as unknown as Object3D);
+          entry.sprite = sprite;
+        }
+      }
+      return group;
     };
   }, [
-    mode,
     hostLinkThreeObject,
     linkLabel,
     theme?.fontFamily,
@@ -354,42 +348,89 @@ export function useLinkLabelRenderer<L extends LinkObject>(
     accentColor,
   ]);
 
-  // Sync sprite.visible + selected texture with the current
-  // showLabels / selection / hover state. The texture flip mirrors
-  // the 3D node-label registry effect so selection feedback is
-  // identical across both label kinds — and the 2D pill cue is
-  // visually equivalent on top.
+  // Visibility / lifecycle effect. Same shape as the node-label
+  // version: walk the registry, mint the sprite on first show, swap
+  // textures for selection, toggle `visible` otherwise. Sprites once
+  // minted are kept around (re-hovering the same link is then free)
+  // and only disposed when the kapsule detaches the parent Group.
   useEffect(() => {
-    if (mode !== "3d") return;
-    const registry = linkSpriteRegistry.current;
-    for (const [id, sprite] of registry) {
-      if (sprite.parent === null) {
+    const registry = linkLabelRegistry.current;
+    const fontFamily = theme?.fontFamily ?? "system-ui, sans-serif";
+    for (const [id, entry] of registry) {
+      if (entry.group.parent === null) {
+        if (entry.sprite) disposeLabelSprite(entry.sprite);
         registry.delete(id);
         continue;
       }
       const isSelected = selectedLinkSet.has(id);
       const isHovered = hoveredLinkSet?.has(id) === true;
-      sprite.visible = showLabels || isSelected || isHovered;
-      const data = sprite.userData as SpriteLabelUserData;
-      const desired =
-        isSelected && data.selectedTexture
-          ? data.selectedTexture
-          : data.normalTexture;
-      const material = sprite.material as SpriteMaterial;
-      if (desired && material.map !== desired) {
-        material.map = desired;
-        material.needsUpdate = true;
+      const shouldShow = showLabels || isSelected || isHovered;
+      if (shouldShow && entry.sprite === null) {
+        // First-time creation. The expensive canvas rasterise + GPU
+        // upload, paid only for links the user is actually inspecting.
+        const sprite = createTextSprite({
+          text: entry.text,
+          fontFamily,
+          fontSize: 48,
+          color: tooltipFg,
+          backgroundColor: tooltipBg,
+          selectedColor: "#ffffff",
+          selectedBackgroundColor: accentColor,
+          pixelHeight: 22,
+        });
+        // Link labels are always-visible annotations: depth-test off
+        // so node spheres / link tubes never occlude the caption, and
+        // a high renderOrder so the sprite paints AFTER everything
+        // the kapsule injects but still UNDER the node labels
+        // (renderOrder 1000). Trade-off: in dense 3D scenes a label
+        // can "show through" geometry between camera and link — but
+        // a hidden hover label is worse than an over-eager one.
+        (sprite.material as SpriteMaterial).depthTest = false;
+        sprite.renderOrder = 500;
+        entry.group.add(sprite as unknown as Object3D);
+        entry.sprite = sprite;
+      }
+      const sprite = entry.sprite;
+      if (sprite) {
+        sprite.visible = shouldShow;
+        const data = sprite.userData as SpriteLabelUserData;
+        const desired =
+          isSelected && data.selectedTexture
+            ? data.selectedTexture
+            : data.normalTexture;
+        const material = sprite.material as SpriteMaterial;
+        if (desired && material.map !== desired) {
+          material.map = desired;
+          material.needsUpdate = true;
+        }
       }
     }
-  }, [mode, showLabels, selectedLinkSet, hoveredLinkSet]);
+  }, [
+    showLabels,
+    selectedLinkSet,
+    hoveredLinkSet,
+    accentColor,
+    tooltipBg,
+    tooltipFg,
+    theme?.fontFamily,
+  ]);
 
   const positionUpdate = useMemo<LinkLabelRenderer<L>["positionUpdate"]>(
     () => {
-      if (mode !== "3d") return undefined;
       if (hostLinkPositionUpdate !== undefined && hostLinkPositionUpdate !== null) {
         // Host owns positioning entirely.
         return undefined;
       }
+      // In 2D presentation the top-down camera makes the world XY
+      // plane map 1:1 onto screen XY, so we can drive
+      // `material.rotation` (a screen-space CCW radian on the sprite
+      // quad) directly from `atan2(dy, dx)` to align the label with
+      // the link's bearing. Normalised into [-π/2, π/2] so the text
+      // never reads upside-down. In 3D the sprite stays billboarded
+      // (rotation = 0) — anchoring along the link in world-space
+      // would require unprojecting through the camera each tick and
+      // is rarely what the user wants when they can already orbit.
+      const is2D = mode === "2d";
       return (
         obj: unknown,
         coords: {
@@ -397,15 +438,55 @@ export function useLinkLabelRenderer<L extends LinkObject>(
           end: { x: number; y: number; z: number };
         },
       ): boolean => {
-        // Only sprites are repositioned; an empty Object3D (returned
-        // when there's no text) has no `.position` to set sensibly,
-        // but the kapsule still calls us — guard.
-        if (obj instanceof Sprite) {
-          obj.position.set(
-            (coords.start.x + coords.end.x) / 2,
-            (coords.start.y + coords.end.y) / 2,
-            (coords.start.z + coords.end.z) / 2,
-          );
+        // The threeObject is a Group (possibly with a lazily-added
+        // sprite child); position the Group at the link midpoint so a
+        // freshly-minted sprite picks up the right transform on its
+        // first rendered frame. Skip the per-tick work for groups
+        // whose sprite hasn't been minted yet AND haven't moved — the
+        // empty Group costs the renderer essentially nothing, so we
+        // don't need to track its position until there's a sprite to
+        // see.
+        if (obj instanceof Group) {
+          const mx = (coords.start.x + coords.end.x) / 2;
+          const my = (coords.start.y + coords.end.y) / 2;
+          const mz = (coords.start.z + coords.end.z) / 2;
+          obj.position.set(mx, my, mz);
+          // One-shot z-order pinning. The kapsule wraps every link in
+          // a parent Group and attaches the default line/cylinder mesh
+          // alongside our label Group. Default renderOrder is 0
+          // everywhere, so in 2D top-down (coplanar geometry) lines
+          // z-fight with — and visibly pass through — node spheres.
+          // Drop the link's parent to `-1` so nodes (default 0) always
+          // draw on top. The userData flag keeps this idempotent
+          // across the ~60 ticks/sec this callback fires at.
+          const parent = obj.parent;
+          if (parent && !(parent.userData as { lgcOrderApplied?: boolean }).lgcOrderApplied) {
+            (parent.userData as { lgcOrderApplied?: boolean }).lgcOrderApplied = true;
+            parent.renderOrder = -1;
+            for (const sibling of parent.children) {
+              if (sibling !== obj) sibling.renderOrder = -1;
+            }
+          }
+          const child = obj.children[0];
+          if (child instanceof Sprite) {
+            const material = child.material as SpriteMaterial;
+            if (is2D) {
+              const dx = coords.end.x - coords.start.x;
+              const dy = coords.end.y - coords.start.y;
+              let angle = Math.atan2(dy, dx);
+              if (angle > Math.PI / 2) angle -= Math.PI;
+              else if (angle < -Math.PI / 2) angle += Math.PI;
+              // Sub-radian no-op guard so we don't dirty the material
+              // buffer when the link hasn't visibly moved frame-to-
+              // frame.
+              if (Math.abs(material.rotation - angle) > 0.001) {
+                material.rotation = angle;
+              }
+            } else if (material.rotation !== 0) {
+              // Coming back from 2D — restore the billboarded baseline.
+              material.rotation = 0;
+            }
+          }
         }
         // Return true so the kapsule still runs its default
         // link-geometry update — we're additive, not replacing the

@@ -17,11 +17,13 @@ export default defineConfig({
       fileName: (format) => `index.${format === "es" ? "js" : "cjs"}`,
     },
     rollupOptions: {
+      // force-graph is no longer external — the in-tree port at
+      // src/engines/force-graph-2d/ gets bundled into the published
+      // artifact.
       external: [
         "react",
         "react-dom",
         "react/jsx-runtime",
-        "force-graph",
         "3d-force-graph",
         "three",
         /^three\//,

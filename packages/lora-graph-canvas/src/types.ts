@@ -197,6 +197,18 @@ export interface LoraGraphCanvasProps<
   // editing flows. All default to `true`.
   /** Allow ⌘C / ⌘X / ⌘V (and the matching ref methods). */
   enableClipboard?: boolean;
+  /** Render the floating tooltip (the cursor-anchored label resolved
+   *  from `nodeLabel` / `linkLabel`) on hover. Defaults to `false` —
+   *  the hover state still drives neighbour highlighting and on-canvas
+   *  labels, just without the mouse-attached pill. */
+  enableTooltip?: boolean;
+  /** Play an animated "zoom in to the bounds" intro on first mount.
+   *  The camera starts pulled back proportional to node count (so a
+   *  sparse 10-node graph reveals from ~×3 out and a 10k stress graph
+   *  from ~×6 out) and tweens into the fitted view. Defaults to
+   *  `true`. Pass `false` to suppress the intro and snap to the
+   *  kapsule's own initial fit instead. */
+  introZoom?: boolean;
 
   // Interactions
   enableNodeDrag?: boolean;

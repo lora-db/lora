@@ -1,46 +1,53 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
-import type { CameraState, GraphEngine } from "../src/engines/types";
-import type { GraphMode, LinkObject, NodeObject } from "../src/types";
+import type { GraphEngine } from "../src/engines/types";
+import type {
+  GraphMode,
+  LinkObject,
+  NodeObject,
+} from "../src/types";
+import type { UnifiedEngine } from "../src/engines/createEngineUnified";
 
-// The persistence behavior used to live in a dedicated hook
-// (`useEnginePersistence`). It now lives inside `useGraphEngine`:
-// camera state is captured in the mount-effect cleanup before the
-// outgoing kapsule is destroyed and restored to each new engine, and
-// pause state is applied via a `[engine, paused]` effect. These tests
-// exercise that integrated behavior by mocking the engine *adapter*
-// factories rather than the underlying kapsules, so we can fully
-// control what each engine reports and observe what's applied.
+// Under the unified engine, mode flips do not destroy or rebuild the
+// engine — they call engine.setMode(target, durationMs) and the
+// engine handles the transition internally. These tests mock the
+// engine factory and verify that lifecycle: a single engine instance
+// persists across mode changes, paused state flows in via React
+// props, and setMode is called with the right args when `mode`
+// changes.
 
-// Shared journal of fake-engine events across factory + test.
 const events: string[] = [];
 
-interface FakeEngine extends GraphEngine<NodeObject, LinkObject> {
-  _cameraState: CameraState;
+interface FakeEngine extends UnifiedEngine<NodeObject, LinkObject> {
   _id: string;
+  _setModeCalls: Array<{ target: GraphMode; durationMs?: number }>;
 }
 
-function makeFakeEngine(
-  id: string,
-  mode: GraphMode,
-  initialCamera: CameraState,
-): FakeEngine {
-  let camera = initialCamera;
-  const engine: Partial<FakeEngine> = {
-    mode,
-    get _cameraState() {
-      return camera;
+function makeFakeEngine(id: string, initialMode: GraphMode): FakeEngine {
+  let mode: GraphMode = initialMode;
+  const setModeCalls: Array<{ target: GraphMode; durationMs?: number }> = [];
+  const fake: Partial<FakeEngine> = {
+    get mode() {
+      return mode;
     },
     _id: id,
+    _setModeCalls: setModeCalls,
+    setMode: vi.fn((target: GraphMode, durationMs?: number) => {
+      events.push(`${id}:setMode(${target})`);
+      setModeCalls.push(
+        durationMs === undefined ? { target } : { target, durationMs },
+      );
+      mode = target;
+    }) as unknown as FakeEngine["setMode"],
     setGraphData: vi.fn(),
     getGraphData: vi.fn(() => ({ nodes: [], links: [] })),
     fit: vi.fn(),
     centerAt: vi.fn(),
     zoom: vi.fn(),
     getZoom: vi.fn(() => 1),
-    screen2Graph: vi.fn((x, y) => ({ x, y, z: 0 })),
-    graph2Screen: vi.fn((x, y) => ({ x, y, z: 0 })),
+    screen2Graph: vi.fn((x: number, y: number) => ({ x, y, z: 0 })),
+    graph2Screen: vi.fn((x: number, y: number) => ({ x, y, z: 0 })),
     getGraphBbox: vi.fn(() => ({
       x: [0, 0] as [number, number],
       y: [0, 0] as [number, number],
@@ -58,38 +65,26 @@ function makeFakeEngine(
     emitParticle: vi.fn(),
     stopAnimation: vi.fn(),
     focusOn: vi.fn(),
-    getCameraState: vi.fn(() => {
-      events.push(`${id}:getCameraState`);
-      return camera;
-    }),
-    setCameraState: vi.fn((state: CameraState) => {
-      events.push(`${id}:setCameraState`);
-      camera = state;
-    }),
+    getCameraState: vi.fn(() => ({ mode: "3d" as const, x: 0, y: 0, z: 100, lookAt: { x: 0, y: 0, z: 0 } })),
+    setCameraState: vi.fn(),
     applyProps: vi.fn(),
     getCanvasElement: vi.fn(() => null),
     destroy: vi.fn(() => {
       events.push(`${id}:destroy`);
     }),
   };
-  return engine as FakeEngine;
+  return fake as FakeEngine;
 }
 
-// Queue of pre-built engines the mocked factories will hand out, in
-// order. Each test pushes the engines it expects to be mounted.
+// Queue of pre-built engines the mocked factory will hand out. Each
+// test pushes the one engine it expects to be mounted (mode flips no
+// longer mount fresh engines).
 const engineQueue: FakeEngine[] = [];
 
-vi.mock("../src/engines/createEngine2D", () => ({
-  createEngine2D: vi.fn(() => {
+vi.mock("../src/engines/createEngineUnified", () => ({
+  createEngineUnified: vi.fn(() => {
     const e = engineQueue.shift();
-    if (!e) throw new Error("test bug: 2D engine queue empty");
-    return e;
-  }),
-}));
-vi.mock("../src/engines/createEngine3D", () => ({
-  createEngine3D: vi.fn(() => {
-    const e = engineQueue.shift();
-    if (!e) throw new Error("test bug: 3D engine queue empty");
+    if (!e) throw new Error("test bug: engine queue empty");
     return e;
   }),
 }));
@@ -115,156 +110,88 @@ beforeEach(() => {
   engineQueue.length = 0;
 });
 
-describe("useGraphEngine persistence", () => {
-  it("restores camera state when a new engine mounts in the same mode", () => {
-    const e2d_a = makeFakeEngine("2d-a", "2d", {
-      mode: "2d",
-      x: 100,
-      y: 200,
-      k: 3,
-    });
-    const e3d = makeFakeEngine("3d", "3d", {
-      mode: "3d",
-      x: 0,
-      y: 0,
-      z: 999,
-      lookAt: { x: 1, y: 2, z: 3 },
-    });
-    const e2d_b = makeFakeEngine("2d-b", "2d", {
-      mode: "2d",
-      x: 0,
-      y: 0,
-      k: 1,
-    });
-    engineQueue.push(e2d_a, e3d, e2d_b);
+describe("useGraphEngine (unified)", () => {
+  it("creates the engine once and keeps it across mode flips", () => {
+    const engine = makeFakeEngine("e", "2d");
+    engineQueue.push(engine);
 
     const { rerender } = renderHook(
       (params: { mode: GraphMode }) => useGraphEngine(baseProps(params)),
       { initialProps: { mode: "2d" } },
     );
 
-    // Mount-time has no saved camera yet, so setCameraState shouldn't fire.
-    expect(e2d_a.setCameraState).not.toHaveBeenCalled();
+    // First mount: no setMode call yet (it started in the right mode).
+    expect(engine._setModeCalls).toHaveLength(0);
+    expect(engine.destroy).not.toHaveBeenCalled();
 
-    // Swap to 3D — the outgoing 2D engine's cleanup captures its camera.
+    // Flip to 3D — same engine, setMode invoked.
     rerender({ mode: "3d" });
-    expect(e2d_a.getCameraState).toHaveBeenCalled();
-    expect(e2d_a.destroy).toHaveBeenCalled();
-    // The 3D engine has no saved 3D camera yet.
-    expect(e3d.setCameraState).not.toHaveBeenCalled();
+    expect(engine._setModeCalls).toEqual([
+      { target: "3d", durationMs: 800 },
+    ]);
+    expect(engine.destroy).not.toHaveBeenCalled();
 
-    // Swap back to 2D — the new 2D engine should receive the captured snapshot.
+    // Flip back — still the same engine, second setMode call.
     rerender({ mode: "2d" });
-    expect(e2d_b.setCameraState).toHaveBeenCalledWith(
-      { mode: "2d", x: 100, y: 200, k: 3 },
-      0,
-    );
+    expect(engine._setModeCalls).toEqual([
+      { target: "3d", durationMs: 800 },
+      { target: "2d", durationMs: 800 },
+    ]);
+    expect(engine.destroy).not.toHaveBeenCalled();
   });
 
-  it("keeps 2D and 3D camera snapshots separate", () => {
-    const e2d_a = makeFakeEngine("2d-a", "2d", {
-      mode: "2d",
-      x: 11,
-      y: 22,
-      k: 5,
-    });
-    const e3d_a = makeFakeEngine("3d-a", "3d", {
-      mode: "3d",
-      x: 50,
-      y: 60,
-      z: 70,
-      lookAt: { x: 0, y: 0, z: 0 },
-    });
-    const e2d_b = makeFakeEngine("2d-b", "2d", {
-      mode: "2d",
-      x: 0,
-      y: 0,
-      k: 1,
-    });
-    const e3d_b = makeFakeEngine("3d-b", "3d", {
-      mode: "3d",
-      x: 0,
-      y: 0,
-      z: 0,
-      lookAt: { x: 0, y: 0, z: 0 },
-    });
-    engineQueue.push(e2d_a, e3d_a, e2d_b, e3d_b);
+  it("does not call setMode on first mount even if mode is set", () => {
+    const engine = makeFakeEngine("e", "3d");
+    engineQueue.push(engine);
 
-    const { rerender } = renderHook(
-      (params: { mode: GraphMode }) => useGraphEngine(baseProps(params)),
-      { initialProps: { mode: "2d" } },
-    );
-    // 2d → 3d → 2d → 3d. Each restoration sees only its own mode's snapshot.
-    rerender({ mode: "3d" });
-    rerender({ mode: "2d" });
-    rerender({ mode: "3d" });
-
-    expect(e2d_b.setCameraState).toHaveBeenCalledWith(
-      { mode: "2d", x: 11, y: 22, k: 5 },
-      0,
-    );
-    expect(e3d_b.setCameraState).toHaveBeenCalledWith(
-      {
-        mode: "3d",
-        x: 50,
-        y: 60,
-        z: 70,
-        lookAt: { x: 0, y: 0, z: 0 },
-      },
-      0,
-    );
+    renderHook(() => useGraphEngine(baseProps({ mode: "3d" })));
+    expect(engine._setModeCalls).toHaveLength(0);
   });
 
   it("applies pause on initial mount when paused=true", () => {
-    const e = makeFakeEngine("e", "2d", { mode: "2d", x: 0, y: 0, k: 1 });
-    engineQueue.push(e);
+    const engine = makeFakeEngine("e", "2d");
+    engineQueue.push(engine);
 
-    renderHook(() => useGraphEngine(baseProps({ mode: "2d", paused: true })));
-    expect(e.pause).toHaveBeenCalledTimes(1);
+    renderHook(() =>
+      useGraphEngine(baseProps({ mode: "2d", paused: true })),
+    );
+    expect(engine.pause).toHaveBeenCalledTimes(1);
   });
 
   it("toggles pause/resume without re-mounting the engine", () => {
-    const e = makeFakeEngine("e", "2d", { mode: "2d", x: 0, y: 0, k: 1 });
-    engineQueue.push(e);
+    const engine = makeFakeEngine("e", "2d");
+    engineQueue.push(engine);
 
     const { rerender } = renderHook(
       (params: { paused: boolean }) =>
         useGraphEngine(baseProps({ mode: "2d", paused: params.paused })),
       { initialProps: { paused: false } },
     );
-    // Initial mount with paused=false fires resume() once.
-    expect(e.resume).toHaveBeenCalledTimes(1);
-    expect(e.pause).not.toHaveBeenCalled();
+    expect(engine.resume).toHaveBeenCalledTimes(1);
+    expect(engine.pause).not.toHaveBeenCalled();
 
     rerender({ paused: true });
-    expect(e.pause).toHaveBeenCalledTimes(1);
+    expect(engine.pause).toHaveBeenCalledTimes(1);
 
     rerender({ paused: false });
-    expect(e.resume).toHaveBeenCalledTimes(2);
-    // Same engine throughout — pause toggles do not trigger destroy.
-    expect(e.destroy).not.toHaveBeenCalled();
+    expect(engine.resume).toHaveBeenCalledTimes(2);
+    expect(engine.destroy).not.toHaveBeenCalled();
   });
 
-  it("re-applies paused state to a fresh engine on mode swap", () => {
-    const e2d = makeFakeEngine("2d", "2d", { mode: "2d", x: 0, y: 0, k: 1 });
-    const e3d = makeFakeEngine("3d", "3d", {
-      mode: "3d",
-      x: 0,
-      y: 0,
-      z: 100,
-      lookAt: { x: 0, y: 0, z: 0 },
-    });
-    engineQueue.push(e2d, e3d);
+  it("destroys the engine on unmount", () => {
+    const engine = makeFakeEngine("e", "2d");
+    engineQueue.push(engine);
 
-    const { rerender } = renderHook(
-      (params: { mode: GraphMode; paused: boolean }) =>
-        useGraphEngine(baseProps(params)),
-      { initialProps: { mode: "2d", paused: true } },
+    const { unmount } = renderHook(() =>
+      useGraphEngine(baseProps({ mode: "2d" })),
     );
-    expect(e2d.pause).toHaveBeenCalledTimes(1);
+    expect(engine.destroy).not.toHaveBeenCalled();
 
-    rerender({ mode: "3d", paused: true });
-    // The fresh 3D engine inherits the current paused value.
-    expect(e3d.pause).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(engine.destroy).toHaveBeenCalledTimes(1);
   });
 });
+
+// Sanity-narrow: the cast above shouldn't drift from the underlying
+// type. If GraphEngine widens, this import keeps the link explicit.
+void (null as unknown as GraphEngine<NodeObject, LinkObject>);

@@ -34,6 +34,13 @@ export interface UseAccessorOverridesParams<
   highlightedNodeIds: ReadonlySet<string | number>;
   highlightedLinkIds: ReadonlySet<string | number>;
   hoverNodeId: string | number | null;
+  /** Direct-link hover. Distinct from `highlightedLinkIds`, which
+   *  only fires when a node is hovered and its neighbour links light
+   *  up. When the user hovers a link itself, only `hoverLinkId` is
+   *  set — both signals need to flow into the size/colour wrappers
+   *  so the link bumps up on direct hover, not just node-neighbour
+   *  hover. */
+  hoverLinkId: string | number | null;
   hiddenGroups: ReadonlySet<string>;
 }
 
@@ -59,18 +66,21 @@ export interface AccessorOverrides<
  *     legend filter) we return the host's accessor *untouched*. The
  *     kapsule never enters our closure on hot paths in that case.
  *
- *  2. When an overlay is active, the wrapper identity stays stable
- *     across hover / selection state changes — the closure reads live
- *     state through a ref instead of capturing it on each render. This
- *     matters during interactions like dragging a node while a hover
- *     highlight is up: the cursor crosses other nodes 60×/sec and
- *     each crossing changes hoverNodeId. With unstable wrappers, every
- *     change would re-trigger the kapsule's nodeColor / linkColor /
- *     linkWidth / nodeVal setters, each of which walks the full
- *     node-or-link list and rebuilds materials. With stable wrappers,
- *     the setters only fire on the on/off *boundary* (first hover,
- *     last unhover) and the live state is picked up on the next render
- *     frame for free. */
+ *  2. When an overlay is active, the wrapper identity flips on every
+ *     selection/hover state change. This is REQUIRED — three-forcegraph's
+ *     link/node digest (see `three-forcegraph.mjs:1185`) only re-evaluates
+ *     accessors when one of its tracked props changes identity. Keeping
+ *     the wrapper "stable" through selection changes — as an earlier
+ *     iteration of this hook did — caused the kapsule to cache the colour
+ *     and width of whichever link the user first clicked and never update
+ *     them on subsequent clicks, despite the React state being correct.
+ *
+ *     The closure body still reads the latest state from a ref, but the
+ *     memo deps include every overlay signal so the identity flips with
+ *     each tick of the state machine. The kapsule's own internal digest
+ *     is smart enough to only rebuild geometries/materials whose value
+ *     actually changed (cheap on small per-click selection deltas), so
+ *     the cost of identity churn here is bounded. */
 export function useAccessorOverrides<
   N extends NodeObject,
   L extends LinkObject,
@@ -94,6 +104,7 @@ export function useAccessorOverrides<
     highlightedNodeIds,
     highlightedLinkIds,
     hoverNodeId,
+    hoverLinkId,
     hiddenGroups,
   } = params;
 
@@ -111,6 +122,7 @@ export function useAccessorOverrides<
     highlightedNodeIds,
     highlightedLinkIds,
     hoverNodeId,
+    hoverLinkId,
     hiddenGroups,
   });
   overlayStateRef.current = {
@@ -122,6 +134,7 @@ export function useAccessorOverrides<
     highlightedNodeIds,
     highlightedLinkIds,
     hoverNodeId,
+    hoverLinkId,
     hiddenGroups,
   };
 
@@ -163,7 +176,16 @@ export function useAccessorOverrides<
       if (hasSelection && s.mode !== "3d") return adjustAlpha(color, 0.25);
       return color;
     };
-  }, [nodeColor]);
+    // Identity must flip on any state that affects this accessor's
+    // output, or the kapsule's link/node digest won't pick up the
+    // change — see the block-level comment above.
+  }, [
+    nodeColor,
+    selectedNodeSet,
+    selectedLinkSet,
+    hoverNodeId,
+    highlightedNodeIds,
+  ]);
 
   const wrappedNodeColor = hasNodeColorOverlay ? stableNodeColor : nodeColor;
 
@@ -173,9 +195,37 @@ export function useAccessorOverrides<
   const hasLinkColorOverlay =
     selectedNodeSet.size > 0 ||
     selectedLinkSet.size > 0 ||
+    hoverLinkId !== null ||
     (highlightNeighborsOnHover && highlightedLinkIds.size > 0) ||
     hasHiddenGroups;
 
+  // ── Link palette ──────────────────────────────────────────────
+  // Three-tier emphasis hierarchy, matching the canonical graph-viewer
+  // mental model:
+  //
+  //   default        — dim grey, recedes into the background
+  //   hover          — "lights up" to a brighter grey (still neutral
+  //                    so the cue reads as "you're hovering here",
+  //                    not "this is selected"). Fires for BOTH direct
+  //                    link hover and node-neighbour highlight.
+  //   connected      — tinted toward the accent so the user can trace
+  //                    what touches their current selection.
+  //   selected       — accent colour at full strength.
+  //
+  // IMPORTANT: `LINK_DEFAULT` and `LINK_HOVER` share the same alpha
+  // channel. Three.js sets `material.transparent = opacity < 1` and
+  // `material.depthWrite = opacity >= 1` when the kapsule rebuilds
+  // link materials. Flipping a single hovered link from `transparent`
+  // to `opaque` (or vice versa) pulls it out of one sort group and
+  // into another, which reshuffles the *entire* transparent render
+  // pass for that frame — neighbouring lines visibly flicker as they
+  // re-sort around the new opaque mesh. Keeping both states in the
+  // same transparency class anchors the sort order, so hover changes
+  // only the RGB triplet and the renderer never has to reorder.
+  // Selection still crosses the class boundary (accent at α=1) but
+  // that's a single click, not a 60Hz event.
+  const LINK_DEFAULT = "rgba(96, 102, 110, 0.55)";
+  const LINK_HOVER = "rgba(180, 188, 198, 0.55)";
   const stableLinkColor = useMemo<Accessor<string, L>>(() => {
     const base = linkColor;
     // The legend-filter / nodeAutoColorBy axis is static for the
@@ -185,8 +235,6 @@ export function useAccessorOverrides<
     const colorBy = nodeAutoColorBy;
     return (link: L) => {
       const s = overlayStateRef.current;
-      const fallback =
-        s.mode === "3d" ? "rgba(80,80,80,0.7)" : "rgba(0,0,0,0.25)";
       const lid = link.id;
       const srcNode =
         typeof link.source === "object" ? (link.source as N) : null;
@@ -217,11 +265,12 @@ export function useAccessorOverrides<
           let color: string;
           if (typeof base === "function") color = base(link);
           else if (typeof base === "string") color = base;
-          else color = (link.color as string | undefined) ?? fallback;
+          else color = (link.color as string | undefined) ?? LINK_DEFAULT;
           return adjustAlpha(color, 0.05);
         }
       }
 
+      // Selected wins over everything else — full accent.
       if (lid !== undefined && s.selectedLinkSet.has(lid)) {
         return s.accentColor;
       }
@@ -234,26 +283,48 @@ export function useAccessorOverrides<
         hasNodeSelection &&
         ((sId !== undefined && s.selectedNodeSet.has(sId)) ||
           (tId !== undefined && s.selectedNodeSet.has(tId)));
-      if (isConnected) return s.accentColor;
-      const hasHover =
-        s.highlightNeighborsOnHover && s.highlightedLinkIds.size > 0;
-      if (hasHover && lid !== undefined && s.highlightedLinkIds.has(lid)) {
-        return s.accentColor;
+      // "Connected to a selected node" — strong cue, still accent but
+      // a hair lighter so the directly-selected links stand out.
+      if (isConnected) return adjustAlpha(s.accentColor, 0.85);
+      // Hover — fires for BOTH direct link hover (`hoverLinkId`) and
+      // node-neighbour highlight (`highlightedLinkIds`). The "lit up"
+      // grey is distinct from the accent reserved for selection so
+      // the user always knows which state they're in.
+      const directHover = lid !== undefined && s.hoverLinkId === lid;
+      const neighbourHover =
+        s.highlightNeighborsOnHover &&
+        lid !== undefined &&
+        s.highlightedLinkIds.has(lid);
+      if (directHover || neighbourHover) {
+        return LINK_HOVER;
       }
+      // Default — host-provided colour wins; otherwise the dim grey
+      // baseline.
       let color: string;
       if (typeof base === "function") color = base(link);
       else if (typeof base === "string") color = base;
-      else color = (link.color as string | undefined) ?? fallback;
+      else color = (link.color as string | undefined) ?? LINK_DEFAULT;
       const hasSelection =
         hasNodeSelection || s.selectedLinkSet.size > 0;
-      // Slight fade in 3D (≈60%), heavier fade in 2D (≈15%) — depth
-      // cues do part of the focus work in 3D, so we don't have to
-      // strip the unselected links down to a whisper.
+      // When SOMETHING is selected, push everything else into the
+      // background so the focus reads cleanly. 3D keeps a slightly
+      // higher floor (depth gives extra separation) than 2D.
       if (hasSelection)
-        return adjustAlpha(color, s.mode === "3d" ? 0.6 : 0.15);
+        return adjustAlpha(color, s.mode === "3d" ? 0.45 : 0.18);
       return color;
     };
-  }, [linkColor, nodeAutoColorBy]);
+    // Identity has to flip on every overlay-state change — see the
+    // block-level comment for why stable identity broke the kapsule's
+    // material/geometry digest.
+  }, [
+    linkColor,
+    nodeAutoColorBy,
+    selectedLinkSet,
+    selectedNodeSet,
+    hoverLinkId,
+    highlightedLinkIds,
+    hiddenGroups,
+  ]);
 
   const wrappedLinkColor = hasLinkColorOverlay ? stableLinkColor : linkColor;
 
@@ -261,8 +332,27 @@ export function useAccessorOverrides<
   const hasLinkWidthOverlay =
     selectedNodeSet.size > 0 ||
     selectedLinkSet.size > 0 ||
+    hoverLinkId !== null ||
     (highlightNeighborsOnHover && highlightedLinkIds.size > 0);
 
+  // Three-tier size hierarchy. Selection is communicated by colour
+  // (full accent) rather than stroke, so the SELECTED bump stays at or
+  // below the HOVER bump — a fat selected stroke felt heavy next to
+  // the neighbour-hover preview and crowded out adjacent edges. Hover
+  // is the visual ceiling; selected dips a hair under it so the colour
+  // stays the dominant cue. Values are split by mode because the
+  // engine maps `linkWidth` differently:
+  //   - 3D / cylinder links → linkWidth becomes cylinder radius, so a
+  //     +0.6 bump reads chunky. Bumps stay modest.
+  //   - 2D / legacy Canvas2D stroke → linkWidth is a CSS-pixel stroke
+  //     width, where a +3 bump is visually equivalent to the 3D +1.
+  //     Kept for hosts that opt back into Canvas2D rendering.
+  const HOVER_3D = 0.6;
+  const HOVER_2D = 1.5;
+  const CONNECTED_3D = 0.4;
+  const CONNECTED_2D = 1.0;
+  const SELECTED_3D = 0.5;
+  const SELECTED_2D = 1.2;
   const stableLinkWidth = useMemo<Accessor<number, L>>(() => {
     const base = linkWidth;
     return (link: L) => {
@@ -282,26 +372,41 @@ export function useAccessorOverrides<
         hasNodeSelection &&
         ((sId !== undefined && s.selectedNodeSet.has(sId)) ||
           (tId !== undefined && s.selectedNodeSet.has(tId)));
-      const hasHover =
-        s.highlightNeighborsOnHover && s.highlightedLinkIds.size > 0;
-      const isHighlighted =
-        hasHover && lid !== undefined && s.highlightedLinkIds.has(lid);
+      // Hover counts the same whether the user hovered the LINK
+      // directly (`hoverLinkId`) or hovered a node whose neighbours
+      // got highlighted (`highlightedLinkIds`) — both bump the width.
+      const directHover = lid !== undefined && s.hoverLinkId === lid;
+      const neighbourHover =
+        s.highlightNeighborsOnHover &&
+        lid !== undefined &&
+        s.highlightedLinkIds.has(lid);
+      const isHovered = directHover || neighbourHover;
       const baseWidth =
         typeof base === "function"
           ? base(link)
           : typeof base === "number"
             ? base
             : ((link.width as number | undefined) ?? 1);
-      // 3D maps `linkWidth` to cylinder radius, so the same absolute
-      // bump reads roughly 3× chunkier than a canvas stroke. Scale
-      // the selection/hover boosts down so the cue is visible without
-      // turning links into pipes.
       const is3D = s.mode === "3d";
-      if (isSelected) return baseWidth + (is3D ? 0.5 : 1.5);
-      if (isConnected) return baseWidth + (is3D ? 0.3 : 1);
-      if (isHighlighted) return baseWidth + (is3D ? 0.8 : 2.5);
+      // Order of precedence matches the colour wrapper above so the
+      // width and colour always agree on which state a link is in.
+      if (isSelected) return baseWidth + (is3D ? SELECTED_3D : SELECTED_2D);
+      if (isHovered) return baseWidth + (is3D ? HOVER_3D : HOVER_2D);
+      if (isConnected) return baseWidth + (is3D ? CONNECTED_3D : CONNECTED_2D);
       return baseWidth;
     };
+    // Stable identity by design. three-forcegraph treats `linkWidth`
+    // as a `.clear()` trigger (see `three-forcegraph.mjs:1201`), so
+    // flipping its identity tears down every link mesh and rebuilds
+    // them from scratch — at ~5–10 ms per 1k links, that's the bulk
+    // of the cost on a hover-driven 60 Hz update *and* it visibly
+    // wipes labels for a frame. Instead the wrapper stays stable and
+    // we lean on the `linkColor` digest below (which fires for the
+    // same state changes but only walks existing meshes in place) to
+    // pick up the new width values — the kapsule re-evaluates both
+    // accessors inside its `onUpdateObj`, so a stable wrapper that
+    // reads live state through `overlayStateRef` still produces the
+    // right per-link value on every digest tick.
   }, [linkWidth]);
 
   const wrappedLinkWidth = hasLinkWidthOverlay ? stableLinkWidth : linkWidth;
@@ -342,6 +447,15 @@ export function useAccessorOverrides<
       }
       return baseVal;
     };
+    // Stable identity by design — the node digest's `.clear()`
+    // trigger list doesn't include `nodeVal`, so we *could* put state
+    // in deps without triggering mesh recreation. But we don't need
+    // to: the digest fires on `nodeColor` identity changes (which DO
+    // happen on every state change), and inside its `onUpdateObj`
+    // walk both `nodeColor` and `nodeVal` accessors are re-evaluated
+    // per node. A stable `nodeVal` wrapper that reads live state
+    // through `overlayStateRef` therefore still produces the right
+    // per-node value on every state change, at zero churn cost.
   }, [nodeVal]);
 
   const wrappedNodeVal = hasNodeValOverlay ? stableNodeVal : nodeVal;

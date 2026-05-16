@@ -5,8 +5,12 @@ import {
   type Sprite,
   type SpriteMaterial,
 } from "three";
-import { readAccessor } from "../utils/accessor";
-import { createTextSprite, type SpriteLabelUserData } from "../utils/spriteLabel";
+import { readAccessor, resolveNodeLabelText } from "../utils/accessor";
+import {
+  createTextSprite,
+  disposeLabelSprite,
+  type SpriteLabelUserData,
+} from "../utils/spriteLabel";
 import type {
   Accessor,
   GraphMode,
@@ -134,13 +138,7 @@ export function useLabelRenderer<N extends NodeObject>(
         state.hoveredNodeSet?.has(node.id) === true;
       if (!state.showLabels && !isSelected && !isHovered) return;
 
-      const label = readAccessor<string | HTMLElement, N>(nodeLabel, node);
-      const text =
-        typeof label === "string"
-          ? label
-          : label instanceof HTMLElement
-            ? (label.textContent ?? String(node.id))
-            : String(node.id);
+      const text = resolveNodeLabelText(nodeLabel, node);
       if (!text) return;
 
       // Match force-graph's actual on-canvas radius:
@@ -202,31 +200,42 @@ export function useLabelRenderer<N extends NodeObject>(
     showLabels || selectedNodeSet.size > 0 || hoverSize > 0;
   const canvasObject = hasAnyNodeLabel ? stableCanvasObject : undefined;
 
-  // Per-instance registry of live sprites keyed by node id. The
-  // threeObject accessor populates this when each node sprite is
-  // created; an effect below walks it whenever the visibility-driving
-  // state changes and flips `sprite.visible` so hidden labels don't
-  // get drawn at all.
+  // Per-node registry — Group-per-node up-front, sprite minted on
+  // demand. Two sites can mint:
   //
-  // The previous approach gated visibility from inside the sprite's
-  // `onBeforeRender` by zeroing `material.opacity`. That kept every
-  // hidden sprite in the render list and paid for matrix updates,
-  // transparent-sort and a no-op draw call per sprite per frame —
-  // which on graphs in the 500-1000-node range was the dominant cost
-  // when labels were off. Setting `sprite.visible = false` instead
-  // lets three.js skip the object during scene traversal entirely,
-  // but means `onBeforeRender` no longer fires for invisible sprites,
-  // so we can't re-enable from inside the render loop — hence the
-  // outside-the-loop effect.
-  const nodeSpriteRegistry = useRef<Map<string | number, Sprite>>(
+  //   1. The threeObject accessor itself (eager) — covers the case
+  //      where the kapsule rebuilds node meshes mid-state-change.
+  //      Without eager creation the new Group renders one full frame
+  //      with no sprite, so node labels visibly flicker / disappear
+  //      during hover/select interactions.
+  //   2. The visibility effect (backup) — handles state changes that
+  //      don't trigger a kapsule digest, plus visibility flips and
+  //      selected-texture swaps for sprites that already exist.
+  //
+  // The deferred-creation pattern is essential at 10k+ nodes: the old
+  // unconditional eager mint did `createTextSprite` × 10k on mount,
+  // freezing the main thread on canvas rasterise + GPU texture upload
+  // for several seconds. The empty-Group fallback keeps cold-mount
+  // cheap while still letting hover/select interactions paint sprites
+  // on the same frame as the state change.
+  interface NodeLabelEntry {
+    group: Group;
+    sprite: Sprite | null;
+    text: string;
+    /** Y-offset in world units — pre-computed at registration time so
+     *  the (rare) sprite-creation path doesn't re-walk node.val. */
+    yOffset: number;
+  }
+  const nodeLabelRegistry = useRef<Map<string | number, NodeLabelEntry>>(
     new Map(),
   );
-  // Live ref to the current visibility-gating state. Read inside the
-  // (stable) threeObject accessor so a freshly-created sprite picks
-  // up the correct visibility on its first frame, without dragging
-  // these sets into the memo deps (which would invalidate the
-  // accessor identity on every hover and force the kapsule to
-  // destroy + rebuild every sprite).
+
+  // Live ref so the threeObject accessor can sample current visibility
+  // state without depending on it in deps. Same rationale as the link
+  // label renderer: putting selection/hover sets in deps would force
+  // the kapsule to recreate every node mesh from scratch on every
+  // mouse tick, an O(N) tear-down we can avoid by reading through a
+  // ref instead.
   const labelVisibilityRef = useRef({
     showLabels,
     selectedNodeSet,
@@ -238,103 +247,88 @@ export function useLabelRenderer<N extends NodeObject>(
     hoveredNodeSet,
   };
 
-  // 3D variant: produce a billboarded sprite and parent it under the
-  // kapsule's default node mesh (we use `nodeThreeObjectExtend: true`
-  // upstream so the sphere keeps rendering). The sprite sits above
-  // the sphere so it reads as a caption.
-  //
-  // The accessor identity stays stable across hover/selection changes
-  // — those flow through the registry effect below, not through deps
-  // — so the kapsule never tears down + rebuilds sprites mid-
-  // interaction. (Rebuilds reset the sprite to its default
-  // `worldHeight: 4` for one frame before `onBeforeRender` rescales
-  // to the pixelHeight target, which is the size-flash users see if
-  // we accidentally invalidate the accessor.)
-  const threeObject = useMemo<NodeLabelRenderer<N>["threeObject"]>(() => {
-    if (mode !== "3d") return undefined;
-    if (hostNodeThreeObject) return undefined;
-
-    const fontFamily = theme?.fontFamily ?? "system-ui, sans-serif";
-    const registry = nodeSpriteRegistry.current;
-
-    return (node: N) => {
-      const label = readAccessor<string | HTMLElement, N>(nodeLabel, node);
-      const text =
-        typeof label === "string"
-          ? label
-          : label instanceof HTMLElement
-            ? (label.textContent ?? String(node.id))
-            : String(node.id);
-      if (!text) return new Group();
-
-      // `pixelHeight: 28` keeps the sprite at ~28 CSS px tall regardless
-      // of camera distance — mirrors the 2D label's
-      // `fontSize / globalScale` trick so panning + zooming feels the
-      // same in both modes. Roughly: 14px font + 4px vertical padding
-      // × 2 ≈ 22, plus pill rounding → 28.
-      //
-      // Background colour is locked to the non-selected style: the
-      // accent cue lives on the sphere itself via `wrappedNodeColor`,
-      // so the label doesn't need to also re-rasterise on every
-      // selection change.
-      // Selected-state styling bakes a second texture at construction
-      // (accent-coloured pill, white text) so the registry effect
-      // below can flip `material.map` without re-rasterising on every
-      // selection change.
-      const sprite = createTextSprite({
-        text,
-        fontFamily,
-        fontSize: 48,
-        color: tooltipFg,
-        backgroundColor: tooltipBg,
-        selectedColor: "#ffffff",
-        selectedBackgroundColor: accentColor,
-        pixelHeight: 28,
-      });
-      // Node labels read as the topmost annotation in the scene —
-      // never occluded by spheres / links / link labels. `depthTest =
-      // false` skips the depth buffer so the sprite pixels always
-      // overwrite whatever was there, and a deliberately large
-      // `renderOrder` (1000) puts the sprite last in the transparent-
-      // sorted pass with enough headroom that nothing the kapsule
-      // injects (link tubes, particles, default arrows — all at the
-      // default renderOrder of 0) can slip in between us and the link
-      // labels at 10.
-      (sprite.material as SpriteMaterial).depthTest = false;
-      sprite.renderOrder = 1000;
-      // Seed visibility from current state so a freshly-added node
-      // appears (or stays hidden) on its first rendered frame without
-      // waiting for the next state change to trigger the registry
-      // effect.
-      const vState = labelVisibilityRef.current;
-      const isSelectedNow =
-        node.id !== undefined && vState.selectedNodeSet.has(node.id);
-      const isHoveredNow =
-        node.id !== undefined &&
-        vState.hoveredNodeSet?.has(node.id) === true;
-      sprite.visible =
-        vState.showLabels || isSelectedNow || isHoveredNow;
-      if (node.id !== undefined) {
-        registry.set(node.id, sprite);
+  // Per-mount cleanup: dispose every entry's sprite resources so we
+  // don't leak GPU memory across remounts.
+  useEffect(() => {
+    const registry = nodeLabelRegistry.current;
+    return () => {
+      for (const entry of registry.values()) {
+        if (entry.sprite) disposeLabelSprite(entry.sprite);
       }
-      // Position well above the sphere so the caption sits clear of
-      // both the node geometry and the edges fanning out of it. The
-      // kapsule centres the default node at (0, 0, 0) within the
-      // group it builds for our extension, and three.js uses +Y up,
-      // so a positive-y offset reads as "above" when the camera is
-      // upright. Offset = 2 × radius + 4 graph units: enough
-      // headroom for the edge fans on a moderately connected node
-      // while still feeling attached to the sphere.
+      registry.clear();
+    };
+  }, []);
+
+  // Sprite variant: returns an empty Group up-front for every node and
+  // eagerly mints a sprite if the node is currently in a visible state.
+  // The Group is parented under the kapsule's default node mesh (via
+  // `nodeThreeObjectExtend: true`) so the sphere keeps rendering.
+  //
+  // Active in BOTH presentation modes — the unified engine renders
+  // through the 3D kapsule even in 2D, so the only label path the
+  // kapsule actually invokes is `nodeThreeObject`. The 2D
+  // `nodeCanvasObject` binding (`canvasObject` below) is `only2d` in
+  // propBindings and never reaches the engine; sprites are the only
+  // working hover-affordance in 2D.
+  const threeObject = useMemo<NodeLabelRenderer<N>["threeObject"]>(() => {
+    if (hostNodeThreeObject) return undefined;
+    const registry = nodeLabelRegistry.current;
+    const fontFamily = theme?.fontFamily ?? "system-ui, sans-serif";
+    return (node: N) => {
+      const id = node.id;
+      const text = resolveNodeLabelText(nodeLabel, node);
       const val = readAccessor<number, N>(nodeVal, node) ?? 1;
       const relSize = nodeRelSize ?? 4;
+      // Cube root mirrors three-forcegraph's sphere radius formula —
+      // the offset keeps the caption clear of the geometry regardless
+      // of how large the user scales individual nodes.
       const radius = Math.cbrt(Math.max(val, 0)) * relSize;
-      sprite.position.set(0, radius * 2 + 4, 0);
+      const yOffset = radius * 2 + 4;
       const group = new Group();
-      group.add(sprite as unknown as Object3D);
+      if (id !== undefined && text) {
+        const entry: NodeLabelEntry = {
+          group,
+          sprite: null,
+          text,
+          yOffset,
+        };
+        registry.set(id, entry);
+        // Eager mint when the node is already in a visible state at
+        // digest-time — see the linkLabelRenderer comment for why
+        // waiting for the visibility effect leaves the new Group with
+        // no sprite for a frame.
+        const v = labelVisibilityRef.current;
+        const isSelected = v.selectedNodeSet.has(id);
+        const isHovered = v.hoveredNodeSet?.has(id) === true;
+        if (v.showLabels || isSelected || isHovered) {
+          const sprite = createTextSprite({
+            text,
+            fontFamily,
+            fontSize: 48,
+            color: tooltipFg,
+            backgroundColor: tooltipBg,
+            selectedColor: "#ffffff",
+            selectedBackgroundColor: accentColor,
+            pixelHeight: 28,
+          });
+          (sprite.material as SpriteMaterial).depthTest = false;
+          sprite.renderOrder = 1000;
+          sprite.position.set(0, yOffset, 0);
+          if (isSelected) {
+            const data = sprite.userData as SpriteLabelUserData;
+            if (data.selectedTexture) {
+              const mat = sprite.material as SpriteMaterial;
+              mat.map = data.selectedTexture;
+              mat.needsUpdate = true;
+            }
+          }
+          group.add(sprite as unknown as Object3D);
+          entry.sprite = sprite;
+        }
+      }
       return group;
     };
   }, [
-    mode,
     hostNodeThreeObject,
     nodeLabel,
     nodeVal,
@@ -345,42 +339,86 @@ export function useLabelRenderer<N extends NodeObject>(
     accentColor,
   ]);
 
-  // Sync sprite.visible + selected-style with the current showLabels
-  // / selection / hover state. Runs on every state change —
-  // O(registry size), which is bounded by node count and only walked
-  // here, not per frame.
+  // Visibility / lifecycle effect. Runs once per state change and
+  // walks the registry (O(node count) in the worst case, but the hot
+  // case — hover-only — fans out to one entry per state flip). For
+  // each entry:
   //
-  // Cleans up stale entries: when the kapsule destroys a sprite
-  // (data update, accessor reset), it detaches it from the scene and
-  // `sprite.parent` becomes null. We drop those rather than calling
-  // .visible on a stranded reference.
+  //   - if the kapsule destroyed our Group (`group.parent === null`)
+  //     we drop the entry and dispose its sprite to free GPU memory;
+  //   - if the node should currently show a label and no sprite has
+  //     been minted yet, we rasterise one and add it to the Group;
+  //   - if the sprite already exists, we just flip `.visible` and
+  //     (when selected) swap to the pre-baked accent texture.
+  //
+  // Sprites once minted are kept around even after the label hides,
+  // so re-hovering the same node never pays the canvas-rasterise cost
+  // again. The teardown path on Group destruction is the only place
+  // we actually call `dispose()`.
   useEffect(() => {
-    if (mode !== "3d") return;
-    const registry = nodeSpriteRegistry.current;
-    for (const [id, sprite] of registry) {
-      if (sprite.parent === null) {
+    const registry = nodeLabelRegistry.current;
+    const fontFamily = theme?.fontFamily ?? "system-ui, sans-serif";
+    for (const [id, entry] of registry) {
+      if (entry.group.parent === null) {
+        if (entry.sprite) disposeLabelSprite(entry.sprite);
         registry.delete(id);
         continue;
       }
       const isSelected = selectedNodeSet.has(id);
       const isHovered = hoveredNodeSet?.has(id) === true;
-      sprite.visible = showLabels || isSelected || isHovered;
-      // Swap the rasterised texture so selected labels render with
-      // the accent-coloured pill + white text. Both textures were
-      // baked at sprite construction; this is just a uniform rebind
-      // — no canvas work, no GC.
-      const data = sprite.userData as SpriteLabelUserData;
-      const desired =
-        isSelected && data.selectedTexture
-          ? data.selectedTexture
-          : data.normalTexture;
-      const material = sprite.material as SpriteMaterial;
-      if (desired && material.map !== desired) {
-        material.map = desired;
-        material.needsUpdate = true;
+      const shouldShow = showLabels || isSelected || isHovered;
+      if (shouldShow && entry.sprite === null) {
+        // Lazy first-time creation. The expensive part — measureText +
+        // a fresh CanvasTexture, paid only for nodes that actually
+        // need to be readable right now.
+        const sprite = createTextSprite({
+          text: entry.text,
+          fontFamily,
+          fontSize: 48,
+          color: tooltipFg,
+          backgroundColor: tooltipBg,
+          selectedColor: "#ffffff",
+          selectedBackgroundColor: accentColor,
+          pixelHeight: 28,
+        });
+        // Node labels read as the topmost annotation: depth-test
+        // disabled + a very large renderOrder so neither link tubes
+        // (renderOrder 0) nor link labels (renderOrder 10) can slip
+        // in front.
+        (sprite.material as SpriteMaterial).depthTest = false;
+        sprite.renderOrder = 1000;
+        sprite.position.set(0, entry.yOffset, 0);
+        entry.group.add(sprite as unknown as Object3D);
+        entry.sprite = sprite;
+      }
+      const sprite = entry.sprite;
+      if (sprite) {
+        sprite.visible = shouldShow;
+        // Swap the rasterised texture so selected labels render with
+        // the accent-coloured pill + white text. Both textures were
+        // baked at sprite construction — this is a uniform rebind, no
+        // canvas work, no GC.
+        const data = sprite.userData as SpriteLabelUserData;
+        const desired =
+          isSelected && data.selectedTexture
+            ? data.selectedTexture
+            : data.normalTexture;
+        const material = sprite.material as SpriteMaterial;
+        if (desired && material.map !== desired) {
+          material.map = desired;
+          material.needsUpdate = true;
+        }
       }
     }
-  }, [mode, showLabels, selectedNodeSet, hoveredNodeSet]);
+  }, [
+    showLabels,
+    selectedNodeSet,
+    hoveredNodeSet,
+    accentColor,
+    tooltipBg,
+    tooltipFg,
+    theme?.fontFamily,
+  ]);
 
-  return { canvasObject, threeObject };
+  return { canvasObject, threeObject, renderFramePost: undefined };
 }

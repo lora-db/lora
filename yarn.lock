@@ -5,19 +5,6 @@ __metadata:
   version: 8
   cacheKey: 10c0
 
-"3d-force-graph@npm:^1.79.0":
-  version: 1.80.0
-  resolution: "3d-force-graph@npm:1.80.0"
-  dependencies:
-    accessor-fn: "npm:1"
-    kapsule: "npm:^1.16"
-    three: "npm:>=0.179 <1"
-    three-forcegraph: "npm:1"
-    three-render-objects: "npm:^1.41"
-  checksum: 10c0/20126e7f71b241a2e305eaa398f6d694b755c8c5ad75b0f9ddf6e8080cf2d1588f4c84561179dc2f8e75c725927e68a1372d6ab832997e141e18b1352193f777
-  languageName: node
-  linkType: hard
-
 "@adobe/css-tools@npm:^4.4.0":
   version: 4.4.4
   resolution: "@adobe/css-tools@npm:4.4.4"
@@ -4118,7 +4105,6 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@loradb/lora-graph-canvas@workspace:packages/lora-graph-canvas"
   dependencies:
-    3d-force-graph: "npm:^1.79.0"
     "@storybook/addon-essentials": "npm:^8.3.0"
     "@storybook/addon-interactions": "npm:^8.3.0"
     "@storybook/addon-links": "npm:^8.3.0"
@@ -4133,13 +4119,20 @@ __metadata:
     "@types/react-dom": "npm:^18.2.0"
     "@types/three": "npm:^0.182.0"
     "@vitejs/plugin-react": "npm:^4.3.0"
+    d3-array: "npm:^3.2.0"
+    d3-drag: "npm:^3.0.0"
     d3-force-3d: "npm:^3.0.0"
-    force-graph: "npm:^1.51.0"
+    d3-scale: "npm:^4.0.0"
+    d3-scale-chromatic: "npm:^3.0.0"
+    d3-selection: "npm:^3.0.0"
+    d3-zoom: "npm:^3.0.0"
     jsdom: "npm:^25.0.0"
     react: "npm:^18.2.0"
     react-dom: "npm:^18.2.0"
     storybook: "npm:^8.3.0"
     three: "npm:^0.182.0"
+    three-forcegraph: "npm:^1.43.0"
+    three-render-objects: "npm:^1.41.0"
     typescript: "npm:^5.6.0"
     vite: "npm:^5.4.0"
     vite-plugin-dts: "npm:^4.2.0"
@@ -8174,13 +8167,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bezier-js@npm:3 - 6":
-  version: 6.1.4
-  resolution: "bezier-js@npm:6.1.4"
-  checksum: 10c0/2785010f1f26b5229aa2a11e0b4dbd57476eec02c62385eed11960e420421ad9894f6130349304bbbc90bc5a15ee54109ca43ddd0556dca4d63bd725c7e36b22
-  languageName: node
-  linkType: hard
-
 "big.js@npm:^5.2.2":
   version: 5.2.2
   resolution: "big.js@npm:5.2.2"
@@ -8468,15 +8454,6 @@ __metadata:
   version: 1.0.30001792
   resolution: "caniuse-lite@npm:1.0.30001792"
   checksum: 10c0/03bab64b123453e18e7c6747c32bb820be6d82ac78536c5c3704988aaeec411715a2045069fb569f872d73acf1ea64bf83508c9fdfa87b6d012236cde738e1be
-  languageName: node
-  linkType: hard
-
-"canvas-color-tracker@npm:^1.3":
-  version: 1.3.2
-  resolution: "canvas-color-tracker@npm:1.3.2"
-  dependencies:
-    tinycolor2: "npm:^1.6.0"
-  checksum: 10c0/fca746cd7b96b139d189415ce3e608d070a3a562f276c5d4b3e1a6d8c7617ffd3108946b54d6365e12741cb5a39c57ee2e2aa537efe79b3771961ebb34aae9e6
   languageName: node
   linkType: hard
 
@@ -9550,7 +9527,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"d3-drag@npm:2 - 3, d3-drag@npm:3":
+"d3-drag@npm:2 - 3, d3-drag@npm:3, d3-drag@npm:^3.0.0":
   version: 3.0.0
   resolution: "d3-drag@npm:3.0.0"
   dependencies:
@@ -9705,7 +9682,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"d3-scale-chromatic@npm:1 - 3, d3-scale-chromatic@npm:3":
+"d3-scale-chromatic@npm:1 - 3, d3-scale-chromatic@npm:3, d3-scale-chromatic@npm:^3.0.0":
   version: 3.1.0
   resolution: "d3-scale-chromatic@npm:3.1.0"
   dependencies:
@@ -9715,7 +9692,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"d3-scale@npm:1 - 4, d3-scale@npm:4":
+"d3-scale@npm:1 - 4, d3-scale@npm:4, d3-scale@npm:^4.0.0":
   version: 4.0.2
   resolution: "d3-scale@npm:4.0.2"
   dependencies:
@@ -9793,7 +9770,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"d3-zoom@npm:2 - 3, d3-zoom@npm:3":
+"d3-zoom@npm:3, d3-zoom@npm:^3.0.0":
   version: 3.0.0
   resolution: "d3-zoom@npm:3.0.0"
   dependencies:
@@ -11553,29 +11530,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"force-graph@npm:^1.51.0":
-  version: 1.51.4
-  resolution: "force-graph@npm:1.51.4"
-  dependencies:
-    "@tweenjs/tween.js": "npm:18 - 25"
-    accessor-fn: "npm:1"
-    bezier-js: "npm:3 - 6"
-    canvas-color-tracker: "npm:^1.3"
-    d3-array: "npm:1 - 3"
-    d3-drag: "npm:2 - 3"
-    d3-force-3d: "npm:2 - 3"
-    d3-scale: "npm:1 - 4"
-    d3-scale-chromatic: "npm:1 - 3"
-    d3-selection: "npm:2 - 3"
-    d3-zoom: "npm:2 - 3"
-    float-tooltip: "npm:^1.7"
-    index-array-by: "npm:1"
-    kapsule: "npm:^1.16"
-    lodash-es: "npm:4"
-  checksum: 10c0/6e7db20aa3ebac45d06d203cb7c49465bdf62d342fdbdc4765aaba34bb681a1e0686055b98f915b69e46a8691c88eb805e7af62f0c6c33f8a84d5145780c768d
-  languageName: node
-  linkType: hard
-
 "foreground-child@npm:^3.1.0":
   version: 3.3.1
   resolution: "foreground-child@npm:3.3.1"
@@ -12600,13 +12554,6 @@ __metadata:
   version: 4.0.0
   resolution: "indent-string@npm:4.0.0"
   checksum: 10c0/1e1904ddb0cb3d6cce7cd09e27a90184908b7a5d5c21b92e232c93579d314f0b83c246ffb035493d0504b1e9147ba2c9b21df0030f48673fba0496ecd698161f
-  languageName: node
-  linkType: hard
-
-"index-array-by@npm:1":
-  version: 1.4.2
-  resolution: "index-array-by@npm:1.4.2"
-  checksum: 10c0/70cfb089148678236c620f471f75b3bec85da65f24cd44ea601c1eae8f6e0da5e1899cee08ed3a276bea1943b6f910fe6fa388276bca4667c6738bb44eae08cb
   languageName: node
   linkType: hard
 
@@ -18826,7 +18773,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"three-forcegraph@npm:1":
+"three-forcegraph@npm:^1.43.0":
   version: 1.43.4
   resolution: "three-forcegraph@npm:1.43.4"
   dependencies:
@@ -18846,7 +18793,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"three-render-objects@npm:^1.41":
+"three-render-objects@npm:^1.41.0":
   version: 1.41.1
   resolution: "three-render-objects@npm:1.41.1"
   dependencies:
@@ -18858,13 +18805,6 @@ __metadata:
   peerDependencies:
     three: ">=0.179"
   checksum: 10c0/39a74938b4d8ddada325c1eebeb1af94a1d149774d56154f3cc857b7fdfc8869364c68ef0131d751a37377d7f1dcd7eeb3a89c4d05bfb8bf125cefb6a5770a6c
-  languageName: node
-  linkType: hard
-
-"three@npm:>=0.179 <1":
-  version: 0.184.0
-  resolution: "three@npm:0.184.0"
-  checksum: 10c0/6af4a36dd97e7082c8daca57af162a36df0ca18337a805913bdb6787dd5b2626face8b51d361a0cb2f767e18fdb1ad7e73ab945ae32647741af9278311f5369d
   languageName: node
   linkType: hard
 
@@ -18910,7 +18850,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tinycolor2@npm:1, tinycolor2@npm:^1.6.0":
+"tinycolor2@npm:1":
   version: 1.6.0
   resolution: "tinycolor2@npm:1.6.0"
   checksum: 10c0/9aa79a36ba2c2a87cb221453465cabacd04b9e35f9694373e846fdc78b1c768110f81e581ea41440106c0f24d9a023891d0887e8075885e790ac40eb0e74a5c1

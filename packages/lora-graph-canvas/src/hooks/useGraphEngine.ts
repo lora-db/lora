@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { CameraState, GraphEngine } from "../engines/types";
-import { createEngine2D } from "../engines/createEngine2D";
-import { createEngine3D } from "../engines/createEngine3D";
+import type { GraphEngine } from "../engines/types";
+import {
+  createEngineUnified,
+  type UnifiedEngine,
+} from "../engines/createEngineUnified";
 import type {
   GraphData,
   GraphMode,
@@ -22,26 +24,33 @@ interface UseGraphEngineParams<
   props: LoraGraphCanvasProps<N, L>;
   /** Whether the engine should be paused. */
   paused: boolean;
+  /** Duration (ms) of the camera + node-z tween when switching modes.
+   *  0 disables the animation. */
+  modeTransitionMs?: number;
 }
 
-/** Owns the kapsule engine lifecycle. Tears down and re-creates the
- *  engine when `mode` changes (the two kapsules are not interchangeable),
- *  and keeps a stable handler-ref so latest props always win without
- *  re-binding event callbacks.
- *
- *  Also owns the state that must survive a 2D ↔ 3D remount: the camera
- *  viewpoint (snapshotted in the mount-effect cleanup, before the
- *  outgoing kapsule is destroyed, and re-applied to each new engine)
- *  and the paused flag (re-applied whenever `engine` or `paused`
- *  changes). Camera is keyed by mode because the kapsules' camera
- *  models aren't interchangeable. */
+/** Owns the kapsule engine lifecycle. The engine is created once on
+ *  mount and survives mode changes — `mode` flips flow through
+ *  `engine.setMode()` so the nodes smoothly move between 2D (z pinned
+ *  to 0, top-down camera) and 3D (z released, orbit camera). The
+ *  engine is destroyed only when the host element changes or the
+ *  component unmounts. */
 export function useGraphEngine<
   N extends NodeObject,
   L extends LinkObject,
 >(params: UseGraphEngineParams<N, L>): GraphEngine<N, L> | null {
-  const { mount, mode, width, height, data, props, paused } = params;
+  const {
+    mount,
+    mode,
+    width,
+    height,
+    data,
+    props,
+    paused,
+    modeTransitionMs = 800,
+  } = params;
 
-  const [engine, setEngine] = useState<GraphEngine<N, L> | null>(null);
+  const [engine, setEngine] = useState<UnifiedEngine<N, L> | null>(null);
 
   // Trampoline ref — adapters read latest event handlers from here.
   const handlerRef = useRef<LoraGraphCanvasProps<N, L>>(props);
@@ -50,60 +59,51 @@ export function useGraphEngine<
   // Track the previous prop bag for diffing.
   const prevPropsRef = useRef<LoraGraphCanvasProps<N, L>>(props);
 
-  // Survives engine teardown — captured in the outgoing engine's
-  // cleanup, restored on the next engine that mounts in that mode.
-  const cameraByModeRef = useRef<Record<GraphMode, CameraState | null>>({
-    "2d": null,
-    "3d": null,
-  });
+  // Hold onto the initial mode so the mount effect can pass it once
+  // without re-mounting whenever React state's `mode` changes
+  // (mode flips are handled by setMode in a sibling effect below).
+  const initialModeRef = useRef<GraphMode>(mode);
 
-  // Mount / re-mount on mode or mount-element changes.
+  // Mount / unmount on host element changes only — mode flips
+  // intentionally do not remount.
   useEffect(() => {
     if (!mount) return;
-    const factory = mode === "3d" ? createEngine3D : createEngine2D;
-    const next = factory<N, L>(
+    const next = createEngineUnified<N, L>(
       mount,
       {
         initialProps: props,
         initialData: data,
         width,
         height,
+        initialMode: initialModeRef.current,
       },
       handlerRef,
     );
     prevPropsRef.current = props;
     setEngine(next);
     return () => {
-      // Capture camera *before* destroy — the kapsule won't answer
-      // afterwards. This is why camera survival has to live here and
-      // not in a sibling effect: a sibling's cleanup would run after
-      // this one, when the engine is already gone.
-      cameraByModeRef.current[next.mode] = next.getCameraState();
       next.destroy();
       setEngine(null);
     };
-    // Intentionally remount only when mount or mode changes — the other
-    // values (width/height/data/props/paused) are forwarded by separate
-    // effects below, so listing them here would force needless rebuilds.
-  }, [mount, mode]);
+    // Width / height / data / props / paused / mode are forwarded by
+    // separate effects so a change in any of them doesn't tear down
+    // the engine.
+  }, [mount]);
 
-  // Restore camera state on each new engine. Mode-specific by design:
-  // a 2D snapshot has no meaning for a 3D kapsule (and vice versa), so
-  // setCameraState silently no-ops on mismatched shapes — the guard
-  // here just short-circuits when there's nothing to restore.
+  // Mode transition: when the React `mode` flips and we have a live
+  // engine, ask it to tween. First mount is a no-op (the engine
+  // already started in the right mode via initialModeRef).
   useEffect(() => {
     if (!engine) return;
-    const saved = cameraByModeRef.current[engine.mode];
-    if (saved && saved.mode === engine.mode) {
-      engine.setCameraState(saved, 0);
-    }
-  }, [engine]);
+    if (engine.mode === mode) return;
+    engine.setMode(mode, modeTransitionMs);
+  }, [engine, mode, modeTransitionMs]);
 
   // Apply pause state. Deps include `paused` so a toggle from React
-  // state flows to the engine, and so a fresh engine post-remount
-  // inherits the current value. The host should drive pause via this
-  // prop only — not by calling engine.pause() imperatively — to keep
-  // a single source of truth.
+  // state flows to the engine, and so a fresh engine inherits the
+  // current value. The host should drive pause via this prop only —
+  // not by calling engine.pause() imperatively — to keep a single
+  // source of truth.
   useEffect(() => {
     if (!engine) return;
     if (paused) engine.pause();
@@ -122,12 +122,18 @@ export function useGraphEngine<
     engine.setGraphData(data);
   }, [engine, data]);
 
-  // Forward (diffed) prop changes every render.
+  // Forward (diffed) prop changes when the engineProps identity moves.
+  // The host memoises engineProps in LoraGraphCanvas — limiting this
+  // effect's deps to `[engine, props]` lets React itself bail out when
+  // nothing in the prop bag changed, so we don't pay the diff walk on
+  // every parent render. The inner `applyDiffedProps` short-circuits
+  // when `props === prev` anyway, but reaching it required running
+  // the effect first; now we don't.
   useEffect(() => {
     if (!engine) return;
     engine.applyProps(props, prevPropsRef.current);
     prevPropsRef.current = props;
-  });
+  }, [engine, props]);
 
   return engine;
 }

@@ -1,0 +1,11 @@
+.float-tooltip-kap {
+  position: absolute;
+  width: max-content;
+  max-width: max(50%, 150px);
+  padding: 3px 5px;
+  border-radius: 3px;
+  font: 12px sans-serif;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}

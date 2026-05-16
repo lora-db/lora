@@ -21,6 +21,7 @@ function baseParams() {
     highlightedNodeIds: empty as ReadonlySet<string | number>,
     highlightedLinkIds: empty as ReadonlySet<string | number>,
     hoverNodeId: null as string | number | null,
+    hoverLinkId: null as string | number | null,
     hiddenGroups: new Set<string>() as ReadonlySet<string>,
   };
 }

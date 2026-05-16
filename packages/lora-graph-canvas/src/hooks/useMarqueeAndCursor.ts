@@ -100,7 +100,11 @@ export function useMarqueeAndCursor<
   latestRef.current.liveHoverNodeIdRef = liveHoverNodeIdRef;
 
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
+  // Stable cursor-pos object — mutated in place on every mousemove so
+  // we don't allocate at 60 Hz. Consumers (paste-at-cursor) read the
+  // current value immediately on use; they never compare identity.
   const lastCursorRef = useRef<{ x: number; y: number } | null>(null);
+  const cursorScratch = useRef({ x: 0, y: 0 }).current;
 
   useEffect(() => {
     if (!mount) return;
@@ -121,10 +125,9 @@ export function useMarqueeAndCursor<
     });
 
     const onMouseMove = (e: MouseEvent) => {
-      lastCursorRef.current = {
-        x: e.clientX - cachedRect.left,
-        y: e.clientY - cachedRect.top,
-      };
+      cursorScratch.x = e.clientX - cachedRect.left;
+      cursorScratch.y = e.clientY - cachedRect.top;
+      lastCursorRef.current = cursorScratch;
     };
     mount.addEventListener("mousemove", onMouseMove);
 
@@ -143,25 +146,25 @@ export function useMarqueeAndCursor<
       // via the `onNodeHover` → `setHoverNodeId` path) to detect
       // whether the press landed on a node.
       if (latestRef.current.liveHoverNodeIdRef.current !== null) return;
-      const rect = mount.getBoundingClientRect();
-      const x0 = e.clientX - rect.left;
-      const y0 = e.clientY - rect.top;
+      // Reuse the cachedRect kept in sync by ResizeObserver / scroll —
+      // calling getBoundingClientRect() on every move forces layout
+      // and dominates the gesture's per-frame cost.
+      const x0 = e.clientX - cachedRect.left;
+      const y0 = e.clientY - cachedRect.top;
       e.stopPropagation();
       e.preventDefault();
       setMarquee({ x0, y0, x1: x0, y1: y0, additive: e.shiftKey });
 
       const onMove = (ev: MouseEvent) => {
-        const r = mount.getBoundingClientRect();
-        const x1 = ev.clientX - r.left;
-        const y1 = ev.clientY - r.top;
+        const x1 = ev.clientX - cachedRect.left;
+        const y1 = ev.clientY - cachedRect.top;
         setMarquee((cur) => (cur ? { ...cur, x1, y1 } : cur));
       };
       const onUp = (ev: MouseEvent) => {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp, true);
-        const r = mount.getBoundingClientRect();
-        const x1 = ev.clientX - r.left;
-        const y1 = ev.clientY - r.top;
+        const x1 = ev.clientX - cachedRect.left;
+        const y1 = ev.clientY - cachedRect.top;
         setMarquee(null);
         const eng = engineRef.current;
         if (!eng) return;
