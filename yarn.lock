@@ -4179,6 +4179,7 @@ __metadata:
     "@types/react": "npm:^18.2.0"
     "@types/react-dom": "npm:^18.2.0"
     "@vitejs/plugin-react": "npm:^4.3.0"
+    eslint: "npm:^9.15.0"
     jsdom: "npm:^25.0.0"
     react: "npm:^18.2.0"
     react-dom: "npm:^18.2.0"

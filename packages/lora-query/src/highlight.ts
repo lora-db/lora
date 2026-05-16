@@ -137,7 +137,7 @@ const parser: StreamParser<State> = {
     }
 
     if (stream.match(/[-+*/%=<>!]+/)) return "operator";
-    if (stream.match(/[()\[\]{},.;:|]/)) return "punctuation";
+    if (stream.match(/[()[\]{},.;:|]/)) return "punctuation";
 
     stream.next();
     return null;

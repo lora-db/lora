@@ -20,8 +20,16 @@ export default defineConfig({
         index: resolve(__dirname, "src/index.ts"),
         parser: resolve(__dirname, "src/parser.ts"),
       },
-      formats: ["es", "cjs"],
-      fileName: (format, name) => `${name}.${format === "es" ? "js" : "cjs"}`,
+      // ESM-only. The WASM bundle uses top-level await, which the
+      // rollup CJS renderer rejects ("Module format 'cjs' does not
+      // support top-level await") regardless of the vite-plugin-top-
+      // level-await transform — that plugin only rewrites ES output.
+      // Since the package ships WASM (which needs bundler-side wasm
+      // support anyway) and `engines.node >= 20`, dropping the CJS
+      // build is fine; modern consumers all handle ESM, and Node 22+
+      // can `require()` ESM directly.
+      formats: ["es"],
+      fileName: (_format, name) => `${name}.js`,
     },
     rollupOptions: {
       external: [

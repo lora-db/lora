@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Decoration, EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { EditorState, EditorSelection } from "@codemirror/state";
 import { cypherVariableReferences } from "../src/cypher/references";
 import {

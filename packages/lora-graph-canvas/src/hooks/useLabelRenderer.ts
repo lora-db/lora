@@ -88,8 +88,11 @@ export function useLabelRenderer<N extends NodeObject>(
     nodeVal,
     nodeRelSize,
     theme,
-    nodes,
   } = params;
+  // `params.nodes` is reserved on the param type for the upcoming 2D
+  // post-render pass (see the field's docstring) but not consumed here
+  // yet. Don't destructure it — the unused-vars rule has no
+  // `varsIgnorePattern` configured, so even `_nodes` would trip it.
 
   const tooltipBg = theme?.tooltipBackground ?? "rgba(28, 31, 35, 0.9)";
   const tooltipFg = theme?.tooltipForeground ?? "#ffffff";

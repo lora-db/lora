@@ -177,7 +177,6 @@ export default function Kapsule(cfg: KapsuleConfig = {}): KapsuleClassCtor {
       // default above). Use a real function expression instead.
       comp[name] = function setterGetter(): unknown {
         const curVal = state[name];
-        // eslint-disable-next-line prefer-rest-params
         if (arguments.length === 0) return curVal;
         // eslint-disable-next-line prefer-rest-params
         const arg = arguments[0];

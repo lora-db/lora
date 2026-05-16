@@ -139,7 +139,6 @@ export default class Tooltip {
       this.#tooltipEl.innerHTML = this.#content;
     } else {
       this.#tooltipEl.style.display = "none";
-      // eslint-disable-next-line no-console
       console.warn("Tooltip content is invalid, skipping.", this.#content);
     }
   }

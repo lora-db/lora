@@ -44,7 +44,7 @@ export default function kapsuleLink(
   // prop. Tear it down immediately so we don't leak DOM listeners or
   // simulations from the dummy.
   const dummyK = new kapsuleType();
-  dummyK._destructor && dummyK._destructor();
+  dummyK._destructor?.();
 
   return {
     linkProp(prop: string): KapsulePropConfig {

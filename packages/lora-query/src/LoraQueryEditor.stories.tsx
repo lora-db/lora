@@ -977,7 +977,7 @@ LIMIT 10;`),
           getPropertyKeys={DEMO_GET_PROPERTY_KEYS}
         />
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
-          Click the chevron in the gutter on a query's first line to fold it.
+          Click the chevron in the gutter on a query&apos;s first line to fold it.
         </p>
       </div>
     );
@@ -1004,7 +1004,6 @@ export const ImperativeHandle: Story = {
           <button
             onClick={async () => {
               const errs = await ref.current?.validate();
-              // eslint-disable-next-line no-console
               console.log("diagnostics", errs);
             }}
           >

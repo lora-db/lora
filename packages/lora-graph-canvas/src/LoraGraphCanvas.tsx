@@ -966,7 +966,6 @@ function LoraGraphCanvasInner<
       props,
       internalDagMode,
       resolvedBackgroundColor,
-      backgroundColor,
       accessors.nodeColor,
       accessors.linkColor,
       accessors.linkWidth,

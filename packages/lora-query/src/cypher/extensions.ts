@@ -21,7 +21,6 @@ import { lintGutter, lintKeymap } from "@codemirror/lint";
 import { search, searchKeymap } from "@codemirror/search";
 import { EditorState, type Extension } from "@codemirror/state";
 import {
-  EditorView,
   highlightActiveLine,
   highlightActiveLineGutter,
   keymap,

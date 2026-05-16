@@ -635,7 +635,7 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
             // Cancel any pressed status the fly controls may have
             // latched onto, then synthesise a pointerup so the
             // controls don't try to keep dragging the camera.
-            controls._status && controls._onPointerCancel?.();
+            if (controls._status) controls._onPointerCancel?.();
             controls.domElement?.ownerDocument?.dispatchEvent(
               new PointerEvent("pointerup", { pointerType: "touch" }),
             );
