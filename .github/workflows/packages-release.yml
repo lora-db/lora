@@ -507,16 +507,22 @@ jobs:
         run: corepack enable
 
       - uses: actions/setup-node@v5
+        if: runner.os != 'Windows'
         with:
           node-version: "20"
           cache: "yarn"
 
+      - uses: actions/setup-node@v5
+        if: runner.os == 'Windows'
+        with:
+          node-version: "20"
+
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - name: Verify shared TS types are in sync
-        run: yarn run verify:types
+        run: corepack yarn run verify:types
 
       - uses: ./.github/actions/copy-license
         with:
@@ -528,7 +534,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           ZIG: ${{ matrix.cross == 'zig' && '--zig' || '' }}
         run: |
-          yarn exec napi build --platform --release --js false --target "$TARGET" $ZIG
+          corepack yarn exec napi build --platform --release --js false --target "$TARGET" $ZIG
 
       - name: Verify the expected .node file exists
         shell: bash
