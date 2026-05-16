@@ -1059,9 +1059,7 @@ fn diagnose_summary(expected: &[String], source: &str, byte_pos: usize) -> Optio
             .chars()
             .rev()
             .find(|c| !c.is_whitespace())
-            .is_some_and(|c| {
-                matches!(c, '=' | '<' | '>' | '+' | '-' | '*' | '/' | '%' | ',' | '(')
-            })
+            .is_some_and(|c| matches!(c, '=' | '<' | '>' | '+' | '-' | '*' | '/' | '%' | ',' | '('))
         {
             return Some("Missing a value on the right-hand side of an operator.".into());
         }

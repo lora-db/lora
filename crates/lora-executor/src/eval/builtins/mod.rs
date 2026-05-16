@@ -90,7 +90,7 @@ fn name_is_known(name: &str) -> bool {
         return false;
     };
     let probe = &[];
-    let pure_known = match ns {
+    match ns {
         "list" => list::dispatch(op, probe).is_some(),
         "string" => string_ns::dispatch(op, probe).is_some(),
         "text" => text::dispatch(op, probe).is_some(),
@@ -112,8 +112,7 @@ fn name_is_known(name: &str) -> bool {
         "path" => path::known(op).is_some(),
         "value" => value::known(op).is_some(),
         _ => false,
-    };
-    pure_known
+    }
 }
 
 #[cfg(test)]
