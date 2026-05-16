@@ -348,7 +348,7 @@ analyzer signature table directly.
 
 - [Function overview](/docs/functions/overview)
 - [Building built-in functions](/docs/developer/functions)
-- [Cypher support matrix](/docs/reference/cypher-support-matrix)
+- [Cypher support matrix](https://github.com/lora-db/lora/blob/main/docs/reference/cypher-support-matrix.md)
 - [Limitations](/docs/limitations)
 
 v0.10 is the release where LoraDB's function library stops being a

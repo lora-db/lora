@@ -171,8 +171,8 @@ module.exports = {
         },
         theme: {
           customCss: [
-            require.resolve('./node_modules/modern-normalize/modern-normalize.css'),
-            require.resolve('./node_modules/@ionic-internal/ionic-ds/dist/tokens/tokens.css'),
+            require.resolve('modern-normalize/modern-normalize.css'),
+            require.resolve('@ionic-internal/ionic-ds/dist/tokens/tokens.css'),
             require.resolve('./src/styles/custom.scss'),
           ],
         },
@@ -339,8 +339,8 @@ module.exports = {
       'docusaurus-plugin-module-alias',
       {
         alias: {
-          react: path.resolve(__dirname, './node_modules/react'),
-          'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
+          react: path.dirname(require.resolve('react/package.json')),
+          'react-dom': path.dirname(require.resolve('react-dom/package.json')),
         },
       },
     ],
