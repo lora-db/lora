@@ -3,6 +3,7 @@
   "version": "0.10.0",
   "description": "WebAssembly bindings for the Lora in-memory graph database",
   "license": "BUSL-1.1",
+  "packageManager": "yarn@4.5.1",
   "author": "LoraDB, Inc.",
   "homepage": "https://github.com/lora-db/lora#readme",
   "repository": {

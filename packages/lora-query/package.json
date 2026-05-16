@@ -3,6 +3,7 @@
   "version": "0.10.0",
   "description": "React CodeMirror editor for the LoraDB Cypher dialect, backed by a WASM pest parser for validation and reformatting.",
   "license": "BUSL-1.1",
+  "packageManager": "yarn@4.5.1",
   "author": "LoraDB, Inc.",
   "homepage": "https://github.com/lora-db/lora/tree/main/packages/lora-query#readme",
   "repository": {
