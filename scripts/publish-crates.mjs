@@ -313,7 +313,7 @@ function isCrateVersionPublished(crate, version) {
       }
     }
     return false;
-  } catch (err) {
+  } catch {
     // If the index fetch fails (crate not yet registered, offline, 404),
     // fall through and try to publish. crates.io will tell us authoritatively.
     return false;

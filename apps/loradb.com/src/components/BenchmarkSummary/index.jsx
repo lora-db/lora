@@ -89,7 +89,7 @@ export default function BenchmarkSummary({src = '/benchmarks/perf-smoke-summary.
     };
   }, [url]);
 
-  const rows = state.data?.benchmarks ?? [];
+  const rows = useMemo(() => state.data?.benchmarks ?? [], [state.data]);
   const sortedRows = useMemo(
     () => [...rows].sort((a, b) => (b.baseline?.ratio ?? 0) - (a.baseline?.ratio ?? 0)),
     [rows],

@@ -247,7 +247,7 @@ function applyCargoWorkspaceInternalDeps(source, next) {
     // Match e.g. `lora-ast = { path = "crates/lora-ast", version = "=0.1.0" }`.
     const depMatch = line.match(/^(\s*)(lora-[A-Za-z0-9_-]+)\s*=\s*\{(.*)\}\s*$/);
     if (!depMatch) continue;
-    const [full, indent, name, inner] = depMatch;
+    const [, indent, name, inner] = depMatch;
     const versionMatch = inner.match(/(^|[,{\s])version\s*=\s*"(=?)([^"]+)"/);
     if (!versionMatch) continue;
     const currentPrefix = versionMatch[2]; // `=` or empty

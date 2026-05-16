@@ -35,6 +35,7 @@ export default tseslint.config(
       "**/pkg-web/**",
       "**/.docusaurus/**",
       "**/.yarn/**",
+      "**/tmp/**",
       "apps/loradb.com/static/**",
     ],
   },

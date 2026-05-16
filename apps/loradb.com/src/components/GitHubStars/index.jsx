@@ -12,7 +12,8 @@ export default function GitHubStars({
   repo = 'lora-db/lora',
   href = 'https://github.com/lora-db/lora',
   label = 'GitHub repository',
-  position, // eslint-disable-line no-unused-vars — swallow Docusaurus navbar item prop
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- swallow Docusaurus navbar item prop
+  position,
   ...rest
 }) {
   const stars = useGitHubStars(repo);

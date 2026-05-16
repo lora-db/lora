@@ -31,9 +31,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, "..");
+const SCRIPT_FILE = fileURLToPath(import.meta.url);
+const SCRIPT_DIR = path.dirname(SCRIPT_FILE);
+const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const DEFAULT_BASELINE = path.join(
   REPO_ROOT,
   "crates/lora-database/benches/perf_smoke_baseline.json",
@@ -78,6 +78,7 @@ function parseArgs(argv) {
       case "--help":
         printHelp();
         process.exit(0);
+        break;
       default:
         fail(`unknown argument: ${a}`, 2);
     }
