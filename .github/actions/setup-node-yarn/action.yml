@@ -1,0 +1,79 @@
+name: Setup Node and Yarn
+description: Install Node.js and force Yarn through Corepack across all runners.
+
+inputs:
+  node-version:
+    description: Node.js version to install.
+    required: false
+    default: "20"
+  yarn-version:
+    description: Yarn version to activate through Corepack.
+    required: false
+    default: "4.5.1"
+  registry-url:
+    description: Optional npm registry URL for publish jobs.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v5
+      if: ${{ inputs.registry-url == '' }}
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - uses: actions/setup-node@v5
+      if: ${{ inputs.registry-url != '' }}
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: ${{ inputs.registry-url }}
+
+    - name: Activate Corepack Yarn
+      shell: bash
+      env:
+        YARN_VERSION: ${{ inputs.yarn-version }}
+      run: |
+        set -euo pipefail
+        corepack enable
+        corepack prepare "yarn@${YARN_VERSION}" --activate
+
+        shim_dir="${RUNNER_TEMP}/yarn-${YARN_VERSION}-shims"
+        mkdir -p "${shim_dir}"
+
+        printf '%s\n' \
+          '#!/usr/bin/env bash' \
+          'exec corepack yarn "$@"' \
+          > "${shim_dir}/yarn"
+        chmod +x "${shim_dir}/yarn"
+
+        if [[ "${RUNNER_OS}" == "Windows" ]]; then
+          printf '%s\n' \
+            '@echo off' \
+            'corepack yarn %*' \
+            > "${shim_dir}/yarn.cmd"
+        fi
+
+        echo "${shim_dir}" >> "${GITHUB_PATH}"
+
+    - name: Verify Yarn version
+      shell: bash
+      env:
+        YARN_VERSION: ${{ inputs.yarn-version }}
+      run: |
+        set -euo pipefail
+        corepack_version="$(corepack yarn --version)"
+        if [[ "${corepack_version}" != "${YARN_VERSION}" ]]; then
+          echo "::error::corepack yarn resolved ${corepack_version}, expected ${YARN_VERSION}"
+          exit 1
+        fi
+
+        bare_version="$(yarn --version)"
+        if [[ "${bare_version}" != "${YARN_VERSION}" ]]; then
+          echo "::error::bare yarn resolved ${bare_version}, expected ${YARN_VERSION}"
+          echo "PATH=${PATH}"
+          command -v yarn || true
+          exit 1
+        fi
+
+        echo "Using Yarn ${YARN_VERSION}"

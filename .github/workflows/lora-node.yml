@@ -65,15 +65,9 @@ jobs:
         with:
           cache-key: lora-node-${{ matrix.os }}
 
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-node-yarn
         with:
           node-version: "20"
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: |
-          corepack enable
-          corepack prepare yarn@4.5.1 --activate
 
       - name: cargo check
         working-directory: .

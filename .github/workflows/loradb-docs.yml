@@ -53,15 +53,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-node-yarn
         with:
           node-version: "20"
-
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: |
-          corepack enable
-          corepack prepare yarn@4.5.1 --activate
 
       - name: yarn install (immutable)
         working-directory: .
