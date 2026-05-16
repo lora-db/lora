@@ -4150,6 +4150,7 @@ __metadata:
   dependencies:
     "@napi-rs/cli": "npm:^2.18.4"
     "@types/node": "npm:^22.7.4"
+    eslint: "npm:^9.15.0"
     typescript: "npm:^5.6.2"
     vitest: "npm:^2.1.1"
   languageName: unknown
@@ -4202,6 +4203,7 @@ __metadata:
   dependencies:
     "@playwright/test": "npm:^1.59.1"
     "@types/node": "npm:^22.7.4"
+    eslint: "npm:^9.15.0"
     typescript: "npm:^5.6.2"
     vite: "npm:^5.4.21"
     vite-plugin-top-level-await: "npm:^1.6.0"

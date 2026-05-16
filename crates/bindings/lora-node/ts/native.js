@@ -14,8 +14,13 @@
 
 "use strict";
 
+// Intentional CJS module: the file uses `require()` to dynamically
+// resolve `.node` binaries based on platform/arch, which is a CJS-only
+// pattern. ESM `import` can't load `.node` addons by path at runtime.
+/* eslint-disable @typescript-eslint/no-require-imports */
+
 const { platform, arch } = process;
-const { existsSync, readFileSync } = require("node:fs");
+const { existsSync } = require("node:fs");
 const { join } = require("node:path");
 const { execSync } = require("node:child_process");
 
