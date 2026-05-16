@@ -65,14 +65,14 @@
   },
   "scripts": {
     "sync:types": "node -e \"const fs=require('fs'); for (const f of ['types.ts','decode.ts']) fs.copyFileSync('../shared-ts/' + f, 'ts/' + f);\"",
-    "verify:types": "node -e \"const fs=require('fs'); for (const f of ['types.ts','decode.ts']) { const a=fs.readFileSync('../shared-ts/' + f,'utf8'); const b=fs.readFileSync('ts/' + f,'utf8'); if (a!==b) { console.error('ts/' + f + ' is out of sync with shared-ts/' + f + ' — run npm run sync:types'); process.exit(1);} } \"",
-    "prebuild": "npm run sync:types",
-    "pretypecheck": "npm run sync:types",
-    "pretest": "npm run sync:types",
+    "verify:types": "node -e \"const fs=require('fs'); for (const f of ['types.ts','decode.ts']) { const a=fs.readFileSync('../shared-ts/' + f,'utf8'); const b=fs.readFileSync('ts/' + f,'utf8'); if (a!==b) { console.error('ts/' + f + ' is out of sync with shared-ts/' + f + ' — run yarn run sync:types'); process.exit(1);} } \"",
+    "prebuild": "yarn run sync:types",
+    "pretypecheck": "yarn run sync:types",
+    "pretest": "yarn run sync:types",
     "build:native": "napi build --platform --release --js false",
     "build:native:debug": "napi build --platform --js false",
     "build:ts": "tsc -p tsconfig.json",
-    "build": "npm run build:native && npm run build:ts",
+    "build": "yarn run build:native && yarn run build:ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -81,7 +81,7 @@
     "artifacts": "napi artifacts",
     "create-npm-dirs": "napi create-npm-dir -t .",
     "copy-license": "node -e \"const fs=require('fs'); try { fs.copyFileSync('../../../LICENSE','LICENSE'); } catch (e) { if (e.code !== 'ENOENT') throw e; }\"",
-    "prepack": "npm run sync:types && npm run copy-license && npm run build",
+    "prepack": "yarn run sync:types && yarn run copy-license && yarn run build",
     "pack:dry": "npm pack --dry-run"
   },
   "devDependencies": {

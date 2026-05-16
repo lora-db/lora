@@ -104,6 +104,12 @@ node_modules/
 dist/
 build/
 
+# npm lockfiles — this repo is yarn v4 only; `yarn.lock` is canonical.
+# `package-lock.json` can regenerate if someone runs `npm install` by
+# habit; ignore it so it doesn't slip back into the tree.
+package-lock.json
+**/package-lock.json
+
 # Yarn v4 (Berry) — keep releases / plugins / sdks committed, ignore caches.
 .yarn/*
 !.yarn/patches
