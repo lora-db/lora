@@ -65,14 +65,15 @@ jobs:
         with:
           cache-key: lora-node-${{ matrix.os }}
 
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: cargo check
         working-directory: .
@@ -80,22 +81,22 @@ jobs:
 
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - name: verify shared TS types are in sync
-        run: yarn run verify:types
+        run: corepack yarn run verify:types
 
       - name: build native (napi)
-        run: yarn run build:native
+        run: corepack yarn run build:native
 
       - name: build TS
-        run: yarn run build:ts
+        run: corepack yarn run build:ts
 
       - name: typecheck
-        run: yarn run typecheck
+        run: corepack yarn run typecheck
 
       - name: vitest (includes non-blocking event-loop test)
-        run: yarn run test
+        run: corepack yarn run test
 
       - name: npm pack (dry-run)
         run: npm pack --dry-run

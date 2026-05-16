@@ -119,28 +119,29 @@ jobs:
         with:
           version: "v0.14.0"
 
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
           destination: crates/bindings/lora-wasm
 
       - name: Build (WASM + TS)
-        run: yarn run build
+        run: corepack yarn run build
 
       - name: Typecheck
-        run: yarn run typecheck
+        run: corepack yarn run typecheck
 
       - name: npm pack (dry-run, inspection)
         run: npm pack --dry-run
@@ -185,29 +186,30 @@ jobs:
         with:
           version: "v0.14.0"
 
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
 
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
           destination: crates/bindings/lora-wasm
 
       - name: Build (WASM + TS)
-        run: yarn run build
+        run: corepack yarn run build
 
       - name: Publish to npm
         run: npm publish --provenance --access public --ignore-scripts
@@ -243,26 +245,27 @@ jobs:
         with:
           version: "v0.14.0"
 
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
+
+      - name: Enable corepack (yarn v4)
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: yarn install (immutable)
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
           destination: packages/lora-query
 
       - name: Build (WASM + TS)
-        run: yarn workspace @loradb/lora-query build
+        run: corepack yarn workspace @loradb/lora-query build
 
       - name: Typecheck
-        run: yarn workspace @loradb/lora-query typecheck
+        run: corepack yarn workspace @loradb/lora-query typecheck
 
       - name: npm pack (produce tarball)
         working-directory: packages/lora-query
@@ -305,21 +308,22 @@ jobs:
         with:
           version: "v0.14.0"
 
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
 
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
@@ -327,7 +331,7 @@ jobs:
 
       - name: Build (WASM + TS)
         working-directory: .
-        run: yarn workspace @loradb/lora-query build
+        run: corepack yarn workspace @loradb/lora-query build
 
       - name: Publish to npm
         # `yarn publish` (Berry) only handles workspace-aware semantics
@@ -354,29 +358,30 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
+
+      - name: Enable corepack (yarn v4)
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: yarn install (immutable)
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
           destination: packages/lora-graph-canvas
 
       - name: Build (TS)
-        run: yarn workspace @loradb/lora-graph-canvas build
+        run: corepack yarn workspace @loradb/lora-graph-canvas build
 
       - name: Typecheck
-        run: yarn workspace @loradb/lora-graph-canvas typecheck
+        run: corepack yarn workspace @loradb/lora-graph-canvas typecheck
 
       - name: Test
-        run: yarn workspace @loradb/lora-graph-canvas test
+        run: corepack yarn workspace @loradb/lora-graph-canvas test
 
       - name: npm pack (produce tarball)
         working-directory: packages/lora-graph-canvas
@@ -410,21 +415,22 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
 
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - uses: ./.github/actions/copy-license
         with:
@@ -432,7 +438,7 @@ jobs:
 
       - name: Build (TS)
         working-directory: .
-        run: yarn workspace @loradb/lora-graph-canvas build
+        run: corepack yarn workspace @loradb/lora-graph-canvas build
 
       - name: Publish to npm
         run: npm publish --provenance --access public --ignore-scripts
@@ -502,20 +508,15 @@ jobs:
         with:
           version: "0.13.0"
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
       - name: Enable corepack (yarn v4)
         working-directory: .
-        run: corepack enable
-
-      - uses: actions/setup-node@v5
-        if: runner.os != 'Windows'
-        with:
-          node-version: "20"
-          cache: "yarn"
-
-      - uses: actions/setup-node@v5
-        if: runner.os == 'Windows'
-        with:
-          node-version: "20"
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: yarn install (immutable)
         working-directory: .
@@ -578,28 +579,29 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: Update npm to a version that supports --provenance (>=9.5)
         run: npm install -g npm@latest
 
       - name: yarn install (immutable; @napi-rs/cli + tsc are needed below)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - name: Sync + typecheck + build TS (the root package's dist/)
         run: |
-          yarn run sync:types
-          yarn run typecheck
-          yarn run build:ts
+          corepack yarn run sync:types
+          corepack yarn run typecheck
+          corepack yarn run build:ts
 
       - uses: ./.github/actions/copy-license
         with:
@@ -616,10 +618,10 @@ jobs:
         run: ls -la artifacts
 
       - name: Create per-triple npm subpackage scaffolds
-        run: yarn exec napi create-npm-dir -t .
+        run: corepack yarn exec napi create-npm-dir -t .
 
       - name: Move .node binaries into subpackage dirs
-        run: yarn exec napi artifacts --dir artifacts --dist npm
+        run: corepack yarn exec napi artifacts --dir artifacts --dist npm
 
       - name: Verify every triple subpackage now has its binary
         shell: bash

@@ -29,28 +29,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Enable corepack (yarn v4)
-        run: corepack enable
-
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
           node-version: '20'
-          cache: 'yarn'
+
+      - name: Enable corepack (yarn v4)
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: yarn install (immutable)
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - name: Validate PR commits
         if: github.event_name == 'pull_request'
-        run: yarn exec commitlint --from=${{ github.event.pull_request.base.sha }} --to=${{ github.event.pull_request.head.sha }} --verbose
+        run: corepack yarn exec commitlint --from=${{ github.event.pull_request.base.sha }} --to=${{ github.event.pull_request.head.sha }} --verbose
 
       - name: Validate PR title
         if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: echo "$PR_TITLE" | yarn exec commitlint --verbose
+        run: echo "$PR_TITLE" | corepack yarn exec commitlint --verbose
 
       - name: Validate latest commit on push
         if: github.event_name == 'push'
-        run: yarn exec commitlint --from=HEAD~1 --to=HEAD --verbose
+        run: corepack yarn exec commitlint --from=HEAD~1 --to=HEAD --verbose

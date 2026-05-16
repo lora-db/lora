@@ -53,21 +53,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - name: Build site
-        run: yarn run build
+        run: corepack yarn run build
 
       - name: Verify CNAME is in build output
         run: test -f build/CNAME && grep -qx loradb.com build/CNAME

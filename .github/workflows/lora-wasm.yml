@@ -67,14 +67,15 @@ jobs:
         with:
           version: "v0.14.0"
 
-      - name: Enable corepack (yarn v4)
-        working-directory: .
-        run: corepack enable
-
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
-          cache: "yarn"
+
+      - name: Enable corepack (yarn v4)
+        working-directory: .
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.1 --activate
 
       - name: cargo check (host)
         working-directory: .
@@ -86,28 +87,28 @@ jobs:
 
       - name: yarn install (immutable)
         working-directory: .
-        run: yarn install --immutable
+        run: corepack yarn install --immutable
 
       - name: verify shared TS types are in sync
-        run: yarn run verify:types
+        run: corepack yarn run verify:types
 
       - name: build WASM (node + bundler + web)
-        run: yarn run build:wasm
+        run: corepack yarn run build:wasm
 
       - name: build TS
-        run: yarn run build:ts
+        run: corepack yarn run build:ts
 
       - name: typecheck (tests, examples, configs)
-        run: yarn run typecheck
+        run: corepack yarn run typecheck
 
       - name: vitest
-        run: yarn run test
+        run: corepack yarn run test
 
       - name: install Playwright browsers
-        run: yarn exec playwright install --with-deps chromium
+        run: corepack yarn exec playwright install --with-deps chromium
 
       - name: Playwright browser smoke test
-        run: yarn run test:browser
+        run: corepack yarn run test:browser
 
       - name: npm pack (dry-run)
         run: npm pack --dry-run
