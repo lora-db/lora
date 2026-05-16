@@ -6,6 +6,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type CSSProperties,
 } from "react";
 import { Compartment, Prec, type Extension } from "@codemirror/state";
@@ -317,7 +318,11 @@ export const LoraQueryEditor = forwardRef<
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const cmHostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const [hasSelection, setHasSelection] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
   const extensionsComp = useRef(new Compartment());
   const providersComp = useRef(new Compartment());
   const themeComp = useRef(new Compartment());
@@ -356,13 +361,13 @@ export const LoraQueryEditor = forwardRef<
   }, []);
 
   useLayoutEffect(() => {
-    if (!hostRef.current) return;
+    if (!cmHostRef.current) return;
     const initialProviders = buildProviders(labels, relTypes, procedures, getPropertyKeys);
     const initialPopupValues = themeToPopupValues(theme);
     lastPopupSigRef.current = JSON.stringify(initialPopupValues);
     const view = new EditorView({
       doc: value,
-      parent: hostRef.current,
+      parent: cmHostRef.current,
       extensions: [
         extensionsComp.current.of(
           cypherExtensions({
@@ -402,6 +407,10 @@ export const LoraQueryEditor = forwardRef<
             const next = update.state.doc.toString();
             lastEmittedRef.current = next;
             onChange(next);
+          }
+          if (update.selectionSet || update.docChanged) {
+            const sel = update.state.selection.main;
+            setHasSelection(!sel.empty);
           }
         }),
       ],
@@ -603,6 +612,39 @@ export const LoraQueryEditor = forwardRef<
     });
   }, [extraKeymap]);
 
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopyClick = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) return;
+    const sel = view.state.selection.main;
+    const text = sel.empty
+      ? view.state.doc.toString()
+      : view.state.sliceDoc(sel.from, sel.to);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+      copiedTimerRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copiedTimerRef.current = null;
+      }, 1200);
+    } catch {
+      /* Clipboard refused — silent no-op. */
+    }
+  }, []);
+
+  const showCopyButton = readOnly || hasSelection;
+
   const containerStyle = useMemo<CSSProperties>(
     () => ({
       ...themeToStyle(theme),
@@ -619,6 +661,29 @@ export const LoraQueryEditor = forwardRef<
       className={["lora-query", className].filter(Boolean).join(" ")}
       data-color-scheme={colorScheme === "auto" ? undefined : colorScheme}
       style={containerStyle}
-    />
+    >
+      <div ref={cmHostRef} style={{ display: "contents" }} />
+      {showCopyButton && (
+        <button
+          type="button"
+          className={`lora-query__copy${copied ? " lora-query__copy--copied" : ""}`}
+          aria-label={copied ? "Copied" : "Copy"}
+          title={copied ? "Copied" : hasSelection ? "Copy selection" : "Copy"}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={handleCopyClick}
+        >
+          {copied ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          )}
+        </button>
+      )}
+    </div>
   );
 });

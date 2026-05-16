@@ -148,14 +148,26 @@ export const TOOL_DESCRIPTORS: Record<ToolId, ToolDescriptor> = {
   },
 };
 
-/** Default toolbar order when `tools={true}`. */
+/** Default toolbar order when `tools={true}`.
+ *
+ *  Tools are grouped by purpose:
+ *    1. cursor modes (select, pan, add-node, add-link)
+ *    2. view (fit, zoom-in, zoom-out)
+ *    3. engine (pause, resume)
+ *    4. file ops (screenshot, export-json, import-json)
+ *
+ *  Selection-scoped actions — delete, duplicate, copy, cut, paste,
+ *  clear — live in the auto-appearing top-left SelectionPanel so the
+ *  main toolbar doesn't restate the same controls. `select-all` lives
+ *  with the cursor modes (Cmd+A keybinding) since it bootstraps a
+ *  selection rather than acting on one. `toggle-mode` is its own
+ *  bottom-right pill (`<ModeToggle>`). Hosts who want a different
+ *  layout can pass their own `tools` array. */
 export const DEFAULT_TOOL_ORDER: ToolId[] = [
   "select",
   "pan",
   "add-node",
   "add-link",
-  "duplicate",
-  "delete",
   "select-all",
   "fit",
   "zoom-in",
@@ -165,7 +177,6 @@ export const DEFAULT_TOOL_ORDER: ToolId[] = [
   "screenshot",
   "export-json",
   "import-json",
-  "toggle-mode",
 ];
 
 /** Icon for the toggle-mode button, depending on the currently active

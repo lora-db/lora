@@ -1,5 +1,9 @@
 import ForceGraph2DKapsule from "force-graph";
-import type { GraphEngine, CreateEngineOptions } from "./types";
+import type {
+  GraphEngine,
+  CreateEngineOptions,
+  CameraState,
+} from "./types";
 import type {
   GraphData,
   LinkObject,
@@ -8,9 +12,12 @@ import type {
 } from "../types";
 import {
   EVENT_BINDINGS,
+  EVENT_BINDINGS_2D,
   applyDiffedProps,
   type EventName,
+  type EventName2D,
 } from "./propBindings";
+import { runAnim, lerp } from "./rafAnim";
 
 /** Loose alias for the chainable kapsule instance. The upstream `.d.ts`
  *  is a heavily generic class — we route through `unknown` rather than
@@ -54,6 +61,18 @@ export function createEngine2D<
     );
   }
 
+  // 2D-only event bindings (zoom + render-frame callbacks).
+  for (const name of EVENT_BINDINGS_2D) {
+    const setter = instance[name as keyof Kapsule2D];
+    if (typeof setter !== "function") continue;
+    setter.call(instance, (...args: unknown[]) => {
+      const fn = handlerRef.current[name as EventName2D] as
+        | ((...a: unknown[]) => void)
+        | undefined;
+      if (typeof fn === "function") fn(...args);
+    });
+  }
+
   // Initial prop pass (diffed against an empty bag so every supported
   // prop gets applied once).
   applyDiffedProps(
@@ -65,6 +84,10 @@ export function createEngine2D<
 
   // Seed data.
   instance.graphData(opts.initialData);
+
+  // Handle to the currently running RAF-based focus animation, if
+  // any. Held so `stopAnimation` and a fresh `focusOn` can cancel it.
+  let cancelAnim: (() => void) | null = null;
 
   return {
     mode: "2d",
@@ -120,6 +143,75 @@ export function createEngine2D<
       instance.width!(width);
       instance.height!(height);
     },
+    d3Force(name: string, fn?: unknown | null) {
+      const setter = instance.d3Force;
+      if (typeof setter !== "function") return undefined;
+      if (fn === undefined) return setter.call(instance, name);
+      return setter.call(instance, name, fn);
+    },
+    emitParticle(link: L) {
+      instance.emitParticle?.(link as unknown);
+    },
+    stopAnimation() {
+      // Cancel our own RAF tween. The kapsule's internal tween group
+      // is unreachable from outside, so any animation we want to be
+      // interruptible must be driven here, not via the kapsule's
+      // own `transitionDuration` arg.
+      cancelAnim?.();
+      cancelAnim = null;
+    },
+
+    focusOn(target, opts) {
+      cancelAnim?.();
+      const dur = opts?.durationMs ?? 800;
+      const targetZoom = opts?.zoom ?? 8;
+      const startCenter = (instance.centerAt?.() as
+        | { x: number; y: number }
+        | undefined) ?? { x: 0, y: 0 };
+      const startZoom =
+        (instance.zoom?.() as number | undefined) ?? 1;
+      cancelAnim = runAnim(dur, (t) => {
+        const x = lerp(startCenter.x, target.x, t);
+        const y = lerp(startCenter.y, target.y, t);
+        const z = lerp(startZoom, targetZoom, t);
+        // Set instantly each tick — the kapsule's own tween is
+        // never engaged, so our cancel is total.
+        instance.centerAt?.(x, y, 0);
+        instance.zoom?.(z, 0);
+      });
+    },
+
+    getCameraState(): CameraState {
+      const c = (instance.centerAt?.() as
+        | { x: number; y: number }
+        | undefined) ?? { x: 0, y: 0 };
+      const k = (instance.zoom?.() as number | undefined) ?? 1;
+      return { mode: "2d", x: c.x, y: c.y, k };
+    },
+
+    setCameraState(state, durationMs) {
+      if (state.mode !== "2d") return;
+      cancelAnim?.();
+      const dur = durationMs ?? 0;
+      if (dur <= 0) {
+        instance.centerAt?.(state.x, state.y, 0);
+        instance.zoom?.(state.k, 0);
+        return;
+      }
+      const startCenter = (instance.centerAt?.() as
+        | { x: number; y: number }
+        | undefined) ?? { x: state.x, y: state.y };
+      const startZoom =
+        (instance.zoom?.() as number | undefined) ?? state.k;
+      cancelAnim = runAnim(dur, (t) => {
+        instance.centerAt?.(
+          lerp(startCenter.x, state.x, t),
+          lerp(startCenter.y, state.y, t),
+          0,
+        );
+        instance.zoom?.(lerp(startZoom, state.k, t), 0);
+      });
+    },
 
     applyProps(props, prev) {
       applyDiffedProps(
@@ -135,6 +227,8 @@ export function createEngine2D<
     },
 
     destroy() {
+      cancelAnim?.();
+      cancelAnim = null;
       instance._destructor();
     },
   };

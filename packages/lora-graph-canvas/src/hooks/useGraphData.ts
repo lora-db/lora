@@ -49,18 +49,38 @@ export function useGraphData<
 >(opts: UseGraphDataOptions<N, L>): GraphDataApi<N, L> {
   const isControlled = opts.controlled !== undefined;
 
-  const [internal, setInternal] = useState<GraphData<N, L>>(
-    () =>
+  // Ensure every link has an id. Without this, link selection breaks
+  // — we key the selectedLinkIds set by id, and any link the host
+  // passed in `{ source, target }` (no id) would silently fail every
+  // click. We mutate in place to keep referential equality with the
+  // host's data (the kapsule already mutates these objects for
+  // simulation state). Memoised so it's stable across renders and
+  // safe to put in dependency arrays.
+  const ensureLinkIds = useCallback((data: GraphData<N, L>) => {
+    for (const link of data.links) {
+      if ((link as { id?: unknown }).id === undefined) {
+        (link as { id?: string | number }).id = createId("l");
+      }
+    }
+    return data;
+  }, []);
+
+  const [internal, setInternal] = useState<GraphData<N, L>>(() => {
+    const seed =
       opts.defaultData ??
       opts.controlled ??
-      (EMPTY_DATA as GraphData<N, L>),
-  );
+      (EMPTY_DATA as GraphData<N, L>);
+    return ensureLinkIds(seed);
+  });
 
   // Mirror controlled data into the internal slot so the mutators
   // always read from the same source.
+  // `ensureLinkIds` is stable inside this hook; declared inline below.
   useEffect(() => {
-    if (isControlled && opts.controlled) setInternal(opts.controlled);
-  }, [isControlled, opts.controlled]);
+    if (isControlled && opts.controlled) {
+      setInternal(ensureLinkIds(opts.controlled));
+    }
+  }, [isControlled, opts.controlled, ensureLinkIds]);
 
   const dataRef = useRef(internal);
   dataRef.current = internal;
@@ -78,8 +98,8 @@ export function useGraphData<
   );
 
   const setData = useCallback(
-    (next: GraphData<N, L>) => commit(next),
-    [commit],
+    (next: GraphData<N, L>) => commit(ensureLinkIds(next)),
+    [commit, ensureLinkIds],
   );
 
   const addNode = useCallback(

@@ -77,6 +77,50 @@
   font-family: var(--lq-font);
   /* Tell form controls + native scrollbars to track our scheme. */
   color-scheme: light;
+
+  position: relative;
+}
+
+/* ─── Copy button overlay ──────────────────────────────────────────
+ * Sits in the top-right corner. Visible when text is selected, or at
+ * all times in read-only mode. Click copies the current selection, or
+ * the whole buffer if the selection is empty.
+ */
+.lora-query__copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--lq-border);
+  border-radius: 5px;
+  background: var(--lq-bg);
+  color: var(--lq-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition: color 120ms, background 120ms, border-color 120ms, box-shadow 120ms;
+}
+.lora-query__copy:hover {
+  color: var(--lq-fg);
+  border-color: var(--lq-accent);
+}
+.lora-query__copy:focus-visible {
+  outline: 2px solid var(--lq-accent);
+  outline-offset: 1px;
+}
+.lora-query__copy--copied {
+  color: var(--lq-color-label);
+  border-color: var(--lq-color-label);
+}
+.lora-query__copy svg {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 /* ─── Dark palette (GitHub Dark hues on VS-Code #1e1e1e surface). ─
@@ -133,7 +177,9 @@
 }
 .lora-query .cm-scroller {
   height: 100%;
-  padding-block: 6px;
+}
+.lora-query .cm-content {
+  padding-block: 10px;
 }
 .lora-query .cm-gutters {
   background: var(--lq-gutter-bg);

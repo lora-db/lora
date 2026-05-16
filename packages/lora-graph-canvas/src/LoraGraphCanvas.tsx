@@ -2,7 +2,6 @@ import {
   forwardRef,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -13,7 +12,6 @@ import type {
   LinkObject,
   LoraGraphCanvasHandle,
   LoraGraphCanvasProps,
-  LoraGraphTheme,
   NodeObject,
   ToolId,
 } from "./types";
@@ -21,60 +19,32 @@ import { useGraphData } from "./hooks/useGraphData";
 import { useGraphEngine } from "./hooks/useGraphEngine";
 import { useResizeObserver } from "./hooks/useResizeObserver";
 import { useGraphSelection } from "./hooks/useGraphSelection";
+import { useShiftHeld } from "./hooks/useShiftHeld";
+import { useAutoIndexNeighbors } from "./hooks/useAutoIndexNeighbors";
+import { useMarqueeAndCursor } from "./hooks/useMarqueeAndCursor";
+import { useClickToleranceShim } from "./hooks/useClickToleranceShim";
+import { useGraphClipboard } from "./hooks/useGraphClipboard";
+import { useGraphKeybindings } from "./hooks/useGraphKeybindings";
+import { useGraphForces } from "./hooks/useGraphForces";
+import { useAccessorOverrides } from "./hooks/useAccessorOverrides";
+import { useHoverState } from "./hooks/useHoverState";
+import { useLabelRenderer } from "./hooks/useLabelRenderer";
+import { useLinkLabelRenderer } from "./hooks/useLinkLabelRenderer";
+import { usePerfTierDefaults } from "./hooks/usePerfTierDefaults";
+import { useImperativeGraphHandle } from "./hooks/useImperativeGraphHandle";
 import { GraphToolbar } from "./tools/GraphToolbar";
 import { ContextMenu, type ContextMenuItem } from "./tools/ContextMenu";
 import { HoverTooltip } from "./tools/HoverTooltip";
 import { MarqueeOverlay } from "./tools/MarqueeOverlay";
 import { SelectionPanel } from "./tools/SelectionPanel";
+import { GroupLegend } from "./tools/GroupLegend";
+import { ModeToggle } from "./tools/ModeToggle";
+import { OptionsMenu, type OptionItem } from "./tools/OptionsMenu";
+import { drawBackgroundGrid } from "./utils/grid";
 import { SNAP_IN } from "./utils/geometry";
+import { themeToStyle } from "./utils/themeStyle";
+import { downloadBlob, downloadScreenshot } from "./utils/download";
 import "./theme/styles.css";
-
-/** Resolve an accessor against an object. Mirrors the kapsule's
- *  `accessor-fn` semantics: a function is invoked; a string is used as
- *  a property name; anything else (including undefined) is returned as
- *  is. */
-function readAccessor<T, In>(
-  accessor: T | string | ((obj: In) => T) | undefined,
-  obj: In,
-): T | undefined {
-  if (typeof accessor === "function") return (accessor as (o: In) => T)(obj);
-  if (typeof accessor === "string") {
-    return (obj as unknown as Record<string, unknown>)[accessor] as
-      | T
-      | undefined;
-  }
-  return accessor;
-}
-
-const THEME_TO_VAR: Record<keyof LoraGraphTheme, string> = {
-  background: "--lgc-bg",
-  foreground: "--lgc-fg",
-  border: "--lgc-border",
-  accent: "--lgc-accent",
-  toolbarBackground: "--lgc-toolbar-bg",
-  toolbarForeground: "--lgc-toolbar-fg",
-  toolbarBorder: "--lgc-toolbar-border",
-  toolActiveBackground: "--lgc-tool-active-bg",
-  toolHoverBackground: "--lgc-tool-hover-bg",
-  tooltipBackground: "--lgc-tooltip-bg",
-  tooltipForeground: "--lgc-tooltip-fg",
-  menuBackground: "--lgc-menu-bg",
-  menuForeground: "--lgc-menu-fg",
-  menuHoverBackground: "--lgc-menu-hover-bg",
-  fontFamily: "--lgc-font",
-  fontSize: "--lgc-font-size",
-};
-
-function themeToStyle(theme?: Partial<LoraGraphTheme>): CSSProperties {
-  if (!theme) return {};
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(theme)) {
-    if (value === undefined) continue;
-    const cssVar = THEME_TO_VAR[key as keyof LoraGraphTheme];
-    if (cssVar) out[cssVar] = String(value);
-  }
-  return out as CSSProperties;
-}
 
 function LoraGraphCanvasInner<
   N extends NodeObject = NodeObject,
@@ -98,8 +68,20 @@ function LoraGraphCanvasInner<
     tools = true,
     selection: selectionMode = "multi",
     showContextMenu = true,
-    enableRename = true,
+    showLegend = false,
+    showGrid = false,
+    showLabels = false,
     enableClipboard = true,
+    focusOnClick = false,
+    highlightNeighborsOnHover = true,
+    // Highlight has nothing to walk without `_neighbors`/`_links` on
+    // each node, so default this to whatever the highlight is —
+    // flipping highlight on without the index would silently no-op.
+    // Host can still override either knob independently.
+    autoIndexNeighbors = highlightNeighborsOnHover,
+    collideNodes = false,
+    fixOnDrop = true,
+    beeswarm = false,
     onSelectionChange,
     onNodeClick,
     onNodeRightClick,
@@ -111,24 +93,53 @@ function LoraGraphCanvasInner<
     onNodeDragEnd,
     onNodeHover,
     onLinkHover,
-    onNodeRename,
+    onNodeDoubleClick,
     onCopy,
     onCut,
     onPaste,
+    onRenderFramePre,
+    nodeColor,
+    nodeLabel,
+    nodeVal,
+    nodeAutoColorBy,
+    nodeRelSize,
+    nodeVisibility,
+    nodeCanvasObject,
+    linkColor,
+    linkLabel,
+    linkWidth,
+    linkHoverPrecision,
+    backgroundColor,
+    enableNavigationControls,
+    performanceProfile,
+    dagMode: dagModeProp,
   } = props;
 
-  // ─── Mode ────────────────────────────────────────────────────────
+  // ─── Mode (controlled / uncontrolled) ────────────────────────────
   const [internalMode, setInternalMode] = useState<GraphMode>(
     controlledMode ?? defaultMode ?? "2d",
   );
   const isModeControlled = controlledMode !== undefined;
   const mode = isModeControlled ? controlledMode : internalMode;
+  // Trampoline for the "about to switch mode" side effects. The 2D ↔
+  // 3D mode switch triggers a full kapsule remount; a few pieces of
+  // React-side state — in-flight gestures whose coords are now stale,
+  // the saved-view focus restore, the open context menu — need to be
+  // cleared before the new engine takes over. (Engine-owned state
+  // like the camera survives the remount via useGraphEngine itself.)
+  // The body is wired up further down once the engine is in scope;
+  // setMode reads through this ref so it can stay early in the file
+  // (its identity has to be stable for every downstream useCallback
+  // that lists it as a dep).
+  const beforeModeChangeRef = useRef<(() => void) | null>(null);
   const setMode = useCallback(
     (next: GraphMode) => {
+      if (next === mode) return;
+      beforeModeChangeRef.current?.();
       if (!isModeControlled) setInternalMode(next);
       onModeChange?.(next);
     },
-    [isModeControlled, onModeChange],
+    [mode, isModeControlled, onModeChange],
   );
 
   // ─── Data ────────────────────────────────────────────────────────
@@ -137,6 +148,8 @@ function LoraGraphCanvasInner<
     ...(defaultData !== undefined ? { defaultData } : {}),
     ...(onDataChange ? { onChange: onDataChange } : {}),
   });
+
+  useAutoIndexNeighbors(autoIndexNeighbors, dataApi.data);
 
   // ─── Selection ───────────────────────────────────────────────────
   const selection = useGraphSelection({
@@ -147,6 +160,69 @@ function LoraGraphCanvasInner<
   // ─── Active tool / engine paused state ──────────────────────────
   const [activeTool, setActiveTool] = useState<ToolId>("select");
   const [paused, setPaused] = useState(false);
+
+  // ─── Hover-highlight state ──────────────────────────────────────
+  // All the live-vs-debounced hover plumbing (label-stickiness grace
+  // timer, neighbour-highlight sets, tooltip content, and the live
+  // refs the marquee guard reads) lives in `useHoverState`. The host
+  // sees a flat result so the canvas body stays focused on tool /
+  // selection wiring.
+  const hover = useHoverState<N, L>({
+    highlightNeighborsOnHover,
+    ...(nodeLabel !== undefined ? { nodeLabel } : {}),
+    ...(linkLabel !== undefined ? { linkLabel } : {}),
+    ...(onNodeHover ? { onNodeHover } : {}),
+    ...(onLinkHover ? { onLinkHover } : {}),
+  });
+  const {
+    hoverNodeId,
+    liveHoverNodeIdRef,
+    highlightedNodeIds,
+    highlightedLinkIds,
+    hoveredNodeSet,
+    hoveredLinkSet,
+    tooltipContent,
+    handleNodeHover,
+    handleLinkHover,
+    pinHover,
+  } = hover;
+
+  // Group-legend hidden state. O(1) lookups in the wrapped accessor.
+  const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  // Options-menu-driven state. The corresponding props seed the
+  // initial value; afterwards the menu's checkbox / select owns it.
+  const [internalFocusOnClick, setInternalFocusOnClick] = useState(
+    Boolean(focusOnClick),
+  );
+  const [internalShowLabels, setInternalShowLabels] = useState(
+    Boolean(showLabels),
+  );
+  const [internalDagMode, setInternalDagMode] = useState<
+    "td" | "bu" | "lr" | "rl" | "radialout" | "radialin" | null
+  >(dagModeProp ?? null);
+  useEffect(() => {
+    setInternalFocusOnClick(Boolean(focusOnClick));
+  }, [focusOnClick]);
+  useEffect(() => {
+    setInternalShowLabels(Boolean(showLabels));
+  }, [showLabels]);
+  useEffect(() => {
+    setInternalDagMode(dagModeProp ?? null);
+  }, [dagModeProp]);
+
+  // Remembered view, so `focusOnClick` can restore on the second click.
+  const savedViewRef = useRef<import("./engines/types").CameraState | null>(
+    null,
+  );
+  const [focusedNodeId, setFocusedNodeId] = useState<
+    string | number | null
+  >(null);
+  const [focusedLinkId, setFocusedLinkId] = useState<
+    string | number | null
+  >(null);
 
   // ─── Add-link in-progress source (clicked first node) ───────────
   const [linkSourceId, setLinkSourceId] = useState<string | number | null>(
@@ -166,75 +242,74 @@ function LoraGraphCanvasInner<
     items: ContextMenuItem[];
   } | null>(null);
 
-  // ─── Hover tooltip content ──────────────────────────────────────
-  const [tooltipContent, setTooltipContent] = useState<
-    string | HTMLElement | null
-  >(null);
-
-  // ─── Marquee state ──────────────────────────────────────────────
-  const [marquee, setMarquee] = useState<{
-    x0: number;
-    y0: number;
-    x1: number;
-    y1: number;
-    additive: boolean;
-  } | null>(null);
-
-  // ─── Inline rename state ────────────────────────────────────────
-  const [renaming, setRenaming] = useState<{
-    id: string | number;
-    x: number;
-    y: number;
-    value: string;
-    previous: string | undefined;
-  } | null>(null);
-
-  // ─── Internal clipboard (lives for the lifetime of the
-  // component instance — not the OS clipboard). ──────────────────
-  const clipboardRef = useRef<Array<Partial<N>>>([]);
-
-  // Track the last screen-space cursor over the mount so paste can
-  // drop new nodes where the user expects them.
-  const lastCursorRef = useRef<{ x: number; y: number } | null>(null);
+  const shiftHeld = useShiftHeld();
 
   // ─── Host / engine mount ────────────────────────────────────────
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // Engine mount goes through a state-backed callback ref so attaching
+  // the element triggers a re-render — without it, useGraphEngine would
+  // never see `mountRef.current` flip from null to the div, since refs
+  // don't re-render.
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const [mountEl, setMountEl] = useState<HTMLDivElement | null>(null);
+  const handleMountRef = useCallback((el: HTMLDivElement | null) => {
+    mountRef.current = el;
+    setMountEl(el);
+  }, []);
   const observed = useResizeObserver(hostRef);
   const width = widthProp ?? observed?.width ?? 600;
   const height = heightProp ?? observed?.height ?? 400;
 
+  // The engine ref lets handlers below (and the marquee + clipboard
+  // hooks) reach the latest engine after a 2D↔3D remount.
+  const engineRef = useRef<ReturnType<typeof useGraphEngine<N, L>>>(null);
+
+  // ─── Marquee + cursor tracking ──────────────────────────────────
+  const { marquee, lastCursorRef } = useMarqueeAndCursor<N, L>({
+    mount: mountEl,
+    engineRef,
+    selection,
+    nodes: dataApi.data.nodes,
+    links: dataApi.data.links,
+    setSelectedLinkIds,
+    liveHoverNodeIdRef,
+  });
+  useClickToleranceShim(mountEl);
+
+  // ─── Clipboard / duplicate / connect / pin primitives ───────────
+  const clipboard = useGraphClipboard<N, L>({
+    enableClipboard,
+    dataApi,
+    selection,
+    setSelectedLinkIds,
+    engineRef,
+    lastCursorRef,
+    ...(onCopy ? { onCopy } : {}),
+    ...(onCut ? { onCut } : {}),
+    ...(onPaste ? { onPaste } : {}),
+  });
+
   // ─── Engine event interception ───────────────────────────────────
   // The active tool changes how clicks are interpreted. We forward the
   // host's own handlers first (they always fire), then apply the
-  // tool-specific behaviour.
-  // Double-click detection. The kapsule doesn't expose a
-  // double-click event, so we synthesise one from the click stream:
-  // two clicks on the same node within 280ms triggers a double-click.
+  // tool-specific behaviour. Double-click is synthesised from the click
+  // stream since the kapsule doesn't expose one.
   const lastNodeClickRef = useRef<{
     id: string | number;
     at: number;
   } | null>(null);
 
-  // Forward ref so handleNodeClick can call beginRename even though
-  // it's defined further down. (Avoids a useCallback ordering loop.)
-  const beginRenameRef = useRef<((node: N) => void) | null>(null);
-
   const handleNodeClick = useCallback(
     (node: N, event: MouseEvent) => {
       onNodeClick?.(node, event);
 
-      // Double-click detection. The host's onNodeDoubleClick fires
-      // regardless of `enableRename`; the built-in rename only fires
-      // when the feature is enabled.
       const now = performance.now();
       const last = lastNodeClickRef.current;
       const isDoubleClick =
         last && last.id === node.id && now - last.at < 280;
       lastNodeClickRef.current = { id: node.id, at: now };
       if (isDoubleClick) {
-        props.onNodeDoubleClick?.(node, event);
-        if (enableRename) beginRenameRef.current?.(node);
+        onNodeDoubleClick?.(node, event);
         return;
       }
 
@@ -248,53 +323,97 @@ function LoraGraphCanvasInner<
           } as Parameters<typeof dataApi.addLink>[0]);
           setLinkSourceId(null);
         } else {
-          // Clicked the source again — cancel.
           setLinkSourceId(null);
         }
         return;
       }
       if (selectionMode !== "none" && node.id !== undefined) {
-        selection.toggle(node.id, {
-          additive: event.shiftKey || event.ctrlKey || event.metaKey,
-        });
-        setSelectedLinkIds([]);
+        const additive =
+          event.shiftKey || event.ctrlKey || event.metaKey;
+        selection.toggle(node.id, { additive });
+        // Shift/ctrl/meta = mixed selection: keep any link selection
+        // intact. Plain click resets it so the user has a single,
+        // unambiguous selection.
+        if (!additive) setSelectedLinkIds([]);
+      }
+
+      // Click-to-focus: snapshot the current camera, animate toward the
+      // node along the user's current viewing angle. Re-clicking the
+      // same node restores the saved camera state.
+      if (
+        internalFocusOnClick &&
+        node.id !== undefined &&
+        engineRef.current
+      ) {
+        const eng = engineRef.current;
+        if (focusedNodeId === node.id) {
+          if (savedViewRef.current) {
+            eng.setCameraState(savedViewRef.current, 800);
+          }
+          setFocusedNodeId(null);
+          savedViewRef.current = null;
+        } else {
+          // Only snapshot the current view when we're transitioning
+          // *into* a focus state from a free camera — otherwise we'd
+          // overwrite the original-view snapshot every time the user
+          // jumps from one focused entity to another, losing the
+          // "restore" anchor.
+          if (focusedNodeId === null && focusedLinkId === null) {
+            savedViewRef.current = eng.getCameraState();
+          }
+          eng.focusOn(
+            { x: node.x ?? 0, y: node.y ?? 0, z: node.z ?? 0 },
+            { distance: 120, zoom: 8, durationMs: 1000 },
+          );
+          setFocusedNodeId(node.id);
+          setFocusedLinkId(null);
+        }
       }
     },
     [
       onNodeClick,
+      onNodeDoubleClick,
       selection,
       selectionMode,
       activeTool,
       linkSourceId,
       dataApi,
-      props,
-      enableRename,
+      internalFocusOnClick,
+      focusedNodeId,
+      focusedLinkId,
     ],
   );
-
-  // We need the engine for screen→graph projection in add-node, but
-  // the engine ref lives below. The trampoline pattern via `useRef`
-  // means we can read the latest engine reference inside this callback.
-  const engineRef = useRef<ReturnType<typeof useGraphEngine<N, L>>>(null);
 
   const handleBackgroundClick = useCallback(
     (event: MouseEvent) => {
       onBackgroundClick?.(event);
+      engineRef.current?.stopAnimation();
       if (activeTool === "add-node") {
         const rect = mountRef.current?.getBoundingClientRect();
         const x = rect ? event.clientX - rect.left : event.clientX;
         const y = rect ? event.clientY - rect.top : event.clientY;
         const coords = engineRef.current?.screen2Graph(x, y) ?? { x, y };
         dataApi.addNode(undefined, {
-          at: { x: coords.x, y: coords.y, ...(coords.z !== undefined ? { z: coords.z } : {}) },
+          at: {
+            x: coords.x,
+            y: coords.y,
+            ...(coords.z !== undefined ? { z: coords.z } : {}),
+          },
         });
         return;
       }
       if (activeTool === "add-link") {
         setLinkSourceId(null);
       }
-      selection.clear();
-      setSelectedLinkIds([]);
+      // Shift/ctrl/meta = additive intent — preserve the running
+      // selection so a stray click-through during a multi-select
+      // gesture doesn't blow it away. Plain click still clears.
+      const additive =
+        event.shiftKey || event.ctrlKey || event.metaKey;
+      if (!additive) {
+        selection.clear();
+        setSelectedLinkIds([]);
+      }
       setMenu(null);
     },
     [onBackgroundClick, activeTool, dataApi, selection],
@@ -345,16 +464,10 @@ function LoraGraphCanvasInner<
         ] as ContextMenuItem[],
       });
     },
-    [
-      onNodeRightClick,
-      showContextMenu,
-      dataApi,
-      selection,
-    ],
+    [onNodeRightClick, showContextMenu, dataApi, selection],
   );
 
-  // Link click → select (selection logic mirrors nodes). Multi-select
-  // requires shift/ctrl/cmd.
+  // Link click → select (selection logic mirrors nodes).
   const handleLinkClick = useCallback(
     (link: L, event: MouseEvent) => {
       onLinkClick?.(link, event);
@@ -369,11 +482,93 @@ function LoraGraphCanvasInner<
         }
         return has ? cur.filter((x) => x !== lid) : [...cur, lid];
       });
-      // Selecting a link should clear the node selection (and vice
-      // versa via the existing node-click flow).
-      selection.clear();
+      // Shift/ctrl/meta keeps the node selection so the user can hold
+      // mixed node + link selections (e.g. to delete both with one
+      // keystroke). Plain click resets nodes so the click is the only
+      // selection.
+      if (!additive) selection.clear();
+
+      // Click-to-focus mirrors the node path: animate the camera to
+      // the link's midpoint, re-click the same link to restore. The
+      // source/target are kapsule-resolved to node objects after the
+      // first sim tick — guard for the pre-resolution case.
+      if (internalFocusOnClick && engineRef.current) {
+        const eng = engineRef.current;
+        if (focusedLinkId === lid) {
+          if (savedViewRef.current) {
+            eng.setCameraState(savedViewRef.current, 800);
+          }
+          setFocusedLinkId(null);
+          savedViewRef.current = null;
+        } else {
+          const src =
+            typeof link.source === "object"
+              ? (link.source as N)
+              : null;
+          const tgt =
+            typeof link.target === "object"
+              ? (link.target as N)
+              : null;
+          if (src && tgt && src.x !== undefined && tgt.x !== undefined) {
+            if (focusedNodeId === null && focusedLinkId === null) {
+              savedViewRef.current = eng.getCameraState();
+            }
+            const sx = src.x ?? 0;
+            const sy = src.y ?? 0;
+            const tx = tgt.x ?? 0;
+            const ty = tgt.y ?? 0;
+            const sz = src.z ?? 0;
+            const tz = tgt.z ?? 0;
+            const mid = {
+              x: (sx + tx) / 2,
+              y: (sy + ty) / 2,
+              z: (sz + tz) / 2,
+            };
+            // Fit both endpoints in view rather than just zooming to
+            // the midpoint at a fixed level — for a long link that
+            // would put both nodes off-screen, and for a short link
+            // it'd be needlessly zoomed out.
+            //
+            // 2D: pick the zoom that frames the bounding box of the
+            //   two nodes within the viewport, with a 1.5× margin so
+            //   the nodes themselves don't kiss the edges. Clamp so a
+            //   tiny extent doesn't max the zoom out to numerical
+            //   silliness.
+            // 3D: the camera's FOV is ~50° (the kapsule's default), so
+            //   `d = halfLen / tan(fov/2)` puts the endpoints on the
+            //   frame edges; multiplied by margin to add padding.
+            const margin = 1.5;
+            const dx = tx - sx;
+            const dy = ty - sy;
+            const dz = tz - sz;
+            const extentX = Math.max(Math.abs(dx), 1);
+            const extentY = Math.max(Math.abs(dy), 1);
+            const fitZoom = Math.min(
+              width / (extentX * margin),
+              height / (extentY * margin),
+            );
+            const zoom = Math.min(16, Math.max(0.5, fitZoom));
+            const linkLength = Math.hypot(dx, dy, dz);
+            // tan(25°) ≈ 0.466, derived from a 50° vertical FOV.
+            const fitDistance = (linkLength / 2 / 0.466) * margin;
+            const distance = Math.max(60, fitDistance);
+            eng.focusOn(mid, { distance, zoom, durationMs: 1000 });
+            setFocusedLinkId(lid);
+            setFocusedNodeId(null);
+          }
+        }
+      }
     },
-    [onLinkClick, selection, selectionMode],
+    [
+      onLinkClick,
+      selection,
+      selectionMode,
+      internalFocusOnClick,
+      focusedLinkId,
+      focusedNodeId,
+      width,
+      height,
+    ],
   );
 
   const handleLinkRightClick = useCallback(
@@ -400,9 +595,6 @@ function LoraGraphCanvasInner<
             id: "reverse",
             label: "Reverse direction",
             onSelect: () => {
-              // Swap source/target. We need stable refs — addLink+removeLink
-              // round-trip works regardless of whether source/target are
-              // ids or resolved node objects.
               dataApi.removeLink((l) => l === link);
               dataApi.addLink({
                 ...(link as object),
@@ -418,88 +610,89 @@ function LoraGraphCanvasInner<
         ],
       });
     },
-    [
-      onLinkRightClick,
-      showContextMenu,
-      dataApi,
-    ],
-  );
-
-  // ─── Hover handlers — drive the React-rendered tooltip ─────────
-  const handleNodeHover = useCallback(
-    (node: N | null, prev: N | null) => {
-      onNodeHover?.(node, prev);
-      if (!node) {
-        setTooltipContent(null);
-        return;
-      }
-      const label = readAccessor<string | HTMLElement, N>(
-        props.nodeLabel,
-        node,
-      );
-      setTooltipContent(label ?? null);
-    },
-    [onNodeHover, props.nodeLabel],
-  );
-
-  const handleLinkHover = useCallback(
-    (link: L | null, prev: L | null) => {
-      onLinkHover?.(link, prev);
-      if (!link) {
-        setTooltipContent(null);
-        return;
-      }
-      const label = readAccessor<string | HTMLElement, L>(
-        props.linkLabel,
-        link,
-      );
-      setTooltipContent(label ?? null);
-    },
-    [onLinkHover, props.linkLabel],
+    [onLinkRightClick, showContextMenu, dataApi],
   );
 
   // Drag-to-create-link: when the user drags a node while the add-link
   // tool is active, snap to the nearest other node within range and
   // commit the link on drag-end.
   const dragSnapTargetRef = useRef<N | null>(null);
+  // Read latest nodes inside the drag callback without re-creating it
+  // mid-drag (which would re-bind the kapsule's drag handler and could
+  // glitch the snap preview).
+  const nodesRef = useRef(dataApi.data.nodes);
+  nodesRef.current = dataApi.data.nodes;
+
   const handleNodeDrag = useCallback(
     (node: N, translate: { x: number; y: number; z?: number }) => {
       onNodeDrag?.(node, translate);
-      if (activeTool !== "add-link") return;
-      const nodes = dataApi.data.nodes;
-      let nearest: N | null = null;
-      let nearestDist = Infinity;
-      for (const other of nodes) {
-        if (other === node || other.id === node.id) continue;
-        const ox = other.x ?? 0;
-        const oy = other.y ?? 0;
+      engineRef.current?.stopAnimation();
+      // Pin the hover state to the dragged node. The kapsule clears
+      // hover internally on mousedown, which after the 250 ms grace
+      // timer wipes `highlightedNodeIds` + `highlightedLinkIds` and
+      // makes the neighbour labels vanish mid-drag — exactly when
+      // the user most wants to see what they're moving and what
+      // it's connected to. Idempotent: re-pinning the same node is
+      // a no-op for the ref + a redundant hover update.
+      pinHover(node);
+
+      if (activeTool === "add-link") {
+        const nodes = nodesRef.current;
         const nx = node.x ?? 0;
         const ny = node.y ?? 0;
-        const d = Math.hypot(ox - nx, oy - ny);
-        if (d < nearestDist) {
-          nearestDist = d;
-          nearest = other;
+        const snapInSq = SNAP_IN * SNAP_IN;
+        let nearest: N | null = null;
+        let nearestDistSq = Infinity;
+        for (let i = 0; i < nodes.length; i++) {
+          const other = nodes[i];
+          if (!other || other === node || other.id === node.id) continue;
+          const ox = (other.x ?? 0) - nx;
+          const oy = (other.y ?? 0) - ny;
+          const dSq = ox * ox + oy * oy;
+          if (dSq < nearestDistSq) {
+            nearestDistSq = dSq;
+            nearest = other;
+          }
         }
+        dragSnapTargetRef.current =
+          nearest && nearestDistSq < snapInSq ? nearest : null;
       }
-      dragSnapTargetRef.current =
-        nearest && nearestDist < SNAP_IN ? nearest : null;
     },
-    [onNodeDrag, activeTool, dataApi.data.nodes],
+    [onNodeDrag, activeTool, pinHover],
   );
 
   const handleNodeDragEnd = useCallback(
     (node: N, translate: { x: number; y: number; z?: number }) => {
       onNodeDragEnd?.(node, translate);
-      if (activeTool !== "add-link") return;
-      const target = dragSnapTargetRef.current;
-      dragSnapTargetRef.current = null;
-      if (!target || target.id === undefined || node.id === undefined) return;
-      dataApi.addLink({
-        source: node.id,
-        target: target.id,
-      } as Parameters<typeof dataApi.addLink>[0]);
+      // Release the drag-time hover pin. If the cursor is still over
+      // the node (the common case — drag ends on the node), the
+      // kapsule will re-fire `onNodeHover(node)` and the highlight
+      // continues; otherwise the grace timer fades it naturally.
+      pinHover(null);
+
+      if (activeTool === "add-link") {
+        const target = dragSnapTargetRef.current;
+        dragSnapTargetRef.current = null;
+        if (!target || target.id === undefined || node.id === undefined)
+          return;
+        dataApi.addLink({
+          source: node.id,
+          target: target.id,
+        } as Parameters<typeof dataApi.addLink>[0]);
+        return;
+      }
+
+      // Pin-on-drop: only the node the user actually dragged. The rest
+      // of the selection stays free so the simulation can keep
+      // arranging them.
+      if (fixOnDrop) {
+        const m = node as unknown as Record<string, unknown>;
+        if (node.x !== undefined) m.fx = node.x;
+        if (node.y !== undefined) m.fy = node.y;
+        if (node.z !== undefined) m.fz = node.z;
+      }
     },
-    [onNodeDragEnd, activeTool, dataApi],
+    [onNodeDragEnd, activeTool, dataApi, fixOnDrop, pinHover],
   );
 
   const handleBackgroundRightClick = useCallback(
@@ -546,19 +739,10 @@ function LoraGraphCanvasInner<
         ],
       });
     },
-    [
-      onBackgroundRightClick,
-      showContextMenu,
-      dataApi,
-      mode,
-      setMode,
-    ],
+    [onBackgroundRightClick, showContextMenu, dataApi, mode, setMode],
   );
 
-  // ─── Selection-aware color accessors ────────────────────────────
-  // Wrap whatever the user provided so selected items pick up the
-  // accent color. We read the accent from the theme prop with a
-  // sensible default. Set membership is O(1) in the selection lists.
+  // ─── Selection-aware accessors ─────────────────────────────────
   const accentColor = theme?.accent ?? "#4f8ef7";
   const selectedNodeSet = useMemo(
     () => new Set(selection.selected),
@@ -569,58 +753,179 @@ function LoraGraphCanvasInner<
     [selectedLinkIds],
   );
 
-  const wrappedNodeColor = useMemo(() => {
-    const base = props.nodeColor;
-    return (node: N) => {
-      if (node.id !== undefined && selectedNodeSet.has(node.id)) {
-        return accentColor;
-      }
-      if (typeof base === "function") return base(node);
-      if (typeof base === "string") return base;
-      // Fall back to per-node color, then a default engine handles.
-      return (node.color as string | undefined) ?? "#888";
-    };
-  }, [props.nodeColor, selectedNodeSet, accentColor]);
+  const accessors = useAccessorOverrides<N, L>({
+    mode,
+    accentColor,
+    ...(nodeColor !== undefined ? { nodeColor } : {}),
+    ...(linkColor !== undefined ? { linkColor } : {}),
+    ...(linkWidth !== undefined ? { linkWidth } : {}),
+    ...(nodeVal !== undefined ? { nodeVal } : {}),
+    ...(nodeRelSize !== undefined ? { nodeRelSize } : {}),
+    ...(props.nodePointerAreaPaint !== undefined
+      ? { nodePointerAreaPaint: props.nodePointerAreaPaint }
+      : {}),
+    ...(nodeAutoColorBy !== undefined ? { nodeAutoColorBy } : {}),
+    ...(nodeVisibility !== undefined ? { nodeVisibility } : {}),
+    selectedNodeSet,
+    selectedLinkSet,
+    highlightNeighborsOnHover,
+    highlightedNodeIds,
+    highlightedLinkIds,
+    hoverNodeId,
+    hiddenGroups,
+  });
 
-  const wrappedLinkColor = useMemo(() => {
-    const base = props.linkColor;
-    return (link: L) => {
-      const lid = link.id;
-      if (lid !== undefined && selectedLinkSet.has(lid)) return accentColor;
-      if (typeof base === "function") return base(link);
-      if (typeof base === "string") return base;
-      return (link.color as string | undefined) ?? "rgba(0,0,0,0.25)";
-    };
-  }, [props.linkColor, selectedLinkSet, accentColor]);
+  const nodeLabelRenderer = useLabelRenderer<N>({
+    mode,
+    showLabels: internalShowLabels,
+    selectedNodeSet,
+    hoveredNodeSet,
+    accentColor,
+    ...(nodeCanvasObject ? { hostNodeCanvasObject: nodeCanvasObject } : {}),
+    ...(props.nodeThreeObject
+      ? { hostNodeThreeObject: props.nodeThreeObject }
+      : {}),
+    ...(nodeLabel !== undefined ? { nodeLabel } : {}),
+    ...(nodeVal !== undefined ? { nodeVal } : {}),
+    ...(nodeRelSize !== undefined ? { nodeRelSize } : {}),
+    ...(theme ? { theme } : {}),
+  });
 
-  const wrappedLinkWidth = useMemo(() => {
-    const base = props.linkWidth;
-    return (link: L) => {
-      const lid = link.id;
-      const isSelected = lid !== undefined && selectedLinkSet.has(lid);
-      const baseWidth =
-        typeof base === "function"
-          ? base(link)
-          : typeof base === "number"
-            ? base
-            : (link.width as number | undefined) ?? 1;
-      return isSelected ? baseWidth + 1.5 : baseWidth;
-    };
-  }, [props.linkWidth, selectedLinkSet]);
+  const linkLabelRenderer = useLinkLabelRenderer<L>({
+    mode,
+    showLabels: internalShowLabels,
+    selectedLinkSet,
+    hoveredLinkSet,
+    accentColor,
+    ...(props.linkCanvasObject
+      ? { hostLinkCanvasObject: props.linkCanvasObject }
+      : {}),
+    ...(props.linkThreeObject
+      ? { hostLinkThreeObject: props.linkThreeObject }
+      : {}),
+    ...(props.linkPositionUpdate !== undefined
+      ? { hostLinkPositionUpdate: props.linkPositionUpdate }
+      : {}),
+    ...(linkLabel !== undefined ? { linkLabel } : {}),
+    ...(theme ? { theme } : {}),
+  });
 
-  // Build the prop bag that flows to the engine — we override the
-  // event hooks so the toolbar / selection / context-menu state stay
-  // consistent with what the engine sees, and swap in the wrapped
-  // color accessors so selection is visible on the canvas.
+  // ─── Auto-performance tier ──────────────────────────────────────
+  const perfDefaults = usePerfTierDefaults<N, L>({
+    profile: performanceProfile,
+    nodeCount: dataApi.data.nodes.length,
+    linkCount: dataApi.data.links.length,
+    mode,
+  });
+
+  // In 3D mode, suppress Three.js navigation controls while the user is
+  // performing a marquee gesture (or just holding Shift in anticipation
+  // of one) so the camera doesn't pan/rotate alongside the rectangle.
+  const suppressNav = mode === "3d" && (shiftHeld || marquee !== null);
+
   const engineProps = useMemo<LoraGraphCanvasProps<N, L>>(
     () => ({
+      // 3D mode defaults — the kapsule renders links as 1px lines with
+      // linkColor=#f0f0f0 and linkOpacity=0.2, which is effectively
+      // invisible on a light background. Inject readable defaults; host
+      // props still win via the `...props` spread below.
+      //
+      // `nodeOpacity: 1` (default kapsule value is 0.75) so the accent
+      // colour applied to selected nodes by `wrappedNodeColor` reads at
+      // full strength, not faded through the global material alpha.
+      ...(mode === "3d"
+        ? {
+            linkColor: "rgba(80,80,80,0.7)",
+            linkOpacity: 1,
+            nodeOpacity: 1,
+          }
+        : {}),
+      ...perfDefaults,
       ...props,
-      nodeColor: wrappedNodeColor,
-      linkColor: wrappedLinkColor,
-      linkWidth: wrappedLinkWidth,
+      // DAG orientation is owned by the options menu (seeded from
+      // `props.dagMode` on mount); pass the live value through so a UI
+      // change re-lays-out the graph immediately.
+      dagMode: internalDagMode as Exclude<typeof internalDagMode, undefined>,
+      // The 3D kapsule defaults its backgroundColor to a dark navy.
+      // Without this override the user would see a jarring dark canvas
+      // the first time they toggle into 3D. We prefer the theme's
+      // background, falling back to white.
+      ...(mode === "3d" && backgroundColor === undefined
+        ? {
+            backgroundColor:
+              theme?.background && theme.background !== "transparent"
+                ? theme.background
+                : "#ffffff",
+          }
+        : {}),
+      // Color / width wrappers are conditional — when there's nothing
+      // to overlay (no selection, no hover-highlight) the memo returns
+      // the host's accessor (or undefined) so we don't inject a
+      // per-frame wrapper for nothing.
+      ...(accessors.nodeColor !== undefined
+        ? { nodeColor: accessors.nodeColor }
+        : {}),
+      ...(accessors.linkColor !== undefined
+        ? { linkColor: accessors.linkColor }
+        : {}),
+      ...(accessors.linkWidth !== undefined
+        ? { linkWidth: accessors.linkWidth }
+        : {}),
+      ...(accessors.nodeVal !== undefined
+        ? { nodeVal: accessors.nodeVal }
+        : {}),
+      ...(accessors.nodePointerAreaPaint !== undefined
+        ? { nodePointerAreaPaint: accessors.nodePointerAreaPaint }
+        : {}),
+      // On-canvas label rendering: draw text beneath each node. Mode
+      // "after" so the engine's default circle is drawn first, our
+      // label sits on top.
+      //
+      // IMPORTANT: pass the mode as a *function*, not a string. The
+      // kapsule's accessor-fn helper treats string values as
+      // per-node property-name lookups (`node["after"]`), so passing
+      // `"after"` resolves to undefined for every node and the
+      // canvas object is never invoked.
+      ...(nodeLabelRenderer.canvasObject
+        ? {
+            nodeCanvasObject: nodeLabelRenderer.canvasObject,
+            nodeCanvasObjectMode: (() => "after") as () => "after",
+          }
+        : {}),
+      // Same pattern for links — draw a small label along the link
+      // when a link is selected (or all links when showLabels is on).
+      ...(linkLabelRenderer.canvasObject
+        ? {
+            linkCanvasObject: linkLabelRenderer.canvasObject,
+            linkCanvasObjectMode: (() => "after") as () => "after",
+          }
+        : {}),
+      // 3D node label sprite under the sphere — extend keeps the
+      // default node mesh visible and adds our caption as a child.
+      ...(nodeLabelRenderer.threeObject
+        ? {
+            nodeThreeObject: nodeLabelRenderer.threeObject,
+            nodeThreeObjectExtend: true as const,
+          }
+        : {}),
+      // 3D link label sprite at the midpoint. Position update keeps
+      // the sprite glued to the live link coords each tick; extend
+      // preserves the kapsule's default line/cylinder rendering.
+      ...(linkLabelRenderer.threeObject
+        ? {
+            linkThreeObject: linkLabelRenderer.threeObject,
+            linkThreeObjectExtend: true as const,
+            ...(linkLabelRenderer.positionUpdate
+              ? { linkPositionUpdate: linkLabelRenderer.positionUpdate }
+              : {}),
+          }
+        : {}),
       // Generous hit area for thin links — without this, edges are
       // hard to click. Hosts can override by passing their own value.
-      linkHoverPrecision: props.linkHoverPrecision ?? 8,
+      linkHoverPrecision: linkHoverPrecision ?? 8,
+      enableNavigationControls: suppressNav
+        ? false
+        : (enableNavigationControls ?? true),
       onNodeClick: handleNodeClick,
       onNodeRightClick: handleNodeRightClick,
       onLinkClick: handleLinkClick,
@@ -629,19 +934,49 @@ function LoraGraphCanvasInner<
       onBackgroundRightClick: handleBackgroundRightClick,
       onNodeDrag: handleNodeDrag,
       onNodeDragEnd: handleNodeDragEnd,
-      // Swallow the engine's HTML tooltip — we render our own. The
-      // kapsule reads `nodeLabel` to decide what to show in the
-      // tooltip; pass an empty string to hide it.
+      // Swallow the engine's HTML tooltip — we render our own.
       nodeLabel: () => "",
       linkLabel: () => "",
       onNodeHover: handleNodeHover,
       onLinkHover: handleLinkHover,
+      // Background grid via the render-frame-pre hook. Wraps any
+      // user-provided callback so we don't clobber it.
+      ...(showGrid
+        ? {
+            onRenderFramePre: (
+              ctx: CanvasRenderingContext2D,
+              scale: number,
+            ) => {
+              const opts = typeof showGrid === "object" ? showGrid : {};
+              drawBackgroundGrid(ctx, scale, opts);
+              onRenderFramePre?.(ctx, scale);
+            },
+          }
+        : {}),
+      // Group-legend visibility: only inject the wrapped accessor when
+      // either the legend filter is in use or the host has supplied
+      // their own nodeVisibility. Otherwise leave the prop alone so
+      // the kapsule uses its default.
+      ...(accessors.nodeVisibility
+        ? { nodeVisibility: accessors.nodeVisibility }
+        : {}),
     }),
     [
       props,
-      wrappedNodeColor,
-      wrappedLinkColor,
-      wrappedLinkWidth,
+      internalDagMode,
+      mode,
+      theme?.background,
+      backgroundColor,
+      accessors.nodeColor,
+      accessors.linkColor,
+      accessors.linkWidth,
+      accessors.nodeVal,
+      accessors.nodePointerAreaPaint,
+      accessors.nodeVisibility,
+      perfDefaults,
+      suppressNav,
+      linkHoverPrecision,
+      enableNavigationControls,
       handleNodeClick,
       handleNodeRightClick,
       handleLinkClick,
@@ -652,138 +987,58 @@ function LoraGraphCanvasInner<
       handleNodeDragEnd,
       handleNodeHover,
       handleLinkHover,
+      showGrid,
+      onRenderFramePre,
+      nodeLabelRenderer.canvasObject,
+      nodeLabelRenderer.threeObject,
+      linkLabelRenderer.canvasObject,
+      linkLabelRenderer.threeObject,
+      linkLabelRenderer.positionUpdate,
     ],
   );
 
   const engine = useGraphEngine<N, L>({
-    mount: mountRef.current,
+    mount: mountEl,
     mode,
     width,
     height,
     data: dataApi.data,
     props: engineProps,
+    paused,
   });
   engineRef.current = engine;
 
-  // ─── Toolbar dispatch ────────────────────────────────────────────
-  // ─── Clipboard primitives ───────────────────────────────────────
-  // `copy` and `cut` snapshot the selected nodes into a private,
-  // component-scoped clipboard (we do not touch the OS clipboard so
-  // the user's other apps aren't affected). `paste` regenerates ids
-  // and places the new nodes near the cursor.
-  const snapshotSelection = useCallback((): Array<Partial<N>> => {
-    const idSet = new Set(selection.selected);
-    const out: Array<Partial<N>> = [];
-    for (const node of dataApi.data.nodes) {
-      if (!idSet.has(node.id)) continue;
-      // Strip id + simulation fields so paste generates fresh ones.
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { id, x, y, z, vx, vy, vz, fx, fy, fz, ...rest } =
-        node as N & Record<string, unknown>;
-      out.push(rest as unknown as Partial<N>);
-    }
-    return out;
-  }, [dataApi.data.nodes, selection.selected]);
+  // Body of the trampoline declared near `setMode`. We assign rather
+  // than memoise because every dependency here is a stable useState
+  // setter or a ref. Engine-owned state (camera, pause) survives the
+  // remount via useGraphEngine itself, so nothing engine-side to do
+  // here.
+  beforeModeChangeRef.current = () => {
+    // The focus-restore plumbing snapshots a `CameraState` whose
+    // `mode` field is mode-specific; restoring it through a kapsule
+    // of the wrong mode would silently no-op (see
+    // `engine.setCameraState`). Clear so the next focus interaction
+    // starts fresh.
+    setFocusedNodeId(null);
+    setFocusedLinkId(null);
+    savedViewRef.current = null;
+    // In-progress add-link gesture: the first click happened in the
+    // old mode. Carrying the source id into the new mode is more
+    // confusing than helpful — the user can't see the pending arrow
+    // anyway.
+    setLinkSourceId(null);
+    // Context menu coords are pinned to the host's bounding rect
+    // which is still valid, but the menu items themselves
+    // (e.g. "Switch to 3D / 2D") are stale relative to the new mode.
+    setMenu(null);
+  };
 
-  const copySelectionInternal = useCallback((): N[] => {
-    if (!enableClipboard) return [];
-    const idSet = new Set(selection.selected);
-    const snapshot = dataApi.data.nodes.filter((n) => idSet.has(n.id));
-    clipboardRef.current = snapshotSelection();
-    onCopy?.(snapshot);
-    return snapshot;
-  }, [
-    enableClipboard,
-    dataApi.data.nodes,
-    selection.selected,
-    snapshotSelection,
-    onCopy,
-  ]);
-
-  const cutSelectionInternal = useCallback((): N[] => {
-    if (!enableClipboard) return [];
-    const idSet = new Set(selection.selected);
-    const snapshot = dataApi.data.nodes.filter((n) => idSet.has(n.id));
-    clipboardRef.current = snapshotSelection();
-    onCut?.(snapshot);
-    if (selection.selected.length > 0) {
-      dataApi.removeNodes(selection.selected);
-      selection.clear();
-    }
-    return snapshot;
-  }, [
-    enableClipboard,
-    dataApi,
-    selection,
-    snapshotSelection,
-    onCut,
-  ]);
-
-  const pasteFromClipboard = useCallback(
-    (at?: { x: number; y: number; z?: number }): N[] => {
-      if (!enableClipboard) return [];
-      const clipboard = clipboardRef.current;
-      if (clipboard.length === 0) return [];
-      const target = at
-        ? at
-        : (() => {
-            const c = lastCursorRef.current;
-            if (!c || !engineRef.current) return undefined;
-            return engineRef.current.screen2Graph(c.x, c.y);
-          })();
-      const created = dataApi.addNodes(
-        clipboard.map((tmpl, i) => {
-          const offsetX = (i % 3) * 24;
-          const offsetY = Math.floor(i / 3) * 24;
-          return {
-            ...tmpl,
-            ...(target
-              ? {
-                  x: target.x + offsetX,
-                  y: target.y + offsetY,
-                  ...(target.z !== undefined
-                    ? { z: target.z + offsetY }
-                    : {}),
-                }
-              : {}),
-          } as Partial<N> & { id?: string | number };
-        }),
-      );
-      selection.set(created.map((n) => n.id));
-      setSelectedLinkIds([]);
-      onPaste?.(created);
-      return created;
-    },
-    [enableClipboard, dataApi, selection, onPaste],
-  );
-
-  // Duplicate is a self-contained primitive — it doesn't touch the
-  // clipboard, so it works even when `enableClipboard` is false.
-  const duplicateSelection = useCallback((): N[] => {
-    const idSet = new Set(selection.selected);
-    const templates: Array<Partial<N> & { id?: string | number }> = [];
-    let i = 0;
-    for (const node of dataApi.data.nodes) {
-      if (!idSet.has(node.id)) continue;
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { id, vx, vy, vz, fx, fy, fz, ...rest } =
-        node as N & Record<string, unknown>;
-      const offsetX = (i % 3) * 24;
-      const offsetY = Math.floor(i / 3) * 24;
-      templates.push({
-        ...(rest as Partial<N>),
-        ...(node.x !== undefined ? { x: node.x + offsetX } : {}),
-        ...(node.y !== undefined ? { y: node.y + offsetY } : {}),
-        ...(node.z !== undefined ? { z: node.z } : {}),
-      });
-      i++;
-    }
-    if (templates.length === 0) return [];
-    const created = dataApi.addNodes(templates);
-    selection.set(created.map((n) => n.id));
-    setSelectedLinkIds([]);
-    return created;
-  }, [dataApi, selection]);
+  useGraphForces<N, L>({
+    engine,
+    collideNodes,
+    beeswarm,
+    ...(nodeRelSize !== undefined ? { nodeRelSize } : {}),
+  });
 
   // ─── JSON import / export ───────────────────────────────────────
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -793,10 +1048,14 @@ function LoraGraphCanvasInner<
         {
           nodes: dataApi.data.nodes.map((n) => {
             // Drop ephemeral simulation fields so re-imports get fresh
-            // layout values.
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { vx, vy, vz, index, ...rest } =
-              n as N & Record<string, unknown>;
+            // layout values. `_neighbors` / `_links` are object-graph
+            // refs populated by `autoIndexNeighbors` — they form a
+            // cycle that breaks JSON.stringify, so strip them too.
+            const {
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              vx, vy, vz, index, _neighbors, _links,
+              ...rest
+            } = n as N & Record<string, unknown>;
             return rest;
           }),
           links: dataApi.data.links,
@@ -808,11 +1067,12 @@ function LoraGraphCanvasInner<
   );
   const importJSON = useCallback(
     (json: string) => {
-      const parsed = JSON.parse(json) as {
-        nodes: N[];
-        links: L[];
-      };
-      if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.links)) {
+      const parsed = JSON.parse(json) as { nodes: N[]; links: L[] };
+      if (
+        !parsed ||
+        !Array.isArray(parsed.nodes) ||
+        !Array.isArray(parsed.links)
+      ) {
         throw new Error("invalid graph JSON");
       }
       dataApi.setData(parsed);
@@ -824,75 +1084,12 @@ function LoraGraphCanvasInner<
   const downloadJSON = useCallback(
     (filename = `graph-${Date.now()}.json`) => {
       const blob = new Blob([exportJSON()], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, filename);
     },
     [exportJSON],
   );
 
-  // ─── Pin/unpin ──────────────────────────────────────────────────
-  const togglePin = useCallback(
-    (id: string | number) => {
-      const node = dataApi.data.nodes.find((n) => n.id === id);
-      if (!node) return;
-      if (node.fx !== undefined) {
-        dataApi.updateNode(id, {
-          fx: undefined,
-          fy: undefined,
-          fz: undefined,
-        } as unknown as Partial<N>);
-      } else {
-        dataApi.updateNode(id, {
-          fx: node.x,
-          fy: node.y,
-          ...(node.z !== undefined ? { fz: node.z } : {}),
-        } as unknown as Partial<N>);
-      }
-    },
-    [dataApi],
-  );
-
-  // ─── Inline rename ──────────────────────────────────────────────
-  const beginRename = useCallback(
-    (node: N) => {
-      const id = node.id;
-      if (id === undefined) return;
-      const sc =
-        engineRef.current?.graph2Screen(
-          node.x ?? 0,
-          node.y ?? 0,
-          node.z,
-        ) ?? { x: 0, y: 0 };
-      setRenaming({
-        id,
-        x: sc.x,
-        y: sc.y,
-        value: (node.label as string | undefined) ?? String(id),
-        previous: node.label as string | undefined,
-      });
-    },
-    [],
-  );
-
-  const commitRename = useCallback(() => {
-    if (!renaming) return;
-    const { id, value, previous } = renaming;
-    dataApi.updateNode(id, { label: value } as Partial<N>);
-    const updated = dataApi.data.nodes.find((n) => n.id === id);
-    if (updated) onNodeRename?.(updated, value, previous);
-    setRenaming(null);
-  }, [renaming, dataApi, onNodeRename]);
-
-  // Keep the forward-ref pointed at the latest beginRename so
-  // handleNodeClick can call it via the trampoline.
-  beginRenameRef.current = beginRename;
-
+  // ─── Toolbar dispatch ────────────────────────────────────────────
   const handleToolSelect = useCallback(
     (id: ToolId) => {
       switch (id) {
@@ -909,14 +1106,14 @@ function LoraGraphCanvasInner<
           }
           if (selectedLinkIds.length > 0) {
             const linkIdSet = new Set(selectedLinkIds);
-            dataApi.removeLink((l) =>
-              l.id !== undefined && linkIdSet.has(l.id),
+            dataApi.removeLink(
+              (l) => l.id !== undefined && linkIdSet.has(l.id),
             );
             setSelectedLinkIds([]);
           }
           break;
         case "duplicate":
-          duplicateSelection();
+          clipboard.duplicate();
           break;
         case "select-all":
           selection.set(dataApi.data.nodes.map((n) => n.id));
@@ -932,11 +1129,9 @@ function LoraGraphCanvasInner<
           if (engine) engine.zoom((engine.getZoom?.() ?? 1) / 1.2, 200);
           break;
         case "pause":
-          engine?.pause();
           setPaused(true);
           break;
         case "resume":
-          engine?.resume();
           setPaused(false);
           break;
         case "screenshot":
@@ -960,326 +1155,43 @@ function LoraGraphCanvasInner<
       mode,
       setMode,
       selectedLinkIds,
-      duplicateSelection,
+      clipboard,
       downloadJSON,
     ],
   );
 
-  // ─── Keybindings ─────────────────────────────────────────────────
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    const onKey = (e: KeyboardEvent) => {
-      // Only handle when the focus is inside our host or the body.
-      const target = e.target as HTMLElement | null;
-      const editable =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-      if (editable) return;
-
-      switch (e.key) {
-        case "v":
-        case "V":
-          if (enableClipboard && (e.metaKey || e.ctrlKey)) {
-            pasteFromClipboard();
-            e.preventDefault();
-          } else {
-            setActiveTool("select");
-          }
-          break;
-        case "h":
-        case "H":
-          setActiveTool("pan");
-          break;
-        case "n":
-        case "N":
-          setActiveTool("add-node");
-          break;
-        case "l":
-        case "L":
-          setActiveTool("add-link");
-          break;
-        case "f":
-        case "F":
-          engine?.fit(400, 40);
-          break;
-        case "3":
-          setMode(mode === "2d" ? "3d" : "2d");
-          break;
-        case "Backspace":
-        case "Delete":
-          if (selection.selected.length > 0) {
-            dataApi.removeNodes(selection.selected);
-            selection.clear();
-            e.preventDefault();
-          }
-          if (selectedLinkIds.length > 0) {
-            const linkIdSet = new Set(selectedLinkIds);
-            dataApi.removeLink((l) =>
-              l.id !== undefined && linkIdSet.has(l.id),
-            );
-            setSelectedLinkIds([]);
-            e.preventDefault();
-          }
-          break;
-        case "a":
-        case "A":
-          if (e.metaKey || e.ctrlKey) {
-            selection.set(dataApi.data.nodes.map((n) => n.id));
-            setSelectedLinkIds([]);
-            e.preventDefault();
-          }
-          break;
-        case "c":
-        case "C":
-          if (enableClipboard && (e.metaKey || e.ctrlKey)) {
-            copySelectionInternal();
-            // Let the OS clipboard event fire too — the user might
-            // be copying text from a tooltip or similar.
-          }
-          break;
-        case "x":
-        case "X":
-          if (enableClipboard && (e.metaKey || e.ctrlKey)) {
-            cutSelectionInternal();
-            e.preventDefault();
-          }
-          break;
-        case "d":
-        case "D":
-          if (e.metaKey || e.ctrlKey) {
-            duplicateSelection();
-            e.preventDefault();
-          }
-          break;
-        case "p":
-        case "P":
-          for (const id of selection.selected) togglePin(id);
-          break;
-        case "Escape":
-          selection.clear();
-          setSelectedLinkIds([]);
-          setLinkSourceId(null);
-          setRenaming(null);
-          break;
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [
+  useGraphKeybindings<N, L>({
     engine,
     dataApi,
     selection,
     mode,
     setMode,
     selectedLinkIds,
-    duplicateSelection,
-    togglePin,
+    setSelectedLinkIds,
+    setLinkSourceId,
+    setActiveTool,
     enableClipboard,
-    copySelectionInternal,
-    cutSelectionInternal,
-    pasteFromClipboard,
-  ]);
+    copy: clipboard.copy,
+    cut: clipboard.cut,
+    paste: clipboard.paste,
+    duplicate: clipboard.duplicate,
+    addConnectedNode: clipboard.addConnectedNode,
+    togglePin: clipboard.togglePin,
+  });
 
-  // ─── Marquee + cursor tracking on the mount element ─────────────
-  //
-  // Shift+drag on the canvas draws a selection rectangle and selects
-  // every node whose projected screen coordinates fall inside it on
-  // release. The kapsule's d3-zoom owns the canvas mouse events; we
-  // attach in the capture phase so we can intercept before it. To
-  // avoid stealing all background clicks (which would break the
-  // add-node tool, panning, etc), the marquee only activates when
-  // Shift is held at mousedown.
-  //
-  // We also use this effect to track the last cursor position over
-  // the mount — used by paste-at-cursor and inline rename position.
-  useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-
-    const onMouseMove = (e: MouseEvent) => {
-      const rect = mount.getBoundingClientRect();
-      lastCursorRef.current = {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      };
-    };
-    mount.addEventListener("mousemove", onMouseMove);
-
-    // Update lastCursorRef on every move so paste-at-cursor and
-    // double-click rename can position correctly.
-    void lastCursorRef;
-
-    const onMouseDown = (e: MouseEvent) => {
-      // Only intercept on left button + shift held.
-      if (e.button !== 0 || !e.shiftKey) return;
-      const rect = mount.getBoundingClientRect();
-      const x0 = e.clientX - rect.left;
-      const y0 = e.clientY - rect.top;
-      // Block kapsule's d3-zoom from starting a pan.
-      e.stopPropagation();
-      e.preventDefault();
-      setMarquee({ x0, y0, x1: x0, y1: y0, additive: e.shiftKey });
-
-      const onMove = (ev: MouseEvent) => {
-        const r = mount.getBoundingClientRect();
-        const x1 = ev.clientX - r.left;
-        const y1 = ev.clientY - r.top;
-        setMarquee((cur) => (cur ? { ...cur, x1, y1 } : cur));
-      };
-      const onUp = (ev: MouseEvent) => {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp, true);
-        const r = mount.getBoundingClientRect();
-        const x1 = ev.clientX - r.left;
-        const y1 = ev.clientY - r.top;
-        setMarquee(null);
-        // Compute selection. Use engineRef so we always read the
-        // latest engine (the trampoline pattern); engine may have
-        // remounted mid-gesture if the user swapped 2D↔3D, in which
-        // case we just bail.
-        const eng = engineRef.current;
-        if (!eng) return;
-        const xMin = Math.min(x0, x1);
-        const yMin = Math.min(y0, y1);
-        const xMax = Math.max(x0, x1);
-        const yMax = Math.max(y0, y1);
-        // Tiny boxes count as a "click" — treat as clearing selection.
-        if (xMax - xMin < 3 && yMax - yMin < 3) {
-          selection.clear();
-          setSelectedLinkIds([]);
-          return;
-        }
-        const hits: Array<string | number> = [];
-        for (const node of dataApi.data.nodes) {
-          if (node.x === undefined || node.y === undefined) continue;
-          const sc = eng.graph2Screen(node.x, node.y, node.z);
-          if (sc.x >= xMin && sc.x <= xMax && sc.y >= yMin && sc.y <= yMax) {
-            hits.push(node.id);
-          }
-        }
-        if (ev.shiftKey || ev.metaKey || ev.ctrlKey) {
-          // Additive: union with existing selection.
-          const union = new Set<string | number>([
-            ...selection.selected,
-            ...hits,
-          ]);
-          selection.set(Array.from(union));
-        } else {
-          selection.set(hits);
-        }
-        setSelectedLinkIds([]);
-      };
-      window.addEventListener("mousemove", onMove);
-      // Capture-phase so we beat d3-zoom's mouseup, which clears its
-      // own internal state.
-      window.addEventListener("mouseup", onUp, true);
-    };
-
-    // Capture-phase listener so we run before d3-zoom's handler.
-    mount.addEventListener("mousedown", onMouseDown, true);
-
-    return () => {
-      mount.removeEventListener("mousemove", onMouseMove);
-      mount.removeEventListener("mousedown", onMouseDown, true);
-    };
-  }, [selection, dataApi.data.nodes]);
-
-  // ─── Imperative handle ──────────────────────────────────────────
-  useImperativeHandle(
+  useImperativeGraphHandle<N, L>({
     ref,
-    () => ({
-      getData: () => dataApi.data,
-      setData: dataApi.setData,
-      addNode: dataApi.addNode,
-      addNodes: dataApi.addNodes,
-      updateNode: dataApi.updateNode,
-      removeNode: dataApi.removeNode,
-      removeNodes: dataApi.removeNodes,
-      addLink: dataApi.addLink,
-      addLinks: dataApi.addLinks,
-      removeLink: dataApi.removeLink,
-      clear: dataApi.clear,
-
-      getSelection: () => selection.selected,
-      setSelection: selection.set,
-      selectAll: () => selection.set(dataApi.data.nodes.map((n) => n.id)),
-      clearSelection: selection.clear,
-
-      getMode: () => mode,
-      setMode,
-      fit: (durationMs, padding) => engine?.fit(durationMs, padding),
-      centerAt: (x, y, z, durationMs) =>
-        engine?.centerAt(x, y, z, durationMs),
-      zoom: (scale, durationMs) => engine?.zoom(scale, durationMs),
-      zoomIn: (step = 1.2) => {
-        if (engine) engine.zoom((engine.getZoom?.() ?? 1) * step, 200);
-      },
-      zoomOut: (step = 1.2) => {
-        if (engine) engine.zoom((engine.getZoom?.() ?? 1) / step, 200);
-      },
-
-      pause: () => {
-        engine?.pause();
-        setPaused(true);
-      },
-      resume: () => {
-        engine?.resume();
-        setPaused(false);
-      },
-      reheat: () => engine?.reheat(),
-      screenshot: async () => {
-        const canvas = engine?.getCanvasElement();
-        if (!canvas) return null;
-        return new Promise<Blob | null>((resolve) =>
-          canvas.toBlob((b) => resolve(b)),
-        );
-      },
-
-      copy: copySelectionInternal,
-      cut: cutSelectionInternal,
-      paste: (opts) => pasteFromClipboard(opts?.at),
-      duplicate: duplicateSelection,
-
-      renameNode: (id, label) => {
-        const prev = dataApi.data.nodes.find((n) => n.id === id);
-        dataApi.updateNode(id, { label } as Partial<N>);
-        const updated = dataApi.data.nodes.find((n) => n.id === id);
-        if (updated)
-          onNodeRename?.(
-            updated,
-            label,
-            prev?.label as string | undefined,
-          );
-      },
-      togglePin,
-
-      exportJSON,
-      importJSON,
-      downloadJSON,
-
-      engine2D: () => (engine?.mode === "2d" ? engine : null),
-      engine3D: () => (engine?.mode === "3d" ? engine : null),
-    }),
-    [
-      dataApi,
-      engine,
-      mode,
-      setMode,
-      selection,
-      copySelectionInternal,
-      cutSelectionInternal,
-      pasteFromClipboard,
-      duplicateSelection,
-      togglePin,
-      exportJSON,
-      importJSON,
-      downloadJSON,
-      onNodeRename,
-    ],
-  );
+    dataApi,
+    selection,
+    engine,
+    mode,
+    setMode,
+    setPaused,
+    clipboard,
+    exportJSON,
+    importJSON,
+    downloadJSON,
+  });
 
   // ─── Render ──────────────────────────────────────────────────────
   const hostStyle = useMemo<CSSProperties>(
@@ -1293,6 +1205,50 @@ function LoraGraphCanvasInner<
     [widthProp, heightProp, theme, style],
   );
 
+  const optionsMenuItems = useMemo<OptionItem[]>(
+    () => [
+      {
+        id: "focus-on-click",
+        kind: "toggle",
+        label: "Click to focus",
+        hint: "Animate the camera to a clicked node; click again to restore.",
+        checked: internalFocusOnClick,
+        onChange: setInternalFocusOnClick,
+      },
+      {
+        id: "show-labels",
+        kind: "toggle",
+        label: "Always show labels",
+        hint: "Draw every node + link label on the canvas, not just the selected ones. 2D only.",
+        checked: internalShowLabels,
+        onChange: setInternalShowLabels,
+      },
+      {
+        kind: "select",
+        id: "dag-mode",
+        label: "DAG orientation",
+        hint: "Force a hierarchical / radial layout.",
+        value: internalDagMode ?? "null",
+        options: [
+          { value: "null", label: "off" },
+          { value: "td", label: "td (top-down)" },
+          { value: "bu", label: "bu (bottom-up)" },
+          { value: "lr", label: "lr (left-right)" },
+          { value: "rl", label: "rl (right-left)" },
+          { value: "radialout" },
+          { value: "radialin" },
+        ],
+        onChange: (next) =>
+          setInternalDagMode(
+            next === "null"
+              ? null
+              : (next as Exclude<typeof internalDagMode, null>),
+          ),
+      } satisfies OptionItem,
+    ],
+    [internalFocusOnClick, internalShowLabels, internalDagMode],
+  );
+
   return (
     <div
       ref={hostRef}
@@ -1301,7 +1257,7 @@ function LoraGraphCanvasInner<
       data-mode={mode}
       data-tool={activeTool}
     >
-      <div ref={mountRef} className="lgc-engine-mount" />
+      <div ref={handleMountRef} className="lgc-engine-mount" />
       <GraphToolbar
         config={tools}
         activeTool={activeTool}
@@ -1309,6 +1265,15 @@ function LoraGraphCanvasInner<
         mode={mode}
         onSelect={handleToolSelect}
       />
+      {tools !== false ? (
+        <>
+          <OptionsMenu items={optionsMenuItems} />
+          <ModeToggle
+            mode={mode}
+            onToggle={() => setMode(mode === "2d" ? "3d" : "2d")}
+          />
+        </>
+      ) : null}
       {menu ? (
         <ContextMenu
           x={menu.x}
@@ -1319,10 +1284,27 @@ function LoraGraphCanvasInner<
       ) : null}
       <HoverTooltip content={tooltipContent} hostRef={hostRef} />
       <MarqueeOverlay rect={marquee} />
+      {showLegend && nodeAutoColorBy ? (
+        <GroupLegend
+          nodes={dataApi.data.nodes}
+          groupBy={
+            nodeAutoColorBy as string | ((n: N) => string | number | null)
+          }
+          hidden={hiddenGroups}
+          onToggle={(group) =>
+            setHiddenGroups((cur) => {
+              const next = new Set(cur);
+              if (next.has(group)) next.delete(group);
+              else next.add(group);
+              return next;
+            })
+          }
+        />
+      ) : null}
       <SelectionPanel
         nodeCount={selection.selected.length}
         linkCount={selectedLinkIds.length}
-        hasClipboard={clipboardRef.current.length > 0}
+        hasClipboard={clipboard.hasClipboard()}
         enableClipboard={enableClipboard}
         onDelete={() => {
           if (selection.selected.length > 0) {
@@ -1337,38 +1319,16 @@ function LoraGraphCanvasInner<
             setSelectedLinkIds([]);
           }
         }}
-        onDuplicate={() => duplicateSelection()}
-        onCopy={() => copySelectionInternal()}
-        onCut={() => cutSelectionInternal()}
-        onPaste={() => pasteFromClipboard()}
+        onDuplicate={() => clipboard.duplicate()}
+        onAddConnected={() => clipboard.addConnectedNode()}
+        onCopy={() => clipboard.copy()}
+        onCut={() => clipboard.cut()}
+        onPaste={() => clipboard.paste()}
         onClear={() => {
           selection.clear();
           setSelectedLinkIds([]);
         }}
       />
-      {renaming ? (
-        <input
-          className="lgc-rename-input"
-          style={{ left: renaming.x, top: renaming.y }}
-          autoFocus
-          value={renaming.value}
-          onChange={(e) =>
-            setRenaming((cur) =>
-              cur ? { ...cur, value: e.target.value } : cur,
-            )
-          }
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              commitRename();
-              e.preventDefault();
-            } else if (e.key === "Escape") {
-              setRenaming(null);
-              e.preventDefault();
-            }
-          }}
-          onBlur={commitRename}
-        />
-      ) : null}
       <input
         ref={fileInputRef}
         type="file"
@@ -1377,30 +1337,18 @@ function LoraGraphCanvasInner<
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (!file) return;
-          file.text().then(importJSON).catch((err) => {
-            console.error("[lora-graph-canvas] import failed:", err);
-          });
+          file
+            .text()
+            .then(importJSON)
+            .catch((err) => {
+              console.error("[lora-graph-canvas] import failed:", err);
+            });
           // Reset so picking the same file twice re-fires onChange.
           e.target.value = "";
         }}
       />
     </div>
   );
-}
-
-function downloadScreenshot(canvas: HTMLCanvasElement | null | undefined) {
-  if (!canvas) return;
-  canvas.toBlob((blob) => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `lora-graph-${Date.now()}.png`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  });
 }
 
 /** React component exporting both a default-instantiated and a generic

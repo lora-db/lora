@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
   LoraGraphCanvas,
@@ -206,6 +206,46 @@ function LargeGraph() {
 export const LargeGraphStory: Story = { render: () => <LargeGraph /> };
 LargeGraphStory.storyName = "Large (1k nodes)";
 
+// 6b. Stress graph — 10k nodes.
+//
+// The renderer's `performanceProfile="auto"` (default) picks the
+// xlarge tier at this size and injects sensible defaults for
+// cooldownTicks / d3AlphaDecay / ngraph-in-3D / lower mesh res —
+// see `src/utils/perfTier.ts`. We deliberately leave the full UI
+// (toolbar, legend, options menu, mode toggle, selection panel)
+// turned on so the stress story doubles as a playground for the
+// feature set under load. Toggle 2D ↔ 3D with the mode button or
+// the `3` key to feel the perf delta.
+function makeStressGraph(n = 10_000): GraphData {
+  const nodes = Array.from({ length: n }, (_, i) => ({
+    id: i,
+    group: i % 12,
+  }));
+  // Sparse tree so the force solver actually converges. Each node
+  // attaches to a random earlier node — keeps the graph connected
+  // without producing a hairball.
+  const links = Array.from({ length: n - 1 }, (_, i) => ({
+    source: i + 1,
+    target: Math.floor(Math.random() * (i + 1)),
+  }));
+  return { nodes, links };
+}
+function StressGraph() {
+  const data = useMemo(() => makeStressGraph(10_000), []);
+  return (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={data}
+        nodeAutoColorBy="group"
+        nodeRelSize={2}
+        showLegend
+      />
+    </div>
+  );
+}
+export const StressGraphStory: Story = { render: () => <StressGraph /> };
+StressGraphStory.storyName = "Stress (10k nodes)";
+
 // 7. DAG layout
 function DagStory() {
   const data = useMemo<GraphData>(() => {
@@ -269,3 +309,151 @@ function CustomTheme() {
 }
 export const Theming: Story = { render: () => <CustomTheme /> };
 Theming.storyName = "Theming (dark + custom accent)";
+
+// 9. Hover-highlight-neighbors
+export const HighlightNeighbors: Story = {
+  render: () => (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={SMALL_GRAPH}
+        nodeLabel="id"
+        nodeAutoColorBy="group"
+        highlightNeighborsOnHover
+        autoIndexNeighbors
+        autoPauseRedraw={false}
+      />
+    </div>
+  ),
+};
+HighlightNeighbors.storyName = "Hover → highlight neighbors";
+
+// 10. Click-to-focus
+export const ClickToFocus: Story = {
+  render: () => (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={SMALL_GRAPH}
+        nodeLabel="id"
+        nodeAutoColorBy="group"
+        focusOnClick
+      />
+    </div>
+  ),
+};
+ClickToFocus.storyName = "Click a node to focus (click again to restore)";
+
+// 11. Background grid
+export const Grid: Story = {
+  render: () => (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={SMALL_GRAPH}
+        nodeLabel="id"
+        nodeAutoColorBy="group"
+        showGrid
+        backgroundColor="#fafbfc"
+      />
+    </div>
+  ),
+};
+Grid.storyName = "Background grid";
+
+// 12. Collision force (no overlap)
+export const Collide: Story = {
+  render: () => {
+    const data = useMemo<GraphData>(() => {
+      const nodes = Array.from({ length: 30 }, (_, i) => ({
+        id: i,
+        group: i % 5,
+      }));
+      const links = nodes
+        .slice(1)
+        .map((n) => ({
+          source: n.id,
+          target: Math.floor(Math.random() * (Number(n.id) || 1)),
+        }));
+      return { nodes, links };
+    }, []);
+    return (
+      <div style={{ width: "100vw", height: "100vh" }}>
+        <LoraGraphCanvas
+          defaultData={data}
+          nodeRelSize={8}
+          nodeAutoColorBy="group"
+          collideNodes
+        />
+      </div>
+    );
+  },
+};
+Collide.storyName = "Collision force";
+
+// 13. Group legend
+export const Legend: Story = {
+  render: () => (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={SMALL_GRAPH}
+        nodeLabel="id"
+        nodeAutoColorBy="group"
+        showLegend
+      />
+    </div>
+  ),
+};
+Legend.storyName = "Group legend (click to filter)";
+
+// 14. Beeswarm layout
+function BeeswarmStory() {
+  const data = useMemo<GraphData>(() => {
+    // 300 nodes spread randomly along the x-axis via `pos`.
+    const nodes = Array.from({ length: 300 }, (_, i) => ({
+      id: i,
+      pos: Math.random(),
+      group: i % 5,
+    }));
+    return { nodes, links: [] };
+  }, []);
+  return (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={data}
+        nodeAutoColorBy="group"
+        nodeRelSize={4}
+        beeswarm={{
+          axis: "x",
+          value: (n) => ((n.pos as number) - 0.5) * 800,
+        }}
+      />
+    </div>
+  );
+}
+export const Beeswarm: Story = { render: () => <BeeswarmStory /> };
+Beeswarm.storyName = "Beeswarm layout";
+
+// 15. Emit-particle on demand — "ping" along a link every second
+function EmitParticleStory() {
+  const ref = useRef<LoraGraphCanvasHandle>(null);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const links = ref.current?.getData().links;
+      if (!links || links.length === 0) return;
+      const link = links[Math.floor(Math.random() * links.length)];
+      if (link) ref.current?.emitParticle(link);
+    }, 800);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        ref={ref}
+        defaultData={SMALL_GRAPH}
+        nodeLabel="id"
+        nodeAutoColorBy="group"
+        linkDirectionalParticleWidth={3}
+      />
+    </div>
+  );
+}
+export const EmitParticle: Story = { render: () => <EmitParticleStory /> };
+EmitParticle.storyName = "emitParticle() — periodic flow ping";

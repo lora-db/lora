@@ -6,6 +6,19 @@ import type {
   LoraGraphCanvasProps,
 } from "../types";
 
+/** Camera state snapshot. The shape differs per mode so we can
+ *  faithfully restore in both 2D (pan + zoom) and 3D (position +
+ *  lookAt). */
+export type CameraState =
+  | { mode: "2d"; x: number; y: number; k: number }
+  | {
+      mode: "3d";
+      x: number;
+      y: number;
+      z: number;
+      lookAt: { x: number; y: number; z: number };
+    };
+
 /** Subset of the kapsule API both 2D and 3D engines implement. Each
  *  adapter normalises naming so the React layer never has to special-case
  *  the dimension. */
@@ -41,6 +54,29 @@ export interface GraphEngine<
   resume(): void;
   reheat(): void;
   resize(width: number, height: number): void;
+  /** Get / set / clear a d3-force by name. Pass `null` to remove. */
+  d3Force(name: string, fn?: unknown | null): unknown;
+  /** Emit a one-off animated particle along the given link. */
+  emitParticle(link: L): void;
+  /** Snap any in-flight camera tween (centerAt / zoom / cameraPosition)
+   *  to its current state. Used to interrupt a focus animation when
+   *  the user starts a new interaction. No-op when nothing is
+   *  animating. */
+  stopAnimation(): void;
+
+  /** Animate the camera so the given target point is centered, while
+   *  preserving the current viewing angle. In 3D the camera flies
+   *  along its current vector from the target so the user's orbit
+   *  is kept; in 2D it's a `centerAt` + `zoom`. */
+  focusOn(
+    target: { x: number; y: number; z?: number },
+    opts?: { distance?: number; zoom?: number; durationMs?: number },
+  ): void;
+
+  /** Snapshot the current camera so it can be restored later. */
+  getCameraState(): CameraState;
+  /** Restore a snapshot produced by `getCameraState`. */
+  setCameraState(state: CameraState, durationMs?: number): void;
 
   // Prop pipe: receive the full prop bag every render; the adapter is
   // responsible for diffing what it cares about and calling the

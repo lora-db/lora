@@ -134,3 +134,14 @@ export const IconImport = (p: IconProps) => (
     <path d="M3 12h10v2H3z" />
   </svg>
 );
+
+/** Source node on the left, a "+" on the right, joined by an edge —
+ *  visualises "create a new node connected to the selection". */
+export const IconAddConnected = (p: IconProps) => (
+  <svg {...base} {...p}>
+    <circle cx="4" cy="8" r="2" />
+    <path d="M6 8h2.5" />
+    <circle cx="11" cy="8" r="2" />
+    <path d="M11 6.5v3M9.5 8h3" />
+  </svg>
+);

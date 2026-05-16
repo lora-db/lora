@@ -4133,6 +4133,7 @@ __metadata:
     "@types/react-dom": "npm:^18.2.0"
     "@types/three": "npm:^0.182.0"
     "@vitejs/plugin-react": "npm:^4.3.0"
+    d3-force-3d: "npm:^3.0.0"
     force-graph: "npm:^1.51.0"
     jsdom: "npm:^25.0.0"
     react: "npm:^18.2.0"
@@ -9596,7 +9597,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"d3-force-3d@npm:2 - 3":
+"d3-force-3d@npm:2 - 3, d3-force-3d@npm:^3.0.0":
   version: 3.0.6
   resolution: "d3-force-3d@npm:3.0.6"
   dependencies:

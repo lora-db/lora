@@ -1,4 +1,5 @@
 import {
+  IconAddConnected,
   IconDelete,
   IconDuplicate,
 } from "./icons";
@@ -74,6 +75,7 @@ export interface SelectionPanelProps {
   enableClipboard: boolean;
   onDelete(): void;
   onDuplicate(): void;
+  onAddConnected(): void;
   onCopy(): void;
   onCut(): void;
   onPaste(): void;
@@ -120,6 +122,7 @@ export function SelectionPanel({
   enableClipboard,
   onDelete,
   onDuplicate,
+  onAddConnected,
   onCopy,
   onCut,
   onPaste,
@@ -158,6 +161,14 @@ export function SelectionPanel({
       </PanelButton>
       <PanelButton label="Duplicate" shortcut="⌘D" onClick={onDuplicate}>
         <IconDuplicate width={14} height={14} />
+      </PanelButton>
+      <PanelButton
+        label="Connect to new node"
+        shortcut="↵"
+        disabled={nodeCount === 0}
+        onClick={onAddConnected}
+      >
+        <IconAddConnected />
       </PanelButton>
       {enableClipboard ? (
         <>

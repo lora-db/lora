@@ -187,6 +187,190 @@
   background: transparent;
 }
 
+/* ─── Options menu (bottom-right, above mode toggle) ──────────── */
+
+.lora-graph-canvas .lgc-options-menu {
+  position: absolute;
+  bottom: 52px;
+  right: 12px;
+  z-index: 2;
+}
+
+.lora-graph-canvas .lgc-options-trigger {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: var(--lgc-toolbar-bg);
+  color: var(--lgc-toolbar-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  transition: background-color 90ms ease;
+}
+
+.lora-graph-canvas .lgc-options-trigger:hover {
+  background: var(--lgc-tool-hover-bg);
+}
+
+.lora-graph-canvas .lgc-options-trigger:focus-visible {
+  outline: 2px solid var(--lgc-accent);
+  outline-offset: 1px;
+}
+
+.lora-graph-canvas .lgc-options-panel {
+  position: absolute;
+  bottom: 36px;
+  right: 0;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--lgc-menu-bg);
+  color: var(--lgc-menu-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.lora-graph-canvas .lgc-options-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.lora-graph-canvas .lgc-options-item:hover {
+  background: var(--lgc-menu-hover-bg);
+}
+
+.lora-graph-canvas .lgc-options-item input[type="checkbox"] {
+  margin-top: 2px;
+}
+
+.lora-graph-canvas .lgc-options-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lora-graph-canvas .lgc-options-item-label {
+  font-weight: 500;
+}
+
+.lora-graph-canvas .lgc-options-item-hint {
+  opacity: 0.65;
+  font-size: 11px;
+}
+
+.lora-graph-canvas .lgc-options-select {
+  margin-left: auto;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  background: var(--lgc-toolbar-bg);
+  color: var(--lgc-toolbar-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 4px;
+}
+
+/* ─── Mode toggle (bottom-right) ──────────────────────────────── */
+
+.lora-graph-canvas .lgc-mode-toggle {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--lgc-toolbar-bg);
+  color: var(--lgc-toolbar-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  z-index: 2;
+  transition: background-color 90ms ease;
+}
+
+.lora-graph-canvas .lgc-mode-toggle:hover {
+  background: var(--lgc-tool-hover-bg);
+}
+
+.lora-graph-canvas .lgc-mode-toggle:focus-visible {
+  outline: 2px solid var(--lgc-accent);
+  outline-offset: 1px;
+}
+
+.lora-graph-canvas .lgc-mode-toggle-label {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Group legend (bottom-left) ──────────────────────────────── */
+
+.lora-graph-canvas .lgc-legend {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--lgc-toolbar-bg);
+  color: var(--lgc-toolbar-fg);
+  border: 1px solid var(--lgc-toolbar-border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  z-index: 2;
+  max-height: 40%;
+  overflow-y: auto;
+}
+
+.lora-graph-canvas .lgc-legend-item {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.lora-graph-canvas .lgc-legend-item:hover {
+  background: var(--lgc-tool-hover-bg);
+}
+
+.lora-graph-canvas .lgc-legend-item--hidden {
+  opacity: 0.35;
+  text-decoration: line-through;
+}
+
+.lora-graph-canvas .lgc-legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
 /* ─── Marquee (box-select) ─────────────────────────────────────── */
 
 .lora-graph-canvas .lgc-marquee {
@@ -195,27 +379,6 @@
   background: color-mix(in srgb, var(--lgc-accent) 12%, transparent);
   border-radius: 2px;
   z-index: 2;
-}
-
-/* Inline node rename input — positioned via inline style, themed
- * through CSS vars. */
-.lora-graph-canvas .lgc-rename-input {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  padding: 2px 6px;
-  border: 1px solid var(--lgc-accent);
-  border-radius: 4px;
-  background: var(--lgc-menu-bg);
-  color: var(--lgc-menu-fg);
-  font: inherit;
-  z-index: 4;
-  min-width: 80px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
-}
-
-.lora-graph-canvas .lgc-rename-input:focus {
-  outline: none;
-  border-color: var(--lgc-accent);
 }
 
 /* ─── Hover tooltip ───────────────────────────────────────────── */

@@ -1,5 +1,10 @@
 import ForceGraph3DKapsule from "3d-force-graph";
-import type { GraphEngine, CreateEngineOptions } from "./types";
+import type {
+  GraphEngine,
+  CreateEngineOptions,
+  CameraState,
+} from "./types";
+import { runAnim, lerp } from "./rafAnim";
 import type {
   GraphData,
   LinkObject,
@@ -54,6 +59,10 @@ export function createEngine3D<
 
   let cachedDistance = 300;
 
+  // Handle to the currently running RAF-based camera animation, if
+  // any. Held so `stopAnimation` and a fresh focus call can cancel it.
+  let cancelAnim: (() => void) | null = null;
+
   return {
     mode: "3d",
 
@@ -69,13 +78,29 @@ export function createEngine3D<
     },
     centerAt(x: number, y: number, z?: number, durationMs?: number) {
       const position = { x, y, z: z ?? cachedDistance };
-      instance.cameraPosition?.(position, undefined, durationMs ?? 0);
+      // Preserve the camera's current `lookAt` — passing `undefined`
+      // would make `three-render-objects` snap the lookAt to (0,0,0),
+      // which yanks the orbited view back to the origin.
+      const cur = instance.cameraPosition?.() as
+        | {
+            x: number;
+            y: number;
+            z: number;
+            lookAt?: { x: number; y: number; z: number };
+          }
+        | undefined;
+      instance.cameraPosition?.(position, cur?.lookAt, durationMs ?? 0);
     },
     zoom(scale: number, durationMs?: number) {
       // In 3D there is no "zoom" — we approximate it by moving the
       // camera closer to / further from its current target.
       const cur = instance.cameraPosition?.() as
-        | { x: number; y: number; z: number }
+        | {
+            x: number;
+            y: number;
+            z: number;
+            lookAt?: { x: number; y: number; z: number };
+          }
         | undefined;
       if (!cur) return;
       const distance = Math.hypot(cur.x, cur.y, cur.z);
@@ -91,7 +116,7 @@ export function createEngine3D<
           y: unit.y * cachedDistance,
           z: unit.z * cachedDistance,
         },
-        undefined,
+        cur.lookAt,
         durationMs ?? 0,
       );
     },
@@ -139,6 +164,127 @@ export function createEngine3D<
       instance.width!(width);
       instance.height!(height);
     },
+    d3Force(name: string, fn?: unknown | null) {
+      const setter = instance.d3Force;
+      if (typeof setter !== "function") return undefined;
+      if (fn === undefined) return setter.call(instance, name);
+      return setter.call(instance, name, fn);
+    },
+    emitParticle(link: L) {
+      instance.emitParticle?.(link as unknown);
+    },
+    stopAnimation() {
+      // Cancel our own RAF-based animation. The kapsule's internal
+      // tween group is unreachable from outside, so any animation we
+      // want to be interruptible must be driven here, never via the
+      // kapsule's own `transitionDuration` argument.
+      cancelAnim?.();
+      cancelAnim = null;
+    },
+
+    focusOn(target, opts) {
+      cancelAnim?.();
+      const cur = instance.cameraPosition?.() as
+        | {
+            x: number;
+            y: number;
+            z: number;
+            lookAt?: { x: number; y: number; z: number };
+          }
+        | undefined;
+      if (!cur) return;
+      const tz = target.z ?? 0;
+      // Preserve the current viewing angle — place the camera along
+      // its existing vector from the target, scaled to `distance`.
+      const dx = cur.x - target.x;
+      const dy = cur.y - target.y;
+      const dz = cur.z - tz;
+      const mag = Math.hypot(dx, dy, dz);
+      const distance = opts?.distance ?? 120;
+      const u =
+        mag === 0
+          ? { x: 0, y: 0, z: 1 }
+          : { x: dx / mag, y: dy / mag, z: dz / mag };
+      const endPos = {
+        x: target.x + u.x * distance,
+        y: target.y + u.y * distance,
+        z: tz + u.z * distance,
+      };
+      const endLookAt = { x: target.x, y: target.y, z: tz };
+      const startLookAt = cur.lookAt ?? { x: 0, y: 0, z: 0 };
+      const dur = opts?.durationMs ?? 1000;
+      cancelAnim = runAnim(dur, (t) => {
+        instance.cameraPosition?.(
+          {
+            x: lerp(cur.x, endPos.x, t),
+            y: lerp(cur.y, endPos.y, t),
+            z: lerp(cur.z, endPos.z, t),
+          },
+          {
+            x: lerp(startLookAt.x, endLookAt.x, t),
+            y: lerp(startLookAt.y, endLookAt.y, t),
+            z: lerp(startLookAt.z, endLookAt.z, t),
+          },
+          0,
+        );
+      });
+    },
+
+    getCameraState(): CameraState {
+      const cur = (instance.cameraPosition?.() as
+        | {
+            x: number;
+            y: number;
+            z: number;
+            lookAt?: { x: number; y: number; z: number };
+          }
+        | undefined) ?? { x: 0, y: 0, z: 300 };
+      return {
+        mode: "3d",
+        x: cur.x,
+        y: cur.y,
+        z: cur.z,
+        lookAt: cur.lookAt ?? { x: 0, y: 0, z: 0 },
+      };
+    },
+
+    setCameraState(state, durationMs) {
+      if (state.mode !== "3d") return;
+      cancelAnim?.();
+      const dur = durationMs ?? 0;
+      if (dur <= 0) {
+        instance.cameraPosition?.(
+          { x: state.x, y: state.y, z: state.z },
+          state.lookAt,
+          0,
+        );
+        return;
+      }
+      const cur = (instance.cameraPosition?.() as
+        | {
+            x: number;
+            y: number;
+            z: number;
+            lookAt?: { x: number; y: number; z: number };
+          }
+        | undefined) ?? { x: state.x, y: state.y, z: state.z };
+      const startLookAt = cur.lookAt ?? state.lookAt;
+      cancelAnim = runAnim(dur, (t) => {
+        instance.cameraPosition?.(
+          {
+            x: lerp(cur.x, state.x, t),
+            y: lerp(cur.y, state.y, t),
+            z: lerp(cur.z, state.z, t),
+          },
+          {
+            x: lerp(startLookAt.x, state.lookAt.x, t),
+            y: lerp(startLookAt.y, state.lookAt.y, t),
+            z: lerp(startLookAt.z, state.lookAt.z, t),
+          },
+          0,
+        );
+      });
+    },
 
     applyProps(props, prev) {
       applyDiffedProps(
@@ -154,6 +300,8 @@ export function createEngine3D<
     },
 
     destroy() {
+      cancelAnim?.();
+      cancelAnim = null;
       instance._destructor();
     },
   };

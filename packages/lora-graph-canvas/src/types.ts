@@ -123,25 +123,42 @@ export interface LoraGraphCanvasProps<
   backgroundColor?: string;
   theme?: Partial<LoraGraphTheme>;
 
+  // Data field mapping (when host data uses non-standard property names)
+  nodeId?: string;
+  linkSource?: string;
+  linkTarget?: string;
+
   // Node styling
   nodeColor?: Accessor<string, N>;
   nodeLabel?: Accessor<string | HTMLElement, N>;
   nodeVal?: Accessor<number, N>;
   nodeAutoColorBy?: Accessor<string | null, N>;
   nodeRelSize?: number;
+  nodeVisibility?: Accessor<boolean, N>;
+  nodeOpacity?: number;
+  nodeResolution?: number;
 
   // Link styling
   linkColor?: Accessor<string, L>;
   linkLabel?: Accessor<string | HTMLElement, L>;
   linkWidth?: Accessor<number, L>;
   linkCurvature?: Accessor<number, L>;
+  linkLineDash?: Accessor<number[] | null, L>;
+  linkAutoColorBy?: Accessor<string | null, L>;
+  linkVisibility?: Accessor<boolean, L>;
+  linkOpacity?: number;
+  linkResolution?: number;
+  linkCurveRotation?: Accessor<number, L>;
   linkDirectionalArrowLength?: Accessor<number, L>;
   linkDirectionalArrowColor?: Accessor<string, L>;
   linkDirectionalArrowRelPos?: Accessor<number, L>;
+  linkDirectionalArrowResolution?: number;
   linkDirectionalParticles?: Accessor<number, L>;
   linkDirectionalParticleSpeed?: Accessor<number, L>;
   linkDirectionalParticleWidth?: Accessor<number, L>;
+  linkDirectionalParticleOffset?: Accessor<number, L>;
   linkDirectionalParticleColor?: Accessor<string, L>;
+  linkDirectionalParticleResolution?: number;
 
   // Forces / physics
   cooldownTicks?: number;
@@ -150,8 +167,25 @@ export interface LoraGraphCanvasProps<
   d3AlphaDecay?: number;
   d3VelocityDecay?: number;
   d3AlphaMin?: number;
+  d3AlphaTarget?: number;
   dagMode?: DagMode;
   dagLevelDistance?: number;
+  dagNodeFilter?: (node: N) => boolean;
+  onDagError?: (loopNodeIds: Array<string | number>) => void;
+  /** 3D-only: drop layout to 1, 2, or 3 dimensions (flattens z when 2). */
+  numDimensions?: 1 | 2 | 3;
+  /** 3D-only: switch the layout engine. ngraph is ~3× faster for >10k nodes. */
+  forceEngine?: "d3" | "ngraph";
+  /** 3D-only: ngraph physics tuning, passed straight through. */
+  ngraphPhysics?: object;
+  /** 3D-only: throttle the raycaster used for hover / click hit
+   *  testing. Defaults to 0 (every frame). Bump to 50-200ms on
+   *  huge graphs to skip raycasts on most frames — the perf tier
+   *  picks a sensible value automatically. */
+  pointerRaycasterThrottleMs?: number;
+  /** Add a node-collision force so circles don't overlap. `true` uses
+   *  `nodeRelSize` as the radius; pass a number to override. */
+  collideNodes?: boolean | number;
 
   // UI chrome
   tools?: boolean | ToolId[] | ToolbarConfig;
@@ -161,8 +195,6 @@ export interface LoraGraphCanvasProps<
 
   // Feature toggles — let the host disable any of the built-in
   // editing flows. All default to `true`.
-  /** Allow double-clicking a node to rename it inline. */
-  enableRename?: boolean;
   /** Allow ⌘C / ⌘X / ⌘V (and the matching ref methods). */
   enableClipboard?: boolean;
 
@@ -171,7 +203,76 @@ export interface LoraGraphCanvasProps<
   enableZoom?: boolean;
   enablePan?: boolean;
   enablePointerInteraction?: boolean;
+  enableNavigationControls?: boolean;
   linkHoverPrecision?: number;
+  minZoom?: number;
+  maxZoom?: number;
+  showPointerCursor?: Accessor<boolean, N | L>;
+  showNavInfo?: boolean;
+  autoPauseRedraw?: boolean;
+  /** When true (default false), clicking a node animates the camera
+   *  toward it; clicking the same node again restores the prior view. */
+  focusOnClick?: boolean;
+  /** When true (default false), hovering a node highlights it and its
+   *  neighbours via the accent color. Requires cross-linked neighbour
+   *  refs in the node data, or set `autoIndexNeighbors`. */
+  highlightNeighborsOnHover?: boolean;
+  /** Auto-build `node._neighbors` and `node._links` arrays after every
+   *  data change so `highlightNeighborsOnHover` has something to walk. */
+  autoIndexNeighbors?: boolean;
+  /** Background helper: draw a faint grid behind the canvas. Useful in
+   *  a playground. 2D only. */
+  showGrid?: boolean | { spacing?: number; color?: string };
+  /** Render each node's label directly on the 2D canvas (under the
+   *  node). When this is on, the default node colour is automatically
+   *  faded so the label text reads clearly on top of overlapping
+   *  nodes. 2D only — in 3D, use `nodeLabel` for the hover tooltip. */
+  showLabels?: boolean;
+  /** When `true` (default), releasing a dragged node pins it at its
+   *  new position by writing `fx`/`fy`/`fz`. Dragging a node that's
+   *  part of the current selection moves all selected nodes together
+   *  and pins them as a group on release. Set to `false` to keep the
+   *  default simulation-pull behaviour. */
+  fixOnDrop?: boolean;
+
+  /** Auto-tune renderer / simulation settings based on graph size so
+   *  the canvas stays responsive into the 50k-100k-node range.
+   *
+   *  - `"auto"` (default): pick a tier from the live node + link count.
+   *  - `"off"`: never inject perf defaults — only the host's props
+   *    drive the kapsule.
+   *  - `"default" | "large" | "xlarge" | "huge"`: force a specific
+   *    tier regardless of size (useful for benchmarking).
+   *
+   *  Each tier overrides things like `cooldownTicks`, `d3AlphaDecay`,
+   *  3D `nodeResolution`/`linkResolution`, and the 3D layout engine.
+   *  Any prop the host sets explicitly always wins. */
+  performanceProfile?:
+    | "auto"
+    | "off"
+    | "default"
+    | "large"
+    | "xlarge"
+    | "huge";
+
+  /** Switch the simulation into a beeswarm layout: nodes spread along
+   *  one axis driven by a value accessor, with a weak orthogonal pull
+   *  and collision so they don't overlap. Pass `true` for an
+   *  id-hashed spread, or an object to control the value source and
+   *  axis. Disables the default `center` + `charge` forces while
+   *  active. */
+  beeswarm?:
+    | boolean
+    | {
+        /** Target axis (default `"x"`). */
+        axis?: "x" | "y";
+        /** Position along the chosen axis — `(node) => number` or a
+         *  property key whose value is numeric. Defaults to a stable
+         *  hash of the node id. */
+        value?: string | ((n: N) => number);
+        /** Strength of the orthogonal pull-to-zero force. Default 0.2. */
+        strength?: number;
+      };
 
   onNodeClick?: (node: N, event: MouseEvent) => void;
   onNodeRightClick?: (node: N, event: MouseEvent) => void;
@@ -187,15 +288,19 @@ export interface LoraGraphCanvasProps<
   onSelectionChange?: (selectedIds: Array<string | number>) => void;
   onEngineTick?: () => void;
   onEngineStop?: () => void;
+  onZoom?: (transform: { k: number; x: number; y: number }) => void;
+  onZoomEnd?: (transform: { k: number; x: number; y: number }) => void;
+  onRenderFramePre?: (
+    ctx: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => void;
+  onRenderFramePost?: (
+    ctx: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => void;
 
   // Editing lifecycle hooks. Each fires *after* the underlying data
   // mutation, so `getData()` already reflects the new state.
-  /** Fires after a node's label has been changed via rename. */
-  onNodeRename?: (
-    node: N,
-    nextLabel: string,
-    previousLabel: string | undefined,
-  ) => void;
   /** Fires when the user copies nodes (⌘C) — receives the snapshot. */
   onCopy?: (nodes: N[]) => void;
   /** Fires when the user cuts nodes (⌘X) — receives the snapshot
@@ -210,12 +315,59 @@ export interface LoraGraphCanvasProps<
     ctx: CanvasRenderingContext2D,
     globalScale: number,
   ) => void;
+  nodeCanvasObjectMode?:
+    | "replace"
+    | "before"
+    | "after"
+    | ((n: N) => "replace" | "before" | "after" | undefined);
+  nodePointerAreaPaint?: (
+    n: N,
+    color: string,
+    ctx: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => void;
   linkCanvasObject?: (
     l: L,
     ctx: CanvasRenderingContext2D,
     globalScale: number,
   ) => void;
+  linkCanvasObjectMode?:
+    | "replace"
+    | "before"
+    | "after"
+    | ((l: L) => "replace" | "before" | "after" | undefined);
+  linkPointerAreaPaint?: (
+    l: L,
+    color: string,
+    ctx: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => void;
   nodeThreeObject?: (n: N) => unknown;
+  nodeThreeObjectExtend?: Accessor<boolean, N>;
+  linkThreeObject?: (l: L) => unknown;
+  linkThreeObjectExtend?: Accessor<boolean, L>;
+  linkMaterial?: Accessor<unknown, L>;
+  nodePositionUpdate?:
+    | ((
+        obj: unknown,
+        coords: { x: number; y: number; z: number },
+        node: N,
+      ) => void | boolean | null)
+    | null;
+  linkPositionUpdate?:
+    | ((
+        obj: unknown,
+        coords: {
+          start: { x: number; y: number; z: number };
+          end: { x: number; y: number; z: number };
+        },
+        link: L,
+      ) => void | boolean | null)
+    | null;
+  /** 3D init-only — passed once on engine construction. */
+  controlType?: "trackball" | "orbit" | "fly";
+  rendererConfig?: Record<string, unknown>;
+  extraRenderers?: unknown[];
 }
 
 export interface LoraGraphCanvasHandle<
@@ -266,9 +418,15 @@ export interface LoraGraphCanvasHandle<
   cut(): N[];
   paste(opts?: { at?: { x: number; y: number; z?: number } }): N[];
   duplicate(): N[];
+  /** Create a fresh node and link each currently selected node to it.
+   *  No-op when the selection is empty. Returns the new node, or null
+   *  if nothing was created. */
+  addConnectedNode(opts?: {
+    at?: { x: number; y: number; z?: number };
+    label?: string;
+  }): N | null;
 
   // Editing
-  renameNode(id: string | number, label: string): void;
   togglePin(id: string | number): void;
 
   // Import / export
@@ -280,6 +438,14 @@ export interface LoraGraphCanvasHandle<
   pause(): void;
   resume(): void;
   reheat(): void;
+  /** Get / set / clear a d3-force by name. Pass `null` to remove. */
+  d3Force(name: string): unknown;
+  d3Force(name: string, fn: unknown | null): void;
+  /** Emit a one-off particle along a link (visual ping for events). */
+  emitParticle(link: L): void;
+  /** Halt any in-flight camera animation (e.g. a focus tween) and
+   *  freeze the camera at its current state. */
+  stopAnimation(): void;
   screenshot(): Promise<Blob | null>;
 
   // Raw engine handle (escape hatch). Returns null when the active mode

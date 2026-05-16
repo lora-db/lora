@@ -124,6 +124,67 @@ first paint:
 <LoraGraphCanvas cooldownTicks={50} warmupTicks={20} />
 ```
 
+For graphs above ~10k nodes, switch the layout engine in 3D mode:
+
+```tsx
+<LoraGraphCanvas mode="3d" forceEngine="ngraph" />
+```
+
+## Opt-in UX flags
+
+Each is a single boolean prop:
+
+| Prop | What it does |
+| --- | --- |
+| `focusOnClick` | Click a node → animated camera focus; click again to restore. |
+| `highlightNeighborsOnHover` | Hover a node → it + its neighbours light up in the accent color. Pair with `autoIndexNeighbors` so the component builds the neighbour index for you, or stash `_neighbors` / `_links` yourself. |
+| `autoIndexNeighbors` | After every data change, build `_neighbors` and `_links` arrays on each node — required by the highlight flag if you don't provide them. |
+| `collideNodes` | Inject `d3-force-3d`'s `forceCollide` so circles don't overlap. Pass a number to override the radius. |
+| `showGrid` | Faint background grid that adapts to the zoom level. 2D only. Pass `{ spacing, color }` to customise. |
+| `showLegend` | Bottom-left widget enumerating `nodeAutoColorBy` groups with a colour swatch; click a group to toggle its visibility (drives `nodeVisibility` automatically). |
+| `enableRename` | (Default true.) Double-click a node to rename it inline. Set false to suppress. |
+| `enableClipboard` | (Default true.) ⌘C / ⌘X / ⌘V keybindings + matching ref methods. |
+
+```tsx
+<LoraGraphCanvas
+  data={graph}
+  nodeAutoColorBy="group"
+  focusOnClick
+  highlightNeighborsOnHover
+  autoIndexNeighbors
+  collideNodes
+  showGrid
+  showLegend
+/>
+```
+
+## Animated particles for events
+
+The kapsule emits an animated particle along a link via `emitParticle`.
+Wire it through the ref to visualise events (data flow, message sent,
+etc.):
+
+```tsx
+const ref = useRef<LoraGraphCanvasHandle>(null);
+useEffect(() => {
+  socket.on("message", (msg) => {
+    const link = graph.links.find((l) => l.id === msg.linkId);
+    if (link) ref.current?.emitParticle(link);
+  });
+}, []);
+```
+
+## Custom forces
+
+Inject d3-force primitives through `d3Force(name, fn)`:
+
+```tsx
+import { forceRadial } from "d3-force-3d";
+
+ref.current?.d3Force("radial", forceRadial(200));
+ref.current?.reheat();
+```
+
 ## License
 
 BUSL-1.1. Third-party attributions for `force-graph` and `3d-force-graph`
