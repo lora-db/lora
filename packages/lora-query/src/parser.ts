@@ -248,13 +248,26 @@ export function validate(source: string): Promise<ParseError[]> {
 }
 
 /**
+ * The Rust prettifier appends a trailing `\n` (Unix file convention).
+ * When the formatted text is loaded into CodeMirror that newline shows
+ * up as a visually empty last line — exactly the wrong shape for a
+ * read-only doc block, which has no cursor to "park" on the blank
+ * line. Strip a single trailing newline so the editor's doc length
+ * matches the visible line count. Multiple trailing newlines are not
+ * something `format` emits, so we don't bother collapsing them.
+ */
+function stripTrailingNewline(s: string): string {
+  return s.endsWith("\n") ? s.slice(0, -1) : s;
+}
+
+/**
  * Reformat a Cypher source string. When the input does not parse, the
  * original source is returned unchanged so the editor never destroys
  * partial work. Not cached — format is called interactively (prettify
  * button / shortcut) and re-formatting the same source is harmless.
  */
 export async function format(source: string): Promise<string> {
-  return wasmFormat(source);
+  return stripTrailingNewline(wasmFormat(source));
 }
 
 /**
@@ -269,7 +282,7 @@ export async function format(source: string): Promise<string> {
  * instantiated by the time this module finishes importing.
  */
 export function formatSync(source: string): string {
-  return wasmFormat(source);
+  return stripTrailingNewline(wasmFormat(source));
 }
 
 /**

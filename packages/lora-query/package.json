@@ -31,12 +31,15 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./parser": {
       "types": "./dist/parser.d.ts",
-      "import": "./dist/parser.js"
+      "import": "./dist/parser.js",
+      "default": "./dist/parser.js"
     },
+    "./styles.css": "./dist/style.css",
     "./wasm/*": "./wasm/*"
   },
   "files": [

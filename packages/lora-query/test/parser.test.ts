@@ -36,8 +36,10 @@ describe("@loradb/lora-query parser", () => {
     const formatted = await format(
       "match (n) return n.name, n.age, n.email, n.role",
     );
+    // No trailing newline — loaded into CodeMirror it would otherwise
+    // render as a visually empty last line.
     expect(formatted).toBe(
-      "MATCH (n)\nRETURN\n  n.name,\n  n.age,\n  n.email,\n  n.role\n",
+      "MATCH (n)\nRETURN\n  n.name,\n  n.age,\n  n.email,\n  n.role",
     );
   });
 
@@ -50,6 +52,12 @@ describe("@loradb/lora-query parser", () => {
   it("returns the original source when format cannot parse", async () => {
     const formatted = await format("MATCH (");
     expect(formatted).toBe("MATCH (");
+  });
+
+  it("strips the trailing newline so CodeMirror doesn't render a blank line", async () => {
+    const formatted = await format("match (n) return n");
+    expect(formatted.endsWith("\n")).toBe(false);
+    expect(formatted).toBe("MATCH (n)\nRETURN n");
   });
 
   it("returns AST-driven highlight spans for a parseable query", async () => {
