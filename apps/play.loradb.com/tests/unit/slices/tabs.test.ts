@@ -1,0 +1,152 @@
+/**
+ * Unit coverage for the tabs slice. We instantiate the slice in isolation
+ * (no other slices, no persistence subscription) so each test exercises
+ * only the slice's own reducers. Anything that depends on cross-slice
+ * coordination (e.g. orphaned result entries) is covered by the e2e suite.
+ */
+
+import { describe, expect, it } from "vitest";
+import { create } from "zustand";
+import { immer } from "zustand/middleware/immer";
+
+import {
+  createTabsSlice,
+  type EditorTab,
+  type SerializedTab,
+  type TabsSlice,
+} from "@/lib/state/slices/tabs";
+
+function makeStore() {
+  return create<TabsSlice>()(
+    immer((set, get, api) =>
+      createTabsSlice(
+        set as Parameters<typeof createTabsSlice>[0],
+        get as Parameters<typeof createTabsSlice>[1],
+        api as Parameters<typeof createTabsSlice>[2],
+      ),
+    ),
+  );
+}
+
+function names(tabs: ReadonlyArray<EditorTab>): string[] {
+  return tabs.map((t) => t.name);
+}
+
+describe("tabs slice", () => {
+  it("opens a tab with an auto-incremented untitled name", () => {
+    const store = makeStore();
+    store.getState().openTab();
+    store.getState().openTab();
+    expect(names(store.getState().tabs)).toEqual(["Query 1", "Query 2"]);
+    expect(store.getState().activeTabId).toBe(store.getState().tabs[1]?.id);
+  });
+
+  it("setBody marks the tab dirty only when the body actually changes", () => {
+    const store = makeStore();
+    const id = store.getState().openTab({ body: "RETURN 1" });
+    expect(store.getState().tabs[0]?.dirty).toBe(false);
+
+    // Identical body: should remain clean.
+    store.getState().setBody(id, "RETURN 1");
+    expect(store.getState().tabs[0]?.dirty).toBe(false);
+
+    // Real change: flips dirty.
+    store.getState().setBody(id, "RETURN 2");
+    expect(store.getState().tabs[0]?.dirty).toBe(true);
+    expect(store.getState().tabs[0]?.body).toBe("RETURN 2");
+  });
+
+  it("markClean clears the dirty flag", () => {
+    const store = makeStore();
+    const id = store.getState().openTab({ body: "RETURN 1" });
+    store.getState().setBody(id, "RETURN 2");
+    store.getState().markClean(id);
+    expect(store.getState().tabs[0]?.dirty).toBe(false);
+  });
+
+  it("closeTab removes the tab and advances activeTabId to the right neighbour", () => {
+    const store = makeStore();
+    const a = store.getState().openTab({ name: "A" });
+    const b = store.getState().openTab({ name: "B" });
+    const c = store.getState().openTab({ name: "C" });
+
+    store.getState().setActiveTab(b);
+    store.getState().closeTab(b);
+
+    expect(names(store.getState().tabs)).toEqual(["A", "C"]);
+    expect(store.getState().activeTabId).toBe(c);
+    expect(a).toBeTruthy();
+  });
+
+  it("closeTab on the last tab falls back to the previous one", () => {
+    const store = makeStore();
+    const a = store.getState().openTab({ name: "A" });
+    const b = store.getState().openTab({ name: "B" });
+    store.getState().setActiveTab(b);
+    store.getState().closeTab(b);
+    expect(store.getState().activeTabId).toBe(a);
+  });
+
+  it("closing the only tab leaves activeTabId null", () => {
+    const store = makeStore();
+    const id = store.getState().openTab();
+    store.getState().closeTab(id);
+    expect(store.getState().tabs).toHaveLength(0);
+    expect(store.getState().activeTabId).toBe(null);
+  });
+
+  it("reorderTab moves a tab from one index to another", () => {
+    const store = makeStore();
+    store.getState().openTab({ name: "A" });
+    store.getState().openTab({ name: "B" });
+    store.getState().openTab({ name: "C" });
+
+    store.getState().reorderTab(0, 2);
+    expect(names(store.getState().tabs)).toEqual(["B", "C", "A"]);
+
+    store.getState().reorderTab(2, 0);
+    expect(names(store.getState().tabs)).toEqual(["A", "B", "C"]);
+  });
+
+  it("reorderTab is a no-op for invalid indices", () => {
+    const store = makeStore();
+    store.getState().openTab({ name: "A" });
+    store.getState().openTab({ name: "B" });
+
+    store.getState().reorderTab(0, 0); // same slot
+    store.getState().reorderTab(-1, 1); // negative source
+    store.getState().reorderTab(0, 99); // out-of-range target
+    store.getState().reorderTab(5, 0); // out-of-range source
+    expect(names(store.getState().tabs)).toEqual(["A", "B"]);
+  });
+
+  it("hydrateTabs restores order and falls back to the first tab when activeId is missing", () => {
+    const store = makeStore();
+    const records: SerializedTab[] = [
+      { id: "x1", name: "X", body: "x", createdAt: 1 },
+      { id: "x2", name: "Y", body: "y", createdAt: 2 },
+    ];
+    store.getState().hydrateTabs(records, "missing-id");
+    expect(names(store.getState().tabs)).toEqual(["X", "Y"]);
+    expect(store.getState().activeTabId).toBe("x1");
+
+    // Re-hydrate with a valid activeId — should honour it.
+    store.getState().hydrateTabs(records, "x2");
+    expect(store.getState().activeTabId).toBe("x2");
+  });
+
+  it("renameTab updates the name in place", () => {
+    const store = makeStore();
+    const id = store.getState().openTab({ name: "First" });
+    store.getState().renameTab(id, "Renamed");
+    expect(store.getState().tabs[0]?.name).toBe("Renamed");
+  });
+
+  it("bindSavedQueryId attaches a saved-query reference without flipping dirty", () => {
+    const store = makeStore();
+    const id = store.getState().openTab({ name: "Q" });
+    store.getState().bindSavedQueryId(id, "saved-1");
+    expect(store.getState().tabs[0]?.savedQueryId).toBe("saved-1");
+    expect(store.getState().tabs[0]?.dirty).toBe(false);
+  });
+});

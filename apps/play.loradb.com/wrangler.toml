@@ -1,0 +1,16 @@
+# Cloudflare Pages project config for the LoraDB Playground.
+#
+# Strictly speaking this file is optional — the GitHub Actions workflow
+# (`.github/workflows/play-loradb.yml`) drives deploys via
+# `cloudflare/wrangler-action@v3` and passes `--project-name=play-loradb`
+# explicitly, so wrangler does not need to discover the project from disk.
+#
+# We commit the file anyway so an operator can run
+#   wrangler pages deploy out --project-name=play-loradb
+# (or simply `wrangler pages deploy` from this directory) locally without
+# extra flags, and so the project name + the static-output directory live
+# alongside the app code rather than only in CI yaml.
+
+name = "play-loradb"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "out"

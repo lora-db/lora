@@ -1,0 +1,255 @@
+"use client";
+
+/**
+ * Zustand store composition.
+ *
+ * Five slices (tabs, results, layout, prefs, schema) are merged into a
+ * single store wrapped with `immer` (imperative draft mutations inside the
+ * slices) and `subscribeWithSelector` (so we can subscribe to the exact
+ * fields that participate in IDB persistence).
+ *
+ * Persistence is driven by an explicit selector subscription rather than
+ * `zustand/middleware/persist` — we own the IDB schema and want full
+ * control over what gets written and when.
+ */
+
+import { create, type StoreApi } from "zustand";
+import { immer } from "zustand/middleware/immer";
+import { subscribeWithSelector } from "zustand/middleware";
+import { notifications } from "@mantine/notifications";
+
+import * as sessionPersistence from "@/lib/persistence/session";
+import { debounce } from "@/lib/util/async";
+
+import {
+  createTabsSlice,
+  type TabsSlice,
+  type SerializedTab,
+  type EditorTab,
+} from "./slices/tabs";
+import {
+  createResultsSlice,
+  type ResultsSlice,
+} from "./slices/results";
+import {
+  createLayoutSlice,
+  type LayoutSlice,
+  type SerializedLayout,
+} from "./slices/layout";
+import {
+  createPrefsSlice,
+  type PrefsSlice,
+  type SerializedPrefs,
+} from "./slices/prefs";
+import {
+  createSchemaSlice,
+  type SchemaSlice,
+} from "./slices/schema";
+import {
+  createInspectSlice,
+  type InspectSlice,
+} from "./slices/inspect";
+
+export type Store = TabsSlice & ResultsSlice & LayoutSlice & PrefsSlice & SchemaSlice & InspectSlice;
+
+export const useStore = create<Store>()(
+  subscribeWithSelector(
+    immer((set, get, api) => ({
+      ...createTabsSlice(
+        set as Parameters<typeof createTabsSlice>[0],
+        get as Parameters<typeof createTabsSlice>[1],
+        api as Parameters<typeof createTabsSlice>[2],
+      ),
+      ...createResultsSlice(
+        set as Parameters<typeof createResultsSlice>[0],
+        get as Parameters<typeof createResultsSlice>[1],
+        api as Parameters<typeof createResultsSlice>[2],
+      ),
+      ...createLayoutSlice(
+        set as Parameters<typeof createLayoutSlice>[0],
+        get as Parameters<typeof createLayoutSlice>[1],
+        api as Parameters<typeof createLayoutSlice>[2],
+      ),
+      ...createPrefsSlice(
+        set as Parameters<typeof createPrefsSlice>[0],
+        get as Parameters<typeof createPrefsSlice>[1],
+        api as Parameters<typeof createPrefsSlice>[2],
+      ),
+      ...createSchemaSlice(
+        set as Parameters<typeof createSchemaSlice>[0],
+        get as Parameters<typeof createSchemaSlice>[1],
+        api as Parameters<typeof createSchemaSlice>[2],
+      ),
+      ...createInspectSlice(
+        set as Parameters<typeof createInspectSlice>[0],
+        get as Parameters<typeof createInspectSlice>[1],
+        api as Parameters<typeof createInspectSlice>[2],
+      ),
+    })),
+  ),
+);
+
+// Tell TypeScript the store has the subscribeWithSelector overload available.
+type SubscribeWithSelector = StoreApi<Store> & {
+  subscribe: <U>(
+    selector: (state: Store) => U,
+    listener: (selected: U, previous: U) => void,
+    options?: {
+      equalityFn?: (a: U, b: U) => boolean;
+      fireImmediately?: boolean;
+    },
+  ) => () => void;
+};
+
+/**
+ * Snapshot of the raw store fields we persist. Holding raw immer-produced
+ * references (instead of building a fresh object per field) means shallow
+ * equality on this snapshot is sufficient — immer reuses references for
+ * any subtree that didn't change, so unrelated mutations don't fire the
+ * persistence write.
+ */
+interface PersistedSnapshot {
+  tabs: EditorTab[];
+  activeTabId: string | null;
+  // layout
+  activitySection: SerializedLayout["activitySection"];
+  panelSizes: SerializedLayout["panelSizes"];
+  resultTab: SerializedLayout["resultTab"];
+  sidebarOpen: SerializedLayout["sidebarOpen"];
+  // prefs
+  graphMode: SerializedPrefs["graphMode"];
+  autoRunOnSave: SerializedPrefs["autoRunOnSave"];
+  nodeCap: SerializedPrefs["nodeCap"];
+  resultRowCap: SerializedPrefs["resultRowCap"];
+  autoRestore: SerializedPrefs["autoRestore"];
+}
+
+function selectPersisted(s: Store): PersistedSnapshot {
+  return {
+    tabs: s.tabs,
+    activeTabId: s.activeTabId,
+    activitySection: s.activitySection,
+    panelSizes: s.panelSizes,
+    resultTab: s.resultTab,
+    sidebarOpen: s.sidebarOpen,
+    graphMode: s.graphMode,
+    autoRunOnSave: s.autoRunOnSave,
+    nodeCap: s.nodeCap,
+    resultRowCap: s.resultRowCap,
+    autoRestore: s.autoRestore,
+  };
+}
+
+function shallowEqualSnapshot(
+  a: PersistedSnapshot,
+  b: PersistedSnapshot,
+): boolean {
+  // Compare every key by reference / Object.is — immer reuses references
+  // for unchanged subtrees so this is equivalent to a deep equality check
+  // for our purposes.
+  return (
+    a.tabs === b.tabs &&
+    a.activeTabId === b.activeTabId &&
+    a.activitySection === b.activitySection &&
+    a.panelSizes === b.panelSizes &&
+    a.resultTab === b.resultTab &&
+    a.sidebarOpen === b.sidebarOpen &&
+    a.graphMode === b.graphMode &&
+    a.autoRunOnSave === b.autoRunOnSave &&
+    a.nodeCap === b.nodeCap &&
+    a.resultRowCap === b.resultRowCap &&
+    a.autoRestore === b.autoRestore
+  );
+}
+
+function serializeSnapshot(s: PersistedSnapshot) {
+  return {
+    tabs: s.tabs.map<SerializedTab>((t) => ({
+      id: t.id,
+      name: t.name,
+      body: t.body,
+      savedQueryId: t.savedQueryId,
+      createdAt: t.createdAt,
+    })),
+    activeTabId: s.activeTabId,
+    layout: {
+      activitySection: s.activitySection,
+      panelSizes: s.panelSizes,
+      resultTab: s.resultTab,
+      sidebarOpen: s.sidebarOpen,
+    },
+    prefs: {
+      graphMode: s.graphMode,
+      autoRunOnSave: s.autoRunOnSave,
+      nodeCap: s.nodeCap,
+      resultRowCap: s.resultRowCap,
+      autoRestore: s.autoRestore,
+    },
+  };
+}
+
+// Hydration gate — true while `hydrateFromIDB` is replacing slice state.
+// The persistence subscription is wired with `fireImmediately: false`
+// already, but any subsequent re-render from hydration would still queue
+// a write. We skip those writes entirely so the just-loaded record isn't
+// immediately re-written.
+let isHydrating = false;
+
+// One-shot guard so a broken IDB doesn't spam toasts on every save.
+let persistFailureToasted = false;
+
+const persistDebounced = debounce((snapshot: PersistedSnapshot) => {
+  void sessionPersistence.write(serializeSnapshot(snapshot)).then((ok) => {
+    if (ok === false && !persistFailureToasted) {
+      persistFailureToasted = true;
+      notifications.show({
+        color: "yellow",
+        title: "Couldn't save your session",
+        message:
+          "Your tabs and layout won't persist across reloads. Check whether storage is allowed for this site.",
+        autoClose: 8000,
+      });
+    }
+  });
+}, 500);
+
+// Wire up the persistence subscription only on the client. Server-side
+// rendering must never touch IDB.
+if (typeof window !== "undefined") {
+  (useStore as unknown as SubscribeWithSelector).subscribe(
+    selectPersisted,
+    (snapshot) => {
+      if (isHydrating) return;
+      persistDebounced(snapshot);
+    },
+    { equalityFn: shallowEqualSnapshot },
+  );
+}
+
+/**
+ * Reads the persisted session record from IDB and applies it to the store.
+ * Idempotent: safe to call multiple times (e.g. from a layout effect that
+ * remounts during dev HMR). Silently no-ops on the server or when no
+ * persisted record exists.
+ */
+export async function hydrateFromIDB(): Promise<void> {
+  if (typeof window === "undefined") return;
+  const record = await sessionPersistence.read();
+  if (!record) return;
+
+  // Gate the persistence subscription so the writes we'd otherwise queue
+  // for these three setters don't immediately echo the just-loaded record
+  // back to IDB. The gate is cleared in a microtask so any *real* state
+  // changes that happen on the same tick still get persisted.
+  isHydrating = true;
+  try {
+    const state = useStore.getState();
+    state.hydrateTabs(record.tabs, record.activeTabId);
+    state.hydrateLayout(record.layout);
+    state.hydratePrefs(record.prefs);
+  } finally {
+    queueMicrotask(() => {
+      isHydrating = false;
+    });
+  }
+}

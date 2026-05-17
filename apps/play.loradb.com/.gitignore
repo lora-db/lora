@@ -1,0 +1,12 @@
+# Next.js build output
+.next/
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Dependencies (usually hoisted in workspaces)
+node_modules/
+
+# Local env files
+.env*.local

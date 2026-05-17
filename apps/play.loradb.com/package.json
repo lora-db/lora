@@ -1,0 +1,58 @@
+{
+  "name": "@loradb/play",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@4.5.1",
+  "scripts": {
+    "dev": "next dev",
+    "prebuild": "node scripts/build-og.mjs",
+    "build": "next build",
+    "build-og": "node scripts/build-og.mjs",
+    "start": "next start",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium --with-deps"
+  },
+  "dependencies": {
+    "@glideapps/glide-data-grid": "^6.0.3",
+    "@loradb/lora-graph-canvas": "workspace:*",
+    "@loradb/lora-query": "workspace:*",
+    "@loradb/lora-wasm": "workspace:*",
+    "@mantine/core": "^7.17.0",
+    "@mantine/hooks": "^7.17.0",
+    "@mantine/modals": "^7.17.0",
+    "@mantine/notifications": "^7.17.0",
+    "@mantine/spotlight": "^7.17.0",
+    "@tabler/icons-react": "^3.26.0",
+    "date-fns": "^4.1.0",
+    "idb": "^8.0.1",
+    "immer": "^10.1.1",
+    "lz-string": "^1.5.0",
+    "next": "^15.1.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.182.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.182.0",
+    "eslint": "^9.15.0",
+    "eslint-config-next": "^15.1.4",
+    "postcss": "^8.4.49",
+    "postcss-preset-mantine": "^1.17.0",
+    "postcss-simple-vars": "^7.0.1",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
