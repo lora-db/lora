@@ -1,0 +1,28 @@
+.snippetWrapper {
+  // Subtle distinction from <QueryCodeBlock>: these are syntax
+  // references rather than runnable example queries. Keep it light —
+  // we don't want a heavy visual treatment that fights the surrounding
+  // prose. A muted left rail and "syntax" badge are enough.
+  position: relative;
+
+  :global(.lora-query) {
+    border-left: 2px solid var(--ifm-color-emphasis-300);
+  }
+
+  &::before {
+    content: 'syntax';
+    position: absolute;
+    top: 0.55rem;
+    right: 0.6rem;
+    z-index: 2;
+    padding: 0 0.4rem;
+    font-size: 0.65rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ifm-color-emphasis-600);
+    background: var(--ifm-background-surface-color);
+    border-radius: 4px;
+    pointer-events: none;
+  }
+}

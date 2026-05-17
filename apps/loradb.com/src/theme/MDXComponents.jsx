@@ -9,9 +9,13 @@
 import MDXComponents from '@theme-original/MDXComponents';
 import BenchmarkSummary from '@site/src/components/BenchmarkSummary';
 import CypherCode from '@site/src/components/CypherCode';
+import CypherSnippet from '@site/src/components/CypherSnippet';
+import QueryCodeBlock from '@site/src/components/LoraQueryCodeBlock';
 
 export default {
   ...MDXComponents,
   BenchmarkSummary,
   CypherCode,
+  CypherSnippet,
+  QueryCodeBlock,
 };

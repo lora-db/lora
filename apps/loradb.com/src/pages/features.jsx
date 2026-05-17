@@ -5,7 +5,21 @@ import Link from '@docusaurus/Link';
 
 import CypherCode from '@site/src/components/CypherCode';
 import LinkCard from '@site/src/components/LinkCard';
+import {useFormattedCypher} from '@site/src/lib/useFormattedCypher';
 import styles from './features.module.scss';
+
+/** Renders a Cypher coverage snippet with auto-formatting applied on
+ *  mount. Kept inline here because the markup is trivial — the only
+ *  reason for the indirection is to call the formatter hook per item
+ *  without yanking the parent component apart. */
+function CoverageSnippet({snippet}) {
+  const formatted = useFormattedCypher(snippet);
+  return (
+    <pre className={styles.coverageCode}>
+      <code>{formatted}</code>
+    </pre>
+  );
+}
 
 // -------------------------------------------------------------------
 // Static content
@@ -672,9 +686,7 @@ export default function Features() {
                     <span className={styles.coverageDot} aria-hidden="true" />
                     <h3>{c.label}</h3>
                   </header>
-                  <pre className={styles.coverageCode}>
-                    <code>{c.snippet}</code>
-                  </pre>
+                  <CoverageSnippet snippet={c.snippet} />
                   <Link to={c.to} className={styles.coverageLink}>
                     {c.linkLabel}
                     <ArrowIcon />

@@ -1,0 +1,60 @@
+.root {
+  margin-block: 1rem;
+
+  :global(.lora-query) {
+    min-height: var(--lora-query-doc-min-height, 58px);
+  }
+
+  :global(.lora-query .cm-content) {
+    padding-block: 0.75rem;
+    padding-inline-end: 2.9rem;
+  }
+
+  :global(.lora-query .cm-line) {
+    line-height: 1.55;
+  }
+
+  :global(.lora-query .cm-gutter-lint),
+  :global(.lora-query .cm-foldGutter),
+  :global(.lora-query .cm-lintGutter) {
+    display: none !important;
+  }
+
+  :global(.lora-query .cm-lintRange),
+  :global(.lora-query .cm-lintRange-error),
+  :global(.lora-query .cm-lintRange-warning),
+  :global(.lora-query .cm-lintRange-info) {
+    background-image: none;
+    border-bottom: 0;
+  }
+
+  // The copy affordance is noise on a read-only doc block — show only
+  // when the reader signals intent (hover or keyboard focus inside the
+  // block). Scoped to `.root` so the playground / other LoraQueryEditor
+  // hosts keep the always-visible behaviour from the package's CSS.
+  :global(.lora-query__copy) {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+  }
+
+  &:hover :global(.lora-query__copy),
+  &:focus-within :global(.lora-query__copy),
+  :global(.lora-query__copy:focus-visible),
+  :global(.lora-query__copy--copied) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.editor {
+  box-shadow: none;
+}
+
+.fallback {
+  margin: 0;
+  padding: 1rem;
+  overflow: auto;
+  border-radius: 0.5rem;
+  background: var(--code-block-bg-c);
+}

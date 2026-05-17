@@ -15,7 +15,8 @@
     "serve": "docusaurus serve",
     "start": "docusaurus start",
     "swizzle": "docusaurus swizzle",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "validate-cypher": "node scripts/validate-docs-cypher.mjs"
   },
   "browserslist": {
     "production": [
@@ -35,6 +36,7 @@
     "@docusaurus/theme-mermaid": "^3.7.0",
     "@easyops-cn/docusaurus-search-local": "^0.55.1",
     "@ionic-internal/ionic-ds": "^7.0.0",
+    "@loradb/lora-query": "workspace:*",
     "@mdx-js/react": "^3.0.0",
     "clsx": "^1.1.1",
     "docusaurus-plugin-module-alias": "^0.0.2",
