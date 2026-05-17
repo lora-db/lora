@@ -19,23 +19,19 @@ different matches bind to the same identity.
 
 ## Create
 
-```cypher
-CREATE (:Person {name: 'Ada', born: 1815})     -- one label
-CREATE (:Person:Admin {name: 'Bob'})           -- multiple labels
-CREATE (:Temp)                                 -- no properties
-CREATE ()                                      -- no labels, no properties
-```
+<QueryCodeBlock code={String.raw`CREATE (:Person {name: 'Ada', born: 1815})     // one label
+CREATE (:Person:Admin {name: 'Bob'})           // multiple labels
+CREATE (:Temp)                                 // no properties
+CREATE ()                                      // no labels, no properties`} />
 
 Even a fully-naked `()` is a valid node. Most real graphs give every
 node at least one label — it's the primary way to scope queries.
 
 ### Bind a variable at creation
 
-```cypher
-CREATE (ada:Person {name: 'Ada'})
+<QueryCodeBlock code={String.raw`CREATE (ada:Person {name: 'Ada'})
 CREATE (ada)-[:WROTE]->(n:Note {text: 'Bernoulli numbers'})
-RETURN ada, n
-```
+RETURN ada, n`} />
 
 Variables (`ada`, `n`) stay in scope for the rest of the query.
 
@@ -43,51 +39,39 @@ Variables (`ada`, `n`) stay in scope for the rest of the query.
 
 Labels are the primary way to scope a query.
 
-```cypher
-MATCH (p:Person)         RETURN p                -- single label
-MATCH (a:Person:Admin)   RETURN a                -- must have both
-MATCH (n)                RETURN labels(n)        -- any node — all labels
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person)         RETURN p;                // single label
+MATCH (a:Person:Admin)   RETURN a;                // must have both
+MATCH (n)                RETURN labels(n)        // any node — all labels`} />
 
 ### Match by label + property
 
-```cypher
-MATCH (u:User {email: $email})        RETURN u
-MATCH (u:User {email: $email, active: true}) RETURN u
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User {email: $email})        RETURN u;
+MATCH (u:User {email: $email, active: true}) RETURN u`} />
 
 Inline maps are equality-only. For ranges, regex, `IN`, or null
 checks, move the predicate into [`WHERE`](../queries/where):
 
-```cypher
+<QueryCodeBlock code={String.raw`MATCH (u:User)
+WHERE u.age BETWEEN 18 AND 65                     // NOT supported
 MATCH (u:User)
-WHERE u.age BETWEEN 18 AND 65                     -- NOT supported
-MATCH (u:User)
-WHERE u.age >= 18 AND u.age <= 65                 -- idiomatic in LoraDB
-RETURN u
-```
+WHERE u.age >= 18 AND u.age <= 65                 // idiomatic in LoraDB
+RETURN u`} />
 
 ## Labels
 
-```cypher
-MATCH (n:Person {name: 'Ada'}) SET    n:Pioneer   RETURN labels(n)
-MATCH (n:Person {name: 'Ada'}) REMOVE n:Pioneer   RETURN labels(n)
-```
+<QueryCodeBlock code={String.raw`MATCH (n:Person {name: 'Ada'}) SET    n:Pioneer   RETURN labels(n);
+MATCH (n:Person {name: 'Ada'}) REMOVE n:Pioneer   RETURN labels(n)`} />
 
 ### Multiple labels
 
 A node can have any number of labels, including zero:
 
-```cypher
-MATCH (n:Person {name: 'Ada'}) SET n:Admin, n:Verified
-```
+<QueryCodeBlock code={String.raw`MATCH (n:Person {name: 'Ada'}) SET n:Admin, n:Verified`} />
 
 ### Inspect labels
 
-```cypher
-MATCH (n) RETURN labels(n), count(*)
-ORDER BY count(*) DESC
-```
+<QueryCodeBlock code={String.raw`MATCH (n) RETURN labels(n), count(*)
+ORDER BY count(*) DESC`} />
 
 One row per distinct label-set in the graph.
 
@@ -104,25 +88,21 @@ for the classic `:user` vs `:User` mistake.
 
 Any [supported data type](../data-types/overview):
 
-```cypher
-CREATE (c:City {
+<QueryCodeBlock code={String.raw`CREATE (c:City {
   name:       'Amsterdam',
   population: 918000,
   founded:    '1275-10-27'::DATE,
   tags:       ['capital', 'port'],
   location:   {latitude: 52.37, longitude: 4.89}::POINT
-})
-```
+})`} />
 
 Read, patch, and remove with [`SET` / `REMOVE`](../queries/set-delete):
 
-```cypher
-MATCH (c:City {name: 'Amsterdam'}) RETURN c.population, c.tags
+<QueryCodeBlock code={String.raw`MATCH (c:City {name: 'Amsterdam'}) RETURN c.population, c.tags;
 
 MATCH (c:City {name: 'Amsterdam'})
 SET c.population = 920000, c.updated = temporal.timestamp()
-RETURN c
-```
+RETURN c`} />
 
 See [Properties](./properties) for the full reference.
 
@@ -132,22 +112,18 @@ See [Properties](./properties) for the full reference.
 Pair with [`ON MATCH` / `ON CREATE`](../queries/unwind-merge#on-match--on-create)
 to run different side-effects per branch:
 
-```cypher
-MERGE (u:User {email: $email})
+<QueryCodeBlock code={String.raw`MERGE (u:User {email: $email})
   ON CREATE SET u.created_at = temporal.timestamp()
   SET u.last_seen = temporal.timestamp()
-RETURN u
-```
+RETURN u`} />
 
 ## Delete
 
-```cypher
--- Standalone node (no edges)
+<QueryCodeBlock code={String.raw`// Standalone node (no edges)
 MATCH (n:Temp) DELETE n
 
--- Node + all edges
-MATCH (n:User {id: $id}) DETACH DELETE n
-```
+;// Node + all edges
+MATCH (n:User {id: $id}) DETACH DELETE n`} />
 
 See [`DETACH DELETE`](../queries/set-delete#detach-delete) for details.
 
@@ -155,87 +131,69 @@ See [`DETACH DELETE`](../queries/set-delete#detach-delete) for details.
 
 ### Count by label
 
-```cypher
-MATCH (n) RETURN labels(n) AS labels, count(*) AS n
-ORDER BY n DESC
-```
+<QueryCodeBlock code={String.raw`MATCH (n) RETURN labels(n) AS labels, count(*) AS n
+ORDER BY n DESC`} />
 
 ### Ensure uniqueness at write time
 
 Use `MERGE` for idempotent writes:
 
-```cypher
-MERGE (u:User {email: $email})
-ON CREATE SET u.created_at = temporal.timestamp()
-```
+<QueryCodeBlock code={String.raw`MERGE (u:User {email: $email})
+ON CREATE SET u.created_at = temporal.timestamp()`} />
 
 When duplicate values must be rejected across all `:User` nodes, add a
 uniqueness constraint:
 
-```cypher
-CREATE CONSTRAINT user_email
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT user_email
 FOR (u:User)
-REQUIRE u.email IS UNIQUE
-```
+REQUIRE u.email IS UNIQUE`} />
 
 ### Pattern-match on one label, filter on another
 
-```cypher
-MATCH (n:Person)
+<QueryCodeBlock code={String.raw`MATCH (n:Person)
 WHERE NOT n:Admin
-RETURN n
-```
+RETURN n`} />
 
 ### Sample a few of each
 
-```cypher
-MATCH (n)
+<QueryCodeBlock code={String.raw`MATCH (n)
 WITH labels(n)[0] AS label, n
 WITH label, collect(n)[..3] AS sample
-RETURN label, sample
-```
+RETURN label, sample`} />
 
 ### Find nodes without a given relationship
 
 Anti-pattern: "who doesn't…" — use
 [`NOT EXISTS { … }`](../queries/where#pattern-existence):
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE NOT EXISTS { (u)-[:WROTE]->(:Post) }
-RETURN u.handle
-```
+RETURN u.handle`} />
 
 ### Bulk label migration
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE u.role = 'admin' AND NOT u:Admin
-SET u:Admin
-```
+SET u:Admin`} />
 
 ### Move properties between nodes
 
-```cypher
-MATCH (src:Person {id: $src}), (dst:Person {id: $dst})
+<QueryCodeBlock code={String.raw`MATCH (src:Person {id: $src}), (dst:Person {id: $dst})
 SET dst += properties(src)
 REMOVE src:Person
 SET src:Archived
-SET src.archived_at = temporal.timestamp()
-```
+SET src.archived_at = temporal.timestamp()`} />
 
 ### Split one node into two
 
 A modelling change where a property becomes its own entity — useful
 when the value starts being reachable from multiple sides:
 
-```cypher
-MATCH (u:User) WHERE u.company IS NOT NULL
+<QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.company IS NOT NULL
 WITH u, u.company AS company
 MERGE (c:Company {name: company})
 CREATE (u)-[:WORKS_AT]->(c)
-REMOVE u.company
-```
+REMOVE u.company`} />
 
 ## Edge cases
 
@@ -249,17 +207,13 @@ and are hard to find without the `id()` function.
 Matching `(n:A:B:C)` requires **all** listed labels. If you want "any
 of", `UNION` two matches or use `WHERE`:
 
-```cypher
-MATCH (n)
+<QueryCodeBlock code={String.raw`MATCH (n)
 WHERE n:Person OR n:Robot
-RETURN n
-```
+RETURN n`} />
 
 ### Property-only match
 
-```cypher
-MATCH (n {external_id: $id}) RETURN n
-```
+<QueryCodeBlock code={String.raw`MATCH (n {external_id: $id}) RETURN n`} />
 
 This scans the entire node set — no label scoping. Always add a label
 when you can.

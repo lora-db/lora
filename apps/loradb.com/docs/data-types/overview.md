@@ -62,10 +62,8 @@ Produced by queries; not storable as properties.
 | `Relationship` | `{kind: "relationship", id, startId, endId, type, properties}` |
 | `Path` | `{kind: "path", nodes, rels}` — alternating sequence |
 
-```cypher
-MATCH (a:Person)-[r:KNOWS]->(b:Person)
-RETURN a, r, b   -- a, b are Nodes; r is a Relationship
-```
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[r:KNOWS]->(b:Person)
+RETURN a, r, b   // a, b are Nodes; r is a Relationship`} />
 
 Narrow graph-typed results in host code with `isNode` /
 `isRelationship` / `isPath` (JS —
@@ -82,13 +80,11 @@ Narrow graph-typed results in host code with `isNode` /
 Use [`type.of(x)`](../functions/overview#type-conversion-and-checking)
 to discover a value's type at query time.
 
-```cypher
-RETURN type.of(1),                                -- 'INTEGER'
-       type.of([1, 2, 3]),                        -- 'LIST<INTEGER>'
-       type.of('2024-01-15'::DATE),               -- 'DATE'
-       type.of({x: 1, y: 2}::POINT),              -- 'POINT'
-       type.of([1,2,3]::VECTOR<INTEGER>(3))       -- 'VECTOR<INTEGER>(3)'
-```
+<QueryCodeBlock code={String.raw`RETURN type.of(1),                                // 'INTEGER'
+       type.of([1, 2, 3]),                        // 'LIST<INTEGER>'
+       type.of('2024-01-15'::DATE),               // 'DATE'
+       type.of({x: 1, y: 2}::POINT),              // 'POINT'
+       type.of([1,2,3]::VECTOR<INTEGER>(3))       // 'VECTOR<INTEGER>(3)'`} />
 
 `VECTOR` is the only built-in type whose `type.of` tag encodes
 structural detail (coordinate type + dimension). Everything else
@@ -98,19 +94,15 @@ returns a plain tag like `INTEGER` or `LIST<INTEGER>`.
 
 Useful on heterogeneous list properties:
 
-```cypher
-MATCH (n:Record)
+<QueryCodeBlock code={String.raw`MATCH (n:Record)
 WHERE all(x IN n.values WHERE type.of(x) = 'INTEGER')
-RETURN n
-```
+RETURN n`} />
 
 ### Distinguish graph types
 
-```cypher
-MATCH (n)
+<QueryCodeBlock code={String.raw`MATCH (n)
 RETURN type.of(n) AS t, count(*) ORDER BY count(*) DESC
--- typically all NODE, but useful for generic projections
-```
+// typically all NODE, but useful for generic projections`} />
 
 ## Conversion matrix
 

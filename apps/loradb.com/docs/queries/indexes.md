@@ -14,38 +14,30 @@ and full-text search.
 
 ## Create an index
 
-```cypher
-CREATE INDEX user_email FOR (u:User) ON (u.email);
+<QueryCodeBlock code={String.raw`CREATE INDEX user_email FOR (u:User) ON (u.email);
 CREATE INDEX user_age IF NOT EXISTS FOR (u:User) ON (u.age);
 CREATE TEXT INDEX user_name FOR (u:User) ON (u.name);
 CREATE POINT INDEX venue_location FOR (v:Venue) ON (v.location);
 CREATE VECTOR INDEX doc_embedding FOR (d:Doc) ON (d.embedding)
-OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
-CREATE FULLTEXT INDEX article_search FOR (a:Article) ON EACH [a.title, a.body];
-```
+OPTIONS {indexConfig: {\`vector.dimensions\`: 1536, \`vector.similarity_function\`: 'cosine'}};
+CREATE FULLTEXT INDEX article_search FOR (a:Article) ON EACH [a.title, a.body];`} />
 
 Relationship indexes use the relationship pattern form:
 
-```cypher
-CREATE INDEX rel_since FOR ()-[r:FOLLOWS]-() ON (r.since);
+<QueryCodeBlock code={String.raw`CREATE INDEX rel_since FOR ()-[r:FOLLOWS]-() ON (r.since);
 CREATE TEXT INDEX rel_note FOR ()-[r:TAGGED]-() ON (r.note);
 CREATE POINT INDEX rel_location FOR ()-[r:DELIVERED]-() ON (r.location);
 CREATE VECTOR INDEX rel_embedding FOR ()-[r:CONTAINS]-() ON (r.embedding)
-OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'euclidean'}};
-CREATE FULLTEXT INDEX rel_summary FOR ()-[r:WROTE]-() ON EACH [r.summary];
-```
+OPTIONS {indexConfig: {\`vector.dimensions\`: 384, \`vector.similarity_function\`: 'euclidean'}};
+CREATE FULLTEXT INDEX rel_summary FOR ()-[r:WROTE]-() ON EACH [r.summary];`} />
 
 If you omit the name, LoraDB creates a deterministic `index_...` name:
 
-```cypher
-CREATE INDEX FOR (p:Product) ON (p.sku);
-```
+<QueryCodeBlock code={String.raw`CREATE INDEX FOR (p:Product) ON (p.sku);`} />
 
 Index names may also come from a string parameter:
 
-```cypher
-CREATE INDEX $name FOR (u:User) ON (u.email);
-```
+<QueryCodeBlock code={String.raw`CREATE INDEX $name FOR (u:User) ON (u.email);`} />
 
 ## Index kinds
 
@@ -60,16 +52,12 @@ CREATE INDEX $name FOR (u:User) ON (u.email);
 
 Lookup indexes are catalog entries over labels or relationship types:
 
-```cypher
-CREATE LOOKUP INDEX node_labels FOR (n) ON EACH labels(n);
-CREATE LOOKUP INDEX rel_types FOR ()-[r]-() ON EACH type(r);
-```
+<QueryCodeBlock code={String.raw`CREATE LOOKUP INDEX node_labels FOR (n) ON EACH labels(n);
+CREATE LOOKUP INDEX rel_types FOR ()-[r]-() ON EACH type(r);`} />
 
 Composite RANGE indexes are accepted and shown in the catalog:
 
-```cypher
-CREATE INDEX person_age_country FOR (p:Person) ON (p.age, p.country);
-```
+<QueryCodeBlock code={String.raw`CREATE INDEX person_age_country FOR (p:Person) ON (p.age, p.country);`} />
 
 Current optimizer rewrites use single-property scopes. Keep composite
 indexes for catalog policy and future planner work rather than expecting
@@ -83,29 +71,25 @@ require an `indexConfig` map with:
 - `vector.dimensions` - integer dimension in `1..=4096`;
 - `vector.similarity_function` - `'cosine'` or `'euclidean'`.
 
-```cypher
-CREATE VECTOR INDEX movie_embedding
+<QueryCodeBlock code={String.raw`CREATE VECTOR INDEX movie_embedding
 FOR (m:Movie)
 ON (m.embedding)
 OPTIONS {indexConfig: {
-  `vector.dimensions`: 3,
-  `vector.similarity_function`: 'cosine'
+  \`vector.dimensions\`: 3,
+  \`vector.similarity_function\`: 'cosine'
 }};
 
 CREATE (:Movie {title: 'A', embedding: [1.0, 0.0, 0.0]::VECTOR<FLOAT32>(3)});
 CREATE (:Movie {title: 'B', embedding: [0.9, 0.1, 0.0]::VECTOR<FLOAT32>(3)});
 
 CALL db.index.vector.queryNodes('movie_embedding', 2, [1.0, 0.0, 0.0])
-YIELD node, score;
-```
+YIELD node, score;`} />
 
 The relationship procedure has the same shape but yields
 `relationship`:
 
-```cypher
-CALL db.index.vector.queryRelationships('rel_embedding', 10, $query)
-YIELD relationship, score;
-```
+<QueryCodeBlock code={String.raw`CALL db.index.vector.queryRelationships('rel_embedding', 10, $query)
+YIELD relationship, score;`} />
 
 `k` must be positive. The query argument can be a `VECTOR`, a
 `[...]::VECTOR<COORD>(DIM)` cast, a numeric list, or a parameter containing a vector.
@@ -126,26 +110,22 @@ Full-text indexes use `ON EACH [...]` and can cover multiple properties.
 Node full-text indexes may cover multiple labels; relationship
 full-text indexes may cover multiple relationship types:
 
-```cypher
-CREATE FULLTEXT INDEX article_search
+<QueryCodeBlock code={String.raw`CREATE FULLTEXT INDEX article_search
 FOR (a:Article|Note)
 ON EACH [a.title, a.body]
-OPTIONS {`fulltext.analyzer`: 'standard'};
+OPTIONS {\`fulltext.analyzer\`: 'standard'};
 
 CALL db.index.fulltext.queryNodes('article_search', 'graph search')
-YIELD node, score;
-```
+YIELD node, score;`} />
 
 Relationship full-text search yields `relationship`:
 
-```cypher
-CREATE FULLTEXT INDEX wrote_search
+<QueryCodeBlock code={String.raw`CREATE FULLTEXT INDEX wrote_search
 FOR ()-[r:WROTE]-()
 ON EACH [r.summary];
 
 CALL db.index.fulltext.queryRelationships('wrote_search', 'graph')
-YIELD relationship, score;
-```
+YIELD relationship, score;`} />
 
 Procedure calls return the yielded columns directly. The current
 analyzer tokenizes by lowercasing and splitting on
@@ -159,9 +139,7 @@ option, but index maintenance is currently synchronous.
 
 ## Inspect indexes
 
-```cypher
-SHOW INDEXES;
-```
+<QueryCodeBlock code={String.raw`SHOW INDEXES;`} />
 
 Rows contain:
 
@@ -180,39 +158,31 @@ Rows contain:
 
 Use a type filter when you only want one kind:
 
-```cypher
-SHOW RANGE INDEXES;
+<QueryCodeBlock code={String.raw`SHOW RANGE INDEXES;
 SHOW TEXT INDEXES;
 SHOW POINT INDEXES;
 SHOW LOOKUP INDEXES;
 SHOW VECTOR INDEXES;
 SHOW FULLTEXT INDEXES;
-SHOW ALL INDEXES;
-```
+SHOW ALL INDEXES;`} />
 
 The singular spelling also works:
 
-```cypher
-SHOW RANGE INDEX;
-```
+<QueryCodeBlock code={String.raw`SHOW RANGE INDEX;`} />
 
 Catalog output can be shaped with a `YIELD`-anchored pipeline:
 
-```cypher
-SHOW INDEXES
+<QueryCodeBlock code={String.raw`SHOW INDEXES
 YIELD name, type, entityType
 WHERE type = 'VECTOR'
 RETURN name
 ORDER BY name
-LIMIT 10;
-```
+LIMIT 10;`} />
 
 ## Drop an index
 
-```cypher
-DROP INDEX user_email;
-DROP INDEX maybe_missing IF EXISTS;
-```
+<QueryCodeBlock code={String.raw`DROP INDEX user_email;
+DROP INDEX maybe_missing IF EXISTS;`} />
 
 Dropping a missing index without `IF EXISTS` returns a stable
 GQLSTATUS-shaped error (`42N51`). Creating an index with a duplicate
@@ -228,22 +198,19 @@ Indexes owned by constraints cannot be dropped directly. Use
 Declared indexes can replace scan-and-filter plans with specialized
 operators:
 
-```cypher
-CREATE INDEX person_age FOR (p:Person) ON (p.age);
+<QueryCodeBlock code={String.raw`CREATE INDEX person_age FOR (p:Person) ON (p.age);
 CREATE TEXT INDEX person_name FOR (p:Person) ON (p.name);
-CREATE POINT INDEX place_location FOR (p:Place) ON (p.location);
-```
+CREATE POINT INDEX place_location FOR (p:Place) ON (p.location);`} />
 
 Inspect the plan with your binding's `explain` method or HTTP
 `POST /explain`. These queries should show the specialized scan names
 in the returned plan tree:
 
-```cypher
-MATCH (p:Person) WHERE p.age >= 30 AND p.age < 50 RETURN p
--- NodeByPropertyRangeScan
+<QueryCodeBlock code={String.raw`MATCH (p:Person) WHERE p.age >= 30 AND p.age < 50 RETURN p
+;// NodeByPropertyRangeScan
 
 MATCH (p:Person) WHERE p.name STARTS WITH 'Al' RETURN p
--- NodeByTextScan
+;// NodeByTextScan
 
 MATCH (p:Place)
 WHERE geo.within_bbox(
@@ -252,19 +219,16 @@ WHERE geo.within_bbox(
   {x: 100, y: 100}::POINT
 )
 RETURN p
--- NodeByPointScan
-```
+// NodeByPointScan`} />
 
 The same rewrite family exists for relationship scans when the pattern
 can be satisfied from the relationship index:
 
-```cypher
-CREATE INDEX knows_since FOR ()-[r:KNOWS]-() ON (r.since);
+<QueryCodeBlock code={String.raw`CREATE INDEX knows_since FOR ()-[r:KNOWS]-() ON (r.since);
 
 MATCH ()-[r:KNOWS]->()
 WHERE r.since > 2020
-RETURN r;
-```
+RETURN r;`} />
 
 The original predicate still runs after the index candidate set is
 produced. That keeps semantics correct for compound predicates and for

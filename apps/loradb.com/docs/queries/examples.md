@@ -1,519 +1,386 @@
 ---
 title: Cypher Query Examples for LoraDB
 sidebar_label: Examples
-description: A copy-paste tour of Cypher against LoraDB — create, match, filter, project, aggregate, path traversal, and mutation — organised by query shape rather than clause.
+description: Copy-paste Cypher examples that run against one seeded LoraDB playground graph.
 ---
 
 # Cypher Query Examples for LoraDB
 
-A copy-paste tour of LoraDB's Cypher surface, organised by query
-shape. Each section is a standalone recipe — read top-to-bottom to
-pick up the language, or jump straight to what you need.
+These examples are designed for the playground. Start with a fresh database,
+run the seed query once, then run any example on this page. The snippets avoid
+host-side parameters so they can execute directly in the browser.
 
 > Working through this for the first time? Try the guided version at
 > [**A Ten-Minute Tour**](../getting-started/tutorial) first.
 
 ## On this page
 
-- [Creating data](#creating-data)
+- [Seed graph](#seed-graph)
 - [Pattern matching](#pattern-matching)
 - [Filtering with WHERE](#filtering-with-where)
 - [Optional patterns](#optional-patterns)
 - [Aggregation](#aggregation)
-- [Parameters](#parameters)
+- [Parameter-shaped filters](#parameter-shaped-filters)
 - [Updating and deleting](#updating-and-deleting)
 - [CASE expressions](#case-expressions)
-- [Escaping with backticks](#escaping-with-backticks)
 - [Common patterns](#common-patterns)
-- [Realistic shapes](#realistic-shapes) — fully worked domain examples
+- [Domain shapes](#domain-shapes)
 
-## Creating data
+## Seed graph
 
-Before you can query a graph, you need one. [`CREATE`](./create) is the
-simplest way to write [nodes](../concepts/nodes) and
-[relationships](../concepts/relationships); relationships can only
-connect existing nodes, so we bind the endpoints with their labels and
-[properties](../concepts/properties) first.
+Run this once in an empty playground database. It creates people, companies,
+projects, tasks, stations, movies, and relationships between them.
 
-```cypher
-// Seed a tiny social graph
-CREATE (ada:Person   {name: 'Ada',   born: 1815})
-CREATE (grace:Person {name: 'Grace', born: 1906})
-CREATE (alan:Person  {name: 'Alan',  born: 1912})
-CREATE (ada)-[:INFLUENCED {decade: 1840}]->(alan)
-CREATE (grace)-[:KNOWS]->(alan)
-```
-
-Three `Person` nodes and two relationships. The `INFLUENCED` edge
-carries its own property (`decade`). `Person`, `INFLUENCED`, and `KNOWS`
-are created implicitly on first use — LoraDB has no separate
-`CREATE TABLE` step.
+<QueryCodeBlock code={String.raw`CREATE (alice:Person:User {id: 1, name: 'Alice', handle: 'alice', born: 1989, city: 'London', score: 1200, tier: 'bronze'})
+CREATE (bob:Person:User {id: 2, name: 'Bob', handle: 'bob', born: 1994, city: 'Berlin', score: 240, tier: 'bronze'})
+CREATE (carol:Person:User {id: 3, name: 'Carol', handle: 'carol', born: 1982, city: 'London', score: 80, tier: 'bronze'})
+CREATE (dave:Person:User {id: 4, name: 'Dave', handle: 'dave', born: 1996, city: 'Paris', score: 30, tier: 'bronze'})
+CREATE (eve:Person:User:Influencer {id: 5, name: 'Eve', handle: 'eve', born: 1991, city: 'Berlin', score: 500, tier: 'bronze'})
+CREATE (frank:Person {id: 6, name: 'Frank', handle: 'frank', born: 1978, city: 'London', score: 40})
+CREATE (alice)-[:KNOWS {since: 2015, strength: 5}]->(bob)
+CREATE (alice)-[:KNOWS {since: 2018, strength: 8}]->(carol)
+CREATE (bob)-[:KNOWS {since: 2019, strength: 4}]->(carol)
+CREATE (bob)-[:KNOWS {since: 2020, strength: 3}]->(dave)
+CREATE (carol)-[:KNOWS {since: 2017, strength: 6}]->(eve)
+CREATE (eve)-[:KNOWS {since: 2016, strength: 7}]->(frank)
+CREATE (alice)-[:FOLLOWS]->(carol)
+CREATE (alice)-[:FOLLOWS]->(eve)
+CREATE (bob)-[:FOLLOWS]->(alice)
+CREATE (carol)-[:FOLLOWS]->(frank)
+CREATE (dave)-[:FOLLOWS]->(alice)
+CREATE (frank)-[:FOLLOWS]->(bob)
+CREATE (music:Interest {name: 'Music'})
+CREATE (travel:Interest {name: 'Travel'})
+CREATE (sports:Interest {name: 'Sports'})
+CREATE (alice)-[:INTERESTED_IN {level: 'high'}]->(music)
+CREATE (alice)-[:INTERESTED_IN {level: 'medium'}]->(travel)
+CREATE (bob)-[:INTERESTED_IN {level: 'high'}]->(sports)
+CREATE (dave)-[:INTERESTED_IN {level: 'high'}]->(music)
+CREATE (eve)-[:INTERESTED_IN {level: 'high'}]->(travel)
+CREATE (acme:Company {name: 'Acme', founded: 2010})
+CREATE (contoso:Company {name: 'Contoso', founded: 2018})
+CREATE (alice)-[:WORKS_AT {since: 2018}]->(acme)
+CREATE (bob)-[:WORKS_AT {since: 2020}]->(acme)
+CREATE (carol)-[:WORKS_AT {since: 2015}]->(acme)
+CREATE (dave)-[:WORKS_AT {since: 2021}]->(contoso)
+CREATE (eve)-[:WORKS_AT {since: 2022}]->(contoso)
+CREATE (alpha:Project {name: 'Alpha', budget: 100000})
+CREATE (beta:Project {name: 'Beta', budget: 50000})
+CREATE (alice)-[:ASSIGNED_TO {role: 'lead'}]->(alpha)
+CREATE (bob)-[:ASSIGNED_TO {role: 'dev'}]->(alpha)
+CREATE (carol)-[:ASSIGNED_TO {role: 'lead'}]->(beta)
+CREATE (eve)-[:ASSIGNED_TO {role: 'dev'}]->(beta)
+CREATE (:Task {title: 'Fix login', status: 'done', priority: 'p1'})
+CREATE (:Task {title: 'Ship billing', status: 'pending', priority: 'p0'})
+CREATE (:Task {title: 'Archive logs', status: 'cancelled', priority: 'p2'})
+CREATE (ams:Station {name: 'Amsterdam', zone: 1})
+CREATE (utrecht:Station {name: 'Utrecht', zone: 1})
+CREATE (rotterdam:Station {name: 'Rotterdam', zone: 2})
+CREATE (denhaag:Station {name: 'Den Haag', zone: 2})
+CREATE (eindhoven:Station {name: 'Eindhoven', zone: 3})
+CREATE (ams)-[:ROUTE {distance: 40, duration: 25}]->(utrecht)
+CREATE (utrecht)-[:ROUTE {distance: 40, duration: 25}]->(ams)
+CREATE (ams)-[:ROUTE {distance: 60, duration: 40}]->(rotterdam)
+CREATE (rotterdam)-[:ROUTE {distance: 60, duration: 40}]->(ams)
+CREATE (utrecht)-[:ROUTE {distance: 55, duration: 35}]->(rotterdam)
+CREATE (rotterdam)-[:ROUTE {distance: 55, duration: 35}]->(utrecht)
+CREATE (rotterdam)-[:ROUTE {distance: 25, duration: 15}]->(denhaag)
+CREATE (denhaag)-[:ROUTE {distance: 25, duration: 15}]->(rotterdam)
+CREATE (utrecht)-[:ROUTE {distance: 100, duration: 60}]->(eindhoven)
+CREATE (eindhoven)-[:ROUTE {distance: 100, duration: 60}]->(utrecht)
+CREATE (matrix:Movie {title: 'Matrix', year: 1999, genre: 'sci-fi'})
+CREATE (inception:Movie {title: 'Inception', year: 2010, genre: 'sci-fi'})
+CREATE (amelie:Movie {title: 'Amelie', year: 2001, genre: 'drama'})
+CREATE (jaws:Movie {title: 'Jaws', year: 1975, genre: 'thriller'})
+CREATE (alice)-[:RATED {score: 5}]->(matrix)
+CREATE (alice)-[:RATED {score: 4}]->(inception)
+CREATE (alice)-[:RATED {score: 3}]->(amelie)
+CREATE (bob)-[:RATED {score: 5}]->(matrix)
+CREATE (bob)-[:RATED {score: 2}]->(jaws)
+CREATE (carol)-[:RATED {score: 4}]->(amelie)
+CREATE (carol)-[:RATED {score: 5}]->(inception)
+CREATE (:Scratch {name: 'temporary'})`} />
 
 ## Pattern matching
 
-[`MATCH`](./match) finds every way to satisfy a pattern. One row per
-match. The pattern `(p:Person)-[:KNOWS]->(other:Person)` reads as "a
-Person `p` with an outgoing `KNOWS` edge to another Person `other`."
+[`MATCH`](./match) finds every way to satisfy a pattern. This returns one row
+for each directed `KNOWS` relationship.
 
-```cypher
-MATCH (p:Person)-[:KNOWS]->(other:Person)
-RETURN p.name AS from, other.name AS to
-```
-
-Returns one row (`Grace → Alan`) in our seed graph. `AS from` and
-`AS to` rename the projected columns — useful when a consumer expects
-specific field names.
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[:KNOWS]->(other:Person)
+RETURN p.name AS person, other.name AS knows
+ORDER BY person, knows`} />
 
 ### Multi-hop
 
-```cypher
-MATCH (a:Person)-[:INFLUENCED]->(b)-[:KNOWS]->(c)
-RETURN a.name, b.name, c.name
-```
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)
+RETURN a.name AS start, b.name AS middle, c.name AS finish
+ORDER BY start, finish`} />
 
 ### Either direction
 
-```cypher
-MATCH (a:Person)-[:KNOWS]-(b)
-RETURN a.name, b.name
-```
-
-The undirected dash matches both `a -> b` and `a <- b` — see
-[Match → Relationship patterns](./match#relationship-patterns).
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[:KNOWS]-(b:Person)
+RETURN a.name AS person, b.name AS connected
+ORDER BY person, connected`} />
 
 ## Filtering with WHERE
 
-[`WHERE`](./where) runs after `MATCH` and can reference anything the
-match bound. [String operators](../functions/string#string-operators-in-where)
-like `STARTS WITH` and `CONTAINS` are case-sensitive — pass through
-[`string.lower`](../functions/string#tolower--toupper) / `string.upper` for
-case-insensitive checks.
+[`WHERE`](./where) runs after `MATCH` and can reference anything the match
+bound.
 
-```cypher
-MATCH (p:Person)
-WHERE p.born < 1900 AND p.name STARTS WITH 'A'
-RETURN p
-ORDER BY p.born ASC
-LIMIT 10
-```
-
-In our seed graph this finds Ada (born 1815), filters by name prefix,
-and returns up to 10 matches sorted oldest-first.
-[`ORDER BY` and `LIMIT`](./ordering) always run **after** projection.
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+WHERE p.born < 1990 AND p.name STARTS WITH 'A'
+RETURN p.name AS name, p.born AS born
+ORDER BY born ASC`} />
 
 ### IN list membership
 
-```cypher
-MATCH (p:Person)
-WHERE p.born IN [1815, 1906, 1912]
-RETURN p.name, p.born
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+WHERE p.city IN ['London', 'Berlin']
+RETURN p.name AS name, p.city AS city
+ORDER BY city, name`} />
 
-### NOT EXISTS (anti-join)
+### NOT EXISTS anti-join
 
-```cypher
-MATCH (p:Person)
-WHERE NOT EXISTS { (p)-[:INFLUENCED]->() }
-RETURN p.name AS uninfluential_person
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+WHERE NOT EXISTS { (p)-[:FOLLOWS]->() }
+RETURN p.name AS person_without_outgoing_follows`} />
 
 ## Optional patterns
 
-[`OPTIONAL MATCH`](./match#optional-match) is the graph equivalent of a
-left-join — if the pattern doesn't match, bound variables are set to
-`null` rather than dropping the row.
+[`OPTIONAL MATCH`](./match#optional-match) keeps the row and fills missing
+bindings with `null`.
 
-```cypher
-MATCH (p:Person {name: 'Ada'})
-OPTIONAL MATCH (p)-[:INFLUENCED]->(target)
-RETURN p.name, target.name
-```
-
-Useful when you want "every person, plus what they influenced if
-anything": people without `INFLUENCED` edges still appear, with
-`target.name` as `null`.
+<QueryCodeBlock code={String.raw`MATCH (p:Person {name: 'Eve'})
+OPTIONAL MATCH (p)-[:FOLLOWS]->(target:Person)
+RETURN p.name AS person, target.name AS follows`} />
 
 ## Aggregation
 
 Any non-aggregated column becomes an
-[implicit group key](./aggregation#grouping). Here, `p.name` groups rows
-per person; [`count(friend)`](../functions/aggregation#count) is the
-group size.
+[implicit group key](./aggregation#grouping).
 
-```cypher
-MATCH (p:Person)-[r:KNOWS]->(friend)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[:KNOWS]->(friend:Person)
 RETURN p.name AS person, count(friend) AS friends
-ORDER BY friends DESC
-```
-
-> **Why `count(friend)` not `count(*)`?** `count(*)` counts rows. If
-> `p` never matched, there'd be no row to count. `count(friend)` counts
-> non-null bindings — the distinction matters once you start mixing
-> [`OPTIONAL MATCH`](./match#optional-match) with aggregation.
+ORDER BY friends DESC, person`} />
 
 ### Collect into a list
 
-```cypher
-MATCH (p:Person)-[:INFLUENCED]->(target:Person)
-RETURN p.name AS influencer,
-       collect(target.name) AS influenced
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[:INTERESTED_IN]->(interest:Interest)
+RETURN p.name AS person, collect(interest.name) AS interests
+ORDER BY person`} />
 
 ### Multiple aggregates
 
-```cypher
-MATCH (p:Person)
-RETURN count(*)   AS people,
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+RETURN count(*) AS people,
        min(p.born) AS earliest,
        max(p.born) AS latest,
-       avg(p.born) AS mean_year
-```
+       avg(p.born) AS mean_year`} />
 
-## Parameters
+## Parameter-shaped filters
 
-[Parameters](./parameters) are the only way to safely mix untrusted
-input into a query. Unbound parameters resolve to `null`, which usually
-filters everything out — worth validating on the host side before you
-call `execute`.
+The playground does not expose host-side parameter binding yet, so this page
+uses literal values. In application code, replace the literals with `$name`,
+`$city`, or other parameters through your binding.
 
-```cypher
-MATCH (p:Person {name: $name})
-WHERE p.born >= $minYear
-RETURN p
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person {name: 'Alice'})
+WHERE p.city = 'London'
+RETURN p.name AS name, p.city AS city, p.score AS score`} />
 
-A variable that happens to be the same name as a parameter doesn't
-collide — `$name` always refers to the bound value, `p.name` always to
-the property.
-
-### List parameters
-
-```cypher
-MATCH (p:Person)
-WHERE p.born IN $years
-RETURN p
-```
-
-### Map parameters (patch update)
-
-```cypher
-MATCH (p:Person {name: $name})
-SET p += $patch
-RETURN p
-```
+See [Parameters](./parameters) for host API examples that bind `$name`,
+`$city`, and structured values safely.
 
 ## Updating and deleting
 
-[`SET`](./set-delete#set--properties) updates properties. `SET n.a = null`
-effectively removes the property. `SET n = {...}` replaces the full
-property [map](../data-types/lists-and-maps#maps), which is almost never
-what you want — use `SET n += {...}` to merge.
+[`SET`](./set-delete#set--properties) updates properties. `SET n += {...}`
+merges a patch into the existing property map.
 
-```cypher
-MATCH (p:Person {name: 'Ada'})
-SET p.born = 1815, p.field = 'Mathematics'
-RETURN p
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person {name: 'Alice'})
+SET p += {city: 'Oxford', score: 1300}
+RETURN p.name AS name, p.city AS city, p.score AS score`} />
 
-Deleting a node with relationships fails unless you use
-[`DETACH DELETE`](./set-delete#detach-delete), which removes the edges
-first:
+Deleting a node with relationships requires
+[`DETACH DELETE`](./set-delete#detach-delete). This example deletes only the
+disposable `Scratch` node from the seed data.
 
-```cypher
-MATCH (p:Person {name: 'Alan'})
-DETACH DELETE p
-```
-
-Once Alan is gone, so is the `Grace -> Alan` `KNOWS` edge.
+<QueryCodeBlock code={String.raw`MATCH (s:Scratch {name: 'temporary'})
+DETACH DELETE s`} />
 
 ## CASE expressions
 
-[`CASE`](./return-with#case-expressions) is LoraDB's conditional
-expression — the ternary / switch of Cypher. Two forms.
+[`CASE`](./return-with#case-expressions) is LoraDB's conditional expression.
 
-### Simple form — match on a value
+### Simple form
 
-```cypher
-MATCH (o:Order)
-RETURN o.id,
-       CASE o.status
-         WHEN 'paid'      THEN 'counted'
-         WHEN 'cancelled' THEN 'refunded'
+<QueryCodeBlock code={String.raw`MATCH (t:Task)
+RETURN t.title AS task,
+       CASE t.status
+         WHEN 'done'      THEN 'counted'
+         WHEN 'cancelled' THEN 'closed'
          WHEN 'pending'   THEN 'waiting'
          ELSE                  'unknown'
        END AS state
-```
+ORDER BY task`} />
 
-### Generic form — boolean per branch
+### Generic form
 
-```cypher
-MATCH (p:Product)
-RETURN p.name,
+<QueryCodeBlock code={String.raw`MATCH (u:User)
+RETURN u.name AS user,
        CASE
-         WHEN p.stock =  0 THEN 'out'
-         WHEN p.stock < 10 THEN 'low'
-         ELSE                   'ok'
-       END AS availability
-```
+         WHEN u.score >= 1000 THEN 'platinum'
+         WHEN u.score >=  100 THEN 'gold'
+         ELSE                       'bronze'
+       END AS tier
+ORDER BY tier, user`} />
 
 ### Conditional count (CASE inside count)
 
-`count(expr)` skips `null`, so a `CASE` with no `ELSE` is a clean way
-to express "count the rows that match this condition":
+`count(expr)` skips `null`, so a `CASE` without `ELSE` can count only the
+rows that match a condition.
 
-```cypher
-MATCH (r:Review)
-RETURN r.product,
-       count(CASE WHEN r.stars >= 4 THEN 1 END) AS positive,
-       count(CASE WHEN r.stars <= 2 THEN 1 END) AS negative,
-       count(*)                                 AS total
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[r:RATED]->(m:Movie)
+RETURN m.title AS movie,
+       count(CASE WHEN r.score >= 4 THEN 1 END) AS positive,
+       count(CASE WHEN r.score <= 2 THEN 1 END) AS negative,
+       count(*) AS total
+ORDER BY movie`} />
 
 ### Custom sort order
 
-```cypher
-MATCH (t:Task)
-RETURN t.title
+<QueryCodeBlock code={String.raw`MATCH (t:Task)
+RETURN t.title AS task, t.priority AS priority
 ORDER BY CASE t.priority
            WHEN 'p0' THEN 0
            WHEN 'p1' THEN 1
            WHEN 'p2' THEN 2
            ELSE           3
-         END
-```
+         END`} />
 
-Natural string order would give you `p0`, `p1`, `p2` by accident here
-— but the moment you introduce `urgent` or `low`, `CASE` is the only
-way to keep the order semantically meaningful.
+### In SET
 
-### In SET (compute-then-assign)
-
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 SET u.tier = CASE
                WHEN u.score >= 1000 THEN 'platinum'
                WHEN u.score >=  100 THEN 'gold'
                ELSE                       'bronze'
              END
-```
-
-See [RETURN → CASE](./return-with#case-expressions) for the full
-reference.
-
-## Escaping with backticks
-
-Identifiers that clash with keywords or contain special characters can
-be wrapped in backticks. Useful if you're importing data from a system
-that doesn't share Cypher's identifier rules.
-
-```cypher
-MATCH (`first person`:Person)
-RETURN `first person`.name
-```
+RETURN u.name AS user, u.tier AS tier
+ORDER BY user`} />
 
 ## Common patterns
 
 ### Count nodes by label
 
-```cypher
-MATCH (n:Person)
-RETURN count(*) AS people
-```
+<QueryCodeBlock code={String.raw`MATCH (n:Person)
+RETURN count(*) AS people`} />
 
 ### Group by a property
 
-```cypher
-MATCH (p:Person)
-RETURN p.born / 100 * 100 AS century, count(*) AS n
-ORDER BY century
-```
-
-Divide-then-multiply truncates to the century. One row per century.
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+RETURN p.city AS city, count(*) AS people
+ORDER BY people DESC, city`} />
 
 ### Distinct values
 
-```cypher
-MATCH (p:Person)
-RETURN DISTINCT p.born
-ORDER BY p.born
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+RETURN DISTINCT p.city AS city
+ORDER BY city`} />
 
 ### Filter before aggregating
 
-```cypher
-MATCH (p:Person)
-WHERE p.born >= 1900
-RETURN count(*) AS modern_people
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+WHERE p.born >= 1990
+RETURN count(*) AS born_since_1990`} />
 
-### Filter after aggregating (HAVING-style)
+### Filter after aggregating
 
 Cypher has no `HAVING`. Pipe through [`WITH`](./return-with#with), then
-filter:
+filter.
 
-```cypher
-MATCH (p:Person)-[:KNOWS]->(friend)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[:KNOWS]->(friend:Person)
 WITH p.name AS person, count(friend) AS friends
 WHERE friends >= 2
 RETURN person, friends
-```
+ORDER BY friends DESC`} />
 
 ### Top-N
 
-```cypher
-MATCH (p:Person)-[:KNOWS]->(friend)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[:KNOWS]->(friend:Person)
 RETURN p.name AS person, count(friend) AS friends
 ORDER BY friends DESC
-LIMIT 5
-```
+LIMIT 3`} />
 
-### Upsert (create-or-match)
+### Upsert with MERGE
 
-[`MERGE`](./unwind-merge#merge) finds the pattern or creates it —
-useful to avoid accidental duplicates.
+[`MERGE`](./unwind-merge#merge) finds a pattern or creates it.
 
-```cypher
-MERGE (u:User {id: $id})
-  ON MATCH  SET u.last_seen = temporal.timestamp()
-  ON CREATE SET u.created   = temporal.timestamp()
-RETURN u
-```
+<QueryCodeBlock code={String.raw`MERGE (u:User {id: 99})
+  ON MATCH SET u.name = 'Zoe'
+  ON CREATE SET u.name = 'Zoe', u.handle = 'zoe', u.score = 0
+RETURN u.id AS id, u.name AS name, u.handle AS handle`} />
 
-### Bulk load via UNWIND
+### Bulk load with UNWIND
 
-```cypher
-UNWIND $rows AS row
-CREATE (:Event {id: row.id, at: row.at::DATETIME, kind: row.kind})
-```
+<QueryCodeBlock code={String.raw`UNWIND ['click', 'signup', 'click'] AS kind
+CREATE (:Event {kind: kind})
+RETURN kind AS imported`} />
 
-One row per element of the `$rows` parameter list — see
-[`UNWIND`](./unwind-merge#unwind). The idiomatic way to import hundreds
-or thousands of records in a single query.
+### Shortest path between two stations
 
-### Shortest path between two nodes
-
-```cypher
-MATCH p = shortestPath(
-  (a:Station {name: $from})-[:ROUTE*]->(b:Station {name: $to})
+<QueryCodeBlock code={String.raw`MATCH p = shortestPath(
+  (from:Station {name: 'Amsterdam'})-[:ROUTE*]->(to:Station {name: 'Den Haag'})
 )
-RETURN path.length(p) AS hops, [n IN path.nodes(p) | n.name] AS via
-```
+RETURN path.length(p) AS hops, [n IN path.nodes(p) | n.name] AS route`} />
 
----
+## Domain shapes
 
-## Realistic shapes
+These examples use the same seed graph but read like application queries.
 
-A few fully-worked domain examples to stretch the patterns above into
-something that looks like a real application query.
+### People you might know
 
-### Users and posts (social)
-
-```cypher
-// 10 most-read posts this week, each with author
-MATCH (u:User)-[:WROTE]->(p:Post)
-WHERE p.published_at >= temporal.now() - 'P7D'::DURATION
-RETURN p.title   AS title,
-       p.views   AS views,
-       u.handle  AS author
-ORDER BY views DESC
-LIMIT 10
-```
-
-```cypher
-// Users who haven't posted in 30 days
-MATCH (u:User)
-WHERE NOT EXISTS {
-  (u)-[:WROTE]->(p:Post)
-  WHERE p.published_at >= temporal.now() - 'P30D'::DURATION
-}
-RETURN u.handle
-```
-
-### Orders and items (e-commerce)
-
-```cypher
-// Revenue per category, only where > $1k
-MATCH (o:Order)-[:CONTAINS]->(i:Item)-[:IN]->(c:Category)
-WHERE o.status = 'paid'
-WITH c.name AS category, sum(i.price * i.quantity) AS revenue
-WHERE revenue > 1000
-RETURN category, revenue
-ORDER BY revenue DESC
-```
-
-```cypher
-// Repeat buyers
-MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})
-WITH u, count(o) AS orders
-WHERE orders > 1
-RETURN u.email, orders
-ORDER BY orders DESC
-```
-
-### People and companies
-
-```cypher
-// Colleagues: same company, different people
-MATCH (a:Person)-[:WORKS_AT]->(c:Company)<-[:WORKS_AT]-(b:Person)
-WHERE id(a) < id(b)
-RETURN c.name, a.name, b.name
-```
-
-### Events and time buckets
-
-```cypher
-// Events per month for the past year
-MATCH (e:Event)
-WHERE e.at >= temporal.now() - 'P1Y'::DURATION
-RETURN temporal.truncate('month', e.at) AS month,
-       count(*)                      AS events
-ORDER BY month
-```
-
-### Locations and distance
-
-```cypher
-// Five cities closest to Amsterdam, with metres
-MATCH (ams:City {name: 'Amsterdam'}), (other:City)
-WHERE other.name <> 'Amsterdam'
-RETURN other.name,
-       geo.distance(ams.location, other.location) AS metres
-ORDER BY metres ASC
-LIMIT 5
-```
-
-### Tag clouds
-
-```cypher
-// Top 20 tags across posts
-MATCH (p:Post)-[:TAGGED]->(t:Tag)
-RETURN t.name, count(p) AS uses
-ORDER BY uses DESC
-LIMIT 20
-```
-
-### Graph walk (recommendations)
-
-```cypher
-// "People you might know" — second-degree connections
-MATCH (me:User {id: $id})-[:FOLLOWS]->(:User)-[:FOLLOWS]->(candidate:User)
+<QueryCodeBlock code={String.raw`MATCH (me:User {name: 'Alice'})-[:FOLLOWS]->(:User)-[:FOLLOWS]->(candidate:User)
 WHERE candidate <> me
   AND NOT EXISTS { (me)-[:FOLLOWS]->(candidate) }
-RETURN candidate.handle, count(*) AS shared_paths
-ORDER BY shared_paths DESC
-LIMIT 10
-```
+RETURN candidate.name AS candidate, count(*) AS shared_paths
+ORDER BY shared_paths DESC, candidate`} />
+
+### Colleagues at the same company
+
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[:WORKS_AT]->(company:Company)<-[:WORKS_AT]-(b:Person)
+WHERE id(a) < id(b)
+RETURN company.name AS company, a.name AS person_a, b.name AS person_b
+ORDER BY company, person_a, person_b`} />
+
+### Project staffing
+
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[assignment:ASSIGNED_TO]->(project:Project)
+RETURN project.name AS project,
+       collect(p.name) AS people,
+       count(assignment) AS team_size
+ORDER BY project`} />
+
+### Movie recommendations
+
+<QueryCodeBlock code={String.raw`MATCH (viewer:User {name: 'Bob'})-[:RATED]->(:Movie)<-[:RATED]-(peer:User)-[rating:RATED]->(movie:Movie)
+WHERE NOT EXISTS { (viewer)-[:RATED]->(movie) }
+RETURN movie.title AS movie, avg(rating.score) AS score
+ORDER BY score DESC, movie`} />
+
+### Route options
+
+<QueryCodeBlock code={String.raw`MATCH (from:Station {name: 'Amsterdam'})-[route:ROUTE]->(to:Station)
+RETURN to.name AS station,
+       route.distance AS distance_km,
+       route.duration AS duration_min
+ORDER BY duration_min ASC`} />
 
 ## See also
 
-- [**Queries → Overview**](../queries) — clause-by-clause reference.
-- [**Cheat sheet**](./cheat-sheet) — single-page quick reference.
-- [**Tutorial**](../getting-started/tutorial) — same language, guided
+- [**Queries -> Overview**](../queries) - clause-by-clause reference.
+- [**Cheat sheet**](./cheat-sheet) - single-page quick reference.
+- [**Tutorial**](../getting-started/tutorial) - same language, guided
   top-to-bottom.
-- [**Cookbook**](../cookbook) — scenario-driven recipes by domain
-  (social, e-commerce, events, geo).
-- [**Parameters**](./parameters) — typed parameter binding (the `$id`
-  used above).
-- [**Functions**](../functions/overview) — every built-in.
-- [**Concepts → Graph Model**](../concepts/graph-model) — the data
-  model these queries run against.
+- [**Cookbook**](../cookbook) - scenario-driven recipes by domain.
+- [**Parameters**](./parameters) - typed parameter binding.
+- [**Functions**](../functions/overview) - every built-in.
+- [**Concepts -> Graph Model**](../concepts/graph-model) - the data model.

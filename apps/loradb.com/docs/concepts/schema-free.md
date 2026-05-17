@@ -28,9 +28,7 @@ No declaration, no `ALTER TABLE`, no migration. The first write that
 mentions a new name brings it into existence; subsequent writes reuse
 it.
 
-```cypher
-CREATE (c:Country {name: 'NL', iso: 'NLD'})
-```
+<QueryCodeBlock code={String.raw`CREATE (c:Country {name: 'NL', iso: 'NLD'})`} />
 
 On an empty graph, this creates the label `Country` and the property
 keys `name` and `iso`. The next `MATCH (:Country)` will succeed.
@@ -39,10 +37,8 @@ keys `name` and `iso`. The next `MATCH (:Country)` will succeed.
 
 A `MATCH` for a label that was **never** created fails at analysis:
 
-```cypher
-MATCH (u:NeverWritten) RETURN u
--- Unknown label :NeverWritten
-```
+<QueryCodeBlock code={String.raw`MATCH (u:NeverWritten) RETURN u
+// Unknown label :NeverWritten`} />
 
 This is deliberate — typo-catching. The alternative (silently return
 zero rows) hides the bug until your integration tests reach
@@ -53,14 +49,12 @@ production. See [Troubleshooting → Semantic errors](../troubleshooting#semanti
 `CREATE`, [`MERGE`](../queries/unwind-merge#merge), and
 [`SET`](../queries/set-delete) accept any name without complaint.
 
-```cypher
-CREATE (:Spaceship {name: 'Rocinante', crew: 4})
--- "Spaceship" was never declared. Fine — it now exists.
+<QueryCodeBlock code={String.raw`CREATE (:Spaceship {name: 'Rocinante', crew: 4})
+;// "Spaceship" was never declared. Fine — it now exists.
 
 MATCH (s:Spaceship)
 SET s.engine = 'Epstein drive'
--- Adds a new property key; totally legal.
-```
+// Adds a new property key; totally legal.`} />
 
 This is good for quick iteration and bad for safety. There is no
 constraint preventing you from creating a second `:Spaceship` with
@@ -98,17 +92,13 @@ property simply yields `null` on access. See
 
 The two rules meet cleanly in this pattern:
 
-```cypher
-CREATE (:Spaceship {name: 'Rocinante'});
-MATCH (s:Spaceship) RETURN s;  -- works — :Spaceship now exists
-```
+<QueryCodeBlock code={String.raw`CREATE (:Spaceship {name: 'Rocinante'});
+MATCH (s:Spaceship) RETURN s;  // works — :Spaceship now exists`} />
 
 And break in this one:
 
-```cypher
--- Empty graph
-MATCH (s:NeverWritten) RETURN s;  -- analysis error on a populated graph
-```
+<QueryCodeBlock code={String.raw`// Empty graph
+MATCH (s:NeverWritten) RETURN s;  // analysis error on a populated graph`} />
 
 ## `MERGE` for idempotent writes
 
@@ -116,11 +106,9 @@ MATCH (s:NeverWritten) RETURN s;  -- analysis error on a populated graph
 pattern, creating only if missing. Add a uniqueness constraint when you
 also need the database to reject duplicate keys:
 
-```cypher
-MERGE (u:User {email: $email})
+<QueryCodeBlock code={String.raw`MERGE (u:User {email: $email})
   ON CREATE SET u.created = temporal.timestamp()
-  ON MATCH  SET u.last_seen = temporal.timestamp()
-```
+  ON MATCH  SET u.last_seen = temporal.timestamp()`} />
 
 It's an important building block for schema-free writes:
 
@@ -138,11 +126,9 @@ See [MERGE](../queries/unwind-merge#merge) for the full reference.
 Because a property's type is only enforced when written — not when
 declared — you occasionally need to verify it at query time:
 
-```cypher
-MATCH (r:Record)
+<QueryCodeBlock code={String.raw`MATCH (r:Record)
 WHERE type.of(r.id) = 'INTEGER'
-RETURN r
-```
+RETURN r`} />
 
 See [Functions → type conversion and checking](../functions/overview#type-conversion-and-checking)
 for `type.of`, `toInteger`, `toString`, and friends.

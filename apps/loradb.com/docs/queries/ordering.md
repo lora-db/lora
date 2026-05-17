@@ -37,11 +37,9 @@ to one. Negative or non-integer `SKIP` / `LIMIT` is a semantic error.
 
 ## Order a single column
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 RETURN n.name
-ORDER BY n.name ASC
-```
+ORDER BY n.name ASC`} />
 
 `ASC` is the default; `ORDER BY n.name` is equivalent.
 
@@ -61,47 +59,37 @@ ORDER BY n.name ASC
 
 Later keys break ties in earlier keys.
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p
-ORDER BY p.last_name ASC, p.first_name ASC, p.id ASC
-```
+ORDER BY p.last_name ASC, p.first_name ASC, p.id ASC`} />
 
 Mix directions freely:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN u
-ORDER BY u.country ASC, u.age DESC
-```
+ORDER BY u.country ASC, u.age DESC`} />
 
 ## Ordering by computed expression
 
 You can order on anything that evaluates to a comparable value.
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name, p.age
-ORDER BY p.age * -1 DESC            -- youngest first
-```
+ORDER BY p.age * -1 DESC            // youngest first`} />
 
 You can also order by an alias defined in the same `RETURN`:
 
-```cypher
-MATCH (u:User)-[:WROTE]->(:Post)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:WROTE]->(:Post)
 RETURN u.name AS author, count(*) AS posts
-ORDER BY posts DESC, author ASC
-```
+ORDER BY posts DESC, author ASC`} />
 
 ## Pagination — SKIP + LIMIT
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 RETURN n
 ORDER BY n.id
 SKIP  20
-LIMIT 10
-```
+LIMIT 10`} />
 
 - `SKIP 0` / no `SKIP` — start at the first row.
 - `LIMIT 0` — return zero rows.
@@ -111,13 +99,11 @@ LIMIT 10
 
 Parameters work identically:
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 RETURN n
 ORDER BY n.id
 SKIP $offset
-LIMIT $page_size
-```
+LIMIT $page_size`} />
 
 ### Stable pagination
 
@@ -125,13 +111,11 @@ LIMIT $page_size
 underlying data changes between pages. For stable pagination, sort by an
 immutable key and filter by "last seen":
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 WHERE n.id > $after
 RETURN n
 ORDER BY n.id
-LIMIT $page_size
-```
+LIMIT $page_size`} />
 
 Then use the last row's id as the next `$after`.
 
@@ -140,14 +124,12 @@ Then use the last row's id as the next `$after`.
 `ORDER BY` and `LIMIT` can attach to a [`WITH`](./return-with#with)
 stage. Only the surviving rows move forward.
 
-```cypher
-MATCH (u:User)-[:WROTE]->(p:Post)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:WROTE]->(p:Post)
 WITH u, count(p) AS posts
 ORDER BY posts DESC
 LIMIT 10
 MATCH (u)-[:FOLLOWS]->(other)
-RETURN u.name, count(other) AS following
-```
+RETURN u.name, count(other) AS following`} />
 
 This is how you express "top 10 posters, then each of their followings".
 
@@ -157,16 +139,14 @@ Use [`CASE`](./return-with#case-expressions) to project a sort key
 that doesn't match the data's natural ordering. Typical for ordering
 strings by business meaning rather than alphabet:
 
-```cypher
-MATCH (t:Task)
+<QueryCodeBlock code={String.raw`MATCH (t:Task)
 RETURN t.title, t.status
 ORDER BY CASE t.status
            WHEN 'urgent' THEN 0
            WHEN 'open'   THEN 1
            WHEN 'review' THEN 2
            ELSE               3
-         END, t.created_at DESC
-```
+         END, t.created_at DESC`} />
 
 One row per task, sorted urgent-first then newest-within-tier.
 
@@ -176,24 +156,20 @@ One row per task, sorted urgent-first then newest-within-tier.
 to sort must either be a projected column or a deterministic expression
 over projected columns.
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN DISTINCT p.city
-ORDER BY p.city
-```
+ORDER BY p.city`} />
 
 ## UNION + ORDER BY / LIMIT
 
 For [`UNION` / `UNION ALL`](./return-with#union--union-all),
 `ORDER BY` and `LIMIT` apply to the combined result:
 
-```cypher
-MATCH (n:User)    RETURN n.name AS name
+<QueryCodeBlock code={String.raw`MATCH (n:User)    RETURN n.name AS name
 UNION ALL
 MATCH (n:Product) RETURN n.name AS name
 ORDER BY name
-LIMIT 20
-```
+LIMIT 20`} />
 
 ## Nulls in ordering
 
@@ -203,65 +179,53 @@ reverse the sort direction, or guard with
 [`coalesce`](../functions/overview#type-conversion-and-checking) to
 change placement.
 
-```cypher
--- Nulls to the end of a DESC sort
+<QueryCodeBlock code={String.raw`// Nulls to the end of a DESC sort
 MATCH (p:Person)
 RETURN p.name, p.rank
 ORDER BY coalesce(p.rank, -2147483648) DESC
 
--- Nulls to the start of an ASC sort
+;// Nulls to the start of an ASC sort
 MATCH (p:Person)
 RETURN p.name, p.rank
-ORDER BY coalesce(p.rank, -2147483648) ASC
-```
+ORDER BY coalesce(p.rank, -2147483648) ASC`} />
 
 ## Common patterns
 
 ### Top-N
 
-```cypher
-MATCH (u:User)-[:WROTE]->(p:Post)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:WROTE]->(p:Post)
 RETURN u.name, count(p) AS posts
 ORDER BY posts DESC
-LIMIT 10
-```
+LIMIT 10`} />
 
 ### First row only
 
-```cypher
-MATCH (u:User {email: $email})
+<QueryCodeBlock code={String.raw`MATCH (u:User {email: $email})
 RETURN u
 ORDER BY u.created ASC
-LIMIT 1
-```
+LIMIT 1`} />
 
 ### Bottom-N (with tiebreaker)
 
-```cypher
-MATCH (p:Product)
+<QueryCodeBlock code={String.raw`MATCH (p:Product)
 RETURN p
 ORDER BY p.price ASC, p.id ASC
-LIMIT 5
-```
+LIMIT 5`} />
 
 ### Page N
 
-```cypher
-MATCH (n:Post)
+<QueryCodeBlock code={String.raw`MATCH (n:Post)
 RETURN n
 ORDER BY n.published_at DESC, n.id DESC
 SKIP ($page - 1) * $size
-LIMIT $size
-```
+LIMIT $size`} />
 
 ### Random sample (unstable)
 
-```cypher
-MATCH (n)
+<QueryCodeBlock code={String.raw`MATCH (n)
 RETURN n
 ORDER BY math.random()
-LIMIT 10
-```
+LIMIT 10`} />
 
 [`math.random()`](../functions/math#random) is re-evaluated per row — good for
 a rough sample, but don't rely on it for cryptographic randomness.
@@ -270,12 +234,10 @@ a rough sample, but don't rely on it for cryptographic randomness.
 
 ### Ordering by a nullable column with NULL present
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name, p.rank
 ORDER BY p.rank ASC
--- Rows where p.rank IS NULL appear at the end
-```
+// Rows where p.rank IS NULL appear at the end`} />
 
 ### Ordering by a type-mixed column
 
@@ -290,12 +252,10 @@ well-defined but unlikely to match your intent. Cast with
 `MATCH` clauses only run for the surviving rows. Use it to keep a
 multi-stage query bounded:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WITH u ORDER BY u.created DESC LIMIT 100
 MATCH (u)-[:WROTE]->(p)
-RETURN u.name, count(p)
-```
+RETURN u.name, count(p)`} />
 
 ### SKIP larger than result count
 

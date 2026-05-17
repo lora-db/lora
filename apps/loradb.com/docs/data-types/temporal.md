@@ -46,23 +46,19 @@ When in doubt, use `DateTime` for instants and `Date` for calendar days
 There are no bare temporal literals — cast a string or component map
 to the target temporal type:
 
-```cypher
-CREATE (e:Event {
+<QueryCodeBlock code={String.raw`CREATE (e:Event {
   title:    'Launch',
   at:       '2026-05-01T09:00:00Z'::DATETIME,
   day:      '2026-05-01'::DATE,
   clock:    '09:00:00'::LOCAL_TIME,
   runs_for: 'PT90M'::DURATION
-})
-```
+})`} />
 
 ### Component maps
 
-```cypher
-CREATE (d:Day {
+<QueryCodeBlock code={String.raw`CREATE (d:Day {
   on: {year: 2024, month: 1, day: 15}::DATE
-})
-```
+})`} />
 
 See more in [Temporal Functions → Construction and current time](../functions/temporal#construction-and-current-time).
 
@@ -78,12 +74,10 @@ parameters without writing query casts manually:
 
 Values of the **same** temporal type are totally ordered.
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE e.at >= temporal.now() AND e.at < temporal.now() + 'P7D'::DURATION
 RETURN e
-ORDER BY e.at
-```
+ORDER BY e.at`} />
 
 Different temporal types are **not** cross-comparable — convert first
 or compare in matching units.
@@ -94,13 +88,11 @@ or compare in matching units.
 - `DateTime + Duration` → `DateTime`
 - `DateTime - DateTime` → `Duration`
 
-```cypher
-RETURN '2024-01-15'::DATE + 'P30D'::DURATION
--- 2024-02-14
+<QueryCodeBlock code={String.raw`RETURN '2024-01-15'::DATE + 'P30D'::DURATION
+;// 2024-02-14
 
 RETURN '2025-01-01T00:00:00Z'::DATETIME - '2024-01-01T00:00:00Z'::DATETIME
--- P366D    (a Duration — 2024 is a leap year)
-```
+// P366D    (a Duration — 2024 is a leap year)`} />
 
 `Duration` is **calendar-aware**: `'P1M'::DURATION` is "one month"
 (variable length in days), not exactly 30 days. Use `'P30D'::DURATION`
@@ -108,10 +100,8 @@ for a fixed 30-day window.
 
 ## Component access
 
-```cypher
-WITH '2024-01-15T10:30:45Z'::DATETIME AS dt
-RETURN dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
-```
+<QueryCodeBlock code={String.raw`WITH '2024-01-15T10:30:45Z'::DATETIME AS dt
+RETURN dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second`} />
 
 For the full list see
 [Temporal Functions → component access](../functions/temporal#component-access).
@@ -138,65 +128,51 @@ without touching the tagged shape manually.
 
 ### Events in the next week
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE e.at >= temporal.now() AND e.at < temporal.now() + 'P7D'::DURATION
 RETURN e.title, e.at
-ORDER BY e.at
-```
+ORDER BY e.at`} />
 
 ### Bucketed by month
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 RETURN temporal.truncate('month', e.on) AS month, count(*) AS events
-ORDER BY month
-```
+ORDER BY month`} />
 
 ### Age from birthday
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name,
-       temporal.in_days(p.born, temporal.today()) / 365 AS approx_age_years
-```
+       temporal.in_days(p.born, temporal.today()) / 365 AS approx_age_years`} />
 
 ### Duration arithmetic
 
-```cypher
-CREATE (m:Meeting {
+<QueryCodeBlock code={String.raw`CREATE (m:Meeting {
   start: '2026-05-01T09:00:00Z'::DATETIME,
   len:   'PT1H30M'::DURATION
-})
+});
 
 MATCH (m:Meeting)
-RETURN m.start, m.start + m.len AS end
-```
+RETURN m.start, m.start + m.len AS end`} />
 
 ### Active in last 30 days
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE u.last_seen >= temporal.now() - 'P30D'::DURATION
-RETURN count(*) AS active_30d
-```
+RETURN count(*) AS active_30d`} />
 
 ### Group by year of birth
 
-```cypher
-MATCH (p:Person) WHERE p.born IS NOT NULL
+<QueryCodeBlock code={String.raw`MATCH (p:Person) WHERE p.born IS NOT NULL
 RETURN p.born.year AS year, count(*) AS people
-ORDER BY year
-```
+ORDER BY year`} />
 
 ### Window query — past N days
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE e.at >= temporal.now() - {days: $days}::DURATION
 RETURN e
-ORDER BY e.at DESC
-```
+ORDER BY e.at DESC`} />
 
 Bind `$days` as an integer from the host — the `{days: …}::DURATION`
 map cast accepts a variable, unlike the ISO string form
@@ -204,8 +180,7 @@ map cast accepts a variable, unlike the ISO string form
 
 ### Age-bracket bucketing
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 WITH p, temporal.in_days(p.born, temporal.today()) / 365 AS age_years
 RETURN CASE
          WHEN age_years < 18 THEN 'minor'
@@ -213,24 +188,21 @@ RETURN CASE
          ELSE                     'senior'
        END AS bracket,
        count(*) AS people
-ORDER BY people DESC
-```
+ORDER BY people DESC`} />
 
 Uses [`CASE`](../queries/return-with#case-expressions) to bucket a
 numeric age.
 
 ### Retention cohort
 
-```cypher
-MATCH (u:User)-[:SIGNED_UP_ON]->(d:Day)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:SIGNED_UP_ON]->(d:Day)
 WITH temporal.truncate('month', d.on) AS cohort, u
 OPTIONAL MATCH (u)-[:LOGGED_IN]->(l:Login)
 WHERE l.at >= temporal.now() - 'P30D'::DURATION
 RETURN cohort,
        count(DISTINCT u)                                                 AS total,
        count(DISTINCT CASE WHEN l IS NOT NULL THEN u END)                AS active_30d
-ORDER BY cohort
-```
+ORDER BY cohort`} />
 
 ## Edge cases
 
@@ -238,41 +210,33 @@ ORDER BY cohort
 
 `Duration` calendar-aware arithmetic handles month-end clamping:
 
-```cypher
-RETURN '2024-01-31'::DATE + 'P1M'::DURATION    -- 2024-02-29
-RETURN '2024-03-31'::DATE + 'P1M'::DURATION    -- 2024-04-30
-```
+<QueryCodeBlock code={String.raw`RETURN '2024-01-31'::DATE + 'P1M'::DURATION;    // 2024-02-29
+RETURN '2024-03-31'::DATE + 'P1M'::DURATION    // 2024-04-30`} />
 
 ### Timezone-aware comparison
 
 `DateTime` values in different offsets compare by the **same UTC
 instant** — ordering is timezone-safe.
 
-```cypher
-RETURN '2024-01-01T12:00:00Z'::DATETIME =
+<QueryCodeBlock code={String.raw`RETURN '2024-01-01T12:00:00Z'::DATETIME =
        '2024-01-01T13:00:00+01:00'::DATETIME
--- true
-```
+// true`} />
 
 ### Cross-type comparison
 
 `Date` and `DateTime` aren't directly comparable. Convert via
 component reconstruction:
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE {year: e.at.year, month: e.at.month, day: e.at.day}::DATE = '2024-01-15'::DATE
-RETURN e
-```
+RETURN e`} />
 
 ### `'P1M'::DURATION` vs `'P30D'::DURATION`
 
 Calendar-aware vs fixed:
 
-```cypher
-RETURN '2024-02-15'::DATE + 'P1M'::DURATION    -- 2024-03-15
-RETURN '2024-02-15'::DATE + 'P30D'::DURATION   -- 2024-03-16
-```
+<QueryCodeBlock code={String.raw`RETURN '2024-02-15'::DATE + 'P1M'::DURATION;    // 2024-03-15
+RETURN '2024-02-15'::DATE + 'P30D'::DURATION   // 2024-03-16`} />
 
 ### Storing as string
 

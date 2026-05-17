@@ -34,12 +34,10 @@ preceding [`MATCH`](./match) or [`UNWIND`](./unwind-merge#unwind).
 
 Return whole entities, bare properties, or any expression.
 
-```cypher
-MATCH (n) RETURN n
-MATCH (n) RETURN n.name, n.age
-MATCH (n) RETURN n.name AS userName
-MATCH (n) RETURN n.age * 2 AS doubled_age
-```
+<QueryCodeBlock code={String.raw`MATCH (n) RETURN n;
+MATCH (n) RETURN n.name, n.age;
+MATCH (n) RETURN n.name AS userName;
+MATCH (n) RETURN n.age * 2 AS doubled_age`} />
 
 Aliases (`AS`) set the column name in the host response. Reserve them
 for anything the consumer has to look up by key.
@@ -49,30 +47,24 @@ for anything the consumer has to look up by key.
 `RETURN *` projects every variable in scope. Handy for exploratory work,
 noisy for production queries.
 
-```cypher
-MATCH (a)-[r]->(b) RETURN *
-MATCH (a)-[r]->(b) RETURN *, a.name AS name
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r]->(b) RETURN *;
+MATCH (a)-[r]->(b) RETURN *, a.name AS name`} />
 
 ### Literal expressions
 
 Return constants, function calls, arithmetic:
 
-```cypher
-RETURN 1 + 2 AS three
-RETURN temporal.timestamp() AS now_ms
-RETURN temporal.now() AS now, temporal.today() AS today
-RETURN 'hello, ' + $name AS greeting
-```
+<QueryCodeBlock code={String.raw`RETURN 1 + 2 AS three;
+RETURN temporal.timestamp() AS now_ms;
+RETURN temporal.now() AS now, temporal.today() AS today;
+RETURN 'hello, ' + $name AS greeting`} />
 
 ### DISTINCT
 
 Deduplicate the output rows. Applies to the full row, not per-column.
 
-```cypher
-MATCH (n) RETURN DISTINCT n.city
-MATCH (p:Person)-[:WROTE]->(:Post) RETURN DISTINCT p
-```
+<QueryCodeBlock code={String.raw`MATCH (n) RETURN DISTINCT n.city;
+MATCH (p:Person)-[:WROTE]->(:Post) RETURN DISTINCT p`} />
 
 `DISTINCT` runs **before** [`ORDER BY`](./ordering) and is expensive on
 large inputs — prefer filtering with [`WHERE`](./where) first.
@@ -82,32 +74,28 @@ large inputs — prefer filtering with [`WHERE`](./where) first.
 Shape the final result set. Full reference:
 [Ordering & Pagination](./ordering).
 
-```cypher
-MATCH (n) RETURN n ORDER BY n.name ASC
-MATCH (n) RETURN n ORDER BY n.last ASC, n.first DESC
-MATCH (n) RETURN n ORDER BY n.name DESC SKIP 5 LIMIT 10
-MATCH (n) RETURN n LIMIT 1
-```
+<QueryCodeBlock code={String.raw`MATCH (n) RETURN n ORDER BY n.name ASC;
+MATCH (n) RETURN n ORDER BY n.last ASC, n.first DESC;
+MATCH (n) RETURN n ORDER BY n.name DESC SKIP 5 LIMIT 10;
+MATCH (n) RETURN n LIMIT 1`} />
 
 ### Map projection
 
 Shape a node or relationship into a map with only the keys you want —
 useful when the consumer doesn't need every property.
 
-```cypher
--- Pick a subset
+<QueryCodeBlock code={String.raw`// Pick a subset
 MATCH (n:User) RETURN n {.name, .age}
 
--- All properties (equivalent to `properties(n)`)
+;// All properties (equivalent to \`properties(n)\`)
 MATCH (n:User) RETURN n {.*}
 
--- Rename + compute
+;// Rename + compute
 MATCH (n:User) RETURN n {.name, score: n.age * 2}
 
--- Include related data
+;// Include related data
 MATCH (u:User)
-RETURN u {.name, posts: [(u)-[:WROTE]->(p) | p.title]}
-```
+RETURN u {.name, posts: [(u)-[:WROTE]->(p) | p.title]}`} />
 
 See also [Lists & Maps → Map projection](../data-types/lists-and-maps#map-projection).
 
@@ -122,29 +110,25 @@ Two forms.
 
 **Simple form** — match an input against successive values:
 
-```cypher
-MATCH (p:Product)
+<QueryCodeBlock code={String.raw`MATCH (p:Product)
 RETURN p.name,
        CASE p.tier
          WHEN 'gold'   THEN 1.2
          WHEN 'silver' THEN 1.1
          WHEN 'bronze' THEN 1.0
          ELSE                0.9
-       END AS multiplier
-```
+       END AS multiplier`} />
 
 **Generic form** — each branch is its own boolean expression:
 
-```cypher
-MATCH (o:Order)
+<QueryCodeBlock code={String.raw`MATCH (o:Order)
 RETURN o.id,
        CASE
          WHEN o.amount >= 1000 THEN 'large'
          WHEN o.amount >= 100  THEN 'medium'
          WHEN o.amount >= 10   THEN 'small'
          ELSE                       'tiny'
-       END AS bucket
-```
+       END AS bucket`} />
 
 The generic form is the one you'll reach for most often — it allows
 arbitrary predicates per branch, including
@@ -155,12 +139,10 @@ predicates.
 
 Omitting `ELSE` implicitly falls through to `null`:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN u.name,
        CASE WHEN u.score > 100 THEN 'pro' END AS tier
--- tier is null for users at or below 100
-```
+// tier is null for users at or below 100`} />
 
 #### Branches are short-circuit
 
@@ -173,33 +155,27 @@ Every branch — including the implicit `null` from a missing `ELSE` —
 can return any type. Nothing forces uniformity. Most callers prefer
 one type per `CASE` for predictable downstream shape:
 
-```cypher
-RETURN CASE WHEN $has_value THEN $value ELSE null END AS maybe
-```
+<QueryCodeBlock code={String.raw`RETURN CASE WHEN $has_value THEN $value ELSE null END AS maybe`} />
 
 #### In predicates and filters
 
 `CASE` is an expression, so it composes inside
 [`WHERE`](./where) and [`ORDER BY`](./ordering):
 
-```cypher
-MATCH (p:Product)
+<QueryCodeBlock code={String.raw`MATCH (p:Product)
 WHERE CASE
         WHEN p.on_sale THEN p.sale_price
         ELSE                p.price
       END < $max
-RETURN p
-```
+RETURN p`} />
 
-```cypher
-MATCH (t:Task)
+<QueryCodeBlock code={String.raw`MATCH (t:Task)
 RETURN t
 ORDER BY CASE t.status
            WHEN 'urgent' THEN 0
            WHEN 'open'   THEN 1
            ELSE               2
-         END, t.created_at
-```
+         END, t.created_at`} />
 
 That ordering pattern is how you express "custom priority order" —
 ASCII/byte order on the status string would give you `open`, `urgent`,
@@ -207,17 +183,13 @@ not what you want.
 
 #### In SET and aggregates
 
-```cypher
-MATCH (u:User)
-SET u.tier = CASE WHEN u.score >= 100 THEN 'pro' ELSE 'free' END
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)
+SET u.tier = CASE WHEN u.score >= 100 THEN 'pro' ELSE 'free' END`} />
 
-```cypher
-MATCH (r:Review)
+<QueryCodeBlock code={String.raw`MATCH (r:Review)
 RETURN r.product,
        count(CASE WHEN r.stars >= 4 THEN 1 END) AS positive,
-       count(CASE WHEN r.stars <= 2 THEN 1 END) AS negative
-```
+       count(CASE WHEN r.stars <= 2 THEN 1 END) AS negative`} />
 
 Combining `CASE` with [`count(expr)`](../functions/aggregation#count)
 is the idiomatic way to express "count rows that satisfy X" inside a
@@ -241,11 +213,9 @@ projected rows of one stage become the input rows of the next.
 
 The simplest `WITH` — pass the bindings through untouched:
 
-```cypher
-MATCH (a)-[r]->(b)
+<QueryCodeBlock code={String.raw`MATCH (a)-[r]->(b)
 WITH a, r, b
-RETURN a, r, b
-```
+RETURN a, r, b`} />
 
 That's pedagogical; a real query uses `WITH` to change something.
 
@@ -254,60 +224,50 @@ That's pedagogical; a real query uses `WITH` to change something.
 `WITH` can rename, compute, filter, aggregate — anything `RETURN` does
 at the end of the pipeline.
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WITH u, u.born AS year
 WHERE year < 1900
-RETURN u.name, year
-```
+RETURN u.name, year`} />
 
 ### HAVING-style filtering (WITH)
 
 Aggregates are not allowed in [`WHERE`](./where). Aggregate into a
 `WITH`, then filter:
 
-```cypher
-MATCH (p:Person)-[:WORKS_AT]->(c:Company)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[:WORKS_AT]->(c:Company)
 WITH c.name AS company, count(p) AS employees
 WHERE employees > 5
-RETURN company, employees
-```
+RETURN company, employees`} />
 
 See [Aggregation → HAVING-style filtering](./aggregation#5-filter-after-aggregating-having-style).
 
 ### Renaming and shaping
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 WITH n.name AS username
-RETURN username
-```
+RETURN username`} />
 
 ### Ordering inside a pipeline
 
 `ORDER BY` and `LIMIT` attach to a `WITH` stage just like they do to a
 final `RETURN`. Only surviving rows move forward.
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 WITH n
 ORDER BY n.age DESC
 LIMIT 3
 MATCH (n)-[:FOLLOWS]->(other)
-RETURN n.name, other.name
-```
+RETURN n.name, other.name`} />
 
 ### Chaining multiple WITH stages
 
-```cypher
-MATCH (o:Order)-[:CONTAINS]->(i:Item)
+<QueryCodeBlock code={String.raw`MATCH (o:Order)-[:CONTAINS]->(i:Item)
 WITH o, sum(i.price) AS total
 WHERE total > 100
 WITH o, total
 ORDER BY total DESC
 LIMIT 20
-RETURN o.id, total
-```
+RETURN o.id, total`} />
 
 Each stage's output columns become the next stage's bindings — any
 variable not projected is dropped.
@@ -317,11 +277,9 @@ variable not projected is dropped.
 A variable must be explicitly projected into `WITH` to survive. This is
 a common source of `Unknown variable` errors:
 
-```cypher
-MATCH (a:User)-[r:KNOWS]->(b)
-WITH a         -- r and b drop out of scope here
-RETURN a, r    -- error: r is not in scope
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User)-[r:KNOWS]->(b)
+WITH a         // r and b drop out of scope here
+RETURN a, r    // error: r is not in scope`} />
 
 Either pipe them through (`WITH a, r, b`) or don't bind them in the
 first place.
@@ -331,47 +289,39 @@ first place.
 Combine two result sets that share a column shape. `UNION`
 deduplicates; `UNION ALL` doesn't.
 
-```cypher
-MATCH (n:User)    RETURN n.name AS name
+<QueryCodeBlock code={String.raw`MATCH (n:User)    RETURN n.name AS name
 UNION
-MATCH (n:Product) RETURN n.name AS name
-```
+MATCH (n:Product) RETURN n.name AS name`} />
 
-```cypher
-MATCH (a:A) RETURN a.v AS v
+<QueryCodeBlock code={String.raw`MATCH (a:A) RETURN a.v AS v
 UNION ALL
 MATCH (b:B) RETURN b.v AS v
 UNION ALL
-MATCH (c:C) RETURN c.v AS v
-```
+MATCH (c:C) RETURN c.v AS v`} />
 
 ### ORDER BY / LIMIT across UNION
 
 Apply at the very end — they shape the combined result:
 
-```cypher
-MATCH (n:User)    RETURN n.name AS name
+<QueryCodeBlock code={String.raw`MATCH (n:User)    RETURN n.name AS name
 UNION ALL
 MATCH (n:Product) RETURN n.name AS name
 ORDER BY name
-LIMIT 10
-```
+LIMIT 10`} />
 
 ### Column shape must match
 
 Both sides must expose the same column names in the same order:
 
-```cypher
--- Valid
+<QueryCodeBlock code={String.raw`// Valid
 MATCH (n:User)    RETURN n.name AS name, 'user'    AS kind
 UNION ALL
 MATCH (n:Product) RETURN n.name AS name, 'product' AS kind
 
--- Invalid — column shape mismatch
+;// Invalid — column shape mismatch
 MATCH (n:User)    RETURN n.name, 'user'
 UNION
-MATCH (n:Product) RETURN n.name, n.price, 'product'
-```
+MATCH (n:Product) RETURN n.name, n.price, 'product'`} />
 
 ## Common patterns
 
@@ -379,50 +329,40 @@ MATCH (n:Product) RETURN n.name, n.price, 'product'
 
 Top-3 users by age, then project their friends:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WITH u ORDER BY u.age DESC LIMIT 3
 MATCH (u)-[:FOLLOWS]->(f)
-RETURN u.name, collect(f.name) AS following
-```
+RETURN u.name, collect(f.name) AS following`} />
 
 ### Count-and-rank
 
-```cypher
-MATCH (u:User)-[:WROTE]->(p:Post)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:WROTE]->(p:Post)
 WITH u, count(p) AS posts
 ORDER BY posts DESC
 LIMIT 10
-RETURN u.name, posts
-```
+RETURN u.name, posts`} />
 
 ### Project the top of a nested list
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name,
-       [(p)-[:KNOWS]->(f) | f.name][..5] AS first_five_friends
-```
+       [(p)-[:KNOWS]->(f) | f.name][..5] AS first_five_friends`} />
 
 ### Keep only rows that meet an aggregate
 
-```cypher
-MATCH (r:Review)
+<QueryCodeBlock code={String.raw`MATCH (r:Review)
 WITH r.product AS product, avg(r.stars) AS mean
 WHERE mean >= 4.5
 RETURN product, mean
-ORDER BY mean DESC
-```
+ORDER BY mean DESC`} />
 
 ### Using both RETURN DISTINCT and ORDER BY
 
 `DISTINCT` runs first — you can only order by projected columns.
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN DISTINCT p.city AS city
-ORDER BY city
-```
+ORDER BY city`} />
 
 ## Edge cases
 
@@ -438,21 +378,17 @@ Every `WITH` must project at least one thing — there's no "pass
 everything" shorthand. `WITH *` works and projects every in-scope
 variable:
 
-```cypher
-MATCH (a)-[r]->(b)
+<QueryCodeBlock code={String.raw`MATCH (a)-[r]->(b)
 WITH *
-RETURN a, r, b
-```
+RETURN a, r, b`} />
 
 ### Aggregation in WITH without a group key
 
 Aggregating with no non-aggregated column folds everything into one row:
 
-```cypher
-MATCH (o:Order)
+<QueryCodeBlock code={String.raw`MATCH (o:Order)
 WITH sum(o.amount) AS total
-RETURN total
-```
+RETURN total`} />
 
 ## See also
 

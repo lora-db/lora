@@ -150,38 +150,28 @@ Common mistakes:
 
 ### `MATCH` returns a cross-product
 
-```cypher
-MATCH (a:User), (b:User) RETURN a, b    -- N * N rows
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User), (b:User) RETURN a, b    // N * N rows`} />
 
 Use a relationship pattern to connect them:
 
-```cypher
-MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a, b
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a, b`} />
 
 Or scope both sides before the write:
 
-```cypher
-MATCH (a:User {id: $from}), (b:User {id: $to})
-CREATE (a)-[:FOLLOWS]->(b)
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User {id: $from}), (b:User {id: $to})
+CREATE (a)-[:FOLLOWS]->(b)`} />
 
 ### `SET` wiped my properties
 
 [`SET n = {…}`](./queries/set-delete#replace-all-properties-)
 **replaces** the property map. To update individual keys:
 
-```cypher
-SET n.prop = value         -- single key
-SET n += {newProp: value}  -- merge keys
-```
+<QueryCodeBlock code={String.raw`SET n.prop = value         // single key
+SET n += {newProp: value}  // merge keys`} />
 
 ### `DELETE` fails with "still has relationships"
 
-```cypher
-MATCH (n:User {id: 1}) DETACH DELETE n
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User {id: 1}) DETACH DELETE n`} />
 
 [`DETACH DELETE`](./queries/set-delete#detach-delete) removes the edges
 in one step.
@@ -190,11 +180,9 @@ in one step.
 
 A variable must be explicitly projected through `WITH`:
 
-```cypher
-MATCH (a)-[r:KNOWS]->(b)
-WITH a                     -- r and b are now out of scope
-RETURN a, r                -- error: Unknown variable r
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:KNOWS]->(b)
+WITH a                     // r and b are now out of scope
+RETURN a, r                // error: Unknown variable r`} />
 
 Either pass them through — `WITH a, r, b` — or don't bind them in the
 first place.
@@ -210,11 +198,9 @@ implicit group key. See
 `null` sorts last ASC / first DESC. Override with
 [`coalesce`](./functions/overview#type-conversion-and-checking):
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name, p.rank
-ORDER BY coalesce(p.rank, 2147483647) ASC
-```
+ORDER BY coalesce(p.rank, 2147483647) ASC`} />
 
 See [Ordering → nulls in ordering](./queries/ordering#nulls-in-ordering).
 
@@ -228,11 +214,9 @@ See [Ordering → nulls in ordering](./queries/ordering#nulls-in-ordering).
 Wrap in [`OPTIONAL MATCH`](./queries/match#optional-match) if you still
 want a row:
 
-```cypher
-MATCH (a:User {id: $from}), (b:User {id: $to})
+<QueryCodeBlock code={String.raw`MATCH (a:User {id: $from}), (b:User {id: $to})
 OPTIONAL MATCH p = shortestPath((a)-[:FOLLOWS*]->(b))
-RETURN a, b, path.length(p) AS hops
-```
+RETURN a, b, path.length(p) AS hops`} />
 
 ## Snapshots
 
@@ -477,17 +461,15 @@ variable.
 
 **Example:**
 
-```cypher
--- Broken
+<QueryCodeBlock code={String.raw`// Broken
 MATCH (a)-[r:KNOWS]->(b)
-WITH a                    -- r and b are now out of scope
-RETURN a, r, b            -- error
+WITH a                    // r and b are now out of scope
+RETURN a, r, b            // error
 
--- Fixed
+;// Fixed
 MATCH (a)-[r:KNOWS]->(b)
 WITH a, r, b
-RETURN a, r, b
-```
+RETURN a, r, b`} />
 
 See [WITH — losing variables](./queries/return-with#losing-variables-through-with).
 
@@ -508,17 +490,15 @@ variable explicitly.
 
 **Example:**
 
-```cypher
--- Broken — drops u
+<QueryCodeBlock code={String.raw`// Broken — drops u
 MATCH (u:User)-[:WROTE]->(p:Post)
 WITH count(p) AS posts
-RETURN u.name, posts          -- error: u is not in scope
+RETURN u.name, posts          // error: u is not in scope
 
--- Fixed
+;// Fixed
 MATCH (u:User)-[:WROTE]->(p:Post)
 WITH u, count(p) AS posts
-RETURN u.name, posts
-```
+RETURN u.name, posts`} />
 
 The fix is not `WITH *` — aggregates plus `WITH *` together cause
 different trouble, because the aggregate needs an explicit grouping
@@ -535,20 +515,18 @@ subsequent `MATCH` clauses only run for the surviving rows.
 
 **Example:**
 
-```cypher
--- "Only see friends of the top-3 oldest users" — works
+<QueryCodeBlock code={String.raw`// "Only see friends of the top-3 oldest users" — works
 MATCH (u:User)
 WITH u ORDER BY u.age DESC LIMIT 3
 MATCH (u)-[:FOLLOWS]->(other)
 RETURN u.name, other.name
 
--- Likely a bug — the LIMIT 3 applies too soon
+;// Likely a bug — the LIMIT 3 applies too soon
 MATCH (u:User)
 WITH u LIMIT 3
 MATCH (u)-[:FOLLOWS]->(other:User)
 WHERE other.active
-RETURN u, other
-```
+RETURN u, other`} />
 
 The second `MATCH` sees at most three users; if none of their
 follows are `active`, the whole query is empty. Push the filter up
@@ -559,13 +537,11 @@ into the first `WITH`, or don't `LIMIT` yet.
 Print-debug a pipeline by swapping the final `RETURN` for one that
 exposes intermediate state:
 
-```cypher
--- Inspect what WITH is emitting
+<QueryCodeBlock code={String.raw`// Inspect what WITH is emitting
 MATCH (u:User)
 WITH u.country AS country, count(*) AS n
 RETURN country, n
-ORDER BY n DESC
-```
+ORDER BY n DESC`} />
 
 Then paste the rows into a spreadsheet — spotting duplicate keys, a
 missing `country`, or an unexpected cardinality often takes five
@@ -589,17 +565,15 @@ default.
 
 **Example:**
 
-```cypher
--- Broken — users with score < 50 become null
+<QueryCodeBlock code={String.raw`// Broken — users with score < 50 become null
 MATCH (u:User)
 RETURN u.name,
        CASE WHEN u.score >= 50 THEN 'ok' END AS tier
 
--- Fixed
+;// Fixed
 MATCH (u:User)
 RETURN u.name,
-       CASE WHEN u.score >= 50 THEN 'ok' ELSE 'low' END AS tier
-```
+       CASE WHEN u.score >= 50 THEN 'ok' ELSE 'low' END AS tier`} />
 
 ### Null in the predicate
 
@@ -616,15 +590,13 @@ even though the condition wasn't explicitly false.
 or an explicit `IS NULL` branch placed **before** the numeric
 comparison.
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN u.name,
        CASE
          WHEN u.score IS NULL  THEN 'unknown'
          WHEN u.score >= 50    THEN 'ok'
          ELSE                       'low'
-       END AS tier
-```
+       END AS tier`} />
 
 ### Inconsistent branch types
 
@@ -639,13 +611,11 @@ need heterogeneous output, convert with `toString`.
 
 **Example:**
 
-```cypher
--- Mixed types — results downstream-unpredictable
+<QueryCodeBlock code={String.raw`// Mixed types — results downstream-unpredictable
 CASE WHEN n.score >= 50 THEN n.score ELSE 'unknown' END
 
--- Fixed
-CASE WHEN n.score >= 50 THEN toString(n.score) ELSE 'unknown' END
-```
+// Fixed
+CASE WHEN n.score >= 50 THEN toString(n.score) ELSE 'unknown' END`} />
 
 ### Simple vs generic form confusion
 
@@ -653,13 +623,11 @@ Simple form (`CASE x WHEN v THEN …`) compares `x` against values
 using equality. It can't express ranges or boolean predicates per
 branch — that's the generic form (`CASE WHEN pred THEN …`).
 
-```cypher
--- Doesn't work — comparison is hidden inside the simple form
+<QueryCodeBlock code={String.raw`// Doesn't work — comparison is hidden inside the simple form
 CASE p.age WHEN >= 18 THEN 'adult' ELSE 'minor' END
 
--- Use the generic form
-CASE WHEN p.age >= 18 THEN 'adult' ELSE 'minor' END
-```
+// Use the generic form
+CASE WHEN p.age >= 18 THEN 'adult' ELSE 'minor' END`} />
 
 ## WITH clause pitfalls
 
@@ -675,16 +643,14 @@ one row per group.
 
 **Example:**
 
-```cypher
--- "Orders per region" — one row total
+<QueryCodeBlock code={String.raw`// "Orders per region" — one row total
 MATCH (o:Order)
 RETURN count(*)
 
--- Fixed — one row per region
+;// Fixed — one row per region
 MATCH (o:Order)
 RETURN o.region, count(*)
-ORDER BY count(*) DESC
-```
+ORDER BY count(*) DESC`} />
 
 ### Implicit group key by accident
 
@@ -699,15 +665,13 @@ itself) alongside the aggregate, and each node became its own group.
 
 **Fix:** Drop the extra column.
 
-```cypher
--- Broken: returns one row per user
+<QueryCodeBlock code={String.raw`// Broken: returns one row per user
 MATCH (u:User)
 RETURN u, count(*)
 
--- Fixed: single total
+;// Fixed: single total
 MATCH (u:User)
-RETURN count(*)
-```
+RETURN count(*)`} />
 
 ### Aggregates in WHERE
 
@@ -718,18 +682,16 @@ no `HAVING` keyword.
 
 **Fix:** Pipe through `WITH` and filter after.
 
-```cypher
--- Broken
+<QueryCodeBlock code={String.raw`// Broken
 MATCH (u:User)-[:WROTE]->(p:Post)
 WHERE count(p) > 5
 RETURN u
 
--- Fixed (HAVING-style)
+;// Fixed (HAVING-style)
 MATCH (u:User)-[:WROTE]->(p:Post)
 WITH u, count(p) AS posts
 WHERE posts > 5
-RETURN u, posts
-```
+RETURN u, posts`} />
 
 See [WITH — HAVING-style filtering](./queries/return-with#having-style-filtering-with).
 
@@ -746,20 +708,18 @@ subsequent `MATCH` then re-emits rows in no particular order.
 **Fix:** Either `collect` in the sorted stage, or re-apply `ORDER
 BY` on the final `RETURN`.
 
-```cypher
--- Broken — final order is unspecified
+<QueryCodeBlock code={String.raw`// Broken — final order is unspecified
 MATCH (u:User)
 WITH u ORDER BY u.created DESC
 MATCH (u)-[:WROTE]->(p)
 RETURN u.name, count(p)
 
--- Fixed
+;// Fixed
 MATCH (u:User)
 WITH u ORDER BY u.created DESC
 MATCH (u)-[:WROTE]->(p)
 RETURN u.name, count(p)
-ORDER BY u.created DESC
-```
+ORDER BY u.created DESC`} />
 
 ## Aggregation pitfalls
 
@@ -777,17 +737,15 @@ counts it.
 
 **Example:**
 
-```cypher
--- Broken — users with no posts get 1
+<QueryCodeBlock code={String.raw`// Broken — users with no posts get 1
 MATCH (u:User)
 OPTIONAL MATCH (u)-[:WROTE]->(p:Post)
 RETURN u.name, count(*) AS posts
 
--- Fixed
+;// Fixed
 MATCH (u:User)
 OPTIONAL MATCH (u)-[:WROTE]->(p:Post)
-RETURN u.name, count(p) AS posts
-```
+RETURN u.name, count(p) AS posts`} />
 
 ### Missing DISTINCT in collect
 
@@ -800,15 +758,13 @@ child multiple times, once per ancestor.
 
 **Example:**
 
-```cypher
--- Broken — same city listed many times if the person visited it often
+<QueryCodeBlock code={String.raw`// Broken — same city listed many times if the person visited it often
 MATCH (p:Person)-[:VISITED]->(c:City)
 RETURN p.name, collect(c.name) AS cities
 
--- Fixed
+;// Fixed
 MATCH (p:Person)-[:VISITED]->(c:City)
-RETURN p.name, collect(DISTINCT c.name) AS cities
-```
+RETURN p.name, collect(DISTINCT c.name) AS cities`} />
 
 ### Aggregating after filtering vs after projection
 
@@ -823,18 +779,16 @@ the wrong stage.
 a pre-aggregate `WHERE`. If you want it *after* (HAVING-style),
 pipe through `WITH`.
 
-```cypher
--- Pre-aggregate filter (input rows only)
+<QueryCodeBlock code={String.raw`// Pre-aggregate filter (input rows only)
 MATCH (o:Order)
 WHERE o.status = 'paid'
 RETURN o.region, sum(o.amount) AS revenue
 
--- Post-aggregate filter (computed totals only)
+;// Post-aggregate filter (computed totals only)
 MATCH (o:Order)
 WITH o.region AS region, sum(o.amount) AS revenue
 WHERE revenue > 1000
-RETURN region, revenue
-```
+RETURN region, revenue`} />
 
 ### `stdev`/`percentile*` don't support DISTINCT
 
@@ -846,16 +800,14 @@ directly (see [Limitations](./limitations#aggregates)).
 
 **Fix:** `collect(DISTINCT …)`, `UNWIND`, then aggregate.
 
-```cypher
--- Broken
+<QueryCodeBlock code={String.raw`// Broken
 MATCH (r:Review) RETURN stdev(DISTINCT r.stars)
 
--- Fixed
+;// Fixed
 MATCH (r:Review)
 WITH collect(DISTINCT r.stars) AS xs
 UNWIND xs AS x
-RETURN stdev(x)
-```
+RETURN stdev(x)`} />
 
 ## Empty results and filtering issues
 
@@ -869,10 +821,8 @@ to `null`, which silently filters out every row.
 
 **Fix:** Audit parameter bindings on the host side before executing.
 
-```cypher
-MATCH (u:User) WHERE u.id = $id RETURN u
--- If $id is not bound, this returns zero rows without raising
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.id = $id RETURN u
+// If $id is not bound, this returns zero rows without raising`} />
 
 ### `= null` never matches
 
@@ -884,13 +834,11 @@ returns zero rows.
 
 **Fix:**
 
-```cypher
--- Broken
+<QueryCodeBlock code={String.raw`// Broken
 MATCH (n) WHERE n.optional = null RETURN n
 
--- Fixed
-MATCH (n) WHERE n.optional IS NULL RETURN n
-```
+;// Fixed
+MATCH (n) WHERE n.optional IS NULL RETURN n`} />
 
 ### Regex anchored by default
 
@@ -903,11 +851,9 @@ substring matching.
 All string operators (`=`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`)
 are case-sensitive. Normalise both sides with `string.lower`.
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE string.lower(u.email) = string.lower($candidate)
-RETURN u
-```
+RETURN u`} />
 
 ## Duplicate results
 
@@ -922,15 +868,13 @@ pattern matches each path independently.
 `RETURN`, or restructure with `EXISTS { }` when you only need
 existence.
 
-```cypher
--- May duplicate `c` if a is connected to many b
+<QueryCodeBlock code={String.raw`// May duplicate \`c\` if a is connected to many b
 MATCH (a:Person)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
 RETURN a, c
 
--- One row per distinct (a, c) pair
+;// One row per distinct (a, c) pair
 MATCH (a:Person)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
-RETURN DISTINCT a, c
-```
+RETURN DISTINCT a, c`} />
 
 ### Undirected match doubles symmetric pairs
 
@@ -941,11 +885,9 @@ that's symmetric in `a` / `b` matches each pair twice.
 
 **Fix:** Filter with `id(a) < id(b)` (or `<>`).
 
-```cypher
-MATCH (a:Person)-[:KNOWS]-(b:Person)
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[:KNOWS]-(b:Person)
 WHERE id(a) < id(b)
-RETURN a.name, b.name
-```
+RETURN a.name, b.name`} />
 
 ## Debugging workflow (step-by-step)
 
@@ -956,9 +898,7 @@ When a query misbehaves, follow this loop. Every step is cheap.
 Remove everything except the patterns. Check you get any rows at
 all.
 
-```cypher
-MATCH (u:User) RETURN count(*)
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User) RETURN count(*)`} />
 
 Zero? Your label is wrong or the graph is empty. See
 [Queries return empty results](#queries-return-empty-results).
@@ -967,11 +907,9 @@ Zero? Your label is wrong or the graph is empty. See
 
 Drop the `WHERE` and look at what the pattern actually binds.
 
-```cypher
-MATCH (u:User)-[:FOLLOWS]->(f)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:FOLLOWS]->(f)
 RETURN u.handle, f.handle
-LIMIT 20
-```
+LIMIT 20`} />
 
 Spot duplicates, unexpected relationships, or nulls here.
 
@@ -980,35 +918,31 @@ Spot duplicates, unexpected relationships, or nulls here.
 Add each `WHERE` clause back one at a time. Count rows at each step
 — the step that drops too many rows is the bug.
 
-```cypher
-MATCH (u:User)-[:FOLLOWS]->(f)
-WHERE u.active                  -- step 1
-RETURN count(*)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:FOLLOWS]->(f)
+WHERE u.active                  // step 1
+RETURN count(*);
 
 MATCH (u:User)-[:FOLLOWS]->(f)
 WHERE u.active
-  AND f.country = u.country     -- step 2
-RETURN count(*)
-```
+  AND f.country = u.country     // step 2
+RETURN count(*)`} />
 
 ### 4. Inspect intermediate WITH stages
 
 If your query has multiple stages, replace the final `RETURN` with
 one that exposes the `WITH` stage output. Do this per stage.
 
-```cypher
--- Instead of the full query:
+<QueryCodeBlock code={String.raw`// Instead of the full query:
 MATCH (u:User)-[:WROTE]->(p:Post)
 WITH u, count(p) AS posts
 WHERE posts > 5
 RETURN u.handle, posts
 
--- Inspect stage 1:
+;// Inspect stage 1:
 MATCH (u:User)-[:WROTE]->(p:Post)
 RETURN u.handle, count(p) AS posts
 ORDER BY posts DESC
-LIMIT 20
-```
+LIMIT 20`} />
 
 Does stage 1 emit what you think? If not, the bug is before the
 `WITH`.

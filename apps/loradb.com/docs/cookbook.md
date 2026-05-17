@@ -49,15 +49,13 @@ followed by somebody they do follow."
 
 #### Query
 
-```cypher
-MATCH (me:User {id: $id})-[:FOLLOWS]->(friend:User)-[:FOLLOWS]->(candidate:User)
+<QueryCodeBlock code={String.raw`MATCH (me:User {id: $id})-[:FOLLOWS]->(friend:User)-[:FOLLOWS]->(candidate:User)
 WHERE candidate <> me
   AND NOT EXISTS { (me)-[:FOLLOWS]->(candidate) }
 RETURN candidate.handle,
        count(*) AS shared_paths
 ORDER BY shared_paths DESC
-LIMIT 20
-```
+LIMIT 20`} />
 
 #### Explanation
 
@@ -96,11 +94,9 @@ of mutual friends — a useful ranking signal.
 
 #### Query
 
-```cypher
-MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(a)
+<QueryCodeBlock code={String.raw`MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(a)
 WHERE id(a) < id(b)
-RETURN a.handle, b.handle
-```
+RETURN a.handle, b.handle`} />
 
 #### Explanation
 
@@ -138,16 +134,14 @@ current follows already follow that account."
 
 #### Query
 
-```cypher
-MATCH (me:User {id: $id})-[:FOLLOWS]->(:User)-[:FOLLOWS]->(rec:User)
+<QueryCodeBlock code={String.raw`MATCH (me:User {id: $id})-[:FOLLOWS]->(:User)-[:FOLLOWS]->(rec:User)
 WHERE rec <> me
   AND NOT EXISTS { (me)-[:FOLLOWS]->(rec) }
 RETURN rec.handle,
        count(*) AS score,
        collect(DISTINCT rec.country)[..3] AS sample_countries
 ORDER BY score DESC
-LIMIT 10
-```
+LIMIT 10`} />
 
 #### Explanation
 
@@ -185,14 +179,12 @@ followers reach them within two hops."
 
 #### Query
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 OPTIONAL MATCH (u)<-[:FOLLOWS*1..2]-(reacher:User)
 RETURN u.handle,
        count(DISTINCT reacher) AS reach
 ORDER BY reach DESC
-LIMIT 20
-```
+LIMIT 20`} />
 
 #### Explanation
 
@@ -231,8 +223,7 @@ paths. Bounded at two hops to stay tractable.
 
 #### Query
 
-```cypher
-MATCH (o:Order)-[c:CONTAINS]->(p:Product)
+<QueryCodeBlock code={String.raw`MATCH (o:Order)-[c:CONTAINS]->(p:Product)
 WHERE o.status = 'paid'
   AND o.placed_at >= temporal.truncate('month', temporal.today())
 RETURN p.name,
@@ -240,8 +231,7 @@ RETURN p.name,
        sum(c.quantity)           AS units,
        count(DISTINCT o)         AS orders
 ORDER BY revenue DESC
-LIMIT 10
-```
+LIMIT 10`} />
 
 #### Explanation
 
@@ -279,14 +269,12 @@ many items), distinct from the total `units` sold.
 
 #### Query
 
-```cypher
-MATCH (anchor:Product {sku: $sku})<-[:CONTAINS]-(:Order)-[:CONTAINS]->(other:Product)
+<QueryCodeBlock code={String.raw`MATCH (anchor:Product {sku: $sku})<-[:CONTAINS]-(:Order)-[:CONTAINS]->(other:Product)
 WHERE other <> anchor
 RETURN other.sku,
        count(*) AS co_orders
 ORDER BY co_orders DESC
-LIMIT 20
-```
+LIMIT 20`} />
 
 #### Explanation
 
@@ -324,14 +312,12 @@ which the co-occurrence happened.
 
 #### Query
 
-```cypher
-MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})
 WITH u, count(o) AS orders
 WHERE orders > 1
 RETURN u.email,
        orders
-ORDER BY orders DESC
-```
+ORDER BY orders DESC`} />
 
 #### Explanation
 
@@ -367,8 +353,7 @@ order placed in the last 30 days."
 
 #### Query
 
-```cypher
-MATCH (u:User)-[:HAS_CART]->(c:Cart {status: 'open'})-[:CONTAINS]->(i:Item)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:HAS_CART]->(c:Cart {status: 'open'})-[:CONTAINS]->(i:Item)
 WITH u, c, count(i) AS items
 WHERE items > $n
   AND NOT EXISTS {
@@ -376,8 +361,7 @@ WHERE items > $n
     WHERE o.placed_at >= temporal.now() - 'P30D'::DURATION
   }
 RETURN u.email, c.id, items
-ORDER BY items DESC
-```
+ORDER BY items DESC`} />
 
 #### Explanation
 
@@ -416,8 +400,7 @@ for whether the event is sold out."
 
 #### Query
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE e.starts_at >= temporal.now()
 OPTIONAL MATCH (u:User)-[r:RSVP {status: 'yes'}]->(e)
 WITH e, count(u) AS going
@@ -430,8 +413,7 @@ RETURN e.id,
          WHEN going >= e.capacity * 0.8 THEN 'filling'
          ELSE 'open'
        END AS status
-ORDER BY e.starts_at
-```
+ORDER BY e.starts_at`} />
 
 #### Explanation
 
@@ -468,15 +450,13 @@ their host."
 
 #### Query
 
-```cypher
-MATCH (host:User)-[:HOSTS]->(e:Event)
+<QueryCodeBlock code={String.raw`MATCH (host:User)-[:HOSTS]->(e:Event)
 WHERE e.starts_at >= temporal.now()
   AND e.starts_at <  temporal.now() + {days: $horizon_days}::DURATION
 RETURN e.id,
        e.starts_at,
        host.handle
-ORDER BY e.starts_at
-```
+ORDER BY e.starts_at`} />
 
 #### Explanation
 
@@ -513,15 +493,13 @@ this year, list the events they shared."
 
 #### Query
 
-```cypher
-MATCH (a:User)-[:ATTENDED]->(e:Event)<-[:ATTENDED]-(b:User)
+<QueryCodeBlock code={String.raw`MATCH (a:User)-[:ATTENDED]->(e:Event)<-[:ATTENDED]-(b:User)
 WHERE id(a) < id(b)
   AND e.at >= temporal.truncate('year', temporal.today())
 WITH a, b, collect(DISTINCT e.id) AS shared
 WHERE value.size(shared) >= $n
 RETURN a.handle, b.handle, shared, value.size(shared) AS n_shared
-ORDER BY n_shared DESC
-```
+ORDER BY n_shared DESC`} />
 
 #### Explanation
 
@@ -559,8 +537,7 @@ during the last 30 days?"
 
 #### Query
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WITH temporal.truncate('month', u.created) AS cohort, u
 OPTIONAL MATCH (u)-[:LOGGED_IN]->(l:Login)
 WHERE l.at >= temporal.now() - 'P30D'::DURATION
@@ -569,8 +546,7 @@ RETURN cohort,
        count(DISTINCT CASE WHEN l IS NOT NULL THEN u END)  AS active_30d,
        toFloat(count(DISTINCT CASE WHEN l IS NOT NULL THEN u END))
          / count(DISTINCT u)                               AS retention
-ORDER BY cohort
-```
+ORDER BY cohort`} />
 
 #### Explanation
 
@@ -607,14 +583,12 @@ yields retention between 0 and 1.
 
 #### Query
 
-```cypher
-MATCH (v:Venue)
+<QueryCodeBlock code={String.raw`MATCH (v:Venue)
 WITH v, geo.distance(v.location, $here) AS metres
-WHERE metres IS NOT NULL            -- guard cross-SRID
+WHERE metres IS NOT NULL            // guard cross-SRID
 RETURN v.name, metres
 ORDER BY metres
-LIMIT 10
-```
+LIMIT 10`} />
 
 #### Explanation
 
@@ -649,13 +623,11 @@ returns `null`.
 
 #### Query
 
-```cypher
-MATCH (c:City)
+<QueryCodeBlock code={String.raw`MATCH (c:City)
 WHERE c.location.latitude  >= $s AND c.location.latitude  <= $n
   AND c.location.longitude >= $w AND c.location.longitude <= $e
 RETURN c.name, c.location.latitude AS lat, c.location.longitude AS lon
-ORDER BY lat
-```
+ORDER BY lat`} />
 
 #### Explanation
 
@@ -690,16 +662,14 @@ index for hot location filters, and keep the component-level `>=` /
 
 #### Query
 
-```cypher
-MATCH (s:Shop)
+<QueryCodeBlock code={String.raw`MATCH (s:Shop)
 WITH s.category AS category, s, geo.distance(s.location, $here) AS metres
 ORDER BY metres ASC
 WITH category, collect({s: s, metres: metres})[0] AS nearest
 RETURN category,
        nearest.s.name AS name,
        nearest.metres AS metres
-ORDER BY metres
-```
+ORDER BY metres`} />
 
 #### Explanation
 
@@ -732,13 +702,11 @@ group-level "pick one" idiom — LoraDB has no window functions.
 
 #### Query
 
-```cypher
-MATCH (a:Sensor), (b:Sensor)
+<QueryCodeBlock code={String.raw`MATCH (a:Sensor), (b:Sensor)
 WHERE id(a) < id(b)
   AND geo.distance(a.location, b.location) < 500
 RETURN a.id, b.id, geo.distance(a.location, b.location) AS metres
-ORDER BY metres
-```
+ORDER BY metres`} />
 
 #### Explanation
 
@@ -775,12 +743,10 @@ pair duplicates.
 
 #### Query
 
-```cypher
-MATCH (d:Doc)
+<QueryCodeBlock code={String.raw`MATCH (d:Doc)
 RETURN d.id AS id, d.title AS title
 ORDER BY vector.similarity(d.embedding, $query) DESC
-LIMIT 10
-```
+LIMIT 10`} />
 
 Pass `$query` either as a tagged vector (`[...]::VECTOR<FLOAT32>(384)`
 on the host) or as a plain numeric list — both are accepted by the
@@ -827,15 +793,13 @@ entity names in the result."
 
 #### Query
 
-```cypher
-MATCH (d:Doc)
+<QueryCodeBlock code={String.raw`MATCH (d:Doc)
 WITH d, vector.similarity(d.embedding, $query) AS score
 MATCH (d)-[:MENTIONS]->(e:Entity)
 WHERE e.type = $entity_type
 RETURN d.id, d.title, score, collect(e.name) AS entities
 ORDER BY score DESC
-LIMIT 5
-```
+LIMIT 5`} />
 
 #### Explanation
 

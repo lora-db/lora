@@ -21,8 +21,7 @@ Constraints are checked in two places:
 
 Every constraint needs a name:
 
-```cypher
-CREATE CONSTRAINT user_email
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT user_email
 FOR (u:User)
 REQUIRE u.email IS UNIQUE;
 
@@ -40,24 +39,19 @@ REQUIRE o.ownershipId IS RELATIONSHIP KEY;
 
 CREATE CONSTRAINT movie_title
 FOR (m:Movie)
-REQUIRE m.title IS :: STRING;
-```
+REQUIRE m.title IS :: STRING;`} />
 
 Use `IF NOT EXISTS` to make creation idempotent:
 
-```cypher
-CREATE CONSTRAINT user_email IF NOT EXISTS
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT user_email IF NOT EXISTS
 FOR (u:User)
-REQUIRE u.email IS UNIQUE;
-```
+REQUIRE u.email IS UNIQUE;`} />
 
 Constraint names may also come from a string parameter:
 
-```cypher
-CREATE CONSTRAINT $name
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT $name
 FOR (u:User)
-REQUIRE u.email IS UNIQUE;
-```
+REQUIRE u.email IS UNIQUE;`} />
 
 ## Constraint Kinds
 
@@ -72,27 +66,22 @@ REQUIRE u.email IS UNIQUE;
 Composite uniqueness and key constraints must wrap the property list in
 parentheses:
 
-```cypher
-CREATE CONSTRAINT order_line
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT order_line
 FOR ()-[r:LINE_ITEM]-()
-REQUIRE (r.orderId, r.lineNo) IS UNIQUE;
-```
+REQUIRE (r.orderId, r.lineNo) IS UNIQUE;`} />
 
 Existence constraints are single-property only:
 
-```cypher
-CREATE CONSTRAINT published_at
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT published_at
 FOR (p:Post)
-REQUIRE p.publishedAt IS NOT NULL;
-```
+REQUIRE p.publishedAt IS NOT NULL;`} />
 
 ## Property Types
 
 Property type constraints accept scalar types, lists with non-null
 elements, vectors, and closed unions:
 
-```cypher
-CREATE CONSTRAINT movie_released
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT movie_released
 FOR (m:Movie)
 REQUIRE m.released IS :: DATE;
 
@@ -106,8 +95,7 @@ REQUIRE d.embedding IS :: VECTOR<FLOAT32>(1536);
 
 CREATE CONSTRAINT tagline
 FOR (m:Movie)
-REQUIRE m.tagline IS :: STRING | LIST<STRING NOT NULL>;
-```
+REQUIRE m.tagline IS :: STRING | LIST<STRING NOT NULL>;`} />
 
 Supported scalar type names are `BOOLEAN`, `STRING`, `INTEGER`,
 `FLOAT`, `DATE`, `LOCAL TIME`, `ZONED TIME`, `LOCAL DATETIME`,
@@ -120,9 +108,7 @@ type.
 
 ## Inspect Constraints
 
-```cypher
-SHOW CONSTRAINTS;
-```
+<QueryCodeBlock code={String.raw`SHOW CONSTRAINTS;`} />
 
 Rows contain:
 
@@ -139,21 +125,17 @@ Rows contain:
 `SHOW CONSTRAINTS` accepts the same `YIELD`-anchored catalog pipeline
 as `SHOW INDEXES`:
 
-```cypher
-SHOW CONSTRAINTS
+<QueryCodeBlock code={String.raw`SHOW CONSTRAINTS
 YIELD name, type
 WHERE type = 'NODE_PROPERTY_UNIQUENESS'
 RETURN name
-ORDER BY name;
-```
+ORDER BY name;`} />
 
 ## Drop Constraints
 
-```cypher
-DROP CONSTRAINT user_email;
+<QueryCodeBlock code={String.raw`DROP CONSTRAINT user_email;
 DROP CONSTRAINT maybe_missing IF EXISTS;
-DROP CONSTRAINT $name;
-```
+DROP CONSTRAINT $name;`} />
 
 Uniqueness and key constraints own a backing `RANGE` index with the
 same name. Drop the constraint, not the backing index; direct
@@ -163,14 +145,12 @@ same name. Drop the constraint, not the backing index; direct
 
 Constraints are enforced for matching writes:
 
-```cypher
-CREATE CONSTRAINT user_email
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT user_email
 FOR (u:User)
 REQUIRE u.email IS UNIQUE;
 
 CREATE (:User {email: 'ada@example.com'});
-CREATE (:User {email: 'ada@example.com'}); -- rejected
-```
+CREATE (:User {email: 'ada@example.com'}); // rejected`} />
 
 Enforcement covers node and relationship creation, property updates,
 property replacement through `SET n = {...}`, property removal, and

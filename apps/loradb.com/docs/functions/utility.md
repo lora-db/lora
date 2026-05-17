@@ -20,12 +20,10 @@ validated before execution, and most invalid or missing inputs return
 | `cast.*` | `cast.to(x, TYPE)`, `cast.try(x, TYPE)`, `cast.can(x, TYPE)` |
 | `value.*` | `value.size(x)`, `value.keys(x)`, `value.properties(x)`, `value.reverse(x)`, `value.coalesce(a, b, ...)`, `value.is_null(x)`, `value.is_not_null(x)`, `value.id(x)` |
 
-```cypher
-RETURN type.of([1, 2, 3])              -- 'LIST<INTEGER>'
-RETURN type.is('2026-05-01'::DATE, DATE) -- true
-RETURN cast.try($maybe_int, INTEGER)   -- null if conversion fails
-RETURN value.coalesce(null, 'fallback') -- 'fallback'
-```
+<QueryCodeBlock code={String.raw`RETURN type.of([1, 2, 3]);              // 'LIST<INTEGER>'
+RETURN type.is('2026-05-01'::DATE, DATE); // true
+RETURN cast.try($maybe_int, INTEGER);   // null if conversion fails
+RETURN value.coalesce(null, 'fallback') // 'fallback'`} />
 
 Prefer `value::TYPE`, `CAST(value AS TYPE)`, and
 `TRY_CAST(value AS TYPE)` in handwritten query text. The function forms
@@ -41,13 +39,11 @@ assembled as an expression.
 | `path.*` | `path.nodes(p)`, `path.edges(p)`, `path.length(p)`, `path.first(p)`, `path.last(p)` |
 | `value.*` | `value.id(x)`, `value.keys(x)`, `value.properties(x)` for node, relationship, and map inputs |
 
-```cypher
-MATCH p = (a:Person)-[r:KNOWS]->(b:Person)
+<QueryCodeBlock code={String.raw`MATCH p = (a:Person)-[r:KNOWS]->(b:Person)
 RETURN node.labels(a),
        edge.type(r),
        path.length(p),
-       path.nodes(p)
-```
+       path.nodes(p)`} />
 
 The familiar Cypher aliases `id`, `labels`, `type`, `keys`,
 `properties`, and `length` resolve to these canonical helpers.
@@ -61,11 +57,9 @@ The familiar Cypher aliases `id`, `labels`, `type`, `keys`,
 | `text.phonetic(s, algorithm)` | Phonetic key |
 | `text.phonetic_match(a, b, algorithm)` | Phonetic equality predicate |
 
-```cypher
-RETURN text.distance('kitten', 'sitting', 'levenshtein') -- 3
-RETURN text.similarity('lora', 'loradb', 'jaro_winkler')
-RETURN text.phonetic_match('Smith', 'Smyth', 'soundex')  -- true
-```
+<QueryCodeBlock code={String.raw`RETURN text.distance('kitten', 'sitting', 'levenshtein'); // 3
+RETURN text.similarity('lora', 'loradb', 'jaro_winkler');
+RETURN text.phonetic_match('Smith', 'Smyth', 'soundex')  // true`} />
 
 Supported distance metrics are `levenshtein`, `damerau`, and `hamming`.
 Supported similarity metrics are `levenshtein`, `jaro`, `jaro_winkler`,
@@ -78,12 +72,10 @@ and `sorensen_dice`. The current phonetic algorithm is `soundex`.
 | `number.*` | `number.format(n[, precision[, thousands]])`, `number.to_base(n, radix)`, `number.from_base(s, radix)`, `number.to_roman(n)`, `number.from_roman(s)`, `number.is_integer(n)`, `number.is_even(n)`, `number.is_odd(n)`, `number.is_positive(n)`, `number.is_negative(n)`, `number.is_zero(n)`, `number.is_nan(n)`, `number.is_finite(n)`, `number.is_infinite(n)`, `number.bitop(a, op, b)` |
 | `bits.*` | `bits.and(a, b)`, `bits.or(a, b)`, `bits.xor(a, b)`, `bits.shift_left(a, b)`, `bits.shift_right(a, b)`, `bits.not(a)` |
 
-```cypher
-RETURN number.format(12345.678, 2, ',') -- '12,345.68'
-RETURN number.to_roman(1994)            -- 'MCMXCIV'
-RETURN bits.and(12, 10)                 -- 8
-RETURN bits.shift_left(3, 2)            -- 12
-```
+<QueryCodeBlock code={String.raw`RETURN number.format(12345.678, 2, ','); // '12,345.68'
+RETURN number.to_roman(1994);            // 'MCMXCIV'
+RETURN bits.and(12, 10);                 // 8
+RETURN bits.shift_left(3, 2)            // 12`} />
 
 `bits.*` operates on integers. `number.bitop` accepts operation strings
 such as `'and'`, `'or'`, `'xor'`, `'shl'`, `'shr'`, and `'not'`; prefer
@@ -98,12 +90,10 @@ the named `bits.*` forms in new queries.
 | `uuid.*` | `uuid.new()`, `uuid.from_string(s)`, `uuid.is_valid(s)` |
 | `json.*` | `json.encode(x[, pretty])`, `json.decode(s)`, `json.path(x, path)` |
 
-```cypher
-RETURN bytes.base64_encode('lora')       -- 'bG9yYQ=='
-RETURN crypto.blake3('lora')             -- hex digest string
-RETURN uuid.is_valid(uuid.new())         -- true
-RETURN json.path(json.decode('{"a":[10]}'), '$.a[0]') -- 10
-```
+<QueryCodeBlock code={String.raw`RETURN bytes.base64_encode('lora');       // 'bG9yYQ=='
+RETURN crypto.blake3('lora');             // hex digest string
+RETURN uuid.is_valid(uuid.new());         // true
+RETURN json.path(json.decode('{"a":[10]}'), '$.a[0]') // 10`} />
 
 `bytes.compress` and `bytes.decompress` support `gzip` and `deflate`.
 `json.encode` supports scalar, list, map, and temporal values that can

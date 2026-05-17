@@ -30,11 +30,9 @@ never deduplicates. For upsert semantics use
 
 The simplest `CREATE` — one node, optional labels, optional property map.
 
-```cypher
-CREATE (n:User {name: 'Alice', age: 32}) RETURN n
-CREATE (n:User:Admin {name: 'Bob'})       RETURN n
-CREATE (n:TempOnly)                       -- no properties, no return
-```
+<QueryCodeBlock code={String.raw`CREATE (n:User {name: 'Alice', age: 32}) RETURN n;
+CREATE (n:User:Admin {name: 'Bob'})       RETURN n;
+CREATE (n:TempOnly)                       // no properties, no return`} />
 
 Labels are added to the node as-is. Property values follow the standard
 [data-type rules](../data-types/overview).
@@ -43,13 +41,11 @@ Labels are added to the node as-is. Property values follow the standard
 
 Comma-separated patterns:
 
-```cypher
-CREATE
+<QueryCodeBlock code={String.raw`CREATE
   (ada:Person   {name: 'Ada',   born: 1815}),
   (grace:Person {name: 'Grace', born: 1906}),
   (alan:Person  {name: 'Alan',  born: 1912})
-RETURN ada, grace, alan
-```
+RETURN ada, grace, alan`} />
 
 Variables (`ada`, `grace`, …) stay in scope for the rest of the query —
 useful if you want to wire them up with a relationship immediately
@@ -61,15 +57,13 @@ Properties accept every
 [supported data type](../data-types/overview), including
 [temporals](../data-types/temporal) and [points](../data-types/spatial):
 
-```cypher
-CREATE (c:City {
+<QueryCodeBlock code={String.raw`CREATE (c:City {
   name:       'Amsterdam',
   population: 918000,
   tags:       ['capital', 'port'],
   founded:    '1275-10-27'::DATE,
   location:   {latitude: 52.37, longitude: 4.89}::POINT
-})
-```
+})`} />
 
 ## Relationships
 
@@ -81,11 +75,9 @@ bound by an earlier [`MATCH`](./match), or created inline in the same
 
 Look up both endpoints, then add the edge:
 
-```cypher
-MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'})
+<QueryCodeBlock code={String.raw`MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'})
 CREATE (a)-[r:FOLLOWS {since: 2020}]->(b)
-RETURN a, r, b
-```
+RETURN a, r, b`} />
 
 Relationships have their own
 [property maps](../concepts/properties). `r.since = 2020` is stored on
@@ -96,23 +88,19 @@ the edge, not on the endpoints.
 A single `CREATE` can produce both nodes and the relationship between
 them:
 
-```cypher
-CREATE (a:User {name: 'Alice'})-[:FOLLOWS]->(b:User {name: 'Bob'})
-RETURN a, b
-```
+<QueryCodeBlock code={String.raw`CREATE (a:User {name: 'Alice'})-[:FOLLOWS]->(b:User {name: 'Bob'})
+RETURN a, b`} />
 
 ### Multi-hop pattern-create
 
 Chain freely:
 
-```cypher
-CREATE
+<QueryCodeBlock code={String.raw`CREATE
   (ada:Person {name: 'Ada'}),
   (grace:Person {name: 'Grace'}),
   (alan:Person {name: 'Alan'}),
   (ada)-[:INFLUENCED]->(grace),
-  (grace)-[:INFLUENCED]->(alan)
-```
+  (grace)-[:INFLUENCED]->(alan)`} />
 
 ### Direction and type are mandatory
 
@@ -132,23 +120,19 @@ The idiomatic bulk-load shape pairs `CREATE` with
 
 ### Literal list
 
-```cypher
-UNWIND [
+<QueryCodeBlock code={String.raw`UNWIND [
   {name: 'Ada',   born: 1815},
   {name: 'Grace', born: 1906},
   {name: 'Alan',  born: 1912}
 ] AS p
-CREATE (:Person {name: p.name, born: p.born})
-```
+CREATE (:Person {name: p.name, born: p.born})`} />
 
 ### Parameter list
 
 Pass the list in from the host language:
 
-```cypher
-UNWIND $people AS p
-CREATE (:Person {name: p.name, born: p.born})
-```
+<QueryCodeBlock code={String.raw`UNWIND $people AS p
+CREATE (:Person {name: p.name, born: p.born})`} />
 
 Where `$people = [{name: 'Ada', born: 1815}, …]`. This is the
 recommended way to load hundreds or thousands of rows in one query —
@@ -161,11 +145,9 @@ see each binding's parameters section
 
 Pair an `UNWIND` with a [`MATCH`](./match) to wire up pre-existing nodes:
 
-```cypher
-UNWIND $edges AS e
+<QueryCodeBlock code={String.raw`UNWIND $edges AS e
 MATCH (a:User {id: e.from}), (b:User {id: e.to})
-CREATE (a)-[:FOLLOWS {since: e.since}]->(b)
-```
+CREATE (a)-[:FOLLOWS {since: e.since}]->(b)`} />
 
 ## Uniqueness
 
@@ -173,25 +155,19 @@ CREATE (a)-[:FOLLOWS {since: e.since}]->(b)
 produces two distinct nodes with the same labels and properties unless
 a matching uniqueness or key constraint rejects the second write.
 
-```cypher
+<QueryCodeBlock code={String.raw`CREATE (:User {id: 1})
 CREATE (:User {id: 1})
-CREATE (:User {id: 1})
--- now there are two :User {id: 1} nodes
-```
+// now there are two :User {id: 1} nodes`} />
 
 To reject duplicates, add a [uniqueness constraint](./constraints):
 
-```cypher
-CREATE CONSTRAINT user_id
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT user_id
 FOR (u:User)
-REQUIRE u.id IS UNIQUE
-```
+REQUIRE u.id IS UNIQUE`} />
 
 For create-if-not-exists semantics use [`MERGE`](./unwind-merge#merge):
 
-```cypher
-MERGE (u:User {id: 1}) RETURN u
-```
+<QueryCodeBlock code={String.raw`MERGE (u:User {id: 1}) RETURN u`} />
 
 Running that same query twice yields one node. See
 [MERGE pattern caveats](./unwind-merge#pattern-caveats) for the rules on
@@ -202,10 +178,8 @@ what it matches.
 `CREATE` can be followed by [`RETURN`](./return-with) to hand the new
 entity back — essential when the host needs its internal ID.
 
-```cypher
-CREATE (u:User {email: $email})
-RETURN id(u) AS id, u
-```
+<QueryCodeBlock code={String.raw`CREATE (u:User {email: $email})
+RETURN id(u) AS id, u`} />
 
 `id()` is the [internal identity](../concepts/graph-model#identity).
 Prefer your own stable property (`id`, `email`, …) for external
@@ -218,51 +192,42 @@ addressing.
 `CREATE` on its own can't express "insert or update". Combine
 [`MERGE`](./unwind-merge#merge) with [`SET`](./set-delete#set--properties):
 
-```cypher
-MERGE (u:User {id: $id})
+<QueryCodeBlock code={String.raw`MERGE (u:User {id: $id})
   ON CREATE SET u.created = temporal.timestamp()
   SET u.name = $name, u.updated = temporal.timestamp()
-RETURN u
-```
+RETURN u`} />
 
 ### Create + link
 
-```cypher
-MATCH (c:Category {slug: $cat})
+<QueryCodeBlock code={String.raw`MATCH (c:Category {slug: $cat})
 CREATE (p:Product {
   name:  $name,
   price: $price
 })-[:IN]->(c)
-RETURN p
-```
+RETURN p`} />
 
 ### Clone a node shape
 
-```cypher
-MATCH (src:Template {id: $src})
+<QueryCodeBlock code={String.raw`MATCH (src:Template {id: $src})
 CREATE (dst:Template)
 SET    dst = properties(src)
 SET    dst.id = $new_id
-RETURN dst
-```
+RETURN dst`} />
 
 ### Create from aggregated input
 
 `CREATE` can consume rows produced by a preceding stage. This is how
 you turn an aggregate into new nodes:
 
-```cypher
-MATCH (o:Order)
+<QueryCodeBlock code={String.raw`MATCH (o:Order)
 WITH o.region AS region, sum(o.amount) AS revenue
-CREATE (:RegionStat {region: region, revenue: revenue})
-```
+CREATE (:RegionStat {region: region, revenue: revenue})`} />
 
 One `:RegionStat` node per region.
 
 ### Mirror-write: create a node plus several relationships
 
-```cypher
-MATCH (u:User {id: $user_id}),
+<QueryCodeBlock code={String.raw`MATCH (u:User {id: $user_id}),
       (cat:Category {slug: $cat})
 CREATE (p:Product {
   id:    $id,
@@ -271,22 +236,19 @@ CREATE (p:Product {
 })
 CREATE (u)-[:OWNS]->(p)
 CREATE (p)-[:IN]->(cat)
-RETURN p
-```
+RETURN p`} />
 
 Each `CREATE` runs once per input row; since the `MATCH` produces one
 row, this creates one product plus two edges in a single query.
 
 ### Create with conditional properties via CASE
 
-```cypher
-CREATE (u:User {
+<QueryCodeBlock code={String.raw`CREATE (u:User {
   id:       $id,
   email:    $email,
   tier:     CASE WHEN $paying THEN 'pro' ELSE 'free' END,
   created:  temporal.timestamp()
-})
-```
+})`} />
 
 See [CASE expressions](./return-with#case-expressions).
 
@@ -303,9 +265,7 @@ first use. See [Graph model → Schema-free](../concepts/graph-model#schema-free
 
 Reusing a variable for different entities is an analysis error:
 
-```cypher
-CREATE (n:A), (n:B)    -- error: variable 'n' already bound
-```
+<QueryCodeBlock code={String.raw`CREATE (n:A), (n:B)    // error: variable 'n' already bound`} />
 
 ### `CREATE` with relationship to a non-existent node
 

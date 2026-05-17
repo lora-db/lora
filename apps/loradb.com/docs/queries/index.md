@@ -11,12 +11,10 @@ chain _clauses_ — see the [clause reference](#clause-reference)
 below, or jump into the [**Ten-Minute Tour**](../getting-started/tutorial)
 for a guided run-through.
 
-```cypher
-MATCH  (p:Person)-[:WORKS_AT]->(c:Company)
+<QueryCodeBlock code={String.raw`MATCH  (p:Person)-[:WORKS_AT]->(c:Company)
 WHERE  p.active = true
 RETURN p.name, c.name
-ORDER  BY p.name
-```
+ORDER  BY p.name`} />
 
 Each clause reads the rows emitted by the previous one and passes rows
 forward. [`RETURN`](./return-with) ends the pipeline.
@@ -101,9 +99,7 @@ see the [**Cheat sheet**](./cheat-sheet).
 Any value that isn't a constant should use a parameter. The short
 version follows; [**Parameters**](./parameters) has the full reference.
 
-```cypher
-MATCH (p:Person) WHERE p.name = $name RETURN p
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person) WHERE p.name = $name RETURN p`} />
 
 Parameters are bound at call time from the host language:
 
@@ -119,13 +115,11 @@ results — set them or validate inputs before executing.
 
 ### Parameters vs inline literals
 
-```cypher
--- Safe (parameterised)
+<QueryCodeBlock code={String.raw`// Safe (parameterised)
 MATCH (u:User) WHERE u.id = $id RETURN u
 
--- Unsafe if $id came from untrusted input and was inlined
-MATCH (u:User) WHERE u.id = 42 RETURN u
-```
+;// Unsafe if $id came from untrusted input and was inlined
+MATCH (u:User) WHERE u.id = 42 RETURN u`} />
 
 Parameters are the only supported way to mix untrusted input into a
 query. They also let the query planner cache plans across invocations.

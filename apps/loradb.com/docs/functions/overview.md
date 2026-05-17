@@ -11,16 +11,14 @@ accepted: in `RETURN`, `WITH`, `WHERE`, `ORDER BY`, `SET`, map
 projections, list comprehensions, and nested inside other function
 calls.
 
-```cypher
-MATCH (d:Doc)
+<QueryCodeBlock code={String.raw`MATCH (d:Doc)
 WITH d,
      vector.similarity(d.embedding, $query) AS score,
      temporal.truncate('month', d.published_at) AS month
 WHERE score >= 0.75
 RETURN d.title, month, score
 ORDER BY score DESC
-LIMIT 10
-```
+LIMIT 10`} />
 
 Function names are **case-insensitive**. Canonical LoraDB functions are
 mostly namespaced, such as `string.lower`, `math.sqrt`, `list.range`,
@@ -45,13 +43,11 @@ Functions do not introduce a new query clause. They are part of the
 expression language, so they evaluate once for each row flowing through
 the clause that contains them.
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WITH u, string.lower(u.email) AS email
 WHERE email ENDS WITH '@loradb.com'
 RETURN u.name, email
-ORDER BY email
-```
+ORDER BY email`} />
 
 In that query:
 
@@ -80,11 +76,9 @@ Examples are written as complete Cypher fragments whenever possible.
 Comments show representative results, not a promise about exact display
 format in every host binding.
 
-```cypher
-RETURN string.slice('loradb', 0, 4)     -- 'lora'
-RETURN '2024-01-15'::DATE               -- DATE value
-RETURN TRY_CAST('not a date' AS DATE)   -- null
-```
+<QueryCodeBlock code={String.raw`RETURN string.slice('loradb', 0, 4);     // 'lora'
+RETURN '2024-01-15'::DATE;               // DATE value
+RETURN TRY_CAST('not a date' AS DATE)   // null`} />
 
 ## How functions are organised
 
@@ -104,11 +98,9 @@ The important distinction: `temporal.*`, `geo.*`, and `vector.*` are
 operation namespaces. They are not the default way to construct
 `DATE`, `POINT`, or `VECTOR` values in query text.
 
-```cypher
-RETURN '2024-01-15'::DATE,
+<QueryCodeBlock code={String.raw`RETURN '2024-01-15'::DATE,
        CAST('2024-01-15' AS DATE),
-       TRY_CAST($maybe_date AS DATE)
-```
+       TRY_CAST($maybe_date AS DATE)`} />
 
 Use host-language helpers separately when binding parameters from
 Node, Python, Go, Ruby, WASM, or Rust. For example, a Node query may
@@ -141,23 +133,19 @@ language.
 A function call has three parts: the name, the arguments, and sometimes
 a literal type or option argument.
 
-```cypher
-RETURN string.lower('LORA') AS name,
+<QueryCodeBlock code={String.raw`RETURN string.lower('LORA') AS name,
        math.round(3.14159, 2) AS rounded,
        vector.distance($a, $b, EUCLIDEAN) AS distance,
-       TRY_CAST($raw AS DATE) AS maybe_date
-```
+       TRY_CAST($raw AS DATE) AS maybe_date`} />
 
 Namespaced functions are ordinary expression functions. They do not
 require `CALL`, do not stream rows by themselves, and can be nested
 inside other expressions:
 
-```cypher
-MATCH (d:Doc)
+<QueryCodeBlock code={String.raw`MATCH (d:Doc)
 WHERE type.of(d.published_at) = 'DATE'
 RETURN string.upper(coalesce(d.title, 'untitled')) AS title,
-       temporal.truncate('year', d.published_at) AS year
-```
+       temporal.truncate('year', d.published_at) AS year`} />
 
 Some arguments are not values from the graph; they are compile-time
 symbols:
@@ -172,10 +160,8 @@ convenient for generated queries. If the target type itself must be
 dynamic, use the lower-level `cast.to` / `cast.try` helpers with a type
 string:
 
-```cypher
-RETURN cast.try($raw, $type_name) AS maybe_date,
-       vector.distance($a, $b, 'euclidean') AS distance
-```
+<QueryCodeBlock code={String.raw`RETURN cast.try($raw, $type_name) AS maybe_date,
+       vector.distance($a, $b, 'euclidean') AS distance`} />
 
 ## Namespaces and aliases
 
@@ -241,13 +227,11 @@ If a task needs graph traversal, start with a pattern in `MATCH`. If it
 needs row grouping, start with aggregation. If it needs to reshape a
 single value already in the row, reach for a scalar function.
 
-```cypher
-// Traversal first, then scalar functions, then aggregation.
+<QueryCodeBlock code={String.raw`// Traversal first, then scalar functions, then aggregation.
 MATCH (u:User)-[:POSTED]->(p:Post)
 WITH u, temporal.truncate('month', p.created_at) AS month
 RETURN u.id, month, count(*) AS posts
-ORDER BY month
-```
+ORDER BY month`} />
 
 ## Errors and nulls
 
@@ -280,23 +264,19 @@ Strict casts are for inputs that must be valid. Nullable casts are for
 ingestion, optional filters, and user-supplied values where invalid data
 should simply disappear from the result:
 
-```cypher
-UNWIND $rows AS row
+<QueryCodeBlock code={String.raw`UNWIND $rows AS row
 WITH row, TRY_CAST(row.signup_date AS DATE) AS signup_date
 WHERE signup_date IS NOT NULL
-CREATE (:Signup {email: row.email, signup_date: signup_date})
-```
+CREATE (:Signup {email: row.email, signup_date: signup_date})`} />
 
 ### Null propagation
 
 Most non-aggregate functions follow normal null propagation:
 
-```cypher
-RETURN geo.distance(null, {x: 1, y: 2}::POINT),       -- null
-       vector.similarity(null, [1, 2, 3]::VECTOR<INTEGER>(3)), -- null
-       temporal.truncate('month', null),              -- null
-       coalesce(null, 'fallback')                     -- 'fallback'
-```
+<QueryCodeBlock code={String.raw`RETURN geo.distance(null, {x: 1, y: 2}::POINT),       // null
+       vector.similarity(null, [1, 2, 3]::VECTOR<INTEGER>(3)), // null
+       temporal.truncate('month', null),              // null
+       coalesce(null, 'fallback')                     // 'fallback'`} />
 
 That behavior is intentional: missing input usually means missing output,
 and the query can decide how to handle it with `IS NULL`, `IS NOT NULL`,
@@ -308,12 +288,10 @@ Aggregates are different because they operate over groups of rows:
 `count(*)` counts rows, `count(x)` counts non-null `x`, and functions
 such as `sum`, `avg`, `min`, and `max` skip null inputs.
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN count(*) AS people,
        count(p.email) AS people_with_email,
-       avg(p.age) AS average_known_age
-```
+       avg(p.age) AS average_known_age`} />
 
 ### Filtering after nullable functions
 
@@ -321,18 +299,14 @@ RETURN count(*) AS people,
 `TRY_CAST` or a function that can return `null`, filter with `IS NULL`
 or `IS NOT NULL`.
 
-```cypher
-UNWIND $rows AS row
+<QueryCodeBlock code={String.raw`UNWIND $rows AS row
 WITH row, TRY_CAST(row.started_at AS DATETIME) AS started_at
 WHERE started_at IS NOT NULL
-CREATE (:Event {id: row.id, started_at: started_at})
-```
+CREATE (:Event {id: row.id, started_at: started_at})`} />
 
 For default values, use `coalesce`:
 
-```cypher
-RETURN coalesce(TRY_CAST($limit AS INTEGER), 100) AS limit
-```
+<QueryCodeBlock code={String.raw`RETURN coalesce(TRY_CAST($limit AS INTEGER), 100) AS limit`} />
 
 ## Categories
 
@@ -363,26 +337,22 @@ shared rules that apply across categories.
 | <CypherCode code="keys(x)" /> | <CypherCode code="value.keys(x)" /> | node \| rel \| map | `List<String>` |
 | <CypherCode code="properties(x)" /> | <CypherCode code="value.properties(x)" /> | node \| rel \| map | `Map` |
 
-```cypher
-MATCH (u:User)-[r:FOLLOWS]->(v:User)
-RETURN id(u), labels(u), type(r), keys(u), properties(u)
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[r:FOLLOWS]->(v:User)
+RETURN id(u), labels(u), type(r), keys(u), properties(u)`} />
 
 ### Common uses
 
-```cypher
-// Dump every property on a node as a map
+<QueryCodeBlock code={String.raw`// Dump every property on a node as a map
 MATCH (u:User {id: $id}) RETURN properties(u)
 
-// Discover which labels a node carries
+;// Discover which labels a node carries
 MATCH (n) WHERE id(n) = $raw_id RETURN labels(n)
 
-// Inspect the type of a matched edge
+;// Inspect the type of a matched edge
 MATCH (a)-[r]->(b) RETURN type(r), count(*) ORDER BY count(*) DESC
 
-// Avoid duplicate pair rows
-MATCH (a)-[:KNOWS]-(b) WHERE id(a) < id(b) RETURN a, b
-```
+;// Avoid duplicate pair rows
+MATCH (a)-[:KNOWS]-(b) WHERE id(a) < id(b) RETURN a, b`} />
 
 See [**Graph model → Identity**](../concepts/graph-model#identity) for
 why `id()` is opaque.
@@ -406,59 +376,51 @@ mixed examples or generated query text.
 | <CypherCode code="coalesce(a, b, …)" /> | first non-null argument |
 | <CypherCode code="temporal.timestamp()" /> / <CypherCode code="timestamp()" /> | current Unix time in milliseconds |
 
-```cypher
-RETURN toInteger('42'),                         -- 42
-       toIntegerOrNull('abc'),                  -- null
-       '2024-01-15'::DATE,                      -- DATE
-       TRY_CAST('bad date' AS DATE),             -- null
-       toFloat(42),                             -- 42.0
-       coalesce(null, null, 'fallback'),        -- 'fallback'
-       type.of(1),                            -- 'INTEGER'
-       type.of([1, 2, 3]),                    -- 'LIST<INTEGER>'
-       type.of('2024-01-15'::DATE)            -- 'DATE'
-```
+<QueryCodeBlock code={String.raw`RETURN toInteger('42'),                         // 42
+       toIntegerOrNull('abc'),                  // null
+       '2024-01-15'::DATE,                      // DATE
+       TRY_CAST('bad date' AS DATE),             // null
+       toFloat(42),                             // 42.0
+       coalesce(null, null, 'fallback'),        // 'fallback'
+       type.of(1),                            // 'INTEGER'
+       type.of([1, 2, 3]),                    // 'LIST<INTEGER>'
+       type.of('2024-01-15'::DATE)            // 'DATE'`} />
 
 ### coalesce recipes
 
-```cypher
-// Default a missing property
+<QueryCodeBlock code={String.raw`// Default a missing property
 MATCH (p:Person) RETURN p.name, coalesce(p.nickname, p.name) AS display
 
-// Cascade through several optional fields
+;// Cascade through several optional fields
 RETURN coalesce($phone, $email, 'unknown') AS contact
 
-// Replace null in ordering
+;// Replace null in ordering
 MATCH (p:Person)
 RETURN p.name, coalesce(p.rank, 999999) AS rank_for_sort
-ORDER BY rank_for_sort
-```
+ORDER BY rank_for_sort`} />
 
 For multi-branch logic with arbitrary predicates per branch (not just
 "first non-null"), use [`CASE`](../queries/return-with#case-expressions).
 
 ### type.of recipes
 
-```cypher
-// Filter a heterogeneous list to numbers only
+<QueryCodeBlock code={String.raw`// Filter a heterogeneous list to numbers only
 MATCH (n)
 WHERE all(x IN n.values WHERE type.of(x) = 'INTEGER')
 RETURN n
 
-// Group by runtime type
+;// Group by runtime type
 UNWIND [1, 'two', 3.0, true, null] AS x
 RETURN type.of(x) AS t, count(*) AS n
-ORDER BY t
-```
+ORDER BY t`} />
 
 ### timestamp
 
 Wall-clock milliseconds since the Unix epoch.
 
-```cypher
-MERGE (c:Counter {name: 'events'})
+<QueryCodeBlock code={String.raw`MERGE (c:Counter {name: 'events'})
   ON CREATE SET c.first_seen = temporal.timestamp()
-  SET c.last_seen = temporal.timestamp()
-```
+  SET c.last_seen = temporal.timestamp()`} />
 
 See [Data Types](../data-types/overview) for every `type.of` return
 value and for how each type maps between LoraDB and host languages.
@@ -468,11 +430,9 @@ value and for how each type maps between LoraDB and host languages.
 All three forms below target the same type system, but they are meant
 for different reading and error-handling styles:
 
-```cypher
-RETURN '2024-01-15'::DATE              AS preferred,
+<QueryCodeBlock code={String.raw`RETURN '2024-01-15'::DATE              AS preferred,
        CAST('2024-01-15' AS DATE)      AS casted,
-       TRY_CAST('not a date' AS DATE)  AS nullable
-```
+       TRY_CAST('not a date' AS DATE)  AS nullable`} />
 
 - `value::TYPE` is the preferred documentation style for handwritten
   query text.

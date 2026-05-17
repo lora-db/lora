@@ -27,38 +27,30 @@ different ways.
 
 ### 1. Make two nodes
 
-```cypher
-CREATE (:Person {name: 'Ada',   born: 1815})
-CREATE (:Person {name: 'Grace', born: 1906})
-```
+<QueryCodeBlock code={String.raw`CREATE (:Person {name: 'Ada',   born: 1815})
+CREATE (:Person {name: 'Grace', born: 1906})`} />
 
 Two nodes with label `Person` and two properties each.
 
 ### 2. Connect them
 
-```cypher
-MATCH (ada:Person {name: 'Ada'}), (grace:Person {name: 'Grace'})
-CREATE (ada)-[:INFLUENCED {year: 1843}]->(grace)
-```
+<QueryCodeBlock code={String.raw`MATCH (ada:Person {name: 'Ada'}), (grace:Person {name: 'Grace'})
+CREATE (ada)-[:INFLUENCED {year: 1843}]->(grace)`} />
 
 One directed relationship with type `INFLUENCED` and its own `year`
 property.
 
 ### 3. Read nodes
 
-```cypher
-MATCH (p:Person) RETURN p.name, p.born
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person) RETURN p.name, p.born`} />
 
 Two rows — same shape as the properties we wrote. Label and direction
 are invisible in this projection.
 
 ### 4. Read through the relationship
 
-```cypher
-MATCH (a)-[r:INFLUENCED]->(b)
-RETURN a.name AS influencer, r.year AS year, b.name AS influenced
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:INFLUENCED]->(b)
+RETURN a.name AS influencer, r.year AS year, b.name AS influenced`} />
 
 One row — Ada → Grace, with the relationship's own property alongside.
 Notice we can project properties from the relationship itself, not just
@@ -83,9 +75,7 @@ LoraDB has no `CREATE TABLE` step. Labels, relationship types, and
 property keys are created implicitly the first time you use them in a
 write:
 
-```cypher
-CREATE (c:Country {name: 'NL', iso: 'NLD'})
-```
+<QueryCodeBlock code={String.raw`CREATE (c:Country {name: 'NL', iso: 'NLD'})`} />
 
 The first time this runs, the label `Country` and properties `name`,
 `iso` come into existence. Writes are permissive; reads validate
@@ -119,16 +109,14 @@ strings), [lists and maps](../data-types/lists-and-maps),
 `Duration`, …), and [spatial points](../data-types/spatial) (2D and 3D,
 Cartesian and WGS-84).
 
-```cypher
-CREATE (:Trip {
+<QueryCodeBlock code={String.raw`CREATE (:Trip {
   from:     'AMS',
   to:       'LHR',
   when:     '2026-04-20T08:00:00Z'::DATETIME,
   duration: 'PT75M'::DURATION,
   route:    ['AMS', 'LHR'],
   origin:   {latitude: 52.31, longitude: 4.76}::POINT
-})
-```
+})`} />
 
 ## Identity
 
@@ -143,20 +131,16 @@ Use the built-in [`id()` function](../functions/overview#entity-introspection)
 to read the internal ID if you really need it, but prefer matching on
 your own property keys.
 
-```cypher
-MATCH (n:User {email: $email}) RETURN id(n) AS internal_id
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User {email: $email}) RETURN id(n) AS internal_id`} />
 
 ### One useful trick
 
 To avoid symmetric-pair duplicates in an undirected match, filter by
 `id(a) < id(b)`:
 
-```cypher
-MATCH (a:Person)-[:KNOWS]-(b:Person)
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[:KNOWS]-(b:Person)
 WHERE id(a) < id(b)
-RETURN a.name, b.name
-```
+RETURN a.name, b.name`} />
 
 Otherwise you'd get both `(alice, bob)` and `(bob, alice)` rows.
 
@@ -202,15 +186,13 @@ If the "edge" itself has a lot of data, including another relationship
 pointing at it, it's probably a node. Cypher can't point edges at
 other edges:
 
-```cypher
--- Edge carrying a little data — fine
+<QueryCodeBlock code={String.raw`// Edge carrying a little data — fine
 CREATE (a)-[:RATED {stars: 4, at: temporal.now()}]->(b)
 
--- Edge with further lifecycle / attachments — promote to node
+// Edge with further lifecycle / attachments — promote to node
 CREATE (a)-[:WROTE]->(r:Review {stars: 4, body: '…', at: temporal.now()})
 CREATE (r)-[:ABOUT]->(b)
-CREATE (r)-[:IN_LANG]->(:Language {code: 'en'})
-```
+CREATE (r)-[:IN_LANG]->(:Language {code: 'en'})`} />
 
 ### "Directional, undirected, or two edges?"
 
@@ -228,13 +210,11 @@ mirror edges consistent.
 
 For something like order status with a known set of values:
 
-```cypher
--- String property — simpler
+<QueryCodeBlock code={String.raw`// String property — simpler
 CREATE (:Order {id: 1, status: 'paid'})
 
--- Label — makes WHERE slightly more efficient and pattern-readable
-CREATE (:Order:Paid {id: 1})
-```
+// Label — makes WHERE slightly more efficient and pattern-readable
+CREATE (:Order:Paid {id: 1})`} />
 
 Labels as status flags work well when the status rarely changes and
 is often the primary filter. Property status scales better when

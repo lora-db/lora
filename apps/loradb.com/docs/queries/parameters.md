@@ -10,9 +10,7 @@ Parameters are the **only** safe way to mix host-side values into a
 query. Every in-process binding accepts them; the HTTP transport does
 not yet (see [caveat](#http-api-doesnt-forward-params)).
 
-```cypher
-MATCH (u:User) WHERE u.id = $id RETURN u
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.id = $id RETURN u`} />
 
 `$id` is a placeholder. The host supplies its value at call time.
 
@@ -152,10 +150,8 @@ See [Limitations → Parameters](../limitations#parameters).
 
 ### Bulk load from a list
 
-```cypher
-UNWIND $rows AS row
-CREATE (:User {id: row.id, name: row.name})
-```
+<QueryCodeBlock code={String.raw`UNWIND $rows AS row
+CREATE (:User {id: row.id, name: row.name})`} />
 
 ```ts
 await db.execute(
@@ -168,9 +164,7 @@ See [`UNWIND` → bulk load](./unwind-merge#bulk-load-from-parameter).
 
 ### Dynamic `IN`-style filter
 
-```cypher
-MATCH (u:User) WHERE u.id IN $ids RETURN u
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.id IN $ids RETURN u`} />
 
 ```python
 db.execute(
@@ -278,9 +272,7 @@ before executing.
 `{id: $id}` with host value `"1"` (a string) won't match an integer
 property. Use the right host type, or coerce inside the query:
 
-```cypher
-MATCH (n:User) WHERE toString(n.id) = $id RETURN n
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User) WHERE toString(n.id) = $id RETURN n`} />
 
 ### Inlining untrusted input
 

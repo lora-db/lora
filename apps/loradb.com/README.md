@@ -8,8 +8,9 @@ Built with [Docusaurus](https://docusaurus.io/) v3.
 ## Develop
 
 ```bash
-npm install
-npm start
+corepack yarn install
+corepack yarn workspace @loradb/lora-query build
+corepack yarn start
 ```
 
 The dev server runs at <http://localhost:3000/docs/>.
@@ -17,8 +18,9 @@ The dev server runs at <http://localhost:3000/docs/>.
 ## Build
 
 ```bash
-npm run build
-npm run serve   # preview the production build
+corepack yarn workspace @loradb/lora-query build
+corepack yarn build
+corepack yarn serve   # preview the production build
 ```
 
 ## Project layout

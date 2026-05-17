@@ -37,16 +37,12 @@ offsets.
 
 Unicode case conversion.
 
-```cypher
-RETURN string.lower('Ada LoveLace')    -- 'ada lovelace'
-RETURN string.upper('ada')             -- 'ADA'
-```
+<QueryCodeBlock code={String.raw`RETURN string.lower('Ada LoveLace');    // 'ada lovelace'
+RETURN string.upper('ada')             // 'ADA'`} />
 
 Non-ASCII letters follow Rust's Unicode case mapping:
 
-```cypher
-RETURN string.lower('Ångström')        -- 'ångström'
-```
+<QueryCodeBlock code={String.raw`RETURN string.lower('Ångström')        // 'ångström'`} />
 
 ## Case Style
 
@@ -54,65 +50,51 @@ Use `string.capitalize(s)` for the first character, or
 `string.capitalize(s, true)` to capitalize each whitespace-delimited word.
 Use `string.case(s, style)` when generating identifiers or display text.
 
-```cypher
-RETURN string.capitalize('ada lovelace')          -- 'Ada lovelace'
-RETURN string.capitalize('ada lovelace', true)    -- 'Ada Lovelace'
-RETURN string.case('hello world', 'camel')        -- 'helloWorld'
-RETURN string.case('helloWorld', 'snake')         -- 'hello_world'
-RETURN string.swap_case('LoraDB')                 -- 'lORAdb'
-```
+<QueryCodeBlock code={String.raw`RETURN string.capitalize('ada lovelace');          // 'Ada lovelace'
+RETURN string.capitalize('ada lovelace', true);    // 'Ada Lovelace'
+RETURN string.case('hello world', 'camel');        // 'helloWorld'
+RETURN string.case('helloWorld', 'snake');         // 'hello_world'
+RETURN string.swap_case('LoraDB')                 // 'lORAdb'`} />
 
 Supported `string.case` styles are `'camel'`, `'pascal'`, `'snake'`,
 `'kebab'`, `'screaming_snake'` / `'constant'`, and `'title'`.
 
 ### Case-insensitive matching
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE string.lower(u.email) = string.lower($search)
-RETURN u
-```
+RETURN u`} />
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE string.lower(u.name) STARTS WITH string.lower($prefix)
-RETURN u
-```
+RETURN u`} />
 
 ## string.trim / string.trim_left / string.trim_right {#trim--ltrim--rtrim}
 
 Strip whitespace from both ends / left / right.
 
-```cypher
-RETURN string.trim('   hi   ')    -- 'hi'
-RETURN string.trim_left('   hi   ')   -- 'hi   '
-RETURN string.trim_right('   hi   ')   -- '   hi'
-```
+<QueryCodeBlock code={String.raw`RETURN string.trim('   hi   ');    // 'hi'
+RETURN string.trim_left('   hi   ');   // 'hi   '
+RETURN string.trim_right('   hi   ')   // '   hi'`} />
 
 Common for cleaning up user input before storage:
 
-```cypher
-UNWIND $rows AS row
-CREATE (:Contact {email: string.lower(string.trim(row.email))})
-```
+<QueryCodeBlock code={String.raw`UNWIND $rows AS row
+CREATE (:Contact {email: string.lower(string.trim(row.email))})`} />
 
 ## string.replace {#replace}
 
 `string.replace(str, find, replacement)` — replaces every occurrence.
 
-```cypher
-RETURN string.replace('banana', 'a', 'o')    -- 'bonono'
-RETURN string.replace('hello', 'x', 'y')     -- 'hello'
-RETURN string.replace('abc def', ' ', '_')   -- 'abc_def'
-```
+<QueryCodeBlock code={String.raw`RETURN string.replace('banana', 'a', 'o');    // 'bonono'
+RETURN string.replace('hello', 'x', 'y');     // 'hello'
+RETURN string.replace('abc def', ' ', '_')   // 'abc_def'`} />
 
 ### Multi-step replace
 
-```cypher
-WITH 'Joe O\'Brien' AS raw
+<QueryCodeBlock code={String.raw`WITH 'Joe O\'Brien' AS raw
 RETURN string.replace(string.replace(raw, ' ', '_'), '\'', '') AS slug
--- 'Joe_OBrien'
-```
+// 'Joe_OBrien'`} />
 
 ## string.find / string.count / string.before / string.after {#find-count-before-after}
 
@@ -127,20 +109,16 @@ inside one row.
 | `string.before(s, needle)` | Text before the first occurrence, or `null` |
 | `string.after(s, needle)` | Text after the first occurrence, or `null` |
 
-```cypher
-RETURN string.find('banana', 'na')       -- 2
-RETURN string.count('banana', 'na')      -- 2
-RETURN string.before('a=b=c', '=')       -- 'a'
-RETURN string.after('a=b=c', '=')        -- 'b=c'
-RETURN string.after('abc', '=')          -- null
-```
+<QueryCodeBlock code={String.raw`RETURN string.find('banana', 'na');       // 2
+RETURN string.count('banana', 'na');      // 2
+RETURN string.before('a=b=c', '=');       // 'a'
+RETURN string.after('a=b=c', '=');        // 'b=c'
+RETURN string.after('abc', '=')          // null`} />
 
 Regex patterns can be used with `string.count` by wrapping the pattern
 in slashes:
 
-```cypher
-RETURN string.count('a1 b22 c333', '/\d+/')  -- 3
-```
+<QueryCodeBlock code={String.raw`RETURN string.count('a1 b22 c333', '/\d+/')  // 3`} />
 
 An empty `needle` returns `null`; pass a concrete delimiter or regex so
 the count has a clear meaning.
@@ -149,41 +127,31 @@ the count has a clear meaning.
 
 `string.slice(str, start[, length])` — 0-based indices.
 
-```cypher
-RETURN string.slice('loradb', 0, 4)   -- 'lora'
-RETURN string.slice('loradb', 4)      -- 'db'
-RETURN string.slice('hello', 1, 3)    -- 'ell'
-```
+<QueryCodeBlock code={String.raw`RETURN string.slice('loradb', 0, 4);   // 'lora'
+RETURN string.slice('loradb', 4);      // 'db'
+RETURN string.slice('hello', 1, 3)    // 'ell'`} />
 
 Out-of-range indices return an empty string rather than an error.
 
-```cypher
-RETURN string.slice('hi', 99)         -- ''
-RETURN string.slice('hi', 0, 99)      -- 'hi'
-```
+<QueryCodeBlock code={String.raw`RETURN string.slice('hi', 99);         // ''
+RETURN string.slice('hi', 0, 99)      // 'hi'`} />
 
 ## string.prefix / string.suffix {#left--right}
 
-```cypher
-RETURN string.prefix('graphdb', 5)     -- 'graph'
-RETURN string.suffix('graphdb', 2)    -- 'db'
-```
+<QueryCodeBlock code={String.raw`RETURN string.prefix('graphdb', 5);     // 'graph'
+RETURN string.suffix('graphdb', 2)    // 'db'`} />
 
 Length exceeding the input returns the whole string:
 
-```cypher
-RETURN string.prefix('ab', 99)         -- 'ab'
-```
+<QueryCodeBlock code={String.raw`RETURN string.prefix('ab', 99)         // 'ab'`} />
 
 ## string.split / string.join / string.words {#split}
 
-```cypher
-RETURN string.split('a,b,c,d', ',')         -- ['a', 'b', 'c', 'd']
-RETURN string.split('one two three', ' ')   -- ['one', 'two', 'three']
-RETURN string.split('x', ',')               -- ['x']
-RETURN string.join(['red', 'green'], ', ')  -- 'red, green'
-RETURN string.words('  red green\tblue ')   -- ['red', 'green', 'blue']
-```
+<QueryCodeBlock code={String.raw`RETURN string.split('a,b,c,d', ',');         // ['a', 'b', 'c', 'd']
+RETURN string.split('one two three', ' ');   // ['one', 'two', 'three']
+RETURN string.split('x', ',');               // ['x']
+RETURN string.join(['red', 'green'], ', ');  // 'red, green'
+RETURN string.words('  red green\tblue ')   // ['red', 'green', 'blue']`} />
 
 Empty input returns `['']`.
 `string.words` uses Unicode whitespace and drops empty fields, which is
@@ -193,29 +161,23 @@ usually what you want for tokenizing human-entered text.
 
 Turn comma-separated values into rows:
 
-```cypher
-UNWIND string.split('red,green,blue', ',') AS color
-CREATE (:Swatch {color: color})
-```
+<QueryCodeBlock code={String.raw`UNWIND string.split('red,green,blue', ',') AS color
+CREATE (:Swatch {color: color})`} />
 
 ### Join values for display
 
 `string.join(list, separator)` accepts strings, numbers, booleans, and
 `null` values. `null` becomes an empty field.
 
-```cypher
-MATCH (u:User)
-RETURN u.name, string.join(u.tags, ', ') AS tags_csv
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)
+RETURN u.name, string.join(u.tags, ', ') AS tags_csv`} />
 
 ## string.reverse / value.reverse {#reverse}
 
 Works on both strings and lists.
 
-```cypher
-RETURN string.reverse('hello')       -- 'olleh'
-RETURN value.reverse([1, 2, 3])      -- [3, 2, 1]
-```
+<QueryCodeBlock code={String.raw`RETURN string.reverse('hello');       // 'olleh'
+RETURN value.reverse([1, 2, 3])      // [3, 2, 1]`} />
 
 `reverse(x)` is a compatibility alias for `value.reverse(x)`, which
 works for both strings and lists. Use `string.reverse(s)` when you want
@@ -229,11 +191,9 @@ to be explicit that the input should be text.
 | `value.size(s)` / `size(s)` | Polymorphic size helper; strings return their length |
 | `path.length(p)` / `length(p)` | Hop count for paths, not a string helper |
 
-```cypher
-RETURN string.length('abc')   -- 3
-RETURN string.length('café')  -- 4
-RETURN value.size('abc')      -- 3
-```
+<QueryCodeBlock code={String.raw`RETURN string.length('abc');   // 3
+RETURN string.length('café');  // 4
+RETURN value.size('abc')      // 3`} />
 
 For paths, use [`path.length(p)`](../queries/paths#path-functions).
 
@@ -243,45 +203,37 @@ For paths, use [`path.length(p)`](../queries/paths#path-functions).
 only whitespace. It is useful for imports where a missing field arrives
 as spaces instead of `null`.
 
-```cypher
-RETURN string.is_blank('   ')       -- true
-RETURN string.is_blank('\t\n')      -- true
-RETURN string.is_blank(' data ')    -- false
-```
+<QueryCodeBlock code={String.raw`RETURN string.is_blank('   ');       // true
+RETURN string.is_blank('\t\n');      // true
+RETURN string.is_blank(' data ')    // false`} />
 
 ## string.pad_left / string.pad_right {#lpad--rpad}
 
 `string.pad_left(str, length, padding)` / `string.pad_right(str, length, padding)` — pads to
 the target length using the padding character repeated.
 
-```cypher
-RETURN string.pad_left('7',   3, '0')   -- '007'
-RETURN string.pad_right('7',   3, '0')   -- '700'
-RETURN string.pad_left('abc', 5, '.')   -- '..abc'
-RETURN string.pad_right('abc', 5, '.')   -- 'abc..'
-```
+<QueryCodeBlock code={String.raw`RETURN string.pad_left('7',   3, '0');   // '007'
+RETURN string.pad_right('7',   3, '0');   // '700'
+RETURN string.pad_left('abc', 5, '.');   // '..abc'
+RETURN string.pad_right('abc', 5, '.')   // 'abc..'`} />
 
 If the input is already longer than `length`, it's returned unchanged.
 
 ### Fixed-width formatting
 
-```cypher
-MATCH (r:Record)
-RETURN string.pad_left(toString(r.id), 6, '0') AS padded_id
-```
+<QueryCodeBlock code={String.raw`MATCH (r:Record)
+RETURN string.pad_left(toString(r.id), 6, '0') AS padded_id`} />
 
 ## Encoding and Escaping
 
 Use `string.slugify` for simple URL slugs, `string.escape` when embedding
 text into another format, and URL helpers for query-string safe values.
 
-```cypher
-RETURN string.slugify('Hello, World! 2026')      -- 'hello-world-2026'
-RETURN string.escape('Tom & "Ada"', 'html')      -- 'Tom &amp; &quot;Ada&quot;'
-RETURN string.escape('Tom & "Ada"', 'json')      -- '"Tom & \"Ada\""'
-RETURN string.url_encode('a b/c')                -- 'a%20b%2Fc'
-RETURN string.url_decode('a%20b%2Fc')            -- 'a b/c'
-```
+<QueryCodeBlock code={String.raw`RETURN string.slugify('Hello, World! 2026');      // 'hello-world-2026'
+RETURN string.escape('Tom & "Ada"', 'html');      // 'Tom &amp; &quot;Ada&quot;'
+RETURN string.escape('Tom & "Ada"', 'json');      // '"Tom & \"Ada\""'
+RETURN string.url_encode('a b/c');                // 'a%20b%2Fc'
+RETURN string.url_decode('a%20b%2Fc')            // 'a b/c'`} />
 
 `string.escape` supports `'json'`, `'html'`, and `'cypher'` / `'lora'`.
 `string.slugify` is intentionally conservative: it lowercases ASCII
@@ -293,10 +245,8 @@ letters and collapses non-alphanumeric runs to `-`.
 form is `'nfc'`. Supported forms are `'nfc'`, `'nfd'`, `'nfkc'`, and
 `'nfkd'`.
 
-```cypher
-RETURN string.normalize('Café')                   -- 'Café'   (NFC)
-RETURN string.length(string.normalize('é', 'nfd')) -- 2
-```
+<QueryCodeBlock code={String.raw`RETURN string.normalize('Café');                   // 'Café'   (NFC)
+RETURN string.length(string.normalize('é', 'nfd')) // 2`} />
 
 Normalize text before storing it when users may submit visually identical
 strings in different Unicode forms. Pair with `string.lower` and
@@ -317,42 +267,36 @@ Use `TRY_CAST(value AS TYPE)` when invalid input should become `null`.
 | `toFloat(x)` / `toFloatOrNull(x)` | `Int`, `Float`, `String` | `Float`; `OrNull` form returns `null` on parse failure |
 | `toBoolean(x)` / `toBooleanOrNull(x)` | `Bool`, `String` (`"true"`/`"false"`), `Int` (0 / non-0) | `Bool`; `OrNull` form returns `null` on parse failure |
 
-```cypher
-RETURN toString(42)              -- '42'
-RETURN toString(true)            -- 'true'
-RETURN toString('2024-01-15'::DATE)  -- '2024-01-15'
+<QueryCodeBlock code={String.raw`RETURN toString(42);              // '42'
+RETURN toString(true);            // 'true'
+RETURN toString('2024-01-15'::DATE);  // '2024-01-15'
 
-RETURN toInteger('007')          -- 7
-RETURN toInteger(3.9)            -- 3       (truncates)
-RETURN toInteger(true)           -- 1
-RETURN toIntegerOrNull('not a number') -- null    (parse fails)
+RETURN toInteger('007');          // 7
+RETURN toInteger(3.9);            // 3       (truncates)
+RETURN toInteger(true);           // 1
+RETURN toIntegerOrNull('not a number'); // null    (parse fails)
 
-RETURN toFloat('3.14')           -- 3.14
-RETURN toFloat(42)               -- 42.0
+RETURN toFloat('3.14');           // 3.14
+RETURN toFloat(42);               // 42.0
 
-RETURN toBoolean('TRUE')         -- true
-RETURN toBoolean(0)              -- false
-RETURN toBooleanOrNull('maybe')  -- null
-```
+RETURN toBoolean('TRUE');         // true
+RETURN toBoolean(0);              // false
+RETURN toBooleanOrNull('maybe')  // null`} />
 
 ### Safe conversion pattern
 
 Combine with [`coalesce`](./overview#type-conversion-and-checking) for a
 default on parse failure:
 
-```cypher
-MATCH (p:Product) RETURN coalesce(toInteger(p.stock), 0) AS stock
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Product) RETURN coalesce(toInteger(p.stock), 0) AS stock`} />
 
 For imports where the target type is not one of the simple scalar helper
 names, keep the conversion explicit:
 
-```cypher
-UNWIND $rows AS row
+<QueryCodeBlock code={String.raw`UNWIND $rows AS row
 WITH row, TRY_CAST(row.shipped_on AS DATE) AS shipped_on
 WHERE shipped_on IS NOT NULL
-CREATE (:Shipment {id: row.id, shipped_on: shipped_on})
-```
+CREATE (:Shipment {id: row.id, shipped_on: shipped_on})`} />
 
 ## String operators (in [`WHERE`](../queries/where)) {#string-operators-in-where}
 
@@ -366,11 +310,9 @@ included here for completeness:
 | `CONTAINS` | yes | Substring match |
 | `=~` | yes | Regex match (Rust `regex`, RE2-style — no backreferences) |
 
-```cypher
-MATCH (u:User) WHERE u.email ENDS WITH '@loradb.com' RETURN u
-MATCH (u:User) WHERE string.lower(u.email) =~ '.*@loradb\\.com$' RETURN u
-MATCH (u:User) WHERE u.name CONTAINS 'Admin' RETURN u
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.email ENDS WITH '@loradb.com' RETURN u;
+MATCH (u:User) WHERE string.lower(u.email) =~ '.*@loradb\\.com$' RETURN u;
+MATCH (u:User) WHERE u.name CONTAINS 'Admin' RETURN u`} />
 
 ### Regex vs CONTAINS
 
@@ -382,46 +324,36 @@ substring matches.
 
 ### Slugify
 
-```cypher
-WITH 'Hello, World! 2024' AS raw
+<QueryCodeBlock code={String.raw`WITH 'Hello, World! 2024' AS raw
 RETURN string.slugify(raw) AS slug
--- 'hello-world-2024'
-```
+// 'hello-world-2024'`} />
 
 For international slugs, normalize first and decide host-side whether to
 transliterate non-ASCII characters.
 
 ### Initials
 
-```cypher
-MATCH (p:Person) WHERE p.name IS NOT NULL
+<QueryCodeBlock code={String.raw`MATCH (p:Person) WHERE p.name IS NOT NULL
 RETURN p.name,
        reduce(acc = '', part IN string.split(p.name, ' ') |
-              acc + string.prefix(part, 1)) AS initials
-```
+              acc + string.prefix(part, 1)) AS initials`} />
 
 ### Domain from email
 
-```cypher
-MATCH (u:User) WHERE u.email CONTAINS '@'
+<QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.email CONTAINS '@'
 RETURN u.email,
-       string.slice(u.email, value.size(string.split(u.email, '@')[0]) + 1) AS domain
-```
+       string.slice(u.email, value.size(string.split(u.email, '@')[0]) + 1) AS domain`} />
 
 ### Normalise for comparison
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE string.lower(string.trim(u.email)) = string.lower(string.trim($candidate))
-RETURN u
-```
+RETURN u`} />
 
 ### Join a list into a string
 
-```cypher
-MATCH (u:User)
-RETURN u.name, string.join(u.tags, ', ') AS tags_csv
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)
+RETURN u.name, string.join(u.tags, ', ') AS tags_csv`} />
 
 For conditional joins or per-element formatting, use
 [`reduce`](./list#reduce) so each element can be transformed before it
@@ -429,15 +361,13 @@ is appended.
 
 ### Parse `key=value` pairs
 
-```cypher
-WITH 'a=1;b=2;c=3' AS s
+<QueryCodeBlock code={String.raw`WITH 'a=1;b=2;c=3' AS s
 RETURN reduce(
   m = {},
   pair IN string.split(s, ';') |
   m + {[string.split(pair, '=')[0]]: string.split(pair, '=')[1]}
 ) AS parsed
--- {a: '1', b: '2', c: '3'}
-```
+// {a: '1', b: '2', c: '3'}`} />
 
 Values are strings — wrap each with
 [`toInteger`](../functions/string#type-conversion) if you need numeric
@@ -445,14 +375,12 @@ types.
 
 ### Truncate for preview
 
-```cypher
-MATCH (p:Post)
+<QueryCodeBlock code={String.raw`MATCH (p:Post)
 RETURN p.id,
        CASE WHEN string.length(p.body) > 100
             THEN string.prefix(p.body, 97) + '...'
             ELSE p.body
-       END AS preview
-```
+       END AS preview`} />
 
 The conditional here is a [`CASE`](../queries/return-with#case-expressions)
 expression — LoraDB's ternary. See that page for the full reference.

@@ -34,19 +34,15 @@ previous one.
 
 Start with the simplest shape — a single node.
 
-```cypher
-MATCH (n) RETURN n
-```
+<QueryCodeBlock code={String.raw`MATCH (n) RETURN n`} />
 
 One row per node in the graph. Variables are local to the query — `n`
 only exists between `MATCH` and `RETURN`.
 
 ### Filter by label
 
-```cypher
-MATCH (n:User)         RETURN n
-MATCH (n:User:Admin)   RETURN n     -- must have BOTH labels
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User)         RETURN n;
+MATCH (n:User:Admin)   RETURN n     // must have BOTH labels`} />
 
 Multiple labels on the pattern narrow the match — the node must carry
 every listed label. See [Nodes](../concepts/nodes) for the rules on
@@ -57,15 +53,13 @@ labels, case, and conventions.
 Inline maps are a shorthand for equality-only filtering. They're
 equivalent to a [`WHERE`](./where) clause on each property.
 
-```cypher
-MATCH (n:User {name: 'alice'})             RETURN n
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'alice'})             RETURN n;
 MATCH (n:User {name: 'alice', age: 42})    RETURN n
 
--- Equivalent to:
+;// Equivalent to:
 MATCH (n:User)
 WHERE n.name = 'alice' AND n.age = 42
-RETURN n
-```
+RETURN n`} />
 
 Inline maps only express equality. For ranges, regex, or null checks,
 move the predicate into [`WHERE`](./where).
@@ -74,9 +68,7 @@ move the predicate into [`WHERE`](./where).
 
 If you don't need the node variable, drop it:
 
-```cypher
-MATCH (:User)-[:FOLLOWS]->(b) RETURN b
-```
+<QueryCodeBlock code={String.raw`MATCH (:User)-[:FOLLOWS]->(b) RETURN b`} />
 
 The anonymous form is handy in long patterns where only endpoints matter.
 
@@ -85,25 +77,23 @@ The anonymous form is handy in long patterns where only endpoints matter.
 A relationship pattern always has two endpoints, a direction (or its
 absence), and optionally a type and properties.
 
-```cypher
--- Outgoing (src → dst)
+<QueryCodeBlock code={String.raw`// Outgoing (src → dst)
 MATCH (a)-[r:FOLLOWS]->(b) RETURN a, r, b
 
--- Incoming (src ← dst)
+;// Incoming (src ← dst)
 MATCH (a)<-[r:FOLLOWS]-(b) RETURN a, r, b
 
--- Undirected — matches either direction, once
+;// Undirected — matches either direction, once
 MATCH (a)-[r:KNOWS]-(b) RETURN a, r, b
 
--- Anonymous relationship variable (we don't need `r`)
+;// Anonymous relationship variable (we don't need \`r\`)
 MATCH (a)-[:FOLLOWS]->(b) RETURN a, b
 
--- Any type, any direction
+;// Any type, any direction
 MATCH (a)-[r]-(b) RETURN type(r), count(*)
 
--- Inline properties on the relationship
-MATCH (a)-[r:FOLLOWS {since: 2020}]->(b) RETURN a, r, b
-```
+;// Inline properties on the relationship
+MATCH (a)-[r:FOLLOWS {since: 2020}]->(b) RETURN a, r, b`} />
 
 Direction on `MATCH` is optional. On [`CREATE`](./create) and
 [`MERGE`](./unwind-merge#merge) it is mandatory.
@@ -112,27 +102,21 @@ Direction on `MATCH` is optional. On [`CREATE`](./create) and
 
 Use `|` to match any of several types:
 
-```cypher
-MATCH (a)-[r:FOLLOWS|KNOWS]->(b)
-RETURN type(r), count(*)
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:FOLLOWS|KNOWS]->(b)
+RETURN type(r), count(*)`} />
 
 ## Multi-hop patterns
 
 Chain relationships to traverse further.
 
-```cypher
--- Friends of friends
+<QueryCodeBlock code={String.raw`// Friends of friends
 MATCH (a:User)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
-RETURN a.name AS who, c.name AS two_hops_away
-```
+RETURN a.name AS who, c.name AS two_hops_away`} />
 
 Intermediate nodes can still be labelled and filtered:
 
-```cypher
-MATCH (p:Person)-[:WORKS_AT]->(c:Company)-[:IN]->(:City {name: 'Amsterdam'})
-RETURN p.name, c.name
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person)-[:WORKS_AT]->(c:Company)-[:IN]->(:City {name: 'Amsterdam'})
+RETURN p.name, c.name`} />
 
 For unknown-length traversals (1 to N hops) see
 [Paths → variable-length relationships](./paths#variable-length-relationships).
@@ -142,25 +126,19 @@ For unknown-length traversals (1 to N hops) see
 Multiple comma-separated patterns produce a Cartesian product — one row
 per combination.
 
-```cypher
-MATCH (a:User {id: 1}), (b:User {id: 2})
-CREATE (a)-[:FOLLOWS]->(b)
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User {id: 1}), (b:User {id: 2})
+CREATE (a)-[:FOLLOWS]->(b)`} />
 
 Disconnected patterns are idiomatic when you want two endpoints for a
 [`CREATE`](./create) or [`MERGE`](./unwind-merge#merge) that follows. In
 a pure read query, they're usually a mistake:
 
-```cypher
--- N * M rows — probably not what you want
-MATCH (a:User), (b:User) RETURN a, b
-```
+<QueryCodeBlock code={String.raw`// N * M rows — probably not what you want
+MATCH (a:User), (b:User) RETURN a, b`} />
 
 For that same shape connected by a relationship, prefer:
 
-```cypher
-MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a, b
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a, b`} />
 
 ## Optional match
 
@@ -168,11 +146,9 @@ MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a, b
 pattern matches, variables are bound. When it doesn't, they are `null`
 — but the row from the previous clause still survives.
 
-```cypher
-MATCH (a:User)
+<QueryCodeBlock code={String.raw`MATCH (a:User)
 OPTIONAL MATCH (a)-[:FOLLOWS]->(b)
-RETURN a.name, b.name
-```
+RETURN a.name, b.name`} />
 
 Users with no outgoing `:FOLLOWS` edge still appear, with `b.name = null`.
 
@@ -180,12 +156,10 @@ Users with no outgoing `:FOLLOWS` edge still appear, with `b.name = null`.
 
 Very common pattern: count related entities per node, including zero.
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 OPTIONAL MATCH (u)-[:WROTE]->(p:Post)
 RETURN u.name AS user, count(p) AS posts
-ORDER BY posts DESC
-```
+ORDER BY posts DESC`} />
 
 `count(p)` — **not** `count(*)` — is crucial here: the optional miss
 binds `p` to `null`, and `count(expr)` skips nulls. `count(*)` would
@@ -194,12 +168,10 @@ count the row and incorrectly yield `1` for users with no posts. See
 
 ### Chained OPTIONAL MATCH
 
-```cypher
-MATCH (u:User {id: $id})
+<QueryCodeBlock code={String.raw`MATCH (u:User {id: $id})
 OPTIONAL MATCH (u)-[:OWNS]->(repo:Repo)
 OPTIONAL MATCH (repo)-[:HAS_ISSUE]->(i:Issue {status: 'open'})
-RETURN u.name, collect(DISTINCT repo.name) AS repos, count(i) AS open_issues
-```
+RETURN u.name, collect(DISTINCT repo.name) AS repos, count(i) AS open_issues`} />
 
 Each `OPTIONAL MATCH` is independent — a missing repo doesn't stop the
 next optional from running.
@@ -209,13 +181,11 @@ next optional from running.
 Bind the whole traversal to a variable with `p = …`. See also
 [Paths](./paths).
 
-```cypher
-MATCH p = (a)-[r:FOLLOWS]->(b)
+<QueryCodeBlock code={String.raw`MATCH p = (a)-[r:FOLLOWS]->(b)
 RETURN p,
        path.length(p)          AS hops,
        path.nodes(p)           AS via,
-       path.edges(p)   AS rels
-```
+       path.edges(p)   AS rels`} />
 
 `path.length(p)` is the hop count; `path.nodes(p)` and `path.edges(p)` return
 lists (see [List Functions](../functions/list)).
@@ -227,52 +197,42 @@ one idea to the last.
 
 ### 1. Just the pattern
 
-```cypher
-MATCH (u:User)-[:FOLLOWS]->(other:User)
-RETURN u, other
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:FOLLOWS]->(other:User)
+RETURN u, other`} />
 
 One row per `FOLLOWS` edge. Returns whole nodes.
 
 ### 2. Project properties
 
-```cypher
-MATCH (u:User)-[:FOLLOWS]->(other:User)
-RETURN u.handle AS follower, other.handle AS leader
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:FOLLOWS]->(other:User)
+RETURN u.handle AS follower, other.handle AS leader`} />
 
 Cleaner for downstream consumers — only the fields that matter.
 
 ### 3. Filter
 
-```cypher
-MATCH (u:User)-[:FOLLOWS]->(other:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:FOLLOWS]->(other:User)
 WHERE u.country = other.country
-RETURN u.handle, other.handle
-```
+RETURN u.handle, other.handle`} />
 
 Same-country follows only — the predicate references both ends of the
 relationship.
 
 ### 4. Order and paginate
 
-```cypher
-MATCH (u:User)-[:FOLLOWS]->(other:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:FOLLOWS]->(other:User)
 WHERE u.country = other.country
 RETURN u.handle, other.handle
 ORDER BY u.handle
-LIMIT 50
-```
+LIMIT 50`} />
 
 ### 5. Aggregate
 
-```cypher
-MATCH (u:User)-[:FOLLOWS]->(other:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:FOLLOWS]->(other:User)
 WHERE u.country = other.country
 RETURN u.handle, count(other) AS same_country_follows
 ORDER BY same_country_follows DESC
-LIMIT 10
-```
+LIMIT 10`} />
 
 Each step is one more clause. Users who have never written Cypher
 often try to start at step 5 — starting at step 1 and adding a clause
@@ -282,52 +242,42 @@ at a time is faster and catches mistakes earlier.
 
 ### Lookup by unique property
 
-```cypher
-MATCH (u:User {email: $email})
+<QueryCodeBlock code={String.raw`MATCH (u:User {email: $email})
 RETURN u
-LIMIT 1
-```
+LIMIT 1`} />
 
 If you have not added a [uniqueness constraint](./constraints), `LIMIT 1`
 is a belt-and-braces guard against duplicates.
 
 ### Filter chain
 
-```cypher
-MATCH (p:Product)-[:IN]->(c:Category {slug: $cat})
+<QueryCodeBlock code={String.raw`MATCH (p:Product)-[:IN]->(c:Category {slug: $cat})
 WHERE p.price <= $max AND p.in_stock
 RETURN p
 ORDER BY p.price ASC
-LIMIT 20
-```
+LIMIT 20`} />
 
 ### Two-sided match
 
-```cypher
-MATCH (src:User {id: $from}), (dst:User {id: $to})
+<QueryCodeBlock code={String.raw`MATCH (src:User {id: $from}), (dst:User {id: $to})
 MATCH (src)-[:FOLLOWS*1..3]->(dst)
-RETURN src, dst
-```
+RETURN src, dst`} />
 
 Useful with [shortest paths](./paths#shortest-paths).
 
 ### Related entities in one hop
 
-```cypher
-MATCH (p:Person {id: $id})-[:WORKS_AT]->(c:Company)
-RETURN p.name, collect(c.name) AS companies
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person {id: $id})-[:WORKS_AT]->(c:Company)
+RETURN p.name, collect(c.name) AS companies`} />
 
 ### Relationship existence check
 
 Use [`EXISTS { pattern }`](./where#pattern-existence) to filter without
 an extra row:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE EXISTS { (u)-[:FOLLOWS]->() }
-RETURN u
-```
+RETURN u`} />
 
 ## Edge cases
 
@@ -341,9 +291,7 @@ populated graph without any node of that label, it fails at analysis:
 
 A node connected to itself:
 
-```cypher
-MATCH (a)-[:FOLLOWS]->(a) RETURN a
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[:FOLLOWS]->(a) RETURN a`} />
 
 ### Duplicate rows
 
@@ -351,10 +299,8 @@ A node reached via two different paths produces two rows. Use
 [`DISTINCT`](./return-with#distinct) on the `RETURN` if you only want
 one:
 
-```cypher
-MATCH (a:User)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
-RETURN DISTINCT a, c
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
+RETURN DISTINCT a, c`} />
 
 ### Type mismatch in inline filter
 
@@ -368,32 +314,26 @@ and `(bob, alice)` rows. Filter with
 [`id()`](../functions/overview#entity-introspection) to keep exactly
 one representative per unordered pair:
 
-```cypher
-MATCH (a:Person)-[:KNOWS]-(b:Person)
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[:KNOWS]-(b:Person)
 WHERE id(a) < id(b)
-RETURN a.name, b.name
-```
+RETURN a.name, b.name`} />
 
 ### Same variable in two positions
 
 A variable can appear multiple times in a pattern — every occurrence
 must bind to the same entity. Useful for detecting cycles:
 
-```cypher
-MATCH (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(a)
-RETURN a.name, b.name
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(a)
+RETURN a.name, b.name`} />
 
 Relationships within a single pattern must use **distinct** variable
 names, even when the type is the same:
 
-```cypher
--- Invalid: r reused across two relationships
+<QueryCodeBlock code={String.raw`// Invalid: r reused across two relationships
 MATCH (a)-[r]->(b)-[r]->(c) RETURN a, b, c
 
--- Valid
-MATCH (a)-[r1]->(b)-[r2]->(c) RETURN a, b, c
-```
+;// Valid
+MATCH (a)-[r1]->(b)-[r2]->(c) RETURN a, b, c`} />
 
 See [Relationships → edge cases](../concepts/relationships#deleting-a-relationship-thats-been-matched-twice).
 
@@ -402,17 +342,13 @@ See [Relationships → edge cases](../concepts/relationships#deleting-a-relation
 Filters in an inline map apply to that one node only. Filtering both
 endpoints uses the shorthand twice, or drops into `WHERE` for clarity:
 
-```cypher
-MATCH (a:User {country: 'NL'})-[:FOLLOWS]->(b:User {country: 'NL'})
-RETURN a.handle, b.handle
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User {country: 'NL'})-[:FOLLOWS]->(b:User {country: 'NL'})
+RETURN a.handle, b.handle`} />
 
-```cypher
--- Equivalent, easier to read for larger filters
+<QueryCodeBlock code={String.raw`// Equivalent, easier to read for larger filters
 MATCH (a:User)-[:FOLLOWS]->(b:User)
 WHERE a.country = 'NL' AND b.country = 'NL'
-RETURN a.handle, b.handle
-```
+RETURN a.handle, b.handle`} />
 
 ## See also
 

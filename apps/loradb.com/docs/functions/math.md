@@ -36,17 +36,15 @@ a restricted domain (e.g. `math.sqrt` of a negative number) return
 | `math.round(n[, digits[, mode]])` | Round to nearest; default mode is `half_up` |
 | `math.sign(n)` | `-1`, `0`, or `1` |
 
-```cypher
-RETURN math.abs(-3.5)    -- 3.5
-RETURN math.ceil(3.1)    -- 4
-RETURN math.floor(3.9)   -- 3
-RETURN math.trunc(-3.9)  -- -3
-RETURN math.round(3.5)   -- 4
-RETURN math.round(2.5)   -- 3       (default half-up rounding)
-RETURN math.sign(-9)     -- -1
-RETURN math.sign(0)      --  0
-RETURN math.sign(9)      --  1
-```
+<QueryCodeBlock code={String.raw`RETURN math.abs(-3.5);    // 3.5
+RETURN math.ceil(3.1);    // 4
+RETURN math.floor(3.9);   // 3
+RETURN math.trunc(-3.9);  // -3
+RETURN math.round(3.5);   // 4
+RETURN math.round(2.5);   // 3       (default half-up rounding)
+RETURN math.sign(-9);     // -1
+RETURN math.sign(0);      //  0
+RETURN math.sign(9)      //  1`} />
 
 ### Rounding modes
 
@@ -55,11 +53,9 @@ Pass `digits` to round to a decimal place. Pass a mode string to choose
 another strategy: `'half_up'`, `'half_even'`, `'ceil'`, `'floor'`, or
 `'trunc'`.
 
-```cypher
-RETURN math.round(3.14159, 2)                  -- 3.14
-RETURN math.round(2.5)                         -- 3
-RETURN math.round(2.5, 0, 'half_even')         -- 2.0
-```
+<QueryCodeBlock code={String.raw`RETURN math.round(3.14159, 2);                  // 3.14
+RETURN math.round(2.5);                         // 3
+RETURN math.round(2.5, 0, 'half_even')         // 2.0`} />
 
 ## Roots, powers, logs
 
@@ -73,23 +69,19 @@ RETURN math.round(2.5, 0, 'half_even')         -- 2.0
 | `math.log_base(n, base)` | `n > 0`, `base > 0`, `base != 1` | Logarithm in an arbitrary base |
 | `math.exp(n)` | any | `e^n` |
 
-```cypher
-RETURN math.sqrt(16)       -- 4.0
-RETURN math.hypot(3, 4)    -- 5.0
-RETURN math.pow(2, 10)     -- 1024.0
-RETURN math.sqrt(-1)       -- null
-RETURN math.log(math.e())       -- 1.0
-RETURN math.log10(1000)    -- 3.0
-RETURN math.log_base(8, 2) -- 3.0
-RETURN math.exp(1)         -- 2.7182818…
-```
+<QueryCodeBlock code={String.raw`RETURN math.sqrt(16);       // 4.0
+RETURN math.hypot(3, 4);    // 5.0
+RETURN math.pow(2, 10);     // 1024.0
+RETURN math.sqrt(-1);       // null
+RETURN math.log(math.e());       // 1.0
+RETURN math.log10(1000);    // 3.0
+RETURN math.log_base(8, 2); // 3.0
+RETURN math.exp(1)         // 2.7182818…`} />
 
 ### Hypotenuse
 
-```cypher
-WITH 3 AS a, 4 AS b
-RETURN math.hypot(a, b)   -- 5.0
-```
+<QueryCodeBlock code={String.raw`WITH 3 AS a, 4 AS b
+RETURN math.hypot(a, b)   // 5.0`} />
 
 For 2D Cartesian points, [`geo.distance`](./spatial#geodistance) does this.
 
@@ -103,14 +95,12 @@ when you need the smallest or largest value across rows in a group.
 All arguments must be finite numbers. A `null`, string, map, list, or
 non-finite float returns `null`.
 
-```cypher
-RETURN math.min(3, 1, 2)      -- 1
-RETURN math.max(3, 1, 2)      -- 3
-RETURN math.min(3, 1.5, 2)    -- 1.5
-RETURN math.max(3, null)      -- null
-RETURN math.clamp(125, 0, 100) -- 100
-RETURN math.lerp(10, 20, 0.25) -- 12.5
-```
+<QueryCodeBlock code={String.raw`RETURN math.min(3, 1, 2);      // 1
+RETURN math.max(3, 1, 2);      // 3
+RETURN math.min(3, 1.5, 2);    // 1.5
+RETURN math.max(3, null);      // null
+RETURN math.clamp(125, 0, 100); // 100
+RETURN math.lerp(10, 20, 0.25) // 12.5`} />
 
 `math.clamp(x, lo, hi)` constrains a value to an inclusive range.
 `math.lerp(a, b, t)` returns `a + (b - a) * t`, which is useful for
@@ -122,27 +112,23 @@ The `number.*` namespace contains numeric presentation helpers and
 integer predicates. Base conversion supports radices from 2 through 36.
 Invalid digits, unsupported bases, and overflow return `null`.
 
-```cypher
-RETURN number.format(12345.678, 2, ',')  -- '12,345.68'
-RETURN number.to_base(255, 16)           -- 'ff'
-RETURN number.from_base('ff', 16)        -- 255
-RETURN number.to_roman(1994)             -- 'MCMXCIV'
-RETURN number.from_roman('MCMXCIV')      -- 1994
-```
+<QueryCodeBlock code={String.raw`RETURN number.format(12345.678, 2, ',');  // '12,345.68'
+RETURN number.to_base(255, 16);           // 'ff'
+RETURN number.from_base('ff', 16);        // 255
+RETURN number.to_roman(1994);             // 'MCMXCIV'
+RETURN number.from_roman('MCMXCIV')      // 1994`} />
 
 Predicates are intentionally type-aware:
 
-```cypher
-RETURN number.is_integer(42)     -- true
-RETURN number.is_integer(42.5)   -- false
-RETURN number.is_even(42)        -- true
-RETURN number.is_odd(42)         -- false
-RETURN number.is_even(42.0)      -- null
-RETURN number.is_positive(0.1)   -- true
-RETURN number.is_negative(-1)    -- true
-RETURN number.is_zero(0.0)       -- true
-RETURN number.is_nan(0.0 / 0.0)  -- true
-```
+<QueryCodeBlock code={String.raw`RETURN number.is_integer(42);     // true
+RETURN number.is_integer(42.5);   // false
+RETURN number.is_even(42);        // true
+RETURN number.is_odd(42);         // false
+RETURN number.is_even(42.0);      // null
+RETURN number.is_positive(0.1);   // true
+RETURN number.is_negative(-1);    // true
+RETURN number.is_zero(0.0);       // true
+RETURN number.is_nan(0.0 / 0.0)  // true`} />
 
 `number.is_even` and `number.is_odd` accept integer values. Use
 `number.is_integer` first when data may arrive as floats. Sign
@@ -160,60 +146,50 @@ return `null` rather than raising.
 | `math.atan2(y, x)` | Two-argument arctangent — `y` first |
 | `math.degrees(r)` / `math.radians(d)` | Unit conversion |
 
-```cypher
-RETURN math.sin(math.pi() / 2)          -- 1.0
-RETURN math.cos(0)                 -- 1.0
-RETURN math.tan(math.pi() / 4)          -- 0.9999…    (float rounding)
-RETURN math.asin(1)                -- 1.5707… (π/2)
-RETURN math.asin(2)                -- null       (out of domain)
-RETURN math.atan2(1, 1)            -- 0.7853… (π/4)
-RETURN math.degrees(math.pi())          -- 180.0
-RETURN math.radians(180)           -- 3.1415…
-```
+<QueryCodeBlock code={String.raw`RETURN math.sin(math.pi() / 2);          // 1.0
+RETURN math.cos(0);                 // 1.0
+RETURN math.tan(math.pi() / 4);          // 0.9999…    (float rounding)
+RETURN math.asin(1);                // 1.5707… (π/2)
+RETURN math.asin(2);                // null       (out of domain)
+RETURN math.atan2(1, 1);            // 0.7853… (π/4)
+RETURN math.degrees(math.pi());          // 180.0
+RETURN math.radians(180)           // 3.1415…`} />
 
 ### Work in degrees
 
 Most geometry inputs are degrees — wrap every trig call:
 
-```cypher
-WITH 30 AS deg
+<QueryCodeBlock code={String.raw`WITH 30 AS deg
 RETURN math.sin(math.radians(deg)),
-       math.cos(math.radians(deg))
-```
+       math.cos(math.radians(deg))`} />
 
 ### Bearing between two points
 
-```cypher
-WITH 4.89 AS lon1, 52.37 AS lat1,
+<QueryCodeBlock code={String.raw`WITH 4.89 AS lon1, 52.37 AS lat1,
      4.40 AS lon2, 51.00 AS lat2
 WITH math.radians(lat1) AS φ1, math.radians(lat2) AS φ2,
      math.radians(lon2 - lon1) AS dλ
 RETURN (math.degrees(math.atan2(
   math.sin(dλ) * math.cos(φ2),
   math.cos(φ1) * math.sin(φ2) - math.sin(φ1) * math.cos(φ2) * math.cos(dλ)
-)) + 360) % 360 AS bearing
-```
+)) + 360) % 360 AS bearing`} />
 
 Approximation — use [`geo.distance`](./spatial#geodistance) for real geodesic
 distance between WGS-84 points.
 
 ## Constants
 
-```cypher
-RETURN math.pi()     -- 3.14159…
-RETURN math.e()      -- 2.71828…
-```
+<QueryCodeBlock code={String.raw`RETURN math.pi();     // 3.14159…
+RETURN math.e()      // 2.71828…`} />
 
 ## Random
 
 `math.random()` returns a `Float` in `[0, 1)`. The bare
 `random()` form is an alias for the same function.
 
-```cypher
-RETURN math.random()                    -- e.g. 0.42389…
-RETURN math.random() * 100              -- a Float in [0, 100)
-RETURN toInteger(math.random() * 100)   -- an Int in [0, 99]
-```
+<QueryCodeBlock code={String.raw`RETURN math.random();                    // e.g. 0.42389…
+RETURN math.random() * 100;              // a Float in [0, 100)
+RETURN toInteger(math.random() * 100)   // an Int in [0, 99]`} />
 
 Not cryptographically secure — seeded from system-time nanoseconds. Do
 **not** use for key generation or sampling that must be unpredictable.
@@ -222,22 +198,18 @@ Not cryptographically secure — seeded from system-time nanoseconds. Do
 
 Each row gets its own `math.random()` value:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN u
 ORDER BY math.random()
-LIMIT 100
-```
+LIMIT 100`} />
 
 ### Weighted pick
 
-```cypher
-MATCH (p:Prize)
+<QueryCodeBlock code={String.raw`MATCH (p:Prize)
 WITH p, math.random() * p.weight AS score
 ORDER BY score DESC
 LIMIT 1
-RETURN p
-```
+RETURN p`} />
 
 ## Arithmetic operators
 
@@ -250,111 +222,89 @@ RETURN p
 | `%` | `a % b` | Modulo; mod by zero → `null` |
 | `^` | `a ^ b` | Exponent |
 
-```cypher
-RETURN 10 / 3           -- 3         (integer division)
-RETURN 10 / 3.0         -- 3.333…    (float)
-RETURN 10 % 3           -- 1
-RETURN 2 ^ 10           -- 1024
-RETURN 1 / 0            -- null
-```
+<QueryCodeBlock code={String.raw`RETURN 10 / 3;           // 3         (integer division)
+RETURN 10 / 3.0;         // 3.333…    (float)
+RETURN 10 % 3;           // 1
+RETURN 2 ^ 10;           // 1024
+RETURN 1 / 0            // null`} />
 
 ### Mixed-type arithmetic
 
-```cypher
-RETURN 1 + 2.5          -- 3.5 (Float)
-RETURN 10 / 3.0         -- 3.333…
-```
+<QueryCodeBlock code={String.raw`RETURN 1 + 2.5;          // 3.5 (Float)
+RETURN 10 / 3.0         // 3.333…`} />
 
 Any `Float` operand promotes the result to `Float`. To do integer
 division on a float input, floor first:
 
-```cypher
-RETURN toInteger(10 / 3.0)    -- 3
-```
+<QueryCodeBlock code={String.raw`RETURN toInteger(10 / 3.0)    // 3`} />
 
 ## Numeric precedence
 
 `^` binds tightest, then unary `-`/`+`, then `*` / `/` / `%`, then
 binary `+` / `-`, then comparisons. Use parentheses freely.
 
-```cypher
-RETURN 1 + 2 * 3        -- 7
-RETURN (1 + 2) * 3      -- 9
-RETURN -2 ^ 2           -- -4        (binds as -(2^2))
-RETURN (-2) ^ 2         -- 4
-```
+<QueryCodeBlock code={String.raw`RETURN 1 + 2 * 3;        // 7
+RETURN (1 + 2) * 3;      // 9
+RETURN -2 ^ 2;           // -4        (binds as -(2^2))
+RETURN (-2) ^ 2         // 4`} />
 
 ## Common patterns
 
 ### Clamp a value
 
-```cypher
-WITH $raw AS raw, 0 AS lo, 100 AS hi
-RETURN math.clamp(raw, lo, hi) AS clamped
-```
+<QueryCodeBlock code={String.raw`WITH $raw AS raw, 0 AS lo, 100 AS hi
+RETURN math.clamp(raw, lo, hi) AS clamped`} />
 
 ### Normalise to 0..1
 
-```cypher
-MATCH (m:Metric)
+<QueryCodeBlock code={String.raw`MATCH (m:Metric)
 WITH min(m.value) AS lo, max(m.value) AS hi
 MATCH (m:Metric)
 RETURN m.id,
-       (m.value - lo) / (hi - lo) AS normalised
-```
+       (m.value - lo) / (hi - lo) AS normalised`} />
 
 ### Bucket a number
 
-```cypher
-MATCH (p:Product)
+<QueryCodeBlock code={String.raw`MATCH (p:Product)
 RETURN (p.price / 10) * 10 AS bucket, count(*) AS n
-ORDER BY bucket
-```
+ORDER BY bucket`} />
 
 ### Log-scale bucket
 
-```cypher
-MATCH (p:Post)
+<QueryCodeBlock code={String.raw`MATCH (p:Post)
 WITH p, CASE WHEN p.views > 0 THEN toInteger(math.log10(p.views)) ELSE 0 END AS decade
 RETURN decade, count(*) AS posts
-ORDER BY decade
-```
+ORDER BY decade`} />
 
 ### Exponential decay (recency score)
 
-```cypher
-MATCH (p:Post)
+<QueryCodeBlock code={String.raw`MATCH (p:Post)
 WITH p, temporal.between(p.published_at, temporal.now()).days AS age
 RETURN p.id, p.title,
        p.views * math.exp(-age * 0.05) AS score
 ORDER BY score DESC
-LIMIT 20
-```
+LIMIT 20`} />
 
 Half-life of roughly 14 days at `0.05` — tune the constant to taste.
 
 ### Percent change
 
-```cypher
-MATCH (m:Metric)
+<QueryCodeBlock code={String.raw`MATCH (m:Metric)
 RETURN m.id,
        m.current,
        m.previous,
        CASE
          WHEN m.previous = 0 OR m.previous IS NULL THEN null
          ELSE (m.current - m.previous) * 100.0 / m.previous
-       END AS pct_change
-```
+       END AS pct_change`} />
 
 Guard against zero/null — see
 [`CASE`](../queries/return-with#case-expressions).
 
 ### Weighted average
 
-```cypher
-MATCH (r:Review)
-RETURN sum(r.stars * r.weight) / sum(r.weight) AS weighted_mean
-```
+<QueryCodeBlock code={String.raw`MATCH (r:Review)
+RETURN sum(r.stars * r.weight) / sum(r.weight) AS weighted_mean`} />
 
 ## Edge cases
 
@@ -369,19 +319,15 @@ huge inputs, coerce to `Float` with
 IEEE 754 applies. `NaN` is neither less than nor greater than any
 value; `NaN == NaN` is `false`.
 
-```cypher
-RETURN 1.0 / 0.0          -- Infinity
-RETURN 0.0 / 0.0          -- NaN
-RETURN math.sqrt(-1)           -- null   (Cypher-level domain guard, not NaN)
-```
+<QueryCodeBlock code={String.raw`RETURN 1.0 / 0.0;          // Infinity
+RETURN 0.0 / 0.0;          // NaN
+RETURN math.sqrt(-1)           // null   (Cypher-level domain guard, not NaN)`} />
 
 ### Integer division vs float division
 
-```cypher
-RETURN 7 / 2       -- 3
-RETURN 7 / 2.0     -- 3.5
-RETURN 7.0 / 2     -- 3.5
-```
+<QueryCodeBlock code={String.raw`RETURN 7 / 2;       // 3
+RETURN 7 / 2.0;     // 3.5
+RETURN 7.0 / 2     // 3.5`} />
 
 A single `.0` on either side flips to float division.
 

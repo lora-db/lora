@@ -82,22 +82,18 @@ identical.
 
 ### 2. Create data
 
-```cypher
-CREATE (ada:Person   {name: 'Ada',   born: 1815})
+<QueryCodeBlock code={String.raw`CREATE (ada:Person   {name: 'Ada',   born: 1815})
 CREATE (grace:Person {name: 'Grace', born: 1906})
-CREATE (ada)-[:INFLUENCED {year: 1843}]->(grace)
-```
+CREATE (ada)-[:INFLUENCED {year: 1843}]->(grace)`} />
 
 One node per `CREATE (…)`. Relationships have a type, direction, and
 their own properties. See [Graph model](./concepts/graph-model).
 
 ### 3. Query
 
-```cypher
-MATCH (a:Person)-[:INFLUENCED]->(b:Person)
+<QueryCodeBlock code={String.raw`MATCH (a:Person)-[:INFLUENCED]->(b:Person)
 WHERE a.born < 1900
-RETURN a.name AS influencer, b.name AS influenced
-```
+RETURN a.name AS influencer, b.name AS influenced`} />
 
 Clauses stream rows: `MATCH` finds patterns, `WHERE` filters, `RETURN`
 projects. See [Queries → Overview](./queries/) or jump into the

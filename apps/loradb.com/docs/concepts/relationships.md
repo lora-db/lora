@@ -33,39 +33,31 @@ created in the same clause.
 
 ### Match then create
 
-```cypher
-MATCH (a:Person {name: 'Ada'}), (b:Person {name: 'Grace'})
-CREATE (a)-[:KNOWS {since: 1843}]->(b)
-```
+<QueryCodeBlock code={String.raw`MATCH (a:Person {name: 'Ada'}), (b:Person {name: 'Grace'})
+CREATE (a)-[:KNOWS {since: 1843}]->(b)`} />
 
 ### Inline in one CREATE
 
-```cypher
-CREATE (a:Person {name: 'Ada'})-[:INFLUENCED]->(b:Person {name: 'Grace'})
-```
+<QueryCodeBlock code={String.raw`CREATE (a:Person {name: 'Ada'})-[:INFLUENCED]->(b:Person {name: 'Grace'})`} />
 
 ### Chained patterns
 
 A single `CREATE` can chain several edges through the same variables:
 
-```cypher
-CREATE
+<QueryCodeBlock code={String.raw`CREATE
   (ada:Person {name: 'Ada'}),
   (grace:Person {name: 'Grace'}),
   (alan:Person {name: 'Alan'}),
   (ada)-[:INFLUENCED]->(grace),
-  (grace)-[:INFLUENCED]->(alan)
-```
+  (grace)-[:INFLUENCED]->(alan)`} />
 
 ### Idempotent create — MERGE
 
 `CREATE` doesn't deduplicate. [`MERGE`](../queries/unwind-merge#merge)
 does:
 
-```cypher
-MATCH (a:Person {name: 'Ada'}), (b:Person {name: 'Grace'})
-MERGE (a)-[:KNOWS]->(b)
-```
+<QueryCodeBlock code={String.raw`MATCH (a:Person {name: 'Ada'}), (b:Person {name: 'Grace'})
+MERGE (a)-[:KNOWS]->(b)`} />
 
 Running this twice yields exactly one `KNOWS` edge.
 
@@ -82,69 +74,55 @@ See [Troubleshooting → Parse errors](../troubleshooting#parse-errors).
 Relationships can be matched with or without a type, with or without a
 direction.
 
-```cypher
-MATCH (a)-[r:KNOWS]->(b)        RETURN a, r, b   -- outgoing
-MATCH (a)<-[r:KNOWS]-(b)        RETURN a, r, b   -- incoming
-MATCH (a)-[r:KNOWS]-(b)         RETURN a, r, b   -- either direction
-MATCH (a)-[r]->(b)              RETURN a, r, b   -- any type
-MATCH (a)-[r:FOLLOWS|KNOWS]->(b) RETURN a, r, b  -- multiple types
-MATCH (a)-[:FOLLOWS {since: 2020}]->(b) RETURN a, b
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:KNOWS]->(b)        RETURN a, r, b;   // outgoing
+MATCH (a)<-[r:KNOWS]-(b)        RETURN a, r, b;   // incoming
+MATCH (a)-[r:KNOWS]-(b)         RETURN a, r, b;   // either direction
+MATCH (a)-[r]->(b)              RETURN a, r, b;   // any type
+MATCH (a)-[r:FOLLOWS|KNOWS]->(b) RETURN a, r, b;  // multiple types
+MATCH (a)-[:FOLLOWS {since: 2020}]->(b) RETURN a, b`} />
 
 ### Projection
 
-```cypher
-MATCH (a)-[r:FOLLOWS]->(b)
-RETURN type(r), r.since, a.name, b.name
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:FOLLOWS]->(b)
+RETURN type(r), r.since, a.name, b.name`} />
 
 [`type(r)`](../functions/overview#entity-introspection) returns the
 relationship's type as a string.
 
 ### Variable-length
 
-```cypher
-MATCH (a)-[:FOLLOWS*1..3]->(b) RETURN b
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[:FOLLOWS*1..3]->(b) RETURN b`} />
 
 See [Paths → variable-length](../queries/paths#variable-length-relationships).
 
 ## Mutate or delete
 
-```cypher
-MATCH (a)-[r:KNOWS]->(b) SET r.since = 2025 RETURN r
-MATCH (a)-[r:KNOWS]->(b) DELETE r
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:KNOWS]->(b) SET r.since = 2025 RETURN r;
+MATCH (a)-[r:KNOWS]->(b) DELETE r`} />
 
 Deleting a node that has relationships requires
 [`DETACH DELETE`](../queries/set-delete#detach-delete):
 
-```cypher
-MATCH (n:User {id: $id}) DETACH DELETE n
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User {id: $id}) DETACH DELETE n`} />
 
 ## Properties on relationships
 
 Exactly the same shape as on nodes:
 
-```cypher
-MATCH (a)-[r:FOLLOWS]->(b)
-SET r.since = 2025, r.visibility = 'public'
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:FOLLOWS]->(b)
+SET r.since = 2025, r.visibility = 'public';
 
 MATCH (a)-[r:FOLLOWS]->(b)
-SET r += {muted: true}
+SET r += {muted: true};
 
 MATCH (a)-[r:FOLLOWS]->(b)
-REMOVE r.muted
-```
+REMOVE r.muted`} />
 
 Access and project them like any other
 [property](./properties):
 
-```cypher
-MATCH (a)-[r:FOLLOWS]->(b)
-RETURN a.name, b.name, r.since
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:FOLLOWS]->(b)
+RETURN a.name, b.name, r.since`} />
 
 ## Direction conventions
 
@@ -165,92 +143,72 @@ either direction with `(a)-[:T]-(b)` if you later need symmetry.
 
 ### "Mutual" follows
 
-```cypher
-MATCH (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(a)
+<QueryCodeBlock code={String.raw`MATCH (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(a)
 WHERE id(a) < id(b)
-RETURN a.name, b.name
-```
+RETURN a.name, b.name`} />
 
 ### Count by type
 
-```cypher
-MATCH (a)-[r]->(b)
-RETURN type(r), count(*) ORDER BY count(*) DESC
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r]->(b)
+RETURN type(r), count(*) ORDER BY count(*) DESC`} />
 
 ### Per-node degree
 
-```cypher
-MATCH (n)-[r]->()
+<QueryCodeBlock code={String.raw`MATCH (n)-[r]->()
 RETURN n.name, count(r) AS out_degree
-ORDER BY out_degree DESC
-```
+ORDER BY out_degree DESC`} />
 
-```cypher
-MATCH (n)<-[r]-()
+<QueryCodeBlock code={String.raw`MATCH (n)<-[r]-()
 RETURN n.name, count(r) AS in_degree
-ORDER BY in_degree DESC
-```
+ORDER BY in_degree DESC`} />
 
 ### Self-loops
 
 Rare but sometimes the right modelling choice:
 
-```cypher
-MATCH (n)
+<QueryCodeBlock code={String.raw`MATCH (n)
 WHERE (n)-[:RECURSES_INTO]->(n)
-RETURN n
-```
+RETURN n`} />
 
 ### Ensure this edge (once)
 
-```cypher
-MATCH (a:User {id: $u}), (r:Role {name: $role})
-MERGE (a)-[:HAS_ROLE]->(r)
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User {id: $u}), (r:Role {name: $role})
+MERGE (a)-[:HAS_ROLE]->(r)`} />
 
 Repeatable without creating duplicates.
 
 ### Remove every edge of a type
 
-```cypher
-MATCH ()-[r:OBSOLETE_LINK]->()
-DELETE r
-```
+<QueryCodeBlock code={String.raw`MATCH ()-[r:OBSOLETE_LINK]->()
+DELETE r`} />
 
 ### Oldest / newest edge per pair
 
 Relationships carry their own properties and can be ranked like
 nodes:
 
-```cypher
-MATCH (a:User)-[r:MESSAGED]->(b:User)
+<QueryCodeBlock code={String.raw`MATCH (a:User)-[r:MESSAGED]->(b:User)
 RETURN a.handle, b.handle,
        min(r.at) AS first,
        max(r.at) AS last,
        count(r)  AS total
 ORDER BY total DESC
-LIMIT 20
-```
+LIMIT 20`} />
 
 ### "Any edge at all" between two nodes
 
-```cypher
-MATCH (a:User {id: $a}), (b:User {id: $b})
-RETURN EXISTS { (a)-[]-(b) } AS connected
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User {id: $a}), (b:User {id: $b})
+RETURN EXISTS { (a)-[]-(b) } AS connected`} />
 
 ### Count in-degree vs out-degree in one pass
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 OPTIONAL MATCH (n)-[out]->()
 WITH n, count(out) AS out_deg
 OPTIONAL MATCH (n)<-[in]-()
 RETURN n.handle, out_deg, count(in) AS in_deg
 ORDER BY in_deg + out_deg DESC
-LIMIT 20
-```
+LIMIT 20`} />
 
 Note the two `OPTIONAL MATCH` stages — any node with zero edges in
 either direction still appears.
@@ -259,12 +217,10 @@ either direction still appears.
 
 Useful during a schema-change migration.
 
-```cypher
-MATCH (a)-[r:OLD_TYPE]->(b)
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:OLD_TYPE]->(b)
 CREATE (a)-[r2:NEW_TYPE]->(b)
 SET    r2 = properties(r)
-DELETE r
-```
+DELETE r`} />
 
 ## Edge cases
 
@@ -275,9 +231,7 @@ DELETE r
 
 ### Matching either direction on CREATE
 
-```cypher
-CREATE (a)-[:T]-(b)   -- error
-```
+<QueryCodeBlock code={String.raw`CREATE (a)-[:T]-(b)   // error`} />
 
 Direction is required on writes. Decide which way makes sense.
 
@@ -286,19 +240,15 @@ Direction is required on writes. Decide which way makes sense.
 A query like `MATCH (a)-[r]->(b)-[r]->(c)` won't compile — `r` must be
 unique. Use two distinct variables:
 
-```cypher
-MATCH (a)-[r1:T]->(b)-[r2:T]->(c)
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[r1:T]->(b)-[r2:T]->(c)`} />
 
 ### Multiple parallel edges
 
 Nothing prevents two `KNOWS` edges between the same pair:
 
-```cypher
+<QueryCodeBlock code={String.raw`CREATE (a)-[:KNOWS]->(b)
 CREATE (a)-[:KNOWS]->(b)
-CREATE (a)-[:KNOWS]->(b)
--- now there are two :KNOWS edges
-```
+// now there are two :KNOWS edges`} />
 
 Use `MERGE (a)-[:KNOWS]->(b)` for dedup. For modelling-time
 uniqueness (one edge only), enforce in application code.

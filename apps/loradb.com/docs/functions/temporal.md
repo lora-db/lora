@@ -87,12 +87,10 @@ instant.
 | Map | <CypherCode code="{year: 2024, month: 1, day: 15}::DATE" /> |
 | CAST form | <CypherCode code="CAST('2024-01-15' AS DATE)" /> |
 
-```cypher
-RETURN temporal.today()                         -- today
-RETURN '2024-01-15'::DATE                       -- 2024-01-15
-RETURN {year: 2024, month: 1, day: 15}::DATE    -- 2024-01-15
-RETURN TRY_CAST($maybe_date AS DATE)            -- null on invalid input
-```
+<QueryCodeBlock code={String.raw`RETURN temporal.today();                         // today
+RETURN '2024-01-15'::DATE;                       // 2024-01-15
+RETURN {year: 2024, month: 1, day: 15}::DATE;    // 2024-01-15
+RETURN TRY_CAST($maybe_date AS DATE)            // null on invalid input`} />
 
 ### DateTime
 
@@ -103,35 +101,29 @@ RETURN TRY_CAST($maybe_date AS DATE)            -- null on invalid input
 | Map | <CypherCode code="{year, month, day, hour, minute, second, millisecond, timezone}::DATETIME" /> |
 | Local current instant | <CypherCode code="temporal.now('local_datetime')" /> |
 
-```cypher
-RETURN '2024-01-15T10:00:00Z'::DATETIME
-RETURN {year: 2024, month: 1, day: 15, hour: 10, minute: 0}::DATETIME
-RETURN '2024-01-15T10:00:00+02:00'::DATETIME
-```
+<QueryCodeBlock code={String.raw`RETURN '2024-01-15T10:00:00Z'::DATETIME;
+RETURN {year: 2024, month: 1, day: 15, hour: 10, minute: 0}::DATETIME;
+RETURN '2024-01-15T10:00:00+02:00'::DATETIME`} />
 
 ### Time / LocalTime / LocalDateTime
 
-```cypher
-RETURN '12:34:56'::TIME                 -- with UTC offset (default Z)
-RETURN '12:34:56+02:00'::TIME
-RETURN '12:34:56'::LOCAL_TIME           -- no timezone
-RETURN '2024-01-15T10:00:00'::LOCAL_DATETIME
-RETURN temporal.now('time')
-RETURN temporal.now('local_time')
-RETURN temporal.now('local_datetime')
-```
+<QueryCodeBlock code={String.raw`RETURN '12:34:56'::TIME;                 // with UTC offset (default Z)
+RETURN '12:34:56+02:00'::TIME;
+RETURN '12:34:56'::LOCAL_TIME;           // no timezone
+RETURN '2024-01-15T10:00:00'::LOCAL_DATETIME;
+RETURN temporal.now('time');
+RETURN temporal.now('local_time');
+RETURN temporal.now('local_datetime')`} />
 
 ### duration
 
 ISO 8601 string or a component map.
 
-```cypher
-RETURN 'P30D'::DURATION                         -- 30 days
-RETURN 'P1Y2M3DT4H5M6S'::DURATION               -- full form
-RETURN 'PT90M'::DURATION                        -- 90 minutes
-RETURN {years: 1, months: 2, days: 3}::DURATION -- equivalent map form
-RETURN CAST('PT90M' AS DURATION)                -- CAST form
-```
+<QueryCodeBlock code={String.raw`RETURN 'P30D'::DURATION;                         // 30 days
+RETURN 'P1Y2M3DT4H5M6S'::DURATION;               // full form
+RETURN 'PT90M'::DURATION;                        // 90 minutes
+RETURN {years: 1, months: 2, days: 3}::DURATION; // equivalent map form
+RETURN CAST('PT90M' AS DURATION)                // CAST form`} />
 
 ### Query casts vs parameters
 
@@ -155,14 +147,12 @@ See [Node → typed helpers](../getting-started/node#typed-helpers) and
 
 Temporal values expose components via property access.
 
-```cypher
-RETURN '2024-01-15'::DATE.year                    -- 2024
-RETURN '2024-01-15'::DATE.month                   -- 1
-RETURN '2024-01-15T10:30:00Z'::DATETIME.hour      -- 10
-RETURN '2024-01-15T10:30:45Z'::DATETIME.second    -- 45
-RETURN 'P30D'::DURATION.days                      -- 30
-RETURN 'P1Y'::DURATION.months                     -- 12
-```
+<QueryCodeBlock code={String.raw`RETURN '2024-01-15'::DATE.year;                    // 2024
+RETURN '2024-01-15'::DATE.month;                   // 1
+RETURN '2024-01-15T10:30:00Z'::DATETIME.hour;      // 10
+RETURN '2024-01-15T10:30:45Z'::DATETIME.second;    // 45
+RETURN 'P30D'::DURATION.days;                      // 30
+RETURN 'P1Y'::DURATION.months                     // 12`} />
 
 Available: `.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`,
 `.millisecond`, `.days`, `.months`, `.years`, `.hours`, `.minutes`,
@@ -170,13 +160,11 @@ Available: `.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`,
 
 ### Build a year-month key
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 RETURN e.at.year AS year,
        e.at.month AS month,
        count(*) AS events
-ORDER BY year, month
-```
+ORDER BY year, month`} />
 
 ## Truncation
 
@@ -187,26 +175,20 @@ Reduce a temporal value to a coarser unit.
 | <CypherCode code="temporal.truncate(unit, date)" /> | `"year"`, `"month"` |
 | <CypherCode code="temporal.truncate(unit, datetime)" /> | `"day"`, `"hour"`, `"month"` |
 
-```cypher
-RETURN temporal.truncate('month', '2024-01-15'::DATE)       -- 2024-01-01
-RETURN temporal.truncate('year',  '2024-07-01'::DATE)       -- 2024-01-01
+<QueryCodeBlock code={String.raw`RETURN temporal.truncate('month', '2024-01-15'::DATE);       // 2024-01-01
+RETURN temporal.truncate('year',  '2024-07-01'::DATE);       // 2024-01-01
 RETURN temporal.truncate('hour', '2024-01-15T10:42:00Z'::DATETIME)
-        -- 2024-01-15T10:00:00Z
-```
+        // 2024-01-15T10:00:00Z`} />
 
 ### Bucketing rows
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 RETURN temporal.truncate('month', e.at) AS month, count(*) AS events
-ORDER BY month
-```
+ORDER BY month`} />
 
-```cypher
-MATCH (r:Request)
+<QueryCodeBlock code={String.raw`MATCH (r:Request)
 RETURN temporal.truncate('hour', r.at) AS hour, count(*) AS hits
-ORDER BY hour
-```
+ORDER BY hour`} />
 
 ## Arithmetic
 
@@ -217,36 +199,30 @@ ORDER BY hour
 Duration arithmetic preserves calendar semantics: months and days are
 stored separately from seconds.
 
-```cypher
-RETURN '2024-01-15'::DATE + 'P30D'::DURATION
-          -- 2024-02-14
+<QueryCodeBlock code={String.raw`RETURN '2024-01-15'::DATE + 'P30D'::DURATION
+;          // 2024-02-14
 
 RETURN '2024-01-15T00:00:00Z'::DATETIME + 'PT36H'::DURATION
-          -- 2024-01-16T12:00:00Z
+;          // 2024-01-16T12:00:00Z
 
 RETURN '2024-12-31T00:00:00Z'::DATETIME - '2024-01-01T00:00:00Z'::DATETIME
-          -- P365D (a Duration)
-```
+          // P365D (a Duration)`} />
 
 ### Calendar vs fixed durations
 
 `'P1M'::DURATION` is "one month" — a variable number of days. `'P30D'::DURATION`
 is exactly 30 days.
 
-```cypher
-RETURN '2024-01-31'::DATE + 'P1M'::DURATION     -- 2024-02-29 (leap year)
-RETURN '2024-01-31'::DATE + 'P30D'::DURATION    -- 2024-03-01
-```
+<QueryCodeBlock code={String.raw`RETURN '2024-01-31'::DATE + 'P1M'::DURATION;     // 2024-02-29 (leap year)
+RETURN '2024-01-31'::DATE + 'P30D'::DURATION    // 2024-03-01`} />
 
 ### temporal.between / temporal.in_days
 
-```cypher
-RETURN temporal.between('2024-01-01'::DATE, '2024-12-31'::DATE)
-       -- P365D (Duration)
+<QueryCodeBlock code={String.raw`RETURN temporal.between('2024-01-01'::DATE, '2024-12-31'::DATE)
+;       // P365D (Duration)
 
 RETURN temporal.in_days('2024-01-01'::DATE, '2024-04-10'::DATE)
-       -- 100
-```
+       // 100`} />
 
 `temporal.in_days` is for `DATE` values. For `DATETIME` values, use
 `temporal.between(a, b).days` when you need the day component.
@@ -256,18 +232,14 @@ RETURN temporal.in_days('2024-01-01'::DATE, '2024-04-10'::DATE)
 Comparable within the same type using `<`, `<=`, `>`, `>=`, `=`, `<>`.
 Cross-type comparisons (e.g. `Date` vs `DateTime`) return `null`.
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE e.at >= temporal.now() AND e.at < temporal.now() + 'P7D'::DURATION
 RETURN e
-ORDER BY e.at
-```
+ORDER BY e.at`} />
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 WHERE p.born < '1900-01-01'::DATE
-RETURN p.name, p.born
-```
+RETURN p.name, p.born`} />
 
 ## Storing temporal values
 
@@ -275,86 +247,69 @@ Temporals serialise tagged: `{"kind": "date", "iso": "2024-01-15"}` etc.
 (see [Temporal Data Types](../data-types/temporal#serialisation)). They
 round-trip cleanly through `CREATE` and `MATCH`.
 
-```cypher
-CREATE (e:Event {
+<QueryCodeBlock code={String.raw`CREATE (e:Event {
   title:    'Launch',
   at:       '2026-05-01T09:00:00Z'::DATETIME,
   runs_for: 'PT90M'::DURATION,
   day:      '2026-05-01'::DATE
-})
+});
 
 MATCH (e:Event)
 RETURN e.title,
        e.at,
-       e.at + e.runs_for AS ends_at
-```
+       e.at + e.runs_for AS ends_at`} />
 
 ## Common patterns
 
 ### Events in the next week
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE e.at >= temporal.now()
   AND e.at <  temporal.now() + 'P7D'::DURATION
 RETURN e
-ORDER BY e.at
-```
+ORDER BY e.at`} />
 
 ### Events in a month
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 WHERE temporal.truncate('month', e.at) = '2026-05-01'::DATE
-RETURN e
-```
+RETURN e`} />
 
 ### Age from birthday
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name,
-       temporal.in_days(p.born, temporal.today()) / 365 AS approx_age_years
-```
+       temporal.in_days(p.born, temporal.today()) / 365 AS approx_age_years`} />
 
 ### Rolling 30-day active users
 
-```cypher
-MATCH (u:User)-[:VIEWED]->(:Page)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:VIEWED]->(:Page)
 WHERE u.last_seen >= temporal.now() - 'P30D'::DURATION
-RETURN count(DISTINCT u) AS active_30d
-```
+RETURN count(DISTINCT u) AS active_30d`} />
 
 ### Session length
 
-```cypher
-MATCH (s:Session)
+<QueryCodeBlock code={String.raw`MATCH (s:Session)
 RETURN s.id, (s.ended - s.started) AS duration
-ORDER BY duration DESC
-```
+ORDER BY duration DESC`} />
 
 ### First / last event per user
 
-```cypher
-MATCH (u:User)-[:DID]->(e:Event)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:DID]->(e:Event)
 RETURN u.id,
        min(e.at) AS first_event,
-       max(e.at) AS last_event
-```
+       max(e.at) AS last_event`} />
 
 ### Cohorts by signup month
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN temporal.truncate('month', u.created) AS cohort,
        count(*)                           AS signups
-ORDER BY cohort
-```
+ORDER BY cohort`} />
 
 ### "Since last seen" bucket
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WITH u,
      temporal.between(u.last_seen, temporal.now()).days AS days_away
 RETURN CASE
@@ -364,38 +319,31 @@ RETURN CASE
          ELSE                       'dormant'
        END AS freshness,
        count(*) AS users
-ORDER BY users DESC
-```
+ORDER BY users DESC`} />
 
 Uses [`CASE`](../queries/return-with#case-expressions) to bucket a
 continuous duration into named tiers.
 
 ### Time-of-day histogram
 
-```cypher
-MATCH (e:Event)
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
 RETURN e.at.hour AS hour, count(*) AS events
-ORDER BY hour
-```
+ORDER BY hour`} />
 
 Component access on a `DateTime` returns integers — no string parsing
 needed.
 
 ### Recurring window — "same time next week"
 
-```cypher
-MATCH (m:Meeting {id: $id})
+<QueryCodeBlock code={String.raw`MATCH (m:Meeting {id: $id})
 RETURN m.start,
        m.start + 'P7D'::DURATION AS next_week,
-       m.start + 'P14D'::DURATION AS two_weeks
-```
+       m.start + 'P14D'::DURATION AS two_weeks`} />
 
 ### Build ISO timestamp for serialisation
 
-```cypher
-MATCH (e:Event)
-RETURN e.id, e.at::STRING AS iso
-```
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
+RETURN e.id, e.at::STRING AS iso`} />
 
 `CAST(e.at AS STRING)` / `e.at::STRING` on a `DateTime` emits a
 round-trippable ISO 8601 string.

@@ -41,14 +41,12 @@ List functions generally return `null` on `null` input.
 | `list.rest(list)` | All but first; empty list → `null` |
 | `list.last(list)` | Last element; empty list → `null` |
 
-```cypher
-RETURN value.size([1, 2, 3])            -- 3
-RETURN list.first([1, 2, 3])            -- 1
-RETURN list.rest([1, 2, 3])            -- [2, 3]
-RETURN list.last([1, 2, 3])            -- 3
-RETURN list.first([])                   -- null
-RETURN value.size([])                   -- 0
-```
+<QueryCodeBlock code={String.raw`RETURN value.size([1, 2, 3]);            // 3
+RETURN list.first([1, 2, 3]);            // 1
+RETURN list.rest([1, 2, 3]);            // [2, 3]
+RETURN list.last([1, 2, 3]);            // 3
+RETURN list.first([]);                   // null
+RETURN value.size([])                   // 0`} />
 
 `value.size` also works on strings — see
 [`String Functions → size`](./string#stringlength--valuesize).
@@ -57,32 +55,26 @@ RETURN value.size([])                   -- 0
 
 Works on lists and strings.
 
-```cypher
-RETURN value.reverse([1, 2, 3])         -- [3, 2, 1]
-RETURN value.reverse('abc')             -- 'cba'
-```
+<QueryCodeBlock code={String.raw`RETURN value.reverse([1, 2, 3]);         // [3, 2, 1]
+RETURN value.reverse('abc')             // 'cba'`} />
 
 ## range
 
 `list.range(start, end[, step])` — inclusive, integers only.
 
-```cypher
-RETURN list.range(1, 5)                -- [1, 2, 3, 4, 5]
-RETURN list.range(0, 10, 2)            -- [0, 2, 4, 6, 8, 10]
-RETURN list.range(10, 1, -1)           -- [10, 9, 8, …, 1]
-RETURN list.range(1, 5, 0)             -- null  (zero step)
-```
+<QueryCodeBlock code={String.raw`RETURN list.range(1, 5);                // [1, 2, 3, 4, 5]
+RETURN list.range(0, 10, 2);            // [0, 2, 4, 6, 8, 10]
+RETURN list.range(10, 1, -1);           // [10, 9, 8, …, 1]
+RETURN list.range(1, 5, 0)             // null  (zero step)`} />
 
 ### Common uses
 
-```cypher
-// Pagination helper: generate page numbers
+<QueryCodeBlock code={String.raw`// Pagination helper: generate page numbers
 RETURN list.range(1, toInteger(math.ceil($total / $size))) AS pages
 
-// Simple synthetic data
+;// Simple synthetic data
 UNWIND list.range(1, 100) AS i
-CREATE (:Point {id: i, x: math.random() * 100, y: math.random() * 100})
-```
+CREATE (:Point {id: i, x: math.random() * 100, y: math.random() * 100})`} />
 
 ## Selection and Reshaping
 
@@ -105,19 +97,17 @@ element.
 | `list.prepend(xs, value)` | Returns a new list with `value` added at the beginning |
 | `list.concat(a, b, ...)` | Concatenates two or more lists |
 
-```cypher
-RETURN list.take([1, 2, 3, 4], 2)              -- [1, 2]
-RETURN list.drop([1, 2, 3, 4], 2)              -- [3, 4]
-RETURN list.take_last([1, 2, 3, 4], 2)         -- [3, 4]
-RETURN list.drop_last([1, 2, 3, 4], 1)         -- [1, 2, 3]
-RETURN list.flatten([[1, 2], [3, [4]]], 2)     -- [1, 2, 3, 4]
-RETURN list.chunks([1, 2, 3, 4, 5], 2)         -- [[1, 2], [3, 4], [5]]
-RETURN list.windows([1, 2, 3, 4], 2)           -- [[1, 2], [2, 3], [3, 4]]
-RETURN list.zip(['a', 'b'], [1, 2, 3])         -- [['a', 1], ['b', 2]]
-RETURN list.append(['a', 'b'], 'c')            -- ['a', 'b', 'c']
-RETURN list.prepend(['b', 'c'], 'a')           -- ['a', 'b', 'c']
-RETURN list.concat([1, 2], [3], [4, 5])        -- [1, 2, 3, 4, 5]
-```
+<QueryCodeBlock code={String.raw`RETURN list.take([1, 2, 3, 4], 2);              // [1, 2]
+RETURN list.drop([1, 2, 3, 4], 2);              // [3, 4]
+RETURN list.take_last([1, 2, 3, 4], 2);         // [3, 4]
+RETURN list.drop_last([1, 2, 3, 4], 1);         // [1, 2, 3]
+RETURN list.flatten([[1, 2], [3, [4]]], 2);     // [1, 2, 3, 4]
+RETURN list.chunks([1, 2, 3, 4, 5], 2);         // [[1, 2], [3, 4], [5]]
+RETURN list.windows([1, 2, 3, 4], 2);           // [[1, 2], [2, 3], [3, 4]]
+RETURN list.zip(['a', 'b'], [1, 2, 3]);         // [['a', 1], ['b', 2]]
+RETURN list.append(['a', 'b'], 'c');            // ['a', 'b', 'c']
+RETURN list.prepend(['b', 'c'], 'a');           // ['a', 'b', 'c']
+RETURN list.concat([1, 2], [3], [4, 5])        // [1, 2, 3, 4, 5]`} />
 
 Use `list.sample(xs[, n])` or `list.shuffle(xs)` for lightweight random
 sampling. They are not cryptographically secure and are intended for
@@ -127,21 +117,17 @@ exploration, demos, and approximate picks.
 
 Fold over a list, carrying an accumulator.
 
-```cypher
-RETURN reduce(total = 0, x IN [1, 2, 3, 4] | total + x)    -- 10
-RETURN reduce(pairs = [], x IN [1, 2, 3] | pairs + [x * 2]) -- [2, 4, 6]
-```
+<QueryCodeBlock code={String.raw`RETURN reduce(total = 0, x IN [1, 2, 3, 4] | total + x);    // 10
+RETURN reduce(pairs = [], x IN [1, 2, 3] | pairs + [x * 2]) // [2, 4, 6]`} />
 
 ### Word frequency with a map accumulator
 
-```cypher
-RETURN reduce(
+<QueryCodeBlock code={String.raw`RETURN reduce(
   acc = {},
   x IN ['red', 'red', 'blue', 'green'] |
   acc + {[x]: coalesce(acc[x], 0) + 1}
 )
--- {red: 2, blue: 1, green: 1}
-```
+// {red: 2, blue: 1, green: 1}`} />
 
 `acc` starts as an empty map. Each element rebuilds `acc` by
 merging in the updated count for `x` — `coalesce(acc[x], 0)`
@@ -151,11 +137,9 @@ rather than a single `x` column.
 
 ### Nested / layered lists
 
-```cypher
-// Flatten a list-of-lists
+<QueryCodeBlock code={String.raw`// Flatten a list-of-lists
 RETURN reduce(out = [], xs IN [[1, 2], [3, 4], [5]] | out + xs)
--- [1, 2, 3, 4, 5]
-```
+// [1, 2, 3, 4, 5]`} />
 
 `reduce` has no short-circuit — the whole list is visited even if the
 accumulator could stop early. Use
@@ -164,16 +148,14 @@ questions.
 
 ## Indexing and slicing
 
-```cypher
-RETURN [10, 20, 30][0]       -- 10
-RETURN [10, 20, 30][-1]      -- 30
-RETURN [10, 20, 30][5]       -- null (out of range)
+<QueryCodeBlock code={String.raw`RETURN [10, 20, 30][0];       // 10
+RETURN [10, 20, 30][-1];      // 30
+RETURN [10, 20, 30][5];       // null (out of range)
 
-RETURN [1, 2, 3, 4, 5][1..3]   -- [2, 3]     (end-exclusive)
-RETURN [1, 2, 3, 4, 5][..2]    -- [1, 2]
-RETURN [1, 2, 3, 4, 5][3..]    -- [4, 5]
-RETURN [1, 2, 3, 4, 5][-2..]   -- [4, 5]
-```
+RETURN [1, 2, 3, 4, 5][1..3];   // [2, 3]     (end-exclusive)
+RETURN [1, 2, 3, 4, 5][..2];    // [1, 2]
+RETURN [1, 2, 3, 4, 5][3..];    // [4, 5]
+RETURN [1, 2, 3, 4, 5][-2..]   // [4, 5]`} />
 
 ## Function Indexing And Slicing
 
@@ -182,15 +164,13 @@ query builder needs regular function calls instead of postfix syntax.
 Both use the same 0-based, negative-from-end convention as list
 indexing.
 
-```cypher
-RETURN list.at([10, 20, 30], 1)          -- 20
-RETURN list.at([10, 20, 30], -1)         -- 30
-RETURN list.at([10, 20, 30], 99)         -- null
+<QueryCodeBlock code={String.raw`RETURN list.at([10, 20, 30], 1);          // 20
+RETURN list.at([10, 20, 30], -1);         // 30
+RETURN list.at([10, 20, 30], 99);         // null
 
-RETURN list.slice([10, 20, 30, 40], 1, 3)   -- [20, 30]
-RETURN list.slice([10, 20, 30, 40], -3, -1) -- [20, 30]
-RETURN list.slice([10, 20, 30], 2, 1)       -- []
-```
+RETURN list.slice([10, 20, 30, 40], 1, 3);   // [20, 30]
+RETURN list.slice([10, 20, 30, 40], -3, -1); // [20, 30]
+RETURN list.slice([10, 20, 30], 2, 1)       // []`} />
 
 ## Numeric Summaries
 
@@ -207,44 +187,36 @@ number is required.
 | `list.stdev(list)` | Sample standard deviation; fewer than two values returns `null` |
 | `list.median(list)` | Median numeric value as a float |
 
-```cypher
-RETURN list.sum([1, 2, 3])       -- 6
-RETURN list.avg([1, 2, null, 5]) -- 2.6666…
-RETURN list.median([1, 10, 20])  -- 10.0
-RETURN list.product([2, 3, 4])   -- 24
-```
+<QueryCodeBlock code={String.raw`RETURN list.sum([1, 2, 3]);       // 6
+RETURN list.avg([1, 2, null, 5]); // 2.6666…
+RETURN list.median([1, 10, 20]);  // 10.0
+RETURN list.product([2, 3, 4])   // 24`} />
 
 ### Slicing recipes
 
-```cypher
-// Top 3
+<QueryCodeBlock code={String.raw`// Top 3
 RETURN collect(x)[..3]
 
-// Last 3
+;// Last 3
 RETURN collect(x)[-3..]
 
-// Second-to-fifth
-RETURN collect(x)[1..5]
-```
+;// Second-to-fifth
+RETURN collect(x)[1..5]`} />
 
 ## Concatenation
 
-```cypher
-RETURN [1, 2] + [3, 4]           -- [1, 2, 3, 4]
-RETURN 0 + [1, 2]                -- [0, 1, 2]
-RETURN [1, 2] + 3                -- [1, 2, 3]
-```
+<QueryCodeBlock code={String.raw`RETURN [1, 2] + [3, 4];           // [1, 2, 3, 4]
+RETURN 0 + [1, 2];                // [0, 1, 2]
+RETURN [1, 2] + 3                // [1, 2, 3]`} />
 
 ## Functional Concatenation
 
 Use the function forms when generated queries or nested expressions are
 easier to build with regular calls than with `+`.
 
-```cypher
-RETURN list.concat([1, 2], [3], [4, 5])   -- [1, 2, 3, 4, 5]
-RETURN list.append([1, 2], 3)             -- [1, 2, 3]
-RETURN list.prepend([2, 3], 1)            -- [1, 2, 3]
-```
+<QueryCodeBlock code={String.raw`RETURN list.concat([1, 2], [3], [4, 5]);   // [1, 2, 3, 4, 5]
+RETURN list.append([1, 2], 3);             // [1, 2, 3]
+RETURN list.prepend([2, 3], 1)            // [1, 2, 3]`} />
 
 `list.append` and `list.prepend` can add any value, including `null`.
 `list.concat` requires every argument to be a list; a non-list argument
@@ -252,49 +224,39 @@ returns `null`.
 
 ## List comprehension
 
-```cypher
--- Filter
-RETURN [x IN [1, 2, 3, 4] WHERE x > 2]       -- [3, 4]
+<QueryCodeBlock code={String.raw`// Filter
+RETURN [x IN [1, 2, 3, 4] WHERE x > 2]       // [3, 4]
 
--- Map
-RETURN [x IN [1, 2, 3] | x * 10]             -- [10, 20, 30]
+;// Map
+RETURN [x IN [1, 2, 3] | x * 10]             // [10, 20, 30]
 
--- Filter + map
-RETURN [x IN [1, 2, 3, 4] WHERE x > 2 | x * 10]   -- [30, 40]
-```
+;// Filter + map
+RETURN [x IN [1, 2, 3, 4] WHERE x > 2 | x * 10]   // [30, 40]`} />
 
 ### On node properties
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN u.name,
-       [t IN u.tags WHERE value.size(t) > 3] AS long_tags
-```
+       [t IN u.tags WHERE value.size(t) > 3] AS long_tags`} />
 
 ### Nested comprehension
 
-```cypher
-UNWIND [[1, 2], [3, 4], [5, 6]] AS pair
-RETURN [x IN pair WHERE x % 2 = 0 | x * 10]
-```
+<QueryCodeBlock code={String.raw`UNWIND [[1, 2], [3, 4], [5, 6]] AS pair
+RETURN [x IN pair WHERE x % 2 = 0 | x * 10]`} />
 
 ## Pattern comprehension
 
 Bind a pattern and collect one value per match — inline.
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name,
-       [(p)-[:KNOWS]->(f) | f.name] AS friends
-```
+       [(p)-[:KNOWS]->(f) | f.name] AS friends`} />
 
 With a filter:
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name,
-       [(p)-[:WROTE]->(post:Post) WHERE post.published | post.title] AS posts
-```
+       [(p)-[:WROTE]->(post:Post) WHERE post.published | post.title] AS posts`} />
 
 Returns a list per matched `p` — ideal when you'd otherwise add a new
 `MATCH` stage and an aggregation just to assemble "each owner's
@@ -302,11 +264,9 @@ items".
 
 ### Take top-N inline
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN u.name,
-       [(u)-[:WROTE]->(p) | p.title][..3] AS recent_titles
-```
+       [(u)-[:WROTE]->(p) | p.title][..3] AS recent_titles`} />
 
 ### Pattern comprehension vs OPTIONAL MATCH
 
@@ -328,30 +288,26 @@ cross-reference.
 | `none(x IN list WHERE pred)` | `true` if `pred` holds for none |
 | `single(x IN list WHERE pred)` | `true` if `pred` holds for exactly one |
 
-```cypher
-MATCH (n)
+<QueryCodeBlock code={String.raw`MATCH (n)
 WHERE all(x IN n.scores WHERE x >= 0)
-RETURN n
+RETURN n;
 
 MATCH (n)
 WHERE any(x IN n.tags WHERE x = 'featured')
-RETURN n
+RETURN n;
 
 MATCH (n)
 WHERE single(x IN n.roles WHERE x = 'owner')
-RETURN n
-```
+RETURN n`} />
 
 ### Predicates on paths
 
 `path.nodes(p)` and `path.edges(p)` are lists, so path predicates work
 too:
 
-```cypher
-MATCH p = (a)-[:FOLLOWS*1..3]->(b)
+<QueryCodeBlock code={String.raw`MATCH p = (a)-[:FOLLOWS*1..3]->(b)
 WHERE all(r IN path.edges(p) WHERE r.active)
-RETURN p
-```
+RETURN p`} />
 
 See [Paths](../queries/paths#path-functions).
 
@@ -362,42 +318,33 @@ See [Paths](../queries/paths#path-functions).
 Use `list.unique(list)` to keep the first occurrence of each value
 inside one row. Use set-style helpers when comparing two lists.
 
-```cypher
-RETURN list.unique([1, 2, 2, 3, 3, 3])          -- [1, 2, 3]
-RETURN list.union([1, 2], [2, 3])               -- [1, 2, 3]
-RETURN list.intersect([1, 2, 3], [2, 3, 4])     -- [2, 3]
-RETURN list.diff([1, 2, 3], [2])                -- [1, 3]
-```
+<QueryCodeBlock code={String.raw`RETURN list.unique([1, 2, 2, 3, 3, 3]);          // [1, 2, 3]
+RETURN list.union([1, 2], [2, 3]);               // [1, 2, 3]
+RETURN list.intersect([1, 2, 3], [2, 3, 4]);     // [2, 3]
+RETURN list.diff([1, 2, 3], [2])                // [1, 3]`} />
 
 ### Sort a list
 
 Use `list.sort(list[, 'desc'])` for scalar lists in a single row. For
 row-level ordering, sort rows before collecting.
 
-```cypher
-RETURN list.sort([3, 1, 4, 1, 5, 9, 2, 6])
--- [1, 1, 2, 3, 4, 5, 6, 9]
-```
+<QueryCodeBlock code={String.raw`RETURN list.sort([3, 1, 4, 1, 5, 9, 2, 6])
+// [1, 1, 2, 3, 4, 5, 6, 9]`} />
 
 ### Zip two lists
 
-```cypher
-RETURN list.zip(['a', 'b', 'c'], [1, 2, 3])
--- [['a', 1], ['b', 2], ['c', 3]]
-```
+<QueryCodeBlock code={String.raw`RETURN list.zip(['a', 'b', 'c'], [1, 2, 3])
+// [['a', 1], ['b', 2], ['c', 3]]`} />
 
 ### Reduce to a single map
 
-```cypher
-WITH [{k: 'a', v: 1}, {k: 'b', v: 2}] AS kvs
+<QueryCodeBlock code={String.raw`WITH [{k: 'a', v: 1}, {k: 'b', v: 2}] AS kvs
 RETURN reduce(m = {}, kv IN kvs | m + {[kv.k]: kv.v})
--- {a: 1, b: 2}
-```
+// {a: 1, b: 2}`} />
 
 ### Running totals
 
-```cypher
-WITH [10, 20, 30, 40] AS xs
+<QueryCodeBlock code={String.raw`WITH [10, 20, 30, 40] AS xs
 RETURN reduce(
   acc = {total: 0, running: []},
   x IN xs |
@@ -406,8 +353,7 @@ RETURN reduce(
     running: acc.running + [acc.total + x]
   }
 ).running AS running_totals
--- [10, 30, 60, 100]
-```
+// [10, 30, 60, 100]`} />
 
 The accumulator is a map with two fields: `total` keeps the running
 sum between steps, `running` appends the new total on each step.
@@ -421,8 +367,7 @@ use it when you genuinely need every step.
 `min()` is an aggregate — for "pick the list element with the
 smallest key" within a single row, use `reduce`:
 
-```cypher
-WITH [{name: 'a', score: 9},
+<QueryCodeBlock code={String.raw`WITH [{name: 'a', score: 9},
       {name: 'b', score: 3},
       {name: 'c', score: 7}] AS rows
 RETURN reduce(
@@ -430,8 +375,7 @@ RETURN reduce(
   r IN list.rest(rows) |
   CASE WHEN r.score < best.score THEN r ELSE best END
 ) AS winner
--- {name: 'b', score: 3}
-```
+// {name: 'b', score: 3}`} />
 
 Start with the first element as `best`, walk `list.rest(rows)`, and on
 each step keep whichever of `best` vs. `r` has the smaller `score`.
@@ -441,8 +385,7 @@ type is stable. Swap `<` for `>` to turn this into a max-by.
 
 ### Bucket counts
 
-```cypher
-WITH [1, 7, 12, 3, 45, 9, 22] AS xs
+<QueryCodeBlock code={String.raw`WITH [1, 7, 12, 3, 45, 9, 22] AS xs
 RETURN reduce(
   buckets = {small: 0, medium: 0, large: 0},
   x IN xs |
@@ -451,48 +394,37 @@ RETURN reduce(
     WHEN x < 30 THEN buckets + {medium: buckets.medium + 1}
     ELSE             buckets + {large:  buckets.large  + 1}
   END
-) AS histogram
-```
+) AS histogram`} />
 
 ### Slice the first N of each group
 
-```cypher
-MATCH (u:User)-[:WROTE]->(p:Post)
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:WROTE]->(p:Post)
 WITH u, p ORDER BY p.published_at DESC
 WITH u, collect(p)[..3] AS recent_three
-RETURN u.name, [p IN recent_three | p.title]
-```
+RETURN u.name, [p IN recent_three | p.title]`} />
 
 ## Edge cases
 
 ### Out-of-range index
 
-```cypher
-RETURN [1, 2, 3][99]       -- null
-RETURN [1, 2, 3][-99]      -- null
-```
+<QueryCodeBlock code={String.raw`RETURN [1, 2, 3][99];       // null
+RETURN [1, 2, 3][-99]      // null`} />
 
 ### Slice with reversed bounds
 
-```cypher
-RETURN [1, 2, 3, 4][3..1]   -- []   (empty, not null, not an error)
-```
+<QueryCodeBlock code={String.raw`RETURN [1, 2, 3, 4][3..1]   // []   (empty, not null, not an error)`} />
 
 ### Operations on null lists
 
 Every list function returns `null` on a `null` input, including `value.size`.
 
-```cypher
-RETURN value.size(null), list.first(null), list.rest(null)    -- null, null, null
-```
+<QueryCodeBlock code={String.raw`RETURN value.size(null), list.first(null), list.rest(null)    // null, null, null`} />
 
 ### Heterogeneous lists
 
 Nothing enforces element-type uniformity.
 
-```cypher
-RETURN [1, 'two', true, null]
-```
+<QueryCodeBlock code={String.raw`RETURN [1, 'two', true, null]`} />
 
 Use a [`type.of`](./overview#type-conversion-and-checking) check in
 `all(… WHERE …)` if you need a guarantee.

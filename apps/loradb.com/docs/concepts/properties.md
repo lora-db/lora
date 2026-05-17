@@ -29,30 +29,24 @@ case-sensitive strings; values are any of the
 
 ### On create
 
-```cypher
-CREATE (:City {
+<QueryCodeBlock code={String.raw`CREATE (:City {
   name:       'Amsterdam',
   population: 918000,
   location:   {latitude: 52.37, longitude: 4.89}::POINT,
   founded:    '1275-10-27'::DATE,
   tags:       ['capital', 'port']
-})
-```
+})`} />
 
 ### On an existing entity
 
-```cypher
-MATCH (c:City {name: 'Amsterdam'})
-SET c.population = 920000
-```
+<QueryCodeBlock code={String.raw`MATCH (c:City {name: 'Amsterdam'})
+SET c.population = 920000`} />
 
 ### Patch with a parameter map
 
-```cypher
-MATCH (c:City {name: 'Amsterdam'})
+<QueryCodeBlock code={String.raw`MATCH (c:City {name: 'Amsterdam'})
 SET c += $patch
-RETURN c
-```
+RETURN c`} />
 
 See [`SET`](../queries/set-delete#set--properties) for the full rules
 on `=`, `+=`, and `null` assignment.
@@ -61,42 +55,32 @@ on `=`, `+=`, and `null` assignment.
 
 ### Dot access
 
-```cypher
-MATCH (c:City {name: 'Amsterdam'})
-RETURN c.name, c.population, c.location.latitude
-```
+<QueryCodeBlock code={String.raw`MATCH (c:City {name: 'Amsterdam'})
+RETURN c.name, c.population, c.location.latitude`} />
 
 ### Bracket access (computed key)
 
-```cypher
-MATCH (c:City {name: 'Amsterdam'})
+<QueryCodeBlock code={String.raw`MATCH (c:City {name: 'Amsterdam'})
 WITH c, 'population' AS k
-RETURN c[k]
-```
+RETURN c[k]`} />
 
 ### Full map
 
-```cypher
-MATCH (c:City) RETURN properties(c)
-```
+<QueryCodeBlock code={String.raw`MATCH (c:City) RETURN properties(c)`} />
 
 ### Key list
 
-```cypher
-MATCH (c:City) RETURN keys(c)   -- e.g. ['name', 'population', …]
-```
+<QueryCodeBlock code={String.raw`MATCH (c:City) RETURN keys(c)   // e.g. ['name', 'population', …]`} />
 
 ### Map projection
 
 Shape an entity into a map with only the keys you want — see also
 [Lists & Maps → Map projection](../data-types/lists-and-maps#map-projection):
 
-```cypher
-MATCH (c:City)
-RETURN c {.name, .population}
-RETURN c {.*}
-RETURN c {.name, density: c.population / c.area}
-```
+<QueryCodeBlock code={String.raw`MATCH (c:City)
+RETURN c {.name, .population};
+RETURN c {.*};
+RETURN c {.name, density: c.population / c.area}`} />
 
 ## Update
 
@@ -107,11 +91,9 @@ RETURN c {.name, density: c.population / c.area}
 | Replace the whole map | `SET n = {…}` |
 | Remove a property | `REMOVE n.prop` or `SET n.prop = null` |
 
-```cypher
-MATCH (c:City {name: 'Amsterdam'})
+<QueryCodeBlock code={String.raw`MATCH (c:City {name: 'Amsterdam'})
 SET c += {updated_at: temporal.now(), active: true}
-RETURN c
-```
+RETURN c`} />
 
 ### Replace vs merge
 
@@ -124,11 +106,9 @@ keys. Pick `+=` for partial updates (almost always what you want). See
 
 Identical shape — relationships have their own property map.
 
-```cypher
-MATCH (a)-[r:KNOWS]->(b)
+<QueryCodeBlock code={String.raw`MATCH (a)-[r:KNOWS]->(b)
 SET r.since = 2020, r.visibility = 'public'
-RETURN r.since
-```
+RETURN r.since`} />
 
 ## Value types
 
@@ -155,10 +135,8 @@ rule.
 
 ### Default via coalesce
 
-```cypher
-MATCH (u:User)
-RETURN u.name, coalesce(u.nickname, u.name) AS display
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User)
+RETURN u.name, coalesce(u.nickname, u.name) AS display`} />
 
 `coalesce` returns the first non-null argument, so users with a
 nickname get it under `display` and everyone else falls back to
@@ -166,19 +144,15 @@ nickname get it under `display` and everyone else falls back to
 
 ### Touch a timestamp on write
 
-```cypher
-MATCH (u:User {id: $id})
-SET u.last_seen = temporal.timestamp()
-```
+<QueryCodeBlock code={String.raw`MATCH (u:User {id: $id})
+SET u.last_seen = temporal.timestamp()`} />
 
 ### Migrate a property
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE u.full_name IS NOT NULL AND u.name IS NULL
 SET u.name = u.full_name
-REMOVE u.full_name
-```
+REMOVE u.full_name`} />
 
 Moves values from `full_name` to `name` on every matched row.
 Because the predicate filters out rows that already have a `name`,
@@ -187,18 +161,14 @@ skipped.
 
 ### Conditional add
 
-```cypher
-MERGE (u:User {id: $id})
+<QueryCodeBlock code={String.raw`MERGE (u:User {id: $id})
   ON CREATE SET u.created = temporal.timestamp()
-  SET u.updated = temporal.timestamp()
-```
+  SET u.updated = temporal.timestamp()`} />
 
 ### Copy properties from one entity to another
 
-```cypher
-MATCH (src:Template {id: $src}), (dst:Record {id: $dst})
-SET dst += properties(src)
-```
+<QueryCodeBlock code={String.raw`MATCH (src:Template {id: $src}), (dst:Record {id: $dst})
+SET dst += properties(src)`} />
 
 [`properties(src)`](../functions/overview#entity-introspection)
 returns every key on `src` as a map; `+=` merges that map into
@@ -208,44 +178,36 @@ record without nuking custom fields.
 
 ### Bulk patch via UNWIND
 
-```cypher
-UNWIND $patches AS patch
+<QueryCodeBlock code={String.raw`UNWIND $patches AS patch
 MATCH (u:User {id: patch.id})
-SET u += patch.fields
-```
+SET u += patch.fields`} />
 
 ### Derived property with CASE
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 SET u.tier = CASE
                WHEN u.score >= 1000 THEN 'platinum'
                WHEN u.score >=  100 THEN 'gold'
                ELSE                       'bronze'
-             END
-```
+             END`} />
 
 See [`CASE`](../queries/return-with#case-expressions).
 
 ### Compact property dump for debugging
 
-```cypher
-MATCH (n)
+<QueryCodeBlock code={String.raw`MATCH (n)
 WHERE id(n) = $raw_id
 RETURN labels(n)          AS labels,
        keys(n)            AS keys,
-       properties(n)      AS props
-```
+       properties(n)      AS props`} />
 
 ### Keys as a set
 
 `keys(n)` is a list. Use list predicates to ask set-style questions:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE all(k IN ['email', 'name', 'created_at'] WHERE k IN keys(u))
-RETURN u
-```
+RETURN u`} />
 
 One row per user who carries all three required keys — the list
 predicate [`all`](../functions/list#predicates-in-where) holds only
@@ -254,12 +216,10 @@ when every element of the input list passes the inner `WHERE`. Swap
 
 ### Nullable property check
 
-```cypher
+<QueryCodeBlock code={String.raw`MATCH (n)
+WHERE n.optional IS NULL     RETURN n;   // missing or explicitly null
 MATCH (n)
-WHERE n.optional IS NULL     RETURN n   -- missing or explicitly null
-MATCH (n)
-WHERE n.optional IS NOT NULL RETURN n   -- present and non-null
-```
+WHERE n.optional IS NOT NULL RETURN n   // present and non-null`} />
 
 ## Edge cases
 
@@ -278,10 +238,8 @@ Keys are always case-sensitive strings. `user.Name` ≠ `user.name`.
 Without a property type constraint, the same key can hold different
 types on different entities:
 
-```cypher
-CREATE (:Item {stock: 5})
-CREATE (:Item {stock: '5'})    -- legal but will surprise you
-```
+<QueryCodeBlock code={String.raw`CREATE (:Item {stock: 5})
+CREATE (:Item {stock: '5'})    // legal but will surprise you`} />
 
 Use [`type.of`](../functions/overview#type-conversion-and-checking)
 to detect at query time, normalise on write, or add a
@@ -294,13 +252,11 @@ Property filters without a label are broad scans. Always scope to a
 label when you can, and add an explicit index for hot top-level
 properties:
 
-```cypher
-CREATE INDEX user_email FOR (u:User) ON (u.email)
+<QueryCodeBlock code={String.raw`CREATE INDEX user_email FOR (u:User) ON (u.email)
 MATCH (u:User {email: $email}) RETURN u
 
--- Broad scan
-MATCH ({email: $email}) RETURN
-```
+// Broad scan
+MATCH ({email: $email}) RETURN`} />
 
 See [Queries → Indexes](../queries/indexes).
 
@@ -308,10 +264,8 @@ See [Queries → Indexes](../queries/indexes).
 
 Accessing nested map keys works:
 
-```cypher
-MATCH (c:City)
-RETURN c.location.latitude, c.tags[0]
-```
+<QueryCodeBlock code={String.raw`MATCH (c:City)
+RETURN c.location.latitude, c.tags[0]`} />
 
 But explicit indexes target top-level entity properties, not inner map
 paths. For frequent inner-key filters, promote to a dedicated property

@@ -71,13 +71,9 @@ See each platform guide for the language-specific shape.
 
 ## Running Your First Query
 
-```cypher
-CREATE (:Person {name: 'Ada'})
-```
+<QueryCodeBlock code={String.raw`CREATE (:Person {name: 'Ada'})`} />
 
-```cypher
-MATCH (p:Person) RETURN p.name
-```
+<QueryCodeBlock code={String.raw`MATCH (p:Person) RETURN p.name`} />
 
 In any binding that's two `execute` calls; the platform guide shows
 the language-specific syntax.

@@ -35,25 +35,23 @@ Cypher's `*` operator marks a relationship as variable-length — the
 traversal can cross any number of that relationship between the given
 bounds.
 
-```cypher
--- 1 to 2 hops
+<QueryCodeBlock code={String.raw`// 1 to 2 hops
 MATCH (a)-[:FOLLOWS*1..2]->(b) RETURN a, b
 
--- Exactly 3 hops
+;// Exactly 3 hops
 MATCH (a)-[:FOLLOWS*3..3]->(b) RETURN b
 
--- Up to 3 hops (same as 1..3)
+;// Up to 3 hops (same as 1..3)
 MATCH (a)-[:FOLLOWS*..3]->(b) RETURN a, b
 
--- 3 or more, unbounded
+;// 3 or more, unbounded
 MATCH (a)-[:FOLLOWS*3..]->(b) RETURN a, b
 
--- Any positive number of hops
+;// Any positive number of hops
 MATCH (a)-[:FOLLOWS*]->(b) RETURN a, b
 
--- Zero-hop included — `a` itself matches as `b`
-MATCH (a)-[:FOLLOWS*0..1]->(b) RETURN b
-```
+;// Zero-hop included — \`a\` itself matches as \`b\`
+MATCH (a)-[:FOLLOWS*0..1]->(b) RETURN b`} />
 
 Each match produces one row per distinct traversal, so a single `a`
 reached via two separate paths appears twice. Use
@@ -71,9 +69,7 @@ Nodes can still repeat on a single path — see
 
 Drop the type to traverse any relationship kind:
 
-```cypher
-MATCH (a)-[*1..3]-(b) RETURN a, b
-```
+<QueryCodeBlock code={String.raw`MATCH (a)-[*1..3]-(b) RETURN a, b`} />
 
 This is rarely what you want on non-trivial graphs — the result set
 explodes fast.
@@ -83,12 +79,10 @@ explodes fast.
 `MATCH p = (…)-[…]->(…)` binds the whole path to `p`. Use the built-in
 path functions to inspect it.
 
-```cypher
-MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
+<QueryCodeBlock code={String.raw`MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
 RETURN path.length(p)        AS hops,
        path.nodes(p)         AS via,
-       path.edges(p) AS rels
-```
+       path.edges(p) AS rels`} />
 
 ### Path functions
 
@@ -102,11 +96,9 @@ RETURN path.length(p)        AS hops,
 
 ### Project intermediate nodes
 
-```cypher
-MATCH p = (a:City {name: 'Amsterdam'})-[:ROUTE*2..3]->(b:City)
+<QueryCodeBlock code={String.raw`MATCH p = (a:City {name: 'Amsterdam'})-[:ROUTE*2..3]->(b:City)
 RETURN a.name, b.name,
-       [n IN path.nodes(p) | n.name] AS via
-```
+       [n IN path.nodes(p) | n.name] AS via`} />
 
 ## Shortest paths
 
@@ -114,12 +106,10 @@ RETURN a.name, b.name,
 
 Returns one path of minimum length per `(start, end)` pair.
 
-```cypher
-MATCH p = shortestPath(
+<QueryCodeBlock code={String.raw`MATCH p = shortestPath(
   (a:Station {name: 'Amsterdam'})-[:ROUTE*]->(b:Station {name: 'Den Haag'})
 )
-RETURN p, path.length(p)
-```
+RETURN p, path.length(p)`} />
 
 Hop count here is the number of `:ROUTE` relationships traversed —
 every relationship has cost 1, regardless of any weight property.
@@ -132,19 +122,15 @@ minimum-length path.
 
 Returns every path tied for the minimum length.
 
-```cypher
-MATCH p = allShortestPaths(
+<QueryCodeBlock code={String.raw`MATCH p = allShortestPaths(
   (a:Station {name: 'Amsterdam'})-[:ROUTE*]->(b:Station {name: 'Den Haag'})
 )
-RETURN p, path.length(p)
-```
+RETURN p, path.length(p)`} />
 
 ### Reachability check
 
-```cypher
-MATCH p = shortestPath((a:Node {id: $src})-[*]-(b:Node {id: $dst}))
-RETURN path.length(p) AS hops
-```
+<QueryCodeBlock code={String.raw`MATCH p = shortestPath((a:Node {id: $src})-[*]-(b:Node {id: $dst}))
+RETURN path.length(p) AS hops`} />
 
 One row back when a path exists; **zero rows** when nothing connects
 `a` and `b` — the outer `MATCH` emits nothing, so the `RETURN` never
@@ -154,12 +140,10 @@ back with `hops = null` for the unreachable case.
 
 ### Shortest path with type filter
 
-```cypher
-MATCH p = shortestPath(
+<QueryCodeBlock code={String.raw`MATCH p = shortestPath(
   (a:User {id: $from})-[:FOLLOWS*]->(b:User {id: $to})
 )
-RETURN path.length(p)
-```
+RETURN path.length(p)`} />
 
 Only `:FOLLOWS` edges count as hops.
 
@@ -170,40 +154,32 @@ Only `:FOLLOWS` edges count as hops.
 Attach a one-to-many result inline — no extra `MATCH` needed. See also
 [List Functions → pattern comprehension](../functions/list#pattern-comprehension).
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name,
-       [(p)-[:KNOWS]->(f) | f.name] AS friends
-```
+       [(p)-[:KNOWS]->(f) | f.name] AS friends`} />
 
 With a filter:
 
-```cypher
-MATCH (p:Person)
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
 RETURN p.name,
-       [(p)-[:WROTE]->(post:Post) WHERE post.published | post.title] AS posts
-```
+       [(p)-[:WROTE]->(post:Post) WHERE post.published | post.title] AS posts`} />
 
 ### Existence check
 
 Use [`EXISTS { pattern }`](./where#pattern-existence) to filter rows by
 whether a pattern matches — without introducing extra rows.
 
-```cypher
-MATCH (n:User)
+<QueryCodeBlock code={String.raw`MATCH (n:User)
 WHERE EXISTS { (n)-[:FOLLOWS]->() }
-RETURN n
-```
+RETURN n`} />
 
 ## Common patterns
 
 ### Friends-of-friends
 
-```cypher
-MATCH (me:User {id: $id})-[:FOLLOWS*2..2]->(fof)
+<QueryCodeBlock code={String.raw`MATCH (me:User {id: $id})-[:FOLLOWS*2..2]->(fof)
 WHERE fof <> me
-RETURN DISTINCT fof.name
-```
+RETURN DISTINCT fof.name`} />
 
 `*2..2` forces exactly two hops — direct follows don't count. A
 given `fof` can be reached through multiple mutual friends, so
@@ -212,10 +188,8 @@ given `fof` can be reached through multiple mutual friends, so
 
 ### Reachable set
 
-```cypher
-MATCH (start:Node {id: $id})-[*0..5]-(n)
-RETURN DISTINCT n
-```
+<QueryCodeBlock code={String.raw`MATCH (start:Node {id: $id})-[*0..5]-(n)
+RETURN DISTINCT n`} />
 
 Every node within 5 hops, in any direction. `*0..5` includes the
 start node itself (via the zero-hop interpretation), so `n` covers
@@ -225,42 +199,34 @@ component — keep a cap.
 
 ### Shortest route length
 
-```cypher
-MATCH p = shortestPath(
+<QueryCodeBlock code={String.raw`MATCH p = shortestPath(
   (a:City {name: $from})-[:ROAD*]->(b:City {name: $to})
 )
-RETURN path.length(p) AS hops
-```
+RETURN path.length(p) AS hops`} />
 
 ### All nearby neighbors of each node
 
-```cypher
-MATCH (n:Node)
+<QueryCodeBlock code={String.raw`MATCH (n:Node)
 RETURN n,
-       [(n)-[*1..2]-(m) | m] AS within_two_hops
-```
+       [(n)-[*1..2]-(m) | m] AS within_two_hops`} />
 
 ### Path with property check along the way
 
-```cypher
-MATCH p = (a:User {id: $from})-[:FOLLOWS*1..3]->(b:User {id: $to})
+<QueryCodeBlock code={String.raw`MATCH p = (a:User {id: $from})-[:FOLLOWS*1..3]->(b:User {id: $to})
 WHERE all(r IN path.edges(p) WHERE r.active)
-RETURN p
-```
+RETURN p`} />
 
 Filter the whole path with [list predicates](../functions/list#predicates-in-where)
 like `all`, `any`, `none`.
 
 ### Path with minimum intermediate-property value
 
-```cypher
-MATCH p = (a:Station {code: $from})-[:ROUTE*1..6]->(b:Station {code: $to})
+<QueryCodeBlock code={String.raw`MATCH p = (a:Station {code: $from})-[:ROUTE*1..6]->(b:Station {code: $to})
 WHERE all(r IN path.edges(p) WHERE r.status = 'open')
 WITH p, reduce(cost = 0, r IN path.edges(p) | cost + r.km) AS km
 ORDER BY km ASC
 LIMIT 1
-RETURN p, km
-```
+RETURN p, km`} />
 
 A manual "cheapest path of length ≤ 6" — `shortestPath` counts hops
 only, so for weighted traversals you [`reduce`](../functions/list#reduce)
@@ -268,11 +234,9 @@ the relationship list yourself, then pick the minimum.
 
 ### Excluded node on path
 
-```cypher
-MATCH p = (a:User {id: $from})-[:FOLLOWS*]->(b:User {id: $to})
+<QueryCodeBlock code={String.raw`MATCH p = (a:User {id: $from})-[:FOLLOWS*]->(b:User {id: $to})
 WHERE none(n IN path.nodes(p) WHERE n.blocked)
-RETURN p
-```
+RETURN p`} />
 
 Path must not pass through any `blocked` user.
 
@@ -292,20 +256,16 @@ uniqueness yourself.
 
 #### The duplicate in practice
 
-```cypher
-CREATE
+<QueryCodeBlock code={String.raw`CREATE
   (a:Stop {code: 'A'}),
   (b:Stop {code: 'B'}),
   (c:Stop {code: 'C'}),
   (a)-[:NEXT]->(b),
   (b)-[:NEXT]->(c),
-  (c)-[:NEXT]->(a)
-```
+  (c)-[:NEXT]->(a)`} />
 
-```cypher
-MATCH p = (:Stop {code: 'A'})-[:NEXT*1..4]->(end)
-RETURN [n IN path.nodes(p) | n.code] AS path
-```
+<QueryCodeBlock code={String.raw`MATCH p = (:Stop {code: 'A'})-[:NEXT*1..4]->(end)
+RETURN [n IN path.nodes(p) | n.code] AS path`} />
 
 | path |
 |---|
@@ -323,16 +283,14 @@ size of its de-duplicated form. LoraDB has no `distinct(list)`
 helper, so express dedup as "keep only elements whose first
 occurrence is at their own index":
 
-```cypher
-MATCH p = (:Stop {code: 'A'})-[:NEXT*1..4]->(end)
+<QueryCodeBlock code={String.raw`MATCH p = (:Stop {code: 'A'})-[:NEXT*1..4]->(end)
 WITH p,
      [n IN path.nodes(p) | id(n)]                                        AS ids
 WITH p, ids,
      [i IN list.range(0, value.size(ids) - 1) WHERE NOT ids[i] IN ids[..i]
       | ids[i]]                                                     AS unique_ids
 WHERE value.size(ids) = value.size(unique_ids)
-RETURN [n IN path.nodes(p) | n.code] AS path
-```
+RETURN [n IN path.nodes(p) | n.code] AS path`} />
 
 Same graph:
 
@@ -381,13 +339,11 @@ See [Limitations](../limitations) for the current list-function gaps.
 `shortestPath` has no "longest" counterpart. Bound the depth, collect,
 and sort:
 
-```cypher
-MATCH p = (a:User {id: $id})-[:FOLLOWS*1..5]->(b:User)
+<QueryCodeBlock code={String.raw`MATCH p = (a:User {id: $id})-[:FOLLOWS*1..5]->(b:User)
 WITH a, b, p
 ORDER BY path.length(p) DESC
 LIMIT 1
-RETURN p, path.length(p) AS hops
-```
+RETURN p, path.length(p) AS hops`} />
 
 Expensive on dense graphs — prefer a bounded variable-length match
 with a small `*..N` cap.
@@ -400,11 +356,9 @@ If no path connects `a` and `b`, the `MATCH` emits zero rows. A
 following [`RETURN path.length(p)`](#path-functions) never runs. Wrap with
 [`OPTIONAL MATCH`](./match#optional-match) if you still want a row:
 
-```cypher
-MATCH (a:User {id: $from}), (b:User {id: $to})
+<QueryCodeBlock code={String.raw`MATCH (a:User {id: $from}), (b:User {id: $to})
 OPTIONAL MATCH p = shortestPath((a)-[:FOLLOWS*]->(b))
-RETURN a, b, path.length(p) AS hops    -- hops = null if unreachable
-```
+RETURN a, b, path.length(p) AS hops    // hops = null if unreachable`} />
 
 ### Self-loops
 
@@ -416,13 +370,11 @@ RETURN a, b, path.length(p) AS hops    -- hops = null if unreachable
 Unbounded variable-length traversals can be expensive. Bound with a
 maximum depth whenever the answer is "and not further":
 
-```cypher
--- Good — bounded
+<QueryCodeBlock code={String.raw`// Good — bounded
 MATCH (a)-[:KNOWS*1..6]-(b) …
 
--- Risky on large graphs — unbounded
-MATCH (a)-[:KNOWS*]-(b) …
-```
+// Risky on large graphs — unbounded
+MATCH (a)-[:KNOWS*]-(b) …`} />
 
 ### Zero-hop semantics
 

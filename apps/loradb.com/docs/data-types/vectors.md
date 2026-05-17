@@ -31,12 +31,10 @@ API, local model, batch job) and pass them in as parameters.
 
 ## Construction
 
-```cypher
-RETURN [1, 2, 3]::VECTOR<INTEGER>(3) AS v
-RETURN [1.05, 0.123, 5]::VECTOR<FLOAT32>(3) AS v
-RETURN $embedding::VECTOR<FLOAT32>(384) AS v
-RETURN CAST('[1.05e+00, 0.123, 5]' AS VECTOR<FLOAT>(3)) AS v
-```
+<QueryCodeBlock code={String.raw`RETURN [1, 2, 3]::VECTOR<INTEGER>(3) AS v;
+RETURN [1.05, 0.123, 5]::VECTOR<FLOAT32>(3) AS v;
+RETURN $embedding::VECTOR<FLOAT32>(384) AS v;
+RETURN CAST('[1.05e+00, 0.123, 5]' AS VECTOR<FLOAT>(3)) AS v`} />
 
 Use `value::VECTOR<COORD>(DIM)` for compact handwritten Cypher, or
 `CAST(value AS VECTOR<COORD>(DIM))` when that reads better in generated
@@ -76,9 +74,7 @@ The coordinate type is written inside `VECTOR<...>`. If the coordinate
 type or dimension must come from host code dynamically, build a type
 string and use the lower-level dynamic helper:
 
-```cypher
-RETURN cast.to($values, $type_name) AS v
-```
+<QueryCodeBlock code={String.raw`RETURN cast.to($values, $type_name) AS v`} />
 
 ### Coercion rules
 
@@ -106,22 +102,18 @@ RETURN cast.to($values, $type_name) AS v
 
 Vectors can be stored directly as node or relationship properties:
 
-```cypher
-CREATE (:Doc {id: 1, embedding: [1, 2, 3]::VECTOR<INTEGER>(3)})
+<QueryCodeBlock code={String.raw`CREATE (:Doc {id: 1, embedding: [1, 2, 3]::VECTOR<INTEGER>(3)});
 
 MATCH (a:Doc {id: 1}), (b:Doc {id: 2})
-CREATE (a)-[:SIM {score: [0.9, 0.1]::VECTOR<FLOAT32>(2)}]->(b)
+CREATE (a)-[:SIM {score: [0.9, 0.1]::VECTOR<FLOAT32>(2)}]->(b);
 
-MATCH (d:Doc {id: 1}) SET d.embedding = [0.1, 0.2]::VECTOR<FLOAT32>(2)
-MATCH (d:Doc {id: 1}) SET d += {embedding: [1, 2]::VECTOR<FLOAT32>(2)}
-```
+MATCH (d:Doc {id: 1}) SET d.embedding = [0.1, 0.2]::VECTOR<FLOAT32>(2);
+MATCH (d:Doc {id: 1}) SET d += {embedding: [1, 2]::VECTOR<FLOAT32>(2)}`} />
 
 A vector is also a legal map value — a property map containing a
 vector is stored intact:
 
-```cypher
-CREATE (:Doc {id: 1, meta: {embedding: [1, 2, 3]::VECTOR<INTEGER>(3)}})
-```
+<QueryCodeBlock code={String.raw`CREATE (:Doc {id: 1, meta: {embedding: [1, 2, 3]::VECTOR<INTEGER>(3)}})`} />
 
 ### Restriction: no list-of-vectors as a property
 
@@ -130,11 +122,9 @@ inside a map nested under the list) cannot be stored as a property.
 The engine rejects the write at property-conversion time — this is a
 shape decision, not an oversight:
 
-```cypher
--- Rejected:
+<QueryCodeBlock code={String.raw`// Rejected:
 CREATE (:Doc {embeddings: [[1,2,3]::VECTOR<INTEGER>(3)]})
-CREATE (:Doc {meta: {embeddings: [[1,2,3]::VECTOR<INTEGER>(3)]}})
-```
+CREATE (:Doc {meta: {embeddings: [[1,2,3]::VECTOR<INTEGER>(3)]}})`} />
 
 If you need many embeddings per document, hang them off separate
 nodes connected by a relationship, each with its own vector property
@@ -148,15 +138,13 @@ only to the write path.
 
 Create a vector index on a single node or relationship property:
 
-```cypher
-CREATE VECTOR INDEX doc_embedding
+<QueryCodeBlock code={String.raw`CREATE VECTOR INDEX doc_embedding
 FOR (d:Doc)
 ON (d.embedding)
 OPTIONS {indexConfig: {
-  `vector.dimensions`: 384,
-  `vector.similarity_function`: 'cosine'
-}};
-```
+  \`vector.dimensions\`: 384,
+  \`vector.similarity_function\`: 'cosine'
+}};`} />
 
 Required options:
 
@@ -165,18 +153,14 @@ Required options:
 
 Query the indexed node scope with `db.index.vector.queryNodes`:
 
-```cypher
-CALL db.index.vector.queryNodes('doc_embedding', 10, $query)
-YIELD node, score;
-```
+<QueryCodeBlock code={String.raw`CALL db.index.vector.queryNodes('doc_embedding', 10, $query)
+YIELD node, score;`} />
 
 Relationship vector indexes use the relationship procedure and yield
 `relationship`:
 
-```cypher
-CALL db.index.vector.queryRelationships('rel_embedding', 10, [1, 0, 0]::VECTOR<FLOAT32>(3))
-YIELD relationship, score;
-```
+<QueryCodeBlock code={String.raw`CALL db.index.vector.queryRelationships('rel_embedding', 10, [1, 0, 0]::VECTOR<FLOAT32>(3))
+YIELD relationship, score;`} />
 
 The procedure returns the yielded columns directly, sorted by
 descending score. The query vector can be a `VECTOR`, a numeric list,
@@ -193,22 +177,18 @@ structure is future work.
 You can also express similarity directly with `ORDER BY … LIMIT k`
 over the full candidate set:
 
-```cypher
-MATCH (d:Doc)
+<QueryCodeBlock code={String.raw`MATCH (d:Doc)
 RETURN d.id AS id
 ORDER BY vector.similarity(d.embedding, $query) DESC
-LIMIT 10
-```
+LIMIT 10`} />
 
 Or, using `WITH` to carry the score forward:
 
-```cypher
-MATCH (n:Node)
+<QueryCodeBlock code={String.raw`MATCH (n:Node)
 WITH n, vector.similarity($query, n.vector, 'euclidean') AS score
 RETURN n.id AS id, score
 ORDER BY score DESC
-LIMIT 2
-```
+LIMIT 2`} />
 
 Every `MATCH` candidate is scored, so cost is `O(n)` in the number of
 matched nodes.
@@ -218,15 +198,13 @@ matched nodes.
 The reason VECTOR lives next to the graph — score candidates by
 similarity, then use relationships to explain or filter them:
 
-```cypher
-MATCH (d:Doc)
+<QueryCodeBlock code={String.raw`MATCH (d:Doc)
 WITH d, vector.similarity(d.embedding, $query) AS score
 MATCH (d)-[:MENTIONS]->(e:Entity)
 WHERE e.type = $entity_type
 RETURN d.id, d.title, score, collect(e.name) AS entities
 ORDER BY score DESC
-LIMIT 5
-```
+LIMIT 5`} />
 
 ### Bulk insert
 
@@ -235,10 +213,8 @@ list of maps. Each row becomes a standalone `CREATE`, so each vector
 flows through property conversion as a *top-level* property (not a
 list entry), and the property rule is satisfied by construction:
 
-```cypher
-UNWIND $batch AS row
-CREATE (:Doc {id: row.id, title: row.title, embedding: row.embedding})
-```
+<QueryCodeBlock code={String.raw`UNWIND $batch AS row
+CREATE (:Doc {id: row.id, title: row.title, embedding: row.embedding})`} />
 
 ```ts
 import { vector } from "@loradb/lora-node";
@@ -281,10 +257,8 @@ before accumulation, then widened back to `f64` for the result).
 
 ### Bounded similarity in `[0, 1]`
 
-```cypher
-vector.similarity(a, b)
-vector.similarity(a, b, 'euclidean')
-```
+<QueryCodeBlock code={String.raw`vector.similarity(a, b)
+vector.similarity(a, b, 'euclidean')`} />
 
 Both accept a `VECTOR` **or** a `LIST<NUMBER>` on either side. Lists
 are coerced on the fly to a `FLOAT32` vector whose dimension equals
@@ -304,14 +278,12 @@ error.
 
 ### Signed distance metrics
 
-```cypher
-vector.distance(a, b, EUCLIDEAN)
+<QueryCodeBlock code={String.raw`vector.distance(a, b, EUCLIDEAN)
 vector.distance(a, b, EUCLIDEAN_SQUARED)
 vector.distance(a, b, MANHATTAN)
 vector.distance(a, b, COSINE)
 vector.distance(a, b, DOT)
-vector.distance(a, b, HAMMING)
-```
+vector.distance(a, b, HAMMING)`} />
 
 Both operands must be `VECTOR` values with matching dimensions — a
 plain list is **rejected** here (unlike the similarity functions).
@@ -332,10 +304,8 @@ metric name is an error. A dimension mismatch is an error.
 
 ### Vector norms
 
-```cypher
-vector.norm(v, EUCLIDEAN)   -- sqrt(Σ xᵢ²)
-vector.norm(v, MANHATTAN)   -- Σ |xᵢ|
-```
+<QueryCodeBlock code={String.raw`vector.norm(v, EUCLIDEAN)   // sqrt(Σ xᵢ²)
+vector.norm(v, MANHATTAN)   // Σ |xᵢ|`} />
 
 Metric matching is case-insensitive; identifiers and quoted strings
 both work. `null` vector or `null` metric returns `null`. Unknown

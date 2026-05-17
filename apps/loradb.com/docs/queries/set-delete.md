@@ -28,30 +28,24 @@ whose `MATCH` found nothing is a silent no-op.
 
 ### Set a single property
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 SET n.age = 33
-RETURN n
-```
+RETURN n`} />
 
 Set multiple keys in one clause by chaining with commas:
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 SET n.age = 33, n.updated = temporal.timestamp()
-RETURN n
-```
+RETURN n`} />
 
 ### Replace all properties (`=`)
 
 `SET n = {...}` **replaces** the full property map. Every key not in
 the new map is dropped — including keys you never touched.
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 SET n = {name: 'Alice', age: 33}
-RETURN n
-```
+RETURN n`} />
 
 Almost always a mistake unless you really mean it. Use `+=` to merge. See
 [Troubleshooting → SET wiped my properties](../troubleshooting#set-wiped-my-properties).
@@ -60,19 +54,15 @@ Almost always a mistake unless you really mean it. Use `+=` to merge. See
 
 `SET n += {...}` adds / overwrites keys without removing anything else.
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 SET n += {age: 33, city: 'Amsterdam'}
-RETURN n
-```
+RETURN n`} />
 
 Combines naturally with parameter maps for patch-style updates:
 
-```cypher
-MATCH (u:User {id: $id})
+<QueryCodeBlock code={String.raw`MATCH (u:User {id: $id})
 SET u += $patch
-RETURN u
-```
+RETURN u`} />
 
 Where `$patch = {name: 'New Name', active: true}`.
 
@@ -81,32 +71,26 @@ Where `$patch = {name: 'New Name', active: true}`.
 The right-hand side is any expression — reference other properties, call
 functions, do arithmetic.
 
-```cypher
-MATCH (n:User) SET n.doubled = n.age * 2       RETURN n
-MATCH (n:User) SET n.greeting = 'Hello ' + n.name RETURN n
-MATCH (n:User) SET n.updated = temporal.timestamp()     RETURN n
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User) SET n.doubled = n.age * 2       RETURN n;
+MATCH (n:User) SET n.greeting = 'Hello ' + n.name RETURN n;
+MATCH (n:User) SET n.updated = temporal.timestamp()     RETURN n`} />
 
 ### Clear a property
 
 Setting a property to `null` removes it — the property simply ceases to
 exist on that entity.
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 SET n.archived = null
-RETURN n
-```
+RETURN n`} />
 
 `REMOVE n.prop` does the same.
 
 ### Copy properties from another entity
 
-```cypher
-MATCH (src:Template {id: $src}), (dst:Record {id: $dst})
+<QueryCodeBlock code={String.raw`MATCH (src:Template {id: $src}), (dst:Record {id: $dst})
 SET dst += properties(src)
-RETURN dst
-```
+RETURN dst`} />
 
 [`properties()`](../functions/overview#entity-introspection) returns the
 full map; `+=` folds it in.
@@ -115,33 +99,27 @@ full map; `+=` folds it in.
 
 Adding a label on a node already carrying it is a no-op.
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 SET n:Admin
-RETURN labels(n)
+RETURN labels(n);
 
 MATCH (n:User {name: 'Alice'})
 SET n:Admin:Verified
-RETURN labels(n)
-```
+RETURN labels(n)`} />
 
 ## REMOVE
 
 ### Remove a label
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 REMOVE n:Admin
-RETURN labels(n)
-```
+RETURN labels(n)`} />
 
 ### Remove a property
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 REMOVE n.age
-RETURN n
-```
+RETURN n`} />
 
 Equivalent to `SET n.age = null`. Use whichever reads more clearly at
 the call site.
@@ -150,20 +128,16 @@ the call site.
 
 Chain with commas:
 
-```cypher
-MATCH (n:User {name: 'Alice'})
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
 REMOVE n:Admin, n:Verified, n.lastAudit
-RETURN n
-```
+RETURN n`} />
 
 ## DELETE
 
 ### Delete a node
 
-```cypher
-MATCH (n:User {name: 'Temp'})
-DELETE n
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Temp'})
+DELETE n`} />
 
 A plain `DELETE` on a node requires the node to have **no
 relationships**. Otherwise the executor returns
@@ -174,28 +148,22 @@ relationships**. Otherwise the executor returns
 
 Removes the node **and** every relationship attached to it in one step.
 
-```cypher
-MATCH (n:User {name: 'Alice'})
-DETACH DELETE n
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User {name: 'Alice'})
+DETACH DELETE n`} />
 
 Use this for ordinary "delete the user" semantics. Plain `DELETE` is
 rarely the right call on a node.
 
 ### Delete a relationship
 
-```cypher
-MATCH (a:User {name: 'Alice'})-[r:FOLLOWS]->(b:User)
-DELETE r
-```
+<QueryCodeBlock code={String.raw`MATCH (a:User {name: 'Alice'})-[r:FOLLOWS]->(b:User)
+DELETE r`} />
 
 Node endpoints survive — the edge alone is removed.
 
 ### Delete everything
 
-```cypher
-MATCH (n) DETACH DELETE n
-```
+<QueryCodeBlock code={String.raw`MATCH (n) DETACH DELETE n`} />
 
 Empties the graph. Note: there is no `TRUNCATE` clause. All bindings
 expose a `clear()` helper that is faster and clearer — see
@@ -206,41 +174,33 @@ expose a `clear()` helper that is faster and clearer — see
 
 ### Upsert (create-or-update)
 
-```cypher
-MERGE (u:User {id: $id})
+<QueryCodeBlock code={String.raw`MERGE (u:User {id: $id})
   ON CREATE SET u.created = temporal.timestamp()
   SET u.name = $name, u.updated = temporal.timestamp()
-RETURN u
-```
+RETURN u`} />
 
 `ON CREATE` only runs on insert; the trailing `SET` runs in both
 branches. See [`MERGE`](./unwind-merge#merge).
 
 ### Patch with merge-semantics
 
-```cypher
-MATCH (u:User {id: $id})
+<QueryCodeBlock code={String.raw`MATCH (u:User {id: $id})
 SET u += $patch
-RETURN u
-```
+RETURN u`} />
 
 Safe pattern for partial updates from a client payload.
 
 ### Touching a timestamp
 
-```cypher
-MATCH (n:User {id: $id})
-SET n.last_seen = temporal.timestamp()
-```
+<QueryCodeBlock code={String.raw`MATCH (n:User {id: $id})
+SET n.last_seen = temporal.timestamp()`} />
 
 ### Convert / migrate a property
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE u.full_name IS NOT NULL AND u.name IS NULL
 SET u.name = u.full_name
-REMOVE u.full_name
-```
+REMOVE u.full_name`} />
 
 Moves the value from `full_name` to `name`, then drops the old
 key — two mutations per matched row, in order. The `WHERE` is
@@ -249,11 +209,9 @@ have both keys would lose their existing `name`.
 
 ### Conditional label
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 WHERE u.score >= 100
-SET u:Pro
-```
+SET u:Pro`} />
 
 Adds the `:Pro` label to every qualifying user. The node keeps its
 existing labels — `SET n:Label` never replaces, only adds. Running
@@ -264,35 +222,29 @@ it again is a no-op for users already labelled `:Pro`.
 [`CASE`](./return-with#case-expressions) is an expression, so it
 composes into `SET`. Single-row-aware derivation:
 
-```cypher
-MATCH (u:User)
+<QueryCodeBlock code={String.raw`MATCH (u:User)
 SET u.tier = CASE
                WHEN u.score >= 1000 THEN 'platinum'
                WHEN u.score >=  100 THEN 'gold'
                WHEN u.score >=   10 THEN 'silver'
                ELSE                       'bronze'
-             END
-```
+             END`} />
 
 Pairs cleanly with `MERGE`:
 
-```cypher
-MERGE (u:User {id: $id})
+<QueryCodeBlock code={String.raw`MERGE (u:User {id: $id})
   ON CREATE SET u.tier = 'bronze', u.created = temporal.timestamp()
   SET u.last_seen = temporal.timestamp(),
       u.tier      = CASE
                       WHEN u.score >= 100 THEN 'gold'
                       ELSE                       coalesce(u.tier, 'bronze')
-                    END
-```
+                    END`} />
 
 ### Bulk patch via UNWIND
 
-```cypher
-UNWIND $patches AS patch
+<QueryCodeBlock code={String.raw`UNWIND $patches AS patch
 MATCH (u:User {id: patch.id})
-SET u += patch.fields
-```
+SET u += patch.fields`} />
 
 Where `$patches = [{id: 1, fields: {name: '…'}}, …]`. One
 parse, one plan, N updates — per-row `MATCH` resolves the target,
@@ -306,10 +258,8 @@ parse, one plan, N updates — per-row `MATCH` resolves the target,
 A broad `MATCH` with a `SET` runs once per matched row. This is
 intentional and powerful, but easy to misuse:
 
-```cypher
--- Sets archived=true on EVERY user
-MATCH (u:User) SET u.archived = true
-```
+<QueryCodeBlock code={String.raw`// Sets archived=true on EVERY user
+MATCH (u:User) SET u.archived = true`} />
 
 Narrow the `MATCH` with [`WHERE`](./where) or inline properties to scope
 the change.

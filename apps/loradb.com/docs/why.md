@@ -73,11 +73,9 @@ An agent's context is a graph — tools, entities, observations,
 decisions, and the links between them. Retrieval over that context is
 a graph question:
 
-```cypher
-MATCH (t:Task {id: $task})-[:DEPENDS_ON*1..3]->(e:Entity)
+<QueryCodeBlock code={String.raw`MATCH (t:Task {id: $task})-[:DEPENDS_ON*1..3]->(e:Entity)
 OPTIONAL MATCH (e)-[:OBSERVED_IN]->(s:Session)
-RETURN e.id, e.summary, collect(DISTINCT s.id) AS sessions
-```
+RETURN e.id, e.summary, collect(DISTINCT s.id) AS sessions`} />
 
 Vectors are great for similarity. Graphs are great for _structure_ —
 what depends on what, what's been tried, what contradicts what. Most
@@ -103,11 +101,9 @@ Stream processors resolve entities, infer relationships, and emit
 enrichments. Doing that in memory next to the handler avoids a hot
 round-trip per event. Cypher makes the rules readable:
 
-```cypher
-MATCH (u:User {id: $user})-[:PLACED]->(o:Order)-[:CONTAINS]->(p:Product)
+<QueryCodeBlock code={String.raw`MATCH (u:User {id: $user})-[:PLACED]->(o:Order)-[:CONTAINS]->(p:Product)
 WHERE o.placed_at >= temporal.now() - 'P7D'::DURATION
-RETURN p.category, count(*) AS recent
-```
+RETURN p.category, count(*) AS recent`} />
 
 ### Real-time reasoning over relationships
 
@@ -122,11 +118,9 @@ graph query says what you mean in one expression.
 Labels and types are first-class. The model is what you read in the
 query:
 
-```cypher
-CREATE (ada:Person {name: 'Ada'})
+<QueryCodeBlock code={String.raw`CREATE (ada:Person {name: 'Ada'})
 CREATE (grace:Person {name: 'Grace'})
-CREATE (ada)-[:INFLUENCED {year: 1843}]->(grace)
-```
+CREATE (ada)-[:INFLUENCED {year: 1843}]->(grace)`} />
 
 No join table, no enum column, no convention to remember.
 
@@ -135,12 +129,10 @@ No join table, no enum column, no convention to remember.
 <CypherCode code="WITH" /> pipes one stage's output into the next, so
 non-trivial questions read top-to-bottom:
 
-```cypher
-MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})
+<QueryCodeBlock code={String.raw`MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})
 WITH u, count(o) AS orders
 WHERE orders > 1
-RETURN u.email, orders ORDER BY orders DESC
-```
+RETURN u.email, orders ORDER BY orders DESC`} />
 
 Filter, aggregate, filter again — one expression, no temp tables.
 
