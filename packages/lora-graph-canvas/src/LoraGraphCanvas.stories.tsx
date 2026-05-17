@@ -572,3 +572,43 @@ export const LabeledStory: Story = {
   },
 };
 LabeledStory.storyName = "Labels on nodes & links";
+
+export const ConfirmDeleteStory: Story = {
+  render: () => (
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <LoraGraphCanvas
+        defaultData={{
+          nodes: [{ id: "a" }, { id: "b" }, { id: "c" }],
+          links: [
+            { source: "a", target: "b" },
+            { source: "b", target: "c" },
+          ],
+        }}
+        // Synchronous `window.confirm` doubles as a no-dependency demo
+        // of the async guard contract — the canvas will await whatever
+        // we return, so a sync boolean works the same as a promise.
+        onBeforeNodeDelete={(nodes, { source }) =>
+          window.confirm(
+            `Delete ${nodes.length} node(s) via ${source}?\n${nodes
+              .map((n) => `• ${String(n.id)}`)
+              .join("\n")}`,
+          )
+        }
+        onBeforeLinkDelete={(links, { source }) =>
+          window.confirm(
+            `Delete ${links.length} link(s) via ${source}?`,
+          )
+        }
+      />
+    </div>
+  ),
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Wires `onBeforeNodeDelete` / `onBeforeLinkDelete` so every delete path (Backspace, toolbar, context menu, selection panel, cut) routes through a `window.confirm`. Returning `false` cancels — the graph is unchanged. The same guard fires for `handle.removeNode` calls with `source: \"imperative\"`, which a host can short-circuit when it's the caller.",
+      },
+    },
+  },
+};
+ConfirmDeleteStory.storyName = "Confirm before delete";

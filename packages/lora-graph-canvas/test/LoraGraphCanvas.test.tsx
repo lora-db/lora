@@ -107,7 +107,7 @@ describe("<LoraGraphCanvas /> ref handle", () => {
     expect(ref.current?.getData().nodes).toHaveLength(1);
   });
 
-  it("removeNode cascades and propagates through the ref handle", () => {
+  it("removeNode cascades and propagates through the ref handle", async () => {
     const ref = createRef<LoraGraphCanvasHandle>();
     render(
       <LoraGraphCanvas
@@ -120,7 +120,14 @@ describe("<LoraGraphCanvas /> ref handle", () => {
         }}
       />,
     );
-    act(() => ref.current?.removeNode("a"));
+    // removeNode now returns a Promise<boolean> (the delete-gate hook
+    // surface is async to accommodate host confirm-dialogs). With no
+    // guard wired up the data mutation is still synchronous, but we
+    // need `await act(async () => ...)` so React flushes the re-render
+    // before the assertion runs.
+    await act(async () => {
+      await ref.current?.removeNode("a");
+    });
     expect(ref.current?.getData().nodes.map((n) => n.id)).toEqual(["b"]);
     expect(ref.current?.getData().links).toHaveLength(0);
   });

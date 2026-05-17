@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface ContextMenuItem {
   id: string;
@@ -15,8 +15,18 @@ export interface ContextMenuProps {
   onClose(): void;
 }
 
+/** Margin from the host's edge we won't let the menu cross. Eight px
+ *  matches the toolbar offsets in styles.css so the menu lines up with
+ *  the rest of the chrome when it gets pushed back. */
+const EDGE_PADDING = 8;
+
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // Adjusted position after we measure the menu and the parent host.
+  // Seeded with the raw click coords so the menu paints at the right
+  // spot on the *first* frame; the layout-effect below corrects on the
+  // same frame if it would clip past an edge.
+  const [pos, setPos] = useState({ left: x, top: y });
 
   useEffect(() => {
     const onAny = (e: MouseEvent | KeyboardEvent) => {
@@ -38,12 +48,32 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     };
   }, [onClose]);
 
+  // Clamp the menu inside the host's bounding rect once we know its
+  // size. useLayoutEffect runs synchronously before paint, so we
+  // never flash the menu in the clipped position before correcting.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const parent = el.parentElement;
+    if (!parent) return;
+    const hostRect = parent.getBoundingClientRect();
+    const menuW = el.offsetWidth;
+    const menuH = el.offsetHeight;
+    const maxLeft = Math.max(EDGE_PADDING, hostRect.width - menuW - EDGE_PADDING);
+    const maxTop = Math.max(EDGE_PADDING, hostRect.height - menuH - EDGE_PADDING);
+    const clampedLeft = Math.min(Math.max(x, EDGE_PADDING), maxLeft);
+    const clampedTop = Math.min(Math.max(y, EDGE_PADDING), maxTop);
+    if (clampedLeft !== pos.left || clampedTop !== pos.top) {
+      setPos({ left: clampedLeft, top: clampedTop });
+    }
+  }, [x, y, items, pos.left, pos.top]);
+
   return (
     <div
       ref={ref}
       className="lgc-menu"
       role="menu"
-      style={{ left: x, top: y }}
+      style={{ left: pos.left, top: pos.top }}
     >
       {items.map((item, i) =>
         "separator" in item ? (

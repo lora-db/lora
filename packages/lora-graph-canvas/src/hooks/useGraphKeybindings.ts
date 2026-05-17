@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import type { GraphEngine } from "../engines/types";
 import type {
   GraphMode,
@@ -7,6 +7,7 @@ import type {
   ToolId,
 } from "../types";
 import type { GraphDataApi } from "./useGraphData";
+import type { GraphDeleteGateApi } from "./useGraphDeleteGate";
 import type { SelectionApi } from "./useGraphSelection";
 
 export interface UseGraphKeybindingsParams<
@@ -15,6 +16,7 @@ export interface UseGraphKeybindingsParams<
 > {
   engine: GraphEngine<N, L> | null;
   dataApi: GraphDataApi<N, L>;
+  deleteGate: GraphDeleteGateApi<N, L>;
   selection: SelectionApi;
   mode: GraphMode;
   setMode: (next: GraphMode) => void;
@@ -33,7 +35,17 @@ export interface UseGraphKeybindingsParams<
   duplicate: () => unknown;
   addConnectedNode: () => unknown;
   togglePin: (id: string | number) => void;
+  /** Host element. Bindings only fire while focus is inside this
+   *  element — otherwise hitting `f` while typing into a sibling text
+   *  field on the page would trigger the canvas fit shortcut. */
+  hostRef: RefObject<HTMLElement | null>;
 }
+
+/** Pan step in graph-space units. The arrow-key handler converts to a
+ *  centerAt() call relative to the current view. Tuned so a single tap
+ *  shifts the view by ~10% of a typical bbox without feeling laggy on
+ *  a held key (the browser's repeat will fire ~30/s). */
+const ARROW_PAN_STEP = 40;
 
 /** Global keyboard shortcuts for the canvas. The listener is bound once
  *  per mount; live state is read through a ref so we avoid the
@@ -47,8 +59,24 @@ export function useGraphKeybindings<
   paramsRef.current = params;
 
   useEffect(() => {
+    // Index walked by Tab / Shift+Tab. Reset to -1 (== "before first
+    // node") so the first Tab lands on node 0. Held outside React state
+    // because cycling through 5k nodes shouldn't trigger renders.
+    let tabIndex = -1;
+
     const onKey = (e: KeyboardEvent) => {
-      // Only handle when the focus is inside our host or the body.
+      const p = paramsRef.current;
+      // Scope to the canvas: only fire when focus is inside our host.
+      // Without this, pressing `f` in a page-level text field
+      // elsewhere would also fit the canvas — confusing on pages with
+      // multiple canvases or any kind of form.
+      const host = p.hostRef.current;
+      const active = document.activeElement as HTMLElement | null;
+      if (host && active && active !== document.body && !host.contains(active)) {
+        return;
+      }
+      // Skip when the focused element is editable — even if it lives
+      // inside our host (a property panel, an inline rename, etc).
       const target = e.target as HTMLElement | null;
       const editable =
         target &&
@@ -56,8 +84,6 @@ export function useGraphKeybindings<
           target.tagName === "TEXTAREA" ||
           target.isContentEditable);
       if (editable) return;
-
-      const p = paramsRef.current;
 
       switch (e.key) {
         case "v":
@@ -83,24 +109,101 @@ export function useGraphKeybindings<
           break;
         case "f":
         case "F":
+        case "0":
+          // `0` mirrors the figma/photoshop "fit to viewport" convention.
           p.engine?.fit(400, 40);
+          e.preventDefault();
+          break;
+        case "+":
+        case "=":
+          // US-layout shift+'=' produces '+', plain key gives '='.
+          // Accept both so users don't need to learn which one their
+          // layout exposes. 1.2× / 0.83× per tap matches the toolbar
+          // buttons in LoraGraphCanvas:1188.
+          if (p.engine) {
+            p.engine.zoom((p.engine.getZoom?.() ?? 1) * 1.2, 200);
+            e.preventDefault();
+          }
+          break;
+        case "-":
+          if (p.engine) {
+            p.engine.zoom((p.engine.getZoom?.() ?? 1) / 1.2, 200);
+            e.preventDefault();
+          }
           break;
         case "3":
           p.setMode(p.mode === "2d" ? "3d" : "2d");
           break;
+        case "ArrowLeft":
+        case "ArrowRight":
+        case "ArrowUp":
+        case "ArrowDown": {
+          // Pan the camera by a fixed graph-space step. We read the
+          // current bbox center as the anchor rather than tracking
+          // a private camera-pos ref — getGraphBbox() is cheap and
+          // already used elsewhere on the engine surface.
+          const eng = p.engine;
+          if (!eng) return;
+          const bbox = eng.getGraphBbox();
+          const cx = (bbox.x[0] + bbox.x[1]) / 2;
+          const cy = (bbox.y[0] + bbox.y[1]) / 2;
+          // Scale the step by the current zoom so a tap in a deep
+          // zoom-in feels proportional rather than jumping over the
+          // whole bbox.
+          const k = eng.getZoom?.() ?? 1;
+          const step = ARROW_PAN_STEP / Math.max(k, 0.1);
+          let dx = 0;
+          let dy = 0;
+          if (e.key === "ArrowLeft") dx = -step;
+          else if (e.key === "ArrowRight") dx = step;
+          else if (e.key === "ArrowUp") dy = -step;
+          else dy = step;
+          eng.centerAt(cx + dx, cy + dy, undefined, 120);
+          e.preventDefault();
+          break;
+        }
+        case "Tab": {
+          // Walk forward (Tab) / backward (Shift+Tab) through the
+          // node list and focus each. Wraps. The tabIndex closure
+          // above isn't a React state, so this doesn't render.
+          const eng = p.engine;
+          const nodes = p.dataApi.data.nodes;
+          if (!eng || nodes.length === 0) return;
+          tabIndex = e.shiftKey
+            ? (tabIndex - 1 + nodes.length) % nodes.length
+            : (tabIndex + 1) % nodes.length;
+          const node = nodes[tabIndex];
+          if (
+            !node ||
+            node.x === undefined ||
+            node.y === undefined
+          ) {
+            return;
+          }
+          p.selection.set([node.id]);
+          eng.focusOn(
+            { x: node.x, y: node.y, ...(node.z !== undefined ? { z: node.z } : {}) },
+            { distance: 120, zoom: 4, durationMs: 400 },
+          );
+          e.preventDefault();
+          break;
+        }
         case "Backspace":
         case "Delete":
-          if (p.selection.selected.length > 0) {
-            p.dataApi.removeNodes(p.selection.selected);
-            p.selection.clear();
-            e.preventDefault();
-          }
-          if (p.selectedLinkIds.length > 0) {
-            const linkIdSet = new Set(p.selectedLinkIds);
-            p.dataApi.removeLink(
-              (l) => l.id !== undefined && linkIdSet.has(l.id),
+          if (
+            p.selection.selected.length > 0 ||
+            p.selectedLinkIds.length > 0
+          ) {
+            // Funnel through the gate so the host's confirm-delete
+            // prompt has a chance to cancel. The promise is fire-and-
+            // forget: the gate's afterNodeDelete / afterLinkDelete
+            // callbacks own the selection cleanup, so we don't await
+            // here (and shouldn't — the listener is sync).
+            void p.deleteGate.requestMixedDelete(
+              p.selection.selected,
+              p.selectedLinkIds,
+              "keyboard",
             );
-            p.setSelectedLinkIds([]);
             e.preventDefault();
           }
           break;

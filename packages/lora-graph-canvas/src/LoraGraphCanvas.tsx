@@ -24,6 +24,7 @@ import { useAutoIndexNeighbors } from "./hooks/useAutoIndexNeighbors";
 import { useMarqueeAndCursor } from "./hooks/useMarqueeAndCursor";
 import { useClickToleranceShim } from "./hooks/useClickToleranceShim";
 import { useGraphClipboard } from "./hooks/useGraphClipboard";
+import { useGraphDeleteGate } from "./hooks/useGraphDeleteGate";
 import { useGraphKeybindings } from "./hooks/useGraphKeybindings";
 import { useGraphForces } from "./hooks/useGraphForces";
 import { useAccessorOverrides } from "./hooks/useAccessorOverrides";
@@ -32,6 +33,7 @@ import { useLabelRenderer } from "./hooks/useLabelRenderer";
 import { useLinkLabelRenderer } from "./hooks/useLinkLabelRenderer";
 import { usePerfTierDefaults } from "./hooks/usePerfTierDefaults";
 import { useImperativeGraphHandle } from "./hooks/useImperativeGraphHandle";
+import { usePrefersReducedMotion } from "./hooks/usePrefersReducedMotion";
 import { GraphToolbar } from "./tools/GraphToolbar";
 import { ContextMenu, type ContextMenuItem } from "./tools/ContextMenu";
 import { HoverTooltip } from "./tools/HoverTooltip";
@@ -72,7 +74,11 @@ function LoraGraphCanvasInner<
     showGrid = false,
     showLabels = false,
     enableClipboard = true,
-    enableTooltip = false,
+    // Tooltips are the most common reason hosts wire `nodeLabel`, so
+    // having them disabled by default made the prop silently invisible
+    // on a working host config. Hosts that want chrome-free canvas
+    // (e.g. an embedded thumbnail) can still opt out.
+    enableTooltip = true,
     introZoom = true,
     focusOnClick = false,
     highlightNeighborsOnHover = true,
@@ -99,6 +105,10 @@ function LoraGraphCanvasInner<
     onCopy,
     onCut,
     onPaste,
+    onBeforeNodeDelete,
+    onBeforeLinkDelete,
+    onNodeDeleted,
+    onLinkDeleted,
     onRenderFramePre,
     nodeColor,
     nodeLabel,
@@ -242,10 +252,14 @@ function LoraGraphCanvasInner<
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
-    items: ContextMenuItem[];
+    items: Array<ContextMenuItem | { separator: true }>;
   } | null>(null);
 
   const shiftHeld = useShiftHeld();
+  // OS-level "reduce motion" preference. Tween durations passed through
+  // this flag collapse to 0 so users on the setting see the final
+  // frame immediately instead of the camera flying around.
+  const reduceMotion = usePrefersReducedMotion();
 
   // ─── Host / engine mount ────────────────────────────────────────
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -279,10 +293,25 @@ function LoraGraphCanvasInner<
   });
   useClickToleranceShim(mountEl);
 
+  // ─── Centralised delete gate ────────────────────────────────────
+  // Every site that removes a node or link funnels through this so the
+  // host's `onBeforeNodeDelete` / `onBeforeLinkDelete` guards run with
+  // consistent semantics (batched, async, post-delete callbacks).
+  const deleteGate = useGraphDeleteGate<N, L>({
+    dataApi,
+    ...(onBeforeNodeDelete ? { beforeNode: onBeforeNodeDelete } : {}),
+    ...(onBeforeLinkDelete ? { beforeLink: onBeforeLinkDelete } : {}),
+    ...(onNodeDeleted ? { onNodeDeleted } : {}),
+    ...(onLinkDeleted ? { onLinkDeleted } : {}),
+    afterNodeDelete: () => selection.clear(),
+    afterLinkDelete: () => setSelectedLinkIds([]),
+  });
+
   // ─── Clipboard / duplicate / connect / pin primitives ───────────
   const clipboard = useGraphClipboard<N, L>({
     enableClipboard,
     dataApi,
+    deleteGate,
     selection,
     setSelectedLinkIds,
     engineRef,
@@ -366,7 +395,7 @@ function LoraGraphCanvasInner<
           }
           eng.focusOn(
             { x: node.x ?? 0, y: node.y ?? 0, z: node.z ?? 0 },
-            { distance: 120, zoom: 8, durationMs: 1000 },
+            { distance: 120, zoom: 8, durationMs: reduceMotion ? 0 : 1000 },
           );
           setFocusedNodeId(node.id);
           setFocusedLinkId(null);
@@ -430,44 +459,103 @@ function LoraGraphCanvasInner<
       const x = rect ? event.clientX - rect.left : event.clientX;
       const y = rect ? event.clientY - rect.top : event.clientY;
       const id = node.id;
-      setMenu({
-        x,
-        y,
-        items: [
-          {
-            id: "pin",
-            label: node.fx !== undefined ? "Unpin" : "Pin",
-            onSelect: () => {
-              dataApi.updateNode(
-                id,
-                (node.fx !== undefined
-                  ? { fx: undefined, fy: undefined, fz: undefined }
-                  : { fx: node.x, fy: node.y, fz: node.z }) as Partial<N>,
-              );
+      // When the right-clicked node belongs to a multi-selection,
+      // swap in batch versions of the destructive actions so the menu
+      // matches what the user can see is selected. We treat the click
+      // as targeting the whole group rather than just `id`, which is
+      // what users invariably want (right-click → "Delete" with 20
+      // nodes highlighted should delete all 20, not silently one).
+      const selectedIds = selection.selected;
+      const isBatch =
+        selectedIds.length > 1 && selectedIds.includes(id);
+      const items: Array<ContextMenuItem | { separator: true }> = isBatch
+        ? [
+            {
+              id: "pin-all",
+              label: `Pin ${selectedIds.length} nodes`,
+              onSelect: () => {
+                for (const sid of selectedIds) {
+                  const n = dataApi.data.nodes.find((nn) => nn.id === sid);
+                  if (!n) continue;
+                  dataApi.updateNode(
+                    sid,
+                    { fx: n.x, fy: n.y, fz: n.z } as Partial<N>,
+                  );
+                }
+              },
             },
-          },
-          {
-            id: "connect",
-            label: "Connect from here…",
-            onSelect: () => {
-              setActiveTool("add-link");
-              setLinkSourceId(id);
+            {
+              id: "unpin-all",
+              label: `Unpin ${selectedIds.length} nodes`,
+              onSelect: () => {
+                for (const sid of selectedIds) {
+                  dataApi.updateNode(
+                    sid,
+                    { fx: undefined, fy: undefined, fz: undefined } as Partial<N>,
+                  );
+                }
+              },
             },
-          },
-          { separator: true } as { separator: true },
-          {
-            id: "delete",
-            label: "Delete",
-            shortcut: "⌫",
-            onSelect: () => {
-              dataApi.removeNode(id);
-              selection.clear();
+            { separator: true } as { separator: true },
+            {
+              id: "duplicate",
+              label: `Duplicate ${selectedIds.length} nodes`,
+              shortcut: "⌘D",
+              onSelect: () => clipboard.duplicate(),
             },
-          },
-        ] as ContextMenuItem[],
-      });
+            {
+              id: "delete-all",
+              label: `Delete ${selectedIds.length} nodes`,
+              shortcut: "⌫",
+              onSelect: () => {
+                void deleteGate.requestNodeDelete(
+                  selectedIds,
+                  "contextMenu",
+                );
+              },
+            },
+          ]
+        : [
+            {
+              id: "pin",
+              label: node.fx !== undefined ? "Unpin" : "Pin",
+              onSelect: () => {
+                dataApi.updateNode(
+                  id,
+                  (node.fx !== undefined
+                    ? { fx: undefined, fy: undefined, fz: undefined }
+                    : { fx: node.x, fy: node.y, fz: node.z }) as Partial<N>,
+                );
+              },
+            },
+            {
+              id: "connect",
+              label: "Connect from here…",
+              onSelect: () => {
+                setActiveTool("add-link");
+                setLinkSourceId(id);
+              },
+            },
+            { separator: true } as { separator: true },
+            {
+              id: "delete",
+              label: "Delete",
+              shortcut: "⌫",
+              onSelect: () => {
+                void deleteGate.requestNodeDelete([id], "contextMenu");
+              },
+            },
+          ];
+      setMenu({ x, y, items });
     },
-    [onNodeRightClick, showContextMenu, dataApi, selection],
+    [
+      onNodeRightClick,
+      showContextMenu,
+      dataApi,
+      selection,
+      clipboard,
+      deleteGate,
+    ],
   );
 
   // Link click → select (selection logic mirrors nodes).
@@ -555,7 +643,7 @@ function LoraGraphCanvasInner<
             // tan(25°) ≈ 0.466, derived from a 50° vertical FOV.
             const fitDistance = (linkLength / 2 / 0.466) * margin;
             const distance = Math.max(60, fitDistance);
-            eng.focusOn(mid, { distance, zoom, durationMs: 1000 });
+            eng.focusOn(mid, { distance, zoom, durationMs: reduceMotion ? 0 : 1000 });
             setFocusedLinkId(lid);
             setFocusedNodeId(null);
           }
@@ -590,8 +678,10 @@ function LoraGraphCanvasInner<
             label: "Delete link",
             shortcut: "⌫",
             onSelect: () => {
-              dataApi.removeLink((l) => l === link);
-              setSelectedLinkIds([]);
+              void deleteGate.requestLinkDelete(
+                (l) => l === link,
+                "contextMenu",
+              );
             },
           },
           {
@@ -613,7 +703,7 @@ function LoraGraphCanvasInner<
         ],
       });
     },
-    [onLinkRightClick, showContextMenu, dataApi],
+    [onLinkRightClick, showContextMenu, dataApi, deleteGate],
   );
 
   // Drag-to-create-link: when the user drags a node while the add-link
@@ -988,6 +1078,7 @@ function LoraGraphCanvasInner<
       handleLinkHover,
       showGrid,
       onRenderFramePre,
+      reduceMotion,
       nodeLabelRenderer.canvasObject,
       nodeLabelRenderer.threeObject,
       linkLabelRenderer.canvasObject,
@@ -1004,6 +1095,10 @@ function LoraGraphCanvasInner<
     data: dataApi.data,
     props: engineProps,
     paused,
+    // 0 = snap mode transitions instantly for reduce-motion users.
+    // The hook treats undefined as "use the default 800ms," so we
+    // only override on the truthy branch.
+    ...(reduceMotion ? { modeTransitionMs: 0 } : {}),
   });
   engineRef.current = engine;
 
@@ -1032,39 +1127,28 @@ function LoraGraphCanvasInner<
     setMenu(null);
   };
 
-  // ─── First-load intro zoom ──────────────────────────────────────
-  // Pull the camera back proportional to node count, then tween into
-  // the fitted view. Fires exactly once per component lifetime — a
-  // ref gates the effect so subsequent data mutations or mode flips
-  // don't re-play the intro (the user has their own camera by then).
-  const hasPlayedIntroRef = useRef(false);
+  // ─── First-load auto-fit ────────────────────────────────────────
+  // Fires once per component lifetime, ~150ms after the engine is
+  // ready and data is non-empty — long enough for the first few
+  // simulation ticks to spread nodes out so the bbox is meaningful,
+  // short enough that the user perceives the graph as "appearing
+  // already framed". We don't wait on onEngineStop because the
+  // simulation can take many seconds (or never, with pinned nodes)
+  // to fully settle, and the kapsule's `cbrt(n)*170` heuristic on
+  // first data load is disabled in createEngineUnified so this is
+  // the only camera motion the user sees on first load.
+  const hasAutoFitRef = useRef(false);
   const nodeCount = dataApi.data.nodes.length;
   useEffect(() => {
     if (!introZoom) return;
     if (!engine) return;
-    if (hasPlayedIntroRef.current) return;
+    if (hasAutoFitRef.current) return;
     if (nodeCount === 0) return;
-    hasPlayedIntroRef.current = true;
-    // Pull-back factor. Log-shaped so the intro feels proportional
-    // to scene complexity: a 5-node demo reveals from ~×3 out, a
-    // 1k graph from ~×5.3, a 10k stress graph from ~×6.3. Smaller
-    // graphs don't need (and would feel slow with) the bigger pull.
-    const pullBack = 2.3 + Math.log10(Math.max(nodeCount, 1));
-    // Give the kapsule a frame to run its own auto-fit so the bbox
-    // we tween toward is sensible — calling fit() before warmup
-    // ticks have populated node positions would fit to a near-zero
-    // bbox and the intro would look like a flat snap.
+    hasAutoFitRef.current = true;
+    const tweenMs = reduceMotion ? 0 : 1000;
     const timer = setTimeout(() => {
-      const eng = engineRef.current;
-      if (!eng) return;
-      // engine.zoom(scale, 0) — scale < 1 pulls the camera away
-      // from origin along its current direction vector. Works in
-      // both 2D (top-down, locked z-axis) and 3D (orbit).
-      eng.zoom(1 / pullBack, 0);
-      // Tween into the fitted bbox. ~1s reads as a deliberate
-      // reveal without dragging.
-      requestAnimationFrame(() => engineRef.current?.fit(1000, 40));
-    }, 80);
+      engineRef.current?.fit(tweenMs, 40);
+    }, 150);
     return () => clearTimeout(timer);
   }, [engine, introZoom, nodeCount]);
 
@@ -1135,17 +1219,11 @@ function LoraGraphCanvasInner<
           setActiveTool(id);
           break;
         case "delete":
-          if (selection.selected.length > 0) {
-            dataApi.removeNodes(selection.selected);
-            selection.clear();
-          }
-          if (selectedLinkIds.length > 0) {
-            const linkIdSet = new Set(selectedLinkIds);
-            dataApi.removeLink(
-              (l) => l.id !== undefined && linkIdSet.has(l.id),
-            );
-            setSelectedLinkIds([]);
-          }
+          void deleteGate.requestMixedDelete(
+            selection.selected,
+            selectedLinkIds,
+            "toolbar",
+          );
           break;
         case "duplicate":
           clipboard.duplicate();
@@ -1196,12 +1274,14 @@ function LoraGraphCanvasInner<
       selectedLinkIds,
       clipboard,
       downloadJSON,
+      deleteGate,
     ],
   );
 
   useGraphKeybindings<N, L>({
     engine,
     dataApi,
+    deleteGate,
     selection,
     mode,
     setMode,
@@ -1216,11 +1296,13 @@ function LoraGraphCanvasInner<
     duplicate: clipboard.duplicate,
     addConnectedNode: clipboard.addConnectedNode,
     togglePin: clipboard.togglePin,
+    hostRef,
   });
 
   useImperativeGraphHandle<N, L>({
     ref,
     dataApi,
+    deleteGate,
     selection,
     engine,
     mode,
@@ -1295,6 +1377,10 @@ function LoraGraphCanvasInner<
       style={hostStyle}
       data-mode={mode}
       data-tool={activeTool}
+      data-paused={paused ? "true" : undefined}
+      tabIndex={0}
+      role="application"
+      aria-label="Graph canvas"
     >
       <div ref={handleMountRef} className="lgc-engine-mount" />
       <GraphToolbar
@@ -1324,7 +1410,10 @@ function LoraGraphCanvasInner<
       {enableTooltip ? (
         <HoverTooltip content={tooltipContent} hostRef={hostRef} />
       ) : null}
-      <MarqueeOverlay rect={marquee} />
+      <MarqueeOverlay
+        rect={marquee}
+        {...(marquee?.count !== undefined ? { count: marquee.count } : {})}
+      />
       {showLegend && nodeAutoColorBy ? (
         <GroupLegend
           nodes={dataApi.data.nodes}
@@ -1348,17 +1437,11 @@ function LoraGraphCanvasInner<
         hasClipboard={clipboard.hasClipboard()}
         enableClipboard={enableClipboard}
         onDelete={() => {
-          if (selection.selected.length > 0) {
-            dataApi.removeNodes(selection.selected);
-            selection.clear();
-          }
-          if (selectedLinkIds.length > 0) {
-            const linkIdSet = new Set(selectedLinkIds);
-            dataApi.removeLink(
-              (l) => l.id !== undefined && linkIdSet.has(l.id),
-            );
-            setSelectedLinkIds([]);
-          }
+          void deleteGate.requestMixedDelete(
+            selection.selected,
+            selectedLinkIds,
+            "selectionPanel",
+          );
         }}
         onDuplicate={() => clipboard.duplicate()}
         onAddConnected={() => clipboard.addConnectedNode()}

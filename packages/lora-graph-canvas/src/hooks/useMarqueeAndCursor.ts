@@ -14,6 +14,11 @@ export interface MarqueeRect {
   x1: number;
   y1: number;
   additive: boolean;
+  /** Live count of nodes inside the rectangle. Updated on rAF
+   *  throttle during drag — cheap to compute (one graph2Screen per
+   *  node) but we still coalesce by frame so a 5k-node graph doesn't
+   *  re-render the host 60×/s. Undefined while inactive. */
+  count?: number;
 }
 
 export interface UseMarqueeAndCursorParams<
@@ -155,14 +160,60 @@ export function useMarqueeAndCursor<
       e.preventDefault();
       setMarquee({ x0, y0, x1: x0, y1: y0, additive: e.shiftKey });
 
+      // rAF-throttled live-count update. Computing on every mousemove
+      // would re-project every node 60×/s; coalescing to one update
+      // per frame keeps the badge responsive without burning CPU on
+      // dense graphs.
+      let countRaf: number | null = null;
+      const scheduleCountUpdate = () => {
+        if (countRaf !== null) return;
+        countRaf = requestAnimationFrame(() => {
+          countRaf = null;
+          const eng = engineRef.current;
+          if (!eng) return;
+          setMarquee((cur) => {
+            if (!cur) return cur;
+            const xMin = Math.min(cur.x0, cur.x1);
+            const yMin = Math.min(cur.y0, cur.y1);
+            const xMax = Math.max(cur.x0, cur.x1);
+            const yMax = Math.max(cur.y0, cur.y1);
+            // Treat tiny rects as "no selection yet" so the pill
+            // doesn't strobe a "1 node" badge from the click origin
+            // before the drag is meaningful. Drop the key (rather
+            // than setting undefined) to satisfy
+            // `exactOptionalPropertyTypes`.
+            if (xMax - xMin < 4 && yMax - yMin < 4) {
+              if (cur.count === undefined) return cur;
+              const { count: _drop, ...rest } = cur;
+              void _drop;
+              return rest;
+            }
+            let count = 0;
+            for (const node of latestRef.current.nodes) {
+              if (node.x === undefined || node.y === undefined) continue;
+              const sc = eng.graph2Screen(node.x, node.y, node.z);
+              if (sc.x >= xMin && sc.x <= xMax && sc.y >= yMin && sc.y <= yMax) {
+                count++;
+              }
+            }
+            if (cur.count === count) return cur;
+            return { ...cur, count };
+          });
+        });
+      };
       const onMove = (ev: MouseEvent) => {
         const x1 = ev.clientX - cachedRect.left;
         const y1 = ev.clientY - cachedRect.top;
         setMarquee((cur) => (cur ? { ...cur, x1, y1 } : cur));
+        scheduleCountUpdate();
       };
       const onUp = (ev: MouseEvent) => {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp, true);
+        if (countRaf !== null) {
+          cancelAnimationFrame(countRaf);
+          countRaf = null;
+        }
         const x1 = ev.clientX - cachedRect.left;
         const y1 = ev.clientY - cachedRect.top;
         setMarquee(null);

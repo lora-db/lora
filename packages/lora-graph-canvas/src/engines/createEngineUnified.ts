@@ -26,7 +26,7 @@
 
 import { MOUSE } from "three";
 import ForceGraph3DKapsule from "./3d-force-graph";
-import { runAnim, lerp } from "./rafAnim";
+import { runAnim, lerp, easeInOutCubic } from "./rafAnim";
 import {
   EVENT_BINDINGS,
   applyDiffedProps,
@@ -241,6 +241,14 @@ export function createEngineUnified<
   };
 
   // Initial-mode setup. No animation on first mount — just snap.
+  // In both modes we explicitly set the camera before `graphData()`
+  // so the kapsule's `cbrt(n)*170` auto-placement is bypassed (its
+  // guard requires the camera to still be at its post-init default
+  // of (0, 0, 1000); writing to `cameraPosition` defeats that). The
+  // host's React-level `useEffect` runs the real auto-fit once the
+  // first few simulation ticks have spread the nodes out — letting
+  // the kapsule also move the camera would produce a visible double
+  // hop.
   if (currentMode === "2d") {
     pinNodesToPlane();
     applyControlsForMode("2d");
@@ -251,8 +259,11 @@ export function createEngineUnified<
     );
   } else {
     applyControlsForMode("3d");
-    // Let the kapsule's own initial position stand for 3D mode —
-    // its auto-fit on first data load picks a sensible distance.
+    instance.cameraPosition?.(
+      { x: 0, y: 0, z: DEFAULT_3D_DISTANCE },
+      { x: 0, y: 0, z: 0 },
+      0,
+    );
   }
 
   // ── GraphEngine implementation ────────────────────────────────
@@ -277,7 +288,125 @@ export function createEngineUnified<
     },
 
     fit(durationMs?: number, padding?: number) {
-      instance.zoomToFit?.(durationMs ?? 400, padding ?? 40);
+      // We compute the fit ourselves rather than delegating to the
+      // upstream `zoomToFit`, which (a) hardcodes the camera lookAt to
+      // world-origin instead of the bbox centre, (b) uses
+      // `atan(fov_rad)` where the correct formula is `tan(fov/2)` —
+      // pulling the camera ~30–45 % further back than needed — and
+      // (c) collapses the bbox to a single "max corner-to-origin"
+      // scalar instead of fitting per-axis extent.
+      cancelAnim?.();
+      const dur = durationMs ?? 400;
+      const pad = padding ?? 40;
+
+      const bbox = instance.getGraphBbox?.() as
+        | { x: [number, number]; y: [number, number]; z: [number, number] }
+        | undefined;
+      if (!bbox) return;
+
+      const cameraObj = (instance.camera?.() as
+        | { fov?: number; aspect?: number }
+        | undefined) ?? {};
+      const fov = cameraObj.fov ?? 50;
+      const w = (instance.width?.() as number) ?? opts.width;
+      const h = (instance.height?.() as number) ?? opts.height;
+      if (w <= 0 || h <= 0) return;
+
+      // Pixel padding → effective viewport. Floored to 1 so a
+      // sub-padding-sized canvas doesn't produce a negative dimension
+      // (and a negative distance ratio).
+      const effW = Math.max(1, w - 2 * pad);
+      const effH = Math.max(1, h - 2 * pad);
+      const aspect = cameraObj.aspect ?? w / h;
+
+      const center = {
+        x: (bbox.x[0] + bbox.x[1]) / 2,
+        y: (bbox.y[0] + bbox.y[1]) / 2,
+        z: (bbox.z[0] + bbox.z[1]) / 2,
+      };
+      // Clamp tiny extents so a single-node graph (or a degenerate
+      // bbox before any tick has run) doesn't collapse the fit
+      // distance to a value smaller than a node's render radius.
+      const halfX = Math.max((bbox.x[1] - bbox.x[0]) / 2, 1);
+      const halfY = Math.max((bbox.y[1] - bbox.y[0]) / 2, 1);
+      const halfZ = Math.max((bbox.z[1] - bbox.z[0]) / 2, 0);
+
+      const halfFovV = ((fov * Math.PI) / 180) / 2;
+      const tanHalfV = Math.tan(halfFovV);
+      // Floor of 60 world units mirrors the link-focus fit floor —
+      // far enough that a sub-100 unit graph doesn't end up with the
+      // camera inside its node spheres.
+      const MIN_DIST = 60;
+
+      const cur = cameraPosition();
+      if (!cur) return;
+
+      let endPos: Coords3D;
+      const endLookAt = { x: center.x, y: center.y, z: center.z };
+
+      if (currentMode === "2d") {
+        // Top-down: camera at (cx, cy, cz), looking at z = center.z
+        // (which is 0 because nodes are pinned to fz=0 in this mode,
+        // but we use center.z for symmetry). Half-height the camera
+        // can see at the lookAt plane is `cz * tan(halfFovV)`; pixel
+        // padding inflates the requested half-extents by viewport /
+        // effective-viewport ratio.
+        const reqDistV = ((halfY * h) / effH) / tanHalfV;
+        const reqDistH = ((halfX * h) / effW) / tanHalfV;
+        const dist = Math.max(reqDistV, reqDistH, MIN_DIST);
+        endPos = { x: center.x, y: center.y, z: center.z + dist };
+        cachedDistance = dist;
+      } else {
+        // 3D: keep the current viewing direction (so an orbited user
+        // doesn't get yanked back to a canonical pose) and slide the
+        // camera along that vector to a distance that fits a bounding
+        // sphere around the bbox. Sphere fit is orientation-
+        // independent — slightly conservative under axis-aligned
+        // views but always correct.
+        const radius = Math.hypot(halfX, halfY, halfZ);
+        const halfFovH = Math.atan(tanHalfV * aspect);
+        const reqDistV = (radius * h) / (effH * Math.sin(halfFovV));
+        const reqDistH = (radius * w) / (effW * Math.sin(halfFovH));
+        const dist = Math.max(reqDistV, reqDistH, MIN_DIST);
+
+        const curLookAt = cur.lookAt ?? { x: 0, y: 0, z: 0 };
+        const dx = cur.x - curLookAt.x;
+        const dy = cur.y - curLookAt.y;
+        const dz = cur.z - curLookAt.z;
+        const mag = Math.hypot(dx, dy, dz);
+        const unit =
+          mag === 0
+            ? { x: 0, y: 0, z: 1 }
+            : { x: dx / mag, y: dy / mag, z: dz / mag };
+        endPos = {
+          x: center.x + unit.x * dist,
+          y: center.y + unit.y * dist,
+          z: center.z + unit.z * dist,
+        };
+        cachedDistance = dist;
+      }
+
+      if (dur <= 0) {
+        instance.cameraPosition?.(endPos, endLookAt, 0);
+        return;
+      }
+
+      const startLookAt = cur.lookAt ?? { x: 0, y: 0, z: 0 };
+      cancelAnim = runAnim(dur, (t) => {
+        instance.cameraPosition?.(
+          {
+            x: lerp(cur.x, endPos.x, t),
+            y: lerp(cur.y, endPos.y, t),
+            z: lerp(cur.z, endPos.z, t),
+          },
+          {
+            x: lerp(startLookAt.x, endLookAt.x, t),
+            y: lerp(startLookAt.y, endLookAt.y, t),
+            z: lerp(startLookAt.z, endLookAt.z, t),
+          },
+          0,
+        );
+      });
     },
 
     centerAt(x: number, y: number, z?: number, durationMs?: number) {
@@ -574,43 +703,59 @@ export function createEngineUnified<
         }
         const lookAt = cur.lookAt ?? { x: 0, y: 0, z: 0 };
         const endLookAt = { x: lookAt.x, y: lookAt.y, z: 0 };
+        // Preserve the user's effective zoom level across the mode
+        // switch: the top-down end-distance is whatever distance they
+        // were already at in 3D, not the canonical
+        // TWO_D_CAMERA_DISTANCE. Otherwise zoomed-in 3D users see a
+        // big dolly-out (and zoomed-out users see a dolly-in) on top
+        // of the perspective rotation — which is exactly the "flashy
+        // switch" feel we want to avoid. Floor of 1 just guards
+        // against a degenerate start (camera exactly at lookAt).
+        const distToLookAt =
+          Math.hypot(cur.x - lookAt.x, cur.y - lookAt.y, cur.z - lookAt.z) ||
+          TWO_D_CAMERA_DISTANCE;
         const endCamera = {
           x: lookAt.x,
           y: lookAt.y,
-          z: TWO_D_CAMERA_DISTANCE,
+          z: lookAt.z + distToLookAt,
         };
 
-        cancelAnim = runAnim(durationMs, (t) => {
-          // Nodes: drag z toward 0 along an eased path. Direct
-          // mutation of node.z bypasses the simulation for this frame,
-          // which is what we want — once the tween ends, fz=0
-          // permanently locks them.
-          for (const [node, startZ] of starts) {
-            (node as unknown as { z: number }).z = lerp(startZ, 0, t);
-          }
-          // Camera: top-down approach.
-          instance.cameraPosition?.(
-            {
-              x: lerp(cur.x, endCamera.x, t),
-              y: lerp(cur.y, endCamera.y, t),
-              z: lerp(cur.z, endCamera.z, t),
-            },
-            {
-              x: lerp(lookAt.x, endLookAt.x, t),
-              y: lerp(lookAt.y, endLookAt.y, t),
-              z: lerp(lookAt.z, endLookAt.z, t),
-            },
-            0,
-          );
-          if (t >= 1) {
-            // Finalise: pin every node and switch to 2D controls
-            // (pan + zoom-to-cursor, rotation locked). Idempotent,
-            // so safe to run inside the last tween frame's tick.
-            pinNodesToPlane();
-            applyControlsForMode("2d");
-            cachedDistance = TWO_D_CAMERA_DISTANCE;
-          }
-        });
+        cancelAnim = runAnim(
+          durationMs,
+          (t) => {
+            // Nodes: drag z toward 0 along an eased path. Direct
+            // mutation of node.z bypasses the simulation for this frame,
+            // which is what we want — once the tween ends, fz=0
+            // permanently locks them.
+            for (const [node, startZ] of starts) {
+              (node as unknown as { z: number }).z = lerp(startZ, 0, t);
+            }
+            // Camera: top-down approach.
+            instance.cameraPosition?.(
+              {
+                x: lerp(cur.x, endCamera.x, t),
+                y: lerp(cur.y, endCamera.y, t),
+                z: lerp(cur.z, endCamera.z, t),
+              },
+              {
+                x: lerp(lookAt.x, endLookAt.x, t),
+                y: lerp(lookAt.y, endLookAt.y, t),
+                z: lerp(lookAt.z, endLookAt.z, t),
+              },
+              0,
+            );
+            if (t >= 1) {
+              // Finalise: pin every node and switch to 2D controls
+              // (pan + zoom-to-cursor, rotation locked). Idempotent,
+              // so safe to run inside the last tween frame's tick.
+              pinNodesToPlane();
+              applyControlsForMode("2d");
+              cachedDistance = distToLookAt;
+            }
+          },
+          undefined,
+          easeInOutCubic,
+        );
         return;
       }
 
@@ -632,46 +777,72 @@ export function createEngineUnified<
         depthStarts.set(n, typeof z === "number" ? z : 0);
       }
 
+      const startLookAt = cur.lookAt ?? { x: 0, y: 0, z: 0 };
+      // Default 3D camera: when the user has no remembered 3D pose
+      // (first-time 2D → 3D), construct one by *rotating* their
+      // current view rather than snapping to a canonical
+      // DEFAULT_3D_DISTANCE position. Same lookAt, same distance —
+      // we only introduce a ~30° tilt off the z-axis so depth
+      // becomes visible. Without this the camera flies in from
+      // straight-down 1200 to (0,0,300), which is the jarring jump
+      // the user wants to eliminate. The y-axis is the natural tilt
+      // axis (camera moves "south" of the lookAt and looks slightly
+      // up-and-forward) — orbit controls happily take over from any
+      // start orientation once the tween ends.
+      const dxStart = cur.x - startLookAt.x;
+      const dyStart = cur.y - startLookAt.y;
+      const dzStart = cur.z - startLookAt.z;
+      const distFromLookAt =
+        Math.hypot(dxStart, dyStart, dzStart) || DEFAULT_3D_DISTANCE;
+      const tiltAngle = Math.PI / 6; // 30°
       const endCamera = last3DCamera ?? {
-        x: 0,
-        y: 0,
-        z: DEFAULT_3D_DISTANCE,
-        lookAt: { x: 0, y: 0, z: 0 },
+        x: startLookAt.x,
+        y: startLookAt.y - distFromLookAt * Math.sin(tiltAngle),
+        z: startLookAt.z + distFromLookAt * Math.cos(tiltAngle),
+        lookAt: { ...startLookAt },
       };
       const endLookAt = endCamera.lookAt ?? { x: 0, y: 0, z: 0 };
-      const startLookAt = cur.lookAt ?? { x: 0, y: 0, z: 0 };
-      cancelAnim = runAnim(durationMs, (t) => {
-        // Drive each node's z from its starting value (typically 0
-        // after a 2D session) toward the seeded depth target. This
-        // is in lockstep with the camera tween so the user sees a
-        // single coherent "expanding into depth" motion.
-        for (const [node, target] of depthTargets) {
-          const start = depthStarts.get(node) ?? 0;
-          (node as unknown as { z: number }).z = lerp(start, target, t);
-        }
-        instance.cameraPosition?.(
-          {
-            x: lerp(cur.x, endCamera.x, t),
-            y: lerp(cur.y, endCamera.y, t),
-            z: lerp(cur.z, endCamera.z, t),
-          },
-          {
-            x: lerp(startLookAt.x, endLookAt.x, t),
-            y: lerp(startLookAt.y, endLookAt.y, t),
-            z: lerp(startLookAt.z, endLookAt.z, t),
-          },
-          0,
-        );
-        if (t >= 1) {
-          // Hand off to the force simulation. Reheat fires AFTER the
-          // seeded z values are in place, so the alpha decay refines
-          // from the perturbed positions instead of fighting an
-          // exact-zero start that the depth axis was never going to
-          // escape on its own.
-          instance.d3ReheatSimulation?.();
-          cachedDistance = Math.hypot(endCamera.x, endCamera.y, endCamera.z);
-        }
-      });
+      cancelAnim = runAnim(
+        durationMs,
+        (t) => {
+          // Drive each node's z from its starting value (typically 0
+          // after a 2D session) toward the seeded depth target. This
+          // is in lockstep with the camera tween so the user sees a
+          // single coherent "expanding into depth" motion.
+          for (const [node, target] of depthTargets) {
+            const start = depthStarts.get(node) ?? 0;
+            (node as unknown as { z: number }).z = lerp(start, target, t);
+          }
+          instance.cameraPosition?.(
+            {
+              x: lerp(cur.x, endCamera.x, t),
+              y: lerp(cur.y, endCamera.y, t),
+              z: lerp(cur.z, endCamera.z, t),
+            },
+            {
+              x: lerp(startLookAt.x, endLookAt.x, t),
+              y: lerp(startLookAt.y, endLookAt.y, t),
+              z: lerp(startLookAt.z, endLookAt.z, t),
+            },
+            0,
+          );
+          if (t >= 1) {
+            // Hand off to the force simulation. Reheat fires AFTER the
+            // seeded z values are in place, so the alpha decay refines
+            // from the perturbed positions instead of fighting an
+            // exact-zero start that the depth axis was never going to
+            // escape on its own.
+            instance.d3ReheatSimulation?.();
+            cachedDistance = Math.hypot(
+              endCamera.x - endLookAt.x,
+              endCamera.y - endLookAt.y,
+              endCamera.z - endLookAt.z,
+            );
+          }
+        },
+        undefined,
+        easeInOutCubic,
+      );
     },
   };
 

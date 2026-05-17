@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
 import type { GraphEngine } from "../engines/types";
 import type { LinkObject, NodeObject } from "../types";
 import type { GraphDataApi } from "./useGraphData";
+import type { GraphDeleteGateApi } from "./useGraphDeleteGate";
 import type { SelectionApi } from "./useGraphSelection";
 
 export interface UseGraphClipboardParams<
@@ -10,6 +11,7 @@ export interface UseGraphClipboardParams<
 > {
   enableClipboard: boolean;
   dataApi: GraphDataApi<N, L>;
+  deleteGate: GraphDeleteGateApi<N, L>;
   selection: SelectionApi;
   setSelectedLinkIds: React.Dispatch<
     React.SetStateAction<Array<string | number>>
@@ -27,7 +29,11 @@ export interface GraphClipboardApi<N extends NodeObject> {
    *  callers that need to react on every keystroke. */
   hasClipboard(): boolean;
   copy(): N[];
-  cut(): N[];
+  /** Async because cut funnels through the host's delete guard — if the
+   *  guard rejects, the cut becomes a no-op (clipboard untouched, nodes
+   *  not removed). Callers that fire-and-forget can ignore the
+   *  promise. */
+  cut(): Promise<N[]>;
   paste(at?: { x: number; y: number; z?: number }): N[];
   duplicate(): N[];
   addConnectedNode(opts?: {
@@ -48,6 +54,7 @@ export function useGraphClipboard<
   const {
     enableClipboard,
     dataApi,
+    deleteGate,
     selection,
     setSelectedLinkIds,
     engineRef,
@@ -88,18 +95,31 @@ export function useGraphClipboard<
     onCopy,
   ]);
 
-  const cut = useCallback((): N[] => {
+  const cut = useCallback(async (): Promise<N[]> => {
     if (!enableClipboard) return [];
     const idSet = new Set(selection.selected);
     const snapshot = dataApi.data.nodes.filter((n) => idSet.has(n.id));
+    if (snapshot.length === 0) return [];
+    // The delete-gate's afterNodeDelete handles selection.clear() and
+    // fires the host's onNodeDeleted; we only touch the clipboard
+    // *after* a successful remove so a rejected guard leaves it intact
+    // (cut should be all-or-nothing).
+    const removed = await deleteGate.requestNodeDelete(
+      selection.selected,
+      "cut",
+    );
+    if (!removed) return [];
     clipboardRef.current = snapshotSelection();
     onCut?.(snapshot);
-    if (selection.selected.length > 0) {
-      dataApi.removeNodes(selection.selected);
-      selection.clear();
-    }
     return snapshot;
-  }, [enableClipboard, dataApi, selection, snapshotSelection, onCut]);
+  }, [
+    enableClipboard,
+    dataApi,
+    deleteGate,
+    selection,
+    snapshotSelection,
+    onCut,
+  ]);
 
   const paste = useCallback(
     (at?: { x: number; y: number; z?: number }): N[] => {

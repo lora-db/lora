@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { ToolId, ToolbarConfig } from "../types";
 import {
   DEFAULT_TOOL_ORDER,
@@ -58,11 +59,45 @@ function resolvePosition(config: GraphToolbarProps["config"]):
 export function GraphToolbar(props: GraphToolbarProps) {
   const { config, activeTool, paused, mode, isDisabled, onSelect } = props;
   const ids = resolveToolList(config, paused);
+  // WAI-ARIA roving tabIndex: the toolbar is a single tab stop, then
+  // arrow keys walk between its buttons. Without this every button
+  // is independently tab-stoppable and a Tab press inside the canvas
+  // gets eaten before it reaches anything else on the page.
+  // The "focused index" survives toolbar re-renders so the user's
+  // arrow-nav position is preserved across pause/resume swaps. We
+  // clamp on every render in case the active set shrinks below the
+  // current index.
+  const [focusedIdx, setFocusedIdx] = useState(0);
+  const buttonsRef = useRef<Array<HTMLButtonElement | null>>([]);
+  // Tracks whether the user is actively keyboard-driving the toolbar
+  // so we only steal focus when *they* asked for it (e.g. ArrowRight).
+  // Without this, mounting / re-rendering the toolbar would pull
+  // focus from whatever the user was working on.
+  const userActiveRef = useRef(false);
+  useEffect(() => {
+    if (!userActiveRef.current) return;
+    const safeIdx = Math.min(focusedIdx, Math.max(0, ids.length - 1));
+    buttonsRef.current[safeIdx]?.focus();
+  }, [focusedIdx, ids.length]);
+
   if (ids.length === 0) return null;
   const position = resolvePosition(config);
+  const clampedFocusedIdx = Math.min(
+    focusedIdx,
+    Math.max(0, ids.length - 1),
+  );
+
+  const moveFocus = (delta: number) => {
+    userActiveRef.current = true;
+    setFocusedIdx((cur) => {
+      const next = (cur + delta + ids.length) % ids.length;
+      return next;
+    });
+  };
+
   return (
     <div className={`lgc-toolbar lgc-toolbar--${position}`} role="toolbar">
-      {ids.map((id) => {
+      {ids.map((id, idx) => {
         const descriptor = TOOL_DESCRIPTORS[id];
         const Icon =
           id === "toggle-mode" ? toggleModeIcon(mode) : descriptor.icon;
@@ -72,9 +107,13 @@ export function GraphToolbar(props: GraphToolbarProps) {
           descriptor.hint,
           descriptor.shortcut ? `(${descriptor.shortcut})` : "",
         ];
+        const isFocusable = idx === clampedFocusedIdx;
         return (
           <button
             key={id}
+            ref={(el) => {
+              buttonsRef.current[idx] = el;
+            }}
             type="button"
             className={[
               "lgc-tool",
@@ -86,8 +125,27 @@ export function GraphToolbar(props: GraphToolbarProps) {
             aria-label={descriptor.label}
             aria-pressed={isActive ? "true" : undefined}
             disabled={disabled}
+            tabIndex={isFocusable ? 0 : -1}
             title={tooltipParts.filter(Boolean).join(" ")}
+            onFocus={() => setFocusedIdx(idx)}
             onClick={() => onSelect(id)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowRight") {
+                e.preventDefault();
+                moveFocus(1);
+              } else if (e.key === "ArrowLeft") {
+                e.preventDefault();
+                moveFocus(-1);
+              } else if (e.key === "Home") {
+                e.preventDefault();
+                userActiveRef.current = true;
+                setFocusedIdx(0);
+              } else if (e.key === "End") {
+                e.preventDefault();
+                userActiveRef.current = true;
+                setFocusedIdx(ids.length - 1);
+              }
+            }}
           >
             <Icon />
           </button>

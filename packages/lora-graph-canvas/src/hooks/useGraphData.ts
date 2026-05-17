@@ -4,6 +4,78 @@ import { createId } from "../utils/ids";
 
 const EMPTY_DATA: GraphData = { nodes: [], links: [] };
 
+/** Fields the d3-force / kapsule simulation writes onto each node
+ *  every tick. Their presence means a prior canvas mount has chewed
+ *  on this exact node object — typical when the host has a
+ *  module-level data constant that's reused across remounts (story
+ *  navigation, HMR, route changes). We clear them so the next mount
+ *  re-derives a fresh layout instead of inheriting the previous one,
+ *  which otherwise looks like the canvas has "remembered" positions
+ *  across reloads.
+ *
+ *  Intentional positions (host passed `{ id, x, y }` for layout
+ *  control) survive — we only strip when a velocity / index marker
+ *  proves a previous simulation ran. Pinned coords (`fx`, `fy`,
+ *  `fz`) are never touched: those are an explicit "stay here" pin
+ *  the kapsule respects. */
+const SIM_FIELDS = [
+  "x",
+  "y",
+  "z",
+  "vx",
+  "vy",
+  "vz",
+  "index",
+  "_neighbors",
+  "_links",
+] as const;
+
+function stripStaleSimulationState<
+  N extends NodeObject,
+  L extends LinkObject,
+>(data: GraphData<N, L>): GraphData<N, L> {
+  let mutated = false;
+  const nodes = data.nodes.map((n) => {
+    const sim = n as unknown as Record<string, unknown>;
+    // No simulation markers → host node, leave alone.
+    if (
+      sim.vx === undefined &&
+      sim.vy === undefined &&
+      sim.vz === undefined &&
+      sim.index === undefined
+    ) {
+      return n;
+    }
+    mutated = true;
+    const clone: Record<string, unknown> = {};
+    for (const key in sim) {
+      if (!(SIM_FIELDS as readonly string[]).includes(key)) {
+        clone[key] = sim[key];
+      }
+    }
+    return clone as N;
+  });
+  // Links may have had source/target resolved to node-object refs
+  // by a prior kapsule mount. Reset back to ids so the next mount
+  // re-resolves against the cleaned-up node array (and so id-based
+  // selection lookups still work before the first tick).
+  const links = data.links.map((l) => {
+    const src = (l as unknown as { source?: unknown }).source;
+    const tgt = (l as unknown as { target?: unknown }).target;
+    const srcIsObj = src !== null && typeof src === "object";
+    const tgtIsObj = tgt !== null && typeof tgt === "object";
+    if (!srcIsObj && !tgtIsObj) return l;
+    mutated = true;
+    return {
+      ...l,
+      source: srcIsObj ? (src as { id: string | number }).id : src,
+      target: tgtIsObj ? (tgt as { id: string | number }).id : tgt,
+    } as L;
+  });
+  if (!mutated) return data;
+  return { nodes, links };
+}
+
 export interface UseGraphDataOptions<
   N extends NodeObject,
   L extends LinkObject,
@@ -70,7 +142,7 @@ export function useGraphData<
       opts.defaultData ??
       opts.controlled ??
       (EMPTY_DATA as GraphData<N, L>);
-    return ensureLinkIds(seed);
+    return ensureLinkIds(stripStaleSimulationState(seed));
   });
 
   // Mirror controlled data into the internal slot so the mutators

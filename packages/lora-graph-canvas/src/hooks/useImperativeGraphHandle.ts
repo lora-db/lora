@@ -7,6 +7,7 @@ import type {
   NodeObject,
 } from "../types";
 import type { GraphDataApi } from "./useGraphData";
+import type { GraphDeleteGateApi } from "./useGraphDeleteGate";
 import type { SelectionApi } from "./useGraphSelection";
 import type { GraphClipboardApi } from "./useGraphClipboard";
 
@@ -16,6 +17,7 @@ export interface UseImperativeGraphHandleParams<
 > {
   ref: React.Ref<LoraGraphCanvasHandle<N, L>>;
   dataApi: GraphDataApi<N, L>;
+  deleteGate: GraphDeleteGateApi<N, L>;
   selection: SelectionApi;
   engine: GraphEngine<N, L> | null;
   mode: GraphMode;
@@ -37,6 +39,7 @@ export function useImperativeGraphHandle<
   const {
     ref,
     dataApi,
+    deleteGate,
     selection,
     engine,
     mode,
@@ -56,11 +59,14 @@ export function useImperativeGraphHandle<
       addNode: dataApi.addNode,
       addNodes: dataApi.addNodes,
       updateNode: dataApi.updateNode,
-      removeNode: dataApi.removeNode,
-      removeNodes: dataApi.removeNodes,
+      // Funnel imperative removes through the delete-gate. Hosts that
+      // didn't supply a guard get a resolved-true promise on every call.
+      removeNode: (id) => deleteGate.requestNodeDelete([id], "imperative"),
+      removeNodes: (ids) => deleteGate.requestNodeDelete(ids, "imperative"),
       addLink: dataApi.addLink,
       addLinks: dataApi.addLinks,
-      removeLink: dataApi.removeLink,
+      removeLink: (predicate) =>
+        deleteGate.requestLinkDelete(predicate, "imperative"),
       clear: dataApi.clear,
 
       getSelection: () => selection.selected,
@@ -121,6 +127,7 @@ export function useImperativeGraphHandle<
     [
       ref,
       dataApi,
+      deleteGate,
       engine,
       mode,
       setMode,

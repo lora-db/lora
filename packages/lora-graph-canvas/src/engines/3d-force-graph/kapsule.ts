@@ -632,13 +632,17 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
 
           if (s.enableNavigationControls && controls) {
             controls.enabled = true;
-            // Cancel any pressed status the fly controls may have
-            // latched onto, then synthesise a pointerup so the
-            // controls don't try to keep dragging the camera.
-            if (controls._status) controls._onPointerCancel?.();
-            controls.domElement?.ownerDocument?.dispatchEvent(
-              new PointerEvent("pointerup", { pointerType: "touch" }),
-            );
+            // Fly controls only: clear latched press state, then
+            // synthesise a pointerup so they stop dragging the camera.
+            // Trackball/Orbit's document-level pointerup handler reads
+            // _pointerPositions[id].x and would crash on a synthetic
+            // event whose pointerId isn't tracked.
+            if (controls._status !== undefined) {
+              controls._onPointerCancel?.();
+              controls.domElement?.ownerDocument?.dispatchEvent(
+                new PointerEvent("pointerup", { pointerType: "touch" }),
+              );
+            }
           }
           renderer.domElement.classList.remove("grabbable");
         });

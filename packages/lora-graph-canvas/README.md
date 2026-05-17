@@ -114,6 +114,37 @@ import { LoraGraphCanvas, darkTheme } from "@loradb/lora-graph-canvas";
 
 Two presets are exported: `lightTheme` and `darkTheme`.
 
+## Confirm-before-delete
+
+Gate every node / link removal — keyboard, toolbar, context menu,
+selection panel, cut, and the imperative `removeNode` / `removeLink`
+handle methods — through an async guard:
+
+```tsx
+<LoraGraphCanvas
+  onBeforeNodeDelete={(nodes, { source }) =>
+    source === "imperative"
+      ? true                                // trust your own code
+      : openMyConfirmDialog(nodes)          // returns Promise<boolean>
+  }
+  onBeforeLinkDelete={(links) => openMyConfirmDialog([], links)}
+  onNodeDeleted={(nodes, { source }) => analytics.track("nodes.removed", {
+    n: nodes.length,
+    source,
+  })}
+/>
+```
+
+The guard receives every item in the batch (one selection-wide call,
+not per-item), the originating `source` (`"keyboard" | "toolbar" |
+"contextMenu" | "selectionPanel" | "cut" | "imperative"`), and may
+return either a boolean or a `Promise<boolean>`. A thrown error is
+treated as a cancel — your host won't silently destroy data.
+
+When no guard is wired, deletion happens immediately as before; the
+imperative methods become `Promise<boolean>` but resolve on the same
+tick.
+
 ## Performance knobs
 
 For large graphs, cap `cooldownTicks` (default ∞) and increase

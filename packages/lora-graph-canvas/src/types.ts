@@ -43,6 +43,25 @@ export interface GraphData<
 
 export type GraphMode = "2d" | "3d";
 
+/** Where a delete originated. Hosts often want to gate UI-driven deletes
+ *  (show a confirm modal) but trust `imperative` calls they made
+ *  themselves, so the source string lets the guard short-circuit. */
+export type DeletionSource =
+  | "keyboard"
+  | "toolbar"
+  | "selectionPanel"
+  | "contextMenu"
+  | "cut"
+  | "imperative";
+
+/** Returns `true` to allow the deletion, `false` to cancel. Can be
+ *  async — the caller awaits it before mutating data. A thrown error
+ *  is treated as a cancel. Called once per batch (not per item). */
+export type DeletionGuard<T> = (
+  items: T[],
+  ctx: { source: DeletionSource },
+) => boolean | Promise<boolean>;
+
 /** Built-in tool identifiers. */
 export type ToolId =
   | "select"
@@ -311,6 +330,19 @@ export interface LoraGraphCanvasProps<
     globalScale: number,
   ) => void;
 
+  /** Optional async gate fired before nodes are removed. Receives every
+   *  node in the batch (single-node deletes get a 1-length array). Resolve
+   *  `true` to proceed, `false` to cancel. Throws are treated as cancel.
+   *  Fires for: keyboard, toolbar, selection-panel, context-menu, cut,
+   *  and `handle.removeNode(s)` calls — discriminate via `ctx.source`. */
+  onBeforeNodeDelete?: DeletionGuard<N>;
+  /** Same shape as `onBeforeNodeDelete` for links. */
+  onBeforeLinkDelete?: DeletionGuard<L>;
+  /** Fires after a node delete has been applied to the data. */
+  onNodeDeleted?: (nodes: N[], ctx: { source: DeletionSource }) => void;
+  /** Fires after a link delete has been applied to the data. */
+  onLinkDeleted?: (links: L[], ctx: { source: DeletionSource }) => void;
+
   // Editing lifecycle hooks. Each fires *after* the underlying data
   // mutation, so `getData()` already reflects the new state.
   /** Fires when the user copies nodes (⌘C) — receives the snapshot. */
@@ -395,8 +427,14 @@ export interface LoraGraphCanvasHandle<
   ): N;
   addNodes(nodes: Array<Partial<N> & { id?: string | number }>): N[];
   updateNode(id: string | number, patch: Partial<N>): void;
-  removeNode(id: string | number): void;
-  removeNodes(ids: Array<string | number>): void;
+  /** Returns a promise that resolves to `true` when the node was removed.
+   *  When the host passes `onBeforeNodeDelete`, the guard runs with
+   *  `source: "imperative"` and may cancel — the promise resolves
+   *  `false` and the graph is unchanged. Hosts that don't pass a guard
+   *  can ignore the promise; the data mutation is observable on the
+   *  same tick (only the resolved promise itself is async). */
+  removeNode(id: string | number): Promise<boolean>;
+  removeNodes(ids: Array<string | number>): Promise<boolean>;
   addLink(link: {
     source: string | number;
     target: string | number;
@@ -407,7 +445,9 @@ export interface LoraGraphCanvasHandle<
       { source: string | number; target: string | number } & Partial<L>
     >,
   ): L[];
-  removeLink(predicate: (l: L) => boolean): void;
+  /** Same gate semantics as `removeNode` — `onBeforeLinkDelete` runs with
+   *  `source: "imperative"` and may cancel. */
+  removeLink(predicate: (l: L) => boolean): Promise<boolean>;
   clear(): void;
 
   // Selection
@@ -427,7 +467,10 @@ export interface LoraGraphCanvasHandle<
 
   // Clipboard / duplication
   copy(): N[];
-  cut(): N[];
+  /** Cut funnels through the same delete-gate as keyboard / toolbar
+   *  cuts. A rejected guard resolves to an empty array and leaves the
+   *  graph + clipboard untouched. */
+  cut(): Promise<N[]>;
   paste(opts?: { at?: { x: number; y: number; z?: number } }): N[];
   duplicate(): N[];
   /** Create a fresh node and link each currently selected node to it.

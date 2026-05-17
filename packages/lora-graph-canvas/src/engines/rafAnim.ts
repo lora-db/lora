@@ -12,6 +12,7 @@ export function runAnim(
   durationMs: number,
   step: (t: number) => void,
   onDone?: () => void,
+  ease: (t: number) => number = easeOutQuad,
 ): () => void {
   if (typeof requestAnimationFrame !== "function") {
     // No raf available — apply the final frame and bail. Keeps tests
@@ -28,7 +29,7 @@ export function runAnim(
     if (cancelled) return;
     const elapsed = now - start;
     const t = Math.min(1, elapsed / Math.max(durationMs, 1));
-    step(easeOutQuad(t));
+    step(ease(t));
     if (t < 1) {
       raf = requestAnimationFrame(tick);
     } else {
@@ -47,6 +48,15 @@ export function runAnim(
 
 export function easeOutQuad(t: number): number {
   return 1 - (1 - t) * (1 - t);
+}
+
+/** Smoother S-curve — slow start, fast middle, slow end. Reads as
+ *  more "cinematic" than easeOutQuad for longer cross-mode camera
+ *  tweens where the user is watching the whole motion. */
+export function easeInOutCubic(t: number): number {
+  return t < 0.5
+    ? 4 * t * t * t
+    : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 export function lerp(a: number, b: number, t: number): number {

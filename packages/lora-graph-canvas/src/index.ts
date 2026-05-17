@@ -5,6 +5,8 @@ export { LoraGraphCanvas } from "./LoraGraphCanvas";
 export type {
   Accessor,
   DagMode,
+  DeletionGuard,
+  DeletionSource,
   GraphData,
   GraphMode,
   LinkObject,
