@@ -1,0 +1,152 @@
+name: play-loradb
+
+# Next.js 15 App Router playground under `apps/play.loradb.com`, exported
+# as a fully static site (`output: 'export'`) and deployed to Cloudflare
+# Pages at https://play.loradb.com.
+#
+# Why Cloudflare Pages and not GitHub Pages?
+#   The sibling Docusaurus site at `apps/loradb.com` already occupies the
+#   single Pages site allowed per repo (apex `loradb.com`). Cloudflare
+#   Pages is a free static host with first-class WASM + custom-subdomain
+#   support — a clean fit for a client-only Next export.
+#
+# Deploy policy:
+#   - `workflow_dispatch`                      → build + deploy (manual).
+#   - `push` on `main` touching the app or its deps → build + deploy.
+#   - `pull_request` touching the same paths  → build only (PR validation,
+#     no deploy, no Cloudflare credentials required).
+#
+# Secrets required for deploy (configure under repo Settings → Secrets):
+#   CLOUDFLARE_API_TOKEN  — token scoped to "Pages — Edit"
+#   CLOUDFLARE_ACCOUNT_ID — found in the Cloudflare dashboard sidebar
+# The deploy job fails fast with a clear message if either is missing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/play.loradb.com/**"
+      - "packages/lora-query/**"
+      - "packages/lora-graph-canvas/**"
+      - "crates/bindings/lora-wasm/**"
+      - ".github/workflows/play-loradb.yml"
+  pull_request:
+    paths:
+      - "apps/play.loradb.com/**"
+      - "packages/lora-query/**"
+      - "packages/lora-graph-canvas/**"
+      - "crates/bindings/lora-wasm/**"
+      - ".github/workflows/play-loradb.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: play-loradb-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      # The playground depends transitively on two WASM crates
+      # (`@loradb/lora-wasm` and `@loradb/lora-query`'s embedded
+      # `lora-query-wasm`), both built via wasm-pack. A Rust toolchain
+      # with the `wasm32-unknown-unknown` target is therefore required.
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: play-loradb-ubuntu
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "v0.14.0"
+
+      - uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: "20"
+
+      - name: yarn install (immutable)
+        run: corepack yarn install --immutable
+
+      # Build the workspace deps explicitly in topological order so the
+      # Next build sees real `dist/`, `pkg-bundler/`, and `wasm/` outputs
+      # instead of stale or empty workspace packages.
+      - name: Build @loradb/lora-wasm
+        run: corepack yarn workspace @loradb/lora-wasm build
+
+      - name: Build @loradb/lora-query
+        run: corepack yarn workspace @loradb/lora-query build
+
+      - name: Build @loradb/lora-graph-canvas
+        run: corepack yarn workspace @loradb/lora-graph-canvas build
+
+      - name: Typecheck @loradb/play
+        run: corepack yarn workspace @loradb/play typecheck
+
+      - name: Build @loradb/play (static export)
+        run: corepack yarn workspace @loradb/play build
+
+      - name: Verify static export
+        run: |
+          test -f apps/play.loradb.com/out/index.html
+          test -f apps/play.loradb.com/out/_headers
+          test -f apps/play.loradb.com/out/_redirects
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: play-loradb-out-${{ github.sha }}
+          path: apps/play.loradb.com/out
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: deploy
+    # Never deploy from PR runs — they lack Cloudflare secrets and would
+    # leak a preview URL outside the controlled production environment.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://play.loradb.com
+    steps:
+      - name: Verify Cloudflare secrets are configured
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=0
+          if [[ -z "${CF_API_TOKEN}" ]]; then
+            echo "::error::Missing repo secret CLOUDFLARE_API_TOKEN. See apps/play.loradb.com/README.md → Production deploy."
+            missing=1
+          fi
+          if [[ -z "${CF_ACCOUNT_ID}" ]]; then
+            echo "::error::Missing repo secret CLOUDFLARE_ACCOUNT_ID. See apps/play.loradb.com/README.md → Production deploy."
+            missing=1
+          fi
+          if [[ "${missing}" != "0" ]]; then
+            exit 1
+          fi
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: play-loradb-out-${{ github.sha }}
+          path: out
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy out --project-name=play-loradb --branch=main
