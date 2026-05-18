@@ -4,18 +4,36 @@
  * Phase 4b export actions.
  *
  * The Graph PNG export uses an event bridge instead of threading a ref
- * across the component tree: `GraphView` registers a listener on the
- * `GRAPH_PNG_EVENT` and calls the canvas's imperative `screenshot()`
+ * across the component tree: `GraphView` instances register a listener
+ * on `GRAPH_PNG_EVENT` and call their canvas's imperative `screenshot()`
  * method when triggered. Callers (Spotlight, the result-pane button)
- * just dispatch the event — no React refs needed.
+ * dispatch the event — no React refs needed.
+ *
+ * Multi-pane note: when several GraphView instances are mounted, the
+ * event payload carries a `paneId`. Listeners only react when the id
+ * matches their containing leaf (or when the id is `null`, in which
+ * case the active pane's GraphView wins).
  */
 
 export const GRAPH_PNG_EVENT = "loradb:graph-png";
 
-/** Dispatches a window event asking GraphView to export a PNG. */
-export function requestGraphPng(): void {
+export interface GraphPngEventDetail {
+  /** Leaf id of the pane whose graph should be exported. `null` = active pane. */
+  paneId: string | null;
+}
+
+export function isGraphPngEvent(event: Event): event is CustomEvent<GraphPngEventDetail> {
+  return event instanceof CustomEvent && event.type === GRAPH_PNG_EVENT;
+}
+
+/**
+ * Dispatches a window event asking GraphView to export a PNG. Defaults
+ * to the active pane when no `paneId` is supplied.
+ */
+export function requestGraphPng(paneId?: string): void {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(GRAPH_PNG_EVENT));
+  const detail: GraphPngEventDetail = { paneId: paneId ?? null };
+  window.dispatchEvent(new CustomEvent<GraphPngEventDetail>(GRAPH_PNG_EVENT, { detail }));
 }
 
 function isoDateStamp(timestamp: number): string {

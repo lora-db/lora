@@ -31,6 +31,7 @@ function groupRows(): Record<HotkeyMeta["group"], Row[]> {
     Navigation: [],
     View: [],
     Editor: [],
+    Panes: [],
     App: [],
   };
   for (const id of Object.keys(HOTKEYS) as HotkeyId[]) {
@@ -47,6 +48,7 @@ function HotkeyHelpDialogBody() {
     "Tabs",
     "Editor",
     "View",
+    "Panes",
     "Navigation",
     "App",
   ];

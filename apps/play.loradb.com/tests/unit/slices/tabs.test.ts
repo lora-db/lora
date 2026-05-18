@@ -35,10 +35,10 @@ function names(tabs: ReadonlyArray<EditorTab>): string[] {
 describe("tabs slice", () => {
   it("opens a tab with an auto-incremented untitled name", () => {
     const store = makeStore();
-    store.getState().openTab();
-    store.getState().openTab();
+    const a = store.getState().openTab();
+    const b = store.getState().openTab();
     expect(names(store.getState().tabs)).toEqual(["Query 1", "Query 2"]);
-    expect(store.getState().activeTabId).toBe(store.getState().tabs[1]?.id);
+    expect(a).not.toBe(b);
   });
 
   it("setBody marks the tab dirty only when the body actually changes", () => {
@@ -64,35 +64,22 @@ describe("tabs slice", () => {
     expect(store.getState().tabs[0]?.dirty).toBe(false);
   });
 
-  it("closeTab removes the tab and advances activeTabId to the right neighbour", () => {
+  it("closeTab removes the tab from the slice", () => {
     const store = makeStore();
     const a = store.getState().openTab({ name: "A" });
     const b = store.getState().openTab({ name: "B" });
     const c = store.getState().openTab({ name: "C" });
-
-    store.getState().setActiveTab(b);
     store.getState().closeTab(b);
-
     expect(names(store.getState().tabs)).toEqual(["A", "C"]);
-    expect(store.getState().activeTabId).toBe(c);
     expect(a).toBeTruthy();
+    expect(c).toBeTruthy();
   });
 
-  it("closeTab on the last tab falls back to the previous one", () => {
-    const store = makeStore();
-    const a = store.getState().openTab({ name: "A" });
-    const b = store.getState().openTab({ name: "B" });
-    store.getState().setActiveTab(b);
-    store.getState().closeTab(b);
-    expect(store.getState().activeTabId).toBe(a);
-  });
-
-  it("closing the only tab leaves activeTabId null", () => {
+  it("closing the only tab leaves an empty tabs array", () => {
     const store = makeStore();
     const id = store.getState().openTab();
     store.getState().closeTab(id);
     expect(store.getState().tabs).toHaveLength(0);
-    expect(store.getState().activeTabId).toBe(null);
   });
 
   it("reorderTab moves a tab from one index to another", () => {
@@ -120,19 +107,14 @@ describe("tabs slice", () => {
     expect(names(store.getState().tabs)).toEqual(["A", "B"]);
   });
 
-  it("hydrateTabs restores order and falls back to the first tab when activeId is missing", () => {
+  it("hydrateTabs restores order", () => {
     const store = makeStore();
     const records: SerializedTab[] = [
       { id: "x1", name: "X", body: "x", createdAt: 1 },
       { id: "x2", name: "Y", body: "y", createdAt: 2 },
     ];
-    store.getState().hydrateTabs(records, "missing-id");
+    store.getState().hydrateTabs(records);
     expect(names(store.getState().tabs)).toEqual(["X", "Y"]);
-    expect(store.getState().activeTabId).toBe("x1");
-
-    // Re-hydrate with a valid activeId — should honour it.
-    store.getState().hydrateTabs(records, "x2");
-    expect(store.getState().activeTabId).toBe("x2");
   });
 
   it("renameTab updates the name in place", () => {

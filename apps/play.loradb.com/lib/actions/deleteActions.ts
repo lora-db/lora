@@ -11,8 +11,14 @@
  * transaction — there's nothing to delete — but the canvas still gets
  * the green light to remove them from its in-memory view.
  *
- * On success we dispatch `loradb:mutation` so `useDbStatus`,
- * schema, and any other listeners refresh their counts.
+ * On success we dispatch `loradb:mutation` so `useDbStatus`, schema,
+ * and any other listeners refresh their counts. We deliberately do not
+ * re-run the active tab here: the canvas drops the deleted nodes from
+ * its uncontrolled view as soon as the guard resolves, and a re-run
+ * would mint a new `runId` and remount `GraphView`, reseeding the
+ * physics simulation and snapping the layout. Other result panes
+ * (table / JSON) stay on the pre-delete snapshot until the user reruns
+ * the query explicitly.
  */
 
 import { notifications } from "@mantine/notifications";
@@ -22,10 +28,7 @@ import type {
 } from "@loradb/lora-graph-canvas";
 import type { TransactionStatement } from "@loradb/lora-wasm";
 import { getDb } from "@/lib/db/client";
-import {
-  LORADB_MUTATION_EVENT,
-  runActiveTab,
-} from "@/lib/actions/runActiveTab";
+import { LORADB_MUTATION_EVENT } from "@/lib/actions/runActiveTab";
 
 export interface DeleteSelectionResult {
   ok: boolean;
@@ -101,12 +104,5 @@ export async function deleteFromGraph(
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent(LORADB_MUTATION_EVENT));
   }
-  // Re-run the active tab so the table / JSON / graph panes reflect the
-  // post-delete DB state. Fire-and-forget — the dialog has already
-  // closed by the time this resolves and a transient run-failure here
-  // would be surfaced by the result pane's own error rendering.
-  void runActiveTab().catch(() => {
-    /* surfaced via ResultPane */
-  });
   return { ok: true, dbNodes: nodeIds.length, dbLinks: linkIds.length };
 }

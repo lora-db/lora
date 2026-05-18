@@ -6,8 +6,16 @@
  */
 
 import { ActionIcon, Group, Text, Tooltip } from "@mantine/core";
-import { IconKeyboard, IconMoon, IconSun } from "@tabler/icons-react";
+import {
+  IconKeyboard,
+  IconLayoutColumns,
+  IconLayoutRows,
+  IconMoon,
+  IconSun,
+} from "@tabler/icons-react";
 
+import { toggleRootOrientation } from "@/lib/actions/workspaceActions";
+import { useStore } from "@/lib/state/store";
 import { useColorSchemeToggle, usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 import { useDbStatus } from "@/lib/hooks/useDbStatus";
 
@@ -30,6 +38,10 @@ export function TopBar() {
   const { tokens, scheme } = usePlaygroundTheme();
   const toggle = useColorSchemeToggle();
   const status = useDbStatus();
+  const rootDirection = useStore((s) =>
+    s.workspace.type === "group" ? s.workspace.direction : "column",
+  );
+  const isHorizontal = rootDirection === "row";
 
   return (
     <Group
@@ -48,6 +60,21 @@ export function TopBar() {
 
       <Group gap="xs" align="center" wrap="nowrap">
         <RunButton />
+        <Tooltip
+          label={isHorizontal ? "Stack panes top/bottom" : "Place panes left/right"}
+          withArrow
+        >
+          <ActionIcon
+            variant="subtle"
+            size="md"
+            color="gray"
+            onClick={() => toggleRootOrientation()}
+            aria-label="Toggle split orientation"
+            data-testid="toggle-orientation"
+          >
+            {isHorizontal ? <IconLayoutRows size={16} /> : <IconLayoutColumns size={16} />}
+          </ActionIcon>
+        </Tooltip>
       </Group>
 
       <Group gap="xs" align="center" wrap="nowrap">

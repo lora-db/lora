@@ -24,6 +24,7 @@ import { inspectNode, inspectRelationship } from "@/lib/actions/inspectActions";
 import {
   GRAPH_PNG_EVENT,
   downloadGraphPng,
+  isGraphPngEvent,
 } from "@/lib/actions/exportActions";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 import { openConfirmDeleteDialog } from "@/app/_components/Dialogs/ConfirmDeleteDialog";
@@ -70,11 +71,19 @@ function GraphSkeleton() {
   );
 }
 
-export function GraphView({ result }: { result: AdaptedResult }) {
+export function GraphView({
+  result,
+  paneId,
+}: {
+  result: AdaptedResult;
+  /** Pane this graph belongs to — used to scope the PNG export event. */
+  paneId?: string;
+}) {
   const { canvas, tokens } = usePlaygroundTheme();
   const graphMode = useStore((s) => s.graphMode);
   const focusOnNodeClick = useStore((s) => s.focusOnNodeClick);
   const alwaysShowLabels = useStore((s) => s.alwaysShowLabels);
+  const fitOnSelect = useStore((s) => s.fitOnSelect);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<LoraGraphCanvasHandle | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -100,7 +109,19 @@ export function GraphView({ result }: { result: AdaptedResult }) {
   // GraphView (rather than ResultPane) so we already hold the ref.
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    const onRequest = () => {
+    const onRequest = (event: Event) => {
+      // Disambiguate when multiple graph panes are mounted. A `null`
+      // event payload means "active pane"; we let the store decide
+      // which pane that is.
+      if (isGraphPngEvent(event)) {
+        const detail = event.detail;
+        if (detail.paneId !== null && detail.paneId !== paneId) return;
+        if (detail.paneId === null && paneId !== undefined) {
+          // Only the pane matching `activePaneId` should respond.
+          const activeId = useStore.getState().activePaneId;
+          if (activeId !== paneId) return;
+        }
+      }
       (async () => {
         const handle = canvasRef.current;
         if (!handle) {
@@ -137,7 +158,7 @@ export function GraphView({ result }: { result: AdaptedResult }) {
     return () => {
       window.removeEventListener(GRAPH_PNG_EVENT, onRequest);
     };
-  }, []);
+  }, [paneId]);
 
   // The store uses immer, which freezes nested objects. LoraGraphCanvas
   // mutates nodes/links in-place (e.g. assigns `_neighbors` and physics
@@ -191,6 +212,7 @@ export function GraphView({ result }: { result: AdaptedResult }) {
           autoIndexNeighbors
           focusOnClick={focusOnNodeClick}
           showLabels={alwaysShowLabels}
+          fitOnSelect={fitOnSelect}
           onBeforeNodeDelete={(nodes, { source }) =>
             // Imperative calls (host-driven, no user gesture) skip the
             // confirm modal — only user-initiated deletes prompt.

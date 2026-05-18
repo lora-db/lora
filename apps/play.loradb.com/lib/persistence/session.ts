@@ -19,6 +19,12 @@ export type { SerializedTab, SerializedLayout, SerializedPrefs };
 export interface SessionRecord {
   id: "singleton";
   tabs: SerializedTab[];
+  /**
+   * Legacy field — the active tab id used to live here. The current
+   * model derives "active tab" from the workspace tree, so this field
+   * is preserved as `null` on new writes for backward compatibility
+   * with older readers, and consulted as a one-shot hint on hydrate.
+   */
   activeTabId: string | null;
   layout: SerializedLayout;
   prefs: SerializedPrefs;

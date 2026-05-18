@@ -24,6 +24,7 @@ import { notifications } from "@mantine/notifications";
 
 import { closeInspect } from "@/lib/actions/inspectActions";
 import { runActiveTab } from "@/lib/actions/runActiveTab";
+import { openTabInCell } from "@/lib/actions/tabActions";
 import { useStore } from "@/lib/state/store";
 import type { InspectTarget } from "@/lib/state/slices/inspect";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
@@ -134,8 +135,10 @@ function visualizeNeighbors(target: InspectTarget): void {
     target.kind === "node"
       ? `Neighbors of ${target.id}`
       : `Neighbors of ${target.type} ${target.id}`;
-  const state = useStore.getState();
-  state.openTab({ name, body });
+  // Route via `openTabInCell` so the new tab lands in the active cell's
+  // editor strip — otherwise the run below would update results for a
+  // tab the user can't see anywhere.
+  openTabInCell({ name, body });
   void runActiveTab();
 }
 

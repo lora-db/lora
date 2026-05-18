@@ -18,9 +18,15 @@ import type {
   ActivitySection,
   ResultTab,
 } from "@/lib/state/slices/layout";
+import { setActiveResultTab } from "@/lib/actions/workspaceActions";
 
+/**
+ * Switch the result inner-tab (Graph/Table/JSON/Plan). Acts on the
+ * active pane if it shows a result view; otherwise the first result
+ * view anywhere in the workspace.
+ */
 export function setResultTab(tab: ResultTab): void {
-  useStore.getState().setResultTab(tab);
+  setActiveResultTab(tab);
 }
 
 export function setActivity(section: ActivitySection): void {

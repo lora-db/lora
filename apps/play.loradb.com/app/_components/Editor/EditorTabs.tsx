@@ -30,6 +30,13 @@ interface EditorTabsProps {
   view: PanelView;
   paneId: string;
   /**
+   * Whether the leaf hosting this tab strip is the currently active
+   * pane. Drives the active tab's accent treatment so the tab itself
+   * carries the pane-focus indicator instead of a frame around the
+   * whole pane.
+   */
+  isPaneActive?: boolean;
+  /**
    * Right-aligned content that lives in the same chrome row as the tab
    * strip — pane-management icons (split, minimize, close) ride here so
    * they don't need a second toolbar.
@@ -37,7 +44,7 @@ interface EditorTabsProps {
   trailingActions?: ReactNode;
 }
 
-export function EditorTabs({ view, paneId, trailingActions }: EditorTabsProps) {
+export function EditorTabs({ view, paneId, isPaneActive = false, trailingActions }: EditorTabsProps) {
   const { tokens } = usePlaygroundTheme();
   const allTabs = useStore((s) => s.tabs);
   // Workspace invariant: there must always be at least one query tab.
@@ -200,18 +207,26 @@ export function EditorTabs({ view, paneId, trailingActions }: EditorTabsProps) {
                 padding: "0 12px 0 14px",
                 borderRight: `1px solid ${tokens.border.subtle}`,
                 background: active
-                  ? tokens.bg.editor
+                  ? isPaneActive
+                    ? tokens.bg.editor
+                    : hexA(tokens.fg.primary, 0.06)
                   : hovered
                     ? hexA(tokens.fg.primary, 0.04)
                     : "transparent",
-                color: active ? tokens.fg.primary : tokens.fg.muted,
+                color: active
+                  ? isPaneActive
+                    ? tokens.fg.primary
+                    : tokens.fg.muted
+                  : tokens.fg.muted,
                 minWidth: 120,
                 maxWidth: 220,
                 flexShrink: 0,
                 cursor: dragging ? "grabbing" : "pointer",
                 opacity: dragging ? 0.4 : 1,
                 borderTop: active
-                  ? `2px solid ${tokens.accent.primary}`
+                  ? isPaneActive
+                    ? `2px solid ${tokens.accent.primary}`
+                    : `2px solid ${tokens.border.strong}`
                   : "2px solid transparent",
                 boxSizing: "border-box",
                 transition: "background 0.08s, color 0.08s, opacity 0.08s",

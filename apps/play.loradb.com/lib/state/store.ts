@@ -3,10 +3,10 @@
 /**
  * Zustand store composition.
  *
- * Five slices (tabs, results, layout, prefs, schema) are merged into a
- * single store wrapped with `immer` (imperative draft mutations inside the
- * slices) and `subscribeWithSelector` (so we can subscribe to the exact
- * fields that participate in IDB persistence).
+ * Six slices (tabs, results, layout, prefs, schema, inspect) are merged
+ * into a single store wrapped with `immer` (imperative draft mutations
+ * inside the slices) and `subscribeWithSelector` (so we can subscribe to
+ * the exact fields that participate in IDB persistence).
  *
  * Persistence is driven by an explicit selector subscription rather than
  * `zustand/middleware/persist` — we own the IDB schema and want full
@@ -110,12 +110,12 @@ type SubscribeWithSelector = StoreApi<Store> & {
  */
 interface PersistedSnapshot {
   tabs: EditorTab[];
-  activeTabId: string | null;
   // layout
   activitySection: SerializedLayout["activitySection"];
-  panelSizes: SerializedLayout["panelSizes"];
-  resultTab: SerializedLayout["resultTab"];
   sidebarOpen: SerializedLayout["sidebarOpen"];
+  sidebarWidth: SerializedLayout["sidebarWidth"];
+  workspace: SerializedLayout["workspace"];
+  activePaneId: SerializedLayout["activePaneId"];
   // prefs
   graphMode: SerializedPrefs["graphMode"];
   autoRunOnSave: SerializedPrefs["autoRunOnSave"];
@@ -124,16 +124,17 @@ interface PersistedSnapshot {
   autoRestore: SerializedPrefs["autoRestore"];
   focusOnNodeClick: SerializedPrefs["focusOnNodeClick"];
   alwaysShowLabels: SerializedPrefs["alwaysShowLabels"];
+  fitOnSelect: SerializedPrefs["fitOnSelect"];
 }
 
 function selectPersisted(s: Store): PersistedSnapshot {
   return {
     tabs: s.tabs,
-    activeTabId: s.activeTabId,
     activitySection: s.activitySection,
-    panelSizes: s.panelSizes,
-    resultTab: s.resultTab,
     sidebarOpen: s.sidebarOpen,
+    sidebarWidth: s.sidebarWidth,
+    workspace: s.workspace,
+    activePaneId: s.activePaneId,
     graphMode: s.graphMode,
     autoRunOnSave: s.autoRunOnSave,
     nodeCap: s.nodeCap,
@@ -141,6 +142,7 @@ function selectPersisted(s: Store): PersistedSnapshot {
     autoRestore: s.autoRestore,
     focusOnNodeClick: s.focusOnNodeClick,
     alwaysShowLabels: s.alwaysShowLabels,
+    fitOnSelect: s.fitOnSelect,
   };
 }
 
@@ -153,18 +155,19 @@ function shallowEqualSnapshot(
   // for our purposes.
   return (
     a.tabs === b.tabs &&
-    a.activeTabId === b.activeTabId &&
     a.activitySection === b.activitySection &&
-    a.panelSizes === b.panelSizes &&
-    a.resultTab === b.resultTab &&
     a.sidebarOpen === b.sidebarOpen &&
+    a.sidebarWidth === b.sidebarWidth &&
+    a.workspace === b.workspace &&
+    a.activePaneId === b.activePaneId &&
     a.graphMode === b.graphMode &&
     a.autoRunOnSave === b.autoRunOnSave &&
     a.nodeCap === b.nodeCap &&
     a.resultRowCap === b.resultRowCap &&
     a.autoRestore === b.autoRestore &&
     a.focusOnNodeClick === b.focusOnNodeClick &&
-    a.alwaysShowLabels === b.alwaysShowLabels
+    a.alwaysShowLabels === b.alwaysShowLabels &&
+    a.fitOnSelect === b.fitOnSelect
   );
 }
 
@@ -177,12 +180,16 @@ function serializeSnapshot(s: PersistedSnapshot) {
       savedQueryId: t.savedQueryId,
       createdAt: t.createdAt,
     })),
-    activeTabId: s.activeTabId,
+    // `activeTabId` is now derived from the workspace tree; we still
+    // write `null` so legacy IDB readers (older preview tabs) don't
+    // crash on its absence.
+    activeTabId: null as string | null,
     layout: {
       activitySection: s.activitySection,
-      panelSizes: s.panelSizes,
-      resultTab: s.resultTab,
       sidebarOpen: s.sidebarOpen,
+      sidebarWidth: s.sidebarWidth,
+      workspace: s.workspace,
+      activePaneId: s.activePaneId,
     },
     prefs: {
       graphMode: s.graphMode,
@@ -192,6 +199,7 @@ function serializeSnapshot(s: PersistedSnapshot) {
       autoRestore: s.autoRestore,
       focusOnNodeClick: s.focusOnNodeClick,
       alwaysShowLabels: s.alwaysShowLabels,
+      fitOnSelect: s.fitOnSelect,
     },
   };
 }
@@ -232,6 +240,12 @@ if (typeof window !== "undefined") {
     },
     { equalityFn: shallowEqualSnapshot },
   );
+  // Dev-only escape hatch so headless tests can introspect the live
+  // store. Removed from production via tree-shaking when this module
+  // is bundled with NODE_ENV=production.
+  if (process.env.NODE_ENV !== "production") {
+    (window as unknown as { __loradbStore?: typeof useStore }).__loradbStore = useStore;
+  }
 }
 
 /**
@@ -252,9 +266,37 @@ export async function hydrateFromIDB(): Promise<void> {
   isHydrating = true;
   try {
     const state = useStore.getState();
-    state.hydrateTabs(record.tabs, record.activeTabId);
-    state.hydrateLayout(record.layout);
+    state.hydrateTabs(record.tabs);
+    // `record.layout` may be on either the legacy shape (panelSizes +
+    // resultTab) or the new workspace tree — `hydrateLayout` runs it
+    // through `migrateLayout` first so both paths converge here.
+    state.hydrateLayout(record.layout as SerializedLayout);
     state.hydratePrefs(record.prefs);
+    // Legacy records carried a top-level `activeTabId`. If the
+    // restored workspace's first editor view doesn't yet have a
+    // tabId (e.g. legacy migrations) and the record's value still
+    // identifies a known tab, plant it as that view's active tab so
+    // the user lands where they left off.
+    const legacyActiveTabId = (record as unknown as { activeTabId?: string | null }).activeTabId ?? null;
+    if (legacyActiveTabId) {
+      const after = useStore.getState();
+      const knownTab = after.tabs.some((t) => t.id === legacyActiveTabId);
+      if (knownTab) {
+        for (const leaf of (function* walk(node: SerializedLayout["workspace"]): Generator<{ id: string; views: { id: string; kind: string; tabId?: string; tabIds?: string[] }[] }> {
+          if (node.type === "leaf") {
+            yield node;
+            return;
+          }
+          for (const c of node.children) yield* walk(c);
+        })(after.workspace)) {
+          const editorView = leaf.views.find((v) => v.kind === "editor");
+          if (editorView && !editorView.tabId) {
+            after.setViewTabId(editorView.id, legacyActiveTabId);
+            break;
+          }
+        }
+      }
+    }
   } finally {
     queueMicrotask(() => {
       isHydrating = false;

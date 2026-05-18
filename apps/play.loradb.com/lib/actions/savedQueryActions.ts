@@ -11,6 +11,8 @@
 
 import { useStore } from "@/lib/state/store";
 import * as savedQueries from "@/lib/persistence/savedQueries";
+import { openTabInCell } from "@/lib/actions/tabActions";
+import { focusTabInWorkspace, getActiveTabId } from "@/lib/actions/workspaceActions";
 
 export const SAVED_QUERIES_EVENT = "loradb:savedQueries";
 
@@ -26,9 +28,9 @@ function emitChange(): void {
  * expected to open the SaveQueryDialog and call `saveActiveTabAs`.
  */
 export async function saveActiveTab(): Promise<savedQueries.SavedQuery | null> {
-  const state = useStore.getState();
-  const tabId = state.activeTabId;
+  const tabId = getActiveTabId();
   if (tabId === null) return null;
+  const state = useStore.getState();
   const tab = state.tabs.find((t) => t.id === tabId);
   if (!tab) return null;
 
@@ -51,11 +53,11 @@ export async function saveActiveTabAs(
   name: string,
   tags?: string[],
 ): Promise<savedQueries.SavedQuery> {
-  const state = useStore.getState();
-  const tabId = state.activeTabId;
+  const tabId = getActiveTabId();
   if (tabId === null) {
     throw new Error("No active tab to save");
   }
+  const state = useStore.getState();
   const tab = state.tabs.find((t) => t.id === tabId);
   if (!tab) {
     throw new Error("Active tab not found");
@@ -77,18 +79,19 @@ export async function saveActiveTabAs(
 
 /**
  * Open a saved query in a new tab — or, if any open tab is already
- * bound to it, focus that one instead.
+ * bound to it, focus that one instead. The tab always appears in the
+ * active cell's editor strip via `openTabInCell`.
  */
 export async function openSavedQuery(id: string): Promise<void> {
   const state = useStore.getState();
   const existing = state.tabs.find((t) => t.savedQueryId === id);
   if (existing) {
-    state.setActiveTab(existing.id);
+    focusTabInWorkspace(existing.id);
     return;
   }
   const record = await savedQueries.get(id);
   if (!record) return;
-  state.openTab({
+  openTabInCell({
     name: record.name,
     body: record.body,
     savedQueryId: record.id,

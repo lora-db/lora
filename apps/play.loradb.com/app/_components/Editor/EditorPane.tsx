@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * Wraps `LoraQueryEditor` (dynamically imported, client-only). Pipes
- * the active tab's body through the store and registers the `⌘↵`
- * keybind to run the active query. Also fans the cached
- * {@link SchemaSnapshot} into the editor's completion providers and
- * starts the post-mutation schema-refresh listener.
+ * Wraps `LoraQueryEditor` (dynamically imported, client-only). The pane
+ * is prop-driven now — `tabId` may either be a pinned id (multi-pane
+ * pinning) or `undefined` to follow whatever tab the editor tabs strip
+ * has active. The body flows back through the tabs slice's `setBody`
+ * regardless.
  */
 
 import { useCallback, useEffect, useMemo } from "react";
@@ -14,7 +14,7 @@ import { useHotkeys } from "@mantine/hooks";
 
 import { LoraQueryEditor } from "@loradb/lora-query";
 import type { PropertyContext } from "@loradb/lora-query";
-import { useActiveTab } from "@/lib/state/selectors";
+import { useActiveTab, useTabById } from "@/lib/state/selectors";
 import { useStore } from "@/lib/state/store";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 import { runActiveTab } from "@/lib/actions/runActiveTab";
@@ -23,8 +23,15 @@ import {
   refreshSchema,
 } from "@/lib/actions/schemaActions";
 
-export function EditorPane() {
-  const tab = useActiveTab();
+interface EditorPaneProps {
+  /** Pinned tab id. `undefined` makes the pane follow the global active tab. */
+  tabId?: string;
+}
+
+export function EditorPane({ tabId }: EditorPaneProps) {
+  const activeTab = useActiveTab();
+  const pinnedTab = useTabById(tabId);
+  const tab = tabId === undefined ? activeTab : pinnedTab;
   const schema = useStore((s) => s.schema);
   const { editor, tokens } = usePlaygroundTheme();
 
@@ -105,6 +112,7 @@ export function EditorPane() {
         display: "flex",
         flexDirection: "column",
         background: tokens.bg.editor,
+        position: "relative",
       }}
     >
       <LoraQueryEditor

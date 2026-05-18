@@ -38,6 +38,7 @@ export function SettingsPanel() {
   const resultRowCap = useStore((s) => s.resultRowCap);
   const focusOnNodeClick = useStore((s) => s.focusOnNodeClick);
   const alwaysShowLabels = useStore((s) => s.alwaysShowLabels);
+  const fitOnSelect = useStore((s) => s.fitOnSelect);
   const setPref = useStore((s) => s.setPref);
 
   const onConfirmClear = () => {
@@ -172,6 +173,21 @@ export function SettingsPanel() {
             </Text>
           </Stack>
 
+          <Stack gap={4}>
+            <Switch
+              size="sm"
+              checked={fitOnSelect}
+              onChange={(e) => {
+                setPref("fitOnSelect", e.currentTarget.checked);
+              }}
+              label="Fit to selection"
+            />
+            <Text size="xs" c={tokens.fg.muted}>
+              Animate the camera to frame the current selection whenever
+              it changes.
+            </Text>
+          </Stack>
+
           <Switch
             size="sm"
             checked={autoRunOnSave}
@@ -223,6 +239,45 @@ export function SettingsPanel() {
             <Text size="xs" c={tokens.fg.muted}>
               When on, the database is restored after a page reload.
             </Text>
+          </Stack>
+
+          <Stack gap={4}>
+            <Text size="xs" fw={600} c={tokens.fg.muted}>
+              Layout
+            </Text>
+            <Text size="xs" c={tokens.fg.muted}>
+              Restore the default editor / result split. Open tabs and
+              saved queries are kept; only the pane arrangement is reset.
+            </Text>
+            <Button
+              size="xs"
+              variant="default"
+              onClick={() => {
+                openConfirmModal({
+                  title: "Reset workspace layout?",
+                  children: (
+                    <Text size="sm" c={tokens.fg.muted}>
+                      This collapses any split panes back to a single
+                      editor pane and a single result pane. Your open
+                      tabs and their bodies remain intact.
+                    </Text>
+                  ),
+                  labels: { confirm: "Reset", cancel: "Cancel" },
+                  confirmProps: { color: "blue" },
+                  onConfirm: () => {
+                    useStore.getState().resetLayout();
+                    notifications.show({
+                      color: "green",
+                      title: "Layout reset",
+                      message: "Workspace restored to the default split.",
+                      autoClose: 3000,
+                    });
+                  },
+                });
+              }}
+            >
+              Reset workspace layout
+            </Button>
           </Stack>
 
           <Button

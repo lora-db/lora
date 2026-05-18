@@ -41,7 +41,7 @@ import type {
   VariableKind,
 } from "@loradb/lora-query";
 
-import { useActiveTab } from "@/lib/state/selectors";
+import { useActiveTab, useTabById } from "@/lib/state/selectors";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
 const DEBOUNCE_MS = 200;
@@ -120,9 +120,15 @@ function groupByKind(vars: readonly OutlineVariable[]): Record<VariableKind, Out
   return out;
 }
 
-export function PlanView() {
+export interface PlanViewProps {
+  tabId?: string;
+}
+
+export function PlanView({ tabId }: PlanViewProps = {}) {
   const { tokens } = usePlaygroundTheme();
-  const tab = useActiveTab();
+  const activeTab = useActiveTab();
+  const pinnedTab = useTabById(tabId);
+  const tab = tabId === undefined ? activeTab : pinnedTab;
   const body = tab?.body ?? "";
   const [bundle, setBundle] = useState<AnalysisBundle>(EMPTY_BUNDLE);
 

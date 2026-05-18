@@ -4647,6 +4647,7 @@ __metadata:
     postcss-simple-vars: "npm:^7.0.1"
     react: "npm:^19.0.0"
     react-dom: "npm:^19.0.0"
+    react-resizable-panels: "npm:^4.11.1"
     three: "npm:^0.182.0"
     typescript: "npm:^5.6.0"
     vitest: "npm:^2.1.0"
@@ -18330,6 +18331,16 @@ __metadata:
     "@types/react":
       optional: true
   checksum: 10c0/b5f3315bead75e72853f492c0b51ba8fb4fa09a4534d7fc42d6fcd59ca3e047cf213279ffc1e35b337e314ef5a04cb2b12544c85e0078802271731c27c09e5aa
+  languageName: node
+  linkType: hard
+
+"react-resizable-panels@npm:^4.11.1":
+  version: 4.11.1
+  resolution: "react-resizable-panels@npm:4.11.1"
+  peerDependencies:
+    react: ^18.0.0 || ^19.0.0
+    react-dom: ^18.0.0 || ^19.0.0
+  checksum: 10c0/b888818b40f1ec54e2f84cc0fe553d197f2250d149f59f7fe2f822629029d3e535d6483a65c98eff3227352810622af08a2fd2e3269561f915b1ef651aee76b8
   languageName: node
   linkType: hard
 

@@ -16,6 +16,7 @@ export interface SerializedPrefs {
   autoRestore: boolean;
   focusOnNodeClick: boolean;
   alwaysShowLabels: boolean;
+  fitOnSelect: boolean;
 }
 
 export interface PrefsSlice extends SerializedPrefs {
@@ -31,6 +32,7 @@ export const DEFAULT_PREFS: SerializedPrefs = {
   autoRestore: true,
   focusOnNodeClick: false,
   alwaysShowLabels: false,
+  fitOnSelect: false,
 };
 
 export const createPrefsSlice: StateCreator<
@@ -62,6 +64,7 @@ export const createPrefsSlice: StateCreator<
         prefs.focusOnNodeClick ?? DEFAULT_PREFS.focusOnNodeClick;
       state.alwaysShowLabels =
         prefs.alwaysShowLabels ?? DEFAULT_PREFS.alwaysShowLabels;
+      state.fitOnSelect = prefs.fitOnSelect ?? DEFAULT_PREFS.fitOnSelect;
     });
   },
 });

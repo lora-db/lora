@@ -1,17 +1,15 @@
 "use client";
 
 /**
- * The bottom half of the workbench. Switches between graph / table /
- * JSON / plan for the active tab's result, or shows an empty /
- * running / error state.
- *
- * The Plan tab always shows the parser's view of the active editor
+ * Result view (Graph / Table / JSON / Plan). Prop-driven so multiple
+ * panes can each show a different inner tab for the same underlying
+ * result. The Plan tab always shows the parser's view of the editor
  * body — it works even before the query has run, so the Tabs frame is
  * mounted in every state (with the data tabs disabled/replaced as
  * needed by the underlying outcome).
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   ActionIcon,
   Box,
@@ -29,8 +27,10 @@ import { IconCamera, IconFileTypeCsv } from "@tabler/icons-react";
 
 import { requestGraphPng } from "@/lib/actions/exportActions";
 import type { AdaptedResult, RunOk } from "@/lib/db/types";
-import { useActiveResult, useResultTab } from "@/lib/state/selectors";
+import { useActiveTab, useTabById, useViewResult } from "@/lib/state/selectors";
 import { useStore } from "@/lib/state/store";
+import type { PanelView, ResultTab } from "@/lib/state/slices/layout";
+import type { Tokens } from "@/lib/theme/tokens";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
 import { EmptyResult } from "./EmptyResult";
@@ -39,7 +39,6 @@ import { GraphView } from "./GraphView";
 import { JsonView } from "./JsonView";
 import { PlanView } from "./PlanView";
 import { TableView } from "./TableView";
-import { InspectorDrawer } from "../Inspector/InspectorDrawer";
 
 /**
  * Convert an AdaptedResult into RFC-4180-ish CSV. Strings containing
@@ -100,181 +99,208 @@ async function copyCsv(result: AdaptedResult): Promise<void> {
   }
 }
 
-export function ResultPane() {
+/**
+ * Pick a token colour for the elapsed-ms stat. Thresholds are tuned
+ * for in-process WASM where most queries finish in tens of ms.
+ */
+function speedColor(ms: number, tokens: Tokens): string {
+  if (ms < 50) return tokens.accent.success;
+  if (ms < 200) return tokens.accent.warning;
+  return tokens.accent.danger;
+}
+
+export interface ResultPaneProps {
+  view: PanelView;
+  paneId: string;
+}
+
+export function ResultPane({ view, paneId }: ResultPaneProps) {
   const { tokens } = usePlaygroundTheme();
-  const result = useActiveResult();
-  const activeId = useStore((s) => s.activeTabId);
-  const resultTab = useResultTab();
-  const setResultTab = useStore((s) => s.setResultTab);
+  const resultTab: ResultTab = view.resultTab ?? "graph";
+  const activeTab = useActiveTab();
+  const pinnedTab = useTabById(view.tabId);
+  const tab = view.tabId === undefined ? activeTab : pinnedTab;
+  const tabId = tab?.id ?? null;
+  const result = useViewResult(view);
+  const setResultTabForView = useStore((s) => s.setResultTabForView);
   const clearResult = useStore((s) => s.clearResult);
 
-  // If the active result has no graph data but the user is parked on the
-  // "graph" tab, slide them over to "table" automatically.
+  // If the active result has no graph data but the pane is parked on
+  // the "graph" tab, slide it over to "table" automatically.
   const hasGraph =
     result !== undefined && result.state === "ok" && result.result.graph !== null;
   useEffect(() => {
     if (resultTab === "graph" && result?.state === "ok" && !hasGraph) {
-      setResultTab("table");
+      setResultTabForView(view.id, "table");
     }
-  }, [resultTab, result, hasGraph, setResultTab]);
+  }, [resultTab, result, hasGraph, setResultTabForView, view.id]);
+
+  // First successful run of a tab in this pane: if the result has
+  // graph data, jump to the graph tab even when this pane's last
+  // selection was table/json/plan. Subsequent runs of the same tab
+  // respect whatever the user picked. We key on tabId (not runId) so
+  // re-running the same query doesn't override the user's manual
+  // choice, and we use a ref instead of state so the effect doesn't
+  // re-fire on the same render that triggers the update.
+  const seenTabsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (tabId === null) return;
+    if (result?.state !== "ok") return;
+    if (seenTabsRef.current.has(tabId)) return;
+    seenTabsRef.current.add(tabId);
+    if (hasGraph && resultTab !== "graph") {
+      setResultTabForView(view.id, "graph");
+    }
+  }, [tabId, result, hasGraph, resultTab, view.id, setResultTabForView]);
 
   if (!result) {
-    return (
-      <>
-        <EmptyResult />
-        <InspectorDrawer />
-      </>
-    );
+    return <EmptyResult />;
   }
 
   if (result.state === "running") {
     return (
-      <>
-        <Center h="100%" style={{ background: tokens.bg.editor }}>
-          <Stack align="center" gap={12}>
-            <Loader size="sm" />
-            <Text size="sm" c={tokens.fg.muted}>
-              Running…
-            </Text>
-            <Tooltip
-              label="Drops the result on the floor. The WASM query keeps running in the background until it finishes, but the workbench will ignore its output."
-              multiline
-              w={260}
-              withArrow
-              openDelay={400}
+      <Center h="100%" style={{ background: tokens.bg.editor }}>
+        <Stack align="center" gap={12}>
+          <Loader size="sm" />
+          <Text size="sm" c={tokens.fg.muted}>
+            Running…
+          </Text>
+          <Tooltip
+            label="Drops the result on the floor. The WASM query keeps running in the background until it finishes, but the workbench will ignore its output."
+            multiline
+            w={260}
+            withArrow
+            openDelay={400}
+          >
+            <Button
+              variant="subtle"
+              color="gray"
+              size="xs"
+              onClick={() => {
+                if (tabId !== null) clearResult(tabId);
+              }}
             >
-              <Button
-                variant="subtle"
-                color="gray"
-                size="xs"
-                onClick={() => {
-                  // The WASM `execute` call has no abort signal yet, so
-                  // clearing the running marker is the best we can do.
-                  // `runActiveTab` re-reads the marker after the await
-                  // and drops the outcome when it's no longer there,
-                  // which means the user can immediately kick off a
-                  // fresh run without the old one stomping on it.
-                  if (activeId !== null) clearResult(activeId);
-                }}
-              >
-                Cancel
-              </Button>
-            </Tooltip>
-          </Stack>
-        </Center>
-        <InspectorDrawer />
-      </>
+              Cancel
+            </Button>
+          </Tooltip>
+        </Stack>
+      </Center>
     );
   }
 
   if (result.state === "error") {
-    return (
-      <>
-        <ErrorView outcome={result} />
-        <InspectorDrawer />
-      </>
-    );
+    return <ErrorView outcome={result} />;
   }
 
   // Cast is sound because we've narrowed to RunOk above.
   const ok: RunOk = result;
 
   return (
-    <>
-      <Tabs
-        value={resultTab}
-        onChange={(v) => {
-          if (v === "graph" || v === "table" || v === "json" || v === "plan") {
-            setResultTab(v);
-          }
-        }}
-        variant="default"
-        keepMounted={false}
+    <Tabs
+      value={resultTab}
+      onChange={(v) => {
+        if (v === "graph" || v === "table" || v === "json" || v === "plan") {
+          setResultTabForView(view.id, v);
+        }
+      }}
+      variant="default"
+      keepMounted={false}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        background: tokens.bg.editor,
+      }}
+    >
+      <Tabs.List
         style={{
-          display: "flex",
-          flexDirection: "column",
-          height: "100%",
-          background: tokens.bg.editor,
+          background: tokens.bg.panel,
+          borderBottom: `1px solid ${tokens.border.subtle}`,
+          paddingLeft: 6,
+          flexShrink: 0,
         }}
       >
-        <Tabs.List
-          style={{
-            background: tokens.bg.panel,
-            borderBottom: `1px solid ${tokens.border.subtle}`,
-            paddingLeft: 6,
-            flexShrink: 0,
-          }}
-        >
-          <Tabs.Tab value="graph" disabled={!hasGraph}>
-            Graph
-          </Tabs.Tab>
-          <Tabs.Tab value="table">Table</Tabs.Tab>
-          <Tabs.Tab value="json">JSON</Tabs.Tab>
-          <Tabs.Tab value="plan">Plan</Tabs.Tab>
-          <Group ml="auto" pr="md" align="center" gap={8}>
-            {resultTab === "graph" && hasGraph && (
-              <Tooltip label="Export graph as PNG" openDelay={400}>
-                <ActionIcon
-                  size="sm"
-                  variant="subtle"
-                  color="gray"
-                  aria-label="Export graph as PNG"
-                  onClick={() => {
-                    requestGraphPng();
-                  }}
-                >
-                  <IconCamera size={14} />
-                </ActionIcon>
-              </Tooltip>
-            )}
-            {ok.result.rows.length > 0 && (
-              <Tooltip label="Copy result as CSV" openDelay={400}>
-                <ActionIcon
-                  size="sm"
-                  variant="subtle"
-                  color="gray"
-                  aria-label="Copy result as CSV"
-                  onClick={() => {
-                    void copyCsv(ok.result);
-                  }}
-                >
-                  <IconFileTypeCsv size={14} />
-                </ActionIcon>
-              </Tooltip>
-            )}
-            <Text size="xs" c={tokens.fg.subtle} ff={tokens.font.mono}>
-              {ok.result.stats.nodeCount} nodes · {ok.result.stats.relCount} rels ·{" "}
-              {ok.result.stats.rowCount} rows · {ok.ms}ms
+        <Tabs.Tab value="graph" disabled={!hasGraph}>
+          Graph
+        </Tabs.Tab>
+        <Tabs.Tab value="table">Table</Tabs.Tab>
+        <Tabs.Tab value="json">JSON</Tabs.Tab>
+        <Tabs.Tab value="plan">Plan</Tabs.Tab>
+        <Group ml="auto" pr="md" align="center" gap={8}>
+          {resultTab === "graph" && hasGraph && (
+            <Tooltip label="Export graph as PNG" openDelay={400}>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                aria-label="Export graph as PNG"
+                onClick={() => {
+                  requestGraphPng(paneId);
+                }}
+              >
+                <IconCamera size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+          {ok.result.rows.length > 0 && (
+            <Tooltip label="Copy result as CSV" openDelay={400}>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                aria-label="Copy result as CSV"
+                onClick={() => {
+                  void copyCsv(ok.result);
+                }}
+              >
+                <IconFileTypeCsv size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+          <Text size="xs" c={tokens.fg.subtle} ff={tokens.font.mono}>
+            <Text span inherit c={tokens.graph.node}>
+              {ok.result.stats.nodeCount}
+            </Text>{" "}
+            nodes ·{" "}
+            <Text span inherit c={tokens.accent.info}>
+              {ok.result.stats.relCount}
+            </Text>{" "}
+            rels ·{" "}
+            <Text span inherit c={tokens.accent.primary}>
+              {ok.result.stats.rowCount}
+            </Text>{" "}
+            rows ·{" "}
+            <Text span inherit c={speedColor(ok.ms, tokens)} fw={600}>
+              {ok.ms}ms
             </Text>
-          </Group>
-        </Tabs.List>
+          </Text>
+        </Group>
+      </Tabs.List>
 
-        <Tabs.Panel value="graph" style={panelStyle}>
-          <Box style={fillStyle}>
-            {/* `key={ok.runId}` remounts the canvas on every new query
-              * run so its uncontrolled `defaultData` seed re-applies.
-              * In between, local edits (delete / add / move) stay put. */}
-            <GraphView key={ok.runId} result={ok.result} />
-          </Box>
-        </Tabs.Panel>
-        <Tabs.Panel value="table" style={panelStyle}>
-          <Box style={fillStyle}>
-            <TableView result={ok.result} />
-          </Box>
-        </Tabs.Panel>
-        <Tabs.Panel value="json" style={panelStyle}>
-          <Box style={fillStyle}>
-            <JsonView result={ok.result} />
-          </Box>
-        </Tabs.Panel>
-        <Tabs.Panel value="plan" style={panelStyle}>
-          <Box style={fillStyle}>
-            <PlanView />
-          </Box>
-        </Tabs.Panel>
-      </Tabs>
-      <InspectorDrawer />
-    </>
+      <Tabs.Panel value="graph" style={panelStyle}>
+        <Box style={fillStyle}>
+          {/* `key={ok.runId}` remounts the canvas on every new query
+            * run so its uncontrolled `defaultData` seed re-applies.
+            * In between, local edits (delete / add / move) stay put. */}
+          <GraphView key={ok.runId} result={ok.result} paneId={paneId} />
+        </Box>
+      </Tabs.Panel>
+      <Tabs.Panel value="table" style={panelStyle}>
+        <Box style={fillStyle}>
+          <TableView result={ok.result} />
+        </Box>
+      </Tabs.Panel>
+      <Tabs.Panel value="json" style={panelStyle}>
+        <Box style={fillStyle}>
+          <JsonView result={ok.result} />
+        </Box>
+      </Tabs.Panel>
+      <Tabs.Panel value="plan" style={panelStyle}>
+        <Box style={fillStyle}>
+          <PlanView tabId={view.tabId} />
+        </Box>
+      </Tabs.Panel>
+    </Tabs>
   );
 }
 

@@ -17,12 +17,12 @@ import { notifications } from "@mantine/notifications";
 import { format } from "@loradb/lora-query";
 
 import { useStore } from "@/lib/state/store";
+import { getActiveTabId } from "@/lib/actions/workspaceActions";
 
 export async function formatActiveTab(): Promise<void> {
-  const state = useStore.getState();
-  const tabId = state.activeTabId;
+  const tabId = getActiveTabId();
   if (tabId === null) return;
-  const tab = state.tabs.find((t) => t.id === tabId);
+  const tab = useStore.getState().tabs.find((t) => t.id === tabId);
   if (!tab) return;
   const body = tab.body;
   if (body.length === 0) return;

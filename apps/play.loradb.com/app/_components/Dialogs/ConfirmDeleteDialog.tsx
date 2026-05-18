@@ -24,6 +24,7 @@ import {
   Text,
 } from "@mantine/core";
 import { modals } from "@mantine/modals";
+import { LoraQueryEditor } from "@loradb/lora-query";
 import type {
   DeletionSource,
   LinkObject,
@@ -31,6 +32,7 @@ import type {
 } from "@loradb/lora-graph-canvas";
 
 import { deleteFromGraph } from "@/lib/actions/deleteActions";
+import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
 interface ConfirmDeleteDialogProps {
   modalId: string;
@@ -97,6 +99,7 @@ function ConfirmDeleteDialog({
   source,
   resolve,
 }: ConfirmDeleteDialogProps) {
+  const { editor } = usePlaygroundTheme();
   const totalNodes = nodes.length;
   const totalLinks = links.length;
   const summary = (() => {
@@ -198,9 +201,14 @@ function ConfirmDeleteDialog({
         <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
           Equivalent Cypher
         </Text>
-        <Code block style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-          {buildCypher(nodes, links)}
-        </Code>
+        <LoraQueryEditor
+          value={buildCypher(nodes, links)}
+          readOnly
+          theme={editor}
+          showLineNumbers={false}
+          minHeight="60px"
+          maxHeight="220px"
+        />
       </Stack>
 
       <Text size="xs" c="dimmed">

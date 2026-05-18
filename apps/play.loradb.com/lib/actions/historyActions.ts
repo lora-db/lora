@@ -7,8 +7,8 @@
  * off a single `loradb:history` window event.
  */
 
-import { useStore } from "@/lib/state/store";
 import * as history from "@/lib/persistence/history";
+import { openTabInCell } from "@/lib/actions/tabActions";
 
 export const HISTORY_EVENT = "loradb:history";
 
@@ -55,5 +55,5 @@ export async function openHistoryEntryInNewTab(
   const entries = await history.list(1000);
   const found = entries.find((e) => e.id === entryId);
   if (!found) return;
-  useStore.getState().openTab({ name: "From history", body: found.body });
+  openTabInCell({ name: "From history", body: found.body });
 }

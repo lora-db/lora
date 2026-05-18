@@ -63,6 +63,13 @@ export function deriveEditorTheme(tokens: Tokens): LoraQueryTheme {
       warning: tokens.accent.warning,
       info: tokens.accent.info,
     },
+    scrollbar: {
+      track: tokens.bg.editor,
+      thumb: tokens.border.strong,
+      thumbHover: tokens.fg.subtle,
+      width: "auto",
+      size: "10px",
+    },
   };
 
   return createTheme(palette, {

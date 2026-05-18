@@ -88,21 +88,10 @@ export function PanelLeafFrame({ leaf }: PanelLeafFrameProps) {
       <EditorTabs
         view={view}
         paneId={leaf.id}
+        isPaneActive={isActive}
         trailingActions={<LeafActions leaf={leaf} view={view} canClose={canClose} />}
       />
       <QueryBody view={view} paneId={leaf.id} />
-      {isActive && (
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            pointerEvents: "none",
-            boxShadow: `inset 0 0 0 1px ${tokens.accent.primary}`,
-            zIndex: 5,
-          }}
-        />
-      )}
     </div>
   );
 }
