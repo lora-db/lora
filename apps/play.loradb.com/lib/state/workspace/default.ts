@@ -17,7 +17,6 @@ import {
   addTabToEditorView,
   firstEditorView,
   iterLeaves,
-  makeGroup,
   makeLeaf,
   makeView,
   type PanelLeaf,

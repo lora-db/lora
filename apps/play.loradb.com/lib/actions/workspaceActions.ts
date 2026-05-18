@@ -8,8 +8,6 @@
 
 import { useStore } from "@/lib/state/store";
 import type {
-  PanelKind,
-  PanelView,
   Placement,
   ResultTab,
   SplitDirection,
