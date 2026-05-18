@@ -16,7 +16,7 @@ export interface UseGraphKeybindingsParams<
 > {
   engine: GraphEngine<N, L> | null;
   dataApi: GraphDataApi<N, L>;
-  deleteGate: GraphDeleteGateApi<N, L>;
+  deleteGate: GraphDeleteGateApi<L>;
   selection: SelectionApi;
   mode: GraphMode;
   setMode: (next: GraphMode) => void;

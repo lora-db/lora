@@ -11,7 +11,7 @@ export interface UseGraphClipboardParams<
 > {
   enableClipboard: boolean;
   dataApi: GraphDataApi<N, L>;
-  deleteGate: GraphDeleteGateApi<N, L>;
+  deleteGate: GraphDeleteGateApi<L>;
   selection: SelectionApi;
   setSelectedLinkIds: React.Dispatch<
     React.SetStateAction<Array<string | number>>

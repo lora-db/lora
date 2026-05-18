@@ -23,10 +23,7 @@ export interface UseGraphDeleteGateParams<
   afterLinkDelete?: (ids: Array<string | number>) => void;
 }
 
-export interface GraphDeleteGateApi<
-  N extends NodeObject,
-  L extends LinkObject,
-> {
+export interface GraphDeleteGateApi<L extends LinkObject> {
   /** Resolves the selected node ids against current data, runs the guard,
    *  and removes them. Returns `false` if the guard rejected or nothing
    *  matched. */
@@ -60,7 +57,7 @@ export interface GraphDeleteGateApi<
 export function useGraphDeleteGate<
   N extends NodeObject,
   L extends LinkObject,
->(params: UseGraphDeleteGateParams<N, L>): GraphDeleteGateApi<N, L> {
+>(params: UseGraphDeleteGateParams<N, L>): GraphDeleteGateApi<L> {
   const {
     dataApi,
     beforeNode,
@@ -150,7 +147,7 @@ export function useGraphDeleteGate<
     [requestNodeDelete, requestLinkDelete],
   );
 
-  return useMemo<GraphDeleteGateApi<N, L>>(
+  return useMemo<GraphDeleteGateApi<L>>(
     () => ({ requestNodeDelete, requestLinkDelete, requestMixedDelete }),
     [requestNodeDelete, requestLinkDelete, requestMixedDelete],
   );

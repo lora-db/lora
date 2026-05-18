@@ -17,7 +17,7 @@ export interface UseImperativeGraphHandleParams<
 > {
   ref: React.Ref<LoraGraphCanvasHandle<N, L>>;
   dataApi: GraphDataApi<N, L>;
-  deleteGate: GraphDeleteGateApi<N, L>;
+  deleteGate: GraphDeleteGateApi<L>;
   selection: SelectionApi;
   engine: GraphEngine<N, L> | null;
   mode: GraphMode;
