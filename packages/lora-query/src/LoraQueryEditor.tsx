@@ -90,6 +90,20 @@ export interface LoraQueryTheme {
   errorAccent?: string;
   warningAccent?: string;
   infoAccent?: string;
+
+  // Scrollbar (vertical + horizontal). Honoured by the editor's
+  // `.cm-scroller` via the modern `scrollbar-color` / `scrollbar-width`
+  // properties and a matching `::-webkit-scrollbar` ruleset.
+  /** Track (gutter) colour behind the scrollbar. */
+  scrollbarTrack?: string;
+  /** Resting colour of the draggable thumb. */
+  scrollbarThumb?: string;
+  /** Thumb colour on hover. */
+  scrollbarThumbHover?: string;
+  /** CSS `scrollbar-width` value — `"auto"`, `"thin"`, or `"none"`. */
+  scrollbarWidth?: "auto" | "thin" | "none";
+  /** Pixel thickness for the WebKit `::-webkit-scrollbar` rules. */
+  scrollbarSize?: string;
 }
 
 const THEME_TO_VAR: Record<keyof LoraQueryTheme, string> = {
@@ -132,6 +146,12 @@ const THEME_TO_VAR: Record<keyof LoraQueryTheme, string> = {
   errorAccent: "--lq-error",
   warningAccent: "--lq-warning",
   infoAccent: "--lq-info",
+
+  scrollbarTrack: "--lq-scrollbar-track",
+  scrollbarThumb: "--lq-scrollbar-thumb",
+  scrollbarThumbHover: "--lq-scrollbar-thumb-hover",
+  scrollbarWidth: "--lq-scrollbar-width",
+  scrollbarSize: "--lq-scrollbar-size",
 };
 
 export interface LoraQueryEditorProps {
@@ -663,26 +683,49 @@ export const LoraQueryEditor = forwardRef<
       style={containerStyle}
     >
       <div ref={cmHostRef} style={{ display: "contents" }} />
-      {showCopyButton && (
-        <button
-          type="button"
-          className={`lora-query__copy${copied ? " lora-query__copy--copied" : ""}`}
-          aria-label={copied ? "Copied" : "Copy"}
-          title={copied ? "Copied" : hasSelection ? "Copy selection" : "Copy"}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={handleCopyClick}
-        >
-          {copied ? (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
+      {(showCopyButton || !readOnly) && (
+        <div className="lora-query__actions">
+          {!readOnly && (
+            <button
+              type="button"
+              className="lora-query__action lora-query__format"
+              aria-label="Format query"
+              title="Format query (⇧⌥F)"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                void prettifyFn();
+              }}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6 21l15 -15l-3 -3l-15 15l3 3" />
+                <path d="M15 6l3 3" />
+                <path d="M9 3a2 2 0 0 0 2 2a2 2 0 0 0 -2 2a2 2 0 0 0 -2 -2a2 2 0 0 0 2 -2" />
+                <path d="M19 13a2 2 0 0 0 2 2a2 2 0 0 0 -2 2a2 2 0 0 0 -2 -2a2 2 0 0 0 2 -2" />
+              </svg>
+            </button>
           )}
-        </button>
+          {showCopyButton && (
+            <button
+              type="button"
+              className={`lora-query__action lora-query__copy${copied ? " lora-query__copy--copied" : ""}`}
+              aria-label={copied ? "Copied" : "Copy"}
+              title={copied ? "Copied" : hasSelection ? "Copy selection" : "Copy"}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={handleCopyClick}
+            >
+              {copied ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              )}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

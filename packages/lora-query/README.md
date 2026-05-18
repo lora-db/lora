@@ -130,6 +130,7 @@ Palette primitives: `latte`, `githubDark`, `typography`,
 | Tokens | `keyword`, `variable`, `parameter`, `label`, `relType`, `property`, `functionName`, `namespace`, `string`, `number`, `bool`, `null` |
 | Popups | `popupBackground`, `popupForeground`, `popupBorder`, `popupSelectedBackground`, `popupSelectedForeground`, `popupShadow` |
 | Diagnostics | `errorAccent`, `warningAccent`, `infoAccent` |
+| Scrollbar | `scrollbarTrack`, `scrollbarThumb`, `scrollbarThumbHover`, `scrollbarWidth` (`auto`/`thin`/`none`), `scrollbarSize` |
 
 Popups (autocomplete / hover / lint) are styled through
 `EditorView.theme()` so they stay correctly themed even when CodeMirror

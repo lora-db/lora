@@ -12,7 +12,7 @@ import {
  * the shared {@link typography} defaults.
  */
 function fromPalette(palette: Palette): LoraQueryTheme {
-  const { surface, tokens, popup, diagnostic } = palette;
+  const { surface, tokens, popup, diagnostic, scrollbar } = palette;
   return {
     ...surface,
     ...typography,
@@ -26,6 +26,11 @@ function fromPalette(palette: Palette): LoraQueryTheme {
     errorAccent: diagnostic.error,
     warningAccent: diagnostic.warning,
     infoAccent: diagnostic.info,
+    scrollbarTrack: scrollbar.track,
+    scrollbarThumb: scrollbar.thumb,
+    scrollbarThumbHover: scrollbar.thumbHover,
+    scrollbarWidth: scrollbar.width,
+    scrollbarSize: scrollbar.size,
   };
 }
 

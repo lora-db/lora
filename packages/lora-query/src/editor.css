@@ -61,6 +61,12 @@
   --lq-warning: #df8e1d;
   --lq-info: #1e66f5;
 
+  --lq-scrollbar-track: #e6e9ef;
+  --lq-scrollbar-thumb: #ccd0da;
+  --lq-scrollbar-thumb-hover: #9ca0b0;
+  --lq-scrollbar-width: auto;
+  --lq-scrollbar-size: 10px;
+
   /* Layout — fill whatever the host gives us. */
   display: flex;
   flex-direction: column;
@@ -86,11 +92,15 @@
  * all times in read-only mode. Click copies the current selection, or
  * the whole buffer if the selection is empty.
  */
-.lora-query__copy {
+.lora-query__actions {
   position: absolute;
   top: 6px;
   right: 8px;
   z-index: 4;
+  display: flex;
+  gap: 6px;
+}
+.lora-query__action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -105,11 +115,11 @@
   cursor: pointer;
   transition: color 120ms, background 120ms, border-color 120ms, box-shadow 120ms;
 }
-.lora-query__copy:hover {
+.lora-query__action:hover {
   color: var(--lq-fg);
   border-color: var(--lq-accent);
 }
-.lora-query__copy:focus-visible {
+.lora-query__action:focus-visible {
   outline: 2px solid var(--lq-accent);
   outline-offset: 1px;
 }
@@ -117,7 +127,7 @@
   color: var(--lq-color-label);
   border-color: var(--lq-color-label);
 }
-.lora-query__copy svg {
+.lora-query__action svg {
   display: block;
   width: 18px;
   height: 18px;
@@ -165,6 +175,10 @@
   --lq-warning: #d29922;
   --lq-info: #58a6ff;
 
+  --lq-scrollbar-track: #1e1e1e;
+  --lq-scrollbar-thumb: #3a3a3a;
+  --lq-scrollbar-thumb-hover: #5a5a5a;
+
   color-scheme: dark;
 }
 
@@ -177,6 +191,26 @@
 }
 .lora-query .cm-scroller {
   height: 100%;
+  scrollbar-color: var(--lq-scrollbar-thumb) var(--lq-scrollbar-track);
+  scrollbar-width: var(--lq-scrollbar-width);
+}
+.lora-query .cm-scroller::-webkit-scrollbar {
+  width: var(--lq-scrollbar-size);
+  height: var(--lq-scrollbar-size);
+}
+.lora-query .cm-scroller::-webkit-scrollbar-track {
+  background: var(--lq-scrollbar-track);
+}
+.lora-query .cm-scroller::-webkit-scrollbar-thumb {
+  background: var(--lq-scrollbar-thumb);
+  border-radius: 4px;
+  border: 2px solid var(--lq-scrollbar-track);
+}
+.lora-query .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: var(--lq-scrollbar-thumb-hover);
+}
+.lora-query .cm-scroller::-webkit-scrollbar-corner {
+  background: var(--lq-scrollbar-track);
 }
 .lora-query .cm-content {
   padding-block: 10px;

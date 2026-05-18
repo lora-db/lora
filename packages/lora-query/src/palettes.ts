@@ -57,11 +57,33 @@ export interface DiagnosticColors {
   info: string;
 }
 
+export interface ScrollbarColors {
+  /** Background of the scrollbar gutter (track). */
+  track: string;
+  /** Resting colour of the draggable thumb. */
+  thumb: string;
+  /** Thumb colour on hover. */
+  thumbHover: string;
+  /**
+   * CSS `scrollbar-width` value — `"auto"`, `"thin"`, or `"none"`.
+   * Honoured by Firefox + modern WebKit; native browsers fall back to
+   * their default sizing.
+   */
+  width: "auto" | "thin" | "none";
+  /**
+   * Pixel size used by the `::-webkit-scrollbar` rules — gives the
+   * thumb/track a consistent thickness on Chrome and Safari where
+   * `scrollbar-width: thin` is partially honoured.
+   */
+  size: string;
+}
+
 export interface Palette {
   surface: SurfaceColors;
   tokens: TokenColors;
   popup: PopupColors;
   diagnostic: DiagnosticColors;
+  scrollbar: ScrollbarColors;
 }
 
 /** Catppuccin Latte — the default light palette. */
@@ -106,6 +128,13 @@ export const latte: Palette = {
     error: "#d20f39",
     warning: "#df8e1d",
     info: "#1e66f5",
+  },
+  scrollbar: {
+    track: "#e6e9ef",
+    thumb: "#ccd0da",
+    thumbHover: "#9ca0b0",
+    width: "auto",
+    size: "10px",
   },
 };
 
@@ -156,6 +185,13 @@ export const githubDark: Palette = {
     error: "#f85149",
     warning: "#d29922",
     info: "#58a6ff",
+  },
+  scrollbar: {
+    track: "#1e1e1e",
+    thumb: "#3a3a3a",
+    thumbHover: "#5a5a5a",
+    width: "auto",
+    size: "10px",
   },
 };
 
