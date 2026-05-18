@@ -85,8 +85,11 @@ export function PanelLeafFrame({ leaf }: PanelLeafFrameProps) {
       aria-label="Query pane"
       aria-current={isActive ? "true" : undefined}
     >
-      <EditorTabs view={view} paneId={leaf.id} />
-      <LeafActions leaf={leaf} view={view} canClose={canClose} />
+      <EditorTabs
+        view={view}
+        paneId={leaf.id}
+        trailingActions={<LeafActions leaf={leaf} view={view} canClose={canClose} />}
+      />
       <QueryBody view={view} paneId={leaf.id} />
       {isActive && (
         <div
@@ -224,7 +227,6 @@ function LeafActions({
   view: PanelView;
   canClose: boolean;
 }) {
-  const { tokens } = usePlaygroundTheme();
   const setActivePane = useStore((s) => s.setActivePane);
   const setResultMinimizedForView = useStore((s) => s.setResultMinimizedForView);
   const minimized = view.resultMinimized ?? false;
@@ -235,19 +237,7 @@ function LeafActions({
   };
 
   return (
-    <Group
-      gap={2}
-      align="center"
-      pr={4}
-      pl={4}
-      style={{
-        height: 28,
-        flexShrink: 0,
-        background: tokens.bg.sidebar,
-        borderBottom: `1px solid ${tokens.border.subtle}`,
-        justifyContent: "flex-end",
-      }}
-    >
+    <Group gap={2} align="center" wrap="nowrap">
       <Tooltip
         label={minimized ? "Restore results" : "Minimize results"}
         openDelay={400}
