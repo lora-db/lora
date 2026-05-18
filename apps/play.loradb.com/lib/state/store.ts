@@ -122,6 +122,8 @@ interface PersistedSnapshot {
   nodeCap: SerializedPrefs["nodeCap"];
   resultRowCap: SerializedPrefs["resultRowCap"];
   autoRestore: SerializedPrefs["autoRestore"];
+  focusOnNodeClick: SerializedPrefs["focusOnNodeClick"];
+  alwaysShowLabels: SerializedPrefs["alwaysShowLabels"];
 }
 
 function selectPersisted(s: Store): PersistedSnapshot {
@@ -137,6 +139,8 @@ function selectPersisted(s: Store): PersistedSnapshot {
     nodeCap: s.nodeCap,
     resultRowCap: s.resultRowCap,
     autoRestore: s.autoRestore,
+    focusOnNodeClick: s.focusOnNodeClick,
+    alwaysShowLabels: s.alwaysShowLabels,
   };
 }
 
@@ -158,7 +162,9 @@ function shallowEqualSnapshot(
     a.autoRunOnSave === b.autoRunOnSave &&
     a.nodeCap === b.nodeCap &&
     a.resultRowCap === b.resultRowCap &&
-    a.autoRestore === b.autoRestore
+    a.autoRestore === b.autoRestore &&
+    a.focusOnNodeClick === b.focusOnNodeClick &&
+    a.alwaysShowLabels === b.alwaysShowLabels
   );
 }
 
@@ -184,6 +190,8 @@ function serializeSnapshot(s: PersistedSnapshot) {
       nodeCap: s.nodeCap,
       resultRowCap: s.resultRowCap,
       autoRestore: s.autoRestore,
+      focusOnNodeClick: s.focusOnNodeClick,
+      alwaysShowLabels: s.alwaysShowLabels,
     },
   };
 }

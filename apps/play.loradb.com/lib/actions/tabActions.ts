@@ -10,7 +10,7 @@ import { modals } from "@mantine/modals";
 
 import { useStore } from "@/lib/state/store";
 
-const DEFAULT_BODY = "MATCH (n) RETURN n LIMIT 25";
+const DEFAULT_BODY = "MATCH (n)\nOPTIONAL MATCH (n)-[r]->(m)\nRETURN n, r, m";
 
 export function newTab(): string {
   const state = useStore.getState();

@@ -71,7 +71,10 @@ export function Workbench() {
       await hydrateFromIDB();
       const st = useStore.getState();
       if (st.tabs.length === 0) {
-        st.openTab({ name: "Query 1", body: "MATCH (n) RETURN n LIMIT 25" });
+        st.openTab({
+          name: "Query 1",
+          body: "MATCH (n)\nOPTIONAL MATCH (n)-[r]->(m)\nRETURN n, r, m",
+        });
       }
     })().catch((err) => {
       // Hydration failure is non-fatal — fall back to a fresh tab and
@@ -85,7 +88,10 @@ export function Workbench() {
       });
       const st = useStore.getState();
       if (st.tabs.length === 0) {
-        st.openTab({ name: "Query 1", body: "MATCH (n) RETURN n LIMIT 25" });
+        st.openTab({
+          name: "Query 1",
+          body: "MATCH (n)\nOPTIONAL MATCH (n)-[r]->(m)\nRETURN n, r, m",
+        });
       }
     });
   }, []);

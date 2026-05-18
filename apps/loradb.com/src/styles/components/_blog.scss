@@ -271,11 +271,12 @@ html.blog-wrapper:not(.blog-post-page) main article {
   }
 
   // Post body in list view: keep it short, soft, scannable.
+  // Soften prose via the text color rather than container opacity so
+  // header banners and inline figures still render at full fidelity.
   .markdown {
     font-size: 0.95rem;
     line-height: 1.65;
-    color: var(--ifm-font-color-base);
-    opacity: 0.86;
+    color: color-mix(in srgb, var(--ifm-font-color-base) 86%, transparent);
 
     > p {
       margin-block: 0.5rem 0;

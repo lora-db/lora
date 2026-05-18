@@ -14,6 +14,8 @@ export interface SerializedPrefs {
   nodeCap: number;
   resultRowCap: number;
   autoRestore: boolean;
+  focusOnNodeClick: boolean;
+  alwaysShowLabels: boolean;
 }
 
 export interface PrefsSlice extends SerializedPrefs {
@@ -27,6 +29,8 @@ export const DEFAULT_PREFS: SerializedPrefs = {
   nodeCap: 5000,
   resultRowCap: 100000,
   autoRestore: true,
+  focusOnNodeClick: false,
+  alwaysShowLabels: false,
 };
 
 export const createPrefsSlice: StateCreator<
@@ -54,6 +58,10 @@ export const createPrefsSlice: StateCreator<
       // `autoRestore` was added in Phase 4b; treat a missing value as the
       // default (on) so existing sessions opt in transparently.
       state.autoRestore = prefs.autoRestore ?? DEFAULT_PREFS.autoRestore;
+      state.focusOnNodeClick =
+        prefs.focusOnNodeClick ?? DEFAULT_PREFS.focusOnNodeClick;
+      state.alwaysShowLabels =
+        prefs.alwaysShowLabels ?? DEFAULT_PREFS.alwaysShowLabels;
     });
   },
 });

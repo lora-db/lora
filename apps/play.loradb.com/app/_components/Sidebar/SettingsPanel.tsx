@@ -21,6 +21,8 @@ import {
 import { openConfirmModal } from "@mantine/modals";
 import { notifications } from "@mantine/notifications";
 
+import { reset as resetWasmDb } from "@/lib/db/client";
+import { clearAuto } from "@/lib/persistence/autoSnapshot";
 import { resetDB } from "@/lib/persistence/idb";
 import { useStore } from "@/lib/state/store";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
@@ -34,6 +36,8 @@ export function SettingsPanel() {
   const autoRestore = useStore((s) => s.autoRestore);
   const nodeCap = useStore((s) => s.nodeCap);
   const resultRowCap = useStore((s) => s.resultRowCap);
+  const focusOnNodeClick = useStore((s) => s.focusOnNodeClick);
+  const alwaysShowLabels = useStore((s) => s.alwaysShowLabels);
   const setPref = useStore((s) => s.setPref);
 
   const onConfirmClear = () => {
@@ -50,6 +54,17 @@ export function SettingsPanel() {
       onConfirm: () => {
         (async () => {
           try {
+            // Order matters. The WASM in-memory graph must be wiped
+            // BEFORE we leave this function: the `beforeunload` hook
+            // installed by `startAutoSaveLoop` flushes a fresh
+            // snapshot of the live DB into localStorage on its way
+            // out, so if the graph is still populated when reload
+            // fires, `bootAutoRestore` rehydrates the very data we
+            // just promised to delete. Clearing the localStorage
+            // slot afterwards isn't enough on its own for the same
+            // reason — the flush would re-populate it.
+            await resetWasmDb();
+            clearAuto();
             await resetDB();
             notifications.show({
               color: "green",
@@ -126,6 +141,35 @@ export function SettingsPanel() {
               ]}
               fullWidth
             />
+          </Stack>
+
+          <Stack gap={4}>
+            <Switch
+              size="sm"
+              checked={focusOnNodeClick}
+              onChange={(e) => {
+                setPref("focusOnNodeClick", e.currentTarget.checked);
+              }}
+              label="Zoom on node click"
+            />
+            <Text size="xs" c={tokens.fg.muted}>
+              Animates the camera toward a clicked node; click again to
+              restore the prior view.
+            </Text>
+          </Stack>
+
+          <Stack gap={4}>
+            <Switch
+              size="sm"
+              checked={alwaysShowLabels}
+              onChange={(e) => {
+                setPref("alwaysShowLabels", e.currentTarget.checked);
+              }}
+              label="Always show labels"
+            />
+            <Text size="xs" c={tokens.fg.muted}>
+              Render every node's label on the canvas (2D only).
+            </Text>
           </Stack>
 
           <Switch

@@ -33,6 +33,32 @@ const LoraGraphCanvas = dynamic(
   { ssr: false, loading: () => <GraphSkeleton /> },
 );
 
+// 3d-force-graph mutates node/link objects in place: it adds `_neighbors`
+// and `_links` arrays of cross-references, rewrites link `source`/`target`
+// from ids to NodeObject refs, and adds physics state. Those refs are
+// cyclic, so handing the raw object to an immer-managed store causes
+// `finalize` to recurse forever ("Maximum call stack size exceeded").
+//
+// The adapter stashes the user-meaningful payload on the canvas object
+// under `_properties` / `_labels` / `_type` (see lib/db/adapter.ts).
+// Those are plain frozen values from the result, so they're guaranteed
+// acyclic and safe to hand to the inspect slice.
+function readProperties(obj: unknown): Record<string, unknown> {
+  if (!obj || typeof obj !== "object") return {};
+  const v = (obj as { _properties?: unknown })._properties;
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+function readLabels(obj: unknown): string[] {
+  if (!obj || typeof obj !== "object") return [];
+  const v = (obj as { _labels?: unknown })._labels;
+  return Array.isArray(v) ? v.map((x) => String(x)) : [];
+}
+function readType(obj: unknown): string {
+  if (!obj || typeof obj !== "object") return "";
+  const v = (obj as { _type?: unknown })._type;
+  return typeof v === "string" ? v : "";
+}
+
 function GraphSkeleton() {
   const { tokens } = usePlaygroundTheme();
   return (
@@ -47,6 +73,8 @@ function GraphSkeleton() {
 export function GraphView({ result }: { result: AdaptedResult }) {
   const { canvas, tokens } = usePlaygroundTheme();
   const graphMode = useStore((s) => s.graphMode);
+  const focusOnNodeClick = useStore((s) => s.focusOnNodeClick);
+  const alwaysShowLabels = useStore((s) => s.alwaysShowLabels);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<LoraGraphCanvasHandle | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -161,6 +189,8 @@ export function GraphView({ result }: { result: AdaptedResult }) {
           enableTooltip
           highlightNeighborsOnHover
           autoIndexNeighbors
+          focusOnClick={focusOnNodeClick}
+          showLabels={alwaysShowLabels}
           onBeforeNodeDelete={(nodes, { source }) =>
             // Imperative calls (host-driven, no user gesture) skip the
             // confirm modal — only user-initiated deletes prompt.
@@ -176,8 +206,8 @@ export function GraphView({ result }: { result: AdaptedResult }) {
           onNodeClick={(node) => {
             inspectNode({
               id: node.id,
-              labels: node.group !== undefined ? [String(node.group)] : [],
-              properties: node as Record<string, unknown>,
+              labels: readLabels(node),
+              properties: readProperties(node),
             });
           }}
           onLinkClick={(link) => {
@@ -194,10 +224,10 @@ export function GraphView({ result }: { result: AdaptedResult }) {
                 : (link.target as string | number);
             inspectRelationship({
               id: link.id ?? `${String(sourceId)}->${String(targetId)}`,
-              type: link.label ?? "",
+              type: readType(link) || link.label || "",
               startId: sourceId,
               endId: targetId,
-              properties: link as Record<string, unknown>,
+              properties: readProperties(link),
             });
           }}
         />
