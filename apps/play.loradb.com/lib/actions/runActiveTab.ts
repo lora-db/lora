@@ -14,6 +14,7 @@ import { useStore } from "@/lib/state/store";
 import { run } from "@/lib/db/client";
 import { ulid } from "@/lib/util/id";
 import { appendHistoryEntry } from "@/lib/actions/historyActions";
+import { getActiveTabId } from "@/lib/actions/workspaceActions";
 
 /**
  * Heuristic — any query that touches one of these keywords is assumed
@@ -28,7 +29,8 @@ export const LORADB_MUTATION_EVENT = "loradb:mutation";
 
 export async function runActiveTab(): Promise<string | null> {
   const state = useStore.getState();
-  const tabId = state.activeTabId;
+  // Derived from the workspace tree — see resolveActiveTabId in tree.ts.
+  const tabId = getActiveTabId();
   if (tabId === null) return null;
   const tab = state.tabs.find((t) => t.id === tabId);
   if (!tab) return null;
