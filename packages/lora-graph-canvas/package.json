@@ -1,6 +1,6 @@
 {
   "name": "@loradb/lora-graph-canvas",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "React graph canvas for LoraDB. Unified 2D/3D force-directed component with a built-in tool palette for adding, connecting, selecting, and removing nodes.",
   "license": "BUSL-1.1",
   "packageManager": "yarn@4.5.1",

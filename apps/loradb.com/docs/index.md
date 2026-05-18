@@ -66,7 +66,9 @@ fit for that structure:
 ## From zero to first query
 
 Four steps. Pick your host language on step 2; everything else is
-identical.
+identical. To skip step 1, open the
+[**playground**](https://play.loradb.com) — it runs LoraDB compiled to
+WASM in your browser, no install, no account.
 
 ### 1. Install
 

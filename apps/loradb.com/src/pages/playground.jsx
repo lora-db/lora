@@ -33,7 +33,7 @@ export default function Playground() {
   return (
     <Layout
       title="Graph Query Playground"
-      description="A browser playground for LoraDB — write Cypher, see the graph. Coming soon."
+      description="A browser playground for LoraDB — write Cypher, see the graph. Live at play.loradb.com."
       wrapperClassName={styles.wrapper}
     >
       <main className={styles.page}>
@@ -42,7 +42,7 @@ export default function Playground() {
           <div className={styles.heroInner}>
             <p className={styles.eyebrow}>
               <span className={styles.dot} />
-              Shipping soon · Public preview
+              Live · Public preview
             </p>
             <h1 className={styles.title}>
               Graph Query{' '}
@@ -54,13 +54,12 @@ export default function Playground() {
               queries, and sharing a result without spinning up a database.
             </p>
             <div className={styles.actions}>
-              <span
-                className={clsx(styles.btn, styles.btnPrimary, styles.btnStatic)}
-                aria-disabled="true"
+              <Link
+                to="https://play.loradb.com"
+                className={clsx(styles.btn, styles.btnPrimary)}
               >
-                <span className={styles.btnDot} aria-hidden="true" />
-                Coming soon
-              </span>
+                Launch playground
+              </Link>
               <Link
                 to="/docs/cookbook"
                 className={clsx(styles.btn, styles.btnSecondary)}
@@ -102,9 +101,6 @@ export default function Playground() {
             </h2>
             <div className={styles.previewFrame}>
               <PlaygroundPreview />
-              <div className={styles.previewOverlay} aria-hidden="true">
-                <span className={styles.previewBadge}>Preview mock</span>
-              </div>
             </div>
           </div>
         </section>
@@ -139,14 +135,20 @@ export default function Playground() {
               A playground for graphs, not tables.
             </h2>
             <p className={styles.ctaBody}>
-              Until the playground lands, the fastest way to write and run
-              Cypher against LoraDB is the crate — four lines to open a
-              database and run your first MATCH.
+              Open the playground in your browser, or drop LoraDB into your
+              own code — same engine, same Cypher, no install required to
+              try it.
             </p>
             <div className={styles.actions}>
               <Link
-                to="/docs/getting-started/installation"
+                to="https://play.loradb.com"
                 className={clsx(styles.btn, styles.btnPrimary)}
+              >
+                Launch playground
+              </Link>
+              <Link
+                to="/docs/getting-started/installation"
+                className={clsx(styles.btn, styles.btnSecondary)}
               >
                 Install LoraDB
               </Link>

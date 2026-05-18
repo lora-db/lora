@@ -371,6 +371,7 @@ The [`apps/loradb.com`](apps/loradb.com) documentation site is separately [MIT-l
   <sub>
     <a href="https://loradb.com">Website</a> ·
     <a href="https://loradb.com/docs">Docs</a> ·
+    <a href="https://play.loradb.com">Playground</a> ·
     <a href="https://github.com/lora-db/lora">GitHub</a> ·
     <a href="https://github.com/lora-db/lora/issues">Issues</a>
   </sub>

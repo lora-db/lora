@@ -57,3 +57,18 @@ performance:
   label: Performance
   permalink: /performance
   description: Query execution, benchmarks, indexing, and concurrency work.
+
+playground:
+  label: Playground
+  permalink: /playground
+  description: The browser playground for LoraDB — Cypher in your tab.
+
+wasm:
+  label: WASM
+  permalink: /wasm
+  description: Running LoraDB in the browser via WebAssembly.
+
+tooling:
+  label: Tooling
+  permalink: /tooling
+  description: Developer tools — editor, canvas, packages, IDE features.

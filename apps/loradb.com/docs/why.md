@@ -156,7 +156,8 @@ Same story in [Node](./getting-started/node),
 [Python](./getting-started/python), and
 [WASM](./getting-started/wasm). There's also an
 [HTTP server](./getting-started/server) when you'd rather reach it
-over the wire.
+over the wire, and a [browser playground](https://play.loradb.com)
+when you'd rather try it before installing anything.
 
 ### Stay small enough to understand
 
