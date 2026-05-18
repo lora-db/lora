@@ -168,7 +168,7 @@ export function SettingsPanel() {
               label="Always show labels"
             />
             <Text size="xs" c={tokens.fg.muted}>
-              Render every node's label on the canvas (2D only).
+              Render every node&apos;s label on the canvas (2D only).
             </Text>
           </Stack>
 
