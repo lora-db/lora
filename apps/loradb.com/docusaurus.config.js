@@ -263,10 +263,12 @@ module.exports = {
           repo: 'lora-db/lora',
         },
         {
-          to: '/playground',
+          href: 'https://play.loradb.com',
           label: 'Playground',
           position: 'left',
           'aria-label': 'Playground',
+          target: '_blank',
+          rel: 'noopener',
       },
       ],
     },

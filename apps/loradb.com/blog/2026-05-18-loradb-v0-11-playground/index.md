@@ -172,7 +172,6 @@ and smoother snapshot handoff from docs into the playground.
 ## Read next
 
 - [Open the playground](https://play.loradb.com)
-- [Playground page on loradb.com](/playground)
 - [Playground guide](/docs/getting-started/playground)
 - [Cookbook — queries that run as-is](/docs/cookbook)
 - [WASM binding guide](/docs/getting-started/wasm)
