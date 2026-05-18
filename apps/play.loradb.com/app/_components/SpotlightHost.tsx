@@ -14,6 +14,7 @@ import {
 } from "@mantine/core";
 import { Spotlight, type SpotlightActionData } from "@mantine/spotlight";
 import {
+  IconArrowsLeftRight,
   IconBinaryTree,
   IconBraces,
   IconCamera,
@@ -21,6 +22,8 @@ import {
   IconFileText,
   IconHistory,
   IconKeyboard,
+  IconLayoutColumns,
+  IconLayoutRows,
   IconLayoutSidebar,
   IconMoon,
   IconPhoto,
@@ -45,6 +48,13 @@ import {
   toggleColorScheme,
   toggleSidebar,
 } from "@/lib/actions/uiActions";
+import {
+  closeActivePane,
+  focusNextPane,
+  focusPrevPane,
+  splitActivePane,
+  toggleRootOrientation,
+} from "@/lib/actions/workspaceActions";
 import { useStore } from "@/lib/state/store";
 
 export function SpotlightHost() {
@@ -189,6 +199,63 @@ export function SpotlightHost() {
           });
         },
         leftSection: isDark ? <IconSun size={16} /> : <IconMoon size={16} />,
+      },
+      {
+        id: "split-right",
+        label: "Split pane right",
+        description: "Split the active pane horizontally",
+        keywords: ["split", "right", "pane", "window"],
+        onClick: () => {
+          splitActivePane("row", "after");
+        },
+        leftSection: <IconLayoutColumns size={16} />,
+      },
+      {
+        id: "split-down",
+        label: "Split pane down",
+        description: "Split the active pane vertically",
+        keywords: ["split", "down", "pane", "window"],
+        onClick: () => {
+          splitActivePane("column", "after");
+        },
+        leftSection: <IconLayoutRows size={16} />,
+      },
+      {
+        id: "close-pane",
+        label: "Close active pane",
+        keywords: ["close", "pane", "window"],
+        onClick: () => {
+          closeActivePane();
+        },
+        leftSection: <IconX size={16} />,
+      },
+      {
+        id: "toggle-orientation",
+        label: "Toggle root split orientation",
+        description: "Flip the root split between left/right and top/bottom",
+        keywords: ["orientation", "flip", "rotate", "vertical", "horizontal"],
+        onClick: () => {
+          toggleRootOrientation();
+        },
+        leftSection: <IconArrowsLeftRight size={16} />,
+      },
+      {
+        id: "focus-next-pane",
+        label: "Focus next pane",
+        keywords: ["focus", "next", "pane"],
+        onClick: () => {
+          focusNextPane();
+        },
+        leftSection: <IconLayoutColumns size={16} />,
+      },
+      {
+        id: "focus-prev-pane",
+        label: "Focus previous pane",
+        keywords: ["focus", "previous", "pane"],
+        onClick: () => {
+          focusPrevPane();
+        },
+        leftSection: <IconLayoutColumns size={16} />,
       },
       {
         id: "keyboard-shortcuts",

@@ -123,7 +123,7 @@ export function closeTabInView(viewId: string, tabId: string): void {
   const viewLeafNow = findViewLeaf(state.workspace, viewId);
   const viewNow = viewLeafNow?.views.find((v) => v.id === viewId);
   const stripWouldEmpty =
-    viewNow?.kind === "editor" &&
+    viewNow?.kind === "query" &&
     (viewNow.tabIds ?? []).length === 1 &&
     (viewNow.tabIds ?? [])[0] === tabId;
   if (stripWouldEmpty && countEditorViews(state.workspace) <= 1) {

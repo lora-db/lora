@@ -1,20 +1,31 @@
 "use client";
 
 /**
- * Renders the contents of a single leaf — a view-tab strip listing
- * every view inside the leaf plus the active view's content area. Also
- * exposes per-pane controls (split right / split down / close pane)
- * and tracks focus so the store's `activePaneId` follows user gaze.
+ * Renders the contents of a single leaf — one "query" pane that owns
+ * its tab strip, editor surface and result region as a single bound
+ * unit. The result region can be minimized to a thin restore strip,
+ * but it can never be closed independently: closing the leaf disposes
+ * of editor + result together.
  */
 
-import { useCallback, useState } from "react";
-import { ActionIcon, Group, Menu, Text, Tooltip, UnstyledButton } from "@mantine/core";
+import { useCallback, useMemo } from "react";
 import {
-  IconBinaryTree,
-  IconFileCode,
+  ActionIcon,
+  Group,
+  Menu,
+  Tooltip,
+} from "@mantine/core";
+import {
+  Group as PanelsGroup,
+  type Layout,
+  Panel,
+  Separator,
+} from "react-resizable-panels";
+import {
+  IconChevronDown,
+  IconChevronUp,
   IconLayoutColumns,
   IconLayoutRows,
-  IconPlus,
   IconX,
 } from "@tabler/icons-react";
 
@@ -22,25 +33,19 @@ import { EditorPane } from "@/app/_components/Editor/EditorPane";
 import { EditorTabs } from "@/app/_components/Editor/EditorTabs";
 import { ResultPane } from "@/app/_components/Result/ResultPane";
 import { useStore } from "@/lib/state/store";
-import { useTabById } from "@/lib/state/selectors";
 import type { PanelLeaf, PanelView } from "@/lib/state/slices/layout";
 import {
   closePaneById,
-  closeView,
-  moveViewToPane,
-  openViewInActivePane,
   splitActivePane,
   toggleParentOrientation,
 } from "@/lib/actions/workspaceActions";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
-import { hexA } from "@/lib/theme/util";
 import {
-  countEditorViews,
-  countResultViews,
+  countQueryViews,
   flatLeafIds,
 } from "@/lib/state/workspace/tree";
 
-const VIEW_DRAG_MIME = "application/x-loradb-view";
+const MINIMIZED_RESULT_PX = 28;
 
 interface PanelLeafFrameProps {
   leaf: PanelLeaf;
@@ -50,18 +55,13 @@ export function PanelLeafFrame({ leaf }: PanelLeafFrameProps) {
   const { tokens } = usePlaygroundTheme();
   const isActive = useStore((s) => s.activePaneId === leaf.id);
   const setActivePane = useStore((s) => s.setActivePane);
-  // Disable Close-pane when removing this leaf would drop the editor
-  // or result count below 1 (workspace invariants).
   const canClose = useStore((s) => {
     if (flatLeafIds(s.workspace).length === 1) return false;
-    const closingEditors = leaf.views.filter((v) => v.kind === "editor").length;
-    const closingResults = leaf.views.filter((v) => v.kind === "result").length;
-    if (closingEditors > 0 && countEditorViews(s.workspace) - closingEditors < 1) return false;
-    if (closingResults > 0 && countResultViews(s.workspace) - closingResults < 1) return false;
-    return true;
+    return countQueryViews(s.workspace) - leaf.views.length >= 1;
   });
 
-  const view = leaf.views.find((v) => v.id === leaf.activeViewId) ?? leaf.views[0]!;
+  const view =
+    leaf.views.find((v) => v.id === leaf.activeViewId) ?? leaf.views[0]!;
 
   const onFocusCapture = useCallback(() => {
     setActivePane(leaf.id);
@@ -82,25 +82,12 @@ export function PanelLeafFrame({ leaf }: PanelLeafFrameProps) {
       }}
       data-pane-id={leaf.id}
       role="region"
-      aria-label={`Pane (${view.kind})`}
+      aria-label="Query pane"
       aria-current={isActive ? "true" : undefined}
     >
-      <LeafHeader leaf={leaf} canClose={canClose} />
-      {view.kind === "editor" && <EditorTabs view={view} paneId={leaf.id} />}
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {view.kind === "editor" ? (
-          <EditorPane tabId={view.tabId} />
-        ) : (
-          <ResultPane view={view} paneId={leaf.id} />
-        )}
-      </div>
-      {/*
-        Active-pane indicator. Rendered as an absolutely-positioned
-        overlay (rather than a CSS `outline` on the pane itself) so it
-        always paints above sibling separators and panel borders, never
-        underneath them. `pointer-events: none` keeps drags and clicks
-        flowing through to the content underneath.
-      */}
+      <EditorTabs view={view} paneId={leaf.id} />
+      <LeafActions leaf={leaf} view={view} canClose={canClose} />
+      <QueryBody view={view} paneId={leaf.id} />
       {isActive && (
         <div
           aria-hidden
@@ -117,173 +104,130 @@ export function PanelLeafFrame({ leaf }: PanelLeafFrameProps) {
   );
 }
 
-function LeafHeader({ leaf, canClose }: { leaf: PanelLeaf; canClose: boolean }) {
+function QueryBody({ view, paneId }: { view: PanelView; paneId: string }) {
   const { tokens } = usePlaygroundTheme();
-  const setActiveView = useStore((s) => s.setActiveView);
-  const [dragOver, setDragOver] = useState<"none" | "tabs" | "left" | "right" | "top" | "bottom">("none");
+  const minimized = view.resultMinimized ?? false;
+  const setEditorSizePctForView = useStore((s) => s.setEditorSizePctForView);
+  const editorSizePct = view.editorSizePct ?? 50;
 
-  return (
-    <div
-      onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes(VIEW_DRAG_MIME)) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-      }}
-      onDragEnter={(e) => {
-        if (e.dataTransfer.types.includes(VIEW_DRAG_MIME)) setDragOver("tabs");
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-        setDragOver("none");
-      }}
-      onDrop={(e) => {
-        const viewId = e.dataTransfer.getData(VIEW_DRAG_MIME);
-        if (!viewId) return;
-        e.preventDefault();
-        moveViewToPane(viewId, leaf.id);
-        setDragOver("none");
-      }}
-      style={{
-        display: "flex",
-        alignItems: "stretch",
-        background: tokens.bg.sidebar,
-        borderBottom: `1px solid ${tokens.border.subtle}`,
-        minHeight: 28,
-        flexShrink: 0,
-        position: "relative",
-      }}
-      data-testid={`leaf-header-${leaf.id}`}
-    >
-      <Group
-        gap={0}
-        wrap="nowrap"
-        role="tablist"
-        aria-label="Pane views"
-        style={{ flex: 1, minWidth: 0, height: 28 }}
-      >
-        {leaf.views.map((v) => (
-          <ViewTabChip
-            key={v.id}
-            view={v}
-            leaf={leaf}
-            active={v.id === leaf.activeViewId}
-            onClick={() => setActiveView(leaf.id, v.id)}
-          />
-        ))}
-      </Group>
-
-      <LeafActions leaf={leaf} canClose={canClose} />
-
-      {dragOver === "tabs" && (
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: hexA(tokens.accent.primary, 0.08),
-            border: `1px dashed ${tokens.accent.primary}`,
-            pointerEvents: "none",
-          }}
-        />
-      )}
-    </div>
+  const defaultLayout = useMemo<Layout>(
+    () => ({ editor: editorSizePct, result: 100 - editorSizePct }),
+    [editorSizePct],
   );
-}
 
-function ViewTabChip({
-  view,
-  leaf,
-  active,
-  onClick,
-}: {
-  view: PanelView;
-  leaf: PanelLeaf;
-  active: boolean;
-  onClick: () => void;
-}) {
-  const { tokens } = usePlaygroundTheme();
-  // Every view (editor or result) now carries an explicit `tabId`
-  // pointing at the cell's current tab, so the chip can simply look it
-  // up — no follow-active fallback needed.
-  const tab = useTabById(view.tabId);
-  const [hover, setHover] = useState(false);
+  const onLayoutChanged = useCallback(
+    (layout: Layout) => {
+      const next = layout.editor ?? editorSizePct;
+      setEditorSizePctForView(view.id, next);
+    },
+    [editorSizePct, setEditorSizePctForView, view.id],
+  );
 
-  const kindLabel = view.kind === "editor" ? "Editor" : "Result";
-  const Icon = view.kind === "editor" ? IconFileCode : IconBinaryTree;
-  const moreThanOne = leaf.views.length > 1;
-
-  return (
-    <UnstyledButton
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData(VIEW_DRAG_MIME, view.id);
-        e.dataTransfer.setData("text/plain", view.id);
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      role="tab"
-      aria-selected={active}
-      data-view-id={view.id}
-      data-view-kind={view.kind}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "0 10px",
-        height: 28,
-        borderRight: `1px solid ${tokens.border.subtle}`,
-        color: active ? tokens.fg.primary : tokens.fg.muted,
-        background: active
-          ? tokens.bg.editor
-          : hover
-            ? hexA(tokens.fg.primary, 0.04)
-            : "transparent",
-        borderTop: active
-          ? `2px solid ${tokens.accent.primary}`
-          : "2px solid transparent",
-        cursor: "pointer",
-        fontSize: 11,
-        minWidth: 0,
-      }}
-    >
-      <Icon size={12} stroke={1.5} style={{ flexShrink: 0, opacity: active ? 0.9 : 0.6 }} />
-      <Text
-        size="xs"
-        ff={tokens.font.ui}
+  if (minimized) {
+    return (
+      <div
         style={{
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          maxWidth: 160,
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
         }}
       >
-        {kindLabel}
-        {tab ? ` · ${tab.name}` : ""}
-      </Text>
-      {moreThanOne && (hover || active) && (
-        <ActionIcon
-          component="span"
-          variant="subtle"
-          size="xs"
-          color="gray"
-          aria-label={`Close ${kindLabel} view`}
-          onClick={(e) => {
-            e.stopPropagation();
-            closeView(view.id);
-          }}
-        >
-          <IconX size={10} />
-        </ActionIcon>
-      )}
-    </UnstyledButton>
+        <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+          <EditorPane tabId={view.tabId} />
+        </div>
+        <MinimizedResultStrip view={view} />
+      </div>
+    );
+  }
+
+  return (
+    <PanelsGroup
+      key={`leaf-${paneId}`}
+      id={`leaf-${paneId}`}
+      orientation="vertical"
+      defaultLayout={defaultLayout}
+      onLayoutChanged={onLayoutChanged}
+      style={{ flex: 1, minHeight: 0 }}
+    >
+      <Panel
+        id="editor"
+        defaultSize={editorSizePct}
+        minSize={20}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+        }}
+      >
+        <EditorPane tabId={view.tabId} />
+      </Panel>
+      <Separator
+        style={{
+          height: 4,
+          background: tokens.border.subtle,
+          cursor: "row-resize",
+        }}
+      />
+      <Panel
+        id="result"
+        defaultSize={100 - editorSizePct}
+        minSize={10}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+        }}
+      >
+        <ResultPane view={view} paneId={paneId} />
+      </Panel>
+    </PanelsGroup>
   );
 }
 
-function LeafActions({ leaf, canClose }: { leaf: PanelLeaf; canClose: boolean }) {
+function MinimizedResultStrip({ view }: { view: PanelView }) {
+  const { tokens } = usePlaygroundTheme();
+  const setResultMinimizedForView = useStore((s) => s.setResultMinimizedForView);
+  return (
+    <button
+      type="button"
+      onClick={() => setResultMinimizedForView(view.id, false)}
+      style={{
+        all: "unset",
+        cursor: "pointer",
+        height: MINIMIZED_RESULT_PX,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "0 10px",
+        background: tokens.bg.sidebar,
+        borderTop: `1px solid ${tokens.border.subtle}`,
+        color: tokens.fg.muted,
+        fontSize: 11,
+        fontFamily: tokens.font.ui,
+      }}
+      aria-label="Restore result region"
+    >
+      <span>Results minimized</span>
+      <IconChevronUp size={14} />
+    </button>
+  );
+}
+
+function LeafActions({
+  leaf,
+  view,
+  canClose,
+}: {
+  leaf: PanelLeaf;
+  view: PanelView;
+  canClose: boolean;
+}) {
   const { tokens } = usePlaygroundTheme();
   const setActivePane = useStore((s) => s.setActivePane);
+  const setResultMinimizedForView = useStore((s) => s.setResultMinimizedForView);
+  const minimized = view.resultMinimized ?? false;
 
   const onSplit = (dir: "row" | "column") => {
     setActivePane(leaf.id);
@@ -291,7 +235,34 @@ function LeafActions({ leaf, canClose }: { leaf: PanelLeaf; canClose: boolean })
   };
 
   return (
-    <Group gap={2} align="center" pr={4} pl={4} style={{ height: 28 }}>
+    <Group
+      gap={2}
+      align="center"
+      pr={4}
+      pl={4}
+      style={{
+        height: 28,
+        flexShrink: 0,
+        background: tokens.bg.sidebar,
+        borderBottom: `1px solid ${tokens.border.subtle}`,
+        justifyContent: "flex-end",
+      }}
+    >
+      <Tooltip
+        label={minimized ? "Restore results" : "Minimize results"}
+        openDelay={400}
+        withArrow
+      >
+        <ActionIcon
+          variant="subtle"
+          color="gray"
+          size="sm"
+          aria-label={minimized ? "Restore results" : "Minimize results"}
+          onClick={() => setResultMinimizedForView(view.id, !minimized)}
+        >
+          {minimized ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
+        </ActionIcon>
+      </Tooltip>
       <Tooltip label="Split right" openDelay={400} withArrow>
         <ActionIcon
           variant="subtle"
@@ -317,9 +288,7 @@ function LeafActions({ leaf, canClose }: { leaf: PanelLeaf; canClose: boolean })
       <Menu position="bottom-end" withArrow>
         <Menu.Target>
           <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Pane menu">
-            <Text size="xs" c={tokens.fg.muted}>
-              ⋯
-            </Text>
+            ⋯
           </ActionIcon>
         </Menu.Target>
         <Menu.Dropdown>
@@ -336,30 +305,17 @@ function LeafActions({ leaf, canClose }: { leaf: PanelLeaf; canClose: boolean })
           >
             Split down
           </Menu.Item>
-          <Menu.Item
-            onClick={() => toggleParentOrientation(leaf.id)}
-          >
+          <Menu.Item onClick={() => toggleParentOrientation(leaf.id)}>
             Toggle parent orientation
           </Menu.Item>
           <Menu.Divider />
-          <Menu.Label>Add view</Menu.Label>
           <Menu.Item
-            leftSection={<IconPlus size={14} />}
-            onClick={() => {
-              useStore.getState().setActivePane(leaf.id);
-              openViewInActivePane("result");
-            }}
+            leftSection={
+              minimized ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />
+            }
+            onClick={() => setResultMinimizedForView(view.id, !minimized)}
           >
-            Add result view
-          </Menu.Item>
-          <Menu.Item
-            leftSection={<IconPlus size={14} />}
-            onClick={() => {
-              useStore.getState().setActivePane(leaf.id);
-              openViewInActivePane("editor");
-            }}
-          >
-            Add editor view
+            {minimized ? "Restore results" : "Minimize results"}
           </Menu.Item>
           <Menu.Divider />
           <Menu.Item

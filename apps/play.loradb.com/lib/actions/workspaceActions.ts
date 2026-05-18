@@ -7,11 +7,8 @@
  */
 
 import { useStore } from "@/lib/state/store";
-import { ulid } from "@/lib/util/id";
 import type {
-  PanelGroup,
   PanelKind,
-  PanelNode,
   PanelView,
   Placement,
   ResultTab,
@@ -22,8 +19,6 @@ import {
   findViewLeaf,
   flatLeafIds,
   iterLeaves,
-  makeGroup,
-  makeLeaf,
   makeView,
   resolveActiveTabId,
 } from "@/lib/state/workspace/tree";
@@ -69,180 +64,40 @@ export function cycleViewInActivePane(): void {
 }
 
 /**
- * Split the workspace, creating a new self-contained editor+result
- * pair alongside the existing one.
+ * Split the workspace, creating a new self-contained query pane
+ * (editor + result, bound together) alongside the existing one.
  *
- * Semantically: each "workspace cell" is a column containing an editor
- * leaf on top and a result leaf below (both pinned to the same tab).
- * Splitting builds a brand-new cell for a fresh tab and places it next
- * to the current cell. The existing cell's editor and result get
- * pinned to the source tab so the two workspaces are fully independent.
+ * `direction`:
+ *   - "row"    → new pane sits to the right of the current one
+ *   - "column" → new pane stacks below the current one
  *
- * `direction` controls how cells are arranged relative to each other:
- *   - "row"    → cells sit side by side (the most common split)
- *   - "column" → cells stack top/bottom (rare but supported)
- *
- * Returns the new leaf's id (the new editor leaf) so the caller can
- * shift focus to it.
+ * The new pane gets its own fresh tab (cloned body from the source
+ * tab) so the two panes don't share editor state. Returns the new
+ * leaf id so the caller can focus it.
  */
-export function splitActivePane(direction: SplitDirection, placement: Placement = "after"): string | null {
+export function splitActivePane(
+  direction: SplitDirection,
+  placement: Placement = "after",
+): string | null {
   const state = useStore.getState();
   const paneId = state.activePaneId;
+
+  // Source tab for body cloning — prefer the active pane's active view.
   const activeLeaf = findLeaf(state.workspace, paneId);
   const activeView = activeLeaf?.views.find((v) => v.id === activeLeaf.activeViewId);
+  const sourceTabId = activeView?.tabId ?? getActiveTabId();
+  const sourceTab = sourceTabId
+    ? state.tabs.find((t) => t.id === sourceTabId)
+    : null;
 
-  // The tab we clone from — prefer the active editor view's tab.
-  let sourceTabId: string | null = null;
-  if (activeView?.kind === "editor" && activeView.tabId) {
-    sourceTabId = activeView.tabId;
-  } else if (activeView?.tabId) {
-    sourceTabId = activeView.tabId;
-  } else {
-    sourceTabId = getActiveTabId();
-  }
-  const sourceTab = sourceTabId ? state.tabs.find((t) => t.id === sourceTabId) : null;
-
-  // Spawn the new tab globally. The tabs slice no longer carries any
-  // "active tab" notion of its own — we wire the new tab into the new
-  // cell's editor view below.
   const newTabId = state.openTab({ body: sourceTab?.body ?? "" });
-
-  // Build the new workspace cell — editor + result, both pinned to the
-  // new tab so it's fully independent of any sibling cells.
-  const newCell = buildWorkspaceCell(newTabId, "graph");
-
-  // Canonicalise the existing workspace into one or more cells before
-  // splicing. This way the source workspace is guaranteed to be paired
-  // (editor on top, result below in a column) regardless of any prior
-  // orientation toggles or partial splits.
-  const sourceTreeNormalized = canonicaliseAsCells(state.workspace, sourceTabId);
-
-  // Insert the new cell. If the canonical source is already a group in
-  // the requested direction with all-cell children, splice; otherwise
-  // wrap it in a fresh group of the requested direction.
-  let nextRoot: PanelNode;
-  if (
-    sourceTreeNormalized.type === "group" &&
-    sourceTreeNormalized.direction === direction &&
-    childrenAreCells(sourceTreeNormalized)
-  ) {
-    const before = placement === "before";
-    nextRoot = {
-      ...sourceTreeNormalized,
-      sizes: balanceSizes(sourceTreeNormalized.children.length + 1),
-      children: before
-        ? [newCell, ...sourceTreeNormalized.children]
-        : [...sourceTreeNormalized.children, newCell],
-    } satisfies PanelGroup;
-  } else {
-    const before = placement === "before";
-    nextRoot = makeGroup(
-      direction,
-      before ? [newCell, sourceTreeNormalized] : [sourceTreeNormalized, newCell],
-      { sizes: [50, 50] },
-    );
-  }
-
-  // The new cell's first child is its editor leaf — that's where focus lands.
-  const newEditorLeafChild = newCell.children[0];
-  const newEditorLeafId =
-    newEditorLeafChild && newEditorLeafChild.type === "leaf"
-      ? newEditorLeafChild.id
-      : null;
-  state.replaceWorkspace(nextRoot, {
-    ...(newEditorLeafId ? { activePaneId: newEditorLeafId } : {}),
+  const newView = makeView({
+    kind: "query",
+    tabId: newTabId,
+    tabIds: [newTabId],
+    resultTab: "graph",
   });
-  return newEditorLeafId;
-}
-
-// ────────────────────────────────────────────────────────────────
-// Workspace cell helpers
-// ────────────────────────────────────────────────────────────────
-
-/**
- * Build a fresh column-cell containing one editor leaf and one result
- * leaf, both pinned to the same tab.
- */
-function buildWorkspaceCell(tabId: string, resultTab: ResultTab): PanelGroup {
-  const editorView = makeView({
-    kind: "editor",
-    tabId,
-    tabIds: [tabId],
-  });
-  const resultView = makeView({
-    kind: "result",
-    tabId,
-    resultTab,
-  });
-  return makeGroup("column", [makeLeaf([editorView]), makeLeaf([resultView])]);
-}
-
-/**
- * A canonical cell = column group containing exactly one editor leaf
- * and one result leaf.
- */
-function isCanonicalCell(node: PanelNode): boolean {
-  if (node.type !== "group") return false;
-  if (node.direction !== "column") return false;
-  if (node.children.length !== 2) return false;
-  const [a, b] = node.children;
-  if (!a || a.type !== "leaf" || a.views.length !== 1) return false;
-  if (!b || b.type !== "leaf" || b.views.length !== 1) return false;
-  const aKind = a.views[0]!.kind;
-  const bKind = b.views[0]!.kind;
-  return (
-    (aKind === "editor" && bKind === "result") ||
-    (aKind === "result" && bKind === "editor")
-  );
-}
-
-function childrenAreCells(group: PanelGroup): boolean {
-  return group.children.every(isCanonicalCell);
-}
-
-/**
- * Bring the tree into "row/column of cells" form when it cheaply can.
- *
- *  - Single canonical cell → re-pin both leaves to `sourceTabId` so the
- *    new sibling cell isn't sharing state with it.
- *  - Already a row/column of cells → returned unchanged.
- *  - Anything else → returned unchanged. We used to collapse arbitrary
- *    trees into a single editor+result cell, but that silently dropped
- *    the user's other panes (e.g. a third editor view, a manual `addView`).
- *    `splitActivePane` will wrap the un-normalised tree in a new parent
- *    group alongside the new cell instead.
- */
-function canonicaliseAsCells(tree: PanelNode, sourceTabId: string | null): PanelNode {
-  if (isCanonicalCell(tree)) return ensureCellPinned(tree as PanelGroup, sourceTabId);
-  return tree;
-}
-
-/**
- * For a canonical cell, pin both leaves to `tabId` (preserving the
- * editor strip's other tab ids).
- */
-function ensureCellPinned(cell: PanelGroup, tabId: string | null): PanelGroup {
-  if (!tabId) return cell;
-  const rewrite = (child: PanelNode): PanelNode => {
-    if (child.type !== "leaf") return child;
-    const view = child.views[0]!;
-    if (view.kind === "editor") {
-      const tabIds = view.tabIds && view.tabIds.includes(tabId)
-        ? view.tabIds
-        : [...(view.tabIds ?? []), tabId];
-      return { ...child, views: [{ ...view, tabId, tabIds }] };
-    }
-    if (view.kind === "result") {
-      return { ...child, views: [{ ...view, tabId }] };
-    }
-    return child;
-  };
-  return { ...cell, children: cell.children.map(rewrite) };
-}
-
-function balanceSizes(count: number): number[] {
-  const each = 100 / count;
-  return Array.from({ length: count }, () => each);
+  return state.splitPane(paneId, direction, placement, newView);
 }
 
 export function closeActivePane(): void {
@@ -299,94 +154,38 @@ export function toggleParentOrientation(paneId: string): void {
 }
 
 /**
- * Add a fresh view of the given kind to the active pane (or create one
- * by splitting if requested). Returns the new view id.
- */
-export function openViewInActivePane(kind: PanelKind, opts?: { resultTab?: ResultTab; tabId?: string }): string {
-  const state = useStore.getState();
-  return state.addView(state.activePaneId, kind, opts);
-}
-
-export function openViewInNewPane(
-  kind: PanelKind,
-  direction: SplitDirection,
-  placement: Placement = "after",
-  opts?: { resultTab?: ResultTab; tabId?: string },
-): string | null {
-  const state = useStore.getState();
-
-  if (kind === "editor" && opts?.tabId === undefined) {
-    // Always give a fresh editor pane its own tab so edits don't mirror
-    // a sibling pane. Caller can pass a specific `tabId` to share a tab.
-    const activeLeaf = findLeaf(state.workspace, state.activePaneId);
-    const sourceView = activeLeaf?.views.find((v) => v.id === activeLeaf.activeViewId);
-    const seedBody = (() => {
-      if (sourceView?.kind === "editor" && sourceView.tabId) {
-        return state.tabs.find((t) => t.id === sourceView.tabId)?.body ?? "";
-      }
-      const fallback = getActiveTabId();
-      return fallback ? state.tabs.find((t) => t.id === fallback)?.body ?? "" : "";
-    })();
-    const newTabId = state.openTab({ body: seedBody });
-    const view: PanelView = {
-      id: ulid(),
-      kind: "editor",
-      tabId: newTabId,
-      tabIds: [newTabId],
-    };
-    return state.splitPane(state.activePaneId, direction, placement, view);
-  }
-
-  const view: PanelView = {
-    id: ulid(),
-    kind,
-    ...(opts?.tabId !== undefined ? { tabId: opts.tabId } : {}),
-    ...(kind === "result" ? { resultTab: opts?.resultTab ?? "graph" } : {}),
-  };
-  return state.splitPane(state.activePaneId, direction, placement, view);
-}
-
-export function closeView(viewId: string): void {
-  useStore.getState().removeView(viewId);
-}
-
-export function moveViewToPane(viewId: string, toPaneId: string, toIndex?: number): void {
-  useStore.getState().moveView(viewId, toPaneId, toIndex);
-}
-
-/**
- * Set the result inner-tab on the most appropriate target:
- *   1. the active pane's currently-active view, if it's a result view
- *   2. otherwise the first result view in the workspace
- * Returns the view id we targeted, or null if no result view exists.
+ * Set the result inner-tab on the active pane's view, falling back to
+ * the first query view anywhere if the active pane can't be found.
  */
 export function setActiveResultTab(resultTab: ResultTab): string | null {
   const state = useStore.getState();
-  // 1. Active pane?
   const activeLeaf = findLeaf(state.workspace, state.activePaneId);
-  if (activeLeaf) {
-    const av = activeLeaf.views.find((v) => v.id === activeLeaf.activeViewId);
-    if (av?.kind === "result") {
-      state.setResultTabForView(av.id, resultTab);
-      return av.id;
-    }
+  const target =
+    activeLeaf?.views.find((v) => v.id === activeLeaf.activeViewId) ??
+    activeLeaf?.views.find((v) => v.kind === "query");
+  if (target) {
+    state.setResultTabForView(target.id, resultTab);
+    return target.id;
   }
-  // 2. Fallback: first result view anywhere in the tree.
-  const found = (function walk(node: typeof state.workspace): PanelView | null {
-    if (node.type === "leaf") {
-      return node.views.find((v) => v.kind === "result") ?? null;
+  for (const leaf of iterLeaves(state.workspace)) {
+    const v = leaf.views.find((view) => view.kind === "query");
+    if (v) {
+      state.setResultTabForView(v.id, resultTab);
+      return v.id;
     }
-    for (const child of node.children) {
-      const r = walk(child);
-      if (r) return r;
-    }
-    return null;
-  })(state.workspace);
-  if (found) {
-    state.setResultTabForView(found.id, resultTab);
-    return found.id;
   }
   return null;
+}
+
+/** Toggle (or set) the active pane's result region minimize state. */
+export function toggleActiveResultMinimized(): void {
+  const state = useStore.getState();
+  const leaf = findLeaf(state.workspace, state.activePaneId);
+  if (!leaf) return;
+  const view =
+    leaf.views.find((v) => v.id === leaf.activeViewId) ?? leaf.views[0];
+  if (!view) return;
+  state.setResultMinimizedForView(view.id, !(view.resultMinimized ?? false));
 }
 
 /**
@@ -399,29 +198,24 @@ export function getActiveTabId(): string | null {
 }
 
 /**
- * Activate `tabId` in some editor view. Preference order:
- *   1. The active pane's editor view if it already contains the tab.
- *   2. Any other editor view whose strip already lists the tab.
- *   3. The first editor view (the tab is added to its strip).
- *
- * Also moves `activePaneId` so the focused pane shows the new tab.
+ * Activate `tabId` in some query pane. Preference order:
+ *   1. The active pane if it already contains the tab.
+ *   2. Any other pane whose strip already lists the tab.
+ *   3. The first query pane (the tab is added to its strip).
  */
 export function focusTabInWorkspace(tabId: string): void {
   const state = useStore.getState();
   const activeLeaf = findLeaf(state.workspace, state.activePaneId);
-  // Preference 1.
   if (activeLeaf) {
     for (const v of activeLeaf.views) {
-      if (v.kind === "editor" && (v.tabIds ?? []).includes(tabId)) {
+      if ((v.tabIds ?? []).includes(tabId)) {
         state.setViewTabId(v.id, tabId);
         return;
       }
     }
   }
-  // Preference 2.
   for (const leaf of iterLeaves(state.workspace)) {
     for (const v of leaf.views) {
-      if (v.kind !== "editor") continue;
       if ((v.tabIds ?? []).includes(tabId)) {
         state.setActivePane(leaf.id);
         state.setViewTabId(v.id, tabId);
@@ -429,14 +223,12 @@ export function focusTabInWorkspace(tabId: string): void {
       }
     }
   }
-  // Preference 3: add to the first editor view's strip.
   for (const leaf of iterLeaves(state.workspace)) {
-    for (const v of leaf.views) {
-      if (v.kind === "editor") {
-        state.setActivePane(leaf.id);
-        state.addTabToEditorView(v.id, tabId);
-        return;
-      }
+    const v = leaf.views.find((view) => view.kind === "query");
+    if (v) {
+      state.setActivePane(leaf.id);
+      state.addTabToEditorView(v.id, tabId);
+      return;
     }
   }
 }
