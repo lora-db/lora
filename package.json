@@ -17,8 +17,8 @@
     "build": "yarn workspaces foreach -A -pt --include '@loradb/*' --include 'loradb-*' run build",
     "test": "yarn workspaces foreach -A -p --include '@loradb/*' --include 'loradb-*' run test",
     "typecheck": "yarn workspaces foreach -A -p --include '@loradb/*' --include 'loradb-*' run typecheck",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
+    "lint": "yarn workspaces foreach -A -p --include '@loradb/*' --include 'loradb-*' run lint",
+    "lint:fix": "yarn workspaces foreach -A -p --include '@loradb/*' --include 'loradb-*' run lint:fix",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

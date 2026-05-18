@@ -82,6 +82,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint ts test",
+    "lint:fix": "eslint ts test --fix",
     "test:browser": "playwright test",
     "test:browser:install": "playwright install chromium",
     "copy-license": "node -e \"const fs=require('fs'); try { fs.copyFileSync('../../../LICENSE','LICENSE'); } catch (e) { if (e.code !== 'ENOENT') throw e; }\"",

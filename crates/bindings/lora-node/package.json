@@ -78,6 +78,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint ts test",
+    "lint:fix": "eslint ts test --fix",
     "bench": "node bench/run.mjs",
     "artifacts": "napi artifacts",
     "create-npm-dirs": "napi create-npm-dir -t .",

@@ -16,6 +16,7 @@
     "start": "docusaurus start",
     "swizzle": "docusaurus swizzle",
     "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
     "validate-cypher": "node scripts/validate-docs-cypher.mjs"
   },
   "browserslist": {
