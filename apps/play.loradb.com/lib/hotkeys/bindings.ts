@@ -25,6 +25,14 @@ import {
   toggleColorScheme,
   toggleSidebar,
 } from "@/lib/actions/uiActions";
+import {
+  closeActivePane,
+  cycleViewInActivePane,
+  focusNextPane,
+  focusPrevPane,
+  splitActivePane,
+  toggleRootOrientation,
+} from "@/lib/actions/workspaceActions";
 import { openHotkeyHelpDialog } from "@/app/_components/Dialogs/HotkeyHelpDialog";
 
 import { HOTKEYS } from "./labels";
@@ -63,6 +71,13 @@ export function buildHotkeys(ctx: HotkeyContext): HotkeyEntry[] {
     [HOTKEYS.moveTabRight.chord, () => { moveActiveTabRight(); }],
     [HOTKEYS.focusEditor.chord, () => { focusEditor(); }],
     [HOTKEYS.help.chord, () => { openHotkeyHelpDialog(); }],
+    [HOTKEYS.splitRight.chord, () => { splitActivePane("row", "after"); }],
+    [HOTKEYS.splitDown.chord, () => { splitActivePane("column", "after"); }],
+    [HOTKEYS.closePane.chord, () => { closeActivePane(); }],
+    [HOTKEYS.focusNextPane.chord, () => { focusNextPane(); }],
+    [HOTKEYS.focusPrevPane.chord, () => { focusPrevPane(); }],
+    [HOTKEYS.cycleViewInPane.chord, () => { cycleViewInActivePane(); }],
+    [HOTKEYS.toggleOrientation.chord, () => { toggleRootOrientation(); }],
     [
       HOTKEYS.toggleColorScheme.chord,
       () => {

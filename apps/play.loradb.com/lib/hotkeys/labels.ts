@@ -33,7 +33,14 @@ export type HotkeyId =
   | "focusEditor"
   | "toggleColorScheme"
   | "spotlight"
-  | "help";
+  | "help"
+  | "splitRight"
+  | "splitDown"
+  | "closePane"
+  | "focusNextPane"
+  | "focusPrevPane"
+  | "cycleViewInPane"
+  | "toggleOrientation";
 
 export interface HotkeyMeta {
   /** Raw shortcut as recognised by Mantine (e.g. "mod+shift+E"). */
@@ -51,6 +58,7 @@ export interface HotkeyMeta {
     | "Navigation"
     | "View"
     | "Editor"
+    | "Panes"
     | "App";
 }
 
@@ -76,6 +84,13 @@ export const HOTKEYS: Record<HotkeyId, HotkeyMeta> = {
   toggleColorScheme: { chord: "mod+shift+D", description: "Toggle color scheme", group: "App" },
   spotlight: { chord: "mod+K", description: "Open command palette", group: "App" },
   help: { chord: "shift+/", description: "Show keyboard shortcuts", group: "App" },
+  splitRight: { chord: "mod+shift+ArrowRight", description: "Split pane right", group: "Panes" },
+  splitDown: { chord: "mod+shift+ArrowDown", description: "Split pane down", group: "Panes" },
+  closePane: { chord: "mod+alt+W", description: "Close active pane", group: "Panes" },
+  focusNextPane: { chord: "mod+alt+ArrowRight", description: "Focus next pane", group: "Panes" },
+  focusPrevPane: { chord: "mod+alt+ArrowLeft", description: "Focus previous pane", group: "Panes" },
+  cycleViewInPane: { chord: "mod+`", description: "Cycle views in current pane", group: "Panes" },
+  toggleOrientation: { chord: "mod+alt+O", description: "Toggle root split orientation", group: "Panes" },
 };
 
 const ARROW_SYMBOLS: Record<string, string> = {
