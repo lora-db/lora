@@ -53,6 +53,25 @@ export default tseslint.config(
         ...globals.browser,
       },
     },
+    rules: {
+      // Underscore prefix is the project-wide convention for
+      // "intentionally unused" — covers callback signatures we keep
+      // for documentation, generic params kept for symmetry, etc.
+      "no-unused-vars": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+          // Object-rest destructure (`const { a, ...rest } = x`) is the
+          // canonical way to "strip these keys"; flagging the named
+          // siblings as unused defeats the pattern.
+          ignoreRestSiblings: true,
+        },
+      ],
+    },
   },
 
   {
