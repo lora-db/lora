@@ -73,6 +73,34 @@ export interface GraphEngine<
     opts?: { distance?: number; zoom?: number; durationMs?: number },
   ): void;
 
+  /** Translate the view by world-space delta. Moves camera AND
+   *  lookAt by the same vector so the orbit / view direction is
+   *  preserved (a true "pan" rather than an orbit step). In 2D the
+   *  z component is ignored — the top-down camera is locked to a
+   *  constant height. */
+  panBy(
+    delta: { x?: number; y?: number; z?: number },
+    durationMs?: number,
+  ): void;
+
+  /** Jump the view to a world coordinate, preserving the current
+   *  viewing direction. Differs from `focusOn` in that it accepts a
+   *  raw coordinate rather than a node-style target and doesn't
+   *  re-tighten the zoom. Useful for "go to coordinates" UI. */
+  goTo(
+    target: { x: number; y: number; z?: number },
+    opts?: { durationMs?: number },
+  ): void;
+
+  /** Fit the camera to a subset of nodes. Same camera math as `fit()`
+   *  but the bbox is computed over `nodeIds` instead of the whole
+   *  graph. Falls back to a full fit when `nodeIds` is empty. */
+  fitToNodes(
+    nodeIds: ReadonlyArray<string | number>,
+    durationMs?: number,
+    padding?: number,
+  ): void;
+
   /** Snapshot the current camera so it can be restored later. */
   getCameraState(): CameraState;
   /** Restore a snapshot produced by `getCameraState`. */

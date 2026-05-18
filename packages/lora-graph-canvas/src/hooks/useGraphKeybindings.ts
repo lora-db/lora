@@ -111,6 +111,43 @@ export function useGraphKeybindings<
         case "F":
         case "0":
           // `0` mirrors the figma/photoshop "fit to viewport" convention.
+          // Shift+F fits to the current selection instead of the whole
+          // graph — convenient for diving into a clicked cluster.
+          if (e.shiftKey && (e.key === "f" || e.key === "F")) {
+            const ids = [...p.selection.selected, ...p.selectedLinkIds];
+            // For links, fold endpoints into the node-id set so the
+            // bbox covers the link's reach, not just selected nodes.
+            const nodeIdSet = new Set<string | number>(p.selection.selected);
+            if (p.selectedLinkIds.length > 0) {
+              // O(L) instead of O(L × |selected-links|) — see same
+              // pattern in fitToSelection + the fit-on-select effect.
+              const linkIdSet = new Set<string | number>(p.selectedLinkIds);
+              for (const link of p.dataApi.data.links) {
+                const lid = link.id;
+                if (lid === undefined || !linkIdSet.has(lid)) {
+                  continue;
+                }
+                const s =
+                  typeof link.source === "object"
+                    ? (link.source as { id: string | number }).id
+                    : link.source;
+                const t =
+                  typeof link.target === "object"
+                    ? (link.target as { id: string | number }).id
+                    : link.target;
+                if (s !== undefined) nodeIdSet.add(s);
+                if (t !== undefined) nodeIdSet.add(t);
+              }
+            }
+            if (nodeIdSet.size > 0 && p.engine?.fitToNodes) {
+              p.engine.fitToNodes([...nodeIdSet], 400, 60);
+            } else {
+              p.engine?.fit(400, 40);
+            }
+            e.preventDefault();
+            void ids;
+            break;
+          }
           p.engine?.fit(400, 40);
           e.preventDefault();
           break;
@@ -138,27 +175,66 @@ export function useGraphKeybindings<
         case "ArrowRight":
         case "ArrowUp":
         case "ArrowDown": {
-          // Pan the camera by a fixed graph-space step. We read the
-          // current bbox center as the anchor rather than tracking
-          // a private camera-pos ref — getGraphBbox() is cheap and
-          // already used elsewhere on the engine surface.
           const eng = p.engine;
           if (!eng) return;
-          const bbox = eng.getGraphBbox();
-          const cx = (bbox.x[0] + bbox.x[1]) / 2;
-          const cy = (bbox.y[0] + bbox.y[1]) / 2;
-          // Scale the step by the current zoom so a tap in a deep
-          // zoom-in feels proportional rather than jumping over the
-          // whole bbox.
+          // Step scales with zoom so the perceived pan size stays
+          // consistent across zoom levels.
           const k = eng.getZoom?.() ?? 1;
           const step = ARROW_PAN_STEP / Math.max(k, 0.1);
           let dx = 0;
           let dy = 0;
+          let dz = 0;
           if (e.key === "ArrowLeft") dx = -step;
           else if (e.key === "ArrowRight") dx = step;
           else if (e.key === "ArrowUp") dy = -step;
           else dy = step;
-          eng.centerAt(cx + dx, cy + dy, undefined, 120);
+          // Shift + Arrow Up/Down → world-Z elevation in 3D (camera
+          // and lookAt translate together). Z is locked in 2D, so
+          // shift just makes it a slightly larger step there.
+          if (e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            if (p.mode === "3d") {
+              dz = e.key === "ArrowUp" ? step : -step;
+              dy = 0;
+            }
+          }
+          if (eng.panBy) {
+            eng.panBy({ x: dx, y: dy, z: dz }, 120);
+          } else {
+            // Fallback for engines without panBy.
+            const bbox = eng.getGraphBbox();
+            const cx = (bbox.x[0] + bbox.x[1]) / 2;
+            const cy = (bbox.y[0] + bbox.y[1]) / 2;
+            eng.centerAt(cx + dx, cy + dy, undefined, 120);
+          }
+          e.preventDefault();
+          break;
+        }
+        case "PageUp":
+        case "PageDown":
+        case "q":
+        case "Q":
+        case "e":
+        case "E": {
+          // World-Z elevation in 3D. PageUp/Q go up, PageDown/E go
+          // down. In 2D mode these are no-ops since the camera height
+          // is locked.
+          const eng = p.engine;
+          if (!eng) break;
+          if (p.mode !== "3d") {
+            if (e.key === "PageUp" || e.key === "PageDown") {
+              // Don't swallow PageUp/Down in 2D — let the browser
+              // scroll the surrounding doc.
+              break;
+            }
+            // q/e: pass through without preventing default.
+            break;
+          }
+          const k = eng.getZoom?.() ?? 1;
+          const step = ARROW_PAN_STEP / Math.max(k, 0.1);
+          const up = e.key === "PageUp" || e.key === "q" || e.key === "Q";
+          if (eng.panBy) {
+            eng.panBy({ z: up ? step : -step }, 120);
+          }
           e.preventDefault();
           break;
         }

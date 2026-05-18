@@ -19,8 +19,8 @@ export interface UseGraphDeleteGateParams<
   onLinkDeleted?: (links: L[], ctx: { source: DeletionSource }) => void;
   /** Called after a successful node delete so the caller can clear its
    *  own selection / hover state. Skipped if the guard rejected. */
-  afterNodeDelete?: (ids: Array<string | number>) => void;
-  afterLinkDelete?: (ids: Array<string | number>) => void;
+  afterNodeDelete?: (ids: ReadonlyArray<string | number>) => void;
+  afterLinkDelete?: (ids: ReadonlyArray<string | number>) => void;
 }
 
 export interface GraphDeleteGateApi<L extends LinkObject> {
@@ -28,14 +28,14 @@ export interface GraphDeleteGateApi<L extends LinkObject> {
    *  and removes them. Returns `false` if the guard rejected or nothing
    *  matched. */
   requestNodeDelete: (
-    ids: Array<string | number>,
+    ids: ReadonlyArray<string | number>,
     source: DeletionSource,
   ) => Promise<boolean>;
   /** Same, for links. Accepts either an id list or a predicate so context
    *  menus that hold the link reference can still target it precisely
    *  (links sometimes lack an id). */
   requestLinkDelete: (
-    target: Array<string | number> | ((l: L) => boolean),
+    target: ReadonlyArray<string | number> | ((l: L) => boolean),
     source: DeletionSource,
   ) => Promise<boolean>;
   /** Convenience: run node + link guards in sequence. Used by the
@@ -44,8 +44,8 @@ export interface GraphDeleteGateApi<L extends LinkObject> {
    *  rejecting one doesn't cancel the other. Returns true if anything
    *  was actually deleted. */
   requestMixedDelete: (
-    nodeIds: Array<string | number>,
-    linkIds: Array<string | number>,
+    nodeIds: ReadonlyArray<string | number>,
+    linkIds: ReadonlyArray<string | number>,
     source: DeletionSource,
   ) => Promise<boolean>;
 }
@@ -70,7 +70,7 @@ export function useGraphDeleteGate<
 
   const requestNodeDelete = useCallback(
     (
-      ids: Array<string | number>,
+      ids: ReadonlyArray<string | number>,
       source: DeletionSource,
     ): Promise<boolean> => {
       if (ids.length === 0) return Promise.resolve(false);
@@ -96,7 +96,7 @@ export function useGraphDeleteGate<
 
   const requestLinkDelete = useCallback(
     (
-      target: Array<string | number> | ((l: L) => boolean),
+      target: ReadonlyArray<string | number> | ((l: L) => boolean),
       source: DeletionSource,
     ): Promise<boolean> => {
       const predicate: (l: L) => boolean =
@@ -127,8 +127,8 @@ export function useGraphDeleteGate<
 
   const requestMixedDelete = useCallback(
     async (
-      nodeIds: Array<string | number>,
-      linkIds: Array<string | number>,
+      nodeIds: ReadonlyArray<string | number>,
+      linkIds: ReadonlyArray<string | number>,
       source: DeletionSource,
     ): Promise<boolean> => {
       // Fire both guards concurrently — they're independent, the host

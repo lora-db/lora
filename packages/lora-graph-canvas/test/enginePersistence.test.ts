@@ -190,6 +190,56 @@ describe("useGraphEngine (unified)", () => {
     unmount();
     expect(engine.destroy).toHaveBeenCalledTimes(1);
   });
+
+  it("does not call setGraphData with the same data reference passed to the factory", () => {
+    // Regression for the "nodes never expand on initial load" bug:
+    // the factory wrote `initialData` to the kapsule and the React
+    // forward-data effect immediately fired `setGraphData()` with the
+    // SAME reference. The redundant call would pin every just-seeded
+    // node and freeze the simulation before it spread them.
+    const engine = makeFakeEngine("e", "2d");
+    engineQueue.push(engine);
+    const data = { nodes: [{ id: "a" }, { id: "b" }], links: [] };
+
+    renderHook(() =>
+      useGraphEngine({
+        mount,
+        width: 100,
+        height: 100,
+        data,
+        props: {} as never,
+        paused: false,
+        mode: "2d",
+      }),
+    );
+    expect(engine.setGraphData).not.toHaveBeenCalled();
+  });
+
+  it("calls setGraphData when a NEW data reference arrives", () => {
+    const engine = makeFakeEngine("e", "2d");
+    engineQueue.push(engine);
+    const initial = { nodes: [{ id: "a" }], links: [] };
+
+    const { rerender } = renderHook(
+      (params: { data: typeof initial }) =>
+        useGraphEngine({
+          mount,
+          width: 100,
+          height: 100,
+          data: params.data,
+          props: {} as never,
+          paused: false,
+          mode: "2d",
+        }),
+      { initialProps: { data: initial } },
+    );
+    expect(engine.setGraphData).not.toHaveBeenCalled();
+
+    const next = { nodes: [{ id: "a" }, { id: "b" }], links: [] };
+    rerender({ data: next });
+    expect(engine.setGraphData).toHaveBeenCalledTimes(1);
+    expect(engine.setGraphData).toHaveBeenCalledWith(next);
+  });
 });
 
 // Sanity-narrow: the cast above shouldn't drift from the underlying

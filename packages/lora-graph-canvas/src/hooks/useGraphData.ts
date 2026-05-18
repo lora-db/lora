@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GraphData, LinkObject, NodeObject } from "../types";
 import { createId } from "../utils/ids";
 
@@ -98,7 +98,7 @@ export interface GraphDataApi<N extends NodeObject, L extends LinkObject> {
   addNodes(nodes: Array<Partial<N> & { id?: string | number }>): N[];
   updateNode(id: string | number, patch: Partial<N>): void;
   removeNode(id: string | number): void;
-  removeNodes(ids: Array<string | number>): void;
+  removeNodes(ids: ReadonlyArray<string | number>): void;
   addLink(link: {
     source: string | number;
     target: string | number;
@@ -124,11 +124,13 @@ export function useGraphData<
   // Ensure every link has an id. Without this, link selection breaks
   // — we key the selectedLinkIds set by id, and any link the host
   // passed in `{ source, target }` (no id) would silently fail every
-  // click. We mutate in place to keep referential equality with the
-  // host's data (the kapsule already mutates these objects for
-  // simulation state). Memoised so it's stable across renders and
-  // safe to put in dependency arrays.
-  const ensureLinkIds = useCallback((data: GraphData<N, L>) => {
+  // click. For uncontrolled data the kapsule already mutates these
+  // objects for simulation state, so an in-place fill is fine; for
+  // controlled data the host owns the array and an in-place mutation
+  // would surprise them (and break shallow-equality state checks),
+  // so we shallow-clone any link that's missing an id. Memoised so
+  // it's stable across renders and safe to put in dependency arrays.
+  const ensureLinkIdsInPlace = useCallback((data: GraphData<N, L>) => {
     for (const link of data.links) {
       if ((link as { id?: unknown }).id === undefined) {
         (link as { id?: string | number }).id = createId("l");
@@ -136,23 +138,43 @@ export function useGraphData<
     }
     return data;
   }, []);
+  const ensureLinkIdsCopyOnWrite = useCallback(
+    (data: GraphData<N, L>): GraphData<N, L> => {
+      let dirty = false;
+      const links = data.links.map((link) => {
+        if ((link as { id?: unknown }).id !== undefined) return link;
+        dirty = true;
+        return { ...link, id: createId("l") } as L;
+      });
+      if (!dirty) return data;
+      return { nodes: data.nodes, links };
+    },
+    [],
+  );
 
   const [internal, setInternal] = useState<GraphData<N, L>>(() => {
-    const seed =
-      opts.defaultData ??
-      opts.controlled ??
-      (EMPTY_DATA as GraphData<N, L>);
-    return ensureLinkIds(stripStaleSimulationState(seed));
+    // Seed precedence: uncontrolled `defaultData`, then controlled
+    // `controlled`, then empty. For the controlled seed we don't
+    // mutate the host's links — copy-on-write so the host's array
+    // stays untouched. Uncontrolled data is canvas-owned so we can
+    // mutate freely.
+    if (opts.defaultData !== undefined) {
+      return ensureLinkIdsInPlace(stripStaleSimulationState(opts.defaultData));
+    }
+    if (opts.controlled !== undefined) {
+      return ensureLinkIdsCopyOnWrite(stripStaleSimulationState(opts.controlled));
+    }
+    return EMPTY_DATA as GraphData<N, L>;
   });
 
   // Mirror controlled data into the internal slot so the mutators
-  // always read from the same source.
-  // `ensureLinkIds` is stable inside this hook; declared inline below.
+  // always read from the same source. Copy-on-write to avoid mutating
+  // the host's link objects.
   useEffect(() => {
     if (isControlled && opts.controlled) {
-      setInternal(ensureLinkIds(opts.controlled));
+      setInternal(ensureLinkIdsCopyOnWrite(opts.controlled));
     }
-  }, [isControlled, opts.controlled, ensureLinkIds]);
+  }, [isControlled, opts.controlled, ensureLinkIdsCopyOnWrite]);
 
   const dataRef = useRef(internal);
   dataRef.current = internal;
@@ -170,8 +192,13 @@ export function useGraphData<
   );
 
   const setData = useCallback(
-    (next: GraphData<N, L>) => commit(ensureLinkIds(next)),
-    [commit, ensureLinkIds],
+    (next: GraphData<N, L>) =>
+      commit(
+        isControlled
+          ? ensureLinkIdsCopyOnWrite(next)
+          : ensureLinkIdsInPlace(next),
+      ),
+    [commit, ensureLinkIdsInPlace, ensureLinkIdsCopyOnWrite, isControlled],
   );
 
   const addNode = useCallback(
@@ -235,7 +262,7 @@ export function useGraphData<
   );
 
   const removeNodes = useCallback(
-    (ids: Array<string | number>) => {
+    (ids: ReadonlyArray<string | number>) => {
       const idSet = new Set(ids);
       const cur = dataRef.current;
       const nodes = cur.nodes.filter((n) => !idSet.has(n.id));
@@ -300,17 +327,40 @@ export function useGraphData<
     commit({ nodes: [], links: [] } as GraphData<N, L>);
   }, [commit]);
 
-  return {
-    data: internal,
-    setData,
-    addNode,
-    addNodes,
-    updateNode,
-    removeNode,
-    removeNodes,
-    addLink,
-    addLinks,
-    removeLink,
-    clear,
-  };
+  // Stable object identity: the methods only change identity when
+  // `isControlled` flips (which the host can't change at runtime
+  // anyway — controlled-vs-uncontrolled is decided on first render).
+  // `data` is what consumers should depend on for "did the graph
+  // change" semantics. Without this memo, every render produced a
+  // fresh object literal and the dozen `useCallback`s in the main
+  // component that list `dataApi` in their dep array would all
+  // re-create — defeating their memoisation entirely.
+  return useMemo<GraphDataApi<N, L>>(
+    () => ({
+      data: internal,
+      setData,
+      addNode,
+      addNodes,
+      updateNode,
+      removeNode,
+      removeNodes,
+      addLink,
+      addLinks,
+      removeLink,
+      clear,
+    }),
+    [
+      internal,
+      setData,
+      addNode,
+      addNodes,
+      updateNode,
+      removeNode,
+      removeNodes,
+      addLink,
+      addLinks,
+      removeLink,
+      clear,
+    ],
+  );
 }

@@ -89,6 +89,7 @@ function LoraGraphCanvasInner<
     autoIndexNeighbors = highlightNeighborsOnHover,
     collideNodes = false,
     fixOnDrop = true,
+    fitOnSelect = false,
     beeswarm = false,
     onSelectionChange,
     onNodeClick,
@@ -213,6 +214,9 @@ function LoraGraphCanvasInner<
   const [internalShowLabels, setInternalShowLabels] = useState(
     Boolean(showLabels),
   );
+  const [internalFitOnSelect, setInternalFitOnSelect] = useState(
+    Boolean(fitOnSelect),
+  );
   const [internalDagMode, setInternalDagMode] = useState<
     "td" | "bu" | "lr" | "rl" | "radialout" | "radialin" | null
   >(dagModeProp ?? null);
@@ -222,6 +226,9 @@ function LoraGraphCanvasInner<
   useEffect(() => {
     setInternalShowLabels(Boolean(showLabels));
   }, [showLabels]);
+  useEffect(() => {
+    setInternalFitOnSelect(Boolean(fitOnSelect));
+  }, [fitOnSelect]);
   useEffect(() => {
     setInternalDagMode(dagModeProp ?? null);
   }, [dagModeProp]);
@@ -839,10 +846,11 @@ function LoraGraphCanvasInner<
 
   // ─── Selection-aware accessors ─────────────────────────────────
   const accentColor = theme?.accent ?? "#4f8ef7";
-  const selectedNodeSet = useMemo(
-    () => new Set(selection.selected),
-    [selection.selected],
-  );
+  // `selection.selectedSet` is already a `Set` maintained inside
+  // `useGraphSelection` — passing it through avoids the per-click
+  // `new Set(selection.selected)` allocation that dominated React
+  // render time on 10k+ selections.
+  const selectedNodeSet = selection.selectedSet;
   const selectedLinkSet = useMemo(
     () => new Set(selectedLinkIds),
     [selectedLinkIds],
@@ -1128,16 +1136,22 @@ function LoraGraphCanvasInner<
     setMenu(null);
   };
 
-  // ─── First-load auto-fit ────────────────────────────────────────
-  // Fires once per component lifetime, ~150ms after the engine is
-  // ready and data is non-empty — long enough for the first few
-  // simulation ticks to spread nodes out so the bbox is meaningful,
-  // short enough that the user perceives the graph as "appearing
-  // already framed". We don't wait on onEngineStop because the
-  // simulation can take many seconds (or never, with pinned nodes)
-  // to fully settle, and the kapsule's `cbrt(n)*170` heuristic on
-  // first data load is disabled in createEngineUnified so this is
-  // the only camera motion the user sees on first load.
+  // ─── First-load reveal ──────────────────────────────────────────
+  // Fires exactly once per component lifetime, the first time the
+  // engine is ready with non-empty data. Subsequent data changes
+  // (node deletions, additions, drags, query reruns within the same
+  // mount) MUST NOT retrigger any camera motion — the user is in
+  // control after this. `hasAutoFitRef` guards against that even
+  // though the effect re-runs when `nodeCount` changes.
+  //
+  // `introFollow` runs concurrently with the force simulation: every
+  // frame it eases the camera toward a freshly-computed padded fit,
+  // so the user sees a smooth zoom-in that tracks the spreading
+  // layout instead of waiting for it to settle. The spring's time
+  // constant scales with node count, so small graphs feel snappy
+  // and huge graphs avoid over-reacting to early-tick bbox
+  // excursions. Reduce-motion users get a single animation-free fit
+  // instead.
   const hasAutoFitRef = useRef(false);
   const nodeCount = dataApi.data.nodes.length;
   useEffect(() => {
@@ -1146,12 +1160,12 @@ function LoraGraphCanvasInner<
     if (hasAutoFitRef.current) return;
     if (nodeCount === 0) return;
     hasAutoFitRef.current = true;
-    const tweenMs = reduceMotion ? 0 : 1000;
-    const timer = setTimeout(() => {
-      engineRef.current?.fit(tweenMs, 40);
-    }, 150);
-    return () => clearTimeout(timer);
-  }, [engine, introZoom, nodeCount]);
+    if (reduceMotion) {
+      const timer = setTimeout(() => engineRef.current?.fit(0, 40), 150);
+      return () => clearTimeout(timer);
+    }
+    engineRef.current?.introFollow({ padding: 40 });
+  }, [engine, introZoom, nodeCount, reduceMotion]);
 
   useGraphForces<N, L>({
     engine,
@@ -1159,6 +1173,74 @@ function LoraGraphCanvasInner<
     beeswarm,
     ...(nodeRelSize !== undefined ? { nodeRelSize } : {}),
   });
+
+  // ─── Fit-on-select ──────────────────────────────────────────────
+  // While `fitOnSelect` is on, every non-empty selection animates the
+  // camera to frame the selected nodes (plus the endpoints of any
+  // selected links). An empty selection is a no-op — snapping back to
+  // the full graph would yank the view away the moment the user
+  // marquee-deselects, which is more disruptive than helpful.
+  useEffect(() => {
+    if (!internalFitOnSelect) return;
+    const eng = engineRef.current;
+    if (!eng?.fitToNodes) return;
+    const idSet = new Set<string | number>(selection.selected);
+    if (selectedLinkIds.length > 0) {
+      // O(L × |selectedLinks|) → O(L) by hashing selection once.
+      const linkIdSet = new Set<string | number>(selectedLinkIds);
+      for (const link of dataApi.data.links) {
+        const lid = link.id;
+        if (lid === undefined || !linkIdSet.has(lid)) continue;
+        const s =
+          typeof link.source === "object"
+            ? (link.source as { id: string | number }).id
+            : link.source;
+        const t =
+          typeof link.target === "object"
+            ? (link.target as { id: string | number }).id
+            : link.target;
+        if (s !== undefined) idSet.add(s);
+        if (t !== undefined) idSet.add(t);
+      }
+    }
+    if (idSet.size === 0) return;
+    eng.fitToNodes([...idSet], reduceMotion ? 0 : 400, 60);
+  }, [
+    internalFitOnSelect,
+    selection.selected,
+    selectedLinkIds,
+    dataApi.data.links,
+    reduceMotion,
+  ]);
+
+  // Shift+wheel → world-Z elevation in 3D. Captured on the mount so we
+  // intercept before Three.js's orbit controls dolly the camera. In 2D
+  // there's no z-axis (camera height locked) so we pass through.
+  useEffect(() => {
+    if (!mountEl) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.shiftKey) return;
+      if (mode !== "3d") return;
+      const eng = engineRef.current;
+      if (!eng?.panBy) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // deltaY is positive when scrolling DOWN. Flip the sign so
+      // scroll-up moves the camera up (intuitive "lift the view"
+      // direction). Step scaled to the current zoom so the perceived
+      // elevation is consistent at any distance.
+      const k = eng.getZoom?.() ?? 1;
+      const step = (-e.deltaY / 4) / Math.max(k, 0.1);
+      eng.panBy({ z: step }, 0);
+    };
+    // Capture phase + non-passive so we can preventDefault before
+    // orbit-controls' own listener runs.
+    mountEl.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => {
+      mountEl.removeEventListener("wheel", onWheel, { capture: true } as
+        AddEventListenerOptions);
+    };
+  }, [mountEl, mode]);
 
   // ─── JSON import / export ───────────────────────────────────────
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1171,14 +1253,41 @@ function LoraGraphCanvasInner<
             // layout values. `_neighbors` / `_links` are object-graph
             // refs populated by `autoIndexNeighbors` — they form a
             // cycle that breaks JSON.stringify, so strip them too.
+            // `__threeObj` / `__indexColor` are the kapsule's internal
+            // mesh + hit-test refs (Three.js objects with Live3D
+            // bindings — also unserialisable).
             const {
-              // eslint-disable-next-line @typescript-eslint/no-unused-vars
               vx, vy, vz, index, _neighbors, _links,
+              __threeObj, __indexColor, __initialFixedPos, __initialPos,
+              __disposeControlsAfterDrag, __dragCommitted, __dragged,
               ...rest
             } = n as N & Record<string, unknown>;
             return rest;
           }),
-          links: dataApi.data.links,
+          links: dataApi.data.links.map((l) => {
+            // The kapsule resolves `source` / `target` from ids to
+            // NodeObject refs after the first tick; left as-is they'd
+            // pull the entire cyclic node graph into the JSON output
+            // (and JSON.stringify would throw on the cycle). Normalise
+            // back to ids; also strip kapsule-internal fields.
+            const link = l as L & Record<string, unknown>;
+            const sId =
+              typeof link.source === "object" && link.source !== null
+                ? (link.source as { id: string | number }).id
+                : (link.source as string | number);
+            const tId =
+              typeof link.target === "object" && link.target !== null
+                ? (link.target as { id: string | number }).id
+                : (link.target as string | number);
+            const {
+               
+              source, target, __lineObj, __arrowObj, __photonObjs,
+               
+              __indexColor, index,
+              ...rest
+            } = link;
+            return { ...rest, source: sId, target: tId };
+          }),
         },
         null,
         2,
@@ -1313,6 +1422,7 @@ function LoraGraphCanvasInner<
     exportJSON,
     importJSON,
     downloadJSON,
+    selectedLinkIds,
   });
 
   // ─── Render ──────────────────────────────────────────────────────
@@ -1346,6 +1456,14 @@ function LoraGraphCanvasInner<
         onChange: setInternalShowLabels,
       },
       {
+        id: "fit-on-select",
+        kind: "toggle",
+        label: "Fit to selection",
+        hint: "Animate the camera to frame the current selection whenever it changes.",
+        checked: internalFitOnSelect,
+        onChange: setInternalFitOnSelect,
+      },
+      {
         kind: "select",
         id: "dag-mode",
         label: "DAG orientation",
@@ -1368,7 +1486,7 @@ function LoraGraphCanvasInner<
           ),
       } satisfies OptionItem,
     ],
-    [internalFocusOnClick, internalShowLabels, internalDagMode],
+    [internalFocusOnClick, internalShowLabels, internalFitOnSelect, internalDagMode],
   );
 
   return (

@@ -187,6 +187,11 @@ describe("auto performance tuning", () => {
   });
 
   it("throttles the 3D raycaster harder as the tier escalates", () => {
+    // `huge` tier (60k nodes) caps the throttle at 64 ms — well below
+    // a fast click duration (~80 ms) so clicks still register, while
+    // still cutting the hover-raycaster work to a manageable rate. See
+    // `perfTier.ts`: the prior 200 ms cap was the root of the "selection
+    // not working on huge graphs" report.
     render(
       <LoraGraphCanvas
         mode="3d"
@@ -195,6 +200,6 @@ describe("auto performance tuning", () => {
         defaultData={{ nodes: nodes(60_000), links: [] }}
       />,
     );
-    expect(valuesFor("pointerRaycasterThrottleMs")).toContain(200);
+    expect(valuesFor("pointerRaycasterThrottleMs")).toContain(64);
   });
 });

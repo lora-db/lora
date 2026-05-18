@@ -30,7 +30,7 @@ export function useAutoIndexNeighbors<
       Object.isFrozen(data.nodes[0])
     ) {
       warnedRef.current = true;
-      // eslint-disable-next-line no-console
+       
       console.warn(
         "[lora-graph-canvas] autoIndexNeighbors is enabled but node objects appear to be frozen. The hover-highlight index needs to mutate nodes to attach `_neighbors`/`_links`. Either pass `autoIndexNeighbors={false}` (and `highlightNeighborsOnHover={false}`) or supply mutable node objects.",
       );

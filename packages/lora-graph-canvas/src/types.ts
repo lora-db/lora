@@ -266,6 +266,13 @@ export interface LoraGraphCanvasProps<
    *  default simulation-pull behaviour. */
   fixOnDrop?: boolean;
 
+  /** When `true` (default `false`), the camera animates to fit the
+   *  current selection any time it changes — like the toolbar "fit"
+   *  button, but scoped to the selected nodes (and the endpoints of
+   *  any selected links). No-ops when the selection becomes empty;
+   *  the user keeps their view instead of being snapped back. */
+  fitOnSelect?: boolean;
+
   /** Auto-tune renderer / simulation settings based on graph size so
    *  the canvas stays responsive into the 50k-100k-node range.
    *
@@ -464,6 +471,27 @@ export interface LoraGraphCanvasHandle<
   zoom(scale: number, durationMs?: number): void;
   zoomIn(step?: number): void;
   zoomOut(step?: number): void;
+  /** Translate the view by a world-space delta. In 2D the z component
+   *  is ignored (the camera height is locked). */
+  panBy(
+    delta: { x?: number; y?: number; z?: number },
+    durationMs?: number,
+  ): void;
+  /** Animate to a world coordinate, preserving the current viewing
+   *  direction. Use for "jump to coordinates" UI. */
+  goTo(
+    target: { x: number; y: number; z?: number },
+    opts?: { durationMs?: number },
+  ): void;
+  /** Fit the view to a subset of nodes. Empty array → full fit. */
+  fitToNodes(
+    nodeIds: ReadonlyArray<string | number>,
+    durationMs?: number,
+    padding?: number,
+  ): void;
+  /** Fit to the current selection (nodes + endpoints of selected links).
+   *  No-op if nothing is selected. */
+  fitToSelection(durationMs?: number, padding?: number): void;
 
   // Clipboard / duplication
   copy(): N[];

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import type { GraphEngine } from "../engines/types";
 import {
   createEngineUnified,
   type UnifiedEngine,
@@ -38,7 +37,7 @@ interface UseGraphEngineParams<
 export function useGraphEngine<
   N extends NodeObject,
   L extends LinkObject,
->(params: UseGraphEngineParams<N, L>): GraphEngine<N, L> | null {
+>(params: UseGraphEngineParams<N, L>): UnifiedEngine<N, L> | null {
   const {
     mount,
     mode,
@@ -58,6 +57,16 @@ export function useGraphEngine<
 
   // Track the previous prop bag for diffing.
   const prevPropsRef = useRef<LoraGraphCanvasProps<N, L>>(props);
+
+  // Track the last graph data reference we've applied to the engine,
+  // so the "forward data" effect can short-circuit when the value is
+  // already in the engine. Critical on first mount: `createEngineUnified`
+  // already writes `initialData` to the kapsule, and without this guard
+  // the forward-data effect would immediately re-write the same
+  // reference, which routes through `engine.setGraphData()` → pins every
+  // node at its just-seeded position → the d3-force reheat finds nothing
+  // to move → the graph never expands on first load.
+  const lastDataRef = useRef<GraphData<N, L> | null>(null);
 
   // Hold onto the initial mode so the mount effect can pass it once
   // without re-mounting whenever React state's `mode` changes
@@ -80,10 +89,15 @@ export function useGraphEngine<
       handlerRef,
     );
     prevPropsRef.current = props;
+    // The factory just wrote `data` into the kapsule via initialData;
+    // mark it as applied so the forward-data effect below skips on this
+    // first render.
+    lastDataRef.current = data;
     setEngine(next);
     return () => {
       next.destroy();
       setEngine(null);
+      lastDataRef.current = null;
     };
     // Width / height / data / props / paused / mode are forwarded by
     // separate effects so a change in any of them doesn't tear down
@@ -116,10 +130,15 @@ export function useGraphEngine<
     engine.resize(width, height);
   }, [engine, width, height]);
 
-  // Forward data changes.
+  // Forward data changes. We skip when the engine was just created
+  // with this same data reference (see `lastDataRef` above) — without
+  // that guard, `setGraphData` would pin every node at its seeded
+  // position and the simulation would settle before any spread happens.
   useEffect(() => {
     if (!engine) return;
+    if (lastDataRef.current === data) return;
     engine.setGraphData(data);
+    lastDataRef.current = data;
   }, [engine, data]);
 
   // Forward (diffed) prop changes when the engineProps identity moves.

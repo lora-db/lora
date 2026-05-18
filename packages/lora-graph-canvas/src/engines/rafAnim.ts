@@ -46,6 +46,46 @@ export function runAnim(
   };
 }
 
+/** Open-ended RAF loop. Unlike `runAnim` there's no fixed duration —
+ *  `step(dt)` receives the seconds elapsed since the previous frame
+ *  (capped at 1/30 s so a tab-switch doesn't deliver a giant dt that
+ *  blows past spring targets) and decides for itself when it has
+ *  converged. Returning `true` from `step` stops the loop the same way
+ *  the returned `cancel()` would. */
+export function runFollow(
+  step: (dtSeconds: number) => boolean | void,
+): () => void {
+  if (typeof requestAnimationFrame !== "function") {
+    step(0);
+    return () => {};
+  }
+  let raf: number | null = null;
+  let cancelled = false;
+  let prev = performance.now();
+
+  const tick = (now: number) => {
+    if (cancelled) return;
+    // Cap dt so a tab-switch / breakpoint resume doesn't deliver a
+    // multi-second frame that overshoots spring targets. 1/30 s keeps
+    // the loop usable even at 30 fps while still acting as a clamp.
+    const dt = Math.min(0.033, (now - prev) / 1000);
+    prev = now;
+    const done = step(dt);
+    if (done === true) {
+      raf = null;
+      return;
+    }
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+
+  return () => {
+    cancelled = true;
+    if (raf !== null) cancelAnimationFrame(raf);
+    raf = null;
+  };
+}
+
 export function easeOutQuad(t: number): number {
   return 1 - (1 - t) * (1 - t);
 }

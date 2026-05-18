@@ -98,11 +98,17 @@ export function perfTierDefaults<
   out.linkResolution = tier === "large" ? 4 : 0;
   out.nodeOpacity = 1;
   out.linkOpacity = 1;
-  // Higher throttle = less raycaster work. At xlarge/huge the
-  // pointer-pick is octree-broadphase but the per-frame budget is
-  // tight; we'd rather miss a 100 ms hover than drop frames.
+  // Higher throttle = less raycaster work. Hover events are coalesced
+  // by the throttle, but CLICK selection rides the same raycaster path
+  // — and a >50 ms throttle drops fast clicks landing inside the
+  // window, which surfaces as "selection broken on huge graphs."
+  // Cap at one frame for `large`, two for `xlarge`, four for `huge`
+  // so the worst case is still well below the ~80 ms human click
+  // duration. The hover-cost story we used to justify higher values
+  // is now mitigated by accessor-wrapper stability + the shadow-paint
+  // pin (see useAccessorOverrides.wrappedNodePointerAreaPaint).
   out.pointerRaycasterThrottleMs =
-    tier === "large" ? 32 : tier === "xlarge" ? 100 : 200;
+    tier === "large" ? 16 : tier === "xlarge" ? 32 : 64;
 
   return out;
 }
