@@ -413,6 +413,7 @@ function LoraGraphCanvasInner<
       internalFocusOnClick,
       focusedNodeId,
       focusedLinkId,
+      reduceMotion,
     ],
   );
 
@@ -659,6 +660,7 @@ function LoraGraphCanvasInner<
       focusedNodeId,
       width,
       height,
+      reduceMotion,
     ],
   );
 
@@ -1078,7 +1080,6 @@ function LoraGraphCanvasInner<
       handleLinkHover,
       showGrid,
       onRenderFramePre,
-      reduceMotion,
       nodeLabelRenderer.canvasObject,
       nodeLabelRenderer.threeObject,
       linkLabelRenderer.canvasObject,

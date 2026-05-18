@@ -72,7 +72,7 @@ export function useGraphClipboard<
     for (const node of dataApi.data.nodes) {
       if (!idSet.has(node.id)) continue;
       // Strip id + simulation fields so paste generates fresh ones.
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+       
       const { id, x, y, z, vx, vy, vz, fx, fy, fz, ...rest } =
         node as N & Record<string, unknown>;
       out.push(rest as unknown as Partial<N>);
@@ -175,7 +175,7 @@ export function useGraphClipboard<
     let i = 0;
     for (const node of dataApi.data.nodes) {
       if (!idSet.has(node.id)) continue;
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+       
       const { id, vx, vy, vz, fx, fy, fz, ...rest } =
         node as N & Record<string, unknown>;
       const offsetX = (i % 3) * 24;
