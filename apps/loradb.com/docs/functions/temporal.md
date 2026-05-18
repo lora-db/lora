@@ -172,8 +172,8 @@ Reduce a temporal value to a coarser unit.
 
 | Function | Supported units |
 |---|---|
-| <CypherCode code="temporal.truncate(unit, date)" /> | `"year"`, `"month"` |
-| <CypherCode code="temporal.truncate(unit, datetime)" /> | `"day"`, `"hour"`, `"month"` |
+| <CypherCode code="temporal.truncate(unit, date)" /> | `"year"`, `"month"`, `"day"` |
+| <CypherCode code="temporal.truncate(unit, datetime)" /> | `"year"`, `"month"`, `"day"`, `"hour"` |
 
 <QueryCodeBlock code={String.raw`RETURN temporal.truncate('month', '2024-01-15'::DATE);       // 2024-01-01
 RETURN temporal.truncate('year',  '2024-07-01'::DATE);       // 2024-01-01
@@ -375,8 +375,9 @@ See [WASM → gotchas](../getting-started/wasm#performance--best-practices).
 
 ## Limitations
 
-- **`temporal.truncate`** supports `"year"` and `"month"` for `DATE`
-  values; `"day"`, `"hour"`, and `"month"` for `DATETIME` values.
+- **`temporal.truncate`** supports `"year"`, `"month"`, and `"day"` for
+  `DATE` values; `"year"`, `"month"`, `"day"`, and `"hour"` for
+  `DATETIME` values.
 - Arithmetic between values of **different** temporal types
   (e.g. `Date - Time`) is not supported. Convert first.
 - Parsing is strict ISO 8601 — non-ISO shapes (`MM/DD/YYYY`,

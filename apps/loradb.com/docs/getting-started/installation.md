@@ -16,6 +16,10 @@ switching hosts later is a mechanical translation. This page helps
 you pick; each binding guide covers install, connect, execute, and
 error handling end-to-end.
 
+If you only want to try the query surface first, start with the
+[browser playground](./playground). It runs LoraDB through WASM without
+installing a package.
+
 ## Installation / Setup
 
 ### Pick a platform

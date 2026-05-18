@@ -1,12 +1,12 @@
 ---
 title: Limitations
 sidebar_label: Limitations
-description: Every Cypher feature and operational capability LoraDB does not support today — persistence, indexes, constraints, procedures, clustering — and what to reach for instead.
+description: Every query feature and operational capability LoraDB does not support today — including procedures, clustering, browser playground boundaries, and remaining storage limitations — plus what to reach for instead.
 ---
 
 # Limitations
 
-A single page for every Cypher feature and operational capability
+A single page for every query feature and operational capability
 LoraDB does not support today, so you can decide whether LoraDB fits
 your use case and know what to reach for instead. Every unsupported
 feature below raises a clear error (a parse error,
@@ -39,6 +39,7 @@ in the internal documentation.
 | Parameters | No HTTP-level params; no parse-time type check |
 | Spatial | No WKT I/O, no CRS transforms; `geo.within_bbox` exists for same-SRID boxes |
 | Vectors | VECTOR indexes are cataloged and queryable through flat-scan procedures; no ANN structure; no embedding generation; no list-of-vectors properties |
+| Browser playground | No parameter drawer, no shared hosted database, no true query abort; state is local to the browser origin |
 
 ## Clauses
 
@@ -82,8 +83,7 @@ in the internal documentation.
 |---|---|
 | External utility compatibility layer | Not supported |
 | User-defined functions | Not supported — no registration surface |
-| [`temporal.truncate`](./functions/temporal#truncation) units | Only `"year"` and `"month"`; `"quarter"` / `"week"` / `"day"` not yet supported |
-| [`temporal.truncate`](./functions/temporal#truncation) units | Only `"day"`, `"hour"`, and `"month"`; sub-hour units not yet supported |
+| [`temporal.truncate`](./functions/temporal#truncation) units | `DATE` supports `"year"`, `"month"`, and `"day"`; `DATETIME` supports `"year"`, `"month"`, `"day"`, and `"hour"`. `"quarter"`, `"week"`, and sub-hour truncation are not yet supported |
 | [`string.lower` / `string.upper`](./functions/string#tolower--toupper) | Unicode case mapping is supported; locale-specific case folding is not |
 | [`string.normalize(str[, form])`](./functions/string#normalize) | Unicode NFC/NFD/NFKC/NFKD normalization is supported; locale-specific transliteration is not |
 
@@ -161,6 +161,24 @@ in the internal documentation.
 - Parameters over HTTP — not yet supported (see Parameters above).
 - Multi-database — not supported. One process serves exactly one
   in-memory graph; run multiple processes for isolation.
+
+## Browser playground
+
+- Host-side parameter input — not yet supported. The editor detects
+  `$name`-style placeholders, but the UI does not yet provide a params
+  drawer. Use trusted inline literals for playground-only examples and
+  parameters in application bindings.
+- Shared hosted database — not supported. The hosted app runs against
+  a browser-origin database; saved queries, snapshots, settings,
+  history, and auto-restored graph state are local browser data.
+- True query abort — not yet supported. The Cancel button drops the
+  pending result from the UI, but the current WASM call still runs until
+  it returns.
+- Multi-database selector — not supported. Use a different browser
+  profile/origin or clear site data when you need a separate local
+  scratch graph.
+- Remote import — not supported. Import accepts local snapshot files;
+  the app does not fetch remote URLs to seed a graph.
 
 ## Workarounds cheatsheet
 

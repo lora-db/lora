@@ -179,9 +179,9 @@ RETURN count(*) AS people,
 
 ## Parameter-shaped filters
 
-The [playground](https://play.loradb.com) accepts inline literals so the
-examples on this page run as-is. In application code, replace the literals
-with `$name`, `$city`, or other parameters through your binding.
+The [playground](../getting-started/playground) accepts inline literals
+so the examples on this page run as-is. In application code, replace the
+literals with `$name`, `$city`, or other parameters through your binding.
 
 <QueryCodeBlock code={String.raw`MATCH (p:Person {name: 'Alice'})
 WHERE p.city = 'London'

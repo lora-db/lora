@@ -534,7 +534,7 @@ export default function Features() {
   return (
     <Layout
       title="Features"
-      description="LoraDB is an in-memory graph database with a full Cypher engine, written in Rust. Explore the query pipeline, language coverage, runtime surfaces, and the lines we won't pretend to cross."
+      description="LoraDB is an in-memory graph database with a pragmatic query engine, written in Rust. Explore the query pipeline, language coverage, runtime surfaces, and the lines we won't pretend to cross."
       wrapperClassName={styles.wrapper}
     >
       <main className={styles.page}>
@@ -592,7 +592,7 @@ export default function Features() {
               </li>
               <li>
                 <span className={styles.heroMetaDot} />
-                Full Cypher pipeline — parse, analyze, compile, execute
+                Query pipeline — parse, analyze, compile, execute
               </li>
               <li>
                 <span className={styles.heroMetaDot} />

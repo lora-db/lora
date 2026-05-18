@@ -67,8 +67,8 @@ fit for that structure:
 
 Four steps. Pick your host language on step 2; everything else is
 identical. To skip step 1, open the
-[**playground**](https://play.loradb.com) — it runs LoraDB compiled to
-WASM in your browser, no install, no account.
+[**playground**](./getting-started/playground) — it runs LoraDB compiled
+to WASM in your browser, no install, no account.
 
 ### 1. Install
 
@@ -121,6 +121,7 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 
 | Section | What's inside |
 |---|---|
+| [**Playground**](./getting-started/playground) | Run LoraDB queries in your browser, inspect graph/table/JSON/analysis views, share query URLs, and export snapshots. |
 | [**Tutorial**](./getting-started/tutorial) | A ten-minute guided tour — create, match, filter, aggregate, paths, CASE. |
 | [**Concepts**](./concepts/graph-model) | Graph model, nodes, relationships, properties, [schema-free](./concepts/schema-free), [result formats](./concepts/result-formats). |
 | [**Queries**](./queries/) | Clause reference, [parameters](./queries/parameters), [cheat sheet](./queries/cheat-sheet). |
@@ -131,6 +132,7 @@ shapes (`rows`, `rowArrays`, `graph`, `combined`).
 | [**Snapshots**](./snapshot) | Save / load the full graph as a file or byte payload — every binding, plus the opt-in HTTP admin surface. |
 | [**WAL & checkpoints**](./wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — with full operator controls on Rust and the server. |
 | [**Performance**](./performance) | Benchmark tables, CI `benchmark-summary.json`, and how to read regression signals. |
+| [**Errors**](./errors) | Error codes, diagnostic shape, and how to read parser / analyzer / runtime failures. |
 | [**Limitations**](./limitations) | What's not supported - binding-level WAL-control asymmetry, limited `CALL`, no HTTP parameters, etc. |
 | [**Troubleshooting**](./troubleshooting) | Common errors and the shortest path out. |
 

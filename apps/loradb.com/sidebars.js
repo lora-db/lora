@@ -11,6 +11,7 @@ module.exports = {
       label: 'Getting Started',
       collapsed: false,
       items: [
+        'getting-started/playground',
         'getting-started/installation',
         'getting-started/node',
         'getting-started/python',
@@ -105,7 +106,13 @@ module.exports = {
       type: 'category',
       label: 'Guides & Reference',
       collapsed: false,
-      items: ['cookbook', 'snapshot', 'wal', 'performance', 'limitations', 'troubleshooting'],
+      items: ['cookbook', 'snapshot', 'wal', 'performance', 'errors', 'limitations', 'troubleshooting'],
+    },
+    {
+      type: 'category',
+      label: 'Developer',
+      collapsed: true,
+      items: ['developer/functions'],
     },
   ],
 };
