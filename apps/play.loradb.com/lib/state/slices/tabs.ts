@@ -1,15 +1,25 @@
 /**
- * Tabs slice — owns the list of open editor tabs and which one is active.
+ * Tabs slice — owns the master list of editor tabs.
  *
- * Tab IDs are ULIDs so they sort chronologically. Newly opened tabs default
- * to clean (`dirty: false`); any subsequent `setBody` flips the dirty flag.
- * The slice has no knowledge of saved-query backing — `markClean` is called
- * by the action that performs the save.
+ * The slice no longer carries an `activeTabId` field. "Which tab is the
+ * user looking at" is derived from the workspace tree (see
+ * `lib/state/selectors.ts#useActiveTabId`), so the only state we keep
+ * here is the tab records themselves. Tab membership in editor panes
+ * is owned by the layout slice's per-view `tabIds` strips.
+ *
+ * Tab IDs are ULIDs so they sort chronologically. Newly opened tabs
+ * default to clean (`dirty: false`); any subsequent `setBody` flips the
+ * dirty flag. The slice has no knowledge of saved-query backing —
+ * `markClean` is called by the action that performs the save.
  */
 
 import type { StateCreator } from "zustand";
 
 import { ulid } from "@/lib/util/id";
+import {
+  gcClosedTab as gcClosedTabInTree,
+  type PanelNode,
+} from "@/lib/state/workspace/tree";
 
 export interface EditorTab {
   id: string;
@@ -30,16 +40,14 @@ export interface SerializedTab {
 
 export interface TabsSlice {
   tabs: EditorTab[];
-  activeTabId: string | null;
   openTab(input?: { name?: string; body?: string; savedQueryId?: string }): string;
   closeTab(id: string): void;
-  setActiveTab(id: string): void;
   renameTab(id: string, name: string): void;
   setBody(id: string, body: string): void;
   markClean(id: string): void;
   bindSavedQueryId(id: string, savedQueryId: string | undefined): void;
   reorderTab(fromIndex: number, toIndex: number): void;
-  hydrateTabs(tabs: SerializedTab[], activeTabId: string | null): void;
+  hydrateTabs(tabs: SerializedTab[]): void;
 }
 
 /**
@@ -63,9 +71,8 @@ export const createTabsSlice: StateCreator<
   [["zustand/immer", never]],
   [],
   TabsSlice
-> = (set, get) => ({
+> = (set) => ({
   tabs: [],
-  activeTabId: null,
 
   openTab(input) {
     const id = ulid();
@@ -83,7 +90,6 @@ export const createTabsSlice: StateCreator<
         createdAt: Date.now(),
       };
       state.tabs.push(tab);
-      state.activeTabId = id;
     });
     return id;
   },
@@ -93,27 +99,23 @@ export const createTabsSlice: StateCreator<
       const index = state.tabs.findIndex((t) => t.id === id);
       if (index === -1) return;
       state.tabs.splice(index, 1);
-      // Drop the orphaned result entry. Both slices share the merged immer
-      // draft at runtime, but the StateCreator generic is narrowed to
-      // TabsSlice — the cast is the cheapest way to reach the sibling
-      // record without coupling the slice types.
-      const sibling = state as unknown as { results?: Record<string, unknown> };
+      // Both slices share the merged immer draft at runtime, but the
+      // StateCreator generic is narrowed to TabsSlice — the cast is the
+      // cheapest way to reach the sibling records without coupling the
+      // slice types. We drop the result entry and GC every workspace
+      // reference (editor strips + pinned result views) so closing a tab
+      // here can never leave dangling pointers.
+      const sibling = state as unknown as {
+        results?: Record<string, unknown>;
+        workspace?: PanelNode;
+      };
       if (sibling.results && id in sibling.results) {
         delete sibling.results[id];
       }
-      if (state.activeTabId === id) {
-        // Prefer the next tab to the right; fall back to the previous one.
-        const next = state.tabs[index] ?? state.tabs[index - 1] ?? null;
-        state.activeTabId = next ? next.id : null;
+      if (sibling.workspace) {
+        const next = gcClosedTabInTree(sibling.workspace, id);
+        if (next) sibling.workspace = next;
       }
-    });
-  },
-
-  setActiveTab(id) {
-    const exists = get().tabs.some((t) => t.id === id);
-    if (!exists) return;
-    set((state) => {
-      state.activeTabId = id;
     });
   },
 
@@ -173,7 +175,7 @@ export const createTabsSlice: StateCreator<
     });
   },
 
-  hydrateTabs(tabs, activeTabId) {
+  hydrateTabs(tabs) {
     set((state) => {
       state.tabs = tabs.map<EditorTab>((t) => ({
         id: t.id,
@@ -183,12 +185,6 @@ export const createTabsSlice: StateCreator<
         savedQueryId: t.savedQueryId,
         createdAt: t.createdAt,
       }));
-      // Only honour the persisted active id if it still resolves to a tab.
-      const stillExists =
-        activeTabId !== null && state.tabs.some((t) => t.id === activeTabId);
-      state.activeTabId = stillExists
-        ? activeTabId
-        : (state.tabs[0]?.id ?? null);
     });
   },
 });

@@ -3,16 +3,11 @@
 /**
  * The main playground shell. Mantine `AppShell` with header + main +
  * footer; the `main` region is a horizontal row containing the
- * Activity Bar, the optional Sidebar, and a vertical split with the
- * editor on top and the result pane below.
- *
- * TODO(phase-3): replace the CSS-grid split with a real docking layer
- * (e.g. dockview-react) so we can offer the multi-panel dockable layout
- * the design calls for. The dep is not installed yet — add it back in
- * the PR that introduces the layout.
+ * Activity Bar, the optional Sidebar, and a recursive split workspace
+ * (`PanelHost`) driven by `react-resizable-panels`.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { AppShell, Button, Code, Group, Modal, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { IconAlertTriangle, IconRefresh } from "@tabler/icons-react";
@@ -22,15 +17,16 @@ import {
   startAutoSaveLoop,
 } from "@/lib/actions/autoRestoreActions";
 import { hydrateFromIDB, useStore } from "@/lib/state/store";
+import { healOrphanedTabs } from "@/lib/state/workspace/default";
+import { validateWorkspace } from "@/lib/state/workspace/validate";
 import { useDbStatus } from "@/lib/hooks/useDbStatus";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
 import { ActivityBar } from "./ActivityBar";
 import { DropZone } from "./DropZone";
-import { EditorPane } from "./Editor/EditorPane";
-import { EditorTabs } from "./Editor/EditorTabs";
 import { HotkeyHost } from "./HotkeyHost";
-import { ResultPane } from "./Result/ResultPane";
+import { InspectorDrawer } from "./Inspector/InspectorDrawer";
+import { PanelHost } from "./Layout/PanelHost";
 import { SidebarRoot } from "./Sidebar/SidebarRoot";
 import { SpotlightHost } from "./SpotlightHost";
 import { StatusBar } from "./StatusBar";
@@ -38,12 +34,6 @@ import { TopBar } from "./TopBar";
 
 const HEADER_H = 44;
 const FOOTER_H = 24;
-const DIVIDER_H = 6;
-const MIN_PANE = 120;
-// Key used inside `layout.panelSizes` for the editor/result vertical split.
-// Persisted as a 0..1 fraction of the work-area height.
-const EDITOR_SPLIT_KEY = "editorSplit";
-const EDITOR_SPLIT_DEFAULT = 0.5;
 
 export function Workbench() {
   const { tokens } = usePlaygroundTheme();
@@ -56,19 +46,15 @@ export function Workbench() {
   const bootErrored = dbStatus.state === "error";
 
   const sidebarOpen = useStore((s) => s.sidebarOpen);
-  const persistedEditorSplit = useStore(
-    (s) => s.panelSizes[EDITOR_SPLIT_KEY] ?? EDITOR_SPLIT_DEFAULT,
-  );
-  const setPanelSize = useStore((s) => s.setPanelSize);
 
-  // Hydrate persisted state once on mount, then ensure there's at
-  // least one tab to land in.
+  // Hydrate persisted state once on mount, then ensure there's at least
+  // one tab to land in and that the first editor view's strip lists every
+  // open tab (legacy sessions migrate without per-view tab order).
   const hydratedRef = useRef(false);
   useEffect(() => {
     if (hydratedRef.current) return;
     hydratedRef.current = true;
-    (async () => {
-      await hydrateFromIDB();
+    const ensureFirstTab = () => {
       const st = useStore.getState();
       if (st.tabs.length === 0) {
         st.openTab({
@@ -76,6 +62,39 @@ export function Workbench() {
           body: "MATCH (n)\nOPTIONAL MATCH (n)-[r]->(m)\nRETURN n, r, m",
         });
       }
+    };
+    const ensureEditorStrip = () => {
+      const st = useStore.getState();
+      const tabIds = st.tabs.map((t) => t.id);
+      const healed = healOrphanedTabs(st.workspace, tabIds);
+      if (healed !== st.workspace) {
+        st.replaceWorkspace(healed);
+      }
+    };
+    const failsafeIfBroken = () => {
+      const st = useStore.getState();
+      const tabIds = new Set(st.tabs.map((t) => t.id));
+      const reason = validateWorkspace(st.workspace, {
+        activePaneId: st.activePaneId,
+        tabIds,
+      });
+      if (reason !== null) {
+        console.warn("workspace validation failed, resetting layout:", reason);
+        notifications.show({
+          color: "yellow",
+          title: "Layout reset",
+          message:
+            "Your saved layout looked off, so we restored the default editor / result split.",
+          autoClose: 6000,
+        });
+        st.resetLayout();
+      }
+    };
+    (async () => {
+      await hydrateFromIDB();
+      ensureFirstTab();
+      ensureEditorStrip();
+      failsafeIfBroken();
     })().catch((err) => {
       // Hydration failure is non-fatal — fall back to a fresh tab and
       // tell the user so they aren't surprised when saved tabs are gone.
@@ -86,13 +105,9 @@ export function Workbench() {
         message: "Starting with a fresh editor.",
         autoClose: 6000,
       });
-      const st = useStore.getState();
-      if (st.tabs.length === 0) {
-        st.openTab({
-          name: "Query 1",
-          body: "MATCH (n)\nOPTIONAL MATCH (n)-[r]->(m)\nRETURN n, r, m",
-        });
-      }
+      ensureFirstTab();
+      ensureEditorStrip();
+      failsafeIfBroken();
     });
   }, []);
 
@@ -115,55 +130,6 @@ export function Workbench() {
     return () => {
       detach?.();
     };
-  }, []);
-
-  // Resizable split: top fraction of the work area, persisted as a
-  // ratio (0..1) inside `layout.panelSizes`. The active drag drives a
-  // local state for 60fps feedback; we only write to the store on
-  // pointer-up to keep the persistence subscription quiet during drags.
-  const splitRef = useRef<HTMLDivElement | null>(null);
-  const [topFrac, setTopFrac] = useState(persistedEditorSplit);
-  const dragging = useRef(false);
-
-  // Re-sync local state when the persisted value lands from IDB. Without
-  // this the first render uses `EDITOR_SPLIT_DEFAULT` and the user's
-  // restored layout gets stomped a tick later.
-  useEffect(() => {
-    if (!dragging.current) {
-      setTopFrac(persistedEditorSplit);
-    }
-  }, [persistedEditorSplit]);
-
-  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    dragging.current = true;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const onPointerUp = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      dragging.current = false;
-      try {
-        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore — pointer may already be released */
-      }
-      // Commit the final position to the store on release. Writing on
-      // every pointermove would queue dozens of IDB writes during a drag
-      // even with the 500ms debounce.
-      setPanelSize(EDITOR_SPLIT_KEY, topFrac);
-    },
-    [setPanelSize, topFrac],
-  );
-  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragging.current) return;
-    const el = splitRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const usable = Math.max(1, rect.height - DIVIDER_H);
-    const minFrac = MIN_PANE / usable;
-    const maxFrac = 1 - minFrac;
-    const next = Math.min(maxFrac, Math.max(minFrac, y / rect.height));
-    setTopFrac(next);
   }, []);
 
   return (
@@ -207,62 +173,14 @@ export function Workbench() {
           style={{
             flex: 1,
             minWidth: 0,
+            minHeight: 0,
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
             background: tokens.bg.app,
           }}
         >
-          <div
-            ref={splitRef}
-            style={{
-              flex: 1,
-              minHeight: 0,
-              display: "grid",
-              gridTemplateRows: `minmax(${MIN_PANE}px, ${topFrac}fr) ${DIVIDER_H}px minmax(${MIN_PANE}px, ${1 - topFrac}fr)`,
-              background: tokens.bg.app,
-            }}
-          >
-            <div
-              style={{
-                minHeight: 0,
-                display: "flex",
-                flexDirection: "column",
-                overflow: "hidden",
-                background: tokens.bg.editor,
-              }}
-            >
-              <EditorTabs />
-              <EditorPane />
-            </div>
-
-            <div
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label="Resize editor / results"
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              style={{
-                cursor: "row-resize",
-                background: tokens.border.subtle,
-                userSelect: "none",
-                touchAction: "none",
-              }}
-            />
-
-            <div
-              style={{
-                minHeight: 0,
-                display: "flex",
-                flexDirection: "column",
-                overflow: "hidden",
-                background: tokens.bg.editor,
-              }}
-            >
-              <ResultPane />
-            </div>
-          </div>
+          <PanelHost />
         </div>
       </AppShell.Main>
 
@@ -273,6 +191,7 @@ export function Workbench() {
       <HotkeyHost />
       <SpotlightHost />
       <DropZone />
+      <InspectorDrawer />
 
       <Modal
         opened={bootErrored}
