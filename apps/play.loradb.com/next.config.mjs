@@ -20,10 +20,38 @@
 // missing `react-responsive-carousel` peer of glide-data-grid. None of
 // that interacts with the static-export pipeline.
 
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Read the version of the `@loradb/lora-wasm` workspace dep so we can
+ * bake it into the static bundle. The runtime can then surface "wasm
+ * v0.11.2" without round-tripping to the binary — handy for spotting
+ * stale deploys at a glance. We try the workspace source first
+ * (canonical in this monorepo) and fall back to the resolved node-
+ * modules entry so the config still works if someone trims the repo.
+ */
+function readLoraWasmVersion() {
+  const candidates = [
+    path.join(__dirname, "../../crates/bindings/lora-wasm/package.json"),
+    path.join(__dirname, "node_modules/@loradb/lora-wasm/package.json"),
+  ];
+  for (const p of candidates) {
+    try {
+      const raw = fs.readFileSync(p, "utf8");
+      const v = JSON.parse(raw).version;
+      if (typeof v === "string" && v.length > 0) return v;
+    } catch {
+      // try next candidate
+    }
+  }
+  return "unknown";
+}
+
+const loraWasmVersion = readLoraWasmVersion();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -31,6 +59,9 @@ const nextConfig = {
   output: "export",
   trailingSlash: true,
   images: { unoptimized: true },
+  env: {
+    NEXT_PUBLIC_LORA_WASM_VERSION: loraWasmVersion,
+  },
   transpilePackages: [
     "@loradb/lora-graph-canvas",
     "@loradb/lora-query",
