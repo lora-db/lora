@@ -48,8 +48,7 @@ pub fn init() {
 ///    encrypted, keyId }`.
 #[wasm_bindgen(js_name = snapshotInfo)]
 pub fn snapshot_info(bytes: &[u8]) -> Result<JsValue, JsError> {
-    let info = read_snapshot_info(bytes)
-        .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))?;
+    let info = read_snapshot_info(bytes).map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))?;
     snapshot_info_to_js(&info)
 }
 
