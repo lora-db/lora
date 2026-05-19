@@ -58,6 +58,35 @@ export interface Tokens {
     linkHighlight: string;
     label: string;
   };
+  /**
+   * Semantic category palette — the colour used to identify a Cypher
+   * concept wherever it surfaces (outline chips, plan badges, schema
+   * browser, inspector, table bubbles, graph canvas, summary strips).
+   *
+   * `*Bg` variants are pre-computed translucent versions of the same
+   * hue, suitable for badge / bubble backgrounds.
+   *
+   * Hues mirror the `lora-query` editor palette so a `:Person` label
+   * looks the same in the editor as on a chip below it.
+   */
+  category: {
+    variable: string;
+    variableBg: string;
+    label: string;
+    labelBg: string;
+    relType: string;
+    relTypeBg: string;
+    parameter: string;
+    parameterBg: string;
+    /** Alias for `graph.node` — kept here so node colours can be looked
+     *  up alongside the other categories. */
+    node: string;
+    nodeBg: string;
+    /** Used for the graph-shape "relationship" concept (counts, summary
+     *  chips). Equal to `relType` so chips agree with the rel-type colour. */
+    relationship: string;
+    relationshipBg: string;
+  };
   font: {
     ui: string;
     mono: string;
@@ -119,6 +148,20 @@ export const darkTokens: Tokens = {
     linkHighlight: "#9cdcfe",
     label: "#d4d4d4",
   },
+  category: {
+    variable: "#79c0ff",
+    variableBg: "rgba(121, 192, 255, 0.16)",
+    label: "#7ee787",
+    labelBg: "rgba(126, 231, 135, 0.16)",
+    relType: "#ffa657",
+    relTypeBg: "rgba(255, 166, 87, 0.16)",
+    parameter: "#d2a8ff",
+    parameterBg: "rgba(210, 168, 255, 0.16)",
+    node: "#6aa3ff",
+    nodeBg: "rgba(106, 163, 255, 0.16)",
+    relationship: "#ffa657",
+    relationshipBg: "rgba(255, 166, 87, 0.16)",
+  },
   font: {
     ui: FONT_UI,
     mono: FONT_MONO,
@@ -174,6 +217,20 @@ export const lightTokens: Tokens = {
     link: "#afb8c1",
     linkHighlight: "#0969da",
     label: "#1f2328",
+  },
+  category: {
+    variable: "#1e66f5",
+    variableBg: "rgba(30, 102, 245, 0.14)",
+    label: "#40a02b",
+    labelBg: "rgba(64, 160, 43, 0.14)",
+    relType: "#df8e1d",
+    relTypeBg: "rgba(223, 142, 29, 0.16)",
+    parameter: "#8839ef",
+    parameterBg: "rgba(136, 57, 239, 0.14)",
+    node: "#0969da",
+    nodeBg: "rgba(9, 105, 218, 0.14)",
+    relationship: "#df8e1d",
+    relationshipBg: "rgba(223, 142, 29, 0.16)",
   },
   font: {
     ui: FONT_UI,

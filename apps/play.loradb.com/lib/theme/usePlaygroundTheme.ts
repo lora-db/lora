@@ -21,7 +21,7 @@ import {
 } from "@mantine/core";
 
 import { deriveCanvasTheme } from "./canvas";
-import { deriveEditorTheme } from "./editor";
+import { deriveEditorTheme, deriveJsonEditorTheme } from "./editor";
 import { deriveGridTheme } from "./grid";
 import { darkTokens, lightTokens, tokensFor, type Tokens } from "./tokens";
 
@@ -33,6 +33,7 @@ interface PlaygroundTheme {
   mantine: MantineTheme;
   canvas: ReturnType<typeof deriveCanvasTheme>;
   editor: ReturnType<typeof deriveEditorTheme>;
+  jsonEditor: ReturnType<typeof deriveJsonEditorTheme>;
   grid: ReturnType<typeof deriveGridTheme>;
 }
 
@@ -70,6 +71,7 @@ export function usePlaygroundTheme(): PlaygroundTheme {
       mantine,
       canvas: deriveCanvasTheme(tokens),
       editor: deriveEditorTheme(tokens),
+      jsonEditor: deriveJsonEditorTheme(tokens),
       grid: deriveGridTheme(tokens),
     }),
     [tokens, scheme, mantine],
