@@ -1,6 +1,6 @@
 {
   "name": "@loradb/lora-wasm",
-  "version": "0.12.4",
+  "version": "0.11.4",
   "description": "WebAssembly bindings for the Lora in-memory graph database",
   "license": "BUSL-1.1",
   "packageManager": "yarn@4.5.1",
