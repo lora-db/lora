@@ -258,15 +258,15 @@ export function ResultPane({ view, paneId }: ResultPaneProps) {
             </Tooltip>
           )}
           <Text size="xs" c={tokens.fg.subtle} ff={tokens.font.mono}>
-            <Text span inherit c={tokens.graph.node}>
+            <Text span inherit c={tokens.category.node} fw={600}>
               {ok.result.stats.nodeCount}
             </Text>{" "}
             nodes ·{" "}
-            <Text span inherit c={tokens.accent.info}>
+            <Text span inherit c={tokens.category.relationship} fw={600}>
               {ok.result.stats.relCount}
             </Text>{" "}
             rels ·{" "}
-            <Text span inherit c={tokens.accent.primary}>
+            <Text span inherit c={tokens.fg.primary} fw={600}>
               {ok.result.stats.rowCount}
             </Text>{" "}
             rows ·{" "}

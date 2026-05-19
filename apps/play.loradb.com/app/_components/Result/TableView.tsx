@@ -125,8 +125,8 @@ function buildCell(value: unknown, hint: CellType | undefined, tokens: Tokens): 
       data: [nodeBubble(value)],
       allowOverlay: false,
       themeOverride: {
-        bgBubble: hexA(tokens.accent.info, 0.18),
-        textBubble: tokens.accent.info,
+        bgBubble: hexA(tokens.category.node, 0.18),
+        textBubble: tokens.category.node,
       },
     };
   }
@@ -137,8 +137,8 @@ function buildCell(value: unknown, hint: CellType | undefined, tokens: Tokens): 
       data: [value.type],
       allowOverlay: false,
       themeOverride: {
-        bgBubble: hexA(tokens.accent.warning, 0.18),
-        textBubble: tokens.accent.warning,
+        bgBubble: hexA(tokens.category.relType, 0.18),
+        textBubble: tokens.category.relType,
       },
     };
   }

@@ -11,7 +11,6 @@
 
 import { useCallback } from "react";
 import {
-  Badge,
   Button,
   Code,
   Drawer,
@@ -28,6 +27,7 @@ import { openTabInCell } from "@/lib/actions/tabActions";
 import { useStore } from "@/lib/state/store";
 import type { InspectTarget } from "@/lib/state/slices/inspect";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
+import { CategoryBadge } from "../CategoryBadge";
 
 const DRAWER_WIDTH = 360;
 
@@ -158,9 +158,9 @@ function NodeBody({
           </Text>
         ) : (
           target.labels.map((l) => (
-            <Badge key={l} color="blue" variant="light" size="sm">
+            <CategoryBadge key={l} kind="label">
               {l}
-            </Badge>
+            </CategoryBadge>
           ))
         )}
       </Group>
@@ -182,9 +182,7 @@ function RelationshipBody({
   return (
     <Stack gap="md">
       <Group gap={6}>
-        <Badge color="orange" variant="light" size="sm">
-          :{target.type || "?"}
-        </Badge>
+        <CategoryBadge kind="relType">:{target.type || "?"}</CategoryBadge>
       </Group>
       <Text size="xs" c={tokens.fg.muted} ff={tokens.font.mono}>
         from {String(target.startId)} → to {String(target.endId)}

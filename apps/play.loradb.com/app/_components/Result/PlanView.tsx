@@ -11,7 +11,7 @@
  * gracefully degrades to an empty state.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Badge,
   Box,
@@ -43,6 +43,7 @@ import type {
 
 import { useActiveTab, useTabById } from "@/lib/state/selectors";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
+import { CategoryBadge } from "../CategoryBadge";
 
 const DEBOUNCE_MS = 200;
 
@@ -58,27 +59,47 @@ const EMPTY_BUNDLE: AnalysisBundle = {
   loaded: false,
 };
 
-function severityIcon(severity: ParseError["severity"], tokens: ReturnType<typeof usePlaygroundTheme>["tokens"]) {
+type Tokens = ReturnType<typeof usePlaygroundTheme>["tokens"];
+
+function tintedIconStyle(color: string): CSSProperties {
+  return { color, background: "transparent" };
+}
+
+function severityIcon(severity: ParseError["severity"], tokens: Tokens) {
   if (severity === "error") {
     return (
-      <ThemeIcon size="sm" variant="light" color="red">
+      <ThemeIcon size="sm" variant="light" style={tintedIconStyle(tokens.accent.danger)}>
         <IconAlertCircle size={14} />
       </ThemeIcon>
     );
   }
   if (severity === "warning") {
     return (
-      <ThemeIcon size="sm" variant="light" color="yellow">
+      <ThemeIcon size="sm" variant="light" style={tintedIconStyle(tokens.accent.warning)}>
         <IconAlertTriangle size={14} />
       </ThemeIcon>
     );
   }
-  void tokens;
   return (
-    <ThemeIcon size="sm" variant="light" color="blue">
+    <ThemeIcon size="sm" variant="light" style={tintedIconStyle(tokens.accent.info)}>
       <IconInfoCircle size={14} />
     </ThemeIcon>
   );
+}
+
+/**
+ * Worst severity wins — `error > warning > info`. Drives the colour of
+ * the "N diagnostics" outline chip so an error count visibly dominates
+ * a warning-only run.
+ */
+function maxSeverityColor(diags: readonly ParseError["severity"][] | readonly ParseError[], tokens: Tokens): string {
+  const sev = (diags as readonly ParseError[]).map((d) =>
+    typeof d === "string" ? d : d.severity,
+  );
+  if (sev.includes("error")) return tokens.accent.danger;
+  if (sev.includes("warning")) return tokens.accent.warning;
+  if (sev.length > 0) return tokens.accent.info;
+  return tokens.fg.subtle;
 }
 
 function VariableRow({ v }: { v: OutlineVariable }) {
@@ -86,12 +107,12 @@ function VariableRow({ v }: { v: OutlineVariable }) {
   const labelStr = v.label ? `:${v.label}` : "";
   return (
     <Group gap="xs" wrap="nowrap" align="center">
-      <ThemeIcon size="sm" variant="light" color="grape">
+      <ThemeIcon size="sm" variant="light" style={tintedIconStyle(tokens.category.variable)}>
         <IconHash size={14} />
       </ThemeIcon>
       <Code style={{ background: tokens.bg.panel, color: tokens.fg.primary }}>{v.name}</Code>
       {labelStr && (
-        <Text size="xs" c={tokens.fg.muted} ff={tokens.font.mono}>
+        <Text size="xs" c={tokens.category.label} ff={tokens.font.mono}>
           {labelStr}
         </Text>
       )}
@@ -105,6 +126,15 @@ function VariableRow({ v }: { v: OutlineVariable }) {
       )}
     </Group>
   );
+}
+
+/** Maps a `VariableKind` from the outline to a `tokens.category`
+ *  colour so the per-kind headers in the Outline tree pick the right
+ *  hue. Scalars and pattern bindings stay neutral. */
+function colorForKind(kind: VariableKind, tokens: Tokens): string {
+  if (kind === "node") return tokens.category.node;
+  if (kind === "relationship") return tokens.category.relationship;
+  return tokens.fg.muted;
 }
 
 function groupByKind(vars: readonly OutlineVariable[]): Record<VariableKind, OutlineVariable[]> {
@@ -200,19 +230,27 @@ export function PlanView({ tabId }: PlanViewProps = {}) {
       <Box p="md">
         <Stack gap="md">
           <Group gap="xs">
-            <Badge variant="default" color="gray" size="sm">
+            <CategoryBadge kind="variable">
               {variables.length} variable{variables.length === 1 ? "" : "s"}
-            </Badge>
-            <Badge variant="default" color="gray" size="sm">
+            </CategoryBadge>
+            <CategoryBadge kind="label">
               {labels.length} label{labels.length === 1 ? "" : "s"}
-            </Badge>
-            <Badge variant="default" color="gray" size="sm">
+            </CategoryBadge>
+            <CategoryBadge kind="relType">
               {relTypes.length} rel-type{relTypes.length === 1 ? "" : "s"}
-            </Badge>
-            <Badge variant="default" color="gray" size="sm">
+            </CategoryBadge>
+            <CategoryBadge kind="parameter">
               {parameters.length} param{parameters.length === 1 ? "" : "s"}
-            </Badge>
-            <Badge variant="default" color="gray" size="sm">
+            </CategoryBadge>
+            <Badge
+              variant="light"
+              size="sm"
+              style={{
+                color: maxSeverityColor(diagnostics, tokens),
+                background: "transparent",
+                borderColor: maxSeverityColor(diagnostics, tokens),
+              }}
+            >
               {diagnostics.length} diagnostic{diagnostics.length === 1 ? "" : "s"}
             </Badge>
           </Group>
@@ -245,9 +283,9 @@ export function PlanView({ tabId }: PlanViewProps = {}) {
               </Text>
               <Group gap={6} wrap="wrap">
                 {labels.map((l) => (
-                  <Badge key={l} variant="light" color="blue" size="sm">
+                  <CategoryBadge key={l} kind="label">
                     {l}
-                  </Badge>
+                  </CategoryBadge>
                 ))}
               </Group>
             </Stack>
@@ -260,9 +298,9 @@ export function PlanView({ tabId }: PlanViewProps = {}) {
               </Text>
               <Group gap={6} wrap="wrap">
                 {relTypes.map((r) => (
-                  <Badge key={r} variant="light" color="orange" size="sm">
+                  <CategoryBadge key={r} kind="relType">
                     :{r}
-                  </Badge>
+                  </CategoryBadge>
                 ))}
               </Group>
             </Stack>
@@ -276,10 +314,16 @@ export function PlanView({ tabId }: PlanViewProps = {}) {
               <Group gap={6} wrap="wrap">
                 {parameters.map((p) => (
                   <Group key={p} gap={4}>
-                    <ThemeIcon size="sm" variant="light" color="teal">
+                    <ThemeIcon
+                      size="sm"
+                      variant="light"
+                      style={tintedIconStyle(tokens.category.parameter)}
+                    >
                       <IconTag size={14} />
                     </ThemeIcon>
-                    <Code style={{ background: tokens.bg.panel }}>${p}</Code>
+                    <Code style={{ background: tokens.bg.panel, color: tokens.category.parameter }}>
+                      ${p}
+                    </Code>
                   </Group>
                 ))}
               </Group>
@@ -294,13 +338,14 @@ export function PlanView({ tabId }: PlanViewProps = {}) {
               {(Object.keys(grouped) as VariableKind[]).map((kind) => {
                 const list = grouped[kind];
                 if (list.length === 0) return null;
+                const kindColor = colorForKind(kind, tokens);
                 return (
                   <Stack key={kind} gap={4}>
                     <Group gap="xs">
-                      <ThemeIcon size="sm" variant="light" color="gray">
+                      <ThemeIcon size="sm" variant="light" style={tintedIconStyle(kindColor)}>
                         <IconBox size={14} />
                       </ThemeIcon>
-                      <Text size="xs" c={tokens.fg.muted} tt="uppercase">
+                      <Text size="xs" c={kindColor} tt="uppercase" fw={600}>
                         {kind}
                       </Text>
                     </Group>

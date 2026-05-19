@@ -1,21 +1,32 @@
 "use client";
 
 /**
- * Plain text dump of the adapted rows, paired with column names so each
- * row reads like `{ "n": {...}, "m": {...} }`. Includes a small "Copy"
- * button at the top right.
+ * Read-only JSON viewer for the active result.
+ *
+ * Backed by `LoraJsonEditor` in read-only mode so we get:
+ *   - Syntax highlighting on keys/strings/numbers/booleans/null
+ *   - Fold-gutter affordances with the `{ N items }` placeholder
+ *   - Search inside the result
+ *   - Copy on selection + copy-all overlay
  */
 
-import { useMemo, useState } from "react";
-import { ActionIcon, Box, ScrollArea, Tooltip } from "@mantine/core";
-import { IconCheck, IconCopy } from "@tabler/icons-react";
+import { useMemo } from "react";
+import dynamic from "next/dynamic";
+import { Box } from "@mantine/core";
 
 import type { AdaptedResult } from "@/lib/db/types";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
+const LoraJsonEditor = dynamic(
+  () =>
+    import("@loradb/lora-query").then((m) => ({
+      default: m.LoraJsonEditor,
+    })),
+  { ssr: false },
+);
+
 export function JsonView({ result }: { result: AdaptedResult }) {
-  const { tokens } = usePlaygroundTheme();
-  const [copied, setCopied] = useState(false);
+  const { tokens, jsonEditor: jsonEditorTheme } = usePlaygroundTheme();
 
   const text = useMemo(() => {
     const rows = result.rows.map((row) => {
@@ -30,50 +41,16 @@ export function JsonView({ result }: { result: AdaptedResult }) {
     return JSON.stringify(rows, null, 2);
   }, [result]);
 
-  const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard refused — silent no-op */
-    }
-  };
-
   return (
-    <Box style={{ position: "relative", height: "100%", background: tokens.bg.editor }}>
-      <Tooltip label={copied ? "Copied" : "Copy"} withArrow position="left">
-        <ActionIcon
-          variant="subtle"
-          size="sm"
-          color="gray"
-          onClick={() => void onCopy()}
-          aria-label="Copy JSON to clipboard"
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 12,
-            zIndex: 2,
-          }}
-        >
-          {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
-        </ActionIcon>
-      </Tooltip>
-      <ScrollArea h="100%" w="100%" type="auto">
-        <pre
-          style={{
-            margin: 0,
-            padding: "12px 16px",
-            fontFamily: tokens.font.mono,
-            fontSize: 12,
-            color: tokens.fg.primary,
-            background: "transparent",
-            whiteSpace: "pre",
-          }}
-        >
-          {text}
-        </pre>
-      </ScrollArea>
+    <Box style={{ flex: 1, minHeight: 0, display: "flex", background: tokens.bg.editor }}>
+      <LoraJsonEditor
+        value={text}
+        readOnly
+        theme={jsonEditorTheme}
+        showLineNumbers={false}
+        minHeight="100%"
+        style={{ flex: 1, minHeight: 0 }}
+      />
     </Box>
   );
 }
