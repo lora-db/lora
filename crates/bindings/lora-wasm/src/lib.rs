@@ -15,7 +15,8 @@ use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, QueryResult, ResultFormat,
+    snapshot_info as read_snapshot_info, Compression, Database as InnerDatabase, ExecuteOptions,
+    InMemoryGraph, QueryResult, ResultFormat, SnapshotInfo,
 };
 
 mod json;
@@ -37,6 +38,40 @@ pub(crate) const INVALID_PARAMS_CODE: &str = "LORA_INVALID_PARAMS";
 pub fn init() {
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
+}
+
+/// Inspect snapshot header metadata from raw bytes without loading the
+/// snapshot into a database. Decodes only the envelope/manifest — no
+/// decryption or body decompression — so this works on encrypted snapshots
+/// too. Returns a plain object:
+/// `{ formatVersion, walLsn, nodeCount, relationshipCount, compression,
+///    encrypted, keyId }`.
+#[wasm_bindgen(js_name = snapshotInfo)]
+pub fn snapshot_info(bytes: &[u8]) -> Result<JsValue, JsError> {
+    let info = read_snapshot_info(bytes)
+        .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))?;
+    snapshot_info_to_js(&info)
+}
+
+fn snapshot_info_to_js(info: &SnapshotInfo) -> Result<JsValue, JsError> {
+    let compression = match info.compression {
+        Compression::None => serde_json::json!({ "format": "none" }),
+        Compression::Gzip { level } => serde_json::json!({
+            "format": "gzip",
+            "level": level,
+        }),
+    };
+    let out = serde_json::json!({
+        "formatVersion": info.format_version,
+        "walLsn": info.wal_lsn,
+        "nodeCount": info.node_count as u64,
+        "relationshipCount": info.relationship_count as u64,
+        "compression": compression,
+        "encrypted": info.encrypted,
+        "keyId": info.key_id,
+    });
+    out.serialize(&Serializer::json_compatible())
+        .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
 }
 
 /// In-memory Lora graph database handle.

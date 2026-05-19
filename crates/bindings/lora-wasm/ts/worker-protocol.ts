@@ -18,6 +18,7 @@ export type RequestBody =
   | { op: "transaction"; statements: TransactionStatement[]; mode?: TransactionMode }
   | { op: "saveSnapshot"; options?: WasmSnapshotByteOptions | null }
   | { op: "loadSnapshot"; bytes: Uint8Array; options?: WasmSnapshotLoadOptions | null }
+  | { op: "snapshotInfo"; bytes: Uint8Array }
   | { op: "clear" }
   | { op: "nodeCount" }
   | { op: "relationshipCount" }

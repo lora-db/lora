@@ -14,6 +14,7 @@
 import __wbg_init, {
   WasmDatabase,
   init as installPanicHook,
+  snapshotInfo as wasmSnapshotInfo,
 } from "../pkg-web/lora_wasm.js";
 import type { Request, Response } from "./worker-protocol.js";
 import type { LoraErrorCode } from "./types.js";
@@ -128,6 +129,13 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         respond({
           ok: true,
           result: native.loadSnapshot(body.bytes, body.options ?? null) as never,
+        });
+        break;
+      }
+      case "snapshotInfo": {
+        respond({
+          ok: true,
+          result: wasmSnapshotInfo(body.bytes) as never,
         });
         break;
       }

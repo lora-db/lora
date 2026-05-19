@@ -9,6 +9,7 @@ import type { WasmDatabase as NativeWasmDatabase } from "../pkg-node/lora_wasm.j
 export interface NativeModule {
   WasmDatabase: new () => NativeWasmDatabase;
   init: () => void;
+  snapshotInfo: (bytes: Uint8Array) => NativeSnapshotInfo;
 }
 
 /**
@@ -22,6 +23,14 @@ export interface NativeSnapshotMeta {
   walLsn: number | null;
 }
 
+/** Header metadata returned by `snapshotInfo`. Includes envelope-level
+ * fields (compression, encryption) that `loadSnapshot` does not surface. */
+export interface NativeSnapshotInfo extends NativeSnapshotMeta {
+  compression: { format: "none" } | { format: "gzip"; level: number };
+  encrypted: boolean;
+  keyId: string | null;
+}
+
 const require = createRequire(import.meta.url);
 // The pkg-node path is stable because `wasm-pack build --out-dir pkg-node`
 // writes it next to this file's parent.
@@ -29,3 +38,4 @@ const mod = require("../pkg-node/lora_wasm.js") as NativeModule;
 
 export const WasmDatabase = mod.WasmDatabase;
 export const init = mod.init;
+export const snapshotInfo = mod.snapshotInfo;

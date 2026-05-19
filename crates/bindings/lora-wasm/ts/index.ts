@@ -22,7 +22,11 @@ import type {
   QueryResult,
 } from "./types.js";
 import { wrapError } from "./types.js";
-import { WasmDatabase, init as wasmInit } from "./loader-node.js";
+import {
+  WasmDatabase,
+  init as wasmInit,
+  snapshotInfo as nativeSnapshotInfo,
+} from "./loader-node.js";
 import { decodeResult } from "./decode.js";
 import { createWorkerDatabase } from "./worker-client.js";
 import type { WorkerDatabase, WorkerLike } from "./worker-client.js";
@@ -68,6 +72,50 @@ export interface SnapshotMeta {
   nodeCount: number;
   relationshipCount: number;
   walLsn: number | null;
+}
+
+/**
+ * Codec used for the snapshot body. Mirrors the Rust `Compression` enum.
+ * `gzip` carries the encoder level recorded in the manifest.
+ */
+export type SnapshotCompressionInfo =
+  | { format: "none" }
+  | { format: "gzip"; level: number };
+
+/**
+ * Header context decoded from a snapshot binary. Extends {@link SnapshotMeta}
+ * with envelope-level fields (`compression`, `encrypted`, `keyId`) that are
+ * stored in the manifest but absent from `loadSnapshot`'s return value.
+ *
+ * Returned by {@link snapshotInfo}, which inspects only the envelope and so
+ * works on encrypted snapshots without credentials.
+ */
+export interface SnapshotInfo extends SnapshotMeta {
+  compression: SnapshotCompressionInfo;
+  encrypted: boolean;
+  keyId: string | null;
+}
+
+/**
+ * Read header metadata from a snapshot binary without loading it into a
+ * database. The envelope is decoded synchronously — no decryption or body
+ * decompression — so this works on encrypted snapshots too.
+ *
+ * **Node-only.** Browser callers must use `Database.snapshotInfo` instead,
+ * because the WASM module lives inside the Web Worker and the main-thread
+ * loader is shimmed away by the bundler. This standalone form bootstraps the
+ * Node-target WASM directly.
+ *
+ * Use this to preview imported `.lorasnap` files or to persist richer
+ * metadata alongside cached snapshot blobs.
+ */
+export function snapshotInfo(bytes: Uint8Array): SnapshotInfo {
+  try {
+    ensureBootstrapped();
+    return nativeSnapshotInfo(bytes) as SnapshotInfo;
+  } catch (err) {
+    throw wrapError(err);
+  }
 }
 
 export interface CreateDatabaseOptions {
@@ -323,6 +371,21 @@ class DatabaseImpl {
         loadSnapshot(bytes: Uint8Array, options?: unknown): unknown;
       };
       return native.loadSnapshot(bytes, options ?? null) as SnapshotMeta;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Decode header metadata from a snapshot binary without loading it.
+   * Resolves with the same shape as the standalone {@link snapshotInfo}
+   * function, but uses the WASM instance already attached to this database
+   * — so it works in browser bundles where the main-thread loader is
+   * shimmed out.
+   */
+  async snapshotInfo(bytes: Uint8Array): Promise<SnapshotInfo> {
+    try {
+      return nativeSnapshotInfo(bytes) as SnapshotInfo;
     } catch (err) {
       throw wrapError(err);
     }

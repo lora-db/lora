@@ -19,6 +19,7 @@ import type {
   WasmSnapshotSaveOptions,
   WasmSnapshotSource,
   RowStream,
+  SnapshotInfo,
   SnapshotMeta,
   TransactionMode,
   TransactionStatement,
@@ -67,6 +68,7 @@ export interface WorkerDatabase {
   saveSnapshot(options: { format: "stream" } & WasmSnapshotByteOptions): Promise<ReadableStream<Uint8Array>>;
   saveSnapshot(options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions): Promise<URL>;
   loadSnapshot(source: WasmSnapshotSource, options?: WasmSnapshotLoadOptions): Promise<SnapshotMeta>;
+  snapshotInfo(bytes: Uint8Array): Promise<SnapshotInfo>;
   clear(): Promise<void>;
   nodeCount(): Promise<number>;
   relationshipCount(): Promise<number>;
@@ -275,6 +277,9 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
         bytes: await readSnapshotSource(source),
         options: options ?? null,
       });
+    },
+    snapshotInfo(bytes: Uint8Array): Promise<SnapshotInfo> {
+      return call<SnapshotInfo>({ op: "snapshotInfo", bytes });
     },
     async clear(): Promise<void> {
       await call<null>({ op: "clear" });

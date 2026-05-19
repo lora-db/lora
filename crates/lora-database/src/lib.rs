@@ -58,8 +58,8 @@ pub use lora_store::InMemoryGraph;
 // Snapshot surface — re-exported so bindings/servers don't need a direct
 // `lora-store` dependency just to name the meta / error types.
 pub use lora_snapshot::{
-    Compression, EncryptionKey, PasswordKdfParams, SnapshotCredentials, SnapshotEncryption,
-    SnapshotInfo, SnapshotOptions, SnapshotPassword, DATABASE_SNAPSHOT_MAGIC,
+    snapshot_info, Compression, EncryptionKey, PasswordKdfParams, SnapshotCredentials,
+    SnapshotEncryption, SnapshotInfo, SnapshotOptions, SnapshotPassword, DATABASE_SNAPSHOT_MAGIC,
 };
 pub use lora_store::{
     NodeId, NodeRecord, RelationshipId, RelationshipRecord, SnapshotError, SnapshotMeta,
