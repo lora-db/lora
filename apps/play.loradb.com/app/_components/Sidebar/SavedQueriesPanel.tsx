@@ -50,7 +50,7 @@ import {
   saveActiveTab,
   saveActiveTabAs,
 } from "@/lib/actions/savedQueryActions";
-import { encodeQuery } from "@/lib/share/encode";
+import { makeShareHash } from "@/lib/share/encode";
 import { useActiveTab } from "@/lib/state/selectors";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
@@ -59,7 +59,7 @@ import { openSaveQueryDialog } from "../Dialogs/SaveQueryDialog";
 
 function copyShareLink(record: savedQueries.SavedQuery): void {
   if (typeof window === "undefined" || !navigator.clipboard) return;
-  const url = `${window.location.origin}/#q=${encodeQuery(record.body)}`;
+  const url = `${window.location.origin}/${makeShareHash(record.body, record.params)}`;
   navigator.clipboard
     .writeText(url)
     .then(() => {

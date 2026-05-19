@@ -11,21 +11,28 @@ import { notifications } from "@mantine/notifications";
 import { makeShareHash } from "@/lib/share/encode";
 
 /**
- * Build a full share URL for the given query body. Returns an empty
- * string on the server — the playground only ever needs share links
- * client-side, but TS-strict callers still expect a string back.
+ * Build a full share URL for the given query body, optionally with
+ * a `$param` payload. Returns an empty string on the server — the
+ * playground only ever needs share links client-side, but TS-strict
+ * callers still expect a string back.
+ *
+ * The params source is omitted from the hash when empty or the
+ * default `"{}"` so legacy share links keep their compact shape.
  */
-export function buildShareLink(body: string): string {
+export function buildShareLink(body: string, params?: string): string {
   if (typeof window === "undefined") return "";
-  return `${window.location.origin}${window.location.pathname}${makeShareHash(body)}`;
+  return `${window.location.origin}${window.location.pathname}${makeShareHash(body, params)}`;
 }
 
 /**
- * Copy a share link for `body` to the clipboard and surface a Mantine
+ * Copy a share link to the clipboard and surface a Mantine
  * notification with the result. Throws on transport failures so the
  * Share dialog can keep its button in a sensible state.
  */
-export async function copyShareLink(body: string): Promise<void> {
+export async function copyShareLink(
+  body: string,
+  params?: string,
+): Promise<void> {
   if (typeof window === "undefined") {
     throw new Error("copyShareLink is only available in the browser");
   }
@@ -37,7 +44,7 @@ export async function copyShareLink(body: string): Promise<void> {
     });
     throw new Error("Clipboard API unavailable");
   }
-  const url = buildShareLink(body);
+  const url = buildShareLink(body, params);
   try {
     await navigator.clipboard.writeText(url);
     notifications.show({

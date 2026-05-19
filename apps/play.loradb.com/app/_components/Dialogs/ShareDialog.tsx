@@ -37,6 +37,8 @@ import { setActivity } from "@/lib/actions/uiActions";
 interface ShareDialogProps {
   modalId: string;
   body: string;
+  /** Optional raw JSON `$param` payload to embed alongside the body. */
+  params?: string;
 }
 
 /**
@@ -47,14 +49,18 @@ interface ShareDialogProps {
  */
 const SAFE_URL_LENGTH = 2000;
 
-function ShareDialog({ modalId, body }: ShareDialogProps) {
-  const url = buildShareLink(body);
+function ShareDialog({ modalId, body, params }: ShareDialogProps) {
+  const url = buildShareLink(body, params);
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const oversized = url.length > SAFE_URL_LENGTH;
+  const hasParams =
+    params !== undefined &&
+    params.trim() !== "" &&
+    params.trim() !== "{}";
 
   const handleCopy = (): void => {
-    void copyShareLink(body)
+    void copyShareLink(body, params)
       .then(() => {
         setCopied(true);
         window.setTimeout(() => {
@@ -121,6 +127,7 @@ function ShareDialog({ modalId, body }: ShareDialogProps) {
       </Group>
       <Text size="xs" c="dimmed">
         {url.length.toLocaleString()} characters
+        {hasParams ? " · params included" : ""}
       </Text>
       {oversized ? (
         <Alert
@@ -168,13 +175,22 @@ function ShareDialog({ modalId, body }: ShareDialogProps) {
   );
 }
 
-/** Opens the share-link modal for a query body. */
-export function openShareDialog(opts: { body: string }): void {
+/**
+ * Opens the share-link modal for a query body, optionally with the
+ * raw JSON params payload to embed in the URL.
+ */
+export function openShareDialog(opts: { body: string; params?: string }): void {
   const id = "loradb-share-dialog";
   modals.open({
     modalId: id,
     title: "Share query",
     centered: true,
-    children: <ShareDialog modalId={id} body={opts.body} />,
+    children: (
+      <ShareDialog
+        modalId={id}
+        body={opts.body}
+        {...(opts.params !== undefined && { params: opts.params })}
+      />
+    ),
   });
 }
