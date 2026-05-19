@@ -51,7 +51,7 @@ export function SettingsPanel() {
         </Text>
       ),
       labels: { confirm: "Clear", cancel: "Cancel" },
-      confirmProps: { color: "red" },
+      confirmProps: { color: "red", "data-autofocus": "true" },
       onConfirm: () => {
         (async () => {
           try {
@@ -263,7 +263,7 @@ export function SettingsPanel() {
                     </Text>
                   ),
                   labels: { confirm: "Reset", cancel: "Cancel" },
-                  confirmProps: { color: "blue" },
+                  confirmProps: { color: "blue", "data-autofocus": "true" },
                   onConfirm: () => {
                     useStore.getState().resetLayout();
                     notifications.show({

@@ -19,6 +19,8 @@ import {
   type HotkeyMeta,
 } from "@/lib/hotkeys/labels";
 
+const MODAL_ID = "loradb-hotkey-help";
+
 interface Row {
   id: HotkeyId;
   meta: HotkeyMeta;
@@ -53,7 +55,17 @@ function HotkeyHelpDialogBody() {
     "App",
   ];
   return (
-    <Stack gap="md">
+    <Stack
+      gap="md"
+      tabIndex={-1}
+      data-autofocus
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          modals.close(MODAL_ID);
+        }
+      }}
+    >
       <Text size="xs" c="dimmed">
         Every chord the workbench listens for. Combinations render in the
         active platform&rsquo;s convention.
@@ -80,8 +92,6 @@ function HotkeyHelpDialogBody() {
     </Stack>
   );
 }
-
-const MODAL_ID = "loradb-hotkey-help";
 
 /** Open (or focus) the keyboard-shortcuts dialog. Idempotent. */
 export function openHotkeyHelpDialog(): void {

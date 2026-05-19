@@ -131,7 +131,7 @@ export function HistoryPanel() {
         </Text>
       ),
       labels: { confirm: "Clear", cancel: "Cancel" },
-      confirmProps: { color: "red" },
+      confirmProps: { color: "red", "data-autofocus": "true" },
       onConfirm: () => {
         clearHistory()
           .then(() => {

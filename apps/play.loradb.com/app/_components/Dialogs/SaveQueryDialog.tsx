@@ -44,52 +44,54 @@ function SaveQueryDialog({ modalId, defaultName, onSave }: SaveQueryDialogProps)
   };
 
   return (
-    <Stack gap="sm">
-      <TextInput
-        label="Name"
-        placeholder="My query"
-        value={name}
-        onChange={(e) => {
-          setName(e.currentTarget.value);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            handleSubmit();
-          }
-        }}
-        data-autofocus
-        required
-        error={!valid && name.length > 0 ? "Name cannot be empty" : undefined}
-      />
-      <TagsInput
-        label="Tags"
-        placeholder="Add tags (press enter)"
-        value={tags}
-        onChange={setTags}
-        clearable
-      />
-      <Group justify="flex-end" gap="xs" mt="xs">
-        <Button
-          variant="default"
-          size="xs"
-          onClick={() => {
-            modals.close(modalId);
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleSubmit();
+      }}
+    >
+      <Stack gap="sm">
+        <TextInput
+          label="Name"
+          placeholder="My query"
+          value={name}
+          onChange={(e) => {
+            setName(e.currentTarget.value);
           }}
-        >
-          Cancel
-        </Button>
-        <Button
-          size="xs"
-          color="green"
-          disabled={!valid || submitting}
-          loading={submitting}
-          onClick={handleSubmit}
-        >
-          Save
-        </Button>
-      </Group>
-    </Stack>
+          data-autofocus
+          required
+          error={!valid && name.length > 0 ? "Name cannot be empty" : undefined}
+        />
+        <TagsInput
+          label="Tags"
+          placeholder="Add tags (press enter)"
+          value={tags}
+          onChange={setTags}
+          clearable
+        />
+        <Group justify="flex-end" gap="xs" mt="xs">
+          <Button
+            type="button"
+            variant="default"
+            size="xs"
+            onClick={() => {
+              modals.close(modalId);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            size="xs"
+            color="green"
+            disabled={!valid || submitting}
+            loading={submitting}
+          >
+            Save
+          </Button>
+        </Group>
+      </Stack>
+    </form>
   );
 }
 

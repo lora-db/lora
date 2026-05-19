@@ -141,7 +141,14 @@ function ConfirmDeleteDialog({
   const linkExtra = totalLinks - linkPreview.length;
 
   return (
-    <Stack gap="sm">
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (busy) return;
+        void confirm();
+      }}
+    >
+      <Stack gap="sm">
       <Text size="sm">
         Remove {summary} from the database? Triggered by{" "}
         <Code>{source}</Code>.
@@ -218,26 +225,26 @@ function ConfirmDeleteDialog({
 
       <Group justify="flex-end" gap="xs" mt="xs">
         <Button
+          type="button"
           variant="default"
           size="xs"
           onClick={cancel}
           disabled={busy}
-          data-autofocus
         >
           Cancel
         </Button>
         <Button
+          type="submit"
           size="xs"
           color="red"
           loading={busy}
-          onClick={() => {
-            void confirm();
-          }}
+          data-autofocus
         >
           Remove
         </Button>
       </Group>
-    </Stack>
+      </Stack>
+    </form>
   );
 }
 

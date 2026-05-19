@@ -41,48 +41,50 @@ function NewSnapshotDialog({
   };
 
   return (
-    <Stack gap="sm">
-      <TextInput
-        label="Name"
-        placeholder="My snapshot"
-        value={name}
-        onChange={(e) => {
-          setName(e.currentTarget.value);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            handleSubmit();
-          }
-        }}
-        onFocus={(e) => {
-          e.currentTarget.select();
-        }}
-        data-autofocus
-        required
-        error={!valid && name.length > 0 ? "Name cannot be empty" : undefined}
-      />
-      <Group justify="flex-end" gap="xs" mt="xs">
-        <Button
-          variant="default"
-          size="xs"
-          onClick={() => {
-            modals.close(modalId);
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleSubmit();
+      }}
+    >
+      <Stack gap="sm">
+        <TextInput
+          label="Name"
+          placeholder="My snapshot"
+          value={name}
+          onChange={(e) => {
+            setName(e.currentTarget.value);
           }}
-        >
-          Cancel
-        </Button>
-        <Button
-          size="xs"
-          color="green"
-          disabled={!valid || submitting}
-          loading={submitting}
-          onClick={handleSubmit}
-        >
-          Create
-        </Button>
-      </Group>
-    </Stack>
+          onFocus={(e) => {
+            e.currentTarget.select();
+          }}
+          data-autofocus
+          required
+          error={!valid && name.length > 0 ? "Name cannot be empty" : undefined}
+        />
+        <Group justify="flex-end" gap="xs" mt="xs">
+          <Button
+            type="button"
+            variant="default"
+            size="xs"
+            onClick={() => {
+              modals.close(modalId);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            size="xs"
+            color="green"
+            disabled={!valid || submitting}
+            loading={submitting}
+          >
+            Create
+          </Button>
+        </Group>
+      </Stack>
+    </form>
   );
 }
 

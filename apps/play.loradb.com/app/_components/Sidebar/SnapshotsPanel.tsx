@@ -168,7 +168,7 @@ export function SnapshotsPanel() {
           </Text>
         ),
         labels: { confirm: "Load", cancel: "Cancel" },
-        confirmProps: { color: "blue" },
+        confirmProps: { color: "blue", "data-autofocus": "true" },
         onConfirm: () => {
           loadSnapshotById(record.id)
             .then(() => {
@@ -213,7 +213,7 @@ export function SnapshotsPanel() {
           </Text>
         ),
         labels: { confirm: "Delete", cancel: "Cancel" },
-        confirmProps: { color: "red" },
+        confirmProps: { color: "red", "data-autofocus": "true" },
         onConfirm: () => {
           deleteSnapshotById(record.id)
             .then(() => {

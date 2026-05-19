@@ -235,7 +235,7 @@ export function SavedQueriesPanel() {
         </Text>
       ),
       labels: { confirm: "Delete", cancel: "Cancel" },
-      confirmProps: { color: "red" },
+      confirmProps: { color: "red", "data-autofocus": "true" },
       onConfirm: () => {
         deleteSavedQuery(record.id)
           .then(() => {
