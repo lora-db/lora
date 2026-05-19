@@ -9,12 +9,41 @@
 import { ulid } from "@/lib/util/id";
 import { getDB } from "./idb";
 
+/**
+ * Header context decoded from the snapshot binary at create/import time.
+ * Mirrors the WASM `SnapshotInfo` shape minus the redundant `walLsn` byte
+ * count fields renamed for storage. `null` on legacy records persisted
+ * before this field was introduced.
+ */
+export interface SnapshotHeader {
+  /** On-disk format version. */
+  formatVersion: number;
+  /** Node count recorded in the manifest. */
+  nodeCount: number;
+  /** Relationship count recorded in the manifest. */
+  relationshipCount: number;
+  /** WAL fence LSN if the snapshot was a checkpoint (always `null` from the
+   * playground today — we save without a WAL). */
+  walLsn: number | null;
+  /** Body codec. `gzip` carries the encoder level. */
+  compression: { format: "none" } | { format: "gzip"; level: number };
+  /** Whether the body is encrypted. The blob is unreadable without
+   * credentials when `true`. */
+  encrypted: boolean;
+  /** Key identifier the snapshot was sealed with, if any — used as a hint
+   * in the passphrase prompt on load. */
+  keyId: string | null;
+}
+
 export interface Snapshot {
   id: string;
   name: string;
   blob: Uint8Array;
   sizeBytes: number;
   createdAt: number;
+  /** Header parsed from the snapshot bytes. Missing on records persisted
+   * before this field was introduced — callers should treat as optional. */
+  header?: SnapshotHeader;
 }
 
 export type SnapshotMeta = Omit<Snapshot, "blob">;
@@ -40,6 +69,7 @@ export async function get(id: string): Promise<Snapshot | undefined> {
 export async function create(input: {
   name: string;
   blob: Uint8Array;
+  header?: SnapshotHeader;
 }): Promise<Snapshot> {
   const record: Snapshot = {
     id: ulid(),
@@ -47,6 +77,7 @@ export async function create(input: {
     blob: input.blob,
     sizeBytes: input.blob.byteLength,
     createdAt: Date.now(),
+    ...(input.header ? { header: input.header } : {}),
   };
   const db = await getDB();
   await db.put("snapshots", record);

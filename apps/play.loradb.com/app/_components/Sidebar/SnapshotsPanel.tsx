@@ -31,7 +31,9 @@ import {
   IconCamera,
   IconDots,
   IconDownload,
+  IconArchive,
   IconFileImport,
+  IconLock,
   IconPlus,
   IconRefresh,
   IconRestore,
@@ -42,6 +44,7 @@ import { format, formatDistanceToNowStrict } from "date-fns";
 import * as snapshots from "@/lib/persistence/snapshots";
 import {
   SNAPSHOTS_EVENT,
+  SnapshotPasswordRequiredError,
   createSnapshotFromDb,
   deleteSnapshotById,
   exportSnapshotToFile,
@@ -52,6 +55,7 @@ import { formatBytes } from "@/lib/util/format";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
 import { openNewSnapshotDialog } from "../Dialogs/NewSnapshotDialog";
+import { openSnapshotPasswordDialog } from "../Dialogs/SnapshotPasswordDialog";
 
 /**
  * Strip the `.lorasnap` suffix (if present) from a picked file name so
@@ -100,13 +104,15 @@ export function SnapshotsPanel() {
   const handleNew = useCallback((): void => {
     openNewSnapshotDialog({
       defaultName: `Snapshot ${new Date().toLocaleString()}`,
-      onCreate: async (name) => {
+      onCreate: async (name, protection) => {
         try {
-          const record = await createSnapshotFromDb(name);
+          const record = await createSnapshotFromDb(name, protection);
           notifications.show({
             color: "green",
             title: "Snapshot created",
-            message: `Saved "${record.name}" (${formatBytes(record.sizeBytes)}).`,
+            message: `Saved "${record.name}" (${formatBytes(record.sizeBytes)})${
+              protection ? " — passphrase-protected" : ""
+            }.`,
           });
         } catch (err) {
           notifications.show({
@@ -132,6 +138,10 @@ export function SnapshotsPanel() {
       if (!file) return;
       openNewSnapshotDialog({
         defaultName: defaultNameFromFile(file),
+        // The file already carries its own envelope (encrypted or not).
+        // Re-encrypting client-side would require decoding + re-encoding,
+        // which we don't expose.
+        allowEncryption: false,
         onCreate: async (name) => {
           try {
             const record = await importSnapshotFromFile(file, name);
@@ -140,7 +150,7 @@ export function SnapshotsPanel() {
               title: "Snapshot imported",
               message: `Imported "${record.name}" (${formatBytes(
                 record.sizeBytes,
-              )}).`,
+              )})${record.header?.encrypted ? " — encrypted" : ""}.`,
             });
           } catch (err) {
             notifications.show({
@@ -158,6 +168,39 @@ export function SnapshotsPanel() {
 
   const handleLoad = useCallback(
     (record: snapshots.SnapshotMeta): void => {
+      const finishLoad = (): void => {
+        notifications.show({
+          color: "green",
+          title: "Snapshot loaded",
+          message: `Restored "${record.name}".`,
+        });
+      };
+      const reportFailure = (err: unknown): void => {
+        notifications.show({
+          color: "red",
+          title: "Load failed",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      };
+
+      const promptForPassword = (keyId: string | null): void => {
+        openSnapshotPasswordDialog({
+          snapshotName: record.name,
+          keyId,
+          onSubmit: async (password) => {
+            try {
+              await loadSnapshotById(record.id, { password });
+              finishLoad();
+            } catch (err) {
+              // Surface the failure but keep the dialog open so the user
+              // can retype the passphrase. Throwing keeps the modal mounted.
+              reportFailure(err);
+              throw err;
+            }
+          },
+        });
+      };
+
       openConfirmModal({
         title: "Load snapshot?",
         centered: true,
@@ -165,25 +208,25 @@ export function SnapshotsPanel() {
           <Text size="sm" c={tokens.fg.muted}>
             Loading <strong>{record.name}</strong> will replace the current
             database contents. This cannot be undone.
+            {record.header?.encrypted ? (
+              <>
+                {" "}
+                You will be asked for the passphrase it was sealed with.
+              </>
+            ) : null}
           </Text>
         ),
         labels: { confirm: "Load", cancel: "Cancel" },
         confirmProps: { color: "blue", "data-autofocus": "true" },
         onConfirm: () => {
           loadSnapshotById(record.id)
-            .then(() => {
-              notifications.show({
-                color: "green",
-                title: "Snapshot loaded",
-                message: `Restored "${record.name}".`,
-              });
-            })
+            .then(finishLoad)
             .catch((err: unknown) => {
-              notifications.show({
-                color: "red",
-                title: "Load failed",
-                message: err instanceof Error ? err.message : String(err),
-              });
+              if (err instanceof SnapshotPasswordRequiredError) {
+                promptForPassword(err.keyId);
+                return;
+              }
+              reportFailure(err);
             });
         },
       });
@@ -363,9 +406,61 @@ interface SnapshotRowProps {
   onDelete: () => void;
 }
 
+function formatCompressionLabel(
+  compression: snapshots.SnapshotHeader["compression"],
+): string {
+  if (compression.format === "gzip") {
+    return `gzip · lvl ${compression.level}`;
+  }
+  return "uncompressed";
+}
+
+function formatStatTooltip(
+  record: snapshots.SnapshotMeta,
+  header: snapshots.SnapshotHeader | undefined,
+): string {
+  const lines: string[] = [];
+  if (header) {
+    lines.push(
+      `${header.nodeCount.toLocaleString()} nodes · ${header.relationshipCount.toLocaleString()} relationships`,
+    );
+  }
+  lines.push(`${record.sizeBytes.toLocaleString()} bytes on disk`);
+  if (header) {
+    lines.push(`Body: ${formatCompressionLabel(header.compression)}`);
+    lines.push(
+      header.encrypted
+        ? `Encrypted${header.keyId ? ` (key: ${header.keyId})` : ""}`
+        : "Not encrypted",
+    );
+    lines.push(`Format v${header.formatVersion}`);
+    if (header.walLsn !== null) lines.push(`WAL fence: ${header.walLsn}`);
+  }
+  return lines.join("\n");
+}
+
+function StatDot({ color }: { color: string }) {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        backgroundColor: color,
+        marginRight: 4,
+        verticalAlign: "middle",
+        flexShrink: 0,
+      }}
+      aria-hidden="true"
+    />
+  );
+}
+
 function SnapshotRow({ record, onLoad, onExport, onDelete }: SnapshotRowProps) {
   const { tokens } = usePlaygroundTheme();
   const [menuOpen, setMenuOpen] = useState(false);
+  const header = record.header;
 
   return (
     <Group
@@ -391,29 +486,48 @@ function SnapshotRow({ record, onLoad, onExport, onDelete }: SnapshotRowProps) {
           borderRadius: tokens.radius.sm,
         }}
       >
-        <Stack gap={2}>
-          <Text
-            size="sm"
-            fw={500}
-            c={tokens.fg.primary}
-            truncate
-            title={record.name}
-          >
-            {record.name}
-          </Text>
-          <Group gap={6} wrap="nowrap">
-            <Tooltip
-              label={`${record.sizeBytes.toLocaleString()} bytes`}
-              withArrow
-              openDelay={400}
+        <Stack gap={3}>
+          <Group gap={6} wrap="nowrap" align="center">
+            <Text
+              size="sm"
+              fw={500}
+              c={tokens.fg.primary}
+              truncate
+              title={record.name}
+              style={{ flex: 1, minWidth: 0 }}
             >
-              <Text size="xs" c={tokens.fg.subtle}>
-                {formatBytes(record.sizeBytes)}
-              </Text>
-            </Tooltip>
-            <Text size="xs" c={tokens.fg.subtle}>
-              ·
+              {record.name}
             </Text>
+            {header?.encrypted ? (
+              <Tooltip
+                label={`Encrypted${header.keyId ? ` · key ${header.keyId}` : ""}`}
+                withArrow
+                openDelay={300}
+              >
+                <IconLock
+                  size={12}
+                  stroke={1.8}
+                  color={tokens.fg.muted}
+                  aria-label="Encrypted snapshot"
+                  style={{ flexShrink: 0 }}
+                />
+              </Tooltip>
+            ) : null}
+            {header && header.compression.format !== "none" ? (
+              <Tooltip
+                label={formatCompressionLabel(header.compression)}
+                withArrow
+                openDelay={300}
+              >
+                <IconArchive
+                  size={12}
+                  stroke={1.8}
+                  color={tokens.fg.muted}
+                  aria-label="Compressed snapshot"
+                  style={{ flexShrink: 0 }}
+                />
+              </Tooltip>
+            ) : null}
             <Tooltip
               label={format(record.createdAt, "PPpp")}
               withArrow
@@ -424,11 +538,59 @@ function SnapshotRow({ record, onLoad, onExport, onDelete }: SnapshotRowProps) {
                 c={tokens.fg.subtle}
                 component="time"
                 dateTime={new Date(record.createdAt).toISOString()}
+                style={{ flexShrink: 0 }}
               >
-                {formatDistanceToNowStrict(record.createdAt, { addSuffix: true })}
+                {formatDistanceToNowStrict(record.createdAt)}
               </Text>
             </Tooltip>
           </Group>
+          <Tooltip
+            label={formatStatTooltip(record, header)}
+            multiline
+            withArrow
+            openDelay={400}
+            w={240}
+          >
+            <Group
+              gap={6}
+              wrap="nowrap"
+              style={{ fontVariantNumeric: "tabular-nums" }}
+            >
+              {header ? (
+                <>
+                  <Text size="xs" c={tokens.fg.muted} component="span">
+                    <StatDot color={tokens.category.node} />
+                    <span style={{ color: tokens.category.node, fontWeight: 500 }}>
+                      {header.nodeCount.toLocaleString()}
+                    </span>
+                    <span style={{ color: tokens.fg.subtle, marginLeft: 3 }}>
+                      n
+                    </span>
+                  </Text>
+                  <Text size="xs" c={tokens.fg.muted} component="span">
+                    <StatDot color={tokens.category.relationship} />
+                    <span
+                      style={{
+                        color: tokens.category.relationship,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {header.relationshipCount.toLocaleString()}
+                    </span>
+                    <span style={{ color: tokens.fg.subtle, marginLeft: 3 }}>
+                      r
+                    </span>
+                  </Text>
+                  <Text size="xs" c={tokens.fg.subtle}>
+                    ·
+                  </Text>
+                </>
+              ) : null}
+              <Text size="xs" c={tokens.fg.subtle}>
+                {formatBytes(record.sizeBytes)}
+              </Text>
+            </Group>
+          </Tooltip>
         </Stack>
       </UnstyledButton>
       <div style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>

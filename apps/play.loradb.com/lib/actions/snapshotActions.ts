@@ -12,9 +12,48 @@
  * schema cache and DB-count chips refresh after a restore.
  */
 
+import type {
+  SnapshotInfo,
+  WasmSnapshotEncryption,
+  WasmSnapshotLoadOptions,
+} from "@loradb/lora-wasm";
+
 import * as snapshots from "@/lib/persistence/snapshots";
-import { loadSnapshot, saveSnapshot } from "@/lib/db/client";
+import { loadSnapshot, readSnapshotInfo, saveSnapshot } from "@/lib/db/client";
 import { LORADB_MUTATION_EVENT } from "@/lib/actions/runActiveTab";
+
+/**
+ * Optional protection applied to a new snapshot. Currently a passphrase —
+ * the same passphrase must be supplied at load time. `keyId` is opaque
+ * metadata shown in the load prompt as a hint to the user.
+ */
+export interface SnapshotProtection {
+  password: string;
+  keyId?: string;
+}
+
+function infoToHeader(info: SnapshotInfo): snapshots.SnapshotHeader {
+  return {
+    formatVersion: info.formatVersion,
+    nodeCount: info.nodeCount,
+    relationshipCount: info.relationshipCount,
+    walLsn: info.walLsn,
+    compression: info.compression,
+    encrypted: info.encrypted,
+    keyId: info.keyId,
+  };
+}
+
+function encryptionFromProtection(
+  protection: SnapshotProtection | undefined,
+): WasmSnapshotEncryption | undefined {
+  if (!protection) return undefined;
+  return {
+    type: "password",
+    keyId: protection.keyId ?? "playground",
+    password: protection.password,
+  };
+}
 
 export const SNAPSHOTS_EVENT = "loradb:snapshots";
 
@@ -30,27 +69,69 @@ function emitMutation(): void {
 
 /**
  * Serialise the current database state and persist it as a new
- * snapshot under `name`. Returns the freshly-created record.
+ * snapshot under `name`. Optionally seals the body with a passphrase
+ * (ChaCha20-Poly1305 + Argon2 KDF) — loading later requires the same
+ * passphrase. Returns the freshly-created record with the parsed
+ * header attached.
  */
 export async function createSnapshotFromDb(
   name: string,
+  protection?: SnapshotProtection,
 ): Promise<snapshots.Snapshot> {
-  const blob = await saveSnapshot();
-  const record = await snapshots.create({ name, blob });
+  const encryption = encryptionFromProtection(protection);
+  const blob = await saveSnapshot(encryption ? { encryption } : undefined);
+  const header = infoToHeader(await readSnapshotInfo(blob));
+  const record = await snapshots.create({ name, blob, header });
   emitChange();
   return record;
+}
+
+/** Error thrown by `loadSnapshotById` when the stored snapshot needs a
+ * passphrase but the caller did not supply one. The Sidebar uses this to
+ * route the user into the passphrase prompt. */
+export class SnapshotPasswordRequiredError extends Error {
+  readonly keyId: string | null;
+  constructor(keyId: string | null) {
+    super("Snapshot is encrypted — passphrase required");
+    this.name = "SnapshotPasswordRequiredError";
+    this.keyId = keyId;
+  }
 }
 
 /**
  * Restore a snapshot by id, replacing the live database contents.
  * Dispatches `loradb:mutation` so schema + counts refresh downstream.
+ *
+ * For encrypted snapshots, supply `protection` with the passphrase the
+ * snapshot was sealed with. Omitting it raises
+ * {@link SnapshotPasswordRequiredError} so the caller can prompt the user.
  */
-export async function loadSnapshotById(id: string): Promise<void> {
+export async function loadSnapshotById(
+  id: string,
+  protection?: SnapshotProtection,
+): Promise<void> {
   const record = await snapshots.get(id);
   if (!record) {
     throw new Error(`Snapshot ${id} not found`);
   }
-  await loadSnapshot(record.blob);
+  // Prefer the persisted header but fall back to re-parsing the blob if
+  // the record predates header storage.
+  const encrypted = record.header
+    ? record.header.encrypted
+    : (await readSnapshotInfo(record.blob)).encrypted;
+  if (encrypted && !protection) {
+    throw new SnapshotPasswordRequiredError(record.header?.keyId ?? null);
+  }
+  const opts: WasmSnapshotLoadOptions | undefined = protection
+    ? {
+        credentials: {
+          type: "password",
+          keyId: protection.keyId ?? record.header?.keyId ?? "playground",
+          password: protection.password,
+        },
+      }
+    : undefined;
+  await loadSnapshot(record.blob, opts);
   emitMutation();
 }
 
@@ -121,7 +202,11 @@ export async function importSnapshotFromFile(
   }
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
-  const record = await snapshots.create({ name, blob: bytes });
+  // Parse the envelope eagerly so encryption/compression are visible in
+  // the panel without re-decoding the bytes on every render. A malformed
+  // file surfaces a typed error here rather than at load time.
+  const header = infoToHeader(await readSnapshotInfo(bytes));
+  const record = await snapshots.create({ name, blob: bytes, header });
   emitChange();
   return record;
 }

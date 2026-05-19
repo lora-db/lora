@@ -14,6 +14,7 @@
 import type {
   Database,
   LoraParams,
+  SnapshotInfo,
   SnapshotMeta,
   WasmSnapshotByteOptions,
   WasmSnapshotLoadOptions,
@@ -184,6 +185,18 @@ export async function loadSnapshot(
 ): Promise<SnapshotMeta> {
   const db = await getDb();
   return db.loadSnapshot(source, opts);
+}
+
+/**
+ * Inspect snapshot header metadata from raw bytes. Routes through the same
+ * WASM module that backs the live database — so in the browser this is a
+ * worker round-trip, in Node it's an in-process call.
+ */
+export async function readSnapshotInfo(
+  bytes: Uint8Array,
+): Promise<SnapshotInfo> {
+  const db = await getDb();
+  return db.snapshotInfo(bytes);
 }
 
 /** Current count of nodes in the database. */
