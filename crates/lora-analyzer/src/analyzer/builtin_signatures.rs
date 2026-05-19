@@ -476,10 +476,13 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
     alias("type.try_cast", "cast.try"),
     alias("type.can_cast", "cast.can"),
     alias("now", "temporal.now"),
+    alias("datetime", "temporal.now"),
     alias("timestamp", "temporal.timestamp"),
     alias("timezone", "temporal.timezone"),
     alias("new", "uuid.new"),
     alias("random", "math.random"),
+    alias("rand", "math.random"),
+    alias("range", "list.range"),
     // Cypher / historical compatibility aliases.
     alias("head", "list.first"),
     alias("last", "list.last"),
