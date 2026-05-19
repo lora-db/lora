@@ -254,6 +254,7 @@ export function SchemaBrowserPanel() {
             {/* Labels --------------------------------------------------- */}
             <SectionHeader
               icon={<IconTag size={12} />}
+              iconColor={tokens.category.label}
               title="Labels"
               count={labels.length}
               tokens={tokens}
@@ -276,7 +277,7 @@ export function SchemaBrowserPanel() {
                     borderRadius: tokens.radius.sm,
                   },
                   label: { padding: 0 },
-                  content: { padding: "0 8px 4px 28px" },
+                  content: { padding: "2px 8px 6px 56px" },
                 }}
               >
                 {labels.map((label) => {
@@ -303,13 +304,13 @@ export function SchemaBrowserPanel() {
                           <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
                             <IconTag
                               size={12}
-                              color={tokens.accent.info}
+                              color={tokens.category.label}
                               stroke={2}
                             />
                             <Text
                               size="sm"
                               fw={500}
-                              c={tokens.fg.primary}
+                              c={tokens.category.label}
                               truncate
                               title={label}
                             >
@@ -338,6 +339,7 @@ export function SchemaBrowserPanel() {
             {/* Relationship types -------------------------------------- */}
             <SectionHeader
               icon={<IconArrowRight size={12} />}
+              iconColor={tokens.category.relType}
               title="Relationship types"
               count={relTypes.length}
               tokens={tokens}
@@ -360,7 +362,7 @@ export function SchemaBrowserPanel() {
                     borderRadius: tokens.radius.sm,
                   },
                   label: { padding: 0 },
-                  content: { padding: "0 8px 4px 28px" },
+                  content: { padding: "2px 8px 6px 56px" },
                 }}
               >
                 {relTypes.map((rt) => {
@@ -382,13 +384,13 @@ export function SchemaBrowserPanel() {
                         >
                           <IconArrowRight
                             size={12}
-                            color={tokens.accent.warning}
+                            color={tokens.category.relType}
                             stroke={2}
                           />
                           <Text
                             size="sm"
                             fw={500}
-                            c={tokens.fg.primary}
+                            c={tokens.category.relType}
                             truncate
                             title={rt}
                           >
@@ -446,12 +448,13 @@ export function SchemaBrowserPanel() {
 
 interface SectionHeaderProps {
   icon: React.ReactNode;
+  iconColor?: string;
   title: string;
   count: number;
   tokens: ReturnType<typeof usePlaygroundTheme>["tokens"];
 }
 
-function SectionHeader({ icon, title, count, tokens }: SectionHeaderProps) {
+function SectionHeader({ icon, iconColor, title, count, tokens }: SectionHeaderProps) {
   return (
     <Group
       gap={6}
@@ -461,7 +464,7 @@ function SectionHeader({ icon, title, count, tokens }: SectionHeaderProps) {
       pb={2}
       style={{ alignItems: "center" }}
     >
-      <span style={{ display: "inline-flex", color: tokens.fg.muted }}>
+      <span style={{ display: "inline-flex", color: iconColor ?? tokens.fg.muted }}>
         {icon}
       </span>
       <Text

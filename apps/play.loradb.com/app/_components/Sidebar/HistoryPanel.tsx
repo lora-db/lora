@@ -41,6 +41,16 @@ import {
 } from "@/lib/actions/historyActions";
 import { formatCount, formatMs } from "@/lib/util/format";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
+import { hexA } from "@/lib/theme/util";
+import type { Tokens } from "@/lib/theme/tokens";
+
+/** Same thresholds as `ResultPane` so the per-run ms in a history row
+ *  reads the same colour as the live result strip. */
+function speedColor(ms: number, tokens: Tokens): string {
+  if (ms < 50) return tokens.accent.success;
+  if (ms < 200) return tokens.accent.warning;
+  return tokens.accent.danger;
+}
 
 const SNIPPET_CAP = 60;
 
@@ -318,18 +328,30 @@ function HistoryRow({ entry, onOpen }: HistoryRowProps) {
           <Badge
             size="xs"
             variant="light"
-            color={entry.ok ? "green" : "red"}
             radius="sm"
+            style={{
+              color: entry.ok ? tokens.accent.success : tokens.accent.danger,
+              background: hexA(
+                entry.ok ? tokens.accent.success : tokens.accent.danger,
+                0.1,
+              ),
+              borderColor: "transparent",
+            }}
           >
             {entry.ok ? "ok" : "error"}
           </Badge>
-          <Text size="xs" c={tokens.fg.subtle}>
+          <Text size="xs" c={speedColor(entry.ms, tokens)} fw={600}>
             {ms}
           </Text>
           <Text size="xs" c={tokens.fg.subtle}>
             ·
           </Text>
-          <Text size="xs" c={tokens.fg.subtle} truncate style={{ minWidth: 0 }}>
+          <Text
+            size="xs"
+            c={entry.ok ? tokens.fg.muted : tokens.accent.danger}
+            truncate
+            style={{ minWidth: 0 }}
+          >
             {head}
           </Text>
         </Group>
