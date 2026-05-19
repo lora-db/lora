@@ -24,6 +24,7 @@ import {
   setActivity,
   setResultTab,
   toggleColorScheme,
+  toggleParamsPanel,
   toggleSidebar,
 } from "@/lib/actions/uiActions";
 import {
@@ -82,6 +83,7 @@ export function buildHotkeys(ctx: HotkeyContext): HotkeyEntry[] {
     [HOTKEYS.focusPrevPane.chord, () => { focusPrevPane(); }],
     [HOTKEYS.cycleViewInPane.chord, () => { cycleViewInActivePane(); }],
     [HOTKEYS.toggleOrientation.chord, () => { toggleRootOrientation(); }],
+    [HOTKEYS.toggleParamsPanel.chord, () => { toggleParamsPanel(); }],
     [
       HOTKEYS.toggleColorScheme.chord,
       () => {

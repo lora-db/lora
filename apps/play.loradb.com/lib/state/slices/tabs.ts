@@ -25,6 +25,16 @@ export interface EditorTab {
   id: string;
   name: string;
   body: string;
+  /**
+   * Raw JSON source for the per-tab `$param` payload. Stored as a
+   * string (not a parsed object) so partial edits don't get
+   * round-tripped or lost mid-keystroke. Defaults to `"{}"`.
+   *
+   * The driver consumes this only at run time — `runActiveTab`
+   * parses it, validates against the editor's detected params,
+   * and surfaces a confirm toast for missing-required.
+   */
+  params: string;
   dirty: boolean;
   savedQueryId?: string;
   createdAt: number;
@@ -34,21 +44,33 @@ export interface SerializedTab {
   id: string;
   name: string;
   body: string;
+  /** Hydration normalises a missing field to `"{}"`. */
+  params?: string;
   savedQueryId?: string;
   createdAt: number;
 }
 
 export interface TabsSlice {
   tabs: EditorTab[];
-  openTab(input?: { name?: string; body?: string; savedQueryId?: string }): string;
+  openTab(input?: {
+    name?: string;
+    body?: string;
+    params?: string;
+    savedQueryId?: string;
+  }): string;
   closeTab(id: string): void;
   renameTab(id: string, name: string): void;
   setBody(id: string, body: string): void;
+  /** Replace the raw JSON params source for a tab. Flips `dirty`. */
+  setParams(id: string, params: string): void;
   markClean(id: string): void;
   bindSavedQueryId(id: string, savedQueryId: string | undefined): void;
   reorderTab(fromIndex: number, toIndex: number): void;
   hydrateTabs(tabs: SerializedTab[]): void;
 }
+
+/** Default empty payload — kept as a constant so call sites are explicit. */
+export const DEFAULT_PARAMS = "{}";
 
 /**
  * Returns the next unused `"Query N"` name for an untitled tab, scanning the
@@ -85,6 +107,7 @@ export const createTabsSlice: StateCreator<
         id,
         name,
         body: input?.body ?? "",
+        params: input?.params ?? DEFAULT_PARAMS,
         dirty: false,
         savedQueryId: input?.savedQueryId,
         createdAt: Date.now(),
@@ -108,9 +131,13 @@ export const createTabsSlice: StateCreator<
       const sibling = state as unknown as {
         results?: Record<string, unknown>;
         workspace?: PanelNode;
+        paramsByTab?: Record<string, unknown>;
       };
       if (sibling.results && id in sibling.results) {
         delete sibling.results[id];
+      }
+      if (sibling.paramsByTab && id in sibling.paramsByTab) {
+        delete sibling.paramsByTab[id];
       }
       if (sibling.workspace) {
         const next = gcClosedTabInTree(sibling.workspace, id);
@@ -138,6 +165,16 @@ export const createTabsSlice: StateCreator<
       tab.body = body;
       // The slice has no diff-against-saved knowledge; callers signal clean
       // state explicitly via `markClean` after a successful save.
+      tab.dirty = true;
+    });
+  },
+
+  setParams(id, params) {
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === id);
+      if (!tab) return;
+      if (tab.params === params) return;
+      tab.params = params;
       tab.dirty = true;
     });
   },
@@ -181,6 +218,7 @@ export const createTabsSlice: StateCreator<
         id: t.id,
         name: t.name,
         body: t.body,
+        params: t.params ?? DEFAULT_PARAMS,
         dirty: false,
         savedQueryId: t.savedQueryId,
         createdAt: t.createdAt,

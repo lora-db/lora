@@ -49,8 +49,18 @@ import {
   createInspectSlice,
   type InspectSlice,
 } from "./slices/inspect";
+import {
+  createParamsByTabSlice,
+  type ParamsByTabSlice,
+} from "./slices/paramsByTab";
 
-export type Store = TabsSlice & ResultsSlice & LayoutSlice & PrefsSlice & SchemaSlice & InspectSlice;
+export type Store = TabsSlice
+  & ResultsSlice
+  & LayoutSlice
+  & PrefsSlice
+  & SchemaSlice
+  & InspectSlice
+  & ParamsByTabSlice;
 
 export const useStore = create<Store>()(
   subscribeWithSelector(
@@ -84,6 +94,11 @@ export const useStore = create<Store>()(
         set as Parameters<typeof createInspectSlice>[0],
         get as Parameters<typeof createInspectSlice>[1],
         api as Parameters<typeof createInspectSlice>[2],
+      ),
+      ...createParamsByTabSlice(
+        set as Parameters<typeof createParamsByTabSlice>[0],
+        get as Parameters<typeof createParamsByTabSlice>[1],
+        api as Parameters<typeof createParamsByTabSlice>[2],
       ),
     })),
   ),
@@ -177,6 +192,7 @@ function serializeSnapshot(s: PersistedSnapshot) {
       id: t.id,
       name: t.name,
       body: t.body,
+      params: t.params,
       savedQueryId: t.savedQueryId,
       createdAt: t.createdAt,
     })),

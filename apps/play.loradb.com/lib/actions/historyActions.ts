@@ -55,5 +55,12 @@ export async function openHistoryEntryInNewTab(
   const entries = await history.list(1000);
   const found = entries.find((e) => e.id === entryId);
   if (!found) return;
-  openTabInCell({ name: "From history", body: found.body });
+  openTabInCell({
+    name: "From history",
+    body: found.body,
+    // Restore the exact param payload the user ran with, so the
+    // re-opened tab is a one-click replay rather than a body-only
+    // snapshot.
+    params: found.params,
+  });
 }

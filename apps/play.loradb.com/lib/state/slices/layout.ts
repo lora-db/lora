@@ -37,6 +37,8 @@ import {
   setGroupDirection,
   setGroupSizes,
   setViewEditorSizePct,
+  setViewParamsPanelOpen,
+  setViewParamsPanelSize,
   setViewResultMinimized,
   setViewResultTab,
   setViewTabId,
@@ -65,10 +67,17 @@ export interface SerializedLayout {
   activePaneId: string;
 }
 
+/** Default width of the Params panel column, as a percentage of the editor row. */
+export const DEFAULT_PARAMS_PANEL_SIZE = 30;
+
 export interface LayoutSlice extends SerializedLayout {
   setActivitySection(section: ActivitySection): void;
   toggleSidebar(): void;
   setSidebarWidth(px: number): void;
+  /** Toggle the Params panel sidecar inside a single editor view. */
+  setParamsPanelOpenForView(viewId: string, open: boolean): void;
+  /** Adjust the Params panel column width for a single view. */
+  setParamsPanelSizeForView(viewId: string, pct: number): void;
   setActivePane(paneId: string): void;
   setActiveView(paneId: string, viewId: string): void;
   splitPane(
@@ -189,6 +198,18 @@ export const createLayoutSlice: StateCreator<
   setSidebarWidth(px) {
     set((state) => {
       state.sidebarWidth = clampSidebar(px);
+    });
+  },
+
+  setParamsPanelOpenForView(viewId, open) {
+    set((state) => {
+      state.workspace = setViewParamsPanelOpen(state.workspace, viewId, open);
+    });
+  },
+
+  setParamsPanelSizeForView(viewId, pct) {
+    set((state) => {
+      state.workspace = setViewParamsPanelSize(state.workspace, viewId, pct);
     });
   },
 

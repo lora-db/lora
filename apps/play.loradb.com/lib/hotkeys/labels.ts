@@ -45,7 +45,8 @@ export type HotkeyId =
   | "focusNextPane"
   | "focusPrevPane"
   | "cycleViewInPane"
-  | "toggleOrientation";
+  | "toggleOrientation"
+  | "toggleParamsPanel";
 
 export interface HotkeyMeta {
   /** Raw shortcut as recognised by Mantine (e.g. "mod+shift+E"). */
@@ -101,6 +102,7 @@ export const HOTKEYS: Record<HotkeyId, HotkeyMeta> = {
   focusPrevPane: { chord: "mod+alt+ArrowLeft", description: "Focus previous pane", group: "Panes" },
   cycleViewInPane: { chord: "mod+`", description: "Cycle views in current pane", group: "Panes" },
   toggleOrientation: { chord: "mod+alt+O", description: "Toggle root split orientation", group: "Panes" },
+  toggleParamsPanel: { chord: "mod+shift+V", description: "Toggle Params panel", group: "View" },
 };
 
 const ARROW_SYMBOLS: Record<string, string> = {

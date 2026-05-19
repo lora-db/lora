@@ -14,11 +14,21 @@ export interface HistoryEntry {
   id: string;
   tabId?: string;
   body: string;
+  /** Raw JSON source of the `$param` payload used for this run. Default `"{}"`. */
+  params: string;
   startedAt: number;
   ms: number;
   rowCount: number;
   ok: boolean;
   errorMessage?: string;
+}
+
+/** Default empty payload — kept as a constant so call sites are explicit. */
+export const DEFAULT_PARAMS = "{}";
+
+function normalize(raw: HistoryEntry): HistoryEntry {
+  if (typeof raw.params === "string") return raw;
+  return { ...raw, params: DEFAULT_PARAMS };
 }
 
 const MAX_ENTRIES = 1000;
@@ -29,7 +39,7 @@ export async function list(limit: number = DEFAULT_LIMIT): Promise<HistoryEntry[
   const db = await getDB();
   const all = await db.getAllFromIndex("history", "byStartedAt");
   all.reverse();
-  return all.slice(0, Math.max(0, limit));
+  return all.slice(0, Math.max(0, limit)).map(normalize);
 }
 
 /**
@@ -37,9 +47,13 @@ export async function list(limit: number = DEFAULT_LIMIT): Promise<HistoryEntry[
  * deleting the oldest entries (by `startedAt`) inside the same transaction.
  */
 export async function append(
-  entry: Omit<HistoryEntry, "id">,
+  entry: Omit<HistoryEntry, "id" | "params"> & { params?: string },
 ): Promise<HistoryEntry> {
-  const record: HistoryEntry = { id: ulid(), ...entry };
+  const record: HistoryEntry = {
+    id: ulid(),
+    ...entry,
+    params: entry.params ?? DEFAULT_PARAMS,
+  };
   const db = await getDB();
   const tx = db.transaction("history", "readwrite");
   const store = tx.store;

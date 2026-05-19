@@ -46,6 +46,7 @@ import {
   setActivity,
   setResultTab,
   toggleColorScheme,
+  toggleParamsPanel,
   toggleSidebar,
 } from "@/lib/actions/uiActions";
 import {
@@ -114,6 +115,16 @@ export function SpotlightHost() {
           toggleSidebar();
         },
         leftSection: <IconLayoutSidebar size={16} />,
+      },
+      {
+        id: "toggle-params-panel",
+        label: "Toggle Params panel",
+        description: "Show or hide the $variable bindings editor",
+        keywords: ["params", "variables", "bindings", "payload", "json"],
+        onClick: () => {
+          toggleParamsPanel();
+        },
+        leftSection: <IconBraces size={16} />,
       },
       {
         id: "view-graph",

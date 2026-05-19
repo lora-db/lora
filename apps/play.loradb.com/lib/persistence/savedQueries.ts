@@ -13,9 +13,19 @@ export interface SavedQuery {
   id: string;
   name: string;
   body: string;
+  /** Raw JSON source for the `$param` payload. Default `"{}"`. */
+  params: string;
   tags: string[];
   createdAt: number;
   updatedAt: number;
+}
+
+/** Default empty payload — kept as a constant so call sites are explicit. */
+export const DEFAULT_PARAMS = "{}";
+
+function normalize(raw: SavedQuery): SavedQuery {
+  if (typeof raw.params === "string") return raw;
+  return { ...raw, params: DEFAULT_PARAMS };
 }
 
 /** Returns all saved queries, most recently updated first. */
@@ -23,17 +33,19 @@ export async function list(): Promise<SavedQuery[]> {
   const db = await getDB();
   // `getAllFromIndex` returns ascending by index value; reverse for newest-first.
   const all = await db.getAllFromIndex("savedQueries", "byUpdatedAt");
-  return all.reverse();
+  return all.reverse().map(normalize);
 }
 
 export async function get(id: string): Promise<SavedQuery | undefined> {
   const db = await getDB();
-  return db.get("savedQueries", id);
+  const raw = await db.get("savedQueries", id);
+  return raw ? normalize(raw) : undefined;
 }
 
 export async function create(input: {
   name: string;
   body: string;
+  params?: string;
   tags?: string[];
 }): Promise<SavedQuery> {
   const now = Date.now();
@@ -41,6 +53,7 @@ export async function create(input: {
     id: ulid(),
     name: input.name,
     body: input.body,
+    params: input.params ?? DEFAULT_PARAMS,
     tags: input.tags ?? [],
     createdAt: now,
     updatedAt: now,
@@ -52,20 +65,19 @@ export async function create(input: {
 
 export async function update(
   id: string,
-  patch: Partial<Pick<SavedQuery, "name" | "body" | "tags">>,
+  patch: Partial<Pick<SavedQuery, "name" | "body" | "params" | "tags">>,
 ): Promise<SavedQuery> {
   const db = await getDB();
   const existing = await db.get("savedQueries", id);
   if (!existing) {
     throw new Error(`SavedQuery ${id} not found`);
   }
-  const next: SavedQuery = {
+  const next: SavedQuery = normalize({
     ...existing,
     ...patch,
-    // Preserve the existing tags array if the patch didn't provide one.
     tags: patch.tags ?? existing.tags,
     updatedAt: Date.now(),
-  };
+  });
   await db.put("savedQueries", next);
   return next;
 }

@@ -40,6 +40,7 @@ export async function saveActiveTab(): Promise<savedQueries.SavedQuery | null> {
 
   const record = await savedQueries.update(tab.savedQueryId, {
     body: tab.body,
+    params: tab.params,
   });
   useStore.getState().markClean(tab.id);
   emitChange();
@@ -141,6 +142,7 @@ export async function saveActiveTabAs(
   const record = await savedQueries.create({
     name,
     body: tab.body,
+    params: tab.params,
     tags: tags ?? [],
   });
 
@@ -169,6 +171,7 @@ export async function openSavedQuery(id: string): Promise<void> {
   openTabInCell({
     name: record.name,
     body: record.body,
+    params: record.params,
     savedQueryId: record.id,
   });
 }
@@ -218,6 +221,7 @@ export async function duplicateSavedQuery(
   const record = await savedQueries.create({
     name: `${source.name} (copy)`,
     body: source.body,
+    params: source.params,
     tags: source.tags,
   });
   emitChange();

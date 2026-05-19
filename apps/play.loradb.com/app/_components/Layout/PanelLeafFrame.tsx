@@ -31,6 +31,10 @@ import {
 
 import { EditorPane } from "@/app/_components/Editor/EditorPane";
 import { EditorTabs } from "@/app/_components/Editor/EditorTabs";
+import {
+  ParamsPanel,
+  ParamsPanelCollapsedStrip,
+} from "@/app/_components/Params/ParamsPanel";
 import { ResultPane } from "@/app/_components/Result/ResultPane";
 import { useStore } from "@/lib/state/store";
 import type { PanelLeaf, PanelView } from "@/lib/state/slices/layout";
@@ -126,7 +130,7 @@ function QueryBody({ view, paneId }: { view: PanelView; paneId: string }) {
         }}
       >
         <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
-          <EditorPane tabId={view.tabId} />
+          <EditorWithParams view={view} />
         </div>
         <MinimizedResultStrip view={view} />
       </div>
@@ -152,7 +156,7 @@ function QueryBody({ view, paneId }: { view: PanelView; paneId: string }) {
           minHeight: 0,
         }}
       >
-        <EditorPane tabId={view.tabId} />
+        <EditorWithParams view={view} />
       </Panel>
       <Separator
         style={{
@@ -172,6 +176,96 @@ function QueryBody({ view, paneId }: { view: PanelView; paneId: string }) {
         }}
       >
         <ResultPane view={view} paneId={paneId} />
+      </Panel>
+    </PanelsGroup>
+  );
+}
+
+/**
+ * EditorPane on the left, ParamsPanel on the right. When the panel is
+ * collapsed, the right slot shrinks to a thin vertical "Params" strip
+ * that re-opens on click. State is tracked per-view so opening it in
+ * one pane doesn't drag siblings along.
+ */
+function EditorWithParams({ view }: { view: PanelView }) {
+  const { tokens } = usePlaygroundTheme();
+  const paramsOpen = view.paramsPanelOpen ?? false;
+  const paramsSize = view.paramsPanelSize ?? 30;
+  const setParamsPanelSizeForView = useStore((s) => s.setParamsPanelSizeForView);
+
+  const defaultLayout = useMemo<Layout>(
+    () => ({ editor: 100 - paramsSize, params: paramsSize }),
+    [paramsSize],
+  );
+
+  const onLayoutChanged = useCallback(
+    (layout: Layout) => {
+      const next = layout.params ?? paramsSize;
+      setParamsPanelSizeForView(view.id, next);
+    },
+    [paramsSize, setParamsPanelSizeForView, view.id],
+  );
+
+  if (!paramsOpen) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "row",
+        }}
+      >
+        <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: "flex" }}>
+          <EditorPane tabId={view.tabId} />
+        </div>
+        <ParamsPanelCollapsedStrip viewId={view.id} />
+      </div>
+    );
+  }
+
+  return (
+    <PanelsGroup
+      key={`leaf-${view.id}-with-params`}
+      id={`leaf-${view.id}-with-params`}
+      orientation="horizontal"
+      defaultLayout={defaultLayout}
+      onLayoutChanged={onLayoutChanged}
+      style={{ flex: 1, minHeight: 0, minWidth: 0 }}
+    >
+      <Panel
+        id="editor"
+        defaultSize={100 - paramsSize}
+        minSize={30}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+          minWidth: 0,
+        }}
+      >
+        <EditorPane tabId={view.tabId} />
+      </Panel>
+      <Separator
+        style={{
+          width: 4,
+          background: tokens.border.subtle,
+          cursor: "col-resize",
+        }}
+      />
+      <Panel
+        id="params"
+        defaultSize={paramsSize}
+        minSize={12}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+          minWidth: 0,
+        }}
+      >
+        <ParamsPanel tabId={view.tabId} viewId={view.id} />
       </Panel>
     </PanelsGroup>
   );

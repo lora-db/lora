@@ -57,6 +57,30 @@ export function useTabById(tabId: string | undefined): EditorTab | null {
   });
 }
 
+/** Returns the raw params JSON source for a tab (or "{}" if missing). */
+export function useTabParams(tabId: string | undefined): string {
+  return useStore((s: Store) => {
+    if (!tabId) return "{}";
+    return s.tabs.find((t) => t.id === tabId)?.params ?? "{}";
+  });
+}
+
+const EMPTY_DETECTED: readonly string[] = [];
+
+/**
+ * Returns the `$param` names the Cypher analyser detected for a tab.
+ * The slice does the diff for us so this selector is stable across
+ * unrelated renders.
+ */
+export function useDetectedParams(
+  tabId: string | undefined,
+): readonly string[] {
+  return useStore((s: Store) => {
+    if (!tabId) return EMPTY_DETECTED;
+    return s.paramsByTab[tabId] ?? EMPTY_DETECTED;
+  });
+}
+
 /**
  * Resolve the tab a view binds to. Editor views always carry an
  * explicit `tabId`; result views may be unpinned in legacy layouts,

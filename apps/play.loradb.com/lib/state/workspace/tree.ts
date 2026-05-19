@@ -37,6 +37,10 @@ export interface PanelView {
   resultMinimized?: boolean;
   /** Percentage of the leaf's height the editor surface gets (0–100). */
   editorSizePct?: number;
+  /** When `true`, the Params panel sidecar is visible for this view. */
+  paramsPanelOpen?: boolean;
+  /** Width of the Params panel as a percentage of the editor row (12–60). */
+  paramsPanelSize?: number;
 }
 
 export interface PanelLeaf {
@@ -76,6 +80,8 @@ export function makeView(input?: Partial<PanelView> & { kind?: PanelKind }): Pan
   if (input?.tabId !== undefined) view.tabId = input.tabId;
   if (input?.resultMinimized !== undefined) view.resultMinimized = input.resultMinimized;
   if (input?.editorSizePct !== undefined) view.editorSizePct = input.editorSizePct;
+  if (input?.paramsPanelOpen !== undefined) view.paramsPanelOpen = input.paramsPanelOpen;
+  if (input?.paramsPanelSize !== undefined) view.paramsPanelSize = input.paramsPanelSize;
   return view;
 }
 
@@ -522,6 +528,71 @@ export function setViewEditorSizePct(
     return { ...node, children: node.children.map(rewrite) };
   };
   return rewrite(tree);
+}
+
+/** Toggle the Params panel sidecar inside a single query view. */
+export function setViewParamsPanelOpen(
+  tree: PanelNode,
+  viewId: string,
+  open: boolean,
+): PanelNode {
+  const rewrite = (node: PanelNode): PanelNode => {
+    if (node.type === "leaf") {
+      const idx = node.views.findIndex((v) => v.id === viewId);
+      if (idx === -1) return node;
+      const view = node.views[idx]!;
+      if ((view.paramsPanelOpen ?? false) === open) return node;
+      const next = [...node.views];
+      next[idx] = { ...view, paramsPanelOpen: open };
+      return { ...node, views: next };
+    }
+    return { ...node, children: node.children.map(rewrite) };
+  };
+  return rewrite(tree);
+}
+
+/** Adjust the Params panel width inside a single query view (12-60). */
+export function setViewParamsPanelSize(
+  tree: PanelNode,
+  viewId: string,
+  pct: number,
+): PanelNode {
+  const clamped = Math.max(12, Math.min(60, pct));
+  const rewrite = (node: PanelNode): PanelNode => {
+    if (node.type === "leaf") {
+      const idx = node.views.findIndex((v) => v.id === viewId);
+      if (idx === -1) return node;
+      const view = node.views[idx]!;
+      if (Math.abs((view.paramsPanelSize ?? 30) - clamped) < 0.5) return node;
+      const next = [...node.views];
+      next[idx] = { ...view, paramsPanelSize: clamped };
+      return { ...node, views: next };
+    }
+    return { ...node, children: node.children.map(rewrite) };
+  };
+  return rewrite(tree);
+}
+
+/**
+ * Resolve the active query view's id — mirrors {@link resolveActiveTabId}.
+ * Returns `null` only when the tree has no query view at all.
+ */
+export function resolveActiveViewId(
+  tree: PanelNode,
+  activePaneId: string,
+): string | null {
+  const activeLeaf = findLeaf(tree, activePaneId);
+  if (activeLeaf) {
+    const av = activeLeaf.views.find((v) => v.id === activeLeaf.activeViewId);
+    if (av) return av.id;
+    const fallback = activeLeaf.views[0];
+    if (fallback) return fallback.id;
+  }
+  for (const leaf of iterLeaves(tree)) {
+    const v = leaf.views[0];
+    if (v) return v.id;
+  }
+  return null;
 }
 
 /**

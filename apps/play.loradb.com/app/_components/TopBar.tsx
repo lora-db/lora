@@ -7,6 +7,7 @@
 
 import { ActionIcon, Group, Text, Tooltip } from "@mantine/core";
 import {
+  IconBraces,
   IconKeyboard,
   IconLayoutColumns,
   IconLayoutRows,
@@ -16,6 +17,15 @@ import {
 
 import { toggleRootOrientation } from "@/lib/actions/workspaceActions";
 import { useStore } from "@/lib/state/store";
+import { toggleParamsPanel } from "@/lib/actions/uiActions";
+import {
+  useActiveTabId,
+  useDetectedParams,
+} from "@/lib/state/selectors";
+import {
+  findLeaf,
+  resolveActiveViewId,
+} from "@/lib/state/workspace/tree";
 import { useColorSchemeToggle, usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 import { useDbStatus } from "@/lib/hooks/useDbStatus";
 
@@ -60,6 +70,7 @@ export function TopBar() {
 
       <Group gap="xs" align="center" wrap="nowrap">
         <RunButton />
+        <ParamsToggleButton />
         <Tooltip
           label={isHorizontal ? "Stack panes top/bottom" : "Place panes left/right"}
           withArrow
@@ -138,5 +149,62 @@ export function TopBar() {
         </Tooltip>
       </Group>
     </Group>
+  );
+}
+
+/**
+ * Params panel toggle. Bound-count badge appears as a coloured dot
+ * when the active query references any `$param`, so the affordance
+ * tells the user there's bindings to fill.
+ */
+function ParamsToggleButton() {
+  const { tokens } = usePlaygroundTheme();
+  const paramsOpen = useStore((s) => {
+    const viewId = resolveActiveViewId(s.workspace, s.activePaneId);
+    if (!viewId) return false;
+    const leaf = findLeaf(s.workspace, s.activePaneId);
+    return leaf?.views.find((v) => v.id === viewId)?.paramsPanelOpen ?? false;
+  });
+  const activeTabId = useActiveTabId();
+  const detected = useDetectedParams(activeTabId ?? undefined);
+  const hasParams = detected.length > 0;
+
+  const tooltip = hasParams
+    ? paramsOpen
+      ? `Hide Params (${detected.length} bound)`
+      : `Show Params (${detected.length} bound)`
+    : paramsOpen
+      ? "Hide Params panel"
+      : "Show Params panel — write bindings before adding $params";
+
+  return (
+    <Tooltip label={tooltip} withArrow>
+      <ActionIcon
+        variant={paramsOpen ? "light" : "subtle"}
+        size="md"
+        color={hasParams ? "blue" : "gray"}
+        onClick={() => toggleParamsPanel()}
+        aria-label="Toggle Params panel"
+        data-testid="toggle-params-panel"
+        style={{ position: "relative" }}
+      >
+        <IconBraces size={16} />
+        {hasParams && (
+          <span
+            aria-hidden
+            style={{
+              position: "absolute",
+              top: 2,
+              right: 2,
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: tokens.accent.primary,
+              border: `1px solid ${tokens.bg.panel}`,
+            }}
+          />
+        )}
+      </ActionIcon>
+    </Tooltip>
   );
 }

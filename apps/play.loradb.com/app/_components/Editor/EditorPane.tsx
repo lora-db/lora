@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { Center, Stack, Text } from "@mantine/core";
 import { useHotkeys } from "@mantine/hooks";
 
-import { LoraQueryEditor } from "@loradb/lora-query";
+import { LoraQueryEditor, useLoraQueryStatus } from "@loradb/lora-query";
 import type { PropertyContext } from "@loradb/lora-query";
 import { useActiveTab, useTabById } from "@/lib/state/selectors";
 import { useStore } from "@/lib/state/store";
@@ -34,6 +34,17 @@ export function EditorPane({ tabId }: EditorPaneProps) {
   const tab = tabId === undefined ? activeTab : pinnedTab;
   const schema = useStore((s) => s.schema);
   const { editor, tokens } = usePlaygroundTheme();
+  const setDetectedParams = useStore((s) => s.setDetectedParams);
+
+  // Bundle the cypher editor's outline + diagnostics into a status
+  // object. We only care about `parameters` here — that's what feeds
+  // the Params panel + `runActiveTab` via the paramsByTab slice.
+  const [queryStatus, statusProps] = useLoraQueryStatus();
+  const currentTabId = tab?.id ?? null;
+  useEffect(() => {
+    if (!currentTabId) return;
+    setDetectedParams(currentTabId, queryStatus.parameters);
+  }, [currentTabId, queryStatus.parameters, setDetectedParams]);
 
   useHotkeys([
     [
@@ -129,6 +140,7 @@ export function EditorPane({ tabId }: EditorPaneProps) {
         minHeight="100%"
         placeholder="-- Type Cypher here, then press ⌘↵ to run"
         style={{ flex: 1, minHeight: 0 }}
+        {...statusProps}
       />
     </div>
   );

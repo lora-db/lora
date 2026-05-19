@@ -94,6 +94,8 @@ function pickEditorViewId(): string | null {
 export function openTabInCell(opts: {
   name?: string;
   body?: string;
+  /** Raw JSON `$param` payload. Falls back to `"{}"` when omitted. */
+  params?: string;
   savedQueryId?: string;
   /** Specific editor view to host the tab. Defaults to the active cell's editor. */
   editorViewId?: string;
@@ -102,6 +104,7 @@ export function openTabInCell(opts: {
   const id = state.openTab({
     body: opts.body ?? DEFAULT_BODY,
     ...(opts.name !== undefined ? { name: opts.name } : {}),
+    ...(opts.params !== undefined ? { params: opts.params } : {}),
     ...(opts.savedQueryId !== undefined ? { savedQueryId: opts.savedQueryId } : {}),
   });
   const viewId = opts.editorViewId ?? pickEditorViewId();
@@ -115,7 +118,7 @@ export function newTab(): string {
 }
 
 /** Open a tab and add it to a specific editor view. Used by the in-strip "+" button. */
-export function newTabInView(viewId: string, opts?: { name?: string; body?: string; savedQueryId?: string }): string {
+export function newTabInView(viewId: string, opts?: { name?: string; body?: string; params?: string; savedQueryId?: string }): string {
   return openTabInCell({ ...(opts ?? {}), editorViewId: viewId });
 }
 

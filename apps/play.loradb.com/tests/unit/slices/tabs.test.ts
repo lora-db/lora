@@ -117,6 +117,57 @@ describe("tabs slice", () => {
     expect(names(store.getState().tabs)).toEqual(["X", "Y"]);
   });
 
+  it("openTab defaults params to '{}' and openTab honours the override", () => {
+    const store = makeStore();
+    const a = store.getState().openTab();
+    const b = store.getState().openTab({ params: `{ "x": 1 }` });
+    const tabA = store.getState().tabs.find((t) => t.id === a);
+    const tabB = store.getState().tabs.find((t) => t.id === b);
+    expect(tabA?.params).toBe("{}");
+    expect(tabB?.params).toBe(`{ "x": 1 }`);
+  });
+
+  it("setParams updates the payload and flips dirty only on real changes", () => {
+    const store = makeStore();
+    const id = store.getState().openTab();
+    expect(store.getState().tabs[0]?.dirty).toBe(false);
+
+    // Identical payload: stays clean.
+    store.getState().setParams(id, "{}");
+    expect(store.getState().tabs[0]?.dirty).toBe(false);
+
+    // Real change.
+    store.getState().setParams(id, `{ "userId": "alice" }`);
+    const tab = store.getState().tabs.find((t) => t.id === id);
+    expect(tab?.params).toBe(`{ "userId": "alice" }`);
+    expect(tab?.dirty).toBe(true);
+  });
+
+  it("hydrateTabs back-fills missing params field with '{}'", () => {
+    const store = makeStore();
+    // Legacy record without `params` — exercise the migration path.
+    const records: SerializedTab[] = [
+      { id: "x1", name: "Legacy", body: "RETURN 1", createdAt: 1 },
+    ];
+    store.getState().hydrateTabs(records);
+    expect(store.getState().tabs[0]?.params).toBe("{}");
+  });
+
+  it("hydrateTabs preserves an explicit params payload", () => {
+    const store = makeStore();
+    const records: SerializedTab[] = [
+      {
+        id: "x1",
+        name: "With params",
+        body: "RETURN $x",
+        params: `{ "x": 1 }`,
+        createdAt: 1,
+      },
+    ];
+    store.getState().hydrateTabs(records);
+    expect(store.getState().tabs[0]?.params).toBe(`{ "x": 1 }`);
+  });
+
   it("renameTab updates the name in place", () => {
     const store = makeStore();
     const id = store.getState().openTab({ name: "First" });

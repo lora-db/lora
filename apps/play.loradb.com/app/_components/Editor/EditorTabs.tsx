@@ -15,7 +15,7 @@
 import type { DragEvent, MouseEvent, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { ActionIcon, Group, ScrollArea, Text, Tooltip, UnstyledButton } from "@mantine/core";
-import { IconPlus, IconX, IconFileCode, IconLink } from "@tabler/icons-react";
+import { IconBraces, IconPlus, IconX, IconFileCode, IconLink } from "@tabler/icons-react";
 
 import { useStore } from "@/lib/state/store";
 import type { PanelView } from "@/lib/state/slices/layout";
@@ -277,6 +277,24 @@ export function EditorTabs({ view, paneId, isPaneActive = false, trailingActions
                     stroke={1.5}
                     style={{ flexShrink: 0, opacity: 0.7 }}
                     aria-label="Tab is open in another cell"
+                  />
+                </Tooltip>
+              )}
+              {tab.params && tab.params.trim() !== "" && tab.params.trim() !== "{}" && (
+                <Tooltip
+                  label="This tab has bound params"
+                  openDelay={400}
+                  withArrow
+                >
+                  <IconBraces
+                    size={11}
+                    stroke={1.8}
+                    style={{
+                      flexShrink: 0,
+                      color: tokens.accent.primary,
+                      opacity: 0.85,
+                    }}
+                    aria-label="Bound params present"
                   />
                 </Tooltip>
               )}
