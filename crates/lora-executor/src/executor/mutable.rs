@@ -25,8 +25,8 @@ use lora_compiler::CompiledQuery;
 use lora_store::{GraphStorageMut, NodeId, Properties};
 
 use std::collections::BTreeMap;
-use std::time::Instant;
 use tracing::{debug, error, trace};
+use web_time::Instant;
 
 use super::aggregate_rows;
 use super::helpers::{

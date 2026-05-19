@@ -34,7 +34,8 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Instant;
+
+use web_time::Instant;
 
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::{AggregateFunction, FunctionId, ResolvedExpr, ResolvedMapSelector};

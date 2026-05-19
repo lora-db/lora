@@ -52,7 +52,7 @@ fn now(args: &[LoraValue]) -> LoraValue {
 }
 
 fn timestamp() -> LoraValue {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

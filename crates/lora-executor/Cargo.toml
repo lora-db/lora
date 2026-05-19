@@ -31,6 +31,7 @@ blake3.workspace = true
 crc32fast.workspace = true
 flate2.workspace = true
 getrandom.workspace = true
+web-time.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { workspace = true, optional = true }

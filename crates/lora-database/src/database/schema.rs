@@ -16,7 +16,8 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
-use std::time::Instant;
+
+use web_time::Instant;
 
 use anyhow::{anyhow, Result};
 use lora_ast::{

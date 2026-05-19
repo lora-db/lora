@@ -947,7 +947,7 @@ struct SimpleRng {
 
 impl SimpleRng {
     fn new() -> Self {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use web_time::{SystemTime, UNIX_EPOCH};
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)

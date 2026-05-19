@@ -20,7 +20,8 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+
+use web_time::Instant;
 
 use lora_compiler::physical::PhysicalNodeId;
 

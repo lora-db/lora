@@ -35,7 +35,9 @@
 use std::any::{Any, TypeId};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, MutexGuard, TryLockError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use anyhow::{anyhow, Result};
 use lora_executor::ExecutorError;

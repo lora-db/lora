@@ -14,7 +14,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use lora_compiler::plan_tree_from_compiled;
 use lora_executor::{
