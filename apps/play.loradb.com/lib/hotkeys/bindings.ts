@@ -18,6 +18,7 @@ import {
   newTab,
   nextTab,
   prevTab,
+  reopenLastClosedTab,
 } from "@/lib/actions/tabActions";
 import {
   setActivity,
@@ -54,8 +55,11 @@ export function buildHotkeys(ctx: HotkeyContext): HotkeyEntry[] {
     [HOTKEYS.run.chord, () => { void runActiveTab(); }],
     [HOTKEYS.newTab.chord, () => { newTab(); }],
     [HOTKEYS.closeTab.chord, () => { closeActiveTab(); }],
+    [HOTKEYS.reopenClosedTab.chord, () => { reopenLastClosedTab(); }],
     [HOTKEYS.toggleSidebar.chord, () => { toggleSidebar(); }],
     // mod+K — Spotlight installs its own listener via the `shortcut` prop.
+    // mod+S, mod+shift+S, mod+P, mod+alt+T also live in HotkeyHost's
+    // capture-phase listener (they need to win against browser/CodeMirror).
     [HOTKEYS.resultGraph.chord, () => { setResultTab("graph"); }],
     [HOTKEYS.resultTable.chord, () => { setResultTab("table"); }],
     [HOTKEYS.resultJson.chord, () => { setResultTab("json"); }],

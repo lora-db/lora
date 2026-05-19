@@ -9,6 +9,8 @@
  * event so the panel can refresh its in-memory list without polling.
  */
 
+import { notifications } from "@mantine/notifications";
+
 import { useStore } from "@/lib/state/store";
 import * as savedQueries from "@/lib/persistence/savedQueries";
 import { openTabInCell } from "@/lib/actions/tabActions";
@@ -42,6 +44,79 @@ export async function saveActiveTab(): Promise<savedQueries.SavedQuery | null> {
   useStore.getState().markClean(tab.id);
   emitChange();
   return record;
+}
+
+/**
+ * One-shot save for the `mod+S` hotkey and the sidebar Save button.
+ *
+ * If the active tab is bound to a saved query, updates the record in
+ * place and surfaces a green toast. If the tab is not yet bound, opens
+ * the SaveQueryDialog so the user can name it. If there is no active
+ * tab, surfaces a yellow toast instead of throwing — the hotkey can
+ * fire from anywhere in the workspace, and the user shouldn't see a
+ * stack trace for "no tab open".
+ *
+ * `forceAs` always opens the dialog regardless of binding state — used
+ * by `mod+shift+S` ("Save As…").
+ */
+export async function saveOrPromptActiveTab(opts?: {
+  forceAs?: boolean;
+}): Promise<void> {
+  const { openSaveQueryDialog } = await import(
+    "@/app/_components/Dialogs/SaveQueryDialog"
+  );
+  const tabId = getActiveTabId();
+  if (tabId === null) {
+    notifications.show({
+      color: "yellow",
+      title: "No active tab",
+      message: "Open a query tab before saving.",
+    });
+    return;
+  }
+  const tab = useStore.getState().tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+
+  if (tab.savedQueryId && !opts?.forceAs) {
+    try {
+      const record = await saveActiveTab();
+      if (record) {
+        notifications.show({
+          color: "green",
+          title: "Query saved",
+          message: `Updated "${record.name}".`,
+        });
+      }
+    } catch (err) {
+      notifications.show({
+        color: "red",
+        title: "Save failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  openSaveQueryDialog({
+    defaultName: tab.name,
+    onSave: async (name, tags) => {
+      try {
+        const record = await saveActiveTabAs(name, tags);
+        notifications.show({
+          color: "green",
+          title: "Query saved",
+          message: `Saved as "${record.name}".`,
+        });
+      } catch (err) {
+        notifications.show({
+          color: "red",
+          title: "Save failed",
+          message: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+    },
+  });
 }
 
 /**

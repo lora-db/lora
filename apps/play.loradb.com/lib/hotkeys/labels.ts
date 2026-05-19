@@ -16,6 +16,10 @@ export type HotkeyId =
   | "run"
   | "newTab"
   | "closeTab"
+  | "reopenClosedTab"
+  | "saveQuery"
+  | "saveQueryAs"
+  | "toggleComment"
   | "toggleSidebar"
   | "resultGraph"
   | "resultTable"
@@ -33,6 +37,7 @@ export type HotkeyId =
   | "focusEditor"
   | "toggleColorScheme"
   | "spotlight"
+  | "spotlightAlias"
   | "help"
   | "splitRight"
   | "splitDown"
@@ -66,13 +71,17 @@ export const HOTKEYS: Record<HotkeyId, HotkeyMeta> = {
   run: { chord: "mod+Enter", description: "Run query", group: "Run" },
   newTab: { chord: "mod+N", description: "New query tab", group: "Tabs" },
   closeTab: { chord: "mod+W", description: "Close active tab", group: "Tabs" },
+  reopenClosedTab: { chord: "mod+alt+T", description: "Reopen closed tab", group: "Tabs" },
+  saveQuery: { chord: "mod+S", description: "Save query", group: "Editor" },
+  saveQueryAs: { chord: "mod+shift+S", description: "Save query as…", group: "Editor" },
+  toggleComment: { chord: "mod+slash", description: "Toggle line comment", group: "Editor" },
   toggleSidebar: { chord: "mod+B", description: "Toggle sidebar", group: "View" },
   resultGraph: { chord: "mod+1", description: "Show graph result", group: "View" },
   resultTable: { chord: "mod+2", description: "Show table result", group: "View" },
   resultJson: { chord: "mod+3", description: "Show JSON result", group: "View" },
   formatQuery: { chord: "shift+alt+F", description: "Format query", group: "Editor" },
   activityQueries: { chord: "mod+shift+E", description: "Saved queries panel", group: "Navigation" },
-  activitySchema: { chord: "mod+shift+S", description: "Schema panel", group: "Navigation" },
+  activitySchema: { chord: "mod+shift+B", description: "Schema panel", group: "Navigation" },
   activitySnapshots: { chord: "mod+shift+N", description: "Snapshots panel", group: "Navigation" },
   activityHistory: { chord: "mod+shift+H", description: "History panel", group: "Navigation" },
   activitySettings: { chord: "mod+comma", description: "Settings panel", group: "Navigation" },
@@ -83,6 +92,7 @@ export const HOTKEYS: Record<HotkeyId, HotkeyMeta> = {
   focusEditor: { chord: "mod+shift+P", description: "Focus editor", group: "Editor" },
   toggleColorScheme: { chord: "mod+shift+D", description: "Toggle color scheme", group: "App" },
   spotlight: { chord: "mod+K", description: "Open command palette", group: "App" },
+  spotlightAlias: { chord: "mod+P", description: "Open command palette", group: "App" },
   help: { chord: "shift+/", description: "Show keyboard shortcuts", group: "App" },
   splitRight: { chord: "mod+shift+ArrowRight", description: "Split pane right", group: "Panes" },
   splitDown: { chord: "mod+shift+ArrowDown", description: "Split pane down", group: "Panes" },

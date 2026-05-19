@@ -29,6 +29,25 @@ import {
 
 const DEFAULT_BODY = "MATCH (n)\nOPTIONAL MATCH (n)-[r]->(m)\nRETURN n, r, m";
 
+// Bounded LIFO of recently-closed tabs. Reopened via `mod+shift+T`.
+// Captures everything we need to rehydrate a tab without rooting around
+// in deleted state. Kept module-local — survives across actions but is
+// intentionally not persisted to IDB (mirrors browser-tab UX).
+interface ClosedTabSnapshot {
+  name: string;
+  body: string;
+  savedQueryId?: string;
+}
+const RECENTLY_CLOSED_LIMIT = 16;
+const recentlyClosed: ClosedTabSnapshot[] = [];
+
+function pushClosedSnapshot(snap: ClosedTabSnapshot): void {
+  recentlyClosed.push(snap);
+  if (recentlyClosed.length > RECENTLY_CLOSED_LIMIT) {
+    recentlyClosed.splice(0, recentlyClosed.length - RECENTLY_CLOSED_LIMIT);
+  }
+}
+
 /**
  * Resolve the cell that should host a newly-opened tab.
  *
@@ -134,6 +153,19 @@ export function closeTabInView(viewId: string, tabId: string): void {
     s.removeTabFromEditorView(viewId, tabId);
     const stillOpen = tabIsOpenInAnyEditorView(useStore.getState().workspace, tabId);
     if (!stillOpen) {
+      // Snapshot the tab before it disappears so `mod+shift+T` can
+      // resurrect it. Read straight from `s.tabs` so the body we
+      // capture is the latest in-memory value, not a stale closure.
+      const closing = s.tabs.find((t) => t.id === tabId);
+      if (closing) {
+        pushClosedSnapshot({
+          name: closing.name,
+          body: closing.body,
+          ...(closing.savedQueryId !== undefined
+            ? { savedQueryId: closing.savedQueryId }
+            : {}),
+        });
+      }
       s.closeTab(tabId);
     }
     // If we just emptied a non-last editor view, drop the view so the
@@ -151,7 +183,7 @@ export function closeTabInView(viewId: string, tabId: string): void {
     title: "Discard unsaved changes?",
     children: `"${tab.name}" has unsaved edits that will be lost.`,
     labels: { confirm: "Discard", cancel: "Keep editing" },
-    confirmProps: { color: "red" },
+    confirmProps: { color: "red", "data-autofocus": "true" },
     onConfirm: proceed,
   });
 }
@@ -229,3 +261,25 @@ export function focusEditor(): void {
   const el = document.querySelector<HTMLElement>(".cm-content");
   if (el) el.focus();
 }
+
+/**
+ * Re-open the most recently closed tab in the active editor strip.
+ * Tabs are popped off a bounded LIFO captured by {@link closeTabInView}.
+ * Reopened tabs always come back as a fresh global record — never
+ * resurrects the original id so any tree references that were GC'd at
+ * close time stay GC'd. Saved-query binding is preserved when present.
+ *
+ * Returns the new tab id (or `null` if the stack is empty).
+ */
+export function reopenLastClosedTab(): string | null {
+  const snap = recentlyClosed.pop();
+  if (!snap) return null;
+  return openTabInCell({
+    name: snap.name,
+    body: snap.body,
+    ...(snap.savedQueryId !== undefined
+      ? { savedQueryId: snap.savedQueryId }
+      : {}),
+  });
+}
+
