@@ -1,81 +1,74 @@
 /**
- * `LoraQueryEditor` theme deriver. Builds a `Palette` from our
- * design tokens and runs it through the package's `createTheme`
- * helper so the editor surface, syntax tokens, popups, and diagnostic
- * accents all snap to the playground palette.
+ * `LoraQueryEditor` theme deriver. Builds a flat `LoraQueryTheme`
+ * directly from our design tokens.
  *
- * Mirrors the dark/light preset construction in
- * `@loradb/lora-query/themes.ts`: `createTheme(palette, overrides)`
- * spreads typography defaults from `palettes.ts` and flattens the
- * popup / diagnostic groups onto the flat `LoraQueryTheme` shape.
+ * Why we don't use `createTheme` from `@loradb/lora-query`:
+ * the package's built ESM bundle is wrapped by
+ * `vite-plugin-top-level-await` (the parser entry needs WASM TLA),
+ * so every export — `createTheme` included — is gated behind an
+ * async `__tla` chain that Webpack does not auto-await. Calling
+ * `createTheme` synchronously from a `useMemo` during the first
+ * render therefore throws `U is not a function` until the WASM
+ * promise resolves. The flatten itself is trivial, so we do it
+ * inline and skip the TLA-gated import entirely.
  */
 
-import {
-  createTheme,
-  type LoraQueryTheme,
-  type Palette,
-} from "@loradb/lora-query";
+import type { LoraQueryTheme } from "@loradb/lora-query";
 
 import type { Tokens } from "./tokens";
 import { hexA } from "./util";
 
 /** Derive a `LoraQueryTheme` from our token set. */
 export function deriveEditorTheme(tokens: Tokens): LoraQueryTheme {
-  const palette: Palette = {
-    surface: {
-      background: tokens.bg.editor,
-      foreground: tokens.fg.primary,
-      border: tokens.border.subtle,
-      muted: tokens.fg.muted,
-      accent: tokens.accent.primary,
-      activeLine: hexA(tokens.fg.primary, 0.06),
-      gutterBackground: tokens.bg.editor,
-      gutterForeground: tokens.fg.subtle,
-      cursor: tokens.fg.primary,
-      selectionBackground: hexA(tokens.accent.primary, 0.28),
-    },
-    tokens: {
-      keyword: tokens.syntax.keyword,
-      variable: tokens.syntax.identifier,
-      parameter: tokens.syntax.identifier,
-      label: tokens.syntax.type,
-      relType: tokens.syntax.type,
-      property: tokens.syntax.identifier,
-      functionName: tokens.syntax.type,
-      namespace: tokens.syntax.type,
-      string: tokens.syntax.string,
-      number: tokens.syntax.number,
-      bool: tokens.syntax.keyword,
-      null: tokens.syntax.keyword,
-      operator: tokens.syntax.operator,
-      comment: tokens.syntax.comment,
-    },
-    popup: {
-      background: tokens.bg.panel,
-      foreground: tokens.fg.primary,
-      border: tokens.border.subtle,
-      selectedBackground: tokens.accent.primary,
-      selectedForeground: tokens.fg.inverse,
-      shadow: `0 6px 16px ${hexA("#000000", 0.35)}`,
-    },
-    diagnostic: {
-      error: tokens.accent.danger,
-      warning: tokens.accent.warning,
-      info: tokens.accent.info,
-    },
-    scrollbar: {
-      track: tokens.bg.editor,
-      thumb: tokens.border.strong,
-      thumbHover: tokens.fg.subtle,
-      width: "auto",
-      size: "10px",
-    },
-  };
+  const keyword = tokens.syntax.keyword;
+  const identifier = tokens.syntax.identifier;
+  const type = tokens.syntax.type;
 
-  return createTheme(palette, {
+  return {
+    background: tokens.bg.editor,
+    foreground: tokens.fg.primary,
+    border: tokens.border.subtle,
+    muted: tokens.fg.muted,
+    accent: tokens.accent.primary,
+    activeLine: hexA(tokens.fg.primary, 0.06),
+    gutterBackground: tokens.bg.editor,
+    gutterForeground: tokens.fg.subtle,
+    cursor: tokens.fg.primary,
+    selectionBackground: hexA(tokens.accent.primary, 0.28),
+
     fontFamily: tokens.font.ui,
     monoFontFamily: tokens.font.mono,
     fontSize: "13px",
     popupFontSize: "12px",
-  });
+
+    keyword,
+    variable: identifier,
+    parameter: identifier,
+    label: type,
+    relType: type,
+    property: identifier,
+    functionName: type,
+    namespace: type,
+    string: tokens.syntax.string,
+    number: tokens.syntax.number,
+    bool: keyword,
+    null: keyword,
+
+    popupBackground: tokens.bg.panel,
+    popupForeground: tokens.fg.primary,
+    popupBorder: tokens.border.subtle,
+    popupSelectedBackground: tokens.accent.primary,
+    popupSelectedForeground: tokens.fg.inverse,
+    popupShadow: `0 6px 16px ${hexA("#000000", 0.35)}`,
+
+    errorAccent: tokens.accent.danger,
+    warningAccent: tokens.accent.warning,
+    infoAccent: tokens.accent.info,
+
+    scrollbarTrack: tokens.bg.editor,
+    scrollbarThumb: tokens.border.strong,
+    scrollbarThumbHover: tokens.fg.subtle,
+    scrollbarWidth: "auto",
+    scrollbarSize: "10px",
+  };
 }
