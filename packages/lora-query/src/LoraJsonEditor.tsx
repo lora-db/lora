@@ -12,184 +12,76 @@ import {
 import { Compartment, Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap, type KeyBinding } from "@codemirror/view";
 import { type Diagnostic } from "@codemirror/lint";
-import { cypherExtensions } from "./cypher/extensions";
-import { popupTheme } from "./cypher/theme";
+import { jsonParseLinter } from "@codemirror/lang-json";
+import { jsonExtensions } from "./json/extensions";
+import { jsonPopupTheme } from "./json/theme";
 import {
-  loraQueryProviders,
-  type LoraQueryProviders,
-  type ProcedureSignature,
-  type PropertyContext,
-} from "./cypher/providers";
+  loraJsonProviders,
+  type LoraJsonProviders,
+} from "./json/completion";
 import {
-  analyseAll,
-  format,
-  outline,
-  validateAll,
-  type Analysis,
-  type Outline,
-  type ParseError,
-} from "./parser";
+  keyConstraintsFacet,
+  type KeyConstraints,
+} from "./json/keyConstraints";
+import { formatJson, minifyJson } from "./json/format";
+import {
+  foldAllCmd,
+  sortKeysCmd,
+  toggleQuotesCmd,
+  unfoldAllCmd,
+} from "./json/commands";
+import { getJsonPath, type PathSegment } from "./json/path";
+import {
+  JSON_THEME_TO_VAR,
+  type LoraJsonTheme,
+} from "./jsonThemes";
 import "./editor.css";
 
-/**
- * CSS-variable theme. Each key maps to one of the editor's `--lq-*`
- * CSS variables — set just the ones you want to override. The host
- * may apply it via the `theme` prop or by attaching its own CSS to the
- * `.lora-query` container.
- *
- * The theme covers the editor surface *and* every popup the editor
- * renders — autocomplete popup, hover tooltip, and lint message — so a
- * single object is enough to dress the whole component.
- */
-export interface LoraQueryTheme {
-  // Editor surface
-  background?: string;
-  foreground?: string;
-  border?: string;
-  accent?: string;
-  muted?: string;
-  activeLine?: string;
-  gutterBackground?: string;
-  gutterForeground?: string;
-  cursor?: string;
-  /** Width of the blinking caret (e.g. `"1px"`, `"2px"`). */
-  cursorWidth?: string;
-  selectionBackground?: string;
+export type { LoraJsonTheme } from "./jsonThemes";
+export type { PathSegment } from "./json/path";
 
-  // Typography
-  /** Font for popup labels and tooltip prose. Defaults to the UI stack. */
-  fontFamily?: string;
-  /** Font for the editor content and code snippets in popups. Defaults to a monospace stack. */
-  monoFontFamily?: string;
-  /** Editor content font size (e.g. `"13px"`). */
-  fontSize?: string;
-  /** Popup / tooltip font size (e.g. `"12px"`). */
-  popupFontSize?: string;
-
-  // Token colours (also used by the AST-driven decorations).
-  keyword?: string;
-  variable?: string;
-  parameter?: string;
-  label?: string;
-  relType?: string;
-  property?: string;
-  functionName?: string;
-  namespace?: string;
-  string?: string;
-  number?: string;
-  bool?: string;
-  null?: string;
-
-  // Popups (autocomplete, hover tooltip, lint message).
-  popupBackground?: string;
-  popupForeground?: string;
-  popupBorder?: string;
-  popupSelectedBackground?: string;
-  popupSelectedForeground?: string;
-  popupShadow?: string;
-
-  // Lint message accent (left border + details background tint).
-  errorAccent?: string;
-  warningAccent?: string;
-  infoAccent?: string;
-
-  // Scrollbar (vertical + horizontal). Honoured by the editor's
-  // `.cm-scroller` via the modern `scrollbar-color` / `scrollbar-width`
-  // properties and a matching `::-webkit-scrollbar` ruleset.
-  /** Track (gutter) colour behind the scrollbar. */
-  scrollbarTrack?: string;
-  /** Resting colour of the draggable thumb. */
-  scrollbarThumb?: string;
-  /** Thumb colour on hover. */
-  scrollbarThumbHover?: string;
-  /** CSS `scrollbar-width` value — `"auto"`, `"thin"`, or `"none"`. */
-  scrollbarWidth?: "auto" | "thin" | "none";
-  /** Pixel thickness for the WebKit `::-webkit-scrollbar` rules. */
-  scrollbarSize?: string;
-}
-
-const THEME_TO_VAR: Record<keyof LoraQueryTheme, string> = {
-  background: "--lq-bg",
-  foreground: "--lq-fg",
-  border: "--lq-border",
-  accent: "--lq-accent",
-  muted: "--lq-muted",
-  activeLine: "--lq-active-line",
-  gutterBackground: "--lq-gutter-bg",
-  gutterForeground: "--lq-gutter-fg",
-  cursor: "--lq-cursor",
-  cursorWidth: "--lq-cursor-width",
-  selectionBackground: "--lq-selection-bg",
-
-  fontFamily: "--lq-font",
-  monoFontFamily: "--lq-mono-font",
-  fontSize: "--lq-font-size",
-  popupFontSize: "--lq-popup-font-size",
-
-  keyword: "--lq-color-keyword",
-  variable: "--lq-color-variable",
-  parameter: "--lq-color-parameter",
-  label: "--lq-color-label",
-  relType: "--lq-color-rel-type",
-  property: "--lq-color-property",
-  functionName: "--lq-color-function",
-  namespace: "--lq-color-namespace",
-  string: "--lq-color-string",
-  number: "--lq-color-number",
-  bool: "--lq-color-bool",
-  null: "--lq-color-null",
-
-  popupBackground: "--lq-popup-bg",
-  popupForeground: "--lq-popup-fg",
-  popupBorder: "--lq-popup-border",
-  popupSelectedBackground: "--lq-popup-selected-bg",
-  popupSelectedForeground: "--lq-popup-selected-fg",
-  popupShadow: "--lq-popup-shadow",
-
-  errorAccent: "--lq-error",
-  warningAccent: "--lq-warning",
-  infoAccent: "--lq-info",
-
-  scrollbarTrack: "--lq-scrollbar-track",
-  scrollbarThumb: "--lq-scrollbar-thumb",
-  scrollbarThumbHover: "--lq-scrollbar-thumb-hover",
-  scrollbarWidth: "--lq-scrollbar-width",
-  scrollbarSize: "--lq-scrollbar-size",
-};
-
-export interface LoraQueryEditorProps {
+export interface LoraJsonEditorProps {
   value: string;
   onChange?: (next: string) => void;
   readOnly?: boolean;
   className?: string;
   /** Inline style applied to the outer container. */
   style?: CSSProperties;
-  /** CSS-variable theme overrides — see {@link LoraQueryTheme}. */
-  theme?: LoraQueryTheme;
-  /** Called whenever the validator has new diagnostics. */
-  onDiagnostics?: (errors: ParseError[]) => void;
-  /** Called whenever the semantic analyser has new warnings + fold ranges. */
-  onAnalysis?: (analysis: Analysis) => void;
-  /** Called whenever the outline (variables / params / labels) changes. */
-  onOutline?: (outline: Outline) => void;
+  /** CSS-variable theme overrides — see {@link LoraJsonTheme}. */
+  theme?: LoraJsonTheme;
+  /** Called whenever the JSON linter has new diagnostics. */
+  onDiagnostics?: (diagnostics: Diagnostic[]) => void;
+  /** Called whenever the cursor moves, with the new JSON path. */
+  onCursorPath?: (path: PathSegment[]) => void;
   /**
    * Fired on `Cmd/Ctrl + Enter`. Hosts typically wire this to
-   * "execute the query". The current source string is passed in.
+   * "run the query with this payload". The current source string
+   * is passed in.
    */
   onRun?: (source: string) => void;
 
-  /** Known node labels — surfaced after `:` inside `(...)`. */
-  labels?: readonly string[];
-  /** Known relationship types — surfaced after `:` inside `[...]`. */
-  relTypes?: readonly string[];
-  /** Stored procedures — surfaced after `CALL ` and inside `YIELD`. */
-  procedures?: readonly ProcedureSignature[];
+  /**
+   * Top-level keys the host wants surfaced in the autocomplete
+   * popup. Defaults to `allowedKeys` when that prop is set.
+   */
+  knownKeys?: readonly string[];
+
+  /**
+   * When set, the only valid top-level keys. Extra keys are
+   * flagged as a lint error. Pair with the autocomplete to lock
+   * the payload down to a specific parameter set.
+   */
+  allowedKeys?: readonly string[];
+
+  /**
+   * Top-level keys that must always be present. Missing keys
+   * surface as a lint warning anchored at the closing `}`.
+   */
+  requiredKeys?: readonly string[];
 
   /**
    * Force a color scheme regardless of the host's
-   * `prefers-color-scheme` setting. Defaults to `"auto"`, which lets
-   * the system value win. Inline `theme` overrides take priority over
-   * this prop.
+   * `prefers-color-scheme` setting. Defaults to `"auto"`.
    */
   colorScheme?: "light" | "dark" | "auto";
   /** Show or hide the line-number gutter. Defaults to `true`. */
@@ -201,72 +93,62 @@ export interface LoraQueryEditorProps {
   /** Maximum height of the editor container (enables vertical scroll). */
   maxHeight?: string;
   /**
+   * Indent width passed to the prettifier (`JSON.stringify(_, null, indent)`).
+   * Defaults to `2`.
+   */
+  indent?: number;
+  /**
+   * Auto-prettify when the user pastes content that parses as
+   * valid JSON. Defaults to `false` — opt-in.
+   */
+  formatOnPaste?: boolean;
+  /**
    * Extra CodeMirror extensions to merge in. Appended to the default
-   * bundle so the host can add language overlays, decorations, custom
-   * lint sources, etc.
+   * bundle so the host can add overlays, custom lint sources, etc.
    */
   extraExtensions?: Extension | readonly Extension[];
   /**
    * Extra keybindings, merged at `Prec.high` so host shortcuts win
-   * over the defaults. Example: `{ key: "Mod-/", run: toggleComment }`.
+   * over the defaults.
    */
   extraKeymap?: readonly KeyBinding[];
-  /**
-   * Called when the cursor sits inside a `{ ... }` property map of a
-   * node or relationship pattern. Return (or resolve to) the property
-   * keys you want to offer.
-   *
-   * The `ctx` argument carries the surrounding label hint
-   * (`(alice:Person {|})` → `{ kind: 'node', label: 'Person', ... }`)
-   * so the host can fetch schema-aware results.
-   */
-  getPropertyKeys?: (
-    ctx: PropertyContext,
-  ) => readonly string[] | Promise<readonly string[]>;
 }
 
-export interface LoraQueryEditorHandle {
-  /** Reformat the current buffer in place via the WASM prettifier. */
+export interface LoraJsonEditorHandle {
+  /** Reformat the current buffer in place via the JSON prettifier. */
   prettify: () => Promise<void>;
   /** Alias for {@link prettify}. */
   format: () => Promise<void>;
-  /** Run a one-shot validation pass and return the diagnostics. */
+  /** Minify the current buffer in place (single-line output). */
+  minify: () => Promise<void>;
+  /** Recursively sort every object's keys alphabetically. */
+  sortKeys: () => void;
+  /** Convert single-quoted strings to double-quoted (strict JSON repair). */
+  toggleQuotes: () => void;
+  /** Collapse every foldable range. */
+  foldAll: () => void;
+  /** Expand every folded range. */
+  unfoldAll: () => void;
+  /** Run a one-shot parse check and return the diagnostics. */
   validate: () => Promise<Diagnostic[]>;
   /** Current source code. */
   getValue: () => string;
+  /** Parse the buffer, or `undefined` when invalid. */
+  getJson: () => unknown | undefined;
+  /** JSON path at the current cursor position. */
+  getCursorPath: () => PathSegment[];
   /** Imperatively replace the editor content. */
   setValue: (next: string) => void;
-  /** Names of every `$param` referenced in the query. */
-  getParameters: () => Promise<string[]>;
-  /** Names of every variable declared anywhere in the query. */
-  getDeclaredVariables: () => Promise<string[]>;
+  /** Set the editor content from a JS value (stringified + prettified). */
+  setJson: (value: unknown) => void;
   /** Trigger the host-provided `onRun` callback with the current source. */
   run: () => void;
-  /**
-   * Copy the current buffer to the clipboard. Resolves with `true` on
-   * success, `false` if the Clipboard API is unavailable or refused.
-   */
+  /** Copy the current buffer to the clipboard. */
   copy: () => Promise<boolean>;
   /** Move keyboard focus to the editor. */
   focus: () => void;
-  /** Direct access to the underlying CodeMirror view, if needed. */
+  /** Direct access to the underlying CodeMirror view. */
   view: () => EditorView | null;
-}
-
-function buildProviders(
-  labels: readonly string[] | undefined,
-  relTypes: readonly string[] | undefined,
-  procedures: readonly ProcedureSignature[] | undefined,
-  getPropertyKeys:
-    | ((ctx: PropertyContext) => readonly string[] | Promise<readonly string[]>)
-    | undefined,
-): LoraQueryProviders {
-  return {
-    labels: labels ?? [],
-    relTypes: relTypes ?? [],
-    procedures: procedures ?? [],
-    ...(getPropertyKeys ? { getPropertyKeys: (ctx) => getPropertyKeys(ctx) } : {}),
-  };
 }
 
 function toExtensionArray(
@@ -276,23 +158,17 @@ function toExtensionArray(
   return (Array.isArray(extras) ? [...extras] : [extras]) as Extension[];
 }
 
-function themeToStyle(theme: LoraQueryTheme | undefined): CSSProperties {
+function themeToStyle(theme: LoraJsonTheme | undefined): CSSProperties {
   if (!theme) return {};
   const out: Record<string, string> = {};
-  for (const k of Object.keys(theme) as (keyof LoraQueryTheme)[]) {
+  for (const k of Object.keys(theme) as (keyof LoraJsonTheme)[]) {
     const v = theme[k];
-    if (v) out[THEME_TO_VAR[k]] = v;
+    if (v) out[JSON_THEME_TO_VAR[k]] = v;
   }
   return out as CSSProperties;
 }
 
-/**
- * Subset of the React theme that lives inside the CodeMirror style
- * namespace (popups). The CSS variables on `.lora-query` cover the
- * editor surface itself; the popup theme needs explicit values because
- * tooltips render into `document.body`.
- */
-function themeToPopupValues(theme: LoraQueryTheme | undefined) {
+function themeToPopupValues(theme: LoraJsonTheme | undefined) {
   if (!theme) return {};
   const out: Record<string, string> = {};
   if (theme.fontFamily) out.fontFamily = theme.fontFamily;
@@ -311,10 +187,35 @@ function themeToPopupValues(theme: LoraQueryTheme | undefined) {
   return out;
 }
 
-export const LoraQueryEditor = forwardRef<
-  LoraQueryEditorHandle,
-  LoraQueryEditorProps
->(function LoraQueryEditor(
+function buildProviders(
+  knownKeys: readonly string[] | undefined,
+  allowedKeys: readonly string[] | undefined,
+): LoraJsonProviders {
+  // `knownKeys` explicitly wins; otherwise fall through to
+  // `allowedKeys` so locking the payload also drives autocomplete.
+  return { knownKeys: knownKeys ?? allowedKeys ?? [] };
+}
+
+function buildKeyConstraints(
+  allowedKeys: readonly string[] | undefined,
+  requiredKeys: readonly string[] | undefined,
+): KeyConstraints {
+  const out: KeyConstraints = {};
+  if (allowedKeys) out.allowedKeys = allowedKeys;
+  if (requiredKeys) out.requiredKeys = requiredKeys;
+  return out;
+}
+
+/**
+ * Full-featured JSON editor — peer to `LoraQueryEditor`. Same theming
+ * surface, same imperative handle shape. Use it for filling in query
+ * parameter payloads (editable, optionally locked to known keys) or
+ * for displaying query results (`readOnly={true}`).
+ */
+export const LoraJsonEditor = forwardRef<
+  LoraJsonEditorHandle,
+  LoraJsonEditorProps
+>(function LoraJsonEditor(
   {
     value,
     onChange,
@@ -323,18 +224,18 @@ export const LoraQueryEditor = forwardRef<
     style,
     theme,
     onDiagnostics,
-    onAnalysis,
-    onOutline,
+    onCursorPath,
     onRun,
-    labels,
-    relTypes,
-    procedures,
-    getPropertyKeys,
+    knownKeys,
+    allowedKeys,
+    requiredKeys,
     colorScheme = "auto",
     showLineNumbers = true,
     placeholder,
     minHeight,
     maxHeight,
+    indent = 2,
+    formatOnPaste = false,
     extraExtensions,
     extraKeymap,
   },
@@ -348,25 +249,39 @@ export const LoraQueryEditor = forwardRef<
   const copiedTimerRef = useRef<number | null>(null);
   const extensionsComp = useRef(new Compartment());
   const providersComp = useRef(new Compartment());
+  const constraintsComp = useRef(new Compartment());
   const themeComp = useRef(new Compartment());
   const keymapComp = useRef(new Compartment());
   const extrasComp = useRef(new Compartment());
-  // Signature of the last popup-theme we pushed to CodeMirror. Hosts
-  // often pass inline `theme={{ ... }}` objects whose identity changes
-  // on every render; without this gate every render would reconfigure
-  // the popup theme compartment even when nothing visible changed.
   const lastPopupSigRef = useRef<string>("");
-  // Last string the editor pushed up via onChange — used to skip the
-  // controlled-value round-trip (host echoes the same string back as
-  // the new `value`, which would otherwise dispatch a full-doc replace
-  // and clobber selection/undo on every keystroke).
   const lastEmittedRef = useRef<string>(value);
+
+  const indentRef = useRef(indent);
+  useEffect(() => {
+    indentRef.current = indent;
+  }, [indent]);
+
+  const formatOnPasteRef = useRef(formatOnPaste);
+  useEffect(() => {
+    formatOnPasteRef.current = formatOnPaste;
+  }, [formatOnPaste]);
 
   const prettifyFn = useCallback(async () => {
     const view = viewRef.current;
     if (!view) return;
     const current = view.state.doc.toString();
-    const next = await format(current);
+    const next = formatJson(current, indentRef.current);
+    if (next === current) return;
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: next },
+    });
+  }, []);
+
+  const minifyFn = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    const next = minifyJson(current);
     if (next === current) return;
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: next },
@@ -383,24 +298,69 @@ export const LoraQueryEditor = forwardRef<
     onRunRef.current?.(view.state.doc.toString());
   }, []);
 
+  const onCursorPathRef = useRef(onCursorPath);
+  useEffect(() => {
+    onCursorPathRef.current = onCursorPath;
+  }, [onCursorPath]);
+  // Memoised last-emitted path so we don't churn the host with
+  // identical arrays.
+  const lastPathSigRef = useRef<string>("");
+
   useLayoutEffect(() => {
     if (!cmHostRef.current) return;
-    const initialProviders = buildProviders(labels, relTypes, procedures, getPropertyKeys);
+    const initialProviders = buildProviders(knownKeys, allowedKeys);
+    const initialConstraints = buildKeyConstraints(allowedKeys, requiredKeys);
     const initialPopupValues = themeToPopupValues(theme);
     lastPopupSigRef.current = JSON.stringify(initialPopupValues);
+
+    // Paste handler — runs at the DOM event level so we can replace
+    // the inbound text *before* CodeMirror sees it. Only triggers
+    // when the pasted content is, on its own, a complete + valid
+    // JSON document; anything else falls through to the default
+    // paste behaviour.
+    const pasteHandler = EditorView.domEventHandlers({
+      paste(event, view) {
+        if (!formatOnPasteRef.current) return false;
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        if (!text.trim()) return false;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          return false;
+        }
+        const replacement = JSON.stringify(
+          parsed,
+          null,
+          indentRef.current,
+        );
+        const sel = view.state.selection.main;
+        event.preventDefault();
+        view.dispatch({
+          changes: { from: sel.from, to: sel.to, insert: replacement },
+          selection: { anchor: sel.from + replacement.length },
+          userEvent: "input.paste.format",
+        });
+        return true;
+      },
+    });
+
     const view = new EditorView({
       doc: value,
       parent: cmHostRef.current,
       extensions: [
         extensionsComp.current.of(
-          cypherExtensions({
+          jsonExtensions({
             readOnly,
             showLineNumbers,
             ...(placeholder !== undefined && { placeholder }),
           }),
         ),
-        themeComp.current.of(popupTheme(initialPopupValues)),
-        providersComp.current.of(loraQueryProviders.of(initialProviders)),
+        themeComp.current.of(jsonPopupTheme(initialPopupValues)),
+        providersComp.current.of(loraJsonProviders.of(initialProviders)),
+        constraintsComp.current.of(
+          keyConstraintsFacet.of(initialConstraints),
+        ),
         extrasComp.current.of(toExtensionArray(extraExtensions)),
         keymapComp.current.of(
           extraKeymap && extraKeymap.length > 0
@@ -423,8 +383,18 @@ export const LoraQueryEditor = forwardRef<
                 return true;
               },
             },
+            {
+              key: "Alt-Shift-s",
+              run: () => {
+                const v = viewRef.current;
+                if (!v) return false;
+                sortKeysCmd(v, indentRef.current);
+                return true;
+              },
+            },
           ]),
         ),
+        pasteHandler,
         EditorView.updateListener.of((update) => {
           if (update.docChanged && onChange) {
             const next = update.state.doc.toString();
@@ -434,6 +404,21 @@ export const LoraQueryEditor = forwardRef<
           if (update.selectionSet || update.docChanged) {
             const sel = update.state.selection.main;
             setHasSelection(!sel.empty);
+          }
+          // Recompute cursor path on either a doc change or a
+          // selection change, but only emit when the path actually
+          // changed.
+          if (
+            onCursorPathRef.current &&
+            (update.docChanged || update.selectionSet)
+          ) {
+            const pos = update.state.selection.main.head;
+            const path = getJsonPath(update.state.doc.toString(), pos);
+            const sig = JSON.stringify(path);
+            if (sig !== lastPathSigRef.current) {
+              lastPathSigRef.current = sig;
+              onCursorPathRef.current(path);
+            }
           }
         }),
       ],
@@ -449,10 +434,6 @@ export const LoraQueryEditor = forwardRef<
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    // Skip the round-trip: when the host echoes the same string we
-    // just emitted, we'd otherwise replace the entire doc on every
-    // keystroke (destroying selection + filling the undo stack with
-    // no-op edits).
     if (lastEmittedRef.current === value) return;
     if (view.state.doc.toString() === value) {
       lastEmittedRef.current = value;
@@ -467,26 +448,12 @@ export const LoraQueryEditor = forwardRef<
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    view.dispatch({
-      effects: extensionsComp.current.reconfigure(
-        cypherExtensions({ readOnly }),
-      ),
-    });
-  }, [readOnly]);
-
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view) return;
     const values = themeToPopupValues(theme);
-    // Stable signature over the popup-relevant keys. Skipping the
-    // reconfigure when the signature matches avoids dispatching a
-    // transaction (and re-rendering popups) for theme objects that
-    // were re-created with identical content.
     const sig = JSON.stringify(values);
     if (sig === lastPopupSigRef.current) return;
     lastPopupSigRef.current = sig;
     view.dispatch({
-      effects: themeComp.current.reconfigure(popupTheme(values)),
+      effects: themeComp.current.reconfigure(jsonPopupTheme(values)),
     });
   }, [theme]);
 
@@ -495,51 +462,44 @@ export const LoraQueryEditor = forwardRef<
     if (!view) return;
     view.dispatch({
       effects: providersComp.current.reconfigure(
-        loraQueryProviders.of(buildProviders(labels, relTypes, procedures, getPropertyKeys)),
+        loraJsonProviders.of(buildProviders(knownKeys, allowedKeys)),
       ),
     });
-  }, [labels, relTypes, procedures, getPropertyKeys]);
+  }, [knownKeys, allowedKeys]);
 
   useEffect(() => {
-    if (!onDiagnostics && !onAnalysis && !onOutline) return;
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: constraintsComp.current.reconfigure(
+        keyConstraintsFacet.of(
+          buildKeyConstraints(allowedKeys, requiredKeys),
+        ),
+      ),
+    });
+  }, [allowedKeys, requiredKeys]);
+
+  useEffect(() => {
+    if (!onDiagnostics) return;
     let cancelled = false;
     const view = viewRef.current;
     if (!view) return;
     const doc = view.state.doc.toString();
     if (!doc.trim()) {
-      // Fire all three synchronously so React batches into a single
-      // re-render of the host.
-      onDiagnostics?.([]);
-      onAnalysis?.({ diagnostics: [], foldRanges: [] });
-      onOutline?.({ variables: [], parameters: [], labels: [], relTypes: [] });
+      onDiagnostics([]);
       return;
     }
-    // Resolve every requested task first, *then* fire callbacks in a
-    // single microtask. With the parser cache (parser.ts) all three
-    // requests share their WASM work; the await-then-emit shape lets
-    // React 18 batch the three setStates of useLoraQueryStatus into
-    // one render rather than three.
-    const cfg: import("./parser").AnalyseConfig = {
-      strictLabels: (labels?.length ?? 0) > 0,
-      strictRelTypes: (relTypes?.length ?? 0) > 0,
-    };
-    if (labels) cfg.labels = labels;
-    if (relTypes) cfg.relTypes = relTypes;
-    const diagP = onDiagnostics ? validateAll(doc) : Promise.resolve(null);
-    const anaP = onAnalysis ? analyseAll(doc, cfg) : Promise.resolve(null);
-    const outP = onOutline ? outline(doc) : Promise.resolve(null);
-    Promise.all([diagP, anaP, outP])
-      .then(([d, a, o]) => {
+    Promise.resolve()
+      .then(() => {
         if (cancelled) return;
-        if (onDiagnostics && d) onDiagnostics(d);
-        if (onAnalysis && a) onAnalysis(a);
-        if (onOutline && o) onOutline(o);
+        const lint = jsonParseLinter();
+        onDiagnostics(lint(view));
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [value, onDiagnostics, onAnalysis, onOutline, labels, relTypes]);
+  }, [value, onDiagnostics]);
 
   useImperativeHandle(
     ref,
@@ -547,6 +507,27 @@ export const LoraQueryEditor = forwardRef<
       view: () => viewRef.current,
       prettify: prettifyFn,
       format: prettifyFn,
+      minify: minifyFn,
+      sortKeys: () => {
+        const v = viewRef.current;
+        if (!v) return;
+        sortKeysCmd(v, indentRef.current);
+      },
+      toggleQuotes: () => {
+        const v = viewRef.current;
+        if (!v) return;
+        toggleQuotesCmd(v);
+      },
+      foldAll: () => {
+        const v = viewRef.current;
+        if (!v) return;
+        foldAllCmd(v);
+      },
+      unfoldAll: () => {
+        const v = viewRef.current;
+        if (!v) return;
+        unfoldAllCmd(v);
+      },
       run: runFn,
       focus: () => viewRef.current?.focus(),
       copy: async () => {
@@ -563,15 +544,25 @@ export const LoraQueryEditor = forwardRef<
       validate: async () => {
         const view = viewRef.current;
         if (!view) return [];
-        const errors = await validateAll(view.state.doc.toString());
-        return errors.map((err) => ({
-          from: err.span.start,
-          to: err.span.end,
-          severity: err.severity,
-          message: err.message,
-        }));
+        const lint = jsonParseLinter();
+        return lint(view);
       },
       getValue: () => viewRef.current?.state.doc.toString() ?? "",
+      getJson: () => {
+        const view = viewRef.current;
+        if (!view) return undefined;
+        try {
+          return JSON.parse(view.state.doc.toString());
+        } catch {
+          return undefined;
+        }
+      },
+      getCursorPath: () => {
+        const view = viewRef.current;
+        if (!view) return [];
+        const pos = view.state.selection.main.head;
+        return getJsonPath(view.state.doc.toString(), pos);
+      },
       setValue: (next: string) => {
         const view = viewRef.current;
         if (!view) return;
@@ -584,29 +575,29 @@ export const LoraQueryEditor = forwardRef<
           changes: { from: 0, to: view.state.doc.length, insert: next },
         });
       },
-      getParameters: async () => {
+      setJson: (val: unknown) => {
         const view = viewRef.current;
-        if (!view) return [];
-        const o = await outline(view.state.doc.toString());
-        return o.parameters;
-      },
-      getDeclaredVariables: async () => {
-        const view = viewRef.current;
-        if (!view) return [];
-        const o = await outline(view.state.doc.toString());
-        return o.variables.map((v) => v.name);
+        if (!view) return;
+        const text = JSON.stringify(val, null, indentRef.current);
+        if (view.state.doc.toString() === text) {
+          lastEmittedRef.current = text;
+          return;
+        }
+        lastEmittedRef.current = text;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: text },
+        });
       },
     }),
-    [prettifyFn, runFn],
+    [prettifyFn, minifyFn, runFn],
   );
 
-  // Reconfigure when the extension-affecting props change.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
       effects: extensionsComp.current.reconfigure(
-        cypherExtensions({
+        jsonExtensions({
           readOnly,
           showLineNumbers,
           ...(placeholder !== undefined && { placeholder }),
@@ -681,7 +672,7 @@ export const LoraQueryEditor = forwardRef<
   return (
     <div
       ref={hostRef}
-      className={["lora-query", className].filter(Boolean).join(" ")}
+      className={["lora-query", "lora-json", className].filter(Boolean).join(" ")}
       data-color-scheme={colorScheme === "auto" ? undefined : colorScheme}
       style={containerStyle}
     >
@@ -692,8 +683,8 @@ export const LoraQueryEditor = forwardRef<
             <button
               type="button"
               className="lora-query__action lora-query__format"
-              aria-label="Format query"
-              title="Format query (⇧⌥F)"
+              aria-label="Format JSON"
+              title="Format JSON (⇧⌥F)"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 void prettifyFn();

@@ -1,19 +1,25 @@
 /* Default styling for @loradb/lora-query.
  *
- * Every visual choice is driven by a CSS variable on `.lora-query`.
- * The React `theme` prop overrides them inline; host CSS can
- * override them too. Values here MUST mirror `src/palettes.ts` —
- * that file is the single source of truth.
+ * Every visual choice is driven by a CSS variable on `.lora-query`
+ * (and `.lora-json`, which reuses every rule below — see the
+ * combined selectors). The React `theme` prop overrides them
+ * inline; host CSS can override them too. Values here MUST mirror
+ * `src/palettes.ts` — that file is the single source of truth.
  *
  * Color scheme resolution (highest priority wins):
  *   1. inline `style="--lq-*: ..."` from the `theme` prop
- *   2. `.lora-query[data-color-scheme="light|dark"]` (set by the
- *      `colorScheme` prop)
+ *   2. `[data-color-scheme="light|dark"]` on the container (set by
+ *      the `colorScheme` prop)
  *   3. the light defaults below
  *
  * The light palette is always the baseline — dark is opt-in, never
  * implicit. Hosts that want auto-switching can pass
  * `colorScheme={prefersDark ? "dark" : "light"}` themselves.
+ *
+ * The LoraJsonEditor stamps `.lora-query .lora-json` on its root so
+ * every selector below applies to it transparently. JSON-specific
+ * rules use `.lora-json` for clarity but can equally be styled via
+ * the shared `.lora-query` class.
  */
 
 /* ─── Light palette (Catppuccin Latte) — the baseline. ──────────── */
@@ -27,6 +33,7 @@
   --lq-gutter-bg: #e6e9ef;
   --lq-gutter-fg: #8c8fa1;
   --lq-cursor: #4c4f69;
+  --lq-cursor-width: 2px;
   --lq-selection-bg: rgba(30, 102, 245, 0.18);
 
   --lq-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -227,6 +234,10 @@
 .lora-query .cm-cursor,
 .lora-query .cm-dropCursor {
   border-left-color: var(--lq-cursor);
+  border-left-width: var(--lq-cursor-width);
+}
+.lora-query .cm-content {
+  caret-color: var(--lq-cursor);
 }
 .lora-query .cm-selectionBackground,
 .lora-query.cm-focused .cm-selectionBackground,
@@ -257,6 +268,32 @@
  * from competing with semantic tokens. */
 .lora-query .cm-lora-punct { opacity: 0.7; }
 .lora-query .cm-lora-comment { color: var(--lq-color-comment); font-style: italic; }
+/* Emitted by the JSON Lezer grammar for malformed tokens — kept
+ * subtle so the lint underline carries the weight. */
+.lora-query .cm-lora-invalid { color: var(--lq-error); text-decoration: underline wavy; }
+
+/* ─── JSON fold placeholder ──────────────────────────────────────
+ * Shown when an object/array body is collapsed. Replaces the
+ * default `…` with `{ N keys }` / `[ N items ]`, computed in
+ * `json/foldPlaceholder.ts`.
+ */
+.lora-query .cm-lora-json-fold-placeholder {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 2px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--lq-muted) 16%, transparent);
+  color: var(--lq-muted);
+  font-family: var(--lq-mono-font);
+  font-size: calc(var(--lq-font-size) - 1px);
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+.lora-query .cm-lora-json-fold-placeholder:hover {
+  background: color-mix(in srgb, var(--lq-accent) 18%, transparent);
+  color: var(--lq-fg);
+}
 
 /* ─── Active variable references ───────────────────────────────────
  * Applied to every occurrence of the variable currently under the

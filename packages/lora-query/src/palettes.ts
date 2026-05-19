@@ -21,6 +21,8 @@ export interface SurfaceColors {
   gutterBackground: string;
   gutterForeground: string;
   cursor: string;
+  /** Width of the blinking caret (e.g. `"2px"`). */
+  cursorWidth: string;
   /** rgba() — must already include alpha for the selection highlight. */
   selectionBackground: string;
 }
@@ -98,6 +100,7 @@ export const latte: Palette = {
     gutterBackground: "#e6e9ef",
     gutterForeground: "#8c8fa1",
     cursor: "#4c4f69",
+    cursorWidth: "2px",
     selectionBackground: "rgba(30, 102, 245, 0.18)",
   },
   tokens: {
@@ -155,6 +158,7 @@ export const githubDark: Palette = {
     gutterBackground: "#1e1e1e",
     gutterForeground: "#6e7681",
     cursor: "#e6e6e6",
+    cursorWidth: "2px",
     selectionBackground: "rgba(31, 111, 235, 0.28)",
   },
   tokens: {

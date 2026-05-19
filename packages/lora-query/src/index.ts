@@ -5,10 +5,42 @@ export type {
   LoraQueryTheme,
 } from "./LoraQueryEditor";
 
+export { LoraJsonEditor } from "./LoraJsonEditor";
+export type {
+  LoraJsonEditorHandle,
+  LoraJsonEditorProps,
+  LoraJsonTheme,
+} from "./LoraJsonEditor";
+
 export { useLoraQueryStatus } from "./useLoraQueryStatus";
 export type { LoraQueryStatus } from "./useLoraQueryStatus";
 
+export { useLoraJsonStatus } from "./useLoraJsonStatus";
+export type { LoraJsonStatus } from "./useLoraJsonStatus";
+
 export { lightTheme, darkTheme, createTheme } from "./themes";
+export {
+  lightJsonTheme,
+  darkJsonTheme,
+  createJsonTheme,
+} from "./jsonThemes";
+
+export { formatJson, minifyJson } from "./json/format";
+export { jsonExtensions } from "./json/extensions";
+export { loraJsonProviders } from "./json/completion";
+export type { LoraJsonProviders } from "./json/completion";
+export { getJsonPath, formatJsonPath } from "./json/path";
+export {
+  sortKeysCmd,
+  toggleQuotesCmd,
+  foldAllCmd,
+  unfoldAllCmd,
+} from "./json/commands";
+export {
+  keyConstraintsFacet,
+  keyConstraintsLinter,
+} from "./json/keyConstraints";
+export type { KeyConstraints } from "./json/keyConstraints";
 export {
   latte,
   githubDark,
