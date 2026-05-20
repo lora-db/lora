@@ -134,6 +134,7 @@ interface PersistedSnapshot {
   // prefs
   graphMode: SerializedPrefs["graphMode"];
   autoRunOnSave: SerializedPrefs["autoRunOnSave"];
+  autoFormatOnRun: SerializedPrefs["autoFormatOnRun"];
   nodeCap: SerializedPrefs["nodeCap"];
   resultRowCap: SerializedPrefs["resultRowCap"];
   autoRestore: SerializedPrefs["autoRestore"];
@@ -152,6 +153,7 @@ function selectPersisted(s: Store): PersistedSnapshot {
     activePaneId: s.activePaneId,
     graphMode: s.graphMode,
     autoRunOnSave: s.autoRunOnSave,
+    autoFormatOnRun: s.autoFormatOnRun,
     nodeCap: s.nodeCap,
     resultRowCap: s.resultRowCap,
     autoRestore: s.autoRestore,
@@ -177,6 +179,7 @@ function shallowEqualSnapshot(
     a.activePaneId === b.activePaneId &&
     a.graphMode === b.graphMode &&
     a.autoRunOnSave === b.autoRunOnSave &&
+    a.autoFormatOnRun === b.autoFormatOnRun &&
     a.nodeCap === b.nodeCap &&
     a.resultRowCap === b.resultRowCap &&
     a.autoRestore === b.autoRestore &&
@@ -210,6 +213,7 @@ function serializeSnapshot(s: PersistedSnapshot) {
     prefs: {
       graphMode: s.graphMode,
       autoRunOnSave: s.autoRunOnSave,
+      autoFormatOnRun: s.autoFormatOnRun,
       nodeCap: s.nodeCap,
       resultRowCap: s.resultRowCap,
       autoRestore: s.autoRestore,

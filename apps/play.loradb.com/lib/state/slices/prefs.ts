@@ -11,6 +11,7 @@ import type { StateCreator } from "zustand";
 export interface SerializedPrefs {
   graphMode: "2d" | "3d";
   autoRunOnSave: boolean;
+  autoFormatOnRun: boolean;
   nodeCap: number;
   resultRowCap: number;
   autoRestore: boolean;
@@ -27,6 +28,7 @@ export interface PrefsSlice extends SerializedPrefs {
 export const DEFAULT_PREFS: SerializedPrefs = {
   graphMode: "2d",
   autoRunOnSave: false,
+  autoFormatOnRun: false,
   nodeCap: 5000,
   resultRowCap: 100000,
   autoRestore: true,
@@ -55,6 +57,8 @@ export const createPrefsSlice: StateCreator<
     set((state) => {
       state.graphMode = prefs.graphMode;
       state.autoRunOnSave = prefs.autoRunOnSave;
+      state.autoFormatOnRun =
+        prefs.autoFormatOnRun ?? DEFAULT_PREFS.autoFormatOnRun;
       state.nodeCap = prefs.nodeCap;
       state.resultRowCap = prefs.resultRowCap;
       // `autoRestore` was added in Phase 4b; treat a missing value as the

@@ -33,6 +33,7 @@ export function SettingsPanel() {
 
   const graphMode = useStore((s) => s.graphMode);
   const autoRunOnSave = useStore((s) => s.autoRunOnSave);
+  const autoFormatOnRun = useStore((s) => s.autoFormatOnRun);
   const autoRestore = useStore((s) => s.autoRestore);
   const nodeCap = useStore((s) => s.nodeCap);
   const resultRowCap = useStore((s) => s.resultRowCap);
@@ -188,14 +189,35 @@ export function SettingsPanel() {
             </Text>
           </Stack>
 
-          <Switch
-            size="sm"
-            checked={autoRunOnSave}
-            onChange={(e) => {
-              setPref("autoRunOnSave", e.currentTarget.checked);
-            }}
-            label="Auto-run on save"
-          />
+          <Stack gap={4}>
+            <Switch
+              size="sm"
+              checked={autoRunOnSave}
+              onChange={(e) => {
+                setPref("autoRunOnSave", e.currentTarget.checked);
+              }}
+              label="Auto-run on save"
+            />
+            <Text size="xs" c={tokens.fg.muted}>
+              Run the active tab automatically when you save it
+              (Cmd/Ctrl-S).
+            </Text>
+          </Stack>
+
+          <Stack gap={4}>
+            <Switch
+              size="sm"
+              checked={autoFormatOnRun}
+              onChange={(e) => {
+                setPref("autoFormatOnRun", e.currentTarget.checked);
+              }}
+              label="Auto-format on run"
+            />
+            <Text size="xs" c={tokens.fg.muted}>
+              Reformat the active tab before running it. Skipped if the
+              query has parse errors.
+            </Text>
+          </Stack>
 
           <NumberInput
             size="xs"

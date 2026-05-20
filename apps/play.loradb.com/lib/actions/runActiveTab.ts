@@ -20,6 +20,7 @@
 import { notifications } from "@mantine/notifications";
 
 import type { LoraParams } from "@loradb/lora-wasm";
+import { format as formatQuery, validate as validateQuery } from "@loradb/lora-query";
 
 import { useStore } from "@/lib/state/store";
 import { run } from "@/lib/db/client";
@@ -125,8 +126,27 @@ export async function runActiveTab(
   if (tabId === null) return null;
   const tab = state.tabs.find((t) => t.id === tabId);
   if (!tab) return null;
-  const body = tab.body;
+  let body = tab.body;
   if (body.trim().length === 0) return null;
+
+  // Auto-format on run — only when the source parses cleanly so we
+  // never silently rewrite a buffer the user is mid-edit on. Errors
+  // from the formatter itself are swallowed: a failed prettify must
+  // never block a run.
+  if (state.autoFormatOnRun) {
+    try {
+      const diagnostics = await validateQuery(body);
+      if (diagnostics.length === 0) {
+        const formatted = await formatQuery(body);
+        if (formatted !== body) {
+          state.setBody(tabId, formatted);
+          body = formatted;
+        }
+      }
+    } catch {
+      // ignore — fall through with the original body
+    }
+  }
 
   // Validate the params payload unless the caller has explicitly
   // opted in to bypassing the gate.
