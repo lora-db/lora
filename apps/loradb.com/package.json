@@ -1,6 +1,6 @@
 {
   "name": "loradb-docs",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "private": true,
   "license": "MIT",
   "packageManager": "yarn@4.5.1",
