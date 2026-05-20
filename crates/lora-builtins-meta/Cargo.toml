@@ -1,0 +1,14 @@
+[package]
+name = "lora-builtins-meta"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Static metadata table for LoraDB's namespaced builtin functions — arity, aliases, aggregates. Shared by the analyzer, executor, and editor WASM."
+keywords = ["loradb", "cypher", "builtins", "metadata"]
+categories = ["compilers", "parser-implementations"]
+
+[dependencies]

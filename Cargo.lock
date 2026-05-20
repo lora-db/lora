@@ -776,6 +776,7 @@ name = "lora-analyzer"
 version = "0.11.4"
 dependencies = [
  "lora-ast",
+ "lora-builtins-meta",
  "lora-parser",
  "lora-store",
  "thiserror",
@@ -795,6 +796,10 @@ dependencies = [
  "lora-database",
  "lora-store",
 ]
+
+[[package]]
+name = "lora-builtins-meta"
+version = "0.11.4"
 
 [[package]]
 name = "lora-compiler"
@@ -909,6 +914,7 @@ dependencies = [
  "console_error_panic_hook",
  "js-sys",
  "lora-ast",
+ "lora-builtins-meta",
  "lora-parser",
  "serde",
  "serde-wasm-bindgen",

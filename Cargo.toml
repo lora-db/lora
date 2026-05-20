@@ -2,6 +2,7 @@
 members = [
     "crates/lora-ast",
     "crates/lora-parser",
+    "crates/lora-builtins-meta",
     "crates/lora-analyzer",
     "crates/lora-compiler",
     "crates/lora-store",
@@ -35,6 +36,7 @@ rust-version = "1.87"
 # `cargo publish` works (crates.io cannot resolve path-only deps).
 lora-ast = { path = "crates/lora-ast", version = "=0.11.4" }
 lora-parser = { path = "crates/lora-parser", version = "=0.11.4" }
+lora-builtins-meta = { path = "crates/lora-builtins-meta", version = "=0.11.4" }
 lora-analyzer = { path = "crates/lora-analyzer", version = "=0.11.4" }
 lora-compiler = { path = "crates/lora-compiler", version = "=0.11.4" }
 lora-store = { path = "crates/lora-store", version = "=0.11.4" }

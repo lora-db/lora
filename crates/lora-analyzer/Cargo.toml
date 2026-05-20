@@ -13,6 +13,7 @@ categories = ["compilers", "parser-implementations"]
 
 [dependencies]
 lora-ast.workspace = true
+lora-builtins-meta.workspace = true
 lora-store.workspace = true
 lora-parser.workspace = true
 thiserror.workspace = true
