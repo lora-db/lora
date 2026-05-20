@@ -17,56 +17,57 @@
 // in `src/styles/components/_code.scss`.
 
 const KEYWORDS = new Set([
-  'MATCH',
-  'OPTIONAL',
-  'WHERE',
-  'RETURN',
-  'WITH',
-  'CREATE',
-  'MERGE',
-  'SET',
-  'DELETE',
-  'DETACH',
-  'REMOVE',
-  'UNWIND',
-  'ORDER',
-  'BY',
-  'SKIP',
-  'LIMIT',
-  'ASC',
-  'DESC',
-  'AND',
-  'OR',
-  'NOT',
-  'XOR',
-  'IN',
-  'IS',
-  'NULL',
-  'TRUE',
-  'FALSE',
-  'AS',
-  'DISTINCT',
-  'UNION',
-  'ALL',
-  'CASE',
-  'WHEN',
-  'THEN',
-  'ELSE',
-  'END',
-  'EXISTS',
-  'ON',
-  'STARTS',
-  'ENDS',
-  'CONTAINS',
-  'USING',
-  'CALL',
-  'YIELD',
-  'FOREACH',
+  "MATCH",
+  "OPTIONAL",
+  "WHERE",
+  "RETURN",
+  "WITH",
+  "CREATE",
+  "MERGE",
+  "SET",
+  "DELETE",
+  "DETACH",
+  "REMOVE",
+  "UNWIND",
+  "ORDER",
+  "BY",
+  "SKIP",
+  "LIMIT",
+  "ASC",
+  "DESC",
+  "AND",
+  "OR",
+  "NOT",
+  "XOR",
+  "IN",
+  "IS",
+  "NULL",
+  "TRUE",
+  "FALSE",
+  "AS",
+  "DISTINCT",
+  "UNION",
+  "ALL",
+  "CASE",
+  "WHEN",
+  "THEN",
+  "ELSE",
+  "END",
+  "EXISTS",
+  "ON",
+  "STARTS",
+  "ENDS",
+  "CONTAINS",
+  "USING",
+  "CALL",
+  "YIELD",
+  "FOREACH",
 ]);
 
 const RE_STRING_SINGLE = /^'(?:[^'\\]|\\.|'')*'/;
 const RE_STRING_DOUBLE = /^"(?:[^"\\]|\\.|"")*"/;
-const RE_NUMBER = /^(?:0x[0-9a-fA-F]+|0o[0-7]+|\d+\.\d+(?:e[-+]?\d+)?|\d+(?:e[-+]?\d+)?)/;
+const RE_NUMBER =
+  /^(?:0x[0-9a-fA-F]+|0o[0-7]+|\d+\.\d+(?:e[-+]?\d+)?|\d+(?:e[-+]?\d+)?)/;
 const RE_PARAM = /^\$[A-Za-z_][A-Za-z0-9_]*/;
 const RE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*/;
 // Arrows / range markers — must be tried before single-char operators.
@@ -86,7 +87,7 @@ export function tokenizeCypher(input) {
 
   const pushToken = (tok) => {
     out.push(tok);
-    if (tok.type !== 'whitespace') prev = tok;
+    if (tok.type !== "whitespace") prev = tok;
   };
 
   while (i < n) {
@@ -94,7 +95,7 @@ export function tokenizeCypher(input) {
 
     const ws = RE_WHITESPACE.exec(rest);
     if (ws) {
-      out.push({ type: 'whitespace', value: ws[0] });
+      out.push({ type: "whitespace", value: ws[0] });
       i += ws[0].length;
       continue;
     }
@@ -102,7 +103,7 @@ export function tokenizeCypher(input) {
     // Strings
     let m = RE_STRING_SINGLE.exec(rest) || RE_STRING_DOUBLE.exec(rest);
     if (m) {
-      pushToken({ type: 'string', value: m[0] });
+      pushToken({ type: "string", value: m[0] });
       i += m[0].length;
       continue;
     }
@@ -110,7 +111,7 @@ export function tokenizeCypher(input) {
     // Numbers
     m = RE_NUMBER.exec(rest);
     if (m) {
-      pushToken({ type: 'number', value: m[0] });
+      pushToken({ type: "number", value: m[0] });
       i += m[0].length;
       continue;
     }
@@ -118,7 +119,7 @@ export function tokenizeCypher(input) {
     // Parameters ($name)
     m = RE_PARAM.exec(rest);
     if (m) {
-      pushToken({ type: 'parameter', value: m[0] });
+      pushToken({ type: "parameter", value: m[0] });
       i += m[0].length;
       continue;
     }
@@ -126,41 +127,41 @@ export function tokenizeCypher(input) {
     // Relationship arrows / range markers
     m = RE_ARROW.exec(rest);
     if (m) {
-      pushToken({ type: 'operator', value: m[0] });
+      pushToken({ type: "operator", value: m[0] });
       i += m[0].length;
       continue;
     }
 
     // Colon — label / relationship-type follows
-    if (rest[0] === ':') {
-      pushToken({ type: 'punctuation', value: ':' });
+    if (rest[0] === ":") {
+      pushToken({ type: "punctuation", value: ":" });
       i += 1;
       const idm = RE_IDENT.exec(input.slice(i));
       if (idm) {
-        pushToken({ type: 'label', value: idm[0] });
+        pushToken({ type: "label", value: idm[0] });
         i += idm[0].length;
       }
       continue;
     }
 
     // Property access — `.name` after an identifier-like thing
-    if (rest[0] === '.') {
+    if (rest[0] === ".") {
       // Capture prev BEFORE pushing the dot, so the property check sees the
       // token preceding the `.` rather than the `.` itself.
       const preceding = prev;
-      pushToken({ type: 'punctuation', value: '.' });
+      pushToken({ type: "punctuation", value: "." });
       i += 1;
       const idm = RE_IDENT.exec(input.slice(i));
       if (idm) {
         const isProperty =
           preceding !== null &&
-          (preceding.type === 'variable' ||
-            preceding.type === 'property' ||
-            preceding.type === 'label' ||
-            preceding.value === ')' ||
-            preceding.value === ']');
+          (preceding.type === "variable" ||
+            preceding.type === "property" ||
+            preceding.type === "label" ||
+            preceding.value === ")" ||
+            preceding.value === "]");
         pushToken({
-          type: isProperty ? 'property' : 'variable',
+          type: isProperty ? "property" : "variable",
           value: idm[0],
         });
         i += idm[0].length;
@@ -171,7 +172,7 @@ export function tokenizeCypher(input) {
     // Operators (before single-char punctuation)
     m = RE_OP.exec(rest);
     if (m) {
-      pushToken({ type: 'operator', value: m[0] });
+      pushToken({ type: "operator", value: m[0] });
       i += m[0].length;
       continue;
     }
@@ -179,7 +180,7 @@ export function tokenizeCypher(input) {
     // Punctuation
     m = RE_PUNCT.exec(rest);
     if (m) {
-      pushToken({ type: 'punctuation', value: m[0] });
+      pushToken({ type: "punctuation", value: m[0] });
       i += m[0].length;
       continue;
     }
@@ -191,15 +192,15 @@ export function tokenizeCypher(input) {
       const upper = word.toUpperCase();
 
       if (KEYWORDS.has(upper)) {
-        pushToken({ type: 'keyword', value: word });
+        pushToken({ type: "keyword", value: word });
       } else {
         // Function if followed (optionally through whitespace) by `(`
         let k = i + word.length;
         while (k < n && /\s/.test(input[k])) k += 1;
-        if (input[k] === '(') {
-          pushToken({ type: 'function', value: word });
+        if (input[k] === "(") {
+          pushToken({ type: "function", value: word });
         } else {
-          pushToken({ type: 'variable', value: word });
+          pushToken({ type: "variable", value: word });
         }
       }
       i += word.length;
@@ -207,7 +208,7 @@ export function tokenizeCypher(input) {
     }
 
     // Fallback — never loop
-    pushToken({ type: 'plain', value: input[i] });
+    pushToken({ type: "plain", value: input[i] });
     i += 1;
   }
 

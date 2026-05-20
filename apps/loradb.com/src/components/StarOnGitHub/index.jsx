@@ -1,9 +1,11 @@
-import React from 'react';
-import clsx from 'clsx';
-import Link from '@docusaurus/Link';
+import React from "react";
+import clsx from "clsx";
+import Link from "@docusaurus/Link";
 
-import useGitHubStars, { formatCount } from '@site/src/components/GitHubStars/useGitHubStars';
-import styles from './styles.module.scss';
+import useGitHubStars, {
+  formatCount,
+} from "@site/src/components/GitHubStars/useGitHubStars";
+import styles from "./styles.module.scss";
 
 // Body-copy CTA. Two zones:
 //   • Left  — GitHub mark + "Star on GitHub" label (the ask)
@@ -14,10 +16,10 @@ import styles from './styles.module.scss';
 // (offline + no build-time value), the right zone hides cleanly and
 // the left zone stays as a standalone CTA.
 export default function StarOnGitHub({
-  repo = 'lora-db/lora',
-  href = 'https://github.com/lora-db/lora',
-  label = 'Github',
-  size = 'md',
+  repo = "lora-db/lora",
+  href = "https://github.com/lora-db/lora",
+  label = "Github",
+  size = "md",
   className,
 }) {
   const stars = useGitHubStars(repo);

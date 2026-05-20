@@ -6,11 +6,11 @@
 //
 // See https://docusaurus.io/docs/markdown-features/react#mdx-component-scope
 
-import MDXComponents from '@theme-original/MDXComponents';
-import BenchmarkSummary from '@site/src/components/BenchmarkSummary';
-import CypherCode from '@site/src/components/CypherCode';
-import CypherSnippet from '@site/src/components/CypherSnippet';
-import QueryCodeBlock from '@site/src/components/LoraQueryCodeBlock';
+import MDXComponents from "@theme-original/MDXComponents";
+import BenchmarkSummary from "@site/src/components/BenchmarkSummary";
+import CypherCode from "@site/src/components/CypherCode";
+import CypherSnippet from "@site/src/components/CypherSnippet";
+import QueryCodeBlock from "@site/src/components/LoraQueryCodeBlock";
 
 export default {
   ...MDXComponents,

@@ -1,6 +1,6 @@
-import React from 'react';
-import clsx from 'clsx';
-import styles from './styles.module.scss';
+import React from "react";
+import clsx from "clsx";
+import styles from "./styles.module.scss";
 
 // A composed graph of labeled nodes and typed edges, used as the
 // signature homepage illustration. Pure SVG — no runtime deps, no
@@ -13,39 +13,39 @@ import styles from './styles.module.scss';
 // is built to live inside.
 
 const NODES = [
-  { id: 'agent',    x: 400, y: 312, r: 30, label: 'Agent',       kind: 'core' },
-  { id: 'memory',   x: 200, y: 220, r: 22, label: 'Memory',      kind: 'primary' },
-  { id: 'tool',     x: 600, y: 200, r: 22, label: 'Tool',        kind: 'primary' },
-  { id: 'event',    x: 170, y: 410, r: 20, label: 'Event',       kind: 'primary' },
-  { id: 'entity',   x: 400, y: 488, r: 22, label: 'Entity',      kind: 'primary' },
-  { id: 'obs',      x: 630, y: 402, r: 20, label: 'Observation', kind: 'primary' },
-  { id: 'decision', x: 400, y: 132, r: 20, label: 'Decision',    kind: 'primary' },
-  { id: 'session',  x: 70,  y: 112, r: 14, label: 'Session',     kind: 'satellite' },
-  { id: 'scene',    x: 92,  y: 520, r: 14, label: 'Scene',       kind: 'satellite' },
-  { id: 'plan',     x: 730, y: 108, r: 14, label: 'Plan',        kind: 'satellite' },
-  { id: 'signal',   x: 720, y: 520, r: 14, label: 'Signal',      kind: 'satellite' },
+  { id: "agent", x: 400, y: 312, r: 30, label: "Agent", kind: "core" },
+  { id: "memory", x: 200, y: 220, r: 22, label: "Memory", kind: "primary" },
+  { id: "tool", x: 600, y: 200, r: 22, label: "Tool", kind: "primary" },
+  { id: "event", x: 170, y: 410, r: 20, label: "Event", kind: "primary" },
+  { id: "entity", x: 400, y: 488, r: 22, label: "Entity", kind: "primary" },
+  { id: "obs", x: 630, y: 402, r: 20, label: "Observation", kind: "primary" },
+  { id: "decision", x: 400, y: 132, r: 20, label: "Decision", kind: "primary" },
+  { id: "session", x: 70, y: 112, r: 14, label: "Session", kind: "satellite" },
+  { id: "scene", x: 92, y: 520, r: 14, label: "Scene", kind: "satellite" },
+  { id: "plan", x: 730, y: 108, r: 14, label: "Plan", kind: "satellite" },
+  { id: "signal", x: 720, y: 520, r: 14, label: "Signal", kind: "satellite" },
 ];
 
 // edges: [from, to, style?]. `style` keys: 'flow' = animated dash,
 // 'soft' = static faint, default = static.
 const EDGES = [
-  ['agent',    'memory',   'flow'],
-  ['agent',    'tool',     'flow'],
-  ['agent',    'event'],
-  ['agent',    'entity',   'flow'],
-  ['agent',    'obs'],
-  ['agent',    'decision', 'flow'],
-  ['memory',   'entity'],
-  ['memory',   'decision', 'soft'],
-  ['tool',     'decision'],
-  ['tool',     'obs',      'soft'],
-  ['event',    'entity'],
-  ['event',    'obs',      'soft'],
-  ['obs',      'entity'],
-  ['memory',   'session',  'soft'],
-  ['event',    'scene',    'soft'],
-  ['tool',     'plan',     'soft'],
-  ['obs',      'signal',   'soft'],
+  ["agent", "memory", "flow"],
+  ["agent", "tool", "flow"],
+  ["agent", "event"],
+  ["agent", "entity", "flow"],
+  ["agent", "obs"],
+  ["agent", "decision", "flow"],
+  ["memory", "entity"],
+  ["memory", "decision", "soft"],
+  ["tool", "decision"],
+  ["tool", "obs", "soft"],
+  ["event", "entity"],
+  ["event", "obs", "soft"],
+  ["obs", "entity"],
+  ["memory", "session", "soft"],
+  ["event", "scene", "soft"],
+  ["tool", "plan", "soft"],
+  ["obs", "signal", "soft"],
 ];
 
 const byId = Object.fromEntries(NODES.map((n) => [n.id, n]));
@@ -77,22 +77,52 @@ export default function BrandGraph({ className }) {
       >
         <defs>
           <radialGradient id="brandGraphCoreGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="var(--brand-graph-glow-inner)" stopOpacity="1" />
-            <stop offset="60%" stopColor="var(--brand-graph-glow-mid)" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="var(--brand-graph-glow-outer)" stopOpacity="0" />
+            <stop
+              offset="0%"
+              stopColor="var(--brand-graph-glow-inner)"
+              stopOpacity="1"
+            />
+            <stop
+              offset="60%"
+              stopColor="var(--brand-graph-glow-mid)"
+              stopOpacity="0.45"
+            />
+            <stop
+              offset="100%"
+              stopColor="var(--brand-graph-glow-outer)"
+              stopOpacity="0"
+            />
           </radialGradient>
 
-          <linearGradient id="brandGraphEdge" x1="0%" y1="0%" x2="100%" y2="100%">
+          <linearGradient
+            id="brandGraphEdge"
+            x1="0%"
+            y1="0%"
+            x2="100%"
+            y2="100%"
+          >
             <stop offset="0%" stopColor="var(--brand-accent-a)" />
             <stop offset="100%" stopColor="var(--brand-accent-b)" />
           </linearGradient>
 
-          <linearGradient id="brandGraphCore" x1="0%" y1="0%" x2="100%" y2="100%">
+          <linearGradient
+            id="brandGraphCore"
+            x1="0%"
+            y1="0%"
+            x2="100%"
+            y2="100%"
+          >
             <stop offset="0%" stopColor="var(--brand-accent-a)" />
             <stop offset="100%" stopColor="var(--brand-accent-b)" />
           </linearGradient>
 
-          <filter id="brandGraphBlur" x="-50%" y="-50%" width="200%" height="200%">
+          <filter
+            id="brandGraphBlur"
+            x="-50%"
+            y="-50%"
+            width="200%"
+            height="200%"
+          >
             <feGaussianBlur stdDeviation="18" />
           </filter>
         </defs>
@@ -112,7 +142,7 @@ export default function BrandGraph({ className }) {
             const a = byId[fromId];
             const b = byId[toId];
             // Alternate bend sign for visual rhythm.
-            const bend = ((i % 2) === 0 ? 1 : -1) * 0.07;
+            const bend = (i % 2 === 0 ? 1 : -1) * 0.07;
             const d = edgePath(a, b, bend);
             return (
               <path
@@ -120,10 +150,10 @@ export default function BrandGraph({ className }) {
                 d={d}
                 className={clsx(
                   styles.edge,
-                  variant === 'flow' && styles.edgeFlow,
-                  variant === 'soft' && styles.edgeSoft,
+                  variant === "flow" && styles.edgeFlow,
+                  variant === "soft" && styles.edgeSoft,
                 )}
-                style={{ '--edge-delay': `${(i % 6) * 0.6}s` }}
+                style={{ "--edge-delay": `${(i % 6) * 0.6}s` }}
               />
             );
           })}
@@ -137,25 +167,22 @@ export default function BrandGraph({ className }) {
             // translate.
             <g key={n.id} transform={`translate(${n.x} ${n.y})`}>
               <g
-                className={clsx(
-                  styles.node,
-                  styles[`node_${n.kind}`],
-                )}
-                style={{ '--node-delay': `${i * 0.25}s` }}
+                className={clsx(styles.node, styles[`node_${n.kind}`])}
+                style={{ "--node-delay": `${i * 0.25}s` }}
               >
-                {n.kind === 'core' && (
+                {n.kind === "core" && (
                   <circle r={n.r + 14} className={styles.nodeHalo} />
                 )}
-                {n.kind !== 'satellite' && (
+                {n.kind !== "satellite" && (
                   <circle r={n.r + 6} className={styles.nodeRing} />
                 )}
                 <circle
                   r={n.r}
                   className={styles.nodeDot}
-                  fill={n.kind === 'core' ? 'url(#brandGraphCore)' : undefined}
+                  fill={n.kind === "core" ? "url(#brandGraphCore)" : undefined}
                 />
                 <circle r={n.r * 0.35} className={styles.nodeCore} />
-                {n.kind !== 'satellite' && (
+                {n.kind !== "satellite" && (
                   <text
                     y={n.r + 20}
                     className={styles.nodeLabel}
@@ -164,7 +191,7 @@ export default function BrandGraph({ className }) {
                     {n.label}
                   </text>
                 )}
-                {n.kind === 'satellite' && (
+                {n.kind === "satellite" && (
                   <text
                     y={n.r + 16}
                     className={clsx(styles.nodeLabel, styles.nodeLabelSmall)}

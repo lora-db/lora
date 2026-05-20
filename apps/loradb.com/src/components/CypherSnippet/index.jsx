@@ -1,6 +1,6 @@
-import React from 'react';
-import LoraQueryCodeBlock from '@site/src/components/LoraQueryCodeBlock';
-import styles from './styles.module.scss';
+import React from "react";
+import LoraQueryCodeBlock from "@site/src/components/LoraQueryCodeBlock";
+import styles from "./styles.module.scss";
 
 /**
  * Reference-only Cypher snippet.

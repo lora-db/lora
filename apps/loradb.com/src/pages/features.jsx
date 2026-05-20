@@ -1,18 +1,18 @@
-import React from 'react';
-import clsx from 'clsx';
-import Layout from '@theme/Layout';
-import Link from '@docusaurus/Link';
+import React from "react";
+import clsx from "clsx";
+import Layout from "@theme/Layout";
+import Link from "@docusaurus/Link";
 
-import CypherCode from '@site/src/components/CypherCode';
-import LinkCard from '@site/src/components/LinkCard';
-import {useFormattedCypher} from '@site/src/lib/useFormattedCypher';
-import styles from './features.module.scss';
+import CypherCode from "@site/src/components/CypherCode";
+import LinkCard from "@site/src/components/LinkCard";
+import { useFormattedCypher } from "@site/src/lib/useFormattedCypher";
+import styles from "./features.module.scss";
 
 /** Renders a Cypher coverage snippet with auto-formatting applied on
  *  mount. Kept inline here because the markup is trivial — the only
  *  reason for the indirection is to call the formatter hook per item
  *  without yanking the parent component apart. */
-function CoverageSnippet({snippet}) {
+function CoverageSnippet({ snippet }) {
   const formatted = useFormattedCypher(snippet);
   return (
     <pre className={styles.coverageCode}>
@@ -27,13 +27,13 @@ function CoverageSnippet({snippet}) {
 
 // Anchor strip below the hero. Each entry maps to a section id below.
 const ANCHORS = [
-  { id: 'principles', label: 'Principles' },
-  { id: 'coverage', label: 'Cypher coverage' },
-  { id: 'functions', label: 'Functions & types' },
-  { id: 'architecture', label: 'Architecture' },
-  { id: 'surfaces', label: 'Surfaces' },
-  { id: 'operations', label: 'Operations' },
-  { id: 'limits', label: 'Limits' },
+  { id: "principles", label: "Principles" },
+  { id: "coverage", label: "Cypher coverage" },
+  { id: "functions", label: "Functions & types" },
+  { id: "architecture", label: "Architecture" },
+  { id: "surfaces", label: "Surfaces" },
+  { id: "operations", label: "Operations" },
+  { id: "limits", label: "Limits" },
 ];
 
 // Design principles — moved from the homepage's "value props" block
@@ -41,20 +41,20 @@ const ANCHORS = [
 // listing what it supports.
 const PRINCIPLES = [
   {
-    title: 'Relationships are first-class',
-    body: 'Edges are typed, directed, and property-bearing. Traversal is O(degree), not a stack of self-joins.',
+    title: "Relationships are first-class",
+    body: "Edges are typed, directed, and property-bearing. Traversal is O(degree), not a stack of self-joins.",
   },
   {
-    title: 'Cypher where it counts',
-    body: 'A pragmatic subset of Cypher — MATCH, WITH, WHERE, CREATE, RETURN. Short queries, readable intent.',
+    title: "Cypher where it counts",
+    body: "A pragmatic subset of Cypher — MATCH, WITH, WHERE, CREATE, RETURN. Short queries, readable intent.",
   },
   {
-    title: 'Schema-free by design',
-    body: 'Add a label, an edge type, or a property by writing it. No ALTER, no migration, no restart.',
+    title: "Schema-free by design",
+    body: "Add a label, an edge type, or a property by writing it. No ALTER, no migration, no restart.",
   },
   {
-    title: 'Small enough to read',
-    body: 'A compiler-style pipeline of focused crates from parser to executor. If the database matters to your product, you should be able to read it.',
+    title: "Small enough to read",
+    body: "A compiler-style pipeline of focused crates from parser to executor. If the database matters to your product, you should be able to read it.",
   },
 ];
 
@@ -64,69 +64,69 @@ const PRINCIPLES = [
 // so the page is a router, not just a brochure.
 const CYPHER_COVERAGE = [
   {
-    label: 'Pattern matching',
+    label: "Pattern matching",
     snippet:
       "MATCH (a:Person)-[:KNOWS]->(b:Person)\nWHERE a.city = 'Berlin'\nRETURN a.name, collect(b.name) AS friends",
-    to: '/docs/queries/match',
-    linkLabel: 'MATCH reference',
+    to: "/docs/queries/match",
+    linkLabel: "MATCH reference",
   },
   {
-    label: 'Writing data',
+    label: "Writing data",
     snippet:
       "MERGE (u:User {email: $email})\nON CREATE SET u.created = temporal.now()\nON MATCH  SET u.last_seen = temporal.now()",
-    to: '/docs/queries/unwind-merge',
-    linkLabel: 'MERGE reference',
+    to: "/docs/queries/unwind-merge",
+    linkLabel: "MERGE reference",
   },
   {
-    label: 'Variable-length paths',
+    label: "Variable-length paths",
     snippet:
-      'MATCH p = shortestPath(\n  (a:Stop {code: $from})-[:CONNECTS*..6]->(b:Stop {code: $to})\n)\nRETURN path.length(p) AS hops, [n IN path.nodes(p) | n.code] AS via',
-    to: '/docs/queries/paths',
-    linkLabel: 'Paths reference',
+      "MATCH p = shortestPath(\n  (a:Stop {code: $from})-[:CONNECTS*..6]->(b:Stop {code: $to})\n)\nRETURN path.length(p) AS hops, [n IN path.nodes(p) | n.code] AS via",
+    to: "/docs/queries/paths",
+    linkLabel: "Paths reference",
   },
   {
-    label: 'Aggregation pipelines',
+    label: "Aggregation pipelines",
     snippet:
       "MATCH (u:User)-[:PLACED]->(o:Order {status: 'paid'})\nWITH u, count(o) AS orders, sum(o.total) AS spend\nWHERE orders >= 3\nRETURN u.email, orders, spend ORDER BY spend DESC",
-    to: '/docs/queries/aggregation',
-    linkLabel: 'Aggregation reference',
+    to: "/docs/queries/aggregation",
+    linkLabel: "Aggregation reference",
   },
   {
-    label: 'Temporal predicates',
+    label: "Temporal predicates",
     snippet:
       "MATCH (e:Event)\nWHERE e.at >= temporal.now() - 'P7D'::DURATION\nRETURN temporal.truncate('day', e.at) AS day, count(*) AS events\nORDER BY day",
-    to: '/docs/data-types/temporal',
-    linkLabel: 'Temporal types',
+    to: "/docs/data-types/temporal",
+    linkLabel: "Temporal types",
   },
   {
-    label: 'Spatial distance',
+    label: "Spatial distance",
     snippet:
       "WITH {latitude: 52.52, longitude: 13.405}::POINT AS origin\nMATCH (s:Store)\nWHERE geo.distance(s.loc, origin) < 5000\nRETURN s.name, geo.distance(s.loc, origin) AS metres\nORDER BY metres",
-    to: '/docs/data-types/spatial',
-    linkLabel: 'Spatial types',
+    to: "/docs/data-types/spatial",
+    linkLabel: "Spatial types",
   },
 ];
 
 // Function categories. Mirrors the categories table in
 // docs/functions/overview.md so links resolve cleanly.
 const FUNCTION_CATEGORIES = [
-  { label: 'Aggregation', to: '/docs/functions/aggregation' },
-  { label: 'String', to: '/docs/functions/string' },
-  { label: 'Math', to: '/docs/functions/math' },
-  { label: 'Number', to: '/docs/functions/number' },
-  { label: 'List', to: '/docs/functions/list' },
-  { label: 'Map', to: '/docs/functions/map' },
-  { label: 'Temporal', to: '/docs/functions/temporal' },
-  { label: 'Spatial', to: '/docs/functions/spatial' },
-  { label: 'Vector', to: '/docs/functions/vectors' },
+  { label: "Aggregation", to: "/docs/functions/aggregation" },
+  { label: "String", to: "/docs/functions/string" },
+  { label: "Math", to: "/docs/functions/math" },
+  { label: "Number", to: "/docs/functions/number" },
+  { label: "List", to: "/docs/functions/list" },
+  { label: "Map", to: "/docs/functions/map" },
+  { label: "Temporal", to: "/docs/functions/temporal" },
+  { label: "Spatial", to: "/docs/functions/spatial" },
+  { label: "Vector", to: "/docs/functions/vectors" },
 ];
 
 const TYPE_CATEGORIES = [
-  { label: 'Scalars', to: '/docs/data-types/scalars' },
-  { label: 'Lists & Maps', to: '/docs/data-types/lists-and-maps' },
-  { label: 'Temporal', to: '/docs/data-types/temporal' },
-  { label: 'Spatial', to: '/docs/data-types/spatial' },
-  { label: 'Vectors', to: '/docs/data-types/vectors' },
+  { label: "Scalars", to: "/docs/data-types/scalars" },
+  { label: "Lists & Maps", to: "/docs/data-types/lists-and-maps" },
+  { label: "Temporal", to: "/docs/data-types/temporal" },
+  { label: "Spatial", to: "/docs/data-types/spatial" },
+  { label: "Vectors", to: "/docs/data-types/vectors" },
 ];
 
 // Pipeline stages. Each one corresponds to a real crate in the
@@ -134,44 +134,44 @@ const TYPE_CATEGORIES = [
 // from this page into the source tree.
 const PIPELINE_STAGES = [
   {
-    step: '01',
-    name: 'Parse',
-    crate: 'lora-parser',
-    body: 'A PEG grammar lifts Cypher text into a typed AST with source spans.',
+    step: "01",
+    name: "Parse",
+    crate: "lora-parser",
+    body: "A PEG grammar lifts Cypher text into a typed AST with source spans.",
   },
   {
-    step: '02',
-    name: 'Analyze',
-    crate: 'lora-analyzer',
-    body: 'Variable scoping, label and type validation against live graph state, function resolution.',
+    step: "02",
+    name: "Analyze",
+    crate: "lora-analyzer",
+    body: "Variable scoping, label and type validation against live graph state, function resolution.",
   },
   {
-    step: '03',
-    name: 'Compile',
-    crate: 'lora-compiler',
-    body: 'Lower the resolved IR into a logical plan, optimize (filter push-down), then a physical plan.',
+    step: "03",
+    name: "Compile",
+    crate: "lora-compiler",
+    body: "Lower the resolved IR into a logical plan, optimize (filter push-down), then a physical plan.",
   },
   {
-    step: '04',
-    name: 'Execute',
-    crate: 'lora-executor',
-    body: 'Interpret the physical plan against the in-memory store and project results in the requested shape.',
+    step: "04",
+    name: "Execute",
+    crate: "lora-executor",
+    body: "Interpret the physical plan against the in-memory store and project results in the requested shape.",
   },
 ];
 
 // Result-format chips shown alongside the architecture pipeline so
 // readers see that "format" is a per-query knob, not a binding-level
 // decision.
-const RESULT_FORMATS = ['rows', 'rowArrays', 'graph', 'combined'];
+const RESULT_FORMATS = ["rows", "rowArrays", "graph", "combined"];
 
 const SURFACES = [
   {
-    id: 'rust',
-    label: 'Rust crate',
-    file: 'main.rs',
-    note: 'lora-database',
-    guideTo: '/docs/getting-started/rust',
-    guideLabel: 'Rust guide',
+    id: "rust",
+    label: "Rust crate",
+    file: "main.rs",
+    note: "lora-database",
+    guideTo: "/docs/getting-started/rust",
+    guideLabel: "Rust guide",
     code: `use lora_database::Database;
 
 let db = Database::in_memory();
@@ -183,12 +183,12 @@ let result = db.execute(
 )?;`,
   },
   {
-    id: 'http',
-    label: 'HTTP server',
-    file: 'shell',
-    note: 'lora-server',
-    guideTo: '/docs/getting-started/server',
-    guideLabel: 'Server guide',
+    id: "http",
+    label: "HTTP server",
+    file: "shell",
+    note: "lora-server",
+    guideTo: "/docs/getting-started/server",
+    guideLabel: "Server guide",
     code: `# Health check
 curl http://127.0.0.1:4747/health
 
@@ -201,12 +201,12 @@ curl -s http://127.0.0.1:4747/query \\
   }'`,
   },
   {
-    id: 'node',
-    label: 'Node.js',
-    file: 'app.ts',
-    note: 'lora-node · prototype',
-    guideTo: '/docs/getting-started/node',
-    guideLabel: 'Node.js guide',
+    id: "node",
+    label: "Node.js",
+    file: "app.ts",
+    note: "lora-node · prototype",
+    guideTo: "/docs/getting-started/node",
+    guideLabel: "Node.js guide",
     code: `import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();           // in-memory
@@ -221,12 +221,12 @@ const result = await db.execute(
 );`,
   },
   {
-    id: 'python',
-    label: 'Python',
-    file: 'app.py',
-    note: 'lora-python · prototype',
-    guideTo: '/docs/getting-started/python',
-    guideLabel: 'Python guide',
+    id: "python",
+    label: "Python",
+    file: "app.py",
+    note: "lora-python · prototype",
+    guideTo: "/docs/getting-started/python",
+    guideLabel: "Python guide",
     code: `from lora_python import Database
 
 db = Database.create()
@@ -238,12 +238,12 @@ result = db.execute(
 )`,
   },
   {
-    id: 'wasm',
-    label: 'WebAssembly',
-    file: 'main.ts',
-    note: 'lora-wasm · prototype',
-    guideTo: '/docs/getting-started/wasm',
-    guideLabel: 'WASM guide',
+    id: "wasm",
+    label: "WebAssembly",
+    file: "main.ts",
+    note: "lora-wasm · prototype",
+    guideTo: "/docs/getting-started/wasm",
+    guideLabel: "WASM guide",
     code: `import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
@@ -254,12 +254,12 @@ const result = await db.execute(
 );`,
   },
   {
-    id: 'go',
-    label: 'Go',
-    file: 'main.go',
-    note: 'lora-go · prototype',
-    guideTo: '/docs/getting-started/go',
-    guideLabel: 'Go guide',
+    id: "go",
+    label: "Go",
+    file: "main.go",
+    note: "lora-go · prototype",
+    guideTo: "/docs/getting-started/go",
+    guideLabel: "Go guide",
     code: `import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, _ := lora.New()
@@ -273,12 +273,12 @@ r, _ := db.Execute(
 )`,
   },
   {
-    id: 'ruby',
-    label: 'Ruby',
-    file: 'app.rb',
-    note: 'lora-ruby · prototype',
-    guideTo: '/docs/getting-started/ruby',
-    guideLabel: 'Ruby guide',
+    id: "ruby",
+    label: "Ruby",
+    file: "app.rb",
+    note: "lora-ruby · prototype",
+    guideTo: "/docs/getting-started/ruby",
+    guideLabel: "Ruby guide",
     code: `require "lora_ruby"
 
 db = LoraRuby::Database.create
@@ -292,20 +292,20 @@ result = db.execute(
 
 const BOUNDARIES = [
   {
-    title: 'In-memory engine',
-    body: 'The graph lives in process memory. Durability is optional via snapshots and WAL, not a separate persistent storage backend.',
+    title: "In-memory engine",
+    body: "The graph lives in process memory. Durability is optional via snapshots and WAL, not a separate persistent storage backend.",
   },
   {
-    title: 'No property indexes',
-    body: 'Predicates are evaluated by scan. Plenty fast for the workloads above; not a substitute for an indexed planner.',
+    title: "No property indexes",
+    body: "Predicates are evaluated by scan. Plenty fast for the workloads above; not a substitute for an indexed planner.",
   },
   {
-    title: 'Single global lock',
-    body: 'The executor holds one mutex per database. Great for embedded and per-request use; not for high-fan-out concurrency.',
+    title: "Single global lock",
+    body: "The executor holds one mutex per database. Great for embedded and per-request use; not for high-fan-out concurrency.",
   },
   {
-    title: 'No auth or TLS in core',
-    body: 'lora-server is meant to live behind your own ingress. The crate has no auth surface — you control the host process.',
+    title: "No auth or TLS in core",
+    body: "lora-server is meant to live behind your own ingress. The crate has no auth surface — you control the host process.",
   },
 ];
 
@@ -316,37 +316,37 @@ const BOUNDARIES = [
 
 function Icon({ name }) {
   const common = {
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
     strokeWidth: 1.6,
-    strokeLinecap: 'round',
-    strokeLinejoin: 'round',
-    'aria-hidden': true,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true,
   };
   switch (name) {
-    case 'rust':
+    case "rust":
       return (
         <svg {...common}>
           <path d="M12 4l2 2 3 .4 1.5 2.6L21 11l-1.5 2-.5 3-3 1L14 19l-2 1-2-1-2-1.4-3-1L4 14l-1.5-2L3 9l1.5-2.6L8 6l2-2 2 0z" />
           <circle cx="12" cy="12" r="3" />
         </svg>
       );
-    case 'http':
+    case "http":
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="9" />
           <path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18" />
         </svg>
       );
-    case 'node':
+    case "node":
       return (
         <svg {...common}>
           <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
           <path d="M12 8v6M9 11h0M15 11l-2 2-2-2" />
         </svg>
       );
-    case 'python':
+    case "python":
       return (
         <svg {...common}>
           <path d="M9 4h5a3 3 0 0 1 3 3v3H9a3 3 0 0 0-3 3v3a3 3 0 0 0 3 3h3" />
@@ -355,14 +355,14 @@ function Icon({ name }) {
           <circle cx="13" cy="17" r="0.6" fill="currentColor" stroke="none" />
         </svg>
       );
-    case 'wasm':
+    case "wasm":
       return (
         <svg {...common}>
           <rect x="3" y="6" width="18" height="12" rx="2" />
           <path d="M7 10l1.5 4 1.5-3 1.5 3 1.5-4M16 10l1 4 1-4" />
         </svg>
       );
-    case 'go':
+    case "go":
       return (
         <svg {...common}>
           <ellipse cx="12" cy="12" rx="8" ry="6" />
@@ -371,7 +371,7 @@ function Icon({ name }) {
           <path d="M3 10h2M3 13h2M19 10h2M19 13h2" />
         </svg>
       );
-    case 'ruby':
+    case "ruby":
       return (
         <svg {...common}>
           <path d="M7 4h10l4 6-9 10-9-10 4-6z" />
@@ -422,13 +422,13 @@ function StageArrow() {
 }
 
 const SURFACE_ICONS = {
-  rust: 'rust',
-  http: 'http',
-  node: 'node',
-  python: 'python',
-  wasm: 'wasm',
-  go: 'go',
-  ruby: 'ruby',
+  rust: "rust",
+  http: "http",
+  node: "node",
+  python: "python",
+  wasm: "wasm",
+  go: "go",
+  ruby: "ruby",
 };
 
 // -------------------------------------------------------------------
@@ -490,7 +490,7 @@ export default function Features() {
       }
       setActiveAnchor(current);
 
-      const navbar = document.querySelector('.navbar');
+      const navbar = document.querySelector(".navbar");
       const strip = anchorNavRef.current;
       if (!navbar || !strip) {
         setNavbarHidden(false);
@@ -522,12 +522,12 @@ export default function Features() {
     };
 
     update();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', onScroll);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
     return () => {
       if (frame) cancelAnimationFrame(frame);
-      window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', onScroll);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
     };
   }, []);
 
@@ -546,7 +546,7 @@ export default function Features() {
               In-memory · Cypher · Rust
             </p>
             <h1 id="features-hero-title" className={styles.title}>
-              Everything <span className={styles.titleAccent}>LoraDB</span>{' '}
+              Everything <span className={styles.titleAccent}>LoraDB</span>{" "}
               supports — and what it doesn’t.
             </h1>
             <p className={styles.tagline}>
@@ -623,7 +623,7 @@ export default function Features() {
                       styles.anchorNavLink,
                       activeAnchor === a.id && styles.anchorNavLinkActive,
                     )}
-                    aria-current={activeAnchor === a.id ? 'true' : undefined}
+                    aria-current={activeAnchor === a.id ? "true" : undefined}
                   >
                     {a.label}
                   </a>
@@ -641,17 +641,14 @@ export default function Features() {
         >
           <div className={styles.sectionInner}>
             <p className={styles.sectionEyebrow}>Design principles</p>
-            <h2
-              id="features-principles-title"
-              className={styles.sectionTitle}
-            >
+            <h2 id="features-principles-title" className={styles.sectionTitle}>
               The bets the engine took.
             </h2>
             <div className={styles.principlesGrid}>
               {PRINCIPLES.map((p, i) => (
                 <article key={p.title} className={styles.principleCard}>
                   <span className={styles.principleIndex}>
-                    {String(i + 1).padStart(2, '0')}
+                    {String(i + 1).padStart(2, "0")}
                   </span>
                   <div>
                     <h3>{p.title}</h3>
@@ -676,7 +673,7 @@ export default function Features() {
             </h2>
             <p className={styles.coverageLede}>
               Pattern matching, writes, aggregation pipelines, paths, temporal
-              and spatial predicates — composed top-to-bottom with{' '}
+              and spatial predicates — composed top-to-bottom with{" "}
               <CypherCode code="WITH" />.
             </p>
             <div className={styles.coverageGrid}>
@@ -733,8 +730,8 @@ export default function Features() {
                 <header className={styles.catalogueHeader}>
                   <h3>Functions</h3>
                   <p>
-                    String, math, list, aggregation, temporal, spatial, vector
-                    — shipped with the engine. No procedure plugins to install.
+                    String, math, list, aggregation, temporal, spatial, vector —
+                    shipped with the engine. No procedure plugins to install.
                   </p>
                 </header>
                 <ul className={styles.chipList}>
@@ -813,10 +810,7 @@ export default function Features() {
                     <p className={styles.archStageBody}>{s.body}</p>
                   </li>
                   {i < PIPELINE_STAGES.length - 1 ? (
-                    <li
-                      className={styles.archConnector}
-                      aria-hidden="true"
-                    >
+                    <li className={styles.archConnector} aria-hidden="true">
                       <StageArrow />
                     </li>
                   ) : null}
@@ -943,10 +937,7 @@ export default function Features() {
         >
           <div className={styles.sectionInner}>
             <p className={styles.sectionEyebrow}>Operations</p>
-            <h2
-              id="features-operations-title"
-              className={styles.sectionTitle}
-            >
+            <h2 id="features-operations-title" className={styles.sectionTitle}>
               Run it as a server. Save it to a file.
             </h2>
             <div className={styles.opsGrid}>
@@ -964,9 +955,9 @@ export default function Features() {
                 eyebrow="Durability"
                 title="Snapshots, WAL, and checkpoints"
               >
-                Save a portable snapshot, recover committed writes from
-                a WAL, and checkpoint the two together when you need a
-                tighter local durability story.
+                Save a portable snapshot, recover committed writes from a WAL,
+                and checkpoint the two together when you need a tighter local
+                durability story.
               </LinkCard>
             </div>
           </div>
@@ -1023,8 +1014,8 @@ export default function Features() {
               Open a database. Run a query.
             </h2>
             <p className={styles.ctaBody}>
-              Three lines of Rust, a curl call, or a single import. The
-              fastest way to feel LoraDB is to write a query against it.
+              Three lines of Rust, a curl call, or a single import. The fastest
+              way to feel LoraDB is to write a query against it.
             </p>
             <div className={styles.actions}>
               <Link

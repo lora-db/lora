@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { usePluginData } from '@docusaurus/useGlobalData';
+import { useEffect, useState } from "react";
+import { usePluginData } from "@docusaurus/useGlobalData";
 
 // Resolver layering:
 //   1. Build-time (plugins/github-stars → globalData) — SSR-visible, no flash
@@ -10,16 +10,16 @@ import { usePluginData } from '@docusaurus/useGlobalData';
 // rate limited, build couldn't reach GitHub), the consumer gets `null`
 // and is expected to render gracefully without a count.
 
-const CACHE_KEY = 'loradb:github-stars';
+const CACHE_KEY = "loradb:github-stars";
 const TTL_MS = 60 * 60 * 1000;
 
 function readCache() {
-  if (typeof window === 'undefined') return null;
+  if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const { stars, ts, repo } = JSON.parse(raw);
-    if (typeof stars !== 'number') return null;
+    if (typeof stars !== "number") return null;
     return { stars, repo, stale: Date.now() - ts > TTL_MS };
   } catch {
     return null;
@@ -27,7 +27,7 @@ function readCache() {
 }
 
 function writeCache(repo, stars) {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(
       CACHE_KEY,
@@ -40,13 +40,13 @@ function writeCache(repo, stars) {
 
 async function fetchStars(repo, signal) {
   const res = await fetch(`https://api.github.com/repos/${repo}`, {
-    headers: { Accept: 'application/vnd.github+json' },
+    headers: { Accept: "application/vnd.github+json" },
     signal,
   });
   if (!res.ok) throw new Error(`github api ${res.status}`);
   const data = await res.json();
-  if (typeof data.stargazers_count !== 'number') {
-    throw new Error('unexpected github api payload');
+  if (typeof data.stargazers_count !== "number") {
+    throw new Error("unexpected github api payload");
   }
   writeCache(repo, data.stargazers_count);
   return data.stargazers_count;
@@ -55,15 +55,15 @@ async function fetchStars(repo, signal) {
 export function formatCount(n) {
   if (n == null) return null;
   if (n < 1000) return String(n);
-  if (n < 10_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  if (n < 1_000_000) return Math.round(n / 1000) + 'k';
-  return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n < 10_000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  if (n < 1_000_000) return Math.round(n / 1000) + "k";
+  return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
 }
 
 export default function useGitHubStars(repo) {
-  const buildData = usePluginData('github-stars');
+  const buildData = usePluginData("github-stars");
   const buildStars =
-    buildData && buildData.repo === repo && typeof buildData.stars === 'number'
+    buildData && buildData.repo === repo && typeof buildData.stars === "number"
       ? buildData.stars
       : null;
 

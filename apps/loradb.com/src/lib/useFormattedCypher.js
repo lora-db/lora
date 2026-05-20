@@ -1,4 +1,4 @@
-import React from 'react';
+import React from "react";
 
 /**
  * Returns the prettified form of a Cypher source string.
@@ -20,11 +20,11 @@ export function useFormattedCypher(source) {
 
   React.useEffect(() => {
     let cancelled = false;
-    import('@loradb/lora-query')
+    import("@loradb/lora-query")
       .then(async (mod) => {
         if (mod.__tla) await mod.__tla;
         if (cancelled) return;
-        if (typeof mod.formatSync !== 'function') return;
+        if (typeof mod.formatSync !== "function") return;
         try {
           const pretty = mod.formatSync(source);
           if (!cancelled && pretty !== source) {

@@ -1,12 +1,12 @@
-import React from 'react';
-import clsx from 'clsx';
-import Layout from '@theme/Layout';
-import Link from '@docusaurus/Link';
+import React from "react";
+import clsx from "clsx";
+import Layout from "@theme/Layout";
+import Link from "@docusaurus/Link";
 
-import BrandGraph from '@site/src/components/BrandGraph';
-import LinkCard from '@site/src/components/LinkCard';
-import StarOnGitHub from '@site/src/components/StarOnGitHub';
-import styles from './index.module.scss';
+import BrandGraph from "@site/src/components/BrandGraph";
+import LinkCard from "@site/src/components/LinkCard";
+import StarOnGitHub from "@site/src/components/StarOnGitHub";
+import styles from "./index.module.scss";
 
 const SAMPLE = `MATCH (a:Agent)-[:REMEMBERS]->(c:Context)
       -[:ABOUT]->(e:Entity)
@@ -18,9 +18,9 @@ RETURN e.id, collect(c.summary) AS recent_context`;
 // reader can compare bindings at a glance.
 const QUICKSTART_TABS = [
   {
-    id: 'node',
-    label: 'Node.js',
-    file: 'quickstart.ts',
+    id: "node",
+    label: "Node.js",
+    file: "quickstart.ts",
     code: `import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();           // in-memory
@@ -37,9 +37,9 @@ const result = await db.execute(
 console.log(result.rows);`,
   },
   {
-    id: 'python',
-    label: 'Python',
-    file: 'quickstart.py',
+    id: "python",
+    label: "Python",
+    file: "quickstart.py",
     code: `from lora_python import Database
 
 db = Database.create()
@@ -55,9 +55,9 @@ result = db.execute(
 print(result["rows"])`,
   },
   {
-    id: 'wasm',
-    label: 'WASM',
-    file: 'quickstart.ts',
+    id: "wasm",
+    label: "WASM",
+    file: "quickstart.ts",
     code: `import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
@@ -73,9 +73,9 @@ const result = await db.execute(
 console.log(result.rows);`,
   },
   {
-    id: 'go',
-    label: 'Go',
-    file: 'quickstart.go',
+    id: "go",
+    label: "Go",
+    file: "quickstart.go",
     code: `import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, _ := lora.New()
@@ -94,9 +94,9 @@ r, _ := db.Execute(
 fmt.Println(r.Rows)`,
   },
   {
-    id: 'ruby',
-    label: 'Ruby',
-    file: 'quickstart.rb',
+    id: "ruby",
+    label: "Ruby",
+    file: "quickstart.rb",
     code: `require "lora_ruby"
 
 db = LoraRuby::Database.create
@@ -117,22 +117,22 @@ puts result["rows"]`,
 // section that answers "show me this".
 const INTENTS = [
   {
-    eyebrow: 'Engine',
-    title: 'A Cypher pipeline you can read',
-    body: 'A pragmatic subset — MATCH, WITH, WHERE, paths, aggregation — composed top to bottom in short, readable queries.',
-    to: '/docs/queries',
+    eyebrow: "Engine",
+    title: "A Cypher pipeline you can read",
+    body: "A pragmatic subset — MATCH, WITH, WHERE, paths, aggregation — composed top to bottom in short, readable queries.",
+    to: "/docs/queries",
   },
   {
-    eyebrow: 'Store',
-    title: 'Labelled property graph, in process',
-    body: 'Nodes, typed directed relationships, and properties — held in RAM, next to the code that uses them.',
-    to: '/docs/concepts/graph-model',
+    eyebrow: "Store",
+    title: "Labelled property graph, in process",
+    body: "Nodes, typed directed relationships, and properties — held in RAM, next to the code that uses them.",
+    to: "/docs/concepts/graph-model",
   },
   {
-    eyebrow: 'Surfaces',
-    title: 'Rust, Node, Python, WASM, Go, Ruby, HTTP',
-    body: 'Pick the binding that fits the host process. Same Cypher, same result shape, same engine underneath.',
-    to: '/docs/getting-started/installation',
+    eyebrow: "Surfaces",
+    title: "Rust, Node, Python, WASM, Go, Ruby, HTTP",
+    body: "Pick the binding that fits the host process. Same Cypher, same result shape, same engine underneath.",
+    to: "/docs/getting-started/installation",
   },
 ];
 
@@ -140,32 +140,32 @@ const INTENTS = [
 // recipe so curious readers have a concrete next click.
 const USE_CASES = [
   {
-    title: 'AI agents & LLM pipelines',
-    body: 'Tools, entities, observations and decisions as a live graph. Retrieval becomes a pattern match, not a similarity score.',
-    icon: 'agent',
-    to: '/docs/cookbook#vector-retrieval-patterns',
-    linkLabel: 'Vector retrieval recipes',
+    title: "AI agents & LLM pipelines",
+    body: "Tools, entities, observations and decisions as a live graph. Retrieval becomes a pattern match, not a similarity score.",
+    icon: "agent",
+    to: "/docs/cookbook#vector-retrieval-patterns",
+    linkLabel: "Vector retrieval recipes",
   },
   {
-    title: 'Context & memory systems',
+    title: "Context & memory systems",
     body: 'Model claims, evidence, citations, and contradictions as typed edges. Ask "why do we believe this?" as a traversal.',
-    icon: 'memory',
-    to: '/docs/cookbook#social-graph-patterns',
-    linkLabel: 'Graph patterns',
+    icon: "memory",
+    to: "/docs/cookbook#social-graph-patterns",
+    linkLabel: "Graph patterns",
   },
   {
-    title: 'Event pipelines & streams',
-    body: 'Resolve entities, infer relationships, and enrich events in-process with Cypher rules that read top-to-bottom.',
-    icon: 'stream',
-    to: '/docs/cookbook#event--time-based-patterns',
-    linkLabel: 'Event recipes',
+    title: "Event pipelines & streams",
+    body: "Resolve entities, infer relationships, and enrich events in-process with Cypher rules that read top-to-bottom.",
+    icon: "stream",
+    to: "/docs/cookbook#event--time-based-patterns",
+    linkLabel: "Event recipes",
   },
   {
-    title: 'Embedded graph storage',
-    body: 'A graph data structure inside your own process. No service to deploy, no protocol to speak, no daemon to babysit.',
-    icon: 'cube',
-    to: '/docs/getting-started/installation',
-    linkLabel: 'Pick a binding',
+    title: "Embedded graph storage",
+    body: "A graph data structure inside your own process. No service to deploy, no protocol to speak, no daemon to babysit.",
+    icon: "cube",
+    to: "/docs/getting-started/installation",
+    linkLabel: "Pick a binding",
   },
 ];
 
@@ -173,28 +173,28 @@ const USE_CASES = [
 // hands off to the docs.
 const WHERE_NEXT = [
   {
-    eyebrow: 'Install',
-    title: 'I just want to get started',
-    body: 'Pick a binding, install, and ship a hello-world in a minute.',
-    to: '/docs/getting-started/installation',
+    eyebrow: "Install",
+    title: "I just want to get started",
+    body: "Pick a binding, install, and ship a hello-world in a minute.",
+    to: "/docs/getting-started/installation",
   },
   {
-    eyebrow: 'Concepts',
-    title: 'I want to understand the model',
-    body: 'Nodes, relationships, properties, and how the engine sees them.',
-    to: '/docs/concepts/graph-model',
+    eyebrow: "Concepts",
+    title: "I want to understand the model",
+    body: "Nodes, relationships, properties, and how the engine sees them.",
+    to: "/docs/concepts/graph-model",
   },
   {
-    eyebrow: 'Examples',
-    title: 'I want query examples',
-    body: 'A copy-paste tour of the Cypher LoraDB supports.',
-    to: '/docs/queries/examples',
+    eyebrow: "Examples",
+    title: "I want query examples",
+    body: "A copy-paste tour of the Cypher LoraDB supports.",
+    to: "/docs/queries/examples",
   },
   {
-    eyebrow: 'Evaluate',
-    title: 'What does it support — and not?',
-    body: 'The full capability surface, plus the lines we won’t pretend to cross.',
-    to: '/features',
+    eyebrow: "Evaluate",
+    title: "What does it support — and not?",
+    body: "The full capability surface, plus the lines we won’t pretend to cross.",
+    to: "/features",
   },
 ];
 
@@ -202,16 +202,16 @@ function Icon({ name }) {
   // Tiny, monochrome, currentColor SVGs. Deliberately abstract so
   // they feel system-like rather than stock-illustration.
   const common = {
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
     strokeWidth: 1.6,
-    strokeLinecap: 'round',
-    strokeLinejoin: 'round',
-    'aria-hidden': true,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true,
   };
   switch (name) {
-    case 'agent':
+    case "agent":
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="3.2" />
@@ -222,7 +222,7 @@ function Icon({ name }) {
           <path d="M7 7l3 3M17 7l-3 3M7 17l3-3M17 17l-3-3" />
         </svg>
       );
-    case 'memory':
+    case "memory":
       return (
         <svg {...common}>
           <path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z" />
@@ -230,7 +230,7 @@ function Icon({ name }) {
           <path d="M4 12v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5" />
         </svg>
       );
-    case 'stream':
+    case "stream":
       return (
         <svg {...common}>
           <path d="M3 7h8M3 12h14M3 17h10" />
@@ -239,7 +239,7 @@ function Icon({ name }) {
           <circle cx="15" cy="17" r="1.5" />
         </svg>
       );
-    case 'cube':
+    case "cube":
       return (
         <svg {...common}>
           <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
@@ -290,14 +290,14 @@ export default function Home() {
                 Embedded · Rust · Cypher-like
               </p>
               <h1 className={styles.title}>
-                The graph database for{' '}
+                The graph database for{" "}
                 <span className={styles.titleAccent}>connected systems</span>.
               </h1>
               <p className={styles.tagline}>
                 LoraDB is an in-process graph store with a Cypher-like query
-                engine — small enough to embed in an agent, a robot, or a
-                stream processor, and expressive enough to model the
-                relationships those systems actually depend on.
+                engine — small enough to embed in an agent, a robot, or a stream
+                processor, and expressive enough to model the relationships
+                those systems actually depend on.
               </p>
               <div className={styles.actions}>
                 <Link
@@ -334,16 +334,17 @@ export default function Home() {
             <div className={styles.heroVisual}>
               <div className={styles.heroVisualInner}>
                 <BrandGraph />
-                <div className={styles.codeCard} aria-label="Example Cypher query">
+                <div
+                  className={styles.codeCard}
+                  aria-label="Example Cypher query"
+                >
                   <div className={styles.codeCardHeader}>
                     <span className={styles.codeDots} aria-hidden="true">
                       <span />
                       <span />
                       <span />
                     </span>
-                    <span className={styles.codeCardTitle}>
-                      context.cypher
-                    </span>
+                    <span className={styles.codeCardTitle}>context.cypher</span>
                   </div>
                   <pre className={styles.codeCardBody}>
                     <code>{SAMPLE}</code>
@@ -361,7 +362,7 @@ export default function Home() {
           <div className={styles.sectionInner}>
             <p className={styles.sectionEyebrow}>The shape of the problem</p>
             <h2 className={styles.sectionTitle}>
-              Modern systems are graphs.{' '}
+              Modern systems are graphs.{" "}
               <span className={styles.mutedHeading}>
                 Most databases aren’t.
               </span>
@@ -382,8 +383,8 @@ export default function Home() {
                 title="Why an embedded graph at all"
                 variant="accent"
               >
-                The argument in full — vs. SQL, vs. document stores, vs.
-                managed graph platforms.
+                The argument in full — vs. SQL, vs. document stores, vs. managed
+                graph platforms.
               </LinkCard>
             </div>
           </div>
@@ -455,10 +456,9 @@ export default function Home() {
                   Add the package. Open a database. Write a query.
                 </h2>
                 <p className={styles.startBody}>
-                  There’s no server to stand up, no protocol to speak.
-                  Opening a LoraDB is a function call — in Node.js, Python,
-                  WASM, Go, or Ruby. Same Cypher, same result shape, across
-                  every binding.
+                  There’s no server to stand up, no protocol to speak. Opening a
+                  LoraDB is a function call — in Node.js, Python, WASM, Go, or
+                  Ruby. Same Cypher, same result shape, across every binding.
                 </p>
                 <div className={styles.actions}>
                   <Link

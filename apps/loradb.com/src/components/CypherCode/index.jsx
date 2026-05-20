@@ -1,7 +1,7 @@
-import React from 'react';
-import clsx from 'clsx';
-import { tokenizeCypher } from './tokenize';
-import styles from './styles.module.scss';
+import React from "react";
+import clsx from "clsx";
+import { tokenizeCypher } from "./tokenize";
+import styles from "./styles.module.scss";
 
 /**
  * Inline Cypher code reference.
@@ -21,12 +21,12 @@ import styles from './styles.module.scss';
  * continue to use plain backticks — see docs/CONTRIBUTING-DOCS.md.
  */
 function resolveSource(code, children) {
-  if (typeof code === 'string') return code;
-  if (typeof children === 'string') return children;
+  if (typeof code === "string") return code;
+  if (typeof children === "string") return children;
   if (Array.isArray(children)) {
-    return children.filter((c) => typeof c === 'string').join('');
+    return children.filter((c) => typeof c === "string").join("");
   }
-  return '';
+  return "";
 }
 
 export default function CypherCode({ code, children, className }) {
@@ -35,19 +35,19 @@ export default function CypherCode({ code, children, className }) {
 
   return (
     <code
-      className={clsx(styles.cypherCode, 'cypher-inline', className)}
+      className={clsx(styles.cypherCode, "cypher-inline", className)}
       // Keep copy-paste of the raw source reliable, independent of the
       // tokenized DOM.
       data-cypher-source={source}
     >
       {tokens.map((tok, idx) => {
-        if (tok.type === 'whitespace') {
+        if (tok.type === "whitespace") {
           return <React.Fragment key={idx}>{tok.value}</React.Fragment>;
         }
         return (
           <span
             key={idx}
-            className={clsx('token', tok.type, styles[`tok_${tok.type}`])}
+            className={clsx("token", tok.type, styles[`tok_${tok.type}`])}
           >
             {tok.value}
           </span>

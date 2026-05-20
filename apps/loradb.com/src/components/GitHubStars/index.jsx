@@ -1,18 +1,18 @@
-import React from 'react';
-import clsx from 'clsx';
-import Link from '@docusaurus/Link';
+import React from "react";
+import clsx from "clsx";
+import Link from "@docusaurus/Link";
 
-import useGitHubStars, { formatCount } from './useGitHubStars';
-import styles from './styles.module.scss';
+import useGitHubStars, { formatCount } from "./useGitHubStars";
+import styles from "./styles.module.scss";
 
 // Compact navbar pill. The expanded-with-count state is desktop-only
 // (see styles.module.scss); on tablet/mobile it collapses back to a
 // 34x34 icon chiclet that matches the neighbouring Discord / X icons.
 export default function GitHubStars({
-  repo = 'lora-db/lora',
-  href = 'https://github.com/lora-db/lora',
-  label = 'GitHub repository',
-   
+  repo = "lora-db/lora",
+  href = "https://github.com/lora-db/lora",
+  label = "GitHub repository",
+
   position,
   ...rest
 }) {

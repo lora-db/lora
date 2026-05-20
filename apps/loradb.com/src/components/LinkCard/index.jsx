@@ -1,8 +1,8 @@
-import React from 'react';
-import clsx from 'clsx';
-import Link from '@docusaurus/Link';
+import React from "react";
+import clsx from "clsx";
+import Link from "@docusaurus/Link";
 
-import styles from './styles.module.scss';
+import styles from "./styles.module.scss";
 
 /**
  * Marketing routing primitive.
@@ -28,7 +28,7 @@ export default function LinkCard({
   title,
   children,
   className,
-  variant = 'default',
+  variant = "default",
 }) {
   const target = to ?? href;
   return (
@@ -36,8 +36,8 @@ export default function LinkCard({
       to={target}
       className={clsx(
         styles.linkCard,
-        variant === 'compact' && styles.linkCardCompact,
-        variant === 'accent' && styles.linkCardAccent,
+        variant === "compact" && styles.linkCardCompact,
+        variant === "accent" && styles.linkCardAccent,
         className,
       )}
     >
