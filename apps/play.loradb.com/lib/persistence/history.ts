@@ -45,18 +45,39 @@ export async function list(limit: number = DEFAULT_LIMIT): Promise<HistoryEntry[
 /**
  * Appends one entry and trims the store back down to `MAX_ENTRIES` by
  * deleting the oldest entries (by `startedAt`) inside the same transaction.
+ *
+ * Dedup: if a prior entry has the same `body` + `params`, its id is
+ * reused and the new fields (startedAt, ms, rowCount, ok, errorMessage)
+ * overwrite the old record. Because the panel sorts by `startedAt`
+ * newest-first, the re-run naturally bubbles to the top — the history
+ * behaves like a shell with `HIST_IGNORE_ALL_DUPS`.
  */
 export async function append(
   entry: Omit<HistoryEntry, "id" | "params"> & { params?: string },
 ): Promise<HistoryEntry> {
-  const record: HistoryEntry = {
-    id: ulid(),
-    ...entry,
-    params: entry.params ?? DEFAULT_PARAMS,
-  };
+  const params = entry.params ?? DEFAULT_PARAMS;
   const db = await getDB();
   const tx = db.transaction("history", "readwrite");
   const store = tx.store;
+
+  // Walk newest-first so the common case (re-running the most recent
+  // query) hits on iteration one.
+  let existingId: string | undefined;
+  let dupCursor = await store.index("byStartedAt").openCursor(null, "prev");
+  while (dupCursor) {
+    const value = dupCursor.value;
+    if (value.body === entry.body && value.params === params) {
+      existingId = value.id;
+      break;
+    }
+    dupCursor = await dupCursor.continue();
+  }
+
+  const record: HistoryEntry = {
+    id: existingId ?? ulid(),
+    ...entry,
+    params,
+  };
   await store.put(record);
 
   // Trim oldest if we exceeded the cap. Use the `byStartedAt` index cursor
