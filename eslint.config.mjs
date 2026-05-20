@@ -19,7 +19,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 import reactPlugin from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
-import prettier from "eslint-config-prettier";
+import prettierRecommended from "eslint-plugin-prettier/recommended";
 
 export default tseslint.config(
   {
@@ -115,7 +115,11 @@ export default tseslint.config(
   },
 
   {
-    files: ["**/*.cjs", "**/*.config.{js,cjs,mjs}", "**/scripts/**/*.{js,mjs,cjs}"],
+    files: [
+      "**/*.cjs",
+      "**/*.config.{js,cjs,mjs}",
+      "**/scripts/**/*.{js,mjs,cjs}",
+    ],
     languageOptions: {
       sourceType: "commonjs",
       globals: { ...globals.node },
@@ -125,7 +129,9 @@ export default tseslint.config(
     },
   },
 
-  // Must come last: disables any ESLint rule that would conflict with
-  // Prettier's formatting. Stylistic concerns belong to Prettier.
-  prettier,
+  // Must come last: runs prettier as an ESLint rule (auto-fixable) and
+  // disables any core rule that would fight prettier's formatting.
+  // Stylistic concerns belong to prettier — IDE fix-on-save will apply
+  // them alongside the rest of ESLint --fix.
+  prettierRecommended,
 );
