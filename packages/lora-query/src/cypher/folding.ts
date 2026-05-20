@@ -1,13 +1,5 @@
-import {
-  StateEffect,
-  StateField,
-  type Extension,
-} from "@codemirror/state";
-import {
-  EditorView,
-  ViewPlugin,
-  type ViewUpdate,
-} from "@codemirror/view";
+import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { foldGutter, foldService } from "@codemirror/language";
 import { analyse, type FoldRange } from "../parser";
 
@@ -42,7 +34,8 @@ export function splitTopLevelStatements(source: string): StatementSlice[] {
   const bytes = source.length;
   if (bytes === 0) return out;
 
-  let state: "normal" | "single" | "double" | "back" | "line" | "block" = "normal";
+  let state: "normal" | "single" | "double" | "back" | "line" | "block" =
+    "normal";
   let depth = 0;
   let segStart = 0;
   const emit = (from: number, to: number) => {
@@ -53,24 +46,72 @@ export function splitTopLevelStatements(source: string): StatementSlice[] {
   for (let i = 0; i < bytes; i++) {
     const c = source[i];
     if (state === "normal") {
-      if (c === "'") { state = "single"; continue; }
-      if (c === '"') { state = "double"; continue; }
-      if (c === "`") { state = "back"; continue; }
-      if (c === "/" && source[i + 1] === "/") { state = "line"; i++; continue; }
-      if (c === "/" && source[i + 1] === "*") { state = "block"; i++; continue; }
-      if (c === "(" || c === "[" || c === "{") { depth++; continue; }
-      if (c === ")" || c === "]" || c === "}") { depth = Math.max(0, depth - 1); continue; }
+      if (c === "'") {
+        state = "single";
+        continue;
+      }
+      if (c === '"') {
+        state = "double";
+        continue;
+      }
+      if (c === "`") {
+        state = "back";
+        continue;
+      }
+      if (c === "/" && source[i + 1] === "/") {
+        state = "line";
+        i++;
+        continue;
+      }
+      if (c === "/" && source[i + 1] === "*") {
+        state = "block";
+        i++;
+        continue;
+      }
+      if (c === "(" || c === "[" || c === "{") {
+        depth++;
+        continue;
+      }
+      if (c === ")" || c === "]" || c === "}") {
+        depth = Math.max(0, depth - 1);
+        continue;
+      }
       if (c === ";" && depth === 0) {
         emit(segStart, i);
         segStart = i + 1;
       }
       continue;
     }
-    if (state === "single") { if (c === "\\") { i++; continue; } if (c === "'") state = "normal"; continue; }
-    if (state === "double") { if (c === "\\") { i++; continue; } if (c === '"') state = "normal"; continue; }
-    if (state === "back")   { if (c === "`") state = "normal"; continue; }
-    if (state === "line")   { if (c === "\n") state = "normal"; continue; }
-    if (state === "block")  { if (c === "*" && source[i + 1] === "/") { state = "normal"; i++; } }
+    if (state === "single") {
+      if (c === "\\") {
+        i++;
+        continue;
+      }
+      if (c === "'") state = "normal";
+      continue;
+    }
+    if (state === "double") {
+      if (c === "\\") {
+        i++;
+        continue;
+      }
+      if (c === '"') state = "normal";
+      continue;
+    }
+    if (state === "back") {
+      if (c === "`") state = "normal";
+      continue;
+    }
+    if (state === "line") {
+      if (c === "\n") state = "normal";
+      continue;
+    }
+    if (state === "block") {
+      if (c === "*" && source[i + 1] === "/") {
+        state = "normal";
+        i++;
+      }
+    }
   }
   // Always emit the trailing slice, even if we ended inside a string or
   // comment — the parser still needs the chance to point at the bad
@@ -151,9 +192,7 @@ const foldWatcher = ViewPlugin.fromClass(
               if (
                 !merged.some(
                   (m) =>
-                    m.start === r.start &&
-                    m.end === r.end &&
-                    m.kind === r.kind,
+                    m.start === r.start && m.end === r.end && m.kind === r.kind,
                 )
               ) {
                 merged.push(r);
@@ -201,11 +240,7 @@ export function pickFoldForLine(
 }
 
 const cypherFoldService = foldService.of((state, lineStart, lineEnd) =>
-  pickFoldForLine(
-    state.field(foldRangeField, false) ?? [],
-    lineStart,
-    lineEnd,
-  ),
+  pickFoldForLine(state.field(foldRangeField, false) ?? [], lineStart, lineEnd),
 );
 
 export const cypherFolding: Extension = [

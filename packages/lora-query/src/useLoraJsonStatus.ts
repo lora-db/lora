@@ -1,8 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Diagnostic } from "@codemirror/lint";
-import type {
-  LoraJsonEditorProps,
-} from "./LoraJsonEditor";
+import type { LoraJsonEditorProps } from "./LoraJsonEditor";
 import type { PathSegment } from "./json/path";
 import { formatJsonPath } from "./json/path";
 

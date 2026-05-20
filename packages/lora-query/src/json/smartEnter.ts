@@ -116,7 +116,7 @@ function smartEnter(view: EditorView): boolean {
   if (quoteCount % 2 === 1) return false;
 
   const step = detectIndentStep(state);
-  const baseIndent = (line.text.match(/^[ \t]*/)?.[0] ?? "");
+  const baseIndent = line.text.match(/^[ \t]*/)?.[0] ?? "";
 
   // Case 1: between `{` and `}` or `[` and `]`. Split onto three
   // lines with the inner line indented one step deeper.

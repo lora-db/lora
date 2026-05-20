@@ -216,9 +216,7 @@ const cachedValidate = singleFlight<ParseError[]>(
 const cachedHighlight = singleFlight<HighlightSpan[]>(
   (s) => wasmHighlight(s) as HighlightSpan[],
 );
-const cachedOutline = singleFlight<Outline>(
-  (s) => wasmOutline(s) as Outline,
-);
+const cachedOutline = singleFlight<Outline>((s) => wasmOutline(s) as Outline);
 const cachedAnalyse = singleFlightKeyed<Analysis, AnalyseConfig>(
   (s, cfg) => wasmAnalyse(s, cfg) as Analysis,
   (cfg) => {

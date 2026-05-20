@@ -23,7 +23,10 @@ const jsonHighlightStyle = HighlightStyle.define([
   { tag: t.number, class: "cm-lora-number" },
   { tag: t.bool, class: "cm-lora-bool" },
   { tag: t.null, class: "cm-lora-null" },
-  { tag: [t.punctuation, t.separator, t.brace, t.bracket], class: "cm-lora-punct" },
+  {
+    tag: [t.punctuation, t.separator, t.brace, t.bracket],
+    class: "cm-lora-punct",
+  },
   { tag: t.invalid, class: "cm-lora-invalid" },
 ]);
 

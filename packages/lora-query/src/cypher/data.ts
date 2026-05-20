@@ -130,8 +130,18 @@ export const CYPHER_CLAUSES: CypherToken[] = [
     detail: "ORDER BY expression [ASC|DESC]",
     info: "Sorts the result set.",
   },
-  { label: "LIMIT", kind: "clause", detail: "LIMIT n", info: "Caps the number of rows returned." },
-  { label: "SKIP", kind: "clause", detail: "SKIP n", info: "Skips the first `n` rows." },
+  {
+    label: "LIMIT",
+    kind: "clause",
+    detail: "LIMIT n",
+    info: "Caps the number of rows returned.",
+  },
+  {
+    label: "SKIP",
+    kind: "clause",
+    detail: "SKIP n",
+    info: "Skips the first `n` rows.",
+  },
   {
     label: "UNION",
     kind: "clause",
@@ -147,8 +157,16 @@ export const CYPHER_CLAUSES: CypherToken[] = [
 ];
 
 export const CYPHER_KEYWORDS: CypherToken[] = [
-  { label: "AS", kind: "keyword", info: "Aliases an expression in a projection." },
-  { label: "DISTINCT", kind: "keyword", info: "Drops duplicate rows from RETURN / WITH." },
+  {
+    label: "AS",
+    kind: "keyword",
+    info: "Aliases an expression in a projection.",
+  },
+  {
+    label: "DISTINCT",
+    kind: "keyword",
+    info: "Drops duplicate rows from RETURN / WITH.",
+  },
   { label: "ASC", kind: "keyword", info: "Ascending sort order." },
   { label: "DESC", kind: "keyword", info: "Descending sort order." },
   { label: "IN", kind: "operator", info: "Membership test against a list." },
@@ -158,8 +176,18 @@ export const CYPHER_KEYWORDS: CypherToken[] = [
   { label: "OR", kind: "operator", info: "Boolean disjunction." },
   { label: "XOR", kind: "operator", info: "Boolean exclusive-or." },
   { label: "NOT", kind: "operator", info: "Boolean negation." },
-  { label: "CASE", kind: "keyword", detail: "CASE ... WHEN ... THEN ... END", info: "Conditional expression." },
-  { label: "EXISTS", kind: "keyword", detail: "EXISTS { pattern }", info: "True if the inner pattern matches at least once." },
+  {
+    label: "CASE",
+    kind: "keyword",
+    detail: "CASE ... WHEN ... THEN ... END",
+    info: "Conditional expression.",
+  },
+  {
+    label: "EXISTS",
+    kind: "keyword",
+    detail: "EXISTS { pattern }",
+    info: "True if the inner pattern matches at least once.",
+  },
 ];
 
 export const CYPHER_CONSTANTS: CypherToken[] = [
@@ -185,36 +213,81 @@ interface DocOverride {
  */
 const DOC_OVERRIDES: Record<string, DocOverride> = {
   // Aggregates (top-level).
-  count: { detail: "count(expr | *)", info: "Aggregate — number of rows. `count(*)` counts every row." },
-  collect: { detail: "collect(expr)", info: "Aggregate — gather rows into a list." },
+  count: {
+    detail: "count(expr | *)",
+    info: "Aggregate — number of rows. `count(*)` counts every row.",
+  },
+  collect: {
+    detail: "collect(expr)",
+    info: "Aggregate — gather rows into a list.",
+  },
   sum: { detail: "sum(expr)", info: "Aggregate — numeric sum." },
   avg: { detail: "avg(expr)", info: "Aggregate — numeric average." },
   min: { detail: "min(expr)", info: "Aggregate — smallest value." },
   max: { detail: "max(expr)", info: "Aggregate — largest value." },
-  stdev: { detail: "stdev(expr)", info: "Aggregate — sample standard deviation." },
-  stdevp: { detail: "stdevp(expr)", info: "Aggregate — population standard deviation." },
-  percentileCont: { detail: "percentileCont(expr, p)", info: "Aggregate — continuous percentile (linear interpolation)." },
-  percentileDisc: { detail: "percentileDisc(expr, p)", info: "Aggregate — discrete percentile (nearest data point)." },
+  stdev: {
+    detail: "stdev(expr)",
+    info: "Aggregate — sample standard deviation.",
+  },
+  stdevp: {
+    detail: "stdevp(expr)",
+    info: "Aggregate — population standard deviation.",
+  },
+  percentileCont: {
+    detail: "percentileCont(expr, p)",
+    info: "Aggregate — continuous percentile (linear interpolation).",
+  },
+  percentileDisc: {
+    detail: "percentileDisc(expr, p)",
+    info: "Aggregate — discrete percentile (nearest data point).",
+  },
   // General scalar helpers (top-level).
   size: { detail: "size(list)", info: "Length of a list, string, or map." },
-  length: { detail: "length(path)", info: "Number of relationships in a path." },
-  keys: { detail: "keys(map)", info: "Keys of a map or properties of a node/relationship." },
-  properties: { detail: "properties(node|rel)", info: "Properties of a node or relationship as a map." },
+  length: {
+    detail: "length(path)",
+    info: "Number of relationships in a path.",
+  },
+  keys: {
+    detail: "keys(map)",
+    info: "Keys of a map or properties of a node/relationship.",
+  },
+  properties: {
+    detail: "properties(node|rel)",
+    info: "Properties of a node or relationship as a map.",
+  },
   coalesce: { detail: "coalesce(x, y, …)", info: "First non-null argument." },
-  reverse: { detail: "reverse(list|string)", info: "Reverses a list or string." },
+  reverse: {
+    detail: "reverse(list|string)",
+    info: "Reverses a list or string.",
+  },
   is_null: { detail: "is_null(x)", info: "True when `x` is NULL." },
-  id: { detail: "id(node|rel)", info: "Internal identifier of a node or relationship." },
+  id: {
+    detail: "id(node|rel)",
+    info: "Internal identifier of a node or relationship.",
+  },
   // Pattern helpers (top-level).
   nodes: { detail: "nodes(path)", info: "All nodes in a path." },
-  relationships: { detail: "relationships(path)", info: "All relationships in a path." },
+  relationships: {
+    detail: "relationships(path)",
+    info: "All relationships in a path.",
+  },
   type: { detail: "type(rel)", info: "Type of a relationship as a string." },
-  labels: { detail: "labels(node)", info: "Labels of a node as a list of strings." },
+  labels: {
+    detail: "labels(node)",
+    info: "Labels of a node as a list of strings.",
+  },
   // List builders (top-level).
-  range: { detail: "range(start, end[, step])", info: "Build an integer range." },
+  range: {
+    detail: "range(start, end[, step])",
+    info: "Build an integer range.",
+  },
   head: { detail: "head(list)", info: "First element of a list." },
   tail: { detail: "tail(list)", info: "All elements after the first." },
   last: { detail: "last(list)", info: "Last element of a list." },
-  timestamp: { detail: "timestamp()", info: "Current epoch milliseconds (UTC)." },
+  timestamp: {
+    detail: "timestamp()",
+    info: "Current epoch milliseconds (UTC).",
+  },
   // math.*
   "math.abs": { detail: "math.abs(x)", info: "Absolute value." },
   "math.sqrt": { detail: "math.sqrt(x)", info: "Square root." },
@@ -223,7 +296,10 @@ const DOC_OVERRIDES: Record<string, DocOverride> = {
   "math.round": { detail: "math.round(x)", info: "Banker's rounding." },
   "math.min": { detail: "math.min(a, b)", info: "Smaller of two values." },
   "math.max": { detail: "math.max(a, b)", info: "Larger of two values." },
-  "math.clamp": { detail: "math.clamp(x, lo, hi)", info: "Clamp `x` to `[lo, hi]`." },
+  "math.clamp": {
+    detail: "math.clamp(x, lo, hi)",
+    info: "Clamp `x` to `[lo, hi]`.",
+  },
   "math.pow": { detail: "math.pow(base, exp)", info: "Exponentiation." },
   "math.log": { detail: "math.log(x)", info: "Natural logarithm." },
   "math.sin": { detail: "math.sin(x)", info: "Sine (radians)." },
@@ -233,16 +309,43 @@ const DOC_OVERRIDES: Record<string, DocOverride> = {
   "string.upper": { detail: "string.upper(s)", info: "Upper-case." },
   "string.lower": { detail: "string.lower(s)", info: "Lower-case." },
   "string.length": { detail: "string.length(s)", info: "Character length." },
-  "string.concat": { detail: "string.concat(a, b)", info: "Concatenate strings." },
-  "string.contains": { detail: "string.contains(s, sub)", info: "Substring test." },
-  "string.startsWith": { detail: "string.startsWith(s, prefix)", info: "Prefix test." },
-  "string.endsWith": { detail: "string.endsWith(s, suffix)", info: "Suffix test." },
-  "string.split": { detail: "string.split(s, sep)", info: "Split by separator." },
-  "string.trim": { detail: "string.trim(s)", info: "Trim surrounding whitespace." },
-  "string.replace": { detail: "string.replace(s, from, to)", info: "Substring replace." },
-  "string.capitalize": { detail: "string.capitalize(s)", info: "Capitalise first letter." },
+  "string.concat": {
+    detail: "string.concat(a, b)",
+    info: "Concatenate strings.",
+  },
+  "string.contains": {
+    detail: "string.contains(s, sub)",
+    info: "Substring test.",
+  },
+  "string.startsWith": {
+    detail: "string.startsWith(s, prefix)",
+    info: "Prefix test.",
+  },
+  "string.endsWith": {
+    detail: "string.endsWith(s, suffix)",
+    info: "Suffix test.",
+  },
+  "string.split": {
+    detail: "string.split(s, sep)",
+    info: "Split by separator.",
+  },
+  "string.trim": {
+    detail: "string.trim(s)",
+    info: "Trim surrounding whitespace.",
+  },
+  "string.replace": {
+    detail: "string.replace(s, from, to)",
+    info: "Substring replace.",
+  },
+  "string.capitalize": {
+    detail: "string.capitalize(s)",
+    info: "Capitalise first letter.",
+  },
   "string.camel": { detail: "string.camel(s)", info: "Convert to camelCase." },
-  "string.count": { detail: "string.count(s, sub)", info: "Occurrences of `sub`." },
+  "string.count": {
+    detail: "string.count(s, sub)",
+    info: "Occurrences of `sub`.",
+  },
   // list.*
   "list.sum": { detail: "list.sum(xs)", info: "Sum of numeric items." },
   "list.avg": { detail: "list.avg(xs)", info: "Average of numeric items." },
@@ -250,7 +353,10 @@ const DOC_OVERRIDES: Record<string, DocOverride> = {
   "list.append": { detail: "list.append(xs, item)", info: "Append an item." },
   "list.first": { detail: "list.first(xs)", info: "First item." },
   "list.last": { detail: "list.last(xs)", info: "Last item." },
-  "list.contains": { detail: "list.contains(xs, item)", info: "Membership test." },
+  "list.contains": {
+    detail: "list.contains(xs, item)",
+    info: "Membership test.",
+  },
   "list.reverse": { detail: "list.reverse(xs)", info: "Reverse." },
   // map.*
   "map.keys": { detail: "map.keys(m)", info: "Keys of the map." },
@@ -258,7 +364,10 @@ const DOC_OVERRIDES: Record<string, DocOverride> = {
   // temporal.*
   "temporal.now": { detail: "temporal.now()", info: "Current timestamp." },
   "temporal.date": { detail: "temporal.date(...)", info: "Construct a date." },
-  "temporal.datetime": { detail: "temporal.datetime(...)", info: "Construct a datetime." },
+  "temporal.datetime": {
+    detail: "temporal.datetime(...)",
+    info: "Construct a datetime.",
+  },
 };
 
 /**
@@ -268,7 +377,8 @@ const DOC_OVERRIDES: Record<string, DocOverride> = {
  */
 const NAMESPACE_INFO: Record<string, string> = {
   math: "Numeric helpers — `math.abs`, `math.sqrt`, `math.floor`, ...",
-  string: "Text helpers — `string.upper`, `string.lower`, `string.length`, `string.concat`, ...",
+  string:
+    "Text helpers — `string.upper`, `string.lower`, `string.length`, `string.concat`, ...",
   list: "List helpers — `list.sum`, `list.avg`, `list.append`, `list.size`, ...",
   map: "Map helpers — `map.keys`, `map.size`, ...",
   bytes: "Byte-string helpers.",
@@ -354,14 +464,16 @@ function fallbackFromDocOverrides(): RawBuiltinsRegistry {
     "percentileCont",
     "percentileDisc",
   ]);
-  const functions: RawBuiltinFunction[] = Object.keys(DOC_OVERRIDES).map((name) => ({
-    name,
-    minArgs: 0,
-    maxArgs: null,
-    isAggregate: AGGREGATE_NAMES.has(name),
-    acceptsEnumAt: [],
-    acceptsTypeAt: [],
-  }));
+  const functions: RawBuiltinFunction[] = Object.keys(DOC_OVERRIDES).map(
+    (name) => ({
+      name,
+      minArgs: 0,
+      maxArgs: null,
+      isAggregate: AGGREGATE_NAMES.has(name),
+      acceptsEnumAt: [],
+      acceptsTypeAt: [],
+    }),
+  );
   return { functions, aliases: [] };
 }
 
@@ -371,16 +483,30 @@ function synthDetailArgs(min: number, max: number | null): string {
   if (max === null) {
     // Variadic — use "..." after `min` required placeholders.
     if (min === 0) return "(...)";
-    const required = Array.from({ length: min }, (_, i) => `arg${i + 1}`).join(", ");
+    const required = Array.from({ length: min }, (_, i) => `arg${i + 1}`).join(
+      ", ",
+    );
     return `(${required}, ...)`;
   }
   const required = Array.from({ length: min }, (_, i) => `arg${i + 1}`);
-  const optional = Array.from({ length: max - min }, (_, i) => `[arg${min + i + 1}]`);
+  const optional = Array.from(
+    { length: max - min },
+    (_, i) => `[arg${min + i + 1}]`,
+  );
   return `(${[...required, ...optional].join(", ")})`;
 }
 
-function synthInfo(min: number, max: number | null, isAggregate: boolean): string {
-  const arity = max === null ? `arity ${min}+` : min === max ? `arity ${min}` : `arity ${min}..${max}`;
+function synthInfo(
+  min: number,
+  max: number | null,
+  isAggregate: boolean,
+): string {
+  const arity =
+    max === null
+      ? `arity ${min}+`
+      : min === max
+        ? `arity ${min}`
+        : `arity ${min}..${max}`;
   const lead = isAggregate ? "Aggregate" : "Builtin function";
   return `${lead} — ${arity}.`;
 }
@@ -392,8 +518,10 @@ function buildToken(fn: RawBuiltinFunction): CypherToken {
   // canonical name is only used for lookup.
   const dotIdx = fn.name.indexOf(".");
   const label = dotIdx >= 0 ? fn.name.slice(dotIdx + 1) : fn.name;
-  const detail = override?.detail ?? `${fn.name}${synthDetailArgs(fn.minArgs, fn.maxArgs)}`;
-  const info = override?.info ?? synthInfo(fn.minArgs, fn.maxArgs, fn.isAggregate);
+  const detail =
+    override?.detail ?? `${fn.name}${synthDetailArgs(fn.minArgs, fn.maxArgs)}`;
+  const info =
+    override?.info ?? synthInfo(fn.minArgs, fn.maxArgs, fn.isAggregate);
   return { label, kind: "function", detail, info };
 }
 
@@ -425,14 +553,17 @@ TOP_LEVEL_FUNCTIONS.sort((a, b) => a.label.localeCompare(b.label));
 
 export const CYPHER_TOP_LEVEL_FUNCTIONS: CypherToken[] = TOP_LEVEL_FUNCTIONS;
 
-export const NAMESPACE_MEMBERS: Record<string, CypherToken[]> = NAMESPACE_MEMBERS_BUILDER;
+export const NAMESPACE_MEMBERS: Record<string, CypherToken[]> =
+  NAMESPACE_MEMBERS_BUILDER;
 
 /**
  * Only namespaces that actually have members in the registry are
  * surfaced — no empty `bytes` / `bits` / `json` entries with nothing
  * behind them. Sorted alphabetically for stable completion ordering.
  */
-export const CYPHER_NAMESPACES: CypherToken[] = Object.keys(NAMESPACE_MEMBERS_BUILDER)
+export const CYPHER_NAMESPACES: CypherToken[] = Object.keys(
+  NAMESPACE_MEMBERS_BUILDER,
+)
   .sort()
   .map((ns) => ({
     label: ns,
@@ -453,7 +584,11 @@ export interface CypherAlias {
  * find the canonical builtin.
  */
 export const CYPHER_ALIASES: CypherAlias[] = RAW_REGISTRY.aliases
-  .map((a) => ({ alias: a.alias, canonical: a.canonical, kind: "alias" as const }))
+  .map((a) => ({
+    alias: a.alias,
+    canonical: a.canonical,
+    kind: "alias" as const,
+  }))
   .sort((a, b) => a.alias.localeCompare(b.alias));
 
 // ─────────────────────────────────────────────────────────────────────
@@ -463,7 +598,10 @@ export const CYPHER_ALIASES: CypherAlias[] = RAW_REGISTRY.aliases
 const ALL_KEYS = new Map<string, CypherToken>();
 function index(tokens: CypherToken[], keyLowercase = false) {
   for (const t of tokens) {
-    ALL_KEYS.set(keyLowercase ? t.label.toLowerCase() : t.label.toUpperCase(), t);
+    ALL_KEYS.set(
+      keyLowercase ? t.label.toLowerCase() : t.label.toUpperCase(),
+      t,
+    );
   }
 }
 index(CYPHER_CLAUSES);

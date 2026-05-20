@@ -1,10 +1,5 @@
 import type { LoraQueryTheme } from "./LoraQueryEditor";
-import {
-  githubDark,
-  latte,
-  typography,
-  type Palette,
-} from "./palettes";
+import { githubDark, latte, typography, type Palette } from "./palettes";
 
 /**
  * Flatten a {@link Palette} into the flat-key shape the editor's

@@ -19,11 +19,7 @@ export { useLoraJsonStatus } from "./useLoraJsonStatus";
 export type { LoraJsonStatus } from "./useLoraJsonStatus";
 
 export { lightTheme, darkTheme, createTheme } from "./themes";
-export {
-  lightJsonTheme,
-  darkJsonTheme,
-  createJsonTheme,
-} from "./jsonThemes";
+export { lightJsonTheme, darkJsonTheme, createJsonTheme } from "./jsonThemes";
 
 export { formatJson, minifyJson } from "./json/format";
 export { jsonExtensions } from "./json/extensions";

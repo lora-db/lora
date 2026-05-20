@@ -140,7 +140,8 @@ export function fallbackOutline(source: string): Outline {
 function stripStringsAndComments(source: string): string {
   let i = 0;
   const out: string[] = [];
-  let state: "normal" | "single" | "double" | "back" | "line" | "block" = "normal";
+  let state: "normal" | "single" | "double" | "back" | "line" | "block" =
+    "normal";
   while (i < source.length) {
     const c = source[i]!;
     if (state === "normal") {
@@ -205,9 +206,11 @@ function stripStringsAndComments(source: string): string {
       i += 2;
       continue;
     }
-    if ((state === "single" && c === "'") ||
-        (state === "double" && c === '"') ||
-        (state === "back" && c === "`")) {
+    if (
+      (state === "single" && c === "'") ||
+      (state === "double" && c === '"') ||
+      (state === "back" && c === "`")
+    ) {
       state = "normal";
       out.push(c);
     } else {
@@ -271,10 +274,7 @@ export function getOutline(state: EditorState): Outline {
 // so it gets garbage-collected with the outline. Hover, navigation and
 // `resolveVariable` were each doing linear `.find()` scans on every
 // invocation.
-const variableIndexCache = new WeakMap<
-  Outline,
-  Map<string, OutlineVariable>
->();
+const variableIndexCache = new WeakMap<Outline, Map<string, OutlineVariable>>();
 
 function buildVariableIndex(outline: Outline): Map<string, OutlineVariable> {
   const map = new Map<string, OutlineVariable>();

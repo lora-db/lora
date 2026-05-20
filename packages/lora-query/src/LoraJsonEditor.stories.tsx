@@ -1,9 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react";
-import {
-  LoraJsonEditor,
-  type LoraJsonEditorHandle,
-} from "./LoraJsonEditor";
+import { LoraJsonEditor, type LoraJsonEditorHandle } from "./LoraJsonEditor";
 import { useLoraJsonStatus } from "./useLoraJsonStatus";
 import { darkJsonTheme, lightJsonTheme } from "./jsonThemes";
 import { formatJson } from "./json/format";
@@ -241,8 +238,8 @@ export const WithKnownKeys: Story = {
           knownKeys={["userId", "minAge", "cap", "includeArchived"]}
         />
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
-          Place the caret between the braces and trigger autocomplete
-          (<kbd>Ctrl+Space</kbd>) — the suggestions come from the
+          Place the caret between the braces and trigger autocomplete (
+          <kbd>Ctrl+Space</kbd>) — the suggestions come from the
           <code> knownKeys</code> prop and would normally match the
           <code> $param</code> names declared in a sibling Cypher query.
         </p>
@@ -274,7 +271,11 @@ export const StatusHook: Story = {
             borderRadius: 4,
           }}
         >
-          <strong>{status.ok ? "✓ Valid JSON" : `✗ ${status.diagnostics.length} error(s)`}</strong>
+          <strong>
+            {status.ok
+              ? "✓ Valid JSON"
+              : `✗ ${status.diagnostics.length} error(s)`}
+          </strong>
           <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
             {status.diagnostics.map((d, i) => (
               <li key={i}>{d.message}</li>
@@ -290,9 +291,7 @@ export const RunCallback: Story = {
   render: () => {
     const editorRef = useRef<LoraJsonEditorHandle>(null);
     const [value, setValue] = useState(pretty(DEMO_PAYLOAD));
-    const [runs, setRuns] = useState<Array<{ at: number; source: string }>>(
-      [],
-    );
+    const [runs, setRuns] = useState<Array<{ at: number; source: string }>>([]);
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <StoryToolbar
@@ -423,11 +422,7 @@ export const FullBleedHeight: Story = {
             boxSizing: "border-box",
           }}
         >
-          <LoraJsonEditor
-            ref={editorRef}
-            value={value}
-            onChange={setValue}
-          />
+          <LoraJsonEditor ref={editorRef} value={value} onChange={setValue} />
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
           The dashed box is 400 px tall. The editor stretches to fill it.
@@ -480,15 +475,22 @@ export const SmartEditing: Story = {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <StoryToolbar editorRef={editorRef} />
-        <LoraJsonEditor
-          ref={editorRef}
-          value={value}
-          onChange={setValue}
-        />
-        <ul style={{ margin: 0, fontSize: 12, color: "#6e7781", paddingLeft: 18 }}>
-          <li>Place the caret between <code>{"{"}</code> and <code>{"}"}</code> and press <kbd>Enter</kbd> — splits onto three lines.</li>
-          <li>Place the caret right after the trailing comma in the buffer and press <kbd>Enter</kbd> — opens a quoted key and the autocomplete.</li>
-          <li>Collapse the object via the fold gutter — the placeholder shows the entry count.</li>
+        <LoraJsonEditor ref={editorRef} value={value} onChange={setValue} />
+        <ul
+          style={{ margin: 0, fontSize: 12, color: "#6e7781", paddingLeft: 18 }}
+        >
+          <li>
+            Place the caret between <code>{"{"}</code> and <code>{"}"}</code>{" "}
+            and press <kbd>Enter</kbd> — splits onto three lines.
+          </li>
+          <li>
+            Place the caret right after the trailing comma in the buffer and
+            press <kbd>Enter</kbd> — opens a quoted key and the autocomplete.
+          </li>
+          <li>
+            Collapse the object via the fold gutter — the placeholder shows the
+            entry count.
+          </li>
         </ul>
       </div>
     );
@@ -527,11 +529,14 @@ export const AllowedRequiredKeys: Story = {
             <code>{`["userId", "minAge", "cap"]`}</code>
           </div>
           <div>
-            <strong>requiredKeys</strong>{" "}
-            <code>{`["userId", "minAge"]`}</code>
+            <strong>requiredKeys</strong> <code>{`["userId", "minAge"]`}</code>
           </div>
           <div style={{ marginTop: 6 }}>
-            <strong>{status.ok ? "✓ Valid" : `✗ ${status.diagnostics.length} issue(s)`}</strong>
+            <strong>
+              {status.ok
+                ? "✓ Valid"
+                : `✗ ${status.diagnostics.length} issue(s)`}
+            </strong>
             <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
               {status.diagnostics.map((d, i) => (
                 <li key={i}>
@@ -542,8 +547,8 @@ export const AllowedRequiredKeys: Story = {
           </div>
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
-          The <code>{`"extra"`}</code> key is flagged because it isn{`'`}t in
-          {" "}<code>allowedKeys</code>. <code>{`"minAge"`}</code> is flagged as
+          The <code>{`"extra"`}</code> key is flagged because it isn{`'`}t in{" "}
+          <code>allowedKeys</code>. <code>{`"minAge"`}</code> is flagged as
           missing. The autocomplete only offers the allowed keys.
         </p>
       </div>
@@ -613,8 +618,8 @@ export const FormatOnPaste: Story = {
         />
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
           Try pasting a minified blob like
-          <code> {`{"userId":"alice","tags":["admin","editor"]}`}</code> —
-          it lands already prettified.
+          <code> {`{"userId":"alice","tags":["admin","editor"]}`}</code> — it
+          lands already prettified.
         </p>
       </div>
     );
@@ -643,16 +648,11 @@ export const SortFoldToggleQuotes: Story = {
             Unfold all
           </button>
         </div>
-        <LoraJsonEditor
-          ref={editorRef}
-          value={value}
-          onChange={setValue}
-        />
+        <LoraJsonEditor ref={editorRef} value={value} onChange={setValue} />
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
-          Start with single-quoted strings, convert to JSON, sort keys.
-          Fold-all + the count placeholder lets you eyeball nested
-          structure at a glance. Keyboard shortcut for Sort:{" "}
-          <kbd>⌥⇧S</kbd>.
+          Start with single-quoted strings, convert to JSON, sort keys. Fold-all
+          + the count placeholder lets you eyeball nested structure at a glance.
+          Keyboard shortcut for Sort: <kbd>⌥⇧S</kbd>.
         </p>
       </div>
     );

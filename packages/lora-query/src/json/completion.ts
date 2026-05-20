@@ -1,7 +1,4 @@
-import {
-  Facet,
-  type EditorState,
-} from "@codemirror/state";
+import { Facet, type EditorState } from "@codemirror/state";
 import {
   type CompletionContext,
   type CompletionResult,
@@ -50,10 +47,7 @@ const KEY_CHAR_RE = /[A-Za-z0-9_\-$]/;
  * Returns `null` when nothing relevant was found (cursor at the top
  * level, or inside an array).
  */
-function findEnclosingOpener(
-  doc: string,
-  pos: number,
-): "{" | "[" | null {
+function findEnclosingOpener(doc: string, pos: number): "{" | "[" | null {
   let depth = 0;
   let inString: '"' | "'" | null = null;
   for (let i = pos - 1; i >= 0; i--) {
@@ -128,7 +122,8 @@ export function jsonCompletions(
     prev === "," ||
     // If we already consumed a leading `"`, the prev char (before the
     // `"`) is the relevant one.
-    (tokenText.startsWith('"') && (prev === "{" || prev === "," || prev === ""));
+    (tokenText.startsWith('"') &&
+      (prev === "{" || prev === "," || prev === ""));
 
   if (!atKeyPos) {
     // Special-case: if the token text itself starts with `"` and the

@@ -1,10 +1,5 @@
 import { useMemo, useState } from "react";
-import type {
-  Analysis,
-  Outline,
-  OutlineVariable,
-  ParseError,
-} from "./parser";
+import type { Analysis, Outline, OutlineVariable, ParseError } from "./parser";
 import type { LoraQueryEditorProps } from "./LoraQueryEditor";
 
 export interface LoraQueryStatus {

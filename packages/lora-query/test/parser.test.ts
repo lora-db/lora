@@ -86,9 +86,7 @@ describe("@loradb/lora-query parser", () => {
   });
 
   it("tags relationship variables with kind:'relationship'", async () => {
-    const o = await outline(
-      "MATCH (a)-[r:KNOWS]->(b) RETURN r",
-    );
+    const o = await outline("MATCH (a)-[r:KNOWS]->(b) RETURN r");
     const r = o.variables.find((v) => v.name === "r");
     expect(r?.kind).toBe("relationship");
     expect(r?.label).toBe("KNOWS");
@@ -145,9 +143,7 @@ describe("@loradb/lora-query parser", () => {
     // (0-indexed). Diagnostic line should be absolute (line 4 with the
     // string opening) — at least past line 1 (i.e. the first stmt
     // didn't get blamed for the second's error).
-    const broken = errs.find((e) =>
-      /string|unary|expected/i.test(e.message),
-    );
+    const broken = errs.find((e) => /string|unary|expected/i.test(e.message));
     expect(broken).toBeDefined();
     expect(broken!.line).toBeGreaterThanOrEqual(3);
     // The span must point inside the second statement, not the first.
@@ -232,8 +228,7 @@ describe("@loradb/lora-query parser", () => {
     expect(err.span.start).toBeLessThanOrEqual(secondEnd + 1);
     // The two good statements must NOT produce errors.
     const goodCount = errs.filter(
-      (e) =>
-        e.span.start < secondStart || e.span.start > secondEnd + 1,
+      (e) => e.span.start < secondStart || e.span.start > secondEnd + 1,
     ).length;
     expect(goodCount).toBe(0);
   });
@@ -284,11 +279,13 @@ describe("@loradb/lora-query parser", () => {
     );
     // The inner `Movie` label and `RATED` relationship type get
     // highlighted, proving the visitor recurses into the subquery.
-    const labels = spans.filter((s) => s.kind === "label").map((s) => {
-      // span text isn't stored on the highlight span; instead, use
-      // the start/end offsets back into the source.
-      return s;
-    });
+    const labels = spans
+      .filter((s) => s.kind === "label")
+      .map((s) => {
+        // span text isn't stored on the highlight span; instead, use
+        // the start/end offsets back into the source.
+        return s;
+      });
     expect(labels.length).toBeGreaterThan(0);
   });
 
@@ -311,7 +308,9 @@ LIMIT 25`,
     const offenders = a.diagnostics
       .map((d) => d.message)
       .filter((m) =>
-        /\b(avg|count|sum|min|max|collect|size|length|reverse|coalesce)\b/.test(m),
+        /\b(avg|count|sum|min|max|collect|size|length|reverse|coalesce)\b/.test(
+          m,
+        ),
       );
     expect(offenders).toEqual([]);
   });

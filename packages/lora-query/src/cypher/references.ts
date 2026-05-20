@@ -29,11 +29,7 @@ const referencesField = StateField.define<DecorationSet>({
     // highlight-spans field has been refreshed by the AST watcher.
     // For everything else, just map the existing decorations through
     // the change set so they ride along with edits.
-    if (
-      tr.docChanged ||
-      tr.selection ||
-      tr.effects.length > 0
-    ) {
+    if (tr.docChanged || tr.selection || tr.effects.length > 0) {
       return computeReferences(tr.state);
     }
     return value.map(tr.changes);

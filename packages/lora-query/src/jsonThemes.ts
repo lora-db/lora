@@ -1,9 +1,4 @@
-import {
-  githubDark,
-  latte,
-  typography,
-  type Palette,
-} from "./palettes";
+import { githubDark, latte, typography, type Palette } from "./palettes";
 
 /**
  * CSS-variable theme for the JSON editor. Identical shape to

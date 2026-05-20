@@ -15,10 +15,7 @@ import { type Diagnostic } from "@codemirror/lint";
 import { jsonParseLinter } from "@codemirror/lang-json";
 import { jsonExtensions } from "./json/extensions";
 import { jsonPopupTheme } from "./json/theme";
-import {
-  loraJsonProviders,
-  type LoraJsonProviders,
-} from "./json/completion";
+import { loraJsonProviders, type LoraJsonProviders } from "./json/completion";
 import {
   keyConstraintsFacet,
   type KeyConstraints,
@@ -31,10 +28,7 @@ import {
   unfoldAllCmd,
 } from "./json/commands";
 import { getJsonPath, type PathSegment } from "./json/path";
-import {
-  JSON_THEME_TO_VAR,
-  type LoraJsonTheme,
-} from "./jsonThemes";
+import { JSON_THEME_TO_VAR, type LoraJsonTheme } from "./jsonThemes";
 import "./editor.css";
 
 export type { LoraJsonTheme } from "./jsonThemes";
@@ -329,11 +323,7 @@ export const LoraJsonEditor = forwardRef<
         } catch {
           return false;
         }
-        const replacement = JSON.stringify(
-          parsed,
-          null,
-          indentRef.current,
-        );
+        const replacement = JSON.stringify(parsed, null, indentRef.current);
         const sel = view.state.selection.main;
         event.preventDefault();
         view.dispatch({
@@ -358,9 +348,7 @@ export const LoraJsonEditor = forwardRef<
         ),
         themeComp.current.of(jsonPopupTheme(initialPopupValues)),
         providersComp.current.of(loraJsonProviders.of(initialProviders)),
-        constraintsComp.current.of(
-          keyConstraintsFacet.of(initialConstraints),
-        ),
+        constraintsComp.current.of(keyConstraintsFacet.of(initialConstraints)),
         extrasComp.current.of(toExtensionArray(extraExtensions)),
         keymapComp.current.of(
           extraKeymap && extraKeymap.length > 0
@@ -472,9 +460,7 @@ export const LoraJsonEditor = forwardRef<
     if (!view) return;
     view.dispatch({
       effects: constraintsComp.current.reconfigure(
-        keyConstraintsFacet.of(
-          buildKeyConstraints(allowedKeys, requiredKeys),
-        ),
+        keyConstraintsFacet.of(buildKeyConstraints(allowedKeys, requiredKeys)),
       ),
     });
   }, [allowedKeys, requiredKeys]);
@@ -610,7 +596,9 @@ export const LoraJsonEditor = forwardRef<
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: extrasComp.current.reconfigure(toExtensionArray(extraExtensions)),
+      effects: extrasComp.current.reconfigure(
+        toExtensionArray(extraExtensions),
+      ),
     });
   }, [extraExtensions]);
 
@@ -672,7 +660,9 @@ export const LoraJsonEditor = forwardRef<
   return (
     <div
       ref={hostRef}
-      className={["lora-query", "lora-json", className].filter(Boolean).join(" ")}
+      className={["lora-query", "lora-json", className]
+        .filter(Boolean)
+        .join(" ")}
       data-color-scheme={colorScheme === "auto" ? undefined : colorScheme}
       style={containerStyle}
     >
@@ -690,7 +680,15 @@ export const LoraJsonEditor = forwardRef<
                 void prettifyFn();
               }}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
                 <path d="M6 21l15 -15l-3 -3l-15 15l3 3" />
                 <path d="M15 6l3 3" />
                 <path d="M9 3a2 2 0 0 0 2 2a2 2 0 0 0 -2 2a2 2 0 0 0 -2 -2a2 2 0 0 0 2 -2" />
@@ -703,16 +701,34 @@ export const LoraJsonEditor = forwardRef<
               type="button"
               className={`lora-query__action lora-query__copy${copied ? " lora-query__copy--copied" : ""}`}
               aria-label={copied ? "Copied" : "Copy"}
-              title={copied ? "Copied" : hasSelection ? "Copy selection" : "Copy"}
+              title={
+                copied ? "Copied" : hasSelection ? "Copy selection" : "Copy"
+              }
               onMouseDown={(e) => e.preventDefault()}
               onClick={handleCopyClick}
             >
               {copied ? (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
               ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>

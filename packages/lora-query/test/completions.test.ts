@@ -43,10 +43,7 @@ async function complete(
   let state = EditorState.create({
     doc,
     selection: { anchor: cursor },
-    extensions: [
-      outlineField,
-      loraQueryProviders.of(TEST_PROVIDERS),
-    ],
+    extensions: [outlineField, loraQueryProviders.of(TEST_PROVIDERS)],
   });
   // Seed the outline with the regex fallback so scope-aware
   // completions work for partial sources too.
@@ -61,10 +58,7 @@ async function complete(
     matchBefore(re: RegExp) {
       const line = state.doc.lineAt(cursor);
       const text = state.sliceDoc(line.from, cursor);
-      const anchored = new RegExp(
-        re.source + "$",
-        re.flags.replace("g", ""),
-      );
+      const anchored = new RegExp(re.source + "$", re.flags.replace("g", ""));
       const m = anchored.exec(text);
       if (!m) return null;
       return { from: cursor - m[0].length, to: cursor, text: m[0] };
@@ -309,20 +303,14 @@ describe("cypherCompletions — ORDER BY position aware", () => {
     expectIncludes(labels, "n DESC", "n ASC");
   });
   it("after a value: only ASC/DESC", async () => {
-    const { labels } = await complete(
-      "MATCH (n) RETURN n ORDER BY n.age ",
-      34,
-    );
+    const { labels } = await complete("MATCH (n) RETURN n ORDER BY n.age ", 34);
     expectIncludes(labels, "DESC", "ASC");
   });
 });
 
 describe("cypherCompletions — YIELD columns from procedure signatures", () => {
   it("CALL db.indexes() YIELD | offers the procedure's columns + *", async () => {
-    const { labels } = await complete(
-      "CALL db.indexes() YIELD ",
-      24,
-    );
+    const { labels } = await complete("CALL db.indexes() YIELD ", 24);
     // db.indexes has no parsed signature in TEST_PROVIDERS so columns
     // are empty — we should still get `*` so the rest of the flow
     // doesn't lock up.
@@ -349,7 +337,9 @@ describe("cypherCompletions — YIELD columns from procedure signatures", () => 
       ],
     });
     state = state.update({
-      effects: _setOutlineEffect.of(fallbackOutline("CALL db.indexes() YIELD ")),
+      effects: _setOutlineEffect.of(
+        fallbackOutline("CALL db.indexes() YIELD "),
+      ),
     }).state;
     const ctx: CompletionContext = {
       state,
@@ -482,14 +472,7 @@ describe("cypherCompletions — registry coverage", () => {
 describe("cypherCompletions — var.property", () => {
   it("n.| with Person label returns the schema keys", async () => {
     const { labels } = await complete("MATCH (n:Person) RETURN n.name", 26);
-    expectIncludes(
-      labels,
-      "name",
-      "age",
-      "email",
-      "archived",
-      "createdAt",
-    );
+    expectIncludes(labels, "name", "age", "email", "archived", "createdAt");
   });
   it("alias.| follows WITH AS source label", async () => {
     const { labels } = await complete(
@@ -508,10 +491,7 @@ describe("cypherCompletions — var.property", () => {
     expectExcludes(labels, "<key>: <value>");
   });
   it("nested n.foo.| → no completion (no nested schema)", async () => {
-    const { labels } = await complete(
-      "MATCH (n:Person) RETURN n.foo.name",
-      30,
-    );
+    const { labels } = await complete("MATCH (n:Person) RETURN n.foo.name", 30);
     expectExcludes(labels, "name", "age", "email");
   });
 
@@ -580,20 +560,14 @@ describe("cypherCompletions — property maps", () => {
 
 describe("cypherCompletions — SET item snippets", () => {
   it("SET | with scope vars surfaces concrete name snippets", async () => {
-    const { labels } = await complete(
-      "MATCH (alice:Person) SET ",
-      25,
-    );
+    const { labels } = await complete("MATCH (alice:Person) SET ", 25);
     expectIncludes(labels, "alice.<key> = <value>", "alice += { … }");
   });
 });
 
 describe("cypherCompletions — safety (never recommend the impossible)", () => {
   it("inside a string literal returns nothing", async () => {
-    const { labels } = await complete(
-      "MATCH (n) WHERE n.name = 'hello",
-      31,
-    );
+    const { labels } = await complete("MATCH (n) WHERE n.name = 'hello", 31);
     expectExcludes(labels, "MATCH", "WHERE", "*");
   });
   it("inside a // comment returns nothing", async () => {

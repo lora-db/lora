@@ -52,7 +52,10 @@ import { autoCompletionTriggers } from "./triggers";
  * that don't parse.
  */
 const cypherHighlightStyle = HighlightStyle.define([
-  { tag: [t.keyword, t.controlKeyword, t.modifier, t.definitionKeyword], class: "cm-lora-keyword" },
+  {
+    tag: [t.keyword, t.controlKeyword, t.modifier, t.definitionKeyword],
+    class: "cm-lora-keyword",
+  },
   { tag: [t.atom, t.bool, t.null], class: "cm-lora-bool" },
   { tag: t.string, class: "cm-lora-string" },
   { tag: t.number, class: "cm-lora-number" },
@@ -63,7 +66,10 @@ const cypherHighlightStyle = HighlightStyle.define([
   // immediately followed by `(`. Routing it to cm-lora-function gives
   // every call site a distinct colour (currently green) without
   // waiting for the WASM AST to resolve.
-  { tag: [t.function(t.variableName), t.function(t.propertyName)], class: "cm-lora-function" },
+  {
+    tag: [t.function(t.variableName), t.function(t.propertyName)],
+    class: "cm-lora-function",
+  },
 ]);
 
 export interface CypherExtensionsOptions {

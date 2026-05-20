@@ -265,7 +265,9 @@ function buildProviders(
     labels: labels ?? [],
     relTypes: relTypes ?? [],
     procedures: procedures ?? [],
-    ...(getPropertyKeys ? { getPropertyKeys: (ctx) => getPropertyKeys(ctx) } : {}),
+    ...(getPropertyKeys
+      ? { getPropertyKeys: (ctx) => getPropertyKeys(ctx) }
+      : {}),
   };
 }
 
@@ -385,7 +387,12 @@ export const LoraQueryEditor = forwardRef<
 
   useLayoutEffect(() => {
     if (!cmHostRef.current) return;
-    const initialProviders = buildProviders(labels, relTypes, procedures, getPropertyKeys);
+    const initialProviders = buildProviders(
+      labels,
+      relTypes,
+      procedures,
+      getPropertyKeys,
+    );
     const initialPopupValues = themeToPopupValues(theme);
     lastPopupSigRef.current = JSON.stringify(initialPopupValues);
     const view = new EditorView({
@@ -495,7 +502,9 @@ export const LoraQueryEditor = forwardRef<
     if (!view) return;
     view.dispatch({
       effects: providersComp.current.reconfigure(
-        loraQueryProviders.of(buildProviders(labels, relTypes, procedures, getPropertyKeys)),
+        loraQueryProviders.of(
+          buildProviders(labels, relTypes, procedures, getPropertyKeys),
+        ),
       ),
     });
   }, [labels, relTypes, procedures, getPropertyKeys]);
@@ -619,7 +628,9 @@ export const LoraQueryEditor = forwardRef<
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: extrasComp.current.reconfigure(toExtensionArray(extraExtensions)),
+      effects: extrasComp.current.reconfigure(
+        toExtensionArray(extraExtensions),
+      ),
     });
   }, [extraExtensions]);
 
@@ -699,7 +710,15 @@ export const LoraQueryEditor = forwardRef<
                 void prettifyFn();
               }}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
                 <path d="M6 21l15 -15l-3 -3l-15 15l3 3" />
                 <path d="M15 6l3 3" />
                 <path d="M9 3a2 2 0 0 0 2 2a2 2 0 0 0 -2 2a2 2 0 0 0 -2 -2a2 2 0 0 0 2 -2" />
@@ -712,16 +731,34 @@ export const LoraQueryEditor = forwardRef<
               type="button"
               className={`lora-query__action lora-query__copy${copied ? " lora-query__copy--copied" : ""}`}
               aria-label={copied ? "Copied" : "Copy"}
-              title={copied ? "Copied" : hasSelection ? "Copy selection" : "Copy"}
+              title={
+                copied ? "Copied" : hasSelection ? "Copy selection" : "Copy"
+              }
               onMouseDown={(e) => e.preventDefault()}
               onClick={handleCopyClick}
             >
               {copied ? (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
               ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>

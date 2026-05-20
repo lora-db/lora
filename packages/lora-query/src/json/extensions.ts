@@ -64,9 +64,7 @@ export interface JsonExtensionsOptions {
  * Mirrors `cypher/extensions.ts` so both editors share the same
  * structural UX.
  */
-export function jsonExtensions(
-  options: JsonExtensionsOptions = {},
-): Extension {
+export function jsonExtensions(options: JsonExtensionsOptions = {}): Extension {
   const {
     readOnly = false,
     showLineNumbers = true,

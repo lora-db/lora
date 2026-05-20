@@ -1,7 +1,4 @@
-import {
-  Facet,
-  type EditorState,
-} from "@codemirror/state";
+import { Facet, type EditorState } from "@codemirror/state";
 import { linter, type Diagnostic } from "@codemirror/lint";
 
 /**

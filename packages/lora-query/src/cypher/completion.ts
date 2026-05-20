@@ -33,7 +33,17 @@ function aliasToCompletion(a: CypherAlias): Completion {
 
 function toCompletion(
   t: CypherToken,
-  opts: { boost?: number; apply?: string | ((view: EditorView, completion: Completion, from: number, to: number) => void) } = {},
+  opts: {
+    boost?: number;
+    apply?:
+      | string
+      | ((
+          view: EditorView,
+          completion: Completion,
+          from: number,
+          to: number,
+        ) => void);
+  } = {},
 ): Completion {
   const base: Completion = {
     label: t.label,
@@ -93,7 +103,8 @@ const SNIPPETS: Array<{ keyword: string; template: string; info: string }> = [
   },
   {
     keyword: "MATCH ()-[]->()",
-    template: "MATCH (${1:a})-[${2:r}:${3:KNOWS}]->(${4:b})\nRETURN ${1:a}, ${4:b}",
+    template:
+      "MATCH (${1:a})-[${2:r}:${3:KNOWS}]->(${4:b})\nRETURN ${1:a}, ${4:b}",
     info: "Read a relationship pattern.",
   },
   {
@@ -103,8 +114,7 @@ const SNIPPETS: Array<{ keyword: string; template: string; info: string }> = [
   },
   {
     keyword: "MATCH path = (a)-[*]->(b)",
-    template:
-      "MATCH ${1:p} = (${2:a})-[${3:*1..3}]->(${4:b})\nRETURN ${1:p}",
+    template: "MATCH ${1:p} = (${2:a})-[${3:*1..3}]->(${4:b})\nRETURN ${1:p}",
     info: "Bind a whole path to a variable and return it.",
   },
   {
@@ -124,8 +134,7 @@ const SNIPPETS: Array<{ keyword: string; template: string; info: string }> = [
   },
   {
     keyword: "WHERE NOT EXISTS pattern",
-    template:
-      "WHERE NOT EXISTS { (${1:n})-[:${2:KNOWS}]->(${3:m}) }",
+    template: "WHERE NOT EXISTS { (${1:n})-[:${2:KNOWS}]->(${3:m}) }",
     info: "Filter out rows where the inner pattern matches.",
   },
   {
@@ -300,12 +309,24 @@ const COMPARISON_OPS: Array<{ label: string; detail: string; info: string }> = [
   { label: "<>", detail: "not equal", info: "Inequality." },
   { label: "<", detail: "less than", info: "Numeric / temporal less-than." },
   { label: "<=", detail: "less or equal", info: "Numeric / temporal ≤." },
-  { label: ">", detail: "greater than", info: "Numeric / temporal greater-than." },
+  {
+    label: ">",
+    detail: "greater than",
+    info: "Numeric / temporal greater-than.",
+  },
   { label: ">=", detail: "greater or equal", info: "Numeric / temporal ≥." },
-  { label: "IN", detail: "membership", info: "True when the LHS is in the RHS list." },
+  {
+    label: "IN",
+    detail: "membership",
+    info: "True when the LHS is in the RHS list.",
+  },
   { label: "STARTS WITH", detail: "prefix match", info: "String prefix test." },
   { label: "ENDS WITH", detail: "suffix match", info: "String suffix test." },
-  { label: "CONTAINS", detail: "substring", info: "Substring containment test." },
+  {
+    label: "CONTAINS",
+    detail: "substring",
+    info: "Substring containment test.",
+  },
   { label: "=~", detail: "regex match", info: "Regex match (Java syntax)." },
 ];
 
@@ -463,16 +484,14 @@ function asAliasCompletions(propertyHint: string | null): Completion[] {
       apply: ` AS ${propertyHint}`,
     });
   }
-  out.push(
-    {
-      label: "AS <alias>",
-      type: "keyword",
-      detail: "named projection",
-      info: "Give this projection a custom name.",
-      boost: 7,
-      apply: snippet(" AS ${1:alias}"),
-    },
-  );
+  out.push({
+    label: "AS <alias>",
+    type: "keyword",
+    detail: "named projection",
+    info: "Give this projection a custom name.",
+    boost: 7,
+    apply: snippet(" AS ${1:alias}"),
+  });
   return out;
 }
 
@@ -667,7 +686,11 @@ function patternStarterCompletions(): Completion[] {
   return [
     mk("(n)", "(${1:n})", "Open a node pattern."),
     mk("(n:Label)", "(${1:n}:${2:Label})", "Node with a label."),
-    mk("(n:Label {key: value})", "(${1:n}:${2:Label} {${3:key}: ${4:'value'}})", "Node with label + properties."),
+    mk(
+      "(n:Label {key: value})",
+      "(${1:n}:${2:Label} {${3:key}: ${4:'value'}})",
+      "Node with label + properties.",
+    ),
     mk(
       "(a)-[r]->(b)",
       "(${1:a})-[${2:r}]->(${3:b})",
@@ -727,7 +750,11 @@ function patternContinuationCompletions(): Completion[] {
   });
   return [
     mk("-[:TYPE]->", "-[:${1:KNOWS}]->(${2:b})", "Outgoing relationship."),
-    mk("-[r:TYPE]->", "-[${1:r}:${2:KNOWS}]->(${3:b})", "Outgoing relationship with variable."),
+    mk(
+      "-[r:TYPE]->",
+      "-[${1:r}:${2:KNOWS}]->(${3:b})",
+      "Outgoing relationship with variable.",
+    ),
     mk("<-[:TYPE]-", "<-[:${1:KNOWS}]-(${2:b})", "Incoming relationship."),
     mk("-[:TYPE]-", "-[:${1:KNOWS}]-(${2:b})", "Undirected relationship."),
     mk("-->", "-->(${1:b})", "Anonymous outgoing relationship."),
@@ -736,7 +763,10 @@ function patternContinuationCompletions(): Completion[] {
   ];
 }
 
-function returnAutoFillCompletions(outline: Outline, cursor: number): Completion[] {
+function returnAutoFillCompletions(
+  outline: Outline,
+  cursor: number,
+): Completion[] {
   const inScope = outline.variables.filter((v) => v.declStart < cursor);
   const out: Completion[] = [];
   if (inScope.length > 0) {
@@ -844,9 +874,7 @@ function rhsCompletions(
     out.push({
       label: `$${paramHint}`,
       type: "constant",
-      detail: known.has(paramHint)
-        ? "parameter"
-        : "new parameter",
+      detail: known.has(paramHint) ? "parameter" : "new parameter",
       info: known.has(paramHint)
         ? `Existing query parameter \`$${paramHint}\`.`
         : `Suggest a new \`$${paramHint}\` parameter matching the property name.`,
@@ -952,7 +980,10 @@ function freshNodeNameCompletions(outline: Outline): Completion[] {
 }
 
 /** DISTINCT is invalid inside percentile* — the spec requires two args. */
-const AGGREGATES_WITHOUT_DISTINCT = new Set(["percentilecont", "percentiledisc"]);
+const AGGREGATES_WITHOUT_DISTINCT = new Set([
+  "percentilecont",
+  "percentiledisc",
+]);
 /** Only `count` accepts `*` as the argument. */
 const AGGREGATES_WITH_STAR = new Set(["count"]);
 
@@ -962,7 +993,10 @@ function numericPaginationCompletions(clause: "LIMIT" | "SKIP"): Completion[] {
     label: String(n),
     type: "constant",
     detail: clause === "LIMIT" ? "rows" : "rows to skip",
-    info: clause === "LIMIT" ? "Cap the result size." : "Offset into the result set.",
+    info:
+      clause === "LIMIT"
+        ? "Cap the result size."
+        : "Offset into the result set.",
     boost: 6 - idx,
   }));
 }
@@ -1283,7 +1317,10 @@ function scanContext(text: string, pos: number): Context {
   let emptyClauseBody = false;
   if (last) {
     const after = head.slice(last.idx);
-    const keywordMatch = /^(?:OPTIONAL\s+MATCH|DETACH\s+DELETE|ORDER\s+BY|UNION\s+ALL|[A-Z]+)/i.exec(after);
+    const keywordMatch =
+      /^(?:OPTIONAL\s+MATCH|DETACH\s+DELETE|ORDER\s+BY|UNION\s+ALL|[A-Z]+)/i.exec(
+        after,
+      );
     if (keywordMatch) {
       const rest = after.slice(keywordMatch[0].length);
       emptyClauseBody = /^\s*$/.test(rest);
@@ -1297,7 +1334,8 @@ function scanContext(text: string, pos: number): Context {
     delimiterTop: top ? top.delim : null,
     // Character *immediately* preceding the open delimiter (no
     // whitespace skipping). `MATCH (` → " "; `count(` → "t".
-    delimiterOpenPrev: top && top.openAt > 0 ? head[top.openAt - 1] ?? "" : "",
+    delimiterOpenPrev:
+      top && top.openAt > 0 ? (head[top.openAt - 1] ?? "") : "",
     insideParens: parenDepth > 0,
     insideBrackets: bracketDepth > 0,
     insideBraces: braceDepth > 0,
@@ -1381,9 +1419,13 @@ function followedByColon(source: string, pos: number): boolean {
 }
 
 /** Best-effort dig of `name` and the first `:Label` from a slice like `(alice:Person {...`. */
-function readPatternHead(slice: string): { variable: string | null; label: string | null } {
+function readPatternHead(slice: string): {
+  variable: string | null;
+  label: string | null;
+} {
   // Strip the leading delimiter
-  const inner = slice.startsWith("(") || slice.startsWith("[") ? slice.slice(1) : slice;
+  const inner =
+    slice.startsWith("(") || slice.startsWith("[") ? slice.slice(1) : slice;
   const variableMatch = /^\s*([A-Za-z_][\w]*)/.exec(inner);
   const labelMatch = /:([A-Za-z_][\w]*)/.exec(inner);
   return {
@@ -1408,9 +1450,7 @@ function suggestionsFor(
 
   const exprFunctions = [
     ...CYPHER_TOP_LEVEL_FUNCTIONS.map((f) => toCompletion(f)),
-    ...CYPHER_NAMESPACES.map((n) =>
-      toCompletion(n, { apply: `${n.label}.` }),
-    ),
+    ...CYPHER_NAMESPACES.map((n) => toCompletion(n, { apply: `${n.label}.` })),
     // Compatibility aliases — `date`, `tolower`, `coalesce`, etc.
     // Surface at a lower boost than the canonical entries so the
     // namespaced form (`temporal.now`, `string.lower`) is suggested
@@ -1419,18 +1459,17 @@ function suggestionsFor(
     ...CYPHER_CONSTANTS.map((c) => toCompletion(c, { boost: 1 })),
     // CASE and EXISTS subqueries are valid expressions and reachable
     // from every expression position (WHERE, RETURN, WITH, SET, …).
-    ...CYPHER_KEYWORDS.filter((k) =>
-      ["CASE", "EXISTS"].includes(k.label),
-    ).map((k) =>
-      toCompletion(k, {
-        boost: 2,
-        apply:
-          k.label === "CASE"
-            ? snippet(
-                "CASE ${1:expr}\n  WHEN ${2:value} THEN ${3:result}\n  ELSE ${4:other}\nEND",
-              )
-            : snippet("EXISTS { ${1:(n)-[:KNOWS]->(m)} }"),
-      }),
+    ...CYPHER_KEYWORDS.filter((k) => ["CASE", "EXISTS"].includes(k.label)).map(
+      (k) =>
+        toCompletion(k, {
+          boost: 2,
+          apply:
+            k.label === "CASE"
+              ? snippet(
+                  "CASE ${1:expr}\n  WHEN ${2:value} THEN ${3:result}\n  ELSE ${4:other}\nEND",
+                )
+              : snippet("EXISTS { ${1:(n)-[:KNOWS]->(m)} }"),
+        }),
     ),
   ];
   const exprOperators = CYPHER_KEYWORDS.filter((k) =>
@@ -1453,12 +1492,7 @@ function suggestionsFor(
       return [...variables, ...parameters, ...exprFunctions];
     }
     // `(` and `[` — pure expression position.
-    return [
-      ...variables,
-      ...parameters,
-      ...exprFunctions,
-      ...exprOperators,
-    ];
+    return [...variables, ...parameters, ...exprFunctions, ...exprOperators];
   }
 
   switch (ctx.clause) {
@@ -1620,7 +1654,11 @@ export function cypherCompletions(
     const word = context.matchBefore(/[\w]*/);
     return {
       from: word ? word.from : context.pos,
-      options: aggregateInsideCompletions(outline, context.pos, ctx.afterAggregateName),
+      options: aggregateInsideCompletions(
+        outline,
+        context.pos,
+        ctx.afterAggregateName,
+      ),
       validFor: /^\w*$/,
     };
   }
@@ -1639,10 +1677,7 @@ export function cypherCompletions(
   if (
     !ctx.insideAnyDelimiter &&
     /(?:=|<>|<|<=|>|>=|=~|\bIN|\bSTARTS WITH|\bENDS WITH|\bCONTAINS)\s+$/i.test(
-      context.state.doc.sliceString(
-        Math.max(0, context.pos - 24),
-        context.pos,
-      ),
+      context.state.doc.sliceString(Math.max(0, context.pos - 24), context.pos),
     ) &&
     (ctx.clause === "WHERE" ||
       ctx.clause === "RETURN" ||
@@ -1714,8 +1749,7 @@ export function cypherCompletions(
         },
         {
           label: "(n:Label {key: value})",
-          template:
-            "(${1:n}:${2:Label} {${3:key}: ${4:'value'}})",
+          template: "(${1:n}:${2:Label} {${3:key}: ${4:'value'}})",
           info: "Node pattern with label and properties.",
         },
         { label: "()", template: "()", info: "Anonymous node." },
@@ -2007,9 +2041,7 @@ export function cypherCompletions(
         const concrete: Completion[] = keys.map((k) => ({
           label: k,
           type: "property",
-          detail: resolved.label
-            ? `:${resolved.label}.${k}`
-            : `property`,
+          detail: resolved.label ? `:${resolved.label}.${k}` : `property`,
           boost: 5,
         }));
         // Expression-position fallback: bare property names only.
@@ -2047,11 +2079,7 @@ export function cypherCompletions(
   // also seed the prop-aware `op rhs` snippets (`= $prop`, `IS NULL`,
   // `STARTS WITH '…'`, …) so finishing a predicate is one keystroke
   // away.
-  if (
-    ctx.afterValue &&
-    !ctx.insideAnyDelimiter &&
-    ctx.clause === "WHERE"
-  ) {
+  if (ctx.afterValue && !ctx.insideAnyDelimiter && ctx.clause === "WHERE") {
     const propHint = tailPropertyName(
       context.state.doc.toString(),
       context.pos,
@@ -2093,7 +2121,11 @@ export function cypherCompletions(
   }
 
   // ── RETURN auto-fill + `*` at empty projection body. ──
-  if (ctx.clause === "RETURN" && ctx.emptyClauseBody && !ctx.insideAnyDelimiter) {
+  if (
+    ctx.clause === "RETURN" &&
+    ctx.emptyClauseBody &&
+    !ctx.insideAnyDelimiter
+  ) {
     options = [
       {
         label: "*",
@@ -2124,7 +2156,9 @@ export function cypherCompletions(
     // The provider's `signature` field holds the return columns as
     // `name() :: (col1, col2, …)`; we parse them out so the host
     // doesn't have to repeat the column list separately.
-    const callMatch = /\bCALL\s+([\w.]+)\s*\([^)]*\)\s*YIELD\b/i.exec(upToCursor);
+    const callMatch = /\bCALL\s+([\w.]+)\s*\([^)]*\)\s*YIELD\b/i.exec(
+      upToCursor,
+    );
     if (callMatch) {
       const procName = callMatch[1]!;
       const proc = providers.procedures.find((p) => p.name === procName);

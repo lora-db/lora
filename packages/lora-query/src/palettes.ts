@@ -201,8 +201,7 @@ export const githubDark: Palette = {
 
 /** Typography defaults — shared across every palette. */
 export const typography = {
-  fontFamily:
-    'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
+  fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
   monoFontFamily:
     'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace',
   fontSize: "13px",

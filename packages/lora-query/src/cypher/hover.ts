@@ -45,8 +45,7 @@ export const cypherHover = hoverTooltip(
         }
         const body = document.createElement("div");
         body.className = "cm-tooltip-lora-query__body";
-        const declLine =
-          view.state.doc.lineAt(v.declStart).number;
+        const declLine = view.state.doc.lineAt(v.declStart).number;
         body.textContent = v.label
           ? `Variable bound on line ${declLine} (label \`${v.label}\`). ⌘-click or F12 to jump.`
           : `Variable bound on line ${declLine}. ⌘-click or F12 to jump.`;

@@ -143,7 +143,7 @@ function build(spans: HighlightSpan[], docLen: number): DecorationSet {
     if (from === to) continue;
     clamped.push({ from, to, cls });
   }
-  clamped.sort((a, b) => (a.from - b.from) || (a.to - b.to));
+  clamped.sort((a, b) => a.from - b.from || a.to - b.to);
   const builder = new RangeSetBuilder<Decoration>();
   for (const r of clamped) {
     builder.add(r.from, r.to, Decoration.mark({ class: r.cls }));

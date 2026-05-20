@@ -13,9 +13,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("LoraJsonEditor (React)", () => {
   it("mounts and renders the source through CodeMirror", () => {
-    const { container } = render(
-      <LoraJsonEditor value={`{ "n": 1 }`} />,
-    );
+    const { container } = render(<LoraJsonEditor value={`{ "n": 1 }`} />);
     expect(container.querySelector(".cm-editor")).toBeTruthy();
     expect(container.textContent).toContain('"n"');
   });
@@ -108,10 +106,7 @@ describe("LoraJsonEditor (React)", () => {
   it("invokes onDiagnostics with parse-error results", async () => {
     const onDiagnostics = vi.fn();
     render(
-      <LoraJsonEditor
-        value={`{ "broken": ,`}
-        onDiagnostics={onDiagnostics}
-      />,
+      <LoraJsonEditor value={`{ "broken": ,`} onDiagnostics={onDiagnostics} />,
     );
     await act(async () => {
       await wait(20);
@@ -184,12 +179,7 @@ describe("getJsonPath / formatJsonPath", () => {
 describe("LoraJsonEditor — commands", () => {
   it("sortKeys recursively sorts every object's keys", async () => {
     const ref = createRef<LoraJsonEditorHandle>();
-    render(
-      <LoraJsonEditor
-        ref={ref}
-        value={`{"z":1,"a":{"y":2,"b":3}}`}
-      />,
-    );
+    render(<LoraJsonEditor ref={ref} value={`{"z":1,"a":{"y":2,"b":3}}`} />);
     await act(async () => {
       ref.current?.sortKeys();
     });
@@ -223,21 +213,14 @@ describe("LoraJsonEditor — commands", () => {
     await act(async () => {
       ref.current?.toggleQuotes();
     });
-    expect(ref.current?.getValue()).toBe(
-      `{ "name": "it's fine", "tag": "x" }`,
-    );
+    expect(ref.current?.getValue()).toBe(`{ "name": "it's fine", "tag": "x" }`);
   });
 });
 
 describe("LoraJsonEditor — cursor path", () => {
   it("getCursorPath returns the path at the current selection", async () => {
     const ref = createRef<LoraJsonEditorHandle>();
-    render(
-      <LoraJsonEditor
-        ref={ref}
-        value={`{ "a": { "b": 1 } }`}
-      />,
-    );
+    render(<LoraJsonEditor ref={ref} value={`{ "a": { "b": 1 } }`} />);
     await act(async () => {
       const view = ref.current?.view();
       view?.dispatch({ selection: { anchor: 14 } });
@@ -299,9 +282,7 @@ describe("LoraJsonEditor — key constraints", () => {
     // off the view.
     const view = ref.current?.view();
     expect(view).toBeTruthy();
-    const { keyConstraintsLinter } = await import(
-      "../src/json/keyConstraints"
-    );
+    const { keyConstraintsLinter } = await import("../src/json/keyConstraints");
     // Pull the underlying linter source by extracting from the
     // extension's `source` — we instead duplicate the assertion
     // via a fresh run on the doc to keep the test independent.
@@ -320,13 +301,7 @@ describe("LoraJsonEditor — key constraints", () => {
     // to the allowedKeys list. We can't easily introspect the
     // facet from outside, so we assert via setValue + getJson.
     const ref = createRef<LoraJsonEditorHandle>();
-    render(
-      <LoraJsonEditor
-        ref={ref}
-        value={`{}`}
-        allowedKeys={["a", "b"]}
-      />,
-    );
+    render(<LoraJsonEditor ref={ref} value={`{}`} allowedKeys={["a", "b"]} />);
     expect(ref.current).toBeTruthy();
   });
 });

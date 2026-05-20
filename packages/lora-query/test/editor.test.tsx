@@ -21,10 +21,7 @@ describe("LoraQueryEditor (React)", () => {
   it("exposes prettify/getValue/setValue via the imperative handle", async () => {
     const ref = createRef<LoraQueryEditorHandle>();
     render(
-      <LoraQueryEditor
-        ref={ref}
-        value="match (n) where n.age > 18 return n"
-      />,
+      <LoraQueryEditor ref={ref} value="match (n) where n.age > 18 return n" />,
     );
     await act(async () => {
       await ref.current?.prettify();

@@ -1,9 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react";
-import {
-  LoraQueryEditor,
-  type LoraQueryEditorHandle,
-} from "./LoraQueryEditor";
+import { LoraQueryEditor, type LoraQueryEditorHandle } from "./LoraQueryEditor";
 import { useLoraQueryStatus } from "./useLoraQueryStatus";
 import { darkTheme, lightTheme } from "./themes";
 import type { PropertyContext } from "./cypher/providers";
@@ -208,8 +205,8 @@ export const WithSchemaProviders: Story = {
         />
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
           Try typing <code>:</code> after <code>(n</code> to see label
-          suggestions, or <code>{"{"}</code> inside <code>(n:Person ...)</code> to
-          see schema-driven property keys.
+          suggestions, or <code>{"{"}</code> inside <code>(n:Person ...)</code>{" "}
+          to see schema-driven property keys.
         </p>
       </div>
     );
@@ -224,7 +221,9 @@ export const DarkTheme: Story = {
   render: () => {
     const editorRef = useRef<LoraQueryEditorHandle>(null);
     const [value, setValue] = useState(
-      pretty(`MATCH (alice:Person {name: 'Alice'})-[r:KNOWS]->(friend)\nWHERE friend.age > 21\nRETURN friend.name, count(r) AS hops`),
+      pretty(
+        `MATCH (alice:Person {name: 'Alice'})-[r:KNOWS]->(friend)\nWHERE friend.age > 21\nRETURN friend.name, count(r) AS hops`,
+      ),
     );
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -251,7 +250,9 @@ export const StatusHook: Story = {
   render: () => {
     const editorRef = useRef<LoraQueryEditorHandle>(null);
     const [value, setValue] = useState(
-      pretty(`MATCH (alice:Person {name: 'Alice'})-[r:KNOWS]->(friend)\nWHERE friend.age > $minAge AND friend.name <> $excluded\nRETURN friend.name AS name, count(r) AS hops`),
+      pretty(
+        `MATCH (alice:Person {name: 'Alice'})-[r:KNOWS]->(friend)\nWHERE friend.age > $minAge AND friend.name <> $excluded\nRETURN friend.name AS name, count(r) AS hops`,
+      ),
     );
     const [status, statusProps] = useLoraQueryStatus();
     return (
@@ -318,11 +319,11 @@ export const RunCallback: Story = {
   render: () => {
     const editorRef = useRef<LoraQueryEditorHandle>(null);
     const [value, setValue] = useState(
-      pretty(`MATCH (p:Person)-[:KNOWS]->(f)\nWHERE p.name = 'Alice'\nRETURN f.name AS friend\nLIMIT 5`),
+      pretty(
+        `MATCH (p:Person)-[:KNOWS]->(f)\nWHERE p.name = 'Alice'\nRETURN f.name AS friend\nLIMIT 5`,
+      ),
     );
-    const [runs, setRuns] = useState<
-      Array<{ at: number; source: string }>
-    >([]);
+    const [runs, setRuns] = useState<Array<{ at: number; source: string }>>([]);
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <StoryToolbar
@@ -352,10 +353,7 @@ export const RunCallback: Story = {
           relTypes={DEMO_REL_TYPES}
           getPropertyKeys={DEMO_GET_PROPERTY_KEYS}
           onRun={(source) =>
-            setRuns((r) => [
-              { at: Date.now(), source },
-              ...r,
-            ].slice(0, 5))
+            setRuns((r) => [{ at: Date.now(), source }, ...r].slice(0, 5))
           }
         />
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
@@ -377,7 +375,9 @@ export const RunCallback: Story = {
             </li>
           ))}
           {runs.length === 0 && (
-            <li style={{ listStyle: "none", color: "#9d9d9d" }}>(no runs yet)</li>
+            <li style={{ listStyle: "none", color: "#9d9d9d" }}>
+              (no runs yet)
+            </li>
           )}
         </ol>
       </div>
@@ -393,7 +393,9 @@ export const LightThemePreset: Story = {
   render: () => {
     const editorRef = useRef<LoraQueryEditorHandle>(null);
     const [value, setValue] = useState(
-      pretty(`MATCH (n:Movie)-[:ACTED_IN]-(actor)\nWHERE n.year > 2000\nRETURN n.title AS movie, collect(actor.name) AS cast\nORDER BY movie\nLIMIT 10`),
+      pretty(
+        `MATCH (n:Movie)-[:ACTED_IN]-(actor)\nWHERE n.year > 2000\nRETURN n.title AS movie, collect(actor.name) AS cast\nORDER BY movie\nLIMIT 10`,
+      ),
     );
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -419,7 +421,9 @@ export const DarkThemePreset: Story = {
   render: () => {
     const editorRef = useRef<LoraQueryEditorHandle>(null);
     const [value, setValue] = useState(
-      pretty(`MATCH (m:Movie)<-[r:RATED]-(u:User)\nWHERE r.score >= 8\nWITH m, avg(r.score) AS avgScore, count(r) AS votes\nWHERE votes > 100\nRETURN m.title, avgScore, votes\nORDER BY avgScore DESC, votes DESC\nLIMIT 25`),
+      pretty(
+        `MATCH (m:Movie)<-[r:RATED]-(u:User)\nWHERE r.score >= 8\nWITH m, avg(r.score) AS avgScore, count(r) AS votes\nWHERE votes > 100\nRETURN m.title, avgScore, votes\nORDER BY avgScore DESC, votes DESC\nLIMIT 25`,
+      ),
     );
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -446,7 +450,9 @@ export const SolarizedTheme: Story = {
   render: () => {
     const editorRef = useRef<LoraQueryEditorHandle>(null);
     const [value, setValue] = useState(
-      pretty(`MATCH (c:Company)-[:EMPLOYS]->(p:Person)\nWHERE c.industry = 'Tech' AND p.role STARTS WITH 'Senior'\nRETURN c.name AS company, p.name AS employee\nORDER BY company\nLIMIT 20`),
+      pretty(
+        `MATCH (c:Company)-[:EMPLOYS]->(p:Person)\nWHERE c.industry = 'Tech' AND p.role STARTS WITH 'Senior'\nRETURN c.name AS company, p.name AS employee\nORDER BY company\nLIMIT 20`,
+      ),
     );
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -456,34 +462,34 @@ export const SolarizedTheme: Story = {
           value={value}
           onChange={setValue}
           theme={{
-          background: "#fdf6e3",
-          foreground: "#586e75",
-          border: "#eee8d5",
-          accent: "#268bd2",
-          muted: "#93a1a1",
-          activeLine: "#eee8d5",
-          gutterBackground: "#fdf6e3",
-          gutterForeground: "#93a1a1",
-          cursor: "#dc322f",
-          selectionBackground: "rgba(38, 139, 210, 0.18)",
-          keyword: "#859900",
-          variable: "#268bd2",
-          parameter: "#6c71c4",
-          label: "#b58900",
-          relType: "#cb4b16",
-          property: "#d33682",
-          functionName: "#2aa198",
-          namespace: "#93a1a1",
-          string: "#2aa198",
-          number: "#dc322f",
-          bool: "#cb4b16",
-          null: "#cb4b16",
-          popupBackground: "#fdf6e3",
-          popupForeground: "#586e75",
-          popupBorder: "#93a1a1",
-          popupSelectedBackground: "#268bd2",
-          popupSelectedForeground: "#fdf6e3",
-        }}
+            background: "#fdf6e3",
+            foreground: "#586e75",
+            border: "#eee8d5",
+            accent: "#268bd2",
+            muted: "#93a1a1",
+            activeLine: "#eee8d5",
+            gutterBackground: "#fdf6e3",
+            gutterForeground: "#93a1a1",
+            cursor: "#dc322f",
+            selectionBackground: "rgba(38, 139, 210, 0.18)",
+            keyword: "#859900",
+            variable: "#268bd2",
+            parameter: "#6c71c4",
+            label: "#b58900",
+            relType: "#cb4b16",
+            property: "#d33682",
+            functionName: "#2aa198",
+            namespace: "#93a1a1",
+            string: "#2aa198",
+            number: "#dc322f",
+            bool: "#cb4b16",
+            null: "#cb4b16",
+            popupBackground: "#fdf6e3",
+            popupForeground: "#586e75",
+            popupBorder: "#93a1a1",
+            popupSelectedBackground: "#268bd2",
+            popupSelectedForeground: "#fdf6e3",
+          }}
           labels={DEMO_LABELS}
           relTypes={DEMO_REL_TYPES}
           getPropertyKeys={DEMO_GET_PROPERTY_KEYS}
@@ -895,9 +901,7 @@ export const FullBleedHeight: Story = {
 export const LineNumbersOff: Story = {
   render: () => {
     const editorRef = useRef<LoraQueryEditorHandle>(null);
-    const [value, setValue] = useState(
-      pretty(`MATCH (n) RETURN n LIMIT 1`),
-    );
+    const [value, setValue] = useState(pretty(`MATCH (n) RETURN n LIMIT 1`));
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <StoryToolbar editorRef={editorRef} />
@@ -977,7 +981,8 @@ LIMIT 10;`),
           getPropertyKeys={DEMO_GET_PROPERTY_KEYS}
         />
         <p style={{ margin: 0, fontSize: 12, color: "#6e7781" }}>
-          Click the chevron in the gutter on a query&apos;s first line to fold it.
+          Click the chevron in the gutter on a query&apos;s first line to fold
+          it.
         </p>
       </div>
     );
@@ -998,9 +1003,7 @@ export const ImperativeHandle: Story = {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => void ref.current?.prettify()}>
-            Prettify
-          </button>
+          <button onClick={() => void ref.current?.prettify()}>Prettify</button>
           <button
             onClick={async () => {
               const errs = await ref.current?.validate();
