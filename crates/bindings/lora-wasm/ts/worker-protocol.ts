@@ -8,16 +8,27 @@
 
 import type { LoraParams, QueryResult, LoraErrorCode } from "./types.js";
 import type { TransactionMode, TransactionStatement } from "./index.js";
-import type { WasmSnapshotByteOptions, WasmSnapshotLoadOptions } from "./snapshot.js";
+import type {
+  WasmSnapshotByteOptions,
+  WasmSnapshotLoadOptions,
+} from "./snapshot.js";
 
 export type RequestBody =
   | { op: "execute"; query: string; params?: LoraParams | null }
   | { op: "streamOpen"; query: string; params?: LoraParams | null }
   | { op: "streamNext"; streamId: number }
   | { op: "streamClose"; streamId: number }
-  | { op: "transaction"; statements: TransactionStatement[]; mode?: TransactionMode }
+  | {
+      op: "transaction";
+      statements: TransactionStatement[];
+      mode?: TransactionMode;
+    }
   | { op: "saveSnapshot"; options?: WasmSnapshotByteOptions | null }
-  | { op: "loadSnapshot"; bytes: Uint8Array; options?: WasmSnapshotLoadOptions | null }
+  | {
+      op: "loadSnapshot";
+      bytes: Uint8Array;
+      options?: WasmSnapshotLoadOptions | null;
+    }
   | { op: "snapshotInfo"; bytes: Uint8Array }
   | { op: "clear" }
   | { op: "nodeCount" }

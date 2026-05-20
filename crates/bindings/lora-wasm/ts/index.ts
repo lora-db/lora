@@ -16,11 +16,7 @@
  *   const res = await db.execute("CREATE (:N {n: $v}) RETURN 1 AS one", { v: 1 });
  */
 
-import type {
-  LoraParams,
-  LoraValue,
-  QueryResult,
-} from "./types.js";
+import type { LoraParams, LoraValue, QueryResult } from "./types.js";
 import { wrapError } from "./types.js";
 import {
   WasmDatabase,
@@ -321,12 +317,27 @@ class DatabaseImpl {
 
   saveSnapshot(): Promise<Uint8Array>;
   saveSnapshot(options: WasmSnapshotByteOptions): Promise<Uint8Array>;
-  saveSnapshot(options: { format?: "bytes" } & WasmSnapshotByteOptions): Promise<Uint8Array>;
-  saveSnapshot(options: { format: "arrayBuffer" } & WasmSnapshotByteOptions): Promise<ArrayBuffer>;
-  saveSnapshot(options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Blob>;
-  saveSnapshot(options: { format: "response"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Response>;
-  saveSnapshot(options: { format: "stream" } & WasmSnapshotByteOptions): Promise<ReadableStream<Uint8Array>>;
-  saveSnapshot(options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions): Promise<URL>;
+  saveSnapshot(
+    options: { format?: "bytes" } & WasmSnapshotByteOptions,
+  ): Promise<Uint8Array>;
+  saveSnapshot(
+    options: { format: "arrayBuffer" } & WasmSnapshotByteOptions,
+  ): Promise<ArrayBuffer>;
+  saveSnapshot(
+    options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions,
+  ): Promise<Blob>;
+  saveSnapshot(
+    options: {
+      format: "response";
+      mimeType?: string;
+    } & WasmSnapshotByteOptions,
+  ): Promise<Response>;
+  saveSnapshot(
+    options: { format: "stream" } & WasmSnapshotByteOptions,
+  ): Promise<ReadableStream<Uint8Array>>;
+  saveSnapshot(
+    options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions,
+  ): Promise<URL>;
   /**
    * Serialize the current graph to a host-friendly snapshot object. WASM has
    * no filesystem access; callers persist the returned bytes/Blob/stream/URL
@@ -334,14 +345,23 @@ class DatabaseImpl {
    */
   async saveSnapshot(
     options?: WasmSnapshotSaveOptions | WasmSnapshotByteOptions,
-  ): Promise<Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | URL> {
+  ): Promise<
+    | Uint8Array
+    | ArrayBuffer
+    | Blob
+    | Response
+    | ReadableStream<Uint8Array>
+    | URL
+  > {
     try {
       const native = this.#inner as unknown as {
         saveSnapshot(options?: unknown): Uint8Array;
       };
       const bytes = native.saveSnapshot(options ?? null);
-      const format = options && "format" in options ? options.format ?? "bytes" : "bytes";
-      const mimeType = options && "mimeType" in options ? options.mimeType : undefined;
+      const format =
+        options && "format" in options ? (options.format ?? "bytes") : "bytes";
+      const mimeType =
+        options && "mimeType" in options ? options.mimeType : undefined;
       switch (format) {
         case "bytes":
           return bytes;
@@ -407,7 +427,9 @@ export type Database = DatabaseImpl | WorkerDatabase;
 
 let warnedWorkerFallback = false;
 
-function requestedRuntime(options?: CreateDatabaseOptions): "auto" | "worker" | "main-thread" {
+function requestedRuntime(
+  options?: CreateDatabaseOptions,
+): "auto" | "worker" | "main-thread" {
   return options?.runtime ?? "auto";
 }
 
@@ -420,7 +442,10 @@ function shouldFallbackToMainThread(options?: CreateDatabaseOptions): boolean {
   return requestedRuntime(options) === "auto";
 }
 
-function warnWorkerFallback(err: unknown, options?: CreateDatabaseOptions): void {
+function warnWorkerFallback(
+  err: unknown,
+  options?: CreateDatabaseOptions,
+): void {
   if (options?.warnOnFallback === false || warnedWorkerFallback) return;
   warnedWorkerFallback = true;
   const detail = err instanceof Error ? err.message : String(err);

@@ -165,10 +165,10 @@ describe("Database — basics", () => {
       q: 42,
       a: true,
     });
-    const result = await db.execute("MATCH (i:Item) RETURN i.name AS name, i.qty AS qty, i.active AS active");
-    expect(result.rows).toEqual([
-      { name: "widget", qty: 42, active: true },
-    ]);
+    const result = await db.execute(
+      "MATCH (i:Item) RETURN i.name AS name, i.qty AS qty, i.active AS active",
+    );
+    expect(result.rows).toEqual([{ name: "widget", qty: 42, active: true }]);
   });
 
   it("returns typed relationship with discriminator", async () => {
@@ -319,9 +319,7 @@ describe("Database — WAL-backed initialization", () => {
         databaseDir: walDir,
         syncMode: "instant" as "groupSync",
       }),
-    ).rejects.toSatisfy((err) =>
-      String(err).includes("expected 'groupSync'"),
-    );
+    ).rejects.toSatisfy((err) => String(err).includes("expected 'groupSync'"));
   });
 
   it("sync() makes the container file visible before dispose", async () => {
@@ -331,8 +329,8 @@ describe("Database — WAL-backed initialization", () => {
     await db.execute("CREATE (:Synced {id: 1})");
     await db.sync();
 
-    await expect(stat(join(walDir, "app.loradb"))).resolves.toSatisfy(
-      (entry) => entry.isFile(),
+    await expect(stat(join(walDir, "app.loradb"))).resolves.toSatisfy((entry) =>
+      entry.isFile(),
     );
     db.dispose();
   });
@@ -473,9 +471,9 @@ describe("Database — WAL-backed initialization", () => {
     const notADir = join(dir, "wal-file");
     await writeFile(notADir, "not a directory");
 
-    await expect(createDatabase("app", { databaseDir: notADir })).rejects.toSatisfy(
-      (e) => e instanceof LoraError && e.code === "LORA_IO",
-    );
+    await expect(
+      createDatabase("app", { databaseDir: notADir }),
+    ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "LORA_IO");
   });
 
   it("rejects invalid database names before creating storage", async () => {
@@ -563,7 +561,9 @@ describe("Database — WAL-backed initialization", () => {
     const uint8Array = await source.saveSnapshot({ format: "uint8Array" });
     expect(uint8Array).toBeInstanceOf(Uint8Array);
     expect(Buffer.isBuffer(uint8Array)).toBe(false);
-    const savedArrayBuffer = await source.saveSnapshot({ format: "arrayBuffer" });
+    const savedArrayBuffer = await source.saveSnapshot({
+      format: "arrayBuffer",
+    });
     expect(savedArrayBuffer).toBeInstanceOf(ArrayBuffer);
     const stream = await source.saveSnapshot({ format: "stream" });
     expect(stream).toBeInstanceOf(Readable);
@@ -786,7 +786,9 @@ describe("Database — errors", () => {
     const db = await createDatabase();
     await expect(
       db.execute("RETURN $d AS d", { d: { kind: "date", iso: "not-a-date" } }),
-    ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS");
+    ).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS",
+    );
   });
 });
 
@@ -961,10 +963,9 @@ describe("Database — vector values", () => {
     const db = await createDatabase();
     const { vector } = await import("../ts/types.js");
     const param = vector([0.1, 0.2, 0.3], 3, "FLOAT32");
-    const { rows } = await db.execute<{ v: LoraValue }>(
-      "RETURN $v AS v",
-      { v: param },
-    );
+    const { rows } = await db.execute<{ v: LoraValue }>("RETURN $v AS v", {
+      v: param,
+    });
     const { isVector } = await import("../ts/types.js");
     const v = rows[0]!.v;
     expect(isVector(v)).toBe(true);

@@ -106,7 +106,9 @@ export function snapshotAsObjectUrl(
   mimeType = DEFAULT_SNAPSHOT_MIME_TYPE,
 ): URL {
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
-    throw new Error("LORA_CONFIG: snapshot URL output requires URL.createObjectURL");
+    throw new Error(
+      "LORA_CONFIG: snapshot URL output requires URL.createObjectURL",
+    );
   }
   return new URL(URL.createObjectURL(snapshotAsBlob(bytes, mimeType)));
 }

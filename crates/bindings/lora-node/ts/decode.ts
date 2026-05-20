@@ -299,10 +299,7 @@ function readBinary(r: Reader): any {
  * to bootstrap its own hidden class, which is the dominant cost on
  * tall result sets after the napi-syscall overhead is removed.
  */
-type RowFactory = (
-  read: (r: Reader) => any,
-  r: Reader,
-) => Record<string, any>;
+type RowFactory = (read: (r: Reader) => any, r: Reader) => Record<string, any>;
 
 const factoryCache = new Map<string, RowFactory>();
 
@@ -331,9 +328,10 @@ function rowFactory(columns: readonly string[]): RowFactory {
  * Decode the wire format produced by `encode_rows` in the native crate
  * into the public `{ columns, rows }` shape.
  */
-export function decodeResult(
-  buf: Uint8Array,
-): { columns: string[]; rows: Array<Record<string, any>> } {
+export function decodeResult(buf: Uint8Array): {
+  columns: string[];
+  rows: Array<Record<string, any>>;
+} {
   const r = new Reader(buf);
   if (
     r.bytes[0] !== MAGIC_0 ||

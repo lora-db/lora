@@ -173,10 +173,13 @@ describe("Database — basics", () => {
     const source = await createDatabase({ runtime: "main-thread" });
     const repeated = "compress-me-".repeat(128);
     for (let i = 0; i < 32; i += 1) {
-      await source.execute("CREATE (:Compressed {i: $i, repeated: $repeated})", {
-        i,
-        repeated,
-      });
+      await source.execute(
+        "CREATE (:Compressed {i: $i, repeated: $repeated})",
+        {
+          i,
+          repeated,
+        },
+      );
     }
 
     const plain = await source.saveSnapshot({ compression: "none" });
@@ -386,7 +389,9 @@ describe("Database — errors", () => {
     const db = await createDatabase();
     await expect(
       db.execute("RETURN $d AS d", { d: { kind: "date", iso: "not-a-date" } }),
-    ).rejects.toSatisfy((e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS");
+    ).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "LORA_INVALID_PARAMS",
+    );
   });
 });
 

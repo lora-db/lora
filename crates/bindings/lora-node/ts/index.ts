@@ -246,7 +246,11 @@ class NativeRowStream<
 }
 
 function isFetchUrl(url: URL): boolean {
-  return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "data:";
+  return (
+    url.protocol === "http:" ||
+    url.protocol === "https:" ||
+    url.protocol === "data:"
+  );
 }
 
 function stringToUrl(value: string): URL | null {
@@ -257,7 +261,9 @@ function stringToUrl(value: string): URL | null {
   }
 }
 
-function bytesToUint8Array(bytes: Uint8Array | ArrayBuffer | Buffer): Uint8Array {
+function bytesToUint8Array(
+  bytes: Uint8Array | ArrayBuffer | Buffer,
+): Uint8Array {
   if (bytes instanceof Uint8Array) {
     return bytes;
   }
@@ -285,7 +291,9 @@ function snapshotBufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
 function resolveNodeSnapshotPath(path: string | URL): string {
   if (path instanceof URL) {
     if (path.protocol !== "file:") {
-      throw new Error(`LORA_ERROR: unsupported snapshot save URL protocol '${path.protocol}'`);
+      throw new Error(
+        `LORA_ERROR: unsupported snapshot save URL protocol '${path.protocol}'`,
+      );
     }
     return fileURLToPath(path);
   }
@@ -295,17 +303,27 @@ function resolveNodeSnapshotPath(path: string | URL): string {
 async function fetchSnapshotBytes(url: URL): Promise<Buffer> {
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`LORA_ERROR: snapshot fetch failed (${res.status} ${res.statusText})`);
+    throw new Error(
+      `LORA_ERROR: snapshot fetch failed (${res.status} ${res.statusText})`,
+    );
   }
   return Buffer.from(await res.arrayBuffer());
 }
 
-function isReadableStream(source: unknown): source is ReadableStream<NodeSnapshotChunk> {
+function isReadableStream(
+  source: unknown,
+): source is ReadableStream<NodeSnapshotChunk> {
   return typeof (source as { getReader?: unknown }).getReader === "function";
 }
 
-function isAsyncIterable(source: unknown): source is AsyncIterable<NodeSnapshotChunk> {
-  return typeof (source as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function";
+function isAsyncIterable(
+  source: unknown,
+): source is AsyncIterable<NodeSnapshotChunk> {
+  return (
+    typeof (source as { [Symbol.asyncIterator]?: unknown })[
+      Symbol.asyncIterator
+    ] === "function"
+  );
 }
 
 async function readableStreamToBuffer(
@@ -346,7 +364,9 @@ async function resolveNodeSnapshotSource(
     if (isFetchUrl(source)) {
       return fetchSnapshotBytes(source);
     }
-    throw new Error(`LORA_ERROR: unsupported snapshot URL protocol '${source.protocol}'`);
+    throw new Error(
+      `LORA_ERROR: unsupported snapshot URL protocol '${source.protocol}'`,
+    );
   }
 
   if (typeof source === "string") {
@@ -445,7 +465,10 @@ class DatabaseImpl {
    */
   async explain(query: string, params?: LoraParams): Promise<LoraQueryPlan> {
     try {
-      return (await this.#inner.explain(query, params ?? null)) as LoraQueryPlan;
+      return (await this.#inner.explain(
+        query,
+        params ?? null,
+      )) as LoraQueryPlan;
     } catch (err) {
       throw wrapError(err);
     }
@@ -462,7 +485,10 @@ class DatabaseImpl {
    */
   async profile(query: string, params?: LoraParams): Promise<LoraQueryProfile> {
     try {
-      return (await this.#inner.profile(query, params ?? null)) as LoraQueryProfile;
+      return (await this.#inner.profile(
+        query,
+        params ?? null,
+      )) as LoraQueryProfile;
     } catch (err) {
       throw wrapError(err);
     }
@@ -576,13 +602,28 @@ class DatabaseImpl {
   saveSnapshot(): Promise<Buffer>;
   saveSnapshot(options: SnapshotCodecOptions): Promise<Buffer>;
   saveSnapshot(path: string | URL): Promise<SnapshotMeta>;
-  saveSnapshot(path: string | URL, options: SnapshotCodecOptions): Promise<SnapshotMeta>;
-  saveSnapshot(options: { format?: "buffer" | "binary" } & SnapshotCodecOptions): Promise<Buffer>;
-  saveSnapshot(options: { format: "uint8Array" } & SnapshotCodecOptions): Promise<Uint8Array>;
-  saveSnapshot(options: { format: "arrayBuffer" } & SnapshotCodecOptions): Promise<ArrayBuffer>;
-  saveSnapshot(options: { format: "base64" } & SnapshotCodecOptions): Promise<string>;
-  saveSnapshot(options: { format: "stream" } & SnapshotCodecOptions): Promise<Readable>;
-  saveSnapshot(options: { format: "path"; path: string | URL } & SnapshotCodecOptions): Promise<SnapshotMeta>;
+  saveSnapshot(
+    path: string | URL,
+    options: SnapshotCodecOptions,
+  ): Promise<SnapshotMeta>;
+  saveSnapshot(
+    options: { format?: "buffer" | "binary" } & SnapshotCodecOptions,
+  ): Promise<Buffer>;
+  saveSnapshot(
+    options: { format: "uint8Array" } & SnapshotCodecOptions,
+  ): Promise<Uint8Array>;
+  saveSnapshot(
+    options: { format: "arrayBuffer" } & SnapshotCodecOptions,
+  ): Promise<ArrayBuffer>;
+  saveSnapshot(
+    options: { format: "base64" } & SnapshotCodecOptions,
+  ): Promise<string>;
+  saveSnapshot(
+    options: { format: "stream" } & SnapshotCodecOptions,
+  ): Promise<Readable>;
+  saveSnapshot(
+    options: { format: "path"; path: string | URL } & SnapshotCodecOptions,
+  ): Promise<SnapshotMeta>;
   /**
    * Save the graph as a snapshot.
    *
@@ -595,7 +636,9 @@ class DatabaseImpl {
   async saveSnapshot(
     target?: NodeSnapshotSaveTarget,
     options?: SnapshotCodecOptions,
-  ): Promise<SnapshotMeta | Buffer | Uint8Array | ArrayBuffer | string | Readable> {
+  ): Promise<
+    SnapshotMeta | Buffer | Uint8Array | ArrayBuffer | string | Readable
+  > {
     try {
       if (typeof target === "string" || target instanceof URL) {
         return this.#inner.saveSnapshot(
@@ -616,7 +659,8 @@ class DatabaseImpl {
         ) as SnapshotMeta;
       }
 
-      const format = ("format" in saveOptions ? saveOptions.format : "buffer") ?? "buffer";
+      const format =
+        ("format" in saveOptions ? saveOptions.format : "buffer") ?? "buffer";
       const bytes = this.#inner.saveSnapshotBuffer(
         normalizeSnapshotCodecOptions({ ...options, ...saveOptions }),
       );
@@ -633,7 +677,9 @@ class DatabaseImpl {
         case "stream":
           return Readable.from([bytes]);
         default:
-          throw new Error(`LORA_ERROR: unsupported snapshot save format '${format}'`);
+          throw new Error(
+            `LORA_ERROR: unsupported snapshot save format '${format}'`,
+          );
       }
     } catch (err) {
       throw wrapError(err);
@@ -655,7 +701,10 @@ class DatabaseImpl {
       if (typeof resolved === "string") {
         return this.#inner.loadSnapshot(resolved, loadOptions) as SnapshotMeta;
       }
-      return this.#inner.loadSnapshotBuffer(resolved, loadOptions) as SnapshotMeta;
+      return this.#inner.loadSnapshotBuffer(
+        resolved,
+        loadOptions,
+      ) as SnapshotMeta;
     } catch (err) {
       throw wrapError(err);
     }
@@ -768,7 +817,9 @@ export async function createDatabase(
   }
 }
 
-export async function openWalDatabase(options: WalDatabaseOptions): Promise<Database> {
+export async function openWalDatabase(
+  options: WalDatabaseOptions,
+): Promise<Database> {
   try {
     const hasSnapshotTuningOptions =
       options.snapshotEveryCommits !== undefined ||

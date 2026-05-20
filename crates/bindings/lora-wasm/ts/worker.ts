@@ -24,11 +24,14 @@ declare const self: DedicatedWorkerGlobalScope;
 let db: WasmDatabase | null = null;
 let ready: Promise<void> | null = null;
 let nextStreamId = 1;
-const streams = new Map<number, {
-  columns(): unknown;
-  next(): unknown;
-  close(): void;
-}>();
+const streams = new Map<
+  number,
+  {
+    columns(): unknown;
+    next(): unknown;
+    close(): void;
+  }
+>();
 
 function ensureReady(): Promise<void> {
   if (!ready) {
@@ -73,7 +76,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       }
       case "streamOpen": {
         const native = db as unknown as {
-          openStream(query: string, params: unknown): {
+          openStream(
+            query: string,
+            params: unknown,
+          ): {
             columns(): unknown;
             next(): unknown;
             close(): void;
@@ -111,7 +117,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         const native = db as unknown as {
           transaction(statements: unknown, mode: string): unknown;
         };
-        const result = native.transaction(body.statements, body.mode ?? "read_write");
+        const result = native.transaction(
+          body.statements,
+          body.mode ?? "read_write",
+        );
         respond({ ok: true, result: result as never });
         break;
       }
@@ -119,7 +128,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         const native = db as unknown as {
           saveSnapshot(options?: unknown): Uint8Array;
         };
-        respond({ ok: true, result: native.saveSnapshot(body.options ?? null) });
+        respond({
+          ok: true,
+          result: native.saveSnapshot(body.options ?? null),
+        });
         break;
       }
       case "loadSnapshot": {
@@ -128,7 +140,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         };
         respond({
           ok: true,
-          result: native.loadSnapshot(body.bytes, body.options ?? null) as never,
+          result: native.loadSnapshot(
+            body.bytes,
+            body.options ?? null,
+          ) as never,
         });
         break;
       }

@@ -51,16 +51,23 @@ export declare class Database {
     query: string,
     params?: Record<string, unknown> | null,
   ): Promise<unknown>;
-  openStream(
-    query: string,
-    params?: Record<string, unknown> | null,
-  ): number;
+  openStream(query: string, params?: Record<string, unknown> | null): number;
   streamColumns(streamId: number): string[];
   streamNext(streamId: number): Record<string, unknown> | null;
   streamClose(streamId: number): void;
   transaction(
-    statements: Array<{ query: string; params?: Record<string, unknown> | null }>,
-    mode?: "read_write" | "read_only" | "readwrite" | "readonly" | "rw" | "ro" | null,
+    statements: Array<{
+      query: string;
+      params?: Record<string, unknown> | null;
+    }>,
+    mode?:
+      | "read_write"
+      | "read_only"
+      | "readwrite"
+      | "readonly"
+      | "rw"
+      | "ro"
+      | null,
   ): Promise<Buffer[]>;
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>;
@@ -69,11 +76,17 @@ export declare class Database {
   relationshipCount(): number;
   dispose(): void;
   /** Atomic save. Synchronous under the store read lock. */
-  saveSnapshot(path: string, options?: NativeSnapshotOptions | null): NativeSnapshotMeta;
+  saveSnapshot(
+    path: string,
+    options?: NativeSnapshotOptions | null,
+  ): NativeSnapshotMeta;
   /** Serialize the current graph into snapshot bytes. */
   saveSnapshotBuffer(options?: NativeSnapshotOptions | null): Buffer;
   /** Replace the current graph with the snapshot at `path`. */
-  loadSnapshot(path: string, options?: NativeSnapshotOptions | null): NativeSnapshotMeta;
+  loadSnapshot(
+    path: string,
+    options?: NativeSnapshotOptions | null,
+  ): NativeSnapshotMeta;
   /** Replace the current graph with snapshot bytes. */
   loadSnapshotBuffer(
     bytes: Uint8Array | Buffer,

@@ -6,11 +6,7 @@
  * so consumers can choose the execution model without rewriting their code.
  */
 
-import type {
-  LoraParams,
-  LoraValue,
-  QueryResult,
-} from "./types.js";
+import type { LoraParams, LoraValue, QueryResult } from "./types.js";
 import { LoraError } from "./types.js";
 import type { Request, Response as WorkerResponse } from "./worker-protocol.js";
 import type {
@@ -37,9 +33,18 @@ import { decodeResult } from "./decode.js";
 export interface WorkerLike {
   postMessage(message: unknown): void;
   terminate(): void;
-  addEventListener(type: "message", listener: (event: { data: WorkerResponse }) => void): void;
-  addEventListener(type: "error", listener: (event: { message?: string }) => void): void;
-  removeEventListener(type: "message", listener: (event: { data: WorkerResponse }) => void): void;
+  addEventListener(
+    type: "message",
+    listener: (event: { data: WorkerResponse }) => void,
+  ): void;
+  addEventListener(
+    type: "error",
+    listener: (event: { message?: string }) => void,
+  ): void;
+  removeEventListener(
+    type: "message",
+    listener: (event: { data: WorkerResponse }) => void,
+  ): void;
 }
 
 export interface WorkerDatabase {
@@ -61,13 +66,31 @@ export interface WorkerDatabase {
   ): Promise<Array<QueryResult<T>>>;
   saveSnapshot(): Promise<Uint8Array>;
   saveSnapshot(options: WasmSnapshotByteOptions): Promise<Uint8Array>;
-  saveSnapshot(options: { format?: "bytes" } & WasmSnapshotByteOptions): Promise<Uint8Array>;
-  saveSnapshot(options: { format: "arrayBuffer" } & WasmSnapshotByteOptions): Promise<ArrayBuffer>;
-  saveSnapshot(options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Blob>;
-  saveSnapshot(options: { format: "response"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Response>;
-  saveSnapshot(options: { format: "stream" } & WasmSnapshotByteOptions): Promise<ReadableStream<Uint8Array>>;
-  saveSnapshot(options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions): Promise<URL>;
-  loadSnapshot(source: WasmSnapshotSource, options?: WasmSnapshotLoadOptions): Promise<SnapshotMeta>;
+  saveSnapshot(
+    options: { format?: "bytes" } & WasmSnapshotByteOptions,
+  ): Promise<Uint8Array>;
+  saveSnapshot(
+    options: { format: "arrayBuffer" } & WasmSnapshotByteOptions,
+  ): Promise<ArrayBuffer>;
+  saveSnapshot(
+    options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions,
+  ): Promise<Blob>;
+  saveSnapshot(
+    options: {
+      format: "response";
+      mimeType?: string;
+    } & WasmSnapshotByteOptions,
+  ): Promise<Response>;
+  saveSnapshot(
+    options: { format: "stream" } & WasmSnapshotByteOptions,
+  ): Promise<ReadableStream<Uint8Array>>;
+  saveSnapshot(
+    options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions,
+  ): Promise<URL>;
+  loadSnapshot(
+    source: WasmSnapshotSource,
+    options?: WasmSnapshotLoadOptions,
+  ): Promise<SnapshotMeta>;
   snapshotInfo(bytes: Uint8Array): Promise<SnapshotInfo>;
   clear(): Promise<void>;
   nodeCount(): Promise<number>;
@@ -194,18 +217,45 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
 
   function saveSnapshot(): Promise<Uint8Array>;
   function saveSnapshot(options: WasmSnapshotByteOptions): Promise<Uint8Array>;
-  function saveSnapshot(options: { format?: "bytes" } & WasmSnapshotByteOptions): Promise<Uint8Array>;
-  function saveSnapshot(options: { format: "arrayBuffer" } & WasmSnapshotByteOptions): Promise<ArrayBuffer>;
-  function saveSnapshot(options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Blob>;
-  function saveSnapshot(options: { format: "response"; mimeType?: string } & WasmSnapshotByteOptions): Promise<Response>;
-  function saveSnapshot(options: { format: "stream" } & WasmSnapshotByteOptions): Promise<ReadableStream<Uint8Array>>;
-  function saveSnapshot(options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions): Promise<URL>;
+  function saveSnapshot(
+    options: { format?: "bytes" } & WasmSnapshotByteOptions,
+  ): Promise<Uint8Array>;
+  function saveSnapshot(
+    options: { format: "arrayBuffer" } & WasmSnapshotByteOptions,
+  ): Promise<ArrayBuffer>;
+  function saveSnapshot(
+    options: { format: "blob"; mimeType?: string } & WasmSnapshotByteOptions,
+  ): Promise<Blob>;
+  function saveSnapshot(
+    options: {
+      format: "response";
+      mimeType?: string;
+    } & WasmSnapshotByteOptions,
+  ): Promise<Response>;
+  function saveSnapshot(
+    options: { format: "stream" } & WasmSnapshotByteOptions,
+  ): Promise<ReadableStream<Uint8Array>>;
+  function saveSnapshot(
+    options: { format: "url"; mimeType?: string } & WasmSnapshotByteOptions,
+  ): Promise<URL>;
   async function saveSnapshot(
     options?: WasmSnapshotSaveOptions | WasmSnapshotByteOptions,
-  ): Promise<Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | URL> {
-    const bytes = await call<Uint8Array>({ op: "saveSnapshot", options: options ?? null });
-    const format = options && "format" in options ? options.format ?? "bytes" : "bytes";
-    const mimeType = options && "mimeType" in options ? options.mimeType : undefined;
+  ): Promise<
+    | Uint8Array
+    | ArrayBuffer
+    | Blob
+    | Response
+    | ReadableStream<Uint8Array>
+    | URL
+  > {
+    const bytes = await call<Uint8Array>({
+      op: "saveSnapshot",
+      options: options ?? null,
+    });
+    const format =
+      options && "format" in options ? (options.format ?? "bytes") : "bytes";
+    const mimeType =
+      options && "mimeType" in options ? options.mimeType : undefined;
     switch (format) {
       case "bytes":
         return bytes;
@@ -244,16 +294,13 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
       query: string,
       params?: LoraParams,
     ): RowStream<T> {
-      return new WorkerRowStream<T>(
-        () => {
-          return call<{ streamId: number; columns: string[] }>({
-            op: "streamOpen",
-            query,
-            params: params ?? null,
-          });
-        },
-        call,
-      );
+      return new WorkerRowStream<T>(() => {
+        return call<{ streamId: number; columns: string[] }>({
+          op: "streamOpen",
+          query,
+          params: params ?? null,
+        });
+      }, call);
     },
     rows<T extends Record<string, LoraValue> = Record<string, LoraValue>>(
       query: string,
@@ -261,11 +308,17 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
     ): RowStream<T> {
       return this.stream<T>(query, params);
     },
-    transaction<T extends Record<string, LoraValue> = Record<string, LoraValue>>(
+    transaction<
+      T extends Record<string, LoraValue> = Record<string, LoraValue>,
+    >(
       statements: TransactionStatement[],
       mode: TransactionMode = "read_write",
     ): Promise<Array<QueryResult<T>>> {
-      return call<Array<QueryResult<T>>>({ op: "transaction", statements, mode });
+      return call<Array<QueryResult<T>>>({
+        op: "transaction",
+        statements,
+        mode,
+      });
     },
     saveSnapshot,
     async loadSnapshot(

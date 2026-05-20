@@ -6,7 +6,13 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { createDatabase, createWorkerDatabase, LoraError, type Database, type WorkerDatabase } from "../ts/index.js";
+import {
+  createDatabase,
+  createWorkerDatabase,
+  LoraError,
+  type Database,
+  type WorkerDatabase,
+} from "../ts/index.js";
 import type { Request, Response } from "../ts/worker-protocol.js";
 import type { LoraErrorCode } from "../ts/types.js";
 
@@ -17,14 +23,19 @@ class InProcessWorker {
   } = { message: [], error: [] };
   #db: Database | null = null;
   #nextStreamId = 1;
-  #streams = new Map<number, AsyncIterableIterator<Record<string, unknown>> & {
-    columns?: () => string[] | Promise<string[]>;
-    close?: () => void;
-  }>();
+  #streams = new Map<
+    number,
+    AsyncIterableIterator<Record<string, unknown>> & {
+      columns?: () => string[] | Promise<string[]>;
+      close?: () => void;
+    }
+  >();
 
   addEventListener(
     type: "message" | "error",
-    listener: ((e: { data: Response }) => void) | ((e: { message?: string }) => void),
+    listener:
+      | ((e: { data: Response }) => void)
+      | ((e: { message?: string }) => void),
   ): void {
     if (type === "message") {
       this.#listeners.message.push(listener as (e: { data: Response }) => void);
@@ -37,7 +48,9 @@ class InProcessWorker {
     type: "message",
     listener: (e: { data: Response }) => void,
   ): void {
-    this.#listeners.message = this.#listeners.message.filter((l) => l !== listener);
+    this.#listeners.message = this.#listeners.message.filter(
+      (l) => l !== listener,
+    );
     void type;
   }
 
@@ -64,7 +77,10 @@ class InProcessWorker {
 
       switch (msg.body.op) {
         case "execute": {
-          const result = await db.execute(msg.body.query, msg.body.params ?? undefined);
+          const result = await db.execute(
+            msg.body.query,
+            msg.body.params ?? undefined,
+          );
           respond({ ok: true, result });
           break;
         }
@@ -77,7 +93,10 @@ class InProcessWorker {
           break;
         }
         case "streamOpen": {
-          const stream = db.stream(msg.body.query, msg.body.params ?? undefined);
+          const stream = db.stream(
+            msg.body.query,
+            msg.body.params ?? undefined,
+          );
           const streamId = this.#nextStreamId++;
           this.#streams.set(streamId, stream);
           respond({
@@ -181,7 +200,8 @@ describe("WorkerDatabase — message protocol", () => {
 
   it("surfaces LORA_PARSE from the worker", async () => {
     await expect(db.execute("NOT CYPHER")).rejects.toSatisfy(
-      (e) => e instanceof Error && (e as { code?: string }).code === "LORA_PARSE",
+      (e) =>
+        e instanceof Error && (e as { code?: string }).code === "LORA_PARSE",
     );
   });
 
