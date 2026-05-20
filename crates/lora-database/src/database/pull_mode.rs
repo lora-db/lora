@@ -53,6 +53,7 @@ fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalN
         | PhysicalOp::Merge(_)
         | PhysicalOp::Delete(_)
         | PhysicalOp::Set(_)
-        | PhysicalOp::Remove(_) => true,
+        | PhysicalOp::Remove(_)
+        | PhysicalOp::Foreach(_) => true,
     }
 }

@@ -1,7 +1,7 @@
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::{
-    ResolvedExpr, ResolvedMergeAction, ResolvedPattern, ResolvedPatternPart, ResolvedProjection,
-    ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
+    ResolvedClause, ResolvedExpr, ResolvedMergeAction, ResolvedPattern, ResolvedPatternPart,
+    ResolvedProjection, ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
 };
 use lora_ast::{Direction, RangeLiteral};
 
@@ -37,9 +37,19 @@ pub enum PhysicalOp {
     Delete(DeleteExec),
     Set(SetExec),
     Remove(RemoveExec),
+    Foreach(ForeachExec),
     OptionalMatch(OptionalMatchExec),
     PathBuild(PathBuildExec),
     CallSubquery(CallSubqueryExec),
+}
+
+/// See [`crate::logical::Foreach`].
+#[derive(Debug, Clone)]
+pub struct ForeachExec {
+    pub input: PhysicalNodeId,
+    pub variable: VarId,
+    pub list: ResolvedExpr,
+    pub body: Vec<ResolvedClause>,
 }
 
 /// `CALL { ... }` subquery executor node. See [`crate::logical::CallSubquery`].

@@ -224,6 +224,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             UpdatingClause::Delete(d) => Ok(ResolvedClause::Delete(self.analyze_delete(d)?)),
             UpdatingClause::Set(s) => Ok(ResolvedClause::Set(self.analyze_set(s)?)),
             UpdatingClause::Remove(r) => Ok(ResolvedClause::Remove(self.analyze_remove(r)?)),
+            UpdatingClause::Foreach(f) => Ok(ResolvedClause::Foreach(self.analyze_foreach(f)?)),
         }
     }
 

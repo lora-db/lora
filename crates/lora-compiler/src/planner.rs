@@ -6,8 +6,9 @@ use crate::{
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::{
     ResolvedCallSubquery, ResolvedClause, ResolvedCreate, ResolvedDelete, ResolvedExpr,
-    ResolvedMatch, ResolvedMerge, ResolvedPattern, ResolvedPatternElement, ResolvedProjection,
-    ResolvedQuery, ResolvedRemove, ResolvedReturn, ResolvedSet, ResolvedUnwind, ResolvedWith,
+    ResolvedForeach, ResolvedMatch, ResolvedMerge, ResolvedPattern, ResolvedPatternElement,
+    ResolvedProjection, ResolvedQuery, ResolvedRemove, ResolvedReturn, ResolvedSet, ResolvedUnwind,
+    ResolvedWith,
 };
 
 pub struct Planner {
@@ -75,6 +76,11 @@ impl Planner {
                 ResolvedClause::Remove(rm) => {
                     let upstream = input.unwrap_or_else(|| self.plan_unit_input());
                     self.plan_remove(upstream, rm)
+                }
+
+                ResolvedClause::Foreach(f) => {
+                    let upstream = input.unwrap_or_else(|| self.plan_unit_input());
+                    self.plan_foreach(upstream, f)
                 }
 
                 ResolvedClause::With(w) => {
@@ -195,6 +201,15 @@ impl Planner {
         self.push(LogicalOp::Remove(crate::Remove {
             input,
             items: r.items.clone(),
+        }))
+    }
+
+    fn plan_foreach(&mut self, input: PlanNodeId, f: &ResolvedForeach) -> PlanNodeId {
+        self.push(LogicalOp::Foreach(crate::Foreach {
+            input,
+            variable: f.variable,
+            list: f.list.clone(),
+            body: f.body.clone(),
         }))
     }
 

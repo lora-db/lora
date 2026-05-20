@@ -402,6 +402,7 @@ pub enum UpdatingClause {
     Delete(Delete),
     Set(Set),
     Remove(Remove),
+    Foreach(Foreach),
 }
 
 #[derive(Debug, Clone)]
@@ -479,6 +480,18 @@ pub enum SetItem {
 #[derive(Debug, Clone)]
 pub struct Remove {
     pub items: Vec<RemoveItem>,
+    pub span: Span,
+}
+
+/// `FOREACH (var IN list | body...)` — runs each body updating clause
+/// once per element in `list`, with `var` bound to the element. The
+/// body itself contains only updating clauses (CREATE / MERGE / DELETE
+/// / SET / REMOVE / nested FOREACH).
+#[derive(Debug, Clone)]
+pub struct Foreach {
+    pub variable: Variable,
+    pub list: Expr,
+    pub body: Vec<UpdatingClause>,
     pub span: Span,
 }
 

@@ -1,6 +1,6 @@
 use super::clauses::{
-    lower_create, lower_delete, lower_in_query_call, lower_match, lower_merge, lower_remove,
-    lower_return_clause, lower_set, lower_unwind, lower_with_clause,
+    lower_create, lower_delete, lower_foreach, lower_in_query_call, lower_match, lower_merge,
+    lower_remove, lower_return_clause, lower_set, lower_unwind, lower_with_clause,
 };
 use super::util::{pair_span, single_inner, unexpected_rule};
 use super::Rule;
@@ -152,6 +152,7 @@ pub(super) fn lower_updating_clause(pair: Pair<Rule>) -> Result<UpdatingClause, 
         Rule::delete_clause => Ok(UpdatingClause::Delete(lower_delete(inner)?)),
         Rule::set_clause => Ok(UpdatingClause::Set(lower_set(inner)?)),
         Rule::remove_clause => Ok(UpdatingClause::Remove(lower_remove(inner)?)),
+        Rule::foreach_clause => Ok(UpdatingClause::Foreach(lower_foreach(inner)?)),
         _ => Err(unexpected_rule("updating_clause", inner)),
     }
 }

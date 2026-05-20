@@ -245,6 +245,34 @@ pub(super) fn lower_property_set_target(pair: Pair<Rule>) -> Result<Expr, ParseE
     Ok(expr)
 }
 
+pub(super) fn lower_foreach(pair: Pair<Rule>) -> Result<Foreach, ParseError> {
+    let span = pair_span(&pair);
+    let mut variable = None;
+    let mut list = None;
+    let mut body = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::variable => variable = Some(lower_variable(p)?),
+            Rule::expression => list = Some(lower_expression(p)?),
+            Rule::updating_clause => {
+                let clause = super::query::lower_updating_clause(p)?;
+                body.push(clause);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Foreach {
+        variable: variable
+            .ok_or_else(|| ParseError::new("expected FOREACH variable", span.start, span.end))?,
+        list: list
+            .ok_or_else(|| ParseError::new("expected FOREACH list", span.start, span.end))?,
+        body,
+        span,
+    })
+}
+
 pub(super) fn lower_remove(pair: Pair<Rule>) -> Result<Remove, ParseError> {
     let span = pair_span(&pair);
     let mut items = Vec::new();

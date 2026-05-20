@@ -2,8 +2,8 @@ use super::expressions::expr_contains_aggregate;
 use super::state::{Analyzer, PatternContext};
 use crate::{errors::*, resolved::*, symbols::*};
 use lora_ast::{
-    Create, Delete, Expr, InQueryCall, Match, Merge, ProjectionBody, ProjectionItem, Remove,
-    RemoveItem, Return, Set, SetItem, Unwind, With,
+    Create, Delete, Expr, Foreach, InQueryCall, Match, Merge, ProjectionBody, ProjectionItem,
+    Remove, RemoveItem, Return, Set, SetItem, Unwind, UpdatingClause, With,
 };
 use lora_store::GraphCatalog;
 use std::collections::{BTreeMap, BTreeSet};
@@ -149,6 +149,51 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         }
 
         Ok(ResolvedSet { items })
+    }
+
+    pub(super) fn analyze_foreach(
+        &mut self,
+        f: &Foreach,
+    ) -> Result<ResolvedForeach, SemanticError> {
+        // The list expression is evaluated in the outer scope.
+        let list = self.analyze_expr(&f.list)?;
+
+        // Push the loop variable into a fresh scope so the body sees it
+        // and shadowing rules track properly. Snapshot the outer scope
+        // so we can restore it once the body is analyzed — the loop
+        // variable must not leak into clauses that follow FOREACH.
+        let outer = self.visible_bindings();
+        let var_id = self.declare_fresh_variable(&f.variable.name)?;
+
+        let mut body = Vec::with_capacity(f.body.len());
+        for clause in &f.body {
+            body.push(self.analyze_foreach_body_clause(clause)?);
+        }
+
+        self.replace_scope(outer);
+
+        Ok(ResolvedForeach {
+            variable: var_id,
+            list,
+            body,
+        })
+    }
+
+    /// Analyze one body clause inside `FOREACH`. The body is restricted
+    /// to updating clauses (Create / Merge / Delete / Set / Remove /
+    /// nested Foreach) — reading clauses and RETURN are not legal there.
+    fn analyze_foreach_body_clause(
+        &mut self,
+        uc: &UpdatingClause,
+    ) -> Result<ResolvedClause, SemanticError> {
+        match uc {
+            UpdatingClause::Create(c) => Ok(ResolvedClause::Create(self.analyze_create(c)?)),
+            UpdatingClause::Merge(m) => Ok(ResolvedClause::Merge(self.analyze_merge(m)?)),
+            UpdatingClause::Delete(d) => Ok(ResolvedClause::Delete(self.analyze_delete(d)?)),
+            UpdatingClause::Set(s) => Ok(ResolvedClause::Set(self.analyze_set(s)?)),
+            UpdatingClause::Remove(r) => Ok(ResolvedClause::Remove(self.analyze_remove(r)?)),
+            UpdatingClause::Foreach(f) => Ok(ResolvedClause::Foreach(self.analyze_foreach(f)?)),
+        }
     }
 
     pub(super) fn analyze_remove(&mut self, r: &Remove) -> Result<ResolvedRemove, SemanticError> {

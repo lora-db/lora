@@ -1,7 +1,7 @@
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::{
-    ResolvedExpr, ResolvedMergeAction, ResolvedPattern, ResolvedPatternPart, ResolvedProjection,
-    ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
+    ResolvedClause, ResolvedExpr, ResolvedMergeAction, ResolvedPattern, ResolvedPatternPart,
+    ResolvedProjection, ResolvedRemoveItem, ResolvedSetItem, ResolvedSortItem,
 };
 use lora_ast::{Direction, RangeLiteral};
 
@@ -36,9 +36,23 @@ pub enum LogicalOp {
     Set(Set),
     Remove(Remove),
     Create(Create),
+    Foreach(Foreach),
     OptionalMatch(OptionalMatch),
     PathBuild(PathBuild),
     CallSubquery(CallSubquery),
+}
+
+/// `FOREACH (var IN list | body...)` — for each input row, evaluate
+/// the list, then run each body clause once per element with `var`
+/// bound to the element. The body is a flat list of resolved updating
+/// clauses applied for side effects only; the outer row is emitted
+/// unchanged after the loop.
+#[derive(Debug, Clone)]
+pub struct Foreach {
+    pub input: PlanNodeId,
+    pub variable: VarId,
+    pub list: ResolvedExpr,
+    pub body: Vec<ResolvedClause>,
 }
 
 /// `CALL { ... }` subquery: for each upstream row, runs the inner

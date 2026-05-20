@@ -211,6 +211,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             PhysicalOp::Delete(op) => self.exec_delete(plan, op),
             PhysicalOp::Set(op) => self.exec_set(plan, op),
             PhysicalOp::Remove(op) => self.exec_remove(plan, op),
+            PhysicalOp::Foreach(op) => self.exec_foreach(plan, op),
             PhysicalOp::OptionalMatch(op) => self.exec_optional_match(plan, op),
             PhysicalOp::CallSubquery(op) => self.exec_call_subquery(plan, op),
             PhysicalOp::PathBuild(op) => self.exec_path_build(plan, op),
@@ -1027,6 +1028,147 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         }
 
         Ok(input_rows)
+    }
+
+    /// `FOREACH (var IN list | body...)` — for each input row, evaluate
+    /// the list and run the body once per element with `var` bound to
+    /// that element. Each iteration runs on a fresh clone of the row
+    /// so any new bindings the body introduces (e.g. anonymous
+    /// `CREATE` node VarIds) don't leak between iterations or back to
+    /// the outer scope. Side effects on the graph persist; the outer
+    /// row is emitted unchanged.
+    fn exec_foreach(&mut self, plan: &PhysicalPlan, op: &ForeachExec) -> ExecResult<Vec<Row>> {
+        let input_rows = self.execute_node(plan, op.input)?;
+        let mut out = Vec::with_capacity(input_rows.len());
+
+        for row in input_rows {
+            let list_value = {
+                let eval_ctx = EvalContext {
+                    storage: &*self.ctx.storage,
+                    params: &self.ctx.params,
+                };
+                eval_expr(&op.list, &row, &eval_ctx)
+            };
+
+            let elements: Vec<LoraValue> = match list_value {
+                LoraValue::List(items) => items,
+                LoraValue::Null => Vec::new(),
+                other => {
+                    return Err(ExecutorError::RuntimeError(format!(
+                        "FOREACH expects a list, got {}",
+                        value_kind(&other)
+                    )));
+                }
+            };
+
+            for element in elements {
+                // Fresh row per iteration so body-introduced bindings
+                // don't reuse VarIds across iterations.
+                let mut iter_row = row.clone();
+                iter_row.insert(op.variable, element);
+                for clause in &op.body {
+                    self.apply_foreach_body_clause(&mut iter_row, clause)?;
+                }
+            }
+
+            out.push(row);
+        }
+
+        Ok(out)
+    }
+
+    /// Apply one resolved updating clause to `row` for its side effect
+    /// inside a `FOREACH` body. Only updating clauses (Create / Merge /
+    /// Delete / Set / Remove / nested Foreach) are legal here; the
+    /// analyzer guarantees that.
+    fn apply_foreach_body_clause(
+        &mut self,
+        row: &mut Row,
+        clause: &lora_analyzer::ResolvedClause,
+    ) -> ExecResult<()> {
+        use lora_analyzer::ResolvedClause;
+        match clause {
+            ResolvedClause::Create(c) => self.apply_create_pattern(row, &c.pattern),
+            ResolvedClause::Set(s) => {
+                for item in &s.items {
+                    self.apply_set_item(row, item)?;
+                }
+                Ok(())
+            }
+            ResolvedClause::Remove(r) => {
+                for item in &r.items {
+                    self.apply_remove_item(row, item)?;
+                }
+                Ok(())
+            }
+            ResolvedClause::Delete(d) => {
+                let detach = d.detach;
+                for expr in &d.expressions {
+                    let value = {
+                        let eval_ctx = EvalContext {
+                            storage: &*self.ctx.storage,
+                            params: &self.ctx.params,
+                        };
+                        eval_expr(expr, row, &eval_ctx)
+                    };
+                    self.delete_value(value, detach)?;
+                }
+                Ok(())
+            }
+            ResolvedClause::Merge(m) => {
+                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part);
+                let matched = if already_bound {
+                    true
+                } else {
+                    self.try_match_merge_pattern(row, &m.pattern_part)?
+                };
+                if !matched {
+                    self.apply_create_pattern_part(row, &m.pattern_part)?;
+                }
+                for action in &m.actions {
+                    if action.on_match == matched {
+                        for item in &action.set.items {
+                            self.apply_set_item(row, item)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            ResolvedClause::Foreach(nested) => {
+                let list_value = {
+                    let eval_ctx = EvalContext {
+                        storage: &*self.ctx.storage,
+                        params: &self.ctx.params,
+                    };
+                    eval_expr(&nested.list, row, &eval_ctx)
+                };
+
+                let elements: Vec<LoraValue> = match list_value {
+                    LoraValue::List(items) => items,
+                    LoraValue::Null => Vec::new(),
+                    other => {
+                        return Err(ExecutorError::RuntimeError(format!(
+                            "FOREACH expects a list, got {}",
+                            value_kind(&other)
+                        )));
+                    }
+                };
+
+                for element in elements {
+                    let mut iter_row = row.clone();
+                    iter_row.insert(nested.variable, element);
+                    for inner in &nested.body {
+                        self.apply_foreach_body_clause(&mut iter_row, inner)?;
+                    }
+                }
+
+                Ok(())
+            }
+            other => Err(ExecutorError::RuntimeError(format!(
+                "FOREACH body may only contain updating clauses, got {:?}",
+                std::mem::discriminant(other)
+            ))),
+        }
     }
 
     fn exec_remove(&mut self, plan: &PhysicalPlan, op: &RemoveExec) -> ExecResult<Vec<Row>> {

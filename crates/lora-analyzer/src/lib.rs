@@ -11,8 +11,8 @@ pub use analyzer::{
 pub use errors::SemanticError;
 pub use resolved::{
     LiteralValue, ResolvedCallSubquery, ResolvedChain, ResolvedClause, ResolvedCreate,
-    ResolvedDelete, ResolvedExpr, ResolvedMapSelector, ResolvedMatch, ResolvedMerge,
-    ResolvedMergeAction, ResolvedNode, ResolvedPattern, ResolvedPatternElement,
+    ResolvedDelete, ResolvedExpr, ResolvedForeach, ResolvedMapSelector, ResolvedMatch,
+    ResolvedMerge, ResolvedMergeAction, ResolvedNode, ResolvedPattern, ResolvedPatternElement,
     ResolvedPatternPart, ResolvedProjection, ResolvedQuery, ResolvedRel, ResolvedRemove,
     ResolvedRemoveItem, ResolvedReturn, ResolvedSet, ResolvedSetItem, ResolvedSortItem,
     ResolvedUnionPart, ResolvedUnwind, ResolvedWith,

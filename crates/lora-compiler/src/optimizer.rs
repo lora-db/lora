@@ -354,6 +354,13 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
             items: remove.items,
         }),
 
+        LogicalOp::Foreach(foreach) => PhysicalOp::Foreach(crate::ForeachExec {
+            input: foreach.input,
+            variable: foreach.variable,
+            list: foreach.list,
+            body: foreach.body,
+        }),
+
         LogicalOp::OptionalMatch(om) => PhysicalOp::OptionalMatch(OptionalMatchExec {
             input: om.input,
             inner: om.inner,

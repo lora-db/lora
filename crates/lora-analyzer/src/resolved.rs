@@ -28,6 +28,7 @@ pub enum ResolvedClause {
     Delete(ResolvedDelete),
     Set(ResolvedSet),
     Remove(ResolvedRemove),
+    Foreach(ResolvedForeach),
     Return(ResolvedReturn),
     With(ResolvedWith),
     CallSubquery(ResolvedCallSubquery),
@@ -110,6 +111,18 @@ pub enum ResolvedSetItem {
 #[derive(Debug, Clone)]
 pub struct ResolvedRemove {
     pub items: Vec<ResolvedRemoveItem>,
+}
+
+/// `FOREACH (var IN list | body...)`. The body is restricted to
+/// updating clauses (Create / Merge / Delete / Set / Remove / nested
+/// Foreach). The analyzer enforces that restriction; the planner /
+/// executor treat each body item as a side-effect-only operation
+/// applied row-by-row inside the iteration.
+#[derive(Debug, Clone)]
+pub struct ResolvedForeach {
+    pub variable: VarId,
+    pub list: ResolvedExpr,
+    pub body: Vec<ResolvedClause>,
 }
 
 #[derive(Debug, Clone)]

@@ -20,6 +20,9 @@ pub enum ExecutorError {
     #[error("this query modifies the graph, but it was executed in read-only mode (REMOVE at plan node {node_id:?})")]
     ReadOnlyRemove { node_id: PhysicalNodeId },
 
+    #[error("this query modifies the graph, but it was executed in read-only mode (FOREACH at plan node {node_id:?})")]
+    ReadOnlyForeach { node_id: PhysicalNodeId },
+
     #[error("expected variable {var} to contain a node before expanding a relationship, but found {found}")]
     ExpectedNodeForExpand { var: String, found: String },
 

@@ -29,6 +29,7 @@ fn plan_is_mutating(plan: &PhysicalPlan) -> bool {
                 | PhysicalOp::Delete(_)
                 | PhysicalOp::Set(_)
                 | PhysicalOp::Remove(_)
+                | PhysicalOp::Foreach(_)
         )
     })
 }

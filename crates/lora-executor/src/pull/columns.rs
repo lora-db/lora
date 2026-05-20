@@ -38,6 +38,7 @@ fn plan_columns_at(plan: &PhysicalPlan, node: PhysicalNodeId) -> Option<Vec<Stri
         PhysicalOp::Delete(p) => plan_columns_at(plan, p.input),
         PhysicalOp::Set(p) => plan_columns_at(plan, p.input),
         PhysicalOp::Remove(p) => plan_columns_at(plan, p.input),
+        PhysicalOp::Foreach(p) => plan_columns_at(plan, p.input),
         PhysicalOp::Argument(_)
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)

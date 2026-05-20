@@ -387,6 +387,12 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             d.insert("items".to_string(), n.items.len().to_string());
             PlanDescription::with_children("Remove", d, vec![n.input])
         }
+        PhysicalOp::Foreach(n) => {
+            d.insert("variable".to_string(), var_str(n.variable));
+            d.insert("list".to_string(), expr_str(&n.list));
+            d.insert("body".to_string(), n.body.len().to_string());
+            PlanDescription::with_children("Foreach", d, vec![n.input])
+        }
         PhysicalOp::OptionalMatch(n) => describe_optional_match(n),
         PhysicalOp::CallSubquery(n) => {
             d.insert(

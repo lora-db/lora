@@ -213,6 +213,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             PhysicalOp::Delete(_) => Err(ExecutorError::ReadOnlyDelete { node_id }),
             PhysicalOp::Set(_) => Err(ExecutorError::ReadOnlySet { node_id }),
             PhysicalOp::Remove(_) => Err(ExecutorError::ReadOnlyRemove { node_id }),
+            PhysicalOp::Foreach(_) => Err(ExecutorError::ReadOnlyForeach { node_id }),
         };
 
         match &result {
@@ -1077,6 +1078,7 @@ fn subtree_is_parallel_safe(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> boo
         | PhysicalOp::Delete(_)
         | PhysicalOp::Set(_)
         | PhysicalOp::Remove(_)
+        | PhysicalOp::Foreach(_)
         | PhysicalOp::OptionalMatch(_)
         | PhysicalOp::PathBuild(_)
         | PhysicalOp::CallSubquery(_) => false,

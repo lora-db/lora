@@ -178,7 +178,7 @@ single_part_query = {
 }
 
 reading_clause = { match_clause | unwind_clause | call_subquery | in_query_call }
-updating_clause = { create_clause | merge_clause | delete_clause | set_clause | remove_clause }
+updating_clause = { create_clause | merge_clause | delete_clause | set_clause | remove_clause | foreach_clause }
 
 match_clause = { OPTIONAL? ~ MATCH ~ pattern ~ where_clause? }
 unwind_clause = { UNWIND ~ expression ~ AS ~ variable }
@@ -189,6 +189,17 @@ merge_action = { ON ~ (MATCH | CREATE) ~ set_clause }
 delete_clause = { DETACH? ~ DELETE ~ expression ~ (comma ~ expression)* }
 
 set_clause = { SET ~ set_item ~ (comma ~ set_item)* }
+
+// FOREACH (var IN list | updating_clause+)
+// Iterates over `list`, binding `var` for each element, and runs the
+// inner updating clauses once per element. The conditional idiom
+// `FOREACH (_ IN CASE WHEN cond THEN [1] ELSE [] END | SET ...)` makes
+// the body run 0 or 1 times based on `cond`.
+foreach_clause = {
+    FOREACH ~ lparen ~ variable ~ IN ~ expression ~ pipe
+    ~ updating_clause+
+    ~ rparen
+}
 
 set_item = {
       variable ~ plus_eq ~ expression
@@ -470,7 +481,7 @@ ident_part = _{ ASCII_ALPHANUMERIC | "_" | "$" }
 
 reserved_word = {
     ALL | ASC | ASCENDING | BY | CALL | CREATE | DELETE | DESC | DESCENDING | DETACH |
-    EXISTS | LIMIT | MATCH | MERGE | ON | OPTIONAL | ORDER | REMOVE | RETURN |
+    EXISTS | FOREACH | LIMIT | MATCH | MERGE | ON | OPTIONAL | ORDER | REMOVE | RETURN |
     SET | SKIP | WHERE | WITH | UNION | UNWIND | AND | AS | CONTAINS | DISTINCT |
     ENDS | IN | IS | NOT | OR | STARTS | XOR | FALSE | TRUE | NULL | CASE |
     WHEN | THEN | ELSE | END | YIELD
@@ -536,6 +547,7 @@ WITH = @{ ^"WITH" ~ !ident_part }
 YIELD = @{ ^"YIELD" ~ !ident_part }
 UNION = @{ ^"UNION" ~ !ident_part }
 UNWIND = @{ ^"UNWIND" ~ !ident_part }
+FOREACH = @{ ^"FOREACH" ~ !ident_part }
 AND = @{ ^"AND" ~ !ident_part }
 AS = @{ ^"AS" ~ !ident_part }
 CONTAINS = @{ ^"CONTAINS" ~ !ident_part }
