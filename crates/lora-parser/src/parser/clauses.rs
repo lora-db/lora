@@ -266,8 +266,7 @@ pub(super) fn lower_foreach(pair: Pair<Rule>) -> Result<Foreach, ParseError> {
     Ok(Foreach {
         variable: variable
             .ok_or_else(|| ParseError::new("expected FOREACH variable", span.start, span.end))?,
-        list: list
-            .ok_or_else(|| ParseError::new("expected FOREACH list", span.start, span.end))?,
+        list: list.ok_or_else(|| ParseError::new("expected FOREACH list", span.start, span.end))?,
         body,
         span,
     })

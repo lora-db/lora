@@ -6157,9 +6157,26 @@ RETURN count(p) AS created";
             .map(|s| s.name)
             .collect();
         for ns in [
-            "math.", "string.", "list.", "map.", "temporal.", "bytes.", "crypto.", "uuid.",
-            "json.", "geo.", "vector.", "node.", "edge.", "path.", "value.", "type.", "cast.",
-            "text.", "number.", "bits.",
+            "math.",
+            "string.",
+            "list.",
+            "map.",
+            "temporal.",
+            "bytes.",
+            "crypto.",
+            "uuid.",
+            "json.",
+            "geo.",
+            "vector.",
+            "node.",
+            "edge.",
+            "path.",
+            "value.",
+            "type.",
+            "cast.",
+            "text.",
+            "number.",
+            "bits.",
         ] {
             assert!(
                 names.iter().any(|n| n.starts_with(ns)),

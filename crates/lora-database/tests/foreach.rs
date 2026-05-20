@@ -88,9 +88,7 @@ fn foreach_case_idiom_skips_when_condition_false() {
 #[test]
 fn point_function_builds_geographic_point_from_map() {
     let db = TestDb::new();
-    let rows = db.run(
-        "RETURN point({ longitude: 4.9, latitude: 52.37, crs: 'wgs-84' }) AS p",
-    );
+    let rows = db.run("RETURN point({ longitude: 4.9, latitude: 52.37, crs: 'wgs-84' }) AS p");
     // Point serialization: shape varies by binding but it should not be null
     // and should carry a longitude/latitude or x/y pair.
     let p = &rows[0]["p"];
@@ -155,7 +153,8 @@ fn venue_ingestion_unwind_foreach_pattern_end_to_end() {
     db.assert_count("MATCH (v:Venue) RETURN v", 3);
 
     // Cafe One has all optional fields populated.
-    let rows = db.run("MATCH (v:Venue { name: 'Cafe One' }) RETURN v.osm_id AS osm, v.location AS loc");
+    let rows =
+        db.run("MATCH (v:Venue { name: 'Cafe One' }) RETURN v.osm_id AS osm, v.location AS loc");
     assert_eq!(rows[0]["osm"].as_i64().unwrap(), 101);
     assert!(!rows[0]["loc"].is_null(), "location should be set");
 
@@ -180,8 +179,14 @@ fn venue(
 ) -> LoraValue {
     let mut m = BTreeMap::new();
     m.insert("name".to_string(), LoraValue::String(name.to_string()));
-    m.insert("address".to_string(), LoraValue::String(address.to_string()));
-    m.insert("category".to_string(), LoraValue::String(category.to_string()));
+    m.insert(
+        "address".to_string(),
+        LoraValue::String(address.to_string()),
+    );
+    m.insert(
+        "category".to_string(),
+        LoraValue::String(category.to_string()),
+    );
     m.insert(
         "osm_id".to_string(),
         osm_id.map(LoraValue::Int).unwrap_or(LoraValue::Null),
