@@ -5,11 +5,13 @@ import {
   type CompletionResult,
 } from "@codemirror/autocomplete";
 import {
+  CYPHER_ALIASES,
   CYPHER_CLAUSES,
   CYPHER_CONSTANTS,
   CYPHER_KEYWORDS,
   CYPHER_NAMESPACES,
   CYPHER_TOP_LEVEL_FUNCTIONS,
+  type CypherAlias,
   NAMESPACE_MEMBERS,
   type CypherToken,
 } from "./data";
@@ -17,6 +19,17 @@ import type { EditorView } from "@codemirror/view";
 import { findVariable, getOutline } from "./scope";
 import { getProviders, type PropertyContext } from "./providers";
 import type { Outline, OutlineVariable } from "../parser";
+
+function aliasToCompletion(a: CypherAlias): Completion {
+  return {
+    label: a.alias,
+    type: "function",
+    detail: `→ ${a.canonical}`,
+    info: `Compatibility alias for \`${a.canonical}\`.`,
+    apply: snippet(`${a.alias}(\${1})`),
+    boost: -1,
+  };
+}
 
 function toCompletion(
   t: CypherToken,
@@ -1398,6 +1411,11 @@ function suggestionsFor(
     ...CYPHER_NAMESPACES.map((n) =>
       toCompletion(n, { apply: `${n.label}.` }),
     ),
+    // Compatibility aliases — `date`, `tolower`, `coalesce`, etc.
+    // Surface at a lower boost than the canonical entries so the
+    // namespaced form (`temporal.now`, `string.lower`) is suggested
+    // first when both match the user's input.
+    ...CYPHER_ALIASES.map(aliasToCompletion),
     ...CYPHER_CONSTANTS.map((c) => toCompletion(c, { boost: 1 })),
     // CASE and EXISTS subqueries are valid expressions and reachable
     // from every expression position (WHERE, RETURN, WITH, SET, …).

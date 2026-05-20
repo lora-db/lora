@@ -315,4 +315,33 @@ LIMIT 25`,
       );
     expect(offenders).toEqual([]);
   });
+
+  it("analyse flags unknown function calls as a warning", async () => {
+    const a = await analyse("RETURN strng.uppr('x')");
+    const unknown = a.diagnostics.find((d) =>
+      /Unknown function/.test(d.message),
+    );
+    expect(unknown).toBeDefined();
+    expect(unknown!.message).toContain("strng.uppr");
+    expect(unknown!.severity).toBe("warning");
+  });
+
+  it("analyse does not flag canonical builtins", async () => {
+    const a = await analyse("RETURN string.upper('alice')");
+    const unknown = a.diagnostics.filter((d) =>
+      /Unknown function/.test(d.message),
+    );
+    expect(unknown).toEqual([]);
+  });
+
+  it("analyse accepts the date('…') alias added in 0.11.x", async () => {
+    // Regression test for the temporal-alias addition. The engine
+    // routes `date(s)` through `temporal.now`'s string-parse branch;
+    // the editor must mirror that without flagging the call.
+    const a = await analyse("RETURN date('2026-11-01') AS d");
+    const unknown = a.diagnostics.filter((d) =>
+      /Unknown function/.test(d.message),
+    );
+    expect(unknown).toEqual([]);
+  });
 });

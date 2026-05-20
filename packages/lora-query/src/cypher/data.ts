@@ -1,11 +1,24 @@
 /**
  * Cypher metadata used by autocomplete + hover tooltips.
  *
- * The lists below intentionally describe the LoraDB dialect: namespaced
- * builtins under `math.*`, `string.*`, `list.*`, etc. Keeping the data
- * in one place lets the editor stay in lockstep with the engine without
- * duplicating signatures across the completion / hover surfaces.
+ * Function metadata is sourced from the engine via the WASM `builtins()`
+ * endpoint so the editor stays in lockstep with the analyzer / executor
+ * — no more hand-maintained signature lists drifting from the Rust
+ * source of truth. We still keep a small editorial layer on top:
+ *
+ *   - `DOC_OVERRIDES` — hand-written `info` / `detail` strings that beat
+ *     the synthesised defaults. Carries our existing wording for the
+ *     common functions; any builtin not in the map gets a generic
+ *     "Builtin function — arity N..M" blurb.
+ *   - `NAMESPACE_INFO` — hand-written one-liners for each namespace
+ *     (`math`, `string`, …). Used when the builtin registry actually
+ *     ships members for the namespace; empty namespaces are dropped.
+ *
+ * Clauses, keywords, constants, and operators are entirely editorial and
+ * still live as hand-written arrays below.
  */
+
+import * as WasmModule from "../../wasm/lora_query_wasm.js";
 
 export type CypherKind =
   | "clause"
@@ -155,108 +168,297 @@ export const CYPHER_CONSTANTS: CypherToken[] = [
   { label: "NULL", kind: "constant", info: "Absence of value." },
 ];
 
-export const CYPHER_TOP_LEVEL_FUNCTIONS: CypherToken[] = [
-  // Aggregates — callable directly at top level.
-  { label: "count", kind: "function", detail: "count(expr | *)", info: "Aggregate — number of rows. `count(*)` counts every row." },
-  { label: "collect", kind: "function", detail: "collect(expr)", info: "Aggregate — gather rows into a list." },
-  { label: "sum", kind: "function", detail: "sum(expr)", info: "Aggregate — numeric sum." },
-  { label: "avg", kind: "function", detail: "avg(expr)", info: "Aggregate — numeric average." },
-  { label: "min", kind: "function", detail: "min(expr)", info: "Aggregate — smallest value." },
-  { label: "max", kind: "function", detail: "max(expr)", info: "Aggregate — largest value." },
-  { label: "stdev", kind: "function", detail: "stdev(expr)", info: "Aggregate — sample standard deviation." },
-  { label: "stdevp", kind: "function", detail: "stdevp(expr)", info: "Aggregate — population standard deviation." },
-  { label: "percentileCont", kind: "function", detail: "percentileCont(expr, p)", info: "Aggregate — continuous percentile (linear interpolation)." },
-  { label: "percentileDisc", kind: "function", detail: "percentileDisc(expr, p)", info: "Aggregate — discrete percentile (nearest data point)." },
-  // General scalar helpers.
-  { label: "size", kind: "function", detail: "size(list)", info: "Length of a list, string, or map." },
-  { label: "length", kind: "function", detail: "length(path)", info: "Number of relationships in a path." },
-  { label: "keys", kind: "function", detail: "keys(map)", info: "Keys of a map or properties of a node/relationship." },
-  { label: "properties", kind: "function", detail: "properties(node|rel)", info: "Properties of a node or relationship as a map." },
-  { label: "coalesce", kind: "function", detail: "coalesce(x, y, …)", info: "First non-null argument." },
-  { label: "reverse", kind: "function", detail: "reverse(list|string)", info: "Reverses a list or string." },
-  { label: "is_null", kind: "function", detail: "is_null(x)", info: "True when `x` is NULL." },
-  { label: "id", kind: "function", detail: "id(node|rel)", info: "Internal identifier of a node or relationship." },
-  // Pattern helpers.
-  { label: "nodes", kind: "function", detail: "nodes(path)", info: "All nodes in a path." },
-  { label: "relationships", kind: "function", detail: "relationships(path)", info: "All relationships in a path." },
-  { label: "type", kind: "function", detail: "type(rel)", info: "Type of a relationship as a string." },
-  { label: "labels", kind: "function", detail: "labels(node)", info: "Labels of a node as a list of strings." },
-  // List builders.
-  { label: "range", kind: "function", detail: "range(start, end[, step])", info: "Build an integer range." },
-  { label: "head", kind: "function", detail: "head(list)", info: "First element of a list." },
-  { label: "tail", kind: "function", detail: "tail(list)", info: "All elements after the first." },
-  { label: "last", kind: "function", detail: "last(list)", info: "Last element of a list." },
-  { label: "timestamp", kind: "function", detail: "timestamp()", info: "Current epoch milliseconds (UTC)." },
-];
+// ─────────────────────────────────────────────────────────────────────
+// Editorial overrides for builtin functions
+// ─────────────────────────────────────────────────────────────────────
 
-export const CYPHER_NAMESPACES: CypherToken[] = [
-  { label: "math", kind: "namespace", info: "Numeric helpers — `math.abs`, `math.sqrt`, `math.floor`, ..." },
-  { label: "string", kind: "namespace", info: "Text helpers — `string.upper`, `string.lower`, `string.length`, `string.concat`, ..." },
-  { label: "list", kind: "namespace", info: "List helpers — `list.sum`, `list.avg`, `list.append`, `list.size`, ..." },
-  { label: "map", kind: "namespace", info: "Map helpers — `map.keys`, `map.size`, ..." },
-  { label: "bytes", kind: "namespace", info: "Byte-string helpers." },
-  { label: "bits", kind: "namespace", info: "Bit-level helpers." },
-  { label: "json", kind: "namespace", info: "JSON parse / stringify." },
-  { label: "uuid", kind: "namespace", info: "UUID generation + parsing." },
-  { label: "cast", kind: "namespace", info: "Explicit type casts." },
-  { label: "type", kind: "namespace", info: "Type predicates and reflection." },
-  { label: "temporal", kind: "namespace", info: "Date / time helpers." },
-  { label: "geo", kind: "namespace", info: "Geospatial helpers." },
-  { label: "vector", kind: "namespace", info: "Vector / embedding helpers." },
-  { label: "crypto", kind: "namespace", info: "Hashing + crypto helpers." },
-];
+interface DocOverride {
+  info: string;
+  detail?: string;
+}
 
-export const NAMESPACE_MEMBERS: Record<string, CypherToken[]> = {
-  math: [
-    { label: "abs", kind: "function", detail: "math.abs(x)", info: "Absolute value." },
-    { label: "sqrt", kind: "function", detail: "math.sqrt(x)", info: "Square root." },
-    { label: "floor", kind: "function", detail: "math.floor(x)", info: "Largest integer ≤ x." },
-    { label: "ceil", kind: "function", detail: "math.ceil(x)", info: "Smallest integer ≥ x." },
-    { label: "round", kind: "function", detail: "math.round(x)", info: "Banker's rounding." },
-    { label: "min", kind: "function", detail: "math.min(a, b)", info: "Smaller of two values." },
-    { label: "max", kind: "function", detail: "math.max(a, b)", info: "Larger of two values." },
-    { label: "clamp", kind: "function", detail: "math.clamp(x, lo, hi)", info: "Clamp `x` to `[lo, hi]`." },
-    { label: "pow", kind: "function", detail: "math.pow(base, exp)", info: "Exponentiation." },
-    { label: "log", kind: "function", detail: "math.log(x)", info: "Natural logarithm." },
-    { label: "sin", kind: "function", detail: "math.sin(x)", info: "Sine (radians)." },
-    { label: "cos", kind: "function", detail: "math.cos(x)", info: "Cosine (radians)." },
-    { label: "tan", kind: "function", detail: "math.tan(x)", info: "Tangent (radians)." },
-  ],
-  string: [
-    { label: "upper", kind: "function", detail: "string.upper(s)", info: "Upper-case." },
-    { label: "lower", kind: "function", detail: "string.lower(s)", info: "Lower-case." },
-    { label: "length", kind: "function", detail: "string.length(s)", info: "Character length." },
-    { label: "concat", kind: "function", detail: "string.concat(a, b)", info: "Concatenate strings." },
-    { label: "contains", kind: "function", detail: "string.contains(s, sub)", info: "Substring test." },
-    { label: "startsWith", kind: "function", detail: "string.startsWith(s, prefix)", info: "Prefix test." },
-    { label: "endsWith", kind: "function", detail: "string.endsWith(s, suffix)", info: "Suffix test." },
-    { label: "split", kind: "function", detail: "string.split(s, sep)", info: "Split by separator." },
-    { label: "trim", kind: "function", detail: "string.trim(s)", info: "Trim surrounding whitespace." },
-    { label: "replace", kind: "function", detail: "string.replace(s, from, to)", info: "Substring replace." },
-    { label: "capitalize", kind: "function", detail: "string.capitalize(s)", info: "Capitalise first letter." },
-    { label: "camel", kind: "function", detail: "string.camel(s)", info: "Convert to camelCase." },
-    { label: "count", kind: "function", detail: "string.count(s, sub)", info: "Occurrences of `sub`." },
-  ],
-  list: [
-    { label: "sum", kind: "function", detail: "list.sum(xs)", info: "Sum of numeric items." },
-    { label: "avg", kind: "function", detail: "list.avg(xs)", info: "Average of numeric items." },
-    { label: "size", kind: "function", detail: "list.size(xs)", info: "Number of items." },
-    { label: "append", kind: "function", detail: "list.append(xs, item)", info: "Append an item." },
-    { label: "first", kind: "function", detail: "list.first(xs)", info: "First item." },
-    { label: "last", kind: "function", detail: "list.last(xs)", info: "Last item." },
-    { label: "contains", kind: "function", detail: "list.contains(xs, item)", info: "Membership test." },
-    { label: "reverse", kind: "function", detail: "list.reverse(xs)", info: "Reverse." },
-  ],
-  map: [
-    { label: "keys", kind: "function", detail: "map.keys(m)", info: "Keys of the map." },
-    { label: "size", kind: "function", detail: "map.size(m)", info: "Number of entries." },
-  ],
-  temporal: [
-    { label: "now", kind: "function", detail: "temporal.now()", info: "Current timestamp." },
-    { label: "date", kind: "function", detail: "temporal.date(...)", info: "Construct a date." },
-    { label: "datetime", kind: "function", detail: "temporal.datetime(...)", info: "Construct a datetime." },
-  ],
+/**
+ * Hand-written `info` / `detail` strings keyed by canonical builtin
+ * name (e.g. `"math.abs"`, `"count"`). Salvaged from the previous
+ * hand-maintained arrays — anything not in here gets a synthesised
+ * placeholder derived from the signature returned by the registry.
+ */
+const DOC_OVERRIDES: Record<string, DocOverride> = {
+  // Aggregates (top-level).
+  count: { detail: "count(expr | *)", info: "Aggregate — number of rows. `count(*)` counts every row." },
+  collect: { detail: "collect(expr)", info: "Aggregate — gather rows into a list." },
+  sum: { detail: "sum(expr)", info: "Aggregate — numeric sum." },
+  avg: { detail: "avg(expr)", info: "Aggregate — numeric average." },
+  min: { detail: "min(expr)", info: "Aggregate — smallest value." },
+  max: { detail: "max(expr)", info: "Aggregate — largest value." },
+  stdev: { detail: "stdev(expr)", info: "Aggregate — sample standard deviation." },
+  stdevp: { detail: "stdevp(expr)", info: "Aggregate — population standard deviation." },
+  percentileCont: { detail: "percentileCont(expr, p)", info: "Aggregate — continuous percentile (linear interpolation)." },
+  percentileDisc: { detail: "percentileDisc(expr, p)", info: "Aggregate — discrete percentile (nearest data point)." },
+  // General scalar helpers (top-level).
+  size: { detail: "size(list)", info: "Length of a list, string, or map." },
+  length: { detail: "length(path)", info: "Number of relationships in a path." },
+  keys: { detail: "keys(map)", info: "Keys of a map or properties of a node/relationship." },
+  properties: { detail: "properties(node|rel)", info: "Properties of a node or relationship as a map." },
+  coalesce: { detail: "coalesce(x, y, …)", info: "First non-null argument." },
+  reverse: { detail: "reverse(list|string)", info: "Reverses a list or string." },
+  is_null: { detail: "is_null(x)", info: "True when `x` is NULL." },
+  id: { detail: "id(node|rel)", info: "Internal identifier of a node or relationship." },
+  // Pattern helpers (top-level).
+  nodes: { detail: "nodes(path)", info: "All nodes in a path." },
+  relationships: { detail: "relationships(path)", info: "All relationships in a path." },
+  type: { detail: "type(rel)", info: "Type of a relationship as a string." },
+  labels: { detail: "labels(node)", info: "Labels of a node as a list of strings." },
+  // List builders (top-level).
+  range: { detail: "range(start, end[, step])", info: "Build an integer range." },
+  head: { detail: "head(list)", info: "First element of a list." },
+  tail: { detail: "tail(list)", info: "All elements after the first." },
+  last: { detail: "last(list)", info: "Last element of a list." },
+  timestamp: { detail: "timestamp()", info: "Current epoch milliseconds (UTC)." },
+  // math.*
+  "math.abs": { detail: "math.abs(x)", info: "Absolute value." },
+  "math.sqrt": { detail: "math.sqrt(x)", info: "Square root." },
+  "math.floor": { detail: "math.floor(x)", info: "Largest integer ≤ x." },
+  "math.ceil": { detail: "math.ceil(x)", info: "Smallest integer ≥ x." },
+  "math.round": { detail: "math.round(x)", info: "Banker's rounding." },
+  "math.min": { detail: "math.min(a, b)", info: "Smaller of two values." },
+  "math.max": { detail: "math.max(a, b)", info: "Larger of two values." },
+  "math.clamp": { detail: "math.clamp(x, lo, hi)", info: "Clamp `x` to `[lo, hi]`." },
+  "math.pow": { detail: "math.pow(base, exp)", info: "Exponentiation." },
+  "math.log": { detail: "math.log(x)", info: "Natural logarithm." },
+  "math.sin": { detail: "math.sin(x)", info: "Sine (radians)." },
+  "math.cos": { detail: "math.cos(x)", info: "Cosine (radians)." },
+  "math.tan": { detail: "math.tan(x)", info: "Tangent (radians)." },
+  // string.*
+  "string.upper": { detail: "string.upper(s)", info: "Upper-case." },
+  "string.lower": { detail: "string.lower(s)", info: "Lower-case." },
+  "string.length": { detail: "string.length(s)", info: "Character length." },
+  "string.concat": { detail: "string.concat(a, b)", info: "Concatenate strings." },
+  "string.contains": { detail: "string.contains(s, sub)", info: "Substring test." },
+  "string.startsWith": { detail: "string.startsWith(s, prefix)", info: "Prefix test." },
+  "string.endsWith": { detail: "string.endsWith(s, suffix)", info: "Suffix test." },
+  "string.split": { detail: "string.split(s, sep)", info: "Split by separator." },
+  "string.trim": { detail: "string.trim(s)", info: "Trim surrounding whitespace." },
+  "string.replace": { detail: "string.replace(s, from, to)", info: "Substring replace." },
+  "string.capitalize": { detail: "string.capitalize(s)", info: "Capitalise first letter." },
+  "string.camel": { detail: "string.camel(s)", info: "Convert to camelCase." },
+  "string.count": { detail: "string.count(s, sub)", info: "Occurrences of `sub`." },
+  // list.*
+  "list.sum": { detail: "list.sum(xs)", info: "Sum of numeric items." },
+  "list.avg": { detail: "list.avg(xs)", info: "Average of numeric items." },
+  "list.size": { detail: "list.size(xs)", info: "Number of items." },
+  "list.append": { detail: "list.append(xs, item)", info: "Append an item." },
+  "list.first": { detail: "list.first(xs)", info: "First item." },
+  "list.last": { detail: "list.last(xs)", info: "Last item." },
+  "list.contains": { detail: "list.contains(xs, item)", info: "Membership test." },
+  "list.reverse": { detail: "list.reverse(xs)", info: "Reverse." },
+  // map.*
+  "map.keys": { detail: "map.keys(m)", info: "Keys of the map." },
+  "map.size": { detail: "map.size(m)", info: "Number of entries." },
+  // temporal.*
+  "temporal.now": { detail: "temporal.now()", info: "Current timestamp." },
+  "temporal.date": { detail: "temporal.date(...)", info: "Construct a date." },
+  "temporal.datetime": { detail: "temporal.datetime(...)", info: "Construct a datetime." },
 };
+
+/**
+ * Hand-written one-liners for each namespace. Only namespaces that
+ * actually have members in the builtin registry are surfaced in
+ * `CYPHER_NAMESPACES`; everything else falls back to a generic blurb.
+ */
+const NAMESPACE_INFO: Record<string, string> = {
+  math: "Numeric helpers — `math.abs`, `math.sqrt`, `math.floor`, ...",
+  string: "Text helpers — `string.upper`, `string.lower`, `string.length`, `string.concat`, ...",
+  list: "List helpers — `list.sum`, `list.avg`, `list.append`, `list.size`, ...",
+  map: "Map helpers — `map.keys`, `map.size`, ...",
+  bytes: "Byte-string helpers.",
+  bits: "Bit-level helpers.",
+  json: "JSON parse / stringify.",
+  uuid: "UUID generation + parsing.",
+  cast: "Explicit type casts.",
+  type: "Type predicates and reflection.",
+  temporal: "Date / time helpers.",
+  geo: "Geospatial helpers.",
+  vector: "Vector / embedding helpers.",
+  crypto: "Hashing + crypto helpers.",
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// WASM bridge — load the builtin registry at module init
+// ─────────────────────────────────────────────────────────────────────
+
+interface RawBuiltinFunction {
+  name: string;
+  minArgs: number;
+  maxArgs: number | null;
+  isAggregate: boolean;
+  acceptsEnumAt: number[];
+  acceptsTypeAt: number[];
+}
+
+interface RawBuiltinAlias {
+  alias: string;
+  canonical: string;
+}
+
+interface RawBuiltinsRegistry {
+  functions: RawBuiltinFunction[];
+  aliases: RawBuiltinAlias[];
+}
+
+/**
+ * Pull the builtin registry from the WASM module. If the current
+ * artifact doesn't expose `builtins()` yet (i.e. we're running with
+ * the pre-rebuild shim), fall back to a registry synthesised from
+ * `DOC_OVERRIDES` so existing tests + autocomplete coverage continue
+ * to work. Once `yarn build:wasm` regenerates the shim, this call
+ * starts returning the full 190+ entries automatically and the
+ * fallback becomes dead code.
+ */
+function loadBuiltinsRaw(): RawBuiltinsRegistry {
+  // TODO: enable after yarn build:wasm — `builtins` will be present
+  // on the WASM module and the fallback path below becomes dead code.
+  const mod = WasmModule as unknown as {
+    builtins?: () => RawBuiltinsRegistry;
+  };
+  if (typeof mod.builtins === "function") {
+    try {
+      const raw = mod.builtins();
+      if (raw && Array.isArray(raw.functions) && raw.functions.length > 0) {
+        return raw;
+      }
+    } catch {
+      // Fall through to the editorial fallback.
+    }
+  }
+  return fallbackFromDocOverrides();
+}
+
+/**
+ * Synthesise a minimal registry from the keys of `DOC_OVERRIDES` so
+ * the editor stays usable while waiting for a WASM rebuild. Arity is
+ * unknown here, so we default to variadic (`min=0, max=null`) — the
+ * autocomplete + hover surfaces only need the name, and the synthesised
+ * detail string is overridden by the editorial entry anyway.
+ */
+function fallbackFromDocOverrides(): RawBuiltinsRegistry {
+  const AGGREGATE_NAMES = new Set([
+    "count",
+    "collect",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "stdev",
+    "stdevp",
+    "percentileCont",
+    "percentileDisc",
+  ]);
+  const functions: RawBuiltinFunction[] = Object.keys(DOC_OVERRIDES).map((name) => ({
+    name,
+    minArgs: 0,
+    maxArgs: null,
+    isAggregate: AGGREGATE_NAMES.has(name),
+    acceptsEnumAt: [],
+    acceptsTypeAt: [],
+  }));
+  return { functions, aliases: [] };
+}
+
+/** Render an arity range as a human placeholder, e.g. `(x, y)` or `(...)`. */
+function synthDetailArgs(min: number, max: number | null): string {
+  if (min === 0 && max === 0) return "()";
+  if (max === null) {
+    // Variadic — use "..." after `min` required placeholders.
+    if (min === 0) return "(...)";
+    const required = Array.from({ length: min }, (_, i) => `arg${i + 1}`).join(", ");
+    return `(${required}, ...)`;
+  }
+  const required = Array.from({ length: min }, (_, i) => `arg${i + 1}`);
+  const optional = Array.from({ length: max - min }, (_, i) => `[arg${min + i + 1}]`);
+  return `(${[...required, ...optional].join(", ")})`;
+}
+
+function synthInfo(min: number, max: number | null, isAggregate: boolean): string {
+  const arity = max === null ? `arity ${min}+` : min === max ? `arity ${min}` : `arity ${min}..${max}`;
+  const lead = isAggregate ? "Aggregate" : "Builtin function";
+  return `${lead} — ${arity}.`;
+}
+
+function buildToken(fn: RawBuiltinFunction): CypherToken {
+  const override = DOC_OVERRIDES[fn.name];
+  // For namespaced names, the autocomplete popup shows just the
+  // member portion as the label (matches the legacy shape); the full
+  // canonical name is only used for lookup.
+  const dotIdx = fn.name.indexOf(".");
+  const label = dotIdx >= 0 ? fn.name.slice(dotIdx + 1) : fn.name;
+  const detail = override?.detail ?? `${fn.name}${synthDetailArgs(fn.minArgs, fn.maxArgs)}`;
+  const info = override?.info ?? synthInfo(fn.minArgs, fn.maxArgs, fn.isAggregate);
+  return { label, kind: "function", detail, info };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Derived, exported tables
+// ─────────────────────────────────────────────────────────────────────
+
+const RAW_REGISTRY: RawBuiltinsRegistry = loadBuiltinsRaw();
+
+const TOP_LEVEL_FUNCTIONS: CypherToken[] = [];
+const NAMESPACE_MEMBERS_BUILDER: Record<string, CypherToken[]> = {};
+
+for (const fn of RAW_REGISTRY.functions) {
+  if (!fn.name.includes(".")) {
+    TOP_LEVEL_FUNCTIONS.push(buildToken(fn));
+    continue;
+  }
+  const ns = fn.name.slice(0, fn.name.indexOf("."));
+  if (!NAMESPACE_MEMBERS_BUILDER[ns]) NAMESPACE_MEMBERS_BUILDER[ns] = [];
+  NAMESPACE_MEMBERS_BUILDER[ns]!.push(buildToken(fn));
+}
+
+// Sort each namespace alphabetically so completion ordering is stable
+// across WASM rebuilds (the registry walks a HashMap in Rust).
+for (const ns of Object.keys(NAMESPACE_MEMBERS_BUILDER)) {
+  NAMESPACE_MEMBERS_BUILDER[ns]!.sort((a, b) => a.label.localeCompare(b.label));
+}
+TOP_LEVEL_FUNCTIONS.sort((a, b) => a.label.localeCompare(b.label));
+
+export const CYPHER_TOP_LEVEL_FUNCTIONS: CypherToken[] = TOP_LEVEL_FUNCTIONS;
+
+export const NAMESPACE_MEMBERS: Record<string, CypherToken[]> = NAMESPACE_MEMBERS_BUILDER;
+
+/**
+ * Only namespaces that actually have members in the registry are
+ * surfaced — no empty `bytes` / `bits` / `json` entries with nothing
+ * behind them. Sorted alphabetically for stable completion ordering.
+ */
+export const CYPHER_NAMESPACES: CypherToken[] = Object.keys(NAMESPACE_MEMBERS_BUILDER)
+  .sort()
+  .map((ns) => ({
+    label: ns,
+    kind: "namespace" as const,
+    info: NAMESPACE_INFO[ns] ?? `${ns}.* helpers.`,
+  }));
+
+export interface CypherAlias {
+  alias: string;
+  canonical: string;
+  kind: "alias";
+}
+
+/**
+ * Compatibility aliases (e.g. `tolower → string.lower`,
+ * `date → temporal.now`). Surfaced by the consumer as a low-boost
+ * suggestion category so users typing legacy Neo4j-style names still
+ * find the canonical builtin.
+ */
+export const CYPHER_ALIASES: CypherAlias[] = RAW_REGISTRY.aliases
+  .map((a) => ({ alias: a.alias, canonical: a.canonical, kind: "alias" as const }))
+  .sort((a, b) => a.alias.localeCompare(b.alias));
+
+// ─────────────────────────────────────────────────────────────────────
+// Lookup index
+// ─────────────────────────────────────────────────────────────────────
 
 const ALL_KEYS = new Map<string, CypherToken>();
 function index(tokens: CypherToken[], keyLowercase = false) {
@@ -275,10 +477,33 @@ for (const [ns, members] of Object.entries(NAMESPACE_MEMBERS)) {
   }
 }
 
-/** Look up a token by its identifier (case-insensitive). */
+// Resolve aliases to their canonical entry. The lookup is best-effort —
+// if the alias points at a name we don't have a token for (e.g. the
+// WASM artifact predates a builtin), we fall through to `undefined`.
+const ALIAS_INDEX = new Map<string, string>();
+for (const a of CYPHER_ALIASES) {
+  ALIAS_INDEX.set(a.alias.toLowerCase(), a.canonical);
+}
+
+/** Look up a token by its identifier (case-insensitive). Aliases are
+ * resolved transparently — `findToken("tolower")` returns the token
+ * for `string.lower`. */
 export function findToken(name: string): CypherToken | undefined {
-  return (
-    ALL_KEYS.get(name.toUpperCase()) ??
-    ALL_KEYS.get(name.toLowerCase())
-  );
+  const direct =
+    ALL_KEYS.get(name.toUpperCase()) ?? ALL_KEYS.get(name.toLowerCase());
+  if (direct) return direct;
+  const canonical = ALIAS_INDEX.get(name.toLowerCase());
+  if (!canonical) return undefined;
+  return ALL_KEYS.get(canonical.toLowerCase());
+}
+
+/**
+ * Look up a function token by canonical or alias name. Returns
+ * `undefined` if neither match. Convenience wrapper around
+ * [`findToken`] that filters to function-shaped results so callers
+ * (e.g. signature hints) don't have to discriminate the kind.
+ */
+export function findFunction(name: string): CypherToken | undefined {
+  const tok = findToken(name);
+  return tok && tok.kind === "function" ? tok : undefined;
 }

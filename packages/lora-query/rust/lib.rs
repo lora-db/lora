@@ -523,6 +523,116 @@ pub fn validate(source: &str) -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Builtin function registry — sourced from `lora-builtins-meta` so the
+// editor stays in lockstep with the analyzer / executor.
+// ─────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinInfo {
+    /// Canonical name as registered in `BUILTIN_SPECS`, e.g.
+    /// `"string.upper"`, `"vector.distance"`. Aggregates are reported
+    /// in their lower-case form (`"count"`, `"collect"`).
+    name: String,
+    /// Minimum arity (inclusive).
+    min_args: usize,
+    /// Maximum arity (inclusive). `None` denotes variadic.
+    max_args: Option<usize>,
+    /// True for entries that come from `AggregateFunction` rather than
+    /// `BUILTIN_SPECS`. Lets the editor surface them differently (e.g.
+    /// suggest `count` at the top level but not inside WHERE).
+    is_aggregate: bool,
+    /// Argument slot indices that expect an enum literal (`'L2'`,
+    /// `'L1'`, …) — `vector.distance` and `vector.norm` use this.
+    accepts_enum_at: Vec<usize>,
+    /// Argument slot indices that expect a type literal (`INT`,
+    /// `FLOAT`, …) — `cast.to` / `cast.try` / `type.is` use this.
+    accepts_type_at: Vec<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinAliasInfo {
+    /// Alternate name the user may type (`"date"`, `"tolower"`).
+    alias: String,
+    /// Resolved canonical name in `BUILTIN_SPECS`.
+    canonical: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinsResult {
+    /// Every namespaced builtin from `BUILTIN_SPECS` plus all
+    /// aggregates, merged into one list so the editor can fan them out
+    /// by namespace prefix.
+    functions: Vec<BuiltinInfo>,
+    /// Compatibility aliases from `BUILTIN_ALIASES` (e.g.
+    /// `tolower → string.lower`, `date → temporal.now`).
+    aliases: Vec<BuiltinAliasInfo>,
+}
+
+/// Snapshot the static builtin registry for the JS side. Returns
+/// `{ functions, aliases }` — the editor turns this into autocomplete
+/// + signature-hint metadata at load time. Pure data, no parsing
+/// involved; safe to call repeatedly (JS caches the result).
+#[wasm_bindgen]
+pub fn builtins() -> Result<JsValue, JsValue> {
+    use lora_builtins_meta::{AggregateFunction, BUILTIN_ALIASES, BUILTIN_SPECS};
+
+    let mut functions: Vec<BuiltinInfo> = BUILTIN_SPECS
+        .iter()
+        .map(|spec| BuiltinInfo {
+            name: spec.name.to_owned(),
+            min_args: spec.arity.min,
+            max_args: spec.arity.max,
+            is_aggregate: false,
+            accepts_enum_at: spec.enum_arg_slots.to_vec(),
+            accepts_type_at: spec.type_arg_slots.to_vec(),
+        })
+        .collect();
+
+    // Aggregates aren't in BUILTIN_SPECS — they live in a separate enum.
+    // Enumerate by parsing the lowercase form back; the canonical list
+    // is short and stable.
+    for name in [
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "collect",
+        "stdev",
+        "stdevp",
+        "percentilecont",
+        "percentiledisc",
+    ] {
+        // Use parse() so we never drift if a future aggregate is added
+        // without updating this list; unknown names are skipped.
+        if let Some(agg) = AggregateFunction::parse(name) {
+            functions.push(BuiltinInfo {
+                name: agg.name().to_owned(),
+                min_args: agg.arity().min,
+                max_args: agg.arity().max,
+                is_aggregate: true,
+                accepts_enum_at: Vec::new(),
+                accepts_type_at: Vec::new(),
+            });
+        }
+    }
+
+    let aliases: Vec<BuiltinAliasInfo> = BUILTIN_ALIASES
+        .iter()
+        .map(|a| BuiltinAliasInfo {
+            alias: a.alias.to_owned(),
+            canonical: a.canonical.to_owned(),
+        })
+        .collect();
+
+    let result = BuiltinsResult { functions, aliases };
+    serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 #[wasm_bindgen]
 pub fn format(source: &str) -> String {
     // Reformat each top-level statement and rejoin with `;\n\n`. The
@@ -731,6 +841,7 @@ pub fn analyse(source: &str, config: JsValue) -> Result<JsValue, JsValue> {
         check_undeclared_uses(&outline, slice_src, &mut local_diags);
         check_schema(&outline, &cfg, &mut local_diags);
         check_unused_bindings(&outline, slice_src, &mut local_diags);
+        check_unknown_functions(&doc, slice_src, &mut local_diags);
         for mut d in local_diags {
             translate_diagnostic_in_place(&mut d, source, slice.start);
             diagnostics.push(d);
@@ -1187,20 +1298,26 @@ fn prettify(source: &str) -> String {
     // 1. lexical tidy (commas, trailing whitespace, blank lines)
     // 2. uppercase keywords (string-aware)
     // 3. fold AND/OR continuation lines back onto their predicate so
-    //    step 6 sees a single-line WHERE body it can re-format.
-    // 4. break each top-level clause onto its own line
-    // 5. reformat projection lists (RETURN/WITH ≥ 3 items split, else inline)
-    // 6. split chained WHERE predicates (AND/OR ≥ 1 connective)
-    // 7. split CASE..WHEN..THEN..ELSE..END across lines for readability
-    // 8. indent CALL { ... } subquery bodies one level deeper
+    //    step 7 sees a single-line WHERE body it can re-format.
+    // 4. collapse multi-line content inside (), [], {}, and CASE..END
+    //    onto a single logical line. This canonicalises hand-formatted
+    //    input so the downstream splitters see one consistent shape.
+    // 5. break each top-level clause onto its own line
+    // 6. reformat projection lists (RETURN/WITH ≥ 3 items split, else inline)
+    // 7. split chained WHERE predicates (AND/OR ≥ 1 connective)
+    // 8. expand large CREATE/MERGE/SET property maps onto one key per line
+    // 9. split CASE..WHEN..THEN..ELSE..END across lines for readability
+    // 10. indent CALL { ... } subquery bodies one level deeper
     let s1 = normalize_whitespace(source);
     let s2 = uppercase_keywords(&s1);
     let s3 = join_logical_continuations(&s2);
-    let s4 = reflow_clauses(&s3);
-    let s5 = split_long_projections(&s4);
-    let s6 = split_long_where(&s5);
-    let s7 = split_case_expressions(&s6);
-    indent_call_subqueries(&s7)
+    let s4 = collapse_multiline_blocks(&s3);
+    let s5 = reflow_clauses(&s4);
+    let s6 = split_long_projections(&s5);
+    let s7 = split_long_where(&s6);
+    let s8 = split_long_property_maps(&s7);
+    let s9 = split_case_expressions(&s8);
+    indent_call_subqueries(&s9)
 }
 
 /// Join lines whose first non-whitespace token is `AND` or `OR`
@@ -1612,6 +1729,493 @@ fn split_long_where(source: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// Collapse multi-line content inside any open `(`, `[`, `{`, or
+/// `CASE...END` region onto a single logical line. Newlines + runs of
+/// whitespace become a single space; strings and comments are
+/// preserved verbatim. Content outside these regions (clause-level
+/// newlines, blank lines between clauses) is left alone.
+///
+/// Running this before [`reflow_clauses`] gives the downstream
+/// splitters (`split_long_projections`, `split_long_property_maps`,
+/// `split_case_expressions`) a canonical "everything on one line"
+/// shape regardless of how the user hand-formatted the source. The
+/// CALL subquery body intentionally gets collapsed too — the clauses
+/// inside are re-broken onto their own lines by `reflow_clauses`
+/// because brace depth is not tracked there.
+fn collapse_multiline_blocks(source: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Normal,
+        Str(u8),
+        Line,
+        Block,
+    }
+
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut state = State::Normal;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut case_depth = 0i32;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        match state {
+            State::Str(q) => {
+                if c == b'\\' && i + 1 < bytes.len() {
+                    out.push('\\');
+                    i += 1;
+                    i += append_utf8_char(&mut out, source, i);
+                    continue;
+                }
+                let consumed = append_utf8_char(&mut out, source, i);
+                if c == q {
+                    state = State::Normal;
+                }
+                i += consumed;
+                continue;
+            }
+            State::Line => {
+                let consumed = append_utf8_char(&mut out, source, i);
+                if c == b'\n' {
+                    state = State::Normal;
+                }
+                i += consumed;
+                continue;
+            }
+            State::Block => {
+                if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    out.push_str("*/");
+                    state = State::Normal;
+                    i += 2;
+                    continue;
+                }
+                i += append_utf8_char(&mut out, source, i);
+                continue;
+            }
+            State::Normal => {}
+        }
+
+        if c == b'\'' || c == b'"' || c == b'`' {
+            out.push(c as char);
+            state = State::Str(c);
+            i += 1;
+            continue;
+        }
+        if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            out.push_str("//");
+            state = State::Line;
+            i += 2;
+            continue;
+        }
+        if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            out.push_str("/*");
+            state = State::Block;
+            i += 2;
+            continue;
+        }
+        if c == b'(' {
+            paren += 1;
+            out.push('(');
+            i += 1;
+            continue;
+        }
+        if c == b')' {
+            paren = (paren - 1).max(0);
+            out.push(')');
+            i += 1;
+            continue;
+        }
+        if c == b'[' {
+            bracket += 1;
+            out.push('[');
+            i += 1;
+            continue;
+        }
+        if c == b']' {
+            bracket = (bracket - 1).max(0);
+            out.push(']');
+            i += 1;
+            continue;
+        }
+        if c == b'{' {
+            brace += 1;
+            out.push('{');
+            i += 1;
+            continue;
+        }
+        if c == b'}' {
+            brace = (brace - 1).max(0);
+            out.push('}');
+            i += 1;
+            continue;
+        }
+
+        // Track CASE / END so multi-line CASE bodies outside any
+        // bracket nesting also get collapsed.
+        let prev_is_boundary = i == 0
+            || !{
+                let p = bytes[i - 1];
+                p.is_ascii_alphanumeric() || p == b'_'
+            };
+        if c < 0x80
+            && prev_is_boundary
+            && bytes.get(i..i + 4) == Some(b"CASE")
+            && !is_word_char(bytes.get(i + 4).copied())
+        {
+            case_depth += 1;
+            out.push_str("CASE");
+            i += 4;
+            continue;
+        }
+        if c < 0x80
+            && prev_is_boundary
+            && bytes.get(i..i + 3) == Some(b"END")
+            && !is_word_char(bytes.get(i + 3).copied())
+        {
+            case_depth = (case_depth - 1).max(0);
+            out.push_str("END");
+            i += 3;
+            continue;
+        }
+
+        // Whitespace handling: when we're inside any nesting, collapse
+        // runs of whitespace (including newlines) into a single space.
+        // Outside nesting, preserve verbatim so clause-level newlines /
+        // blank lines survive for `reflow_clauses` to consume.
+        if matches!(c, b' ' | b'\t' | b'\n' | b'\r') {
+            let inside = paren > 0 || bracket > 0 || brace > 0 || case_depth > 0;
+            if inside {
+                while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+                    i += 1;
+                }
+                out.push(' ');
+                continue;
+            }
+            i += append_utf8_char(&mut out, source, i);
+            continue;
+        }
+
+        i += append_utf8_char(&mut out, source, i);
+    }
+    out
+}
+
+/// Expand large property maps on `CREATE` / `MERGE` / `SET` / `REMOVE`
+/// / `ON CREATE SET` / `ON MATCH SET` / `DELETE` lines onto one key per
+/// line. A map is "large" when it has 3+ entries, when its inline body
+/// is longer than 60 characters, or when it contains a `CASE`
+/// expression. The closing `}` returns to the line's base indent;
+/// anything after the map (e.g. the `)` of an enclosing node pattern,
+/// or `]->...` of a relationship pattern) stays on that same line.
+fn split_long_property_maps(source: &str) -> String {
+    let mut out = String::with_capacity(source.len() + 32);
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let indent_len = line.len() - trimmed.len();
+        let indent = &line[..indent_len];
+
+        if !is_write_clause_line(trimmed) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        match split_maps_on_line(line, indent) {
+            Some(rewritten) => out.push_str(&rewritten),
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    out
+}
+
+/// Whether `trimmed` (already left-trimmed) begins a write clause whose
+/// inline property maps are eligible for expansion.
+fn is_write_clause_line(trimmed: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "CREATE ",
+        "MERGE ",
+        "SET ",
+        "REMOVE ",
+        "DELETE ",
+        "DETACH DELETE ",
+        "ON CREATE SET ",
+        "ON MATCH SET ",
+    ];
+    PREFIXES.iter().any(|p| trimmed.starts_with(p))
+}
+
+/// Rewrite a single line, expanding every eligible `{ ... }` property
+/// map. Returns `Some(rewritten)` if at least one map was split, `None`
+/// when the line was already canonical (so the caller can copy it
+/// verbatim without paying an allocation).
+fn split_maps_on_line(line: &str, indent: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len() + 32);
+    let inner_indent = format!("{indent}  ");
+    let mut state: u8 = 0; // 0 normal, 1 single-q, 2 double-q, 3 backtick
+    let mut changed = false;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        match state {
+            0 => {
+                if c == b'\'' {
+                    state = 1;
+                    out.push('\'');
+                    i += 1;
+                    continue;
+                }
+                if c == b'"' {
+                    state = 2;
+                    out.push('"');
+                    i += 1;
+                    continue;
+                }
+                if c == b'`' {
+                    state = 3;
+                    out.push('`');
+                    i += 1;
+                    continue;
+                }
+                if c == b'{' {
+                    if let Some(end_idx) = find_matching_brace(bytes, i) {
+                        let body = &line[i + 1..end_idx];
+                        let parts = split_top_level_commas(body);
+                        let non_empty: Vec<&str> = parts
+                            .iter()
+                            .map(|p| p.trim())
+                            .filter(|p| !p.is_empty())
+                            .collect();
+                        let body_trim = body.trim();
+                        let should_split = non_empty.len() >= 3
+                            || body_trim.len() > 60
+                            || contains_top_level_case(body);
+                        if should_split && !non_empty.is_empty() {
+                            out.push('{');
+                            out.push('\n');
+                            for (idx, part) in non_empty.iter().enumerate() {
+                                out.push_str(&inner_indent);
+                                out.push_str(part);
+                                if idx + 1 < non_empty.len() {
+                                    out.push(',');
+                                }
+                                out.push('\n');
+                            }
+                            out.push_str(indent);
+                            out.push('}');
+                            changed = true;
+                            i = end_idx + 1;
+                            continue;
+                        }
+                    }
+                    out.push('{');
+                    i += 1;
+                    continue;
+                }
+                i += append_utf8_char(&mut out, line, i);
+            }
+            1 => {
+                if c == b'\\' && i + 1 < bytes.len() {
+                    out.push('\\');
+                    i += 1;
+                    i += append_utf8_char(&mut out, line, i);
+                    continue;
+                }
+                let consumed = append_utf8_char(&mut out, line, i);
+                if c == b'\'' {
+                    state = 0;
+                }
+                i += consumed;
+            }
+            2 => {
+                if c == b'\\' && i + 1 < bytes.len() {
+                    out.push('\\');
+                    i += 1;
+                    i += append_utf8_char(&mut out, line, i);
+                    continue;
+                }
+                let consumed = append_utf8_char(&mut out, line, i);
+                if c == b'"' {
+                    state = 0;
+                }
+                i += consumed;
+            }
+            3 => {
+                let consumed = append_utf8_char(&mut out, line, i);
+                if c == b'`' {
+                    state = 0;
+                }
+                i += consumed;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    if changed {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// Find the byte offset of the `}` that closes the `{` at `start`.
+/// Respects string and backtick state, and nested `{`. Returns `None`
+/// when the input is malformed (unclosed brace).
+fn find_matching_brace(bytes: &[u8], start: usize) -> Option<usize> {
+    debug_assert_eq!(bytes.get(start), Some(&b'{'));
+    let mut state: u8 = 0;
+    let mut depth = 0i32;
+    let mut i = start;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match state {
+            0 => {
+                if c == b'\'' {
+                    state = 1;
+                    i += 1;
+                    continue;
+                }
+                if c == b'"' {
+                    state = 2;
+                    i += 1;
+                    continue;
+                }
+                if c == b'`' {
+                    state = 3;
+                    i += 1;
+                    continue;
+                }
+                if c == b'{' {
+                    depth += 1;
+                    i += 1;
+                    continue;
+                }
+                if c == b'}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                    i += 1;
+                    continue;
+                }
+                i += 1;
+            }
+            1 => {
+                if c == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if c == b'\'' {
+                    state = 0;
+                }
+                i += 1;
+            }
+            2 => {
+                if c == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if c == b'"' {
+                    state = 0;
+                }
+                i += 1;
+            }
+            3 => {
+                if c == b'`' {
+                    state = 0;
+                }
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Does this map body contain a CASE expression at the top level (not
+/// inside a string)? Used to force a multi-line split — CASEs are
+/// always more readable broken out.
+fn contains_top_level_case(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    let mut state: u8 = 0;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match state {
+            0 => {
+                if c == b'\'' {
+                    state = 1;
+                    i += 1;
+                    continue;
+                }
+                if c == b'"' {
+                    state = 2;
+                    i += 1;
+                    continue;
+                }
+                if c == b'`' {
+                    state = 3;
+                    i += 1;
+                    continue;
+                }
+                let prev_is_boundary = i == 0
+                    || !{
+                        let p = bytes[i - 1];
+                        p.is_ascii_alphanumeric() || p == b'_'
+                    };
+                if prev_is_boundary
+                    && bytes.get(i..i + 4) == Some(b"CASE")
+                    && !is_word_char(bytes.get(i + 4).copied())
+                {
+                    return true;
+                }
+                i += 1;
+            }
+            1 => {
+                if c == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if c == b'\'' {
+                    state = 0;
+                }
+                i += 1;
+            }
+            2 => {
+                if c == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if c == b'"' {
+                    state = 0;
+                }
+                i += 1;
+            }
+            3 => {
+                if c == b'`' {
+                    state = 0;
+                }
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    false
 }
 
 /// Re-emit every inline `CASE ... END` expression across multiple
@@ -2886,6 +3490,12 @@ fn walk_updating_outline(uc: &UpdatingClause, source: &str, acc: &mut OutlineAcc
                 }
             }
         }
+        UpdatingClause::Foreach(f) => {
+            walk_expr_outline(&f.list, source, acc);
+            for body in &f.body {
+                walk_updating_outline(body, source, acc);
+            }
+        }
     }
 }
 
@@ -3654,6 +4264,13 @@ fn visit_updating(uc: &UpdatingClause, source: &str, out: &mut Vec<HighlightSpan
                     lora_ast::RemoveItem::Property { expr, .. } => visit_expr(expr, source, out),
                     lora_ast::RemoveItem::Labels { variable, .. } => push_variable(out, variable),
                 }
+            }
+        }
+        UpdatingClause::Foreach(f) => {
+            push_variable(out, &f.variable);
+            visit_expr(&f.list, source, out);
+            for body in &f.body {
+                visit_updating(body, source, out);
             }
         }
     }
@@ -4446,6 +5063,207 @@ fn check_unused_bindings(outline: &Outline, source: &str, out: &mut Vec<Diagnost
     }
 }
 
+/// Flag function calls that reference a name absent from
+/// `BUILTIN_SPECS`, `BUILTIN_ALIASES`, and `AggregateFunction`. The
+/// engine would reject these at compile time anyway; surfacing the
+/// diagnostic in the editor lets the user catch the typo before
+/// running.
+fn check_unknown_functions(doc: &Document, _source: &str, out: &mut Vec<Diagnostic>) {
+    let mut calls: Vec<(String, lora_ast::Span)> = Vec::new();
+    walk_function_calls(&doc.statement, &mut calls);
+    for (name, span) in calls {
+        if is_known_function(&name) {
+            continue;
+        }
+        out.push(make_diag(
+            Severity::Warning,
+            format!("Unknown function `{name}`."),
+            span.start,
+            span.end,
+        ));
+    }
+}
+
+fn is_known_function(name: &str) -> bool {
+    lora_builtins_meta::resolve_function(name).is_some()
+}
+
+fn walk_function_calls(stmt: &Statement, out: &mut Vec<(String, lora_ast::Span)>) {
+    if let Statement::Query(Query::Regular(rq)) = stmt {
+        walk_fn_single(&rq.head, out);
+        for u in &rq.unions {
+            walk_fn_single(&u.query, out);
+        }
+    }
+}
+
+fn walk_fn_single(q: &SingleQuery, out: &mut Vec<(String, lora_ast::Span)>) {
+    match q {
+        SingleQuery::SinglePart(part) => walk_fn_single_part(part, out),
+        SingleQuery::MultiPart(mp) => {
+            for p in &mp.parts {
+                for rc in &p.reading_clauses {
+                    walk_fn_reading(rc, out);
+                }
+                for uc in &p.updating_clauses {
+                    walk_fn_updating(uc, out);
+                }
+                for item in &p.with_clause.body.items {
+                    if let ProjectionItem::Expr { expr, .. } = item {
+                        walk_fn_expr(expr, out);
+                    }
+                }
+                if let Some(filter) = &p.with_clause.where_ {
+                    walk_fn_expr(filter, out);
+                }
+            }
+            walk_fn_single_part(&mp.tail, out);
+        }
+    }
+}
+
+fn walk_fn_single_part(part: &SinglePartQuery, out: &mut Vec<(String, lora_ast::Span)>) {
+    for rc in &part.reading_clauses {
+        walk_fn_reading(rc, out);
+    }
+    for uc in &part.updating_clauses {
+        walk_fn_updating(uc, out);
+    }
+    if let Some(ret) = &part.return_clause {
+        for item in &ret.body.items {
+            if let ProjectionItem::Expr { expr, .. } = item {
+                walk_fn_expr(expr, out);
+            }
+        }
+    }
+}
+
+fn walk_fn_reading(rc: &ReadingClause, out: &mut Vec<(String, lora_ast::Span)>) {
+    match rc {
+        ReadingClause::Match(m) => {
+            if let Some(filter) = &m.where_ {
+                walk_fn_expr(filter, out);
+            }
+        }
+        ReadingClause::Unwind(u) => walk_fn_expr(&u.expr, out),
+        ReadingClause::InQueryCall(_) => {}
+        ReadingClause::CallSubquery(c) => {
+            walk_fn_single(&c.body.head, out);
+            for u in &c.body.unions {
+                walk_fn_single(&u.query, out);
+            }
+        }
+    }
+}
+
+fn walk_fn_updating(uc: &UpdatingClause, out: &mut Vec<(String, lora_ast::Span)>) {
+    match uc {
+        UpdatingClause::Create(_) | UpdatingClause::Merge(_) => {}
+        UpdatingClause::Delete(d) => {
+            for e in &d.expressions {
+                walk_fn_expr(e, out);
+            }
+        }
+        UpdatingClause::Set(s) => {
+            for item in &s.items {
+                match item {
+                    lora_ast::SetItem::SetProperty { target, value, .. } => {
+                        walk_fn_expr(target, out);
+                        walk_fn_expr(value, out);
+                    }
+                    lora_ast::SetItem::SetVariable { value, .. }
+                    | lora_ast::SetItem::MutateVariable { value, .. } => walk_fn_expr(value, out),
+                    lora_ast::SetItem::SetLabels { .. } => {}
+                }
+            }
+        }
+        UpdatingClause::Remove(_) => {}
+        UpdatingClause::Foreach(f) => {
+            walk_fn_expr(&f.list, out);
+            for body in &f.body {
+                walk_fn_updating(body, out);
+            }
+        }
+    }
+}
+
+#[allow(clippy::only_used_in_recursion)]
+fn walk_fn_expr(expr: &Expr, out: &mut Vec<(String, lora_ast::Span)>) {
+    match expr {
+        Expr::FunctionCall {
+            name, args, span, ..
+        } => {
+            let joined = name.join(".");
+            out.push((joined, *span));
+            for a in args {
+                walk_fn_expr(a, out);
+            }
+        }
+        Expr::List(items, _) => {
+            for it in items {
+                walk_fn_expr(it, out);
+            }
+        }
+        Expr::Map(entries, _) => {
+            for (_, v) in entries {
+                walk_fn_expr(v, out);
+            }
+        }
+        Expr::Property { expr, .. } => walk_fn_expr(expr, out),
+        Expr::Binary { lhs, rhs, .. } => {
+            walk_fn_expr(lhs, out);
+            walk_fn_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. } => walk_fn_expr(expr, out),
+        Expr::TypeCast { expr, .. } => walk_fn_expr(expr, out),
+        Expr::Case {
+            input,
+            alternatives,
+            else_expr,
+            ..
+        } => {
+            if let Some(i) = input {
+                walk_fn_expr(i, out);
+            }
+            for (cond, val) in alternatives {
+                walk_fn_expr(cond, out);
+                walk_fn_expr(val, out);
+            }
+            if let Some(e) = else_expr {
+                walk_fn_expr(e, out);
+            }
+        }
+        Expr::ListPredicate {
+            list, predicate, ..
+        } => {
+            walk_fn_expr(list, out);
+            walk_fn_expr(predicate, out);
+        }
+        Expr::ListComprehension {
+            list,
+            filter,
+            map_expr,
+            ..
+        } => {
+            walk_fn_expr(list, out);
+            if let Some(f) = filter {
+                walk_fn_expr(f, out);
+            }
+            if let Some(m) = map_expr {
+                walk_fn_expr(m, out);
+            }
+        }
+        Expr::Reduce {
+            init, list, expr, ..
+        } => {
+            walk_fn_expr(init, out);
+            walk_fn_expr(list, out);
+            walk_fn_expr(expr, out);
+        }
+        _ => {}
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Fold-range collection
 // ─────────────────────────────────────────────────────────────────────
@@ -5169,5 +5987,247 @@ RETURN count(p) AS created";
         assert_has_span(&spans, src, HighlightKind::Namespace, "math");
         assert_has_span(&spans, src, HighlightKind::FunctionName, "abs");
         assert_has_span(&spans, src, HighlightKind::PropertyKey, "name");
+    }
+
+    // ── property-map expansion ────────────────────────────────────────
+
+    #[test]
+    fn prettify_keeps_short_create_property_map_inline() {
+        let input = "CREATE (a:Person {name: 'Alice'})";
+        let out = prettify(input);
+        assert_eq!(out, "CREATE (a:Person {name: 'Alice'})\n");
+    }
+
+    #[test]
+    fn prettify_keeps_two_key_create_map_inline() {
+        // Two keys, short body — stays inline.
+        let input = "CREATE (a:Person {name: 'Alice', age: 30})";
+        let out = prettify(input);
+        assert_eq!(out, "CREATE (a:Person {name: 'Alice', age: 30})\n");
+    }
+
+    #[test]
+    fn prettify_expands_create_property_map_with_many_keys() {
+        let input = "CREATE (n:User {id: 1, name: 'Alice', email: 'a@b.c'})";
+        let out = prettify(input);
+        assert_eq!(
+            out,
+            "CREATE (n:User {\n  id: 1,\n  name: 'Alice',\n  email: 'a@b.c'\n})\n"
+        );
+    }
+
+    #[test]
+    fn prettify_expands_merge_property_map() {
+        let input = "MERGE (n:User {id: 1, name: 'Alice', email: 'a@b.c'})";
+        let out = prettify(input);
+        assert_eq!(
+            out,
+            "MERGE (n:User {\n  id: 1,\n  name: 'Alice',\n  email: 'a@b.c'\n})\n"
+        );
+    }
+
+    #[test]
+    fn prettify_expands_set_map_merge() {
+        let input = "MATCH (n) SET n += {a: 1, b: 2, c: 3, d: 4}";
+        let out = prettify(input);
+        assert!(
+            out.contains("SET n += {\n  a: 1,\n  b: 2,\n  c: 3,\n  d: 4\n}"),
+            "got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn prettify_expands_relationship_property_map() {
+        let input = "CREATE (a)-[r:R {since: 2024, weight: 0.5, source: 'x'}]->(b)";
+        let out = prettify(input);
+        assert_eq!(
+            out,
+            "CREATE (a)-[r:R {\n  since: 2024,\n  weight: 0.5,\n  source: 'x'\n}]->(b)\n"
+        );
+    }
+
+    #[test]
+    fn prettify_forces_split_when_map_contains_case() {
+        // Two keys would normally stay inline, but a CASE on the RHS
+        // forces a multi-line layout for readability.
+        let input = "CREATE (n:Foo {id: 1, status: CASE WHEN x > 0 THEN 'A' ELSE 'B' END})";
+        let out = prettify(input);
+        assert!(out.contains("CREATE (n:Foo {\n"), "got: {out:?}");
+        assert!(out.contains("\n  id: 1,\n"), "got: {out:?}");
+        assert!(out.contains("\n  status: CASE\n"), "got: {out:?}");
+    }
+
+    #[test]
+    fn prettify_does_not_split_map_inside_function_arg() {
+        // `apoc.foo(...)` is inside a RETURN line; map literal should
+        // stay inline — only CREATE/MERGE/SET lines get the split.
+        let input = "MATCH (n) RETURN apoc.foo({a: 1, b: 2, c: 3, d: 4})";
+        let out = prettify(input);
+        assert!(
+            out.contains("apoc.foo({a: 1, b: 2, c: 3, d: 4})"),
+            "got: {out:?}"
+        );
+    }
+
+    // ── multi-line CASE collapse + re-split ───────────────────────────
+
+    #[test]
+    fn prettify_splits_hand_wrapped_multiline_case() {
+        // CASE / END span multiple lines in the input. Today's pipeline
+        // collapses them via `collapse_multiline_blocks` then re-splits.
+        let input = "WITH x, CASE\n  WHEN x > 0 THEN 'pos'\n  ELSE 'neg'\nEND AS sign\nRETURN sign";
+        let out = prettify(input);
+        assert!(out.contains("CASE\n"), "got: {out:?}");
+        assert!(out.contains("WHEN x > 0 THEN 'pos'"), "got: {out:?}");
+        assert!(out.contains("ELSE 'neg'"), "got: {out:?}");
+        assert!(out.contains("END AS sign"), "got: {out:?}");
+        // Idempotent.
+        let twice = prettify(&out);
+        assert_eq!(out, twice, "format(format(x)) should equal format(x)");
+    }
+
+    #[test]
+    fn prettify_splits_back_to_back_when_on_same_line() {
+        // Two WHEN keywords on the same line should each get their own
+        // line after prettify — already handled by `split_case_body`,
+        // but worth a regression test now that more inputs reach it.
+        let input = "RETURN CASE WHEN x = 1 THEN 'a' WHEN x = 2 THEN 'b' ELSE 'c' END";
+        let out = prettify(input);
+        assert!(out.contains("CASE\n"), "got: {out:?}");
+        assert!(out.contains("\n  WHEN x = 1 THEN 'a'\n"), "got: {out:?}");
+        assert!(out.contains("\n  WHEN x = 2 THEN 'b'\n"), "got: {out:?}");
+        assert!(out.contains("\n  ELSE 'c'\n"), "got: {out:?}");
+    }
+
+    // ── user-reported example ─────────────────────────────────────────
+
+    #[test]
+    fn prettify_create_with_multiline_map_and_case() {
+        let input = concat!(
+            "WITH range(1, 1000) AS ids\n",
+            "UNWIND ids AS id\n",
+            "\n",
+            "CREATE (n:TestRecord { id: id,\n",
+            "      name: 'Record ' + toString(id),\n",
+            "      createdAt: datetime(),\n",
+            "      randomValue: rand(),\n",
+            "      status: CASE\n",
+            "          WHEN id % 3 = 0 THEN 'ACTIVE' WHEN id % 3 = 1 THEN 'PENDING'\n",
+            "          ELSE 'ARCHIVED'\n",
+            "      END\n",
+            "  })\n",
+            "\n",
+            "RETURN n",
+        );
+        let out = prettify(input);
+        let expected = concat!(
+            "WITH range(1, 1000) AS ids\n",
+            "UNWIND ids AS id\n",
+            "\n",
+            "CREATE (n:TestRecord {\n",
+            "  id: id,\n",
+            "  name: 'Record ' + toString(id),\n",
+            "  createdAt: datetime(),\n",
+            "  randomValue: rand(),\n",
+            "  status: CASE\n",
+            "    WHEN id % 3 = 0 THEN 'ACTIVE'\n",
+            "    WHEN id % 3 = 1 THEN 'PENDING'\n",
+            "    ELSE 'ARCHIVED'\n",
+            "  END\n",
+            "})\n",
+            "\n",
+            "RETURN n\n",
+        );
+        assert_eq!(out, expected);
+        // Idempotent.
+        let twice = prettify(&out);
+        assert_eq!(out, twice, "format(format(x)) should equal format(x)");
+    }
+
+    // ── builtin registry surface ──────────────────────────────────────
+
+    #[test]
+    fn builtins_table_covers_every_namespace() {
+        // Spot-check: every namespace the editor advertises should
+        // actually have at least one spec exposed. If a namespace
+        // appears in `data.ts` but has zero members here, autocomplete
+        // for `<ns>.|` will return nothing.
+        let names: std::collections::HashSet<&'static str> = lora_builtins_meta::BUILTIN_SPECS
+            .iter()
+            .map(|s| s.name)
+            .collect();
+        for ns in [
+            "math.", "string.", "list.", "map.", "temporal.", "bytes.", "crypto.", "uuid.",
+            "json.", "geo.", "vector.", "node.", "edge.", "path.", "value.", "type.", "cast.",
+            "text.", "number.", "bits.",
+        ] {
+            assert!(
+                names.iter().any(|n| n.starts_with(ns)),
+                "no `{ns}` builtins exposed — `data.ts` would list an empty namespace",
+            );
+        }
+    }
+
+    #[test]
+    fn builtins_table_resolves_temporal_aliases() {
+        // The `date("2026-11-01")` family routes through the alias
+        // table back to `temporal.now`. Regression test for the alias
+        // additions in 0.11.x.
+        for alias in ["date", "time", "localdatetime", "localtime", "duration"] {
+            let canonical = lora_builtins_meta::canonical_builtin_name(alias);
+            assert_eq!(
+                canonical,
+                Some("temporal.now"),
+                "`{alias}` should alias to `temporal.now`",
+            );
+        }
+    }
+
+    // ── unknown-function diagnostic ───────────────────────────────────
+
+    fn unknown_function_diags(source: &str) -> Vec<Diagnostic> {
+        let doc = lora_parser::parse_query(source).expect("parses");
+        let mut diags = Vec::new();
+        check_unknown_functions(&doc, source, &mut diags);
+        diags
+    }
+
+    fn diag_messages(diags: &[Diagnostic]) -> String {
+        diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    #[test]
+    fn unknown_function_flags_typo() {
+        let diags = unknown_function_diags("RETURN strng.uppr('x')");
+        assert_eq!(diags.len(), 1, "messages: {}", diag_messages(&diags));
+        assert!(
+            diags[0].message.contains("strng.uppr"),
+            "got: {}",
+            diags[0].message,
+        );
+    }
+
+    #[test]
+    fn unknown_function_allows_canonical_namespaced_call() {
+        let diags = unknown_function_diags("RETURN string.upper('alice')");
+        assert!(diags.is_empty(), "messages: {}", diag_messages(&diags));
+    }
+
+    #[test]
+    fn unknown_function_allows_aggregate() {
+        let diags = unknown_function_diags("MATCH (n) RETURN count(n)");
+        assert!(diags.is_empty(), "messages: {}", diag_messages(&diags));
+    }
+
+    #[test]
+    fn unknown_function_allows_date_alias() {
+        // Regression: the `date("2026-11-01")` alias must round-trip
+        // through resolve_function without firing the warning.
+        let diags = unknown_function_diags("RETURN date('2026-11-01')");
+        assert!(diags.is_empty(), "messages: {}", diag_messages(&diags));
     }
 }

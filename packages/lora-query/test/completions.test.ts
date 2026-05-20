@@ -417,15 +417,18 @@ describe("cypherCompletions — namespace members", () => {
   });
   it("string.", async () => {
     const { labels } = await complete("MATCH (n) RETURN string.", 24);
+    // Names below match the canonical `string.*` registry in
+    // `lora-builtins-meta`. Cypher-style camelCase aliases like
+    // `startsWith` / `endsWith` would need an entry in BUILTIN_ALIASES
+    // — they are not direct namespace members.
     expectIncludes(
       labels,
       "upper",
       "lower",
       "length",
-      "concat",
       "contains",
-      "startsWith",
-      "endsWith",
+      "starts_with",
+      "ends_with",
       "split",
       "trim",
       "replace",
@@ -451,7 +454,28 @@ describe("cypherCompletions — namespace members", () => {
   });
   it("temporal.", async () => {
     const { labels } = await complete("MATCH (n) RETURN temporal.", 26);
-    expectIncludes(labels, "now", "date", "datetime");
+    // `date` / `datetime` are top-level *aliases* (added in 0.11.x) —
+    // they live in CYPHER_ALIASES, not as members of `temporal.*`.
+    // The namespace itself surfaces only the registered builtins.
+    expectIncludes(labels, "now", "today", "parse", "format");
+  });
+});
+
+describe("cypherCompletions — registry coverage", () => {
+  it("surfaces namespaces that previously had zero hand-written members", async () => {
+    // Pre-0.12 `data.ts` listed these namespaces with no members, so
+    // `vector.|` / `crypto.|` returned nothing. Once the registry is
+    // sourced from `lora-builtins-meta`, the real members appear.
+    const v = await complete("RETURN vector.", 14);
+    expectIncludes(v.labels, "distance", "similarity", "dimension");
+    const c = await complete("RETURN crypto.", 14);
+    expectIncludes(c.labels, "blake3", "crc32");
+  });
+  it("date alias is offered at the top level", async () => {
+    // `date(...)` is a Cypher-style alias to `temporal.now`. It must
+    // be reachable from the top-level expression completion list.
+    const { labels } = await complete("RETURN da", 9);
+    expectIncludes(labels, "date");
   });
 });
 
