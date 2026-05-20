@@ -6,7 +6,13 @@
  */
 
 import { ActionIcon, Group, Text, Tooltip } from "@mantine/core";
-import { IconBraces, IconCube, IconMoon, IconSquare, IconSun } from "@tabler/icons-react";
+import {
+  IconBraces,
+  IconCube,
+  IconMoon,
+  IconSquare,
+  IconSun,
+} from "@tabler/icons-react";
 
 import { useStore } from "@/lib/state/store";
 import {
@@ -14,16 +20,14 @@ import {
   useActiveTabId,
   useDetectedParams,
 } from "@/lib/state/selectors";
-import {
-  toggleParamsPanel as toggleParamsPanelAction,
-} from "@/lib/actions/uiActions";
-import {
-  findLeaf,
-  resolveActiveViewId,
-} from "@/lib/state/workspace/tree";
+import { toggleParamsPanel as toggleParamsPanelAction } from "@/lib/actions/uiActions";
+import { findLeaf, resolveActiveViewId } from "@/lib/state/workspace/tree";
 import { useDbStatus, type DbState } from "@/lib/hooks/useDbStatus";
 import { formatCount, formatMs } from "@/lib/util/format";
-import { useColorSchemeToggle, usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
+import {
+  useColorSchemeToggle,
+  usePlaygroundTheme,
+} from "@/lib/theme/usePlaygroundTheme";
 import type { Tokens } from "@/lib/theme/tokens";
 import { LORA_WASM_VERSION } from "@/lib/version";
 
@@ -82,8 +86,12 @@ export function StatusBar() {
     return leaf?.views.find((v) => v.id === viewId)?.paramsPanelOpen ?? false;
   });
 
-  const ms = result && (result.state === "ok" || result.state === "error") ? result.ms : null;
-  const rows = result && result.state === "ok" ? result.result.rows.length : null;
+  const ms =
+    result && (result.state === "ok" || result.state === "error")
+      ? result.ms
+      : null;
+  const rows =
+    result && result.state === "ok" ? result.result.rows.length : null;
 
   return (
     <Group
@@ -176,13 +184,22 @@ export function StatusBar() {
             variant="subtle"
             size="sm"
             color="gray"
-            onClick={() => setPref("graphMode", graphMode === "2d" ? "3d" : "2d")}
+            onClick={() =>
+              setPref("graphMode", graphMode === "2d" ? "3d" : "2d")
+            }
             aria-label={`Switch to ${graphMode === "2d" ? "3D" : "2D"} graph`}
           >
-            {graphMode === "2d" ? <IconSquare size={14} /> : <IconCube size={14} />}
+            {graphMode === "2d" ? (
+              <IconSquare size={14} />
+            ) : (
+              <IconCube size={14} />
+            )}
           </ActionIcon>
         </Tooltip>
-        <Tooltip label={scheme === "dark" ? "Light mode" : "Dark mode"} withArrow>
+        <Tooltip
+          label={scheme === "dark" ? "Light mode" : "Dark mode"}
+          withArrow
+        >
           <ActionIcon
             variant="subtle"
             size="sm"

@@ -70,7 +70,9 @@ export type Placement = "before" | "after";
 // Constructors
 // ────────────────────────────────────────────────────────────────
 
-export function makeView(input?: Partial<PanelView> & { kind?: PanelKind }): PanelView {
+export function makeView(
+  input?: Partial<PanelView> & { kind?: PanelKind },
+): PanelView {
   const view: PanelView = {
     id: input?.id ?? ulid(),
     kind: "query",
@@ -78,14 +80,21 @@ export function makeView(input?: Partial<PanelView> & { kind?: PanelKind }): Pan
     resultTab: input?.resultTab ?? "graph",
   };
   if (input?.tabId !== undefined) view.tabId = input.tabId;
-  if (input?.resultMinimized !== undefined) view.resultMinimized = input.resultMinimized;
-  if (input?.editorSizePct !== undefined) view.editorSizePct = input.editorSizePct;
-  if (input?.paramsPanelOpen !== undefined) view.paramsPanelOpen = input.paramsPanelOpen;
-  if (input?.paramsPanelSize !== undefined) view.paramsPanelSize = input.paramsPanelSize;
+  if (input?.resultMinimized !== undefined)
+    view.resultMinimized = input.resultMinimized;
+  if (input?.editorSizePct !== undefined)
+    view.editorSizePct = input.editorSizePct;
+  if (input?.paramsPanelOpen !== undefined)
+    view.paramsPanelOpen = input.paramsPanelOpen;
+  if (input?.paramsPanelSize !== undefined)
+    view.paramsPanelSize = input.paramsPanelSize;
   return view;
 }
 
-export function makeLeaf(views: PanelView[], opts?: { id?: string; activeViewId?: string }): PanelLeaf {
+export function makeLeaf(
+  views: PanelView[],
+  opts?: { id?: string; activeViewId?: string },
+): PanelLeaf {
   const first = views[0];
   if (!first) {
     throw new Error("makeLeaf: leaf must contain at least one view");
@@ -147,7 +156,10 @@ export function firstLeaf(node: PanelNode): PanelLeaf {
   return firstLeaf(child);
 }
 
-export function findViewLeaf(node: PanelNode, viewId: string): PanelLeaf | null {
+export function findViewLeaf(
+  node: PanelNode,
+  viewId: string,
+): PanelLeaf | null {
   for (const leaf of iterLeaves(node)) {
     if (leaf.views.some((v) => v.id === viewId)) return leaf;
   }
@@ -155,7 +167,9 @@ export function findViewLeaf(node: PanelNode, viewId: string): PanelLeaf | null 
 }
 
 /** First query view (= the canonical view kind) anywhere in the tree. */
-export function firstQueryView(node: PanelNode): { leaf: PanelLeaf; view: PanelView } | null {
+export function firstQueryView(
+  node: PanelNode,
+): { leaf: PanelLeaf; view: PanelView } | null {
   for (const leaf of iterLeaves(node)) {
     for (const v of leaf.views) {
       if (v.kind === "query") return { leaf, view: v };
@@ -209,7 +223,10 @@ export function splitLeaf(
   // Walk and rewrite. When we find the parent of `leaf`, decide whether to
   // splice next to it (parent already runs in the same direction) or wrap
   // the leaf in a new group.
-  const rewrite = (node: PanelNode, parentDirection: SplitDirection | null): PanelNode => {
+  const rewrite = (
+    node: PanelNode,
+    parentDirection: SplitDirection | null,
+  ): PanelNode => {
     if (node.type === "leaf") {
       if (node.id !== paneId) return node;
       if (parentDirection === direction) {
@@ -226,7 +243,9 @@ export function splitLeaf(
     const childIndex = node.children.findIndex(
       (c) => c.type === "leaf" && c.id === paneId,
     );
-    const rewrittenChildren = node.children.map((c) => rewrite(c, node.direction));
+    const rewrittenChildren = node.children.map((c) =>
+      rewrite(c, node.direction),
+    );
     if (childIndex !== -1 && node.direction === direction) {
       const insertAt = placement === "before" ? childIndex : childIndex + 1;
       const nextChildren = [
@@ -302,7 +321,9 @@ export function closeLeaf(tree: PanelNode, paneId: string): PanelNode | null {
       // Collapse: the lone child takes the parent's slot.
       return nextChildren[0]!;
     }
-    const nextSizes = normaliseSizes(survivingIndices.map((i) => group.sizes[i] ?? 0));
+    const nextSizes = normaliseSizes(
+      survivingIndices.map((i) => group.sizes[i] ?? 0),
+    );
     return {
       type: "group",
       id: group.id,
@@ -414,7 +435,10 @@ export function insertView(
     if (node.type === "leaf") {
       if (node.id !== paneId) return node;
       const nextViews = [...node.views];
-      const at = index === undefined ? nextViews.length : Math.max(0, Math.min(nextViews.length, index));
+      const at =
+        index === undefined
+          ? nextViews.length
+          : Math.max(0, Math.min(nextViews.length, index));
       nextViews.splice(at, 0, view);
       return { ...node, views: nextViews, activeViewId: view.id };
     }
@@ -444,7 +468,10 @@ export function moveView(
       if (node.type === "leaf") {
         if (node.id !== toPaneId) return node;
         const remaining = node.views.filter((v) => v.id !== viewId);
-        const at = toIndex === undefined ? remaining.length : Math.max(0, Math.min(remaining.length, toIndex));
+        const at =
+          toIndex === undefined
+            ? remaining.length
+            : Math.max(0, Math.min(remaining.length, toIndex));
         const next = [...remaining];
         next.splice(at, 0, view);
         return { ...node, views: next, activeViewId: view.id };
@@ -647,7 +674,10 @@ export function addTabToEditorView(
         next[idx] = { ...view, tabId };
         return { ...node, views: next };
       }
-      const at = index === undefined ? tabIds.length : Math.max(0, Math.min(tabIds.length, index));
+      const at =
+        index === undefined
+          ? tabIds.length
+          : Math.max(0, Math.min(tabIds.length, index));
       const nextTabIds = [...tabIds.slice(0, at), tabId, ...tabIds.slice(at)];
       const next = [...node.views];
       next[idx] = { ...view, tabIds: nextTabIds, tabId };
@@ -733,7 +763,10 @@ export function reorderTabInEditorView(
 }
 
 /** Returns true when `tabId` appears in any query view's strip. */
-export function tabIsOpenInAnyEditorView(tree: PanelNode, tabId: string): boolean {
+export function tabIsOpenInAnyEditorView(
+  tree: PanelNode,
+  tabId: string,
+): boolean {
   for (const leaf of iterLeaves(tree)) {
     for (const v of leaf.views) {
       if ((v.tabIds ?? []).includes(tabId)) return true;
@@ -774,7 +807,10 @@ export function* iterCells(tree: PanelNode): Generator<WorkspaceCellView> {
   }
 }
 
-export function findCellForLeaf(tree: PanelNode, leafId: string): WorkspaceCellView | null {
+export function findCellForLeaf(
+  tree: PanelNode,
+  leafId: string,
+): WorkspaceCellView | null {
   const leaf = findLeaf(tree, leafId);
   if (!leaf) return null;
   const v = leaf.views.find((view) => view.kind === "query");
@@ -861,7 +897,10 @@ export function setActiveView(
  * editor surface — callers refuse the close earlier when this would
  * leave the workspace with no tabs at all).
  */
-export function gcClosedTab(tree: PanelNode, closedTabId: string): PanelNode | null {
+export function gcClosedTab(
+  tree: PanelNode,
+  closedTabId: string,
+): PanelNode | null {
   let current: PanelNode | null = tree;
   const affected: string[] = [];
   for (const leaf of iterLeaves(tree)) {
@@ -892,4 +931,3 @@ function normaliseSizes(sizes: number[]): number[] {
   if (total === 0) return even(sizes.length);
   return positive.map((s) => (s * 100) / total);
 }
-

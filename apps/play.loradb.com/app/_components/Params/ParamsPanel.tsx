@@ -97,10 +97,7 @@ function countFilled(
  * "Generate skeleton" header action — a low-friction way to seed
  * the JSON without typing key by key.
  */
-function buildSkeleton(
-  source: string,
-  detected: readonly string[],
-): string {
+function buildSkeleton(source: string, detected: readonly string[]): string {
   const indent = 2;
   // Try to keep existing values where we can.
   let existing: Record<string, unknown> = {};
@@ -131,7 +128,10 @@ export function ParamsPanel({ tabId, viewId }: ParamsPanelProps) {
 
   const editorRef = useRef<LoraJsonEditorHandle | null>(null);
 
-  const counts = useMemo(() => countFilled(source, detected), [source, detected]);
+  const counts = useMemo(
+    () => countFilled(source, detected),
+    [source, detected],
+  );
 
   const onSortKeys = useCallback(() => {
     editorRef.current?.sortKeys();
@@ -334,10 +334,7 @@ function ParamsCountChip({
 }) {
   const ok = total > 0 && filled === total;
   const color = total === 0 ? mutedColor : ok ? okColor : warnColor;
-  const label =
-    total === 0
-      ? "none detected"
-      : `${filled}/${total} filled`;
+  const label = total === 0 ? "none detected" : `${filled}/${total} filled`;
   return (
     <Text
       span

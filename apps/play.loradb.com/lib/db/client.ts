@@ -110,9 +110,12 @@ export { DbBootTimeoutError };
 // ---------------------------------------------------------------------------
 
 // Matches things like "line 3, column 7", "line 3:7", "(3:7)", "at 3:7".
-const POSITION_RE = /(?:line\s*)?(\d+)\s*(?:[:,]\s*(?:col(?:umn)?\s*)?|\s+col(?:umn)?\s*)(\d+)/i;
+const POSITION_RE =
+  /(?:line\s*)?(\d+)\s*(?:[:,]\s*(?:col(?:umn)?\s*)?|\s+col(?:umn)?\s*)(\d+)/i;
 
-function parsePosition(message: string): { line: number; col: number } | undefined {
+function parsePosition(
+  message: string,
+): { line: number; col: number } | undefined {
   const m = POSITION_RE.exec(message);
   if (!m) return undefined;
   const line = Number(m[1]);
@@ -129,7 +132,10 @@ function parsePosition(message: string): { line: number; col: number } | undefin
  * Run a query and return a normalised outcome. Never throws: failures are
  * captured as `RunErr` so callers can render them inline.
  */
-export async function run(body: string, params?: LoraParams): Promise<RunOutcome> {
+export async function run(
+  body: string,
+  params?: LoraParams,
+): Promise<RunOutcome> {
   const runId = ulid();
   const startedAt = Date.now();
   try {

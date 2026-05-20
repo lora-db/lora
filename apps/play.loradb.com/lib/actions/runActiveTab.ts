@@ -20,7 +20,10 @@
 import { notifications } from "@mantine/notifications";
 
 import type { LoraParams } from "@loradb/lora-wasm";
-import { format as formatQuery, validate as validateQuery } from "@loradb/lora-query";
+import {
+  format as formatQuery,
+  validate as validateQuery,
+} from "@loradb/lora-query";
 
 import { useStore } from "@/lib/state/store";
 import { run } from "@/lib/db/client";
@@ -118,9 +121,7 @@ function showParamsGate(opts: {
   });
 }
 
-export async function runActiveTab(
-  opts: RunOpts = {},
-): Promise<string | null> {
+export async function runActiveTab(opts: RunOpts = {}): Promise<string | null> {
   const state = useStore.getState();
   const tabId = getActiveTabId();
   if (tabId === null) return null;
@@ -169,7 +170,8 @@ export async function runActiveTab(
     } else if (check.kind === "non-object") {
       showParamsGate({
         title: "Params payload must be a JSON object",
-        message: "Top-level value should be a `{}`. Click to run with no params.",
+        message:
+          "Top-level value should be a `{}`. Click to run with no params.",
         color: "red",
         onConfirm: () => {
           void runActiveTab({ force: true });
@@ -217,7 +219,11 @@ export async function runActiveTab(
   if (!stillLatest) return outcome.runId;
   after.setResult(tabId, outcome);
 
-  if (outcome.state === "ok" && MUTATION_RE.test(body) && typeof window !== "undefined") {
+  if (
+    outcome.state === "ok" &&
+    MUTATION_RE.test(body) &&
+    typeof window !== "undefined"
+  ) {
     window.dispatchEvent(new CustomEvent(LORADB_MUTATION_EVENT));
   }
 

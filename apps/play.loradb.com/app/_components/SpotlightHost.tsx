@@ -8,12 +8,10 @@
  */
 
 import { useMemo } from "react";
-import {
-  useComputedColorScheme,
-  useMantineColorScheme,
-} from "@mantine/core";
+import { useComputedColorScheme, useMantineColorScheme } from "@mantine/core";
 import { Spotlight, type SpotlightActionData } from "@mantine/spotlight";
 import {
+  IconArrowRight,
   IconArrowsLeftRight,
   IconBinaryTree,
   IconBraces,
@@ -33,6 +31,7 @@ import {
   IconSettings,
   IconSun,
   IconTable,
+  IconTag,
   IconWand,
   IconX,
 } from "@tabler/icons-react";
@@ -57,6 +56,8 @@ import {
   toggleRootOrientation,
 } from "@/lib/actions/workspaceActions";
 import { useStore } from "@/lib/state/store";
+import { insertSnippet } from "@/lib/actions/snippetActions";
+import { labelMatch, relTypeMatch } from "@/lib/snippets/cypher";
 
 export function SpotlightHost() {
   const { colorScheme, setColorScheme } = useMantineColorScheme();
@@ -66,6 +67,39 @@ export function SpotlightHost() {
   const effectiveScheme = colorScheme === "auto" ? computed : colorScheme;
   const isDark = effectiveScheme === "dark";
   const autoRestore = useStore((s) => s.autoRestore);
+  const schemaLabels = useStore((s) => s.schema?.labels);
+  const schemaRelTypes = useStore((s) => s.schema?.relTypes);
+
+  // Spotlight actions generated from the live schema snapshot. Selecting
+  // one inserts the canonical MATCH snippet via the same smart-placement
+  // path the Schema panel uses.
+  const schemaActions = useMemo<SpotlightActionData[]>(() => {
+    const labelActions = (schemaLabels ?? []).map<SpotlightActionData>(
+      (label) => ({
+        id: `schema-label-${label}`,
+        label: `Match :${label}`,
+        description: `Insert MATCH (n:${label}) RETURN n LIMIT 25`,
+        keywords: ["schema", "label", "match", label.toLowerCase()],
+        onClick: () => {
+          insertSnippet(labelMatch(label), { name: label });
+        },
+        leftSection: <IconTag size={16} />,
+      }),
+    );
+    const relTypeActions = (schemaRelTypes ?? []).map<SpotlightActionData>(
+      (rt) => ({
+        id: `schema-rel-${rt}`,
+        label: `Match -[:${rt}]-`,
+        description: `Insert MATCH ()-[r:${rt}]->() RETURN r LIMIT 25`,
+        keywords: ["schema", "relationship", "rel", "match", rt.toLowerCase()],
+        onClick: () => {
+          insertSnippet(relTypeMatch(rt), { name: rt });
+        },
+        leftSection: <IconArrowRight size={16} />,
+      }),
+    );
+    return [...labelActions, ...relTypeActions];
+  }, [schemaLabels, schemaRelTypes]);
 
   const actions = useMemo<SpotlightActionData[]>(
     () => [
@@ -303,9 +337,14 @@ export function SpotlightHost() {
     [isDark, setColorScheme, colorScheme, computed, autoRestore],
   );
 
+  const allActions = useMemo<SpotlightActionData[]>(
+    () => [...actions, ...schemaActions],
+    [actions, schemaActions],
+  );
+
   return (
     <Spotlight
-      actions={actions}
+      actions={allActions}
       nothingFound="No matching commands"
       shortcut={null}
       searchProps={{ placeholder: "Search commands..." }}

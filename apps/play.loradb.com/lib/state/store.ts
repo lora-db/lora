@@ -27,10 +27,7 @@ import {
   type SerializedTab,
   type EditorTab,
 } from "./slices/tabs";
-import {
-  createResultsSlice,
-  type ResultsSlice,
-} from "./slices/results";
+import { createResultsSlice, type ResultsSlice } from "./slices/results";
 import {
   createLayoutSlice,
   type LayoutSlice,
@@ -41,26 +38,25 @@ import {
   type PrefsSlice,
   type SerializedPrefs,
 } from "./slices/prefs";
-import {
-  createSchemaSlice,
-  type SchemaSlice,
-} from "./slices/schema";
-import {
-  createInspectSlice,
-  type InspectSlice,
-} from "./slices/inspect";
+import { createSchemaSlice, type SchemaSlice } from "./slices/schema";
+import { createInspectSlice, type InspectSlice } from "./slices/inspect";
 import {
   createParamsByTabSlice,
   type ParamsByTabSlice,
 } from "./slices/paramsByTab";
+import {
+  createSchemaDesignSlice,
+  type SchemaDesignSlice,
+} from "./slices/schemaDesign";
 
-export type Store = TabsSlice
-  & ResultsSlice
-  & LayoutSlice
-  & PrefsSlice
-  & SchemaSlice
-  & InspectSlice
-  & ParamsByTabSlice;
+export type Store = TabsSlice &
+  ResultsSlice &
+  LayoutSlice &
+  PrefsSlice &
+  SchemaSlice &
+  InspectSlice &
+  ParamsByTabSlice &
+  SchemaDesignSlice;
 
 export const useStore = create<Store>()(
   subscribeWithSelector(
@@ -99,6 +95,11 @@ export const useStore = create<Store>()(
         set as Parameters<typeof createParamsByTabSlice>[0],
         get as Parameters<typeof createParamsByTabSlice>[1],
         api as Parameters<typeof createParamsByTabSlice>[2],
+      ),
+      ...createSchemaDesignSlice(
+        set as Parameters<typeof createSchemaDesignSlice>[0],
+        get as Parameters<typeof createSchemaDesignSlice>[1],
+        api as Parameters<typeof createSchemaDesignSlice>[2],
       ),
     })),
   ),
@@ -264,7 +265,8 @@ if (typeof window !== "undefined") {
   // store. Removed from production via tree-shaking when this module
   // is bundled with NODE_ENV=production.
   if (process.env.NODE_ENV !== "production") {
-    (window as unknown as { __loradbStore?: typeof useStore }).__loradbStore = useStore;
+    (window as unknown as { __loradbStore?: typeof useStore }).__loradbStore =
+      useStore;
   }
 }
 
@@ -297,12 +299,24 @@ export async function hydrateFromIDB(): Promise<void> {
     // tabId (e.g. legacy migrations) and the record's value still
     // identifies a known tab, plant it as that view's active tab so
     // the user lands where they left off.
-    const legacyActiveTabId = (record as unknown as { activeTabId?: string | null }).activeTabId ?? null;
+    const legacyActiveTabId =
+      (record as unknown as { activeTabId?: string | null }).activeTabId ??
+      null;
     if (legacyActiveTabId) {
       const after = useStore.getState();
       const knownTab = after.tabs.some((t) => t.id === legacyActiveTabId);
       if (knownTab) {
-        for (const leaf of (function* walk(node: SerializedLayout["workspace"]): Generator<{ id: string; views: { id: string; kind: string; tabId?: string; tabIds?: string[] }[] }> {
+        for (const leaf of (function* walk(
+          node: SerializedLayout["workspace"],
+        ): Generator<{
+          id: string;
+          views: {
+            id: string;
+            kind: string;
+            tabId?: string;
+            tabIds?: string[];
+          }[];
+        }> {
           if (node.type === "leaf") {
             yield node;
             return;

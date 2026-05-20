@@ -9,12 +9,7 @@
  */
 
 import { useCallback, useMemo } from "react";
-import {
-  ActionIcon,
-  Group,
-  Menu,
-  Tooltip,
-} from "@mantine/core";
+import { ActionIcon, Group, Menu, Tooltip } from "@mantine/core";
 import {
   Group as PanelsGroup,
   type Layout,
@@ -44,10 +39,7 @@ import {
   toggleParentOrientation,
 } from "@/lib/actions/workspaceActions";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
-import {
-  countQueryViews,
-  flatLeafIds,
-} from "@/lib/state/workspace/tree";
+import { countQueryViews, flatLeafIds } from "@/lib/state/workspace/tree";
 
 const MINIMIZED_RESULT_PX = 28;
 
@@ -93,7 +85,9 @@ export function PanelLeafFrame({ leaf }: PanelLeafFrameProps) {
         view={view}
         paneId={leaf.id}
         isPaneActive={isActive}
-        trailingActions={<LeafActions leaf={leaf} view={view} canClose={canClose} />}
+        trailingActions={
+          <LeafActions leaf={leaf} view={view} canClose={canClose} />
+        }
       />
       <QueryBody view={view} paneId={leaf.id} />
     </div>
@@ -191,7 +185,9 @@ function EditorWithParams({ view }: { view: PanelView }) {
   const { tokens } = usePlaygroundTheme();
   const paramsOpen = view.paramsPanelOpen ?? false;
   const paramsSize = view.paramsPanelSize ?? 30;
-  const setParamsPanelSizeForView = useStore((s) => s.setParamsPanelSizeForView);
+  const setParamsPanelSizeForView = useStore(
+    (s) => s.setParamsPanelSizeForView,
+  );
 
   const defaultLayout = useMemo<Layout>(
     () => ({ editor: 100 - paramsSize, params: paramsSize }),
@@ -273,7 +269,9 @@ function EditorWithParams({ view }: { view: PanelView }) {
 
 function MinimizedResultStrip({ view }: { view: PanelView }) {
   const { tokens } = usePlaygroundTheme();
-  const setResultMinimizedForView = useStore((s) => s.setResultMinimizedForView);
+  const setResultMinimizedForView = useStore(
+    (s) => s.setResultMinimizedForView,
+  );
   return (
     <button
       type="button"
@@ -311,7 +309,9 @@ function LeafActions({
   canClose: boolean;
 }) {
   const setActivePane = useStore((s) => s.setActivePane);
-  const setResultMinimizedForView = useStore((s) => s.setResultMinimizedForView);
+  const setResultMinimizedForView = useStore(
+    (s) => s.setResultMinimizedForView,
+  );
   const minimized = view.resultMinimized ?? false;
 
   const onSplit = (dir: "row" | "column") => {
@@ -333,7 +333,11 @@ function LeafActions({
           aria-label={minimized ? "Restore results" : "Minimize results"}
           onClick={() => setResultMinimizedForView(view.id, !minimized)}
         >
-          {minimized ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
+          {minimized ? (
+            <IconChevronUp size={14} />
+          ) : (
+            <IconChevronDown size={14} />
+          )}
         </ActionIcon>
       </Tooltip>
       <Tooltip label="Split right" openDelay={400} withArrow>
@@ -360,7 +364,12 @@ function LeafActions({
       </Tooltip>
       <Menu position="bottom-end" withArrow>
         <Menu.Target>
-          <ActionIcon variant="subtle" color="gray" size="sm" aria-label="Pane menu">
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="sm"
+            aria-label="Pane menu"
+          >
             ⋯
           </ActionIcon>
         </Menu.Target>
@@ -384,7 +393,11 @@ function LeafActions({
           <Menu.Divider />
           <Menu.Item
             leftSection={
-              minimized ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />
+              minimized ? (
+                <IconChevronUp size={14} />
+              ) : (
+                <IconChevronDown size={14} />
+              )
             }
             onClick={() => setResultMinimizedForView(view.id, !minimized)}
           >

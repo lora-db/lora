@@ -17,6 +17,7 @@ import type { SavedQuery } from "./savedQueries";
 import type { Snapshot } from "./snapshots";
 import type { HistoryEntry } from "./history";
 import type { SessionRecord } from "./session";
+import type { AutoSnapshotRecord } from "./autoSnapshot";
 
 const DB_NAME = "loradb-play";
 // IMPORTANT: bump DB_VERSION (and add a versioned branch in `upgrade`)
@@ -26,7 +27,7 @@ const DB_NAME = "loradb-play";
 // users' data when the shape changes. Adding a store without bumping the
 // version will leave returning users without that store and crash any
 // read against it.
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export interface PlayDB extends DBSchema {
   savedQueries: {
@@ -59,6 +60,10 @@ export interface PlayDB extends DBSchema {
     key: string;
     value: { id: "singleton"; [k: string]: unknown };
   };
+  autoSnapshot: {
+    key: string;
+    value: AutoSnapshotRecord;
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<PlayDB>> | null = null;
@@ -90,6 +95,9 @@ function init(): Promise<IDBPDatabase<PlayDB>> {
       }
       if (!db.objectStoreNames.contains("meta")) {
         db.createObjectStore("meta", { keyPath: "id" });
+      }
+      if (!db.objectStoreNames.contains("autoSnapshot")) {
+        db.createObjectStore("autoSnapshot", { keyPath: "id" });
       }
     },
   });

@@ -8,7 +8,15 @@
  */
 
 import { useEffect, useRef } from "react";
-import { AppShell, Button, Code, Group, Modal, Stack, Text } from "@mantine/core";
+import {
+  AppShell,
+  Button,
+  Code,
+  Group,
+  Modal,
+  Stack,
+  Text,
+} from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { IconAlertTriangle, IconRefresh } from "@tabler/icons-react";
 
@@ -16,6 +24,10 @@ import {
   bootAutoRestore,
   startAutoSaveLoop,
 } from "@/lib/actions/autoRestoreActions";
+import {
+  attachSchemaDesignMutationListener,
+  refreshSchemaDesign,
+} from "@/lib/actions/schemaDesignActions";
 import { hydrateFromIDB, useStore } from "@/lib/state/store";
 import { healOrphanedTabs } from "@/lib/state/workspace/default";
 import { validateWorkspace } from "@/lib/state/workspace/validate";
@@ -25,8 +37,9 @@ import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 import { ActivityBar } from "./ActivityBar";
 import { DropZone } from "./DropZone";
 import { HotkeyHost } from "./HotkeyHost";
-import { InspectorDrawer } from "./Inspector/InspectorDrawer";
+import { InspectorHost } from "./Inspector/InspectorHost";
 import { PanelHost } from "./Layout/PanelHost";
+import { SchemaWizards } from "./SchemaDesigner/SchemaWizards";
 import { SidebarRoot } from "./Sidebar/SidebarRoot";
 import { SpotlightHost } from "./SpotlightHost";
 import { StatusBar } from "./StatusBar";
@@ -111,6 +124,13 @@ export function Workbench() {
     });
   }, []);
 
+  // Keep the schema-design catalog in sync with mutations the user
+  // performs in the regular editor (manual CREATE/DROP INDEX etc.).
+  useEffect(() => {
+    void refreshSchemaDesign();
+    return attachSchemaDesignMutationListener();
+  }, []);
+
   // Auto-restore: rehydrate the WASM DB from the last auto-saved
   // snapshot (if any), then start a debounced save loop that mirrors
   // mutations back to localStorage. Mounted once thanks to StrictMode
@@ -191,7 +211,8 @@ export function Workbench() {
       <HotkeyHost />
       <SpotlightHost />
       <DropZone />
-      <InspectorDrawer />
+      <InspectorHost />
+      <SchemaWizards />
 
       <Modal
         opened={bootErrored}
@@ -212,9 +233,8 @@ export function Workbench() {
         <Stack gap="sm">
           <Text size="sm" c={tokens.fg.muted}>
             The LoraDB WebAssembly module didn&rsquo;t finish booting. This is
-            usually caused by a locked-down browser (private mode, blocked
-            WASM origins) or a temporary network blip during the module
-            fetch.
+            usually caused by a locked-down browser (private mode, blocked WASM
+            origins) or a temporary network blip during the module fetch.
           </Text>
           {dbStatus.error ? (
             <Code

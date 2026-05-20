@@ -67,8 +67,8 @@ function HotkeyHelpDialogBody() {
       }}
     >
       <Text size="xs" c="dimmed">
-        Every chord the workbench listens for. Combinations render in the
-        active platform&rsquo;s convention.
+        Every chord the workbench listens for. Combinations render in the active
+        platform&rsquo;s convention.
       </Text>
       {order.map((bucket) => {
         const rows = grouped[bucket];

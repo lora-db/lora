@@ -8,13 +8,7 @@
  */
 
 import { useState } from "react";
-import {
-  Button,
-  Group,
-  PasswordInput,
-  Stack,
-  Text,
-} from "@mantine/core";
+import { Button, Group, PasswordInput, Stack, Text } from "@mantine/core";
 import { modals } from "@mantine/modals";
 
 interface SnapshotPasswordDialogProps {
@@ -59,8 +53,8 @@ function SnapshotPasswordDialog({
     >
       <Stack gap="sm">
         <Text size="sm">
-          <strong>{snapshotName}</strong> is encrypted. Enter the passphrase
-          it was sealed with to load it.
+          <strong>{snapshotName}</strong> is encrypted. Enter the passphrase it
+          was sealed with to load it.
         </Text>
         {keyId ? (
           <Text size="xs" c="dimmed">

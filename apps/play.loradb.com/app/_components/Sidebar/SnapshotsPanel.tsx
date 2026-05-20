@@ -11,17 +11,19 @@
  * database contents — there is no undo.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
   Button,
   Center,
+  CloseButton,
   Group,
   Loader,
   Menu,
   ScrollArea,
   Stack,
   Text,
+  TextInput,
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
@@ -31,12 +33,12 @@ import {
   IconCamera,
   IconDots,
   IconDownload,
-  IconArchive,
   IconFileImport,
   IconLock,
   IconPlus,
   IconRefresh,
   IconRestore,
+  IconSearch,
   IconTrash,
 } from "@tabler/icons-react";
 import { format, formatDistanceToNowStrict } from "date-fns";
@@ -70,7 +72,23 @@ export function SnapshotsPanel() {
   const { tokens } = usePlaygroundTheme();
   const [items, setItems] = useState<snapshots.SnapshotMeta[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (q.length === 0) return items;
+    return items.filter((record) => record.name.toLowerCase().includes(q));
+  }, [items, filter]);
+
+  const latest = useMemo(
+    () =>
+      items.reduce<snapshots.SnapshotMeta | null>((winner, item) => {
+        if (!winner) return item;
+        return item.createdAt > winner.createdAt ? item : winner;
+      }, null),
+    [items],
+  );
 
   const refresh = useCallback((): void => {
     snapshots
@@ -209,10 +227,7 @@ export function SnapshotsPanel() {
             Loading <strong>{record.name}</strong> will replace the current
             database contents. This cannot be undone.
             {record.header?.encrypted ? (
-              <>
-                {" "}
-                You will be asked for the passphrase it was sealed with.
-              </>
+              <> You will be asked for the passphrase it was sealed with.</>
             ) : null}
           </Text>
         ),
@@ -289,14 +304,28 @@ export function SnapshotsPanel() {
         py={8}
         style={{ borderBottom: `1px solid ${tokens.border.subtle}` }}
       >
-        <Text
-          size="xs"
-          fw={600}
-          c={tokens.fg.muted}
-          style={{ letterSpacing: 1, textTransform: "uppercase" }}
-        >
-          Snapshots
-        </Text>
+        <Stack gap={0}>
+          <Text
+            size="xs"
+            fw={600}
+            c={tokens.fg.muted}
+            style={{ letterSpacing: 1, textTransform: "uppercase" }}
+          >
+            Snapshots
+          </Text>
+          {latest ? (
+            <Text
+              size="xs"
+              c={tokens.fg.subtle}
+              component="time"
+              dateTime={new Date(latest.createdAt).toISOString()}
+              style={{ fontSize: 10 }}
+            >
+              latest{" "}
+              {formatDistanceToNowStrict(latest.createdAt, { addSuffix: true })}
+            </Text>
+          ) : null}
+        </Stack>
         <Group gap={4} wrap="nowrap">
           <Tooltip label="New snapshot from current DB" withArrow>
             <ActionIcon
@@ -342,6 +371,33 @@ export function SnapshotsPanel() {
         onChange={handleFilePicked}
       />
 
+      {items.length > 0 && (
+        <Group
+          px={8}
+          py={6}
+          style={{ borderBottom: `1px solid ${tokens.border.subtle}` }}
+        >
+          <TextInput
+            size="xs"
+            value={filter}
+            onChange={(e) => setFilter(e.currentTarget.value)}
+            placeholder="Filter snapshots"
+            aria-label="Filter snapshots"
+            leftSection={<IconSearch size={12} />}
+            rightSection={
+              filter.length > 0 ? (
+                <CloseButton
+                  size="xs"
+                  onClick={() => setFilter("")}
+                  aria-label="Clear filter"
+                />
+              ) : null
+            }
+            style={{ flex: 1 }}
+          />
+        </Group>
+      )}
+
       <ScrollArea style={{ flex: 1, minHeight: 0 }}>
         {loading ? (
           <Center p="md">
@@ -352,17 +408,17 @@ export function SnapshotsPanel() {
             <Stack gap="xs" align="center">
               <IconCamera size={28} color={tokens.fg.subtle} stroke={1.5} />
               <Text size="xs" c={tokens.fg.subtle} ta="center">
-                No snapshots. Create one from the current database state, or
-                import a <code>.lorasnap</code> file.
+                No snapshots yet — capture the current database or import a{" "}
+                <code>.lorasnap</code> file.
               </Text>
-              <Group gap="xs">
+              <Group gap={6}>
                 <Button
                   size="xs"
                   variant="light"
                   onClick={handleNew}
                   leftSection={<IconPlus size={14} />}
                 >
-                  New
+                  New snapshot
                 </Button>
                 <Button
                   size="xs"
@@ -375,9 +431,15 @@ export function SnapshotsPanel() {
               </Group>
             </Stack>
           </Center>
+        ) : filtered.length === 0 ? (
+          <Center p="md">
+            <Text size="xs" c={tokens.fg.subtle} ta="center">
+              No snapshots match &ldquo;{filter}&rdquo;
+            </Text>
+          </Center>
         ) : (
           <Stack gap={0} p={4}>
-            {items.map((record) => (
+            {filtered.map((record) => (
               <SnapshotRow
                 key={record.id}
                 record={record}
@@ -420,13 +482,11 @@ function formatStatTooltip(
   header: snapshots.SnapshotHeader | undefined,
 ): string {
   const lines: string[] = [];
+  lines.push(format(record.createdAt, "PPpp"));
   if (header) {
     lines.push(
       `${header.nodeCount.toLocaleString()} nodes · ${header.relationshipCount.toLocaleString()} relationships`,
     );
-  }
-  lines.push(`${record.sizeBytes.toLocaleString()} bytes on disk`);
-  if (header) {
     lines.push(`Body: ${formatCompressionLabel(header.compression)}`);
     lines.push(
       header.encrypted
@@ -436,25 +496,8 @@ function formatStatTooltip(
     lines.push(`Format v${header.formatVersion}`);
     if (header.walLsn !== null) lines.push(`WAL fence: ${header.walLsn}`);
   }
+  lines.push(`${record.sizeBytes.toLocaleString()} bytes on disk`);
   return lines.join("\n");
-}
-
-function StatDot({ color }: { color: string }) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        width: 6,
-        height: 6,
-        borderRadius: "50%",
-        backgroundColor: color,
-        marginRight: 4,
-        verticalAlign: "middle",
-        flexShrink: 0,
-      }}
-      aria-hidden="true"
-    />
-  );
 }
 
 function SnapshotRow({ record, onLoad, onExport, onDelete }: SnapshotRowProps) {
@@ -467,10 +510,7 @@ function SnapshotRow({ record, onLoad, onExport, onDelete }: SnapshotRowProps) {
       gap={0}
       wrap="nowrap"
       align="stretch"
-      style={{
-        borderRadius: tokens.radius.sm,
-        position: "relative",
-      }}
+      style={{ borderRadius: tokens.radius.sm, position: "relative" }}
     >
       <UnstyledButton
         onClick={onLoad}
@@ -485,9 +525,19 @@ function SnapshotRow({ record, onLoad, onExport, onDelete }: SnapshotRowProps) {
           color: tokens.fg.primary,
           borderRadius: tokens.radius.sm,
         }}
+        title={formatStatTooltip(record, header)}
       >
-        <Stack gap={3}>
-          <Group gap={6} wrap="nowrap" align="center">
+        <Stack gap={2}>
+          <Group gap={6} wrap="nowrap" align="center" style={{ minWidth: 0 }}>
+            {header?.encrypted ? (
+              <IconLock
+                size={12}
+                stroke={1.8}
+                color={tokens.accent.warning}
+                style={{ flexShrink: 0 }}
+                aria-label="Encrypted"
+              />
+            ) : null}
             <Text
               size="sm"
               fw={500}
@@ -498,99 +548,49 @@ function SnapshotRow({ record, onLoad, onExport, onDelete }: SnapshotRowProps) {
             >
               {record.name}
             </Text>
-            {header?.encrypted ? (
-              <Tooltip
-                label={`Encrypted${header.keyId ? ` · key ${header.keyId}` : ""}`}
-                withArrow
-                openDelay={300}
-              >
-                <IconLock
-                  size={12}
-                  stroke={1.8}
-                  color={tokens.fg.muted}
-                  aria-label="Encrypted snapshot"
-                  style={{ flexShrink: 0 }}
-                />
-              </Tooltip>
-            ) : null}
-            {header && header.compression.format !== "none" ? (
-              <Tooltip
-                label={formatCompressionLabel(header.compression)}
-                withArrow
-                openDelay={300}
-              >
-                <IconArchive
-                  size={12}
-                  stroke={1.8}
-                  color={tokens.fg.muted}
-                  aria-label="Compressed snapshot"
-                  style={{ flexShrink: 0 }}
-                />
-              </Tooltip>
-            ) : null}
-            <Tooltip
-              label={format(record.createdAt, "PPpp")}
-              withArrow
-              openDelay={400}
+            <Text
+              size="xs"
+              c={tokens.fg.subtle}
+              component="time"
+              dateTime={new Date(record.createdAt).toISOString()}
+              style={{ flexShrink: 0 }}
             >
-              <Text
-                size="xs"
-                c={tokens.fg.subtle}
-                component="time"
-                dateTime={new Date(record.createdAt).toISOString()}
-                style={{ flexShrink: 0 }}
-              >
-                {formatDistanceToNowStrict(record.createdAt)}
-              </Text>
-            </Tooltip>
+              {formatDistanceToNowStrict(record.createdAt, {
+                addSuffix: true,
+              })}
+            </Text>
           </Group>
-          <Tooltip
-            label={formatStatTooltip(record, header)}
-            multiline
-            withArrow
-            openDelay={400}
-            w={240}
+          <Group
+            gap={6}
+            wrap="nowrap"
+            style={{ minWidth: 0, fontVariantNumeric: "tabular-nums" }}
           >
-            <Group
-              gap={6}
-              wrap="nowrap"
-              style={{ fontVariantNumeric: "tabular-nums" }}
-            >
-              {header ? (
-                <>
-                  <Text size="xs" c={tokens.fg.muted} component="span">
-                    <StatDot color={tokens.category.node} />
-                    <span style={{ color: tokens.category.node, fontWeight: 500 }}>
-                      {header.nodeCount.toLocaleString()}
-                    </span>
-                    <span style={{ color: tokens.fg.subtle, marginLeft: 3 }}>
-                      n
-                    </span>
+            {header ? (
+              <>
+                <Text size="xs" c={tokens.category.node} fw={600}>
+                  {header.nodeCount.toLocaleString()}{" "}
+                  <Text span size="xs" c={tokens.fg.subtle} fw={500}>
+                    nodes
                   </Text>
-                  <Text size="xs" c={tokens.fg.muted} component="span">
-                    <StatDot color={tokens.category.relationship} />
-                    <span
-                      style={{
-                        color: tokens.category.relationship,
-                        fontWeight: 500,
-                      }}
-                    >
-                      {header.relationshipCount.toLocaleString()}
-                    </span>
-                    <span style={{ color: tokens.fg.subtle, marginLeft: 3 }}>
-                      r
-                    </span>
+                </Text>
+                <Text size="xs" c={tokens.fg.subtle}>
+                  ·
+                </Text>
+                <Text size="xs" c={tokens.category.relationship} fw={600}>
+                  {header.relationshipCount.toLocaleString()}{" "}
+                  <Text span size="xs" c={tokens.fg.subtle} fw={500}>
+                    rels
                   </Text>
-                  <Text size="xs" c={tokens.fg.subtle}>
-                    ·
-                  </Text>
-                </>
-              ) : null}
-              <Text size="xs" c={tokens.fg.subtle}>
-                {formatBytes(record.sizeBytes)}
-              </Text>
-            </Group>
-          </Tooltip>
+                </Text>
+                <Text size="xs" c={tokens.fg.subtle}>
+                  ·
+                </Text>
+              </>
+            ) : null}
+            <Text size="xs" c={tokens.fg.muted}>
+              {formatBytes(record.sizeBytes)}
+            </Text>
+          </Group>
         </Stack>
       </UnstyledButton>
       <div style={{ display: "flex", alignItems: "center", paddingRight: 4 }}>

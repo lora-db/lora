@@ -21,12 +21,14 @@ import {
 import { HistoryPanel } from "./HistoryPanel";
 import { SavedQueriesPanel } from "./SavedQueriesPanel";
 import { SchemaBrowserPanel } from "./SchemaBrowserPanel";
+import { SchemaDesignPanel } from "./SchemaDesignPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { SnapshotsPanel } from "./SnapshotsPanel";
 
 const SECTION_LABEL: Record<ActivitySection, string> = {
   queries: "Saved queries",
   schema: "Schema",
+  schemaDesign: "Schema design",
   snapshots: "Snapshots",
   history: "History",
   settings: "Settings",
@@ -38,6 +40,8 @@ function renderPanel(section: ActivitySection) {
       return <SavedQueriesPanel />;
     case "schema":
       return <SchemaBrowserPanel />;
+    case "schemaDesign":
+      return <SchemaDesignPanel />;
     case "snapshots":
       return <SnapshotsPanel />;
     case "history":
@@ -55,11 +59,14 @@ export function SidebarRoot() {
   const asideRef = useRef<HTMLElement | null>(null);
   const [drafting, setDrafting] = useState<number | null>(null);
 
-  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    setDrafting(width);
-  }, [width]);
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      setDrafting(width);
+    },
+    [width],
+  );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -67,7 +74,10 @@ export function SidebarRoot() {
       const el = asideRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const next = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, e.clientX - rect.left));
+      const next = Math.min(
+        MAX_SIDEBAR_WIDTH,
+        Math.max(MIN_SIDEBAR_WIDTH, e.clientX - rect.left),
+      );
       setDrafting(Math.round(next));
     },
     [drafting],

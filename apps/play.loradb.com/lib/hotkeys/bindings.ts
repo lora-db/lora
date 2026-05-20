@@ -53,37 +53,177 @@ export type HotkeyEntry = [
 
 export function buildHotkeys(ctx: HotkeyContext): HotkeyEntry[] {
   return [
-    [HOTKEYS.run.chord, () => { void runActiveTab(); }],
-    [HOTKEYS.newTab.chord, () => { newTab(); }],
-    [HOTKEYS.closeTab.chord, () => { closeActiveTab(); }],
-    [HOTKEYS.reopenClosedTab.chord, () => { reopenLastClosedTab(); }],
-    [HOTKEYS.toggleSidebar.chord, () => { toggleSidebar(); }],
+    [
+      HOTKEYS.run.chord,
+      () => {
+        void runActiveTab();
+      },
+    ],
+    [
+      HOTKEYS.newTab.chord,
+      () => {
+        newTab();
+      },
+    ],
+    [
+      HOTKEYS.closeTab.chord,
+      () => {
+        closeActiveTab();
+      },
+    ],
+    [
+      HOTKEYS.reopenClosedTab.chord,
+      () => {
+        reopenLastClosedTab();
+      },
+    ],
+    [
+      HOTKEYS.toggleSidebar.chord,
+      () => {
+        toggleSidebar();
+      },
+    ],
     // mod+K — Spotlight installs its own listener via the `shortcut` prop.
     // mod+S, mod+shift+S, mod+P, mod+alt+T also live in HotkeyHost's
     // capture-phase listener (they need to win against browser/CodeMirror).
-    [HOTKEYS.resultGraph.chord, () => { setResultTab("graph"); }],
-    [HOTKEYS.resultTable.chord, () => { setResultTab("table"); }],
-    [HOTKEYS.resultJson.chord, () => { setResultTab("json"); }],
-    [HOTKEYS.formatQuery.chord, () => { void formatActiveTab(); }],
-    [HOTKEYS.activityQueries.chord, () => { setActivity("queries"); }],
-    [HOTKEYS.activitySchema.chord, () => { setActivity("schema"); }],
-    [HOTKEYS.activitySnapshots.chord, () => { setActivity("snapshots"); }],
-    [HOTKEYS.activityHistory.chord, () => { setActivity("history"); }],
-    [HOTKEYS.activitySettings.chord, () => { setActivity("settings"); }],
-    [HOTKEYS.prevTab.chord, () => { prevTab(); }],
-    [HOTKEYS.nextTab.chord, () => { nextTab(); }],
-    [HOTKEYS.moveTabLeft.chord, () => { moveActiveTabLeft(); }],
-    [HOTKEYS.moveTabRight.chord, () => { moveActiveTabRight(); }],
-    [HOTKEYS.focusEditor.chord, () => { focusEditor(); }],
-    [HOTKEYS.help.chord, () => { openHotkeyHelpDialog(); }],
-    [HOTKEYS.splitRight.chord, () => { splitActivePane("row", "after"); }],
-    [HOTKEYS.splitDown.chord, () => { splitActivePane("column", "after"); }],
-    [HOTKEYS.closePane.chord, () => { closeActivePane(); }],
-    [HOTKEYS.focusNextPane.chord, () => { focusNextPane(); }],
-    [HOTKEYS.focusPrevPane.chord, () => { focusPrevPane(); }],
-    [HOTKEYS.cycleViewInPane.chord, () => { cycleViewInActivePane(); }],
-    [HOTKEYS.toggleOrientation.chord, () => { toggleRootOrientation(); }],
-    [HOTKEYS.toggleParamsPanel.chord, () => { toggleParamsPanel(); }],
+    [
+      HOTKEYS.resultGraph.chord,
+      () => {
+        setResultTab("graph");
+      },
+    ],
+    [
+      HOTKEYS.resultTable.chord,
+      () => {
+        setResultTab("table");
+      },
+    ],
+    [
+      HOTKEYS.resultJson.chord,
+      () => {
+        setResultTab("json");
+      },
+    ],
+    [
+      HOTKEYS.formatQuery.chord,
+      () => {
+        void formatActiveTab();
+      },
+    ],
+    [
+      HOTKEYS.activityQueries.chord,
+      () => {
+        setActivity("queries");
+      },
+    ],
+    [
+      HOTKEYS.activitySchema.chord,
+      () => {
+        setActivity("schema");
+      },
+    ],
+    [
+      HOTKEYS.activitySnapshots.chord,
+      () => {
+        setActivity("snapshots");
+      },
+    ],
+    [
+      HOTKEYS.activityHistory.chord,
+      () => {
+        setActivity("history");
+      },
+    ],
+    [
+      HOTKEYS.activitySettings.chord,
+      () => {
+        setActivity("settings");
+      },
+    ],
+    [
+      HOTKEYS.prevTab.chord,
+      () => {
+        prevTab();
+      },
+    ],
+    [
+      HOTKEYS.nextTab.chord,
+      () => {
+        nextTab();
+      },
+    ],
+    [
+      HOTKEYS.moveTabLeft.chord,
+      () => {
+        moveActiveTabLeft();
+      },
+    ],
+    [
+      HOTKEYS.moveTabRight.chord,
+      () => {
+        moveActiveTabRight();
+      },
+    ],
+    [
+      HOTKEYS.focusEditor.chord,
+      () => {
+        focusEditor();
+      },
+    ],
+    [
+      HOTKEYS.help.chord,
+      () => {
+        openHotkeyHelpDialog();
+      },
+    ],
+    [
+      HOTKEYS.splitRight.chord,
+      () => {
+        splitActivePane("row", "after");
+      },
+    ],
+    [
+      HOTKEYS.splitDown.chord,
+      () => {
+        splitActivePane("column", "after");
+      },
+    ],
+    [
+      HOTKEYS.closePane.chord,
+      () => {
+        closeActivePane();
+      },
+    ],
+    [
+      HOTKEYS.focusNextPane.chord,
+      () => {
+        focusNextPane();
+      },
+    ],
+    [
+      HOTKEYS.focusPrevPane.chord,
+      () => {
+        focusPrevPane();
+      },
+    ],
+    [
+      HOTKEYS.cycleViewInPane.chord,
+      () => {
+        cycleViewInActivePane();
+      },
+    ],
+    [
+      HOTKEYS.toggleOrientation.chord,
+      () => {
+        toggleRootOrientation();
+      },
+    ],
+    [
+      HOTKEYS.toggleParamsPanel.chord,
+      () => {
+        toggleParamsPanel();
+      },
+    ],
     [
       HOTKEYS.toggleColorScheme.chord,
       () => {

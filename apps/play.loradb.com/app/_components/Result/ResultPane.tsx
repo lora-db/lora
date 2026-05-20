@@ -128,7 +128,9 @@ export function ResultPane({ view, paneId }: ResultPaneProps) {
   // If the active result has no graph data but the pane is parked on
   // the "graph" tab, slide it over to "table" automatically.
   const hasGraph =
-    result !== undefined && result.state === "ok" && result.result.graph !== null;
+    result !== undefined &&
+    result.state === "ok" &&
+    result.result.graph !== null;
   useEffect(() => {
     if (resultTab === "graph" && result?.state === "ok" && !hasGraph) {
       setResultTabForView(view.id, "table");
@@ -280,8 +282,8 @@ export function ResultPane({ view, paneId }: ResultPaneProps) {
       <Tabs.Panel value="graph" style={panelStyle}>
         <Box style={fillStyle}>
           {/* `key={ok.runId}` remounts the canvas on every new query
-            * run so its uncontrolled `defaultData` seed re-applies.
-            * In between, local edits (delete / add / move) stay put. */}
+           * run so its uncontrolled `defaultData` seed re-applies.
+           * In between, local edits (delete / add / move) stay put. */}
           <GraphView key={ok.runId} result={ok.result} paneId={paneId} />
         </Box>
       </Tabs.Panel>

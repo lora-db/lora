@@ -128,7 +128,9 @@ export function shadesFrom(hex: string): MantineColorsTuple {
   // Lightness targets for indices 0..9 (light → dark).
   const targets = [0.95, 0.88, 0.78, 0.68, 0.58, 0.5, base.l, 0.34, 0.24, 0.16];
   const shades = targets.map((l) =>
-    toHex(hslToRgb({ h: base.h, s: base.s, l: Math.max(0.05, Math.min(0.97, l)) })),
+    toHex(
+      hslToRgb({ h: base.h, s: base.s, l: Math.max(0.05, Math.min(0.97, l)) }),
+    ),
   );
   return [
     shades[0] as string,

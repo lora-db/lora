@@ -66,7 +66,8 @@ export function DropZone() {
       if (!e.dataTransfer) return;
       // Only treat as a file drag (ignore text/element drags).
       const hasFiles =
-        e.dataTransfer.types && Array.from(e.dataTransfer.types).includes("Files");
+        e.dataTransfer.types &&
+        Array.from(e.dataTransfer.types).includes("Files");
       if (!hasFiles) return;
       depth.current += 1;
       setDragging(true);
@@ -75,7 +76,8 @@ export function DropZone() {
     const onOver = (e: DragEvent) => {
       if (!e.dataTransfer) return;
       const hasFiles =
-        e.dataTransfer.types && Array.from(e.dataTransfer.types).includes("Files");
+        e.dataTransfer.types &&
+        Array.from(e.dataTransfer.types).includes("Files");
       if (!hasFiles) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";

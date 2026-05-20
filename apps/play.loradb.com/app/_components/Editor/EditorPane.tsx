@@ -67,14 +67,8 @@ export function EditorPane({ tabId }: EditorPaneProps) {
   // Pull the schema into stable arrays for the editor's completion
   // providers. The editor reconfigures its provider Facet whenever
   // these identities change, so we only rebuild on real updates.
-  const labels = useMemo(
-    () => schema?.labels ?? [],
-    [schema?.labels],
-  );
-  const relTypes = useMemo(
-    () => schema?.relTypes ?? [],
-    [schema?.relTypes],
-  );
+  const labels = useMemo(() => schema?.labels ?? [], [schema?.labels]);
+  const relTypes = useMemo(() => schema?.relTypes ?? [], [schema?.relTypes]);
 
   // The editor's `getPropertyKeys` is the property-map completer.
   // We narrow the suggestion list by the surrounding label (or
@@ -102,7 +96,14 @@ export function EditorPane({ tabId }: EditorPaneProps) {
 
   if (!tab) {
     return (
-      <Center h="100%" style={{ background: tokens.bg.editor }}>
+      <Center
+        style={{
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          background: tokens.bg.editor,
+        }}
+      >
         <Stack align="center" gap={4}>
           <Text size="sm" c={tokens.fg.muted}>
             No editor tab open

@@ -11,6 +11,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Center, Text } from "@mantine/core";
 import type {
+  CellClickedEventArgs,
   GridCell,
   GridColumn,
   Item,
@@ -28,7 +29,10 @@ import type { Tokens } from "@/lib/theme/tokens";
 import { hexA } from "@/lib/theme/util";
 
 const DataEditor = dynamic(
-  () => import("@glideapps/glide-data-grid").then((m) => ({ default: m.DataEditor })),
+  () =>
+    import("@glideapps/glide-data-grid").then((m) => ({
+      default: m.DataEditor,
+    })),
   { ssr: false, loading: () => <TableSkeleton /> },
 );
 
@@ -106,7 +110,11 @@ function nodeBubble(n: NodeLike): string {
   });
 }
 
-function buildCell(value: unknown, hint: CellType | undefined, tokens: Tokens): GridCell {
+function buildCell(
+  value: unknown,
+  hint: CellType | undefined,
+  tokens: Tokens,
+): GridCell {
   void hint;
   // Null first — applies regardless of the column hint.
   if (value === null || value === undefined) {
@@ -115,7 +123,10 @@ function buildCell(value: unknown, hint: CellType | undefined, tokens: Tokens): 
       data: "",
       displayData: "null",
       allowOverlay: false,
-      themeOverride: { textDark: tokens.fg.subtle, textMedium: tokens.fg.subtle },
+      themeOverride: {
+        textDark: tokens.fg.subtle,
+        textMedium: tokens.fg.subtle,
+      },
     };
   }
 
@@ -216,6 +227,7 @@ function buildCell(value: unknown, hint: CellType | undefined, tokens: Tokens): 
 export function TableView({ result }: { result: AdaptedResult }) {
   const { grid, tokens } = usePlaygroundTheme();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const lastClickRef = useRef<{ x: number; y: number } | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
   useEffect(() => {
@@ -224,7 +236,10 @@ export function TableView({ result }: { result: AdaptedResult }) {
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const cr = entry.contentRect;
-        setSize({ w: Math.max(0, Math.floor(cr.width)), h: Math.max(0, Math.floor(cr.height)) });
+        setSize({
+          w: Math.max(0, Math.floor(cr.width)),
+          h: Math.max(0, Math.floor(cr.height)),
+        });
       }
     });
     ro.observe(el);
@@ -237,7 +252,10 @@ export function TableView({ result }: { result: AdaptedResult }) {
     const total = size.w > 0 ? size.w : 800;
     // Reserve ~52px for the row-number gutter; spread the remainder.
     const usable = Math.max(120, total - 52);
-    const perColumn = Math.max(120, Math.floor(usable / Math.max(1, result.columns.length)));
+    const perColumn = Math.max(
+      120,
+      Math.floor(usable / Math.max(1, result.columns.length)),
+    );
     return result.columns.map((title, i) => ({
       title,
       id: `col-${i}`,
@@ -265,27 +283,34 @@ export function TableView({ result }: { result: AdaptedResult }) {
   );
 
   const onCellClicked = useCallback(
-    (cell: Item) => {
+    (cell: Item, _args: CellClickedEventArgs) => {
       const [col, row] = cell;
       const r = result.rows[row];
       if (!r) return;
       const value = r.values[col];
+      const anchor = lastClickRef.current;
       if (isNodeLike(value)) {
-        inspectNode({
-          id: value.id,
-          labels: value.labels,
-          properties: value.properties,
-        });
+        inspectNode(
+          {
+            id: value.id,
+            labels: value.labels,
+            properties: value.properties,
+          },
+          anchor ? { anchor } : undefined,
+        );
         return;
       }
       if (isRelLike(value)) {
-        inspectRelationship({
-          id: value.id,
-          type: value.type,
-          startId: value.startId,
-          endId: value.endId,
-          properties: value.properties,
-        });
+        inspectRelationship(
+          {
+            id: value.id,
+            type: value.type,
+            startId: value.startId,
+            endId: value.endId,
+            properties: value.properties,
+          },
+          anchor ? { anchor } : undefined,
+        );
       }
     },
     [result],
@@ -306,6 +331,12 @@ export function TableView({ result }: { result: AdaptedResult }) {
   return (
     <div
       ref={wrapperRef}
+      onPointerDownCapture={(e) => {
+        // Glide's onCellClicked fires after a pointer interaction but
+        // doesn't expose the native event — capture client coords here
+        // so we can anchor the inspector popup at the click.
+        lastClickRef.current = { x: e.clientX, y: e.clientY };
+      }}
       style={{
         position: "relative",
         flex: 1,

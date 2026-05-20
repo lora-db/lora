@@ -130,7 +130,8 @@ function collectGraph(
     return;
   }
   if (Array.isArray(v)) {
-    for (const item of v) collectGraph(item, nodes, rels, pathNodeIds, pathRelIds);
+    for (const item of v)
+      collectGraph(item, nodes, rels, pathNodeIds, pathRelIds);
     return;
   }
   if (isObjectLike(v)) {
@@ -212,7 +213,9 @@ export function adapt(raw: QueryResult): AdaptedResult {
   // Build index-aligned `values[]` arrays per row while collecting nodes/rels.
   const rows: QueryRow[] = new Array(rawRows.length);
   // Track per-column observed cell types to compute a dominant type per column.
-  const perColumnTypes: Array<Set<CellType>> = columns.map(() => new Set<CellType>());
+  const perColumnTypes: Array<Set<CellType>> = columns.map(
+    () => new Set<CellType>(),
+  );
 
   for (let r = 0; r < rawRows.length; r++) {
     const rowObj = rawRows[r] as Record<string, LoraValue> | undefined;

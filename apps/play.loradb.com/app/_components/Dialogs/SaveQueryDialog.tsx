@@ -8,13 +8,7 @@
  */
 
 import { useState } from "react";
-import {
-  Button,
-  Group,
-  Stack,
-  TagsInput,
-  TextInput,
-} from "@mantine/core";
+import { Button, Group, Stack, TagsInput, TextInput } from "@mantine/core";
 import { modals } from "@mantine/modals";
 
 interface SaveQueryDialogProps {
@@ -23,7 +17,11 @@ interface SaveQueryDialogProps {
   onSave: (name: string, tags: string[]) => void | Promise<void>;
 }
 
-function SaveQueryDialog({ modalId, defaultName, onSave }: SaveQueryDialogProps) {
+function SaveQueryDialog({
+  modalId,
+  defaultName,
+  onSave,
+}: SaveQueryDialogProps) {
   const [name, setName] = useState(defaultName);
   const [tags, setTags] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);

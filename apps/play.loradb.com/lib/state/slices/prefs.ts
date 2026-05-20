@@ -21,7 +21,10 @@ export interface SerializedPrefs {
 }
 
 export interface PrefsSlice extends SerializedPrefs {
-  setPref<K extends keyof SerializedPrefs>(key: K, value: SerializedPrefs[K]): void;
+  setPref<K extends keyof SerializedPrefs>(
+    key: K,
+    value: SerializedPrefs[K],
+  ): void;
   hydratePrefs(prefs: SerializedPrefs): void;
 }
 
@@ -29,7 +32,7 @@ export const DEFAULT_PREFS: SerializedPrefs = {
   graphMode: "2d",
   autoRunOnSave: false,
   autoFormatOnRun: false,
-  nodeCap: 5000,
+  nodeCap: 500,
   resultRowCap: 100000,
   autoRestore: true,
   focusOnNodeClick: false,

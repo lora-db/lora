@@ -24,7 +24,11 @@ export function RunButton() {
         size="xs"
         color={disabled ? "gray" : "green"}
         leftSection={
-          isRunning ? <Loader size={14} color="white" /> : <IconPlayerPlayFilled size={14} />
+          isRunning ? (
+            <Loader size={14} color="white" />
+          ) : (
+            <IconPlayerPlayFilled size={14} />
+          )
         }
         disabled={disabled}
         onClick={() => {

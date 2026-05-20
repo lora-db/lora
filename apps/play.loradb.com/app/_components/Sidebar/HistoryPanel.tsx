@@ -30,7 +30,12 @@ import {
 } from "@mantine/core";
 import { openConfirmModal } from "@mantine/modals";
 import { notifications } from "@mantine/notifications";
-import { IconHistory, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
+import {
+  IconHistory,
+  IconRefresh,
+  IconSearch,
+  IconTrash,
+} from "@tabler/icons-react";
 
 import type { HistoryEntry } from "@/lib/persistence/history";
 import {
@@ -266,8 +271,7 @@ export function HistoryPanel() {
                     notifications.show({
                       color: "red",
                       title: "Open failed",
-                      message:
-                        err instanceof Error ? err.message : String(err),
+                      message: err instanceof Error ? err.message : String(err),
                     });
                   });
                 }}

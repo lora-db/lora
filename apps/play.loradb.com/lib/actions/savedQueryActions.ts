@@ -14,7 +14,10 @@ import { notifications } from "@mantine/notifications";
 import { useStore } from "@/lib/state/store";
 import * as savedQueries from "@/lib/persistence/savedQueries";
 import { openTabInCell } from "@/lib/actions/tabActions";
-import { focusTabInWorkspace, getActiveTabId } from "@/lib/actions/workspaceActions";
+import {
+  focusTabInWorkspace,
+  getActiveTabId,
+} from "@/lib/actions/workspaceActions";
 
 export const SAVED_QUERIES_EVENT = "loradb:savedQueries";
 
@@ -63,9 +66,8 @@ export async function saveActiveTab(): Promise<savedQueries.SavedQuery | null> {
 export async function saveOrPromptActiveTab(opts?: {
   forceAs?: boolean;
 }): Promise<void> {
-  const { openSaveQueryDialog } = await import(
-    "@/app/_components/Dialogs/SaveQueryDialog"
-  );
+  const { openSaveQueryDialog } =
+    await import("@/app/_components/Dialogs/SaveQueryDialog");
   const tabId = getActiveTabId();
   if (tabId === null) {
     notifications.show({

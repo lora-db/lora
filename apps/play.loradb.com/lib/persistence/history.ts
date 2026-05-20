@@ -35,7 +35,9 @@ const MAX_ENTRIES = 1000;
 const DEFAULT_LIMIT = 200;
 
 /** Returns history entries newest-first, capped at `limit` (default 200). */
-export async function list(limit: number = DEFAULT_LIMIT): Promise<HistoryEntry[]> {
+export async function list(
+  limit: number = DEFAULT_LIMIT,
+): Promise<HistoryEntry[]> {
   const db = await getDB();
   const all = await db.getAllFromIndex("history", "byStartedAt");
   all.reverse();

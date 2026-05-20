@@ -54,8 +54,12 @@ export function buildDefaultWorkspace(opts?: {
     kind: "query",
     tabIds: opts?.editorTabIds ?? [],
     resultTab: opts?.resultTab ?? "graph",
-    ...(opts?.editorActiveTabId !== undefined ? { tabId: opts.editorActiveTabId } : {}),
-    ...(opts?.editorSizePct !== undefined ? { editorSizePct: opts.editorSizePct } : {}),
+    ...(opts?.editorActiveTabId !== undefined
+      ? { tabId: opts.editorActiveTabId }
+      : {}),
+    ...(opts?.editorSizePct !== undefined
+      ? { editorSizePct: opts.editorSizePct }
+      : {}),
   });
   const leaf: PanelLeaf = makeLeaf([view]);
   return {
@@ -82,16 +86,20 @@ export function migrateLayout(raw: unknown): SerializedLayout {
     splitOrientation?: SplitDirection;
   };
 
-  if (v.workspace && (v.workspace.type === "leaf" || v.workspace.type === "group")) {
+  if (
+    v.workspace &&
+    (v.workspace.type === "leaf" || v.workspace.type === "group")
+  ) {
     const collapsed = collapseEditorResultCells(v.workspace);
     return {
       activitySection: v.activitySection ?? "queries",
       sidebarOpen: v.sidebarOpen ?? true,
       sidebarWidth: clampWidth(v.sidebarWidth),
       workspace: collapsed,
-      activePaneId: v.activePaneId && findLeafById(collapsed, v.activePaneId)
-        ? v.activePaneId
-        : findFirstLeafId(collapsed),
+      activePaneId:
+        v.activePaneId && findLeafById(collapsed, v.activePaneId)
+          ? v.activePaneId
+          : findFirstLeafId(collapsed),
     };
   }
 
@@ -138,7 +146,9 @@ function collapseEditorResultCells(node: PanelNode): PanelNode {
  * result leaf" shape, return a single query leaf carrying the merged
  * state. Otherwise return null.
  */
-function tryReadCellGroup(group: Extract<PanelNode, { type: "group" }>): PanelNode | null {
+function tryReadCellGroup(
+  group: Extract<PanelNode, { type: "group" }>,
+): PanelNode | null {
   if (group.direction !== "column") return null;
   if (group.children.length !== 2) return null;
   const [a, b] = group.children;
@@ -190,8 +200,12 @@ function normaliseLeaf(leaf: PanelLeaf): PanelLeaf {
       tabIds: view.tabIds ?? (view.tabId ? [view.tabId] : []),
       ...(view.tabId !== undefined ? { tabId: view.tabId } : {}),
       resultTab: view.resultTab ?? "graph",
-      ...(view.editorSizePct !== undefined ? { editorSizePct: view.editorSizePct } : {}),
-      ...(view.resultMinimized !== undefined ? { resultMinimized: view.resultMinimized } : {}),
+      ...(view.editorSizePct !== undefined
+        ? { editorSizePct: view.editorSizePct }
+        : {}),
+      ...(view.resultMinimized !== undefined
+        ? { resultMinimized: view.resultMinimized }
+        : {}),
     });
   });
   if (!dirty) return leaf;
@@ -260,7 +274,11 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 function clampWidth(n: number | undefined): number {
-  return clamp(n ?? DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+  return clamp(
+    n ?? DEFAULT_SIDEBAR_WIDTH,
+    MIN_SIDEBAR_WIDTH,
+    MAX_SIDEBAR_WIDTH,
+  );
 }
 
 function findFirstLeafId(node: PanelNode): string {

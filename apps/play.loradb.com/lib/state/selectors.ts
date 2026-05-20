@@ -126,11 +126,17 @@ export function useActivePaneId(): string {
 export function useActiveLeaf() {
   const workspace = useStore((s: Store) => s.workspace);
   const activeId = useStore((s: Store) => s.activePaneId);
-  return useMemo(() => findLeaf(workspace, activeId) ?? firstLeaf(workspace), [workspace, activeId]);
+  return useMemo(
+    () => findLeaf(workspace, activeId) ?? firstLeaf(workspace),
+    [workspace, activeId],
+  );
 }
 
 /** Find the leaf that hosts the given view id. */
 export function useLeafForView(viewId: string | null) {
   const workspace = useStore((s: Store) => s.workspace);
-  return useMemo(() => (viewId ? findViewLeaf(workspace, viewId) : null), [workspace, viewId]);
+  return useMemo(
+    () => (viewId ? findViewLeaf(workspace, viewId) : null),
+    [workspace, viewId],
+  );
 }

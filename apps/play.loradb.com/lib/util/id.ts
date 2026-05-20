@@ -19,7 +19,9 @@ const RANDOM_LEN = 16;
 function randomBytes(n: number): Uint8Array {
   const buf = new Uint8Array(n);
   const g: { crypto?: { getRandomValues?: (b: Uint8Array) => Uint8Array } } =
-    typeof globalThis === "undefined" ? {} : (globalThis as unknown as typeof g);
+    typeof globalThis === "undefined"
+      ? {}
+      : (globalThis as unknown as typeof g);
   if (g.crypto && typeof g.crypto.getRandomValues === "function") {
     g.crypto.getRandomValues(buf);
     return buf;

@@ -18,7 +18,10 @@ import {
 } from "react-resizable-panels";
 
 import { useStore } from "@/lib/state/store";
-import type { PanelGroup as PanelGroupNode, PanelNode } from "@/lib/state/workspace/tree";
+import type {
+  PanelGroup as PanelGroupNode,
+  PanelNode,
+} from "@/lib/state/workspace/tree";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
 import { PanelLeafFrame } from "./PanelLeafFrame";
@@ -92,7 +95,12 @@ function PanelHostGroup({ group }: { group: PanelGroupNode }) {
             id={child.id}
             defaultSize={group.sizes[i] ?? 100 / group.children.length}
             minSize={10}
-            style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              minWidth: 0,
+            }}
           >
             <PanelHostNode node={child} />
           </Panel>

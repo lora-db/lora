@@ -3,89 +3,99 @@
 /**
  * Auto-restore snapshot storage.
  *
- * Phase 4b stashes a single serialized DB blob in `localStorage` so the
- * workbench can rehydrate after a page reload. We deliberately bypass the
- * `snapshots` IDB store here so the auto-snapshot stays invisible to the
- * Snapshots panel (which lists user-named snapshots only). The trade-off
- * is the ~5MB localStorage cap; we cap writes at 4MB and silently skip
- * larger DBs with a console warning.
+ * Stashes a single serialized DB blob in IndexedDB so the workbench can
+ * rehydrate after a page reload. The blob lives in its own `autoSnapshot`
+ * object store (singleton row) and is deliberately kept out of the
+ * `snapshots` store so it stays invisible to the user-facing Snapshots
+ * panel. IDB stores the `Uint8Array` natively — no base64 round-trip — and
+ * gives us orders-of-magnitude more headroom than the ~5 MB localStorage
+ * cap we used previously.
  */
 
-const KEY = "loradb-play.autosnap.v1";
-const MAX_BYTES = 4 * 1024 * 1024;
-// Chunk size for base64 encoding the byte array. String.fromCharCode with
-// a single huge array can blow the call stack; this keeps the per-call
-// argument count well below typical engine limits.
-const CHUNK = 0x8000;
+import { getDB } from "./idb";
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    const slice = bytes.subarray(i, i + CHUNK);
-    binary += String.fromCharCode(...slice);
-  }
-  return btoa(binary);
-}
+const STORE = "autoSnapshot";
+const KEY = "singleton";
 
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    out[i] = binary.charCodeAt(i);
-  }
-  return out;
+// Soft cap to avoid pathological cases (e.g. a multi-GB graph that would
+// make every flush take ages and starve the UI). IDB itself can hold much
+// more, but at this size the user is better served by an explicit
+// user-named snapshot they can manage.
+const MAX_BYTES = 256 * 1024 * 1024;
+
+export interface AutoSnapshotRecord {
+  id: string;
+  blob: Uint8Array;
+  savedAt: number;
 }
 
 /**
- * Read the auto-snapshot from localStorage.
- *
- * Returns `null` when no entry exists. Throws when an entry exists but
- * can't be decoded (corrupted base64, partial write, etc.) so callers
- * can surface that to the user — silently returning null in the
- * corruption case would lead to confusing "session not restored"
- * behaviour with no explanation.
+ * Per-write outcome. `quota-exceeded` is distinguished from `too-large`
+ * so the UI can give the user a more actionable hint (free up space vs.
+ * use a manual snapshot).
  */
-export function readAuto(): Uint8Array | null {
+export type WriteResult =
+  | { ok: true }
+  | { ok: false; reason: "too-large"; size: number; cap: number }
+  | { ok: false; reason: "quota-exceeded" }
+  | { ok: false; reason: "unavailable" };
+
+/** Read the auto-snapshot from IDB. Returns `null` when no entry exists. */
+export async function readAuto(): Promise<Uint8Array | null> {
   if (typeof window === "undefined") return null;
-  let raw: string | null;
   try {
-    raw = window.localStorage.getItem(KEY);
+    const db = await getDB();
+    const row = await db.get(STORE, KEY);
+    return row ? row.blob : null;
   } catch (err) {
-    // localStorage may throw if access is blocked (Safari private mode,
-    // disabled by enterprise policy). Treat as "nothing to restore" so
-    // the workbench still boots; the empty-DB toast in bootAutoRestore
-    // is sufficient signal.
-    console.warn("readAuto: localStorage access failed", err);
+    console.warn("readAuto: IDB access failed", err);
     return null;
   }
-  if (raw === null) return null;
-  return base64ToBytes(raw);
 }
 
-/** Returns false if the blob is too large to store. */
-export function writeAuto(blob: Uint8Array): boolean {
-  if (typeof window === "undefined") return false;
+export async function writeAuto(blob: Uint8Array): Promise<WriteResult> {
+  if (typeof window === "undefined") {
+    return { ok: false, reason: "unavailable" };
+  }
   if (blob.byteLength > MAX_BYTES) {
     console.warn(
       `autoSnapshot: blob is ${blob.byteLength}B, exceeds the ${MAX_BYTES}B cap — skipping`,
     );
-    return false;
+    return {
+      ok: false,
+      reason: "too-large",
+      size: blob.byteLength,
+      cap: MAX_BYTES,
+    };
   }
   try {
-    const encoded = bytesToBase64(blob);
-    window.localStorage.setItem(KEY, encoded);
-    return true;
+    const db = await getDB();
+    const record: AutoSnapshotRecord = {
+      id: KEY,
+      blob,
+      savedAt: Date.now(),
+    };
+    await db.put(STORE, record);
+    return { ok: true };
   } catch (err) {
+    if (err instanceof DOMException && err.name === "QuotaExceededError") {
+      console.warn("writeAuto: browser storage quota exceeded", err);
+      return { ok: false, reason: "quota-exceeded" };
+    }
     console.warn("writeAuto failed", err);
-    return false;
+    return { ok: false, reason: "unavailable" };
   }
 }
 
-export function clearAuto(): void {
+export async function clearAuto(): Promise<void> {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.removeItem(KEY);
-  } catch {
-    /* ignore */
+    const db = await getDB();
+    await db.delete(STORE, KEY);
+  } catch (err) {
+    console.warn("clearAuto: IDB delete failed", err);
   }
 }
+
+/** Exposed for the UI so it can phrase the cap in toasts/help text. */
+export const AUTO_SNAPSHOT_CAP_BYTES = MAX_BYTES;

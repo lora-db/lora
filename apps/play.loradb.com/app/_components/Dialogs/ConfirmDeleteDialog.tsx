@@ -14,15 +14,7 @@
  */
 
 import { useState } from "react";
-import {
-  Button,
-  Code,
-  Divider,
-  Group,
-  List,
-  Stack,
-  Text,
-} from "@mantine/core";
+import { Button, Code, Divider, Group, List, Stack, Text } from "@mantine/core";
 import { modals } from "@mantine/modals";
 import { LoraQueryEditor } from "@loradb/lora-query";
 import type {
@@ -108,9 +100,7 @@ function ConfirmDeleteDialog({
       bits.push(`${totalNodes} node${totalNodes === 1 ? "" : "s"}`);
     }
     if (totalLinks > 0) {
-      bits.push(
-        `${totalLinks} relationship${totalLinks === 1 ? "" : "s"}`,
-      );
+      bits.push(`${totalLinks} relationship${totalLinks === 1 ? "" : "s"}`);
     }
     return bits.length > 0 ? bits.join(" and ") : "nothing";
   })();
@@ -149,100 +139,100 @@ function ConfirmDeleteDialog({
       }}
     >
       <Stack gap="sm">
-      <Text size="sm">
-        Remove {summary} from the database? Triggered by{" "}
-        <Code>{source}</Code>.
-      </Text>
-
-      {totalNodes > 0 && (
-        <Stack gap={4}>
-          <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-            Nodes
-          </Text>
-          <List size="xs" spacing={2} withPadding>
-            {nodePreview.map((n) => (
-              <List.Item key={String(n.id)}>
-                <Text size="xs" ff="monospace">
-                  {nodeLabel(n)}
-                </Text>
-              </List.Item>
-            ))}
-            {nodeExtra > 0 && (
-              <List.Item>
-                <Text size="xs" c="dimmed">
-                  …and {nodeExtra} more
-                </Text>
-              </List.Item>
-            )}
-          </List>
-        </Stack>
-      )}
-
-      {totalLinks > 0 && (
-        <Stack gap={4}>
-          <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-            Relationships
-          </Text>
-          <List size="xs" spacing={2} withPadding>
-            {linkPreview.map((l, i) => (
-              <List.Item key={l.id !== undefined ? String(l.id) : `lp-${i}`}>
-                <Text size="xs" ff="monospace">
-                  {linkLabel(l)}
-                </Text>
-              </List.Item>
-            ))}
-            {linkExtra > 0 && (
-              <List.Item>
-                <Text size="xs" c="dimmed">
-                  …and {linkExtra} more
-                </Text>
-              </List.Item>
-            )}
-          </List>
-        </Stack>
-      )}
-
-      <Divider />
-
-      <Stack gap={4}>
-        <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-          Equivalent Cypher
+        <Text size="sm">
+          Remove {summary} from the database? Triggered by <Code>{source}</Code>
+          .
         </Text>
-        <LoraQueryEditor
-          value={buildCypher(nodes, links)}
-          readOnly
-          theme={editor}
-          showLineNumbers={false}
-          minHeight="60px"
-          maxHeight="220px"
-        />
-      </Stack>
 
-      <Text size="xs" c="dimmed">
-        This runs against the in-memory LoraDB session. Save a snapshot
-        afterwards to persist the deletion across reloads.
-      </Text>
+        {totalNodes > 0 && (
+          <Stack gap={4}>
+            <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+              Nodes
+            </Text>
+            <List size="xs" spacing={2} withPadding>
+              {nodePreview.map((n) => (
+                <List.Item key={String(n.id)}>
+                  <Text size="xs" ff="monospace">
+                    {nodeLabel(n)}
+                  </Text>
+                </List.Item>
+              ))}
+              {nodeExtra > 0 && (
+                <List.Item>
+                  <Text size="xs" c="dimmed">
+                    …and {nodeExtra} more
+                  </Text>
+                </List.Item>
+              )}
+            </List>
+          </Stack>
+        )}
 
-      <Group justify="flex-end" gap="xs" mt="xs">
-        <Button
-          type="button"
-          variant="default"
-          size="xs"
-          onClick={cancel}
-          disabled={busy}
-        >
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          size="xs"
-          color="red"
-          loading={busy}
-          data-autofocus
-        >
-          Remove
-        </Button>
-      </Group>
+        {totalLinks > 0 && (
+          <Stack gap={4}>
+            <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+              Relationships
+            </Text>
+            <List size="xs" spacing={2} withPadding>
+              {linkPreview.map((l, i) => (
+                <List.Item key={l.id !== undefined ? String(l.id) : `lp-${i}`}>
+                  <Text size="xs" ff="monospace">
+                    {linkLabel(l)}
+                  </Text>
+                </List.Item>
+              ))}
+              {linkExtra > 0 && (
+                <List.Item>
+                  <Text size="xs" c="dimmed">
+                    …and {linkExtra} more
+                  </Text>
+                </List.Item>
+              )}
+            </List>
+          </Stack>
+        )}
+
+        <Divider />
+
+        <Stack gap={4}>
+          <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+            Equivalent Cypher
+          </Text>
+          <LoraQueryEditor
+            value={buildCypher(nodes, links)}
+            readOnly
+            theme={editor}
+            showLineNumbers={false}
+            minHeight="60px"
+            maxHeight="220px"
+          />
+        </Stack>
+
+        <Text size="xs" c="dimmed">
+          This runs against the in-memory LoraDB session. Save a snapshot
+          afterwards to persist the deletion across reloads.
+        </Text>
+
+        <Group justify="flex-end" gap="xs" mt="xs">
+          <Button
+            type="button"
+            variant="default"
+            size="xs"
+            onClick={cancel}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            size="xs"
+            color="red"
+            loading={busy}
+            data-autofocus
+          >
+            Remove
+          </Button>
+        </Group>
       </Stack>
     </form>
   );

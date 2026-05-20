@@ -47,8 +47,8 @@ export function SettingsPanel() {
       title: "Clear all local data?",
       children: (
         <Text size="sm" c={tokens.fg.muted}>
-          This wipes the playground database (saved queries, history,
-          snapshots, and the in-memory graph). The page will reload.
+          This wipes the playground database (saved queries, history, snapshots,
+          and the in-memory graph). The page will reload.
         </Text>
       ),
       labels: { confirm: "Clear", cancel: "Cancel" },
@@ -59,14 +59,15 @@ export function SettingsPanel() {
             // Order matters. The WASM in-memory graph must be wiped
             // BEFORE we leave this function: the `beforeunload` hook
             // installed by `startAutoSaveLoop` flushes a fresh
-            // snapshot of the live DB into localStorage on its way
-            // out, so if the graph is still populated when reload
-            // fires, `bootAutoRestore` rehydrates the very data we
-            // just promised to delete. Clearing the localStorage
-            // slot afterwards isn't enough on its own for the same
-            // reason — the flush would re-populate it.
+            // snapshot of the live DB into the auto-save IDB slot on
+            // its way out, so if the graph is still populated when
+            // reload fires, `bootAutoRestore` rehydrates the very
+            // data we just promised to delete. Clearing the IDB slot
+            // afterwards isn't enough on its own — the flush would
+            // re-populate it (or re-create it inside the freshly
+            // reopened DB after `resetDB`).
             await resetWasmDb();
-            clearAuto();
+            await clearAuto();
             await resetDB();
             notifications.show({
               color: "green",
@@ -155,8 +156,8 @@ export function SettingsPanel() {
               label="Zoom on node click"
             />
             <Text size="xs" c={tokens.fg.muted}>
-              Animates the camera toward a clicked node; click again to
-              restore the prior view.
+              Animates the camera toward a clicked node; click again to restore
+              the prior view.
             </Text>
           </Stack>
 
@@ -184,8 +185,8 @@ export function SettingsPanel() {
               label="Fit to selection"
             />
             <Text size="xs" c={tokens.fg.muted}>
-              Animate the camera to frame the current selection whenever
-              it changes.
+              Animate the camera to frame the current selection whenever it
+              changes.
             </Text>
           </Stack>
 
@@ -199,8 +200,7 @@ export function SettingsPanel() {
               label="Auto-run on save"
             />
             <Text size="xs" c={tokens.fg.muted}>
-              Run the active tab automatically when you save it
-              (Cmd/Ctrl-S).
+              Run the active tab automatically when you save it (Cmd/Ctrl-S).
             </Text>
           </Stack>
 
@@ -214,8 +214,8 @@ export function SettingsPanel() {
               label="Auto-format on run"
             />
             <Text size="xs" c={tokens.fg.muted}>
-              Reformat the active tab before running it. Skipped if the
-              query has parse errors.
+              Reformat the active tab before running it. Skipped if the query
+              has parse errors.
             </Text>
           </Stack>
 
@@ -229,9 +229,9 @@ export function SettingsPanel() {
                 setPref("nodeCap", value);
               }
             }}
-            min={1000}
-            max={50000}
-            step={1000}
+            min={100}
+            max={5000}
+            step={100}
           />
 
           <NumberInput
@@ -268,8 +268,8 @@ export function SettingsPanel() {
               Layout
             </Text>
             <Text size="xs" c={tokens.fg.muted}>
-              Restore the default editor / result split. Open tabs and
-              saved queries are kept; only the pane arrangement is reset.
+              Restore the default editor / result split. Open tabs and saved
+              queries are kept; only the pane arrangement is reset.
             </Text>
             <Button
               size="xs"
@@ -279,9 +279,9 @@ export function SettingsPanel() {
                   title: "Reset workspace layout?",
                   children: (
                     <Text size="sm" c={tokens.fg.muted}>
-                      This collapses any split panes back to a single
-                      editor pane and a single result pane. Your open
-                      tabs and their bodies remain intact.
+                      This collapses any split panes back to a single editor
+                      pane and a single result pane. Your open tabs and their
+                      bodies remain intact.
                     </Text>
                   ),
                   labels: { confirm: "Reset", cancel: "Cancel" },

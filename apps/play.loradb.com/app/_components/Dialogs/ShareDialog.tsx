@@ -55,9 +55,7 @@ function ShareDialog({ modalId, body, params }: ShareDialogProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const oversized = url.length > SAFE_URL_LENGTH;
   const hasParams =
-    params !== undefined &&
-    params.trim() !== "" &&
-    params.trim() !== "{}";
+    params !== undefined && params.trim() !== "" && params.trim() !== "{}";
 
   const handleCopy = (): void => {
     void copyShareLink(body, params)
@@ -139,9 +137,9 @@ function ShareDialog({ modalId, body, params }: ShareDialogProps) {
           <Stack gap="xs">
             <Text size="xs">
               Some chat clients and email providers truncate URLs past about{" "}
-              {SAFE_URL_LENGTH.toLocaleString()} characters. If recipients see
-              a broken link, save the current database as a snapshot and share
-              the exported <code>.lorasnap</code> file instead.
+              {SAFE_URL_LENGTH.toLocaleString()} characters. If recipients see a
+              broken link, save the current database as a snapshot and share the
+              exported <code>.lorasnap</code> file instead.
             </Text>
             <Group gap="xs">
               <Button

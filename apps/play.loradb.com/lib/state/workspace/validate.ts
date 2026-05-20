@@ -61,7 +61,10 @@ export function validateWorkspace(
     if (!Array.isArray(node.children) || node.children.length < 2) {
       return `group ${node.id} must contain ≥2 children`;
     }
-    if (!Array.isArray(node.sizes) || node.sizes.length !== node.children.length) {
+    if (
+      !Array.isArray(node.sizes) ||
+      node.sizes.length !== node.children.length
+    ) {
       return `group ${node.id} sizes/children length mismatch`;
     }
     for (const size of node.sizes) {
@@ -135,7 +138,8 @@ function validateView(
   }
   if (knownTabIds) {
     for (const id of tabIds) {
-      if (typeof id !== "string") return `view ${v.id} tabIds contains non-string`;
+      if (typeof id !== "string")
+        return `view ${v.id} tabIds contains non-string`;
       if (!knownTabIds.has(id)) {
         return `view ${v.id} references missing tab ${id}`;
       }

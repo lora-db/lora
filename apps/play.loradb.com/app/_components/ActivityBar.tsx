@@ -10,6 +10,7 @@ import type { ComponentType } from "react";
 import { Stack, Tooltip, UnstyledButton } from "@mantine/core";
 import {
   IconCamera,
+  IconDatabaseCog,
   IconFileText,
   IconHistory,
   IconSchema,
@@ -38,6 +39,11 @@ const ITEMS: ReadonlyArray<ActivityItem> = [
     section: "schema",
     label: "Schema browser",
     Icon: IconSchema,
+  },
+  {
+    section: "schemaDesign",
+    label: "Schema design",
+    Icon: IconDatabaseCog,
   },
   {
     section: "snapshots",
@@ -82,12 +88,7 @@ export function ActivityBar() {
       {ITEMS.map(({ section, label, Icon }) => {
         const active = section === activeSection && sidebarOpen;
         return (
-          <Tooltip
-            key={section}
-            label={label}
-            position="right"
-            withArrow
-          >
+          <Tooltip key={section} label={label} position="right" withArrow>
             <UnstyledButton
               role="tab"
               aria-selected={active}

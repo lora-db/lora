@@ -14,8 +14,21 @@
 
 import type { DragEvent, MouseEvent, ReactNode } from "react";
 import { useMemo, useState } from "react";
-import { ActionIcon, Group, ScrollArea, Text, Tooltip, UnstyledButton } from "@mantine/core";
-import { IconBraces, IconPlus, IconX, IconFileCode, IconLink } from "@tabler/icons-react";
+import {
+  ActionIcon,
+  Group,
+  ScrollArea,
+  Text,
+  Tooltip,
+  UnstyledButton,
+} from "@mantine/core";
+import {
+  IconBraces,
+  IconPlus,
+  IconX,
+  IconFileCode,
+  IconLink,
+} from "@tabler/icons-react";
 
 import { useStore } from "@/lib/state/store";
 import type { PanelView } from "@/lib/state/slices/layout";
@@ -44,13 +57,14 @@ interface EditorTabsProps {
   trailingActions?: ReactNode;
 }
 
-export function EditorTabs({ view, paneId, isPaneActive = false, trailingActions }: EditorTabsProps) {
+export function EditorTabs({
+  view,
+  paneId,
+  isPaneActive = false,
+  trailingActions,
+}: EditorTabsProps) {
   const { tokens } = usePlaygroundTheme();
   const allTabs = useStore((s) => s.tabs);
-  // Workspace invariant: there must always be at least one query tab.
-  // Hide the X button on every tab when there's only one globally so the
-  // affordance doesn't suggest a closable target.
-  const canCloseTabs = useStore((s) => s.tabs.length > 1);
   // Set of tab ids that are open in another cell's editor view too —
   // surfacing a "linked" icon there tells the user that edits to that
   // tab affect the sibling cell as well. Subscribe to the workspace
@@ -171,161 +185,171 @@ export function EditorTabs({ view, paneId, isPaneActive = false, trailingActions
         }}
         style={{ height: 36, flex: 1, minWidth: 0 }}
       >
-      <Group
-        gap={0}
-        wrap="nowrap"
-        align="stretch"
-        onDragLeave={handleDragLeaveStrip}
-        onDrop={handleDrop}
-        style={{ height: 36, minWidth: "max-content" }}
-      >
-        {tabs.map((tab, index) => {
-          const active = tab.id === activeId;
-          const hovered = tab.id === hoverId;
-          const dragging = tab.id === draggingId;
-          const showClose = active || hovered;
-          const showIndicatorLeft = dropIndex === index && draggingId !== null;
-          const showIndicatorRight =
-            dropIndex === tabs.length && index === tabs.length - 1 && draggingId !== null;
-          return (
-            <UnstyledButton
-              key={tab.id}
-              draggable
-              onDragStart={(e: DragEvent<HTMLElement>) => handleDragStart(tab.id, e)}
-              onDragOver={(e: DragEvent<HTMLElement>) => handleDragOver(index, e)}
-              onDragEnd={handleDragEnd}
-              onClick={() => handleSelect(tab.id)}
-              onAuxClick={(e: MouseEvent) => handleAuxClick(tab.id, e)}
-              onMouseEnter={() => setHoverId(tab.id)}
-              onMouseLeave={() => setHoverId((id) => (id === tab.id ? null : id))}
-              data-testid={`editor-tab-${tab.id}`}
-              style={{
-                position: "relative",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "0 12px 0 14px",
-                borderRight: `1px solid ${tokens.border.subtle}`,
-                background: active
-                  ? isPaneActive
-                    ? tokens.bg.editor
-                    : hexA(tokens.fg.primary, 0.06)
-                  : hovered
-                    ? hexA(tokens.fg.primary, 0.04)
-                    : "transparent",
-                color: active
-                  ? isPaneActive
-                    ? tokens.fg.primary
-                    : tokens.fg.muted
-                  : tokens.fg.muted,
-                minWidth: 120,
-                maxWidth: 220,
-                flexShrink: 0,
-                cursor: dragging ? "grabbing" : "pointer",
-                opacity: dragging ? 0.4 : 1,
-                borderTop: active
-                  ? isPaneActive
-                    ? `2px solid ${tokens.accent.primary}`
-                    : `2px solid ${tokens.border.strong}`
-                  : "2px solid transparent",
-                boxSizing: "border-box",
-                transition: "background 0.08s, color 0.08s, opacity 0.08s",
-              }}
-              aria-label={`Activate tab ${tab.name}`}
-            >
-              {showIndicatorLeft ? (
-                <span
-                  aria-hidden
-                  style={{
-                    position: "absolute",
-                    left: -1,
-                    top: 0,
-                    bottom: 0,
-                    width: 2,
-                    background: tokens.accent.primary,
-                    pointerEvents: "none",
-                  }}
-                />
-              ) : null}
-              {showIndicatorRight ? (
-                <span
-                  aria-hidden
-                  style={{
-                    position: "absolute",
-                    right: -1,
-                    top: 0,
-                    bottom: 0,
-                    width: 2,
-                    background: tokens.accent.primary,
-                    pointerEvents: "none",
-                  }}
-                />
-              ) : null}
-              <IconFileCode
-                size={14}
-                stroke={1.5}
-                style={{ flexShrink: 0, opacity: active ? 0.9 : 0.6 }}
-              />
-              {sharedTabIds.has(tab.id) && (
-                <Tooltip
-                  label="Open in another cell — edits sync"
-                  openDelay={400}
-                  withArrow
-                >
-                  <IconLink
-                    size={10}
-                    stroke={1.5}
-                    style={{ flexShrink: 0, opacity: 0.7 }}
-                    aria-label="Tab is open in another cell"
-                  />
-                </Tooltip>
-              )}
-              {tab.params && tab.params.trim() !== "" && tab.params.trim() !== "{}" && (
-                <Tooltip
-                  label="This tab has bound params"
-                  openDelay={400}
-                  withArrow
-                >
-                  <IconBraces
-                    size={11}
-                    stroke={1.8}
-                    style={{
-                      flexShrink: 0,
-                      color: tokens.accent.primary,
-                      opacity: 0.85,
-                    }}
-                    aria-label="Bound params present"
-                  />
-                </Tooltip>
-              )}
-              <Text
-                size="xs"
-                fw={active ? 500 : 400}
-                ff={tokens.font.ui}
+        <Group
+          gap={0}
+          wrap="nowrap"
+          align="stretch"
+          onDragLeave={handleDragLeaveStrip}
+          onDrop={handleDrop}
+          style={{ height: 36, minWidth: "max-content" }}
+        >
+          {tabs.map((tab, index) => {
+            const active = tab.id === activeId;
+            const hovered = tab.id === hoverId;
+            const dragging = tab.id === draggingId;
+            const showClose = active || hovered;
+            const showIndicatorLeft =
+              dropIndex === index && draggingId !== null;
+            const showIndicatorRight =
+              dropIndex === tabs.length &&
+              index === tabs.length - 1 &&
+              draggingId !== null;
+            return (
+              <UnstyledButton
+                key={tab.id}
+                draggable
+                onDragStart={(e: DragEvent<HTMLElement>) =>
+                  handleDragStart(tab.id, e)
+                }
+                onDragOver={(e: DragEvent<HTMLElement>) =>
+                  handleDragOver(index, e)
+                }
+                onDragEnd={handleDragEnd}
+                onClick={() => handleSelect(tab.id)}
+                onAuxClick={(e: MouseEvent) => handleAuxClick(tab.id, e)}
+                onMouseEnter={() => setHoverId(tab.id)}
+                onMouseLeave={() =>
+                  setHoverId((id) => (id === tab.id ? null : id))
+                }
+                data-testid={`editor-tab-${tab.id}`}
                 style={{
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  flex: 1,
-                  textAlign: "left",
+                  position: "relative",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "0 12px 0 14px",
+                  borderRight: `1px solid ${tokens.border.subtle}`,
+                  background: active
+                    ? isPaneActive
+                      ? tokens.bg.editor
+                      : hexA(tokens.fg.primary, 0.06)
+                    : hovered
+                      ? hexA(tokens.fg.primary, 0.04)
+                      : "transparent",
+                  color: active
+                    ? isPaneActive
+                      ? tokens.fg.primary
+                      : tokens.fg.muted
+                    : tokens.fg.muted,
+                  minWidth: 120,
+                  maxWidth: 220,
+                  flexShrink: 0,
+                  cursor: dragging ? "grabbing" : "pointer",
+                  opacity: dragging ? 0.4 : 1,
+                  borderTop: active
+                    ? isPaneActive
+                      ? `2px solid ${tokens.accent.primary}`
+                      : `2px solid ${tokens.border.strong}`
+                    : "2px solid transparent",
+                  boxSizing: "border-box",
+                  transition: "background 0.08s, color 0.08s, opacity 0.08s",
                 }}
+                aria-label={`Activate tab ${tab.name}`}
               >
-                {tab.name}
-              </Text>
-              {tab.dirty ? (
-                <span
-                  aria-label="unsaved"
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: tokens.fg.primary,
-                    display: showClose ? "none" : "inline-block",
-                    flexShrink: 0,
-                  }}
+                {showIndicatorLeft ? (
+                  <span
+                    aria-hidden
+                    style={{
+                      position: "absolute",
+                      left: -1,
+                      top: 0,
+                      bottom: 0,
+                      width: 2,
+                      background: tokens.accent.primary,
+                      pointerEvents: "none",
+                    }}
+                  />
+                ) : null}
+                {showIndicatorRight ? (
+                  <span
+                    aria-hidden
+                    style={{
+                      position: "absolute",
+                      right: -1,
+                      top: 0,
+                      bottom: 0,
+                      width: 2,
+                      background: tokens.accent.primary,
+                      pointerEvents: "none",
+                    }}
+                  />
+                ) : null}
+                <IconFileCode
+                  size={14}
+                  stroke={1.5}
+                  style={{ flexShrink: 0, opacity: active ? 0.9 : 0.6 }}
                 />
-              ) : null}
-              {canCloseTabs && (
+                {sharedTabIds.has(tab.id) && (
+                  <Tooltip
+                    label="Open in another cell — edits sync"
+                    openDelay={400}
+                    withArrow
+                  >
+                    <IconLink
+                      size={10}
+                      stroke={1.5}
+                      style={{ flexShrink: 0, opacity: 0.7 }}
+                      aria-label="Tab is open in another cell"
+                    />
+                  </Tooltip>
+                )}
+                {tab.params &&
+                  tab.params.trim() !== "" &&
+                  tab.params.trim() !== "{}" && (
+                    <Tooltip
+                      label="This tab has bound params"
+                      openDelay={400}
+                      withArrow
+                    >
+                      <IconBraces
+                        size={11}
+                        stroke={1.8}
+                        style={{
+                          flexShrink: 0,
+                          color: tokens.accent.primary,
+                          opacity: 0.85,
+                        }}
+                        aria-label="Bound params present"
+                      />
+                    </Tooltip>
+                  )}
+                <Text
+                  size="xs"
+                  fw={active ? 500 : 400}
+                  ff={tokens.font.ui}
+                  style={{
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    flex: 1,
+                    textAlign: "left",
+                  }}
+                >
+                  {tab.name}
+                </Text>
+                {tab.dirty ? (
+                  <span
+                    aria-label="unsaved"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: tokens.fg.primary,
+                      display: showClose ? "none" : "inline-block",
+                      flexShrink: 0,
+                    }}
+                  />
+                ) : null}
                 <ActionIcon
                   component="span"
                   role="button"
@@ -343,21 +367,20 @@ export function EditorTabs({ view, paneId, isPaneActive = false, trailingActions
                 >
                   <IconX size={12} />
                 </ActionIcon>
-              )}
-            </UnstyledButton>
-          );
-        })}
-        <ActionIcon
-          variant="subtle"
-          color="gray"
-          size="sm"
-          onClick={() => newTabInView(view.id)}
-          aria-label="New query tab"
-          style={{ alignSelf: "center", marginLeft: 8, marginRight: 6 }}
-        >
-          <IconPlus size={14} />
-        </ActionIcon>
-      </Group>
+              </UnstyledButton>
+            );
+          })}
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="sm"
+            onClick={() => newTabInView(view.id)}
+            aria-label="New query tab"
+            style={{ alignSelf: "center", marginLeft: 8, marginRight: 6 }}
+          >
+            <IconPlus size={14} />
+          </ActionIcon>
+        </Group>
       </ScrollArea>
       {trailingActions ? (
         <div

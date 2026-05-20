@@ -46,9 +46,7 @@ export async function clearHistory(): Promise<void> {
  * No-ops silently if the entry cannot be located (it may have been
  * evicted by the rolling 1000-entry cap between hover and click).
  */
-export async function openHistoryEntryInNewTab(
-  entryId: string,
-): Promise<void> {
+export async function openHistoryEntryInNewTab(entryId: string): Promise<void> {
   // We can't `getById` without modifying persistence, so list and find.
   // The list is capped at 200 by default — bump the limit so older
   // entries the user has scrolled to remain openable.

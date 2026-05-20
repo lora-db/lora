@@ -82,7 +82,9 @@ export function splitActivePane(
 
   // Source tab for body cloning — prefer the active pane's active view.
   const activeLeaf = findLeaf(state.workspace, paneId);
-  const activeView = activeLeaf?.views.find((v) => v.id === activeLeaf.activeViewId);
+  const activeView = activeLeaf?.views.find(
+    (v) => v.id === activeLeaf.activeViewId,
+  );
   const sourceTabId = activeView?.tabId ?? getActiveTabId();
   const sourceTab = sourceTabId
     ? state.tabs.find((t) => t.id === sourceTabId)
@@ -148,7 +150,10 @@ export function toggleParentOrientation(paneId: string): void {
   }
   const parent = findParent(state.workspace, paneId);
   if (!parent) return;
-  state.setGroupDirection(parent.id, parent.direction === "row" ? "column" : "row");
+  state.setGroupDirection(
+    parent.id,
+    parent.direction === "row" ? "column" : "row",
+  );
 }
 
 /**

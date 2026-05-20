@@ -90,6 +90,13 @@ function pickEditorViewId(): string | null {
  * Inspector "visualize neighbors", drop-zone import, share link). It
  * keeps the global `tabs` slice and the per-pane `tabIds` strips in
  * sync without callers having to remember the second step.
+ *
+ * **Dedupe:** when `opts.body` is provided and an existing tab already
+ * carries the exact same body, the existing tab is brought to the
+ * target editor view (added to its strip if missing, activated) and
+ * its id is returned — no new tab is created. The `dedupe: false`
+ * escape hatch forces a fresh tab (used by "duplicate tab" and other
+ * intentional copy flows).
  */
 export function openTabInCell(opts: {
   name?: string;
@@ -99,15 +106,37 @@ export function openTabInCell(opts: {
   savedQueryId?: string;
   /** Specific editor view to host the tab. Defaults to the active cell's editor. */
   editorViewId?: string;
+  /** Skip the same-body lookup when true. Defaults to true (dedupe on). */
+  dedupe?: boolean;
 }): string {
   const state = useStore.getState();
+  const viewId = opts.editorViewId ?? pickEditorViewId();
+  const dedupe = opts.dedupe ?? true;
+
+  // Same-body lookup. Only triggers when the caller passed an explicit
+  // body — a no-body `newTab()` is always a "create me a fresh empty
+  // tab" intent and must not resurrect an old default-bodied tab.
+  if (dedupe && opts.body !== undefined) {
+    const existing = state.tabs.find((t) => t.body === opts.body);
+    if (existing) {
+      if (viewId) {
+        // `addTabToEditorView` adds the tab to the strip if it's not
+        // already there, and activates it either way — exactly the
+        // "reveal the existing tab" semantics we want here.
+        state.addTabToEditorView(viewId, existing.id);
+      }
+      return existing.id;
+    }
+  }
+
   const id = state.openTab({
     body: opts.body ?? DEFAULT_BODY,
     ...(opts.name !== undefined ? { name: opts.name } : {}),
     ...(opts.params !== undefined ? { params: opts.params } : {}),
-    ...(opts.savedQueryId !== undefined ? { savedQueryId: opts.savedQueryId } : {}),
+    ...(opts.savedQueryId !== undefined
+      ? { savedQueryId: opts.savedQueryId }
+      : {}),
   });
-  const viewId = opts.editorViewId ?? pickEditorViewId();
   if (viewId) state.addTabToEditorView(viewId, id);
   return id;
 }
@@ -118,7 +147,15 @@ export function newTab(): string {
 }
 
 /** Open a tab and add it to a specific editor view. Used by the in-strip "+" button. */
-export function newTabInView(viewId: string, opts?: { name?: string; body?: string; params?: string; savedQueryId?: string }): string {
+export function newTabInView(
+  viewId: string,
+  opts?: {
+    name?: string;
+    body?: string;
+    params?: string;
+    savedQueryId?: string;
+  },
+): string {
   return openTabInCell({ ...(opts ?? {}), editorViewId: viewId });
 }
 
@@ -128,33 +165,31 @@ export function newTabInView(viewId: string, opts?: { name?: string; body?: stri
  * we drop it entirely (and gc its result). Honours the dirty-tab
  * confirm modal.
  *
- * Refuses to close the last tab in the last editor view, so the
- * workspace always has at least one query tab to land in.
+ * Closing the last tab in the last editor view is allowed — the view
+ * stays so the user can land back on the empty state and create a new
+ * query via the strip's "+" button.
  */
 export function closeTabInView(viewId: string, tabId: string): void {
   const state = useStore.getState();
   const tab = state.tabs.find((t) => t.id === tabId);
   if (!tab) return;
-  // Refuse to close if it would leave zero tabs globally.
-  if (state.tabs.length <= 1) {
-    return;
-  }
-  // Detect the "this is the only tab in the only editor view" case
-  // before we touch anything — refusing here keeps the user from
-  // stranding the workspace with no place to type.
+  // Detect the "closing the only tab in this editor view" case before
+  // we touch anything so we can decide whether the view itself should
+  // be removed (only when other editor views exist to land in).
   const viewLeafNow = findViewLeaf(state.workspace, viewId);
   const viewNow = viewLeafNow?.views.find((v) => v.id === viewId);
   const stripWouldEmpty =
     viewNow?.kind === "query" &&
     (viewNow.tabIds ?? []).length === 1 &&
     (viewNow.tabIds ?? [])[0] === tabId;
-  if (stripWouldEmpty && countEditorViews(state.workspace) <= 1) {
-    return;
-  }
+  const isLastEditorView = countEditorViews(state.workspace) <= 1;
   const proceed = () => {
     const s = useStore.getState();
     s.removeTabFromEditorView(viewId, tabId);
-    const stillOpen = tabIsOpenInAnyEditorView(useStore.getState().workspace, tabId);
+    const stillOpen = tabIsOpenInAnyEditorView(
+      useStore.getState().workspace,
+      tabId,
+    );
     if (!stillOpen) {
       // Snapshot the tab before it disappears so `mod+shift+T` can
       // resurrect it. Read straight from `s.tabs` so the body we
@@ -171,10 +206,10 @@ export function closeTabInView(viewId: string, tabId: string): void {
       }
       s.closeTab(tabId);
     }
-    // If we just emptied a non-last editor view, drop the view so the
-    // leaf doesn't render a blank editor surface. (countEditorViews
-    // guard above ensures we have ≥1 other editor view to land in.)
-    if (stripWouldEmpty) {
+    // Drop a now-empty editor view only when other editor views still
+    // exist — keep the last one around so the workspace can render its
+    // empty state instead of a blank leaf.
+    if (stripWouldEmpty && !isLastEditorView) {
       useStore.getState().removeView(viewId);
     }
   };
@@ -206,7 +241,11 @@ export function closeActiveTab(): void {
  * Cycle the active tab inside the active editor pane (next / prev).
  * Falls back to global tabs when the active pane isn't an editor.
  */
-function activeViewTabs(): { viewId: string; tabIds: string[]; activeId: string | null } | null {
+function activeViewTabs(): {
+  viewId: string;
+  tabIds: string[];
+  activeId: string | null;
+} | null {
   const state = useStore.getState();
   const viewId = pickEditorViewId();
   if (!viewId) return null;
@@ -285,4 +324,3 @@ export function reopenLastClosedTab(): string | null {
       : {}),
   });
 }
-

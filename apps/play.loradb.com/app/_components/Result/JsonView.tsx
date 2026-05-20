@@ -42,7 +42,14 @@ export function JsonView({ result }: { result: AdaptedResult }) {
   }, [result]);
 
   return (
-    <Box style={{ flex: 1, minHeight: 0, display: "flex", background: tokens.bg.editor }}>
+    <Box
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: "flex",
+        background: tokens.bg.editor,
+      }}
+    >
       <LoraJsonEditor
         value={text}
         readOnly

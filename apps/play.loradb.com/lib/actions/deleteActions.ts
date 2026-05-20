@@ -22,10 +22,7 @@
  */
 
 import { notifications } from "@mantine/notifications";
-import type {
-  LinkObject,
-  NodeObject,
-} from "@loradb/lora-graph-canvas";
+import type { LinkObject, NodeObject } from "@loradb/lora-graph-canvas";
 import type { TransactionStatement } from "@loradb/lora-wasm";
 import { getDb } from "@/lib/db/client";
 import { LORADB_MUTATION_EVENT } from "@/lib/actions/runActiveTab";

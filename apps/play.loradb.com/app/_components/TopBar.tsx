@@ -18,21 +18,23 @@ import {
 import { toggleRootOrientation } from "@/lib/actions/workspaceActions";
 import { useStore } from "@/lib/state/store";
 import { toggleParamsPanel } from "@/lib/actions/uiActions";
+import { useActiveTabId, useDetectedParams } from "@/lib/state/selectors";
+import { findLeaf, resolveActiveViewId } from "@/lib/state/workspace/tree";
 import {
-  useActiveTabId,
-  useDetectedParams,
-} from "@/lib/state/selectors";
-import {
-  findLeaf,
-  resolveActiveViewId,
-} from "@/lib/state/workspace/tree";
-import { useColorSchemeToggle, usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
+  useColorSchemeToggle,
+  usePlaygroundTheme,
+} from "@/lib/theme/usePlaygroundTheme";
 import { useDbStatus } from "@/lib/hooks/useDbStatus";
 
 import { openHotkeyHelpDialog } from "./Dialogs/HotkeyHelpDialog";
 import { RunButton } from "./Editor/RunButton";
 
-function dotColor(state: ReturnType<typeof useDbStatus>["state"], success: string, warning: string, danger: string): string {
+function dotColor(
+  state: ReturnType<typeof useDbStatus>["state"],
+  success: string,
+  warning: string,
+  danger: string,
+): string {
   switch (state) {
     case "ready":
       return success;
@@ -49,9 +51,10 @@ export function TopBar() {
   const toggle = useColorSchemeToggle();
   const status = useDbStatus();
   const rootDirection = useStore((s) =>
-    s.workspace.type === "group" ? s.workspace.direction : "column",
+    s.workspace.type === "group" ? s.workspace.direction : null,
   );
   const isHorizontal = rootDirection === "row";
+  const canToggleOrientation = rootDirection !== null;
 
   return (
     <Group
@@ -63,7 +66,12 @@ export function TopBar() {
       style={{ borderBottom: `1px solid ${tokens.border.subtle}` }}
     >
       <Group gap="sm" align="center" wrap="nowrap">
-        <Text fw={600} size="sm" c={tokens.fg.primary} style={{ letterSpacing: 0.2 }}>
+        <Text
+          fw={600}
+          size="sm"
+          c={tokens.fg.primary}
+          style={{ letterSpacing: 0.2 }}
+        >
           LoraDB Playground
         </Text>
       </Group>
@@ -71,21 +79,29 @@ export function TopBar() {
       <Group gap="xs" align="center" wrap="nowrap">
         <RunButton />
         <ParamsToggleButton />
-        <Tooltip
-          label={isHorizontal ? "Stack panes top/bottom" : "Place panes left/right"}
-          withArrow
-        >
-          <ActionIcon
-            variant="subtle"
-            size="md"
-            color="gray"
-            onClick={() => toggleRootOrientation()}
-            aria-label="Toggle split orientation"
-            data-testid="toggle-orientation"
+        {canToggleOrientation && (
+          <Tooltip
+            label={
+              isHorizontal ? "Stack panes top/bottom" : "Place panes left/right"
+            }
+            withArrow
           >
-            {isHorizontal ? <IconLayoutRows size={16} /> : <IconLayoutColumns size={16} />}
-          </ActionIcon>
-        </Tooltip>
+            <ActionIcon
+              variant="subtle"
+              size="md"
+              color="gray"
+              onClick={() => toggleRootOrientation()}
+              aria-label="Toggle split orientation"
+              data-testid="toggle-orientation"
+            >
+              {isHorizontal ? (
+                <IconLayoutRows size={16} />
+              ) : (
+                <IconLayoutColumns size={16} />
+              )}
+            </ActionIcon>
+          </Tooltip>
+        )}
       </Group>
 
       <Group gap="xs" align="center" wrap="nowrap">

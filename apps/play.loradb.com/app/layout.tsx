@@ -21,7 +21,8 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "LoraDB Playground",
-    description: "In-browser Cypher IDE backed by the LoraDB WASM graph engine.",
+    description:
+      "In-browser Cypher IDE backed by the LoraDB WASM graph engine.",
     type: "website",
     images: [{ url: "/og-image.png", width: 1200, height: 630 }],
   },

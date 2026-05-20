@@ -22,7 +22,9 @@ export interface GraphPngEventDetail {
   paneId: string | null;
 }
 
-export function isGraphPngEvent(event: Event): event is CustomEvent<GraphPngEventDetail> {
+export function isGraphPngEvent(
+  event: Event,
+): event is CustomEvent<GraphPngEventDetail> {
   return event instanceof CustomEvent && event.type === GRAPH_PNG_EVENT;
 }
 
@@ -33,7 +35,9 @@ export function isGraphPngEvent(event: Event): event is CustomEvent<GraphPngEven
 export function requestGraphPng(paneId?: string): void {
   if (typeof window === "undefined") return;
   const detail: GraphPngEventDetail = { paneId: paneId ?? null };
-  window.dispatchEvent(new CustomEvent<GraphPngEventDetail>(GRAPH_PNG_EVENT, { detail }));
+  window.dispatchEvent(
+    new CustomEvent<GraphPngEventDetail>(GRAPH_PNG_EVENT, { detail }),
+  );
 }
 
 function isoDateStamp(timestamp: number): string {

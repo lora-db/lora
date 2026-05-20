@@ -224,37 +224,40 @@ export function SavedQueriesPanel() {
     [],
   );
 
-  const handleDelete = useCallback((record: savedQueries.SavedQuery): void => {
-    openConfirmModal({
-      title: "Delete saved query?",
-      centered: true,
-      children: (
-        <Text size="sm" c={tokens.fg.muted}>
-          Permanently delete <strong>{record.name}</strong>? Any open
-          tab bound to it stays open but loses its saved-query link.
-        </Text>
-      ),
-      labels: { confirm: "Delete", cancel: "Cancel" },
-      confirmProps: { color: "red", "data-autofocus": "true" },
-      onConfirm: () => {
-        deleteSavedQuery(record.id)
-          .then(() => {
-            notifications.show({
-              color: "green",
-              title: "Deleted",
-              message: `"${record.name}" was deleted.`,
+  const handleDelete = useCallback(
+    (record: savedQueries.SavedQuery): void => {
+      openConfirmModal({
+        title: "Delete saved query?",
+        centered: true,
+        children: (
+          <Text size="sm" c={tokens.fg.muted}>
+            Permanently delete <strong>{record.name}</strong>? Any open tab
+            bound to it stays open but loses its saved-query link.
+          </Text>
+        ),
+        labels: { confirm: "Delete", cancel: "Cancel" },
+        confirmProps: { color: "red", "data-autofocus": "true" },
+        onConfirm: () => {
+          deleteSavedQuery(record.id)
+            .then(() => {
+              notifications.show({
+                color: "green",
+                title: "Deleted",
+                message: `"${record.name}" was deleted.`,
+              });
+            })
+            .catch((err: unknown) => {
+              notifications.show({
+                color: "red",
+                title: "Delete failed",
+                message: err instanceof Error ? err.message : String(err),
+              });
             });
-          })
-          .catch((err: unknown) => {
-            notifications.show({
-              color: "red",
-              title: "Delete failed",
-              message: err instanceof Error ? err.message : String(err),
-            });
-          });
-      },
-    });
-  }, [tokens.fg.muted]);
+        },
+      });
+    },
+    [tokens.fg.muted],
+  );
 
   return (
     <Stack gap={0} style={{ flex: 1, minHeight: 0 }}>
@@ -469,7 +472,12 @@ function SavedQueryRow({
               ))}
             </Group>
           ) : null}
-          <Text size="xs" c={tokens.fg.subtle} component="time" dateTime={new Date(record.updatedAt).toISOString()}>
+          <Text
+            size="xs"
+            c={tokens.fg.subtle}
+            component="time"
+            dateTime={new Date(record.updatedAt).toISOString()}
+          >
             {formatDistanceToNowStrict(record.updatedAt, { addSuffix: true })}
           </Text>
         </Stack>
@@ -496,10 +504,16 @@ function SavedQueryRow({
             <Menu.Item leftSection={<IconEdit size={14} />} onClick={onRename}>
               Rename
             </Menu.Item>
-            <Menu.Item leftSection={<IconCopy size={14} />} onClick={onDuplicate}>
+            <Menu.Item
+              leftSection={<IconCopy size={14} />}
+              onClick={onDuplicate}
+            >
               Duplicate
             </Menu.Item>
-            <Menu.Item leftSection={<IconLink size={14} />} onClick={onCopyLink}>
+            <Menu.Item
+              leftSection={<IconLink size={14} />}
+              onClick={onCopyLink}
+            >
               Copy link
             </Menu.Item>
             <Menu.Divider />

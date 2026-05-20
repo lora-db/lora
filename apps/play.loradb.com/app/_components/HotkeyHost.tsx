@@ -19,10 +19,7 @@
  */
 
 import { useEffect, useMemo } from "react";
-import {
-  useComputedColorScheme,
-  useMantineColorScheme,
-} from "@mantine/core";
+import { useComputedColorScheme, useMantineColorScheme } from "@mantine/core";
 import { useHotkeys } from "@mantine/hooks";
 import { spotlight } from "@mantine/spotlight";
 
@@ -84,10 +81,7 @@ export function HotkeyHost() {
     const handler = (event: KeyboardEvent): void => {
       // mod+K / mod+P → Spotlight (mod+P preventDefault overrides
       // the browser's Print shortcut on the way through).
-      if (
-        matchModChord(event, "k") ||
-        matchModChord(event, "p")
-      ) {
+      if (matchModChord(event, "k") || matchModChord(event, "p")) {
         event.preventDefault();
         event.stopPropagation();
         spotlight.open();

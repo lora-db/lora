@@ -41,7 +41,10 @@ export async function read(): Promise<SessionRecord | undefined> {
     const db = await getDB();
     return await db.get("session", "singleton");
   } catch (err) {
-    console.warn("session.read failed; starting with no persisted session", err);
+    console.warn(
+      "session.read failed; starting with no persisted session",
+      err,
+    );
     return undefined;
   }
 }

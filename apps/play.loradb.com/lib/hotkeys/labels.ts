@@ -58,51 +58,160 @@ export interface HotkeyMeta {
    * the table by intent (Run, Tabs, Navigation, View, …) without
    * sprinkling section markers across the binding code.
    */
-  group:
-    | "Run"
-    | "Tabs"
-    | "Navigation"
-    | "View"
-    | "Editor"
-    | "Panes"
-    | "App";
+  group: "Run" | "Tabs" | "Navigation" | "View" | "Editor" | "Panes" | "App";
 }
 
 export const HOTKEYS: Record<HotkeyId, HotkeyMeta> = {
   run: { chord: "mod+Enter", description: "Run query", group: "Run" },
   newTab: { chord: "mod+N", description: "New query tab", group: "Tabs" },
   closeTab: { chord: "mod+W", description: "Close active tab", group: "Tabs" },
-  reopenClosedTab: { chord: "mod+alt+T", description: "Reopen closed tab", group: "Tabs" },
+  reopenClosedTab: {
+    chord: "mod+alt+T",
+    description: "Reopen closed tab",
+    group: "Tabs",
+  },
   saveQuery: { chord: "mod+S", description: "Save query", group: "Editor" },
-  saveQueryAs: { chord: "mod+shift+S", description: "Save query as…", group: "Editor" },
-  toggleComment: { chord: "mod+slash", description: "Toggle line comment", group: "Editor" },
-  toggleSidebar: { chord: "mod+B", description: "Toggle sidebar", group: "View" },
-  resultGraph: { chord: "mod+1", description: "Show graph result", group: "View" },
-  resultTable: { chord: "mod+2", description: "Show table result", group: "View" },
-  resultJson: { chord: "mod+3", description: "Show JSON result", group: "View" },
-  formatQuery: { chord: "shift+alt+F", description: "Format query", group: "Editor" },
-  activityQueries: { chord: "mod+shift+E", description: "Saved queries panel", group: "Navigation" },
-  activitySchema: { chord: "mod+shift+B", description: "Schema panel", group: "Navigation" },
-  activitySnapshots: { chord: "mod+shift+N", description: "Snapshots panel", group: "Navigation" },
-  activityHistory: { chord: "mod+shift+H", description: "History panel", group: "Navigation" },
-  activitySettings: { chord: "mod+comma", description: "Settings panel", group: "Navigation" },
-  prevTab: { chord: "alt+ArrowLeft", description: "Previous tab", group: "Tabs" },
+  saveQueryAs: {
+    chord: "mod+shift+S",
+    description: "Save query as…",
+    group: "Editor",
+  },
+  toggleComment: {
+    chord: "mod+slash",
+    description: "Toggle line comment",
+    group: "Editor",
+  },
+  toggleSidebar: {
+    chord: "mod+B",
+    description: "Toggle sidebar",
+    group: "View",
+  },
+  resultGraph: {
+    chord: "mod+1",
+    description: "Show graph result",
+    group: "View",
+  },
+  resultTable: {
+    chord: "mod+2",
+    description: "Show table result",
+    group: "View",
+  },
+  resultJson: {
+    chord: "mod+3",
+    description: "Show JSON result",
+    group: "View",
+  },
+  formatQuery: {
+    chord: "shift+alt+F",
+    description: "Format query",
+    group: "Editor",
+  },
+  activityQueries: {
+    chord: "mod+shift+E",
+    description: "Saved queries panel",
+    group: "Navigation",
+  },
+  activitySchema: {
+    chord: "mod+shift+B",
+    description: "Schema panel",
+    group: "Navigation",
+  },
+  activitySnapshots: {
+    chord: "mod+shift+N",
+    description: "Snapshots panel",
+    group: "Navigation",
+  },
+  activityHistory: {
+    chord: "mod+shift+H",
+    description: "History panel",
+    group: "Navigation",
+  },
+  activitySettings: {
+    chord: "mod+comma",
+    description: "Settings panel",
+    group: "Navigation",
+  },
+  prevTab: {
+    chord: "alt+ArrowLeft",
+    description: "Previous tab",
+    group: "Tabs",
+  },
   nextTab: { chord: "alt+ArrowRight", description: "Next tab", group: "Tabs" },
-  moveTabLeft: { chord: "mod+shift+alt+ArrowLeft", description: "Move tab left", group: "Tabs" },
-  moveTabRight: { chord: "mod+shift+alt+ArrowRight", description: "Move tab right", group: "Tabs" },
-  focusEditor: { chord: "mod+shift+P", description: "Focus editor", group: "Editor" },
-  toggleColorScheme: { chord: "mod+shift+D", description: "Toggle color scheme", group: "App" },
-  spotlight: { chord: "mod+K", description: "Open command palette", group: "App" },
-  spotlightAlias: { chord: "mod+P", description: "Open command palette", group: "App" },
-  help: { chord: "shift+/", description: "Show keyboard shortcuts", group: "App" },
-  splitRight: { chord: "mod+shift+ArrowRight", description: "Split pane right", group: "Panes" },
-  splitDown: { chord: "mod+shift+ArrowDown", description: "Split pane down", group: "Panes" },
-  closePane: { chord: "mod+alt+W", description: "Close active pane", group: "Panes" },
-  focusNextPane: { chord: "mod+alt+ArrowRight", description: "Focus next pane", group: "Panes" },
-  focusPrevPane: { chord: "mod+alt+ArrowLeft", description: "Focus previous pane", group: "Panes" },
-  cycleViewInPane: { chord: "mod+`", description: "Cycle views in current pane", group: "Panes" },
-  toggleOrientation: { chord: "mod+alt+O", description: "Toggle root split orientation", group: "Panes" },
-  toggleParamsPanel: { chord: "mod+shift+V", description: "Toggle Params panel", group: "View" },
+  moveTabLeft: {
+    chord: "mod+shift+alt+ArrowLeft",
+    description: "Move tab left",
+    group: "Tabs",
+  },
+  moveTabRight: {
+    chord: "mod+shift+alt+ArrowRight",
+    description: "Move tab right",
+    group: "Tabs",
+  },
+  focusEditor: {
+    chord: "mod+shift+P",
+    description: "Focus editor",
+    group: "Editor",
+  },
+  toggleColorScheme: {
+    chord: "mod+shift+D",
+    description: "Toggle color scheme",
+    group: "App",
+  },
+  spotlight: {
+    chord: "mod+K",
+    description: "Open command palette",
+    group: "App",
+  },
+  spotlightAlias: {
+    chord: "mod+P",
+    description: "Open command palette",
+    group: "App",
+  },
+  help: {
+    chord: "shift+/",
+    description: "Show keyboard shortcuts",
+    group: "App",
+  },
+  splitRight: {
+    chord: "mod+shift+ArrowRight",
+    description: "Split pane right",
+    group: "Panes",
+  },
+  splitDown: {
+    chord: "mod+shift+ArrowDown",
+    description: "Split pane down",
+    group: "Panes",
+  },
+  closePane: {
+    chord: "mod+alt+W",
+    description: "Close active pane",
+    group: "Panes",
+  },
+  focusNextPane: {
+    chord: "mod+alt+ArrowRight",
+    description: "Focus next pane",
+    group: "Panes",
+  },
+  focusPrevPane: {
+    chord: "mod+alt+ArrowLeft",
+    description: "Focus previous pane",
+    group: "Panes",
+  },
+  cycleViewInPane: {
+    chord: "mod+`",
+    description: "Cycle views in current pane",
+    group: "Panes",
+  },
+  toggleOrientation: {
+    chord: "mod+alt+O",
+    description: "Toggle root split orientation",
+    group: "Panes",
+  },
+  toggleParamsPanel: {
+    chord: "mod+shift+V",
+    description: "Toggle Params panel",
+    group: "View",
+  },
 };
 
 const ARROW_SYMBOLS: Record<string, string> = {

@@ -53,6 +53,7 @@ import {
 export type ActivitySection =
   | "queries"
   | "schema"
+  | "schemaDesign"
   | "snapshots"
   | "history"
   | "settings";
@@ -92,13 +93,21 @@ export interface LayoutSlice extends SerializedLayout {
   setGroupSizes(groupId: string, sizes: number[]): void;
   setResultTabForView(viewId: string, resultTab: ResultTab): void;
   setViewTabId(viewId: string, tabId: string | undefined): void;
-  addView(paneId: string, kind: PanelKind, opts?: { tabId?: string; resultTab?: ResultTab }): string;
+  addView(
+    paneId: string,
+    kind: PanelKind,
+    opts?: { tabId?: string; resultTab?: ResultTab },
+  ): string;
   removeView(viewId: string): void;
   moveView(viewId: string, toPaneId: string, toIndex?: number): void;
   gcClosedTab(tabId: string): void;
   addTabToEditorView(viewId: string, tabId: string, index?: number): void;
   removeTabFromEditorView(viewId: string, tabId: string): void;
-  reorderTabInEditorView(viewId: string, fromIndex: number, toIndex: number): void;
+  reorderTabInEditorView(
+    viewId: string,
+    fromIndex: number,
+    toIndex: number,
+  ): void;
   setResultMinimizedForView(viewId: string, minimized: boolean): void;
   setEditorSizePctForView(viewId: string, pct: number): void;
   /**
@@ -128,10 +137,17 @@ export const DEFAULT_LAYOUT: SerializedLayout = {
 };
 
 function clampSidebar(n: number): number {
-  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(n)));
+  return Math.min(
+    MAX_SIDEBAR_WIDTH,
+    Math.max(MIN_SIDEBAR_WIDTH, Math.round(n)),
+  );
 }
 
-function nextActivePaneAfterClose(tree: PanelNode | null, removedId: string, current: string): string | null {
+function nextActivePaneAfterClose(
+  tree: PanelNode | null,
+  removedId: string,
+  current: string,
+): string | null {
   if (!tree) return null;
   if (current !== removedId && findLeaf(tree, current)) return current;
   // Prefer the first remaining leaf id.
@@ -143,7 +159,10 @@ function nextActivePaneAfterClose(tree: PanelNode | null, removedId: string, cur
  * Closing the leaf strands every tab in its strip, so we move them to
  * a sibling pane to keep them reachable.
  */
-function findSurvivorQueryViewId(tree: PanelNode, closingLeafId: string): string | null {
+function findSurvivorQueryViewId(
+  tree: PanelNode,
+  closingLeafId: string,
+): string | null {
   function walk(node: PanelNode): string | null {
     if (node.type === "leaf") {
       if (node.id === closingLeafId) return null;
@@ -160,7 +179,11 @@ function findSurvivorQueryViewId(tree: PanelNode, closingLeafId: string): string
 }
 
 /** True iff `tabId` appears in any query view OTHER than `viewId`. */
-function tabIsOpenInOtherQueryView(tree: PanelNode, viewId: string, tabId: string): boolean {
+function tabIsOpenInOtherQueryView(
+  tree: PanelNode,
+  viewId: string,
+  tabId: string,
+): boolean {
   function walk(node: PanelNode): boolean {
     if (node.type === "leaf") {
       for (const v of node.views) {
@@ -231,7 +254,13 @@ export const createLayoutSlice: StateCreator<
   splitPane(paneId, direction, placement = "after", newView) {
     let newLeafId: string | null = null;
     set((state) => {
-      const result = splitLeaf(state.workspace, paneId, direction, placement, newView);
+      const result = splitLeaf(
+        state.workspace,
+        paneId,
+        direction,
+        placement,
+        newView,
+      );
       if (!result) return;
       state.workspace = result.tree;
       state.activePaneId = result.newLeafId;
@@ -263,28 +292,41 @@ export const createLayoutSlice: StateCreator<
           }
         }
         for (const tabId of orphaned) {
-          state.workspace = addTabToEditorView(state.workspace, survivorViewId, tabId);
+          state.workspace = addTabToEditorView(
+            state.workspace,
+            survivorViewId,
+            tabId,
+          );
         }
       }
 
       const next = closeLeaf(state.workspace, paneId);
       if (!next) return;
       state.workspace = next;
-      const reassigned = nextActivePaneAfterClose(next, paneId, state.activePaneId);
+      const reassigned = nextActivePaneAfterClose(
+        next,
+        paneId,
+        state.activePaneId,
+      );
       if (reassigned) state.activePaneId = reassigned;
     });
   },
 
   setGroupDirection(idOnOrInGroup, direction) {
     set((state) => {
-      state.workspace = setGroupDirection(state.workspace, idOnOrInGroup, direction);
+      state.workspace = setGroupDirection(
+        state.workspace,
+        idOnOrInGroup,
+        direction,
+      );
     });
   },
 
   toggleRootDirection() {
     set((state) => {
       if (state.workspace.type !== "group") return;
-      const next: SplitDirection = state.workspace.direction === "row" ? "column" : "row";
+      const next: SplitDirection =
+        state.workspace.direction === "row" ? "column" : "row";
       state.workspace = { ...state.workspace, direction: next };
     });
   },
@@ -347,14 +389,23 @@ export const createLayoutSlice: StateCreator<
       const next = gcClosedTab(state.workspace, tabId);
       if (!next) return; // workspace would collapse to nothing — keep current
       state.workspace = next;
-      const reassigned = nextActivePaneAfterClose(next, state.activePaneId, state.activePaneId);
+      const reassigned = nextActivePaneAfterClose(
+        next,
+        state.activePaneId,
+        state.activePaneId,
+      );
       if (reassigned) state.activePaneId = reassigned;
     });
   },
 
   addTabToEditorView(viewId, tabId, index) {
     set((state) => {
-      state.workspace = addTabToEditorView(state.workspace, viewId, tabId, index);
+      state.workspace = addTabToEditorView(
+        state.workspace,
+        viewId,
+        tabId,
+        index,
+      );
     });
   },
 
@@ -366,13 +417,22 @@ export const createLayoutSlice: StateCreator<
 
   reorderTabInEditorView(viewId, fromIndex, toIndex) {
     set((state) => {
-      state.workspace = reorderTabInEditorView(state.workspace, viewId, fromIndex, toIndex);
+      state.workspace = reorderTabInEditorView(
+        state.workspace,
+        viewId,
+        fromIndex,
+        toIndex,
+      );
     });
   },
 
   setResultMinimizedForView(viewId, minimized) {
     set((state) => {
-      state.workspace = setViewResultMinimized(state.workspace, viewId, minimized);
+      state.workspace = setViewResultMinimized(
+        state.workspace,
+        viewId,
+        minimized,
+      );
     });
   },
 

@@ -14,8 +14,9 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Center, Text } from "@mantine/core";
+import { Center, Group, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
+import { IconInfoCircle } from "@tabler/icons-react";
 import type { LoraGraphCanvasHandle } from "@loradb/lora-graph-canvas";
 
 import type { AdaptedResult } from "@/lib/db/types";
@@ -30,7 +31,10 @@ import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 import { openConfirmDeleteDialog } from "@/app/_components/Dialogs/ConfirmDeleteDialog";
 
 const LoraGraphCanvas = dynamic(
-  () => import("@loradb/lora-graph-canvas").then((m) => ({ default: m.LoraGraphCanvas })),
+  () =>
+    import("@loradb/lora-graph-canvas").then((m) => ({
+      default: m.LoraGraphCanvas,
+    })),
   { ssr: false, loading: () => <GraphSkeleton /> },
 );
 
@@ -84,6 +88,7 @@ export function GraphView({
   const focusOnNodeClick = useStore((s) => s.focusOnNodeClick);
   const alwaysShowLabels = useStore((s) => s.alwaysShowLabels);
   const fitOnSelect = useStore((s) => s.fitOnSelect);
+  const nodeCap = useStore((s) => s.nodeCap);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<LoraGraphCanvasHandle | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -94,7 +99,10 @@ export function GraphView({
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const cr = entry.contentRect;
-        setSize({ w: Math.max(0, Math.floor(cr.width)), h: Math.max(0, Math.floor(cr.height)) });
+        setSize({
+          w: Math.max(0, Math.floor(cr.width)),
+          h: Math.max(0, Math.floor(cr.height)),
+        });
       }
     });
     ro.observe(el);
@@ -163,13 +171,50 @@ export function GraphView({
   // The store uses immer, which freezes nested objects. LoraGraphCanvas
   // mutates nodes/links in-place (e.g. assigns `_neighbors` and physics
   // state), so we hand it a shallow-cloned copy of each entry.
-  const data = useMemo(() => {
-    if (!result.graph) return null;
+  //
+  // The `nodeCap` pref puts a ceiling on how many nodes we hand to the
+  // canvas. Past ~a few thousand the force layout starts to chew CPU
+  // even at idle, so the cap protects the playground from accidental
+  // RETURN-everything queries. Truncation is deterministic (first N in
+  // adapter order) and links whose endpoints fall outside the kept set
+  // are dropped — the canvas would otherwise throw "node not found".
+  const { data, truncation } = useMemo(() => {
+    if (!result.graph) return { data: null, truncation: null };
+    const totalNodes = result.graph.nodes.length;
+    const capped =
+      Number.isFinite(nodeCap) && nodeCap > 0 && totalNodes > nodeCap;
+    const limit = capped ? nodeCap : totalNodes;
+    const nodes = result.graph.nodes.slice(0, limit).map((n) => ({ ...n }));
+    let links;
+    if (capped) {
+      const keptIds = new Set(nodes.map((n) => n.id));
+      links = result.graph.links
+        .filter((l) => {
+          const sId =
+            typeof l.source === "object" && l.source !== null
+              ? (l.source as { id: string | number }).id
+              : (l.source as string | number);
+          const tId =
+            typeof l.target === "object" && l.target !== null
+              ? (l.target as { id: string | number }).id
+              : (l.target as string | number);
+          return keptIds.has(sId) && keptIds.has(tId);
+        })
+        .map((l) => ({ ...l }));
+    } else {
+      links = result.graph.links.map((l) => ({ ...l }));
+    }
     return {
-      nodes: result.graph.nodes.map((n) => ({ ...n })),
-      links: result.graph.links.map((l) => ({ ...l })),
+      data: { nodes, links },
+      truncation: capped
+        ? {
+            kept: limit,
+            total: totalNodes,
+            droppedLinks: result.graph.links.length - links.length,
+          }
+        : null,
     };
-  }, [result.graph]);
+  }, [result.graph, nodeCap]);
 
   if (!data) {
     return (
@@ -194,6 +239,32 @@ export function GraphView({
         overflow: "hidden",
       }}
     >
+      {truncation ? (
+        <Group
+          gap={6}
+          wrap="nowrap"
+          style={{
+            position: "absolute",
+            bottom: 8,
+            left: 8,
+            zIndex: 2,
+            padding: "4px 8px",
+            borderRadius: tokens.radius.sm,
+            background: tokens.bg.panel,
+            border: `1px solid ${tokens.border.subtle}`,
+            color: tokens.fg.muted,
+            pointerEvents: "none",
+            maxWidth: "calc(100% - 16px)",
+          }}
+        >
+          <IconInfoCircle size={14} />
+          <Text size="xs" c={tokens.fg.muted}>
+            Showing {truncation.kept.toLocaleString()} of{" "}
+            {truncation.total.toLocaleString()} nodes (node cap). Raise the cap
+            in Settings to render more.
+          </Text>
+        </Group>
+      ) : null}
       {size.w > 0 && size.h > 0 && (
         <LoraGraphCanvas
           ref={canvasRef}
@@ -210,6 +281,11 @@ export function GraphView({
           enableTooltip
           highlightNeighborsOnHover
           autoIndexNeighbors
+          // Colour nodes by their primary `:Label`. The adapter populates
+          // `node.group` with `primaryLabel(n)`, so this fans nodes out
+          // across the theme's `nodePalette` deterministically — same
+          // label → same swatch across runs and across the group legend.
+          nodeAutoColorBy="group"
           focusOnClick={focusOnNodeClick}
           showLabels={alwaysShowLabels}
           fitOnSelect={fitOnSelect}
@@ -225,17 +301,20 @@ export function GraphView({
               ? true
               : openConfirmDeleteDialog({ nodes: [], links, source })
           }
-          onNodeClick={(node) => {
-            inspectNode({
-              id: node.id,
-              labels: readLabels(node),
-              properties: readProperties(node),
-            });
+          onNodeClick={(node, event) => {
+            inspectNode(
+              {
+                id: node.id,
+                labels: readLabels(node),
+                properties: readProperties(node),
+              },
+              { anchor: { x: event.clientX, y: event.clientY } },
+            );
           }}
-          onLinkClick={(link) => {
+          onLinkClick={(link, event) => {
             // `source`/`target` may have been replaced by the engine
             // with full NodeObject references; reduce to ids so the
-            // drawer copies behave deterministically.
+            // popup copies behave deterministically.
             const sourceId =
               typeof link.source === "object" && link.source !== null
                 ? (link.source as { id: string | number }).id
@@ -244,13 +323,16 @@ export function GraphView({
               typeof link.target === "object" && link.target !== null
                 ? (link.target as { id: string | number }).id
                 : (link.target as string | number);
-            inspectRelationship({
-              id: link.id ?? `${String(sourceId)}->${String(targetId)}`,
-              type: readType(link) || link.label || "",
-              startId: sourceId,
-              endId: targetId,
-              properties: readProperties(link),
-            });
+            inspectRelationship(
+              {
+                id: link.id ?? `${String(sourceId)}->${String(targetId)}`,
+                type: readType(link) || link.label || "",
+                startId: sourceId,
+                endId: targetId,
+                properties: readProperties(link),
+              },
+              { anchor: { x: event.clientX, y: event.clientY } },
+            );
           }}
         />
       )}

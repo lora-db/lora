@@ -14,15 +14,9 @@
 import type { MantineColorScheme } from "@mantine/core";
 
 import { useStore } from "@/lib/state/store";
-import type {
-  ActivitySection,
-  ResultTab,
-} from "@/lib/state/slices/layout";
+import type { ActivitySection, ResultTab } from "@/lib/state/slices/layout";
 import { setActiveResultTab } from "@/lib/actions/workspaceActions";
-import {
-  findLeaf,
-  resolveActiveViewId,
-} from "@/lib/state/workspace/tree";
+import { findLeaf, resolveActiveViewId } from "@/lib/state/workspace/tree";
 
 /**
  * Switch the result inner-tab (Graph/Table/JSON/Plan). Acts on the
@@ -71,7 +65,9 @@ export function activeParamsPanelOpen(): boolean {
 export function toggleParamsPanel(): void {
   const viewId = getActiveEditorViewId();
   if (!viewId) return;
-  useStore.getState().setParamsPanelOpenForView(viewId, !activeParamsPanelOpen());
+  useStore
+    .getState()
+    .setParamsPanelOpenForView(viewId, !activeParamsPanelOpen());
 }
 
 export function setActiveParamsPanelOpen(open: boolean): void {
