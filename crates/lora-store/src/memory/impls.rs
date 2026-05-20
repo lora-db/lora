@@ -10,8 +10,8 @@ use crate::{
     BorrowedGraphStorage, ConstraintDefinition, ConstraintRequest, CreateConstraintError,
     CreateConstraintOutcome, CreateIndexError, CreateIndexOutcome, DropConstraintError,
     DropConstraintOutcome, DropIndexError, DropIndexOutcome, GraphStats, GraphStorage,
-    GraphStorageMut, IndexDefinition, IndexRequest, MutationEvent, NodeId, NodeRecord, Properties,
-    PropertyValue, RelationshipId, RelationshipRecord, StoredIndexEntity,
+    GraphStorageMut, IndexDefinition, IndexRequest, LoraVector, MutationEvent, NodeId, NodeRecord,
+    Properties, PropertyValue, RelationshipId, RelationshipRecord, StoredIndexEntity,
 };
 
 use super::property_index::PropertyIndexKey;
@@ -44,6 +44,23 @@ impl GraphStorage for InMemoryGraph {
             .get(name)
             .map(|idx| idx.query(query));
         rel_hits.unwrap_or_default()
+    }
+
+    fn vector_search(&self, name: &str, query: &LoraVector, _k: usize) -> Vec<(u64, f64)> {
+        // Like fulltext_search, an index lives on exactly one entity
+        // scope. Probe both registries; the catalog has already
+        // enforced kind/entity agreement so only one will hit.
+        if let Some(hits) = self
+            .vector_indexes_read(StoredIndexEntity::Node)
+            .query(name, query)
+        {
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
+        self.vector_indexes_read(StoredIndexEntity::Relationship)
+            .query(name, query)
+            .unwrap_or_default()
     }
 
     fn list_constraints(&self) -> Vec<ConstraintDefinition> {

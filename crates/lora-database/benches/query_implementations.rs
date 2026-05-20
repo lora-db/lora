@@ -595,6 +595,48 @@ fn bench_advanced_query_shapes(c: &mut Criterion) {
     group.finish();
 }
 
+/// Flat-scan k-NN baseline.
+///
+/// These numbers are the contract any future ANN backend has to beat —
+/// a Phase 0 measurement, intentionally noisy at the high end so we can
+/// see how badly brute force scales. d=384 matches a typical
+/// sentence-transformer embedding dimension. The 100k case dominates
+/// total bench time; restrict with `cargo bench -- vector_knn/n_1000`
+/// during iteration.
+fn bench_vector_knn(c: &mut Criterion) {
+    let mut group = c.benchmark_group("query/vector_knn");
+    group.throughput(Throughput::Elements(1));
+    // Per-iter cost at 100k is in the ~10-50ms range; give criterion
+    // enough samples without making the suite intolerable.
+    group.measurement_time(Duration::from_secs(5));
+    group.sample_size(20);
+
+    let dim = 384usize;
+    let k = 10usize;
+    let query = build_vector_query(0xDEAD_BEEF, dim);
+
+    for &n in &[1_000usize, 10_000, 100_000] {
+        for &sim in &["cosine", "euclidean"] {
+            let db = build_vector_graph(n, dim, sim);
+            let name = format!("n_{n}_{sim}_k{k}_d{dim}");
+            group.bench_function(&name, |b| {
+                b.iter(|| {
+                    let params = BTreeMap::from([(
+                        "q".to_string(),
+                        LoraValue::Vector(query.clone()),
+                    )]);
+                    run_params(
+                        &db,
+                        "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
+                        params,
+                    );
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = bench_config();
@@ -606,7 +648,8 @@ criterion_group! {
         bench_writes,
         bench_expressions_and_functions,
         bench_typed_values,
-        bench_advanced_query_shapes
+        bench_advanced_query_shapes,
+        bench_vector_knn
 }
 
 criterion_main!(benches);

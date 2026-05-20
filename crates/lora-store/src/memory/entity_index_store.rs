@@ -29,6 +29,7 @@ use super::point_index::PointRegistry;
 use super::property_index::PropertyIndexRegistry;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::text_index::TrigramRegistry;
+use super::vector_index::VectorIndexRegistry;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub(super) struct ScopedPropertyKey {
@@ -119,6 +120,7 @@ pub(super) struct IndexBundle {
     pub(super) sorted: EntityIndexStore<SortedPropertyIndex>,
     pub(super) point: EntityIndexStore<PointRegistry>,
     pub(super) fulltext: EntityIndexStore<FulltextRegistry>,
+    pub(super) vector: EntityIndexStore<VectorIndexRegistry>,
     pub(super) active_node_property_indexes: AtomicUsize,
     pub(super) active_relationship_property_indexes: AtomicUsize,
     pub(super) active_fulltext_indexes: AtomicUsize,
@@ -142,6 +144,7 @@ impl Clone for IndexBundle {
             sorted: self.sorted.clone(),
             point: self.point.clone(),
             fulltext: self.fulltext.clone(),
+            vector: self.vector.clone(),
             active_node_property_indexes: AtomicUsize::new(
                 self.active_node_property_indexes.load(Ordering::Relaxed),
             ),

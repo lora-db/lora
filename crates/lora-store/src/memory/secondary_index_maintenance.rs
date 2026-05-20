@@ -126,6 +126,7 @@ impl InMemoryGraph {
         self.update_text_property(entity, scopes.clone(), entity_id, key, old, new);
         self.update_sorted_property(entity, scopes.clone(), entity_id, key, old, new);
         self.update_point_property(entity, scopes.clone(), entity_id, key, old, new);
+        self.update_vector_property(entity, scopes.clone(), entity_id, key, old, new);
         if self.has_active_fulltext_indexes() {
             self.update_fulltext_property(entity, scopes, entity_id, key);
         }
@@ -291,6 +292,50 @@ impl InMemoryGraph {
         let mut registry = self.point_indexes_write(entity);
         for scope in scopes {
             registry.update(scope, key, entity_id, old_pt, new_pt);
+        }
+    }
+
+    /// Vector-index maintenance: insert / replace / remove the entity's
+    /// contribution to every backend whose `(label, property)` matches
+    /// `(scope, key)`.
+    ///
+    /// Bails out without taking the registry lock if neither the old
+    /// nor the new value is a vector — the common case for non-vector
+    /// property mutations.
+    fn update_vector_property<'a>(
+        &self,
+        entity: StoredIndexEntity,
+        scopes: impl IntoIterator<Item = &'a str>,
+        entity_id: u64,
+        key: &str,
+        old: Option<&PropertyValue>,
+        new: Option<&PropertyValue>,
+    ) {
+        let old_v = match old {
+            Some(PropertyValue::Vector(v)) => Some(v),
+            _ => None,
+        };
+        let new_v = match new {
+            Some(PropertyValue::Vector(v)) => Some(v),
+            _ => None,
+        };
+        if old_v.is_none() && new_v.is_none() {
+            return;
+        }
+
+        // Cheap empty-registry early-out: vector indexes are rare today,
+        // so most updates skip the per-scope insert/remove work entirely.
+        if self.vector_indexes_read(entity).is_empty() {
+            return;
+        }
+
+        let mut registry = self.vector_indexes_write(entity);
+        for scope in scopes {
+            match (old_v, new_v) {
+                (_, Some(new)) => registry.insert_for(scope, key, entity_id, new),
+                (Some(_), None) => registry.remove_for(scope, key, entity_id),
+                (None, None) => unreachable!(),
+            }
         }
     }
 }

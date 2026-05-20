@@ -6,7 +6,10 @@ use test_helpers::TestDb;
 use std::collections::BTreeMap;
 
 use lora_database::LoraValue;
-use lora_store::{LoraVector, RawCoordinate, VectorCoordinateType};
+use lora_store::{
+    cosine_similarity_bounded, euclidean_similarity, LoraVector, RawCoordinate,
+    VectorCoordinateType,
+};
 use serde_json::Value as JsonValue;
 
 fn index_named<'a>(rows: &'a [JsonValue], name: &str) -> Option<&'a JsonValue> {
@@ -330,6 +333,200 @@ fn vector_query_accepts_vector_arg() {
     assert_eq!(rows.len(), 1);
     // Still ranks the identical vector first.
     assert!((rows[0]["score"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+}
+
+// ---------- Brute-force oracle tests ----------
+//
+// These lock the current flat-scan behavior so that any future ANN backend
+// (HNSW, IVF, …) can be tested against the same fixtures. The oracle
+// computes top-k in-test using the same `cosine_similarity_bounded` /
+// `euclidean_similarity` primitives the production scorer uses, sorts
+// descending, and compares the resulting score sequence. A backend that
+// keeps recall@k = 1.0 must reproduce the exact ordering; an approximate
+// backend can later be tested with a recall tolerance.
+
+/// Deterministic LCG so the fixtures are stable across runs and platforms
+/// without pulling in `rand`. Returns f32 samples in roughly [-1, 1).
+fn seeded_f32_stream(seed: u64) -> impl FnMut() -> f32 {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+    move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        // Take the upper 32 bits and map into [-1, 1).
+        let bits = (state >> 32) as u32 as i32;
+        bits as f32 / (i32::MAX as f32 + 1.0)
+    }
+}
+
+fn seeded_vectors(seed: u64, n: usize, dim: usize) -> Vec<LoraVector> {
+    let mut rng = seeded_f32_stream(seed);
+    (0..n)
+        .map(|_| {
+            let coords: Vec<RawCoordinate> = (0..dim)
+                .map(|_| RawCoordinate::Float(rng() as f64))
+                .collect();
+            LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Float32).unwrap()
+        })
+        .collect()
+}
+
+/// Seed the DB with `n` `:V` nodes each carrying property `e` set to the
+/// matching vector. Uses parameter binding (one CREATE per vector) so the
+/// vectors are stored byte-identically rather than reparsed from text.
+fn seed_vector_nodes(db: &TestDb, vectors: &[LoraVector]) {
+    for v in vectors {
+        let mut params = BTreeMap::new();
+        params.insert("e".to_string(), LoraValue::Vector(v.clone()));
+        db.run_with_params("CREATE (:V {e: $e})", params);
+    }
+}
+
+fn call_top_k(db: &TestDb, k: usize, query: &LoraVector) -> Vec<f64> {
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    let rows = db.run_with_params(
+        &format!("CALL db.index.vector.queryNodes('vidx', {k}, $q) YIELD score"),
+        params,
+    );
+    rows.iter()
+        .filter_map(|r| r.get("score").and_then(|s| s.as_f64()))
+        .collect()
+}
+
+fn oracle_top_k<F>(vectors: &[LoraVector], query: &LoraVector, k: usize, sim: F) -> Vec<f64>
+where
+    F: Fn(&LoraVector, &LoraVector) -> Option<f64>,
+{
+    let mut scored: Vec<f64> = vectors
+        .iter()
+        .filter_map(|v| sim(v, query))
+        .collect();
+    scored.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(k);
+    scored
+}
+
+fn assert_scores_match(proc_scores: &[f64], oracle: &[f64]) {
+    assert_eq!(
+        proc_scores.len(),
+        oracle.len(),
+        "score count mismatch: proc={proc_scores:?}, oracle={oracle:?}"
+    );
+    for (i, (a, b)) in proc_scores.iter().zip(oracle.iter()).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-9,
+            "score[{i}] mismatch: proc={a}, oracle={b}\nproc={proc_scores:?}\noracle={oracle:?}"
+        );
+    }
+}
+
+#[test]
+fn flat_knn_matches_oracle_cosine() {
+    let db = TestDb::new();
+    let dim = 16usize;
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'cosine'}}}}",
+    ));
+    let vectors = seeded_vectors(0xC051_4E_u64, 64, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(0xDEAD_BEEF_u64, 1, dim).pop().unwrap();
+    let proc_scores = call_top_k(&db, 10, &query);
+    let oracle = oracle_top_k(&vectors, &query, 10, cosine_similarity_bounded);
+    assert_scores_match(&proc_scores, &oracle);
+}
+
+#[test]
+fn flat_knn_matches_oracle_euclidean() {
+    let db = TestDb::new();
+    let dim = 16usize;
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'euclidean'}}}}",
+    ));
+    let vectors = seeded_vectors(0xE0C1_1D_u64, 64, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(0xFEED_FACE_u64, 1, dim).pop().unwrap();
+    let proc_scores = call_top_k(&db, 10, &query);
+    let oracle = oracle_top_k(&vectors, &query, 10, euclidean_similarity);
+    assert_scores_match(&proc_scores, &oracle);
+}
+
+#[test]
+fn flat_knn_k_larger_than_n_returns_all() {
+    let db = TestDb::new();
+    let dim = 8usize;
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'cosine'}}}}",
+    ));
+    let vectors = seeded_vectors(7, 5, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(8, 1, dim).pop().unwrap();
+    let proc_scores = call_top_k(&db, 100, &query);
+    let oracle = oracle_top_k(&vectors, &query, 100, cosine_similarity_bounded);
+    assert_eq!(proc_scores.len(), 5);
+    assert_scores_match(&proc_scores, &oracle);
+}
+
+#[test]
+fn flat_knn_handles_score_ties_deterministically() {
+    // 4 identical vectors → 4 identical scores. Procedure must return them
+    // in a deterministic order (current contract: descending score, then
+    // ascending node id). We only assert the score sequence is stable
+    // across repeated calls; node-id ordering is left to the procedure.
+    let db = TestDb::new();
+    let dim = 4usize;
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'cosine'}}}}",
+    ));
+    let v = LoraVector::try_new(
+        vec![
+            RawCoordinate::Float(1.0),
+            RawCoordinate::Float(0.0),
+            RawCoordinate::Float(0.0),
+            RawCoordinate::Float(0.0),
+        ],
+        dim as i64,
+        VectorCoordinateType::Float32,
+    )
+    .unwrap();
+    let vectors = vec![v.clone(), v.clone(), v.clone(), v.clone()];
+    seed_vector_nodes(&db, &vectors);
+    let scores_a = call_top_k(&db, 4, &v);
+    let scores_b = call_top_k(&db, 4, &v);
+    assert_eq!(scores_a, scores_b, "ordering not deterministic across runs");
+    assert!(scores_a.iter().all(|s| (s - 1.0).abs() < 1e-9));
+}
+
+#[test]
+fn flat_knn_skips_nodes_missing_property_in_oracle() {
+    // A node without the indexed property must be skipped by the
+    // procedure. The oracle must do the same — verified here because the
+    // future backend abstraction is going to special-case missing
+    // properties at insert time, not at query time.
+    let db = TestDb::new();
+    let dim = 8usize;
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'cosine'}}}}",
+    ));
+    let vectors = seeded_vectors(3, 8, dim);
+    seed_vector_nodes(&db, &vectors);
+    // Two `:V` nodes with no `e` property.
+    db.run("CREATE (:V {label: 'no-vec-1'})");
+    db.run("CREATE (:V {label: 'no-vec-2'})");
+    let query = seeded_vectors(4, 1, dim).pop().unwrap();
+    let proc_scores = call_top_k(&db, 100, &query);
+    assert_eq!(
+        proc_scores.len(),
+        8,
+        "expected exactly 8 scored vectors (missing-property nodes ignored)"
+    );
+    let oracle = oracle_top_k(&vectors, &query, 100, cosine_similarity_bounded);
+    assert_scores_match(&proc_scores, &oracle);
 }
 
 #[test]

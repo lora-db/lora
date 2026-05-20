@@ -15,8 +15,8 @@ use crate::memory::{
     DropIndexError, DropIndexOutcome, GraphStats, IndexDefinition, IndexRequest,
 };
 use crate::types::{
-    ExpandedRelationship, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId,
-    RelationshipRecord,
+    ExpandedRelationship, LoraVector, NodeId, NodeRecord, Properties, PropertyValue,
+    RelationshipId, RelationshipRecord,
 };
 
 // ============================================================================
@@ -588,6 +588,20 @@ pub trait GraphStorage {
     /// expected to have validated that the index exists via the
     /// catalog first.
     fn fulltext_search(&self, _name: &str, _query: &str) -> Vec<(u64, f64)> {
+        Vec::new()
+    }
+
+    /// Run a VECTOR index query against the named index. Returns
+    /// unsorted `(entity_id, score)` pairs; the caller sorts by score
+    /// descending and truncates to top-k. Backends without vector
+    /// support return an empty vector. The caller has already
+    /// validated that the index exists via the catalog and that the
+    /// query vector matches the configured dimensions.
+    ///
+    /// `k` is a hint: future ANN backends can use it to prune work;
+    /// the flat backend ignores it because exhaustive scoring is the
+    /// cheapest correctness contract.
+    fn vector_search(&self, _name: &str, _query: &LoraVector, _k: usize) -> Vec<(u64, f64)> {
         Vec::new()
     }
 

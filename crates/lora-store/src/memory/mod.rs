@@ -27,6 +27,7 @@ mod snapshot;
 mod sorted_property_index;
 mod stats;
 mod text_index;
+mod vector_index;
 
 #[cfg(test)]
 mod tests;

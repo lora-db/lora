@@ -32,6 +32,7 @@ use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
 use super::text_index::TrigramRegistry;
+use super::vector_index::{VectorIndexRegistry, VectorSimilarity};
 
 #[derive(Default)]
 pub struct InMemoryGraph {
@@ -1120,9 +1121,12 @@ impl InMemoryGraph {
                         }
                     }
                 }
-                StoredIndexKind::Lookup | StoredIndexKind::Vector => {
-                    // VECTOR uses a flat per-query scan today; no
-                    // backing structure to release.
+                StoredIndexKind::Lookup => {
+                    // Lookup rides on the eagerly-maintained label/type
+                    // indexes; nothing to release.
+                }
+                StoredIndexKind::Vector => {
+                    self.deactivate_vector_index(def.entity, &def.name);
                 }
                 StoredIndexKind::Fulltext => {
                     self.deactivate_fulltext_index(def.entity, &def.name);
@@ -1186,10 +1190,21 @@ impl InMemoryGraph {
                 }
                 self.activate_fulltext_index(def.entity, &def.name, &labels, &def.properties);
             }
+            StoredIndexKind::Vector => {
+                let label = match def.label.as_deref() {
+                    Some(l) => l,
+                    None => return,
+                };
+                let property = match def.properties.first() {
+                    Some(p) => p.as_str(),
+                    None => return,
+                };
+                let similarity = vector_similarity_from_options(&def.options)
+                    .unwrap_or(VectorSimilarity::Cosine);
+                self.activate_vector_index(def.entity, &def.name, label, property, similarity);
+            }
             // LOOKUP rides on the label/type indexes maintained eagerly.
-            // VECTOR runs flat scans per query — no precomputed structure
-            // to populate here.
-            StoredIndexKind::Lookup | StoredIndexKind::Vector => {}
+            StoredIndexKind::Lookup => {}
         }
     }
 
@@ -1439,6 +1454,70 @@ impl InMemoryGraph {
     ) {
         self.point_indexes_write(entity)
             .remove_scope(label, property);
+    }
+
+    pub(super) fn vector_indexes_read(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> std::sync::RwLockReadGuard<'_, VectorIndexRegistry> {
+        self.indexes.vector.read(entity)
+    }
+
+    pub(super) fn vector_indexes_write(
+        &self,
+        entity: StoredIndexEntity,
+    ) -> RwLockWriteGuard<'_, VectorIndexRegistry> {
+        self.indexes.vector.write(entity)
+    }
+
+    fn activate_vector_index(
+        &self,
+        entity: StoredIndexEntity,
+        name: &str,
+        label: &str,
+        property: &str,
+        similarity: VectorSimilarity,
+    ) {
+        {
+            let mut registry = self.vector_indexes_write(entity);
+            registry.register(
+                name.to_string(),
+                label.to_string(),
+                property.to_string(),
+                similarity,
+            );
+        }
+
+        // Backfill: pull existing vectors from the property store into
+        // the freshly-registered backend. Collected up-front so the
+        // registry lock is held only for the insert phase.
+        let backfill: Vec<(u64, crate::LoraVector)> = match entity {
+            StoredIndexEntity::Node => self
+                .iter_nodes()
+                .filter(|(_, node)| node.labels.iter().any(|l| l == label))
+                .filter_map(|(id, node)| match node.properties.get(property) {
+                    Some(PropertyValue::Vector(v)) => Some((id, v.clone())),
+                    _ => None,
+                })
+                .collect(),
+            StoredIndexEntity::Relationship => self
+                .iter_rels()
+                .filter(|(_, rel)| rel.rel_type == label)
+                .filter_map(|(id, rel)| match rel.properties.get(property) {
+                    Some(PropertyValue::Vector(v)) => Some((id, v.clone())),
+                    _ => None,
+                })
+                .collect(),
+        };
+
+        let mut registry = self.vector_indexes_write(entity);
+        for (id, vector) in backfill {
+            registry.insert_for(label, property, id, &vector);
+        }
+    }
+
+    pub(super) fn deactivate_vector_index(&self, entity: StoredIndexEntity, name: &str) {
+        self.vector_indexes_write(entity).deregister(name);
     }
 
     /// Snapshot of cardinality stats. Cheap: derived from already-tracked
@@ -2435,6 +2514,20 @@ fn point_cell_size_from_options(
     match raw {
         IndexConfigValue::Number(v) if *v > 0.0 && v.is_finite() => Some(*v),
         IndexConfigValue::Integer(v) if *v > 0 => Some(*v as f64),
+        _ => None,
+    }
+}
+
+/// Read `vector.similarity_function` from a VECTOR index `OPTIONS`
+/// map. Returns `None` when the key is missing or unrecognised; the
+/// caller picks a default. DDL validation in `schema.rs` has already
+/// rejected invalid values by the time we get here, so a `None` here
+/// only occurs on snapshot/WAL replay of a malformed payload.
+fn vector_similarity_from_options(
+    options: &std::collections::BTreeMap<String, IndexConfigValue>,
+) -> Option<VectorSimilarity> {
+    match options.get("vector.similarity_function")? {
+        IndexConfigValue::String(s) => VectorSimilarity::parse(s),
         _ => None,
     }
 }

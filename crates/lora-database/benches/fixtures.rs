@@ -22,10 +22,12 @@
 //! | `build_temporal_graph(n)`     | `:Event` / `:FOLLOWS`                | Events with date/time properties |
 //! | `build_spatial_graph(n)`      | `:Location` / `:CONNECTS_TO`         | Locations with point coords      |
 //! | `build_recommendation_graph`  | `:User`, `:Product` / `:BOUGHT`, etc | Bipartite user-product graph     |
+//! | `build_vector_graph(n, d, …)` | `:V`                                 | Vector index k-NN benchmarks     |
 
 use std::collections::BTreeMap;
 
 use lora_database::{Database, ExecuteOptions, InMemoryGraph, LoraValue, ResultFormat};
+use lora_store::{LoraVector, RawCoordinate, VectorCoordinateType};
 
 // ---------------------------------------------------------------------------
 // Wrapper (mirrors TestDb from integration tests but without serde_json dep)
@@ -599,4 +601,72 @@ pub fn build_recommendation_graph(n_users: usize, n_products: usize) -> BenchDb 
     }
 
     db
+}
+
+// ---------------------------------------------------------------------------
+// Vector graph builder
+// ---------------------------------------------------------------------------
+
+/// Deterministic LCG → f32 in roughly [-1, 1). Stable across platforms,
+/// no external dep. Used to seed vector fixtures so bench numbers are
+/// comparable across runs.
+fn vector_rng(seed: u64) -> impl FnMut() -> f32 {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+    move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let bits = (state >> 32) as u32 as i32;
+        bits as f32 / (i32::MAX as f32 + 1.0)
+    }
+}
+
+/// Build a graph of `n` `:V` nodes each carrying a `dim`-dimensional
+/// FLOAT32 vector under property `e`, with a pre-created VECTOR index
+/// `vidx` and similarity function `sim` (`"cosine"` or `"euclidean"`).
+///
+/// Vectors are deterministic so the same fixture produces identical
+/// content across runs. Used by `bench_vector_knn` to baseline flat-scan
+/// k-NN throughput before any ANN backend lands.
+pub fn build_vector_graph(n: usize, dim: usize, sim: &str) -> BenchDb {
+    let db = BenchDb::with_capacity_hint(n, 0);
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (v:V) ON (v.e) \
+         OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: '{sim}'}}}}",
+    ));
+
+    let mut rng = vector_rng(0x5EED);
+    // Each vector is dim * 4 bytes stored; intermediate RawCoordinate is
+    // 16 bytes per coord. Keep peak per-batch RSS bounded.
+    let batch = 1_000usize;
+    let mut i = 0usize;
+    while i < n {
+        let end = (i + batch).min(n);
+        let count = end - i;
+        let vecs: Vec<LoraValue> = (0..count)
+            .map(|_| {
+                let coords: Vec<RawCoordinate> = (0..dim)
+                    .map(|_| RawCoordinate::Float(rng() as f64))
+                    .collect();
+                LoraValue::Vector(
+                    LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Float32)
+                        .expect("vector construction"),
+                )
+            })
+            .collect();
+        let params = BTreeMap::from([("vecs".to_string(), LoraValue::List(vecs))]);
+        db.run_with_params("UNWIND $vecs AS e CREATE (:V {e: e})", params);
+        i = end;
+    }
+    db
+}
+
+/// A single deterministic query vector with the given seed and dim.
+pub fn build_vector_query(seed: u64, dim: usize) -> LoraVector {
+    let mut rng = vector_rng(seed);
+    let coords: Vec<RawCoordinate> = (0..dim)
+        .map(|_| RawCoordinate::Float(rng() as f64))
+        .collect();
+    LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Float32)
+        .expect("vector construction")
 }

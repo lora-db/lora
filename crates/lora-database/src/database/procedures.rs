@@ -3,14 +3,16 @@
 //! These calls bypass the analyzer (which doesn't yet model standalone
 //! CALL). The cheap textual prefix router in [`is_procedure_call_text`]
 //! catches them, the parser produces a [`StandaloneCall`], and this
-//! module evaluates the procedure directly against the catalog + raw
-//! storage. The result is a flat row stream that the optional YIELD
-//! clause then projects.
+//! module evaluates the procedure directly against the catalog + the
+//! per-index backend exposed through [`GraphStorage::vector_search`].
+//! The result is a flat row stream that the optional YIELD clause
+//! then projects.
 //!
-//! kNN is computed with a flat scan: enumerate all label-matching
-//! entities, fetch the indexed property as [`LoraVector`], score, and
-//! keep the top `k` by descending similarity. Correctness only — a
-//! dedicated ANN structure is a follow-up.
+//! Top-k is built by sorting the backend's `(id, score)` output
+//! descending by score (tiebreak ascending by id) and truncating. The
+//! flat backend returns every label-matching entity; future ANN
+//! backends can return at most `k` and still satisfy the same
+//! contract.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -19,9 +21,8 @@ use anyhow::{anyhow, Result};
 use lora_ast::{Expr, ProcedureInvocationKind, StandaloneCall, YieldItem};
 use lora_executor::{LoraValue, Row};
 use lora_store::{
-    cosine_similarity_bounded, euclidean_similarity, GraphStorage, GraphStorageMut,
-    IndexDefinition, LoraVector, PropertyValue, StoredIndexEntity, StoredIndexKind,
-    VectorCoordinateType,
+    GraphStorage, GraphStorageMut, IndexDefinition, LoraVector, StoredIndexEntity,
+    StoredIndexKind, VectorCoordinateType,
 };
 
 use crate::database::{
@@ -78,16 +79,18 @@ where
             .ok_or_else(|| anyhow!("no vector index named `{index_name}`"))?;
 
         validate_procedure_index(&def, StoredIndexKind::Vector, entity, "vector")?;
-        let label = def
-            .label
-            .as_deref()
-            .ok_or_else(|| anyhow!("vector index `{index_name}` has no label/type"))?;
-        let property = def
-            .properties
-            .first()
-            .ok_or_else(|| anyhow!("vector index `{index_name}` has no property column"))?;
+        // Catalog sanity: the schema validator guarantees both fields
+        // exist, so any miss here is a corrupted catalog row, not user
+        // input.
+        if def.label.is_none() {
+            return Err(anyhow!("vector index `{index_name}` has no label/type"));
+        }
+        if def.properties.is_empty() {
+            return Err(anyhow!(
+                "vector index `{index_name}` has no property column"
+            ));
+        }
 
-        let similarity = similarity_from_definition(&def)?;
         let expected_dim = expected_dimension(&def);
         if let Some(dim) = expected_dim {
             if query_vec.dimension != dim {
@@ -99,7 +102,7 @@ where
             }
         }
 
-        let scored = score_entities(&*snapshot, entity, label, property, &query_vec, similarity);
+        let scored = snapshot.vector_search(&index_name, &query_vec, k);
         Ok(scored_rows(scored, Some(k), entity))
     }
 
@@ -157,35 +160,6 @@ enum ProcedureKind {
     Fulltext,
 }
 
-#[derive(Clone, Copy)]
-enum Similarity {
-    Cosine,
-    Euclidean,
-}
-
-fn similarity_from_definition(def: &IndexDefinition) -> Result<Similarity> {
-    let sim = def
-        .options
-        .get("vector.similarity_function")
-        .and_then(|v| match v {
-            lora_store::IndexConfigValue::String(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            anyhow!(
-                "vector index `{}` is missing `vector.similarity_function`",
-                def.name
-            )
-        })?;
-    if sim.eq_ignore_ascii_case("cosine") {
-        Ok(Similarity::Cosine)
-    } else if sim.eq_ignore_ascii_case("euclidean") {
-        Ok(Similarity::Euclidean)
-    } else {
-        Err(anyhow!("unknown similarity function `{sim}`"))
-    }
-}
-
 fn expected_dimension(def: &IndexDefinition) -> Option<usize> {
     def.options.get("vector.dimensions").and_then(|v| match v {
         lora_store::IndexConfigValue::Integer(n) if *n > 0 => Some(*n as usize),
@@ -216,56 +190,6 @@ fn validate_procedure_index(
         ));
     }
     Ok(())
-}
-
-fn score_entities<S: GraphStorage + ?Sized>(
-    storage: &S,
-    entity: StoredIndexEntity,
-    label: &str,
-    property: &str,
-    query: &LoraVector,
-    similarity: Similarity,
-) -> Vec<(u64, f64)> {
-    let mut scored: Vec<(u64, f64)> = Vec::new();
-    match entity {
-        StoredIndexEntity::Node => {
-            for id in storage.node_ids_by_label(label) {
-                let Some(record) = storage.node(id) else {
-                    continue;
-                };
-                let Some(PropertyValue::Vector(v)) = record.property(property) else {
-                    continue;
-                };
-                if let Some(score) = score_pair(v, query, similarity) {
-                    scored.push((id, score));
-                }
-            }
-        }
-        StoredIndexEntity::Relationship => {
-            for id in storage.rel_ids_by_type(label) {
-                let Some(record) = storage.relationship(id) else {
-                    continue;
-                };
-                let Some(PropertyValue::Vector(v)) = record.property(property) else {
-                    continue;
-                };
-                if let Some(score) = score_pair(v, query, similarity) {
-                    scored.push((id, score));
-                }
-            }
-        }
-    }
-    scored
-}
-
-fn score_pair(a: &LoraVector, b: &LoraVector, similarity: Similarity) -> Option<f64> {
-    if a.dimension != b.dimension {
-        return None;
-    }
-    match similarity {
-        Similarity::Cosine => cosine_similarity_bounded(a, b),
-        Similarity::Euclidean => euclidean_similarity(a, b),
-    }
 }
 
 fn scored_rows(
