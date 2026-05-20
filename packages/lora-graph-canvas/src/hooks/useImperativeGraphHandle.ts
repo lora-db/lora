@@ -72,10 +72,7 @@ export function useImperativeGraphHandle<
       addLink: (link) => latestRef.current.dataApi.addLink(link),
       addLinks: (links) => latestRef.current.dataApi.addLinks(links),
       removeLink: (predicate) =>
-        latestRef.current.deleteGate.requestLinkDelete(
-          predicate,
-          "imperative",
-        ),
+        latestRef.current.deleteGate.requestLinkDelete(predicate, "imperative"),
       clear: () => latestRef.current.dataApi.clear(),
 
       getSelection: () => [...latestRef.current.selection.selected],
@@ -166,10 +163,11 @@ export function useImperativeGraphHandle<
       downloadJSON: (filename) => latestRef.current.downloadJSON(filename),
 
       d3Force: ((name: string, fn?: unknown | null) =>
-        latestRef.current.engine?.d3Force(name, fn)) as
-        LoraGraphCanvasHandle<N, L>["d3Force"],
-      emitParticle: (link: L) =>
-        latestRef.current.engine?.emitParticle(link),
+        latestRef.current.engine?.d3Force(name, fn)) as LoraGraphCanvasHandle<
+        N,
+        L
+      >["d3Force"],
+      emitParticle: (link: L) => latestRef.current.engine?.emitParticle(link),
       stopAnimation: () => latestRef.current.engine?.stopAnimation(),
 
       engine2D: () =>

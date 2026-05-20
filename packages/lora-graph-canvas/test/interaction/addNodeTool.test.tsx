@@ -7,7 +7,9 @@ import { render, act } from "@testing-library/react";
 // from the test. The mock engine writes them to module-level slots.
 const handlers3D: Record<string, (...a: unknown[]) => void> = {};
 
-function makeFakeKapsule(captureBag: Record<string, (...a: unknown[]) => void>) {
+function makeFakeKapsule(
+  captureBag: Record<string, (...a: unknown[]) => void>,
+) {
   const captureSetters = new Set([
     "onNodeClick",
     "onNodeRightClick",
@@ -81,9 +83,7 @@ describe("add-node tool", () => {
     // The tool is set via the React layer's toolbar. We jump straight
     // to the underlying state by sending the keybinding event.
     act(() => {
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "n" }),
-      );
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "n" }));
     });
     // Simulate the engine reporting a background click. (Our mock
     // captured the handler the React layer wired up.)
@@ -136,16 +136,10 @@ describe("add-link tool", () => {
     });
     // Click node A (source), then node B (target).
     act(() => {
-      handlers3D.onNodeClick?.(
-        { id: "a" },
-        new MouseEvent("click"),
-      );
+      handlers3D.onNodeClick?.({ id: "a" }, new MouseEvent("click"));
     });
     act(() => {
-      handlers3D.onNodeClick?.(
-        { id: "b" },
-        new MouseEvent("click"),
-      );
+      handlers3D.onNodeClick?.({ id: "b" }, new MouseEvent("click"));
     });
     const links = ref.current?.getData().links;
     expect(links).toHaveLength(1);

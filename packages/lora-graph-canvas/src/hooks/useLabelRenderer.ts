@@ -1,22 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
-import {
-  Group,
-  Object3D,
-  type Sprite,
-  type SpriteMaterial,
-} from "three";
+import { Group, Object3D, type Sprite, type SpriteMaterial } from "three";
 import { readAccessor, resolveNodeLabelText } from "../utils/accessor";
 import {
   createTextSprite,
   disposeLabelSprite,
   type SpriteLabelUserData,
 } from "../utils/spriteLabel";
-import type {
-  Accessor,
-  GraphMode,
-  LoraGraphTheme,
-  NodeObject,
-} from "../types";
+import type { Accessor, GraphMode, LoraGraphTheme, NodeObject } from "../types";
 
 export interface UseLabelRendererParams<N extends NodeObject> {
   mode: GraphMode;
@@ -128,17 +118,12 @@ export function useLabelRenderer<N extends NodeObject>(
 
     const fontFamily = theme?.fontFamily ?? "system-ui, sans-serif";
 
-    return (
-      node: N,
-      ctx: CanvasRenderingContext2D,
-      globalScale: number,
-    ) => {
+    return (node: N, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const state = canvas2DStateRef.current;
       const isSelected =
         node.id !== undefined && state.selectedNodeSet.has(node.id);
       const isHovered =
-        node.id !== undefined &&
-        state.hoveredNodeSet?.has(node.id) === true;
+        node.id !== undefined && state.hoveredNodeSet?.has(node.id) === true;
       if (!state.showLabels && !isSelected && !isHovered) return;
 
       const text = resolveNodeLabelText(nodeLabel, node);
@@ -191,7 +176,14 @@ export function useLabelRenderer<N extends NodeObject>(
       ctx.fillStyle = isSelected ? "#ffffff" : state.tooltipFg;
       ctx.fillText(text, cx, cy + padY);
     };
-  }, [mode, hostNodeCanvasObject, nodeLabel, nodeVal, nodeRelSize, theme?.fontFamily]);
+  }, [
+    mode,
+    hostNodeCanvasObject,
+    nodeLabel,
+    nodeVal,
+    nodeRelSize,
+    theme?.fontFamily,
+  ]);
 
   // Toggle the prop on/off when there's nothing to draw, so the
   // kapsule skips the per-node call entirely on empty frames. This

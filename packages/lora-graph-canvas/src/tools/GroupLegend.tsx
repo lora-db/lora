@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { NodeObject } from "../types";
+import { colorForGroup } from "../theme/palette";
 
 export interface GroupLegendProps<N extends NodeObject = NodeObject> {
   nodes: N[];
@@ -8,34 +9,10 @@ export interface GroupLegendProps<N extends NodeObject = NodeObject> {
   /** Hidden group keys (stringified). Toggled by clicking. */
   hidden: Set<string>;
   onToggle(group: string): void;
-}
-
-/** Auto-colour palette (d3-scale-chromatic's schemeTableau10). We
- *  pick the colour by group-hash so the same group string always maps
- *  to the same swatch across re-renders. */
-const PALETTE = [
-  "#4e79a7",
-  "#f28e2b",
-  "#e15759",
-  "#76b7b2",
-  "#59a14f",
-  "#edc948",
-  "#b07aa1",
-  "#ff9da7",
-  "#9c755f",
-  "#bab0ac",
-];
-
-function hashStringToIndex(input: string, mod: number): number {
-  let h = 0;
-  for (let i = 0; i < input.length; i++) {
-    h = (h * 31 + input.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h) % mod;
-}
-
-export function colorForGroup(group: string): string {
-  return PALETTE[hashStringToIndex(group, PALETTE.length)]!;
+  /** Palette used for swatch backgrounds — must match the canvas's
+   *  node palette so legend swatches and node fills line up. Defaults
+   *  to the package's Tableau10 ramp. */
+  palette?: readonly string[];
 }
 
 export function GroupLegend<N extends NodeObject = NodeObject>({
@@ -43,6 +20,7 @@ export function GroupLegend<N extends NodeObject = NodeObject>({
   groupBy,
   hidden,
   onToggle,
+  palette,
 }: GroupLegendProps<N>) {
   const groups = useMemo(() => {
     if (!groupBy) return [] as string[];
@@ -80,7 +58,7 @@ export function GroupLegend<N extends NodeObject = NodeObject>({
           >
             <span
               className="lgc-legend-swatch"
-              style={{ background: colorForGroup(g) }}
+              style={{ background: colorForGroup(g, palette) }}
             />
             <span>{g}</span>
           </button>

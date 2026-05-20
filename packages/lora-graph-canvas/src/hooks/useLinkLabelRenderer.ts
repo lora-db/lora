@@ -133,8 +133,7 @@ export function useLinkLabelRenderer<L extends LinkObject>(
       const isSelected =
         link.id !== undefined && state.selectedLinkSet.has(link.id);
       const isHovered =
-        link.id !== undefined &&
-        state.hoveredLinkSet?.has(link.id) === true;
+        link.id !== undefined && state.hoveredLinkSet?.has(link.id) === true;
       if (!state.showLabels && !isSelected && !isHovered) return;
 
       // After the simulation ticks, link.source / link.target hold the
@@ -415,87 +414,91 @@ export function useLinkLabelRenderer<L extends LinkObject>(
     theme?.fontFamily,
   ]);
 
-  const positionUpdate = useMemo<LinkLabelRenderer<L>["positionUpdate"]>(
-    () => {
-      if (hostLinkPositionUpdate !== undefined && hostLinkPositionUpdate !== null) {
-        // Host owns positioning entirely.
-        return undefined;
-      }
-      // In 2D presentation the top-down camera makes the world XY
-      // plane map 1:1 onto screen XY, so we can drive
-      // `material.rotation` (a screen-space CCW radian on the sprite
-      // quad) directly from `atan2(dy, dx)` to align the label with
-      // the link's bearing. Normalised into [-π/2, π/2] so the text
-      // never reads upside-down. In 3D the sprite stays billboarded
-      // (rotation = 0) — anchoring along the link in world-space
-      // would require unprojecting through the camera each tick and
-      // is rarely what the user wants when they can already orbit.
-      const is2D = mode === "2d";
-      return (
-        obj: unknown,
-        coords: {
-          start: { x: number; y: number; z: number };
-          end: { x: number; y: number; z: number };
-        },
-      ): boolean => {
-        // The threeObject is a Group (possibly with a lazily-added
-        // sprite child); position the Group at the link midpoint so a
-        // freshly-minted sprite picks up the right transform on its
-        // first rendered frame. Skip the per-tick work for groups
-        // whose sprite hasn't been minted yet AND haven't moved — the
-        // empty Group costs the renderer essentially nothing, so we
-        // don't need to track its position until there's a sprite to
-        // see.
-        if (obj instanceof Group) {
-          const mx = (coords.start.x + coords.end.x) / 2;
-          const my = (coords.start.y + coords.end.y) / 2;
-          const mz = (coords.start.z + coords.end.z) / 2;
-          obj.position.set(mx, my, mz);
-          // One-shot z-order pinning. The kapsule wraps every link in
-          // a parent Group and attaches the default line/cylinder mesh
-          // alongside our label Group. Default renderOrder is 0
-          // everywhere, so in 2D top-down (coplanar geometry) lines
-          // z-fight with — and visibly pass through — node spheres.
-          // Drop the link's parent to `-1` so nodes (default 0) always
-          // draw on top. The userData flag keeps this idempotent
-          // across the ~60 ticks/sec this callback fires at.
-          const parent = obj.parent;
-          if (parent && !(parent.userData as { lgcOrderApplied?: boolean }).lgcOrderApplied) {
-            (parent.userData as { lgcOrderApplied?: boolean }).lgcOrderApplied = true;
-            parent.renderOrder = -1;
-            for (const sibling of parent.children) {
-              if (sibling !== obj) sibling.renderOrder = -1;
-            }
-          }
-          const child = obj.children[0];
-          if (child instanceof Sprite) {
-            const material = child.material as SpriteMaterial;
-            if (is2D) {
-              const dx = coords.end.x - coords.start.x;
-              const dy = coords.end.y - coords.start.y;
-              let angle = Math.atan2(dy, dx);
-              if (angle > Math.PI / 2) angle -= Math.PI;
-              else if (angle < -Math.PI / 2) angle += Math.PI;
-              // Sub-radian no-op guard so we don't dirty the material
-              // buffer when the link hasn't visibly moved frame-to-
-              // frame.
-              if (Math.abs(material.rotation - angle) > 0.001) {
-                material.rotation = angle;
-              }
-            } else if (material.rotation !== 0) {
-              // Coming back from 2D — restore the billboarded baseline.
-              material.rotation = 0;
-            }
+  const positionUpdate = useMemo<LinkLabelRenderer<L>["positionUpdate"]>(() => {
+    if (
+      hostLinkPositionUpdate !== undefined &&
+      hostLinkPositionUpdate !== null
+    ) {
+      // Host owns positioning entirely.
+      return undefined;
+    }
+    // In 2D presentation the top-down camera makes the world XY
+    // plane map 1:1 onto screen XY, so we can drive
+    // `material.rotation` (a screen-space CCW radian on the sprite
+    // quad) directly from `atan2(dy, dx)` to align the label with
+    // the link's bearing. Normalised into [-π/2, π/2] so the text
+    // never reads upside-down. In 3D the sprite stays billboarded
+    // (rotation = 0) — anchoring along the link in world-space
+    // would require unprojecting through the camera each tick and
+    // is rarely what the user wants when they can already orbit.
+    const is2D = mode === "2d";
+    return (
+      obj: unknown,
+      coords: {
+        start: { x: number; y: number; z: number };
+        end: { x: number; y: number; z: number };
+      },
+    ): boolean => {
+      // The threeObject is a Group (possibly with a lazily-added
+      // sprite child); position the Group at the link midpoint so a
+      // freshly-minted sprite picks up the right transform on its
+      // first rendered frame. Skip the per-tick work for groups
+      // whose sprite hasn't been minted yet AND haven't moved — the
+      // empty Group costs the renderer essentially nothing, so we
+      // don't need to track its position until there's a sprite to
+      // see.
+      if (obj instanceof Group) {
+        const mx = (coords.start.x + coords.end.x) / 2;
+        const my = (coords.start.y + coords.end.y) / 2;
+        const mz = (coords.start.z + coords.end.z) / 2;
+        obj.position.set(mx, my, mz);
+        // One-shot z-order pinning. The kapsule wraps every link in
+        // a parent Group and attaches the default line/cylinder mesh
+        // alongside our label Group. Default renderOrder is 0
+        // everywhere, so in 2D top-down (coplanar geometry) lines
+        // z-fight with — and visibly pass through — node spheres.
+        // Drop the link's parent to `-1` so nodes (default 0) always
+        // draw on top. The userData flag keeps this idempotent
+        // across the ~60 ticks/sec this callback fires at.
+        const parent = obj.parent;
+        if (
+          parent &&
+          !(parent.userData as { lgcOrderApplied?: boolean }).lgcOrderApplied
+        ) {
+          (parent.userData as { lgcOrderApplied?: boolean }).lgcOrderApplied =
+            true;
+          parent.renderOrder = -1;
+          for (const sibling of parent.children) {
+            if (sibling !== obj) sibling.renderOrder = -1;
           }
         }
-        // Return true so the kapsule still runs its default
-        // link-geometry update — we're additive, not replacing the
-        // line/cylinder.
-        return true;
-      };
-    },
-    [mode, hostLinkPositionUpdate],
-  );
+        const child = obj.children[0];
+        if (child instanceof Sprite) {
+          const material = child.material as SpriteMaterial;
+          if (is2D) {
+            const dx = coords.end.x - coords.start.x;
+            const dy = coords.end.y - coords.start.y;
+            let angle = Math.atan2(dy, dx);
+            if (angle > Math.PI / 2) angle -= Math.PI;
+            else if (angle < -Math.PI / 2) angle += Math.PI;
+            // Sub-radian no-op guard so we don't dirty the material
+            // buffer when the link hasn't visibly moved frame-to-
+            // frame.
+            if (Math.abs(material.rotation - angle) > 0.001) {
+              material.rotation = angle;
+            }
+          } else if (material.rotation !== 0) {
+            // Coming back from 2D — restore the billboarded baseline.
+            material.rotation = 0;
+          }
+        }
+      }
+      // Return true so the kapsule still runs its default
+      // link-geometry update — we're additive, not replacing the
+      // line/cylinder.
+      return true;
+    };
+  }, [mode, hostLinkPositionUpdate]);
 
   return { canvasObject, threeObject, positionUpdate };
 }

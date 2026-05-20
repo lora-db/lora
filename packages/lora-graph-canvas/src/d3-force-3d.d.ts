@@ -11,12 +11,8 @@ declare module "d3-force-3d" {
   export function forceCollide(
     radius?: number | ((node: unknown) => number),
   ): Force;
-  export function forceX(
-    x?: number | ((node: unknown) => number),
-  ): Force;
-  export function forceY(
-    y?: number | ((node: unknown) => number),
-  ): Force;
+  export function forceX(x?: number | ((node: unknown) => number)): Force;
+  export function forceY(y?: number | ((node: unknown) => number)): Force;
 
   // Used by our in-tree force-graph-2d port (canvas.ts).
   type Simulation = {

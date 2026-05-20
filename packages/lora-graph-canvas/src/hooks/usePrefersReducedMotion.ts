@@ -11,14 +11,20 @@ import { useEffect, useState } from "react";
  *  (SSR / jsdom without matchMedia) so animations play by default. */
 export function usePrefersReducedMotion(): boolean {
   const [reduce, setReduce] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
       return false;
     }
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   });
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
       return;
     }
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");

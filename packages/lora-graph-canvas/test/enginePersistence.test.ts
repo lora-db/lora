@@ -2,11 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import type { GraphEngine } from "../src/engines/types";
-import type {
-  GraphMode,
-  LinkObject,
-  NodeObject,
-} from "../src/types";
+import type { GraphMode, LinkObject, NodeObject } from "../src/types";
 import type { UnifiedEngine } from "../src/engines/createEngineUnified";
 
 // Under the unified engine, mode flips do not destroy or rebuild the
@@ -65,7 +61,13 @@ function makeFakeEngine(id: string, initialMode: GraphMode): FakeEngine {
     emitParticle: vi.fn(),
     stopAnimation: vi.fn(),
     focusOn: vi.fn(),
-    getCameraState: vi.fn(() => ({ mode: "3d" as const, x: 0, y: 0, z: 100, lookAt: { x: 0, y: 0, z: 0 } })),
+    getCameraState: vi.fn(() => ({
+      mode: "3d" as const,
+      x: 0,
+      y: 0,
+      z: 100,
+      lookAt: { x: 0, y: 0, z: 0 },
+    })),
     setCameraState: vi.fn(),
     applyProps: vi.fn(),
     getCanvasElement: vi.fn(() => null),
@@ -126,9 +128,7 @@ describe("useGraphEngine (unified)", () => {
 
     // Flip to 3D — same engine, setMode invoked.
     rerender({ mode: "3d" });
-    expect(engine._setModeCalls).toEqual([
-      { target: "3d", durationMs: 800 },
-    ]);
+    expect(engine._setModeCalls).toEqual([{ target: "3d", durationMs: 800 }]);
     expect(engine.destroy).not.toHaveBeenCalled();
 
     // Flip back — still the same engine, second setMode call.
@@ -152,9 +152,7 @@ describe("useGraphEngine (unified)", () => {
     const engine = makeFakeEngine("e", "2d");
     engineQueue.push(engine);
 
-    renderHook(() =>
-      useGraphEngine(baseProps({ mode: "2d", paused: true })),
-    );
+    renderHook(() => useGraphEngine(baseProps({ mode: "2d", paused: true })));
     expect(engine.pause).toHaveBeenCalledTimes(1);
   });
 

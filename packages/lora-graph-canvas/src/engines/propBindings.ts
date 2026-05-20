@@ -186,10 +186,7 @@ export const SHARED_BINDINGS: PropBinding<unknown>[] = [
 /** Walk the bindings, calling each engine setter for props whose value
  *  changed (using Object.is). The engine instance is treated as a loose
  *  record of chainable setters so this works for both kapsule types. */
-export function applyDiffedProps<
-  N extends NodeObject,
-  L extends LinkObject,
->(
+export function applyDiffedProps<N extends NodeObject, L extends LinkObject>(
   engine: Record<string, (value: unknown) => unknown>,
   props: LoraGraphCanvasProps<N, L>,
   prev: LoraGraphCanvasProps<N, L>,

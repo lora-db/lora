@@ -47,10 +47,9 @@ export interface GraphClipboardApi<N extends NodeObject> {
  *  per-instance clipboard. The clipboard lives in a ref so writes don't
  *  trigger re-renders, and the OS clipboard is intentionally not
  *  touched — copy/paste shouldn't disturb the user's other apps. */
-export function useGraphClipboard<
-  N extends NodeObject,
-  L extends LinkObject,
->(params: UseGraphClipboardParams<N, L>): GraphClipboardApi<N> {
+export function useGraphClipboard<N extends NodeObject, L extends LinkObject>(
+  params: UseGraphClipboardParams<N, L>,
+): GraphClipboardApi<N> {
   const {
     enableClipboard,
     dataApi,
@@ -72,9 +71,9 @@ export function useGraphClipboard<
     for (const node of dataApi.data.nodes) {
       if (!idSet.has(node.id)) continue;
       // Strip id + simulation fields so paste generates fresh ones.
-       
-      const { id, x, y, z, vx, vy, vz, fx, fy, fz, ...rest } =
-        node as N & Record<string, unknown>;
+
+      const { id, x, y, z, vx, vy, vz, fx, fy, fz, ...rest } = node as N &
+        Record<string, unknown>;
       out.push(rest as unknown as Partial<N>);
     }
     return out;
@@ -143,9 +142,7 @@ export function useGraphClipboard<
               ? {
                   x: target.x + offsetX,
                   y: target.y + offsetY,
-                  ...(target.z !== undefined
-                    ? { z: target.z + offsetY }
-                    : {}),
+                  ...(target.z !== undefined ? { z: target.z + offsetY } : {}),
                 }
               : {}),
           } as Partial<N> & { id?: string | number };
@@ -175,9 +172,9 @@ export function useGraphClipboard<
     let i = 0;
     for (const node of dataApi.data.nodes) {
       if (!idSet.has(node.id)) continue;
-       
-      const { id, vx, vy, vz, fx, fy, fz, ...rest } =
-        node as N & Record<string, unknown>;
+
+      const { id, vx, vy, vz, fx, fy, fz, ...rest } = node as N &
+        Record<string, unknown>;
       const offsetX = (i % 3) * 24;
       const offsetY = Math.floor(i / 3) * 24;
       templates.push({
@@ -230,9 +227,9 @@ export function useGraphClipboard<
         }
       }
 
-      const seed: Partial<N> = (opts?.label !== undefined
-        ? { label: opts.label }
-        : {}) as Partial<N>;
+      const seed: Partial<N> = (
+        opts?.label !== undefined ? { label: opts.label } : {}
+      ) as Partial<N>;
       const newNode = dataApi.addNode(seed, pos ? { at: pos } : undefined);
 
       for (const source of sources) {
@@ -270,10 +267,7 @@ export function useGraphClipboard<
     [dataApi],
   );
 
-  const hasClipboard = useCallback(
-    () => clipboardRef.current.length > 0,
-    [],
-  );
+  const hasClipboard = useCallback(() => clipboardRef.current.length > 0, []);
 
   return useMemo<GraphClipboardApi<N>>(
     () => ({

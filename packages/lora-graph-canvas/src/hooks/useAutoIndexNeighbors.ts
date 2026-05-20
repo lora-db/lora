@@ -30,7 +30,7 @@ export function useAutoIndexNeighbors<
       Object.isFrozen(data.nodes[0])
     ) {
       warnedRef.current = true;
-       
+
       console.warn(
         "[lora-graph-canvas] autoIndexNeighbors is enabled but node objects appear to be frozen. The hover-highlight index needs to mutate nodes to attach `_neighbors`/`_links`. Either pass `autoIndexNeighbors={false}` (and `highlightNeighborsOnHover={false}`) or supply mutable node objects.",
       );
@@ -43,13 +43,9 @@ export function useAutoIndexNeighbors<
     }
     for (const link of data.links) {
       const sId =
-        typeof link.source === "object"
-          ? (link.source as N).id
-          : link.source;
+        typeof link.source === "object" ? (link.source as N).id : link.source;
       const tId =
-        typeof link.target === "object"
-          ? (link.target as N).id
-          : link.target;
+        typeof link.target === "object" ? (link.target as N).id : link.target;
       const s = byId.get(sId as string | number);
       const t = byId.get(tId as string | number);
       if (!s || !t) continue;

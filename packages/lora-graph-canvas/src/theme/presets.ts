@@ -1,4 +1,9 @@
 import type { LoraGraphTheme } from "../types";
+import {
+  DEFAULT_LINK_COLOR,
+  DEFAULT_LINK_HOVER_COLOR,
+  DEFAULT_NODE_PALETTE,
+} from "./palette";
 
 /** Light theme — matches the package default. Useful as a reset value
  *  when toggling between presets. */
@@ -17,6 +22,9 @@ export const lightTheme: LoraGraphTheme = {
   menuBackground: "#ffffff",
   menuForeground: "#1c1f23",
   menuHoverBackground: "rgba(0, 0, 0, 0.06)",
+  nodePalette: DEFAULT_NODE_PALETTE,
+  linkDefault: DEFAULT_LINK_COLOR,
+  linkHover: DEFAULT_LINK_HOVER_COLOR,
 };
 
 /** Dark theme — dark surface, accent kept blue. The engine
@@ -37,4 +45,7 @@ export const darkTheme: LoraGraphTheme = {
   menuBackground: "#161a20",
   menuForeground: "#e6e9ee",
   menuHoverBackground: "rgba(255, 255, 255, 0.08)",
+  nodePalette: DEFAULT_NODE_PALETTE,
+  linkDefault: DEFAULT_LINK_COLOR,
+  linkHover: DEFAULT_LINK_HOVER_COLOR,
 };

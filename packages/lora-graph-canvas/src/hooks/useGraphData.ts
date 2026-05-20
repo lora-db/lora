@@ -30,10 +30,9 @@ const SIM_FIELDS = [
   "_links",
 ] as const;
 
-function stripStaleSimulationState<
-  N extends NodeObject,
-  L extends LinkObject,
->(data: GraphData<N, L>): GraphData<N, L> {
+function stripStaleSimulationState<N extends NodeObject, L extends LinkObject>(
+  data: GraphData<N, L>,
+): GraphData<N, L> {
   let mutated = false;
   const nodes = data.nodes.map((n) => {
     const sim = n as unknown as Record<string, unknown>;
@@ -99,11 +98,13 @@ export interface GraphDataApi<N extends NodeObject, L extends LinkObject> {
   updateNode(id: string | number, patch: Partial<N>): void;
   removeNode(id: string | number): void;
   removeNodes(ids: ReadonlyArray<string | number>): void;
-  addLink(link: {
-    source: string | number;
-    target: string | number;
-    id?: string | number;
-  } & Partial<L>): L;
+  addLink(
+    link: {
+      source: string | number;
+      target: string | number;
+      id?: string | number;
+    } & Partial<L>,
+  ): L;
   addLinks(
     links: Array<
       { source: string | number; target: string | number } & Partial<L>
@@ -115,10 +116,9 @@ export interface GraphDataApi<N extends NodeObject, L extends LinkObject> {
 
 /** Owns the canonical `GraphData` for a `LoraGraphCanvas`. Supports
  *  controlled and uncontrolled usage; mutators always notify `onChange`. */
-export function useGraphData<
-  N extends NodeObject,
-  L extends LinkObject,
->(opts: UseGraphDataOptions<N, L>): GraphDataApi<N, L> {
+export function useGraphData<N extends NodeObject, L extends LinkObject>(
+  opts: UseGraphDataOptions<N, L>,
+): GraphDataApi<N, L> {
   const isControlled = opts.controlled !== undefined;
 
   // Ensure every link has an id. Without this, link selection breaks
@@ -162,7 +162,9 @@ export function useGraphData<
       return ensureLinkIdsInPlace(stripStaleSimulationState(opts.defaultData));
     }
     if (opts.controlled !== undefined) {
-      return ensureLinkIdsCopyOnWrite(stripStaleSimulationState(opts.controlled));
+      return ensureLinkIdsCopyOnWrite(
+        stripStaleSimulationState(opts.controlled),
+      );
     }
     return EMPTY_DATA as GraphData<N, L>;
   });
@@ -270,10 +272,7 @@ export function useGraphData<
         const s = typeof l.source === "object" ? l.source?.id : l.source;
         const t = typeof l.target === "object" ? l.target?.id : l.target;
         return (
-          s !== undefined &&
-          t !== undefined &&
-          !idSet.has(s) &&
-          !idSet.has(t)
+          s !== undefined && t !== undefined && !idSet.has(s) && !idSet.has(t)
         );
       });
       commit({ nodes, links });
@@ -282,11 +281,13 @@ export function useGraphData<
   );
 
   const addLink = useCallback(
-    (link: {
-      source: string | number;
-      target: string | number;
-      id?: string | number;
-    } & Partial<L>): L => {
+    (
+      link: {
+        source: string | number;
+        target: string | number;
+        id?: string | number;
+      } & Partial<L>,
+    ): L => {
       const created = { id: createId("l"), ...link } as unknown as L;
       commit({
         nodes: dataRef.current.nodes,

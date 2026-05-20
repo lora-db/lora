@@ -101,21 +101,23 @@ export interface HoverState<N extends NodeObject, L extends LinkObject> {
  *  content. Pulled out of `LoraGraphCanvas` so the live-vs-debounced
  *  split is a first-class contract instead of a tangle of useState +
  *  useRef calls in the canvas body. */
-export function useHoverState<
-  N extends NodeObject,
-  L extends LinkObject,
->(params: UseHoverStateParams<N, L>): HoverState<N, L> {
-  const { highlightNeighborsOnHover, nodeLabel, linkLabel, onNodeHover, onLinkHover } =
-    params;
+export function useHoverState<N extends NodeObject, L extends LinkObject>(
+  params: UseHoverStateParams<N, L>,
+): HoverState<N, L> {
+  const {
+    highlightNeighborsOnHover,
+    nodeLabel,
+    linkLabel,
+    onNodeHover,
+    onLinkHover,
+  } = params;
 
   const [hoverNodeId, setHoverNodeId] = useState<string | number | null>(null);
   const [hoverLinkId, setHoverLinkId] = useState<string | number | null>(null);
-  const [highlightedNodeIds, setHighlightedNodeIds] = useState<
-    ReadonlySet<string | number>
-  >(EMPTY_ID_SET);
-  const [highlightedLinkIds, setHighlightedLinkIds] = useState<
-    ReadonlySet<string | number>
-  >(EMPTY_ID_SET);
+  const [highlightedNodeIds, setHighlightedNodeIds] =
+    useState<ReadonlySet<string | number>>(EMPTY_ID_SET);
+  const [highlightedLinkIds, setHighlightedLinkIds] =
+    useState<ReadonlySet<string | number>>(EMPTY_ID_SET);
   const [tooltipContent, setTooltipContent] = useState<
     string | HTMLElement | null
   >(null);
@@ -135,12 +137,8 @@ export function useHoverState<
   // without re-scheduling it, leaving `hoverNodeId` stuck "on" until
   // another node-hover event arrived. Keeping them separate lets each
   // kind manage its own 250 ms grace independently.
-  const nodeClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const linkClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const nodeClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const linkClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     return () => {
       if (nodeClearTimerRef.current !== null) {
@@ -263,12 +261,7 @@ export function useHoverState<
       return highlightedLinkIds;
     }
     return EMPTY_ID_SET;
-  }, [
-    hoverLinkId,
-    hoverNodeId,
-    highlightNeighborsOnHover,
-    highlightedLinkIds,
-  ]);
+  }, [hoverLinkId, hoverNodeId, highlightNeighborsOnHover, highlightedLinkIds]);
 
   const pinHover = useCallback(
     (node: N | null) => {

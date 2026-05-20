@@ -46,7 +46,7 @@ function refreshFrameScratch(
   renderer.getSize(scratchRendererSize);
   frameScratch.frameId = frameId;
   frameScratch.fov = fov;
-  frameScratch.tanHalfFov = Math.tan(((fov * Math.PI) / 180) / 2);
+  frameScratch.tanHalfFov = Math.tan((fov * Math.PI) / 180 / 2);
   frameScratch.canvasHeightPx = scratchRendererSize.y || 1;
   return frameScratch;
 }
@@ -147,11 +147,7 @@ export function createTextSprite(opts: SpriteLabelOpts): Sprite {
   const cvWidth = textWidth + padding * 2;
   const cvHeight = textHeight + padding * 2;
 
-  const paintCanvas = (
-    cv: HTMLCanvasElement,
-    fg: string,
-    bg: string,
-  ): void => {
+  const paintCanvas = (cv: HTMLCanvasElement, fg: string, bg: string): void => {
     cv.width = cvWidth;
     cv.height = cvHeight;
     const ctx = cv.getContext("2d")!;
@@ -252,10 +248,14 @@ export function createTextSprite(opts: SpriteLabelOpts): Sprite {
       // Shared per-frame FOV + canvas-height lookup. Cheap when this
       // sprite is the 2nd, 3rd, … sprite in the frame.
       const f = refreshFrameScratch(renderer, cam.fov);
-      const worldH = (2 * f.tanHalfFov * distance * targetPx) / f.canvasHeightPx;
+      const worldH =
+        (2 * f.tanHalfFov * distance * targetPx) / f.canvasHeightPx;
       // Sub-pixel change → not worth rewriting. The browser's
       // animation cadence guarantees we revisit soon anyway.
-      if (lastWorldH > 0 && Math.abs(worldH - lastWorldH) < lastWorldH * 0.005) {
+      if (
+        lastWorldH > 0 &&
+        Math.abs(worldH - lastWorldH) < lastWorldH * 0.005
+      ) {
         return;
       }
       lastWorldH = worldH;

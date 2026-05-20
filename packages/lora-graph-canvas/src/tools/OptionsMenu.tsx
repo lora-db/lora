@@ -95,9 +95,7 @@ export function OptionsMenu({ items }: OptionsMenuProps) {
             item.kind === "select" ? (
               <div key={item.id} className="lgc-options-item">
                 <span className="lgc-options-item-text">
-                  <span className="lgc-options-item-label">
-                    {item.label}
-                  </span>
+                  <span className="lgc-options-item-label">{item.label}</span>
                   {item.hint ? (
                     <span className="lgc-options-item-hint">{item.hint}</span>
                   ) : null}
@@ -122,13 +120,9 @@ export function OptionsMenu({ items }: OptionsMenuProps) {
                   onChange={(e) => item.onChange(e.target.checked)}
                 />
                 <span className="lgc-options-item-text">
-                  <span className="lgc-options-item-label">
-                    {item.label}
-                  </span>
+                  <span className="lgc-options-item-label">{item.label}</span>
                   {item.hint ? (
-                    <span className="lgc-options-item-hint">
-                      {item.hint}
-                    </span>
+                    <span className="lgc-options-item-hint">{item.hint}</span>
                   ) : null}
                 </span>
               </label>

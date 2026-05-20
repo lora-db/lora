@@ -1,11 +1,11 @@
 import { useMemo, useRef } from "react";
 import { adjustAlpha } from "../utils/accessor";
-import type {
-  Accessor,
-  GraphMode,
-  LinkObject,
-  NodeObject,
-} from "../types";
+import {
+  DEFAULT_LINK_COLOR,
+  DEFAULT_LINK_HOVER_COLOR,
+  colorForGroup,
+} from "../theme/palette";
+import type { Accessor, GraphMode, LinkObject, NodeObject } from "../types";
 
 export type NodePointerAreaPaint<N extends NodeObject> = (
   node: N,
@@ -28,6 +28,15 @@ export interface UseAccessorOverridesParams<
   nodePointerAreaPaint?: NodePointerAreaPaint<N>;
   nodeAutoColorBy?: Accessor<string | null, N>;
   nodeVisibility?: Accessor<boolean, N>;
+  /** Palette used to colour nodes by group when `nodeAutoColorBy` is
+   *  set and the host hasn't supplied an explicit `nodeColor`.
+   *  Comes from the theme; falls back to the package default. */
+  nodePalette?: readonly string[];
+  /** Default colour for relationships when nothing is selected /
+   *  hovered. Comes from the theme; falls back to the package default. */
+  linkDefaultColor?: string;
+  /** Colour for hovered relationships. */
+  linkHoverColor?: string;
   selectedNodeSet: ReadonlySet<string | number>;
   selectedLinkSet: ReadonlySet<string | number>;
   highlightNeighborsOnHover: boolean;
@@ -44,10 +53,7 @@ export interface UseAccessorOverridesParams<
   hiddenGroups: ReadonlySet<string>;
 }
 
-export interface AccessorOverrides<
-  N extends NodeObject,
-  L extends LinkObject,
-> {
+export interface AccessorOverrides<N extends NodeObject, L extends LinkObject> {
   nodeColor: Accessor<string, N> | undefined;
   linkColor: Accessor<string, L> | undefined;
   linkWidth: Accessor<number, L> | undefined;
@@ -84,9 +90,7 @@ export interface AccessorOverrides<
 export function useAccessorOverrides<
   N extends NodeObject,
   L extends LinkObject,
->(
-  params: UseAccessorOverridesParams<N, L>,
-): AccessorOverrides<N, L> {
+>(params: UseAccessorOverridesParams<N, L>): AccessorOverrides<N, L> {
   const {
     mode,
     accentColor,
@@ -98,6 +102,9 @@ export function useAccessorOverrides<
     nodePointerAreaPaint,
     nodeAutoColorBy,
     nodeVisibility,
+    nodePalette,
+    linkDefaultColor,
+    linkHoverColor,
     selectedNodeSet,
     selectedLinkSet,
     highlightNeighborsOnHover,
@@ -139,13 +146,40 @@ export function useAccessorOverrides<
   };
 
   // ─── nodeColor ────────────────────────────────────────────────
+  // Palette-aware fallback: when the host opts into `nodeAutoColorBy`
+  // (and hasn't supplied a `nodeColor` of their own), we paint nodes
+  // from the theme palette using a stable group-key hash. This is the
+  // canvas-package equivalent of the legend's `colorForGroup`, so the
+  // swatches and node fills always agree. When the host DOES supply
+  // `nodeColor`, theirs wins — we just stay out of the way.
+  const paletteAccessor = useMemo<Accessor<string, N> | undefined>(() => {
+    if (nodeColor !== undefined) return undefined;
+    if (nodeAutoColorBy === undefined) return undefined;
+    const colorBy = nodeAutoColorBy;
+    return (node: N): string => {
+      const raw =
+        typeof colorBy === "function"
+          ? (colorBy as (n: N) => string | number | null)(node)
+          : (node as unknown as Record<string, unknown>)[colorBy as string];
+      if (raw === null || raw === undefined) {
+        return (node.color as string | undefined) ?? "#888";
+      }
+      return colorForGroup(String(raw), nodePalette);
+    };
+  }, [nodeColor, nodeAutoColorBy, nodePalette]);
+
+  // The "effective" base accessor used both by the standalone path (no
+  // overlay) and by the selection/hover wrapper. Either is fine to pass
+  // to the kapsule.
+  const effectiveNodeColor = nodeColor ?? paletteAccessor;
+
   const hasNodeColorOverlay =
     selectedNodeSet.size > 0 ||
     selectedLinkSet.size > 0 ||
     (highlightNeighborsOnHover && highlightedNodeIds.size > 0);
 
   const stableNodeColor = useMemo<Accessor<string, N>>(() => {
-    const base = nodeColor;
+    const base = effectiveNodeColor;
     return (node: N) => {
       const s = overlayStateRef.current;
       if (node.id !== undefined && s.selectedNodeSet.has(node.id)) {
@@ -180,14 +214,16 @@ export function useAccessorOverrides<
     // output, or the kapsule's link/node digest won't pick up the
     // change — see the block-level comment above.
   }, [
-    nodeColor,
+    effectiveNodeColor,
     selectedNodeSet,
     selectedLinkSet,
     hoverNodeId,
     highlightedNodeIds,
   ]);
 
-  const wrappedNodeColor = hasNodeColorOverlay ? stableNodeColor : nodeColor;
+  const wrappedNodeColor = hasNodeColorOverlay
+    ? stableNodeColor
+    : effectiveNodeColor;
 
   // ─── linkColor ────────────────────────────────────────────────
   const hasHiddenGroups =
@@ -212,9 +248,9 @@ export function useAccessorOverrides<
   //                    what touches their current selection.
   //   selected       — accent colour at full strength.
   //
-  // IMPORTANT: `LINK_DEFAULT` and `LINK_HOVER` share the same alpha
-  // channel. Three.js sets `material.transparent = opacity < 1` and
-  // `material.depthWrite = opacity >= 1` when the kapsule rebuilds
+  // IMPORTANT: `LINK_DEFAULT` and `LINK_HOVER` must share the same
+  // alpha channel. Three.js sets `material.transparent = opacity < 1`
+  // and `material.depthWrite = opacity >= 1` when the kapsule rebuilds
   // link materials. Flipping a single hovered link from `transparent`
   // to `opaque` (or vice versa) pulls it out of one sort group and
   // into another, which reshuffles the *entire* transparent render
@@ -224,8 +260,13 @@ export function useAccessorOverrides<
   // only the RGB triplet and the renderer never has to reorder.
   // Selection still crosses the class boundary (accent at α=1) but
   // that's a single click, not a 60Hz event.
-  const LINK_DEFAULT = "rgba(96, 102, 110, 0.55)";
-  const LINK_HOVER = "rgba(180, 188, 198, 0.55)";
+  //
+  // Defaults are theme-driven. Hosts that override only one half are
+  // on the hook for picking compatible alphas — pick both from the
+  // same colour family with matched alpha to keep the sort order
+  // stable.
+  const LINK_DEFAULT = linkDefaultColor ?? DEFAULT_LINK_COLOR;
+  const LINK_HOVER = linkHoverColor ?? DEFAULT_LINK_HOVER_COLOR;
   const stableLinkColor = useMemo<Accessor<string, L>>(() => {
     const base = linkColor;
     // The legend-filter / nodeAutoColorBy axis is static for the
@@ -251,9 +292,7 @@ export function useAccessorOverrides<
           const g =
             typeof colorBy === "function"
               ? (colorBy as (n: N) => unknown)(node)
-              : (node as unknown as Record<string, unknown>)[
-                  colorBy as string
-                ];
+              : (node as unknown as Record<string, unknown>)[colorBy as string];
           return g === null || g === undefined ? null : String(g);
         };
         const sg = groupOf(srcNode);
@@ -274,10 +313,8 @@ export function useAccessorOverrides<
       if (lid !== undefined && s.selectedLinkSet.has(lid)) {
         return s.accentColor;
       }
-      const sId =
-        srcNode?.id ?? (link.source as string | number | undefined);
-      const tId =
-        tgtNode?.id ?? (link.target as string | number | undefined);
+      const sId = srcNode?.id ?? (link.source as string | number | undefined);
+      const tId = tgtNode?.id ?? (link.target as string | number | undefined);
       const hasNodeSelection = s.selectedNodeSet.size > 0;
       const isConnected =
         hasNodeSelection &&
@@ -304,8 +341,7 @@ export function useAccessorOverrides<
       if (typeof base === "function") color = base(link);
       else if (typeof base === "string") color = base;
       else color = (link.color as string | undefined) ?? LINK_DEFAULT;
-      const hasSelection =
-        hasNodeSelection || s.selectedLinkSet.size > 0;
+      const hasSelection = hasNodeSelection || s.selectedLinkSet.size > 0;
       // When SOMETHING is selected, push everything else into the
       // background so the focus reads cleanly. 3D keeps a slightly
       // higher floor (depth gives extra separation) than 2D.
@@ -324,6 +360,13 @@ export function useAccessorOverrides<
     hoverLinkId,
     highlightedLinkIds,
     hiddenGroups,
+    // Theme-driven baselines — when these change the closure's captured
+    // LINK_DEFAULT / LINK_HOVER constants change too. Adding them to
+    // the deps so the wrapper identity flips on theme swaps; otherwise
+    // a host switching from light → dark would see stale link colours
+    // until the next selection change.
+    linkDefaultColor,
+    linkHoverColor,
   ]);
 
   const wrappedLinkColor = hasLinkColorOverlay ? stableLinkColor : linkColor;
@@ -515,9 +558,7 @@ export function useAccessorOverrides<
         const groupVal =
           typeof colorBy === "function"
             ? (colorBy as (n: N) => unknown)(node)
-            : (node as unknown as Record<string, unknown>)[
-                colorBy as string
-              ];
+            : (node as unknown as Record<string, unknown>)[colorBy as string];
         if (
           groupVal !== null &&
           groupVal !== undefined &&
@@ -529,9 +570,7 @@ export function useAccessorOverrides<
       if (typeof baseVis === "function") return Boolean(baseVis(node));
       if (typeof baseVis === "boolean") return baseVis;
       if (typeof baseVis === "string") {
-        return Boolean(
-          (node as unknown as Record<string, unknown>)[baseVis],
-        );
+        return Boolean((node as unknown as Record<string, unknown>)[baseVis]);
       }
       return true;
     };

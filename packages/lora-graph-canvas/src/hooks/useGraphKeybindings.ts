@@ -1,11 +1,6 @@
 import { useEffect, useRef, type RefObject } from "react";
 import type { GraphEngine } from "../engines/types";
-import type {
-  GraphMode,
-  LinkObject,
-  NodeObject,
-  ToolId,
-} from "../types";
+import type { GraphMode, LinkObject, NodeObject, ToolId } from "../types";
 import type { GraphDataApi } from "./useGraphData";
 import type { GraphDeleteGateApi } from "./useGraphDeleteGate";
 import type { SelectionApi } from "./useGraphSelection";
@@ -24,9 +19,7 @@ export interface UseGraphKeybindingsParams<
   setSelectedLinkIds: React.Dispatch<
     React.SetStateAction<Array<string | number>>
   >;
-  setLinkSourceId: React.Dispatch<
-    React.SetStateAction<string | number | null>
-  >;
+  setLinkSourceId: React.Dispatch<React.SetStateAction<string | number | null>>;
   setActiveTool: React.Dispatch<React.SetStateAction<ToolId>>;
   enableClipboard: boolean;
   copy: () => unknown;
@@ -51,10 +44,9 @@ const ARROW_PAN_STEP = 40;
  *  per mount; live state is read through a ref so we avoid the
  *  re-binding churn that would otherwise happen on every selection
  *  change. */
-export function useGraphKeybindings<
-  N extends NodeObject,
-  L extends LinkObject,
->(params: UseGraphKeybindingsParams<N, L>): void {
+export function useGraphKeybindings<N extends NodeObject, L extends LinkObject>(
+  params: UseGraphKeybindingsParams<N, L>,
+): void {
   const paramsRef = useRef(params);
   paramsRef.current = params;
 
@@ -72,7 +64,12 @@ export function useGraphKeybindings<
       // multiple canvases or any kind of form.
       const host = p.hostRef.current;
       const active = document.activeElement as HTMLElement | null;
-      if (host && active && active !== document.body && !host.contains(active)) {
+      if (
+        host &&
+        active &&
+        active !== document.body &&
+        !host.contains(active)
+      ) {
         return;
       }
       // Skip when the focused element is editable — even if it lives
@@ -249,16 +246,16 @@ export function useGraphKeybindings<
             ? (tabIndex - 1 + nodes.length) % nodes.length
             : (tabIndex + 1) % nodes.length;
           const node = nodes[tabIndex];
-          if (
-            !node ||
-            node.x === undefined ||
-            node.y === undefined
-          ) {
+          if (!node || node.x === undefined || node.y === undefined) {
             return;
           }
           p.selection.set([node.id]);
           eng.focusOn(
-            { x: node.x, y: node.y, ...(node.z !== undefined ? { z: node.z } : {}) },
+            {
+              x: node.x,
+              y: node.y,
+              ...(node.z !== undefined ? { z: node.z } : {}),
+            },
             { distance: 120, zoom: 4, durationMs: 400 },
           );
           e.preventDefault();
@@ -266,10 +263,7 @@ export function useGraphKeybindings<
         }
         case "Backspace":
         case "Delete":
-          if (
-            p.selection.selected.length > 0 ||
-            p.selectedLinkIds.length > 0
-          ) {
+          if (p.selection.selected.length > 0 || p.selectedLinkIds.length > 0) {
             // Funnel through the gate so the host's confirm-delete
             // prompt has a chance to cancel. The promise is fire-and-
             // forget: the gate's afterNodeDelete / afterLinkDelete
@@ -295,9 +289,7 @@ export function useGraphKeybindings<
             p.setSelectedLinkIds(
               p.dataApi.data.links
                 .map((l) => l.id)
-                .filter(
-                  (id): id is string | number => id !== undefined,
-                ),
+                .filter((id): id is string | number => id !== undefined),
             );
             e.preventDefault();
           }

@@ -1,10 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ToolId, ToolbarConfig } from "../types";
-import {
-  DEFAULT_TOOL_ORDER,
-  TOOL_DESCRIPTORS,
-  toggleModeIcon,
-} from "./tools";
+import { DEFAULT_TOOL_ORDER, TOOL_DESCRIPTORS, toggleModeIcon } from "./tools";
 
 export interface GraphToolbarProps {
   /** Tools the user configured. Falsy → none; `true` → defaults;
@@ -45,11 +41,9 @@ function resolveToolList(
   });
 }
 
-function resolvePosition(config: GraphToolbarProps["config"]):
-  | "top"
-  | "top-right"
-  | "top-left"
-  | "bottom" {
+function resolvePosition(
+  config: GraphToolbarProps["config"],
+): "top" | "top-right" | "top-left" | "bottom" {
   if (config && typeof config === "object" && !Array.isArray(config)) {
     return config.position ?? "top-right";
   }
@@ -82,10 +76,7 @@ export function GraphToolbar(props: GraphToolbarProps) {
 
   if (ids.length === 0) return null;
   const position = resolvePosition(config);
-  const clampedFocusedIdx = Math.min(
-    focusedIdx,
-    Math.max(0, ids.length - 1),
-  );
+  const clampedFocusedIdx = Math.min(focusedIdx, Math.max(0, ids.length - 1));
 
   const moveFocus = (delta: number) => {
     userActiveRef.current = true;

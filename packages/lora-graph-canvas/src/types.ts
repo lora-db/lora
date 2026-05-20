@@ -112,6 +112,18 @@ export interface LoraGraphTheme {
   menuHoverBackground?: string;
   fontFamily?: string;
   fontSize?: string;
+  /** Palette used when `nodeAutoColorBy` is set: nodes get a colour by
+   *  hashing the group key against this array. Defaults to a
+   *  Tableau10-style ramp. */
+  nodePalette?: readonly string[];
+  /** Default colour for relationships when nothing is selected /
+   *  hovered. Defaults to `rgba(96, 102, 110, 0.55)`. */
+  linkDefault?: string;
+  /** Colour for hovered relationships — both direct hover and
+   *  neighbour-of-hovered-node. Kept distinct from the selection
+   *  accent so users can tell hover from selection at a glance.
+   *  Defaults to `rgba(180, 188, 198, 0.55)`. */
+  linkHover?: string;
 }
 
 export interface ToolbarConfig {
@@ -285,13 +297,7 @@ export interface LoraGraphCanvasProps<
    *  Each tier overrides things like `cooldownTicks`, `d3AlphaDecay`,
    *  3D `nodeResolution`/`linkResolution`, and the 3D layout engine.
    *  Any prop the host sets explicitly always wins. */
-  performanceProfile?:
-    | "auto"
-    | "off"
-    | "default"
-    | "large"
-    | "xlarge"
-    | "huge";
+  performanceProfile?: "auto" | "off" | "default" | "large" | "xlarge" | "huge";
 
   /** Switch the simulation into a beeswarm layout: nodes spread along
    *  one axis driven by a value accessor, with a weak orthogonal pull
@@ -316,8 +322,14 @@ export interface LoraGraphCanvasProps<
   onNodeRightClick?: (node: N, event: MouseEvent) => void;
   onNodeHover?: (node: N | null, previousNode: N | null) => void;
   onNodeDoubleClick?: (node: N, event: MouseEvent) => void;
-  onNodeDrag?: (node: N, translate: { x: number; y: number; z?: number }) => void;
-  onNodeDragEnd?: (node: N, translate: { x: number; y: number; z?: number }) => void;
+  onNodeDrag?: (
+    node: N,
+    translate: { x: number; y: number; z?: number },
+  ) => void;
+  onNodeDragEnd?: (
+    node: N,
+    translate: { x: number; y: number; z?: number },
+  ) => void;
   onLinkClick?: (link: L, event: MouseEvent) => void;
   onLinkRightClick?: (link: L, event: MouseEvent) => void;
   onLinkHover?: (link: L | null, previousLink: L | null) => void;
@@ -442,11 +454,13 @@ export interface LoraGraphCanvasHandle<
    *  same tick (only the resolved promise itself is async). */
   removeNode(id: string | number): Promise<boolean>;
   removeNodes(ids: Array<string | number>): Promise<boolean>;
-  addLink(link: {
-    source: string | number;
-    target: string | number;
-    id?: string | number;
-  } & Partial<L>): L;
+  addLink(
+    link: {
+      source: string | number;
+      target: string | number;
+      id?: string | number;
+    } & Partial<L>,
+  ): L;
   addLinks(
     links: Array<
       { source: string | number; target: string | number } & Partial<L>

@@ -1,7 +1,10 @@
 import type { CSSProperties } from "react";
 import type { LoraGraphTheme } from "../types";
 
-const THEME_TO_VAR: Record<keyof LoraGraphTheme, string> = {
+// Only the chrome-facing theme keys map to CSS variables; the engine-
+// facing keys (`nodePalette`, `linkDefault`, `linkHover`) are consumed
+// in JS by the accessor wrappers and don't need a `--lgc-*` slot.
+const THEME_TO_VAR: Partial<Record<keyof LoraGraphTheme, string>> = {
   background: "--lgc-bg",
   foreground: "--lgc-fg",
   border: "--lgc-border",

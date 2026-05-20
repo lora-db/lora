@@ -1,9 +1,4 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  type MutableRefObject,
-} from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { GraphEngine } from "../engines/types";
 import type { LinkObject, NodeObject } from "../types";
 import type { SelectionApi } from "./useGraphSelection";
@@ -72,10 +67,7 @@ export interface UseMarqueeAndCursorResult {
  *  ref so the listener identity stays stable across data mutations —
  *  re-binding ResizeObserver + window listeners on every change would
  *  otherwise glitch the marquee gesture mid-drag. */
-export function useMarqueeAndCursor<
-  N extends NodeObject,
-  L extends LinkObject,
->(
+export function useMarqueeAndCursor<N extends NodeObject, L extends LinkObject>(
   params: UseMarqueeAndCursorParams<N, L>,
 ): UseMarqueeAndCursorResult {
   const {
@@ -192,7 +184,12 @@ export function useMarqueeAndCursor<
             for (const node of latestRef.current.nodes) {
               if (node.x === undefined || node.y === undefined) continue;
               const sc = eng.graph2Screen(node.x, node.y, node.z);
-              if (sc.x >= xMin && sc.x <= xMax && sc.y >= yMin && sc.y <= yMax) {
+              if (
+                sc.x >= xMin &&
+                sc.x <= xMax &&
+                sc.y >= yMin &&
+                sc.y <= yMax
+              ) {
                 count++;
               }
             }

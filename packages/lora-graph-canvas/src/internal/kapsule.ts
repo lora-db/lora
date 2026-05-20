@@ -57,10 +57,7 @@ export interface KapsuleConfig {
     options?: Record<string, unknown>,
   ) => void;
   /** Trailing-edge digest. Fired after each batch of prop changes. */
-  update?: (
-    state: KapsuleState,
-    changedProps: Record<string, unknown>,
-  ) => void;
+  update?: (state: KapsuleState, changedProps: Record<string, unknown>) => void;
 }
 
 /** A kapsule instance — every prop/method ends up as a chainable
@@ -75,14 +72,8 @@ export interface KapsuleInstance {
 }
 
 export interface KapsuleClassCtor {
-  new (
-    element?: unknown,
-    options?: Record<string, unknown>,
-  ): KapsuleInstance;
-  (
-    element?: unknown,
-    options?: Record<string, unknown>,
-  ): KapsuleInstance;
+  new (element?: unknown, options?: Record<string, unknown>): KapsuleInstance;
+  (element?: unknown, options?: Record<string, unknown>): KapsuleInstance;
 }
 
 class Prop {
@@ -128,11 +119,10 @@ export default function Kapsule(cfg: KapsuleConfig = {}): KapsuleClassCtor {
 
     const initial =
       typeof stateInit === "function" ? stateInit(options) : stateInit;
-    const state: KapsuleState = Object.assign(
-      {},
-      initial,
-      { initialised: false, _rerender: () => {} } as KapsuleState,
-    );
+    const state: KapsuleState = Object.assign({}, initial, {
+      initialised: false,
+      _rerender: () => {},
+    } as KapsuleState);
 
     let changedProps: Record<string, unknown> = {};
 
@@ -142,10 +132,7 @@ export default function Kapsule(cfg: KapsuleConfig = {}): KapsuleClassCtor {
       return comp;
     }) as unknown as KapsuleInstance;
 
-    function initStatic(
-      el: unknown,
-      opts: Record<string, unknown>,
-    ): void {
+    function initStatic(el: unknown, opts: Record<string, unknown>): void {
       initFn.call(comp, el, state, opts);
       state.initialised = true;
     }

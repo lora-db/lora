@@ -1,8 +1,4 @@
-import {
-  IconAddConnected,
-  IconDelete,
-  IconDuplicate,
-} from "./icons";
+import { IconAddConnected, IconDelete, IconDuplicate } from "./icons";
 
 /** Inline icon for "copy". We reuse two stacked squares — similar to
  *  the duplicate icon but distinct enough to read. Keeping these

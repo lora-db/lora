@@ -5,7 +5,9 @@ import { render, act } from "@testing-library/react";
 
 const handlers3D: Record<string, (...a: unknown[]) => void> = {};
 
-function makeFakeKapsule(captureBag: Record<string, (...a: unknown[]) => void>) {
+function makeFakeKapsule(
+  captureBag: Record<string, (...a: unknown[]) => void>,
+) {
   const captureSetters = new Set([
     "onNodeClick",
     "onNodeRightClick",
@@ -182,7 +184,10 @@ describe("import / export JSON via ref handle", () => {
         width={400}
         height={300}
         defaultData={{
-          nodes: [{ id: "a", label: "Alice" }, { id: "b", label: "Bob" }],
+          nodes: [
+            { id: "a", label: "Alice" },
+            { id: "b", label: "Bob" },
+          ],
           links: [{ source: "a", target: "b", id: "l1" }],
         }}
       />,

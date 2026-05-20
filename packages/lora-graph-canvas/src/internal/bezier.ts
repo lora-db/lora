@@ -40,15 +40,9 @@ export class Bezier {
     const uuu = uu * u;
     const ttt = tt * t;
     const x =
-      uuu * p[0]! +
-      3 * uu * t * p[2]! +
-      3 * u * tt * p[4]! +
-      ttt * p[6]!;
+      uuu * p[0]! + 3 * uu * t * p[2]! + 3 * u * tt * p[4]! + ttt * p[6]!;
     const y =
-      uuu * p[1]! +
-      3 * uu * t * p[3]! +
-      3 * u * tt * p[5]! +
-      ttt * p[7]!;
+      uuu * p[1]! + 3 * uu * t * p[3]! + 3 * u * tt * p[5]! + ttt * p[7]!;
     return { x, y };
   }
 

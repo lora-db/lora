@@ -56,8 +56,7 @@ export function perfTierDefaults<
     // count regardless of frame timing, so it works the same on slow
     // and fast machines.
     cooldownTicks: tier === "large" ? 100 : tier === "xlarge" ? 60 : 30,
-    d3AlphaDecay:
-      tier === "large" ? 0.04 : tier === "xlarge" ? 0.08 : 0.15,
+    d3AlphaDecay: tier === "large" ? 0.04 : tier === "xlarge" ? 0.08 : 0.15,
     d3VelocityDecay: tier === "huge" ? 0.6 : 0.4,
     // Default link-hover precision is 8px; shrink it as the graph
     // grows so the shadow-canvas hit-test stays cheap.
@@ -86,8 +85,7 @@ export function perfTierDefaults<
   // Sphere segment count by tier. The visible difference between 6
   // and 4 is hard to see at typical node sizes, while the triangle
   // count halves — so xlarge drops to 4 for the geometry savings.
-  out.nodeResolution =
-    tier === "large" ? 8 : tier === "xlarge" ? 4 : 3;
+  out.nodeResolution = tier === "large" ? 8 : tier === "xlarge" ? 4 : 3;
   // `linkResolution: 0` renders links as 1px THREE.LineSegments
   // instead of cylinders. At 10k+ links the cylinder geometry path
   // builds 10k tiny meshes — each one a draw call, vertex buffer and

@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 export interface ContextMenuItem {
   id: string;
@@ -59,8 +65,14 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     const hostRect = parent.getBoundingClientRect();
     const menuW = el.offsetWidth;
     const menuH = el.offsetHeight;
-    const maxLeft = Math.max(EDGE_PADDING, hostRect.width - menuW - EDGE_PADDING);
-    const maxTop = Math.max(EDGE_PADDING, hostRect.height - menuH - EDGE_PADDING);
+    const maxLeft = Math.max(
+      EDGE_PADDING,
+      hostRect.width - menuW - EDGE_PADDING,
+    );
+    const maxTop = Math.max(
+      EDGE_PADDING,
+      hostRect.height - menuH - EDGE_PADDING,
+    );
     const clampedLeft = Math.min(Math.max(x, EDGE_PADDING), maxLeft);
     const clampedTop = Math.min(Math.max(y, EDGE_PADDING), maxTop);
     if (clampedLeft !== pos.left || clampedTop !== pos.top) {

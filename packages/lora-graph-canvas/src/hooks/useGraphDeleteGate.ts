@@ -54,10 +54,9 @@ export interface GraphDeleteGateApi<L extends LinkObject> {
  *  here keeps the guard semantics (batched calls, post-delete callbacks,
  *  selection cleanup) consistent across keyboard, toolbar, context menu,
  *  selection panel, and imperative paths. */
-export function useGraphDeleteGate<
-  N extends NodeObject,
-  L extends LinkObject,
->(params: UseGraphDeleteGateParams<N, L>): GraphDeleteGateApi<L> {
+export function useGraphDeleteGate<N extends NodeObject, L extends LinkObject>(
+  params: UseGraphDeleteGateParams<N, L>,
+): GraphDeleteGateApi<L> {
   const {
     dataApi,
     beforeNode,

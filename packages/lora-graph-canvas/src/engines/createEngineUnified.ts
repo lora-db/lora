@@ -32,11 +32,7 @@ import {
   applyDiffedProps,
   type EventName,
 } from "./propBindings";
-import type {
-  CameraState,
-  CreateEngineOptions,
-  GraphEngine,
-} from "./types";
+import type { CameraState, CreateEngineOptions, GraphEngine } from "./types";
 import type {
   GraphData,
   GraphMode,
@@ -99,10 +95,7 @@ export interface UnifiedEngine<
   }): void;
 }
 
-export function createEngineUnified<
-  N extends NodeObject,
-  L extends LinkObject,
->(
+export function createEngineUnified<N extends NodeObject, L extends LinkObject>(
   mount: HTMLElement,
   opts: CreateEngineOptions<N, L> & { initialMode: GraphMode },
   handlerRef: { current: LoraGraphCanvasProps<N, L> },
@@ -144,7 +137,8 @@ export function createEngineUnified<
           }
         }
         const fn = handlerRef.current.onEngineStop;
-        if (typeof fn === "function") (fn as (...a: unknown[]) => void)(...args);
+        if (typeof fn === "function")
+          (fn as (...a: unknown[]) => void)(...args);
       });
       continue;
     }
@@ -160,7 +154,10 @@ export function createEngineUnified<
   // prop fires once.
   applyDiffedProps(
     instance as unknown as Record<string, (value: unknown) => unknown>,
-    opts.initialProps as unknown as LoraGraphCanvasProps<NodeObject, LinkObject>,
+    opts.initialProps as unknown as LoraGraphCanvasProps<
+      NodeObject,
+      LinkObject
+    >,
     {} as LoraGraphCanvasProps<NodeObject, LinkObject>,
     "3d",
   );
@@ -259,8 +256,12 @@ export function createEngineUnified<
     const data = instance.graphData() as GraphData<N, L>;
     for (const n of data.nodes) {
       const node = n as unknown as {
-        x?: number; y?: number; z?: number;
-        fx?: number; fy?: number; fz?: number;
+        x?: number;
+        y?: number;
+        z?: number;
+        fx?: number;
+        fy?: number;
+        fz?: number;
       };
       if (node.fx === undefined && typeof node.x === "number") {
         node.fx = node.x;
@@ -352,7 +353,9 @@ export function createEngineUnified<
    *  flags keeps the path safe regardless of which control type the
    *  host configured (we default to orbit; some hosts may not). */
   const applyControlsForMode = (m: GraphMode): void => {
-    const controls = (instance.controls as (() => unknown | null) | undefined)?.();
+    const controls = (
+      instance.controls as (() => unknown | null) | undefined
+    )?.();
     if (!controls) return;
     const c = controls as {
       noRotate?: boolean;
@@ -488,9 +491,12 @@ export function createEngineUnified<
   // up the next mode's anchor, the synthesised value drifts and
   // shifts the resulting orbit centre.
   const readOrbitTarget = (): { x: number; y: number; z: number } | null => {
-    const controls = (instance.controls as (() => unknown | null) | undefined)?.();
-    const target = (controls as { target?: { x: number; y: number; z: number } } | null)
-      ?.target;
+    const controls = (
+      instance.controls as (() => unknown | null) | undefined
+    )?.();
+    const target = (
+      controls as { target?: { x: number; y: number; z: number } } | null
+    )?.target;
     if (!target) return null;
     return { x: target.x, y: target.y, z: target.z };
   };
@@ -557,9 +563,9 @@ export function createEngineUnified<
     sinHalfH: number;
   }
   const readViewportInv = (padding: number): ViewportInv | null => {
-    const cameraObj = (instance.camera?.() as
-      | { fov?: number; aspect?: number }
-      | undefined) ?? {};
+    const cameraObj =
+      (instance.camera?.() as { fov?: number; aspect?: number } | undefined) ??
+      {};
     const fov = cameraObj.fov ?? 50;
     const w = (instance.width?.() as number) ?? opts.width;
     const h = (instance.height?.() as number) ?? opts.height;
@@ -567,11 +573,22 @@ export function createEngineUnified<
     const effW = Math.max(1, w - 2 * padding);
     const effH = Math.max(1, h - 2 * padding);
     const aspect = cameraObj.aspect ?? w / h;
-    const halfFovV = ((fov * Math.PI) / 180) / 2;
+    const halfFovV = (fov * Math.PI) / 180 / 2;
     const tanHalfV = Math.tan(halfFovV);
     const sinHalfV = Math.sin(halfFovV);
     const sinHalfH = Math.sin(Math.atan(tanHalfV * aspect));
-    return { fov, aspect, w, h, effW, effH, halfFovV, tanHalfV, sinHalfV, sinHalfH };
+    return {
+      fov,
+      aspect,
+      w,
+      h,
+      effW,
+      effH,
+      halfFovV,
+      tanHalfV,
+      sinHalfV,
+      sinHalfH,
+    };
   };
 
   const computeFitPose = (
@@ -611,8 +628,8 @@ export function createEngineUnified<
       // plane is `dist * tan(halfFovV)`; pixel padding inflates the
       // requested half-extents by viewport / effective-viewport
       // ratio.
-      const reqDistV = ((halfY * v.h) / v.effH) / v.tanHalfV;
-      const reqDistH = ((halfX * v.h) / v.effW) / v.tanHalfV;
+      const reqDistV = (halfY * v.h) / v.effH / v.tanHalfV;
+      const reqDistH = (halfX * v.h) / v.effW / v.tanHalfV;
       dist = reqDistV > reqDistH ? reqDistV : reqDistH;
       if (dist < FIT_MIN_DIST) dist = FIT_MIN_DIST;
       out.endPos.x = centerX;
@@ -850,11 +867,7 @@ export function createEngineUnified<
           const x = lerp(cur.x, target.x, t);
           const y = lerp(cur.y, target.y, t);
           const z = lerp(cur.z, endZ, t);
-          instance.cameraPosition?.(
-            { x, y, z },
-            { x, y, z: 0 },
-            0,
-          );
+          instance.cameraPosition?.({ x, y, z }, { x, y, z: 0 }, 0);
         });
         return;
       }
@@ -981,9 +994,12 @@ export function createEngineUnified<
       // Build a bbox from the selected nodes only. Reuse the bbox
       // shape that `instance.getGraphBbox()` returns, then plug it
       // into the same camera math `fit()` uses.
-      let xmin = Infinity, xmax = -Infinity;
-      let ymin = Infinity, ymax = -Infinity;
-      let zmin = Infinity, zmax = -Infinity;
+      let xmin = Infinity,
+        xmax = -Infinity;
+      let ymin = Infinity,
+        ymax = -Infinity;
+      let zmin = Infinity,
+        zmax = -Infinity;
       let count = 0;
       for (const n of data.nodes) {
         if (!idSet.has(n.id)) continue;
@@ -1007,9 +1023,10 @@ export function createEngineUnified<
       // Simpler: replicate `fit()`'s math here on the local bbox.
       const dur = durationMs ?? 400;
       const pad = padding ?? 40;
-      const cameraObj = (instance.camera?.() as
-        | { fov?: number; aspect?: number }
-        | undefined) ?? {};
+      const cameraObj =
+        (instance.camera?.() as
+          | { fov?: number; aspect?: number }
+          | undefined) ?? {};
       const fov = cameraObj.fov ?? 50;
       const w = (instance.width?.() as number) ?? opts.width;
       const h = (instance.height?.() as number) ?? opts.height;
@@ -1025,7 +1042,7 @@ export function createEngineUnified<
       const halfX = Math.max((xmax - xmin) / 2, 1);
       const halfY = Math.max((ymax - ymin) / 2, 1);
       const halfZ = Math.max((zmax - zmin) / 2, 0);
-      const halfFovV = ((fov * Math.PI) / 180) / 2;
+      const halfFovV = (fov * Math.PI) / 180 / 2;
       const tanHalfV = Math.tan(halfFovV);
       const MIN_DIST = 60;
       const cur = cameraPosition();
@@ -1033,8 +1050,8 @@ export function createEngineUnified<
       let endPos: Coords3D;
       const endLookAt = { x: center.x, y: center.y, z: center.z };
       if (currentMode === "2d") {
-        const reqDistV = ((halfY * h) / effH) / tanHalfV;
-        const reqDistH = ((halfX * h) / effW) / tanHalfV;
+        const reqDistV = (halfY * h) / effH / tanHalfV;
+        const reqDistH = (halfX * h) / effW / tanHalfV;
         const dist = Math.max(reqDistV, reqDistH, MIN_DIST);
         endPos = { x: center.x, y: center.y, z: center.z + dist };
         cachedDistance = dist;
@@ -1109,8 +1126,7 @@ export function createEngineUnified<
 
       if (state.mode === "2d") {
         // Map (x, y, k) back into 3D top-down camera coordinates.
-        const targetZ =
-          k2Distance(state.k) ?? TWO_D_CAMERA_DISTANCE;
+        const targetZ = k2Distance(state.k) ?? TWO_D_CAMERA_DISTANCE;
         if (dur <= 0) {
           instance.cameraPosition?.(
             { x: state.x, y: state.y, z: targetZ },
@@ -1455,13 +1471,12 @@ export function createEngineUnified<
       // ms for 10k.
       const tauSeconds =
         introOpts?.tauSeconds ??
-        (0.18 + 0.09 * Math.log10(Math.max(1, nodeCount)));
+        0.18 + 0.09 * Math.log10(Math.max(1, nodeCount));
 
       // Bbox sample cadence — bbox traversal is the dominant cost so
       // we throttle it harder on larger graphs. Spring steps still
       // run every frame.
-      const bboxSampleStride =
-        nodeCount < 200 ? 2 : nodeCount < 2000 ? 4 : 6;
+      const bboxSampleStride = nodeCount < 200 ? 2 : nodeCount < 2000 ? 4 : 6;
 
       cancelAnim?.();
 
@@ -1473,7 +1488,9 @@ export function createEngineUnified<
         | ((p: Coords3D, l: Coords3D, dur: number) => unknown)
         | undefined;
       const setCamera = cameraSet
-        ? (cameraSet as (p: Coords3D, l: Coords3D, dur: number) => unknown).bind(instance)
+        ? (
+            cameraSet as (p: Coords3D, l: Coords3D, dur: number) => unknown
+          ).bind(instance)
         : null;
 
       const poseBuf: FitPose = {

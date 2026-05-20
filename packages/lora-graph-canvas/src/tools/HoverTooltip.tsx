@@ -52,7 +52,10 @@ export function HoverTooltip({ content, hostRef }: HoverTooltipProps) {
     const host = hostRef.current;
     if (!host) return;
     rectRef.current = host.getBoundingClientRect();
-    const delayTimer = window.setTimeout(() => setVisible(true), APPEAR_DELAY_MS);
+    const delayTimer = window.setTimeout(
+      () => setVisible(true),
+      APPEAR_DELAY_MS,
+    );
     const onMove = (e: MouseEvent) => {
       const rect = rectRef.current ?? host.getBoundingClientRect();
       setPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });

@@ -139,9 +139,7 @@ describe("collideNodes prop", () => {
         collideNodes
       />,
     );
-    expect(d3ForceCalls.some((c) => c.name === "collide" && c.fn)).toBe(
-      true,
-    );
+    expect(d3ForceCalls.some((c) => c.name === "collide" && c.fn)).toBe(true);
   });
 
   it("removes the force when disabled later", () => {
@@ -162,8 +160,9 @@ describe("collideNodes prop", () => {
         collideNodes={false}
       />,
     );
-    expect(d3ForceCalls.some((c) => c.name === "collide" && c.fn === null))
-      .toBe(true);
+    expect(
+      d3ForceCalls.some((c) => c.name === "collide" && c.fn === null),
+    ).toBe(true);
   });
 });
 
@@ -218,9 +217,7 @@ describe("click-vs-drag tolerance", () => {
           defaultData={{ nodes: [{ id: "a" }], links: [] }}
         />,
       );
-      const mount = container.querySelector(
-        ".lgc-engine-mount",
-      ) as HTMLElement;
+      const mount = container.querySelector(".lgc-engine-mount") as HTMLElement;
       expect(mount).toBeTruthy();
 
       // Simulate the kapsule's container-level listener. With the shim
@@ -268,9 +265,7 @@ describe("click-vs-drag tolerance", () => {
           defaultData={{ nodes: [{ id: "a" }], links: [] }}
         />,
       );
-      const mount = container.querySelector(
-        ".lgc-engine-mount",
-      ) as HTMLElement;
+      const mount = container.querySelector(".lgc-engine-mount") as HTMLElement;
       const kapsuleListener = vi.fn();
       mount.addEventListener("pointermove", kapsuleListener);
 

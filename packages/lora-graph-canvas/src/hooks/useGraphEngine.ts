@@ -11,10 +11,7 @@ import type {
   NodeObject,
 } from "../types";
 
-interface UseGraphEngineParams<
-  N extends NodeObject,
-  L extends LinkObject,
-> {
+interface UseGraphEngineParams<N extends NodeObject, L extends LinkObject> {
   mount: HTMLElement | null;
   mode: GraphMode;
   width: number;
@@ -34,10 +31,9 @@ interface UseGraphEngineParams<
  *  to 0, top-down camera) and 3D (z released, orbit camera). The
  *  engine is destroyed only when the host element changes or the
  *  component unmounts. */
-export function useGraphEngine<
-  N extends NodeObject,
-  L extends LinkObject,
->(params: UseGraphEngineParams<N, L>): UnifiedEngine<N, L> | null {
+export function useGraphEngine<N extends NodeObject, L extends LinkObject>(
+  params: UseGraphEngineParams<N, L>,
+): UnifiedEngine<N, L> | null {
   const {
     mount,
     mode,

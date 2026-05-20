@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react";
-import {
-  LoraGraphCanvas,
-  type LoraGraphCanvasHandle,
-  type GraphData,
-} from ".";
+import { LoraGraphCanvas, type LoraGraphCanvasHandle, type GraphData } from ".";
 import { darkTheme } from "./theme/presets";
 
 const SMALL_GRAPH: GraphData = {
@@ -114,10 +110,16 @@ function BuildAGraph() {
       >
         <b>How to use:</b>
         <ol style={{ margin: "4px 0 0 16px", padding: 0 }}>
-          <li>Click the “add node” button (or press <code>N</code>).</li>
+          <li>
+            Click the “add node” button (or press <code>N</code>).
+          </li>
           <li>Click anywhere on the canvas to drop a node.</li>
-          <li>Press <code>L</code>, then click two nodes to link them.</li>
-          <li>Select a node and press <code>⌫</code> to delete it.</li>
+          <li>
+            Press <code>L</code>, then click two nodes to link them.
+          </li>
+          <li>
+            Select a node and press <code>⌫</code> to delete it.
+          </li>
           <li>Right-click a node or the canvas for more actions.</li>
         </ol>
       </div>
@@ -153,11 +155,15 @@ function Headless() {
         <button onClick={() => ref.current?.addNode()}>+ node</button>
         <button
           onClick={() => {
-            const ids = ref.current?.getData().nodes.slice(-2).map((n) => n.id);
-            if (ids && ids.length === 2) ref.current?.addLink({
-              source: ids[0]!,
-              target: ids[1]!,
-            });
+            const ids = ref.current
+              ?.getData()
+              .nodes.slice(-2)
+              .map((n) => n.id);
+            if (ids && ids.length === 2)
+              ref.current?.addLink({
+                source: ids[0]!,
+                target: ids[1]!,
+              });
           }}
         >
           + link (last two)
@@ -250,12 +256,10 @@ StressGraphStory.storyName = "Stress (10k nodes)";
 function DagStory() {
   const data = useMemo<GraphData>(() => {
     const nodes = Array.from({ length: 20 }, (_, i) => ({ id: i }));
-    const links = nodes
-      .slice(1)
-      .map((n) => ({
-        source: n.id,
-        target: Math.floor(Math.random() * (Number(n.id) || 1)),
-      }));
+    const links = nodes.slice(1).map((n) => ({
+      source: n.id,
+      target: Math.floor(Math.random() * (Number(n.id) || 1)),
+    }));
     return { nodes, links };
   }, []);
   return (
@@ -366,12 +370,10 @@ export const Collide: Story = {
         id: i,
         group: i % 5,
       }));
-      const links = nodes
-        .slice(1)
-        .map((n) => ({
-          source: n.id,
-          target: Math.floor(Math.random() * (Number(n.id) || 1)),
-        }));
+      const links = nodes.slice(1).map((n) => ({
+        source: n.id,
+        target: Math.floor(Math.random() * (Number(n.id) || 1)),
+      }));
       return { nodes, links };
     }, []);
     return (
@@ -532,13 +534,13 @@ RandomGraphStory.storyName = "Random topology (orphans + hub)";
 // caption so the demo also shows the precedence in action.
 const LABELED_GRAPH: GraphData = {
   nodes: [
-    { id: "u1", label: "Alice",   group: "user" },
-    { id: "u2", label: "Bob",     group: "user" },
-    { id: "u3", label: "Carol",   group: "user" },
+    { id: "u1", label: "Alice", group: "user" },
+    { id: "u2", label: "Bob", group: "user" },
+    { id: "u3", label: "Carol", group: "user" },
     { id: "t1", label: "Roadmap", group: "team" },
-    { id: "t2", label: "Infra",   group: "team" },
+    { id: "t2", label: "Infra", group: "team" },
     { id: "p1", label: "lora-graph-canvas", group: "project" },
-    { id: "p2", label: "lora-node",         group: "project" },
+    { id: "p2", label: "lora-node", group: "project" },
   ],
   links: [
     { source: "u1", target: "t1", label: "leads" },
@@ -595,9 +597,7 @@ export const ConfirmDeleteStory: Story = {
           )
         }
         onBeforeLinkDelete={(links, { source }) =>
-          window.confirm(
-            `Delete ${links.length} link(s) via ${source}?`,
-          )
+          window.confirm(`Delete ${links.length} link(s) via ${source}?`)
         }
       />
     </div>
@@ -606,7 +606,7 @@ export const ConfirmDeleteStory: Story = {
     docs: {
       description: {
         story:
-          "Wires `onBeforeNodeDelete` / `onBeforeLinkDelete` so every delete path (Backspace, toolbar, context menu, selection panel, cut) routes through a `window.confirm`. Returning `false` cancels — the graph is unchanged. The same guard fires for `handle.removeNode` calls with `source: \"imperative\"`, which a host can short-circuit when it's the caller.",
+          'Wires `onBeforeNodeDelete` / `onBeforeLinkDelete` so every delete path (Backspace, toolbar, context menu, selection panel, cut) routes through a `window.confirm`. Returning `false` cancels — the graph is unchanged. The same guard fires for `handle.removeNode` calls with `source: "imperative"`, which a host can short-circuit when it\'s the caller.',
       },
     },
   },

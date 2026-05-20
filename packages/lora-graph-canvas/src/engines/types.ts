@@ -47,7 +47,11 @@ export interface GraphEngine<
     y: number,
     z?: number,
   ): { x: number; y: number; z?: number };
-  getGraphBbox(): { x: [number, number]; y: [number, number]; z?: [number, number] };
+  getGraphBbox(): {
+    x: [number, number];
+    y: [number, number];
+    z?: [number, number];
+  };
 
   // Engine
   pause(): void;
@@ -109,7 +113,10 @@ export interface GraphEngine<
   // Prop pipe: receive the full prop bag every render; the adapter is
   // responsible for diffing what it cares about and calling the
   // underlying kapsule setter only when something changed.
-  applyProps(props: LoraGraphCanvasProps<N, L>, prev: LoraGraphCanvasProps<N, L>): void;
+  applyProps(
+    props: LoraGraphCanvasProps<N, L>,
+    prev: LoraGraphCanvasProps<N, L>,
+  ): void;
 
   // Renderer escape hatch — returns the canvas / WebGL DOM element so
   // the `screenshot` ref method can call `toBlob`.

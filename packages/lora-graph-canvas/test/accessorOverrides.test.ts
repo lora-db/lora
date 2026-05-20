@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useAccessorOverrides } from "../src/hooks/useAccessorOverrides";
-import type { NodeObject } from "../src/types";
+import {
+  DEFAULT_LINK_COLOR,
+  DEFAULT_LINK_HOVER_COLOR,
+  colorForGroup,
+} from "../src/theme/palette";
+import type { LinkObject, NodeObject } from "../src/types";
 
 interface TestNode extends NodeObject {
   val?: number;
@@ -34,9 +39,7 @@ function makeFakeCtx() {
     fillStyle: "",
     beginPath: vi.fn(),
     fill: vi.fn(),
-    arc: vi.fn((x: number, y: number, r: number) =>
-      arcCalls.push({ x, y, r }),
-    ),
+    arc: vi.fn((x: number, y: number, r: number) => arcCalls.push({ x, y, r })),
   } as unknown as CanvasRenderingContext2D;
   return { ctx, arcCalls };
 }
@@ -66,11 +69,10 @@ describe("useAccessorOverrides.nodePointerAreaPaint", () => {
     const wrappedVal = result.current.nodeVal!;
     // Visible val is enlarged for selection (2.25× by current tier),
     // but the shadow paint uses the host's base val (1).
-    const visibleVal = (
+    const visibleVal =
       typeof wrappedVal === "function"
         ? (wrappedVal as (n: TestNode) => number)({ id: "a", val: 1 })
-        : 1
-    );
+        : 1;
     expect(visibleVal).toBeGreaterThan(1);
 
     const { ctx, arcCalls } = makeFakeCtx();
@@ -137,5 +139,93 @@ describe("useAccessorOverrides.nodePointerAreaPaint", () => {
     // raycaster has no decoupling).
     expect(wrappedVal({ id: "a", val: 1 })).toBeCloseTo(2.25, 5);
     expect(wrappedVal({ id: "b", val: 1 })).toBe(1);
+  });
+});
+
+interface GroupedNode extends NodeObject {
+  group?: string;
+}
+
+describe("useAccessorOverrides — theme palette", () => {
+  it("paints nodes from the supplied palette when nodeAutoColorBy is set and the host hasn't provided nodeColor", () => {
+    const palette = ["#aa0000", "#00aa00", "#0000aa"] as const;
+    const { result } = renderHook(() =>
+      useAccessorOverrides<GroupedNode, LinkObject>({
+        ...baseParams(),
+        nodeAutoColorBy: "group",
+        nodePalette: palette,
+      }),
+    );
+    const nodeColor = result.current.nodeColor as (n: GroupedNode) => string;
+    expect(typeof nodeColor).toBe("function");
+    // Same group key → palette[hash(key) % palette.length], stable
+    // across calls. We don't pin to a specific index because the hash
+    // is private — we only assert the result is one of the palette
+    // entries and that the colour is consistent for a given key.
+    const aColor = nodeColor({ id: 1, group: "Person" });
+    const bColor = nodeColor({ id: 2, group: "Person" });
+    expect(aColor).toBe(bColor);
+    expect(palette).toContain(aColor);
+    // Two different groups should not collide in this hand-picked test
+    // set (the hash + 3-slot palette happens to spread these three
+    // keys onto three different slots).
+    expect(nodeColor({ id: 3, group: "Company" })).not.toBe(aColor);
+    // And the wrapper agrees with the public `colorForGroup` helper —
+    // that's the contract the legend swatches rely on.
+    expect(aColor).toBe(colorForGroup("Person", palette));
+  });
+
+  it("defers to a host-supplied nodeColor even when nodeAutoColorBy is set", () => {
+    const palette = ["#aa0000"] as const;
+    const hostColor = vi.fn(() => "#123456");
+    const { result } = renderHook(() =>
+      useAccessorOverrides<GroupedNode, LinkObject>({
+        ...baseParams(),
+        nodeAutoColorBy: "group",
+        nodePalette: palette,
+        nodeColor: hostColor,
+      }),
+    );
+    // No overlay → wrapper bypassed, host's accessor flows through.
+    expect(result.current.nodeColor).toBe(hostColor);
+  });
+
+  it("uses the theme-supplied link defaults inside the hover-state wrapper", () => {
+    const themedDefault = "rgba(10, 20, 30, 0.55)";
+    const themedHover = "rgba(200, 210, 220, 0.55)";
+    const { result } = renderHook(() =>
+      useAccessorOverrides<GroupedNode, LinkObject>({
+        ...baseParams(),
+        // Engage the wrapper via a hovered link so we can read the
+        // baselines through it.
+        hoverLinkId: "L",
+        linkDefaultColor: themedDefault,
+        linkHoverColor: themedHover,
+      }),
+    );
+    const linkColor = result.current.linkColor as (l: LinkObject) => string;
+    expect(typeof linkColor).toBe("function");
+    // The hovered link → themed hover colour.
+    expect(linkColor({ id: "L", source: "a", target: "b" })).toBe(themedHover);
+    // A non-hovered link with no host base → themed default.
+    expect(linkColor({ id: "M", source: "a", target: "b" })).toBe(
+      themedDefault,
+    );
+  });
+
+  it("falls back to the package's hardcoded link colours when the theme doesn't override", () => {
+    const { result } = renderHook(() =>
+      useAccessorOverrides<GroupedNode, LinkObject>({
+        ...baseParams(),
+        hoverLinkId: "L",
+      }),
+    );
+    const linkColor = result.current.linkColor as (l: LinkObject) => string;
+    expect(linkColor({ id: "L", source: "a", target: "b" })).toBe(
+      DEFAULT_LINK_HOVER_COLOR,
+    );
+    expect(linkColor({ id: "M", source: "a", target: "b" })).toBe(
+      DEFAULT_LINK_COLOR,
+    );
   });
 });

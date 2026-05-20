@@ -1,11 +1,7 @@
 import { useEffect } from "react";
 import { forceCollide, forceX, forceY } from "d3-force-3d";
 import type { GraphEngine } from "../engines/types";
-import type {
-  LinkObject,
-  LoraGraphCanvasProps,
-  NodeObject,
-} from "../types";
+import type { LinkObject, LoraGraphCanvasProps, NodeObject } from "../types";
 
 export interface UseGraphForcesParams<
   N extends NodeObject,
@@ -20,10 +16,9 @@ export interface UseGraphForcesParams<
 /** Drive optional d3-force-3d forces (collide + beeswarm) onto the
  *  active engine. These are deliberately kept as separate effects in
  *  one hook so the simulation knobs can be toggled independently. */
-export function useGraphForces<
-  N extends NodeObject,
-  L extends LinkObject,
->(params: UseGraphForcesParams<N, L>): void {
+export function useGraphForces<N extends NodeObject, L extends LinkObject>(
+  params: UseGraphForcesParams<N, L>,
+): void {
   const { engine, collideNodes, beeswarm, nodeRelSize } = params;
 
   // ─── Collide force ────────────────────────────────────────────────
@@ -38,9 +33,7 @@ export function useGraphForces<
       return;
     }
     const radius =
-      typeof collideNodes === "number"
-        ? collideNodes
-        : (nodeRelSize ?? 4) + 2;
+      typeof collideNodes === "number" ? collideNodes : (nodeRelSize ?? 4) + 2;
     engine.d3Force("collide", forceCollide(radius));
     engine.reheat();
     return () => {

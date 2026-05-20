@@ -33,9 +33,15 @@ import "./styles.css";
 // Allow consumers to provide `window.THREE` instead of bundling.
 // (Upstream behaviour preserved.)
 const three: typeof globalThis & {
-  THREE?: { AmbientLight: typeof AmbientLight; DirectionalLight: typeof DirectionalLight };
+  THREE?: {
+    AmbientLight: typeof AmbientLight;
+    DirectionalLight: typeof DirectionalLight;
+  };
 } = globalThis as unknown as typeof globalThis & {
-  THREE?: { AmbientLight: typeof AmbientLight; DirectionalLight: typeof DirectionalLight };
+  THREE?: {
+    AmbientLight: typeof AmbientLight;
+    DirectionalLight: typeof DirectionalLight;
+  };
 };
 const ThreeBundle = three.THREE
   ? three.THREE
@@ -159,7 +165,10 @@ interface State {
   enableNavigationControls?: boolean;
   showPointerCursor?: unknown;
   forceEngine?: string;
-  graphData: { nodes: Array<Record<string, unknown>>; links: Array<Record<string, unknown>> };
+  graphData: {
+    nodes: Array<Record<string, unknown>>;
+    links: Array<Record<string, unknown>>;
+  };
   hoverObj?: GraphObj | null;
   _dragControls?: ThreeDragControls | undefined;
   lastSetCameraZ?: number;
@@ -206,7 +215,11 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
       default: 1,
       onChange(p: unknown, state: unknown) {
         const s = asState(state);
-        (s.renderObjs as unknown as { lineHoverPrecision: (n: unknown) => unknown }).lineHoverPrecision(p);
+        (
+          s.renderObjs as unknown as {
+            lineHoverPrecision: (n: unknown) => unknown;
+          }
+        ).lineHoverPrecision(p);
       },
       triggerUpdate: false,
     },
@@ -214,9 +227,10 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
       default: true,
       onChange(enable: unknown, state: unknown) {
         const s = asState(state);
-        const controls = (s.renderObjs.controls as () => unknown)() as
-          | { enabled?: boolean; domElement?: HTMLElement }
-          | null;
+        const controls = (s.renderObjs.controls as () => unknown)() as {
+          enabled?: boolean;
+          domElement?: HTMLElement;
+        } | null;
         if (controls) {
           controls.enabled = !!enable;
           // Synthesize a pointerup on re-enable so any stuck
@@ -252,13 +266,11 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
       ...bboxArgs: unknown[]
     ) {
       const s = asState(state);
-      (s.renderObjs as unknown as {
-        fitToBbox: (b: unknown, d?: number, p?: number) => unknown;
-      }).fitToBbox(
-        this.getGraphBbox(...bboxArgs),
-        transitionDuration,
-        padding,
-      );
+      (
+        s.renderObjs as unknown as {
+          fitToBbox: (b: unknown, d?: number, p?: number) => unknown;
+        }
+      ).fitToBbox(this.getGraphBbox(...bboxArgs), transitionDuration, padding);
       return this;
     },
     pauseAnimation(state: unknown) {
@@ -275,7 +287,10 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
       return this;
     },
     _animationCycle(
-      this: { renderer: () => { domElement: HTMLElement }; _animationCycle: () => void },
+      this: {
+        renderer: () => { domElement: HTMLElement };
+        _animationCycle: () => void;
+      },
       state: unknown,
     ) {
       const s = asState(state);
@@ -322,10 +337,9 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
       (...args: unknown[]) => unknown
     >)();
     const renderObjs = (
-      ThreeRenderObjects as unknown as (opts: ForceGraph3DConfigOptions) => Record<
-        string,
-        (...args: unknown[]) => unknown
-      >
+      ThreeRenderObjects as unknown as (
+        opts: ForceGraph3DConfigOptions,
+      ) => Record<string, (...args: unknown[]) => unknown>
     )({
       ...(o.controlType ? { controlType: o.controlType } : {}),
       ...(o.rendererConfig ? { rendererConfig: o.rendererConfig } : {}),
@@ -360,17 +374,26 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
     s.container.appendChild(roDom);
     (s.renderObjs as unknown as (host: HTMLElement) => unknown)(roDom);
 
-    const camera = (s.renderObjs.camera as () => { position: { x: number; y: number; z: number }; lookAt: (v: { x: number; y: number; z: number }) => void })();
-    const renderer = (s.renderObjs.renderer as () => {
-      domElement: HTMLElement;
-      useLegacyLights?: boolean;
-    })();
-    const controls = (s.renderObjs.controls as () => {
-      enabled?: boolean;
-      domElement?: HTMLElement;
-      _status?: unknown;
-      _onPointerCancel?: () => void;
-    } | null)();
+    const camera = (
+      s.renderObjs.camera as () => {
+        position: { x: number; y: number; z: number };
+        lookAt: (v: { x: number; y: number; z: number }) => void;
+      }
+    )();
+    const renderer = (
+      s.renderObjs.renderer as () => {
+        domElement: HTMLElement;
+        useLegacyLights?: boolean;
+      }
+    )();
+    const controls = (
+      s.renderObjs.controls as () => {
+        enabled?: boolean;
+        domElement?: HTMLElement;
+        _status?: unknown;
+        _onPointerCancel?: () => void;
+      } | null
+    )();
     if (controls) controls.enabled = !!s.enableNavigationControls;
     s.lastSetCameraZ = camera.position.z;
 
@@ -440,7 +463,9 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
           .filter((o): o is Object3D => !!o);
         const dragControls = new ThreeDragControls(
           nodeObjs,
-          camera as unknown as ConstructorParameters<typeof ThreeDragControls>[1],
+          camera as unknown as ConstructorParameters<
+            typeof ThreeDragControls
+          >[1],
           renderer.domElement,
         );
         s._dragControls = dragControls;
@@ -501,7 +526,9 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
               __initialPos?: { clone: () => unknown };
               __prevPos?: { copy: (p: unknown) => unknown };
               position: {
-                clone: () => { sub: (p: unknown) => { x: number; y: number; z: number } };
+                clone: () => {
+                  sub: (p: unknown) => { x: number; y: number; z: number };
+                };
                 x: number;
                 y: number;
                 z: number;
@@ -512,7 +539,9 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
           const nodeObj = getGraphObj(ev.object);
           if (!nodeObj) return;
 
-          if (!Object.prototype.hasOwnProperty.call(ev.object, "__graphObjType")) {
+          if (
+            !Object.prototype.hasOwnProperty.call(ev.object, "__graphObjType")
+          ) {
             // Dragging a child of the node — re-route the motion
             // delta to the node group itself and reset the child to
             // its starting position so the visual drag follows the
@@ -520,14 +549,20 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
             const initPos = ev.object.__initialPos!;
             const prevPos = ev.object.__prevPos!;
             const newPos = ev.object.position;
-            const delta = (newPos.clone() as { sub: (p: unknown) => unknown }).sub(
-              prevPos as unknown,
+            const delta = (
+              newPos.clone() as { sub: (p: unknown) => unknown }
+            ).sub(prevPos as unknown);
+            (
+              nodeObj.position as unknown as {
+                add: (d: unknown) => unknown;
+              }
+            ).add(delta);
+            (prevPos as { copy: (p: unknown) => unknown }).copy(
+              newPos as unknown,
             );
-            (nodeObj.position as unknown as {
-              add: (d: unknown) => unknown;
-            }).add(delta);
-            (prevPos as { copy: (p: unknown) => unknown }).copy(newPos as unknown);
-            (newPos as { copy: (p: unknown) => unknown }).copy(initPos as unknown);
+            (newPos as { copy: (p: unknown) => unknown }).copy(
+              initPos as unknown,
+            );
           }
 
           const node = nodeObj.__data as Record<string, number | undefined> & {
@@ -569,9 +604,11 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
             (node as Record<string, number>)[`f${c}`] = newPos[c];
             (node as Record<string, number>)[c] = newPos[c];
           }
-          (s.forceGraph as unknown as {
-            d3AlphaTarget: (a: number) => { resetCountdown: () => unknown };
-          })
+          (
+            s.forceGraph as unknown as {
+              d3AlphaTarget: (a: number) => { resetCountdown: () => unknown };
+            }
+          )
             .d3AlphaTarget(0.3)
             .resetCountdown();
           (node as Record<string, unknown>).__dragged = true;
@@ -624,9 +661,11 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
             }
           }
 
-          (s.forceGraph as unknown as {
-            d3AlphaTarget: (a: number) => { resetCountdown: () => unknown };
-          })
+          (
+            s.forceGraph as unknown as {
+              d3AlphaTarget: (a: number) => { resetCountdown: () => unknown };
+            }
+          )
             .d3AlphaTarget(0)
             .resetCountdown();
 
@@ -658,13 +697,17 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
       renderer.useLegacyLights = false;
     }
     const ro = s.renderObjs as unknown as {
-      hoverOrderComparator: (cmp: (a: Object3D, b: Object3D) => number) => typeof ro;
+      hoverOrderComparator: (
+        cmp: (a: Object3D, b: Object3D) => number,
+      ) => typeof ro;
       tooltipContent: (fn: (o: Object3D) => string) => typeof ro;
       hoverDuringDrag: (b: boolean) => typeof ro;
       onHover: (cb: (o: Object3D | null) => void) => typeof ro;
       clickAfterDrag: (b: boolean) => typeof ro;
       onClick: (cb: (o: Object3D | null, ev: MouseEvent) => void) => typeof ro;
-      onRightClick: (cb: (o: Object3D | null, ev: MouseEvent) => void) => typeof ro;
+      onRightClick: (
+        cb: (o: Object3D | null, ev: MouseEvent) => void,
+      ) => typeof ro;
     };
     ro.hoverOrderComparator((a, b) => {
       // Prefer graph objects; among them prefer nodes over links so
@@ -695,23 +738,22 @@ const ForceGraph3D: KapsuleClassCtor = Kapsule({
         // Fire `onXHover(null, prev)` only when the kind actually
         // changed — i.e. transition between Node → Link or X → none.
         if (prevObjType && prevObjType !== objType) {
-          const fn = s[
-            `on${prevObjType === "node" ? "Node" : "Link"}Hover`
-          ] as ((cur: unknown, prev: unknown) => void) | undefined;
+          const fn = s[`on${prevObjType === "node" ? "Node" : "Link"}Hover`] as
+            | ((cur: unknown, prev: unknown) => void)
+            | undefined;
           fn?.(null, prevObjData);
         }
         if (objType) {
-          const fn = s[
-            `on${objType === "node" ? "Node" : "Link"}Hover`
-          ] as ((cur: unknown, prev: unknown) => void) | undefined;
+          const fn = s[`on${objType === "node" ? "Node" : "Link"}Hover`] as
+            | ((cur: unknown, prev: unknown) => void)
+            | undefined;
           fn?.(objData, prevObjType === objType ? prevObjData : null);
         }
         const clickFn = hoverObj
           ? s[`on${objType === "node" ? "Node" : "Link"}Click`]
           : s.onBackgroundClick;
         const shouldShowPointer =
-          !!clickFn &&
-          (accessorFn(s.showPointerCursor)(objData) as boolean);
+          !!clickFn && (accessorFn(s.showPointerCursor)(objData) as boolean);
         renderer.domElement.classList[shouldShowPointer ? "add" : "remove"](
           "clickable",
         );

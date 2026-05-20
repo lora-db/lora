@@ -4,16 +4,12 @@ import { pickPerfTier, perfTierDefaults } from "../src/utils/perfTier";
 describe("pickPerfTier", () => {
   it("returns default below the large threshold", () => {
     expect(pickPerfTier({ nodeCount: 100, linkCount: 200 })).toBe("default");
-    expect(pickPerfTier({ nodeCount: 1500, linkCount: 500 })).toBe(
-      "default",
-    );
+    expect(pickPerfTier({ nodeCount: 1500, linkCount: 500 })).toBe("default");
   });
 
   it("returns large between 2k and 10k weighted", () => {
     expect(pickPerfTier({ nodeCount: 2_000, linkCount: 0 })).toBe("large");
-    expect(pickPerfTier({ nodeCount: 5_000, linkCount: 5_000 })).toBe(
-      "large",
-    );
+    expect(pickPerfTier({ nodeCount: 5_000, linkCount: 5_000 })).toBe("large");
   });
 
   it("returns xlarge between 10k and 50k weighted", () => {
@@ -32,9 +28,7 @@ describe("pickPerfTier", () => {
 
   it("weights links at half a node", () => {
     // 1000 nodes + 2000 links → 2000 weighted → large
-    expect(pickPerfTier({ nodeCount: 1_000, linkCount: 2_000 })).toBe(
-      "large",
-    );
+    expect(pickPerfTier({ nodeCount: 1_000, linkCount: 2_000 })).toBe("large");
     // 1000 nodes + 1800 links → 1900 weighted → still default
     expect(pickPerfTier({ nodeCount: 1_000, linkCount: 1_800 })).toBe(
       "default",

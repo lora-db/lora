@@ -70,7 +70,9 @@ function makeRecordingKapsule() {
   >;
 }
 
-vi.mock("../../src/engines/3d-force-graph", () => ({ default: vi.fn(makeRecordingKapsule) }));
+vi.mock("../../src/engines/3d-force-graph", () => ({
+  default: vi.fn(makeRecordingKapsule),
+}));
 
 beforeEach(() => {
   setterCalls.length = 0;
@@ -147,7 +149,7 @@ describe("auto performance tuning", () => {
     expect(valuesFor("cooldownTicks")).not.toContain(100);
   });
 
-  it("respects performanceProfile=\"off\"", () => {
+  it('respects performanceProfile="off"', () => {
     render(
       <LoraGraphCanvas
         width={400}

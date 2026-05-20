@@ -15,7 +15,9 @@
 const ENTROPY = 123; // Bumps low-index numbers above the noise floor.
 
 const int2HexColor = (num: number): string =>
-  `#${Math.min(num, 2 ** 24).toString(16).padStart(6, "0")}`;
+  `#${Math.min(num, 2 ** 24)
+    .toString(16)
+    .padStart(6, "0")}`;
 
 const rgb2Int = (r: number, g: number, b: number): number =>
   (r << 16) + (g << 8) + b;
@@ -61,12 +63,9 @@ export default class CanvasColorTracker<T = unknown> {
         ? hexStr2Int(color)
         : rgb2Int(color[0], color[1], color[2]);
     if (!n) return null; // 0 is the background sentinel
-    const idx = n & ((2 ** (24 - this.#csBits)) - 1);
-    const cs = (n >> (24 - this.#csBits)) & ((2 ** this.#csBits) - 1);
-    if (
-      checksum(idx, this.#csBits) !== cs ||
-      idx >= this.#registry.length
-    ) {
+    const idx = n & (2 ** (24 - this.#csBits) - 1);
+    const cs = (n >> (24 - this.#csBits)) & (2 ** this.#csBits - 1);
+    if (checksum(idx, this.#csBits) !== cs || idx >= this.#registry.length) {
       return null;
     }
     const entry = this.#registry[idx];

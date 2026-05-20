@@ -52,7 +52,10 @@ export default function kapsuleLink(
         default: (dummyK as Record<string, () => unknown>)[prop]!(),
         onChange(v, state) {
           propNames.forEach((propName) => {
-            const inner = state[propName] as Record<string, (v: unknown) => unknown>;
+            const inner = state[propName] as Record<
+              string,
+              (v: unknown) => unknown
+            >;
             inner[prop]!.call(state[propName], v);
           });
         },
@@ -66,8 +69,12 @@ export default function kapsuleLink(
           const kapsuleInstance = state[propName] as Record<
             string,
             (...a: unknown[]) => unknown
-          > & ChainableKapsule;
-          const returnVal = kapsuleInstance[method]!.apply(kapsuleInstance, args);
+          > &
+            ChainableKapsule;
+          const returnVal = kapsuleInstance[method]!.apply(
+            kapsuleInstance,
+            args,
+          );
           if (returnVal !== kapsuleInstance) {
             returnVals.push(returnVal);
           }

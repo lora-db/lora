@@ -9,8 +9,9 @@ class MockResizeObserver {
 }
 
 if (typeof globalThis.ResizeObserver === "undefined") {
-  (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver =
-    MockResizeObserver;
+  (
+    globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }
+  ).ResizeObserver = MockResizeObserver;
 }
 
 // HTMLCanvasElement.getContext('2d') in jsdom returns null, which would

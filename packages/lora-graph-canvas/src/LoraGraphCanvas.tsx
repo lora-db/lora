@@ -46,6 +46,7 @@ import { drawBackgroundGrid } from "./utils/grid";
 import { SNAP_IN } from "./utils/geometry";
 import { themeToStyle } from "./utils/themeStyle";
 import { downloadBlob, downloadScreenshot } from "./utils/download";
+import { DEFAULT_LINK_COLOR } from "./theme/palette";
 import "./theme/styles.css";
 
 function LoraGraphCanvasInner<
@@ -237,12 +238,12 @@ function LoraGraphCanvasInner<
   const savedViewRef = useRef<import("./engines/types").CameraState | null>(
     null,
   );
-  const [focusedNodeId, setFocusedNodeId] = useState<
-    string | number | null
-  >(null);
-  const [focusedLinkId, setFocusedLinkId] = useState<
-    string | number | null
-  >(null);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | number | null>(
+    null,
+  );
+  const [focusedLinkId, setFocusedLinkId] = useState<string | number | null>(
+    null,
+  );
 
   // ─── Add-link in-progress source (clicked first node) ───────────
   const [linkSourceId, setLinkSourceId] = useState<string | number | null>(
@@ -344,8 +345,7 @@ function LoraGraphCanvasInner<
 
       const now = performance.now();
       const last = lastNodeClickRef.current;
-      const isDoubleClick =
-        last && last.id === node.id && now - last.at < 280;
+      const isDoubleClick = last && last.id === node.id && now - last.at < 280;
       lastNodeClickRef.current = { id: node.id, at: now };
       if (isDoubleClick) {
         onNodeDoubleClick?.(node, event);
@@ -367,8 +367,7 @@ function LoraGraphCanvasInner<
         return;
       }
       if (selectionMode !== "none" && node.id !== undefined) {
-        const additive =
-          event.shiftKey || event.ctrlKey || event.metaKey;
+        const additive = event.shiftKey || event.ctrlKey || event.metaKey;
         selection.toggle(node.id, { additive });
         // Shift/ctrl/meta = mixed selection: keep any link selection
         // intact. Plain click resets it so the user has a single,
@@ -379,11 +378,7 @@ function LoraGraphCanvasInner<
       // Click-to-focus: snapshot the current camera, animate toward the
       // node along the user's current viewing angle. Re-clicking the
       // same node restores the saved camera state.
-      if (
-        internalFocusOnClick &&
-        node.id !== undefined &&
-        engineRef.current
-      ) {
+      if (internalFocusOnClick && node.id !== undefined && engineRef.current) {
         const eng = engineRef.current;
         if (focusedNodeId === node.id) {
           if (savedViewRef.current) {
@@ -448,8 +443,7 @@ function LoraGraphCanvasInner<
       // Shift/ctrl/meta = additive intent — preserve the running
       // selection so a stray click-through during a multi-select
       // gesture doesn't blow it away. Plain click still clears.
-      const additive =
-        event.shiftKey || event.ctrlKey || event.metaKey;
+      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
       if (!additive) {
         selection.clear();
         setSelectedLinkIds([]);
@@ -474,8 +468,7 @@ function LoraGraphCanvasInner<
       // what users invariably want (right-click → "Delete" with 20
       // nodes highlighted should delete all 20, not silently one).
       const selectedIds = selection.selected;
-      const isBatch =
-        selectedIds.length > 1 && selectedIds.includes(id);
+      const isBatch = selectedIds.length > 1 && selectedIds.includes(id);
       const items: Array<ContextMenuItem | { separator: true }> = isBatch
         ? [
             {
@@ -485,10 +478,11 @@ function LoraGraphCanvasInner<
                 for (const sid of selectedIds) {
                   const n = dataApi.data.nodes.find((nn) => nn.id === sid);
                   if (!n) continue;
-                  dataApi.updateNode(
-                    sid,
-                    { fx: n.x, fy: n.y, fz: n.z } as Partial<N>,
-                  );
+                  dataApi.updateNode(sid, {
+                    fx: n.x,
+                    fy: n.y,
+                    fz: n.z,
+                  } as Partial<N>);
                 }
               },
             },
@@ -497,10 +491,11 @@ function LoraGraphCanvasInner<
               label: `Unpin ${selectedIds.length} nodes`,
               onSelect: () => {
                 for (const sid of selectedIds) {
-                  dataApi.updateNode(
-                    sid,
-                    { fx: undefined, fy: undefined, fz: undefined } as Partial<N>,
-                  );
+                  dataApi.updateNode(sid, {
+                    fx: undefined,
+                    fy: undefined,
+                    fz: undefined,
+                  } as Partial<N>);
                 }
               },
             },
@@ -516,10 +511,7 @@ function LoraGraphCanvasInner<
               label: `Delete ${selectedIds.length} nodes`,
               shortcut: "⌫",
               onSelect: () => {
-                void deleteGate.requestNodeDelete(
-                  selectedIds,
-                  "contextMenu",
-                );
+                void deleteGate.requestNodeDelete(selectedIds, "contextMenu");
               },
             },
           ]
@@ -601,13 +593,9 @@ function LoraGraphCanvasInner<
           savedViewRef.current = null;
         } else {
           const src =
-            typeof link.source === "object"
-              ? (link.source as N)
-              : null;
+            typeof link.source === "object" ? (link.source as N) : null;
           const tgt =
-            typeof link.target === "object"
-              ? (link.target as N)
-              : null;
+            typeof link.target === "object" ? (link.target as N) : null;
           if (src && tgt && src.x !== undefined && tgt.x !== undefined) {
             if (focusedNodeId === null && focusedLinkId === null) {
               savedViewRef.current = eng.getCameraState();
@@ -651,7 +639,11 @@ function LoraGraphCanvasInner<
             // tan(25°) ≈ 0.466, derived from a 50° vertical FOV.
             const fitDistance = (linkLength / 2 / 0.466) * margin;
             const distance = Math.max(60, fitDistance);
-            eng.focusOn(mid, { distance, zoom, durationMs: reduceMotion ? 0 : 1000 });
+            eng.focusOn(mid, {
+              distance,
+              zoom,
+              durationMs: reduceMotion ? 0 : 1000,
+            });
             setFocusedLinkId(lid);
             setFocusedNodeId(null);
           }
@@ -775,8 +767,7 @@ function LoraGraphCanvasInner<
       if (activeTool === "add-link") {
         const target = dragSnapTargetRef.current;
         dragSnapTargetRef.current = null;
-        if (!target || target.id === undefined || node.id === undefined)
-          return;
+        if (!target || target.id === undefined || node.id === undefined) return;
         dataApi.addLink({
           source: node.id,
           target: target.id,
@@ -807,8 +798,10 @@ function LoraGraphCanvasInner<
       const mountRect = mountRef.current?.getBoundingClientRect();
       const cx = mountRect ? event.clientX - mountRect.left : event.clientX;
       const cy = mountRect ? event.clientY - mountRect.top : event.clientY;
-      const coords =
-        engineRef.current?.screen2Graph(cx, cy) ?? { x: cx, y: cy };
+      const coords = engineRef.current?.screen2Graph(cx, cy) ?? {
+        x: cx,
+        y: cy,
+      };
       setMenu({
         x,
         y,
@@ -869,6 +862,15 @@ function LoraGraphCanvasInner<
       : {}),
     ...(nodeAutoColorBy !== undefined ? { nodeAutoColorBy } : {}),
     ...(nodeVisibility !== undefined ? { nodeVisibility } : {}),
+    ...(theme?.nodePalette !== undefined
+      ? { nodePalette: theme.nodePalette }
+      : {}),
+    ...(theme?.linkDefault !== undefined
+      ? { linkDefaultColor: theme.linkDefault }
+      : {}),
+    ...(theme?.linkHover !== undefined
+      ? { linkHoverColor: theme.linkHover }
+      : {}),
     selectedNodeSet,
     selectedLinkSet,
     highlightNeighborsOnHover,
@@ -974,8 +976,9 @@ function LoraGraphCanvasInner<
       // Kept in lock-step with `LINK_DEFAULT` inside
       // useAccessorOverrides — otherwise the un-stateful link colour
       // would shift the instant any selection appears (when the
-      // wrapper takes over and returns its own default).
-      out.linkColor = "rgba(96, 102, 110, 0.55)";
+      // wrapper takes over and returns its own default). Theme-driven
+      // so a host can swap the baseline without touching either side.
+      out.linkColor = theme?.linkDefault ?? DEFAULT_LINK_COLOR;
     }
     if (out.linkOpacity === undefined) out.linkOpacity = 1;
     if (out.nodeOpacity === undefined) out.nodeOpacity = 1;
@@ -1047,10 +1050,7 @@ function LoraGraphCanvasInner<
     // Background grid via the render-frame-pre hook. Wraps any
     // user-provided callback so we don't clobber it.
     if (showGrid) {
-      out.onRenderFramePre = (
-        ctx: CanvasRenderingContext2D,
-        scale: number,
-      ) => {
+      out.onRenderFramePre = (ctx: CanvasRenderingContext2D, scale: number) => {
         const gridOpts = typeof showGrid === "object" ? showGrid : {};
         drawBackgroundGrid(ctx, scale, gridOpts);
         onRenderFramePre?.(ctx, scale);
@@ -1063,38 +1063,38 @@ function LoraGraphCanvasInner<
     if (accessors.nodeVisibility) out.nodeVisibility = accessors.nodeVisibility;
     return out as LoraGraphCanvasProps<N, L>;
   }, [
-      props,
-      internalDagMode,
-      resolvedBackgroundColor,
-      accessors.nodeColor,
-      accessors.linkColor,
-      accessors.linkWidth,
-      accessors.nodeVal,
-      accessors.nodePointerAreaPaint,
-      accessors.nodeVisibility,
-      perfDefaults,
-      suppressNav,
-      linkHoverPrecision,
-      enableNavigationControls,
-      handleNodeClick,
-      handleNodeRightClick,
-      handleLinkClick,
-      handleLinkRightClick,
-      handleBackgroundClick,
-      handleBackgroundRightClick,
-      handleNodeDrag,
-      handleNodeDragEnd,
-      handleNodeHover,
-      handleLinkHover,
-      showGrid,
-      onRenderFramePre,
-      nodeLabelRenderer.canvasObject,
-      nodeLabelRenderer.threeObject,
-      linkLabelRenderer.canvasObject,
-      linkLabelRenderer.threeObject,
-      linkLabelRenderer.positionUpdate,
-    ],
-  );
+    props,
+    internalDagMode,
+    resolvedBackgroundColor,
+    accessors.nodeColor,
+    accessors.linkColor,
+    accessors.linkWidth,
+    accessors.nodeVal,
+    accessors.nodePointerAreaPaint,
+    accessors.nodeVisibility,
+    perfDefaults,
+    suppressNav,
+    linkHoverPrecision,
+    enableNavigationControls,
+    handleNodeClick,
+    handleNodeRightClick,
+    handleLinkClick,
+    handleLinkRightClick,
+    handleBackgroundClick,
+    handleBackgroundRightClick,
+    handleNodeDrag,
+    handleNodeDragEnd,
+    handleNodeHover,
+    handleLinkHover,
+    showGrid,
+    onRenderFramePre,
+    nodeLabelRenderer.canvasObject,
+    nodeLabelRenderer.threeObject,
+    linkLabelRenderer.canvasObject,
+    linkLabelRenderer.threeObject,
+    linkLabelRenderer.positionUpdate,
+    theme?.linkDefault,
+  ]);
 
   const engine = useGraphEngine<N, L>({
     mount: mountEl,
@@ -1230,15 +1230,19 @@ function LoraGraphCanvasInner<
       // direction). Step scaled to the current zoom so the perceived
       // elevation is consistent at any distance.
       const k = eng.getZoom?.() ?? 1;
-      const step = (-e.deltaY / 4) / Math.max(k, 0.1);
+      const step = -e.deltaY / 4 / Math.max(k, 0.1);
       eng.panBy({ z: step }, 0);
     };
     // Capture phase + non-passive so we can preventDefault before
     // orbit-controls' own listener runs.
-    mountEl.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    mountEl.addEventListener("wheel", onWheel, {
+      capture: true,
+      passive: false,
+    });
     return () => {
-      mountEl.removeEventListener("wheel", onWheel, { capture: true } as
-        AddEventListenerOptions);
+      mountEl.removeEventListener("wheel", onWheel, {
+        capture: true,
+      } as AddEventListenerOptions);
     };
   }, [mountEl, mode]);
 
@@ -1257,9 +1261,19 @@ function LoraGraphCanvasInner<
             // mesh + hit-test refs (Three.js objects with Live3D
             // bindings — also unserialisable).
             const {
-              vx, vy, vz, index, _neighbors, _links,
-              __threeObj, __indexColor, __initialFixedPos, __initialPos,
-              __disposeControlsAfterDrag, __dragCommitted, __dragged,
+              vx,
+              vy,
+              vz,
+              index,
+              _neighbors,
+              _links,
+              __threeObj,
+              __indexColor,
+              __initialFixedPos,
+              __initialPos,
+              __disposeControlsAfterDrag,
+              __dragCommitted,
+              __dragged,
               ...rest
             } = n as N & Record<string, unknown>;
             return rest;
@@ -1280,10 +1294,14 @@ function LoraGraphCanvasInner<
                 ? (link.target as { id: string | number }).id
                 : (link.target as string | number);
             const {
-               
-              source, target, __lineObj, __arrowObj, __photonObjs,
-               
-              __indexColor, index,
+              source,
+              target,
+              __lineObj,
+              __arrowObj,
+              __photonObjs,
+
+              __indexColor,
+              index,
               ...rest
             } = link;
             return { ...rest, source: sId, target: tId };
@@ -1486,7 +1504,12 @@ function LoraGraphCanvasInner<
           ),
       } satisfies OptionItem,
     ],
-    [internalFocusOnClick, internalShowLabels, internalFitOnSelect, internalDagMode],
+    [
+      internalFocusOnClick,
+      internalShowLabels,
+      internalFitOnSelect,
+      internalDagMode,
+    ],
   );
 
   return (
@@ -1548,6 +1571,9 @@ function LoraGraphCanvasInner<
               return next;
             })
           }
+          {...(theme?.nodePalette !== undefined
+            ? { palette: theme.nodePalette }
+            : {})}
         />
       ) : null}
       <SelectionPanel

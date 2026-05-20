@@ -26,11 +26,7 @@ export function readAccessor<T, In>(
 export function resolveNodeLabelText<
   N extends { id?: string | number; label?: unknown },
 >(
-  accessor:
-    | string
-    | HTMLElement
-    | ((n: N) => string | HTMLElement)
-    | undefined,
+  accessor: string | HTMLElement | ((n: N) => string | HTMLElement) | undefined,
   node: N,
 ): string {
   const raw = readAccessor<string | HTMLElement, N>(accessor, node);
@@ -39,7 +35,8 @@ export function resolveNodeLabelText<
     return raw.textContent ?? "";
   }
   if (raw !== null && raw !== undefined) return String(raw);
-  if (typeof node.label === "string" && node.label.length > 0) return node.label;
+  if (typeof node.label === "string" && node.label.length > 0)
+    return node.label;
   return node.id !== undefined ? String(node.id) : "";
 }
 
@@ -54,11 +51,7 @@ export function resolveLinkLabelText<
     target: unknown;
   },
 >(
-  accessor:
-    | string
-    | HTMLElement
-    | ((l: L) => string | HTMLElement)
-    | undefined,
+  accessor: string | HTMLElement | ((l: L) => string | HTMLElement) | undefined,
   link: L,
 ): string {
   const raw = readAccessor<string | HTMLElement, L>(accessor, link);
@@ -67,7 +60,8 @@ export function resolveLinkLabelText<
     return raw.textContent ?? "";
   }
   if (raw !== null && raw !== undefined) return String(raw);
-  if (typeof link.label === "string" && link.label.length > 0) return link.label;
+  if (typeof link.label === "string" && link.label.length > 0)
+    return link.label;
   const src = link.source as { id?: string | number } | string | number;
   const tgt = link.target as { id?: string | number } | string | number;
   const sId =

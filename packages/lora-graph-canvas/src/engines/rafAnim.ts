@@ -94,9 +94,7 @@ export function easeOutQuad(t: number): number {
  *  more "cinematic" than easeOutQuad for longer cross-mode camera
  *  tweens where the user is watching the whole motion. */
 export function easeInOutCubic(t: number): number {
-  return t < 0.5
-    ? 4 * t * t * t
-    : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 export function lerp(a: number, b: number, t: number): number {

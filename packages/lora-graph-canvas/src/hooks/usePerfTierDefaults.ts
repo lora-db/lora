@@ -19,17 +19,14 @@ export interface UsePerfTierDefaultsParams {
  *  perf knobs (cooldownTicks, ngraph layout in 3D, lower mesh
  *  resolutions, etc). The bag is spread *before* `props` so anything
  *  the host sets explicitly always wins. */
-export function usePerfTierDefaults<
-  N extends NodeObject,
-  L extends LinkObject,
->(params: UsePerfTierDefaultsParams): Partial<LoraGraphCanvasProps<N, L>> {
+export function usePerfTierDefaults<N extends NodeObject, L extends LinkObject>(
+  params: UsePerfTierDefaultsParams,
+): Partial<LoraGraphCanvasProps<N, L>> {
   const { profile = "auto", nodeCount, linkCount, mode } = params;
   return useMemo<Partial<LoraGraphCanvasProps<N, L>>>(() => {
     if (profile === "off") return {};
     const tier =
-      profile === "auto"
-        ? pickPerfTier({ nodeCount, linkCount })
-        : profile;
+      profile === "auto" ? pickPerfTier({ nodeCount, linkCount }) : profile;
     return perfTierDefaults<N, L>(tier, mode);
   }, [profile, nodeCount, linkCount, mode]);
 }
