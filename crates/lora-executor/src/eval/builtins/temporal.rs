@@ -37,17 +37,34 @@ pub(super) fn dispatch(op: &str, args: &[LoraValue]) -> Option<LoraValue> {
 // --- current-instant -------------------------------------------------------
 
 fn now(args: &[LoraValue]) -> LoraValue {
-    let kind = match args.first() {
-        Some(LoraValue::String(s)) => s.to_ascii_lowercase(),
-        _ => "datetime".to_string(),
+    let raw = match args.first() {
+        Some(LoraValue::String(s)) => Some(s.clone()),
+        Some(LoraValue::Null) => return LoraValue::Null,
+        _ => None,
     };
-    match kind.as_str() {
-        "date" => LoraValue::Date(LoraDate::today()),
-        "datetime" => LoraValue::DateTime(LoraDateTime::now()),
-        "time" => LoraValue::Time(LoraTime::now()),
-        "local_time" => LoraValue::LocalTime(LoraLocalTime::now()),
-        "local_datetime" => LoraValue::LocalDateTime(LoraLocalDateTime::now()),
-        _ => LoraValue::Null,
+    let kind_lower = raw.as_deref().map(str::to_ascii_lowercase);
+    match kind_lower.as_deref() {
+        None => LoraValue::DateTime(LoraDateTime::now()),
+        Some("date") => LoraValue::Date(LoraDate::today()),
+        Some("datetime") => LoraValue::DateTime(LoraDateTime::now()),
+        Some("time") => LoraValue::Time(LoraTime::now()),
+        Some("local_time") => LoraValue::LocalTime(LoraLocalTime::now()),
+        Some("local_datetime") => LoraValue::LocalDateTime(LoraLocalDateTime::now()),
+        // Not a known "kind" keyword — interpret the argument as a
+        // value to parse. This is what `datetime("2025-01-01T12:00:00Z")`
+        // and `date("2025-01-01")` rely on.
+        Some(_) => {
+            let s = raw.as_ref().expect("string arg present");
+            if let Ok(dt) = LoraDateTime::parse(s) {
+                LoraValue::DateTime(dt)
+            } else if let Ok(d) = LoraDate::parse(s) {
+                LoraValue::Date(d)
+            } else if let Ok(d) = LoraDuration::parse(s) {
+                LoraValue::Duration(d)
+            } else {
+                LoraValue::Null
+            }
+        }
     }
 }
 
