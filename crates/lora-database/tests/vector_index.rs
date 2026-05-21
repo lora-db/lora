@@ -426,7 +426,7 @@ fn flat_knn_matches_oracle_cosine() {
         "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
          OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'cosine'}}}}",
     ));
-    let vectors = seeded_vectors(0xC051_4E_u64, 64, dim);
+    let vectors = seeded_vectors(0x00C0_514E_u64, 64, dim);
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(0xDEAD_BEEF_u64, 1, dim).pop().unwrap();
     let proc_scores = call_top_k(&db, 10, &query);
@@ -442,7 +442,7 @@ fn flat_knn_matches_oracle_euclidean() {
         "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
          OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'euclidean'}}}}",
     ));
-    let vectors = seeded_vectors(0xE0C1_1D_u64, 64, dim);
+    let vectors = seeded_vectors(0x00E0_C11D_u64, 64, dim);
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(0xFEED_FACE_u64, 1, dim).pop().unwrap();
     let proc_scores = call_top_k(&db, 10, &query);
@@ -588,7 +588,7 @@ fn hnsw_recall_at_10_meets_target_cosine() {
     let dim = 64usize;
     let n = 1_000usize;
     create_hnsw_index(&db, dim, "cosine");
-    let vectors = seeded_vectors(0xC051_4E_u64, n, dim);
+    let vectors = seeded_vectors(0x00C0_514E_u64, n, dim);
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(0xDEAD_BEEF_u64, 1, dim).pop().unwrap();
 
@@ -763,9 +763,9 @@ fn dot_metric_works_with_hnsw_provider() {
     let db = TestDb::new();
     let dim = 32usize;
     create_index_with_metric(&db, dim, "dot", "hnsw");
-    let vectors = seeded_vectors(0xD07_2, 256, dim);
+    let vectors = seeded_vectors(0xD072, 256, dim);
     seed_vector_nodes(&db, &vectors);
-    let query = seeded_vectors(0xD07_2_1, 1, dim).pop().unwrap();
+    let query = seeded_vectors(0x000D_0721, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
     params.insert("q".to_string(), LoraValue::Vector(query));
     let rows = db.run_with_params(
@@ -1097,7 +1097,7 @@ fn restrict_to_filters_results_hnsw() {
     let db = TestDb::new();
     let dim = 8usize;
     create_index_with_metric(&db, dim, "cosine", "hnsw");
-    let vectors = seeded_vectors(0xF11_7E_u64, 50, dim);
+    let vectors = seeded_vectors(0x000F_117E_u64, 50, dim);
     seed_vector_nodes(&db, &vectors);
     // Grab the first 5 nodes' internal ids and restrict the query to them.
     let id_rows = db.run("MATCH (n:V) RETURN id(n) AS i ORDER BY id(n) LIMIT 5");
@@ -1112,7 +1112,7 @@ fn restrict_to_filters_results_hnsw() {
         .collect::<Vec<_>>()
         .join(", ");
 
-    let query = seeded_vectors(0xF11_7E_2_u64, 1, dim).pop().unwrap();
+    let query = seeded_vectors(0x00F1_17E2_u64, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
     params.insert("q".to_string(), LoraValue::Vector(query));
     let rows = db.run_with_params(
