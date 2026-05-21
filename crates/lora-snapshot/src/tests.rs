@@ -51,6 +51,7 @@ fn payload() -> SnapshotPayload {
         }],
         indexes: Vec::new(),
         constraints: Vec::new(),
+        vector_indexes: Vec::new(),
     }
 }
 
@@ -233,6 +234,7 @@ fn large_columnar_roundtrip() {
         relationships,
         indexes: Vec::new(),
         constraints: Vec::new(),
+        vector_indexes: Vec::new(),
     };
     let options = SnapshotOptions {
         compression: Compression::Gzip { level: 1 },
