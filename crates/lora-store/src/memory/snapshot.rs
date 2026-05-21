@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::{SnapshotError, SnapshotMeta, SnapshotPayload};
 
+use super::index_catalog::StoredIndexEntity;
 use super::InMemoryGraph;
 
 /// Format-version stamp surfaced through [`SnapshotMeta::format_version`]
@@ -22,6 +23,13 @@ impl InMemoryGraph {
     /// `lora-store` (typically `lora-database`) feed this into
     /// `lora-snapshot` for byte-level encoding.
     pub fn snapshot_payload(&self) -> SnapshotPayload {
+        let mut vector_indexes = self
+            .vector_indexes_read(StoredIndexEntity::Node)
+            .to_snapshots(StoredIndexEntity::Node);
+        vector_indexes.extend(
+            self.vector_indexes_read(StoredIndexEntity::Relationship)
+                .to_snapshots(StoredIndexEntity::Relationship),
+        );
         SnapshotPayload {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
@@ -29,6 +37,7 @@ impl InMemoryGraph {
             relationships: self.iter_rel_records().cloned().collect(),
             indexes: self.index_catalog_read().list(),
             constraints: self.constraint_catalog_read().list(),
+            vector_indexes,
         }
     }
 
@@ -137,6 +146,25 @@ impl InMemoryGraph {
                     /*if_not_exists*/ true,
                 )
                 .map_err(|e| SnapshotError::Decode(format!("index `{}`: {e}", def.name)))?;
+        }
+
+        // Overlay persisted HNSW snapshots over the freshly-registered
+        // (and freshly-backfilled) vector indexes. This is the
+        // post-step that gives Phase 5 its raison d'être: instead of
+        // paying O(n log n) to re-insert every vector through the
+        // HNSW algorithm, we install the graph topology byte-for-byte.
+        // Snapshots from versions before this trailer round-trip with
+        // `vector_indexes = []` so the fallback path (the backfill
+        // that already ran inside `register_index`) handles them
+        // correctly.
+        for snap in payload.vector_indexes {
+            let entity = snap.entity;
+            let mut registry = rebuilt.vector_indexes_write(entity);
+            if !registry.restore_snapshot(snap) {
+                // Catalog/snapshot mismatch — registry already
+                // contains the populate-built backend, which is the
+                // safe fallback. No further action.
+            }
         }
 
         // Re-register constraints. Uniqueness / key constraints recreate

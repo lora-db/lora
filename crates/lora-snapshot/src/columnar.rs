@@ -6,7 +6,7 @@ use lora_store::{
         encode_constraint_definitions, encode_index_definitions, encode_property_value,
     },
     ConstraintDefinition, IndexDefinition, NodeRecord, PropertyValue, RelationshipRecord,
-    SnapshotPayload,
+    SnapshotPayload, VectorIndexSnapshot,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,9 @@ use crate::body::{
     write_u64_vec, BodyReader,
 };
 use crate::errors::{Result, SnapshotCodecError};
-use crate::format::{BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2, BODY_FORMAT_VERSION_V3};
+use crate::format::{
+    BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2, BODY_FORMAT_VERSION_V3, BODY_FORMAT_VERSION_V4,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ColumnarSnapshot {
@@ -39,6 +41,11 @@ pub(crate) struct ColumnarSnapshot {
     /// round-trip.
     #[serde(default)]
     constraints: Vec<ConstraintDefinition>,
+    /// Persisted HNSW backend state. Defaulted to empty so snapshots
+    /// from before V5 round-trip with the existing rebuild-on-load
+    /// path.
+    #[serde(default)]
+    vector_indexes: Vec<VectorIndexSnapshot>,
 }
 
 impl ColumnarSnapshot {
@@ -62,6 +69,7 @@ impl ColumnarSnapshot {
             properties,
             indexes: payload.indexes.clone(),
             constraints: payload.constraints.clone(),
+            vector_indexes: payload.vector_indexes.clone(),
         })
     }
 
@@ -80,6 +88,7 @@ impl ColumnarSnapshot {
             relationships,
             indexes: self.indexes,
             constraints: self.constraints,
+            vector_indexes: self.vector_indexes,
         })
     }
 
@@ -176,6 +185,16 @@ impl ColumnarSnapshot {
         let constraint_bytes = encode_constraint_definitions(&self.constraints)
             .map_err(|e| SnapshotCodecError::Encode(format!("constraint catalog: {e}")))?;
         write_bytes(&mut out, &constraint_bytes)?;
+
+        // v5 trailer: persisted HNSW backend state. JSON-encoded for
+        // first iteration — a follow-up can swap to a hand-rolled
+        // binary format inside the same length-prefixed bytes slot
+        // without bumping the format version (only the encoder/
+        // decoder pair changes, framing is stable).
+        let vector_index_bytes = serde_json::to_vec(&self.vector_indexes).map_err(|e| {
+            SnapshotCodecError::Encode(format!("vector index trailer: {e}"))
+        })?;
+        write_bytes(&mut out, &vector_index_bytes)?;
         Ok(out)
     }
 
@@ -183,6 +202,7 @@ impl ColumnarSnapshot {
         let mut reader = BodyReader::new(bytes);
         let version = reader.read_u32()?;
         if version != BODY_FORMAT_VERSION
+            && version != BODY_FORMAT_VERSION_V4
             && version != BODY_FORMAT_VERSION_V3
             && version != BODY_FORMAT_VERSION_V2
         {
@@ -191,7 +211,8 @@ impl ColumnarSnapshot {
             )));
         }
         let has_catalog = version >= BODY_FORMAT_VERSION_V3;
-        let has_constraints = version >= BODY_FORMAT_VERSION;
+        let has_constraints = version >= BODY_FORMAT_VERSION_V4;
+        let has_vector_indexes = version >= BODY_FORMAT_VERSION;
         let next_node_id = reader.read_u64()?;
         let next_rel_id = reader.read_u64()?;
         let node_ids = reader.read_u64_vec()?;
@@ -225,6 +246,19 @@ impl ColumnarSnapshot {
             Vec::new()
         };
 
+        let vector_indexes = if has_vector_indexes {
+            let bytes = reader.read_bytes()?;
+            if bytes.is_empty() {
+                Vec::new()
+            } else {
+                serde_json::from_slice(bytes).map_err(|e| {
+                    SnapshotCodecError::Decode(format!("vector index trailer: {e}"))
+                })?
+            }
+        } else {
+            Vec::new()
+        };
+
         reader.finish()?;
 
         Ok(Self {
@@ -241,6 +275,7 @@ impl ColumnarSnapshot {
             properties,
             indexes,
             constraints,
+            vector_indexes,
         })
     }
 }

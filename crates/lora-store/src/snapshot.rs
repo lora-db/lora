@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::memory::{ConstraintDefinition, IndexDefinition};
+use crate::memory::{ConstraintDefinition, IndexDefinition, VectorIndexSnapshot};
 use crate::{NodeId, NodeRecord, RelationshipId, RelationshipRecord};
 
 /// Portable representation of an entire store state.
@@ -33,6 +33,12 @@ pub struct SnapshotPayload {
     /// the round-trip.
     #[serde(default)]
     pub constraints: Vec<ConstraintDefinition>,
+    /// Persisted ANN backend state (HNSW today). Defaulted to empty
+    /// so older snapshots that lack the trailer rebuild via the
+    /// existing property-store backfill. Each entry maps to one
+    /// catalog index by name.
+    #[serde(default)]
+    pub vector_indexes: Vec<VectorIndexSnapshot>,
 }
 
 impl SnapshotPayload {
@@ -44,6 +50,7 @@ impl SnapshotPayload {
             relationships: Vec::new(),
             indexes: Vec::new(),
             constraints: Vec::new(),
+            vector_indexes: Vec::new(),
         }
     }
 }

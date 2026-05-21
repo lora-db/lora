@@ -10,4 +10,9 @@ pub(crate) const BODY_FORMAT_VERSION_V2: u32 = 2;
 /// `3` introduced the index-catalog trailer.
 pub(crate) const BODY_FORMAT_VERSION_V3: u32 = 3;
 /// `4` added the constraint-catalog trailer (after indexes).
-pub(crate) const BODY_FORMAT_VERSION: u32 = 4;
+pub(crate) const BODY_FORMAT_VERSION_V4: u32 = 4;
+/// `5` added the vector-index backend trailer (HNSW graph state)
+/// after constraints. JSON-encoded payload for now — a follow-up
+/// can swap to a hand-rolled binary format without a version bump
+/// if the JSON-byte framing is preserved.
+pub(crate) const BODY_FORMAT_VERSION: u32 = 5;
