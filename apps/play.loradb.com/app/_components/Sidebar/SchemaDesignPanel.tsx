@@ -37,13 +37,13 @@ import {
   IconBolt,
   IconChevronDown,
   IconChevronRight,
-  IconCopy,
   IconDots,
   IconEdit,
   IconKey,
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconShare,
   IconTrash,
   IconX,
 } from "@tabler/icons-react";
@@ -226,32 +226,6 @@ export function SchemaDesignPanel() {
       </Group>
 
       <Stack gap={6} px={12} py={10}>
-        <Group gap={6} wrap="nowrap">
-          <Button
-            size="xs"
-            variant="light"
-            // Tint matches the RANGE index badge below so the "new index"
-            // CTA and the existing index rows share a visual family.
-            color="blue"
-            leftSection={<IconPlus size={12} />}
-            onClick={() => openNewIndex()}
-            style={{ flex: 1 }}
-          >
-            Index
-          </Button>
-          <Button
-            size="xs"
-            variant="light"
-            // Same idea on the constraint side — the `grape` tint is the
-            // colour used by every constraint badge in this panel.
-            color="grape"
-            leftSection={<IconPlus size={12} />}
-            onClick={() => openNewConstraint()}
-            style={{ flex: 1 }}
-          >
-            Constraint
-          </Button>
-        </Group>
         <TextInput
           size="xs"
           placeholder="Filter by name, label, or property"
@@ -301,6 +275,11 @@ export function SchemaDesignPanel() {
             }
             tokens={tokens}
             icon={<IconKey size={12} />}
+            onAdd={
+              constraintCount > 0 ? () => openNewConstraint() : undefined
+            }
+            addLabel="New constraint"
+            addColor="grape"
           />
           {constraints === null ? (
             <Hint>Loading…</Hint>
@@ -332,6 +311,9 @@ export function SchemaDesignPanel() {
             filteredCount={filter.length > 0 ? filteredIndexes.length : null}
             tokens={tokens}
             icon={<IconBolt size={12} />}
+            onAdd={indexCount > 0 ? () => openNewIndex() : undefined}
+            addLabel="New index"
+            addColor="blue"
           />
           {indexes === null ? (
             <Hint>Loading…</Hint>
@@ -407,6 +389,10 @@ interface SectionHeaderProps {
   /** When non-null, the badge shows "N of M" to surface filter narrowing. */
   filteredCount?: number | null;
   tokens: ReturnType<typeof usePlaygroundTheme>["tokens"];
+  onAdd?: () => void;
+  addLabel?: string;
+  /** Mantine color token for the add ActionIcon — matches the section's badge palette. */
+  addColor?: string;
 }
 
 function SectionHeader({
@@ -415,6 +401,9 @@ function SectionHeader({
   count,
   filteredCount = null,
   tokens,
+  onAdd,
+  addLabel,
+  addColor = "gray",
 }: SectionHeaderProps) {
   return (
     <Group gap={6} wrap="nowrap" px={4} pt={8} pb={2}>
@@ -432,6 +421,20 @@ function SectionHeader({
       <Badge size="xs" variant="light" color="gray" radius="sm">
         {filteredCount === null ? count : `${filteredCount} of ${count}`}
       </Badge>
+      {onAdd ? (
+        <Tooltip label={addLabel ?? `Add ${title.toLowerCase()}`} withArrow>
+          <ActionIcon
+            size="sm"
+            variant="light"
+            color={addColor}
+            onClick={onAdd}
+            aria-label={addLabel ?? `Add ${title.toLowerCase()}`}
+            style={{ marginLeft: "auto" }}
+          >
+            <IconPlus size={12} />
+          </ActionIcon>
+        </Tooltip>
+      ) : null}
     </Group>
   );
 }
@@ -529,6 +532,10 @@ function ConstraintRow({
             </Badge>
           </Tooltip>
         ) : null}
+        <ShareDdlButton
+          ddl={ddl}
+          ariaLabel={`Copy DDL for constraint ${def.name}`}
+        />
         <RowMenu
           ariaLabel={`Actions for constraint ${def.name}`}
           ddl={ddl}
@@ -661,6 +668,10 @@ function IndexRow({
             <Loader size={10} />
           </Tooltip>
         ) : null}
+        <ShareDdlButton
+          ddl={ddl}
+          ariaLabel={`Copy DDL for index ${def.name}`}
+        />
         <RowMenu
           ariaLabel={`Actions for index ${def.name}`}
           ddl={ddl}
@@ -808,6 +819,28 @@ function DetailChips({
   );
 }
 
+function ShareDdlButton({
+  ddl,
+  ariaLabel,
+}: {
+  ddl: string;
+  ariaLabel: string;
+}) {
+  return (
+    <Tooltip label="Copy DDL" withArrow>
+      <ActionIcon
+        variant="subtle"
+        size="sm"
+        color="gray"
+        aria-label={ariaLabel}
+        onClick={() => copyDdl(ddl)}
+      >
+        <IconShare size={12} />
+      </ActionIcon>
+    </Tooltip>
+  );
+}
+
 interface RowMenuProps {
   ariaLabel: string;
   ddl: string;
@@ -859,12 +892,6 @@ function RowMenu({
             {editLabel}
           </Menu.Item>
         </Tooltip>
-        <Menu.Item
-          leftSection={<IconCopy size={14} />}
-          onClick={() => copyDdl(ddl)}
-        >
-          Copy DDL
-        </Menu.Item>
         <Menu.Item
           leftSection={<IconArrowUpRight size={14} />}
           onClick={() => {

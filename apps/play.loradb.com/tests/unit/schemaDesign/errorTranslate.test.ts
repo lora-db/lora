@@ -8,6 +8,24 @@ describe("translateError", () => {
     expect(translateError("[22N73] index exists").suggestedAction).toBe("useExisting");
   });
 
+  it("enriches 22N73 with the conflicting index name and a valid DROP command", () => {
+    const f = translateError(
+      "[22N73] (:Venue {osm_id}) already covered by index `unique_venue_osm_id`",
+    );
+    expect(f.code).toBe("22N73");
+    expect(f.body).toContain("DROP INDEX `unique_venue_osm_id` IF EXISTS");
+    // Must not suggest a trailing kind keyword — that's the bug we hit.
+    expect(f.body).not.toMatch(/IF EXISTS\s+RANGE/);
+  });
+
+  it("falls back to the generic 22N73 body when the engine message has no name", () => {
+    const f = translateError("[22N73] backing index conflict");
+    expect(f.code).toBe("22N73");
+    expect(f.body).toBe(
+      "LoraDB will use the existing range index automatically. Drop it first if you really want to replace it.",
+    );
+  });
+
   it("falls back via substring sniffing", () => {
     const friendly = translateError("Constraint already exists on schema");
     expect(friendly.title).toBe("An identical constraint already exists");

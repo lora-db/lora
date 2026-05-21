@@ -87,6 +87,14 @@ const KNOWN: Record<string, Omit<FriendlyError, "code">> = {
 
 const CODE_RE = /\[?(\d{2}N\d{2})\]?/;
 
+/**
+ * 22N73 messages from the engine have the shape
+ * `` (:Label {prop}) already covered by index `idx_name` `` — pull the
+ * conflicting index name out so we can surface a copy-pasteable
+ * `DROP INDEX` command instead of leaving the user to guess the syntax.
+ */
+const BACKING_INDEX_NAME_RE = /index `([^`]+)`/;
+
 function pickCode(message: string): string | undefined {
   const m = CODE_RE.exec(message);
   return m ? m[1] : undefined;
@@ -96,7 +104,18 @@ function pickCode(message: string): string | undefined {
 export function translateError(message: string): FriendlyError {
   const code = pickCode(message);
   if (code && KNOWN[code]) {
-    return { code, ...KNOWN[code] };
+    const known: FriendlyError = { code, ...KNOWN[code] };
+    if (code === "22N73") {
+      const m = BACKING_INDEX_NAME_RE.exec(message);
+      if (m) {
+        const name = m[1]!;
+        return {
+          ...known,
+          body: `LoraDB will use the existing range index automatically. To replace it, drop it first with: DROP INDEX \`${name}\` IF EXISTS`,
+        };
+      }
+    }
+    return known;
   }
   const lower = message.toLowerCase();
   if (lower.includes("already exists") && lower.includes("constraint")) {
