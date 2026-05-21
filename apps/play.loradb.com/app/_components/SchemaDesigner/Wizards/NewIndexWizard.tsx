@@ -1,13 +1,19 @@
 "use client";
 
 /**
- * Three-step wizard for `CREATE … INDEX`. Each step is its own pane;
+ * Multi-step wizard for `CREATE … INDEX`. Each step is its own pane;
  * the DDL preview stays sticky on the right so users see the Cypher
  * change live as they make picks.
  *
- * RANGE / TEXT / POINT / LOOKUP are supported. VECTOR + FULLTEXT are
- * surfaced as disabled options with a "coming soon" hint so the user
- * knows the feature is on the roadmap.
+ * Steps:
+ *   1. Kind            — pick the index kind
+ *   2. Where           — pick entity, label, properties
+ *   3. Tune (VECTOR)   — vector-specific: dim / similarity / provider
+ *                        / hnsw knobs / quantization. Only present
+ *                        when kind === VECTOR.
+ *   4. Confirm         — name, IF NOT EXISTS, DDL preview, examples
+ *
+ * RANGE / TEXT / POINT / LOOKUP / FULLTEXT / VECTOR are all supported.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -16,18 +22,29 @@ import {
   Badge,
   Button,
   Checkbox,
+  Divider,
   Group,
   MultiSelect,
+  NumberInput,
   Paper,
   Radio,
+  SegmentedControl,
   Select,
+  Slider,
   Stack,
   Stepper,
+  Switch,
   Text,
   TextInput,
   Tooltip,
 } from "@mantine/core";
-import { IconCircleCheck, IconInfoCircle } from "@tabler/icons-react";
+import {
+  IconBolt,
+  IconCircleCheck,
+  IconInfoCircle,
+  IconRulerMeasure,
+  IconWand,
+} from "@tabler/icons-react";
 
 import { useStore } from "@/lib/state/store";
 import { createIndex, updateIndex } from "@/lib/actions/schemaDesignActions";
@@ -48,7 +65,12 @@ import type {
   IndexDef,
   IndexDraft,
   IndexKind,
+  VectorIndexOptions,
+  VectorIndexProvider,
+  VectorQuantization,
+  VectorSimilarity,
 } from "@/lib/schemaDesign/types";
+import { DEFAULT_VECTOR_OPTIONS } from "@/lib/schemaDesign/types";
 
 const EMPTY_INDEXES: IndexDef[] = [];
 const EMPTY_CONSTRAINTS: ConstraintDef[] = [];
@@ -91,9 +113,8 @@ const KIND_CARDS: readonly KindCard[] = [
   {
     kind: "VECTOR",
     title: "Vector similarity",
-    blurb: "Nearest-neighbour over vector embeddings.",
-    disabled: true,
-    disabledReason: "Coming soon — planner integration still in progress.",
+    blurb:
+      "k-NN over embeddings. HNSW for fast approximate search, flat for exact small-N. Picks up your default tuning unless you tweak it.",
   },
   {
     kind: "FULLTEXT",
@@ -103,7 +124,7 @@ const KIND_CARDS: readonly KindCard[] = [
 ];
 
 function defaultDraftFor(kind: IndexKind): IndexDraft {
-  return {
+  const draft: IndexDraft = {
     kind,
     entity: "NODE",
     label: "",
@@ -111,7 +132,55 @@ function defaultDraftFor(kind: IndexKind): IndexDraft {
     name: "",
     ifNotExists: true,
   };
+  if (kind === "VECTOR") {
+    draft.vectorOptions = { ...DEFAULT_VECTOR_OPTIONS };
+  }
+  return draft;
 }
+
+const SIMILARITY_OPTIONS: ReadonlyArray<{
+  value: VectorSimilarity;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "cosine",
+    label: "Cosine",
+    hint: "Direction-only — the right pick for most embedding workflows.",
+  },
+  {
+    value: "euclidean",
+    label: "Euclidean",
+    hint: "L2 distance. Good when magnitudes carry meaning.",
+  },
+  {
+    value: "dot",
+    label: "Dot",
+    hint: "Raw inner product. Equivalent to cosine on normalised vectors and one reciprocal-sqrt cheaper.",
+  },
+  {
+    value: "manhattan",
+    label: "Manhattan",
+    hint: "L1 distance. Useful with quantised / binary-ish features.",
+  },
+];
+
+const PROVIDER_OPTIONS: ReadonlyArray<{
+  value: VectorIndexProvider;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "hnsw",
+    label: "HNSW",
+    hint: "Approximate k-NN with sub-linear queries. The default at scale.",
+  },
+  {
+    value: "flat",
+    label: "Flat",
+    hint: "Brute-force scoring. Exact, recommended for <10k vectors or as an oracle.",
+  },
+];
 
 export function NewIndexWizard({ onClose }: { onClose: () => void }) {
   const { tokens } = usePlaygroundTheme();
@@ -190,6 +259,25 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
       }),
     [draft, schema],
   );
+
+  const isVector = draft.kind === "VECTOR";
+  const lastStep = isVector ? 3 : 2;
+  // Clamp step when the kind switches between vector / non-vector
+  // mid-flow so the user never lands on a step that no longer
+  // renders.
+  useEffect(() => {
+    if (step > lastStep) setStep(lastStep);
+  }, [lastStep, step]);
+
+  const updateVectorOptions = (patch: Partial<VectorIndexOptions>) => {
+    setDraft((d) => ({
+      ...d,
+      vectorOptions: {
+        ...(d.vectorOptions ?? DEFAULT_VECTOR_OPTIONS),
+        ...patch,
+      },
+    }));
+  };
 
   const submit = async () => {
     setSubmitting(true);
@@ -336,6 +424,19 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
             </Stack>
           </Stepper.Step>
 
+          {isVector && (
+            <Stepper.Step
+              label="Tune"
+              description="Vector knobs"
+              icon={<IconRulerMeasure size={16} />}
+            >
+              <VectorTuneStep
+                options={draft.vectorOptions ?? DEFAULT_VECTOR_OPTIONS}
+                onChange={updateVectorOptions}
+              />
+            </Stepper.Step>
+          )}
+
           <Stepper.Step label="Confirm" description="Name & review">
             <Stack gap="sm" mt="sm">
               <TextInput
@@ -367,7 +468,7 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
             </Stack>
           </Stepper.Step>
         </Stepper>
-        {step === 2 && (
+        {step === lastStep && (
           <Stack gap="xs">
             <DDLPreview ddl={ddl} />
             <Paper withBorder p="xs">
@@ -375,15 +476,7 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
                 What this does
               </Text>
               <Text size="xs" c={tokens.fg.primary} mt={4}>
-                {draft.kind === "RANGE"
-                  ? "Speeds up filters with =, <, >, BETWEEN and ORDER BY on the chosen properties."
-                  : draft.kind === "TEXT"
-                    ? "Speeds up STARTS WITH, CONTAINS and ENDS WITH on the chosen string properties."
-                    : draft.kind === "POINT"
-                      ? "Speeds up point.distance and bounded-area lookups on POINT values."
-                      : draft.kind === "FULLTEXT"
-                        ? "Speeds up CALL db.index.fulltext.queryNodes / queryRelationships across the chosen properties."
-                        : "Speeds up MATCH (n:Label) / MATCH ()-[r:Type]-() scans."}
+                {whatThisDoesCopy(draft)}
               </Text>
             </Paper>
             <UsageExamples examples={usageExamples} />
@@ -415,10 +508,10 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
                 Back
               </Button>
             )}
-            {step < 2 ? (
+            {step < lastStep ? (
               <Button
                 size="xs"
-                onClick={() => setStep((s) => Math.min(2, s + 1))}
+                onClick={() => setStep((s) => Math.min(lastStep, s + 1))}
               >
                 Next
               </Button>
@@ -438,6 +531,320 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
       </Stack>
     </Stack>
   );
+}
+
+function whatThisDoesCopy(draft: IndexDraft): string {
+  switch (draft.kind) {
+    case "RANGE":
+      return "Speeds up filters with =, <, >, BETWEEN and ORDER BY on the chosen properties.";
+    case "TEXT":
+      return "Speeds up STARTS WITH, CONTAINS and ENDS WITH on the chosen string properties.";
+    case "POINT":
+      return "Speeds up point.distance and bounded-area lookups on POINT values.";
+    case "FULLTEXT":
+      return "Speeds up CALL db.index.fulltext.queryNodes / queryRelationships across the chosen properties.";
+    case "VECTOR":
+      return draft.vectorOptions?.provider === "hnsw"
+        ? "Builds an HNSW graph for sub-linear k-NN over the embedding property. Tune knobs control recall vs query cost."
+        : "Scans every vector for every query. Exact results; consider HNSW once you cross ~10k vectors.";
+    default:
+      return "Speeds up MATCH (n:Label) / MATCH ()-[r:Type]-() scans.";
+  }
+}
+
+/**
+ * Vector-index tuning panel. Ships sensible defaults so a user can
+ * click straight to Confirm — every knob has an explainer so the
+ * tradeoff is visible before they touch it.
+ */
+function VectorTuneStep({
+  options,
+  onChange,
+}: {
+  options: VectorIndexOptions;
+  onChange: (patch: Partial<VectorIndexOptions>) => void;
+}) {
+  const { tokens } = usePlaygroundTheme();
+  const isHnsw = options.provider === "hnsw";
+  const int8Allowed = options.similarity === "cosine" && isHnsw;
+  const selectedSim = SIMILARITY_OPTIONS.find(
+    (o) => o.value === options.similarity,
+  );
+  const selectedProvider = PROVIDER_OPTIONS.find(
+    (o) => o.value === options.provider,
+  );
+
+  return (
+    <Stack gap="sm" mt="sm">
+      <Alert
+        color="grape"
+        variant="light"
+        icon={<IconWand size={14} />}
+        styles={{ message: { fontSize: 12 } }}
+      >
+        Defaults work for most embedding workloads. Tune dimensions to
+        match your model (e.g. 384 for MiniLM, 768 for BERT-base,
+        1536 for OpenAI text-embedding-3-small).
+      </Alert>
+
+      <NumberInput
+        label="Embedding dimensions"
+        description="Width of every stored vector. Must match the vectors you insert."
+        value={options.dimensions}
+        onChange={(v) => {
+          const next =
+            typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : 0;
+          onChange({ dimensions: next });
+        }}
+        min={1}
+        max={4096}
+        step={1}
+        clampBehavior="strict"
+        leftSection={<IconRulerMeasure size={14} />}
+      />
+
+      <Stack gap={4}>
+        <Text size="sm" fw={500}>
+          Similarity function
+        </Text>
+        <SegmentedControl
+          fullWidth
+          size="xs"
+          value={options.similarity}
+          onChange={(v) =>
+            onChange({ similarity: v as VectorSimilarity })
+          }
+          data={SIMILARITY_OPTIONS.map((o) => ({
+            value: o.value,
+            label: o.label,
+          }))}
+        />
+        {selectedSim && (
+          <Text size="xs" c={tokens.fg.muted}>
+            {selectedSim.hint}
+          </Text>
+        )}
+      </Stack>
+
+      <Stack gap={4}>
+        <Text size="sm" fw={500}>
+          Index provider
+        </Text>
+        <SegmentedControl
+          fullWidth
+          size="xs"
+          value={options.provider}
+          onChange={(v) =>
+            onChange({ provider: v as VectorIndexProvider })
+          }
+          data={PROVIDER_OPTIONS.map((o) => ({
+            value: o.value,
+            label: o.label,
+          }))}
+        />
+        {selectedProvider && (
+          <Text size="xs" c={tokens.fg.muted}>
+            {selectedProvider.hint}
+          </Text>
+        )}
+      </Stack>
+
+      {isHnsw && (
+        <>
+          <Divider
+            my={4}
+            label={
+              <Group gap={4}>
+                <IconBolt size={12} />
+                <Text size="xs" fw={600} tt="uppercase">
+                  HNSW tuning
+                </Text>
+              </Group>
+            }
+            labelPosition="left"
+          />
+
+          <SliderKnob
+            label="M (neighbours per layer)"
+            description="Higher = better recall, more memory, slower build. 16 is a strong default."
+            value={options.hnswM}
+            onChange={(v) => onChange({ hnswM: v })}
+            min={4}
+            max={64}
+            step={2}
+            marks={[
+              { value: 8, label: "8" },
+              { value: 16, label: "16" },
+              { value: 32, label: "32" },
+              { value: 64, label: "64" },
+            ]}
+          />
+
+          <SliderKnob
+            label="efConstruction"
+            description="Build-time search width. Higher = slower build, better graph quality."
+            value={options.hnswEfConstruction}
+            onChange={(v) => onChange({ hnswEfConstruction: v })}
+            min={16}
+            max={800}
+            step={16}
+            marks={[
+              { value: 100, label: "100" },
+              { value: 200, label: "200" },
+              { value: 400, label: "400" },
+              { value: 800, label: "800" },
+            ]}
+          />
+
+          <SliderKnob
+            label="efSearch"
+            description="Query-time search width. Bump this for tighter pre-filtered queries."
+            value={options.hnswEfSearch}
+            onChange={(v) => onChange({ hnswEfSearch: v })}
+            min={16}
+            max={800}
+            step={16}
+            marks={[
+              { value: 50, label: "50" },
+              { value: 100, label: "100" },
+              { value: 200, label: "200" },
+              { value: 800, label: "800" },
+            ]}
+          />
+
+          <Tooltip
+            label={
+              int8Allowed
+                ? "Stores each coordinate as int8 (-128..127). Memory drops ~4× with a small recall cost."
+                : "Quantization currently requires cosine similarity with the HNSW provider."
+            }
+            withArrow
+            multiline
+            w={260}
+          >
+            <Switch
+              label="int8 quantization (~4× smaller memory)"
+              size="sm"
+              checked={options.quantization === "int8"}
+              disabled={!int8Allowed}
+              onChange={(e) =>
+                onChange({
+                  quantization: e.currentTarget.checked ? "int8" : "none",
+                })
+              }
+            />
+          </Tooltip>
+        </>
+      )}
+
+      <Divider my={4} />
+
+      <Tooltip
+        label="Skip the initial backfill at CREATE time. The index marks Populating and the first query fills it on demand."
+        withArrow
+        multiline
+        w={260}
+      >
+        <Switch
+          label="Populate asynchronously (lazy)"
+          size="sm"
+          checked={options.populateAsync}
+          onChange={(e) =>
+            onChange({ populateAsync: e.currentTarget.checked })
+          }
+        />
+      </Tooltip>
+
+      <Paper
+        withBorder
+        p="xs"
+        style={{
+          background: tokens.bg.overlay,
+        }}
+      >
+        <Text size="xs" c={tokens.fg.muted} tt="uppercase" fw={600}>
+          Quick read
+        </Text>
+        <Text size="xs" c={tokens.fg.primary} mt={4}>
+          {quickReadCopy(options)}
+        </Text>
+      </Paper>
+    </Stack>
+  );
+}
+
+function SliderKnob({
+  label,
+  description,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  marks,
+}: {
+  label: string;
+  description: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  step: number;
+  marks: { value: number; label: string }[];
+}) {
+  const { tokens } = usePlaygroundTheme();
+  return (
+    <Stack gap={2}>
+      <Group justify="space-between" align="baseline">
+        <Text size="sm" fw={500}>
+          {label}
+        </Text>
+        <Badge size="sm" variant="light">
+          {value}
+        </Badge>
+      </Group>
+      <Slider
+        value={value}
+        onChange={onChange}
+        min={min}
+        max={max}
+        step={step}
+        marks={marks}
+        thumbSize={14}
+        styles={{ markLabel: { fontSize: 10 } }}
+      />
+      <Text size="xs" c={tokens.fg.muted}>
+        {description}
+      </Text>
+    </Stack>
+  );
+}
+
+/**
+ * Best-effort summary of the chosen tuning. Avoids hard numbers
+ * (every workload is different) and instead points at the qualitative
+ * tradeoff each toggle pushes you toward.
+ */
+function quickReadCopy(opts: VectorIndexOptions): string {
+  const fragments: string[] = [];
+  fragments.push(`d=${opts.dimensions}`);
+  fragments.push(`${opts.similarity}`);
+  if (opts.provider === "flat") {
+    fragments.push(
+      "Flat: exact recall, query cost grows linearly with N.",
+    );
+  } else {
+    fragments.push(
+      `HNSW M=${opts.hnswM}, ef build/search=${opts.hnswEfConstruction}/${opts.hnswEfSearch}. Higher ef = higher recall + slower queries.`,
+    );
+  }
+  if (opts.quantization === "int8") {
+    fragments.push("int8 storage saves ~4× memory at a small recall cost.");
+  }
+  if (opts.populateAsync) {
+    fragments.push("Async populate: CREATE returns fast, first query backfills.");
+  }
+  return fragments.join(" · ");
 }
 
 function IssueList({

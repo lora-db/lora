@@ -117,6 +117,86 @@ describe("buildCreateIndexDDL", () => {
       "CREATE RANGE INDEX `idx_person_email` IF NOT EXISTS FOR (n:`BadLabel`) ON (n.`ab`)",
     );
   });
+
+  // -------- VECTOR --------
+
+  const vectorBase: IndexDraft = {
+    kind: "VECTOR",
+    entity: "NODE",
+    label: "Movie",
+    properties: ["embedding"],
+    name: "vec_movie_embedding",
+    ifNotExists: true,
+    vectorOptions: {
+      dimensions: 384,
+      similarity: "cosine",
+      provider: "hnsw",
+      hnswM: 16,
+      hnswEfConstruction: 200,
+      hnswEfSearch: 100,
+      quantization: "none",
+      populateAsync: false,
+    },
+  };
+
+  it("emits a VECTOR INDEX with full HNSW OPTIONS", () => {
+    expect(buildCreateIndexDDL(vectorBase)).toBe(
+      "CREATE VECTOR INDEX `vec_movie_embedding` IF NOT EXISTS " +
+        "FOR (n:`Movie`) ON (n.`embedding`) " +
+        "OPTIONS {indexConfig: {`vector.dimensions`: 384, " +
+        "`vector.similarity_function`: 'cosine', " +
+        "`vector.indexProvider`: 'hnsw', " +
+        "`vector.hnsw.m`: 16, " +
+        "`vector.hnsw.ef_construction`: 200, " +
+        "`vector.hnsw.ef_search`: 100}}",
+    );
+  });
+
+  it("omits HNSW knobs for the flat provider", () => {
+    expect(
+      buildCreateIndexDDL({
+        ...vectorBase,
+        vectorOptions: { ...vectorBase.vectorOptions!, provider: "flat" },
+      }),
+    ).toBe(
+      "CREATE VECTOR INDEX `vec_movie_embedding` IF NOT EXISTS " +
+        "FOR (n:`Movie`) ON (n.`embedding`) " +
+        "OPTIONS {indexConfig: {`vector.dimensions`: 384, " +
+        "`vector.similarity_function`: 'cosine', " +
+        "`vector.indexProvider`: 'flat'}}",
+    );
+  });
+
+  it("appends int8 quantization when enabled", () => {
+    expect(
+      buildCreateIndexDDL({
+        ...vectorBase,
+        vectorOptions: {
+          ...vectorBase.vectorOptions!,
+          quantization: "int8",
+        },
+      }),
+    ).toContain("`vector.hnsw.quantization`: 'int8'");
+  });
+
+  it("appends populate.async when enabled", () => {
+    expect(
+      buildCreateIndexDDL({
+        ...vectorBase,
+        vectorOptions: {
+          ...vectorBase.vectorOptions!,
+          populateAsync: true,
+        },
+      }),
+    ).toContain("`vector.populate.async`: true");
+  });
+
+  it("uses default vector options when none supplied", () => {
+    const ddl = buildCreateIndexDDL({ ...vectorBase, vectorOptions: undefined });
+    expect(ddl).toContain("`vector.dimensions`: 384");
+    expect(ddl).toContain("`vector.similarity_function`: 'cosine'");
+    expect(ddl).toContain("`vector.indexProvider`: 'hnsw'");
+  });
 });
 
 describe("buildDropIndexDDL", () => {

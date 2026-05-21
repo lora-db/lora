@@ -16,7 +16,13 @@ import type {
 } from "./types";
 
 export interface ValidationIssue {
-  field: "name" | "label" | "properties" | "propertyType" | "kind";
+  field:
+    | "name"
+    | "label"
+    | "properties"
+    | "propertyType"
+    | "kind"
+    | "vectorOptions";
   message: string;
   /** When true the wizard step that owns this field is blocked. */
   blocking: boolean;
@@ -103,6 +109,74 @@ export function validateIndexDraft(
         break;
       }
       seen.add(p);
+    }
+  }
+
+  // VECTOR indexes carry a single property (engine enforces this with
+  // a clear error too — surface it client-side so the user can fix
+  // before they see a rejection) and a tuning block.
+  if (draft.kind === "VECTOR") {
+    if (draft.properties.length > 1) {
+      issues.push({
+        field: "properties",
+        message:
+          "Vector indexes apply to a single embedding property — pick one.",
+        blocking: true,
+      });
+    }
+    const v = draft.vectorOptions;
+    if (v) {
+      if (
+        !Number.isFinite(v.dimensions) ||
+        v.dimensions < 1 ||
+        v.dimensions > 4096
+      ) {
+        issues.push({
+          field: "vectorOptions",
+          message: "Dimensions must be between 1 and 4096.",
+          blocking: true,
+        });
+      }
+      if (v.provider === "hnsw") {
+        if (v.hnswM < 4 || v.hnswM > 128) {
+          issues.push({
+            field: "vectorOptions",
+            message: "HNSW M must be between 4 and 128.",
+            blocking: true,
+          });
+        }
+        if (v.hnswEfConstruction < 16 || v.hnswEfConstruction > 2000) {
+          issues.push({
+            field: "vectorOptions",
+            message:
+              "HNSW efConstruction must be between 16 and 2000.",
+            blocking: true,
+          });
+        }
+        if (v.hnswEfSearch < 16 || v.hnswEfSearch > 2000) {
+          issues.push({
+            field: "vectorOptions",
+            message: "HNSW efSearch must be between 16 and 2000.",
+            blocking: true,
+          });
+        }
+      }
+      if (v.quantization === "int8" && v.similarity !== "cosine") {
+        issues.push({
+          field: "vectorOptions",
+          message:
+            "int8 quantization currently requires the cosine similarity function.",
+          blocking: true,
+        });
+      }
+      if (v.quantization === "int8" && v.provider !== "hnsw") {
+        issues.push({
+          field: "vectorOptions",
+          message:
+            "Quantization only applies to the HNSW provider — switch provider or set quantization to none.",
+          blocking: true,
+        });
+      }
     }
   }
 

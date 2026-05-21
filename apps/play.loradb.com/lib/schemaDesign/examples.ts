@@ -115,8 +115,30 @@ export function buildIndexUsageExamples(
         },
       ];
     }
-    case "VECTOR":
-      return [];
+    case "VECTOR": {
+      const indexName = draft.name || "<index-name>";
+      const fn =
+        draft.entity === "NODE"
+          ? "db.index.vector.queryNodes"
+          : "db.index.vector.queryRelationships";
+      const yieldVar = draft.entity === "NODE" ? "node" : "relationship";
+      const dim = draft.vectorOptions?.dimensions ?? 384;
+      const sampleVec = `[${new Array(Math.min(dim, 4))
+        .fill(0)
+        .map((_, i) => (i === 0 ? "1.0" : "0.0"))
+        .join(", ")}${dim > 4 ? ", …" : ""}]`;
+      const k = 10;
+      return [
+        {
+          caption: "Top-k nearest neighbours",
+          cypher: `CALL ${fn}('${indexName}', ${k}, ${sampleVec}) YIELD ${yieldVar}, score RETURN ${yieldVar}, score`,
+        },
+        {
+          caption: "Hybrid: restrict to a candidate set",
+          cypher: `CALL ${fn}('${indexName}', ${k}, $queryVec, {restrictTo: $allowedIds}) YIELD ${yieldVar}, score RETURN ${yieldVar}, score`,
+        },
+      ];
+    }
   }
 }
 

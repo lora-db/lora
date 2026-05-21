@@ -55,7 +55,81 @@ export interface IndexDef {
   owned: boolean;
   /** Constraint that owns this index, if any. */
   ownerConstraint?: string;
+  /**
+   * Raw `OPTIONS { indexConfig: { … } }` map surfaced by
+   * `SHOW INDEXES`. Used by the edit flow to round-trip vector
+   * tuning knobs (similarity, indexProvider, hnsw.*) without
+   * forcing the user to re-enter them every time.
+   */
+  options?: Record<string, unknown>;
 }
+
+// ---------------------------------------------------------------------------
+// Vector index tuning
+// ---------------------------------------------------------------------------
+
+/**
+ * Similarity functions the engine accepts for VECTOR indexes. Cosine
+ * is the safe default for embedding workloads; the others trade
+ * different correctness / performance properties — see the wizard's
+ * Tune step for the per-metric hints.
+ */
+export type VectorSimilarity = "cosine" | "euclidean" | "dot" | "manhattan";
+
+/**
+ * Index provider: `flat` keeps every vector in a brute-force list
+ * (correct, slow at scale); `hnsw` builds a Hierarchical Navigable
+ * Small World graph (approximate, sub-linear queries).
+ */
+export type VectorIndexProvider = "flat" | "hnsw";
+
+/**
+ * Quantization mode for HNSW. `none` keeps full f32 storage; `int8`
+ * scales to signed bytes for ~4× memory reduction. The engine
+ * rejects `int8` with non-cosine metrics because only cosine is
+ * scale-invariant under uniform scaling.
+ */
+export type VectorQuantization = "none" | "int8";
+
+/**
+ * Wizard-shaped tuning knobs for a VECTOR index. Mirrors the engine
+ * options validated by `validate_vector_options` in
+ * `crates/lora-database/src/database/schema.rs`. Defaults are picked
+ * so a user who clicks straight through the Tune step gets a
+ * production-shaped index.
+ */
+export interface VectorIndexOptions {
+  /** 1..=4096. The width of the embedding. */
+  dimensions: number;
+  similarity: VectorSimilarity;
+  provider: VectorIndexProvider;
+  /**
+   * HNSW knobs — honored only when `provider === "hnsw"`. The wizard
+   * still tracks them in the off state so toggling between providers
+   * doesn't lose your tuning.
+   */
+  hnswM: number;
+  hnswEfConstruction: number;
+  hnswEfSearch: number;
+  quantization: VectorQuantization;
+  /**
+   * When true the index registers in Populating state and the
+   * backfill runs lazily on first query. CREATE returns instantly;
+   * the first query pays the populate cost.
+   */
+  populateAsync: boolean;
+}
+
+export const DEFAULT_VECTOR_OPTIONS: VectorIndexOptions = {
+  dimensions: 384,
+  similarity: "cosine",
+  provider: "hnsw",
+  hnswM: 16,
+  hnswEfConstruction: 200,
+  hnswEfSearch: 100,
+  quantization: "none",
+  populateAsync: false,
+};
 
 export interface ConstraintDef {
   name: string;
@@ -82,6 +156,12 @@ export interface IndexDraft {
   properties: string[];
   name: string;
   ifNotExists: boolean;
+  /**
+   * Vector-specific tuning. Populated when `kind === "VECTOR"`;
+   * left undefined for every other kind so the rest of the wizard
+   * code doesn't have to special-case its presence.
+   */
+  vectorOptions?: VectorIndexOptions;
 }
 
 export interface ConstraintDraft {

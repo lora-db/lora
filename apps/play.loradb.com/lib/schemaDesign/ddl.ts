@@ -20,7 +20,12 @@ import type {
   IndexDraft,
   IndexKind,
   ScalarPropertyType,
+  VectorIndexOptions,
+  VectorIndexProvider,
+  VectorQuantization,
+  VectorSimilarity,
 } from "./types";
+import { DEFAULT_VECTOR_OPTIONS } from "./types";
 
 /** Wrap an identifier in backticks, stripping any embedded backticks. */
 function quote(id: string): string {
@@ -88,7 +93,58 @@ export function buildCreateIndexDDL(draft: IndexDraft): string {
     return `CREATE ${keyword}${name}${ine} FOR ${pattern} ON EACH [${props}]`;
   }
 
+  if (draft.kind === "VECTOR") {
+    const options = buildVectorOptionsClause(
+      draft.vectorOptions ?? DEFAULT_VECTOR_OPTIONS,
+    );
+    return `CREATE ${keyword}${name}${ine} FOR ${pattern} ON (${props}) ${options}`;
+  }
+
   return `CREATE ${keyword}${name}${ine} FOR ${pattern} ON (${props})`;
+}
+
+/**
+ * Emit the `OPTIONS { indexConfig: { … } }` clause for a vector
+ * index. Only writes HNSW knobs when the provider is HNSW so the
+ * `flat` DDL stays minimal. `quantization` and `populate.async`
+ * are emitted only when they differ from the engine defaults so
+ * generated DDL stays small for the common case.
+ */
+function buildVectorOptionsClause(options: VectorIndexOptions): string {
+  const entries: string[] = [];
+  entries.push(`\`vector.dimensions\`: ${Math.trunc(options.dimensions)}`);
+  entries.push(`\`vector.similarity_function\`: '${quoteSimilarity(options.similarity)}'`);
+  entries.push(`\`vector.indexProvider\`: '${quoteProvider(options.provider)}'`);
+  if (options.provider === "hnsw") {
+    entries.push(`\`vector.hnsw.m\`: ${Math.trunc(options.hnswM)}`);
+    entries.push(
+      `\`vector.hnsw.ef_construction\`: ${Math.trunc(options.hnswEfConstruction)}`,
+    );
+    entries.push(
+      `\`vector.hnsw.ef_search\`: ${Math.trunc(options.hnswEfSearch)}`,
+    );
+    if (options.quantization !== "none") {
+      entries.push(
+        `\`vector.hnsw.quantization\`: '${quoteQuantization(options.quantization)}'`,
+      );
+    }
+  }
+  if (options.populateAsync) {
+    entries.push("`vector.populate.async`: true");
+  }
+  return `OPTIONS {indexConfig: {${entries.join(", ")}}}`;
+}
+
+function quoteSimilarity(s: VectorSimilarity): string {
+  return s;
+}
+
+function quoteProvider(p: VectorIndexProvider): string {
+  return p;
+}
+
+function quoteQuantization(q: VectorQuantization): string {
+  return q;
 }
 
 /** Build a `DROP INDEX <name> [IF EXISTS]` statement. */
@@ -245,7 +301,7 @@ const SCALAR_PROPERTY_TYPE_SET: ReadonlySet<ScalarPropertyType> = new Set(
  * statement, not the idempotent variant.
  */
 export function indexDefToDraft(def: IndexDef): IndexDraft {
-  return {
+  const draft: IndexDraft = {
     kind: def.kind,
     entity: def.entity,
     label: def.labelsOrTypes[0] ?? "",
@@ -253,6 +309,58 @@ export function indexDefToDraft(def: IndexDef): IndexDraft {
     name: def.name,
     ifNotExists: false,
   };
+  if (def.kind === "VECTOR") {
+    draft.vectorOptions = vectorOptionsFromMap(def.options);
+  }
+  return draft;
+}
+
+/**
+ * Project the `OPTIONS` map surfaced by `SHOW INDEXES` back into the
+ * wizard's typed shape, filling missing keys with the engine
+ * defaults. Defensive: anything weird (wrong type, out-of-range)
+ * falls through to the default so the edit wizard always mounts.
+ */
+export function vectorOptionsFromMap(
+  raw: Record<string, unknown> | undefined,
+): VectorIndexOptions {
+  const out: VectorIndexOptions = { ...DEFAULT_VECTOR_OPTIONS };
+  if (!raw) return out;
+  const dim = raw["vector.dimensions"];
+  if (typeof dim === "number" && dim >= 1 && dim <= 4096) {
+    out.dimensions = Math.trunc(dim);
+  }
+  const sim = raw["vector.similarity_function"];
+  if (sim === "cosine" || sim === "euclidean" || sim === "dot" || sim === "manhattan") {
+    out.similarity = sim;
+  } else if (sim === "dot_product") {
+    out.similarity = "dot";
+  }
+  const provider = raw["vector.indexProvider"];
+  if (provider === "flat" || provider === "hnsw") {
+    out.provider = provider;
+  }
+  const m = raw["vector.hnsw.m"];
+  if (typeof m === "number" && m >= 4 && m <= 128) {
+    out.hnswM = Math.trunc(m);
+  }
+  const efc = raw["vector.hnsw.ef_construction"];
+  if (typeof efc === "number" && efc >= 16 && efc <= 2000) {
+    out.hnswEfConstruction = Math.trunc(efc);
+  }
+  const efs = raw["vector.hnsw.ef_search"];
+  if (typeof efs === "number" && efs >= 16 && efs <= 2000) {
+    out.hnswEfSearch = Math.trunc(efs);
+  }
+  const quant = raw["vector.hnsw.quantization"];
+  if (quant === "none" || quant === "int8") {
+    out.quantization = quant;
+  }
+  const async = raw["vector.populate.async"];
+  if (typeof async === "boolean") {
+    out.populateAsync = async;
+  }
+  return out;
 }
 
 /**
