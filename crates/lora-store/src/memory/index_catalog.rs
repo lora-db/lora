@@ -301,6 +301,16 @@ impl IndexCatalog {
             None => Err(DropIndexError::NotFound(name.to_string())),
         }
     }
+
+    /// In-place state transition for an existing entry. Used by
+    /// lazy-populate flows: an index registers as `Populating` at
+    /// CREATE time and flips to `Online` once the first query
+    /// triggers the deferred backfill. No-op if the index is gone.
+    pub fn set_state(&mut self, name: &str, state: StoredIndexState) {
+        if let Some(def) = self.by_name.get_mut(name) {
+            def.state = state;
+        }
+    }
 }
 
 fn equivalent(def: &IndexDefinition, request: &IndexRequest) -> bool {

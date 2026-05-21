@@ -46,20 +46,34 @@ impl GraphStorage for InMemoryGraph {
         rel_hits.unwrap_or_default()
     }
 
-    fn vector_search(&self, name: &str, query: &LoraVector, _k: usize) -> Vec<(u64, f64)> {
+    fn vector_search(
+        &self,
+        name: &str,
+        query: &LoraVector,
+        k: usize,
+        restrict_to: Option<&std::collections::BTreeSet<u64>>,
+    ) -> Vec<(u64, f64)> {
+        // Lazy populate: an index created with
+        // `vector.populate.async: true` stays Populating until the
+        // first query forces the backfill. The check is cheap (one
+        // catalog read), and the populate itself takes the write
+        // lock — concurrent queries pile up on the read lock and
+        // proceed once the writer drops.
+        self.lazy_populate_vector_index(name);
+
         // Like fulltext_search, an index lives on exactly one entity
         // scope. Probe both registries; the catalog has already
         // enforced kind/entity agreement so only one will hit.
         if let Some(hits) = self
             .vector_indexes_read(StoredIndexEntity::Node)
-            .query(name, query)
+            .query(name, query, k, restrict_to)
         {
             if !hits.is_empty() {
                 return hits;
             }
         }
         self.vector_indexes_read(StoredIndexEntity::Relationship)
-            .query(name, query)
+            .query(name, query, k, restrict_to)
             .unwrap_or_default()
     }
 

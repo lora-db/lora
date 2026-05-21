@@ -28,11 +28,12 @@
 //! scopes (so multiple POINT indexes on the same `(label, property)`
 //! share storage); `update` mirrors the property-mutation hook.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::types::spatial::LoraPoint;
 
 use super::entity_index_store::ScopedPropertyKey;
+use super::index_catalog::IndexConfigValue;
 
 /// Default cell side. Tuned for cartesian space at world scale; WGS-84
 /// users with denser data should use `OPTIONS { indexConfig: { ... } }`
@@ -154,6 +155,20 @@ impl PointGrid {
 }
 
 impl PointRegistry {
+    /// Resolve the optional `cellSize` knob from a catalog `OPTIONS`
+    /// map. Returns `None` when the key is missing, non-numeric, or
+    /// non-positive — the registry then falls back to
+    /// [`DEFAULT_CELL_SIZE`].
+    pub(super) fn cell_size_from_options(
+        options: &BTreeMap<String, IndexConfigValue>,
+    ) -> Option<f64> {
+        match options.get("cellSize")? {
+            IndexConfigValue::Number(v) if *v > 0.0 && v.is_finite() => Some(*v),
+            IndexConfigValue::Integer(v) if *v > 0 => Some(*v as f64),
+            _ => None,
+        }
+    }
+
     pub(super) fn add_scope(
         &mut self,
         label: &str,

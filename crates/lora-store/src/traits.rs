@@ -601,7 +601,18 @@ pub trait GraphStorage {
     /// `k` is a hint: future ANN backends can use it to prune work;
     /// the flat backend ignores it because exhaustive scoring is the
     /// cheapest correctness contract.
-    fn vector_search(&self, _name: &str, _query: &LoraVector, _k: usize) -> Vec<(u64, f64)> {
+    ///
+    /// `restrict_to`, when `Some`, hard-filters the result set to
+    /// those entity ids. The backend may still traverse other
+    /// entities internally (HNSW uses them as routing hops), but
+    /// returned tuples are guaranteed to live in the set.
+    fn vector_search(
+        &self,
+        _name: &str,
+        _query: &LoraVector,
+        _k: usize,
+        _restrict_to: Option<&std::collections::BTreeSet<u64>>,
+    ) -> Vec<(u64, f64)> {
         Vec::new()
     }
 

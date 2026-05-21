@@ -19,7 +19,6 @@ use super::constraint_catalog::{
 };
 use super::entity_index_store::IndexBundle;
 use super::fulltext_index::FulltextRegistry;
-use super::index_catalog::IndexConfigValue;
 use super::index_catalog::{
     CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
     IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind, StoredIndexState,
@@ -32,7 +31,8 @@ use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
 use super::text_index::TrigramRegistry;
-use super::vector_index::{VectorIndexRegistry, VectorSimilarity};
+use super::hnsw::HnswParams;
+use super::vector_index::{VectorIndexProvider, VectorIndexRegistry, VectorSimilarity};
 
 #[derive(Default)]
 pub struct InMemoryGraph {
@@ -1178,7 +1178,7 @@ impl InMemoryGraph {
                     Some(l) => l,
                     None => return,
                 };
-                let cell_size = point_cell_size_from_options(&def.options);
+                let cell_size = PointRegistry::cell_size_from_options(&def.options);
                 for property in &def.properties {
                     self.activate_point_scope(def.entity, label, property, cell_size);
                 }
@@ -1199,9 +1199,29 @@ impl InMemoryGraph {
                     Some(p) => p.as_str(),
                     None => return,
                 };
-                let similarity = vector_similarity_from_options(&def.options)
+                let similarity = VectorSimilarity::from_options(&def.options)
                     .unwrap_or(VectorSimilarity::Cosine);
-                self.activate_vector_index(def.entity, &def.name, label, property, similarity);
+                let provider = VectorIndexProvider::from_options(&def.options)
+                    .unwrap_or(VectorIndexProvider::Flat);
+                let hnsw = HnswParams::from_options(&def.options);
+                let lazy = matches!(
+                    def.options.get("vector.populate.async"),
+                    Some(super::index_catalog::IndexConfigValue::Bool(true))
+                );
+                self.activate_vector_index(
+                    def.entity,
+                    &def.name,
+                    label,
+                    property,
+                    similarity,
+                    provider,
+                    hnsw,
+                    lazy,
+                );
+                if lazy {
+                    self.index_catalog_write()
+                        .set_state(&def.name, StoredIndexState::Populating);
+                }
             }
             // LOOKUP rides on the label/type indexes maintained eagerly.
             StoredIndexKind::Lookup => {}
@@ -1477,6 +1497,9 @@ impl InMemoryGraph {
         label: &str,
         property: &str,
         similarity: VectorSimilarity,
+        provider: VectorIndexProvider,
+        hnsw: HnswParams,
+        lazy: bool,
     ) {
         {
             let mut registry = self.vector_indexes_write(entity);
@@ -1485,12 +1508,28 @@ impl InMemoryGraph {
                 label.to_string(),
                 property.to_string(),
                 similarity,
+                provider,
+                hnsw,
             );
         }
 
-        // Backfill: pull existing vectors from the property store into
-        // the freshly-registered backend. Collected up-front so the
-        // registry lock is held only for the insert phase.
+        if lazy {
+            // Skip the initial backfill — the catalog state is flipped
+            // to Populating by the caller and the first query routed
+            // to this index triggers `lazy_populate_vector_index`.
+            // Mutations between CREATE and first query still feed the
+            // registry via the maintenance hook, so the lazy phase
+            // only handles vectors that existed before CREATE.
+            return;
+        }
+
+        self.backfill_vector_index(entity, label, property);
+    }
+
+    /// Walk the property store for vectors matching this index's
+    /// `(label, property)` scope and replay them into the registry.
+    /// Shared by sync CREATE and lazy-populate flows.
+    fn backfill_vector_index(&self, entity: StoredIndexEntity, label: &str, property: &str) {
         let backfill: Vec<(u64, crate::LoraVector)> = match entity {
             StoredIndexEntity::Node => self
                 .iter_nodes()
@@ -1514,6 +1553,32 @@ impl InMemoryGraph {
         for (id, vector) in backfill {
             registry.insert_for(label, property, id, &vector);
         }
+    }
+
+    /// Lazy-populate a `Populating` vector index: backfill from the
+    /// property store, then flip catalog state to `Online`. Called
+    /// from `GraphStorage::vector_search` on the first request that
+    /// hits a still-populating index. Idempotent: a second concurrent
+    /// caller finds the state already `Online` and does no work.
+    pub(super) fn lazy_populate_vector_index(&self, name: &str) {
+        let def = match self.index_catalog_read().get(name).cloned() {
+            Some(d) => d,
+            None => return,
+        };
+        if def.state != StoredIndexState::Populating || def.kind != StoredIndexKind::Vector {
+            return;
+        }
+        let label = match def.label.as_deref() {
+            Some(l) => l,
+            None => return,
+        };
+        let property = match def.properties.first() {
+            Some(p) => p.as_str(),
+            None => return,
+        };
+        self.backfill_vector_index(def.entity, label, property);
+        self.index_catalog_write()
+            .set_state(name, StoredIndexState::Online);
     }
 
     pub(super) fn deactivate_vector_index(&self, entity: StoredIndexEntity, name: &str) {
@@ -2504,30 +2569,3 @@ impl InMemoryGraph {
     }
 }
 
-/// Read the optional `cell_size` from a POINT index `OPTIONS` map.
-/// Falls back to the registry's default when the key is missing,
-/// not numeric, or non-positive.
-fn point_cell_size_from_options(
-    options: &std::collections::BTreeMap<String, IndexConfigValue>,
-) -> Option<f64> {
-    let raw = options.get("cellSize")?;
-    match raw {
-        IndexConfigValue::Number(v) if *v > 0.0 && v.is_finite() => Some(*v),
-        IndexConfigValue::Integer(v) if *v > 0 => Some(*v as f64),
-        _ => None,
-    }
-}
-
-/// Read `vector.similarity_function` from a VECTOR index `OPTIONS`
-/// map. Returns `None` when the key is missing or unrecognised; the
-/// caller picks a default. DDL validation in `schema.rs` has already
-/// rejected invalid values by the time we get here, so a `None` here
-/// only occurs on snapshot/WAL replay of a malformed payload.
-fn vector_similarity_from_options(
-    options: &std::collections::BTreeMap<String, IndexConfigValue>,
-) -> Option<VectorSimilarity> {
-    match options.get("vector.similarity_function")? {
-        IndexConfigValue::String(s) => VectorSimilarity::parse(s),
-        _ => None,
-    }
-}
