@@ -285,7 +285,9 @@ export type LoraValue =
   | LoraVector
   | LoraBinary;
 
-export type QueryRow<T extends Record<string, LoraValue> = Record<string, LoraValue>> = T;
+export type QueryRow<
+  T extends Record<string, LoraValue> = Record<string, LoraValue>,
+> = T;
 
 export interface QueryResult<
   T extends Record<string, LoraValue> = Record<string, LoraValue>,
@@ -350,27 +352,57 @@ export interface LoraQueryProfile {
 // ---------------------------------------------------------------------------
 
 export function isNode(v: LoraValue): v is LoraNode {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "node";
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    (v as { kind?: unknown }).kind === "node"
+  );
 }
 
 export function isRelationship(v: LoraValue): v is LoraRelationship {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "relationship";
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    (v as { kind?: unknown }).kind === "relationship"
+  );
 }
 
 export function isPath(v: LoraValue): v is LoraPath {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "path";
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    (v as { kind?: unknown }).kind === "path"
+  );
 }
 
 export function isPoint(v: LoraValue): v is LoraPoint {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "point";
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    (v as { kind?: unknown }).kind === "point"
+  );
 }
 
 export function isVector(v: LoraValue): v is LoraVector {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "vector";
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    (v as { kind?: unknown }).kind === "vector"
+  );
 }
 
 export function isBinary(v: LoraValue): v is LoraBinary {
-  return typeof v === "object" && v !== null && !Array.isArray(v) && (v as { kind?: unknown }).kind === "binary";
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    (v as { kind?: unknown }).kind === "binary"
+  );
 }
 
 export function isTemporal(v: LoraValue): v is LoraTemporal {
@@ -392,10 +424,22 @@ export function isTemporal(v: LoraValue): v is LoraTemporal {
 
 export const date = (iso: string): LoraDate => ({ kind: "date", iso });
 export const time = (iso: string): LoraTime => ({ kind: "time", iso });
-export const localtime = (iso: string): LoraLocalTime => ({ kind: "localtime", iso });
-export const datetime = (iso: string): LoraDateTime => ({ kind: "datetime", iso });
-export const localdatetime = (iso: string): LoraLocalDateTime => ({ kind: "localdatetime", iso });
-export const duration = (iso: string): LoraDuration => ({ kind: "duration", iso });
+export const localtime = (iso: string): LoraLocalTime => ({
+  kind: "localtime",
+  iso,
+});
+export const datetime = (iso: string): LoraDateTime => ({
+  kind: "datetime",
+  iso,
+});
+export const localdatetime = (iso: string): LoraLocalDateTime => ({
+  kind: "localdatetime",
+  iso,
+});
+export const duration = (iso: string): LoraDuration => ({
+  kind: "duration",
+  iso,
+});
 
 /**
  * Build a `LoraVector` parameter value. Mirrors the on-wire tagged
@@ -435,10 +479,7 @@ export const cartesian3d = (
   z,
 });
 
-export const wgs84 = (
-  longitude: number,
-  latitude: number,
-): LoraWgs84Point => ({
+export const wgs84 = (longitude: number, latitude: number): LoraWgs84Point => ({
   kind: "point",
   srid: 4326,
   crs: "WGS-84-2D",
