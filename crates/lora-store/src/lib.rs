@@ -41,7 +41,7 @@ pub use memory::InMemoryGraph;
 pub use memory::{
     CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, GraphStats,
     IndexCatalog, IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity,
-    StoredIndexKind, StoredIndexState,
+    StoredIndexKind, StoredIndexState, VectorBackendSnapshot, VectorIndexSnapshot,
 };
 
 // ---------- Constraint catalog (CREATE CONSTRAINT surface) ----------

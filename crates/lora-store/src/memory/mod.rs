@@ -24,6 +24,7 @@ mod point_index;
 mod property_index;
 mod secondary_index_maintenance;
 mod snapshot;
+mod hnsw;
 mod sorted_property_index;
 mod stats;
 mod text_index;
@@ -45,3 +46,4 @@ pub use index_catalog::{
     StoredIndexState,
 };
 pub use stats::GraphStats;
+pub use vector_index::{VectorBackendSnapshot, VectorIndexSnapshot};
