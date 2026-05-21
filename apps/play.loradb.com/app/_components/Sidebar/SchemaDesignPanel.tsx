@@ -275,9 +275,7 @@ export function SchemaDesignPanel() {
             }
             tokens={tokens}
             icon={<IconKey size={12} />}
-            onAdd={
-              constraintCount > 0 ? () => openNewConstraint() : undefined
-            }
+            onAdd={constraintCount > 0 ? () => openNewConstraint() : undefined}
             addLabel="New constraint"
             addColor="grape"
           />
@@ -361,13 +359,7 @@ function Hint({ children }: { children: React.ReactNode }) {
   );
 }
 
-function EmptyStateCTA({
-  cta,
-  onClick,
-}: {
-  cta: string;
-  onClick: () => void;
-}) {
+function EmptyStateCTA({ cta, onClick }: { cta: string; onClick: () => void }) {
   return (
     <Stack gap={2} align="center" py={8}>
       <Button
@@ -558,11 +550,7 @@ function ConstraintRow({
             tokens={tokens}
           />
           {def.propertyType ? (
-            <DetailLine
-              label="Type"
-              value={def.propertyType}
-              tokens={tokens}
-            />
+            <DetailLine label="Type" value={def.propertyType} tokens={tokens} />
           ) : null}
           {ownedIndex ? (
             <Group gap={4}>
@@ -784,11 +772,7 @@ function DetailLine({
       <Text size="xs" c={tokens.fg.muted} style={{ flexShrink: 0 }}>
         {label}:
       </Text>
-      <Text
-        size="xs"
-        c={tokens.fg.primary}
-        style={{ wordBreak: "break-word" }}
-      >
+      <Text size="xs" c={tokens.fg.primary} style={{ wordBreak: "break-word" }}>
         {value}
       </Text>
     </Group>

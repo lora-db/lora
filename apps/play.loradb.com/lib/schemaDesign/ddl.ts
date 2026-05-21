@@ -113,8 +113,12 @@ export function buildCreateIndexDDL(draft: IndexDraft): string {
 function buildVectorOptionsClause(options: VectorIndexOptions): string {
   const entries: string[] = [];
   entries.push(`\`vector.dimensions\`: ${Math.trunc(options.dimensions)}`);
-  entries.push(`\`vector.similarity_function\`: '${quoteSimilarity(options.similarity)}'`);
-  entries.push(`\`vector.indexProvider\`: '${quoteProvider(options.provider)}'`);
+  entries.push(
+    `\`vector.similarity_function\`: '${quoteSimilarity(options.similarity)}'`,
+  );
+  entries.push(
+    `\`vector.indexProvider\`: '${quoteProvider(options.provider)}'`,
+  );
   if (options.provider === "hnsw") {
     entries.push(`\`vector.hnsw.m\`: ${Math.trunc(options.hnswM)}`);
     entries.push(
@@ -331,7 +335,12 @@ export function vectorOptionsFromMap(
     out.dimensions = Math.trunc(dim);
   }
   const sim = raw["vector.similarity_function"];
-  if (sim === "cosine" || sim === "euclidean" || sim === "dot" || sim === "manhattan") {
+  if (
+    sim === "cosine" ||
+    sim === "euclidean" ||
+    sim === "dot" ||
+    sim === "manhattan"
+  ) {
     out.similarity = sim;
   } else if (sim === "dot_product") {
     out.similarity = "dot";

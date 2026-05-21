@@ -5,7 +5,7 @@ if printf '%s\n' "$STAGED" | grep -qE '\.rs$|^Cargo\.(toml|lock)$|^rust-toolchai
   ANY_RUST=1
 fi
 
-# Compute the affected-crate scope once, reused for clippy and tests below.
+# Compute the affected-crate scope once, reused for clippy below.
 # Output is one of:
 #   "--workspace"                → broad change (Cargo.lock, root manifest, …)
 #   "-p crateA -p crateB ..."    → reverse-dep closure of changed crates
@@ -16,7 +16,7 @@ if [ "$ANY_RUST" = "1" ]; then
 fi
 
 run_cargo_scoped() {
-  # $1 = subcommand (e.g. "clippy", "test"); $2... = trailing args
+  # $1 = subcommand (e.g. "clippy"); $2... = trailing args
   cmd="$1"; shift
   case "$TARGETS" in
     --workspace)
@@ -33,77 +33,19 @@ run_cargo_scoped() {
 
 # Lint passes are scoped to Rust changes — no point running fmt/clippy on
 # a docs- or scripts-only commit. fmt-check is fast and global; clippy is
-# scoped to the affected crates.
+# scoped to the affected crates. Rust + binding test gates intentionally
+# omitted: CI is the source of truth for those, pre-commit only runs lint.
 if [ "$ANY_RUST" = "1" ]; then
   cargo fmt --all --check || exit 1
   run_cargo_scoped clippy -- -D warnings || exit 1
 fi
 
-# Heavier test gates below. Set SKIP_TESTS=1 to bypass (e.g. for emergency
-# commits or known-broken-but-WIP states).
-if [ "${SKIP_TESTS:-0}" = "1" ]; then
-  exit 0
+# JS/TS lint pass. Runs whenever any JS/TS-ish file is staged.
+ANY_JS_TS=0
+if printf '%s\n' "$STAGED" | grep -qE '\.(ts|tsx|js|jsx|mjs|cjs)$'; then
+  ANY_JS_TS=1
 fi
 
-# Prefer cargo-nextest when available — typically 2-3x faster than `cargo test`.
-# Substitute it in by overriding the function for the test pass only.
-if cargo nextest --version >/dev/null 2>&1; then
-  run_cargo_scoped() {
-    cmd="$1"; shift
-    if [ "$cmd" = "test" ]; then
-      case "$TARGETS" in
-        --workspace) cargo nextest run --workspace --exclude lora-python --exclude lora_ruby "$@" ;;
-        "") return 0 ;;
-        *) cargo nextest run $TARGETS "$@" ;;
-      esac
-    else
-      case "$TARGETS" in
-        --workspace) cargo $cmd --workspace --exclude lora-python --exclude lora_ruby "$@" ;;
-        "") return 0 ;;
-        *) cargo $cmd $TARGETS "$@" ;;
-      esac
-    fi
-  }
-fi
-
-if [ "$ANY_RUST" = "1" ]; then
-  run_cargo_scoped test || exit 1
-fi
-
-# Binding tests. Any Rust change can ripple through the engine (the binding
-# crates depend on lora-database, which depends on the rest of the engine),
-# so npm test runs whenever Rust moves OR the binding's own files / shared
-# TS contract are staged. The native artifact is only rebuilt when Rust
-# changed or the prebuilt is missing — TS-only edits reuse the binary.
-SHARED_TS_STAGED=0
-NODE_STAGED=0
-WASM_STAGED=0
-if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/shared-ts/'; then
-  SHARED_TS_STAGED=1
-fi
-if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/lora-node/'; then
-  NODE_STAGED=1
-fi
-if printf '%s\n' "$STAGED" | grep -qE '^crates/bindings/lora-wasm/'; then
-  WASM_STAGED=1
-fi
-
-if [ "$ANY_RUST" = "1" ] || [ "$SHARED_TS_STAGED" = "1" ] || [ "$NODE_STAGED" = "1" ]; then
-  (
-    cd crates/bindings/lora-node || exit 1
-    if [ "$ANY_RUST" = "1" ] || ! ls lora-node.*.node >/dev/null 2>&1; then
-      npm run build:native || exit 1
-    fi
-    npm test
-  ) || exit 1
-fi
-
-if [ "$ANY_RUST" = "1" ] || [ "$SHARED_TS_STAGED" = "1" ] || [ "$WASM_STAGED" = "1" ]; then
-  (
-    cd crates/bindings/lora-wasm || exit 1
-    if [ "$ANY_RUST" = "1" ] || [ ! -d pkg-node ]; then
-      npm run build:wasm:node || exit 1
-    fi
-    npm test
-  ) || exit 1
+if [ "$ANY_JS_TS" = "1" ]; then
+  yarn lint || exit 1
 fi

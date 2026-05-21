@@ -152,7 +152,6 @@ export function buildConstraintUsageExamples(
 ): UsageExample[] {
   if (!draft.label || draft.properties.length === 0) return [];
 
-  const pattern = patternFor(draft.entity, draft.label);
   const v = varFor(draft.entity);
   const first = draft.properties[0]!;
   const firstRef = `${v}.${quote(first)}`;

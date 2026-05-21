@@ -139,7 +139,9 @@ export function NewConstraintWizard({ onClose }: { onClose: () => void }) {
 
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<ConstraintDraft>(() =>
-    editingDef ? constraintDefToDraft(editingDef) : defaultDraftFor("UNIQUE", "NODE"),
+    editingDef
+      ? constraintDefToDraft(editingDef)
+      : defaultDraftFor("UNIQUE", "NODE"),
   );
   const [submitting, setSubmitting] = useState(false);
   const [nameTouched, setNameTouched] = useState(editing);

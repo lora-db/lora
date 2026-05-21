@@ -67,7 +67,6 @@ import type {
   IndexKind,
   VectorIndexOptions,
   VectorIndexProvider,
-  VectorQuantization,
   VectorSimilarity,
 } from "@/lib/schemaDesign/types";
 import { DEFAULT_VECTOR_OPTIONS } from "@/lib/schemaDesign/types";
@@ -487,8 +486,8 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
                 icon={<IconInfoCircle size={14} />}
               >
                 Editing replaces the index — “{editingDef!.name}” will be
-                dropped and recreated. Queries that rely on it will fall back
-                to a full scan until the new index is online.
+                dropped and recreated. Queries that rely on it will fall back to
+                a full scan until the new index is online.
               </Alert>
             )}
             <IssueList issues={issues} editing={editing} />
@@ -582,9 +581,9 @@ function VectorTuneStep({
         icon={<IconWand size={14} />}
         styles={{ message: { fontSize: 12 } }}
       >
-        Defaults work for most embedding workloads. Tune dimensions to
-        match your model (e.g. 384 for MiniLM, 768 for BERT-base,
-        1536 for OpenAI text-embedding-3-small).
+        Defaults work for most embedding workloads. Tune dimensions to match
+        your model (e.g. 384 for MiniLM, 768 for BERT-base, 1536 for OpenAI
+        text-embedding-3-small).
       </Alert>
 
       <NumberInput
@@ -611,9 +610,7 @@ function VectorTuneStep({
           fullWidth
           size="xs"
           value={options.similarity}
-          onChange={(v) =>
-            onChange({ similarity: v as VectorSimilarity })
-          }
+          onChange={(v) => onChange({ similarity: v as VectorSimilarity })}
           data={SIMILARITY_OPTIONS.map((o) => ({
             value: o.value,
             label: o.label,
@@ -634,9 +631,7 @@ function VectorTuneStep({
           fullWidth
           size="xs"
           value={options.provider}
-          onChange={(v) =>
-            onChange({ provider: v as VectorIndexProvider })
-          }
+          onChange={(v) => onChange({ provider: v as VectorIndexProvider })}
           data={PROVIDER_OPTIONS.map((o) => ({
             value: o.value,
             label: o.label,
@@ -749,9 +744,7 @@ function VectorTuneStep({
           label="Populate asynchronously (lazy)"
           size="sm"
           checked={options.populateAsync}
-          onChange={(e) =>
-            onChange({ populateAsync: e.currentTarget.checked })
-          }
+          onChange={(e) => onChange({ populateAsync: e.currentTarget.checked })}
         />
       </Tooltip>
 
@@ -830,9 +823,7 @@ function quickReadCopy(opts: VectorIndexOptions): string {
   fragments.push(`d=${opts.dimensions}`);
   fragments.push(`${opts.similarity}`);
   if (opts.provider === "flat") {
-    fragments.push(
-      "Flat: exact recall, query cost grows linearly with N.",
-    );
+    fragments.push("Flat: exact recall, query cost grows linearly with N.");
   } else {
     fragments.push(
       `HNSW M=${opts.hnswM}, ef build/search=${opts.hnswEfConstruction}/${opts.hnswEfSearch}. Higher ef = higher recall + slower queries.`,
@@ -842,7 +833,9 @@ function quickReadCopy(opts: VectorIndexOptions): string {
     fragments.push("int8 storage saves ~4× memory at a small recall cost.");
   }
   if (opts.populateAsync) {
-    fragments.push("Async populate: CREATE returns fast, first query backfills.");
+    fragments.push(
+      "Async populate: CREATE returns fast, first query backfills.",
+    );
   }
   return fragments.join(" · ");
 }

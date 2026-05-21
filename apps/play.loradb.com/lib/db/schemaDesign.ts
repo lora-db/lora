@@ -165,7 +165,11 @@ export async function fetchSchemaDesignSnapshot(): Promise<{
       };
       if (owner !== undefined) def.ownerConstraint = owner;
       const rawOptions = col(reader, "options");
-      if (rawOptions && typeof rawOptions === "object" && !Array.isArray(rawOptions)) {
+      if (
+        rawOptions &&
+        typeof rawOptions === "object" &&
+        !Array.isArray(rawOptions)
+      ) {
         def.options = rawOptions as Record<string, unknown>;
       }
       return def;

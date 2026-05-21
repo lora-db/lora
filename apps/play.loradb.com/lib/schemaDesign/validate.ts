@@ -148,8 +148,7 @@ export function validateIndexDraft(
         if (v.hnswEfConstruction < 16 || v.hnswEfConstruction > 2000) {
           issues.push({
             field: "vectorOptions",
-            message:
-              "HNSW efConstruction must be between 16 and 2000.",
+            message: "HNSW efConstruction must be between 16 and 2000.",
             blocking: true,
           });
         }
