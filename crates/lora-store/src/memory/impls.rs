@@ -64,9 +64,9 @@ impl GraphStorage for InMemoryGraph {
         // Like fulltext_search, an index lives on exactly one entity
         // scope. Probe both registries; the catalog has already
         // enforced kind/entity agreement so only one will hit.
-        if let Some(hits) = self
-            .vector_indexes_read(StoredIndexEntity::Node)
-            .query(name, query, k, restrict_to)
+        if let Some(hits) =
+            self.vector_indexes_read(StoredIndexEntity::Node)
+                .query(name, query, k, restrict_to)
         {
             if !hits.is_empty() {
                 return hits;

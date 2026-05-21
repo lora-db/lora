@@ -398,10 +398,7 @@ fn oracle_top_k<F>(vectors: &[LoraVector], query: &LoraVector, k: usize, sim: F)
 where
     F: Fn(&LoraVector, &LoraVector) -> Option<f64>,
 {
-    let mut scored: Vec<f64> = vectors
-        .iter()
-        .filter_map(|v| sim(v, query))
-        .collect();
+    let mut scored: Vec<f64> = vectors.iter().filter_map(|v| sim(v, query)).collect();
     scored.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(k);
     scored
@@ -832,9 +829,8 @@ fn async_populate_first_query_warms_index_and_flips_to_online() {
     );
     // First query: triggers populate inline; both pre-existing
     // vectors must show up.
-    let rows = db.run(
-        "CALL db.index.vector.queryNodes('vidx', 5, [1.0, 0.0, 0.0, 0.0]) YIELD node, score",
-    );
+    let rows = db
+        .run("CALL db.index.vector.queryNodes('vidx', 5, [1.0, 0.0, 0.0, 0.0]) YIELD node, score");
     assert_eq!(rows.len(), 2, "expected pre-existing vectors, got {rows:?}");
     // State should now be Online.
     let listed = db.run("SHOW INDEXES");
@@ -859,10 +855,13 @@ fn async_populate_post_create_inserts_still_visible() {
     );
     // After CREATE, while index is Populating, insert another:
     db.run("CREATE (:V {tag: 'post', e: [0.0, 1.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
-    let rows = db.run(
-        "CALL db.index.vector.queryNodes('vidx', 5, [1.0, 0.0, 0.0, 0.0]) YIELD node, score",
+    let rows = db
+        .run("CALL db.index.vector.queryNodes('vidx', 5, [1.0, 0.0, 0.0, 0.0]) YIELD node, score");
+    assert_eq!(
+        rows.len(),
+        2,
+        "expected both pre+post vectors, got {rows:?}"
     );
-    assert_eq!(rows.len(), 2, "expected both pre+post vectors, got {rows:?}");
 }
 
 #[test]
@@ -1020,9 +1019,8 @@ fn hnsw_int8_returns_top_k_for_normalized_embeddings() {
                 lora_store::RawCoordinate::Float(if norm > 0.0 { f / norm } else { 0.0 })
             })
             .collect();
-        normalized.push(
-            LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Float32).unwrap(),
-        );
+        normalized
+            .push(LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Float32).unwrap());
     }
     seed_vector_nodes(&db, &normalized);
     let q = normalized[0].clone();
@@ -1124,7 +1122,10 @@ fn restrict_to_filters_results_hnsw() {
         ),
         params,
     );
-    let returned: BTreeMap<i64, ()> = ordered_node_ids(&rows).into_iter().map(|i| (i, ())).collect();
+    let returned: BTreeMap<i64, ()> = ordered_node_ids(&rows)
+        .into_iter()
+        .map(|i| (i, ()))
+        .collect();
     // Every returned id must be in the allowed set.
     for &id in returned.keys() {
         assert!(
@@ -1197,9 +1198,8 @@ fn hnsw_handles_updates_through_maintenance_hook() {
     db.run("MATCH (n:V {id: 1}) SET n.e = [0.0, 0.0, 1.0, 0.0]::VECTOR<FLOAT32>(4)");
     // Query for [0,0,1,0] — node 1 should now be the top hit (it
     // wouldn't be if the old vector were still indexed).
-    let rows = db.run(
-        "CALL db.index.vector.queryNodes('vidx', 1, [0.0, 0.0, 1.0, 0.0]) YIELD node, score",
-    );
+    let rows = db
+        .run("CALL db.index.vector.queryNodes('vidx', 1, [0.0, 0.0, 1.0, 0.0]) YIELD node, score");
     assert_eq!(rows.len(), 1);
     assert!((rows[0]["score"].as_f64().unwrap() - 1.0).abs() < 1e-6);
 }

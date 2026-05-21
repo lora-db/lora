@@ -191,9 +191,8 @@ impl ColumnarSnapshot {
         // binary format inside the same length-prefixed bytes slot
         // without bumping the format version (only the encoder/
         // decoder pair changes, framing is stable).
-        let vector_index_bytes = serde_json::to_vec(&self.vector_indexes).map_err(|e| {
-            SnapshotCodecError::Encode(format!("vector index trailer: {e}"))
-        })?;
+        let vector_index_bytes = serde_json::to_vec(&self.vector_indexes)
+            .map_err(|e| SnapshotCodecError::Encode(format!("vector index trailer: {e}")))?;
         write_bytes(&mut out, &vector_index_bytes)?;
         Ok(out)
     }
@@ -251,9 +250,8 @@ impl ColumnarSnapshot {
             if bytes.is_empty() {
                 Vec::new()
             } else {
-                serde_json::from_slice(bytes).map_err(|e| {
-                    SnapshotCodecError::Decode(format!("vector index trailer: {e}"))
-                })?
+                serde_json::from_slice(bytes)
+                    .map_err(|e| SnapshotCodecError::Decode(format!("vector index trailer: {e}")))?
             }
         } else {
             Vec::new()

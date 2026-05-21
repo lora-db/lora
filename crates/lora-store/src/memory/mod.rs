@@ -18,13 +18,13 @@ mod entity_index_store;
 #[allow(dead_code)]
 mod fulltext_index;
 mod graph;
+mod hnsw;
 mod impls;
 mod index_catalog;
 mod point_index;
 mod property_index;
 mod secondary_index_maintenance;
 mod snapshot;
-mod hnsw;
 mod sorted_property_index;
 mod stats;
 mod text_index;

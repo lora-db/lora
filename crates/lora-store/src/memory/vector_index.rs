@@ -72,9 +72,7 @@ impl VectorSimilarity {
     /// DDL validation has already rejected invalid values, so a
     /// `None` here only occurs on a malformed snapshot/WAL payload —
     /// the caller picks a default in that case.
-    pub(super) fn from_options(
-        options: &BTreeMap<String, IndexConfigValue>,
-    ) -> Option<Self> {
+    pub(super) fn from_options(options: &BTreeMap<String, IndexConfigValue>) -> Option<Self> {
         match options.get("vector.similarity_function")? {
             IndexConfigValue::String(s) => Self::parse(s),
             _ => None,
@@ -148,9 +146,7 @@ impl VectorIndexProvider {
     /// Resolve `vector.indexProvider` from a catalog `OPTIONS` map.
     /// `'flat'` and `'hnsw'` are accepted; anything else returns
     /// `None` and the caller falls back to the safe default.
-    pub(super) fn from_options(
-        options: &BTreeMap<String, IndexConfigValue>,
-    ) -> Option<Self> {
+    pub(super) fn from_options(options: &BTreeMap<String, IndexConfigValue>) -> Option<Self> {
         match options.get("vector.indexProvider")? {
             IndexConfigValue::String(s) => Self::parse(s),
             _ => None,
@@ -393,7 +389,13 @@ mod tests {
         LoraVector::try_new(coords, values.len() as i64, VectorCoordinateType::Float32).unwrap()
     }
 
-    fn register_flat(reg: &mut VectorIndexRegistry, name: &str, label: &str, prop: &str, sim: VectorSimilarity) {
+    fn register_flat(
+        reg: &mut VectorIndexRegistry,
+        name: &str,
+        label: &str,
+        prop: &str,
+        sim: VectorSimilarity,
+    ) {
         reg.register(
             name.into(),
             label.into(),
@@ -433,7 +435,13 @@ mod tests {
     #[test]
     fn unrelated_scope_is_skipped() {
         let mut reg = VectorIndexRegistry::default();
-        register_flat(&mut reg, "movie_emb", "Movie", "embedding", VectorSimilarity::Cosine);
+        register_flat(
+            &mut reg,
+            "movie_emb",
+            "Movie",
+            "embedding",
+            VectorSimilarity::Cosine,
+        );
         // Wrong label — must not be picked up.
         reg.insert_for("Other", "embedding", 99, &vec(&[1.0, 0.0]));
         let scored = reg.query("movie_emb", &vec(&[1.0, 0.0]), 10, None).unwrap();

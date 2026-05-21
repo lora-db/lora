@@ -276,7 +276,12 @@ impl HnswBackend {
         // find a good local entry point at layer `level`.
         let mut nearest = entry;
         for l in ((level + 1)..=self.max_level).rev() {
-            nearest = self.greedy_search_layer(id, nearest, l, 1).into_iter().next().map(|c| c.id).unwrap_or(nearest);
+            nearest = self
+                .greedy_search_layer(id, nearest, l, 1)
+                .into_iter()
+                .next()
+                .map(|c| c.id)
+                .unwrap_or(nearest);
         }
 
         // Phase 2: at each layer from `level` down to 0, run a
@@ -400,7 +405,10 @@ impl HnswBackend {
         let candidates = self.greedy_search_layer_against(query, nearest, 0, ef);
         let mut filtered: Vec<Candidate> = match restrict_to {
             None => candidates,
-            Some(set) => candidates.into_iter().filter(|c| set.contains(&c.id)).collect(),
+            Some(set) => candidates
+                .into_iter()
+                .filter(|c| set.contains(&c.id))
+                .collect(),
         };
         filtered.truncate(k);
         filtered.into_iter().map(|c| (c.id, -c.dist.0)).collect()
@@ -546,14 +554,11 @@ impl HnswBackend {
         };
         // Gather candidate distances for prune-by-closest.
         let mut current: Vec<Candidate> = {
-            let target_node = self
-                .nodes
-                .get(&target)
-                .expect("checked above");
+            let target_node = self.nodes.get(&target).expect("checked above");
             target_node
                 .neighbors
                 .get(layer)
-                .map(|list| list.clone())
+                .cloned()
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|&id| id != source)
@@ -575,10 +580,7 @@ impl HnswBackend {
         current.sort();
         current.truncate(m_max);
 
-        let target_node = self
-            .nodes
-            .get_mut(&target)
-            .expect("checked above");
+        let target_node = self.nodes.get_mut(&target).expect("checked above");
         if let Some(list) = target_node.neighbors.get_mut(layer) {
             *list = current.into_iter().map(|c| c.id).collect();
         }

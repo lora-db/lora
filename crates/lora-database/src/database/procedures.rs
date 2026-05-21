@@ -21,8 +21,8 @@ use anyhow::{anyhow, Result};
 use lora_ast::{Expr, ProcedureInvocationKind, StandaloneCall, YieldItem};
 use lora_executor::{LoraValue, Row};
 use lora_store::{
-    GraphStorage, GraphStorageMut, IndexDefinition, LoraVector, StoredIndexEntity,
-    StoredIndexKind, VectorCoordinateType,
+    GraphStorage, GraphStorageMut, IndexDefinition, LoraVector, StoredIndexEntity, StoredIndexKind,
+    VectorCoordinateType,
 };
 
 use crate::database::{
@@ -102,8 +102,7 @@ where
             }
         }
 
-        let scored =
-            snapshot.vector_search(&index_name, &query_vec, k, restrict_to.as_ref());
+        let scored = snapshot.vector_search(&index_name, &query_vec, k, restrict_to.as_ref());
         Ok(scored_rows(scored, Some(k), entity))
     }
 

@@ -622,10 +622,8 @@ fn bench_vector_knn(c: &mut Criterion) {
             let name = format!("n_{n}_{sim}_flat_k{k}_d{dim}");
             group.bench_function(&name, |b| {
                 b.iter(|| {
-                    let params = BTreeMap::from([(
-                        "q".to_string(),
-                        LoraValue::Vector(query.clone()),
-                    )]);
+                    let params =
+                        BTreeMap::from([("q".to_string(), LoraValue::Vector(query.clone()))]);
                     run_params(
                         &db,
                         "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
@@ -644,10 +642,7 @@ fn bench_vector_knn(c: &mut Criterion) {
         let name = format!("n_{n}_cosine_hnsw_k{k}_d{dim}");
         group.bench_function(&name, |b| {
             b.iter(|| {
-                let params = BTreeMap::from([(
-                    "q".to_string(),
-                    LoraValue::Vector(query.clone()),
-                )]);
+                let params = BTreeMap::from([("q".to_string(), LoraValue::Vector(query.clone()))]);
                 run_params(
                     &db,
                     "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",

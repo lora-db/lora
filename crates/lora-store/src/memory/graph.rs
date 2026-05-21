@@ -19,6 +19,7 @@ use super::constraint_catalog::{
 };
 use super::entity_index_store::IndexBundle;
 use super::fulltext_index::FulltextRegistry;
+use super::hnsw::HnswParams;
 use super::index_catalog::{
     CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
     IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind, StoredIndexState,
@@ -31,7 +32,6 @@ use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
 use super::text_index::TrigramRegistry;
-use super::hnsw::HnswParams;
 use super::vector_index::{VectorIndexProvider, VectorIndexRegistry, VectorSimilarity};
 
 #[derive(Default)]
@@ -1209,14 +1209,7 @@ impl InMemoryGraph {
                     Some(super::index_catalog::IndexConfigValue::Bool(true))
                 );
                 self.activate_vector_index(
-                    def.entity,
-                    &def.name,
-                    label,
-                    property,
-                    similarity,
-                    provider,
-                    hnsw,
-                    lazy,
+                    def.entity, &def.name, label, property, similarity, provider, hnsw, lazy,
                 );
                 if lazy {
                     self.index_catalog_write()
@@ -1490,6 +1483,7 @@ impl InMemoryGraph {
         self.indexes.vector.write(entity)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn activate_vector_index(
         &self,
         entity: StoredIndexEntity,
@@ -2568,4 +2562,3 @@ impl InMemoryGraph {
         );
     }
 }
-
