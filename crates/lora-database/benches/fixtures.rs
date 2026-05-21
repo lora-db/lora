@@ -623,16 +623,21 @@ fn vector_rng(seed: u64) -> impl FnMut() -> f32 {
 
 /// Build a graph of `n` `:V` nodes each carrying a `dim`-dimensional
 /// FLOAT32 vector under property `e`, with a pre-created VECTOR index
-/// `vidx` and similarity function `sim` (`"cosine"` or `"euclidean"`).
+/// `vidx`, similarity function `sim` (`"cosine"` or `"euclidean"`),
+/// and index provider `provider` (`"flat"` or `"hnsw"`).
 ///
 /// Vectors are deterministic so the same fixture produces identical
-/// content across runs. Used by `bench_vector_knn` to baseline flat-scan
-/// k-NN throughput before any ANN backend lands.
-pub fn build_vector_graph(n: usize, dim: usize, sim: &str) -> BenchDb {
+/// content across runs. Used by `bench_vector_knn` to compare flat
+/// vs HNSW throughput.
+pub fn build_vector_graph(n: usize, dim: usize, sim: &str, provider: &str) -> BenchDb {
     let db = BenchDb::with_capacity_hint(n, 0);
     db.run(&format!(
         "CREATE VECTOR INDEX vidx FOR (v:V) ON (v.e) \
-         OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: '{sim}'}}}}",
+         OPTIONS {{indexConfig: {{ \
+            `vector.dimensions`: {dim}, \
+            `vector.similarity_function`: '{sim}', \
+            `vector.indexProvider`: '{provider}' \
+         }}}}",
     ));
 
     let mut rng = vector_rng(0x5EED);

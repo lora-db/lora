@@ -595,19 +595,19 @@ fn bench_advanced_query_shapes(c: &mut Criterion) {
     group.finish();
 }
 
-/// Flat-scan k-NN baseline.
+/// k-NN throughput across providers and scales.
 ///
-/// These numbers are the contract any future ANN backend has to beat —
-/// a Phase 0 measurement, intentionally noisy at the high end so we can
-/// see how badly brute force scales. d=384 matches a typical
-/// sentence-transformer embedding dimension. The 100k case dominates
-/// total bench time; restrict with `cargo bench -- vector_knn/n_1000`
-/// during iteration.
+/// Flat: the Phase 1 baseline — every call scores every vector.
+/// HNSW: the Phase 2 approximate index. d=384 matches a typical
+/// sentence-transformer embedding. The 100k cases dominate total
+/// bench time; restrict with e.g.
+/// `cargo bench -- vector_knn/n_100000_cosine_hnsw` during iteration.
 fn bench_vector_knn(c: &mut Criterion) {
     let mut group = c.benchmark_group("query/vector_knn");
     group.throughput(Throughput::Elements(1));
-    // Per-iter cost at 100k is in the ~10-50ms range; give criterion
-    // enough samples without making the suite intolerable.
+    // 100k flat is ~50ms per query; 100k HNSW is sub-millisecond.
+    // Give criterion enough headroom on both ends without an
+    // intolerable suite runtime.
     group.measurement_time(Duration::from_secs(5));
     group.sample_size(20);
 
@@ -615,10 +615,11 @@ fn bench_vector_knn(c: &mut Criterion) {
     let k = 10usize;
     let query = build_vector_query(0xDEAD_BEEF, dim);
 
+    // Flat at every scale (baseline curve).
     for &n in &[1_000usize, 10_000, 100_000] {
         for &sim in &["cosine", "euclidean"] {
-            let db = build_vector_graph(n, dim, sim);
-            let name = format!("n_{n}_{sim}_k{k}_d{dim}");
+            let db = build_vector_graph(n, dim, sim, "flat");
+            let name = format!("n_{n}_{sim}_flat_k{k}_d{dim}");
             group.bench_function(&name, |b| {
                 b.iter(|| {
                     let params = BTreeMap::from([(
@@ -633,6 +634,27 @@ fn bench_vector_knn(c: &mut Criterion) {
                 });
             });
         }
+    }
+
+    // HNSW only at scales where the ANN structure pays for its
+    // construction cost. n=1k is dominated by procedure overhead and
+    // doesn't move on either backend; skip.
+    for &n in &[10_000usize, 100_000] {
+        let db = build_vector_graph(n, dim, "cosine", "hnsw");
+        let name = format!("n_{n}_cosine_hnsw_k{k}_d{dim}");
+        group.bench_function(&name, |b| {
+            b.iter(|| {
+                let params = BTreeMap::from([(
+                    "q".to_string(),
+                    LoraValue::Vector(query.clone()),
+                )]);
+                run_params(
+                    &db,
+                    "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
+                    params,
+                );
+            });
+        });
     }
     group.finish();
 }

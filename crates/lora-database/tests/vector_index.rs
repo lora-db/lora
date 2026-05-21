@@ -112,7 +112,7 @@ fn vector_index_rejects_unknown_similarity() {
     let db = TestDb::new();
     let err = db.run_err(
         "CREATE VECTOR INDEX bad FOR (m:Movie) ON (m.embedding) \
-         OPTIONS {indexConfig: {`vector.dimensions`: 4, `vector.similarity_function`: 'manhattan'}}",
+         OPTIONS {indexConfig: {`vector.dimensions`: 4, `vector.similarity_function`: 'jaccard'}}",
     );
     assert!(
         err.contains("similarity_function"),
@@ -527,6 +527,681 @@ fn flat_knn_skips_nodes_missing_property_in_oracle() {
     );
     let oracle = oracle_top_k(&vectors, &query, 100, cosine_similarity_bounded);
     assert_scores_match(&proc_scores, &oracle);
+}
+
+// ---------- HNSW provider tests ----------
+//
+// These exercise the `vector.indexProvider: 'hnsw'` option end-to-end:
+// DDL round-trip, top-k correctness against the flat oracle (with
+// recall tolerance), and schema validator coverage for the new knobs.
+
+fn create_hnsw_index(db: &TestDb, dim: usize, sim: &str) {
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{ \
+            `vector.dimensions`: {dim}, \
+            `vector.similarity_function`: '{sim}', \
+            `vector.indexProvider`: 'hnsw' \
+         }}}}",
+    ));
+}
+
+#[test]
+fn hnsw_index_ddl_round_trip() {
+    let db = TestDb::new();
+    create_hnsw_index(&db, 8, "cosine");
+    let listed = db.run("SHOW INDEXES");
+    let entry = index_named(&listed, "vidx").expect("listed");
+    assert_eq!(entry["type"], JsonValue::String("VECTOR".into()));
+}
+
+#[test]
+fn hnsw_top_k_returns_k_results() {
+    let db = TestDb::new();
+    let dim = 16usize;
+    create_hnsw_index(&db, dim, "cosine");
+    let vectors = seeded_vectors(0xABCD, 64, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(0xEEFF, 1, dim).pop().unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query));
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 5, $q) YIELD node, score",
+        params,
+    );
+    assert_eq!(rows.len(), 5);
+    // Scores must be descending.
+    let scores: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| r.get("score").and_then(|s| s.as_f64()))
+        .collect();
+    for w in scores.windows(2) {
+        assert!(w[0] >= w[1], "scores not descending: {scores:?}");
+    }
+}
+
+#[test]
+fn hnsw_recall_at_10_meets_target_cosine() {
+    // Recall@10 ≥ 0.95 against the flat oracle on uniform random
+    // d=64 vectors at n=1k. Tighter than the per-backend unit test
+    // because Cypher's path uses default HNSW params (M=16,
+    // ef_search=100) on a higher-dim, larger-n fixture where graph
+    // structure is more pronounced.
+    let db = TestDb::new();
+    let dim = 64usize;
+    let n = 1_000usize;
+    create_hnsw_index(&db, dim, "cosine");
+    let vectors = seeded_vectors(0xC051_4E_u64, n, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(0xDEAD_BEEF_u64, 1, dim).pop().unwrap();
+
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
+        params,
+    );
+    let hnsw_scores: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| r.get("score").and_then(|s| s.as_f64()))
+        .collect();
+    assert_eq!(hnsw_scores.len(), 10);
+
+    // Build the oracle from the same vectors. Recall is the
+    // fraction of the oracle's top-10 *scores* the HNSW result
+    // recovers — using score as the identity is more lenient than
+    // id-based recall but still meaningful, and it avoids the
+    // node-id bookkeeping we'd otherwise need.
+    let oracle = oracle_top_k(&vectors, &query, 10, cosine_similarity_bounded);
+    let mut hits = 0usize;
+    for s in &hnsw_scores {
+        if oracle.iter().any(|o| (o - s).abs() < 1e-9) {
+            hits += 1;
+        }
+    }
+    let recall = hits as f64 / 10.0;
+    assert!(
+        recall >= 0.95,
+        "HNSW recall@10 too low: {recall} (hnsw={hnsw_scores:?}, oracle={oracle:?})"
+    );
+}
+
+#[test]
+fn hnsw_explicit_flat_provider_matches_oracle_exactly() {
+    // `vector.indexProvider: 'flat'` is the legacy code path under a
+    // new explicit name. Must remain exact (recall=1.0) so users
+    // upgrading their config don't see drift.
+    let db = TestDb::new();
+    let dim = 16usize;
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{ \
+            `vector.dimensions`: {dim}, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.indexProvider`: 'flat' \
+         }}}}",
+    ));
+    let vectors = seeded_vectors(13, 50, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(14, 1, dim).pop().unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD score",
+        params,
+    );
+    let proc_scores: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| r.get("score").and_then(|s| s.as_f64()))
+        .collect();
+    let oracle = oracle_top_k(&vectors, &query, 10, cosine_similarity_bounded);
+    assert_scores_match(&proc_scores, &oracle);
+}
+
+#[test]
+fn schema_rejects_invalid_index_provider() {
+    let db = TestDb::new();
+    let err = db.run_err(
+        "CREATE VECTOR INDEX bad FOR (m:Movie) ON (m.embedding) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.indexProvider`: 'annoy' \
+         }}",
+    );
+    assert!(
+        err.contains("indexProvider"),
+        "expected indexProvider error, got: {err}"
+    );
+}
+
+#[test]
+fn schema_rejects_out_of_range_hnsw_m() {
+    let db = TestDb::new();
+    let err = db.run_err(
+        "CREATE VECTOR INDEX bad FOR (m:Movie) ON (m.embedding) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.hnsw.m`: 999 \
+         }}",
+    );
+    assert!(
+        err.contains("vector.hnsw.m") && err.contains("128"),
+        "expected hnsw.m range error, got: {err}"
+    );
+}
+
+// ---------- New metric coverage: dot, manhattan ----------
+
+fn create_index_with_metric(db: &TestDb, dim: usize, sim: &str, provider: &str) {
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{ \
+            `vector.dimensions`: {dim}, \
+            `vector.similarity_function`: '{sim}', \
+            `vector.indexProvider`: '{provider}' \
+         }}}}",
+    ));
+}
+
+#[test]
+fn dot_metric_top_k_matches_oracle_flat() {
+    let db = TestDb::new();
+    let dim = 16usize;
+    create_index_with_metric(&db, dim, "dot", "flat");
+    let vectors = seeded_vectors(0xD07_u64, 64, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(0xD071, 1, dim).pop().unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD score",
+        params,
+    );
+    let proc_scores: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| r.get("score").and_then(|s| s.as_f64()))
+        .collect();
+    // Oracle uses raw dot product — same metric the index ranks by.
+    let mut oracle: Vec<f64> = vectors
+        .iter()
+        .filter_map(|v| lora_store::dot_product(v, &query))
+        .collect();
+    oracle.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    oracle.truncate(10);
+    assert_scores_match(&proc_scores, &oracle);
+}
+
+#[test]
+fn manhattan_metric_top_k_matches_oracle_flat() {
+    let db = TestDb::new();
+    let dim = 16usize;
+    create_index_with_metric(&db, dim, "manhattan", "flat");
+    let vectors = seeded_vectors(0x1A_10, 64, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(0x1A_11, 1, dim).pop().unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD score",
+        params,
+    );
+    let proc_scores: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| r.get("score").and_then(|s| s.as_f64()))
+        .collect();
+    // Oracle applies the same `1/(1+L1)` mapping the index uses.
+    let mut oracle: Vec<f64> = vectors
+        .iter()
+        .filter_map(|v| lora_store::manhattan_distance(v, &query).map(|d| 1.0 / (1.0 + d)))
+        .collect();
+    oracle.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    oracle.truncate(10);
+    assert_scores_match(&proc_scores, &oracle);
+}
+
+#[test]
+fn dot_metric_works_with_hnsw_provider() {
+    let db = TestDb::new();
+    let dim = 32usize;
+    create_index_with_metric(&db, dim, "dot", "hnsw");
+    let vectors = seeded_vectors(0xD07_2, 256, dim);
+    seed_vector_nodes(&db, &vectors);
+    let query = seeded_vectors(0xD07_2_1, 1, dim).pop().unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query));
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 5, $q) YIELD score",
+        params,
+    );
+    let scores: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| r.get("score").and_then(|s| s.as_f64()))
+        .collect();
+    assert_eq!(scores.len(), 5);
+    for w in scores.windows(2) {
+        assert!(w[0] >= w[1], "dot+hnsw scores not descending: {scores:?}");
+    }
+}
+
+#[test]
+fn dot_product_alias_is_accepted() {
+    let db = TestDb::new();
+    db.run(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {indexConfig: {`vector.dimensions`: 4, `vector.similarity_function`: 'dot_product'}}",
+    );
+    // No error → alias accepted.
+    let listed = db.run("SHOW VECTOR INDEXES");
+    assert!(index_named(&listed, "vidx").is_some());
+}
+
+// ---------- Async (lazy) populate state ----------
+
+#[test]
+fn async_populate_index_starts_populating() {
+    let db = TestDb::new();
+    // Pre-seed a vector before CREATE INDEX so the backfill has work.
+    db.run("CREATE (:V {e: [1.0, 0.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.populate.async`: true \
+         }}",
+    );
+    let listed = db.run("SHOW INDEXES");
+    let entry = index_named(&listed, "vidx").expect("listed");
+    assert_eq!(entry["state"], JsonValue::String("POPULATING".into()));
+}
+
+#[test]
+fn async_populate_first_query_warms_index_and_flips_to_online() {
+    let db = TestDb::new();
+    db.run("CREATE (:V {e: [1.0, 0.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run("CREATE (:V {e: [0.9, 0.1, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.populate.async`: true \
+         }}",
+    );
+    // First query: triggers populate inline; both pre-existing
+    // vectors must show up.
+    let rows = db.run(
+        "CALL db.index.vector.queryNodes('vidx', 5, [1.0, 0.0, 0.0, 0.0]) YIELD node, score",
+    );
+    assert_eq!(rows.len(), 2, "expected pre-existing vectors, got {rows:?}");
+    // State should now be Online.
+    let listed = db.run("SHOW INDEXES");
+    let entry = index_named(&listed, "vidx").expect("listed");
+    assert_eq!(entry["state"], JsonValue::String("ONLINE".into()));
+}
+
+#[test]
+fn async_populate_post_create_inserts_still_visible() {
+    // Mutations between CREATE (async) and first query go through
+    // the maintenance hook and feed the registry. Verify the lazy
+    // backfill doesn't drop or duplicate them.
+    let db = TestDb::new();
+    db.run("CREATE (:V {tag: 'pre', e: [1.0, 0.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.populate.async`: true \
+         }}",
+    );
+    // After CREATE, while index is Populating, insert another:
+    db.run("CREATE (:V {tag: 'post', e: [0.0, 1.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    let rows = db.run(
+        "CALL db.index.vector.queryNodes('vidx', 5, [1.0, 0.0, 0.0, 0.0]) YIELD node, score",
+    );
+    assert_eq!(rows.len(), 2, "expected both pre+post vectors, got {rows:?}");
+}
+
+#[test]
+fn async_populate_option_rejects_non_boolean() {
+    let db = TestDb::new();
+    let err = db.run_err(
+        "CREATE VECTOR INDEX bad FOR (n:V) ON (n.e) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.populate.async`: 'yes' \
+         }}",
+    );
+    assert!(
+        err.contains("vector.populate.async") && err.contains("boolean"),
+        "expected boolean shape error, got: {err}"
+    );
+}
+
+// ---------- SHOW INDEXES surfaces options ----------
+
+#[test]
+fn show_indexes_surfaces_vector_options() {
+    let db = TestDb::new();
+    db.run(
+        "CREATE VECTOR INDEX vidx FOR (m:Movie) ON (m.embedding) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 8, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.indexProvider`: 'hnsw', \
+            `vector.hnsw.m`: 24, \
+            `vector.hnsw.ef_construction`: 256, \
+            `vector.hnsw.ef_search`: 128 \
+         }}",
+    );
+    let listed = db.run("SHOW INDEXES");
+    let entry = index_named(&listed, "vidx").expect("listed");
+    let options = entry["options"].as_object().expect("options is a map");
+    assert_eq!(options.get("vector.dimensions"), Some(&JsonValue::from(8)));
+    assert_eq!(
+        options.get("vector.similarity_function"),
+        Some(&JsonValue::String("cosine".into()))
+    );
+    assert_eq!(
+        options.get("vector.indexProvider"),
+        Some(&JsonValue::String("hnsw".into()))
+    );
+    assert_eq!(options.get("vector.hnsw.m"), Some(&JsonValue::from(24)));
+    assert_eq!(
+        options.get("vector.hnsw.ef_construction"),
+        Some(&JsonValue::from(256))
+    );
+    assert_eq!(
+        options.get("vector.hnsw.ef_search"),
+        Some(&JsonValue::from(128))
+    );
+}
+
+// ---------- HNSW snapshot round-trip ----------
+
+#[test]
+fn hnsw_backend_survives_snapshot_round_trip() {
+    let donor = TestDb::new();
+    let dim = 16usize;
+    donor.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{ \
+            `vector.dimensions`: {dim}, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.indexProvider`: 'hnsw' \
+         }}}}",
+    ));
+    let vectors = seeded_vectors(0x5A_AF_u64, 128, dim);
+    seed_vector_nodes(&donor, &vectors);
+
+    // Capture donor query result so we can compare after restore.
+    let query = seeded_vectors(0xC1_AB_u64, 1, dim).pop().unwrap();
+    let mut donor_params = BTreeMap::new();
+    donor_params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    let donor_rows = donor.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
+        donor_params,
+    );
+
+    // Round-trip the database through a snapshot.
+    let bytes = donor
+        .service
+        .save_snapshot_to_bytes()
+        .expect("snapshot encode");
+    let target = TestDb::new();
+    target
+        .service
+        .load_snapshot_from_bytes(&bytes)
+        .expect("snapshot decode");
+
+    // Restored query must produce the same top-k order and scores.
+    // If the snapshot trailer were missing, the rebuild would
+    // generate a different HNSW topology (different RNG state →
+    // different graph) and likely return slightly different
+    // results. Identical-byte parity is the strongest signal that
+    // the snapshot path skipped the rebuild.
+    let mut target_params = BTreeMap::new();
+    target_params.insert("q".to_string(), LoraValue::Vector(query));
+    let target_rows = target.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
+        target_params,
+    );
+    assert_eq!(
+        ordered_node_ids(&donor_rows),
+        ordered_node_ids(&target_rows),
+        "restored HNSW returned different node order:\n  donor={donor_rows:?}\n  target={target_rows:?}"
+    );
+}
+
+// ---------- Int8 quantized HNSW ----------
+
+fn create_hnsw_int8(db: &TestDb, dim: usize) {
+    db.run(&format!(
+        "CREATE VECTOR INDEX vidx FOR (n:V) ON (n.e) \
+         OPTIONS {{indexConfig: {{ \
+            `vector.dimensions`: {dim}, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.indexProvider`: 'hnsw', \
+            `vector.hnsw.quantization`: 'int8' \
+         }}}}",
+    ));
+}
+
+#[test]
+fn hnsw_int8_ddl_round_trip() {
+    let db = TestDb::new();
+    create_hnsw_int8(&db, 8);
+    let listed = db.run("SHOW INDEXES");
+    let entry = index_named(&listed, "vidx").expect("listed");
+    assert_eq!(
+        entry["options"]["vector.hnsw.quantization"],
+        JsonValue::String("int8".into())
+    );
+}
+
+#[test]
+fn hnsw_int8_returns_top_k_for_normalized_embeddings() {
+    let db = TestDb::new();
+    let dim = 16usize;
+    create_hnsw_int8(&db, dim);
+    // Build unit-normalized vectors so the [-1, 1] quantization
+    // range is fully exercised without clipping.
+    let raw = seeded_vectors(0xA1_u64, 32, dim);
+    let mut normalized = Vec::with_capacity(raw.len());
+    for v in &raw {
+        let norm = lora_store::euclidean_norm(v);
+        let coords: Vec<lora_store::RawCoordinate> = (0..dim)
+            .map(|i| {
+                let f = v.values.as_f64_vec()[i];
+                lora_store::RawCoordinate::Float(if norm > 0.0 { f / norm } else { 0.0 })
+            })
+            .collect();
+        normalized.push(
+            LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Float32).unwrap(),
+        );
+    }
+    seed_vector_nodes(&db, &normalized);
+    let q = normalized[0].clone();
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(q));
+    let rows = db.run_with_params(
+        "CALL db.index.vector.queryNodes('vidx', 5, $q) YIELD node, score",
+        params,
+    );
+    assert_eq!(rows.len(), 5);
+    // The self-query should rank near the top with a score close to 1.
+    let top = rows[0]["score"].as_f64().unwrap();
+    assert!(top > 0.95, "top quantized score too low: {top}");
+}
+
+#[test]
+fn hnsw_int8_rejected_with_euclidean() {
+    let db = TestDb::new();
+    let err = db.run_err(
+        "CREATE VECTOR INDEX bad FOR (m:Movie) ON (m.e) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'euclidean', \
+            `vector.hnsw.quantization`: 'int8' \
+         }}",
+    );
+    assert!(
+        err.contains("int8") && err.contains("cosine"),
+        "expected int8-requires-cosine error, got: {err}"
+    );
+}
+
+#[test]
+fn hnsw_quantization_rejects_unknown_value() {
+    let db = TestDb::new();
+    let err = db.run_err(
+        "CREATE VECTOR INDEX bad FOR (m:Movie) ON (m.e) \
+         OPTIONS {indexConfig: { \
+            `vector.dimensions`: 4, \
+            `vector.similarity_function`: 'cosine', \
+            `vector.hnsw.quantization`: 'int4' \
+         }}",
+    );
+    assert!(
+        err.contains("quantization"),
+        "expected quantization-shape error, got: {err}"
+    );
+}
+
+// ---------- Pre-filter (4th-argument options map) ----------
+
+#[test]
+fn restrict_to_filters_results_flat() {
+    let db = TestDb::new();
+    let dim = 4usize;
+    create_index_with_metric(&db, dim, "cosine", "flat");
+    db.run("CREATE (:V {tag: 'a', e: [1.0, 0.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run("CREATE (:V {tag: 'b', e: [0.9, 0.1, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run("CREATE (:V {tag: 'c', e: [0.0, 1.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    let listed = db.run("MATCH (n:V {tag: 'a'}) RETURN id(n) AS internal");
+    let id_a = listed[0]["internal"].as_i64().expect("internal id");
+    // Restrict to {id_a}: query for [1, 0, 0, 0] should return only id_a
+    // even though id_b's vector is nearly identical and would normally rank.
+    let rows = db.run(&format!(
+        "CALL db.index.vector.queryNodes('vidx', 3, [1.0, 0.0, 0.0, 0.0], {{restrictTo: [{id_a}]}}) \
+         YIELD node, score",
+    ));
+    let ids = ordered_node_ids(&rows);
+    assert_eq!(ids, vec![id_a], "expected only id_a, got {ids:?}");
+}
+
+#[test]
+fn restrict_to_filters_results_hnsw() {
+    let db = TestDb::new();
+    let dim = 8usize;
+    create_index_with_metric(&db, dim, "cosine", "hnsw");
+    let vectors = seeded_vectors(0xF11_7E_u64, 50, dim);
+    seed_vector_nodes(&db, &vectors);
+    // Grab the first 5 nodes' internal ids and restrict the query to them.
+    let id_rows = db.run("MATCH (n:V) RETURN id(n) AS i ORDER BY id(n) LIMIT 5");
+    let allowed: Vec<i64> = id_rows
+        .iter()
+        .filter_map(|r| r.get("i").and_then(|v| v.as_i64()))
+        .collect();
+    assert_eq!(allowed.len(), 5);
+    let restrict_str = allowed
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let query = seeded_vectors(0xF11_7E_2_u64, 1, dim).pop().unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("q".to_string(), LoraValue::Vector(query));
+    let rows = db.run_with_params(
+        &format!(
+            "CALL db.index.vector.queryNodes('vidx', 5, $q, {{restrictTo: [{restrict_str}]}}) \
+             YIELD node, score"
+        ),
+        params,
+    );
+    let returned: BTreeMap<i64, ()> = ordered_node_ids(&rows).into_iter().map(|i| (i, ())).collect();
+    // Every returned id must be in the allowed set.
+    for &id in returned.keys() {
+        assert!(
+            allowed.contains(&id),
+            "node {id} returned but not in restrictTo {allowed:?}"
+        );
+    }
+    // Should return up to 5 results (less only if HNSW under-fetched).
+    assert!(
+        returned.len() >= 3,
+        "expected ≥3 results under restrictTo, got {returned:?}"
+    );
+}
+
+#[test]
+fn restrict_to_empty_returns_empty() {
+    let db = TestDb::new();
+    let dim = 4usize;
+    create_index_with_metric(&db, dim, "cosine", "flat");
+    db.run("CREATE (:V {e: [1.0, 0.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run("CREATE (:V {e: [0.9, 0.1, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    let rows = db.run(
+        "CALL db.index.vector.queryNodes('vidx', 5, [1.0, 0.0, 0.0, 0.0], {restrictTo: []}) \
+         YIELD node, score",
+    );
+    assert!(rows.is_empty(), "expected empty result, got {rows:?}");
+}
+
+#[test]
+fn restrict_to_rejects_unknown_option_key() {
+    let db = TestDb::new();
+    let dim = 4usize;
+    create_index_with_metric(&db, dim, "cosine", "flat");
+    let err = db.run_err(
+        "CALL db.index.vector.queryNodes('vidx', 1, [1.0, 0.0, 0.0, 0.0], {sneaky: true}) \
+         YIELD node, score",
+    );
+    assert!(
+        err.contains("unknown option") && err.contains("sneaky"),
+        "expected unknown-option error, got: {err}"
+    );
+}
+
+#[test]
+fn restrict_to_rejects_non_list_value() {
+    let db = TestDb::new();
+    let dim = 4usize;
+    create_index_with_metric(&db, dim, "cosine", "flat");
+    let err = db.run_err(
+        "CALL db.index.vector.queryNodes('vidx', 1, [1.0, 0.0, 0.0, 0.0], {restrictTo: 42}) \
+         YIELD node, score",
+    );
+    assert!(
+        err.contains("restrictTo") && err.contains("LIST"),
+        "expected restrictTo-shape error, got: {err}"
+    );
+}
+
+#[test]
+fn hnsw_handles_updates_through_maintenance_hook() {
+    // SET that replaces a vector property must update the HNSW
+    // backend, not leave a stale entry. We assert the new vector is
+    // the top match, not the old one.
+    let db = TestDb::new();
+    let dim = 4usize;
+    create_hnsw_index(&db, dim, "cosine");
+    db.run("CREATE (:V {id: 1, e: [1.0, 0.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    db.run("CREATE (:V {id: 2, e: [0.0, 1.0, 0.0, 0.0]::VECTOR<FLOAT32>(4)})");
+    // Re-aim node 1 at [0,0,1,0].
+    db.run("MATCH (n:V {id: 1}) SET n.e = [0.0, 0.0, 1.0, 0.0]::VECTOR<FLOAT32>(4)");
+    // Query for [0,0,1,0] — node 1 should now be the top hit (it
+    // wouldn't be if the old vector were still indexed).
+    let rows = db.run(
+        "CALL db.index.vector.queryNodes('vidx', 1, [0.0, 0.0, 1.0, 0.0]) YIELD node, score",
+    );
+    assert_eq!(rows.len(), 1);
+    assert!((rows[0]["score"].as_f64().unwrap() - 1.0).abs() < 1e-6);
 }
 
 #[test]
