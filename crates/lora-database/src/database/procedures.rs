@@ -15,7 +15,7 @@
 //! contract.
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, Result};
 use lora_ast::{Expr, ProcedureInvocationKind, StandaloneCall, YieldItem};
@@ -72,7 +72,7 @@ where
         params: &BTreeMap<String, LoraValue>,
         entity: StoredIndexEntity,
     ) -> Result<Vec<Row>> {
-        let (index_name, k, query_vec) = parse_vector_args(args, params)?;
+        let (index_name, k, query_vec, restrict_to) = parse_vector_args(args, params)?;
         let snapshot = self.read_store();
         let def = snapshot
             .get_index(&index_name)
@@ -102,7 +102,8 @@ where
             }
         }
 
-        let scored = snapshot.vector_search(&index_name, &query_vec, k);
+        let scored =
+            snapshot.vector_search(&index_name, &query_vec, k, restrict_to.as_ref());
         Ok(scored_rows(scored, Some(k), entity))
     }
 
@@ -249,10 +250,10 @@ fn parse_fulltext_args(
 fn parse_vector_args(
     args: &[Expr],
     params: &BTreeMap<String, LoraValue>,
-) -> Result<(String, usize, LoraVector)> {
-    if args.len() != 3 {
+) -> Result<(String, usize, LoraVector, Option<BTreeSet<u64>>)> {
+    if args.len() < 3 || args.len() > 4 {
         return Err(anyhow!(
-            "vector procedure expects 3 arguments (indexName, k, query); got {}",
+            "vector procedure expects 3 or 4 arguments (indexName, k, query, options?); got {}",
             args.len()
         ));
     }
@@ -262,7 +263,81 @@ fn parse_vector_args(
         return Err(anyhow!("k must be positive"));
     }
     let query = eval_vector_arg(&args[2], params)?;
-    Ok((name, k, query))
+    let restrict_to = if args.len() == 4 {
+        parse_vector_options(&args[3], params)?
+    } else {
+        None
+    };
+    Ok((name, k, query, restrict_to))
+}
+
+/// Parse the optional 4th-argument options map. Currently the only
+/// honored key is `restrictTo`, a list of entity ids that limits
+/// returned results. Unknown keys are rejected so users notice
+/// typos at call time rather than silently getting unfiltered
+/// behaviour.
+fn parse_vector_options(
+    expr: &Expr,
+    params: &BTreeMap<String, LoraValue>,
+) -> Result<Option<BTreeSet<u64>>> {
+    let entries = match expr {
+        Expr::Map(items, _) => items.clone(),
+        // A $param map binding lands as LoraValue::Map after
+        // resolution; we don't currently take that path because
+        // resolve_literal would need a Map arm. For now, require an
+        // inline map literal in the procedure call.
+        other => {
+            return Err(anyhow!(
+                "vector procedure options must be a MAP literal like {{restrictTo: [...]}}, got {other:?}"
+            ));
+        }
+    };
+    let mut restrict_to: Option<BTreeSet<u64>> = None;
+    for (key, value) in entries {
+        match key.as_str() {
+            "restrictTo" => {
+                let resolved = resolve_literal(&value, params)?;
+                restrict_to = Some(coerce_id_set(&resolved)?);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown option `{other}` for db.index.vector.queryNodes (known: `restrictTo`)"
+                ));
+            }
+        }
+    }
+    Ok(restrict_to)
+}
+
+fn coerce_id_set(value: &LoraValue) -> Result<BTreeSet<u64>> {
+    let items = match value {
+        LoraValue::List(xs) => xs,
+        other => {
+            return Err(anyhow!(
+                "`restrictTo` must be a LIST of node ids, got {other:?}"
+            ));
+        }
+    };
+    let mut out = BTreeSet::new();
+    for item in items {
+        match item {
+            LoraValue::Int(n) if *n >= 0 => {
+                out.insert(*n as u64);
+            }
+            LoraValue::Node(id) => {
+                out.insert(*id);
+            }
+            LoraValue::Relationship(id) => {
+                out.insert(*id);
+            }
+            other => {
+                return Err(anyhow!(
+                    "`restrictTo` entries must be non-negative integers or node/relationship references, got {other:?}"
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn eval_string_arg(

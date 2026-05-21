@@ -395,10 +395,96 @@ fn validate_vector_options(opts: &BTreeMap<String, IndexConfigValue>) -> Result<
             ))
         }
     };
-    if !(sim.eq_ignore_ascii_case("cosine") || sim.eq_ignore_ascii_case("euclidean")) {
+    let normalized = sim.to_ascii_lowercase();
+    let known = matches!(
+        normalized.as_str(),
+        "cosine" | "euclidean" | "dot" | "dot_product" | "manhattan"
+    );
+    if !known {
         return Err(anyhow!(
-            "`vector.similarity_function` must be 'cosine' or 'euclidean', got '{sim}'"
+            "`vector.similarity_function` must be one of 'cosine', 'euclidean', 'dot', 'manhattan', got '{sim}'"
         ));
+    }
+
+    // Optional knobs. `indexProvider` selects flat (default) vs HNSW;
+    // the `vector.hnsw.*` keys are honored only when the provider is
+    // HNSW but we validate ranges regardless to surface typos at DDL
+    // time rather than silently ignoring them.
+    if let Some(provider) = opts.get("vector.indexProvider") {
+        let p = match provider {
+            IndexConfigValue::String(s) => s.as_str(),
+            other => {
+                return Err(anyhow!(
+                    "`vector.indexProvider` must be a string, got {other:?}"
+                ))
+            }
+        };
+        if !(p.eq_ignore_ascii_case("flat") || p.eq_ignore_ascii_case("hnsw")) {
+            return Err(anyhow!(
+                "`vector.indexProvider` must be 'flat' or 'hnsw', got '{p}'"
+            ));
+        }
+    }
+
+    validate_hnsw_int(opts, "vector.hnsw.m", 4, 128)?;
+    validate_hnsw_int(opts, "vector.hnsw.ef_construction", 16, 2000)?;
+    validate_hnsw_int(opts, "vector.hnsw.ef_search", 16, 2000)?;
+
+    if let Some(value) = opts.get("vector.populate.async") {
+        match value {
+            IndexConfigValue::Bool(_) => {}
+            other => {
+                return Err(anyhow!(
+                    "`vector.populate.async` must be a boolean, got {other:?}"
+                ));
+            }
+        }
+    }
+
+    if let Some(value) = opts.get("vector.hnsw.quantization") {
+        let q = match value {
+            IndexConfigValue::String(s) => s.as_str(),
+            other => {
+                return Err(anyhow!(
+                    "`vector.hnsw.quantization` must be a string, got {other:?}"
+                ));
+            }
+        };
+        if !(q.eq_ignore_ascii_case("none") || q.eq_ignore_ascii_case("int8")) {
+            return Err(anyhow!(
+                "`vector.hnsw.quantization` must be 'none' or 'int8', got '{q}'"
+            ));
+        }
+        // int8 stores i8 coords; only cosine (scale-invariant)
+        // preserves correct ranking under the implicit ×127 scaling.
+        // Other metrics return a degenerate score range.
+        if q.eq_ignore_ascii_case("int8") && !normalized.eq_ignore_ascii_case("cosine") {
+            return Err(anyhow!(
+                "`vector.hnsw.quantization` = 'int8' currently requires `vector.similarity_function` = 'cosine'"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_hnsw_int(
+    opts: &BTreeMap<String, IndexConfigValue>,
+    key: &str,
+    min: i64,
+    max: i64,
+) -> Result<()> {
+    let Some(value) = opts.get(key) else {
+        return Ok(());
+    };
+    let n = match value {
+        IndexConfigValue::Integer(n) => *n,
+        other => {
+            return Err(anyhow!("`{key}` must be a positive integer, got {other:?}"));
+        }
+    };
+    if !(min..=max).contains(&n) {
+        return Err(anyhow!("`{key}` must be in {min}..={max}, got {n}"));
     }
     Ok(())
 }
@@ -607,6 +693,7 @@ fn definition_to_row(def: IndexDefinition) -> Row {
         label,
         additional_labels,
         properties,
+        options,
         state,
         ..
     } = def;
@@ -614,6 +701,10 @@ fn definition_to_row(def: IndexDefinition) -> Row {
         .into_iter()
         .chain(additional_labels)
         .map(LoraValue::String)
+        .collect();
+    let options_map: BTreeMap<String, LoraValue> = options
+        .into_iter()
+        .map(|(k, v)| (k, index_config_to_lora_value(v)))
         .collect();
 
     row_from_columns([
@@ -625,6 +716,7 @@ fn definition_to_row(def: IndexDefinition) -> Row {
             "properties",
             LoraValue::List(properties.into_iter().map(LoraValue::String).collect()),
         ),
+        NamedColumn::new("options", LoraValue::Map(options_map)),
         NamedColumn::new("state", LoraValue::String(state.as_str().to_string())),
         NamedColumn::new(
             "populationPercent",
@@ -634,4 +726,25 @@ fn definition_to_row(def: IndexDefinition) -> Row {
             }),
         ),
     ])
+}
+
+/// Translate a catalog `IndexConfigValue` into a Cypher-native
+/// `LoraValue` so `SHOW INDEXES` surfaces the user's OPTIONS map
+/// directly. Nested maps and lists recurse.
+fn index_config_to_lora_value(v: IndexConfigValue) -> LoraValue {
+    match v {
+        IndexConfigValue::Number(n) => LoraValue::Float(n),
+        IndexConfigValue::Integer(n) => LoraValue::Int(n),
+        IndexConfigValue::String(s) => LoraValue::String(s),
+        IndexConfigValue::Bool(b) => LoraValue::Bool(b),
+        IndexConfigValue::List(xs) => {
+            LoraValue::List(xs.into_iter().map(index_config_to_lora_value).collect())
+        }
+        IndexConfigValue::Map(m) => LoraValue::Map(
+            m.into_iter()
+                .map(|(k, v)| (k, index_config_to_lora_value(v)))
+                .collect(),
+        ),
+        IndexConfigValue::Null => LoraValue::Null,
+    }
 }
