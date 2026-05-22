@@ -195,6 +195,22 @@ impl<W: Write> RowEncoder for CsvEncoder<W> {
                 columns.iter().map(|(name, _)| name.clone()).collect();
             self.begin(&header_columns)?;
         }
+        // Contract: every key in `columns` must appear in the header.
+        // CSV is positional — once the header is locked, a row can
+        // only fill those slots. Unknown keys would otherwise be
+        // silently dropped, which is a common source of "where did
+        // my column go?" bugs when query shapes drift between calls.
+        // The check is debug-only so release builds keep the cheap
+        // BTreeMap path; in tests + dev, the panic flags the bug at
+        // the call-site that introduced it.
+        debug_assert!(
+            columns
+                .iter()
+                .all(|(k, _)| self.columns.iter().any(|c| c == k)),
+            "row has keys not in the encoder's header: {:?} (header: {:?})",
+            columns.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            self.columns,
+        );
         let lookup: BTreeMap<&str, &LoraValue> =
             columns.iter().map(|(k, v)| (k.as_str(), v)).collect();
         let mut cells = Vec::with_capacity(self.columns.len());
@@ -222,8 +238,12 @@ fn encode_cell(value: &LoraValue) -> String {
         LoraValue::Float(f) => f.to_string(),
         LoraValue::String(s) => s.clone(),
         LoraValue::List(items) => {
-            // Plain scalar lists -> ';'-separated. Anything else -> JSON.
-            if items.iter().all(is_scalar) {
+            // Scalar lists are joined with `;`, but only when no
+            // element carries a char that the `;`-split decoder would
+            // misinterpret — otherwise the round-trip silently loses
+            // data (e.g. `["a;b"]` decoding back as two elements).
+            // Fall back to JSON for those cases.
+            if items.iter().all(is_scalar) && items.iter().all(list_element_safe_for_semicolon) {
                 items
                     .iter()
                     .map(encode_cell_scalar_only)
@@ -247,6 +267,17 @@ fn is_scalar(v: &LoraValue) -> bool {
             | LoraValue::Float(_)
             | LoraValue::String(_)
     )
+}
+
+/// String elements containing the `;` separator, embedded quotes, or
+/// line terminators can't be encoded safely via `;`-join — the decoder
+/// (or downstream CSV consumers) would re-split or mis-quote them. The
+/// caller falls back to JSON encoding when this returns `false`.
+fn list_element_safe_for_semicolon(v: &LoraValue) -> bool {
+    match v {
+        LoraValue::String(s) => !s.contains([';', '"', '\n', '\r']),
+        _ => true,
+    }
 }
 
 fn encode_cell_scalar_only(v: &LoraValue) -> String {
@@ -323,13 +354,16 @@ impl<R: BufRead> CsvDecoder<R> {
         if self.headers.is_some() {
             return Ok(());
         }
-        let cells = match read_record(&mut self.reader)? {
+        let mut cells = match read_record(&mut self.reader)? {
             Some(c) => c,
             None => {
                 self.headers = Some(Vec::new());
                 return Ok(());
             }
         };
+        if let Some(first) = cells.first_mut() {
+            strip_utf8_bom(first);
+        }
         let mut headers = Vec::with_capacity(cells.len());
         let mut column_names = Vec::with_capacity(cells.len());
         for (idx, raw) in cells.iter().enumerate() {
@@ -340,6 +374,17 @@ impl<R: BufRead> CsvDecoder<R> {
         self.headers = Some(headers);
         self.column_names = column_names;
         Ok(())
+    }
+}
+
+/// Remove the UTF-8 byte-order mark (`\u{feff}`) from the start of a
+/// header cell, if present. Excel, Google Sheets, and most native
+/// "Save as CSV (UTF-8)" exports prepend the BOM; without this strip
+/// the first column name silently includes the BOM character and all
+/// downstream `r.name` lookups against the generated Cypher miss.
+pub(crate) fn strip_utf8_bom(s: &mut String) {
+    if let Some(rest) = s.strip_prefix('\u{feff}') {
+        *s = rest.to_string();
     }
 }
 
@@ -652,11 +697,14 @@ impl StreamingCsvDecoder {
         Ok(())
     }
 
-    fn handle_record(&mut self, cells: Vec<String>) -> std::io::Result<()> {
+    fn handle_record(&mut self, mut cells: Vec<String>) -> std::io::Result<()> {
         if self.header.is_none() {
             // Header errors are fatal: without a valid header the
             // body can't be parsed at all, so permissive mode does
             // not apply.
+            if let Some(first) = cells.first_mut() {
+                strip_utf8_bom(first);
+            }
             let mut headers = Vec::with_capacity(cells.len());
             let mut column_names = Vec::with_capacity(cells.len());
             for (idx, raw) in cells.iter().enumerate() {
@@ -990,6 +1038,88 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].row, 2);
         assert_eq!(errors[0].column.as_deref(), Some("age"));
+    }
+
+    #[test]
+    fn pull_decoder_strips_utf8_bom_from_first_header() {
+        // Mimics what Excel / Google Sheets writes on "Save as CSV
+        // (UTF-8)": the file starts with `EF BB BF`. Without the
+        // strip, the first column name parses as `\u{feff}name` and
+        // every downstream lookup misses.
+        let bytes = [0xEF, 0xBB, 0xBF];
+        let mut csv = String::from_utf8(bytes.to_vec()).unwrap();
+        csv.push_str("name,age\nalice,30\n");
+        let mut dec = CsvDecoder::new(Cursor::new(csv));
+        let h = dec.header().unwrap().unwrap();
+        assert_eq!(h, vec!["name".to_string(), "age".to_string()]);
+        let r = dec.next_row().unwrap().unwrap();
+        assert_eq!(r[0].0, "name");
+    }
+
+    #[test]
+    fn streaming_csv_strips_utf8_bom_from_first_header() {
+        let mut dec = StreamingCsvDecoder::new();
+        // BOM split across the chunk boundary on purpose — the strip
+        // happens after the whole first record is assembled, so the
+        // exact chunking of the BOM bytes doesn't matter.
+        dec.feed(&[0xEF, 0xBB]).unwrap();
+        dec.feed(&[0xBF]).unwrap();
+        dec.feed(b"name,age\nalice,30\n").unwrap();
+        let rows = dec.drain().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].0, "name");
+        assert_eq!(
+            dec.header().unwrap(),
+            &["name".to_string(), "age".to_string()]
+        );
+    }
+
+    #[test]
+    fn encoder_falls_back_to_json_when_list_element_contains_separator() {
+        // `["a;b", "c"]` would round-trip as `["a", "b", "c"]` if
+        // we picked the `;`-join encoding — the decoder splits on
+        // `;`. Force the JSON path instead so the data survives.
+        let mut buf = Vec::new();
+        {
+            let mut enc = CsvEncoder::new(&mut buf);
+            enc.begin(&["tags".into()]).unwrap();
+            enc.write_named_row(&[(
+                "tags".into(),
+                LoraValue::List(vec![
+                    LoraValue::String("a;b".into()),
+                    LoraValue::String("c".into()),
+                ]),
+            )])
+            .unwrap();
+            enc.finish().unwrap();
+        }
+        let text = std::str::from_utf8(&buf).unwrap();
+        // Cell carries the JSON encoding, comma-quoted because of the
+        // embedded `"`.
+        assert!(
+            text.contains(r#""[""a;b"",""c""]""#),
+            "expected JSON-encoded list, got: {text}"
+        );
+    }
+
+    #[test]
+    fn encoder_uses_semicolon_join_for_safe_list_elements() {
+        let mut buf = Vec::new();
+        {
+            let mut enc = CsvEncoder::new(&mut buf);
+            enc.begin(&["tags".into()]).unwrap();
+            enc.write_named_row(&[(
+                "tags".into(),
+                LoraValue::List(vec![
+                    LoraValue::String("a".into()),
+                    LoraValue::String("b".into()),
+                ]),
+            )])
+            .unwrap();
+            enc.finish().unwrap();
+        }
+        let text = std::str::from_utf8(&buf).unwrap();
+        assert_eq!(text, "tags\na;b\n");
     }
 
     #[test]
