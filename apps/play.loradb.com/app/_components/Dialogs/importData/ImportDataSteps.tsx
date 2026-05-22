@@ -41,6 +41,7 @@ import type {
   RowImportProgress,
   RowParseError,
 } from "@loradb/lora-wasm";
+import { LoraQueryEditor } from "@loradb/lora-query";
 
 import {
   formatBytes,
@@ -55,6 +56,7 @@ import {
   formatRowsPerSecond,
   type ThroughputReading,
 } from "@/lib/util/throughput";
+import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
 const CSV_TYPE_CHOICES = [
   { value: "auto", label: "auto" },
@@ -73,6 +75,47 @@ const CSV_TYPE_CHOICES = [
   { value: "point", label: "point" },
   { value: "json", label: "json" },
 ];
+
+/**
+ * Read-only Cypher view used by the wizard's preview panels. Same
+ * Monaco-backed editor the workbench uses, with syntax highlighting
+ * and the playground theme, so the generated `UNWIND $rows AS r …`
+ * statement reads like real Cypher rather than a wall of pre-text.
+ */
+function CypherPreview({
+  value,
+  caption,
+  maxHeight = "180px",
+}: {
+  value: string;
+  caption: string;
+  maxHeight?: string;
+}) {
+  const { tokens, editor } = usePlaygroundTheme();
+  return (
+    <Stack gap={4}>
+      <Text size="xs" c="dimmed">
+        {caption}
+      </Text>
+      <Box
+        style={{
+          border: `1px solid ${tokens.border.subtle}`,
+          borderRadius: tokens.radius.sm,
+          overflow: "hidden",
+        }}
+      >
+        <LoraQueryEditor
+          value={value}
+          readOnly
+          theme={editor}
+          showLineNumbers={false}
+          minHeight="60px"
+          maxHeight={maxHeight}
+        />
+      </Box>
+    </Stack>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Step: File
@@ -337,14 +380,7 @@ export function MappingStep(props: MappingStepProps) {
       )}
 
       {previewCypher && mappingKind !== "template" && (
-        <Box>
-          <Text size="xs" c="dimmed" mb={4}>
-            Generated Cypher
-          </Text>
-          <Code block style={{ whiteSpace: "pre-wrap" }}>
-            {previewCypher}
-          </Code>
-        </Box>
+        <CypherPreview value={previewCypher} caption="Generated Cypher" />
       )}
 
       {preview && preview.sample.length > 0 && (
@@ -608,17 +644,10 @@ export function ReviewStep({
       </Group>
 
       {previewCypher && (
-        <Box>
-          <Text size="xs" c="dimmed" mb={4}>
-            Cypher that will run once per batch
-          </Text>
-          <Code
-            block
-            style={{ whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }}
-          >
-            {previewCypher}
-          </Code>
-        </Box>
+        <CypherPreview
+          value={previewCypher}
+          caption="Cypher that will run once per batch"
+        />
       )}
 
       <NumberInput
@@ -786,22 +815,11 @@ export function RunningPhase({
       </Group>
 
       {previewCypher && (
-        <Box>
-          <Text size="xs" c="dimmed" mb={4}>
-            Running this Cypher per batch
-          </Text>
-          <Code
-            block
-            style={{
-              whiteSpace: "pre-wrap",
-              maxHeight: 90,
-              overflow: "auto",
-              fontSize: 11,
-            }}
-          >
-            {previewCypher}
-          </Code>
-        </Box>
+        <CypherPreview
+          value={previewCypher}
+          caption="Running this Cypher per batch"
+          maxHeight="90px"
+        />
       )}
     </Stack>
   );
