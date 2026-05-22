@@ -47,27 +47,32 @@ const INDEX_PROPAGATION_TIMEOUT_MS = 120_000;
 
 // ── Crate publish order ─────────────────────────────────────────────────
 // Derived from `crates/*/Cargo.toml` dependency edges:
-//   lora-ast      : —
-//   lora-store    : lora-ast
-//   lora-snapshot : lora-store
-//   lora-parser   : lora-ast
-//   lora-analyzer : lora-ast, lora-store, lora-parser
-//   lora-compiler : lora-analyzer, lora-ast
-//   lora-executor : lora-compiler, lora-store, lora-analyzer, lora-ast
-//   lora-wal      : lora-store
-//   lora-database : lora-ast, lora-parser, lora-analyzer, lora-compiler,
-//                   lora-executor, lora-store, lora-snapshot, lora-wal
-//   lora-server   : lora-database
+//   lora-ast           : —
+//   lora-builtins-meta : —
+//   lora-store         : lora-ast
+//   lora-snapshot      : lora-store
+//   lora-parser        : lora-ast
+//   lora-analyzer      : lora-ast, lora-store, lora-parser, lora-builtins-meta
+//   lora-compiler      : lora-analyzer, lora-ast
+//   lora-executor      : lora-compiler, lora-store, lora-analyzer, lora-ast
+//   lora-io            : lora-executor, lora-store
+//   lora-wal           : lora-store
+//   lora-database      : lora-ast, lora-parser, lora-analyzer, lora-compiler,
+//                        lora-executor, lora-store, lora-snapshot, lora-io,
+//                        lora-wal
+//   lora-server        : lora-database
 // Any linear extension of that DAG works. This one is leaf-first and
 // minimises the number of edges each step introduces.
 const PUBLISH_ORDER = [
   'lora-ast',
+  'lora-builtins-meta',
   'lora-store',
   'lora-snapshot',
   'lora-parser',
   'lora-analyzer',
   'lora-compiler',
   'lora-executor',
+  'lora-io',
   'lora-wal',
   'lora-database',
   'lora-server',
