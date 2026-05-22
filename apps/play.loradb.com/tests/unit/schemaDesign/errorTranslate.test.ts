@@ -18,6 +18,16 @@ describe("translateError", () => {
     expect(f.body).not.toMatch(/IF EXISTS\s+RANGE/);
   });
 
+  it("rewrites 22N73 from a DROP INDEX into DROP CONSTRAINT advice", () => {
+    const f = translateError(
+      "[22N73] index `unique_venue_osm_id` is owned by constraint `unique_venue_osm_id` and cannot be dropped directly; use DROP CONSTRAINT instead",
+    );
+    expect(f.code).toBe("22N73");
+    expect(f.title).toBe("This index backs a constraint");
+    expect(f.body).toContain("DROP CONSTRAINT `unique_venue_osm_id` IF EXISTS");
+    expect(f.body).not.toContain("DROP INDEX");
+  });
+
   it("falls back to the generic 22N73 body when the engine message has no name", () => {
     const f = translateError("[22N73] backing index conflict");
     expect(f.code).toBe("22N73");

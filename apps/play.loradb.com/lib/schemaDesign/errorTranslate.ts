@@ -95,6 +95,17 @@ const CODE_RE = /\[?(\d{2}N\d{2})\]?/;
  */
 const BACKING_INDEX_NAME_RE = /index `([^`]+)`/;
 
+/**
+ * 22N73 is also raised by DROP INDEX when the target backs a
+ * constraint. The engine message is
+ * `` index `idx` is owned by constraint `cons` … use DROP CONSTRAINT instead ``,
+ * which carries opposite advice from the CREATE-CONSTRAINT variant — we
+ * need to surface the owning constraint name and a DROP CONSTRAINT CTA
+ * instead of telling the user to retry the DROP INDEX they just ran.
+ */
+const OWNED_BY_CONSTRAINT_RE =
+  /index `([^`]+)` is owned by constraint `([^`]+)`/;
+
 function pickCode(message: string): string | undefined {
   const m = CODE_RE.exec(message);
   return m ? m[1] : undefined;
@@ -104,18 +115,29 @@ function pickCode(message: string): string | undefined {
 export function translateError(message: string): FriendlyError {
   const code = pickCode(message);
   if (code && KNOWN[code]) {
-    const known: FriendlyError = { code, ...KNOWN[code] };
     if (code === "22N73") {
+      const owned = OWNED_BY_CONSTRAINT_RE.exec(message);
+      if (owned) {
+        const indexName = owned[1]!;
+        const constraintName = owned[2]!;
+        return {
+          code,
+          title: "This index backs a constraint",
+          body: `\`${indexName}\` is the backing index for constraint \`${constraintName}\` and can't be dropped on its own. Drop the constraint instead with: DROP CONSTRAINT \`${constraintName}\` IF EXISTS`,
+          suggestedAction: "showConflict",
+        };
+      }
       const m = BACKING_INDEX_NAME_RE.exec(message);
       if (m) {
         const name = m[1]!;
         return {
-          ...known,
+          code,
+          ...KNOWN[code],
           body: `LoraDB will use the existing range index automatically. To replace it, drop it first with: DROP INDEX \`${name}\` IF EXISTS`,
         };
       }
     }
-    return known;
+    return { code, ...KNOWN[code] };
   }
   const lower = message.toLowerCase();
   if (lower.includes("already exists") && lower.includes("constraint")) {
