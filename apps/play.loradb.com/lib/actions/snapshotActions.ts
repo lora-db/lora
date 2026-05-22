@@ -21,6 +21,7 @@ import type {
 import * as snapshots from "@/lib/persistence/snapshots";
 import { loadSnapshot, readSnapshotInfo, saveSnapshot } from "@/lib/db/client";
 import { LORADB_MUTATION_EVENT } from "@/lib/actions/runActiveTab";
+import { useStore } from "@/lib/state/store";
 
 /**
  * Optional protection applied to a new snapshot. Currently a passphrase —
@@ -131,8 +132,14 @@ export async function loadSnapshotById(
         },
       }
     : undefined;
-  await loadSnapshot(record.blob, opts);
-  emitMutation();
+  const { setRestoringSession } = useStore.getState();
+  setRestoringSession(true, `Loading "${record.name}"…`);
+  try {
+    await loadSnapshot(record.blob, opts);
+    emitMutation();
+  } finally {
+    setRestoringSession(false);
+  }
 }
 
 function sanitiseForFilename(name: string): string {

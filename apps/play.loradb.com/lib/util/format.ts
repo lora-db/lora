@@ -45,3 +45,23 @@ export function formatCount(n: number): string {
   // `toLocaleString("en-US")` keeps the comma separator stable across locales.
   return rounded.toLocaleString("en-US");
 }
+
+/**
+ * Formats how long ago `timestamp` (epoch ms) occurred, relative to `now`.
+ * Returns e.g. `"just now"`, `"5 minutes ago"`, `"2 hours ago"`, `"3 days ago"`.
+ * Anything in the future or non-finite collapses to `"just now"`.
+ */
+export function formatRelativeAgo(
+  timestamp: number,
+  now: number = Date.now(),
+): string {
+  if (!Number.isFinite(timestamp)) return "just now";
+  const diffMs = now - timestamp;
+  if (diffMs < 30_000) return "just now";
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(diffMs / 3_600_000);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(diffMs / 86_400_000);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}

@@ -123,6 +123,11 @@ function showParamsGate(opts: {
 
 export async function runActiveTab(opts: RunOpts = {}): Promise<string | null> {
   const state = useStore.getState();
+  // While a snapshot is being loaded into the WASM DB, the engine is in
+  // a transient half-loaded state. Running here would either error out
+  // or query partial data; the workbench draws an overlay, but hotkeys
+  // (⌘↵) bypass it so we have to belt-and-brace at the action.
+  if (state.restoringSession) return null;
   const tabId = getActiveTabId();
   if (tabId === null) return null;
   const tab = state.tabs.find((t) => t.id === tabId);

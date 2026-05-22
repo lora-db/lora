@@ -28,8 +28,18 @@ export interface SchemaSnapshot {
 export interface SchemaSlice {
   schema: SchemaSnapshot | null;
   refreshing: boolean;
+  /**
+   * Set while a snapshot is being loaded into the WASM DB — auto-restore
+   * on boot, manual snapshot load from the Snapshots panel, or a dropped
+   * `.lorasnap` file. The workbench draws a blocking overlay while this
+   * is true so the user can't run queries or mutate state mid-restore.
+   */
+  restoringSession: boolean;
+  /** Human-readable hint shown under the overlay spinner, when set. */
+  restoringSessionLabel: string | null;
   setSchema(snap: SchemaSnapshot | null): void;
   setRefreshing(v: boolean): void;
+  setRestoringSession(v: boolean, label?: string | null): void;
 }
 
 export const createSchemaSlice: StateCreator<
@@ -40,6 +50,8 @@ export const createSchemaSlice: StateCreator<
 > = (set) => ({
   schema: null,
   refreshing: false,
+  restoringSession: false,
+  restoringSessionLabel: null,
 
   setSchema(snap) {
     set((state) => {
@@ -50,6 +62,13 @@ export const createSchemaSlice: StateCreator<
   setRefreshing(v) {
     set((state) => {
       state.refreshing = v;
+    });
+  },
+
+  setRestoringSession(v, label) {
+    set((state) => {
+      state.restoringSession = v;
+      state.restoringSessionLabel = v ? (label ?? null) : null;
     });
   },
 });

@@ -41,12 +41,15 @@ export type WriteResult =
   | { ok: false; reason: "unavailable" };
 
 /** Read the auto-snapshot from IDB. Returns `null` when no entry exists. */
-export async function readAuto(): Promise<Uint8Array | null> {
+export async function readAuto(): Promise<{
+  blob: Uint8Array;
+  savedAt: number;
+} | null> {
   if (typeof window === "undefined") return null;
   try {
     const db = await getDB();
     const row = await db.get(STORE, KEY);
-    return row ? row.blob : null;
+    return row ? { blob: row.blob, savedAt: row.savedAt } : null;
   } catch (err) {
     console.warn("readAuto: IDB access failed", err);
     return null;

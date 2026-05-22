@@ -13,12 +13,17 @@ import {
   Button,
   Code,
   Group,
+  LoadingOverlay,
   Modal,
   Stack,
   Text,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconAlertTriangle, IconRefresh } from "@tabler/icons-react";
+import {
+  IconAlertTriangle,
+  IconHistory,
+  IconRefresh,
+} from "@tabler/icons-react";
 
 import {
   bootAutoRestore,
@@ -59,6 +64,8 @@ export function Workbench() {
   const bootErrored = dbStatus.state === "error";
 
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const restoringSession = useStore((s) => s.restoringSession);
+  const restoringSessionLabel = useStore((s) => s.restoringSessionLabel);
 
   // Hydrate persisted state once on mount, then ensure there's at least
   // one tab to land in and that the first editor view's strip lists every
@@ -184,6 +191,7 @@ export function Workbench() {
           display: "flex",
           flexDirection: "row",
           overflow: "hidden",
+          position: "relative",
         }}
       >
         <ActivityBar />
@@ -202,6 +210,31 @@ export function Workbench() {
         >
           <PanelHost />
         </div>
+
+        {/*
+          Snapshot loads (auto-restore on boot, manual snapshot picks, dropped
+          `.lorasnap` files) put the DB into a transient half-loaded state.
+          The overlay blocks clicks, scroll, and hotkey focus targets across
+          the whole work area so the user can't run a query mid-restore.
+        */}
+        <LoadingOverlay
+          visible={restoringSession}
+          zIndex={1000}
+          overlayProps={{ blur: 2, backgroundOpacity: 0.55 }}
+          loaderProps={{
+            children: (
+              <Stack align="center" gap={10}>
+                <IconHistory size={24} color={tokens.fg.muted} stroke={1.5} />
+                <Text size="sm" c={tokens.fg.primary} fw={500}>
+                  {restoringSessionLabel ?? "Restoring session…"}
+                </Text>
+                <Text size="xs" c={tokens.fg.muted}>
+                  Hang on a moment.
+                </Text>
+              </Stack>
+            ),
+          }}
+        />
       </AppShell.Main>
 
       <AppShell.Footer style={{ background: tokens.bg.panel }}>

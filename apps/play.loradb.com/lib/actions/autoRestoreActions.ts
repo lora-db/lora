@@ -32,7 +32,10 @@ import {
 } from "@/lib/persistence/autoSnapshot";
 import { useStore } from "@/lib/state/store";
 import { debounce } from "@/lib/util/async";
+import { formatCount, formatRelativeAgo } from "@/lib/util/format";
 import { notifications } from "@mantine/notifications";
+import { IconHistory } from "@tabler/icons-react";
+import { createElement } from "react";
 
 const SAVE_DEBOUNCE_MS = 2000;
 
@@ -66,9 +69,9 @@ export async function bootAutoRestore(): Promise<void> {
   const { autoRestore } = useStore.getState();
   if (!autoRestore) return;
 
-  let blob: Uint8Array | null;
+  let record: { blob: Uint8Array; savedAt: number } | null;
   try {
-    blob = await readAuto();
+    record = await readAuto();
   } catch (err) {
     // The auto-snapshot exists but couldn't be read — most likely a
     // partial write from a previous tab crash, or IDB access blocked.
@@ -83,16 +86,23 @@ export async function bootAutoRestore(): Promise<void> {
     });
     return;
   }
-  if (!blob) return;
+  if (!record) return;
 
+  const { setRestoringSession } = useStore.getState();
+  setRestoringSession(true, "Restoring your last session…");
   try {
-    await loadSnapshot(blob);
+    await loadSnapshot(record.blob);
     const [n, r] = await Promise.all([nodeCount(), relationshipCount()]);
     window.dispatchEvent(new CustomEvent(LORADB_MUTATION_EVENT));
+    const nodes = `${formatCount(n)} node${n === 1 ? "" : "s"}`;
+    const rels = `${formatCount(r)} relationship${r === 1 ? "" : "s"}`;
+    const when = formatRelativeAgo(record.savedAt);
     notifications.show({
       color: "blue",
+      icon: createElement(IconHistory, { size: 18 }),
       title: "Session restored",
-      message: `Restored ${n} node${n === 1 ? "" : "s"}, ${r} rel${r === 1 ? "" : "s"} from auto-save`,
+      message: `${nodes} · ${rels} · saved ${when}`,
+      autoClose: 5000,
     });
   } catch (err) {
     console.warn("bootAutoRestore: failed to load snapshot", err);
@@ -103,6 +113,8 @@ export async function bootAutoRestore(): Promise<void> {
         "The auto-saved snapshot couldn't be loaded. Starting with an empty database.",
       autoClose: 8000,
     });
+  } finally {
+    setRestoringSession(false);
   }
 }
 
