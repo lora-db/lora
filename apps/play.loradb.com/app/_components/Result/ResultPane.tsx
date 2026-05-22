@@ -9,7 +9,7 @@
  * needed by the underlying outcome).
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActionIcon,
   Box,
@@ -17,15 +17,22 @@ import {
   Center,
   Group,
   Loader,
+  Menu,
   Stack,
   Tabs,
   Text,
   Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconCamera, IconFileTypeCsv } from "@tabler/icons-react";
+import { IconCamera, IconDownload, IconFileTypeCsv } from "@tabler/icons-react";
+import type { LoraParams, RowFormat } from "@loradb/lora-wasm";
 
 import { requestGraphPng } from "@/lib/actions/exportActions";
+import {
+  exportRowsStream,
+  rowFormatExtension,
+  rowFormatMimeType,
+} from "@/lib/db/client";
 import type { AdaptedResult, RunOk } from "@/lib/db/types";
 import { useActiveTab, useTabById, useViewResult } from "@/lib/state/selectors";
 import { useStore } from "@/lib/state/store";
@@ -259,6 +266,13 @@ export function ResultPane({ view, paneId }: ResultPaneProps) {
               </ActionIcon>
             </Tooltip>
           )}
+          {tab && ok.result.rows.length > 0 && (
+            <ExportMenu
+              tabName={tab.name}
+              body={tab.body}
+              params={tab.params}
+            />
+          )}
           <Text size="xs" c={tokens.fg.subtle} ff={tokens.font.mono}>
             <Text span inherit c={tokens.category.node} fw={600}>
               {ok.result.stats.nodeCount}
@@ -321,3 +335,250 @@ const fillStyle = {
   width: "100%",
   height: "100%",
 };
+
+interface ExportMenuProps {
+  tabName: string;
+  body: string;
+  /** Raw JSON string from the tab; same shape the Run action parses. */
+  params: string;
+}
+
+/**
+ * Re-runs the current tab's query through the WASM `exportRows`
+ * pipeline and triggers a Blob download in the chosen format. Using
+ * the native Rust encoders preserves tagged temporal / vector /
+ * point values that a JS-side CSV writer would flatten.
+ *
+ * Re-running on export (rather than re-encoding the already-loaded
+ * result) means edits to the editor body after the last run are
+ * reflected — predictable: the menu always exports "what the editor
+ * currently says."
+ */
+function ExportMenu({ tabName, body, params }: ExportMenuProps) {
+  const [busy, setBusy] = useState(false);
+
+  const trigger = async (format: RowFormat) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const parsedParams = parseTabParams(params);
+      const filename = `${sanitizeFilename(tabName)}.${rowFormatExtension(format)}`;
+      const mime = rowFormatMimeType(format);
+
+      // Streaming export: each chunk hops the worker boundary and
+      // lands either directly on disk (File System Access API,
+      // Chromium-family browsers) or in a fallback Blob that grows
+      // one chunk at a time before triggering a normal download.
+      // The Rust + WASM side never materialises the full payload —
+      // only one chunk is in flight at any moment.
+      const stream = await exportRowsStream(body, parsedParams, format);
+      const stats = await drainExportStream(stream, filename, mime);
+
+      notifications.show({
+        color: "green",
+        title: `Exported ${stats.rows} ${stats.rows === 1 ? "row" : "rows"}`,
+        message: `Saved as ${format.toUpperCase()} (${formatBytes(stats.bytes)}).`,
+      });
+    } catch (err) {
+      notifications.show({
+        color: "red",
+        title: "Export failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Menu shadow="md" position="bottom-end" withinPortal>
+      <Menu.Target>
+        <Tooltip label="Download result as JSONL / JSON / CSV" openDelay={400}>
+          <ActionIcon
+            size="sm"
+            variant="subtle"
+            color="gray"
+            aria-label="Export result"
+            loading={busy}
+          >
+            <IconDownload size={14} />
+          </ActionIcon>
+        </Tooltip>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Download result</Menu.Label>
+        <Menu.Item onClick={() => void trigger("jsonl")}>
+          JSON Lines (.jsonl)
+        </Menu.Item>
+        <Menu.Item onClick={() => void trigger("json")}>JSON (.json)</Menu.Item>
+        <Menu.Item onClick={() => void trigger("csv")}>CSV (.csv)</Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+function parseTabParams(raw: string): LoraParams | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed === "{}") return undefined;
+  try {
+    const v = JSON.parse(trimmed) as unknown;
+    // The bridge accepts any structured-cloneable object as params;
+    // anything malformed will be surfaced by the engine itself with
+    // a clearer error than a JSON parse failure here.
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? (v as LoraParams)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke after a short delay so Safari/Firefox have a chance to
+  // actually fetch the blob before the URL is invalidated.
+  setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+interface ExportRunStats {
+  /** Total bytes shipped through the stream. */
+  bytes: number;
+  /**
+   * Approximate row count. JSONL-and-JSON chunks contain one row per
+   * `\n` separator; CSV chunks contain rows minus the header. The
+   * encoder doesn't emit a row count along with the bytes, so we
+   * tally newlines as a useful approximation for the toast message.
+   */
+  rows: number;
+}
+
+/**
+ * Drain a `ReadableStream<Uint8Array>` returned by the WASM streaming
+ * exporter to disk (or to a Blob fallback) without ever buffering the
+ * entire payload.
+ *
+ * Tries the File System Access API first — that's the only path that
+ * lets the encoded bytes go straight from the worker to the file
+ * handle without sitting in main-thread JS memory. When the API
+ * isn't available (Safari, Firefox without flag, some embedded
+ * webviews), we fall back to a `Blob` constructed from the streamed
+ * chunks. The fallback still pulls one chunk at a time — so the
+ * peak resident set is one chunk plus the growing Blob backing
+ * (which the browser is free to spill to disk).
+ */
+async function drainExportStream(
+  stream: ReadableStream<Uint8Array>,
+  filename: string,
+  mimeType: string,
+): Promise<ExportRunStats> {
+  const counted = countingTransform(stream);
+  const fs = (
+    window as unknown as {
+      showSaveFilePicker?: (
+        opts: ShowSaveFilePickerOptions,
+      ) => Promise<FileSystemFileHandle>;
+    }
+  ).showSaveFilePicker;
+
+  if (typeof fs === "function") {
+    try {
+      const handle = await fs({
+        suggestedName: filename,
+        types: [
+          {
+            description: `${mimeType.split("/")[1] ?? "data"} file`,
+            accept: { [mimeType]: [`.${filename.split(".").pop() ?? "txt"}`] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      // `pipeTo` drives the source's `pull` one chunk at a time,
+      // backpressuring when the writable can't keep up. Bytes hop
+      // worker→main→disk one chunk per round trip.
+      await counted.stream.pipeTo(writable);
+      return counted.stats();
+    } catch (err) {
+      // User cancelled the save dialog or the API is gated; fall
+      // through to the Blob path. AbortError is the expected
+      // cancel; anything else we surface so the toast carries it.
+      if ((err as { name?: string } | null)?.name !== "AbortError") {
+        throw err;
+      }
+      // User cancelled — release the cursor and pretend nothing
+      // happened (no toast about success).
+      await counted.stream.cancel();
+      return { bytes: 0, rows: 0 };
+    }
+  }
+
+  // Blob fallback: still streams chunks (no full Vec<u8> in WASM
+  // memory), but the browser-side Blob constructor accumulates them.
+  // Modern browsers spill large Blobs to disk so this isn't as bad
+  // as it sounds for big exports — but the File System Access path
+  // is strictly better when available.
+  const blob = await new Response(counted.stream).blob();
+  downloadBlob(new Blob([blob], { type: mimeType }), filename);
+  return counted.stats();
+}
+
+/**
+ * Wrap a chunk stream with a passive observer that tallies the byte
+ * count and an approximate row count (one row per `\n`). Returns the
+ * wrapped stream and a closure that reports stats after the stream
+ * has been drained.
+ */
+function countingTransform(source: ReadableStream<Uint8Array>): {
+  stream: ReadableStream<Uint8Array>;
+  stats: () => ExportRunStats;
+} {
+  let bytes = 0;
+  let newlines = 0;
+  const stream = source.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        bytes += chunk.byteLength;
+        for (let i = 0; i < chunk.byteLength; i += 1) {
+          if (chunk[i] === 0x0a) newlines += 1;
+        }
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+  // Drop the header newline for CSV (best-effort: the encoder always
+  // emits a header line before any data rows; subtracting one keeps
+  // the toast count human-friendly). JSON-array's bracket lines also
+  // contribute small overcounts that we accept rather than parsing
+  // the format on the JS side.
+  return { stream, stats: () => ({ bytes, rows: Math.max(0, newlines - 1) }) };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+interface ShowSaveFilePickerOptions {
+  suggestedName?: string;
+  types?: Array<{
+    description?: string;
+    accept: Record<string, string[]>;
+  }>;
+}
+
+interface FileSystemFileHandle {
+  createWritable(): Promise<WritableStream<Uint8Array>>;
+}
+
+function sanitizeFilename(name: string): string {
+  const cleaned = name
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned.length > 0 ? cleaned : "lora-result";
+}

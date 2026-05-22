@@ -13,7 +13,12 @@
 
 import type {
   Database,
+  ImportStreamOptions,
   LoraParams,
+  RowExportStats,
+  RowFormat,
+  RowImportStats,
+  RowMapping,
   SnapshotInfo,
   SnapshotMeta,
   WasmSnapshotByteOptions,
@@ -215,4 +220,125 @@ export async function nodeCount(): Promise<number> {
 export async function relationshipCount(): Promise<number> {
   const db = await getDb();
   return db.relationshipCount();
+}
+
+// ---------------------------------------------------------------------------
+// Row import / export
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a query and serialise its result rows as `format`. Returns the
+ * encoded bytes ready to wrap in a `Blob` plus a row count.
+ *
+ * Buffers the whole encoded payload before returning. Prefer
+ * {@link exportRowsStream} for large exports — it streams chunks
+ * row-at-a-time without ever holding the full dataset in memory.
+ */
+export async function exportRows(
+  query: string,
+  params: LoraParams | undefined,
+  format: RowFormat,
+): Promise<{ bytes: Uint8Array; stats: RowExportStats }> {
+  const db = await getDb();
+  return db.exportRows(query, params ?? null, format);
+}
+
+/**
+ * Open a streaming export of `query`'s result rows as `format`.
+ * Returns a `ReadableStream<Uint8Array>` that pulls one chunk per
+ * `read()` — the engine pulls rows row-at-a-time, encodes a chunk,
+ * and ships the bytes back to the main thread. Memory stays bounded
+ * by one chunk (~32-256 KiB) regardless of total export size.
+ *
+ * Cancel the returned stream (or its consumer pipeline) to release
+ * the engine cursor early.
+ */
+export async function exportRowsStream(
+  query: string,
+  params: LoraParams | undefined,
+  format: RowFormat,
+): Promise<ReadableStream<Uint8Array>> {
+  const db = await getDb();
+  return db.openExportStream(query, params ?? null, format);
+}
+
+/**
+ * Decode rows from `bytes` and apply them to the graph via the
+ * auto-mapping path. Each batch executes as one `UNWIND $rows AS r
+ * CREATE …` statement.
+ */
+export async function importRows(
+  bytes: Uint8Array,
+  format: RowFormat,
+  mapping: RowMapping,
+  batchSize?: number,
+): Promise<RowImportStats> {
+  const db = await getDb();
+  return db.importRows(bytes, format, mapping, batchSize ?? null);
+}
+
+/**
+ * Decode rows from `bytes` and execute the supplied Cypher template
+ * once per batch with `$rows` bound to the batch payload.
+ */
+export async function importRowsWithCypher(
+  bytes: Uint8Array,
+  format: RowFormat,
+  template: string,
+  batchSize?: number,
+): Promise<RowImportStats> {
+  const db = await getDb();
+  return db.importRowsWithCypher(bytes, format, template, batchSize ?? null);
+}
+
+/**
+ * Stream rows from a `ReadableStream<Uint8Array>` source — typically
+ * `file.stream()` — into the graph. Bytes flow one chunk at a time
+ * from the file → main-thread JS → worker → WASM decoder → batched
+ * Cypher. Neither the JS heap nor the WASM heap ever holds the full
+ * file. All three formats (JSONL, JSON-array, CSV) stream chunk by
+ * chunk.
+ */
+export async function importStream(
+  source: ReadableStream<Uint8Array>,
+  format: RowFormat,
+  mappingOrTemplate: RowMapping | string,
+  options?: ImportStreamOptions,
+): Promise<RowImportStats> {
+  const db = await getDb();
+  return db.importStream(source, format, mappingOrTemplate, options);
+}
+
+/** Detect a row format from a filename. */
+export function detectRowFormat(name: string): RowFormat | null {
+  const ext = name.toLowerCase().split(".").pop();
+  if (!ext) return null;
+  if (ext === "jsonl" || ext === "ndjson") return "jsonl";
+  if (ext === "json") return "json";
+  if (ext === "csv") return "csv";
+  return null;
+}
+
+/** MIME type for a row format. */
+export function rowFormatMimeType(format: RowFormat): string {
+  switch (format) {
+    case "jsonl":
+      return "application/x-ndjson";
+    case "json":
+      return "application/json";
+    case "csv":
+      return "text/csv";
+  }
+}
+
+/** Default filename extension for a row format. */
+export function rowFormatExtension(format: RowFormat): string {
+  switch (format) {
+    case "jsonl":
+      return "jsonl";
+    case "json":
+      return "json";
+    case "csv":
+      return "csv";
+  }
 }

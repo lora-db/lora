@@ -1,12 +1,16 @@
 "use client";
 
 /**
- * Global drag-and-drop overlay for `.lorasnap` imports.
+ * Global drag-and-drop overlay.
+ *
+ * Routes dropped files by extension:
+ *   * `.lorasnap` → snapshot import + load (the original behaviour)
+ *   * `.csv` / `.jsonl` / `.ndjson` / `.json` → opens
+ *     {@link openImportDataDialog} with the file pre-filled
  *
  * Listens on `window` for `dragenter`/`dragover`/`dragleave`/`drop`, shows
  * a full-page accent-tinted overlay while a file is being dragged, and
- * — on drop — imports the file as a new snapshot and immediately loads
- * it into the live DB. The same pipeline the Snapshots panel uses.
+ * — on drop — dispatches to whichever pipeline matches the file kind.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -21,13 +25,24 @@ import {
 import { hexA } from "@/lib/theme/util";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 
-const LORASNAP_RE = /\.lorasnap$/i;
+import { openImportDataDialog } from "./Dialogs/ImportDataDialog";
 
-function pickLorasnapFile(list: FileList | null | undefined): File | null {
+const LORASNAP_RE = /\.lorasnap$/i;
+const DATA_FILE_RE = /\.(csv|jsonl|ndjson|json)$/i;
+
+type DroppedFile =
+  | { kind: "snapshot"; file: File }
+  | { kind: "data"; file: File };
+
+function pickDroppedFile(
+  list: FileList | null | undefined,
+): DroppedFile | null {
   if (!list) return null;
   for (let i = 0; i < list.length; i++) {
     const f = list.item(i);
-    if (f && LORASNAP_RE.test(f.name)) return f;
+    if (!f) continue;
+    if (LORASNAP_RE.test(f.name)) return { kind: "snapshot", file: f };
+    if (DATA_FILE_RE.test(f.name)) return { kind: "data", file: f };
   }
   return null;
 }
@@ -40,7 +55,7 @@ export function DropZone() {
   // pointer crosses child element boundaries.
   const depth = useRef(0);
 
-  const handleDrop = useCallback(async (file: File) => {
+  const handleSnapshotDrop = useCallback(async (file: File) => {
     const name = file.name.replace(LORASNAP_RE, "") || "snapshot";
     try {
       const record = await importSnapshotFromFile(file, name);
@@ -93,19 +108,24 @@ export function DropZone() {
       e.preventDefault();
       depth.current = 0;
       setDragging(false);
-      const file = pickLorasnapFile(e.dataTransfer?.files ?? null);
-      if (!file) {
+      const dropped = pickDroppedFile(e.dataTransfer?.files ?? null);
+      if (!dropped) {
         // Only show a complaint if the user actually dropped *something*.
         if ((e.dataTransfer?.files?.length ?? 0) > 0) {
           notifications.show({
             color: "yellow",
             title: "Unsupported file",
-            message: "Drop a .lorasnap snapshot to import.",
+            message:
+              "Drop a .lorasnap snapshot or a .csv / .jsonl / .json file.",
           });
         }
         return;
       }
-      void handleDrop(file);
+      if (dropped.kind === "snapshot") {
+        void handleSnapshotDrop(dropped.file);
+      } else {
+        openImportDataDialog({ file: dropped.file });
+      }
     };
 
     window.addEventListener("dragenter", onEnter);
@@ -118,7 +138,7 @@ export function DropZone() {
       window.removeEventListener("dragleave", onLeave);
       window.removeEventListener("drop", onDrop);
     };
-  }, [handleDrop]);
+  }, [handleSnapshotDrop]);
 
   if (!dragging) return null;
 
@@ -147,10 +167,11 @@ export function DropZone() {
           <Stack align="center" gap={8}>
             <IconUpload size={32} color={tokens.accent.primary} />
             <Text size="sm" fw={600} c={tokens.fg.primary}>
-              Drop a .lorasnap file to import
+              Drop a file to import
             </Text>
             <Text size="xs" c={tokens.fg.muted}>
-              The snapshot is saved and loaded automatically.
+              .lorasnap loads as a snapshot · .csv / .jsonl / .json opens the
+              import dialog.
             </Text>
           </Stack>
         </Paper>

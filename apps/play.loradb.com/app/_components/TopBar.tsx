@@ -13,6 +13,7 @@ import {
   IconLayoutRows,
   IconMoon,
   IconSun,
+  IconUpload,
 } from "@tabler/icons-react";
 
 import { toggleRootOrientation } from "@/lib/actions/workspaceActions";
@@ -27,6 +28,7 @@ import {
 import { useDbStatus } from "@/lib/hooks/useDbStatus";
 
 import { openHotkeyHelpDialog } from "./Dialogs/HotkeyHelpDialog";
+import { openImportDataDialog } from "./Dialogs/ImportDataDialog";
 import { RunButton } from "./Editor/RunButton";
 
 function dotColor(
@@ -79,6 +81,18 @@ export function TopBar() {
       <Group gap="xs" align="center" wrap="nowrap">
         <RunButton />
         <ParamsToggleButton />
+        <Tooltip label="Import data (CSV / JSONL / JSON)" withArrow>
+          <ActionIcon
+            variant="subtle"
+            size="md"
+            color="gray"
+            onClick={() => openImportDataDialog()}
+            aria-label="Import data"
+            data-testid="import-data"
+          >
+            <IconUpload size={16} />
+          </ActionIcon>
+        </Tooltip>
         {canToggleOrientation && (
           <Tooltip
             label={
