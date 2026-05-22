@@ -1,0 +1,23 @@
+[package]
+name = "lora-io"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "LoraDB — row-level bulk import/export codecs (JSONL, JSON, CSV) over LoraValue."
+keywords = ["loradb", "csv", "jsonl", "import", "export"]
+categories = ["database-implementations", "encoding"]
+
+[lib]
+bench = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+lora-executor = { workspace = true, default-features = false }
+lora-store.workspace = true

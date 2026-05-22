@@ -824,6 +824,7 @@ dependencies = [
  "lora-ast",
  "lora-compiler",
  "lora-executor",
+ "lora-io",
  "lora-parser",
  "lora-snapshot",
  "lora-store",
@@ -867,6 +868,17 @@ dependencies = [
  "lora-store",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lora-io"
+version = "0.12.0"
+dependencies = [
+ "lora-executor",
+ "lora-store",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
