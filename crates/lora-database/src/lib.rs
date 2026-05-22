@@ -18,6 +18,7 @@ mod database;
 mod durable_io;
 mod error;
 mod explain;
+mod io;
 mod live_store;
 mod named;
 mod plan_cache;
@@ -28,8 +29,18 @@ mod wal;
 
 pub use database::{Database, GraphDirection, QueryRunner};
 pub use error::{LoraError, LoraErrorCategory, LoraErrorCode};
+pub use io::{ExportStats, ImportStats, DEFAULT_IMPORT_BATCH_SIZE};
+
+// Re-export the row-IO surface so transports and bindings only need
+// `lora-database` for the common case.
 pub use explain::{OperatorMetrics, PlanShape, ProfileMetrics, QueryPlan, QueryProfile};
 pub use lora_compiler::{PlanTree, PlanTreeNode};
+pub use lora_io::{
+    parameterized_create_for_node, parameterized_create_for_relationship, ColumnSpec, CsvDecoder,
+    CsvEncoder, Format, JsonArrayDecoder, JsonArrayEncoder, JsonlDecoder, JsonlEncoder, RowDecoder,
+    RowEncoder, RowMapping, RowParseError, StreamingCsvDecoder, StreamingJsonArrayDecoder,
+    StreamingJsonlDecoder, StreamingRowDecoder,
+};
 pub use named::{
     resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
     DEFAULT_DATABASE_MAX_BYTES,
