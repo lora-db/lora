@@ -262,22 +262,31 @@ function applyCsvTypeOverrides(
   headerLine: string,
   overrides: Record<string, string>,
 ): string {
-  const cells = splitCsvLine(headerLine);
+  // splitCsvLine already consumes the surrounding quotes, so we
+  // re-encode every cell on the way out — that picks the right
+  // RFC-4180 quoting for the *new* content (which may differ from
+  // the original, e.g. a header name with a comma whose type just
+  // got appended).
+  const cells = splitCsvLine(stripBom(headerLine));
   const rewritten = cells.map((cell) => {
     const trimmed = cell.trim();
-    if (trimmed.startsWith(":")) return cell;
+    if (trimmed.startsWith(":")) return encodeCsvCell(cell);
     const colonIdx = trimmed.indexOf(":");
     const name = (
       colonIdx === -1 ? trimmed : trimmed.slice(0, colonIdx)
     ).trim();
     const override = overrides[name];
-    if (!override || override === "auto") return cell;
-    const wasQuoted =
-      cell.length >= 2 && cell.startsWith('"') && cell.endsWith('"');
-    const inner = `${name}:${override}`;
-    return wasQuoted ? `"${inner}"` : inner;
+    if (!override || override === "auto") return encodeCsvCell(cell);
+    return encodeCsvCell(`${name}:${override}`);
   });
   return rewritten.join(",");
+}
+
+function encodeCsvCell(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
 }
 
 function rewriteCsvHeaderStream(
@@ -398,15 +407,17 @@ function sniffCsv(text: string): {
   columns: string[];
   sample: Array<Record<string, unknown>>;
 } {
-  const lines = text.split(/\r?\n/);
-  const header = lines[0] ?? "";
-  const raw = splitCsvLine(header);
-  const columns = raw.map((cell) => normalizeCsvHeader(cell));
+  // BOM is what Excel / Google Sheets write on "Save as CSV (UTF-8)"
+  // — without the strip, the first column name carries `﻿` and
+  // every smart-default + downstream `r.name` reference misses.
+  const cleaned = stripBom(text);
+  const records = parseCsvRecords(cleaned, 11);
+  if (records.length === 0) return { columns: [], sample: [] };
+  const columns = records[0]!.map(normalizeCsvHeader);
   const sample: Array<Record<string, unknown>> = [];
-  for (let i = 1; i < Math.min(lines.length, 11); i += 1) {
-    const line = lines[i] ?? "";
-    if (line.trim().length === 0) continue;
-    const cells = splitCsvLine(line);
+  for (let i = 1; i < records.length; i += 1) {
+    const cells = records[i]!;
+    if (cells.length === 1 && cells[0]!.length === 0) continue;
     const obj: Record<string, unknown> = {};
     columns.forEach((name, idx) => {
       obj[name] = cells[idx] ?? "";
@@ -414,6 +425,61 @@ function sniffCsv(text: string): {
     sample.push(obj);
   }
   return { columns, sample };
+}
+
+const BOM = "﻿";
+function stripBom(s: string): string {
+  return s.startsWith(BOM) ? s.slice(1) : s;
+}
+
+/**
+ * Parse up to `maxRecords` CSV records from `text`. Walks the input as a
+ * single state machine so quoted cells with embedded newlines (RFC 4180)
+ * stay attached to their record instead of being shattered by a naive
+ * `split(/\r?\n/)`. The previous line-then-split sniffer broke the
+ * preview's column count for any file whose first 10 rows contained a
+ * multiline quoted cell — the Rust decoder handles those correctly, so
+ * the import then "worked" but the wizard's preview was nonsense.
+ */
+function parseCsvRecords(text: string, maxRecords: number): string[][] {
+  const records: string[][] = [];
+  let current: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      current.push(cell);
+      cell = "";
+    } else if (ch === "\n" || ch === "\r") {
+      current.push(cell);
+      cell = "";
+      records.push(current);
+      current = [];
+      if (ch === "\r" && text[i + 1] === "\n") i += 1;
+      if (records.length >= maxRecords) return records;
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell.length > 0 || current.length > 0) {
+    current.push(cell);
+    records.push(current);
+  }
+  return records;
 }
 
 function splitCsvLine(line: string): string[] {

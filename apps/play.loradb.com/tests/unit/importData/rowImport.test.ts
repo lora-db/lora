@@ -153,6 +153,53 @@ describe("row import helpers", () => {
     expect(effectiveBatchSize(0)).toBe(1_000);
     expect(effectiveBatchSize(250)).toBe(250);
   });
+
+  // Regression: Excel and Google Sheets prepend a UTF-8 BOM (`﻿`)
+  // on save. Without the strip, the first column name parses as
+  // `﻿name` and smart-defaults + Cypher `r.name` lookups all miss.
+  it("strips a UTF-8 BOM from the first CSV column name", async () => {
+    const { preview } = await buildPreview(
+      textFile("users.csv", "﻿name,age\nAlice,30\nBob,25\n"),
+    );
+    expect(preview.columns).toEqual(["name", "age"]);
+    expect(preview.sample[0]).toEqual({ name: "Alice", age: "30" });
+  });
+
+  // Regression: the previous sniffer did `text.split(/\r?\n/)` and then
+  // re-split each line for cells, so any quoted cell with an embedded
+  // newline shattered the preview's column count. The Rust decoder
+  // handled it correctly, so users saw "preview broken, import works."
+  it("keeps quoted newlines attached to their CSV record in the preview", async () => {
+    const csv =
+      'name,note\n' +
+      '"Alice","line one\nline two"\n' +
+      '"Bob","plain"\n';
+    const { preview } = await buildPreview(textFile("notes.csv", csv));
+    expect(preview.columns).toEqual(["name", "note"]);
+    expect(preview.sample).toEqual([
+      { name: "Alice", note: "line one\nline two" },
+      { name: "Bob", note: "plain" },
+    ]);
+  });
+
+  // Regression: the rewriter joined cells with bare `,` and never
+  // re-quoted them, so a header with a comma round-tripped to broken
+  // CSV. Re-encoding through the RFC-4180 helper keeps the output
+  // valid even when the type override changes a cell's quoting needs.
+  it("re-quotes rewritten CSV header cells that need RFC-4180 escaping", async () => {
+    const file = textFile(
+      "users.csv",
+      '"first, last",age\nAlice Smith,30\n',
+    );
+    const rewritten = await streamText(wrapStream(file, "csv", { age: "int" }));
+    expect(rewritten.startsWith('"first, last",age:int\n')).toBe(true);
+  });
+
+  it("strips a UTF-8 BOM from the CSV header when rewriting overrides", async () => {
+    const file = textFile("users.csv", "﻿name,age\nAlice,30\n");
+    const rewritten = await streamText(wrapStream(file, "csv", { age: "int" }));
+    expect(rewritten.startsWith("name,age:int\n")).toBe(true);
+  });
 });
 
 function makeDefaultSetters(): {
