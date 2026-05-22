@@ -31,6 +31,42 @@ fn create_allows_new_relationship_type_when_graph_is_not_empty() {
     ));
 }
 
+#[test]
+fn unwind_alias_allows_property_access_with_unknown_keys() {
+    // Regression: when the playground import driver runs
+    //     UNWIND $rows AS r CREATE (:Label {`User Id`: r.`User Id`})
+    // against a non-empty graph that has never seen "User Id" as a
+    // property key, the analyzer used to reject `r.\`User Id\`` as an
+    // unknown property. UNWIND-bound vars hold whatever the parameter
+    // payload carries, so property access on them must skip the
+    // catalog check.
+    let mut graph = InMemoryGraph::new();
+    let _ = graph.create_node(vec!["Other".into()], Properties::new());
+
+    let doc = parse_query(
+        "UNWIND $rows AS r CREATE (:People {`User Id`: r.`User Id`, `First Name`: r.`First Name`})",
+    )
+    .unwrap();
+    let mut analyzer = Analyzer::new(&graph);
+    analyzer
+        .analyze(&doc)
+        .expect("UNWIND-bound row variable should allow any property key");
+}
+
+#[test]
+fn parameter_property_access_allowed_with_unknown_keys() {
+    // Parameters are runtime maps the analyzer can't introspect — keys
+    // on `$ctx.foo` must not be gated by the graph catalog either.
+    let mut graph = InMemoryGraph::new();
+    let _ = graph.create_node(vec!["Other".into()], Properties::new());
+
+    let doc = parse_query("RETURN $ctx.user_id AS u").unwrap();
+    let mut analyzer = Analyzer::new(&graph);
+    analyzer
+        .analyze(&doc)
+        .expect("property access on a parameter should skip the catalog check");
+}
+
 // --- Vector function analyzer tests ----------------------------------
 
 #[test]

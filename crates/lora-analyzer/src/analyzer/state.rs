@@ -4,12 +4,18 @@ use lora_ast::{
     UpdatingClause,
 };
 use lora_store::GraphCatalog;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Analyzer<'a, S: GraphCatalog + ?Sized> {
     pub(super) storage: &'a S,
     pub(super) scopes: ScopeStack,
     pub(super) symbols: SymbolTable,
+    /// Variables whose runtime value shape isn't tracked by the analyzer
+    /// (UNWIND-bound elements, anything that may legitimately hold a map
+    /// or list of maps). Property access on these vars must skip the
+    /// graph-catalog check — the caller can't know which keys the data
+    /// carries until rows are bound at execution time.
+    pub(super) dynamic_property_vars: BTreeSet<VarId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +32,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             storage,
             scopes: ScopeStack::new(),
             symbols: SymbolTable::default(),
+            dynamic_property_vars: BTreeSet::new(),
         }
     }
 
@@ -324,7 +331,13 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
 
     pub(super) fn property_access_allowed(&self, base: &ResolvedExpr, key: &str) -> bool {
         match base {
-            ResolvedExpr::Map(_) => true,
+            // Map literals and query parameters carry their own keys —
+            // there's nothing in the graph catalog to check against.
+            ResolvedExpr::Map(_) | ResolvedExpr::Parameter(_) => true,
+            // Variables whose value shape isn't tracked (UNWIND-bound
+            // row elements, etc.) — the catalog can't speak to keys on
+            // values that come from `$params` at execution time.
+            ResolvedExpr::Variable(id) if self.dynamic_property_vars.contains(id) => true,
             _ => {
                 self.storage.has_property_key(key)
                     || (self.storage.node_count() == 0 && self.storage.relationship_count() == 0)

@@ -54,6 +54,11 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     pub(super) fn analyze_unwind(&mut self, u: &Unwind) -> Result<ResolvedUnwind, SemanticError> {
         let expr = self.analyze_expr(&u.expr)?;
         let alias = self.declare_fresh_variable(&u.alias.name)?;
+        // UNWIND iterates a list — typically `$rows` from a batched
+        // import, where each element is a map of arbitrary keys. The
+        // analyzer can't know the row shape, so let property access on
+        // the alias skip the graph-catalog check.
+        self.dynamic_property_vars.insert(alias);
 
         Ok(ResolvedUnwind { expr, alias })
     }
