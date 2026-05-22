@@ -6,7 +6,15 @@
  * so consumers can choose the execution model without rewriting their code.
  */
 
-import type { LoraParams, LoraValue, QueryResult } from "./types.js";
+import type {
+  LoraParams,
+  LoraValue,
+  QueryResult,
+  RowExportStats,
+  RowFormat,
+  RowImportStats,
+  RowMapping,
+} from "./types.js";
 import { LoraError } from "./types.js";
 import type { Request, Response as WorkerResponse } from "./worker-protocol.js";
 import type {
@@ -14,6 +22,8 @@ import type {
   WasmSnapshotLoadOptions,
   WasmSnapshotSaveOptions,
   WasmSnapshotSource,
+  ImportStreamOptions,
+  RowImportProgress,
   RowStream,
   SnapshotInfo,
   SnapshotMeta,
@@ -92,6 +102,34 @@ export interface WorkerDatabase {
     options?: WasmSnapshotLoadOptions,
   ): Promise<SnapshotMeta>;
   snapshotInfo(bytes: Uint8Array): Promise<SnapshotInfo>;
+  exportRows(
+    query: string,
+    params: LoraParams | null | undefined,
+    format: RowFormat,
+  ): Promise<{ bytes: Uint8Array; stats: RowExportStats }>;
+  openExportStream(
+    query: string,
+    params: LoraParams | null | undefined,
+    format: RowFormat,
+  ): ReadableStream<Uint8Array>;
+  importRows(
+    bytes: Uint8Array,
+    format: RowFormat,
+    mapping: RowMapping,
+    batchSize?: number | null,
+  ): Promise<RowImportStats>;
+  importRowsWithCypher(
+    bytes: Uint8Array,
+    format: RowFormat,
+    template: string,
+    batchSize?: number | null,
+  ): Promise<RowImportStats>;
+  importStream(
+    source: ReadableStream<Uint8Array>,
+    format: RowFormat,
+    mappingOrTemplate: RowMapping | string,
+    options?: ImportStreamOptions,
+  ): Promise<RowImportStats>;
   clear(): Promise<void>;
   nodeCount(): Promise<number>;
   relationshipCount(): Promise<number>;
@@ -197,6 +235,22 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
       p.reject(new LoraError(body.error.message, body.error.code));
     }
   });
+
+  function makeAbortError(signal: AbortSignal): Error {
+    const reason: unknown = (signal as AbortSignal & { reason?: unknown })
+      .reason;
+    if (reason instanceof Error) return reason;
+    const message =
+      typeof reason === "string" && reason.length > 0
+        ? reason
+        : "import aborted";
+    if (typeof DOMException === "function") {
+      return new DOMException(message, "AbortError");
+    }
+    const err = new Error(message);
+    err.name = "AbortError";
+    return err;
+  }
 
   worker.addEventListener("error", (event) => {
     const message = event.message ?? "worker errored";
@@ -333,6 +387,178 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
     },
     snapshotInfo(bytes: Uint8Array): Promise<SnapshotInfo> {
       return call<SnapshotInfo>({ op: "snapshotInfo", bytes });
+    },
+    exportRows(
+      query: string,
+      params: LoraParams | null | undefined,
+      format: RowFormat,
+    ): Promise<{ bytes: Uint8Array; stats: RowExportStats }> {
+      return call<{ bytes: Uint8Array; stats: RowExportStats }>({
+        op: "exportRows",
+        query,
+        params: params ?? null,
+        format,
+      });
+    },
+    openExportStream(
+      query: string,
+      params: LoraParams | null | undefined,
+      format: RowFormat,
+    ): ReadableStream<Uint8Array> {
+      // The native cursor lives in the worker, identified by exportId.
+      // Each `pull` hops to the worker for one chunk; the worker
+      // returns one chunk's worth of encoded bytes (with the buffer
+      // transferred, no clone) and we enqueue it. When the cursor is
+      // drained the worker returns null and we close the stream.
+      let exportId: number | null = null;
+      let openPromise: Promise<void> | null = null;
+
+      const ensureOpen = (): Promise<void> => {
+        if (openPromise) return openPromise;
+        openPromise = call<{ exportId: number; columns: string[] }>({
+          op: "exportOpen",
+          query,
+          params: params ?? null,
+          format,
+        }).then((res) => {
+          exportId = res.exportId;
+        });
+        return openPromise;
+      };
+
+      return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            await ensureOpen();
+            if (exportId === null) {
+              controller.close();
+              return;
+            }
+            const chunk = await call<Uint8Array | null>({
+              op: "exportNext",
+              exportId,
+            });
+            if (chunk === null) {
+              exportId = null;
+              controller.close();
+              return;
+            }
+            controller.enqueue(chunk);
+          } catch (err) {
+            controller.error(err);
+            if (exportId !== null) {
+              void call<null>({
+                op: "exportClose",
+                exportId,
+              });
+              exportId = null;
+            }
+          }
+        },
+        async cancel() {
+          if (exportId !== null) {
+            await call<null>({ op: "exportClose", exportId });
+            exportId = null;
+          }
+        },
+      });
+    },
+    importRows(
+      bytes: Uint8Array,
+      format: RowFormat,
+      mapping: RowMapping,
+      batchSize?: number | null,
+    ): Promise<RowImportStats> {
+      return call<RowImportStats>({
+        op: "importRows",
+        bytes,
+        format,
+        mapping,
+        batchSize: batchSize ?? null,
+      });
+    },
+    importRowsWithCypher(
+      bytes: Uint8Array,
+      format: RowFormat,
+      template: string,
+      batchSize?: number | null,
+    ): Promise<RowImportStats> {
+      return call<RowImportStats>({
+        op: "importRowsWithCypher",
+        bytes,
+        format,
+        template,
+        batchSize: batchSize ?? null,
+      });
+    },
+    async importStream(
+      source: ReadableStream<Uint8Array>,
+      format: RowFormat,
+      mappingOrTemplate: RowMapping | string,
+      options?: ImportStreamOptions,
+    ): Promise<RowImportStats> {
+      const signal = options?.signal;
+      const open = await call<{ importId: number }>({
+        op: "importOpen",
+        format,
+        mappingOrTemplate,
+        batchSize: options?.batchSize ?? null,
+        dryRun: options?.dryRun ?? null,
+        permissive: options?.permissive ?? null,
+      });
+      const importId = open.importId;
+      if (signal?.aborted) {
+        try {
+          await call<null>({ op: "importClose", importId });
+        } catch {
+          // ignore
+        }
+        throw makeAbortError(signal);
+      }
+      const reader = source.getReader();
+      try {
+        try {
+          while (true) {
+            if (signal?.aborted) {
+              await reader.cancel();
+              try {
+                await call<null>({ op: "importClose", importId });
+              } catch {
+                // ignore
+              }
+              throw makeAbortError(signal);
+            }
+            const { value, done } = await reader.read();
+            if (done) break;
+            const progress = await call<RowImportProgress>({
+              op: "importFeed",
+              importId,
+              chunk: value,
+            });
+            options?.onProgress?.(progress);
+          }
+        } finally {
+          try {
+            reader.releaseLock();
+          } catch {
+            // releaseLock throws on an already-released reader;
+            // ignore so the original error path stays intact.
+          }
+        }
+        return await call<RowImportStats>({
+          op: "importFinish",
+          importId,
+        });
+      } catch (err) {
+        // Best-effort cleanup; swallow secondary errors so the
+        // original cause propagates.
+        try {
+          await call<null>({ op: "importClose", importId });
+        } catch {
+          // ignore
+        }
+        throw err;
+      }
     },
     async clear(): Promise<void> {
       await call<null>({ op: "clear" });

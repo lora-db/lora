@@ -16,7 +16,15 @@
  *   const res = await db.execute("CREATE (:N {n: $v}) RETURN 1 AS one", { v: 1 });
  */
 
-import type { LoraParams, LoraValue, QueryResult } from "./types.js";
+import type {
+  LoraParams,
+  LoraValue,
+  QueryResult,
+  RowExportStats,
+  RowFormat,
+  RowImportStats,
+  RowMapping,
+} from "./types.js";
 import { wrapError } from "./types.js";
 import {
   WasmDatabase,
@@ -112,6 +120,57 @@ export function snapshotInfo(bytes: Uint8Array): SnapshotInfo {
   } catch (err) {
     throw wrapError(err);
   }
+}
+
+/**
+ * Progress payload emitted by [`Database.importStream`] callbacks.
+ * Mirrors the JSON the WASM cursor's `feed` method returns: counts
+ * are cumulative across the whole stream.
+ */
+export interface RowImportProgress {
+  /** Total bytes accepted by the decoder. */
+  bytesFed: number;
+  /** Total records the decoder has parsed (regardless of commit state). */
+  rowsSeen: number;
+  /** Records that have been committed via a flushed batch. */
+  rowsCommitted: number;
+  /** Number of batches flushed so far. */
+  batches: number;
+  /**
+   * Cumulative count of records the decoder skipped because they
+   * failed to parse. Always 0 when permissive mode is off.
+   */
+  skipped: number;
+}
+
+export interface ImportStreamOptions {
+  /** Rows per Cypher batch. Defaults to 1000 on the WASM side. */
+  batchSize?: number;
+  /** Called after each chunk is fed; useful for progress UIs. */
+  onProgress?: (progress: RowImportProgress) => void;
+  /**
+   * When true, every row is parsed and counted but no Cypher executes.
+   * Useful for validating a mapping + checking the file parses before
+   * committing to a mutation. Stats reflect what *would have* been
+   * imported.
+   */
+  dryRun?: boolean;
+  /**
+   * When true, records that fail to parse are skipped and reported in
+   * the final stats (`skipped` + `errors`) instead of aborting the
+   * import. Defaults to false — the first bad record terminates the
+   * stream with a structured error.
+   */
+  permissive?: boolean;
+  /**
+   * Cancel the in-flight import. When the signal aborts mid-stream,
+   * the native cursor is closed (releasing the WASM cursor + any
+   * in-flight batch) and the returned promise rejects with a
+   * `LoraError` carrying code `"LORA_INTERNAL"` and the abort reason
+   * as its message. Already-committed batches are kept — there is no
+   * transactional rollback across the whole import.
+   */
+  signal?: AbortSignal;
 }
 
 export interface CreateDatabaseOptions {
@@ -224,6 +283,26 @@ class NativeRowStream<
       throw wrapError(err);
     }
   }
+}
+
+/**
+ * Normalise an [`AbortSignal`] cancellation into a `DOMException`
+ * whose `name === "AbortError"` (the standard browser shape). We
+ * accept the signal's `reason` when it's already an `Error`,
+ * otherwise wrap a generic message.
+ */
+function abortError(signal: AbortSignal): Error {
+  const reason: unknown = (signal as AbortSignal & { reason?: unknown }).reason;
+  if (reason instanceof Error) return reason;
+  const message =
+    typeof reason === "string" && reason.length > 0 ? reason : "import aborted";
+  // DOMException is available in both browsers and modern Node.
+  if (typeof DOMException === "function") {
+    return new DOMException(message, "AbortError");
+  }
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
 }
 
 let bootstrapped = false;
@@ -406,6 +485,232 @@ class DatabaseImpl {
   async snapshotInfo(bytes: Uint8Array): Promise<SnapshotInfo> {
     try {
       return nativeSnapshotInfo(bytes) as SnapshotInfo;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Run a query and serialise its result rows as the chosen format.
+   * Returns the encoded bytes plus a row count.
+   *
+   * Materialises the full encoded payload in WASM memory before
+   * returning. For large exports prefer {@link openExportStream},
+   * which yields chunks row-at-a-time without ever holding the whole
+   * dataset in memory.
+   */
+  async exportRows(
+    query: string,
+    params: LoraParams | null | undefined,
+    format: RowFormat,
+  ): Promise<{ bytes: Uint8Array; stats: RowExportStats }> {
+    try {
+      const native = this.#inner as unknown as {
+        exportRows(query: string, params: unknown, format: string): unknown;
+      };
+      return native.exportRows(query, params ?? null, format) as {
+        bytes: Uint8Array;
+        stats: RowExportStats;
+      };
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Open a streaming row-export cursor and wrap it as a Web
+   * {@link ReadableStream}. The engine pulls rows one chunk at a
+   * time and writes encoded bytes through the encoder; the JS side
+   * pulls chunks one at a time and pushes them to the stream
+   * controller. **At no point is the full encoded payload held in
+   * memory** — the bound is the per-chunk encoder buffer (≈32–256 KiB).
+   *
+   * Cancel-aware: cancelling the returned stream closes the native
+   * cursor so the engine releases its snapshot reference.
+   */
+  openExportStream(
+    query: string,
+    params: LoraParams | null | undefined,
+    format: RowFormat,
+  ): ReadableStream<Uint8Array> {
+    let cursor: {
+      next(): unknown;
+      close(): void;
+    } | null = null;
+    const inner = this.#inner;
+    return new ReadableStream<Uint8Array>({
+      start() {
+        try {
+          const native = inner as unknown as {
+            openExport(
+              query: string,
+              params: unknown,
+              format: string,
+            ): { next(): unknown; close(): void };
+          };
+          cursor = native.openExport(query, params ?? null, format);
+        } catch (err) {
+          throw wrapError(err);
+        }
+      },
+      pull(controller) {
+        if (!cursor) {
+          controller.close();
+          return;
+        }
+        try {
+          const chunk = cursor.next() as Uint8Array | null;
+          if (chunk === null) {
+            cursor.close();
+            cursor = null;
+            controller.close();
+            return;
+          }
+          controller.enqueue(chunk);
+        } catch (err) {
+          cursor?.close();
+          cursor = null;
+          controller.error(wrapError(err));
+        }
+      },
+      cancel() {
+        cursor?.close();
+        cursor = null;
+      },
+    });
+  }
+
+  /**
+   * Decode rows from `bytes` and apply them to the graph using the
+   * auto-mapping path. The mapping renders a parameterised
+   * `UNWIND $rows AS r CREATE …` template internally; rows are batched
+   * and each batch executes as a single auto-committed statement.
+   */
+  async importRows(
+    bytes: Uint8Array,
+    format: RowFormat,
+    mapping: RowMapping,
+    batchSize?: number | null,
+  ): Promise<RowImportStats> {
+    try {
+      const native = this.#inner as unknown as {
+        importRows(
+          bytes: Uint8Array,
+          format: string,
+          mapping: unknown,
+          batchSize?: number | null,
+        ): unknown;
+      };
+      return native.importRows(
+        bytes,
+        format,
+        mapping,
+        batchSize ?? null,
+      ) as RowImportStats;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Decode rows from `bytes` and execute `template` once per batch with
+   * `$rows` bound to the batch payload. Escape hatch for the auto-mapping
+   * path: anything Cypher accepts is fair game here.
+   */
+  async importRowsWithCypher(
+    bytes: Uint8Array,
+    format: RowFormat,
+    template: string,
+    batchSize?: number | null,
+  ): Promise<RowImportStats> {
+    try {
+      const native = this.#inner as unknown as {
+        importRowsWithCypher(
+          bytes: Uint8Array,
+          format: string,
+          template: string,
+          batchSize?: number | null,
+        ): unknown;
+      };
+      return native.importRowsWithCypher(
+        bytes,
+        format,
+        template,
+        batchSize ?? null,
+      ) as RowImportStats;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Stream rows from a `ReadableStream<Uint8Array>` into the graph,
+   * one chunk at a time. The chunk source can be a `File.stream()`,
+   * a `fetch` response body, or any other Web stream.
+   *
+   * Memory bound: peak resident set is one chunk + one batch of
+   * decoded rows. Files of arbitrary size are supported without ever
+   * being loaded fully into memory on either the JS or the WASM side.
+   *
+   * `mappingOrTemplate` is either a {@link RowMapping} (auto-mapping)
+   * or a Cypher template string with a `$rows` parameter (escape
+   * hatch). All three row formats stream chunk-by-chunk.
+   */
+  async importStream(
+    source: ReadableStream<Uint8Array>,
+    format: RowFormat,
+    mappingOrTemplate: RowMapping | string,
+    options?: ImportStreamOptions,
+  ): Promise<RowImportStats> {
+    try {
+      const native = this.#inner as unknown as {
+        openImport(
+          format: string,
+          mappingOrTemplate: unknown,
+          batchSize: number | null,
+          dryRun: boolean | null,
+          permissive: boolean | null,
+        ): {
+          feed(chunk: Uint8Array): unknown;
+          finish(): unknown;
+          close(): void;
+        };
+      };
+      const cursor = native.openImport(
+        format,
+        mappingOrTemplate,
+        options?.batchSize ?? null,
+        options?.dryRun ?? null,
+        options?.permissive ?? null,
+      );
+      const signal = options?.signal;
+      if (signal?.aborted) {
+        cursor.close();
+        throw abortError(signal);
+      }
+      try {
+        const reader = source.getReader();
+        try {
+          while (true) {
+            if (signal?.aborted) {
+              await reader.cancel();
+              cursor.close();
+              throw abortError(signal);
+            }
+            const { value, done } = await reader.read();
+            if (done) break;
+            const progress = cursor.feed(value);
+            options?.onProgress?.(progress as RowImportProgress);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        const stats = cursor.finish() as RowImportStats;
+        return stats;
+      } catch (err) {
+        cursor.close();
+        throw err;
+      }
     } catch (err) {
       throw wrapError(err);
     }

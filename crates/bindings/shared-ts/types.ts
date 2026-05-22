@@ -506,6 +506,92 @@ export const wgs84_3d = (
 });
 
 // ---------------------------------------------------------------------------
+// Row IO (import/export)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire format for row-level import / export. Mirrors
+ * `lora_io::Format`.
+ *
+ * - `jsonl` — one JSON object per line. The lossless default; every
+ *   `LoraValue` variant round-trips through the canonical tagged shape.
+ * - `json` — a single top-level JSON array of objects. Same row shape
+ *   as JSONL, intended for small datasets and copy-paste.
+ * - `csv` — RFC 4180 CSV with optional `name:type` typed headers and
+ *   Neo4j-style `:LABEL` / `:ID` / `:START_ID` / `:END_ID` / `:TYPE`
+ *   schema markers.
+ */
+export type RowFormat = "jsonl" | "json" | "csv";
+
+/**
+ * Single column → property mapping. `source` is the column name as it
+ * appears in the file (after schema-marker canonicalisation); `property`
+ * is the target node / relationship property name.
+ */
+export interface RowMappingColumnSpec {
+  source: string;
+  property: string;
+}
+
+/**
+ * Auto-mapping config for `db.importRows`. Mirrors `lora_io::RowMapping`.
+ */
+export type RowMapping =
+  | {
+      kind: "node";
+      label: string;
+      id_column?: string | null;
+      id_property?: string | null;
+      properties: RowMappingColumnSpec[];
+    }
+  | {
+      kind: "relationship";
+      rel_type: string;
+      start_label: string;
+      start_column: string;
+      start_match_property: string;
+      end_label: string;
+      end_column: string;
+      end_match_property: string;
+      properties: RowMappingColumnSpec[];
+    };
+
+export interface RowExportStats {
+  rows: number;
+}
+
+export interface RowImportStats {
+  rows: number;
+  batches: number;
+  /**
+   * Number of records the decoder skipped because they failed to
+   * parse in permissive mode. Zero when permissive mode was off.
+   */
+  skipped: number;
+  /**
+   * Per-record parse errors collected from the decoder in permissive
+   * mode. Capped on the WASM side (`skipped` is the true total even
+   * when this array has been truncated).
+   */
+  errors: RowParseError[];
+}
+
+/**
+ * Structured per-record parse failure. Emitted by streaming
+ * imports when permissive mode is enabled.
+ */
+export interface RowParseError {
+  /** 1-indexed record number within the file (data rows only). */
+  row: number;
+  /** Column name when attributable to a single cell (CSV); else null. */
+  column: string | null;
+  /** Truncated raw text of the offending record. */
+  rawSample: string;
+  /** Human-readable reason. */
+  message: string;
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 

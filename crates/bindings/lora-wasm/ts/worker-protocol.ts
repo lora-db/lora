@@ -7,6 +7,7 @@
  */
 
 import type { LoraParams, QueryResult, LoraErrorCode } from "./types.js";
+import type { RowFormat } from "./types.js";
 import type { TransactionMode, TransactionStatement } from "./index.js";
 import type {
   WasmSnapshotByteOptions,
@@ -30,6 +31,50 @@ export type RequestBody =
       options?: WasmSnapshotLoadOptions | null;
     }
   | { op: "snapshotInfo"; bytes: Uint8Array }
+  | {
+      op: "exportRows";
+      query: string;
+      params?: LoraParams | null;
+      format: RowFormat;
+    }
+  | {
+      op: "exportOpen";
+      query: string;
+      params?: LoraParams | null;
+      format: RowFormat;
+    }
+  | { op: "exportNext"; exportId: number }
+  | { op: "exportClose"; exportId: number }
+  | {
+      op: "importRows";
+      bytes: Uint8Array;
+      format: RowFormat;
+      mapping: unknown;
+      batchSize?: number | null;
+    }
+  | {
+      op: "importRowsWithCypher";
+      bytes: Uint8Array;
+      format: RowFormat;
+      template: string;
+      batchSize?: number | null;
+    }
+  | {
+      op: "importOpen";
+      format: RowFormat;
+      /** Either a `RowMapping` object or a Cypher template string. */
+      mappingOrTemplate: unknown;
+      batchSize?: number | null;
+      /** When true, the cursor parses + counts rows but skips Cypher
+       * execution. Used by the playground's Preview button. */
+      dryRun?: boolean | null;
+      /** When true, per-record parse failures are skipped and reported
+       * in the final stats instead of aborting the stream. */
+      permissive?: boolean | null;
+    }
+  | { op: "importFeed"; importId: number; chunk: Uint8Array }
+  | { op: "importFinish"; importId: number }
+  | { op: "importClose"; importId: number }
   | { op: "clear" }
   | { op: "nodeCount" }
   | { op: "relationshipCount" }
@@ -50,6 +95,8 @@ export type ResponseBody =
         | Uint8Array
         | null
         | { streamId: number; columns: string[] }
+        | { exportId: number; columns: string[] }
+        | { importId: number }
         | Record<string, unknown>;
     }
   | { ok: false; error: { message: string; code: LoraErrorCode } };
