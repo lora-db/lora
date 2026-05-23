@@ -92,6 +92,10 @@ fn vector_index_requires_index_config_options() {
         err.contains("indexConfig"),
         "expected indexConfig error, got: {err}"
     );
+    let err = db
+        .exec("CREATE VECTOR INDEX bad FOR (m:Movie) ON (m.embedding)")
+        .expect_err("missing vector indexConfig should fail validation");
+    assert_eq!(err.code(), lora_database::LoraErrorCode::Validation);
 }
 
 #[test]

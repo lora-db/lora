@@ -1,6 +1,7 @@
 /// Error behavior tests — parse errors, semantic validation, executor
 /// constraint violations, schema-awareness rules.
 mod test_helpers;
+use lora_database::{Database, LoraErrorCode};
 use test_helpers::TestDb;
 
 // ============================================================
@@ -30,6 +31,28 @@ fn error_missing_return_or_update() {
 #[test]
 fn error_empty_query() {
     assert!(!TestDb::new().run_err("").is_empty());
+}
+
+#[test]
+fn schema_duplicate_index_is_unique_constraint_error() {
+    let db = Database::in_memory();
+    db.execute("CREATE INDEX person_name FOR (p:Person) ON (p.name)", None)
+        .unwrap();
+
+    let err = db
+        .execute(
+            "CREATE INDEX person_name_again FOR (p:Person) ON (p.name)",
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), LoraErrorCode::UniqueConstraint);
+}
+
+#[test]
+fn schema_drop_missing_index_is_not_found() {
+    let db = Database::in_memory();
+    let err = db.execute("DROP INDEX missing_index", None).unwrap_err();
+    assert_eq!(err.code(), LoraErrorCode::NotFound);
 }
 
 #[test]

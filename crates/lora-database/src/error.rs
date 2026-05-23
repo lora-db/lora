@@ -23,11 +23,12 @@ use std::error::Error;
 use std::fmt;
 
 use lora_analyzer::SemanticError;
-use lora_executor::ExecutorError;
+use lora_executor::{ExecutorError, PropertyConversionError};
 use lora_parser::ParseError;
 use lora_snapshot::SnapshotCodecError;
 use lora_store::SnapshotError;
 use lora_wal::{WalBufferedCommitError, WalCommitError, WalError};
+use thiserror::Error;
 
 use crate::transaction::TransactionError;
 use crate::DatabaseNameError;
@@ -59,10 +60,22 @@ pub enum LoraErrorCode {
     DatabaseName,
     /// Required parameters are missing or malformed (CLI / config flags).
     Config,
+    /// A well-formed request failed database-layer validation.
+    Validation,
+    /// A uniqueness constraint rejected a duplicate value.
+    UniqueConstraint,
+    /// A property-existence / NOT NULL constraint rejected missing data.
+    NotNullConstraint,
+    /// A relationship or dependent record references a missing entity.
+    ForeignKeyViolation,
+    /// A transaction lifecycle rule was violated.
+    TransactionFailure,
 
     // -------- Server errors --------
     /// I/O failure outside the WAL / snapshot boundaries.
     Io,
+    /// The database could not open or use its backing connection/handle.
+    Connection,
     /// WAL record was truncated, mis-CRC'd, or otherwise unreadable.
     WalCorruption,
     /// The WAL is poisoned and no longer accepts durable writes.
@@ -107,7 +120,13 @@ impl LoraErrorCode {
             Self::Timeout => "LORA_TIMEOUT",
             Self::DatabaseName => "LORA_DATABASE_NAME",
             Self::Config => "LORA_CONFIG",
+            Self::Validation => "LORA_VALIDATION",
+            Self::UniqueConstraint => "LORA_UNIQUE_CONSTRAINT",
+            Self::NotNullConstraint => "LORA_NOT_NULL_CONSTRAINT",
+            Self::ForeignKeyViolation => "LORA_FOREIGN_KEY",
+            Self::TransactionFailure => "LORA_TRANSACTION",
             Self::Io => "LORA_IO",
+            Self::Connection => "LORA_CONNECTION",
             Self::WalCorruption => "LORA_WAL_CORRUPTION",
             Self::WalPoisoned => "LORA_WAL_POISONED",
             Self::SnapshotCodec => "LORA_SNAPSHOT_CODEC",
@@ -128,8 +147,14 @@ impl LoraErrorCode {
             | Self::InvalidVector
             | Self::Timeout
             | Self::DatabaseName
-            | Self::Config => LoraErrorCategory::Client,
+            | Self::Config
+            | Self::Validation
+            | Self::UniqueConstraint
+            | Self::NotNullConstraint
+            | Self::ForeignKeyViolation
+            | Self::TransactionFailure => LoraErrorCategory::Client,
             Self::Io
+            | Self::Connection
             | Self::WalCorruption
             | Self::WalPoisoned
             | Self::SnapshotCodec
@@ -155,6 +180,17 @@ pub struct LoraError {
     message: String,
     source: Option<Box<dyn Error + Send + Sync + 'static>>,
 }
+
+#[derive(Debug)]
+struct InternalAnyhowSource(String);
+
+impl fmt::Display for InternalAnyhowSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for InternalAnyhowSource {}
 
 impl LoraError {
     pub fn new(code: LoraErrorCode, message: impl Into<String>) -> Self {
@@ -189,12 +225,64 @@ impl LoraError {
         self.code.category()
     }
 
+    /// Message intended for external transports. Client-side errors keep
+    /// their precise text; server-side failures return a stable, sanitized
+    /// sentence while the original details stay available through
+    /// [`Self::message`] for logs and local debugging.
+    pub fn public_message(&self) -> String {
+        match self.category() {
+            LoraErrorCategory::Client => self.message.clone(),
+            LoraErrorCategory::Server => match self.code {
+                LoraErrorCode::Io => "database storage is temporarily unavailable".to_string(),
+                LoraErrorCode::Connection => {
+                    "database connection is temporarily unavailable".to_string()
+                }
+                LoraErrorCode::WalCorruption => {
+                    "database write-ahead log is unreadable".to_string()
+                }
+                LoraErrorCode::WalPoisoned => {
+                    "database write-ahead log is unavailable until recovery".to_string()
+                }
+                LoraErrorCode::SnapshotCodec => "snapshot data could not be decoded".to_string(),
+                LoraErrorCode::SnapshotCrypto => {
+                    "snapshot encryption could not be processed".to_string()
+                }
+                LoraErrorCode::Internal => "database operation failed unexpectedly".to_string(),
+                // Exhaustive for future-proofing: if a code's category
+                // changes, expose the original client-facing text.
+                _ => self.message.clone(),
+            },
+        }
+    }
+
+    /// Detailed cause chain for diagnostics. Do not put this in
+    /// user-facing response bodies.
+    pub fn debug_context(&self) -> String {
+        let mut out = self.message.clone();
+        let mut source = self.source();
+        while let Some(err) = source {
+            out.push_str(": ");
+            out.push_str(&err.to_string());
+            source = err.source();
+        }
+        out
+    }
+
     /// Convert an `anyhow::Error` from the engine's internal `?`-chains
     /// into a typed `LoraError`. Best-effort: downcasts the chain to any
     /// known concrete error type and picks the matching code; falls back
     /// to [`LoraErrorCode::Internal`] with the original message preserved.
     pub fn from_anyhow(err: anyhow::Error) -> Self {
-        Self::from_anyhow_ref(&err)
+        let mapped = Self::from_anyhow_ref(&err);
+        if mapped.code == LoraErrorCode::Internal {
+            Self::with_source(
+                LoraErrorCode::Internal,
+                "database operation failed unexpectedly",
+                InternalAnyhowSource(format!("{err:#}")),
+            )
+        } else {
+            mapped
+        }
     }
 
     /// Borrowed version of [`Self::from_anyhow`]. Useful in binding
@@ -215,6 +303,9 @@ impl LoraError {
         }
         if let Some(e) = err.downcast_ref::<ExecutorError>() {
             return Self::new(executor_code(e), e.to_string());
+        }
+        if let Some(e) = err.downcast_ref::<PropertyConversionError>() {
+            return Self::new(LoraErrorCode::Validation, e.to_string());
         }
         if let Some(e) = err.downcast_ref::<WalError>() {
             return Self::new(wal_code(e), e.to_string());
@@ -237,14 +328,23 @@ impl LoraError {
         if let Some(e) = err.downcast_ref::<TransactionError>() {
             return Self::new(transaction_code(e), e.to_string());
         }
+        if let Some(e) = err.downcast_ref::<DatabaseOperationError>() {
+            return Self::new(e.code(), e.to_string());
+        }
         if let Some(e) = err.downcast_ref::<std::io::Error>() {
-            return Self::new(LoraErrorCode::Io, e.to_string());
+            return Self::new(io_code(e), e.to_string());
+        }
+        if let Some(code) = legacy_message_code(&err.to_string()) {
+            return Self::new(code, err.to_string());
         }
         // Fallback: an external `anyhow::Error` we don't recognise. Internal
         // sites all surface typed errors that the downcasts above route
         // precisely, so anything that lands here is from a third-party crate
         // or a legacy `anyhow!("...")` we have not yet converted.
-        Self::new(LoraErrorCode::Internal, format!("{err:#}"))
+        Self::new(
+            LoraErrorCode::Internal,
+            "database operation failed unexpectedly",
+        )
     }
 }
 
@@ -254,16 +354,73 @@ fn executor_code(err: &ExecutorError) -> LoraErrorCode {
         | ExecutorError::ReadOnlyMerge { .. }
         | ExecutorError::ReadOnlyDelete { .. }
         | ExecutorError::ReadOnlySet { .. }
-        | ExecutorError::ReadOnlyRemove { .. } => LoraErrorCode::ReadOnlyViolation,
+        | ExecutorError::ReadOnlyRemove { .. }
+        | ExecutorError::ReadOnlyForeach { .. } => LoraErrorCode::ReadOnlyViolation,
         ExecutorError::QueryTimeout => LoraErrorCode::Timeout,
-        ExecutorError::DeleteNodeWithRelationships { .. } => LoraErrorCode::ConstraintViolation,
-        _ => LoraErrorCode::Internal,
+        ExecutorError::ConstraintViolation(message) => constraint_message_code(message),
+        ExecutorError::DeleteNodeWithRelationships { .. } => LoraErrorCode::ForeignKeyViolation,
+        ExecutorError::RelationshipCreateFailed { .. } => LoraErrorCode::ForeignKeyViolation,
+        ExecutorError::NodeCreateFailed => LoraErrorCode::Internal,
+        ExecutorError::RuntimeError(message) => validation_message_code(message),
+        ExecutorError::ExpectedNodeForExpand { .. }
+        | ExecutorError::ExpectedPropertyMap { .. }
+        | ExecutorError::GroupByNotLowered
+        | ExecutorError::AggregateNotLowered
+        | ExecutorError::UnsupportedCreateRelationshipRange
+        | ExecutorError::MissingRelationshipType
+        | ExecutorError::DeleteRelationshipFailed { .. }
+        | ExecutorError::InvalidDeleteTarget { .. }
+        | ExecutorError::ExpectedNodeForRemoveLabels { .. }
+        | ExecutorError::UnboundVariableForRemove { .. }
+        | ExecutorError::ExpectedNodeForSetLabels { .. }
+        | ExecutorError::UnboundVariableForSet { .. }
+        | ExecutorError::InvalidSetTarget { .. }
+        | ExecutorError::UnsupportedRemoveTarget
+        | ExecutorError::InvalidRemoveTarget { .. }
+        | ExecutorError::UnsupportedSetTarget
+        | ExecutorError::ExpectedRelationshipForExpand { .. } => LoraErrorCode::Validation,
     }
+}
+
+fn constraint_message_code(message: &str) -> LoraErrorCode {
+    if message.contains("22N79") || message.contains("22N70") || message.contains("22N71") {
+        LoraErrorCode::UniqueConstraint
+    } else if message.contains("22N77") {
+        LoraErrorCode::NotNullConstraint
+    } else if message.contains("42N51") {
+        LoraErrorCode::NotFound
+    } else if message.contains("22N78") || message.contains("22N90") {
+        LoraErrorCode::Validation
+    } else {
+        LoraErrorCode::ConstraintViolation
+    }
+}
+
+fn validation_message_code(message: &str) -> LoraErrorCode {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("vector") {
+        LoraErrorCode::InvalidVector
+    } else {
+        LoraErrorCode::Validation
+    }
+}
+
+fn legacy_message_code(message: &str) -> Option<LoraErrorCode> {
+    if message.contains("22N")
+        || message.contains("42N51")
+        || message.contains("50N11")
+        || message.contains("constraint")
+        || message.contains("CONSTRAINT")
+    {
+        return Some(constraint_message_code(message));
+    }
+    None
 }
 
 fn wal_code(err: &WalError) -> LoraErrorCode {
     match err {
-        WalError::Io(_) | WalError::AlreadyOpen { .. } => LoraErrorCode::Io,
+        WalError::Io(inner) => io_code(inner),
+        WalError::AlreadyOpen { .. } => LoraErrorCode::Connection,
         WalError::CrcMismatch { .. }
         | WalError::Truncated { .. }
         | WalError::UnknownKind(_)
@@ -272,6 +429,19 @@ fn wal_code(err: &WalError) -> LoraErrorCode {
         | WalError::Encode(_)
         | WalError::Decode(_) => LoraErrorCode::WalCorruption,
         WalError::Poisoned => LoraErrorCode::WalPoisoned,
+    }
+}
+
+fn io_code(err: &std::io::Error) -> LoraErrorCode {
+    match err.kind() {
+        std::io::ErrorKind::ConnectionRefused
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::NotConnected
+        | std::io::ErrorKind::AddrInUse
+        | std::io::ErrorKind::AddrNotAvailable => LoraErrorCode::Connection,
+        std::io::ErrorKind::TimedOut => LoraErrorCode::Timeout,
+        _ => LoraErrorCode::Io,
     }
 }
 
@@ -293,7 +463,7 @@ fn wal_buffered_commit_code(err: &WalBufferedCommitError) -> LoraErrorCode {
 
 fn snapshot_codec_code(err: &SnapshotCodecError) -> LoraErrorCode {
     match err {
-        SnapshotCodecError::Io(_) => LoraErrorCode::Io,
+        SnapshotCodecError::Io(inner) => io_code(inner),
         SnapshotCodecError::MissingEncryptionKey(_)
         | SnapshotCodecError::MissingPassword(_)
         | SnapshotCodecError::PasswordKdf(_)
@@ -310,7 +480,7 @@ fn snapshot_codec_code(err: &SnapshotCodecError) -> LoraErrorCode {
 
 fn snapshot_store_code(err: &SnapshotError) -> LoraErrorCode {
     match err {
-        SnapshotError::Io(_) => LoraErrorCode::Io,
+        SnapshotError::Io(inner) => io_code(inner),
         SnapshotError::Decode(_) | SnapshotError::Encode(_) => LoraErrorCode::SnapshotCodec,
     }
 }
@@ -321,11 +491,71 @@ fn transaction_code(err: &TransactionError) -> LoraErrorCode {
         | TransactionError::ReadOnlyCommit
         | TransactionError::StreamingRequiresReadWrite => LoraErrorCode::ReadOnlyViolation,
         TransactionError::AlreadyClosed
-        | TransactionError::NoGraphGuard
-        | TransactionError::NoStagedGraph
         | TransactionError::CursorActiveCommit
-        | TransactionError::CursorActiveStatement
-        | TransactionError::Poisoned => LoraErrorCode::Internal,
+        | TransactionError::CursorActiveStatement => LoraErrorCode::TransactionFailure,
+        TransactionError::NoGraphGuard
+        | TransactionError::NoStagedGraph
+        | TransactionError::Poisoned => LoraErrorCode::TransactionFailure,
+    }
+}
+
+#[derive(Debug, Clone, Error)]
+pub(crate) enum DatabaseOperationError {
+    #[error("{0}")]
+    InvalidParams(String),
+    #[error("{0}")]
+    InvalidVector(String),
+    #[error("{0}")]
+    Validation(String),
+    #[error("{0}")]
+    NotFound(String),
+    #[error("{0}")]
+    ConstraintViolation(String),
+    #[error("{0}")]
+    UniqueConstraint(String),
+    #[error("{0}")]
+    NotNullConstraint(String),
+}
+
+impl DatabaseOperationError {
+    pub(crate) fn invalid_params(message: impl Into<String>) -> Self {
+        Self::InvalidParams(message.into())
+    }
+
+    pub(crate) fn invalid_vector(message: impl Into<String>) -> Self {
+        Self::InvalidVector(message.into())
+    }
+
+    pub(crate) fn validation(message: impl Into<String>) -> Self {
+        Self::Validation(message.into())
+    }
+
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
+        Self::NotFound(message.into())
+    }
+
+    pub(crate) fn constraint_violation(message: impl Into<String>) -> Self {
+        Self::ConstraintViolation(message.into())
+    }
+
+    pub(crate) fn unique_constraint(message: impl Into<String>) -> Self {
+        Self::UniqueConstraint(message.into())
+    }
+
+    pub(crate) fn not_null_constraint(message: impl Into<String>) -> Self {
+        Self::NotNullConstraint(message.into())
+    }
+
+    pub(crate) fn code(&self) -> LoraErrorCode {
+        match self {
+            Self::InvalidParams(_) => LoraErrorCode::InvalidParams,
+            Self::InvalidVector(_) => LoraErrorCode::InvalidVector,
+            Self::Validation(_) => LoraErrorCode::Validation,
+            Self::NotFound(_) => LoraErrorCode::NotFound,
+            Self::ConstraintViolation(_) => LoraErrorCode::ConstraintViolation,
+            Self::UniqueConstraint(_) => LoraErrorCode::UniqueConstraint,
+            Self::NotNullConstraint(_) => LoraErrorCode::NotNullConstraint,
+        }
     }
 }
 
@@ -374,6 +604,13 @@ impl From<ExecutorError> for LoraError {
     }
 }
 
+impl From<PropertyConversionError> for LoraError {
+    fn from(e: PropertyConversionError) -> Self {
+        let msg = e.to_string();
+        Self::with_source(LoraErrorCode::Validation, msg, e)
+    }
+}
+
 impl From<WalError> for LoraError {
     fn from(e: WalError) -> Self {
         let code = wal_code(&e);
@@ -415,8 +652,9 @@ impl From<TransactionError> for LoraError {
 
 impl From<std::io::Error> for LoraError {
     fn from(e: std::io::Error) -> Self {
+        let code = io_code(&e);
         let msg = e.to_string();
-        Self::with_source(LoraErrorCode::Io, msg, e)
+        Self::with_source(code, msg, e)
     }
 }
 
@@ -466,6 +704,8 @@ mod tests {
         let e = anyhow::anyhow!("something else entirely");
         let mapped = LoraError::from_anyhow(e);
         assert_eq!(mapped.code(), LoraErrorCode::Internal);
+        assert_eq!(mapped.message(), "database operation failed unexpectedly");
+        assert!(mapped.debug_context().contains("something else entirely"));
     }
 
     #[test]
@@ -482,7 +722,7 @@ mod tests {
     fn typed_transaction_error_round_trips_through_anyhow() {
         let any: anyhow::Error = TransactionError::AlreadyClosed.into();
         let mapped = LoraError::from_anyhow(any);
-        assert_eq!(mapped.code(), LoraErrorCode::Internal);
+        assert_eq!(mapped.code(), LoraErrorCode::TransactionFailure);
         assert_eq!(mapped.message(), "transaction is already closed");
     }
 
@@ -493,6 +733,92 @@ mod tests {
         assert_eq!(LoraErrorCode::Parse.as_str(), "LORA_PARSE");
         assert_eq!(LoraErrorCode::Timeout.as_str(), "LORA_TIMEOUT");
         assert_eq!(LoraErrorCode::WalPoisoned.as_str(), "LORA_WAL_POISONED");
+        assert_eq!(
+            LoraErrorCode::UniqueConstraint.as_str(),
+            "LORA_UNIQUE_CONSTRAINT"
+        );
+        assert_eq!(
+            LoraErrorCode::NotNullConstraint.as_str(),
+            "LORA_NOT_NULL_CONSTRAINT"
+        );
+        assert_eq!(LoraErrorCode::Connection.as_str(), "LORA_CONNECTION");
         assert_eq!(LoraErrorCode::Internal.as_str(), "LORA_INTERNAL");
+    }
+
+    #[test]
+    fn constraint_messages_route_to_specific_codes() {
+        let unique = LoraError::from(ExecutorError::ConstraintViolation(
+            "[22N79] property uniqueness constraint violated".into(),
+        ));
+        assert_eq!(unique.code(), LoraErrorCode::UniqueConstraint);
+
+        let not_null = LoraError::from(ExecutorError::ConstraintViolation(
+            "[22N77] property presence verification failed".into(),
+        ));
+        assert_eq!(not_null.code(), LoraErrorCode::NotNullConstraint);
+
+        let missing = LoraError::from_anyhow(anyhow::anyhow!(
+            "[42N51] no index named `missing` exists in the catalog"
+        ));
+        assert_eq!(missing.code(), LoraErrorCode::NotFound);
+    }
+
+    #[test]
+    fn database_operation_errors_route_to_specific_codes() {
+        let cases = [
+            (
+                DatabaseOperationError::invalid_params("bad params"),
+                LoraErrorCode::InvalidParams,
+            ),
+            (
+                DatabaseOperationError::invalid_vector("bad vector"),
+                LoraErrorCode::InvalidVector,
+            ),
+            (
+                DatabaseOperationError::validation("bad request"),
+                LoraErrorCode::Validation,
+            ),
+            (
+                DatabaseOperationError::not_found("missing"),
+                LoraErrorCode::NotFound,
+            ),
+            (
+                DatabaseOperationError::constraint_violation("conflict"),
+                LoraErrorCode::ConstraintViolation,
+            ),
+            (
+                DatabaseOperationError::unique_constraint("duplicate"),
+                LoraErrorCode::UniqueConstraint,
+            ),
+            (
+                DatabaseOperationError::not_null_constraint("missing property"),
+                LoraErrorCode::NotNullConstraint,
+            ),
+        ];
+
+        for (err, code) in cases {
+            let mapped = LoraError::from_anyhow(err.into());
+            assert_eq!(mapped.code(), code);
+            assert_eq!(mapped.category(), code.category());
+        }
+    }
+
+    #[test]
+    fn connection_io_routes_to_connection() {
+        let mapped = LoraError::from(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        ));
+        assert_eq!(mapped.code(), LoraErrorCode::Connection);
+    }
+
+    #[test]
+    fn public_message_sanitizes_server_details() {
+        let err = LoraError::new(LoraErrorCode::Internal, "panic: secret path /tmp/db");
+        assert_eq!(
+            err.public_message(),
+            "database operation failed unexpectedly"
+        );
+        assert_eq!(err.message(), "panic: secret path /tmp/db");
     }
 }

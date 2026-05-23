@@ -292,7 +292,7 @@ function resolveNodeSnapshotPath(path: string | URL): string {
   if (path instanceof URL) {
     if (path.protocol !== "file:") {
       throw new Error(
-        `LORA_ERROR: unsupported snapshot save URL protocol '${path.protocol}'`,
+        `LORA_INVALID_PARAMS: unsupported snapshot save URL protocol '${path.protocol}'`,
       );
     }
     return fileURLToPath(path);
@@ -304,7 +304,7 @@ async function fetchSnapshotBytes(url: URL): Promise<Buffer> {
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(
-      `LORA_ERROR: snapshot fetch failed (${res.status} ${res.statusText})`,
+      `LORA_IO: snapshot fetch failed (${res.status} ${res.statusText})`,
     );
   }
   return Buffer.from(await res.arrayBuffer());
@@ -365,7 +365,7 @@ async function resolveNodeSnapshotSource(
       return fetchSnapshotBytes(source);
     }
     throw new Error(
-      `LORA_ERROR: unsupported snapshot URL protocol '${source.protocol}'`,
+      `LORA_INVALID_PARAMS: unsupported snapshot URL protocol '${source.protocol}'`,
     );
   }
 
@@ -651,7 +651,9 @@ class DatabaseImpl {
       if ("format" in saveOptions && saveOptions.format === "path") {
         const path = "path" in saveOptions ? saveOptions.path : undefined;
         if (!(typeof path === "string" || path instanceof URL)) {
-          throw new Error("LORA_ERROR: snapshot path format requires a path");
+          throw new Error(
+            "LORA_INVALID_PARAMS: snapshot path format requires a path",
+          );
         }
         return this.#inner.saveSnapshot(
           resolveNodeSnapshotPath(path),
@@ -678,7 +680,7 @@ class DatabaseImpl {
           return Readable.from([bytes]);
         default:
           throw new Error(
-            `LORA_ERROR: unsupported snapshot save format '${format}'`,
+            `LORA_INVALID_PARAMS: unsupported snapshot save format '${format}'`,
           );
       }
     } catch (err) {

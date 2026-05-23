@@ -55,7 +55,7 @@ pub(crate) fn invalid_params(ruby: &Ruby, msg: impl Into<String>) -> MagnusError
 #[allow(dead_code)]
 pub(crate) fn query_error_from_anyhow(ruby: &Ruby, err: impl Into<LoraError>) -> MagnusError {
     let lora = err.into();
-    let body = format!("{}: {}", lora.code().as_str(), lora.message());
+    let body = format!("{}: {}", lora.code().as_str(), lora.public_message());
     MagnusError::new(lora_error_class(ruby, "QueryError"), body)
 }
 

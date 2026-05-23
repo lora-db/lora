@@ -119,7 +119,9 @@ impl<R: BufRead> JsonArrayDecoder<R> {
 
     fn ensure_loaded(&mut self) -> std::io::Result<()> {
         if let State::Pending(slot) = &mut self.state {
-            let reader = slot.take().expect("pending reader is set exactly once");
+            let reader = slot
+                .take()
+                .ok_or_else(|| invalid_data("JSON array reader was already consumed"))?;
             let value: J = serde_json::from_reader(reader).map_err(invalid_data)?;
             let J::Array(items) = value else {
                 return Err(invalid_data("expected a JSON array at the top level"));
@@ -137,8 +139,15 @@ impl<R: BufRead> RowDecoder for JsonArrayDecoder<R> {
 
     fn next_row(&mut self) -> std::io::Result<Option<Vec<(String, LoraValue)>>> {
         self.ensure_loaded()?;
+        // Belt-and-braces: `ensure_loaded` is what advances `Pending`
+        // into `Loaded`, but treating the invariant as an error rather
+        // than `unreachable!()` means a future code change that doesn't
+        // perform the transition surfaces as an io error on untrusted
+        // input instead of a panic.
         let State::Loaded(iter) = &mut self.state else {
-            unreachable!("ensure_loaded transitioned state");
+            return Err(invalid_data(
+                "JSON array decoder state was not loaded after ensure_loaded",
+            ));
         };
         let Some(v) = iter.next() else {
             return Ok(None);

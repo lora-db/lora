@@ -54,7 +54,9 @@ fn now(args: &[LoraValue]) -> LoraValue {
         // value to parse. This is what `datetime("2025-01-01T12:00:00Z")`
         // and `date("2025-01-01")` rely on.
         Some(_) => {
-            let s = raw.as_ref().expect("string arg present");
+            let Some(s) = raw.as_deref() else {
+                return LoraValue::Null;
+            };
             if let Ok(dt) = LoraDateTime::parse(s) {
                 LoraValue::DateTime(dt)
             } else if let Ok(d) = LoraDate::parse(s) {

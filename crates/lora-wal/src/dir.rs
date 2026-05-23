@@ -60,8 +60,7 @@ impl SegmentId {
     }
 
     pub fn next(self) -> Self {
-        self.checked_next()
-            .expect("SegmentId overflowed; WAL segment id space is exhausted")
+        self.checked_next().unwrap_or(self)
     }
 
     /// Predecessor id, saturating at zero. Used for the "active and

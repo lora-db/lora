@@ -257,8 +257,26 @@ fn lcm(args: &[LoraValue]) -> LoraValue {
     if a == 0 || b == 0 {
         return LoraValue::Int(0);
     }
+    // Compute in u128 so neither the multiply nor the negation can
+    // panic on i64::MIN. We already know both inputs are non-zero, so
+    // `gcd_i` returns a positive divisor.
     let g = gcd_i(a.unsigned_abs(), b.unsigned_abs());
-    LoraValue::Int(((a / g as i64) * b).abs())
+    if g == 0 {
+        // Defensive: `gcd_i` on two non-zero magnitudes is always
+        // non-zero, but if that invariant ever drifts we want a Null
+        // rather than a division-by-zero panic.
+        return LoraValue::Null;
+    }
+    let abs_a = a.unsigned_abs() as u128;
+    let abs_b = b.unsigned_abs() as u128;
+    let product = match (abs_a / g as u128).checked_mul(abs_b) {
+        Some(p) => p,
+        None => return LoraValue::Null,
+    };
+    if product > i64::MAX as u128 {
+        return LoraValue::Null;
+    }
+    LoraValue::Int(product as i64)
 }
 
 fn clamp(args: &[LoraValue]) -> LoraValue {

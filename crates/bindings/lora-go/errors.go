@@ -41,11 +41,25 @@ const (
 	// CodeConfig — required parameters are missing or malformed (CLI /
 	// config flags).
 	CodeConfig Code = "LORA_CONFIG"
+	// CodeValidation — a well-formed database operation failed validation.
+	CodeValidation Code = "LORA_VALIDATION"
+	// CodeUniqueConstraint — a uniqueness constraint rejected duplicate data.
+	CodeUniqueConstraint Code = "LORA_UNIQUE_CONSTRAINT"
+	// CodeNotNullConstraint — an existence / NOT NULL constraint rejected
+	// missing data.
+	CodeNotNullConstraint Code = "LORA_NOT_NULL_CONSTRAINT"
+	// CodeForeignKey — a relationship or dependent record references a
+	// missing entity.
+	CodeForeignKey Code = "LORA_FOREIGN_KEY"
+	// CodeTransaction — a transaction lifecycle rule was violated.
+	CodeTransaction Code = "LORA_TRANSACTION"
 
 	// -------- Server errors --------
 
 	// CodeIO — I/O failure outside the WAL / snapshot boundaries.
 	CodeIO Code = "LORA_IO"
+	// CodeConnection — database backing connection or handle failed.
+	CodeConnection Code = "LORA_CONNECTION"
 	// CodeWalCorruption — WAL record was truncated, mis-CRC'd, or
 	// otherwise unreadable.
 	CodeWalCorruption Code = "LORA_WAL_CORRUPTION"
@@ -86,7 +100,13 @@ var allKnownCodes = []Code{
 	CodeTimeout,
 	CodeDatabaseName,
 	CodeConfig,
+	CodeValidation,
+	CodeUniqueConstraint,
+	CodeNotNullConstraint,
+	CodeForeignKey,
+	CodeTransaction,
 	CodeIO,
+	CodeConnection,
 	CodeWalCorruption,
 	CodeWalPoisoned,
 	CodeSnapshotCodec,
@@ -128,7 +148,8 @@ func (e *LoraError) IsClient() bool {
 	switch e.Code {
 	case CodeParse, CodeSemantic, CodeInvalidParams, CodeReadOnly,
 		CodeNotFound, CodeConstraint, CodeInvalidVector, CodeTimeout,
-		CodeDatabaseName, CodeConfig:
+		CodeDatabaseName, CodeConfig, CodeValidation, CodeUniqueConstraint,
+		CodeNotNullConstraint, CodeForeignKey, CodeTransaction:
 		return true
 	default:
 		return false

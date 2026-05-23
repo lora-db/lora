@@ -611,9 +611,15 @@ export interface RowParseError {
  * - `LORA_TIMEOUT` — query exceeded its cooperative deadline
  * - `LORA_DATABASE_NAME` — logical database name violates the portable-path rules
  * - `LORA_CONFIG` — required parameters are missing or malformed
+ * - `LORA_VALIDATION` — a well-formed database operation failed validation
+ * - `LORA_UNIQUE_CONSTRAINT` — a uniqueness constraint rejected duplicate data
+ * - `LORA_NOT_NULL_CONSTRAINT` — an existence / NOT NULL constraint rejected missing data
+ * - `LORA_FOREIGN_KEY` — a relationship or dependent record references a missing entity
+ * - `LORA_TRANSACTION` — a transaction lifecycle rule was violated
  *
  * Server errors (engine-side):
  * - `LORA_IO` — I/O failure outside the WAL / snapshot boundaries
+ * - `LORA_CONNECTION` — database backing connection or handle failed
  * - `LORA_WAL_CORRUPTION` — WAL record was truncated, mis-CRC'd, or otherwise unreadable
  * - `LORA_WAL_POISONED` — WAL is poisoned and no longer accepts durable writes
  * - `LORA_SNAPSHOT_CODEC` — snapshot codec failure (bad magic, version, checksum, …)
@@ -635,7 +641,13 @@ export type LoraErrorCode =
   | "LORA_TIMEOUT"
   | "LORA_DATABASE_NAME"
   | "LORA_CONFIG"
+  | "LORA_VALIDATION"
+  | "LORA_UNIQUE_CONSTRAINT"
+  | "LORA_NOT_NULL_CONSTRAINT"
+  | "LORA_FOREIGN_KEY"
+  | "LORA_TRANSACTION"
   | "LORA_IO"
+  | "LORA_CONNECTION"
   | "LORA_WAL_CORRUPTION"
   | "LORA_WAL_POISONED"
   | "LORA_SNAPSHOT_CODEC"
@@ -643,6 +655,39 @@ export type LoraErrorCode =
   | "LORA_INTERNAL"
   | "WORKER_ERROR"
   | "UNKNOWN";
+
+const KNOWN_ERROR_CODES = new Set<LoraErrorCode>([
+  "LORA_PARSE",
+  "LORA_SEMANTIC",
+  "LORA_INVALID_PARAMS",
+  "LORA_READ_ONLY",
+  "LORA_NOT_FOUND",
+  "LORA_CONSTRAINT",
+  "LORA_INVALID_VECTOR",
+  "LORA_TIMEOUT",
+  "LORA_DATABASE_NAME",
+  "LORA_CONFIG",
+  "LORA_VALIDATION",
+  "LORA_UNIQUE_CONSTRAINT",
+  "LORA_NOT_NULL_CONSTRAINT",
+  "LORA_FOREIGN_KEY",
+  "LORA_TRANSACTION",
+  "LORA_IO",
+  "LORA_CONNECTION",
+  "LORA_WAL_CORRUPTION",
+  "LORA_WAL_POISONED",
+  "LORA_SNAPSHOT_CODEC",
+  "LORA_SNAPSHOT_CRYPTO",
+  "LORA_INTERNAL",
+  "WORKER_ERROR",
+  "UNKNOWN",
+]);
+
+export function isLoraErrorCode(value: unknown): value is LoraErrorCode {
+  return (
+    typeof value === "string" && KNOWN_ERROR_CODES.has(value as LoraErrorCode)
+  );
+}
 
 /**
  * Error thrown by `Database.execute` when Lora parsing, analysis, or
@@ -668,7 +713,7 @@ const ERROR_PREFIX_RE = /^(LORA_[A-Z_]+|WORKER_ERROR):\s*(.*)$/s;
 export function wrapError(err: unknown): Error {
   if (!(err instanceof Error)) return new LoraError(String(err), "UNKNOWN");
   const match = ERROR_PREFIX_RE.exec(err.message);
-  if (match) {
+  if (match && isLoraErrorCode(match[1])) {
     return new LoraError(match[2]!, match[1] as LoraErrorCode);
   }
   return err;

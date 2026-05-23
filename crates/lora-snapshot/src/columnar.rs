@@ -115,18 +115,31 @@ impl ColumnarSnapshot {
     }
 
     fn node_records_from_columns(&self) -> Result<Vec<NodeRecord>> {
+        // `validate_payload_columns` is the single caller's
+        // precondition, but reaching in with `.get()` makes the lookup
+        // safe even if a future refactor calls this helper without it.
+        let column_err = || SnapshotCodecError::Decode("node label column lookup".into());
         let mut nodes = Vec::with_capacity(self.node_ids.len());
         for (index, id) in self.node_ids.iter().copied().enumerate() {
-            let start = u32_to_usize(self.node_label_offsets[index], "node label offset")?;
-            let end = u32_to_usize(self.node_label_offsets[index + 1], "node label offset")?;
-            if start > end || end > self.node_labels.len() {
-                return Err(SnapshotCodecError::Decode(
-                    "invalid node label offset".into(),
-                ));
-            }
+            let start_raw = self
+                .node_label_offsets
+                .get(index)
+                .copied()
+                .ok_or_else(column_err)?;
+            let end_raw = self
+                .node_label_offsets
+                .get(index + 1)
+                .copied()
+                .ok_or_else(column_err)?;
+            let start = u32_to_usize(start_raw, "node label offset")?;
+            let end = u32_to_usize(end_raw, "node label offset")?;
+            let labels = self
+                .node_labels
+                .get(start..end)
+                .ok_or_else(|| SnapshotCodecError::Decode("invalid node label offset".into()))?;
             nodes.push(NodeRecord {
                 id,
-                labels: self.node_labels[start..end].to_vec(),
+                labels: labels.to_vec(),
                 properties: BTreeMap::new(),
             });
         }
@@ -134,18 +147,27 @@ impl ColumnarSnapshot {
     }
 
     fn relationship_records_from_columns(&self) -> Result<Vec<RelationshipRecord>> {
+        let column_err = || SnapshotCodecError::Decode("relationship column lookup".into());
         let mut relationships = Vec::with_capacity(self.rel_ids.len());
         for index in 0..self.rel_ids.len() {
-            let type_id = u32_to_usize(self.rel_type_ids[index], "relationship type id")?;
+            let type_id_raw = self
+                .rel_type_ids
+                .get(index)
+                .copied()
+                .ok_or_else(column_err)?;
+            let type_id = u32_to_usize(type_id_raw, "relationship type id")?;
             let rel_type = self
                 .rel_type_dictionary
                 .get(type_id)
                 .ok_or_else(|| SnapshotCodecError::Decode("invalid relationship type id".into()))?
                 .clone();
+            let id = self.rel_ids.get(index).copied().ok_or_else(column_err)?;
+            let src = self.rel_src.get(index).copied().ok_or_else(column_err)?;
+            let dst = self.rel_dst.get(index).copied().ok_or_else(column_err)?;
             relationships.push(RelationshipRecord {
-                id: self.rel_ids[index],
-                src: self.rel_src[index],
-                dst: self.rel_dst[index],
+                id,
+                src,
+                dst,
                 rel_type,
                 properties: BTreeMap::new(),
             });
@@ -399,12 +421,12 @@ impl PropertyColumns {
         &mut self,
         owner_kind: EntityKind,
         owner_index: u64,
-        properties: &BTreeMap<String, PropertyValue>,
+        properties: &lora_store::Properties,
     ) {
         for (key, value) in properties {
             self.owner_kind.push(owner_kind);
             self.owner_index.push(owner_index);
-            self.key.push(key.clone());
+            self.key.push(key.to_string());
             self.value.push(ValueCell::from(value.clone()));
         }
     }
@@ -435,14 +457,14 @@ impl PropertyColumns {
                     let node = nodes.get_mut(owner_index).ok_or_else(|| {
                         SnapshotCodecError::Decode("invalid node property owner".into())
                     })?;
-                    node.properties.insert(key, value);
+                    node.properties.insert(lora_store::intern_owned(key), value);
                 }
                 EntityKind::Relationship => {
                     let owner_index = u64_to_usize(owner_index, "relationship property owner")?;
                     let rel = relationships.get_mut(owner_index).ok_or_else(|| {
                         SnapshotCodecError::Decode("invalid relationship property owner".into())
                     })?;
-                    rel.properties.insert(key, value);
+                    rel.properties.insert(lora_store::intern_owned(key), value);
                 }
             }
         }

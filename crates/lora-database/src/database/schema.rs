@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use web_time::Instant;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use lora_ast::{
     ConstraintKind as AstConstraintKind, ConstraintNameSpec, CreateConstraint, CreateIndex,
     DropConstraint, DropIndex, Expr, IndexEntityKind as AstIndexEntityKind,
@@ -41,6 +41,7 @@ use crate::database::{
     row_projection::{row_from_columns, NamedColumn},
     Database,
 };
+use crate::error::DatabaseOperationError;
 
 impl<S> Database<S>
 where
@@ -284,10 +285,11 @@ fn build_index_request(
 
     if kind == StoredIndexKind::Vector {
         if cmd.properties.len() != 1 {
-            return Err(anyhow!(
+            return Err(DatabaseOperationError::validation(format!(
                 "VECTOR indexes are single-property; got {} properties",
                 cmd.properties.len()
-            ));
+            ))
+            .into());
         }
         validate_vector_options(&options)?;
     }
@@ -310,13 +312,15 @@ fn build_index_request(
 fn resolve_string_param(name: &str, params: &BTreeMap<String, LoraValue>) -> Result<String> {
     match params.get(name) {
         Some(LoraValue::String(s)) => Ok(s.clone()),
-        Some(other) => Err(anyhow!(
+        Some(other) => Err(DatabaseOperationError::validation(format!(
             "parameter `${name}` for an index name must be a string, got {:?}",
             other
-        )),
-        None => Err(anyhow!(
+        ))
+        .into()),
+        None => Err(DatabaseOperationError::validation(format!(
             "parameter `${name}` was not supplied for index name"
-        )),
+        ))
+        .into()),
     }
 }
 
@@ -338,24 +342,27 @@ fn validate_fulltext_options(opts: &BTreeMap<String, IndexConfigValue>) -> Resul
         let name = match analyzer {
             IndexConfigValue::String(s) => s.as_str(),
             other => {
-                return Err(anyhow!(
+                return Err(DatabaseOperationError::validation(format!(
                     "`fulltext.analyzer` must be a string, got {other:?}"
                 ))
+                .into())
             }
         };
         if !(name.eq_ignore_ascii_case("standard") || name.eq_ignore_ascii_case("simple")) {
-            return Err(anyhow!(
+            return Err(DatabaseOperationError::validation(format!(
                 "fulltext analyzer `{name}` is not supported; only `standard` and `simple` are currently available"
-            ));
+            ))
+            .into());
         }
     }
     if let Some(ec) = opts.get("fulltext.eventually_consistent") {
         match ec {
             IndexConfigValue::Bool(_) => {}
             other => {
-                return Err(anyhow!(
+                return Err(DatabaseOperationError::validation(format!(
                     "`fulltext.eventually_consistent` must be a boolean, got {other:?}"
                 ))
+                .into())
             }
         }
     }
@@ -368,31 +375,34 @@ fn validate_fulltext_options(opts: &BTreeMap<String, IndexConfigValue>) -> Resul
 fn validate_vector_options(opts: &BTreeMap<String, IndexConfigValue>) -> Result<()> {
     let dim = opts
         .get("vector.dimensions")
-        .ok_or_else(|| anyhow!(
+        .ok_or_else(|| DatabaseOperationError::validation(
             "CREATE VECTOR INDEX requires OPTIONS {{ indexConfig: {{ `vector.dimensions`: N, `vector.similarity_function`: '...' }} }}"
         ))?;
     let dim = match dim {
         IndexConfigValue::Integer(n) => *n,
         other => {
-            return Err(anyhow!(
+            return Err(DatabaseOperationError::validation(format!(
                 "`vector.dimensions` must be a positive integer, got {other:?}"
             ))
+            .into())
         }
     };
     if !(1..=4096).contains(&dim) {
-        return Err(anyhow!(
+        return Err(DatabaseOperationError::validation(format!(
             "`vector.dimensions` must be in 1..=4096, got {dim}"
-        ));
+        ))
+        .into());
     }
-    let sim = opts
-        .get("vector.similarity_function")
-        .ok_or_else(|| anyhow!("`vector.similarity_function` is required"))?;
+    let sim = opts.get("vector.similarity_function").ok_or_else(|| {
+        DatabaseOperationError::validation("`vector.similarity_function` is required")
+    })?;
     let sim = match sim {
         IndexConfigValue::String(s) => s.as_str(),
         other => {
-            return Err(anyhow!(
+            return Err(DatabaseOperationError::validation(format!(
                 "`vector.similarity_function` must be a string, got {other:?}"
             ))
+            .into())
         }
     };
     let normalized = sim.to_ascii_lowercase();
@@ -401,9 +411,10 @@ fn validate_vector_options(opts: &BTreeMap<String, IndexConfigValue>) -> Result<
         "cosine" | "euclidean" | "dot" | "dot_product" | "manhattan"
     );
     if !known {
-        return Err(anyhow!(
+        return Err(DatabaseOperationError::validation(format!(
             "`vector.similarity_function` must be one of 'cosine', 'euclidean', 'dot', 'manhattan', got '{sim}'"
-        ));
+        ))
+        .into());
     }
 
     // Optional knobs. `indexProvider` selects flat (default) vs HNSW;
@@ -414,15 +425,17 @@ fn validate_vector_options(opts: &BTreeMap<String, IndexConfigValue>) -> Result<
         let p = match provider {
             IndexConfigValue::String(s) => s.as_str(),
             other => {
-                return Err(anyhow!(
+                return Err(DatabaseOperationError::validation(format!(
                     "`vector.indexProvider` must be a string, got {other:?}"
                 ))
+                .into())
             }
         };
         if !(p.eq_ignore_ascii_case("flat") || p.eq_ignore_ascii_case("hnsw")) {
-            return Err(anyhow!(
+            return Err(DatabaseOperationError::validation(format!(
                 "`vector.indexProvider` must be 'flat' or 'hnsw', got '{p}'"
-            ));
+            ))
+            .into());
         }
     }
 
@@ -434,9 +447,10 @@ fn validate_vector_options(opts: &BTreeMap<String, IndexConfigValue>) -> Result<
         match value {
             IndexConfigValue::Bool(_) => {}
             other => {
-                return Err(anyhow!(
+                return Err(DatabaseOperationError::validation(format!(
                     "`vector.populate.async` must be a boolean, got {other:?}"
-                ));
+                ))
+                .into());
             }
         }
     }
@@ -445,23 +459,26 @@ fn validate_vector_options(opts: &BTreeMap<String, IndexConfigValue>) -> Result<
         let q = match value {
             IndexConfigValue::String(s) => s.as_str(),
             other => {
-                return Err(anyhow!(
+                return Err(DatabaseOperationError::validation(format!(
                     "`vector.hnsw.quantization` must be a string, got {other:?}"
-                ));
+                ))
+                .into());
             }
         };
         if !(q.eq_ignore_ascii_case("none") || q.eq_ignore_ascii_case("int8")) {
-            return Err(anyhow!(
+            return Err(DatabaseOperationError::validation(format!(
                 "`vector.hnsw.quantization` must be 'none' or 'int8', got '{q}'"
-            ));
+            ))
+            .into());
         }
         // int8 stores i8 coords; only cosine (scale-invariant)
         // preserves correct ranking under the implicit ×127 scaling.
         // Other metrics return a degenerate score range.
         if q.eq_ignore_ascii_case("int8") && !normalized.eq_ignore_ascii_case("cosine") {
-            return Err(anyhow!(
+            return Err(DatabaseOperationError::validation(
                 "`vector.hnsw.quantization` = 'int8' currently requires `vector.similarity_function` = 'cosine'"
-            ));
+            )
+            .into());
         }
     }
 
@@ -480,11 +497,17 @@ fn validate_hnsw_int(
     let n = match value {
         IndexConfigValue::Integer(n) => *n,
         other => {
-            return Err(anyhow!("`{key}` must be a positive integer, got {other:?}"));
+            return Err(DatabaseOperationError::validation(format!(
+                "`{key}` must be a positive integer, got {other:?}"
+            ))
+            .into());
         }
     };
     if !(min..=max).contains(&n) {
-        return Err(anyhow!("`{key}` must be in {min}..={max}, got {n}"));
+        return Err(DatabaseOperationError::validation(format!(
+            "`{key}` must be in {min}..={max}, got {n}"
+        ))
+        .into());
     }
     Ok(())
 }
@@ -517,32 +540,80 @@ fn evaluate_literal_expr(expr: &Expr) -> Result<IndexConfigValue> {
         } => match evaluate_literal_expr(inner)? {
             IndexConfigValue::Integer(v) => Ok(IndexConfigValue::Integer(-v)),
             IndexConfigValue::Number(v) => Ok(IndexConfigValue::Number(-v)),
-            other => Err(anyhow!(
-                "unary minus only valid on numbers in OPTIONS, found {:?}",
-                other
-            )),
+            other => Err(DatabaseOperationError::validation(format!(
+                "unary minus only valid on numbers in OPTIONS, found {other:?}"
+            ))
+            .into()),
         },
-        other => Err(anyhow!(
-            "OPTIONS values must be literals; encountered non-literal expression: {:?}",
-            other
-        )),
+        other => Err(DatabaseOperationError::validation(format!(
+            "OPTIONS values must be literals; encountered non-literal expression: {other:?}"
+        ))
+        .into()),
     }
 }
 
 fn map_create_index_error(err: CreateIndexError) -> anyhow::Error {
-    anyhow!("[{}] {err}", err.gql_status())
+    match err {
+        CreateIndexError::EquivalentIndexExists(_) | CreateIndexError::DuplicateName(_) => {
+            DatabaseOperationError::unique_constraint(format!("[{}] {err}", err.gql_status()))
+                .into()
+        }
+        CreateIndexError::Unsupported(_) => {
+            DatabaseOperationError::validation(format!("[{}] {err}", err.gql_status())).into()
+        }
+    }
 }
 
 fn map_drop_index_error(err: DropIndexError) -> anyhow::Error {
-    anyhow!("[{}] {err}", err.gql_status())
+    match err {
+        DropIndexError::NotFound(_) => {
+            DatabaseOperationError::not_found(format!("[{}] {err}", err.gql_status())).into()
+        }
+        DropIndexError::ConstraintOwned { .. } => {
+            DatabaseOperationError::constraint_violation(format!("[{}] {err}", err.gql_status()))
+                .into()
+        }
+        DropIndexError::Unsupported(_) => {
+            DatabaseOperationError::validation(format!("[{}] {err}", err.gql_status())).into()
+        }
+    }
 }
 
 fn map_create_constraint_error(err: CreateConstraintError) -> anyhow::Error {
-    anyhow!("[{}] {err}", err.gql_status())
+    let message = format!("[{}] {err}", err.gql_status());
+    match err {
+        CreateConstraintError::DataViolation(_) if message.contains("22N79") => {
+            DatabaseOperationError::unique_constraint(message).into()
+        }
+        CreateConstraintError::DataViolation(_) if message.contains("22N77") => {
+            DatabaseOperationError::not_null_constraint(message).into()
+        }
+        CreateConstraintError::UnsupportedPropertyType(_)
+        | CreateConstraintError::Unsupported(_) => {
+            DatabaseOperationError::validation(message).into()
+        }
+        CreateConstraintError::EquivalentConstraintExists(_)
+        | CreateConstraintError::DuplicateName(_)
+        | CreateConstraintError::DuplicateIndexName(_) => {
+            DatabaseOperationError::unique_constraint(message).into()
+        }
+        CreateConstraintError::ConflictingConstraint(_)
+        | CreateConstraintError::BackingIndexConflict(_)
+        | CreateConstraintError::DataViolation(_) => {
+            DatabaseOperationError::constraint_violation(message).into()
+        }
+    }
 }
 
 fn map_drop_constraint_error(err: DropConstraintError) -> anyhow::Error {
-    anyhow!("[{}] {err}", err.gql_status())
+    match err {
+        DropConstraintError::NotFound(_) => {
+            DatabaseOperationError::not_found(format!("[{}] {err}", err.gql_status())).into()
+        }
+        DropConstraintError::Unsupported(_) => {
+            DatabaseOperationError::validation(format!("[{}] {err}", err.gql_status())).into()
+        }
+    }
 }
 
 fn build_constraint_request(
@@ -599,23 +670,26 @@ fn lower_property_type_term(term: &AstPropertyTypeTerm) -> Result<StoredProperty
                 AstScalarType::Duration => StoredScalarType::Duration,
                 AstScalarType::Point => StoredScalarType::Point,
                 AstScalarType::Map => {
-                    return Err(anyhow!(
+                    return Err(DatabaseOperationError::validation(
                         "[22N90] property type unsupported in constraint: MAP is not supported in property type constraints"
-                    ));
+                    )
+                    .into());
                 }
                 AstScalarType::Any => {
-                    return Err(anyhow!(
+                    return Err(DatabaseOperationError::validation(
                         "[22N90] property type unsupported in constraint: ANY is not supported in property type constraints"
-                    ));
+                    )
+                    .into());
                 }
             };
             Ok(StoredPropertyTypeTerm::Scalar(mapped))
         }
         AstPropertyTypeTerm::List { inner, not_null } => {
             if !not_null {
-                return Err(anyhow!(
+                return Err(DatabaseOperationError::validation(
                     "[22N90] property type unsupported in constraint: LIST element type must be `NOT NULL`"
-                ));
+                )
+                .into());
             }
             let lowered = lower_property_type_term(inner)?;
             Ok(StoredPropertyTypeTerm::List {

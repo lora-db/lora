@@ -15,8 +15,13 @@ import type {
   RowImportStats,
   RowMapping,
 } from "./types.js";
-import { LoraError } from "./types.js";
-import type { Request, Response as WorkerResponse } from "./worker-protocol.js";
+import { isLoraErrorCode, LoraError } from "./types.js";
+import type {
+  GraphStatsSnapshot,
+  MemoryReportSnapshot,
+  Request,
+  Response as WorkerResponse,
+} from "./worker-protocol.js";
 import type {
   WasmSnapshotByteOptions,
   WasmSnapshotLoadOptions,
@@ -45,15 +50,19 @@ export interface WorkerLike {
   terminate(): void;
   addEventListener(
     type: "message",
-    listener: (event: { data: WorkerResponse }) => void,
+    listener: (event: { data: unknown }) => void,
   ): void;
   addEventListener(
     type: "error",
     listener: (event: { message?: string }) => void,
   ): void;
+  addEventListener(
+    type: "messageerror",
+    listener: (event: { message?: string }) => void,
+  ): void;
   removeEventListener(
     type: "message",
-    listener: (event: { data: WorkerResponse }) => void,
+    listener: (event: { data: unknown }) => void,
   ): void;
 }
 
@@ -133,13 +142,35 @@ export interface WorkerDatabase {
   clear(): Promise<void>;
   nodeCount(): Promise<number>;
   relationshipCount(): Promise<number>;
+  /**
+   * Cardinality + per-label / per-(label,property) snapshot — cheap to
+   * compute, suitable for refreshing on user action (e.g. opening the
+   * Stats side panel). Not polled internally.
+   */
+  graphStats(): Promise<GraphStatsSnapshot>;
+  /**
+   * Approximate retained-heap breakdown by component. See
+   * [`MemoryReportSnapshot`] for the per-field meaning.
+   */
+  memoryReport(): Promise<MemoryReportSnapshot>;
   dispose(): Promise<void>;
 }
 
 interface Pending {
   resolve(value: unknown): void;
   reject(err: Error): void;
+  timer: ReturnType<typeof setTimeout> | null;
 }
+
+export interface WorkerDatabaseOptions {
+  /**
+   * Maximum time to wait for an individual worker request. Use `0` or
+   * `Infinity` to disable the guard for hosts that provide their own timeout.
+   */
+  requestTimeoutMs?: number;
+}
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 
 class WorkerRowStream<
   T extends Record<string, LoraValue> = Record<string, LoraValue>,
@@ -220,15 +251,30 @@ class WorkerRowStream<
  * const result = await db.execute("MATCH (n) RETURN n");
  * ```
  */
-export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
+export function createWorkerDatabase(
+  worker: WorkerLike,
+  options: WorkerDatabaseOptions = {},
+): WorkerDatabase {
   let nextId = 1;
   const pending = new Map<number, Pending>();
+  let closed = false;
+  let failedError: LoraError | null = null;
+  const requestTimeoutMs =
+    options.requestTimeoutMs === undefined
+      ? DEFAULT_REQUEST_TIMEOUT_MS
+      : options.requestTimeoutMs;
 
   worker.addEventListener("message", (event) => {
-    const { id, body } = event.data;
+    const parsed = parseWorkerResponse(event.data);
+    if (!parsed.ok) {
+      failWorker(parsed.error);
+      return;
+    }
+    const { id, body } = parsed.response;
     const p = pending.get(id);
     if (!p) return;
     pending.delete(id);
+    if (p.timer) clearTimeout(p.timer);
     if (body.ok) {
       p.resolve(body.result);
     } else {
@@ -254,18 +300,77 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
 
   worker.addEventListener("error", (event) => {
     const message = event.message ?? "worker errored";
-    for (const p of pending.values()) {
-      p.reject(new LoraError(message, "WORKER_ERROR"));
-    }
-    pending.clear();
+    failWorker(new LoraError(message, "WORKER_ERROR"));
   });
 
-  function call<R>(body: Request["body"]): Promise<R> {
+  worker.addEventListener("messageerror", (event) => {
+    const message = event.message ?? "worker message could not be decoded";
+    failWorker(new LoraError(message, "WORKER_ERROR"));
+  });
+
+  function failWorker(error: LoraError): void {
+    failedError = error;
+    for (const pendingCall of pending.values()) {
+      if (pendingCall.timer) clearTimeout(pendingCall.timer);
+      pendingCall.reject(error);
+    }
+    pending.clear();
+  }
+
+  function makeTransportError(message: string): LoraError {
+    return new LoraError(message, "WORKER_ERROR");
+  }
+
+  function timeoutFor(id: number): ReturnType<typeof setTimeout> | null {
+    if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
+      return null;
+    }
+    return setTimeout(() => {
+      const pendingCall = pending.get(id);
+      if (!pendingCall) return;
+      pending.delete(id);
+      pendingCall.reject(
+        makeTransportError(
+          `database worker did not respond within ${requestTimeoutMs}ms`,
+        ),
+      );
+    }, requestTimeoutMs);
+  }
+
+  function call<R>(
+    body: Request["body"],
+    transfer?: Transferable[],
+  ): Promise<R> {
+    if (closed) {
+      return Promise.reject(makeTransportError("database worker is closed"));
+    }
+    if (failedError) {
+      return Promise.reject(failedError);
+    }
     const id = nextId++;
     return new Promise<R>((resolve, reject) => {
-      pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      pending.set(id, {
+        resolve: resolve as (v: unknown) => void,
+        reject,
+        timer: timeoutFor(id),
+      });
       const msg: Request = { id, body };
-      worker.postMessage(msg);
+      try {
+        if (transfer && transfer.length > 0) {
+          (worker.postMessage as (m: unknown, t: Transferable[]) => void)(
+            msg,
+            transfer,
+          );
+        } else {
+          worker.postMessage(msg);
+        }
+      } catch (err) {
+        const pendingCall = pending.get(id);
+        pending.delete(id);
+        if (pendingCall?.timer) clearTimeout(pendingCall.timer);
+        const message = err instanceof Error ? err.message : String(err);
+        reject(makeTransportError(message));
+      }
     });
   }
 
@@ -530,11 +635,23 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
             }
             const { value, done } = await reader.read();
             if (done) break;
-            const progress = await call<RowImportProgress>({
-              op: "importFeed",
-              importId,
-              chunk: value,
-            });
+            // Transfer the chunk's underlying buffer instead of copying it
+            // across the worker boundary. The local `value` is detached
+            // after this call (we don't reference it again before the
+            // next `reader.read()`), so structured-clone copying would
+            // be pure waste — for a 5M-row CSV that's hundreds of MB
+            // of avoidable memcpy. If the chunk happens to share its
+            // ArrayBuffer with a sibling view we'd want to skip the
+            // transfer, but `File.stream()` always yields chunks that
+            // own their backing buffer.
+            const progress = await call<RowImportProgress>(
+              {
+                op: "importFeed",
+                importId,
+                chunk: value,
+              },
+              [value.buffer as ArrayBuffer],
+            );
             options?.onProgress?.(progress);
           }
         } finally {
@@ -569,9 +686,61 @@ export function createWorkerDatabase(worker: WorkerLike): WorkerDatabase {
     relationshipCount(): Promise<number> {
       return call<number>({ op: "relationshipCount" });
     },
+    graphStats(): Promise<GraphStatsSnapshot> {
+      return call<GraphStatsSnapshot>({ op: "graphStats" });
+    },
+    memoryReport(): Promise<MemoryReportSnapshot> {
+      return call<MemoryReportSnapshot>({ op: "memoryReport" });
+    },
     async dispose(): Promise<void> {
-      await call<null>({ op: "dispose" });
-      worker.terminate();
+      if (closed) return;
+      try {
+        if (!failedError) {
+          await call<null>({ op: "dispose" });
+        }
+      } finally {
+        closed = true;
+        worker.terminate();
+      }
     },
   };
+}
+
+type ParsedWorkerResponse =
+  | { ok: true; response: WorkerResponse }
+  | { ok: false; error: LoraError };
+
+function parseWorkerResponse(value: unknown): ParsedWorkerResponse {
+  const error = (message: string): ParsedWorkerResponse => ({
+    ok: false,
+    error: new LoraError(message, "WORKER_ERROR"),
+  });
+
+  if (!isRecord(value)) return error("worker returned a malformed response");
+
+  const { id, body } = value;
+  if (typeof id !== "number" || !Number.isInteger(id) || !isRecord(body)) {
+    return error("worker returned a malformed response");
+  }
+
+  if (body.ok === true) {
+    if (!("result" in body))
+      return error("worker returned a malformed response");
+    return { ok: true, response: value as unknown as WorkerResponse };
+  }
+
+  if (body.ok !== false || !isRecord(body.error)) {
+    return error("worker returned a malformed response");
+  }
+
+  const { message, code } = body.error;
+  if (typeof message !== "string" || !isLoraErrorCode(code)) {
+    return error("worker returned a malformed error");
+  }
+
+  return { ok: true, response: value as unknown as WorkerResponse };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

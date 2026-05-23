@@ -34,13 +34,13 @@ pub(crate) fn js_error(code: &str, message: &str) -> JsError {
 /// engine-typed [`LoraError`].
 pub(crate) fn js_error_from_anyhow(err: &anyhow::Error) -> JsError {
     let lora = LoraError::from_anyhow_ref(err);
-    js_error(lora.code().as_str(), lora.message())
+    js_error(lora.code().as_str(), &lora.public_message())
 }
 
 /// Variant of [`js_error_from_anyhow`] for the LoraError-typed
 /// engine API (`Database::execute*`, `Transaction::commit`, …).
 pub(crate) fn js_error_from_lora(err: &LoraError) -> JsError {
-    js_error(err.code().as_str(), err.message())
+    js_error(err.code().as_str(), &err.public_message())
 }
 
 pub(crate) struct TransactionStatement {

@@ -1,9 +1,11 @@
 use std::borrow::Cow;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use lora_analyzer::symbols::VarId;
 use lora_ast::YieldItem;
 use lora_executor::{LoraValue, Row};
+
+use crate::error::DatabaseOperationError;
 
 #[derive(Debug, Clone)]
 pub(crate) struct NamedColumn<'a> {
@@ -53,10 +55,11 @@ pub(crate) fn lookup_column(
             return Ok(value.clone());
         }
     }
-    Err(anyhow!(
+    Err(DatabaseOperationError::validation(format!(
         "unknown column `{name}` in {}",
         context.description()
     ))
+    .into())
 }
 
 pub(crate) fn project_yield_items(

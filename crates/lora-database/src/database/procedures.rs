@@ -17,7 +17,7 @@
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use lora_ast::{Expr, ProcedureInvocationKind, StandaloneCall, YieldItem};
 use lora_executor::{LoraValue, Row};
 use lora_store::{
@@ -29,6 +29,27 @@ use crate::database::{
     row_projection::{project_yield_items, row_from_columns, ColumnLookupContext, NamedColumn},
     Database,
 };
+use crate::error::{DatabaseOperationError, LoraError, LoraErrorCode};
+
+fn invalid_params_error(message: impl Into<String>) -> anyhow::Error {
+    DatabaseOperationError::invalid_params(message).into()
+}
+
+fn invalid_vector_error(message: impl Into<String>) -> anyhow::Error {
+    DatabaseOperationError::invalid_vector(message).into()
+}
+
+fn validation_error(message: impl Into<String>) -> anyhow::Error {
+    DatabaseOperationError::validation(message).into()
+}
+
+fn not_found_error(message: impl Into<String>) -> anyhow::Error {
+    DatabaseOperationError::not_found(message).into()
+}
+
+fn internal_error(message: impl Into<String>) -> anyhow::Error {
+    LoraError::new(LoraErrorCode::Internal, message).into()
+}
 
 /// Cheap textual prefix detector for the procedures we route here.
 pub(crate) fn is_procedure_call_text(query: &str) -> bool {
@@ -76,29 +97,30 @@ where
         let snapshot = self.read_store();
         let def = snapshot
             .get_index(&index_name)
-            .ok_or_else(|| anyhow!("no vector index named `{index_name}`"))?;
+            .ok_or_else(|| not_found_error(format!("no vector index named `{index_name}`")))?;
 
         validate_procedure_index(&def, StoredIndexKind::Vector, entity, "vector")?;
         // Catalog sanity: the schema validator guarantees both fields
         // exist, so any miss here is a corrupted catalog row, not user
         // input.
         if def.label.is_none() {
-            return Err(anyhow!("vector index `{index_name}` has no label/type"));
+            return Err(internal_error(format!(
+                "vector index `{index_name}` has no label/type"
+            )));
         }
         if def.properties.is_empty() {
-            return Err(anyhow!(
+            return Err(internal_error(format!(
                 "vector index `{index_name}` has no property column"
-            ));
+            )));
         }
 
         let expected_dim = expected_dimension(&def);
         if let Some(dim) = expected_dim {
             if query_vec.dimension != dim {
-                return Err(anyhow!(
+                return Err(invalid_vector_error(format!(
                     "query vector has dimension {} but index `{index_name}` expects {}",
-                    query_vec.dimension,
-                    dim
-                ));
+                    query_vec.dimension, dim
+                )));
             }
         }
 
@@ -116,7 +138,7 @@ where
         let snapshot = self.read_store();
         let def = snapshot
             .get_index(&index_name)
-            .ok_or_else(|| anyhow!("no fulltext index named `{index_name}`"))?;
+            .ok_or_else(|| not_found_error(format!("no fulltext index named `{index_name}`")))?;
         validate_procedure_index(&def, StoredIndexKind::Fulltext, entity, "fulltext")?;
 
         let scored = snapshot.fulltext_search(&index_name, &query_text);
@@ -149,7 +171,7 @@ impl Procedure {
                 kind: ProcedureKind::Fulltext,
                 entity: StoredIndexEntity::Relationship,
             }),
-            other => Err(anyhow!("unknown procedure: {other}")),
+            other => Err(validation_error(format!("unknown procedure: {other}"))),
         }
     }
 }
@@ -174,20 +196,20 @@ fn validate_procedure_index(
     procedure_kind: &str,
 ) -> Result<()> {
     if def.kind != expected_kind {
-        return Err(anyhow!(
+        return Err(validation_error(format!(
             "index `{}` is not a {} index (kind={})",
             def.name,
             expected_kind.as_str(),
             def.kind.as_str()
-        ));
+        )));
     }
     if def.entity != expected_entity {
-        return Err(anyhow!(
+        return Err(validation_error(format!(
             "{procedure_kind} index `{}` is on {} entities; procedure expects {}",
             def.name,
             def.entity.as_str(),
             expected_entity.as_str()
-        ));
+        )));
     }
     Ok(())
 }
@@ -234,10 +256,10 @@ fn parse_fulltext_args(
     params: &BTreeMap<String, LoraValue>,
 ) -> Result<(String, String)> {
     if args.len() < 2 || args.len() > 3 {
-        return Err(anyhow!(
+        return Err(invalid_params_error(format!(
             "fulltext procedure expects 2 or 3 arguments (indexName, queryString, options? ); got {}",
             args.len()
-        ));
+        )));
     }
     let name = eval_string_arg(&args[0], params, "indexName")?;
     let query = eval_string_arg(&args[1], params, "queryString")?;
@@ -251,15 +273,15 @@ fn parse_vector_args(
     params: &BTreeMap<String, LoraValue>,
 ) -> Result<(String, usize, LoraVector, Option<BTreeSet<u64>>)> {
     if args.len() < 3 || args.len() > 4 {
-        return Err(anyhow!(
+        return Err(invalid_params_error(format!(
             "vector procedure expects 3 or 4 arguments (indexName, k, query, options?); got {}",
             args.len()
-        ));
+        )));
     }
     let name = eval_string_arg(&args[0], params, "indexName")?;
     let k = eval_usize_arg(&args[1], params, "k")?;
     if k == 0 {
-        return Err(anyhow!("k must be positive"));
+        return Err(invalid_params_error("k must be positive"));
     }
     let query = eval_vector_arg(&args[2], params)?;
     let restrict_to = if args.len() == 4 {
@@ -286,9 +308,9 @@ fn parse_vector_options(
         // resolve_literal would need a Map arm. For now, require an
         // inline map literal in the procedure call.
         other => {
-            return Err(anyhow!(
+            return Err(invalid_params_error(format!(
                 "vector procedure options must be a MAP literal like {{restrictTo: [...]}}, got {other:?}"
-            ));
+            )));
         }
     };
     let mut restrict_to: Option<BTreeSet<u64>> = None;
@@ -299,9 +321,9 @@ fn parse_vector_options(
                 restrict_to = Some(coerce_id_set(&resolved)?);
             }
             other => {
-                return Err(anyhow!(
+                return Err(invalid_params_error(format!(
                     "unknown option `{other}` for db.index.vector.queryNodes (known: `restrictTo`)"
-                ));
+                )));
             }
         }
     }
@@ -312,9 +334,9 @@ fn coerce_id_set(value: &LoraValue) -> Result<BTreeSet<u64>> {
     let items = match value {
         LoraValue::List(xs) => xs,
         other => {
-            return Err(anyhow!(
+            return Err(invalid_params_error(format!(
                 "`restrictTo` must be a LIST of node ids, got {other:?}"
-            ));
+            )));
         }
     };
     let mut out = BTreeSet::new();
@@ -330,9 +352,9 @@ fn coerce_id_set(value: &LoraValue) -> Result<BTreeSet<u64>> {
                 out.insert(*id);
             }
             other => {
-                return Err(anyhow!(
+                return Err(invalid_params_error(format!(
                     "`restrictTo` entries must be non-negative integers or node/relationship references, got {other:?}"
-                ));
+                )));
             }
         }
     }
@@ -346,18 +368,20 @@ fn eval_string_arg(
 ) -> Result<String> {
     match resolve_literal(expr, params)? {
         LoraValue::String(s) => Ok(s),
-        other => Err(anyhow!("{label} must be a string, got {other:?}")),
+        other => Err(invalid_params_error(format!(
+            "{label} must be a string, got {other:?}"
+        ))),
     }
 }
 
 fn eval_usize_arg(expr: &Expr, params: &BTreeMap<String, LoraValue>, label: &str) -> Result<usize> {
     match resolve_literal(expr, params)? {
-        LoraValue::Int(n) if n >= 0 => {
-            usize::try_from(n).map_err(|_| anyhow!("{label} is too large for this platform: {n}"))
-        }
-        other => Err(anyhow!(
+        LoraValue::Int(n) if n >= 0 => usize::try_from(n).map_err(|_| {
+            invalid_params_error(format!("{label} is too large for this platform: {n}"))
+        }),
+        other => Err(invalid_params_error(format!(
             "{label} must be a non-negative integer, got {other:?}"
-        )),
+        ))),
     }
 }
 
@@ -366,9 +390,9 @@ fn eval_vector_arg(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<
     match value {
         LoraValue::Vector(v) => Ok(v),
         LoraValue::List(items) => list_to_float32_vector(&items),
-        other => Err(anyhow!(
+        other => Err(invalid_vector_error(format!(
             "query must be a VECTOR or LIST<NUMBER>; got {other:?}"
-        )),
+        ))),
     }
 }
 
@@ -379,16 +403,16 @@ fn list_to_float32_vector(items: &[LoraValue]) -> Result<LoraVector> {
             LoraValue::Int(n) => lora_store::RawCoordinate::Int(*n),
             LoraValue::Float(f) => lora_store::RawCoordinate::Float(*f),
             other => {
-                return Err(anyhow!(
+                return Err(invalid_vector_error(format!(
                     "query list elements must be INTEGER or FLOAT; got {other:?}"
-                ))
+                )))
             }
         };
         raw.push(coord);
     }
     let dim = items.len() as i64;
     LoraVector::try_new(raw, dim, VectorCoordinateType::Float32)
-        .map_err(|e| anyhow!("invalid query vector: {e}"))
+        .map_err(|e| invalid_vector_error(format!("invalid query vector: {e}")))
 }
 
 fn resolve_literal(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<LoraValue> {
@@ -401,7 +425,7 @@ fn resolve_literal(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<
         Expr::Parameter(name, _) => params
             .get(name)
             .cloned()
-            .ok_or_else(|| anyhow!("parameter `${name}` not supplied")),
+            .ok_or_else(|| invalid_params_error(format!("parameter `${name}` not supplied"))),
         Expr::List(items, _) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
@@ -416,14 +440,14 @@ fn resolve_literal(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<
         } => match resolve_literal(inner, params)? {
             LoraValue::Int(n) => Ok(LoraValue::Int(-n)),
             LoraValue::Float(f) => Ok(LoraValue::Float(-f)),
-            other => Err(anyhow!("cannot negate {other:?}")),
+            other => Err(invalid_params_error(format!("cannot negate {other:?}"))),
         },
         Expr::FunctionCall { name, args, .. } if matches_vector_ctor(name) => {
             resolve_vector_ctor(args, params)
         }
-        other => Err(anyhow!(
+        other => Err(invalid_params_error(format!(
             "procedure arguments must be literals or $params; got {other:?}"
-        )),
+        ))),
     }
 }
 
@@ -440,16 +464,21 @@ fn matches_vector_ctor(name: &[String]) -> bool {
 /// bare identifier (`FLOAT32`), a string (`'FLOAT32'`), or a $param.
 fn resolve_vector_ctor(args: &[Expr], params: &BTreeMap<String, LoraValue>) -> Result<LoraValue> {
     if args.len() != 3 {
-        return Err(anyhow!("vector() expects 3 arguments, got {}", args.len()));
+        return Err(invalid_params_error(format!(
+            "vector() expects 3 arguments, got {}",
+            args.len()
+        )));
     }
     let LoraValue::List(values) = resolve_literal(&args[0], params)? else {
-        return Err(anyhow!("vector() first argument must be a list"));
+        return Err(invalid_vector_error(
+            "vector() first argument must be a list",
+        ));
     };
     let dim_value = resolve_literal(&args[1], params)?;
     let LoraValue::Int(dim) = dim_value else {
-        return Err(anyhow!(
+        return Err(invalid_vector_error(format!(
             "vector() dimension must be integer, got {dim_value:?}"
-        ));
+        )));
     };
     let coord = coord_type_from_expr(&args[2], params)?;
     let mut raw = Vec::with_capacity(values.len());
@@ -458,13 +487,14 @@ fn resolve_vector_ctor(args: &[Expr], params: &BTreeMap<String, LoraValue>) -> R
             LoraValue::Int(n) => raw.push(lora_store::RawCoordinate::Int(n)),
             LoraValue::Float(f) => raw.push(lora_store::RawCoordinate::Float(f)),
             other => {
-                return Err(anyhow!(
+                return Err(invalid_vector_error(format!(
                     "vector() list elements must be INTEGER or FLOAT; got {other:?}"
-                ))
+                )))
             }
         }
     }
-    let v = LoraVector::try_new(raw, dim, coord).map_err(|e| anyhow!("vector(): {e}"))?;
+    let v = LoraVector::try_new(raw, dim, coord)
+        .map_err(|e| invalid_vector_error(format!("vector(): {e}")))?;
     Ok(LoraValue::Vector(v))
 }
 
@@ -478,17 +508,20 @@ fn coord_type_from_expr(
         Expr::Parameter(_, _) => {
             let value = resolve_literal(expr, params)?;
             let LoraValue::String(s) = value else {
-                return Err(anyhow!(
+                return Err(invalid_params_error(format!(
                     "coordinate type parameter must be a string; got {value:?}"
-                ));
+                )));
             };
             s
         }
         other => {
-            return Err(anyhow!("invalid coordinate type expression: {other:?}"));
+            return Err(invalid_params_error(format!(
+                "invalid coordinate type expression: {other:?}"
+            )));
         }
     };
-    VectorCoordinateType::parse(&name).ok_or_else(|| anyhow!("unknown coordinate type `{name}`"))
+    VectorCoordinateType::parse(&name)
+        .ok_or_else(|| invalid_params_error(format!("unknown coordinate type `{name}`")))
 }
 
 fn project_yield(rows: Vec<Row>, items: &[YieldItem], yield_all: bool) -> Result<Vec<Row>> {

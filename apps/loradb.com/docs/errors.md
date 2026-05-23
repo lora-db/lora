@@ -24,6 +24,11 @@ on the message.
 | `LORA_READ_ONLY` | A mutating statement was issued in a read-only context. |
 | `LORA_NOT_FOUND` | A named entity (database, label, key) does not exist. |
 | `LORA_CONSTRAINT` | A precondition failed (e.g. `DELETE` on a node with relationships — use `DETACH DELETE`). |
+| `LORA_VALIDATION` | A well-formed database operation failed validation. |
+| `LORA_UNIQUE_CONSTRAINT` | A uniqueness constraint rejected duplicate data. |
+| `LORA_NOT_NULL_CONSTRAINT` | An existence / NOT NULL constraint rejected missing data. |
+| `LORA_FOREIGN_KEY` | A relationship or dependent record references a missing entity. |
+| `LORA_TRANSACTION` | A transaction lifecycle rule was violated. |
 | `LORA_INVALID_VECTOR` | A vector value failed dimension or coordinate-type validation. |
 | `LORA_TIMEOUT` | The query exceeded its cooperative deadline. |
 | `LORA_DATABASE_NAME` | A logical database name violates the portable-path rules. |
@@ -34,6 +39,7 @@ on the message.
 | Code | When you'll see it |
 |---|---|
 | `LORA_IO` | An I/O failure outside the WAL / snapshot subsystems. |
+| `LORA_CONNECTION` | The database backing connection or handle failed. |
 | `LORA_WAL_CORRUPTION` | A WAL record was truncated, mis-CRC'd, or otherwise unreadable. |
 | `LORA_WAL_POISONED` | The WAL is poisoned and no longer accepts durable writes. |
 | `LORA_SNAPSHOT_CODEC` | Snapshot bad magic, version, or checksum. |

@@ -78,10 +78,10 @@ The transport in `lora-server` maps codes to status as follows:
 
 | Code | Status | Notes |
 | --- | --- | --- |
-| `LORA_PARSE`, `LORA_SEMANTIC`, `LORA_READ_ONLY`, `LORA_DATABASE_NAME`, `LORA_CONFIG` | 400 | Caller-fixable mistake |
-| `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR` | 422 | Well-formed request, semantically invalid value |
+| `LORA_PARSE`, `LORA_SEMANTIC`, `LORA_READ_ONLY`, `LORA_TRANSACTION`, `LORA_DATABASE_NAME`, `LORA_CONFIG` | 400 | Caller-fixable mistake |
+| `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR`, `LORA_VALIDATION` | 422 | Well-formed request, semantically invalid value |
 | `LORA_NOT_FOUND` | 404 | Named entity does not exist |
-| `LORA_CONSTRAINT` | 409 | Action conflicts with current state |
+| `LORA_CONSTRAINT`, `LORA_UNIQUE_CONSTRAINT`, `LORA_NOT_NULL_CONSTRAINT`, `LORA_FOREIGN_KEY` | 409 | Action conflicts with current state |
 | `LORA_TIMEOUT` | 408 | Cooperative deadline expired |
 | `LORA_WAL_POISONED` | 503 | Engine cannot accept further writes |
-| `LORA_IO`, `LORA_WAL_CORRUPTION`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO`, `LORA_INTERNAL` | 500 | Server-side failure |
+| `LORA_IO`, `LORA_CONNECTION`, `LORA_WAL_CORRUPTION`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO`, `LORA_INTERNAL` | 500 | Server-side failure |

@@ -275,6 +275,7 @@ fn drop_missing_index_errors() {
     let msg = err.to_string();
     assert!(msg.contains("42N51"), "expected 42N51 status, got: {msg}");
     assert!(msg.contains("nope"));
+    assert_eq!(err.code(), lora_database::LoraErrorCode::NotFound);
 }
 
 #[test]

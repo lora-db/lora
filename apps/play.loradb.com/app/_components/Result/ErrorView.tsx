@@ -52,13 +52,25 @@ function semanticHead(message: string): string {
   return message.trim() || "Unknown error";
 }
 
+function userFacingHead(outcome: RunOutcome): string {
+  if (outcome.state !== "error") return "Unknown error";
+  switch (outcome.code) {
+    case "DB_BOOT_TIMEOUT":
+      return "The database engine did not finish starting. Try running the query again.";
+    case "WORKER_ERROR":
+      return "The database worker became unavailable. Try running the query again or reload the page.";
+    default:
+      return semanticHead(outcome.message);
+  }
+}
+
 export function ErrorView({ outcome }: { outcome: RunOutcome }) {
   const { tokens } = usePlaygroundTheme();
   const [showFull, setShowFull] = useState(false);
 
   if (outcome.state !== "error") return null;
 
-  const head = semanticHead(outcome.message);
+  const head = userFacingHead(outcome);
   const hasMore = head !== outcome.message.trim();
 
   const handleCopy = (): void => {

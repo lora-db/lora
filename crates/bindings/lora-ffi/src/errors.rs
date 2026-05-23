@@ -81,7 +81,7 @@ pub(crate) unsafe fn write_error(out_error: *mut *mut c_char, prefix: &str, mess
 /// stringly errors share one path.
 pub(crate) unsafe fn write_lora_error(out_error: *mut *mut c_char, err: impl Into<LoraError>) {
     let lora = err.into();
-    write_error(out_error, lora.code().as_str(), lora.message());
+    write_error(out_error, lora.code().as_str(), &lora.public_message());
 }
 
 /// Write a `<code>: <message>` for a precomputed [`LoraErrorCode`]

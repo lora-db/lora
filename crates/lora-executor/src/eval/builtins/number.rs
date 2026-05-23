@@ -166,7 +166,7 @@ fn digit_char(digit: u32) -> char {
     match digit {
         0..=9 => (b'0' + digit as u8) as char,
         10..=35 => (b'a' + (digit as u8 - 10)) as char,
-        _ => unreachable!("radix conversion only emits base-36 digits"),
+        _ => '?',
     }
 }
 

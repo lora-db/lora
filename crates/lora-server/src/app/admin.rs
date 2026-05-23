@@ -1,10 +1,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use axum::{
+    extract::{rejection::JsonRejection, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::post,
+    Json, Router,
+};
 use lora_database::{LoraErrorCode, SnapshotAdmin, SnapshotMeta, WalAdmin};
 
-use super::errors::{lora_error_response, ErrorResponse};
+use super::errors::{json_rejection_error, lora_error_response, ErrorResponse};
 use super::types::{SnapshotRequest, SnapshotResponse, WalStatusResponse, WalTruncateRequest};
 
 /// Snapshot admin surface. Mounted as a unit so that
@@ -129,9 +135,12 @@ fn resolve_snapshot_path(cfg: &SnapshotAdminConfig, req: Option<&SnapshotRequest
 
 async fn admin_snapshot_save(
     State(cfg): State<SnapshotAdminConfig>,
-    body: Option<Json<SnapshotRequest>>,
+    body: Result<Json<SnapshotRequest>, JsonRejection>,
 ) -> impl IntoResponse {
-    let req = body.map(|Json(r)| r);
+    let req = match parse_optional_json(body) {
+        Ok(req) => req,
+        Err(err) => return lora_error_response(json_rejection_error(err)),
+    };
     let path = resolve_snapshot_path(&cfg, req.as_ref());
 
     match cfg.admin.save_snapshot(&path) {
@@ -142,9 +151,12 @@ async fn admin_snapshot_save(
 
 async fn admin_snapshot_load(
     State(cfg): State<SnapshotAdminConfig>,
-    body: Option<Json<SnapshotRequest>>,
+    body: Result<Json<SnapshotRequest>, JsonRejection>,
 ) -> impl IntoResponse {
-    let req = body.map(|Json(r)| r);
+    let req = match parse_optional_json(body) {
+        Ok(req) => req,
+        Err(err) => return lora_error_response(json_rejection_error(err)),
+    };
     let path = resolve_snapshot_path(&cfg, req.as_ref());
 
     match cfg.admin.load_snapshot(&path) {
@@ -168,9 +180,12 @@ fn resolve_checkpoint_path(
 
 async fn admin_checkpoint(
     State(state): State<WalAdminState>,
-    body: Option<Json<SnapshotRequest>>,
+    body: Result<Json<SnapshotRequest>, JsonRejection>,
 ) -> impl IntoResponse {
-    let req = body.map(|Json(r)| r);
+    let req = match parse_optional_json(body) {
+        Ok(req) => req,
+        Err(err) => return lora_error_response(json_rejection_error(err)),
+    };
     let path = match resolve_checkpoint_path(&state, req.as_ref()) {
         Ok(p) => p,
         Err(msg) => {
@@ -221,11 +236,15 @@ async fn admin_wal_status(State(state): State<WalAdminState>) -> impl IntoRespon
 
 async fn admin_wal_truncate(
     State(state): State<WalAdminState>,
-    body: Option<Json<WalTruncateRequest>>,
+    body: Result<Json<WalTruncateRequest>, JsonRejection>,
 ) -> impl IntoResponse {
+    let req = match parse_optional_json(body) {
+        Ok(req) => req,
+        Err(err) => return lora_error_response(json_rejection_error(err)),
+    };
     // No body / no fence => truncate up to the WAL's current durable
     // LSN. That's the natural "drop everything safe to drop" default.
-    let fence = match body.and_then(|Json(r)| r.fence_lsn) {
+    let fence = match req.and_then(|r| r.fence_lsn) {
         Some(lsn) => lsn,
         None => match state.wal.wal_status() {
             Ok(s) => s.durable_lsn,
@@ -236,5 +255,15 @@ async fn admin_wal_truncate(
     match state.wal.wal_truncate(fence) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => lora_error_response(err),
+    }
+}
+
+fn parse_optional_json<T>(
+    body: Result<Json<T>, JsonRejection>,
+) -> Result<Option<T>, JsonRejection> {
+    match body {
+        Ok(Json(value)) => Ok(Some(value)),
+        Err(JsonRejection::MissingJsonContentType(_)) => Ok(None),
+        Err(err) => Err(err),
     }
 }

@@ -413,7 +413,10 @@ impl<R: BufRead> RowDecoder for CsvDecoder<R> {
         let Some(cells) = read_record(&mut self.reader)? else {
             return Ok(None);
         };
-        let headers = self.headers.as_ref().unwrap();
+        let headers = self
+            .headers
+            .as_ref()
+            .ok_or_else(|| invalid_data("CSV header missing after header parse"))?;
         if cells.len() != headers.len() {
             return Err(invalid_data(format!(
                 "row has {} cells; expected {} (one per header)",
@@ -479,7 +482,12 @@ pub(crate) fn parse_cell(raw: &str, ty: &CsvType) -> Result<LoraValue, String> {
                     CsvType::Point => {
                         return Err("point cells must be JSON-encoded".into());
                     }
-                    _ => unreachable!(),
+                    // Defensive: the outer match restricts `ty` to the
+                    // typed-string branches above, but if a new
+                    // `CsvType` variant is added without extending this
+                    // arm we want untrusted CSV to surface a parse
+                    // error, not panic the parser.
+                    other => return Err(format!("unsupported csv type `{other:?}`")),
                 };
                 let json = serde_json::json!({ "kind": tag, "iso": raw });
                 lora_value_from_json(json)
@@ -613,6 +621,15 @@ pub struct StreamingCsvDecoder {
     /// anything left over (inside a quoted cell, mid-cell, etc.)
     /// stays here for the next feed.
     chunk_buffer: Vec<u8>,
+    /// Read offset into `chunk_buffer`. `process_buf` is fed
+    /// `&chunk_buffer[head..]` each iteration, and `head` is advanced
+    /// by however many bytes the state machine consumed. The buffer
+    /// is only physically drained (one memmove of the unread tail)
+    /// when `head` exceeds a threshold — without this, draining inside
+    /// the per-record loop turns one chunk's worth of N records into
+    /// O(N²) memmove work, which dominates throughput on imports
+    /// with millions of small rows.
+    head: usize,
     /// In-flight record cells.
     cells: Vec<Vec<u8>>,
     /// In-flight cell.
@@ -648,6 +665,7 @@ impl StreamingCsvDecoder {
     pub fn new() -> Self {
         Self {
             chunk_buffer: Vec::with_capacity(64 * 1024),
+            head: 0,
             cells: Vec::new(),
             current: Vec::new(),
             in_quotes: false,
@@ -672,19 +690,20 @@ impl StreamingCsvDecoder {
     /// Drain as many complete records as the current buffer holds.
     fn advance(&mut self) -> std::io::Result<()> {
         // Repeatedly call process_buf until it stops finding record
-        // terminators. Each call advances the byte cursor by
-        // `consumed` bytes; we drain that prefix and loop.
+        // terminators. Each call returns how many bytes of the
+        // unread tail it consumed; we advance `head` instead of
+        // physically draining, so a chunk containing N records pays
+        // one O(tail) memmove at the end of feed() rather than N of
+        // them inside the loop.
         loop {
             let (consumed, end_of_record) = process_buf(
-                &self.chunk_buffer,
+                &self.chunk_buffer[self.head..],
                 &mut self.cells,
                 &mut self.current,
                 &mut self.in_quotes,
                 &mut self.started,
             );
-            if consumed > 0 {
-                self.chunk_buffer.drain(..consumed);
-            }
+            self.head += consumed;
             if !end_of_record {
                 break;
             }
@@ -693,6 +712,17 @@ impl StreamingCsvDecoder {
             self.cells.push(std::mem::take(&mut self.current));
             let record = decode_record(std::mem::take(&mut self.cells))?;
             self.handle_record(record)?;
+        }
+        // Compact the buffer once the read offset has moved past
+        // half its length, or when the buffer is fully consumed.
+        // Doing the memmove here (amortized) keeps the total drain
+        // work O(file_size) instead of O(file_size × rows_per_chunk).
+        if self.head >= self.chunk_buffer.len() {
+            self.chunk_buffer.clear();
+            self.head = 0;
+        } else if self.head * 2 >= self.chunk_buffer.len() {
+            self.chunk_buffer.drain(..self.head);
+            self.head = 0;
         }
         Ok(())
     }
@@ -717,7 +747,10 @@ impl StreamingCsvDecoder {
             return Ok(());
         }
         self.record_index += 1;
-        let header = self.header.as_ref().unwrap();
+        let header = self
+            .header
+            .as_ref()
+            .ok_or_else(|| invalid_data("CSV header missing after header parse"))?;
         if cells.len() != header.len() {
             let message = format!(
                 "row has {} cells; expected {} (one per header)",

@@ -124,6 +124,41 @@ async fn admin_save_and_load_roundtrip() {
 }
 
 #[tokio::test]
+async fn admin_malformed_json_returns_structured_error() {
+    let dir = tempdir("malformed_json");
+    let snapshot_path = dir.join("snap.bin");
+
+    let db = Arc::new(Database::in_memory());
+    let admin = AdminConfig {
+        snapshot: Some(SnapshotAdminConfig {
+            path: snapshot_path,
+            admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
+        }),
+        wal: None,
+    };
+    let app = build_app_with_admin(Arc::clone(&db), Some(admin));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/snapshot/save")
+                .header("content-type", "application/json")
+                .body(Body::from("{not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["code"], "LORA_INVALID_PARAMS");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn admin_save_honours_path_override() {
     let dir = tempdir("path_override");
     let default_path = dir.join("default.bin");
@@ -458,8 +493,8 @@ async fn wal_admin_routes_mount_without_snapshot_path() {
 async fn wal_status_errors_when_wal_admin_is_disconnected() {
     // Edge case: an `AdminConfig.wal` that points at a database
     // without a live WAL (e.g. WalConfig::Disabled). The endpoint
-    // surfaces the trait error as a 500 with a useful message
-    // rather than panicking.
+    // surfaces the trait error as a sanitized 500 rather than panicking
+    // or leaking internal database state.
     let dir = tempdir("wal-err");
     let snapshot_path = dir.join("snap.bin");
 
@@ -486,7 +521,10 @@ async fn wal_status_errors_when_wal_admin_is_disconnected() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(json["error"]["message"].as_str().unwrap().contains("WAL"));
+    assert_eq!(
+        json["error"]["message"].as_str().unwrap(),
+        "database operation failed unexpectedly"
+    );
     assert_eq!(json["error"]["category"].as_str().unwrap(), "server");
 
     let _ = std::fs::remove_dir_all(&dir);

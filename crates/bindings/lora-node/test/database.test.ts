@@ -613,6 +613,37 @@ describe("Database — WAL-backed initialization", () => {
     }
   });
 
+  it("uses declared LoraError codes for binding-level snapshot validation", async () => {
+    const db = await createDatabase();
+
+    await expect(
+      db.saveSnapshot(new URL("https://example.com/out.lsnap")),
+    ).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "LORA_INVALID_PARAMS" &&
+        !e.message.startsWith("LORA_INVALID_PARAMS:"),
+    );
+    await expect(
+      db.saveSnapshot({ format: "unsupported" } as never),
+    ).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "LORA_INVALID_PARAMS" &&
+        !e.message.startsWith("LORA_INVALID_PARAMS:"),
+    );
+    await expect(
+      db.loadSnapshot(new URL("ftp://example.com/in.lsnap")),
+    ).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "LORA_INVALID_PARAMS" &&
+        !e.message.startsWith("LORA_INVALID_PARAMS:"),
+    );
+
+    db.dispose();
+  });
+
   it("saves and loads encrypted snapshots from bytes and paths", async () => {
     const dir = await makeTempDir("lora-node-encrypted-snapshot-");
     const snapshotPath = join(dir, "secret.lsnap");

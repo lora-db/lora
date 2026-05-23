@@ -131,7 +131,7 @@ impl LiveCursor {
 
         let cursor = PullExecutor::new(storage_ref, params)
             .open_compiled(compiled_ref)
-            .map_err(|e| anyhow!(e))?;
+            .map_err(anyhow::Error::from)?;
 
         Ok(Self {
             cursor: ManuallyDrop::new(cursor),
@@ -265,7 +265,7 @@ impl<'a> QueryStream<'a> {
                     }
                     Err(e) => {
                         *state = StreamState::Errored;
-                        Err(anyhow!(e))
+                        Err(anyhow::Error::from(e))
                     }
                 },
             },
@@ -296,7 +296,7 @@ impl<'a> QueryStream<'a> {
                             cursor.take();
                             lease.finalize(TxStreamOutcome::Interrupted);
                             *state = StreamState::Errored;
-                            Err(anyhow!(e))
+                            Err(anyhow::Error::from(e))
                         }
                     }
                 }
@@ -338,7 +338,7 @@ impl<'a> QueryStream<'a> {
                             cursor.take();
                             guard.rollback();
                             *state = StreamState::Errored;
-                            Err(anyhow!(e))
+                            Err(anyhow::Error::from(e))
                         }
                     }
                 }

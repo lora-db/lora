@@ -19,11 +19,11 @@ use wasm_bindgen::prelude::*;
 
 use lora_database::{
     snapshot_info as read_snapshot_info, Compression, CsvEncoder, Database as InnerDatabase,
-    ExecuteOptions, ExportStats, Format as IoFormat, ImportStats, InMemoryGraph, JsonArrayEncoder,
-    JsonlEncoder, LoraValue, QueryResult, QueryStream as InnerQueryStream, ResultFormat,
-    RowEncoder, RowMapping, RowParseError, SnapshotInfo, StreamingCsvDecoder,
-    StreamingJsonArrayDecoder, StreamingJsonlDecoder, StreamingRowDecoder,
-    DEFAULT_IMPORT_BATCH_SIZE,
+    ExecuteOptions, ExportStats, Format as IoFormat, GraphStats, ImportStats, InMemoryGraph,
+    JsonArrayEncoder, JsonlEncoder, LoraError, LoraValue, QueryResult,
+    QueryStream as InnerQueryStream, ResultFormat, RowEncoder, RowMapping, RowParseError,
+    SnapshotInfo, StreamingCsvDecoder, StreamingJsonArrayDecoder, StreamingJsonlDecoder,
+    StreamingRowDecoder, DEFAULT_IMPORT_BATCH_SIZE,
 };
 
 mod json;
@@ -55,7 +55,7 @@ pub fn init() {
 ///    encrypted, keyId }`.
 #[wasm_bindgen(js_name = snapshotInfo)]
 pub fn snapshot_info(bytes: &[u8]) -> Result<JsValue, JsError> {
-    let info = read_snapshot_info(bytes).map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))?;
+    let info = read_snapshot_info(bytes).map_err(|e| js_error_from_lora(&LoraError::from(e)))?;
     snapshot_info_to_js(&info)
 }
 
@@ -113,6 +113,50 @@ fn export_payload_to_js(bytes: &[u8], stats: ExportStats) -> Result<JsValue, JsE
 
 fn import_stats_to_js(stats: ImportStats) -> Result<JsValue, JsError> {
     serde_json::json!({ "rows": stats.rows, "batches": stats.batches })
+        .serialize(&Serializer::json_compatible())
+        .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
+}
+
+/// Flatten [`GraphStats`] to a JS-friendly shape. The Rust struct uses
+/// tuple keys (`(label, property)`) which don't round-trip through JSON
+/// objects, so we render those as arrays of records instead.
+fn graph_stats_to_js(stats: &GraphStats) -> Result<JsValue, JsError> {
+    let count_map = |m: &std::collections::BTreeMap<String, usize>| {
+        m.iter()
+            .map(|(k, v)| serde_json::json!({ "label": k, "count": v }))
+            .collect::<Vec<_>>()
+    };
+    let distinct = |m: &std::collections::BTreeMap<(String, String), usize>| {
+        m.iter()
+            .map(|((label, property), count)| {
+                serde_json::json!({ "label": label, "property": property, "count": count })
+            })
+            .collect::<Vec<_>>()
+    };
+    let scopes = |s: &std::collections::BTreeSet<(String, String)>| {
+        s.iter()
+            .map(|(label, property)| serde_json::json!({ "label": label, "property": property }))
+            .collect::<Vec<_>>()
+    };
+
+    let payload = serde_json::json!({
+        "nodeCount": stats.node_count,
+        "relationshipCount": stats.relationship_count,
+        "nodesByLabel": count_map(&stats.nodes_by_label),
+        "relationshipsByType": count_map(&stats.relationships_by_type),
+        "nodeDistinctValues": distinct(&stats.node_distinct_values),
+        "relationshipDistinctValues": distinct(&stats.relationship_distinct_values),
+        "nodeRangeIndexes": scopes(&stats.node_range_indexes),
+        "relationshipRangeIndexes": scopes(&stats.relationship_range_indexes),
+        "nodeTextIndexes": scopes(&stats.node_text_indexes),
+        "relationshipTextIndexes": scopes(&stats.relationship_text_indexes),
+        "nodePointIndexes": scopes(&stats.node_point_indexes),
+        "relationshipPointIndexes": scopes(&stats.relationship_point_indexes),
+        "nodeVectorIndexes": scopes(&stats.node_vector_indexes),
+        "relationshipVectorIndexes": scopes(&stats.relationship_vector_indexes),
+    });
+
+    payload
         .serialize(&Serializer::json_compatible())
         .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
 }
@@ -304,8 +348,8 @@ impl WasmDatabase {
             .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
     }
 
-    pub fn clear(&self) {
-        self.db.clear();
+    pub fn clear(&self) -> Result<(), JsError> {
+        self.db.try_clear().map_err(|e| js_error_from_lora(&e))
     }
 
     #[wasm_bindgen(js_name = nodeCount)]
@@ -316,6 +360,30 @@ impl WasmDatabase {
     #[wasm_bindgen(js_name = relationshipCount)]
     pub fn relationship_count(&self) -> u32 {
         self.db.relationship_count() as u32
+    }
+
+    /// Live `GraphStats` snapshot for the Stats side panel.
+    ///
+    /// `GraphStats` carries `BTreeMap<(String, String), usize>` fields
+    /// (distinct-value counts, per-index scope sets) that don't round-trip
+    /// through plain JSON keys. We flatten them to arrays of
+    /// `{ label, property, count? }` records so the JS side gets a
+    /// stable shape it can render without further reshaping.
+    #[wasm_bindgen(js_name = graphStats)]
+    pub fn graph_stats(&self) -> Result<JsValue, JsError> {
+        let stats: GraphStats = self.db.with_store(|s| s.graph_stats());
+        graph_stats_to_js(&stats)
+    }
+
+    /// Approximate retained-heap breakdown for the Stats side panel.
+    /// Cheap to compute; not on a hot path. See
+    /// [`lora_store::MemoryReport`] for the methodology.
+    #[wasm_bindgen(js_name = memoryReport)]
+    pub fn memory_report(&self) -> Result<JsValue, JsError> {
+        let report = self.db.with_store(|s| s.memory_estimate());
+        report
+            .serialize(&Serializer::json_compatible())
+            .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
     }
 
     /// Serialize the graph into database snapshot bytes. The caller is
@@ -868,7 +936,11 @@ impl WasmRowImport {
     }
 
     fn flush_batch(&mut self) -> Result<(), JsError> {
-        let batch = std::mem::take(&mut self.batch);
+        // Swap out the full batch while restoring the pre-allocated capacity
+        // on the cursor. `mem::take` would leave `self.batch` with zero
+        // capacity, forcing every subsequent push to re-grow the Vec — for
+        // a 5M-row import that's thousands of allocator round-trips.
+        let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
         let batch_len = batch.len() as u64;
         if !self.dry_run {
             let mut params = BTreeMap::new();

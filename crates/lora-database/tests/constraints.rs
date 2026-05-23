@@ -8,7 +8,7 @@ use test_helpers::TestDb;
 
 use std::collections::BTreeMap;
 
-use lora_database::LoraValue;
+use lora_database::{LoraErrorCode, LoraValue};
 use serde_json::Value as JsonValue;
 
 fn rows_for_constraint_named<'a>(rows: &'a [JsonValue], name: &str) -> Option<&'a JsonValue> {
@@ -333,11 +333,34 @@ fn create_node_duplicate_unique_rejected() {
 }
 
 #[test]
+fn create_node_duplicate_unique_has_specific_error_code() {
+    let db = TestDb::new();
+    db.run("CREATE CONSTRAINT book_isbn FOR (b:Book) REQUIRE b.isbn IS UNIQUE");
+    db.run("CREATE (:Book {isbn: 'A'})");
+    let err = db
+        .exec("CREATE (:Book {isbn: 'A'})")
+        .expect_err("duplicate value should fail uniqueness");
+    assert_eq!(err.code(), LoraErrorCode::UniqueConstraint);
+    assert!(err.message().contains("22N79"));
+}
+
+#[test]
 fn create_node_missing_existence_rejected() {
     let db = TestDb::new();
     db.run("CREATE CONSTRAINT author_name FOR (a:Author) REQUIRE a.name IS NOT NULL");
     let err = db.run_err("CREATE (:Author {surname: 'Austen'})");
     assert!(err.contains("22N77"), "expected 22N77, got: {err}");
+}
+
+#[test]
+fn create_node_missing_existence_has_specific_error_code() {
+    let db = TestDb::new();
+    db.run("CREATE CONSTRAINT author_name FOR (a:Author) REQUIRE a.name IS NOT NULL");
+    let err = db
+        .exec("CREATE (:Author {surname: 'Austen'})")
+        .expect_err("missing required property should fail existence");
+    assert_eq!(err.code(), LoraErrorCode::NotNullConstraint);
+    assert!(err.message().contains("22N77"));
 }
 
 #[test]

@@ -43,7 +43,11 @@ create_exception!(
 /// the same path.
 pub(crate) fn lora_query_err_from_anyhow(err: impl Into<EngineLoraError>) -> PyErr {
     let lora = err.into();
-    LoraQueryError::new_err(format!("{}: {}", lora.code().as_str(), lora.message()))
+    LoraQueryError::new_err(format!(
+        "{}: {}",
+        lora.code().as_str(),
+        lora.public_message()
+    ))
 }
 
 /// Borrowed-by-reference variant for call sites that don't have an
@@ -51,7 +55,11 @@ pub(crate) fn lora_query_err_from_anyhow(err: impl Into<EngineLoraError>) -> PyE
 #[allow(dead_code)]
 pub(crate) fn lora_query_err_from_anyhow_ref(err: &anyhow::Error) -> PyErr {
     let lora = EngineLoraError::from_anyhow_ref(err);
-    LoraQueryError::new_err(format!("{}: {}", lora.code().as_str(), lora.message()))
+    LoraQueryError::new_err(format!(
+        "{}: {}",
+        lora.code().as_str(),
+        lora.public_message()
+    ))
 }
 
 /// Build a [`LoraQueryError`] for a binding-side message that doesn't

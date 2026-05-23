@@ -36,12 +36,14 @@ impl Lsn {
         self.0.checked_add(1).map(Self)
     }
 
-    /// Returns the next LSN. Panics on `u64::MAX` — saturating would
-    /// silently violate monotonicity, and overflow at this scale means a
-    /// trillion records per second for ~580 million years.
+    /// Returns the next LSN, saturating at `u64::MAX`.
+    ///
+    /// Production WAL allocation uses [`Self::checked_next`] so exhaustion
+    /// can surface as a structured error. This convenience method is kept
+    /// non-panicking for low-level callers and tests that only need simple
+    /// monotonic advancement.
     pub fn next(self) -> Self {
-        self.checked_next()
-            .expect("Lsn overflowed; the WAL has been continuously running for ~580 My")
+        self.checked_next().unwrap_or(self)
     }
 }
 
@@ -82,8 +84,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Lsn overflowed")]
-    fn overflow_panics() {
-        let _ = Lsn::new(u64::MAX).next();
+    fn overflow_saturates() {
+        assert_eq!(Lsn::new(u64::MAX).next(), Lsn::new(u64::MAX));
     }
 }

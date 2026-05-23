@@ -5,13 +5,14 @@
  * requires a browser host, which we demo in `examples/browser.html`.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   createDatabase,
   createWorkerDatabase,
   LoraError,
   type Database,
   type WorkerDatabase,
+  type WorkerLike,
 } from "../ts/index.js";
 import type { Request, Response } from "../ts/worker-protocol.js";
 import type { LoraErrorCode } from "../ts/types.js";
@@ -20,7 +21,8 @@ class InProcessWorker {
   #listeners: {
     message: Array<(e: { data: Response }) => void>;
     error: Array<(e: { message?: string }) => void>;
-  } = { message: [], error: [] };
+    messageerror: Array<(e: { message?: string }) => void>;
+  } = { message: [], error: [], messageerror: [] };
   #db: Database | null = null;
   #nextStreamId = 1;
   #streams = new Map<
@@ -32,15 +34,19 @@ class InProcessWorker {
   >();
 
   addEventListener(
-    type: "message" | "error",
+    type: "message" | "error" | "messageerror",
     listener:
       | ((e: { data: Response }) => void)
       | ((e: { message?: string }) => void),
   ): void {
     if (type === "message") {
       this.#listeners.message.push(listener as (e: { data: Response }) => void);
-    } else {
+    } else if (type === "error") {
       this.#listeners.error.push(listener as (e: { message?: string }) => void);
+    } else {
+      this.#listeners.messageerror.push(
+        listener as (e: { message?: string }) => void,
+      );
     }
   }
 
@@ -171,6 +177,10 @@ describe("WorkerDatabase — message protocol", () => {
     db = createWorkerDatabase(worker);
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("creates a node and counts it over the worker protocol", async () => {
     await db.execute("CREATE (:X {n: 1})");
     expect(await db.nodeCount()).toBe(1);
@@ -201,8 +211,29 @@ describe("WorkerDatabase — message protocol", () => {
   it("surfaces LORA_PARSE from the worker", async () => {
     await expect(db.execute("NOT CYPHER")).rejects.toSatisfy(
       (e) =>
-        e instanceof Error && (e as { code?: string }).code === "LORA_PARSE",
+        e instanceof Error &&
+        (e as { code?: string }).code === "LORA_PARSE" &&
+        !e.message.startsWith("LORA_PARSE:"),
     );
+  });
+
+  it("rejects and clears a request when postMessage throws", async () => {
+    const throwingDb = createWorkerDatabase({
+      addEventListener() {
+        // no-op
+      },
+      removeEventListener() {
+        // no-op
+      },
+      postMessage() {
+        throw new Error("post failed");
+      },
+      terminate() {
+        // no-op
+      },
+    } as never);
+
+    await expect(throwingDb.nodeCount()).rejects.toThrow("post failed");
   });
 
   it("handles many concurrent queries without deadlock", async () => {
@@ -216,4 +247,147 @@ describe("WorkerDatabase — message protocol", () => {
       Array.from({ length: 20 }, (_, i) => i),
     );
   });
+
+  it("rejects a worker request that never receives a response", async () => {
+    vi.useFakeTimers();
+    const silent = new ManualWorker({ respond: false });
+    const stalledDb = createWorkerDatabase(silent, { requestTimeoutMs: 5 });
+
+    const promise = stalledDb.nodeCount();
+    const assertion = expect(promise).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "WORKER_ERROR" &&
+        /did not respond/.test(e.message),
+    );
+    await vi.advanceTimersByTimeAsync(5);
+
+    await assertion;
+  });
+
+  it("rejects future calls after a worker error", async () => {
+    const manual = new ManualWorker({ respond: false });
+    const failedDb = createWorkerDatabase(manual, { requestTimeoutMs: 0 });
+
+    const pending = failedDb.nodeCount();
+    manual.emitError("boom");
+
+    await expect(pending).rejects.toSatisfy(
+      (e) => e instanceof LoraError && e.code === "WORKER_ERROR",
+    );
+    await expect(failedDb.nodeCount()).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "WORKER_ERROR" &&
+        e.message === "boom",
+    );
+  });
+
+  it("rejects malformed worker responses instead of hanging", async () => {
+    const manual = new ManualWorker({ respond: false });
+    const malformedDb = createWorkerDatabase(manual, { requestTimeoutMs: 0 });
+
+    const pending = malformedDb.nodeCount();
+    manual.emitMessage({
+      id: 1,
+      body: { ok: false, error: { message: "bad", code: "LORA_FUTURE" } },
+    });
+
+    await expect(pending).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "WORKER_ERROR" &&
+        /malformed/.test(e.message),
+    );
+  });
+
+  it("wraps synchronous postMessage failures as worker errors", async () => {
+    const throwing = new ManualWorker({
+      respond: false,
+      postMessageError: new Error("clone failed"),
+    });
+    const throwingDb = createWorkerDatabase(throwing, { requestTimeoutMs: 0 });
+
+    await expect(throwingDb.nodeCount()).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "WORKER_ERROR" &&
+        e.message === "clone failed",
+    );
+  });
+
+  it("rejects calls after dispose closes the client", async () => {
+    const manual = new ManualWorker({ respond: true });
+    const disposedDb = createWorkerDatabase(manual, { requestTimeoutMs: 0 });
+
+    await disposedDb.dispose();
+
+    await expect(disposedDb.nodeCount()).rejects.toSatisfy(
+      (e) =>
+        e instanceof LoraError &&
+        e.code === "WORKER_ERROR" &&
+        e.message === "database worker is closed",
+    );
+  });
 });
+
+class ManualWorker implements WorkerLike {
+  readonly #listeners: {
+    message: Array<(e: { data: unknown }) => void>;
+    error: Array<(e: { message?: string }) => void>;
+    messageerror: Array<(e: { message?: string }) => void>;
+  } = { message: [], error: [], messageerror: [] };
+
+  constructor(
+    private readonly options: {
+      respond: boolean;
+      postMessageError?: Error;
+    },
+  ) {}
+
+  addEventListener(
+    type: "message" | "error" | "messageerror",
+    listener:
+      | ((e: { data: unknown }) => void)
+      | ((e: { message?: string }) => void),
+  ): void {
+    if (type === "message") {
+      this.#listeners.message.push(listener as (e: { data: unknown }) => void);
+    } else if (type === "error") {
+      this.#listeners.error.push(listener as (e: { message?: string }) => void);
+    } else {
+      this.#listeners.messageerror.push(
+        listener as (e: { message?: string }) => void,
+      );
+    }
+  }
+
+  removeEventListener(
+    type: "message",
+    listener: (e: { data: unknown }) => void,
+  ): void {
+    this.#listeners.message = this.#listeners.message.filter(
+      (l) => l !== listener,
+    );
+    void type;
+  }
+
+  postMessage(message: unknown): void {
+    if (this.options.postMessageError) throw this.options.postMessageError;
+    if (!this.options.respond) return;
+    const request = message as Request;
+    this.emitMessage({ id: request.id, body: { ok: true, result: null } });
+  }
+
+  terminate(): void {
+    // no-op
+  }
+
+  emitMessage(data: unknown): void {
+    for (const listener of this.#listeners.message) listener({ data });
+  }
+
+  emitError(message: string): void {
+    for (const listener of this.#listeners.error) listener({ message });
+  }
+}

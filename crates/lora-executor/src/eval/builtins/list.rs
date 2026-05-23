@@ -509,8 +509,10 @@ fn split_by(args: &[LoraValue]) -> LoraValue {
     for v in xs {
         if value_eq(v, sep) {
             out.push(Vec::new());
+        } else if let Some(last) = out.last_mut() {
+            last.push(v.clone());
         } else {
-            out.last_mut().unwrap().push(v.clone());
+            out.push(vec![v.clone()]);
         }
     }
     LoraValue::List(out.into_iter().map(LoraValue::List).collect())
@@ -525,11 +527,27 @@ fn windows(args: &[LoraValue]) -> LoraValue {
     }
     let size = size as usize;
     let step = as_i64(args.get(2)).unwrap_or(1).max(1) as usize;
+    if size > xs.len() {
+        return LoraValue::List(Vec::new());
+    }
     let mut out: Vec<LoraValue> = Vec::new();
-    let mut i = 0;
-    while i + size <= xs.len() {
-        out.push(LoraValue::List(xs[i..i + size].to_vec()));
-        i += step;
+    let mut i: usize = 0;
+    // `i + size` cannot overflow here because the loop precondition
+    // keeps it ≤ xs.len(), but bumping `i` by `step` can — guard the
+    // increment with `checked_add` so an absurd `step` exits cleanly
+    // instead of wrapping into a fresh in-bounds index.
+    while let Some(end) = i.checked_add(size) {
+        if end > xs.len() {
+            break;
+        }
+        match xs.get(i..end) {
+            Some(slice) => out.push(LoraValue::List(slice.to_vec())),
+            None => break,
+        }
+        let Some(next) = i.checked_add(step) else {
+            break;
+        };
+        i = next;
     }
     LoraValue::List(out)
 }
@@ -853,12 +871,22 @@ fn at(args: &[LoraValue]) -> LoraValue {
         return LoraValue::Null;
     };
     let len = xs.len() as i64;
-    let real = if idx < 0 { idx + len } else { idx };
-    if real < 0 || real >= len {
-        LoraValue::Null
+    // `idx.saturating_add(len)` keeps the negative-index path safe
+    // even when `idx == i64::MIN` (where `idx + len` would wrap to a
+    // large positive in release mode).
+    let real = if idx < 0 {
+        idx.saturating_add(len)
     } else {
-        xs[real as usize].clone()
+        idx
+    };
+    if real < 0 || real >= len {
+        return LoraValue::Null;
     }
+    // `.get()` over direct indexing: the bounds check above already
+    // guarantees `real` is in range, but using `.get()` makes that
+    // safety an *invariant of this function* rather than a calling
+    // assumption — a future edit to the normalisation cannot panic.
+    xs.get(real as usize).cloned().unwrap_or(LoraValue::Null)
 }
 
 fn slice(args: &[LoraValue]) -> LoraValue {
@@ -870,14 +898,24 @@ fn slice(args: &[LoraValue]) -> LoraValue {
     let start = normalize_slice_bound(start, len);
     let end = normalize_slice_bound(end, len);
     if end <= start {
-        LoraValue::List(Vec::new())
-    } else {
-        LoraValue::List(xs[start as usize..end as usize].to_vec())
+        return LoraValue::List(Vec::new());
     }
+    // `.get(range)` instead of `xs[range]`: the clamps above keep both
+    // bounds inside `[0, len]`, but a `None` here surfaces as an empty
+    // list rather than a panic if that ever drifts.
+    xs.get(start as usize..end as usize)
+        .map(|s| LoraValue::List(s.to_vec()))
+        .unwrap_or_else(|| LoraValue::List(Vec::new()))
 }
 
 fn normalize_slice_bound(bound: i64, len: i64) -> i64 {
-    let real = if bound < 0 { bound + len } else { bound };
+    // `saturating_add` protects against `bound == i64::MIN` wrapping
+    // to a positive value before the clamp.
+    let real = if bound < 0 {
+        bound.saturating_add(len)
+    } else {
+        bound
+    };
     real.clamp(0, len)
 }
 
@@ -888,6 +926,14 @@ fn list_size(args: &[LoraValue]) -> LoraValue {
     }
 }
 
+/// Hard cap on `range()` output length. Picked so a single call can't
+/// blow up resident memory regardless of the (start, end, step) the
+/// caller passes — at 8 bytes per `i64` plus `LoraValue` overhead a
+/// 16M-element list is already ~hundreds of MB. Callers that want a
+/// bigger sequence should produce it incrementally via a procedural
+/// pattern, not as a single materialised list.
+const MAX_RANGE_LEN: usize = 16_777_216;
+
 fn range(args: &[LoraValue]) -> LoraValue {
     let start = args.first().and_then(LoraValue::as_i64).unwrap_or(0);
     let end = args.get(1).and_then(LoraValue::as_i64).unwrap_or(0);
@@ -895,17 +941,36 @@ fn range(args: &[LoraValue]) -> LoraValue {
     if step == 0 {
         return LoraValue::Null;
     }
-    let mut result = Vec::new();
+    // Reject sequences that would overflow the cap before allocating.
+    // Using `i128` here so the size estimate itself can't overflow for
+    // the i64::MIN / i64::MAX corners.
+    let expected_len: i128 = if (step > 0 && end < start) || (step < 0 && end > start) {
+        0
+    } else {
+        let span = (end as i128) - (start as i128);
+        let abs_step = (step as i128).abs();
+        span.abs() / abs_step + 1
+    };
+    if expected_len > MAX_RANGE_LEN as i128 {
+        return LoraValue::Null;
+    }
+    let mut result = Vec::with_capacity(expected_len as usize);
     let mut i = start;
     if step > 0 {
         while i <= end {
             result.push(LoraValue::Int(i));
-            i += step;
+            match i.checked_add(step) {
+                Some(next) => i = next,
+                None => break,
+            }
         }
     } else {
         while i >= end {
             result.push(LoraValue::Int(i));
-            i += step;
+            match i.checked_add(step) {
+                Some(next) => i = next,
+                None => break,
+            }
         }
     }
     LoraValue::List(result)

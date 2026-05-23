@@ -17,7 +17,7 @@ import __wbg_init, {
   snapshotInfo as wasmSnapshotInfo,
 } from "../pkg-web/lora_wasm.js";
 import type { Request, Response } from "./worker-protocol.js";
-import type { LoraErrorCode } from "./types.js";
+import { isLoraErrorCode, type LoraErrorCode } from "./types.js";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -63,9 +63,15 @@ function ensureReady(): Promise<void> {
   return ready;
 }
 
-function extractErrorCode(message: string): LoraErrorCode {
-  const match = /^(LORA_[A-Z_]+|WORKER_ERROR):/.exec(message);
-  return (match?.[1] as LoraErrorCode | undefined) ?? "UNKNOWN";
+function normalizeError(message: string): {
+  code: LoraErrorCode;
+  message: string;
+} {
+  const match = /^(LORA_[A-Z_]+|WORKER_ERROR):\s*(.*)$/s.exec(message);
+  return {
+    code: match && isLoraErrorCode(match[1]) ? match[1] : "UNKNOWN",
+    message: match ? match[2]! : message,
+  };
 }
 
 self.onmessage = async (event: MessageEvent<Request>) => {
@@ -117,6 +123,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         if (!stream) throw new Error("LORA_INTERNAL: query stream is closed");
         const row = stream.next();
         if (row === null) {
+          stream.close();
           streams.delete(body.streamId);
         }
         respond({ ok: true, result: row as never });
@@ -221,6 +228,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         if (!cursor) throw new Error("LORA_INTERNAL: export cursor is closed");
         const chunk = cursor.next() as Uint8Array | null;
         if (chunk === null) {
+          cursor.close();
           exports_.delete(body.exportId);
           respond({ ok: true, result: null });
         } else {
@@ -273,9 +281,13 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       case "importFinish": {
         const cursor = imports_.get(body.importId);
         if (!cursor) throw new Error("LORA_INTERNAL: import cursor is closed");
-        const stats = cursor.finish();
-        imports_.delete(body.importId);
-        respond({ ok: true, result: stats as never });
+        try {
+          const stats = cursor.finish();
+          respond({ ok: true, result: stats as never });
+        } finally {
+          cursor.close();
+          imports_.delete(body.importId);
+        }
         break;
       }
       case "importClose": {
@@ -340,6 +352,20 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         respond({ ok: true, result: db.relationshipCount() });
         break;
       }
+      case "graphStats": {
+        respond({
+          ok: true,
+          result: db.graphStats() as Record<string, unknown>,
+        });
+        break;
+      }
+      case "memoryReport": {
+        respond({
+          ok: true,
+          result: db.memoryReport() as Record<string, unknown>,
+        });
+        break;
+      }
       case "dispose": {
         for (const stream of streams.values()) stream.close();
         streams.clear();
@@ -355,9 +381,10 @@ self.onmessage = async (event: MessageEvent<Request>) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const error = normalizeError(message);
     respond({
       ok: false,
-      error: { message, code: extractErrorCode(message) },
+      error,
     });
   }
 };

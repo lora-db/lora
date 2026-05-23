@@ -13,7 +13,7 @@ use lora_analyzer::symbols::VarId;
 use lora_compiler::physical::{PhysicalNodeId, PhysicalPlan};
 use lora_store::GraphStorage;
 
-use crate::errors::ExecResult;
+use crate::errors::{ExecResult, ExecutorError};
 use crate::executor::merge_optional_rows;
 use crate::value::{LoraValue, Row};
 
@@ -57,10 +57,11 @@ impl<'a, S: GraphStorage> RowSource for CallSubquerySource<'a, S> {
     fn next_row(&mut self) -> ExecResult<Option<Row>> {
         loop {
             if let Some(inner_row) = self.pending.next() {
-                let outer = self
-                    .pending_outer
-                    .as_ref()
-                    .expect("pending_outer set when pending iter has rows");
+                let Some(outer) = self.pending_outer.as_ref() else {
+                    return Err(ExecutorError::RuntimeError(
+                        "CALL subquery cursor lost its outer row".into(),
+                    ));
+                };
                 return Ok(Some(merge_optional_rows(outer, &inner_row)));
             }
 

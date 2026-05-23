@@ -34,6 +34,10 @@ import {
 import { decodeResult } from "./decode.js";
 import { createWorkerDatabase } from "./worker-client.js";
 import type { WorkerDatabase, WorkerLike } from "./worker-client.js";
+import type {
+  GraphStatsSnapshot,
+  MemoryReportSnapshot,
+} from "./worker-protocol.js";
 import {
   snapshotAsArrayBuffer,
   snapshotAsBlob,
@@ -55,6 +59,13 @@ export {
   type WorkerDatabase,
   type WorkerLike,
 } from "./worker-client.js";
+export type {
+  DistinctValueRecord,
+  GraphStatsSnapshot,
+  IndexScope,
+  LabelCount,
+  MemoryReportSnapshot,
+} from "./worker-protocol.js";
 export type {
   WasmSnapshotByteOptions,
   WasmSnapshotCompression,
@@ -383,7 +394,11 @@ class DatabaseImpl {
   }
 
   async clear(): Promise<void> {
-    this.#inner.clear();
+    try {
+      this.#inner.clear();
+    } catch (err) {
+      throw wrapError(err);
+    }
   }
 
   async nodeCount(): Promise<number> {
@@ -392,6 +407,20 @@ class DatabaseImpl {
 
   async relationshipCount(): Promise<number> {
     return this.#inner.relationshipCount();
+  }
+
+  async graphStats(): Promise<GraphStatsSnapshot> {
+    const native = this.#inner as unknown as {
+      graphStats(): GraphStatsSnapshot;
+    };
+    return native.graphStats();
+  }
+
+  async memoryReport(): Promise<MemoryReportSnapshot> {
+    const native = this.#inner as unknown as {
+      memoryReport(): MemoryReportSnapshot;
+    };
+    return native.memoryReport();
   }
 
   saveSnapshot(): Promise<Uint8Array>;

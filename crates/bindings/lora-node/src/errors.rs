@@ -23,7 +23,7 @@ pub(crate) const INVALID_PARAMS_CODE: &str = "LORA_INVALID_PARAMS";
 /// precise [`LoraErrorCode`] (e.g. `LORA_PARSE`, `LORA_TIMEOUT`,
 /// `LORA_WAL_POISONED`, …) so the JS wrapper can route on it.
 pub(crate) fn format_lora_error(err: &LoraError) -> String {
-    format!("{}: {}", err.code().as_str(), err.message())
+    format!("{}: {}", err.code().as_str(), err.public_message())
 }
 
 /// Format a binding-level error using a precomputed code (used for

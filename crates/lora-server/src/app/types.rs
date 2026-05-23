@@ -6,6 +6,8 @@ pub struct QueryRequest {
     pub query: String,
     #[serde(default)]
     pub format: Option<QueryFormat>,
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
 }
 
 /// Request body for `POST /explain` and `POST /profile`. Mirrors

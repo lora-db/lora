@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Buffer } from "node:buffer";
 import {
   createDatabase,
+  snapshotInfo,
   type Database,
   LoraError,
   isNode,
@@ -228,6 +229,18 @@ describe("Database — basics", () => {
 
     await source.dispose();
     await target.dispose();
+  });
+
+  it("surfaces snapshotInfo codec failures with a snapshot code", async () => {
+    expect(() => snapshotInfo(new Uint8Array([1, 2, 3, 4]))).toThrowError(
+      LoraError,
+    );
+    try {
+      snapshotInfo(new Uint8Array([1, 2, 3, 4]));
+    } catch (e) {
+      expect(e).toBeInstanceOf(LoraError);
+      expect((e as LoraError).code).toBe("LORA_SNAPSHOT_CODEC");
+    }
   });
 });
 
