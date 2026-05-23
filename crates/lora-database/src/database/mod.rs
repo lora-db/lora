@@ -2,7 +2,7 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Error, Result};
 use lora_ast::{Direction, Document};
 use lora_executor::{lora_value_to_property, ExecuteOptions, LoraValue, QueryResult};
 use lora_parser::parse_query;
@@ -47,6 +47,24 @@ pub trait QueryRunner: Send + Sync + 'static {
         query: &str,
         options: Option<ExecuteOptions>,
     ) -> Result<QueryResult, LoraError>;
+
+    /// Execute a query with bound parameters. Implementors that cannot bind
+    /// parameters should reject non-empty maps instead of silently ignoring
+    /// them.
+    fn execute_with_params(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<QueryResult, LoraError> {
+        if params.is_empty() {
+            return self.execute(query, options);
+        }
+        Err(LoraError::new(
+            crate::error::LoraErrorCode::InvalidParams,
+            "query parameters are not supported by this database runner",
+        ))
+    }
 
     /// Compile a query and return its plan without executing it.
     fn explain(
@@ -130,8 +148,8 @@ pub(crate) fn values_to_properties(values: BTreeMap<String, LoraValue>) -> Resul
     values
         .into_iter()
         .map(|(key, value)| {
-            let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
-            Ok((key, value))
+            let value = lora_value_to_property(value).map_err(Error::from)?;
+            Ok((lora_store::intern_owned(key), value))
         })
         .collect()
 }
@@ -260,20 +278,22 @@ where
         f(&*snapshot)
     }
 
-    /// Run a closure with an exclusive borrow of the underlying store. Reserved
-    /// for admin paths (restore, bulk load); regular mutation goes through
-    /// `execute_with_params`. The closure mutates the live graph in place
-    /// via `Arc::make_mut`, so callers don't pay an O(N+E) snapshot clone
-    /// just to overwrite the graph. Concurrent readers, when present,
-    /// force a single CoW clone and keep observing their pre-mutation
-    /// snapshot via the `Arc<S>` they already hold.
+    /// Run a closure with an exclusive borrow of a staged store, then publish
+    /// it atomically after the closure returns. Reserved for admin paths;
+    /// regular mutation goes through `execute_with_params`.
+    ///
+    /// If the closure panics, the staged copy is dropped and the live store is
+    /// left untouched.
     pub fn with_store_mut<R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
-        let _lock = self
+        let _writer_lock = self
             .writer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut handle = self.store.write();
-        f(handle.as_mut())
+        let snapshot = self.store.load_full();
+        let mut staged: S = (*snapshot).clone();
+        let result = f(&mut staged);
+        self.store.store(Arc::new(staged));
+        result
     }
 }
 
@@ -287,6 +307,15 @@ where
         options: Option<ExecuteOptions>,
     ) -> Result<QueryResult, LoraError> {
         Database::execute(self, query, options)
+    }
+
+    fn execute_with_params(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<QueryResult, LoraError> {
+        Database::execute_with_params(self, query, options, params)
     }
 
     fn explain(

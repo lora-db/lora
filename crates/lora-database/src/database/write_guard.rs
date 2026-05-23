@@ -4,13 +4,12 @@
 //! published entry points that wrap it:
 //!
 //! * [`Database::run_with_durable_recorder`] — single canonical write
-//!   shape. Acquires the writer mutex, takes the [`LiveStore`] write
-//!   handle, arms the durable recorder when a WAL is attached,
-//!   reinstalls the recorder on the post-CoW staged graph, runs the
-//!   caller's closure, and either commits via [`Wal::commit_tx`] (and
-//!   triggers managed-snapshot accounting) or aborts. Used by both
-//!   the auto-commit OCC fast path and the admin live-mutate path so
-//!   the WAL semantics live in exactly one place.
+//!   shape. Acquires the writer mutex, clones the current store into a
+//!   staged graph, arms the durable recorder when a WAL is attached,
+//!   runs the caller's closure, and only publishes the staged graph
+//!   after a successful WAL commit. Used by both the auto-commit OCC
+//!   fast path and the admin mutator path so rollback semantics and WAL
+//!   ordering live in exactly one place.
 //! * [`Database::with_logged_store_mut`] — admin entry. Dispatches
 //!   InMemoryGraph traffic to `run_with_durable_recorder`; falls back
 //!   to the pessimistic clone-then-publish path for any other backend.
@@ -26,14 +25,11 @@
 //!   — deadline-aware variants that participate in the cooperative
 //!   query-timeout flow.
 //!
-//! Trade-off shared by `run_with_durable_recorder` and the
-//! `WalAbortPolicy::PoisonIfMutated` flavour of `with_logged_write_guard`:
-//! a query that fails mid-execution can leave the live in-memory graph
-//! partially mutated. The WAL is aborted (no commit record is written),
-//! so durable recovery from snapshot+WAL stays consistent.
+//! Failed staged writes are discarded without publishing. The
+//! `WalAbortPolicy::PoisonIfMutated` fallback remains for paths that
+//! mutate a live graph directly.
 
 use std::any::{Any, TypeId};
-use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, MutexGuard, TryLockError};
 use std::time::Duration;
 
@@ -66,23 +62,6 @@ pub(crate) struct WriteGuard<'db, S> {
     staged: Option<S>,
 }
 
-impl<S> Deref for WriteGuard<'_, S> {
-    type Target = S;
-    fn deref(&self) -> &S {
-        self.staged
-            .as_ref()
-            .expect("staged graph already published or taken")
-    }
-}
-
-impl<S> DerefMut for WriteGuard<'_, S> {
-    fn deref_mut(&mut self) -> &mut S {
-        self.staged
-            .as_mut()
-            .expect("staged graph already published or taken")
-    }
-}
-
 impl<S> WriteGuard<'_, S>
 where
     S: Send + Sync + 'static,
@@ -93,6 +72,18 @@ where
         if let Some(staged) = self.staged.take() {
             self.db.store.store(Arc::new(staged));
         }
+    }
+
+    pub(crate) fn staged_or_error(&self) -> Result<&S> {
+        self.staged
+            .as_ref()
+            .ok_or_else(|| anyhow!("staged graph already published or taken"))
+    }
+
+    pub(crate) fn staged_mut_or_error(&mut self) -> Result<&mut S> {
+        self.staged
+            .as_mut()
+            .ok_or_else(|| anyhow!("staged graph already published or taken"))
     }
 }
 
@@ -184,9 +175,9 @@ where
     /// Admin entry into the live-mutate write path.
     ///
     /// For `InMemoryGraph` (the default backend) this delegates to
-    /// [`Self::run_with_durable_recorder`], so the same shape governs
-    /// both query auto-commit and the direct admin / `graph_api`
-    /// mutators. For other backends — which don't expose
+    /// [`Self::run_with_durable_recorder`], so the same staged shape
+    /// governs both query auto-commit and the direct admin /
+    /// `graph_api` mutators. For other backends — which don't expose
     /// `set_mutation_recorder` and therefore can't redirect buffered
     /// events — we fall back to the pessimistic clone-then-publish
     /// path with `WalAbortPolicy::AbortOnly`.
@@ -202,8 +193,8 @@ where
     }
 
     /// Canonical mutating shape for `InMemoryGraph` writes. Used by
-    /// both the auto-commit OCC fast path and the admin live-mutate
-    /// path so the WAL bracketing lives in exactly one place.
+    /// both the auto-commit OCC fast path and the admin mutator path so
+    /// the WAL bracketing and publish rules live in exactly one place.
     ///
     /// Sequence:
     ///
@@ -212,17 +203,31 @@ where
     /// 2. If a WAL is attached, check it isn't poisoned and `arm` the
     ///    durable recorder so subsequent `MutationEvent`s buffer
     ///    inside it.
-    /// 3. Take the `LiveStore` write handle and `Arc::make_mut` the
-    ///    live graph in place. The CoW clone (when any reader holds a
-    ///    snapshot) drops the recorder, so we reinstall it on the
-    ///    staged copy before running `f`.
-    /// 4. Run `f`. On `Err`: `abort` the recorder (buffered events
-    ///    are discarded; nothing reaches the durable log). On `Ok`:
-    ///    `commit` the recorder, which routes through
-    ///    [`Wal::commit_tx`] for the begin/batch/commit/fsync triple,
-    ///    and trigger managed-snapshot accounting if a commit record
-    ///    was actually written.
+    /// 3. Clone the current store into a staged graph.
+    /// 4. Run `f` against the staged graph. On `Err`: abort the
+    ///    recorder, discard the staged graph, and leave the live graph
+    ///    unchanged. On `Ok`: commit the recorder, trigger
+    ///    managed-snapshot accounting if a commit record was written,
+    ///    reinstall the durable recorder, and publish the staged graph.
     pub(crate) fn run_with_durable_recorder<R>(
+        &self,
+        f: impl FnOnce(&mut S) -> Result<R>,
+    ) -> Result<R> {
+        let guard = self.write_store();
+        self.with_logged_write_guard(guard, WalAbortPolicy::AbortOnly, f)
+    }
+
+    /// Low-overhead mutating shape for plans that are proven simple enough to
+    /// execute directly against the live graph. This preserves the old
+    /// `Arc::make_mut` hot path for CREATE/SET-style writes where staging the
+    /// whole graph would dominate the actual mutation cost.
+    ///
+    /// Complex or fallible plans must use [`Self::run_with_durable_recorder`]
+    /// instead so errors discard a staged graph. If an allegedly-safe live
+    /// plan still fails after emitting WAL events, poison the recorder: the
+    /// live graph may have advanced beyond durable state, so callers should
+    /// recover from snapshot + WAL.
+    pub(crate) fn run_live_fast_with_durable_recorder<R>(
         &self,
         f: impl FnOnce(&mut S) -> Result<R>,
     ) -> Result<R> {
@@ -239,14 +244,11 @@ where
         let mut handle = self.store.write();
 
         let result = {
-            let staged = handle.as_mut();
+            let live = handle.as_mut();
             if let Some(rec) = self.wal.as_ref() {
-                install_recorder_if_inmemory(
-                    staged,
-                    Some(rec.clone() as Arc<dyn MutationRecorder>),
-                );
+                install_recorder_if_inmemory(live, Some(rec.clone() as Arc<dyn MutationRecorder>));
             }
-            f(staged)
+            f(live)
         };
 
         if let Some(rec) = self.wal.as_ref() {
@@ -258,7 +260,10 @@ where
                     }
                 }
                 Err(_) => {
-                    let _ = rec.abort();
+                    let mutated = rec.abort().unwrap_or(false);
+                    if mutated {
+                        rec.poison(crate::database::QUERY_FAILURE_POISON);
+                    }
                 }
             }
         }
@@ -278,7 +283,8 @@ where
     ) -> Result<R> {
         let Some(rec) = self.wal.clone() else {
             // No WAL: just run the closure, publish on success.
-            let result = f(&mut *guard);
+            let staged = guard.staged_mut_or_error()?;
+            let result = f(staged);
             if result.is_ok() {
                 guard.publish();
             }
@@ -289,26 +295,39 @@ where
         // executor's mutations fire into it. `InMemoryGraph::clone`
         // intentionally drops the recorder, so the staged copy starts
         // without one.
-        install_recorder_if_inmemory(&mut *guard, Some(rec.clone() as Arc<dyn MutationRecorder>));
+        {
+            let staged = guard.staged_mut_or_error()?;
+            install_recorder_if_inmemory(staged, Some(rec.clone() as Arc<dyn MutationRecorder>));
+        }
 
         let scope = WalWriteScope::arm(&rec, abort_policy)?;
-        let result = f(&mut *guard);
+        let result = {
+            let staged = guard.staged_mut_or_error()?;
+            f(staged)
+        };
         let wrote_commit = scope.finish(&result)?;
         if wrote_commit {
-            self.observe_snapshot_commit_if_needed(&*guard, &rec)?;
+            let staged = guard.staged_or_error()?;
+            self.observe_snapshot_commit_if_needed(staged, &rec)?;
         }
 
         // Strip the per-mutation recorder before publish — the new live
         // store carries the durable recorder reinstalled below.
-        install_recorder_if_inmemory(&mut *guard, None);
+        {
+            let staged = guard.staged_mut_or_error()?;
+            install_recorder_if_inmemory(staged, None);
+        }
 
         if result.is_ok() {
             // Reinstall the durable recorder on staged so the new live
             // graph keeps observing mutations after the swap.
-            install_recorder_if_inmemory(
-                &mut *guard,
-                Some(rec.clone() as Arc<dyn MutationRecorder>),
-            );
+            {
+                let staged = guard.staged_mut_or_error()?;
+                install_recorder_if_inmemory(
+                    staged,
+                    Some(rec.clone() as Arc<dyn MutationRecorder>),
+                );
+            }
             guard.publish();
         }
         result

@@ -270,7 +270,9 @@ impl Database<InMemoryGraph> {
         let mut guard = self.write_store();
         let (payload, info) = decode_snapshot_bytes(bytes, credentials)?;
         let meta = snapshot_info_to_meta(info);
-        guard.load_snapshot_payload(payload)?;
+        guard
+            .staged_mut_or_error()?
+            .load_snapshot_payload(payload)?;
         // Publish the staged graph atomically into the live store; dropping
         // the guard without `publish` would discard the restore (rollback
         // semantics on the writer lease).
@@ -323,7 +325,7 @@ impl Database<InMemoryGraph> {
             .open(&tmp)?;
         let tmp_guard = TempFileGuard::new(tmp.clone());
         let mut writer = BufWriter::new(file);
-        let payload = guard.snapshot_payload();
+        let payload = guard.staged_or_error()?.snapshot_payload();
         let options = SnapshotOptions {
             compression: Compression::None,
             encryption: None,
@@ -376,7 +378,9 @@ impl Database<InMemoryGraph> {
             )
         })?;
         let guard = self.write_store();
-        snapshots.checkpoint(&guard, recorder).map_err(Into::into)
+        snapshots
+            .checkpoint(guard.staged_or_error()?, recorder)
+            .map_err(Into::into)
     }
 }
 

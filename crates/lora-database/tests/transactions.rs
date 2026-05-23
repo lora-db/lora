@@ -198,6 +198,47 @@ fn wal_replays_committed_transaction_but_not_rolled_back_transaction() {
 }
 
 #[test]
+fn wal_auto_commit_delete_failure_does_not_publish_partial_deletes() {
+    let dir = TempWalDir::new("auto-delete-preflight");
+
+    {
+        let db = Database::open_with_wal(WalConfig::enabled(dir.path.clone())).unwrap();
+        db.execute(
+            "CREATE (:D {id: 1}), (:D {id: 2}), (:Other {id: 3})",
+            rows_options(),
+        )
+        .unwrap();
+        db.execute(
+            "MATCH (d:D {id: 2}), (o:Other {id: 3}) CREATE (d)-[:R]->(o)",
+            rows_options(),
+        )
+        .unwrap();
+
+        let err = db
+            .execute("MATCH (n:D) DELETE n", rows_options())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("still has relationships"),
+            "expected relationship delete guard, got: {err}"
+        );
+
+        let rows = rows_json(
+            db.execute("MATCH (n:D) RETURN n.id AS id ORDER BY id", rows_options())
+                .unwrap(),
+        );
+        assert_eq!(rows.len(), 2);
+    }
+
+    let recovered = Database::open_with_wal(WalConfig::enabled(dir.path.clone())).unwrap();
+    let rows = rows_json(
+        recovered
+            .execute("MATCH (n:D) RETURN n.id AS id ORDER BY id", rows_options())
+            .unwrap(),
+    );
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
 fn transaction_with_params() {
     let db = Database::in_memory();
     let mut params = std::collections::BTreeMap::new();
@@ -362,6 +403,7 @@ fn transaction_cursor_active_blocks_commit() {
             .execute("CREATE (:Marker)", rows_options())
             .expect_err("a second statement must be rejected while a cursor is active");
         assert!(err.to_string().contains("cursor"));
+        assert_eq!(err.code(), lora_database::LoraErrorCode::TransactionFailure);
     }
     // Cursor dropped — tx is usable again.
     tx.commit().unwrap();
@@ -488,7 +530,9 @@ fn wal_replay_excludes_failed_statement_inside_committed_transaction() {
     {
         let db = Database::open_with_wal(WalConfig::enabled(dir.path.clone())).unwrap();
 
-        let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+        let mut tx = db
+            .begin_transaction(lora_database::TransactionMode::ReadWrite)
+            .unwrap();
         tx.execute("CREATE (:Person {name:'Ada'})", rows_options())
             .unwrap();
         // A failed statement inside a tx rolls back only that statement.
@@ -522,7 +566,9 @@ fn wal_replay_excludes_dropped_stream_inside_committed_transaction() {
     {
         let db = Database::open_with_wal(WalConfig::enabled(dir.path.clone())).unwrap();
 
-        let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+        let mut tx = db
+            .begin_transaction(lora_database::TransactionMode::ReadWrite)
+            .unwrap();
         tx.execute("CREATE (:Person {name:'Ada'})", rows_options())
             .unwrap();
         {
@@ -1408,7 +1454,7 @@ mod streaming_writes {
     //! deferred — the workaround is simple enough and the strict
     //! check is valuable in production.
 
-    use lora_database::Database;
+    use lora_database::{Database, TransactionMode};
     use serde_json::Value as JsonValue;
 
     use super::{rows_json, rows_options};
@@ -2104,5 +2150,34 @@ mod streaming_writes {
         let rows = rows_json(result);
         assert_eq!(rows[0].get("c").and_then(JsonValue::as_i64).unwrap(), 2);
         assert_eq!(rows[0].get("s").and_then(JsonValue::as_i64).unwrap(), 5);
+    }
+
+    #[test]
+    fn failed_transaction_statement_restores_savepoint() {
+        let db = Database::in_memory();
+        db.execute(
+            "CREATE CONSTRAINT user_id FOR (u:User) REQUIRE u.id IS UNIQUE",
+            rows_options(),
+        )
+        .unwrap();
+
+        let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+        tx.execute("CREATE (:User {id: 1})", rows_options())
+            .unwrap();
+
+        let err = tx
+            .execute("CREATE (:User {id: 2}), (:User {id: 1})", rows_options())
+            .unwrap_err();
+        assert_eq!(err.code(), lora_database::LoraErrorCode::UniqueConstraint);
+
+        tx.commit().unwrap();
+        let rows = rows_json(
+            db.execute(
+                "MATCH (u:User) RETURN u.id AS id ORDER BY id",
+                rows_options(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(rows, vec![serde_json::json!({ "id": 1 })]);
     }
 }

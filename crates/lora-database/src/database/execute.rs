@@ -75,10 +75,9 @@ where
     ///    mutation record, and `TxCommit` only when mutations occurred,
     ///    then applies the WAL's configured single-thread flush policy.
     /// 4. On Err, `recorder.abort()` clears the pending batch. The
-    ///    engine has no rollback, so the in-memory state may already
-    ///    be partially mutated; the live handle is quarantined while
-    ///    durable recovery stays atomic because no committed batch was
-    ///    written.
+    ///    staged graph is discarded without publishing, so the live
+    ///    in-memory state and durable WAL both remain at the last
+    ///    successful commit.
     /// 5. The recorder's poisoned flag is polled once. If set, the query
     ///    fails loudly with the durability error so the caller can act on it;
     ///    the WAL refuses further appends until the operator restarts the

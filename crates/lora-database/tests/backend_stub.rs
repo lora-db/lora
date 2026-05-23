@@ -152,7 +152,11 @@ impl GraphStorage for OwnedMapStore {
 }
 
 impl GraphStorageMut for OwnedMapStore {
-    fn create_node(&mut self, labels: Vec<String>, properties: Properties) -> NodeRecord {
+    fn try_create_node(
+        &mut self,
+        labels: Vec<String>,
+        properties: Properties,
+    ) -> Option<NodeRecord> {
         let id = self.alloc_node_id();
         let labels: Vec<String> = {
             let mut seen = BTreeSet::new();
@@ -169,7 +173,7 @@ impl GraphStorageMut for OwnedMapStore {
             properties,
         };
         self.nodes.insert(id, record.clone());
-        record
+        Some(record)
     }
 
     fn create_relationship(
@@ -201,7 +205,7 @@ impl GraphStorageMut for OwnedMapStore {
     fn set_node_property(&mut self, node_id: NodeId, key: String, value: PropertyValue) -> bool {
         match self.nodes.get_mut(&node_id) {
             Some(n) => {
-                n.properties.insert(key, value);
+                n.properties.insert(lora_store::intern_owned(key), value);
                 true
             }
             None => false,
@@ -251,7 +255,7 @@ impl GraphStorageMut for OwnedMapStore {
     ) -> bool {
         match self.relationships.get_mut(&rel_id) {
             Some(r) => {
-                r.properties.insert(key, value);
+                r.properties.insert(lora_store::intern_owned(key), value);
                 true
             }
             None => false,

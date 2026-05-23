@@ -601,61 +601,56 @@ fn read_only_queries_do_not_grow_wal_or_advance_lsn() {
 
 #[test]
 fn aborted_query_does_not_persist_partial_mutation() {
-    // The engine has no rollback, so a query that mutates and then
-    // errors leaves partial in-memory state. The WAL must mark that
-    // transaction aborted so recovery from a fresh process drops it.
+    // A query that mutates and then errors must leave both the live
+    // in-memory state and recovered WAL state at the previous commit.
     let dir = TmpDir::new("aborted");
 
     {
         let db = Database::open_with_wal(enabled(dir.path())).unwrap();
         db.execute("CREATE (:User {id: 1})", rows()).unwrap();
 
-        // Pick a query that compiles but fails at execute time.
-        // Creating a relationship with an unknown variable surfaces
-        // a runtime error; specifics are less important than the
-        // fact that the resulting Err triggers the abort branch.
-        let bad = db.execute("MATCH (u:User) CREATE (u)-[:KNOWS]->(missing)", rows());
-        // The query may either reject at semantic-analysis time
-        // (Err) or succeed by creating the missing node implicitly,
-        // depending on planner specifics. We tolerate both — the
-        // assertion is on what *recovery* produces.
-        let _ = bad;
+        let err = db
+            .execute("CREATE (a)-[:R]->(b) WITH a DELETE a", rows())
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("relationship") || msg.contains("DETACH"),
+            "expected the constraint failure to surface, got {err}"
+        );
+
+        assert_eq!(
+            db.node_count(),
+            1,
+            "failed auto-commit query must not publish staged nodes"
+        );
+        assert_eq!(
+            db.relationship_count(),
+            0,
+            "failed auto-commit query must not publish staged relationships"
+        );
     }
 
-    // Recovery should produce a graph consistent with what was
-    // committed. If the bad query was rejected pre-execute, only
-    // the first User exists; if it succeeded, both nodes exist plus
-    // the relationship. Either way, recovery state must equal a
-    // fresh `Database::open_with_wal` reading the same WAL.
     let recovered = Database::open_with_wal(enabled(dir.path())).unwrap();
-    let count = recovered.node_count();
-    // Run the same CREATE on a *different* WAL-disabled DB and
-    // compare counts to confirm reproducibility — we don't care
-    // about the exact number, only that recovery is deterministic.
-    drop(recovered);
-    let again = Database::open_with_wal(enabled(dir.path())).unwrap();
-    assert_eq!(again.node_count(), count);
+    assert_eq!(recovered.node_count(), 1);
+    assert_eq!(recovered.relationship_count(), 0);
 }
 
 #[test]
-fn failed_mutating_query_leaves_live_handle_usable_under_occ() {
-    // Auto-commit mutating queries run against the live store in
-    // place: when the executor fails partway through, in-memory
-    // state may reflect mutations the executor applied before the
-    // error. The buffered mutation events are *not* committed to
-    // the WAL on failure, so durable state stays consistent and a
-    // recovery reopen replays only the genuinely-committed
-    // transactions.
+fn failed_mutating_query_rolls_back_live_state_and_keeps_handle_usable() {
+    // Auto-commit mutating queries run against a staged graph: when
+    // the executor fails partway through, the staged graph is dropped
+    // without publishing and buffered mutation events are not committed
+    // to the WAL. Live state and durable recovery both observe only
+    // genuinely committed transactions.
     //
     // This test guards two invariants:
-    //   1. The handle stays usable after a failed query — the WAL
+    //   1. The failed query does not leak partial nodes or relationships
+    //      into the live graph.
+    //   2. The handle stays usable after a failed query — the WAL
     //      is not poisoned, follow-up reads/writes succeed.
-    //   2. Recovery from snapshot+WAL observes only committed
+    //   3. Recovery from snapshot+WAL observes only committed
     //      transactions, not the partial in-memory state from the
     //      aborted query.
-    //
-    // Callers that need transactional rollback for individual
-    // statements should use explicit `db.begin_transaction()`.
     let dir = TmpDir::new("abort-keeps-live-usable");
 
     {
@@ -672,6 +667,17 @@ fn failed_mutating_query_leaves_live_handle_usable_under_occ() {
         assert!(
             msg.contains("relationship") || msg.contains("DETACH"),
             "expected the constraint failure to surface, got {err}"
+        );
+
+        assert_eq!(
+            db.node_count(),
+            0,
+            "failed auto-commit write must not publish partially-created nodes"
+        );
+        assert_eq!(
+            db.relationship_count(),
+            0,
+            "failed auto-commit write must not publish partially-created relationships"
         );
 
         // The handle is still usable — no poisoning. Reads work and
@@ -804,8 +810,9 @@ fn replay_rejects_relationship_with_missing_endpoint() {
         Err(err) => err,
     };
     assert!(
-        err.to_string().contains("missing source node 10"),
-        "unexpected recovery error: {err}"
+        err.debug_context().contains("missing source node 10"),
+        "unexpected recovery error: {}",
+        err.debug_context()
     );
 }
 

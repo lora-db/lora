@@ -83,6 +83,7 @@ impl<S: Clone> LiveStore<S> {
     /// The caller serializes with other writers via [`Database::writer`].
     /// The returned guard, when dropped, releases the lock and the
     /// post-mutation state becomes the live state.
+    #[allow(dead_code)]
     pub(crate) fn write(&self) -> WriteHandle<'_, S> {
         let guard = self.inner.write().unwrap_or_else(|p| p.into_inner());
         WriteHandle {
@@ -95,6 +96,7 @@ impl<S: Clone> LiveStore<S> {
 /// Writer's exclusive access to the live graph. Mutations happen
 /// in-place via `Arc::make_mut`; on drop, the post-mutation state is
 /// already live, so there's no explicit "publish" step.
+#[allow(dead_code)]
 pub(crate) struct WriteHandle<'a, S> {
     guard: RwLockWriteGuard<'a, Arc<S>>,
     epoch: &'a AtomicU64,
@@ -104,6 +106,7 @@ impl<S: Clone> WriteHandle<'_, S> {
     /// `&mut` to the live state. First call after a snapshot reader
     /// took an `Arc<S>` clone may pay one graph clone; subsequent calls
     /// while this handle is alive are free.
+    #[allow(dead_code)]
     pub(crate) fn as_mut(&mut self) -> &mut S {
         Arc::make_mut(&mut *self.guard)
     }
@@ -111,6 +114,7 @@ impl<S: Clone> WriteHandle<'_, S> {
     /// Snapshot the current Arc without releasing the write lock.
     /// Used by paths that need to feed the post-mutation state to
     /// `observe_commit` while the writer mutex is still held.
+    #[allow(dead_code)]
     pub(crate) fn snapshot(&self) -> Arc<S> {
         Arc::clone(&*self.guard)
     }

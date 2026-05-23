@@ -1,13 +1,18 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{rejection::JsonRejection, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use lora_database::{
     ExecuteOptions, LoraError, LoraErrorCode, LoraValue, PlanShape, PlanTreeNode, QueryPlan,
     QueryProfile, QueryRunner,
 };
 
-use super::errors::lora_error_response;
+use super::errors::{json_rejection_error, lora_error_response};
 use super::types::{HealthResponse, PlanRequest, QueryRequest};
 
 pub(crate) async fn health() -> Json<HealthResponse> {
@@ -16,16 +21,24 @@ pub(crate) async fn health() -> Json<HealthResponse> {
 
 pub(crate) async fn query<R>(
     State(db): State<Arc<R>>,
-    Json(req): Json<QueryRequest>,
+    body: Result<Json<QueryRequest>, JsonRejection>,
 ) -> impl IntoResponse
 where
     R: QueryRunner,
 {
+    let req = match parse_json(body) {
+        Ok(req) => req,
+        Err(err) => return lora_error_response(err),
+    };
+    let params = match parse_params(req.params) {
+        Ok(p) => p,
+        Err(err) => return lora_error_response(err),
+    };
     let options = req.format.map(|format| ExecuteOptions {
         format: format.into(),
     });
 
-    match db.execute(&req.query, options) {
+    match db.execute_with_params(&req.query, options, params.unwrap_or_default()) {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(err) => lora_error_response(err),
     }
@@ -36,12 +49,16 @@ where
 /// untouched.
 pub(crate) async fn explain<R>(
     State(db): State<Arc<R>>,
-    Json(req): Json<PlanRequest>,
+    body: Result<Json<PlanRequest>, JsonRejection>,
 ) -> impl IntoResponse
 where
     R: QueryRunner,
 {
-    let params = match parse_plan_params(req.params) {
+    let req = match parse_json(body) {
+        Ok(req) => req,
+        Err(err) => return lora_error_response(err),
+    };
+    let params = match parse_params(req.params) {
         Ok(p) => p,
         Err(err) => return lora_error_response(err),
     };
@@ -59,12 +76,16 @@ where
 /// inspect a mutating plan without running it.
 pub(crate) async fn profile<R>(
     State(db): State<Arc<R>>,
-    Json(req): Json<PlanRequest>,
+    body: Result<Json<PlanRequest>, JsonRejection>,
 ) -> impl IntoResponse
 where
     R: QueryRunner,
 {
-    let params = match parse_plan_params(req.params) {
+    let req = match parse_json(body) {
+        Ok(req) => req,
+        Err(err) => return lora_error_response(err),
+    };
+    let params = match parse_params(req.params) {
         Ok(p) => p,
         Err(err) => return lora_error_response(err),
     };
@@ -74,7 +95,14 @@ where
     }
 }
 
-fn parse_plan_params(
+fn parse_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, LoraError> {
+    match body {
+        Ok(Json(value)) => Ok(value),
+        Err(rejection) => Err(json_rejection_error(rejection)),
+    }
+}
+
+fn parse_params(
     raw: Option<serde_json::Value>,
 ) -> Result<Option<BTreeMap<String, LoraValue>>, LoraError> {
     let Some(value) = raw else {
