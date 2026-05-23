@@ -43,12 +43,12 @@ const MAX_CELLS_TO_ENUMERATE: u128 = 100_000;
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct PointRegistry {
-    by_scope: HashMap<ScopedPropertyKey, PointScope>,
+    pub(super) by_scope: HashMap<ScopedPropertyKey, PointScope>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct PointScope {
-    grid: PointGrid,
+    pub(super) grid: PointGrid,
     refcount: u32,
 }
 
@@ -64,7 +64,7 @@ impl Default for PointScope {
 #[derive(Debug, Clone)]
 pub(super) struct PointGrid {
     cell_size: f64,
-    cells: HashMap<(i32, i32), Vec<(LoraPoint, u64)>>,
+    pub(super) cells: HashMap<(i32, i32), Vec<(LoraPoint, u64)>>,
 }
 
 impl PointGrid {

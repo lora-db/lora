@@ -35,13 +35,13 @@ use super::property_index::PropertyIndexKey;
 /// across labels.
 #[derive(Debug, Default, Clone)]
 pub(super) struct SortedPropertyIndex {
-    by_scope: BTreeMap<ScopedPropertyKey, SortedScope>,
+    pub(super) by_scope: BTreeMap<ScopedPropertyKey, SortedScope>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct SortedScope {
     /// Keyed by sortable property key. Values are ids in that bucket.
-    by_value: BTreeMap<PropertyIndexKey, BTreeSet<u64>>,
+    pub(super) by_value: BTreeMap<PropertyIndexKey, BTreeSet<u64>>,
     /// Refcount of catalog entries pointing at this scope.
     refcount: u32,
 }

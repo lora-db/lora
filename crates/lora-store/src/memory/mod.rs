@@ -21,6 +21,7 @@ mod graph;
 mod hnsw;
 mod impls;
 mod index_catalog;
+mod mem_report;
 mod point_index;
 mod property_index;
 mod secondary_index_maintenance;
@@ -45,5 +46,6 @@ pub use index_catalog::{
     IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind,
     StoredIndexState,
 };
+pub use mem_report::{property_value_heap_bytes, MemoryReport};
 pub use stats::GraphStats;
 pub use vector_index::{VectorBackendSnapshot, VectorIndexSnapshot};

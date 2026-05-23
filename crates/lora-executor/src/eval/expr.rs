@@ -242,14 +242,14 @@ pub fn eval_expr<S: GraphStorage>(
                             LoraValue::Node(id) => {
                                 ctx.storage.with_node(*id, |node| {
                                     for (k, v) in &node.properties {
-                                        result.insert(k.clone(), LoraValue::from(v));
+                                        result.insert(k.to_string(), LoraValue::from(v));
                                     }
                                 });
                             }
                             LoraValue::Relationship(id) => {
                                 ctx.storage.with_relationship(*id, |rel| {
                                     for (k, v) in &rel.properties {
-                                        result.insert(k.clone(), LoraValue::from(v));
+                                        result.insert(k.to_string(), LoraValue::from(v));
                                     }
                                 });
                             }
@@ -629,7 +629,7 @@ fn node_matches_labels(node_labels: &[String], groups: &[Vec<String>]) -> bool {
 }
 
 fn node_matches_properties<S: GraphStorage>(
-    props: &BTreeMap<String, lora_store::PropertyValue>,
+    props: &lora_store::Properties,
     expected: &Option<ResolvedExpr>,
     row: &Row,
     ctx: &EvalContext<'_, S>,
@@ -640,8 +640,10 @@ fn node_matches_properties<S: GraphStorage>(
     let expected = eval_expr(props_expr, row, ctx);
     if let LoraValue::Map(exp) = expected {
         exp.iter().all(|(k, v)| {
+            // BTreeMap<Arc<str>, _>::get accepts &str via Borrow; the
+            // expected key is `&String`, so deref to &str first.
             props
-                .get(k)
+                .get(k.as_str())
                 .map(|pv| crate::executor::value_matches_property_value(v, pv))
                 .unwrap_or(false)
         })

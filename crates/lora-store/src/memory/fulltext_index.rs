@@ -131,10 +131,10 @@ pub(super) struct FulltextIndex {
     pub properties: Vec<String>,
     /// `term → entity → term_frequency`. Term frequency is the count of
     /// tokens for the entity across all covered properties.
-    postings: BTreeMap<String, BTreeMap<u64, u32>>,
+    pub(super) postings: BTreeMap<String, BTreeMap<u64, u32>>,
     /// `entity → set<term>` reverse map so re-indexing can remove the
     /// stale contribution before adding the new one.
-    entity_terms: BTreeMap<u64, BTreeSet<String>>,
+    pub(super) entity_terms: BTreeMap<u64, BTreeSet<String>>,
 }
 
 impl FulltextIndex {
@@ -268,7 +268,7 @@ pub(super) fn string_property_term_counts(properties: &Properties) -> PropertyTe
     let mut out = PropertyTermCounts::new();
     for (key, value) in properties {
         if let crate::PropertyValue::String(value) = value {
-            out.insert(key.clone(), tokenize_to_term_counts(value));
+            out.insert(key.to_string(), tokenize_to_term_counts(value));
         }
     }
     out

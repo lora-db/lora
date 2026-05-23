@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use lora_ast::Direction;
 
@@ -11,7 +12,20 @@ use super::PropertyValue;
 pub type NodeId = u64;
 pub type RelationshipId = u64;
 
-pub type Properties = BTreeMap<String, PropertyValue>;
+/// A node's or relationship's property bag.
+///
+/// Keys are `Arc<str>` rather than `String` so that every node sharing
+/// a property name reuses one byte buffer instead of duplicating it.
+/// On a 5M-row × 8-column import that turns ~40M heap copies of the
+/// column names into ~8 (one per distinct key) plus refcount bumps.
+/// Lookups still accept `&str` because `Arc<str>: Borrow<str>`, so
+/// most reader code paths are untouched.
+///
+/// Construction at hot paths should route keys through
+/// [`crate::intern`] so the `Arc<str>` instances actually share their
+/// backing storage; calling `Arc::from(s)` directly works but
+/// allocates a fresh buffer per call.
+pub type Properties = BTreeMap<Arc<str>, PropertyValue>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeRecord {

@@ -62,7 +62,7 @@ where
             store.node_properties(id).map(|props| {
                 props
                     .into_iter()
-                    .map(|(key, value)| (key, LoraValue::from(value)))
+                    .map(|(key, value)| (key.to_string(), LoraValue::from(value)))
                     .collect()
             })
         })
@@ -112,7 +112,7 @@ where
             store.relationship_properties(id).map(|props| {
                 props
                     .into_iter()
-                    .map(|(key, value)| (key, LoraValue::from(value)))
+                    .map(|(key, value)| (key.to_string(), LoraValue::from(value)))
                     .collect()
             })
         })
@@ -186,7 +186,7 @@ where
         key: &str,
         value: LoraValue,
     ) -> Result<Vec<NodeId>> {
-        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        let value = lora_value_to_property(value).map_err(anyhow::Error::from)?;
         Ok(self.with_store(|store| store.find_node_ids_by_property(label, key, &value)))
     }
 
@@ -196,7 +196,7 @@ where
         key: &str,
         value: LoraValue,
     ) -> Result<Vec<RelationshipId>> {
-        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        let value = lora_value_to_property(value).map_err(anyhow::Error::from)?;
         Ok(self.with_store(|store| store.find_relationship_ids_by_property(rel_type, key, &value)))
     }
 
@@ -208,8 +208,12 @@ where
         properties: BTreeMap<String, LoraValue>,
     ) -> Result<NodeRecord, LoraError> {
         let properties = values_to_properties(properties).map_err(LoraError::from_anyhow)?;
-        self.with_logged_store_mut(|store| Ok(store.create_node(labels, properties)))
-            .map_err(LoraError::from_anyhow)
+        self.with_logged_store_mut(|store| {
+            store
+                .try_create_node(labels, properties)
+                .ok_or_else(|| anyhow!("failed to create node because storage is exhausted"))
+        })
+        .map_err(LoraError::from_anyhow)
     }
 
     pub fn graph_create_relationship(
@@ -232,7 +236,7 @@ where
         key: String,
         value: LoraValue,
     ) -> Result<bool, LoraError> {
-        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        let value = lora_value_to_property(value).map_err(anyhow::Error::from)?;
         self.with_logged_store_mut(|store| Ok(store.set_node_property(node_id, key, value)))
             .map_err(LoraError::from_anyhow)
     }
@@ -291,7 +295,7 @@ where
         key: String,
         value: LoraValue,
     ) -> Result<bool, LoraError> {
-        let value = lora_value_to_property(value).map_err(|e| anyhow!(e))?;
+        let value = lora_value_to_property(value).map_err(anyhow::Error::from)?;
         self.with_logged_store_mut(|store| Ok(store.set_relationship_property(rel_id, key, value)))
             .map_err(LoraError::from_anyhow)
     }

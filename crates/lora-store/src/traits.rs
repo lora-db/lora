@@ -353,7 +353,7 @@ pub trait GraphStorage {
         for id in self.all_node_ids() {
             self.with_node(id, |n| {
                 for key in n.properties.keys() {
-                    keys.insert(key.clone());
+                    keys.insert(key.to_string());
                 }
             });
         }
@@ -368,7 +368,7 @@ pub trait GraphStorage {
         for id in self.all_rel_ids() {
             self.with_relationship(id, |r| {
                 for key in r.properties.keys() {
-                    keys.insert(key.clone());
+                    keys.insert(key.to_string());
                 }
             });
         }
@@ -408,7 +408,7 @@ pub trait GraphStorage {
         for id in self.node_ids_by_label(label) {
             self.with_node(id, |n| {
                 for key in n.properties.keys() {
-                    keys.insert(key.clone());
+                    keys.insert(key.to_string());
                 }
             });
         }
@@ -423,7 +423,7 @@ pub trait GraphStorage {
         for id in self.rel_ids_by_type(rel_type) {
             self.with_relationship(id, |r| {
                 for key in r.properties.keys() {
-                    keys.insert(key.clone());
+                    keys.insert(key.to_string());
                 }
             });
         }
@@ -932,7 +932,27 @@ pub trait BorrowedGraphStorage: GraphStorage {
 pub trait GraphStorageMut: GraphStorage {
     // ---------- Creation ----------
 
-    fn create_node(&mut self, labels: Vec<String>, properties: Properties) -> NodeRecord;
+    fn try_create_node(
+        &mut self,
+        labels: Vec<String>,
+        properties: Properties,
+    ) -> Option<NodeRecord>;
+
+    /// Compatibility helper for callers that historically used the
+    /// infallible creation surface. Query and binding paths should prefer
+    /// [`Self::try_create_node`] so allocation/id exhaustion can surface as
+    /// an ordinary error instead of a process panic.
+    fn create_node(&mut self, labels: Vec<String>, properties: Properties) -> NodeRecord
+    where
+        Self: Sized,
+    {
+        self.try_create_node(labels, properties)
+            .unwrap_or_else(|| NodeRecord {
+                id: NodeId::MAX,
+                labels: Vec::new(),
+                properties: Properties::new(),
+            })
+    }
 
     fn create_relationship(
         &mut self,
@@ -1059,7 +1079,7 @@ pub trait GraphStorageMut: GraphStorage {
         }
 
         for (k, v) in properties {
-            self.set_node_property(node_id, k, v);
+            self.set_node_property(node_id, k.to_string(), v);
         }
 
         true
@@ -1071,7 +1091,7 @@ pub trait GraphStorageMut: GraphStorage {
         }
 
         for (k, v) in properties {
-            self.set_node_property(node_id, k, v);
+            self.set_node_property(node_id, k.to_string(), v);
         }
 
         true
@@ -1123,7 +1143,7 @@ pub trait GraphStorageMut: GraphStorage {
         }
 
         for (k, v) in properties {
-            self.set_relationship_property(rel_id, k, v);
+            self.set_relationship_property(rel_id, k.to_string(), v);
         }
 
         true
@@ -1139,7 +1159,7 @@ pub trait GraphStorageMut: GraphStorage {
         }
 
         for (k, v) in properties {
-            self.set_relationship_property(rel_id, k, v);
+            self.set_relationship_property(rel_id, k.to_string(), v);
         }
 
         true

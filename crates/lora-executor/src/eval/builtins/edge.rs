@@ -51,7 +51,7 @@ fn keys<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> LoraVa
                 LoraValue::List(
                     r.properties
                         .keys()
-                        .map(|k| LoraValue::String(k.clone()))
+                        .map(|k| LoraValue::String(k.to_string()))
                         .collect(),
                 )
             })
@@ -68,7 +68,7 @@ fn properties<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> 
                 LoraValue::Map(
                     r.properties
                         .iter()
-                        .map(|(k, v)| (k.clone(), LoraValue::from(v)))
+                        .map(|(k, v)| (k.to_string(), LoraValue::from(v)))
                         .collect(),
                 )
             })

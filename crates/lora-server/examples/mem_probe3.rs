@@ -1,4 +1,4 @@
-use lora_database::{Database, ExecuteOptions, ResultFormat};
+use lora_database::{Database, ExecuteOptions, InMemoryGraph, ResultFormat};
 
 fn rss_kb() -> u64 {
     let pid = std::process::id();
@@ -17,6 +17,14 @@ fn opts() -> Option<ExecuteOptions> {
     })
 }
 
+/// Print one labelled snapshot — RSS plus the `MemoryReport` summary
+/// — so the bulk-create benchmark surfaces both process-wide growth
+/// and the per-component attribution from the engine.
+fn snapshot(label: &str, svc: &Database<InMemoryGraph>) {
+    let summary = svc.with_store(|g| g.memory_estimate().summary());
+    println!("[{label}] rss_kb={} {summary}", rss_kb());
+}
+
 fn main() {
     let n: usize = std::env::args()
         .nth(1)
@@ -26,14 +34,14 @@ fn main() {
     println!("n={} pattern={}", n, pattern);
 
     let svc = Database::in_memory();
-    println!("start: {}", rss_kb());
+    snapshot("start", &svc);
 
     svc.execute(
         &format!("UNWIND range(0, {}) AS i CREATE (:Chain {{idx: i}})", n - 1),
         opts(),
     )
     .unwrap();
-    println!("after nodes: {}", rss_kb());
+    snapshot("after nodes", &svc);
 
     let q: String = match pattern.as_str() {
         "original" => format!("UNWIND range(0, {}) AS i MATCH (a:Chain {{idx: i}}), (b:Chain {{idx: i+1}}) CREATE (a)-[:NEXT]->(b)", n-2),
@@ -48,13 +56,13 @@ fn main() {
                 svc.execute(&format!("UNWIND range({i}, {}) AS i MATCH (a:Chain {{idx: i}}), (b:Chain {{idx: i+1}}) CREATE (a)-[:NEXT]->(b)", end-1), opts()).unwrap();
                 i = end;
             }
-            println!("after edges (small_batch=100): {}", rss_kb());
+            snapshot("after edges (small_batch=100)", &svc);
             return;
         }
         _ => panic!()
     };
     svc.execute(&q, opts()).unwrap();
-    println!("after edges ({}): {}", pattern, rss_kb());
+    snapshot(&format!("after edges ({pattern})"), &svc);
 
     // Now verify edge count
     let r = svc

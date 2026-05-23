@@ -48,6 +48,9 @@ pub enum ExecutorError {
         rel_type: String,
     },
 
+    #[error("failed to create node because storage is exhausted")]
+    NodeCreateFailed,
+
     #[error("cannot delete node {node_id} because it still has relationships; use DETACH DELETE to remove the node and its relationships")]
     DeleteNodeWithRelationships { node_id: NodeId },
 

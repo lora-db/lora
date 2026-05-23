@@ -73,7 +73,8 @@ pub use lora_snapshot::{
     SnapshotEncryption, SnapshotInfo, SnapshotOptions, SnapshotPassword, DATABASE_SNAPSHOT_MAGIC,
 };
 pub use lora_store::{
-    NodeId, NodeRecord, RelationshipId, RelationshipRecord, SnapshotError, SnapshotMeta,
+    GraphStats, MemoryReport, NodeId, NodeRecord, RelationshipId, RelationshipRecord,
+    SnapshotError, SnapshotMeta,
 };
 
 // Standalone parsing entry point (does not require building a `Database`).

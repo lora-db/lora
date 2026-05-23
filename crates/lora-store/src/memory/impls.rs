@@ -613,7 +613,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
         for node in self.iter_node_records() {
             for key in node.properties.keys() {
-                keys.insert(key.clone());
+                keys.insert(key.to_string());
             }
         }
         keys.into_iter().collect()
@@ -625,7 +625,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
         for rel in self.iter_rel_records() {
             for key in rel.properties.keys() {
-                keys.insert(key.clone());
+                keys.insert(key.to_string());
             }
         }
         keys.into_iter().collect()
@@ -638,7 +638,7 @@ impl GraphStorage for InMemoryGraph {
             for &id in ids {
                 if let Some(node) = self.node_at(id) {
                     for key in node.properties.keys() {
-                        keys.insert(key.clone());
+                        keys.insert(key.to_string());
                     }
                 }
             }
@@ -654,7 +654,7 @@ impl GraphStorage for InMemoryGraph {
             for &id in ids {
                 if let Some(rel) = self.rel_at(id) {
                     for key in rel.properties.keys() {
-                        keys.insert(key.clone());
+                        keys.insert(key.to_string());
                     }
                 }
             }
@@ -884,8 +884,12 @@ impl BorrowedGraphStorage for InMemoryGraph {
 }
 
 impl GraphStorageMut for InMemoryGraph {
-    fn create_node(&mut self, labels: Vec<String>, properties: Properties) -> NodeRecord {
-        let (id, idx) = self.reserve_next_node_slot();
+    fn try_create_node(
+        &mut self,
+        labels: Vec<String>,
+        properties: Properties,
+    ) -> Option<NodeRecord> {
+        let (id, idx) = self.try_reserve_next_node_slot()?;
         let labels = Self::normalize_labels(labels);
 
         let node = NodeRecord {
@@ -907,7 +911,7 @@ impl GraphStorageMut for InMemoryGraph {
             properties: node.properties.clone(),
         });
 
-        node
+        Some(node)
     }
 
     fn create_relationship(
@@ -955,7 +959,17 @@ impl GraphStorageMut for InMemoryGraph {
         }
 
         let old = match self.node_at_mut(node_id) {
-            Some(node) => node.properties.insert(key.clone(), value.clone()),
+            // Reuse the existing key Arc when this is an overwrite — the
+            // common SET-existing-property path then skips the intern
+            // table entirely (and the read-lock + hash lookup it costs).
+            Some(node) => {
+                if let Some(slot) = node.properties.get_mut(key.as_str()) {
+                    Some(std::mem::replace(slot, value.clone()))
+                } else {
+                    let key_arc = crate::intern(&key);
+                    node.properties.insert(key_arc, value.clone())
+                }
+            }
             None => return false,
         };
         self.on_node_property_set(node_id, &key, old.as_ref(), &value);
@@ -1045,7 +1059,14 @@ impl GraphStorageMut for InMemoryGraph {
         }
 
         let old = match self.rel_at_mut(rel_id) {
-            Some(rel) => rel.properties.insert(key.clone(), value.clone()),
+            Some(rel) => {
+                if let Some(slot) = rel.properties.get_mut(key.as_str()) {
+                    Some(std::mem::replace(slot, value.clone()))
+                } else {
+                    let key_arc = crate::intern(&key);
+                    rel.properties.insert(key_arc, value.clone())
+                }
+            }
             None => return false,
         };
         self.on_relationship_property_set(rel_id, &key, old.as_ref(), &value);

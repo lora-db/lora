@@ -89,3 +89,7 @@ harness = false
 [[bench]]
 name = "index_acceleration"
 harness = false
+
+[[bench]]
+name = "memory"
+harness = false

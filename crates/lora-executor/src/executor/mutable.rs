@@ -24,7 +24,7 @@ use lora_compiler::physical::*;
 use lora_compiler::CompiledQuery;
 use lora_store::{GraphStorageMut, NodeId, Properties};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tracing::{debug, error, trace};
 use web_time::Instant;
 
@@ -45,6 +45,12 @@ use super::sort_rows_with_top_k;
 /// whole `LoraValue`.
 #[derive(Clone, Copy)]
 enum EntityTarget {
+    Node(NodeId),
+    Relationship(u64),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DeleteTarget {
     Node(NodeId),
     Relationship(u64),
 }
@@ -698,6 +704,99 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         }
     }
 
+    fn collect_delete_targets(
+        &self,
+        value: &LoraValue,
+        targets: &mut BTreeSet<DeleteTarget>,
+    ) -> ExecResult<()> {
+        match value {
+            LoraValue::Null => Ok(()),
+
+            LoraValue::Node(node_id) => {
+                targets.insert(DeleteTarget::Node(*node_id));
+                Ok(())
+            }
+
+            LoraValue::Relationship(rel_id) => {
+                targets.insert(DeleteTarget::Relationship(*rel_id));
+                Ok(())
+            }
+
+            LoraValue::List(values) => {
+                for v in values {
+                    self.collect_delete_targets(v, targets)?;
+                }
+                Ok(())
+            }
+
+            other => Err(ExecutorError::InvalidDeleteTarget {
+                found: value_kind(other),
+            }),
+        }
+    }
+
+    fn validate_delete_targets(
+        &self,
+        targets: &BTreeSet<DeleteTarget>,
+        detach: bool,
+    ) -> ExecResult<()> {
+        for target in targets {
+            match target {
+                DeleteTarget::Relationship(rel_id) => {
+                    if !self.ctx.storage.contains_relationship(*rel_id) {
+                        return Err(ExecutorError::DeleteRelationshipFailed { rel_id: *rel_id });
+                    }
+                }
+                DeleteTarget::Node(node_id) if !detach => {
+                    if !self.ctx.storage.contains_node(*node_id) {
+                        return Err(ExecutorError::DeleteNodeWithRelationships {
+                            node_id: *node_id,
+                        });
+                    }
+                    let has_external_relationship = self
+                        .ctx
+                        .storage
+                        .relationship_ids_of(*node_id, Direction::Undirected)
+                        .into_iter()
+                        .any(|rel_id| !targets.contains(&DeleteTarget::Relationship(rel_id)));
+                    if has_external_relationship {
+                        return Err(ExecutorError::DeleteNodeWithRelationships {
+                            node_id: *node_id,
+                        });
+                    }
+                }
+                DeleteTarget::Node(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_target(&mut self, target: DeleteTarget, detach: bool) -> ExecResult<()> {
+        match target {
+            DeleteTarget::Node(node_id) => {
+                if detach {
+                    self.ctx.storage.detach_delete_node(node_id);
+                    Ok(())
+                } else {
+                    let ok = self.ctx.storage.delete_node(node_id);
+                    if ok {
+                        Ok(())
+                    } else {
+                        Err(ExecutorError::DeleteNodeWithRelationships { node_id })
+                    }
+                }
+            }
+            DeleteTarget::Relationship(rel_id) => {
+                let ok = self.ctx.storage.delete_relationship(rel_id);
+                if ok {
+                    Ok(())
+                } else {
+                    Err(ExecutorError::DeleteRelationshipFailed { rel_id })
+                }
+            }
+        }
+    }
+
     fn exec_merge(&mut self, plan: &PhysicalPlan, op: &MergeExec) -> ExecResult<Vec<Row>> {
         // Streaming-input fast path when the input subtree is fully
         // streamable. Per-row work (probe → optionally create →
@@ -796,7 +895,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                             if let Some(LoraValue::Map(expected)) = &expected_props {
                                 let all_match = expected.iter().all(|(key, expected_value)| {
                                     node.properties
-                                        .get(key)
+                                        .get(key.as_str())
                                         .map(|actual| {
                                             value_matches_property_value(expected_value, actual)
                                         })
@@ -895,7 +994,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                                                 expected_map.iter().all(|(key, expected_val)| {
                                                     node_rec
                                                         .properties
-                                                        .get(key)
+                                                        .get(key.as_str())
                                                         .map(|actual| {
                                                             value_matches_property_value(
                                                                 expected_val,
@@ -928,7 +1027,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                                                 expected_map.iter().all(|(key, expected_val)| {
                                                     rel_rec
                                                         .properties
-                                                        .get(key)
+                                                        .get(key.as_str())
                                                         .map(|actual| {
                                                             value_matches_property_value(
                                                                 expected_val,
@@ -973,24 +1072,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_delete(&mut self, plan: &PhysicalPlan, op: &DeleteExec) -> ExecResult<Vec<Row>> {
-        if crate::pull::subtree_is_fully_streaming(plan, op.input) {
-            let detach = op.detach;
-            return self.streaming_apply(plan, op.input, |this, row| {
-                for expr in &op.expressions {
-                    let value = {
-                        let eval_ctx = EvalContext {
-                            storage: &*this.ctx.storage,
-                            params: &this.ctx.params,
-                        };
-                        eval_expr(expr, row, &eval_ctx)
-                    };
-                    this.delete_value(value, detach)?;
-                }
-                Ok(())
-            });
-        }
-
         let input_rows = self.execute_node(plan, op.input)?;
+        let mut targets = BTreeSet::new();
 
         for row in &input_rows {
             for expr in &op.expressions {
@@ -1001,8 +1084,20 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                     };
                     eval_expr(expr, row, &eval_ctx)
                 };
+                self.collect_delete_targets(&value, &mut targets)?;
+            }
+        }
 
-                self.delete_value(value, op.detach)?;
+        self.validate_delete_targets(&targets, op.detach)?;
+
+        for target in &targets {
+            if let DeleteTarget::Relationship(_) = target {
+                self.delete_target(*target, op.detach)?;
+            }
+        }
+        for target in targets {
+            if let DeleteTarget::Node(_) = target {
+                self.delete_target(target, op.detach)?;
             }
         }
 
@@ -1388,7 +1483,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         for (k, v) in map {
             let prop = lora_value_to_property(v)
                 .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
-            props.insert(k, prop);
+            props.insert(lora_store::intern_owned(k), prop);
         }
 
         match target {
@@ -1650,7 +1745,11 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         {
             return Err(ExecutorError::ConstraintViolation(msg));
         }
-        let created = self.ctx.storage.create_node(flat_labels, properties);
+        let created = self
+            .ctx
+            .storage
+            .try_create_node(flat_labels, properties)
+            .ok_or(ExecutorError::NodeCreateFailed)?;
 
         if let Some(var_id) = var {
             row.insert(var_id, LoraValue::Node(created.id));

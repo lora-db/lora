@@ -31,7 +31,11 @@ fn sample_event() -> MutationEvent {
 }
 
 fn all_extension_values_event() -> MutationEvent {
-    let mut props = Properties::new();
+    // `PropertyValue::Map` keys stay as `String`; only the top-level
+    // `Properties` bag is `Arc<str>`-keyed. Build this map with the
+    // concrete inner type to stay aligned.
+    let mut props: std::collections::BTreeMap<String, PropertyValue> =
+        std::collections::BTreeMap::new();
     props.insert(
         "date".into(),
         PropertyValue::Date(LoraDate {

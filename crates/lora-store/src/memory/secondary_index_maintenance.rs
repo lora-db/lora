@@ -334,7 +334,7 @@ impl InMemoryGraph {
             match (old_v, new_v) {
                 (_, Some(new)) => registry.insert_for(scope, key, entity_id, new),
                 (Some(_), None) => registry.remove_for(scope, key, entity_id),
-                (None, None) => unreachable!(),
+                (None, None) => {}
             }
         }
     }

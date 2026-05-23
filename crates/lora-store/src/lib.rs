@@ -5,6 +5,7 @@
 //! readable in one place.
 
 pub mod codec;
+pub mod intern;
 mod lock_table;
 mod memory;
 mod mutation;
@@ -36,6 +37,20 @@ pub use traits::{BorrowedGraphStorage, GraphCatalog, GraphStorage, GraphStorageM
 
 // ---------- In-memory backend ----------
 pub use memory::InMemoryGraph;
+
+// ---------- Memory-footprint diagnostics ----------
+//
+// Debug-only retained-heap breakdown of an `InMemoryGraph`. Used by
+// the memory benchmark in `lora-database/benches/memory.rs` and the
+// `mem_probe*` examples to attribute observed RSS growth to a
+// specific component.
+pub use memory::{property_value_heap_bytes, MemoryReport};
+
+// ---------- Property-key interning ----------
+//
+// Re-exported flat so callers building `Properties` can write
+// `lora_store::intern("name")` instead of importing the submodule.
+pub use intern::{intern, intern_owned};
 
 // ---------- Index catalog (CREATE INDEX surface) ----------
 pub use memory::{

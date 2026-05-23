@@ -235,14 +235,11 @@ impl InMemoryGraph {
         Ok(())
     }
 
-    pub(super) fn reserve_next_node_slot(&mut self) -> (NodeId, usize) {
+    pub(super) fn try_reserve_next_node_slot(&mut self) -> Option<(NodeId, usize)> {
         let id = self.next_node_id;
-        let idx = self
-            .ensure_node_slot_checked(id)
-            .expect("next node id should fit in memory-backed slab");
-        self.bump_next_node_id_past(id)
-            .expect("next node id should leave a valid successor");
-        (id, idx)
+        let idx = self.ensure_node_slot_checked(id).ok()?;
+        self.bump_next_node_id_past(id).ok()?;
+        Some((id, idx))
     }
 
     pub(super) fn try_reserve_next_rel_slot(&mut self) -> Option<(RelationshipId, usize)> {
@@ -345,11 +342,6 @@ impl InMemoryGraph {
             self.relationships.resize_with(target, || None);
         }
         Ok(target - 1)
-    }
-
-    fn ensure_node_slot(&mut self, id: NodeId) -> usize {
-        self.ensure_node_slot_checked(id)
-            .expect("node id should fit in memory-backed slab")
     }
 
     pub(super) fn put_node_checked(&mut self, id: NodeId, node: NodeRecord) -> Result<(), String> {
@@ -567,13 +559,15 @@ impl InMemoryGraph {
     /// invariant: relationship ids are allocated once and never re-used, so
     /// the bucket can never see a duplicate.
     fn outgoing_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        let idx = self.ensure_node_slot(node_id);
-        self.outgoing[idx].push(rel_id);
+        if let Ok(idx) = self.ensure_node_slot_checked(node_id) {
+            self.outgoing[idx].push(rel_id);
+        }
     }
 
     fn incoming_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        let idx = self.ensure_node_slot(node_id);
-        self.incoming[idx].push(rel_id);
+        if let Ok(idx) = self.ensure_node_slot_checked(node_id) {
+            self.incoming[idx].push(rel_id);
+        }
     }
 
     /// Remove `rel_id` from `node_id`'s outgoing list. `swap_remove` keeps
@@ -1657,6 +1651,14 @@ impl InMemoryGraph {
             }
         }
         stats
+    }
+
+    /// Approximate retained-heap breakdown of this graph. See
+    /// [`super::MemoryReport`] for the methodology and per-component
+    /// fields. Intended for benches and the `mem_probe*` examples;
+    /// not on a hot path.
+    pub fn memory_estimate(&self) -> super::MemoryReport {
+        super::mem_report::estimate(self)
     }
 
     pub(super) fn rebuild_property_indexes(&mut self) {

@@ -582,7 +582,7 @@ pub(super) fn expand_rows<S: GraphStorage>(
                         .with_relationship(rel_id, |rel| {
                             map.iter().all(|(key, expected)| {
                                 rel.properties
-                                    .get(key)
+                                    .get(key.as_str())
                                     .map(|actual| value_matches_property_value(expected, actual))
                                     .unwrap_or(false)
                             })
@@ -675,7 +675,7 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
 pub(super) fn properties_to_value_map(props: &Properties) -> LoraValue {
     let mut map = BTreeMap::new();
     for (k, v) in props.iter() {
-        map.insert(k.clone(), LoraValue::from(v));
+        map.insert(k.to_string(), LoraValue::from(v));
     }
     LoraValue::Map(map)
 }
@@ -728,13 +728,29 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
 ) -> ExecResult<Properties> {
     let eval_ctx = EvalContext { storage, params };
 
+    if let ResolvedExpr::Map(items) = expr {
+        let mut out = Properties::new();
+        for (k, v) in items {
+            let prop = lora_value_to_property(eval_expr(v, row, &eval_ctx))
+                .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+            out.insert(lora_store::intern(k), prop);
+        }
+        return Ok(out);
+    }
+
     match eval_expr(expr, row, &eval_ctx) {
         LoraValue::Map(map) => {
             let mut out = Properties::new();
             for (k, v) in map {
                 let prop = lora_value_to_property(v)
                     .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
-                out.insert(k, prop);
+                // Route every CREATE/SET property key through the
+                // process-wide intern table so all nodes sharing a
+                // column name share one heap allocation. This is the
+                // hot path for `UNWIND $rows AS r CREATE (...)` and
+                // is where the bulk CSV-import memory win actually
+                // lands.
+                out.insert(lora_store::intern_owned(k), prop);
             }
             Ok(out)
         }
@@ -2108,7 +2124,7 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
                 if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
                     return Ok(());
                 }
-                let Some(actual) = rel.properties.get(&op.key) else {
+                let Some(actual) = rel.properties.get(op.key.as_str()) else {
                     return Ok(());
                 };
                 let actual_lv = LoraValue::from(actual);
@@ -2158,7 +2174,8 @@ pub(crate) fn rel_by_text_scan_rows<S: GraphStorage>(
                 if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
                     return Ok(());
                 }
-                let Some(PropertyValue::String(actual)) = rel.properties.get(&op.key) else {
+                let Some(PropertyValue::String(actual)) = rel.properties.get(op.key.as_str())
+                else {
                     return Ok(());
                 };
                 if !text_predicate_holds(actual, op.predicate, query_str) {
@@ -2239,7 +2256,7 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
                 if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
                     return Ok(());
                 }
-                let Some(PropertyValue::Point(actual)) = rel.properties.get(&op.key) else {
+                let Some(PropertyValue::Point(actual)) = rel.properties.get(op.key.as_str()) else {
                     return Ok(());
                 };
                 if !point_predicate_holds(actual, &probe) {

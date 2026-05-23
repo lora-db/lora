@@ -86,7 +86,7 @@ impl VectorSimilarity {
 /// `score_entities` contract).
 #[derive(Debug, Default, Clone)]
 pub(super) struct FlatBackend {
-    items: BTreeMap<u64, LoraVector>,
+    pub(super) items: BTreeMap<u64, LoraVector>,
 }
 
 impl FlatBackend {
@@ -226,7 +226,7 @@ pub(super) struct VectorIndexEntry {
 /// Per-entity-kind registry of vector indexes. Keyed by index name.
 #[derive(Debug, Default, Clone)]
 pub(super) struct VectorIndexRegistry {
-    by_name: BTreeMap<String, VectorIndexEntry>,
+    pub(super) by_name: BTreeMap<String, VectorIndexEntry>,
 }
 
 impl VectorIndexRegistry {

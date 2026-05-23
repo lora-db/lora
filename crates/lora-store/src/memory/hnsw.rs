@@ -145,7 +145,7 @@ impl HnswParams {
 /// embeddings; out-of-range values clip rather than panic. Used for
 /// both stored vectors at insert time and the query vector at
 /// search time so distances stay comparable.
-fn quantize_to_int8(input: &LoraVector) -> LoraVector {
+fn quantize_to_int8(input: &LoraVector) -> Option<LoraVector> {
     let dim = input.dimension;
     let coords: Vec<RawCoordinate> = (0..dim)
         .map(|i| {
@@ -154,18 +154,18 @@ fn quantize_to_int8(input: &LoraVector) -> LoraVector {
             RawCoordinate::Int(scaled)
         })
         .collect();
-    LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Integer8)
-        .expect("quantized vector must validate")
+    let dim = i64::try_from(dim).ok()?;
+    LoraVector::try_new(coords, dim, VectorCoordinateType::Integer8).ok()
 }
 
 #[derive(Debug, Clone)]
-struct HnswNode {
-    vector: LoraVector,
-    level: usize,
+pub(super) struct HnswNode {
+    pub(super) vector: LoraVector,
+    pub(super) level: usize,
     /// One neighbor list per layer 0..=level. Each is a `Vec<u64>` so
     /// graph traversal stays cache-friendly; the list length is
     /// bounded by `m_max(layer)` (2·m at layer 0, m above).
-    neighbors: Vec<Vec<u64>>,
+    pub(super) neighbors: Vec<Vec<u64>>,
 }
 
 /// Wrapper that turns f64 into a totally-ordered type for heap use.
@@ -211,7 +211,7 @@ impl PartialOrd for Candidate {
 pub(super) struct HnswBackend {
     params: HnswParams,
     similarity: VectorSimilarity,
-    nodes: BTreeMap<u64, HnswNode>,
+    pub(super) nodes: BTreeMap<u64, HnswNode>,
     entry_point: Option<u64>,
     max_level: usize,
     /// `1 / ln(M)` precomputed for layer sampling.
@@ -251,7 +251,10 @@ impl HnswBackend {
         // distance helpers work without modification.
         let vector = match self.params.quantization {
             HnswQuantization::None => vector,
-            HnswQuantization::Int8 => quantize_to_int8(&vector),
+            HnswQuantization::Int8 => match quantize_to_int8(&vector) {
+                Some(vector) => vector,
+                None => return,
+            },
         };
 
         let level = self.sample_level();
@@ -373,7 +376,10 @@ impl HnswBackend {
         let query: &LoraVector = match self.params.quantization {
             HnswQuantization::None => query,
             HnswQuantization::Int8 => {
-                owned_query = quantize_to_int8(query);
+                let Some(quantized) = quantize_to_int8(query) else {
+                    return Vec::new();
+                };
+                owned_query = quantized;
                 &owned_query
             }
         };
@@ -554,7 +560,9 @@ impl HnswBackend {
         };
         // Gather candidate distances for prune-by-closest.
         let mut current: Vec<Candidate> = {
-            let target_node = self.nodes.get(&target).expect("checked above");
+            let Some(target_node) = self.nodes.get(&target) else {
+                return;
+            };
             target_node
                 .neighbors
                 .get(layer)
@@ -580,8 +588,11 @@ impl HnswBackend {
         current.sort();
         current.truncate(m_max);
 
-        let target_node = self.nodes.get_mut(&target).expect("checked above");
-        if let Some(list) = target_node.neighbors.get_mut(layer) {
+        if let Some(list) = self
+            .nodes
+            .get_mut(&target)
+            .and_then(|target_node| target_node.neighbors.get_mut(layer))
+        {
             *list = current.into_iter().map(|c| c.id).collect();
         }
     }

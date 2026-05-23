@@ -11,7 +11,7 @@ use crate::{
 fn props(pairs: &[(&str, PropertyValue)]) -> Properties {
     pairs
         .iter()
-        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .map(|(k, v)| (Arc::<str>::from(*k), v.clone()))
         .collect()
 }
 

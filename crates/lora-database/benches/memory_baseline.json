@@ -1,0 +1,66 @@
+{
+  "_meta": {
+    "default_tolerance_pct": 10,
+    "last_updated": "2026-05-23",
+    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario."
+  },
+  "benchmarks": {
+    "node_only_10k": {
+      "total_bytes": 4896966,
+      "bytes_per_node": 428.9,
+      "tolerance_pct": 10
+    },
+    "chain_1000.build": {
+      "total_bytes": 665387,
+      "bytes_per_node": 213.0,
+      "bytes_per_rel": 100.0,
+      "tolerance_pct": 10
+    },
+    "chain_10000.build": {
+      "total_bytes": 5834195,
+      "bytes_per_node": 213.0,
+      "bytes_per_rel": 100.0,
+      "tolerance_pct": 10
+    },
+    "chain_100000.build": {
+      "total_bytes": 57764195,
+      "bytes_per_node": 213.0,
+      "bytes_per_rel": 100.0,
+      "tolerance_pct": 10
+    },
+    "star_1000.build": {
+      "total_bytes": 416075,
+      "bytes_per_node": 212.0,
+      "bytes_per_rel": 99.0,
+      "tolerance_pct": 10
+    },
+    "star_10000.build": {
+      "total_bytes": 4102499,
+      "bytes_per_node": 212.0,
+      "bytes_per_rel": 99.0,
+      "tolerance_pct": 10
+    },
+    "star_100000.build": {
+      "total_bytes": 41452499,
+      "bytes_per_node": 212.0,
+      "bytes_per_rel": 99.0,
+      "tolerance_pct": 10
+    },
+    "social_20k_x8.build": {
+      "total_bytes": 53593249,
+      "bytes_per_node": 543.6,
+      "bytes_per_rel": 205.0,
+      "tolerance_pct": 10
+    },
+    "vector_flat_5k_d128": {
+      "total_bytes": 6829412,
+      "bytes_per_node": 721.0,
+      "tolerance_pct": 10
+    },
+    "vector_hnsw_5k_d128": {
+      "total_bytes": 10459212,
+      "bytes_per_node": 721.0,
+      "tolerance_pct": 15
+    }
+  }
+}

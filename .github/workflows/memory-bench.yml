@@ -1,0 +1,107 @@
+name: memory-bench
+
+# Memory-footprint regression gate for `InMemoryGraph`.
+#
+# Purpose:
+#   Catch obvious regressions in the bytes-per-node / bytes-per-relationship
+#   shape of the in-memory store. The `memory` bench prints one
+#   `memreport scenario=… total=… …` line per documented scenario; the
+#   companion `scripts/check-mem-bench.mjs` diffs those totals against
+#   `crates/lora-database/benches/memory_baseline.json` and exits
+#   non-zero when any scenario exceeds its per-scenario tolerance.
+#
+#   This is NOT a measurement lab. It catches "we accidentally grew node
+#   storage by 30%" style regressions, not micro-shifts in allocator
+#   behaviour. See `crates/lora-store/src/memory/mem_report.rs` for the
+#   estimation methodology — fixed amortised BTree/HashMap overheads,
+#   shared-Arc keys counted once.
+#
+# Trigger:
+#   - PR + push to `main`, path-filtered to anything that can plausibly
+#     move retained heap on the in-memory backend.
+#   - Manual dispatch for ad-hoc runs.
+#
+# Kept separate from `perf-smoke` because:
+#   - the metric is bytes, not ns/iter,
+#   - regressions read as "memory leak / shape change", not "perf canary
+#     died".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "crates/lora-database/benches/memory.rs"
+      - "crates/lora-database/benches/memory_baseline.json"
+      - "scripts/check-mem-bench.mjs"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/memory-bench.yml"
+  pull_request:
+    paths:
+      - "crates/lora-store/**"
+      - "crates/lora-database/**"
+      - "crates/lora-database/benches/memory.rs"
+      - "crates/lora-database/benches/memory_baseline.json"
+      - "scripts/check-mem-bench.mjs"
+      - ".github/actions/setup-rust/**"
+      - ".github/workflows/memory-bench.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  memory:
+    name: memory bench (per-scenario regression gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: memory-bench
+
+      - name: Run memory bench
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p memory-bench-out
+          cargo bench --locked -p lora-database --bench memory -- --quick \
+            2>&1 | tee memory-bench-out/output.log
+
+      - name: Check against baseline
+        id: check
+        shell: bash
+        run: |
+          node scripts/check-mem-bench.mjs \
+              --input memory-bench-out/output.log \
+            | tee memory-bench-out/regression-report.txt
+
+      # Always render the per-scenario table to the step summary so
+      # reviewers see exactly which scenarios moved without opening
+      # the raw log.
+      - name: Append regression table to step summary
+        if: always()
+        shell: bash
+        run: |
+          node scripts/check-mem-bench.mjs \
+              --input memory-bench-out/output.log \
+              --format markdown \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload bench artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: memory-bench-output
+          path: |
+            memory-bench-out/output.log
+            memory-bench-out/regression-report.txt
+          if-no-files-found: warn
+          retention-days: 14

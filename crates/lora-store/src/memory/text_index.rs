@@ -32,13 +32,13 @@ use super::entity_index_store::ScopedPropertyKey;
 /// Registry of trigram scopes for either nodes or relationships.
 #[derive(Debug, Default, Clone)]
 pub(super) struct TrigramRegistry {
-    by_scope: HashMap<ScopedPropertyKey, TrigramScope>,
+    pub(super) by_scope: HashMap<ScopedPropertyKey, TrigramScope>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct TrigramScope {
     /// Trigram → entity ids whose property value contains it.
-    grams: BTreeMap<[u8; 3], BTreeSet<u64>>,
+    pub(super) grams: BTreeMap<[u8; 3], BTreeSet<u64>>,
     /// Reference count: how many catalog entries point at this scope.
     /// We allow multiple TEXT indexes on the same `(label, property)`
     /// (different names, redundant); the scope is freed only when the

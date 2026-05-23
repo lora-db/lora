@@ -169,7 +169,7 @@ impl<'a> PayloadReader<'a> {
         for _ in 0..len {
             let key = self.read_string()?;
             let value = self.read_value()?;
-            properties.insert(key, value);
+            properties.insert(lora_store::intern_owned(key), value);
         }
         Ok(properties)
     }

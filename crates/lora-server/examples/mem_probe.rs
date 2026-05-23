@@ -18,6 +18,23 @@ fn opts() -> Option<ExecuteOptions> {
     })
 }
 
+/// Append one probe row in `iter,rss_kb,total,graph,indexes,catalogs`
+/// format — one line per sample so callers can paste the output into
+/// a spreadsheet. `total` is the `MemoryReport` total bytes; `graph`
+/// is the core (slabs + adjacency + label/type) breakdown; the rest
+/// fall into the indexes / catalogs columns.
+fn probe(svc: &Database<InMemoryGraph>, iter: usize) {
+    let r = svc.with_store(|g| g.memory_estimate());
+    println!(
+        "{iter},{},{},{},{},{}",
+        rss_kb(),
+        r.total_bytes(),
+        r.graph_core_bytes(),
+        r.secondary_index_bytes(),
+        r.catalog_bytes(),
+    );
+}
+
 fn build_chain(n: usize) -> Database<InMemoryGraph> {
     let db = Database::in_memory();
     let batch = 2_000;
@@ -58,12 +75,12 @@ fn main() {
         .unwrap_or(500);
 
     println!("scenario: {scenario}");
-    println!("iter,rss_kb");
+    println!("iter,rss_kb,total,graph,indexes,catalogs");
 
     match scenario.as_str() {
         "varlen" => {
             let svc = build_chain(100);
-            println!("0,{}", rss_kb());
+            probe(&svc, 0);
             for k in 1..=iters {
                 let _ = std::hint::black_box(
                     svc.execute(
@@ -73,13 +90,13 @@ fn main() {
                     .unwrap(),
                 );
                 if k % probe_every == 0 {
-                    println!("{k},{}", rss_kb());
+                    probe(&svc, k);
                 }
             }
         }
         "varlen_unbounded" => {
             let svc = build_chain(500);
-            println!("0,{}", rss_kb());
+            probe(&svc, 0);
             for k in 1..=iters {
                 let _ = std::hint::black_box(
                     svc.execute(
@@ -89,25 +106,25 @@ fn main() {
                     .unwrap(),
                 );
                 if k % probe_every == 0 {
-                    println!("{k},{}", rss_kb());
+                    probe(&svc, k);
                 }
             }
         }
         "shortest" => {
             let svc = build_chain(500);
-            println!("0,{}", rss_kb());
+            probe(&svc, 0);
             for k in 1..=iters {
                 let _ = std::hint::black_box(svc.execute(
                     "MATCH p = shortestPath((a:Chain {idx:0})-[:NEXT*]->(b:Chain {idx:10})) RETURN length(p) AS len", opts()).unwrap());
                 if k % probe_every == 0 {
-                    println!("{k},{}", rss_kb());
+                    probe(&svc, k);
                 }
             }
         }
         "bulk_create" => {
             // Repeatedly CREATE then DELETE batches to see retention.
             let svc = Database::in_memory();
-            println!("0,{}", rss_kb());
+            probe(&svc, 0);
             for k in 1..=iters {
                 svc.execute(
                     "UNWIND list.range(1, 100) AS i CREATE (:Tmp {id: i, name: 'x' + type.cast(i, STRING)})",
@@ -117,19 +134,22 @@ fn main() {
                 svc.execute("MATCH (n:Tmp) DETACH DELETE n", opts())
                     .unwrap();
                 if k % probe_every == 0 {
-                    println!("{k},{}", rss_kb());
+                    probe(&svc, k);
                 }
             }
         }
         "fresh_db_each_iter" => {
-            println!("0,{}", rss_kb());
+            // RSS-only here — the per-iter graph is dropped, so a
+            // per-graph MemoryReport would always be near zero.
+            println!("0,{},,,,", rss_kb());
             for k in 1..=iters {
                 let svc = Database::in_memory();
                 svc.execute("UNWIND range(1, 100) AS i CREATE (:Tmp {id: i})", opts())
                     .unwrap();
                 if k % probe_every == 0 {
-                    println!("{k},{}", rss_kb());
+                    println!("{k},{},,,,", rss_kb());
                 }
+                drop(svc);
             }
         }
         "optional_match" => {
@@ -144,12 +164,12 @@ fn main() {
                 svc.execute(&format!(
                     "UNWIND range(0, 49) AS i MATCH (a:Person {{id: i}}), (b:Person {{id: (i + {j}) % 50}}) CREATE (a)-[:KNOWS]->(b)"), opts()).unwrap();
             }
-            println!("0,{}", rss_kb());
+            probe(&svc, 0);
             for k in 1..=iters {
                 let _ = std::hint::black_box(svc.execute(
                     "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.id, count(f) AS friends", opts()).unwrap());
                 if k % probe_every == 0 {
-                    println!("{k},{}", rss_kb());
+                    probe(&svc, k);
                 }
             }
         }
