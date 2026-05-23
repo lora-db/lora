@@ -24,12 +24,14 @@ import { SchemaBrowserPanel } from "./SchemaBrowserPanel";
 import { SchemaDesignPanel } from "./SchemaDesignPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { SnapshotsPanel } from "./SnapshotsPanel";
+import { StatsPanel } from "./StatsPanel";
 
 const SECTION_LABEL: Record<ActivitySection, string> = {
   queries: "Saved queries",
   schema: "Schema",
   schemaDesign: "Schema design",
   snapshots: "Snapshots",
+  stats: "Stats",
   history: "History",
   settings: "Settings",
 };
@@ -44,6 +46,8 @@ function renderPanel(section: ActivitySection) {
       return <SchemaDesignPanel />;
     case "snapshots":
       return <SnapshotsPanel />;
+    case "stats":
+      return <StatsPanel />;
     case "history":
       return <HistoryPanel />;
     case "settings":

@@ -10,6 +10,7 @@ import type { ComponentType } from "react";
 import { Stack, Tooltip, UnstyledButton } from "@mantine/core";
 import {
   IconCamera,
+  IconChartHistogram,
   IconDatabaseCog,
   IconFileText,
   IconHistory,
@@ -36,6 +37,11 @@ const ITEMS: ReadonlyArray<ActivityItem> = [
     Icon: IconFileText,
   },
   {
+    section: "history",
+    label: "History",
+    Icon: IconHistory,
+  },
+  {
     section: "schema",
     label: "Schema browser",
     Icon: IconSchema,
@@ -51,9 +57,9 @@ const ITEMS: ReadonlyArray<ActivityItem> = [
     Icon: IconCamera,
   },
   {
-    section: "history",
-    label: "History",
-    Icon: IconHistory,
+    section: "stats",
+    label: "Stats",
+    Icon: IconChartHistogram,
   },
   {
     section: "settings",

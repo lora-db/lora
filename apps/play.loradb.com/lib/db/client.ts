@@ -13,8 +13,11 @@
 
 import type {
   Database,
+  GraphStatsSnapshot,
   ImportStreamOptions,
+  LoraErrorCode,
   LoraParams,
+  MemoryReportSnapshot,
   RowExportStats,
   RowFormat,
   RowImportStats,
@@ -129,6 +132,50 @@ function parsePosition(
   return { line, col };
 }
 
+const LORA_ERROR_CODES = new Set<string>([
+  "LORA_PARSE",
+  "LORA_SEMANTIC",
+  "LORA_INVALID_PARAMS",
+  "LORA_READ_ONLY",
+  "LORA_NOT_FOUND",
+  "LORA_CONSTRAINT",
+  "LORA_INVALID_VECTOR",
+  "LORA_TIMEOUT",
+  "LORA_DATABASE_NAME",
+  "LORA_CONFIG",
+  "LORA_VALIDATION",
+  "LORA_UNIQUE_CONSTRAINT",
+  "LORA_NOT_NULL_CONSTRAINT",
+  "LORA_FOREIGN_KEY",
+  "LORA_TRANSACTION",
+  "LORA_IO",
+  "LORA_CONNECTION",
+  "LORA_WAL_CORRUPTION",
+  "LORA_WAL_POISONED",
+  "LORA_SNAPSHOT_CODEC",
+  "LORA_SNAPSHOT_CRYPTO",
+  "LORA_INTERNAL",
+  "WORKER_ERROR",
+  "UNKNOWN",
+]);
+
+function isKnownLoraErrorCode(value: unknown): value is LoraErrorCode {
+  return (
+    typeof value === "string" && LORA_ERROR_CODES.has(value as LoraErrorCode)
+  );
+}
+
+function errorCode(
+  err: unknown,
+): LoraErrorCode | "DB_BOOT_TIMEOUT" | undefined {
+  if (err instanceof DbBootTimeoutError) return "DB_BOOT_TIMEOUT";
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    if (isKnownLoraErrorCode(code)) return code;
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -159,6 +206,7 @@ export async function run(
     const endedAt = Date.now();
     const message = err instanceof Error ? err.message : String(err);
     const position = parsePosition(message);
+    const code = errorCode(err);
     const base = {
       state: "error" as const,
       runId,
@@ -166,6 +214,7 @@ export async function run(
       endedAt,
       ms: endedAt - startedAt,
       message,
+      ...(code ? { code } : {}),
     };
     return position ? { ...base, position } : base;
   }
@@ -220,6 +269,28 @@ export async function nodeCount(): Promise<number> {
 export async function relationshipCount(): Promise<number> {
   const db = await getDb();
   return db.relationshipCount();
+}
+
+/**
+ * Cardinality snapshot used by the Stats side panel — per-label
+ * counts, per-rel-type counts, and the set of active secondary
+ * indexes. Cheap to compute on small/medium graphs but not on a hot
+ * path; call on user action, not in a poll loop.
+ */
+export async function graphStats(): Promise<GraphStatsSnapshot> {
+  const db = await getDb();
+  return db.graphStats();
+}
+
+/**
+ * Retained-heap breakdown of the engine. See the
+ * `MemoryReportSnapshot` interface for the per-field meaning. Numbers
+ * are approximate — see the Rust `MemoryReport` doc comment for the
+ * estimation methodology.
+ */
+export async function memoryReport(): Promise<MemoryReportSnapshot> {
+  const db = await getDb();
+  return db.memoryReport();
 }
 
 // ---------------------------------------------------------------------------

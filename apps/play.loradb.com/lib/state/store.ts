@@ -48,6 +48,7 @@ import {
   createSchemaDesignSlice,
   type SchemaDesignSlice,
 } from "./slices/schemaDesign";
+import { createStatsSlice, type StatsSlice } from "./slices/stats";
 
 export type Store = TabsSlice &
   ResultsSlice &
@@ -56,7 +57,8 @@ export type Store = TabsSlice &
   SchemaSlice &
   InspectSlice &
   ParamsByTabSlice &
-  SchemaDesignSlice;
+  SchemaDesignSlice &
+  StatsSlice;
 
 export const useStore = create<Store>()(
   subscribeWithSelector(
@@ -100,6 +102,11 @@ export const useStore = create<Store>()(
         set as Parameters<typeof createSchemaDesignSlice>[0],
         get as Parameters<typeof createSchemaDesignSlice>[1],
         api as Parameters<typeof createSchemaDesignSlice>[2],
+      ),
+      ...createStatsSlice(
+        set as Parameters<typeof createStatsSlice>[0],
+        get as Parameters<typeof createStatsSlice>[1],
+        api as Parameters<typeof createStatsSlice>[2],
       ),
     })),
   ),
@@ -236,18 +243,23 @@ let isHydrating = false;
 let persistFailureToasted = false;
 
 const persistDebounced = debounce((snapshot: PersistedSnapshot) => {
-  void sessionPersistence.write(serializeSnapshot(snapshot)).then((ok) => {
-    if (ok === false && !persistFailureToasted) {
-      persistFailureToasted = true;
-      notifications.show({
-        color: "yellow",
-        title: "Couldn't save your session",
-        message:
-          "Your tabs and layout won't persist across reloads. Check whether storage is allowed for this site.",
-        autoClose: 8000,
-      });
-    }
-  });
+  void sessionPersistence
+    .write(serializeSnapshot(snapshot))
+    .then((ok) => {
+      if (ok === false && !persistFailureToasted) {
+        persistFailureToasted = true;
+        notifications.show({
+          color: "yellow",
+          title: "Couldn't save your session",
+          message:
+            "Your tabs and layout won't persist across reloads. Check whether storage is allowed for this site.",
+          autoClose: 8000,
+        });
+      }
+    })
+    .catch((err: unknown) => {
+      console.warn("session persistence failed unexpectedly", err);
+    });
 }, 500);
 
 // Wire up the persistence subscription only on the client. Server-side

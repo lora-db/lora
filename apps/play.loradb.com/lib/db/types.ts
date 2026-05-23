@@ -7,6 +7,7 @@
  */
 
 import type { GraphData } from "@loradb/lora-graph-canvas";
+import type { LoraErrorCode } from "@loradb/lora-wasm";
 
 export type CellType =
   | "node"
@@ -54,6 +55,7 @@ export interface RunErr {
   endedAt: number;
   ms: number;
   message: string;
+  code?: LoraErrorCode | "DB_BOOT_TIMEOUT";
   position?: { line: number; col: number };
 }
 

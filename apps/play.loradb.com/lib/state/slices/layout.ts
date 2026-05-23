@@ -55,6 +55,7 @@ export type ActivitySection =
   | "schema"
   | "schemaDesign"
   | "snapshots"
+  | "stats"
   | "history"
   | "settings";
 
