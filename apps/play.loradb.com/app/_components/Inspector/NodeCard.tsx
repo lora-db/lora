@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
   Box,
+  Button,
   Code,
   Group,
   Paper,
@@ -28,9 +29,12 @@ import {
   TextInput,
   Tooltip,
 } from "@mantine/core";
+import { modals } from "@mantine/modals";
 import { notifications } from "@mantine/notifications";
 import {
+  IconCheck,
   IconGripVertical,
+  IconPencil,
   IconPin,
   IconPinned,
   IconRoute,
@@ -38,6 +42,10 @@ import {
   IconX,
 } from "@tabler/icons-react";
 
+import {
+  updateNodeProperties,
+  updateRelationshipProperties,
+} from "@/lib/actions/editActions";
 import { runActiveTab } from "@/lib/actions/runActiveTab";
 import { openTabInCell } from "@/lib/actions/tabActions";
 import { useStore } from "@/lib/state/store";
@@ -45,6 +53,14 @@ import type { Inspection, InspectTarget } from "@/lib/state/slices/inspect";
 import { usePlaygroundTheme } from "@/lib/theme/usePlaygroundTheme";
 import { CategoryBadge } from "../CategoryBadge";
 
+import { EditPanel } from "./EditPanel";
+import {
+  buildPropertiesPayload,
+  rowsDirty,
+  rowsFromProperties,
+  validateRows,
+  type EditRow,
+} from "./editForm";
 import {
   GROUP_LABEL,
   GROUP_ORDER,
@@ -76,9 +92,157 @@ export function NodeCard({ inspection }: { inspection: Inspection }) {
   const move = useStore((s) => s.moveInspection);
   const resize = useStore((s) => s.resizeInspection);
   const bringToFront = useStore((s) => s.bringInspectionToFront);
+  const updateTarget = useStore((s) => s.updateInspectionTarget);
 
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTab] = useState<string | null>("overview");
+
+  const [editing, setEditing] = useState(false);
+  const [rows, setRows] = useState<EditRow[]>([]);
+  const [saving, setSaving] = useState(false);
+  const tabBeforeEdit = useRef<string | null>("overview");
+
+  // Constraint-derived required keys for the current target. Used by
+  // the edit panel to mark properties the user can't drop / null.
+  const constraints = useStore((s) => s.constraints);
+  const requiredKeys = useMemo(() => {
+    const set = new Set<string>();
+    if (!constraints) return set;
+    if (inspection.target.kind === "node") {
+      const labels = inspection.target.labels;
+      for (const c of constraints) {
+        if (c.entity !== "NODE") continue;
+        if (!labels.includes(c.label)) continue;
+        if (
+          c.kind !== "UNIQUE" &&
+          c.kind !== "NODE_KEY" &&
+          c.kind !== "NOT_NULL"
+        ) {
+          continue;
+        }
+        for (const p of c.properties) set.add(p);
+      }
+    } else {
+      const type = inspection.target.type;
+      for (const c of constraints) {
+        if (c.entity !== "RELATIONSHIP") continue;
+        if (c.label !== type) continue;
+        if (
+          c.kind !== "UNIQUE" &&
+          c.kind !== "RELATIONSHIP_KEY" &&
+          c.kind !== "NOT_NULL"
+        ) {
+          continue;
+        }
+        for (const p of c.properties) set.add(p);
+      }
+    }
+    return set;
+  }, [constraints, inspection.target]);
+
+  const { rowErrors, globalError } = useMemo(
+    () => validateRows(rows, { requiredKeys }),
+    [rows, requiredKeys],
+  );
+
+  const enterEdit = useCallback(() => {
+    if (typeof inspection.target.id !== "number") {
+      notifications.show({
+        color: "yellow",
+        title: "Can't edit this entity",
+        message: "Edit only works on database-resident entities (numeric id).",
+      });
+      return;
+    }
+    tabBeforeEdit.current = tab ?? "overview";
+    setRows(rowsFromProperties(inspection.target.properties));
+    setEditing(true);
+    setTab("edit");
+  }, [inspection.target, tab]);
+
+  const cancelEdit = useCallback(
+    (options: { force?: boolean } = {}) => {
+      const dirty = rowsDirty(rows, inspection.target.properties);
+      const finish = () => {
+        setEditing(false);
+        setRows([]);
+        setTab(tabBeforeEdit.current ?? "overview");
+      };
+      if (!dirty || options.force) {
+        finish();
+        return;
+      }
+      modals.openConfirmModal({
+        title: "Discard unsaved changes?",
+        centered: true,
+        children: (
+          <Text size="sm">
+            You have unsaved property edits. Discard them and exit edit mode?
+          </Text>
+        ),
+        labels: { confirm: "Discard", cancel: "Keep editing" },
+        confirmProps: { color: "red" },
+        onConfirm: finish,
+      });
+    },
+    [inspection.target.properties, rows],
+  );
+
+  const saveEdit = useCallback(async () => {
+    if (saving) return;
+    const id = inspection.target.id;
+    if (typeof id !== "number") return;
+    if (rowErrors.length > 0 || globalError !== null) {
+      notifications.show({
+        color: "red",
+        title: "Can't save",
+        message: globalError ?? "Fix the highlighted fields first.",
+      });
+      return;
+    }
+    const payload = buildPropertiesPayload(rows);
+    if (!payload) return;
+    setSaving(true);
+    let outcome: Awaited<ReturnType<typeof updateNodeProperties>>;
+    try {
+      outcome =
+        inspection.target.kind === "node"
+          ? await updateNodeProperties(id, payload)
+          : await updateRelationshipProperties(id, payload);
+    } finally {
+      setSaving(false);
+    }
+    if (!outcome.ok) return;
+
+    // Reflect the change in the popup immediately so the user sees the
+    // new values before the next mutation-driven refresh lands.
+    const nextTarget: InspectTarget =
+      inspection.target.kind === "node"
+        ? { ...inspection.target, properties: payload }
+        : { ...inspection.target, properties: payload };
+    updateTarget(inspection.key, nextTarget);
+
+    notifications.show({
+      color: "green",
+      title: "Saved",
+      message:
+        inspection.target.kind === "node"
+          ? "Node properties updated."
+          : "Relationship properties updated.",
+      autoClose: 1500,
+    });
+    setEditing(false);
+    setRows([]);
+    setTab(tabBeforeEdit.current ?? "overview");
+  }, [
+    saving,
+    inspection.target,
+    inspection.key,
+    rowErrors.length,
+    globalError,
+    rows,
+    updateTarget,
+  ]);
 
   const position = useMemo(() => computePosition(inspection), [inspection]);
 
@@ -87,8 +251,21 @@ export function NodeCard({ inspection }: { inspection: Inspection }) {
   }, [inspection.key, pin]);
 
   const onClose = useCallback(() => {
+    if (editing && rowsDirty(rows, inspection.target.properties)) {
+      modals.openConfirmModal({
+        title: "Discard unsaved changes?",
+        centered: true,
+        children: (
+          <Text size="sm">Closing now will discard your property edits.</Text>
+        ),
+        labels: { confirm: "Discard and close", cancel: "Keep editing" },
+        confirmProps: { color: "red" },
+        onConfirm: () => close(inspection.key),
+      });
+      return;
+    }
     close(inspection.key);
-  }, [inspection.key, close]);
+  }, [editing, rows, inspection.target.properties, inspection.key, close]);
 
   const onMouseDownAnywhere = useCallback(() => {
     bringToFront(inspection.key);
@@ -219,9 +396,33 @@ export function NodeCard({ inspection }: { inspection: Inspection }) {
   // Card-level keyboard shortcuts. Only fire when the card has focus.
   const onCardKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // In edit mode we treat the card as a form host — keys that
+      // would normally act as letter-shortcuts (p / c / j) belong to
+      // the inputs the user is typing into. Save / cancel are the
+      // only chrome-level shortcuts in this mode.
+      if (editing) {
+        const meta = e.metaKey || e.ctrlKey;
+        if (meta && (e.key === "s" || e.key === "S")) {
+          e.preventDefault();
+          e.stopPropagation();
+          void saveEdit();
+          return;
+        }
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          cancelEdit();
+        }
+        return;
+      }
+
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();
+        return;
+      }
+      if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        enterEdit();
         return;
       }
       if (e.key === "p" || e.key === "P") {
@@ -236,7 +437,15 @@ export function NodeCard({ inspection }: { inspection: Inspection }) {
         copyAsJson(inspection.target);
       }
     },
-    [inspection.target, onClose, onPin],
+    [
+      editing,
+      saveEdit,
+      cancelEdit,
+      enterEdit,
+      inspection.target,
+      onClose,
+      onPin,
+    ],
   );
 
   useEffect(() => {
@@ -273,6 +482,9 @@ export function NodeCard({ inspection }: { inspection: Inspection }) {
       <CardHeader
         target={inspection.target}
         pinned={inspection.pinned}
+        editing={editing}
+        canEdit={typeof inspection.target.id === "number"}
+        onEdit={enterEdit}
         onPin={onPin}
         onClose={onClose}
         onPointerDown={onHeaderPointerDown}
@@ -281,7 +493,10 @@ export function NodeCard({ inspection }: { inspection: Inspection }) {
       />
       <Tabs
         value={tab}
-        onChange={setTab}
+        onChange={(v) => {
+          if (editing && v !== "edit") return;
+          setTab(v);
+        }}
         keepMounted={false}
         styles={{
           root: {
@@ -300,43 +515,85 @@ export function NodeCard({ inspection }: { inspection: Inspection }) {
         }}
       >
         <Tabs.List>
-          <Tabs.Tab value="overview">Overview</Tabs.Tab>
-          <Tabs.Tab value="properties">Properties</Tabs.Tab>
-          {inspection.target.kind === "node" && (
-            <Tabs.Tab value="neighbors">Neighbors</Tabs.Tab>
+          {editing ? (
+            <Tabs.Tab value="edit">Edit</Tabs.Tab>
+          ) : (
+            <>
+              <Tabs.Tab value="overview">Overview</Tabs.Tab>
+              <Tabs.Tab value="properties">Properties</Tabs.Tab>
+              {inspection.target.kind === "node" && (
+                <Tabs.Tab value="neighbors">Neighbors</Tabs.Tab>
+              )}
+              <Tabs.Tab value="raw">JSON</Tabs.Tab>
+            </>
           )}
-          <Tabs.Tab value="raw">JSON</Tabs.Tab>
         </Tabs.List>
-        <Tabs.Panel value="overview">
-          <ScrollArea
-            style={{ flex: 1, minHeight: 0 }}
-            styles={{ viewport: { padding: 12 } }}
-          >
-            <OverviewPanel target={inspection.target} />
-          </ScrollArea>
-        </Tabs.Panel>
-        <Tabs.Panel value="properties">
-          <ScrollArea
-            style={{ flex: 1, minHeight: 0 }}
-            styles={{ viewport: { padding: 12 } }}
-          >
-            <PropertiesPanel target={inspection.target} />
-          </ScrollArea>
-        </Tabs.Panel>
-        {inspection.target.kind === "node" && (
-          <Tabs.Panel value="neighbors">
+        {editing ? (
+          <Tabs.Panel value="edit">
             <ScrollArea
               style={{ flex: 1, minHeight: 0 }}
               styles={{ viewport: { padding: 12 } }}
             >
-              <NeighborsPanel target={inspection.target} />
+              <EditPanel
+                target={inspection.target}
+                rows={rows}
+                onRowsChange={setRows}
+                rowErrors={rowErrors}
+                globalError={globalError}
+                requiredKeys={requiredKeys}
+                disabled={saving}
+              />
             </ScrollArea>
           </Tabs.Panel>
+        ) : (
+          <>
+            <Tabs.Panel value="overview">
+              <ScrollArea
+                style={{ flex: 1, minHeight: 0 }}
+                styles={{ viewport: { padding: 12 } }}
+              >
+                <OverviewPanel target={inspection.target} />
+              </ScrollArea>
+            </Tabs.Panel>
+            <Tabs.Panel value="properties">
+              <ScrollArea
+                style={{ flex: 1, minHeight: 0 }}
+                styles={{ viewport: { padding: 12 } }}
+              >
+                <PropertiesPanel target={inspection.target} />
+              </ScrollArea>
+            </Tabs.Panel>
+            {inspection.target.kind === "node" && (
+              <Tabs.Panel value="neighbors">
+                <ScrollArea
+                  style={{ flex: 1, minHeight: 0 }}
+                  styles={{ viewport: { padding: 12 } }}
+                >
+                  <NeighborsPanel target={inspection.target} />
+                </ScrollArea>
+              </Tabs.Panel>
+            )}
+            <Tabs.Panel value="raw">
+              <RawPanel target={inspection.target} />
+            </Tabs.Panel>
+          </>
         )}
-        <Tabs.Panel value="raw">
-          <RawPanel target={inspection.target} />
-        </Tabs.Panel>
       </Tabs>
+      {editing ? (
+        <EditFooter
+          dirty={rowsDirty(rows, inspection.target.properties)}
+          canSave={
+            rowErrors.length === 0 &&
+            globalError === null &&
+            rowsDirty(rows, inspection.target.properties)
+          }
+          saving={saving}
+          onCancel={() => cancelEdit()}
+          onSave={() => {
+            void saveEdit();
+          }}
+        />
+      ) : null}
       <ResizeGrip
         onPointerDown={onResizePointerDown}
         onPointerMove={onResizePointerMove}
@@ -398,12 +655,70 @@ function ResizeGrip({
 }
 
 // ---------------------------------------------------------------------------
+// Edit footer
+// ---------------------------------------------------------------------------
+
+function EditFooter({
+  dirty,
+  canSave,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  dirty: boolean;
+  canSave: boolean;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  const { tokens } = usePlaygroundTheme();
+  return (
+    <div
+      style={{
+        borderTop: `1px solid ${tokens.border.subtle}`,
+        background: tokens.bg.overlay,
+        padding: "8px 10px",
+      }}
+    >
+      <Group justify="space-between" gap="xs">
+        <Text size="xs" c={tokens.fg.subtle}>
+          {dirty ? "Unsaved changes" : "No changes"}
+        </Text>
+        <Group gap="xs">
+          <Button
+            size="xs"
+            variant="default"
+            onClick={onCancel}
+            disabled={saving}
+          >
+            Cancel
+          </Button>
+          <Button
+            size="xs"
+            color="blue"
+            onClick={onSave}
+            loading={saving}
+            disabled={!canSave}
+            leftSection={<IconCheck size={12} />}
+          >
+            Save
+          </Button>
+        </Group>
+      </Group>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
 
 interface CardHeaderProps {
   target: InspectTarget;
   pinned: boolean;
+  editing: boolean;
+  canEdit: boolean;
+  onEdit: () => void;
   onPin: () => void;
   onClose: () => void;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
@@ -414,6 +729,9 @@ interface CardHeaderProps {
 function CardHeader({
   target,
   pinned,
+  editing,
+  canEdit,
+  onEdit,
   onPin,
   onClose,
   onPointerDown,
@@ -456,8 +774,30 @@ function CardHeader({
               :{target.type || "?"}
             </CategoryBadge>
           )}
+          {editing ? (
+            <CategoryBadge kind="parameter" size="xs">
+              Editing
+            </CategoryBadge>
+          ) : null}
         </Group>
         <Group gap={2} wrap="nowrap" data-no-drag>
+          {editing ? null : (
+            <Tooltip
+              label={canEdit ? "Edit (E)" : "Edit unavailable"}
+              withArrow
+            >
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                onClick={onEdit}
+                disabled={!canEdit}
+                aria-label="Edit properties"
+              >
+                <IconPencil size={12} />
+              </ActionIcon>
+            </Tooltip>
+          )}
           <Tooltip label={pinned ? "Unpin" : "Pin"} withArrow>
             <ActionIcon
               size="sm"

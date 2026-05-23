@@ -88,6 +88,14 @@ export interface InspectSlice {
   bringInspectionToFront(key: string): void;
   moveInspection(key: string, position: { x: number; y: number }): void;
   resizeInspection(key: string, size: { width: number; height: number }): void;
+  /**
+   * Replace an inspection's `target` in place — used after an edit
+   * commits so the popup reflects the new values without needing the
+   * upstream pane (graph / table) to re-run its query. The lookup is
+   * by the *current* key, so swapping properties (which don't change
+   * the key) is the common case.
+   */
+  updateInspectionTarget(key: string, target: InspectTarget): void;
   /** Legacy alias — close the top unpinned card (matches old single-target drawer). */
   closeInspect(): void;
 }
@@ -190,6 +198,23 @@ export const createInspectSlice: StateCreator<
       const found = state.inspections.find((i) => i.key === key);
       if (!found) return;
       found.size = size;
+    });
+  },
+
+  updateInspectionTarget(key, target) {
+    const safe = safeInspectTarget(target);
+    set((state) => {
+      const found = state.inspections.find((i) => i.key === key);
+      if (!found) return;
+      found.target = safe as Inspection["target"];
+      // Re-key when id/kind changed (shouldn't happen for property edits
+      // but cheap safety net). Drops duplicates if a target collision
+      // exists.
+      const newKey = inspectionKey(safe);
+      if (newKey !== found.key) {
+        state.inspections = state.inspections.filter((i) => i.key !== newKey);
+        found.key = newKey;
+      }
     });
   },
 
