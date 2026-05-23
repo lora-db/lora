@@ -122,13 +122,20 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
     errors: RowParseError[];
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  const previewRequestRef = useRef(0);
+  const reviewRequestRef = useRef(0);
 
   // Abort any in-flight import when the dialog unmounts — covers the
   // X button, ESC key, outside-click, and the Footer's Close button,
   // none of which route through the explicit Cancel handler.
   useEffect(
-    () => () =>
-      abortRef.current?.abort(new DOMException("dialog closed", "AbortError")),
+    () => () => {
+      mountedRef.current = false;
+      previewRequestRef.current += 1;
+      reviewRequestRef.current += 1;
+      abortRef.current?.abort(new DOMException("dialog closed", "AbortError"));
+    },
     [],
   );
 
@@ -138,6 +145,7 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
   // Sniff the file whenever it changes
   // -------------------------------------------------------------------------
   useEffect(() => {
+    const requestId = ++previewRequestRef.current;
     if (!file) {
       setPreview(null);
       setPreviewError(null);
@@ -147,6 +155,9 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
     if (detected) setFormat(detected);
     void buildPreview(file)
       .then(({ preview, format: f }) => {
+        if (!mountedRef.current || requestId !== previewRequestRef.current) {
+          return;
+        }
         if (f) setFormat(f);
         setPreview(preview);
         setPreviewError(null);
@@ -164,6 +175,9 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
         });
       })
       .catch((err: unknown) => {
+        if (!mountedRef.current || requestId !== previewRequestRef.current) {
+          return;
+        }
         setPreviewError(err instanceof Error ? err.message : String(err));
         setPreview(null);
       });
@@ -243,6 +257,7 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
 
   const goReview = useCallback(async () => {
     if (!file || !target) return;
+    const requestId = ++reviewRequestRef.current;
     setStep(3);
     setReviewing(true);
     setReviewError(null);
@@ -255,17 +270,25 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
         dryRun: true,
         permissive,
       });
+      if (!mountedRef.current || requestId !== reviewRequestRef.current) {
+        return;
+      }
       setReviewStats({
         rows: stats.rows,
         batches: stats.batches,
         skipped: stats.skipped,
       });
     } catch (err) {
+      if (!mountedRef.current || requestId !== reviewRequestRef.current) {
+        return;
+      }
       setReviewError(err instanceof Error ? err.message : String(err));
     } finally {
-      setReviewing(false);
+      if (mountedRef.current && requestId === reviewRequestRef.current) {
+        setReviewing(false);
+      }
     }
-  }, [file, target, batchSize, format, columnTypes]);
+  }, [file, target, batchSize, format, columnTypes, permissive]);
 
   const startImport = useCallback(async () => {
     if (!file || !target) return;
@@ -278,6 +301,34 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
     abortRef.current = controller;
     const tracker = new ThroughputTracker(2_000);
     const startTime = Date.now();
+    // The worker emits one progress callback per fed chunk, which for a
+    // multi-million-row CSV is thousands of callbacks. Without batching,
+    // each one triggers a full React rerender of the dialog and starves
+    // the main thread. Buffer the latest reading in refs and flush once
+    // per animation frame; the user sees a smooth update, the engine
+    // doesn't wait on the UI.
+    const latestProgress: { value: RowImportProgress | null } = { value: null };
+    let rafHandle: number | null = null;
+    let scheduledWithTimeout = false;
+    const cancelProgressFlush = () => {
+      if (rafHandle === null) return;
+      if (scheduledWithTimeout || typeof cancelAnimationFrame === "undefined") {
+        clearTimeout(rafHandle);
+      } else {
+        cancelAnimationFrame(rafHandle);
+      }
+      rafHandle = null;
+      scheduledWithTimeout = false;
+    };
+    const flush = () => {
+      rafHandle = null;
+      scheduledWithTimeout = false;
+      if (!mountedRef.current) return;
+      const p = latestProgress.value;
+      if (!p) return;
+      setProgress(p);
+      setThroughput(tracker.read(file.size));
+    };
     try {
       const batch = effectiveBatchSize(batchSize);
       const sourceStream = wrapStream(file, format, columnTypes);
@@ -286,20 +337,38 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
         permissive,
         signal: controller.signal,
         onProgress: (p) => {
-          setProgress(p);
           tracker.record(p.bytesFed, p.rowsCommitted);
-          setThroughput(tracker.read(file.size));
+          latestProgress.value = p;
+          if (rafHandle === null) {
+            if (typeof requestAnimationFrame !== "undefined") {
+              rafHandle = requestAnimationFrame(flush);
+              scheduledWithTimeout = false;
+            } else {
+              rafHandle = setTimeout(flush, 16) as unknown as number;
+              scheduledWithTimeout = true;
+            }
+          }
         },
       });
-      setRunStats({
-        rows: stats.rows,
-        batches: stats.batches,
-        durationMs: Date.now() - startTime,
-        skipped: stats.skipped,
-        errors: stats.errors,
-      });
-      setPhase("done");
+      cancelProgressFlush();
+      // Make sure the user sees the final pre-completion reading.
+      if (mountedRef.current && latestProgress.value) {
+        setProgress(latestProgress.value);
+        setThroughput(tracker.read(file.size));
+      }
+      if (mountedRef.current) {
+        setRunStats({
+          rows: stats.rows,
+          batches: stats.batches,
+          durationMs: Date.now() - startTime,
+          skipped: stats.skipped,
+          errors: stats.errors,
+        });
+        setPhase("done");
+      }
     } catch (err) {
+      cancelProgressFlush();
+      if (!mountedRef.current) return;
       if ((err as { name?: string } | null)?.name === "AbortError") {
         setRunError("Import cancelled before completion.");
       } else {
@@ -309,7 +378,7 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
     } finally {
       abortRef.current = null;
     }
-  }, [file, target, batchSize, format, columnTypes]);
+  }, [file, target, batchSize, format, columnTypes, permissive]);
 
   const cancelImport = useCallback(() => {
     abortRef.current?.abort(new DOMException("user cancelled", "AbortError"));

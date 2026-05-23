@@ -107,7 +107,10 @@ function init(): Promise<IDBPDatabase<PlayDB>> {
 export function getDB(): Promise<IDBPDatabase<PlayDB>> {
   assertClient();
   if (!dbPromise) {
-    dbPromise = init();
+    dbPromise = init().catch((err) => {
+      dbPromise = null;
+      throw err;
+    });
   }
   return dbPromise;
 }
@@ -116,11 +119,20 @@ export function getDB(): Promise<IDBPDatabase<PlayDB>> {
 export async function resetDB(): Promise<void> {
   assertClient();
   if (dbPromise) {
-    const db = await dbPromise;
-    db.close();
+    const existing = dbPromise;
     dbPromise = null;
+    try {
+      const db = await existing;
+      db.close();
+    } catch {
+      // The cached open may already be rejected. Continue with deletion so a
+      // reset can recover from a failed or blocked IndexedDB open.
+    }
   }
   await deleteDB(DB_NAME);
-  dbPromise = init();
+  dbPromise = init().catch((err) => {
+    dbPromise = null;
+    throw err;
+  });
   await dbPromise;
 }

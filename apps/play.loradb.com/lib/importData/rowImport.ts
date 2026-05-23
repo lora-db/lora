@@ -373,7 +373,11 @@ function sniffJsonl(text: string): {
   const sample: Array<Record<string, unknown>> = [];
   const columns = new Set<string>();
   for (let i = 0; i < Math.min(lines.length, 10); i += 1) {
-    const obj = JSON.parse(lines[i]!) as Record<string, unknown>;
+    const parsed = JSON.parse(lines[i]!) as unknown;
+    if (!isObjectRow(parsed)) {
+      throw new Error(`expected JSON object on line ${i + 1}`);
+    }
+    const obj = parsed;
     sample.push(obj);
     for (const k of Object.keys(obj)) columns.add(k);
   }
@@ -393,14 +397,20 @@ function sniffJsonArray(text: string): {
   if (!Array.isArray(arr)) throw new Error("expected a JSON array");
   const sample: Array<Record<string, unknown>> = [];
   const columns = new Set<string>();
-  for (const v of arr.slice(0, 10)) {
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      const obj = v as Record<string, unknown>;
-      sample.push(obj);
-      for (const k of Object.keys(obj)) columns.add(k);
+  for (let i = 0; i < Math.min(arr.length, 10); i += 1) {
+    const v = arr[i];
+    if (!isObjectRow(v)) {
+      throw new Error(`expected JSON object at array index ${i}`);
     }
+    const obj = v;
+    sample.push(obj);
+    for (const k of Object.keys(obj)) columns.add(k);
   }
   return { columns: [...columns], sample };
+}
+
+function isObjectRow(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sniffCsv(text: string): {

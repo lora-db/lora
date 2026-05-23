@@ -43,7 +43,10 @@ describe("row import helpers", () => {
 
   it("builds a CSV preview with normalized schema-marker headers", async () => {
     const { preview, format } = await buildPreview(
-      textFile("users.csv", ":ID,:LABEL,name:string\n1,User,Alice\n2,User,Bob\n"),
+      textFile(
+        "users.csv",
+        ":ID,:LABEL,name:string\n1,User,Alice\n2,User,Bob\n",
+      ),
     );
 
     expect(format).toBe("csv");
@@ -63,6 +66,18 @@ describe("row import helpers", () => {
     expect(format).toBe("jsonl");
     expect(preview.columns).toEqual(["name", "age"]);
     expect(preview.parsedSampleRows).toBe(2);
+  });
+
+  it("rejects JSONL rows that are not objects", async () => {
+    await expect(
+      buildPreview(textFile("rows.jsonl", '{"name":"Alice"}\nnull\n')),
+    ).rejects.toThrow("expected JSON object on line 2");
+  });
+
+  it("rejects JSON arrays that do not contain object rows", async () => {
+    await expect(
+      buildPreview(textFile("rows.json", '[{"name":"Alice"}, 42]')),
+    ).rejects.toThrow("expected JSON object at array index 1");
   });
 
   it("applies smart defaults for relationship-ish CSV previews", () => {
@@ -171,9 +186,7 @@ describe("row import helpers", () => {
   // handled it correctly, so users saw "preview broken, import works."
   it("keeps quoted newlines attached to their CSV record in the preview", async () => {
     const csv =
-      'name,note\n' +
-      '"Alice","line one\nline two"\n' +
-      '"Bob","plain"\n';
+      "name,note\n" + '"Alice","line one\nline two"\n' + '"Bob","plain"\n';
     const { preview } = await buildPreview(textFile("notes.csv", csv));
     expect(preview.columns).toEqual(["name", "note"]);
     expect(preview.sample).toEqual([
@@ -187,10 +200,7 @@ describe("row import helpers", () => {
   // CSV. Re-encoding through the RFC-4180 helper keeps the output
   // valid even when the type override changes a cell's quoting needs.
   it("re-quotes rewritten CSV header cells that need RFC-4180 escaping", async () => {
-    const file = textFile(
-      "users.csv",
-      '"first, last",age\nAlice Smith,30\n',
-    );
+    const file = textFile("users.csv", '"first, last",age\nAlice Smith,30\n');
     const rewritten = await streamText(wrapStream(file, "csv", { age: "int" }));
     expect(rewritten.startsWith('"first, last",age:int\n')).toBe(true);
   });

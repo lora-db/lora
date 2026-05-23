@@ -46,14 +46,9 @@ export async function readAuto(): Promise<{
   savedAt: number;
 } | null> {
   if (typeof window === "undefined") return null;
-  try {
-    const db = await getDB();
-    const row = await db.get(STORE, KEY);
-    return row ? { blob: row.blob, savedAt: row.savedAt } : null;
-  } catch (err) {
-    console.warn("readAuto: IDB access failed", err);
-    return null;
-  }
+  const db = await getDB();
+  const row = await db.get(STORE, KEY);
+  return row ? { blob: row.blob, savedAt: row.savedAt } : null;
 }
 
 export async function writeAuto(blob: Uint8Array): Promise<WriteResult> {
