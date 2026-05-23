@@ -8,3 +8,11 @@ debug = 1
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+# Pin the wasm linear-memory ceiling to the wasm32 maximum (4 GiB). Without
+# this, the linker can emit a lower default `max` on the memory import,
+# which causes large in-memory graphs (e.g. multi-million-row CSV imports
+# into `InMemoryGraph`) to abort before the address space is exhausted.
+# Browsers will still impose their own practical caps below 4 GiB.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--max-memory=4294967296"]
