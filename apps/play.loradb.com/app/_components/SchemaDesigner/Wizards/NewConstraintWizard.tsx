@@ -230,7 +230,11 @@ export function NewConstraintWizard({ onClose }: { onClose: () => void }) {
   const submit = async () => {
     setSubmitting(true);
     const ok = editingDef
-      ? await updateConstraint(editingDef.name, draft)
+      ? await updateConstraint(
+          editingDef.name,
+          draft,
+          constraintDefToDraft(editingDef),
+        )
       : await createConstraint(draft);
     setSubmitting(false);
     if (ok) onClose();

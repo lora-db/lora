@@ -111,3 +111,18 @@ export function relTypeDistinctProperty(
 export function propertyDistinctAny(property: string): string {
   return `MATCH (n)\nWHERE n.${quoteId(property)} IS NOT NULL\nRETURN DISTINCT n.${quoteId(property)} AS ${quoteId(property)}\nORDER BY ${quoteId(property)}\nLIMIT ${SAMPLE_LIMIT}`;
 }
+
+/**
+ * Delete every node carrying a given label. `DETACH` ensures attached
+ * relationships are removed in the same transaction so the graph never
+ * ends up with orphaned edges referencing a missing endpoint.
+ */
+export function labelDeleteAll(label: string): string {
+  const b = bindingFor(label);
+  return `MATCH (${b}:${quoteId(label)})\nDETACH DELETE ${b}`;
+}
+
+/** Delete every relationship of a given rel-type, leaving endpoints intact. */
+export function relTypeDeleteAll(relType: string): string {
+  return `MATCH ()-[r:${quoteId(relType)}]->()\nDELETE r`;
+}

@@ -25,6 +25,7 @@ import {
   ActionIcon,
   Badge,
   Box,
+  Button,
   Center,
   CloseButton,
   Collapse,
@@ -55,8 +56,14 @@ import {
   IconSortAscending,
   IconSum,
   IconTag,
+  IconTrash,
 } from "@tabler/icons-react";
 import { formatDistanceToNowStrict } from "date-fns";
+
+import {
+  openConfirmRemoveLabel,
+  openConfirmRemoveRelType,
+} from "@/app/_components/Dialogs/ConfirmRemoveSchemaDialog";
 
 import { useStore } from "@/lib/state/store";
 import { refreshSchema } from "@/lib/actions/schemaActions";
@@ -288,18 +295,47 @@ export function SchemaBrowserPanel() {
       <ScrollArea style={{ flex: 1, minHeight: 0 }}>
         {!hasAny ? (
           <Center p="md">
-            <Stack gap="xs" align="center">
-              <IconTag size={28} color={tokens.fg.subtle} stroke={1.5} />
-              <Text size="xs" c={tokens.fg.subtle} ta="center">
-                No schema yet — run a query first.
-              </Text>
+            <Stack gap="xs" align="center" maw={220}>
+              {refreshing ? (
+                <>
+                  <Loader size="sm" />
+                  <Text size="xs" c={tokens.fg.subtle} ta="center">
+                    Inspecting the database…
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <IconTag size={28} color={tokens.fg.subtle} stroke={1.5} />
+                  <Text size="sm" c={tokens.fg.muted} ta="center" fw={500}>
+                    No schema yet
+                  </Text>
+                  <Text size="xs" c={tokens.fg.subtle} ta="center">
+                    Run a query that creates nodes, or load a snapshot. Then
+                    refresh.
+                  </Text>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconRefresh size={12} />}
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                  >
+                    Refresh
+                  </Button>
+                </>
+              )}
             </Stack>
           </Center>
         ) : filterActive && !hasMatches ? (
           <Center p="md">
-            <Text size="xs" c={tokens.fg.subtle} ta="center">
-              No schema entries match &ldquo;{filter}&rdquo;
-            </Text>
+            <Stack gap="xs" align="center">
+              <Text size="xs" c={tokens.fg.subtle} ta="center">
+                No schema entries match &ldquo;{filter}&rdquo;
+              </Text>
+              <Button size="xs" variant="subtle" onClick={() => setFilter("")}>
+                Clear filter
+              </Button>
+            </Stack>
           </Center>
         ) : (
           <Stack gap={4} p={8}>
@@ -463,7 +499,12 @@ function LabelRow({ label, count, properties, tokens }: LabelRowProps) {
         style={{
           padding: "2px 6px",
           borderRadius: tokens.radius.sm,
-          background: hovered || menuOpen ? tokens.bg.overlay : "transparent",
+          borderLeft: `2px solid ${
+            hovered || menuOpen ? tokens.category.label : "transparent"
+          }`,
+          background:
+            hovered || menuOpen ? tokens.category.labelBg : "transparent",
+          transition: "background-color 80ms, border-color 80ms",
         }}
       >
         <ActionIcon
@@ -517,6 +558,7 @@ function LabelRow({ label, count, properties, tokens }: LabelRowProps) {
         </Badge>
         <LabelRowMenu
           label={label}
+          count={count}
           properties={properties}
           opened={menuOpen}
           onOpenChange={setMenuOpen}
@@ -548,6 +590,7 @@ function LabelRow({ label, count, properties, tokens }: LabelRowProps) {
 
 interface LabelRowMenuProps {
   label: string;
+  count: number;
   properties: readonly string[];
   opened: boolean;
   onOpenChange: (v: boolean) => void;
@@ -556,6 +599,7 @@ interface LabelRowMenuProps {
 
 function LabelRowMenu({
   label,
+  count,
   properties,
   opened,
   onOpenChange,
@@ -571,18 +615,20 @@ function LabelRowMenu({
       withinPortal
     >
       <Menu.Target>
-        <ActionIcon
-          variant="subtle"
-          size="xs"
-          color="gray"
-          aria-label={`Actions for ${label}`}
-          style={{
-            opacity: visible ? 1 : 0,
-            transition: "opacity 120ms",
-          }}
-        >
-          <IconDots size={12} />
-        </ActionIcon>
+        <Tooltip label="Actions" withArrow openDelay={400}>
+          <ActionIcon
+            variant="subtle"
+            size="xs"
+            color="gray"
+            aria-label={`Actions for ${label}`}
+            style={{
+              opacity: visible ? 1 : 0.35,
+              transition: "opacity 120ms",
+            }}
+          >
+            <IconDots size={12} />
+          </ActionIcon>
+        </Tooltip>
       </Menu.Target>
       <Menu.Dropdown>
         <Menu.Label>{label}</Menu.Label>
@@ -660,6 +706,16 @@ function LabelRowMenu({
         >
           Copy name
         </Menu.Item>
+        <Menu.Divider />
+        <Menu.Item
+          color="red"
+          leftSection={<IconTrash size={14} />}
+          onClick={() => openConfirmRemoveLabel(label, count)}
+        >
+          {count > 0
+            ? `Remove all ${count} node${count === 1 ? "" : "s"}…`
+            : "Remove label…"}
+        </Menu.Item>
       </Menu.Dropdown>
     </Menu>
   );
@@ -698,7 +754,12 @@ function RelTypeRow({ relType, properties, tokens }: RelTypeRowProps) {
         style={{
           padding: "2px 6px",
           borderRadius: tokens.radius.sm,
-          background: hovered || menuOpen ? tokens.bg.overlay : "transparent",
+          borderLeft: `2px solid ${
+            hovered || menuOpen ? tokens.category.relType : "transparent"
+          }`,
+          background:
+            hovered || menuOpen ? tokens.category.relTypeBg : "transparent",
+          transition: "background-color 80ms, border-color 80ms",
         }}
       >
         <ActionIcon
@@ -887,6 +948,14 @@ function RelTypeRowMenu({
           onClick={() => copyToClipboard(relType, "Relationship type")}
         >
           Copy name
+        </Menu.Item>
+        <Menu.Divider />
+        <Menu.Item
+          color="red"
+          leftSection={<IconTrash size={14} />}
+          onClick={() => openConfirmRemoveRelType(relType)}
+        >
+          Remove all relationships…
         </Menu.Item>
       </Menu.Dropdown>
     </Menu>

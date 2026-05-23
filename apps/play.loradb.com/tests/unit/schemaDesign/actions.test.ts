@@ -55,7 +55,7 @@ import {
 
 const mockRunDDL = runDDL as ReturnType<typeof vi.fn>;
 const mockFetch = fetchSchemaDesignSnapshot as ReturnType<typeof vi.fn>;
-const mockNotify = (notifications.show as unknown) as ReturnType<typeof vi.fn>;
+const mockNotify = notifications.show as unknown as ReturnType<typeof vi.fn>;
 
 const indexDraft: IndexDraft = {
   kind: "RANGE",
@@ -145,7 +145,9 @@ describe("createConstraint", () => {
 
 describe("updateIndex", () => {
   it("issues DROP then CREATE for the new draft", async () => {
-    mockRunDDL.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+    mockRunDDL
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
 
     const ok = await updateIndex("idx_person_email", {
       ...indexDraft,
@@ -184,6 +186,35 @@ describe("updateIndex", () => {
     );
   });
 
+  it("restores the original index when replacement CREATE fails", async () => {
+    mockRunDDL
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("create broke"))
+      .mockResolvedValueOnce(undefined);
+
+    const ok = await updateIndex(
+      "idx_person_email",
+      {
+        ...indexDraft,
+        name: "idx_person_email_new",
+      },
+      indexDraft,
+    );
+
+    expect(ok).toBe(false);
+    expect(mockRunDDL).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("CREATE RANGE INDEX `idx_person_email`"),
+    );
+    expect(mockNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: "yellow",
+        title: "Index update rolled back",
+        autoClose: false,
+      }),
+    );
+  });
+
   it("aborts cleanly when DROP fails — no CREATE attempted", async () => {
     mockRunDDL.mockRejectedValueOnce(new Error("drop broke"));
 
@@ -196,7 +227,9 @@ describe("updateIndex", () => {
 
 describe("updateConstraint", () => {
   it("issues DROP then CREATE", async () => {
-    mockRunDDL.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+    mockRunDDL
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
 
     const ok = await updateConstraint("unique_person_email", constraintDraft);
 
@@ -211,6 +244,35 @@ describe("updateConstraint", () => {
     );
     expect(mockNotify).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Constraint updated" }),
+    );
+  });
+
+  it("restores the original constraint when replacement CREATE fails", async () => {
+    mockRunDDL
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("create broke"))
+      .mockResolvedValueOnce(undefined);
+
+    const ok = await updateConstraint(
+      "unique_person_email",
+      {
+        ...constraintDraft,
+        name: "unique_person_email_new",
+      },
+      constraintDraft,
+    );
+
+    expect(ok).toBe(false);
+    expect(mockRunDDL).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("CREATE CONSTRAINT `unique_person_email`"),
+    );
+    expect(mockNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: "yellow",
+        title: "Constraint update rolled back",
+        autoClose: false,
+      }),
     );
   });
 });
@@ -240,7 +302,18 @@ describe("dropIndex / dropConstraint", () => {
 describe("refreshSchemaDesign", () => {
   it("calls fetch and stores the snapshot", async () => {
     mockFetch.mockResolvedValueOnce({
-      indexes: [{ name: "idx", kind: "RANGE", entity: "NODE", labelsOrTypes: ["Person"], properties: ["email"], state: "online", populationPercent: 100, owned: false }],
+      indexes: [
+        {
+          name: "idx",
+          kind: "RANGE",
+          entity: "NODE",
+          labelsOrTypes: ["Person"],
+          properties: ["email"],
+          state: "online",
+          populationPercent: 100,
+          owned: false,
+        },
+      ],
       constraints: [],
     });
 

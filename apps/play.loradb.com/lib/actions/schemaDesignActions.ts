@@ -121,6 +121,7 @@ export async function createConstraint(
 export async function updateIndex(
   oldName: string,
   draft: IndexDraft,
+  originalDraft?: IndexDraft,
 ): Promise<boolean> {
   try {
     await runDDL(buildDropIndexDDL(oldName, true));
@@ -138,6 +139,34 @@ export async function updateIndex(
     await refreshSchemaDesign();
     return true;
   } catch (err) {
+    if (originalDraft) {
+      try {
+        await runDDL(buildCreateIndexDDL(originalDraft));
+        notifications.show({
+          color: "yellow",
+          title: "Index update rolled back",
+          message: `The replacement couldn't be created, so “${oldName}” was restored. ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          autoClose: false,
+        });
+        await refreshSchemaDesign();
+        return false;
+      } catch (rollbackErr) {
+        notifications.show({
+          color: "red",
+          title: "Index update rollback failed",
+          message: `“${oldName}” was dropped, the replacement couldn't be created, and the original couldn't be restored. ${
+            rollbackErr instanceof Error
+              ? rollbackErr.message
+              : String(rollbackErr)
+          }`,
+          autoClose: false,
+        });
+        await refreshSchemaDesign();
+        return false;
+      }
+    }
     notifications.show({
       color: "red",
       title: "Index update partially failed",
@@ -155,6 +184,7 @@ export async function updateIndex(
 export async function updateConstraint(
   oldName: string,
   draft: ConstraintDraft,
+  originalDraft?: ConstraintDraft,
 ): Promise<boolean> {
   try {
     await runDDL(buildDropConstraintDDL(oldName, true));
@@ -172,6 +202,34 @@ export async function updateConstraint(
     await refreshSchemaDesign();
     return true;
   } catch (err) {
+    if (originalDraft) {
+      try {
+        await runDDL(buildCreateConstraintDDL(originalDraft));
+        notifications.show({
+          color: "yellow",
+          title: "Constraint update rolled back",
+          message: `The replacement couldn't be created, so “${oldName}” was restored. ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          autoClose: false,
+        });
+        await refreshSchemaDesign();
+        return false;
+      } catch (rollbackErr) {
+        notifications.show({
+          color: "red",
+          title: "Constraint update rollback failed",
+          message: `“${oldName}” was dropped, the replacement couldn't be created, and the original couldn't be restored. ${
+            rollbackErr instanceof Error
+              ? rollbackErr.message
+              : String(rollbackErr)
+          }`,
+          autoClose: false,
+        });
+        await refreshSchemaDesign();
+        return false;
+      }
+    }
     notifications.show({
       color: "red",
       title: "Constraint update partially failed",

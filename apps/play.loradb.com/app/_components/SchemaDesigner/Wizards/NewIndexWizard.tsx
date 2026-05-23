@@ -281,7 +281,7 @@ export function NewIndexWizard({ onClose }: { onClose: () => void }) {
   const submit = async () => {
     setSubmitting(true);
     const ok = editingDef
-      ? await updateIndex(editingDef.name, draft)
+      ? await updateIndex(editingDef.name, draft, indexDefToDraft(editingDef))
       : await createIndex(draft);
     setSubmitting(false);
     if (ok) onClose();
