@@ -92,12 +92,12 @@ property simply yields `null` on access. See
 
 The two rules meet cleanly in this pattern:
 
-<QueryCodeBlock code={String.raw`CREATE (:Spaceship {name: 'Rocinante'});
+<CypherSnippet code={String.raw`CREATE (:Spaceship {name: 'Rocinante'});
 MATCH (s:Spaceship) RETURN s;  // works — :Spaceship now exists`} />
 
 And break in this one:
 
-<QueryCodeBlock code={String.raw`// Empty graph
+<CypherSnippet code={String.raw`// Empty graph
 MATCH (s:NeverWritten) RETURN s;  // analysis error on a populated graph`} />
 
 ## `MERGE` for idempotent writes

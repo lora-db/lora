@@ -145,7 +145,7 @@ same name. Drop the constraint, not the backing index; direct
 
 Constraints are enforced for matching writes:
 
-<QueryCodeBlock code={String.raw`CREATE CONSTRAINT user_email
+<CypherSnippet code={String.raw`CREATE CONSTRAINT user_email
 FOR (u:User)
 REQUIRE u.email IS UNIQUE;
 

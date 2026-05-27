@@ -275,9 +275,9 @@ Both endpoints must be in scope. A `CREATE (a)-[:R]->(b)` where `a` or
 ### Storage considerations
 
 Every node is `O(1)` to create. Relationships are stored on both
-endpoints, so creating one edge is `O(1)` too. There are **no property
-indexes** (see [Limitations](../limitations)) — later `MATCH (n {p: v})`
-lookups without a label are full scans.
+endpoints, so creating one edge is `O(1)` too. Declared secondary
+indexes speed up scoped hot predicates, but unlabeled `MATCH (n {p: v})`
+lookups still have no label scope and fall back to scanning.
 
 ## See also
 

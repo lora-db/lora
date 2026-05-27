@@ -370,7 +370,7 @@ RETURN a, b, path.length(p) AS hops    // hops = null if unreachable`} />
 Unbounded variable-length traversals can be expensive. Bound with a
 maximum depth whenever the answer is "and not further":
 
-<QueryCodeBlock code={String.raw`// Good — bounded
+<CypherSnippet code={String.raw`// Good — bounded
 MATCH (a)-[:KNOWS*1..6]-(b) …
 
 // Risky on large graphs — unbounded

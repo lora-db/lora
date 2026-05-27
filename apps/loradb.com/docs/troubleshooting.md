@@ -11,6 +11,31 @@ find the symptom in the lookup table below and jump to the fix.
 Each section names the cause, shows the failure mode, and gives the
 shortest way out.
 
+## Frequent fixes
+
+<FAQ items={[
+  {
+    question: "Why does my LoraDB query return no rows when I know the data is there?",
+    answer: "Cypher labels and relationship types are case-sensitive. (:Person) and (:person) match different nodes; [:KNOWS] and [:knows] are different relationship types. Check the case of every label and type in the query against what was used at CREATE time. If labels match, also confirm the direction of relationships — (a)-[:R]->(b) does not match (b)-[:R]->(a).",
+  },
+  {
+    question: "Why is LoraDB throwing 'Unknown function' on a function I know exists?",
+    answer: "LoraDB functions are namespaced. string.lower(x) works; lower(x) without the namespace does not. See Functions → Overview for the full list of namespaces (string, math, list, map, temporal, spatial, vectors, utility) and the compatibility aliases.",
+  },
+  {
+    question: "How do I fix 'DeleteNodeWithRelationships' when deleting a node?",
+    answer: "Plain DELETE refuses to remove a node that still has relationships attached, to prevent dangling edges. Use DETACH DELETE n to remove the node and every relationship touching it in one step, or DELETE every relationship first and then DELETE the node.",
+  },
+  {
+    question: "Why does my LoraDB MATCH produce an N times M row explosion?",
+    answer: "Independent MATCH patterns produce a Cartesian product unless joined by a shared variable. MATCH (a:Person), (b:Movie) is one pattern; MATCH (a:Person)-[:WATCHED]->(b:Movie) is another. If you need both pieces independently, project them through WITH and re-MATCH, or wire them together via a shared variable.",
+  },
+  {
+    question: "Why does my SET clause overwrite existing properties instead of merging?",
+    answer: "SET n = {key: value} replaces every property on n with the given map. To add or update specific properties without disturbing the rest, use SET n.key = value or SET n += {key: value} for merge semantics.",
+  },
+]} />
+
 ## Quick lookup
 
 | Symptom | Jump to |
@@ -29,7 +54,50 @@ shortest way out.
 | Snapshot load fails with "bad magic" or checksum mismatch | [Snapshots → load fails with bad magic / checksum](#snapshot-load-fails-with-bad-magic-or-crc) |
 | Snapshot load reports unsupported version | [Snapshots → unsupported format version](#snapshot-load-reports-unsupported-format-version) |
 | Result JSON shape is wrong | [Result format](#result-json-looks-nothing-like-what-i-expected) |
+| Install or package build fails | [Install and setup](#install-and-setup) |
 | Build fails | [Build](#build) |
+
+## Install and setup
+
+### I just want to try LoraDB
+
+Use [play.loradb.com](https://play.loradb.com) first. It runs in the
+browser and avoids local toolchain setup. Move to a binding or the
+HTTP server once you need runtime-supplied parameters; use a binding
+when you also want host-language types or direct persistence APIs.
+
+### `yarn` uses the wrong version
+
+The repository pins Yarn through Corepack. From the repository root:
+
+```bash
+corepack enable
+yarn install --immutable
+```
+
+If `yarn install --immutable` complains about the lockfile after a pull,
+do not edit `yarn.lock` by hand. Re-run with the pinned Yarn and check
+whether the branch intentionally changed dependencies.
+
+### Node package scripts fail immediately
+
+Use Node.js 20+. The docs site, playground, WASM package, and workspace
+tooling assume the Node 20 runtime even when a single package may appear
+to build on older versions.
+
+### Go binding cannot find `liblora_ffi`
+
+Build the Rust FFI library before running Go tests:
+
+```bash
+cargo build --release -p lora-ffi
+cd crates/bindings/lora-go
+go test -race ./...
+```
+
+Consumer projects outside the repository need `CGO_CFLAGS` and
+`CGO_LDFLAGS` pointing at the release archive or local checkout. See
+[Go → Installation](./getting-started/go#installation--setup).
 
 ## Build
 
@@ -40,6 +108,20 @@ Install a C toolchain. On macOS:
 ```bash
 xcode-select --install
 ```
+
+### `cargo: command not found` or wrong Rust version
+
+Install Rust with `rustup`, then let the repository's
+`rust-toolchain.toml` select the pinned stable toolchain:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup show
+```
+
+The workspace currently requires Rust 1.87 or newer. If `cargo build`
+reports an older compiler, run `rustup update stable` and retry from
+the repository root.
 
 ### Slow release builds
 
@@ -123,7 +205,7 @@ Common mistakes:
 |---|---|
 | `DeleteNodeWithRelationships` | Use [`DETACH DELETE`](./queries/set-delete#detach-delete) instead of plain `DELETE`. |
 | `MissingRelationshipType` | `CREATE (a)-[]->(b)` — a [relationship](./concepts/relationships) must have a type. |
-| `ReadOnlyCreate` | Should not occur via normal paths; filed bug if you see this. |
+| `ReadOnlyCreate` | Should not occur via normal paths; file a bug if you see this. |
 
 ### Queries return empty results
 
@@ -401,11 +483,18 @@ usually filters everything out. Verify every `$name` in your query has
 a corresponding entry in the params map passed to
 `execute_with_params`.
 
-### The HTTP API ignored my parameters
+### The HTTP API rejected my parameters
 
-`POST /query` does not currently accept a `params` body field — see
-[Limitations](./limitations). Bind parameters via the Rust / Node /
-Python APIs for now.
+`POST /query`, `/explain`, and `/profile` accept a `params` object.
+If you get `LORA_INVALID_PARAMS`, check that `params` is a JSON object
+keyed by parameter name, not an array or scalar:
+
+```json
+{ "query": "RETURN $v AS v", "params": { "v": 42 } }
+```
+
+For typed values such as dates, points, and vectors, pass the JSON
+value and cast it in the query. See [Parameters](./queries/parameters#http-api).
 
 ### Integer precision lost in JS
 
@@ -611,7 +700,7 @@ need heterogeneous output, convert with `toString`.
 
 **Example:**
 
-<QueryCodeBlock code={String.raw`// Mixed types — results downstream-unpredictable
+<CypherSnippet code={String.raw`// Mixed types — results downstream-unpredictable
 CASE WHEN n.score >= 50 THEN n.score ELSE 'unknown' END
 
 // Fixed
@@ -623,7 +712,7 @@ Simple form (`CASE x WHEN v THEN …`) compares `x` against values
 using equality. It can't express ranges or boolean predicates per
 branch — that's the generic form (`CASE WHEN pred THEN …`).
 
-<QueryCodeBlock code={String.raw`// Doesn't work — comparison is hidden inside the simple form
+<CypherSnippet code={String.raw`// Doesn't work — comparison is hidden inside the simple form
 CASE p.age WHEN >= 18 THEN 'adult' ELSE 'minor' END
 
 // Use the generic form

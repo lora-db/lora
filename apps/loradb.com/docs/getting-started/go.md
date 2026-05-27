@@ -15,6 +15,44 @@ and Ruby bindings (primitives pass through; nodes, relationships,
 paths, temporals, and points come back as `map[string]any` with a
 `"kind"` discriminator).
 
+<HowTo
+  name="Use LoraDB in a Go project"
+  description="Build liblora_ffi from source (or fetch a release archive), wire up cgo flags, open an in-process database handle, run a Cypher query, and persist the graph."
+  totalTime="PT10M"
+  steps={[
+    {
+      name: "Install Go and a C toolchain",
+      text: "Go 1.21+ with cgo enabled. macOS/Linux usually have clang or gcc available; Windows needs MSYS2 or the MSVC build tools.",
+      url: "#requirements",
+    },
+    {
+      name: "Build or download liblora_ffi",
+      text: "Run cargo build --release -p lora-ffi from a checkout of github.com/lora-db/lora to produce target/release/liblora_ffi.a, or download the prebuilt archive from a tagged GitHub Release.",
+      url: "#install",
+    },
+    {
+      name: "Add the Go module",
+      text: "Run go get github.com/lora-db/lora/crates/bindings/lora-go. For consumer projects outside the workspace, export CGO_LDFLAGS to point at the directory containing liblora_ffi.a.",
+      url: "#installation--setup",
+    },
+    {
+      name: "Open a database handle",
+      text: "Call lora.New() to get an in-process handle (defer db.Close()). Every binding shares the same tagged value model: primitives pass through, complex types come back as map[string]any with a kind discriminator.",
+      url: "#creating-a-client--connection",
+    },
+    {
+      name: "Run a Cypher query",
+      text: "Call db.Execute(\"CREATE (:Person {name: 'Ada'})\", nil) and db.Execute(\"MATCH (p:Person) RETURN p.name\", nil) to confirm the binding works end-to-end.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Persist the graph",
+      text: "Call db.SaveSnapshot(\"graph.bin\") for an atomic point-in-time dump, or open with WAL config for continuous durability.",
+      url: "#persisting-your-graph",
+    },
+  ]}
+/>
+
 ## Installation / Setup
 
 ### Requirements
@@ -264,8 +302,10 @@ if err != nil {
         switch lerr.Code {
         case lora.CodeInvalidParams:
             // bad params
-        case lora.CodeLoraError:
-            // parse / analyze / execute failure
+        case lora.CodeParse, lora.CodeSemantic:
+            // parse / analyze failure
+        case lora.CodeConstraint:
+            // write conflicted with current graph state
         }
     }
 }
@@ -323,7 +363,7 @@ WAL-enabled deployment. Save and load encode or decode the whole graph, so large
 snapshots can still affect latency. A crash
 between saves loses every mutation since the last save.
 
-Passing a database name and directory opens or creates an container-backed persistent
+Passing a database name and directory opens or creates a container-backed persistent
 database at `<databaseDir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. `OpenWal` opens a raw WAL
 directory; when `SnapshotDir` and `SnapshotEveryCommits` are set, the
@@ -371,12 +411,14 @@ db.Version()                 // module / engine version string
 
 | Code | When |
 |---|---|
-| `LORA_ERROR` | Parse / analyze / execute failure |
-| `INVALID_PARAMS` | A parameter value couldn't be mapped |
-| `PANIC` | The engine panicked; the FFI caught it and surfaced the message |
+| `LORA_PARSE` | Cypher syntax could not be parsed |
+| `LORA_SEMANTIC` | Analysis failed, for example an unknown variable or function |
+| `LORA_INVALID_PARAMS` | A parameter value couldn't be mapped |
+| `LORA_CONSTRAINT` | The write conflicted with current graph state |
+| `LORA_PANIC` | The engine panicked; the FFI caught it and surfaced the message |
 | `UNKNOWN` | Catch-all for messages without a recognised prefix |
 
-Engine-level causes live in [Troubleshooting](../troubleshooting).
+The full code list lives in [Error reference](../errors).
 
 ## Performance / Best Practices
 

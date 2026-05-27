@@ -167,11 +167,11 @@ RETURN math.sin(math.radians(deg)),
 
 <QueryCodeBlock code={String.raw`WITH 4.89 AS lon1, 52.37 AS lat1,
      4.40 AS lon2, 51.00 AS lat2
-WITH math.radians(lat1) AS φ1, math.radians(lat2) AS φ2,
-     math.radians(lon2 - lon1) AS dλ
+WITH math.radians(lat1) AS phi1, math.radians(lat2) AS phi2,
+     math.radians(lon2 - lon1) AS d_lambda
 RETURN (math.degrees(math.atan2(
-  math.sin(dλ) * math.cos(φ2),
-  math.cos(φ1) * math.sin(φ2) - math.sin(φ1) * math.cos(φ2) * math.cos(dλ)
+  math.sin(d_lambda) * math.cos(phi2),
+  math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(d_lambda)
 )) + 360) % 360 AS bearing`} />
 
 Approximation — use [`geo.distance`](./spatial#geodistance) for real geodesic

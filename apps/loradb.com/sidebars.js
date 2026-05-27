@@ -18,16 +18,9 @@ module.exports = {
         'getting-started/wasm',
         'getting-started/go',
         'getting-started/ruby',
+        'getting-started/rust',
+        'getting-started/server',
         'getting-started/tutorial',
-        {
-          type: 'category',
-          label: 'Other runtimes',
-          collapsed: true,
-          items: [
-            'getting-started/rust',
-            'getting-started/server',
-          ],
-        },
       ],
     },
     {

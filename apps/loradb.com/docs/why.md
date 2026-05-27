@@ -214,6 +214,35 @@ Near-term direction, not promises:
 See [**Limitations**](./limitations) for what's not yet supported,
 and the [**docs**](./) for what works today.
 
+## Common questions
+
+<FAQ items={[
+  {
+    question: "Is LoraDB a drop-in replacement for Neo4j or Memgraph?",
+    answer: "No. LoraDB supports a scoped subset of Cypher — enough for application-level graph workloads, not the full surface that hosted graph platforms offer. The trade-off is that LoraDB embeds in-process with no separate server, no network hop, and no operational tier to run.",
+  },
+  {
+    question: "Does LoraDB scale horizontally?",
+    answer: "Not today. LoraDB is an embedded engine, not a distributed database. One LoraDB instance lives inside one host process. Horizontal scaling, sharding, and replication are out of scope for the current design; if your dataset does not fit in RAM on one machine, LoraDB is the wrong choice.",
+  },
+  {
+    question: "Is LoraDB ACID?",
+    answer: "Writes serialize at commit through a single lane. Reads run lock-free against an Arc snapshot taken at the start of the query, so concurrent reads never block writes or each other. With WAL enabled, commits are durable; without WAL, durability is at the granularity of explicit snapshots.",
+  },
+  {
+    question: "Why an in-memory engine in 2026?",
+    answer: "Because the workloads LoraDB targets — AI agents, robot scene graphs, permission inference, retrieval over knowledge graphs — touch every node they care about on every query. The working set is hot by definition. Pushing it through a disk-based planner means paying for storage abstractions you do not need.",
+  },
+  {
+    question: "Can LoraDB persist data?",
+    answer: "Yes. Snapshots write the full graph to a single file with an atomic rename and ship on every binding. WAL-backed durability is available on every filesystem-backed surface (Rust, Node, Python, Go, Ruby, and the HTTP server) — commits append to a write-ahead log and replay on recover above the snapshot fence.",
+  },
+  {
+    question: "What query language does LoraDB use?",
+    answer: "A pragmatic subset of Cypher. Read clauses (MATCH, OPTIONAL MATCH, WHERE, WITH, RETURN), write clauses (CREATE, MERGE, SET, DELETE, REMOVE), iteration (UNWIND), paths and variable-length traversals, aggregation, and most built-in functions are supported. See Limitations for what is out of scope.",
+  },
+]} />
+
 ## See also
 
 - [**What is LoraDB**](./) — introduction, audiences, and quick start.

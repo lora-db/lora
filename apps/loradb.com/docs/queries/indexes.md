@@ -52,8 +52,8 @@ Index names may also come from a string parameter:
 
 Lookup indexes are catalog entries over labels or relationship types:
 
-<QueryCodeBlock code={String.raw`CREATE LOOKUP INDEX node_labels FOR (n) ON EACH labels(n);
-CREATE LOOKUP INDEX rel_types FOR ()-[r]-() ON EACH type(r);`} />
+<CypherSnippet code={String.raw`CREATE LOOKUP INDEX node_labels FOR (n) ON EACH node.labels(n);
+CREATE LOOKUP INDEX rel_types FOR ()-[r]-() ON EACH edge.type(r);`} />
 
 Composite RANGE indexes are accepted and shown in the catalog:
 

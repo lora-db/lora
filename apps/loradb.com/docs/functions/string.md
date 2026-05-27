@@ -362,14 +362,11 @@ is appended.
 ### Parse `key=value` pairs
 
 <QueryCodeBlock code={String.raw`WITH 'a=1;b=2;c=3' AS s
-RETURN reduce(
-  m = {},
-  pair IN string.split(s, ';') |
-  m + {[string.split(pair, '=')[0]]: string.split(pair, '=')[1]}
-) AS parsed
-// {a: '1', b: '2', c: '3'}`} />
+RETURN [pair IN string.split(s, ';') |
+  {key: string.split(pair, '=')[0], value: string.split(pair, '=')[1]}
+] AS parsed`} />
 
-Values are strings — wrap each with
+Values are strings — wrap each parsed value with
 [`toInteger`](../functions/string#type-conversion) if you need numeric
 types.
 

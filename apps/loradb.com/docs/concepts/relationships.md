@@ -167,7 +167,7 @@ ORDER BY in_degree DESC`} />
 Rare but sometimes the right modelling choice:
 
 <QueryCodeBlock code={String.raw`MATCH (n)
-WHERE (n)-[:RECURSES_INTO]->(n)
+WHERE EXISTS { (n)-[:RECURSES_INTO]->(n) }
 RETURN n`} />
 
 ### Ensure this edge (once)
@@ -240,7 +240,8 @@ Direction is required on writes. Decide which way makes sense.
 A query like `MATCH (a)-[r]->(b)-[r]->(c)` won't compile — `r` must be
 unique. Use two distinct variables:
 
-<QueryCodeBlock code={String.raw`MATCH (a)-[r1:T]->(b)-[r2:T]->(c)`} />
+<QueryCodeBlock code={String.raw`MATCH (a)-[r1:T]->(b)-[r2:T]->(c)
+RETURN r1, r2`} />
 
 ### Multiple parallel edges
 

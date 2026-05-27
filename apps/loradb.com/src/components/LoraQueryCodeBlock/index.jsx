@@ -26,8 +26,9 @@ function StaticFallback({ source, className }) {
   );
 }
 
-function LoadedLoraQueryCodeBlock({ source, colorScheme }) {
+function LoadedLoraQueryCodeBlock({ source, colorScheme, lineWrap }) {
   const [editorModule, setEditorModule] = React.useState(null);
+  const [wrapExt, setWrapExt] = React.useState(null);
   // Reuse the shared formatter hook so every Cypher surface on the
   // site auto-formats with identical semantics. The hook returns the
   // raw `source` until the WASM module resolves, then snaps to the
@@ -49,6 +50,21 @@ function LoadedLoraQueryCodeBlock({ source, colorScheme }) {
     };
   }, []);
 
+  // CodeMirror's lineWrapping extension is opt-in — the dynamic import
+  // keeps it off the critical path for surfaces that don't need it.
+  React.useEffect(() => {
+    if (!lineWrap) return undefined;
+    let cancelled = false;
+    import("@codemirror/view")
+      .then((mod) => {
+        if (!cancelled) setWrapExt(mod.EditorView.lineWrapping);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [lineWrap]);
+
   if (!editorModule?.LoraQueryEditor) {
     return <StaticFallback source={formattedSource} />;
   }
@@ -66,11 +82,17 @@ function LoadedLoraQueryCodeBlock({ source, colorScheme }) {
       minHeight={minHeight}
       maxHeight="460px"
       className={styles.editor}
+      extraExtensions={lineWrap && wrapExt ? wrapExt : undefined}
     />
   );
 }
 
-export default function LoraQueryCodeBlock({ code, children, className }) {
+export default function LoraQueryCodeBlock({
+  code,
+  children,
+  className,
+  lineWrap = false,
+}) {
   const source = normalizeSource(code, children);
   const { colorMode } = useColorMode();
   const colorScheme = colorMode === "dark" ? "dark" : "light";
@@ -85,7 +107,11 @@ export default function LoraQueryCodeBlock({ code, children, className }) {
         fallback={<StaticFallback source={source} className={className} />}
       >
         {() => (
-          <LoadedLoraQueryCodeBlock source={source} colorScheme={colorScheme} />
+          <LoadedLoraQueryCodeBlock
+            source={source}
+            colorScheme={colorScheme}
+            lineWrap={lineWrap}
+          />
         )}
       </BrowserOnly>
     </div>

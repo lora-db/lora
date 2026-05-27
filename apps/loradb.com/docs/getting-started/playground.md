@@ -19,7 +19,8 @@ Node, Python, WASM, Go, Ruby, Rust, or the HTTP server.
 
 | Surface | What it does |
 |---|---|
-| Editor | Query tabs, LoraDB-aware highlighting, completion, diagnostics, formatting, and `Cmd/Ctrl+Enter` to run |
+| Editor | Query tabs, LoraDB-aware highlighting, completion, diagnostics, formatting, parameter detection, and `Cmd/Ctrl+Enter` to run |
+| Params | Per-query JSON params panel for `$name` placeholders, with missing-param checks before execution |
 | Results | Graph, table, JSON, and parser/analyzer views over the active query |
 | Sidebar | Saved queries, schema browser, snapshots, history, and settings |
 | Local persistence | IndexedDB and `localStorage` keep saved queries, snapshots, settings, history, and the auto-restored graph on the browser origin |
@@ -48,8 +49,9 @@ JSON result tabs show the same rows in more compact forms.
 
 ## Share a query
 
-The Share action copies a URL that carries only the query body. It does
-not include your database, saved queries, snapshots, or settings.
+The Share action copies a URL that carries the active query body and,
+when present, the active params JSON. It does not include your
+database, saved queries, snapshots, history, or settings.
 
 For a reproducible example with data:
 
@@ -62,13 +64,21 @@ The query URL uses the hash fragment (`#q=...`) so the static export can
 refresh cleanly. Very large queries can produce long URLs; when in
 doubt, share a snapshot and keep the query short.
 
-## Use literals in playground examples
+## Use parameters in playground examples
 
-Application code should use [parameters](../queries/parameters). The
-playground editor can show parameter names in the analyzer view, but it
-does not yet have a params drawer for supplying host-side values.
+Application code should use [parameters](../queries/parameters), and
+the playground can run them too. Write `$name` placeholders in the
+query, open the Params panel, and provide a JSON object:
 
-For playground-ready docs and examples, use trusted inline literals:
+<QueryCodeBlock code={String.raw`MATCH (p:Person {name: $name})
+RETURN p`} />
+
+```json
+{ "name": "Ada" }
+```
+
+For tiny docs examples that should run without opening the Params
+panel, trusted inline literals are still fine:
 
 <QueryCodeBlock code={String.raw`MATCH (p:Person {name: 'Ada'})
 RETURN p`} />

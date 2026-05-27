@@ -18,15 +18,43 @@ filesystem-backed persistence the WASM build cannot: container-backed
 `.loradb` files, explicit WAL directories, and path-based snapshot
 save/load.
 
+<HowTo
+  name="Use LoraDB in a Node.js or TypeScript project"
+  description="Install the @loradb/lora-node N-API binding, open an async in-memory handle, run a Cypher query, and persist the graph with a .loradb container or a WAL directory."
+  totalTime="PT5M"
+  steps={[
+    {
+      name: "Install the package",
+      text: "Run npm install @loradb/lora-node (or yarn add @loradb/lora-node). The published package ships prebuilt N-API binaries for Linux, macOS, and Windows.",
+      url: "#installation--setup",
+    },
+    {
+      name: "Open a database handle",
+      text: "Call createDatabase() for an in-memory graph, or createDatabase('app', { databaseDir: './data' }) for a .loradb container. The handle is async-only — every call returns a Promise.",
+      url: "#creating-a-client--connection",
+    },
+    {
+      name: "Run a Cypher query",
+      text: "Await db.execute(\"CREATE (:Person {name: 'Ada'})\") and then db.execute(\"MATCH (p:Person) RETURN p.name\") to confirm the binding works end-to-end.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Persist the graph",
+      text: "Call db.saveSnapshot('graph.bin') for a point-in-time dump, or switch to openWalDatabase({ walDir, snapshotDir, snapshotEveryCommits }) for continuous WAL-backed durability.",
+      url: "#persisting-your-graph",
+    },
+  ]}
+/>
+
 ## Installation / Setup
 
 [![npm (@loradb/lora-node)](https://img.shields.io/npm/v/@loradb/lora-node?label=%40loradb%2Flora-node&logo=npm)](https://www.npmjs.com/package/@loradb/lora-node)
 
 ### Requirements
 
-- Node.js **18+**
-- For building from source: Rust toolchain (`rustup`) +
-  `@napi-rs/cli`
+- Node.js **18+** for the published package
+- Node.js **20+** for repository-wide tooling and docs / playground work
+- For building from source: Rust toolchain (`rustup`) + `@napi-rs/cli`
 
 ### Install
 
@@ -39,9 +67,9 @@ npm install @loradb/lora-node
 When working inside this repository, build from source:
 
 ```bash
-cd crates/bindings/lora-node
-npm install
-npm run build        # builds native .node artifact + TypeScript
+corepack enable
+yarn install --immutable
+yarn workspace @loradb/lora-node build   # native .node artifact + TypeScript
 ```
 
 ## Creating a Client / Connection
@@ -77,7 +105,7 @@ const wal = await openWalDatabase({
 If you want persistence, pass a database name and `databaseDir` to
 `createDatabase(...)`, or pass `walDir` to `openWalDatabase(...)`.
 
-To open an container-backed embedded database instead of a fresh in-memory
+To open a container-backed embedded database instead of a fresh in-memory
 one, pass a database name and `databaseDir`:
 
 ```ts
@@ -270,7 +298,7 @@ try {
   await db.execute("BAD QUERY");
 } catch (err) {
   if (err instanceof LoraError) {
-    console.error(err.code);   // "LORA_ERROR" | "INVALID_PARAMS"
+    console.error(err.code);   // "LORA_PARSE", "LORA_INVALID_PARAMS", ...
     console.error(err.message);
   } else {
     throw err;                 // unexpected — rethrow

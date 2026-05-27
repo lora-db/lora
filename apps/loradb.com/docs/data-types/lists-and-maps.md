@@ -114,10 +114,13 @@ RETURN m.b                   // null`} />
 <QueryCodeBlock code={String.raw`MATCH (u:User)
 RETURN {id: u.id, name: u.name, active: u.active} AS user`} />
 
-### Dynamic keys
+### Dynamic lookup
 
-<QueryCodeBlock code={String.raw`WITH 'red' AS color
-RETURN {[color]: 1}          // {red: 1}`} />
+Map literals use static keys. Use bracket lookup when the key comes
+from a variable:
+
+<QueryCodeBlock code={String.raw`WITH 'red' AS color, {red: 1, blue: 2} AS counts
+RETURN counts[color] AS n`} />
 
 ### Concatenation / merge
 

@@ -101,7 +101,9 @@ CREATE (:Should_Not_Exist)
 
 `UNWIND null` emits zero rows (same as empty). This is easy to miss:
 
-<QueryCodeBlock code={String.raw`UNWIND $maybe_list AS x    // $maybe_list not bound → null → 0 rows`} />
+<QueryCodeBlock code={String.raw`UNWIND $maybe_list AS x
+RETURN x
+// $maybe_list not bound -> null -> 0 rows`} />
 
 Pass an explicit `[]` rather than `null` when you want to express
 "nothing to do" from the host.

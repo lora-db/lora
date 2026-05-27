@@ -215,9 +215,7 @@ ORDER BY n DESC`} />
 ### Is any member of a set within range
 
 <QueryCodeBlock code={String.raw`MATCH (u:User {id: $id})
-RETURN any(
-  s IN [(u)-[:OWNS]->(:Car) | s] | true   // example placeholder
-) AS owns_car`} />
+RETURN EXISTS { (u)-[:OWNS]->(:Car) } AS owns_car`} />
 
 For pattern-based `any`, prefer
 [`EXISTS { … }`](../queries/where#pattern-existence).

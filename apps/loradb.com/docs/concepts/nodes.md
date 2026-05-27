@@ -51,9 +51,10 @@ MATCH (u:User {email: $email, active: true}) RETURN u`} />
 Inline maps are equality-only. For ranges, regex, `IN`, or null
 checks, move the predicate into [`WHERE`](../queries/where):
 
+<CypherSnippet code={String.raw`MATCH (u:User)
+WHERE u.age BETWEEN 18 AND 65                     // NOT supported`} />
+
 <QueryCodeBlock code={String.raw`MATCH (u:User)
-WHERE u.age BETWEEN 18 AND 65                     // NOT supported
-MATCH (u:User)
 WHERE u.age >= 18 AND u.age <= 65                 // idiomatic in LoraDB
 RETURN u`} />
 
@@ -151,7 +152,7 @@ REQUIRE u.email IS UNIQUE`} />
 ### Pattern-match on one label, filter on another
 
 <QueryCodeBlock code={String.raw`MATCH (n:Person)
-WHERE NOT n:Admin
+WHERE NOT 'Admin' IN node.labels(n)
 RETURN n`} />
 
 ### Sample a few of each
@@ -173,7 +174,7 @@ RETURN u.handle`} />
 ### Bulk label migration
 
 <QueryCodeBlock code={String.raw`MATCH (u:User)
-WHERE u.role = 'admin' AND NOT u:Admin
+WHERE u.role = 'admin' AND NOT 'Admin' IN node.labels(u)
 SET u:Admin`} />
 
 ### Move properties between nodes
@@ -208,7 +209,7 @@ Matching `(n:A:B:C)` requires **all** listed labels. If you want "any
 of", `UNION` two matches or use `WHERE`:
 
 <QueryCodeBlock code={String.raw`MATCH (n)
-WHERE n:Person OR n:Robot
+WHERE 'Person' IN node.labels(n) OR 'Robot' IN node.labels(n)
 RETURN n`} />
 
 ### Property-only match

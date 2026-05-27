@@ -252,11 +252,13 @@ Property filters without a label are broad scans. Always scope to a
 label when you can, and add an explicit index for hot top-level
 properties:
 
-<QueryCodeBlock code={String.raw`CREATE INDEX user_email FOR (u:User) ON (u.email)
-MATCH (u:User {email: $email}) RETURN u
+<QueryCodeBlock code={String.raw`CREATE INDEX user_email FOR (u:User) ON (u.email)`} />
 
-// Broad scan
-MATCH ({email: $email}) RETURN`} />
+<QueryCodeBlock code={String.raw`MATCH (u:User {email: $email}) RETURN u`} />
+
+Broad scan shape to avoid on hot paths:
+
+<CypherSnippet code={String.raw`MATCH (u {email: $email}) RETURN u`} />
 
 See [Queries → Indexes](../queries/indexes).
 

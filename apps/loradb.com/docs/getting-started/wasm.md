@@ -15,6 +15,39 @@ persistence is pathless in WASM: save returns bytes or web-native
 objects, and load consumes byte/source objects. For browser apps,
 prefer the **Worker** variant so the main thread stays responsive.
 
+<HowTo
+  name="Run LoraDB in the browser with WebAssembly"
+  description="Install @loradb/lora-wasm, pick the bundler or web entry, open an async in-memory handle, run a Cypher query, and persist the graph as bytes."
+  totalTime="PT5M"
+  steps={[
+    {
+      name: "Install the package",
+      text: "Run npm install @loradb/lora-wasm. The package ships three targets out of the same source: a Node entry, a bundler entry for Vite / webpack / esbuild, and a web entry for raw <script type=module>.",
+      url: "#installation--setup",
+    },
+    {
+      name: "Import the right entry",
+      text: "Use @loradb/lora-wasm/bundler in apps built with Vite or webpack, @loradb/lora-wasm/web for native ESM in the browser, or the bare specifier in Node.",
+      url: "#bundler-notes",
+    },
+    {
+      name: "Open a database handle",
+      text: "Call await createDatabase(). The first call bootstraps the WASM module; every method returns a Promise. For long-running queries in the browser, prefer the Worker variant so the main thread stays responsive.",
+      url: "#creating-a-client--connection",
+    },
+    {
+      name: "Run a Cypher query",
+      text: "Await db.execute(\"CREATE (:Person {name: 'Ada'})\") and db.execute(\"MATCH (p:Person) RETURN p.name\") to confirm the engine loaded and the query path works.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Persist the graph",
+      text: "Call db.saveSnapshot() to get a Uint8Array, then write it to IndexedDB or a file. Restore with db.loadSnapshot(bytes). WASM has no filesystem so all persistence is pathless.",
+      url: "#persisting-your-graph",
+    },
+  ]}
+/>
+
 ## Installation / Setup
 
 [![npm (@loradb/lora-wasm)](https://img.shields.io/npm/v/@loradb/lora-wasm?label=%40loradb%2Flora-wasm&logo=npm)](https://www.npmjs.com/package/@loradb/lora-wasm)
@@ -63,7 +96,7 @@ on the returned instance returns a Promise for API symmetry with
 
 Unlike `lora-node`, the WASM binding does **not** accept a directory
 string for persistent initialization. `createDatabase()` is always an
-in-memory database; persistency in WASM is byte-based through
+in-memory database; persistence in WASM is byte-based through
 `saveSnapshot` / `loadSnapshot`.
 
 :::caution Do not skip the `await`
@@ -77,7 +110,7 @@ directly — it is exported as a **type only**.
 
 ```ts
 // src/worker.ts
-import 'lora-wasm/worker';
+import '@loradb/lora-wasm/worker';
 ```
 
 ```ts
@@ -222,7 +255,7 @@ packages with identical signatures.
 
 ```tsx
 // src/worker.ts
-import 'lora-wasm/worker';
+import '@loradb/lora-wasm/worker';
 
 // src/useDb.ts
 import { createWorkerDatabase, type WorkerDatabase } from '@loradb/lora-wasm/worker-client';
@@ -263,11 +296,17 @@ UI stays interactive.
 ### Handle errors
 
 ```ts
+import { LoraError } from '@loradb/lora-wasm';
+
 try {
   await db.execute("BAD QUERY");
 } catch (err) {
-  // WASM surfaces engine errors as plain Error objects
-  console.error((err as Error).message);
+  if (err instanceof LoraError) {
+    console.error(err.code);
+    console.error(err.message);
+  } else {
+    throw err;
+  }
 }
 ```
 
@@ -393,7 +432,7 @@ stays interactive.
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  optimizeDeps: { exclude: ['lora-wasm'] },
+  optimizeDeps: { exclude: ['@loradb/lora-wasm'] },
   worker: { format: 'es' },
 });
 ```
@@ -441,10 +480,9 @@ can never be queried before it is bootstrapped.
 
 ## Error Handling
 
-WASM surfaces engine errors as plain `Error` with the engine's
-message. There is no structured error class equivalent to
-`lora-node`'s `LoraError` — match on the message text or let it
-bubble to a generic handler.
+WASM surfaces engine and worker failures as `LoraError`, the same
+structured error class shape as `lora-node`. Match on `err.code`,
+for example `LORA_PARSE`, `LORA_INVALID_PARAMS`, or `WORKER_ERROR`.
 
 ## Performance / Best Practices
 

@@ -58,8 +58,9 @@ a structured result back.
 
 ```json
 {
-  "query":  "MATCH (p:Person) RETURN p",
-  "format": "rows"
+  "query":  "MATCH (p:Person) WHERE p.name = $name RETURN p",
+  "format": "rows",
+  "params": { "name": "Alice" }
 }
 ```
 
@@ -67,20 +68,17 @@ a structured result back.
 |---|---|---|---|
 | `query` | string | yes | Cypher source. |
 | `format` | string | no | One of `"rows"`, `"rowArrays"`, `"graph"`, `"combined"`. Defaults to `"graph"`. |
-
-:::caution
-
-The request body does **not** yet accept a `params` field. Bind
-parameters via the [Rust](../getting-started/rust#parameterised-query),
-[Node](../getting-started/node#parameterised-query),
-[Python](../getting-started/python#parameterised-query), or
-[WASM](../getting-started/wasm#parameterised-query) bindings. See
-[Limitations → Parameters](../limitations#parameters).
-
-:::
+| `params` | object | no | Bound parameters keyed by name. Values may be JSON scalars, arrays, or objects. |
 
 `content-type: application/json` is required. Anything else yields
 `400`.
+
+Parameters map JSON values to LoraDB values directly: `null`, booleans,
+numbers, strings, arrays, and objects become `Null`, `Boolean`,
+`Integer` / `Float`, `String`, `List`, and `Map`. HTTP does not have
+the host-language helper constructors that the in-process bindings
+provide, so use query casts for typed values when needed, for example
+`$when::DATE`, `$where::POINT`, or `$embedding::VECTOR<FLOAT32>(384)`.
 
 ### Response (success)
 
@@ -136,7 +134,7 @@ call.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Cypher source. |
-| `params` | object | no | Bound parameters keyed by name. Accepted for API symmetry with `/profile` and `/query`; reserved for a future cost model. |
+| `params` | object | no | Bound parameters keyed by name. Used when planning expressions that reference `$name` placeholders. |
 
 ### Response
 
@@ -284,7 +282,7 @@ Both endpoints accept the same optional JSON body:
 ### Snapshot save / load response (error)
 
 - `500 Internal Server Error` — path cannot be read / written, file is corrupt, permissions fail, parent directory is missing, or the save / load itself errors.
-- `404 Not Found` — the server was not started with `--snapshot-path`, so the admin routes are not mounted.
+- `404 Not Found` — the server was not started with `--snapshot-path`, so the snapshot admin routes are not mounted.
 
 Error bodies match `/query`'s shape:
 
@@ -454,6 +452,19 @@ The second call asks for `rows` explicitly and returns
 `{"rows": [{"name": "Ada"}]}` — one row per match, keyed by the
 `AS` alias.
 
+### Parameterised query
+
+```bash
+curl -s http://127.0.0.1:4747/query \
+  -H 'content-type: application/json' \
+  -d '{"query": "MATCH (p:Person) WHERE p.name = $name RETURN p.name AS name",
+       "format": "rows",
+       "params": {"name": "Ada"}}'
+```
+
+`params` must be a JSON object. Missing parameters resolve to `null`,
+just like they do through the in-process bindings.
+
 ### Choose a result format
 
 ```bash
@@ -523,8 +534,8 @@ Relevant durability flags:
   server behind a reverse proxy.
 - **TLS — not supported.** Terminate at a proxy.
 - **Rate limiting — not supported.**
-- **Parameters — not yet supported.** See
-  [Limitations → Parameters](../limitations#parameters).
+- **Multi-query transactions — not supported.** Each `/query` request
+  executes independently.
 - **Multi-database — not supported.** One process, one graph. Run
   multiple processes on different ports for isolation.
 - **HTTP auth / TLS on the admin surface — not supported.** Snapshot
@@ -537,7 +548,7 @@ Relevant durability flags:
 - [HTTP server quickstart → Snapshots, WAL, and restore](../getting-started/server#snapshots-wal-and-restore) — flag reference for the admin endpoints.
 - [WAL and checkpoints](../wal) — recovery model, sync modes, and route semantics.
 - [Result formats](../concepts/result-formats) — what each `format` looks like.
-- [Queries → Parameters](../queries/parameters) — typed parameter binding (via in-process bindings today).
+- [Queries → Parameters](../queries/parameters) — typed parameter binding and HTTP JSON params.
 - [Troubleshooting → Snapshots](../troubleshooting#snapshots) — 404 on admin routes, malformed files, version mismatches.
 - [Troubleshooting → WAL and checkpoints](../troubleshooting#wal-and-checkpoints) — 404, checkpoint path errors, poisoned WALs.
 - [Troubleshooting → Server](../troubleshooting#server) — port conflicts, 400s.

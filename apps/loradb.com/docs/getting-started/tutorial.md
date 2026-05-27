@@ -14,6 +14,49 @@ aggregation patterns you'll reach for most often.
 > The queries are the same in every language. If you haven't, start
 > with [**Installation**](./installation).
 
+<HowTo
+  name="Learn LoraDB in ten minutes"
+  description="A guided Cypher tour: build a small social graph, then match patterns, filter, project, aggregate, walk variable-length traversals, and mutate the graph."
+  totalTime="PT10M"
+  steps={[
+    {
+      name: "Create nodes and relationships",
+      text: "Use CREATE to insert four Person nodes with name and born properties, then connect them with directed FOLLOWS relationships. Labels and relationship types are case-sensitive.",
+      url: "#step-1--create-some-data",
+    },
+    {
+      name: "Match patterns",
+      text: "Use MATCH to find nodes and traversals. (p:Person) binds every Person to p; (a)-[:FOLLOWS]->(b) walks one hop along a FOLLOWS edge in the given direction.",
+      url: "#step-2--find-something",
+    },
+    {
+      name: "Filter with WHERE",
+      text: "Add WHERE clauses to narrow results: WHERE p.born > 1900, WHERE p.name STARTS WITH 'A', WHERE p.name IN ['Ada', 'Grace']. CASE expressions handle conditional values inline.",
+      url: "#step-3--filter",
+    },
+    {
+      name: "Project and shape results",
+      text: "Pick the columns you want with RETURN p.name AS name, p.born AS born. Use map projection RETURN p { .* } for full property maps, or compose pipelines with WITH.",
+      url: "#step-4--project-and-shape-results",
+    },
+    {
+      name: "Count and aggregate",
+      text: "count(*), sum(), avg(), collect() aggregate over the row stream. Non-aggregated columns become the implicit group-by; HAVING-style filtering goes through WITH.",
+      url: "#step-5--count-and-aggregate",
+    },
+    {
+      name: "Walk multi-hop paths",
+      text: "Variable-length patterns like (a)-[:FOLLOWS*1..3]->(b) traverse one to three hops. shortestPath() and allShortestPaths() find graph-distance answers in a single query.",
+      url: "#step-6--walk-multi-step-patterns",
+    },
+    {
+      name: "Mutate the graph",
+      text: "SET updates properties, MERGE upserts a pattern with ON CREATE / ON MATCH clauses, DETACH DELETE removes a node and every relationship touching it in one step.",
+      url: "#step-7--update-and-delete",
+    },
+  ]}
+/>
+
 ## What you'll learn
 
 | Step | Topic |

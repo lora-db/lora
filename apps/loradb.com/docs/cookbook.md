@@ -356,10 +356,10 @@ order placed in the last 30 days."
 <QueryCodeBlock code={String.raw`MATCH (u:User)-[:HAS_CART]->(c:Cart {status: 'open'})-[:CONTAINS]->(i:Item)
 WITH u, c, count(i) AS items
 WHERE items > $n
-  AND NOT EXISTS {
-    (u)-[:PLACED]->(o:Order)
-    WHERE o.placed_at >= temporal.now() - 'P30D'::DURATION
-  }
+OPTIONAL MATCH (u)-[:PLACED]->(o:Order)
+WITH u, c, items, max(o.placed_at) AS last_order_at
+WHERE last_order_at IS NULL
+   OR last_order_at < temporal.now() - 'P30D'::DURATION
 RETURN u.email, c.id, items
 ORDER BY items DESC`} />
 

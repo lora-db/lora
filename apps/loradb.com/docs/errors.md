@@ -67,10 +67,17 @@ The Axum server returns errors as JSON:
 ```
 
 `category` is `"client"` (4xx) or `"server"` (5xx). The HTTP status
-code follows the category, with two refinements: `LORA_TIMEOUT` ⇒
-`408 Request Timeout`, `LORA_NOT_FOUND` ⇒ `404 Not Found`. Everything
-else in the client category is `400 Bad Request`; everything in the
-server category is `500 Internal Server Error`.
+code follows the category, with these refinements:
+
+| Status | Codes |
+|---|---|
+| `400 Bad Request` | `LORA_PARSE`, `LORA_SEMANTIC`, `LORA_READ_ONLY`, `LORA_DATABASE_NAME`, `LORA_CONFIG` |
+| `404 Not Found` | `LORA_NOT_FOUND` |
+| `408 Request Timeout` | `LORA_TIMEOUT` |
+| `409 Conflict` | `LORA_CONSTRAINT`, `LORA_UNIQUE_CONSTRAINT`, `LORA_NOT_NULL_CONSTRAINT`, `LORA_FOREIGN_KEY`, `LORA_TRANSACTION` |
+| `422 Unprocessable Entity` | `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR`, `LORA_VALIDATION` |
+| `500 Internal Server Error` | `LORA_IO`, `LORA_WAL_CORRUPTION`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO`, `LORA_INTERNAL` |
+| `503 Service Unavailable` | `LORA_CONNECTION`, `LORA_WAL_POISONED` |
 
 ## Examples per language
 
@@ -94,21 +101,19 @@ match db.execute("NOT CYPHER", None) {
 ### Node.js / TypeScript
 
 ```ts
-import { LoraError } from "@loradb/loradb";
+import { LoraError } from "@loradb/lora-node";
 
 try {
   await db.execute("NOT CYPHER");
 } catch (err) {
   if (err instanceof LoraError) {
-    if (err.engineCode === "LORA_PARSE") console.error("syntax:", err.message);
-    if (!err.isClient()) reportToMonitoring(err);
+    if (err.code === "LORA_PARSE") console.error("syntax:", err.message);
   }
 }
 ```
 
-`err.code` continues to be the legacy umbrella code (`"LORA_ERROR"` or
-`"INVALID_PARAMS"`) for backwards compatibility; `err.engineCode` is
-the precise wire string from the catalog above.
+`err.code` is the precise wire string from the catalog above, for
+example `"LORA_PARSE"` or `"LORA_INVALID_PARAMS"`.
 
 ### Python
 
@@ -126,7 +131,12 @@ except LoraQueryError as e:
 ### Go
 
 ```go
-import "github.com/lora-db/lora/crates/bindings/lora-go"
+import (
+    "errors"
+    "fmt"
+
+    lora "github.com/lora-db/lora/crates/bindings/lora-go"
+)
 
 if _, err := db.Execute("NOT CYPHER", nil); err != nil {
     var le *lora.LoraError
@@ -151,11 +161,9 @@ end
 
 ```js
 try {
-  db.execute("NOT CYPHER", null);
+  await db.execute("NOT CYPHER", null);
 } catch (err) {
-  // Message format: "<CODE>: <human text>"
-  const [code] = err.message.split(": ", 1);
-  if (code === "LORA_PARSE") console.warn("syntax", err.message);
+  if (err.code === "LORA_PARSE") console.warn("syntax", err.message);
 }
 ```
 

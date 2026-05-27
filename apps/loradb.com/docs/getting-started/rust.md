@@ -14,6 +14,34 @@ typed `LoraValue` enum; errors propagate through `Result`. The
 handle is `Send + Sync` and cheap to clone; the underlying store is
 published through Arc snapshots, with writes serialized at commit.
 
+<HowTo
+  name="Embed LoraDB in a Rust project"
+  description="Add the lora-database crate to Cargo.toml, open a cheap Send + Sync Database handle, run a Cypher query through execute, and persist the graph either with a one-shot snapshot or with a WAL-backed open."
+  totalTime="PT5M"
+  steps={[
+    {
+      name: "Add the crate",
+      text: "Run `cargo add lora-database`, or add `lora-database = \"0.14\"` under `[dependencies]` in `Cargo.toml`. The crate ships on crates.io with a stable Send + Sync handle, a strongly typed `LoraValue` enum, and Result-based errors. Examples on this page also pull in `anyhow = \"1\"` to keep `main` short; swap it for your own error type when you wire it into a real binary.",
+      url: "#installation--setup",
+    },
+    {
+      name: "Open an in-memory handle",
+      text: "Call `Database::in_memory()` to get a ready-to-use handle backed by an empty graph. Clones share one inner `Arc<Mutex<Store>>`, so wrapping in `Arc<Database>` is the standard way to share across threads and tasks. Auto-commit reads overlap on Arc snapshots, and write commits serialize at the store.",
+      url: "#creating-a-client--connection",
+    },
+    {
+      name: "Run a Cypher query",
+      text: "Call `db.execute(\"CREATE (:Person {name: 'Ada'})\", None)?` to write a node, then `db.execute(\"MATCH (p:Person) RETURN p.name\", None)?` to read it back. The second argument is `Option<ExecuteOptions>`; pass `None` for engine defaults. Results come back as a typed `QueryResult` enum: match on `RowArrays` for column/row tuples, `Rows` for column-keyed maps, or `Graph` for the default node/relationship shape.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Persist the graph",
+      text: "For a one-shot dump, call `db.save_snapshot_to(\"graph.bin\")?` to write a point-in-time file via atomic rename, then later `Database::in_memory_from_snapshot(\"graph.bin\")?` to boot a fresh handle from it. For continuous durability between snapshots, open with `Database::open_with_wal(WalConfig::enabled(\"./app\"))?` and reload with `Database::recover(\"graph.bin\", WalConfig::enabled(\"./app\"))?`, which replays the WAL above the snapshot's fence.",
+      url: "#persisting-your-graph",
+    },
+  ]}
+/>
+
 ## Installation / Setup
 
 [![crates.io](https://img.shields.io/crates/v/lora-database?label=crates.io&logo=rust)](https://crates.io/crates/lora-database)
@@ -21,7 +49,7 @@ published through Arc snapshots, with writes serialized at commit.
 ```toml
 # Cargo.toml
 [dependencies]
-lora-database = "0.7"
+lora-database = "0.14"
 anyhow        = "1"
 ```
 

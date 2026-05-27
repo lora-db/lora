@@ -13,6 +13,34 @@ synchronous `Database` plus an asyncio-friendly `AsyncDatabase` wrapper
 for normal query execution, snapshots, and WAL-backed opens. Switching
 the core `execute` path between them is a one-line import change.
 
+<HowTo
+  name="Use LoraDB in a Python project"
+  description="Install the lora-python wheel from PyPI, open a synchronous Database (or asyncio AsyncDatabase), run a Cypher query, and persist the graph with a snapshot or WAL directory."
+  totalTime="PT3M"
+  steps={[
+    {
+      name: "Install the wheel",
+      text: "Run pip install lora-python. Prebuilt wheels ship for CPython 3.8 and newer on Linux, macOS, and Windows; building from source requires rustup and maturin.",
+      url: "#installation--setup",
+    },
+    {
+      name: "Open a database handle",
+      text: "Call Database.create() (or await AsyncDatabase.create() in asyncio code) to get an in-memory handle. Pass a name and database_dir to back the graph with a .loradb container on disk.",
+      url: "#creating-a-client--connection",
+    },
+    {
+      name: "Run a Cypher query",
+      text: "Call db.execute(\"CREATE (:Person {name: 'Ada'})\") then db.execute(\"MATCH (p:Person) RETURN p.name\") and read result['rows'] to confirm the install works.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Persist the graph",
+      text: "Call db.save_snapshot('graph.bin') for an atomic point-in-time dump, or open with WalConfig.enabled('./data') for continuous WAL-backed durability that replays on recover.",
+      url: "#persisting-your-graph",
+    },
+  ]}
+/>
+
 ## Installation / Setup
 
 [![PyPI](https://img.shields.io/pypi/v/lora-python?label=pypi&logo=pypi&logoColor=white)](https://pypi.org/project/lora-python/)
@@ -328,7 +356,7 @@ asyncio.run(main())
 Both save and load process the whole graph. A crash between saves loses every
 mutation since the last save unless you opened the database with WAL.
 
-Passing a database name and directory opens or creates an container-backed persistent
+Passing a database name and directory opens or creates a container-backed persistent
 database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. `open_wal` opens a raw WAL
 directory; when `snapshot_dir` and `snapshot_every_commits` are set,

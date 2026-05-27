@@ -6,6 +6,18 @@ description: The labeled property graph model LoraDB uses — nodes, typed direc
 
 # The LoraDB Graph Data Model
 
+<Definition
+  term="Labelled property graph"
+  termSet="https://loradb.com/docs/concepts/graph-model"
+  description="A data model where entities are nodes, connections are typed directed relationships between two nodes, and both nodes and relationships can carry zero or more labels (or one relationship type) and any number of key-value properties."
+>
+A data model where entities are <strong>nodes</strong>, connections are
+typed directed <strong>relationships</strong> between two nodes, and both
+nodes and relationships can carry zero or more <strong>labels</strong>
+(or one relationship type) and any number of key-value
+<strong>properties</strong>.
+</Definition>
+
 LoraDB uses the **labelled property graph** model. Three things live
 in the graph:
 

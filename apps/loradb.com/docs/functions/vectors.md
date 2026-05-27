@@ -582,17 +582,18 @@ precision loss for magnitudes that don't fit in the mantissa.
 
 ### HTTP and parameters
 
-`POST /query` does not yet accept a `params` field, so a vector cannot
-ride in as a parameter over HTTP. Either embed the vector literally
-in the query — using the string form makes this practical —
+`POST /query` accepts JSON parameters. Because HTTP has no
+host-language `vector(...)` helper, pass the coordinates as a JSON
+array and cast the parameter in the query:
 
 ```bash
 curl -s http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
-  -d '{"query":"RETURN [0.1,0.2,0.3]::VECTOR<FLOAT32>(3) AS v"}'
+  -d '{"query":"RETURN $q::VECTOR<FLOAT32>(3) AS v","format":"rows","params":{"q":[0.1,0.2,0.3]}}'
 ```
 
-— or use one of the in-process bindings, which all support parameters.
+You can still embed a vector literal directly in the query for quick
+manual probes.
 
 ## Index-backed retrieval
 
@@ -625,7 +626,9 @@ for relationship indexes and option details.
   embeddings host-side and pass them in.
 - **No list-of-vectors as a property** — store each vector on its own
   node or relationship. Lists of vectors inside a query are fine.
-- **No parameters over HTTP** — see the note above.
+- **Typed vector helpers over HTTP** — HTTP accepts JSON params, not
+  host-language helper constructors. Pass a numeric list and cast it
+  with `$q::VECTOR<COORD>(DIM)` when the query needs a typed vector.
 - **Dimension ≤ 4096** — enforced at construction.
 - **Ordering by a vector column is unspecified** — order by a scalar
   score instead.

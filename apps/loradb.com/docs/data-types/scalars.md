@@ -86,7 +86,7 @@ rows where `p.in_stock` is `false` or `null`.
 
 64-bit signed (`i64`). Literals can be decimal, hex, or octal.
 
-<QueryCodeBlock code={String.raw`RETURN 42, -1, 0, 0xFF, 0o17
+<CypherSnippet code={String.raw`RETURN 42, -1, 0, 0xFF, 0o17
 // 42, -1, 0, 255, 15`} />
 
 ### Arithmetic
@@ -166,7 +166,7 @@ RETURN r.stars / 5.0 AS normalised   // 0.0 .. 1.0`} />
 
 UTF-8 text. Either quote style works.
 
-<QueryCodeBlock code={String.raw`RETURN 'hello', "world"
+<CypherSnippet code={String.raw`RETURN 'hello', "world"
 RETURN 'it''s fine'        // 'it's fine'  (double the quote to escape)
 RETURN "with \n newline"   // string with a literal newline`} />
 

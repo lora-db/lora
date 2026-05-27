@@ -16,6 +16,39 @@ same tagged model as the Node, Python, WASM, and Go bindings
 (primitives pass through; nodes, relationships, paths, temporals,
 and points come back as `Hash`es with a `"kind"` discriminator).
 
+<HowTo
+  name="Use LoraDB in a Ruby project"
+  description="Install the lora-ruby gem, require the extension, open an in-memory database handle, run a Cypher query, and persist the graph."
+  totalTime="PT3M"
+  steps={[
+    {
+      name: "Install the gem",
+      text: "Run gem install lora-ruby (or add gem 'lora-ruby' to your Gemfile and run bundle install). Precompiled platform gems install directly; missing platforms fall through to a cargo + rb-sys source build.",
+      url: "#install",
+    },
+    {
+      name: "Require the extension",
+      text: "Add require 'lora_ruby' at the top of your script or initializer.",
+      url: "#installation--setup",
+    },
+    {
+      name: "Open a database handle",
+      text: "Call LoraRuby::Database.create (alias for .new) to get a handle over an empty in-memory graph.",
+      url: "#creating-a-client--connection",
+    },
+    {
+      name: "Run a Cypher query",
+      text: "Call db.execute(\"CREATE (:Person {name: 'Ada'})\") and db.execute(\"MATCH (p:Person) RETURN p.name\") to confirm the gem loaded and the engine runs in-process.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Persist the graph",
+      text: "Call db.save_snapshot('graph.bin') for an atomic point-in-time dump, or open with a WAL directory for continuous durability across process restarts.",
+      url: "#persisting-your-graph",
+    },
+  ]}
+/>
+
 ## Installation / Setup
 
 ### Requirements
@@ -254,7 +287,7 @@ mutation since the last save unless you opened the database with WAL. See
 the canonical [Snapshots guide](../snapshot) for the wire format and
 atomic-rename guarantees.
 
-Passing a database name and directory opens or creates an container-backed persistent
+Passing a database name and directory opens or creates a container-backed persistent
 database at `<database_dir>/<name>.loradb`. Reopening the same path replays committed
 writes before the handle is returned. `open_wal` opens a raw WAL
 directory; when `snapshot_dir` and `snapshot_every_commits` are set,

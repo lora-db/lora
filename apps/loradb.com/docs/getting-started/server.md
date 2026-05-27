@@ -14,9 +14,55 @@ or running demos. One process serves exactly one graph. The graph
 lives in memory while the process runs, and can optionally be paired
 with snapshots and a WAL for recovery across restarts.
 
+<HowTo
+  name="Run LoraDB as an HTTP server"
+  description="Install lora-server, start it on a bind address, send a Cypher query over HTTP, and enable snapshot or WAL persistence."
+  totalTime="PT5M"
+  steps={[
+    {
+      name: "Install the binary",
+      text: "Download a prebuilt archive from the latest GitHub release, or run cargo install lora-server from crates.io. From a workspace checkout, cargo run --release -p lora-server boots straight from source.",
+      url: "#install",
+    },
+    {
+      name: "Start the server",
+      text: "Run lora-server (defaults to 127.0.0.1:4747). Override with --host 0.0.0.0 --port 8080 or the LORA_SERVER_HOST / LORA_SERVER_PORT env vars. The graph lives in memory while the process runs.",
+      url: "#configure",
+    },
+    {
+      name: "Send your first query",
+      text: "POST a JSON body to /query: curl -X POST http://127.0.0.1:4747/query -d '{\"query\": \"CREATE (:Person {name: \\\"Ada\\\"})\"}'. Follow up with a MATCH to read it back. Always send user input through params instead of string-concatenating into the query field.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Add persistence",
+      text: "Pass --snapshot-path graph.bin to enable the admin snapshot endpoints, --restore-from graph.bin to load a snapshot at boot, and --wal-dir ./wal to attach a write-ahead log for continuous durability between checkpoints.",
+      url: "#snapshots-wal-and-restore",
+    },
+    {
+      name: "Secure the endpoint",
+      text: "lora-server has no built-in auth. Keep it on 127.0.0.1, or front it with a reverse proxy that handles TLS, authentication, and rate limiting before exposing it to the network.",
+      url: "#whats-not-here",
+    },
+  ]}
+/>
+
 ## Installation / Setup
 
 ### Install
+
+Fastest binary path:
+
+- Download a prebuilt `lora-server` archive from the
+  [latest GitHub release](https://github.com/lora-db/lora/releases/latest).
+
+From crates.io:
+
+```bash
+cargo install lora-server
+```
+
+From a local checkout:
 
 ```bash
 cargo install --path crates/lora-server
@@ -201,27 +247,23 @@ Shown above. Two `POST /query` calls.
 
 ### Parameterised query
 
-:::caution
-
-`POST /query` does **not** currently accept a `params` body field —
-see [Limitations → Parameters](../limitations#parameters).
-Interpolate constants safely into the query string yourself, or use
-the Rust API. HTTP parameters are on the roadmap.
-
-:::
-
-Safe-enough pattern — build the literal server-side when the values
-are trusted and fully encoded:
+Send a `params` object next to the query. JSON scalars, arrays, and
+objects map to LoraDB scalar, list, and map values:
 
 ```bash
-NAME='Ada'
 curl -s http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
-  --data-binary "$(jq -n --arg q "MATCH (p:Person {name: '$NAME'}) RETURN p" '{query:$q}')"
+  -d '{"query":"MATCH (p:Person) WHERE p.name = $name RETURN p.name AS name","format":"rows","params":{"name":"Ada"}}'
 ```
 
-For anything user-supplied, run against the [Rust binding](./rust)
-with real parameters and expose a narrower API on top.
+For typed values that JSON cannot represent directly, cast the
+parameter in the query:
+
+```bash
+curl -s http://127.0.0.1:4747/query \
+  -H 'content-type: application/json' \
+  -d '{"query":"RETURN $when::DATE AS d, $embedding::VECTOR<FLOAT32>(3) AS v","format":"rows","params":{"when":"2026-05-26","embedding":[0.1,0.2,0.3]}}'
+```
 
 ### Structured result handling with `jq`
 
@@ -416,10 +458,9 @@ isolation.
   `127.0.0.1` or put it behind a reverse proxy. The admin snapshot and
   WAL endpoints also ship without auth — see
   [Snapshots, WAL, and restore](#snapshots-wal-and-restore).
-- **Parameter binding over HTTP** — the `/query` body does **not**
-  currently accept a `params` field. Bind via the Rust API today;
-  HTTP params are on the roadmap. See
-  [Limitations](../limitations).
+- **Multi-query HTTP transactions** — each `/query` call is its own
+  statement or document execution. Use an in-process binding when your
+  application needs explicit transaction handles.
 - **Multiple databases** — one process serves exactly one graph.
   Run multiple processes on different ports if you need isolation.
 
@@ -442,7 +483,7 @@ isolation.
 - [**Queries**](../queries/) — the query language the server exposes.
 - [**Cookbook**](../cookbook) — scenario-based recipes, including backup-and-restore.
 - [**Limitations → HTTP server**](../limitations#http-server) —
-  auth, TLS, parameters.
+  auth, TLS, rate limiting, and multi-query transactions.
 - [**Troubleshooting → Snapshots**](../troubleshooting#snapshots) — 404, malformed file, version mismatch.
 - [**Troubleshooting → WAL and checkpoints**](../troubleshooting#wal-and-checkpoints) —
   missing WAL routes, checkpoint path errors, poisoned WALs.

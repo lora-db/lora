@@ -120,20 +120,15 @@ Fold over a list, carrying an accumulator.
 <QueryCodeBlock code={String.raw`RETURN reduce(total = 0, x IN [1, 2, 3, 4] | total + x);    // 10
 RETURN reduce(pairs = [], x IN [1, 2, 3] | pairs + [x * 2]) // [2, 4, 6]`} />
 
-### Word frequency with a map accumulator
+### Word frequency
 
-<QueryCodeBlock code={String.raw`RETURN reduce(
-  acc = {},
-  x IN ['red', 'red', 'blue', 'green'] |
-  acc + {[x]: coalesce(acc[x], 0) + 1}
-)
-// {red: 2, blue: 1, green: 1}`} />
+<QueryCodeBlock code={String.raw`UNWIND ['red', 'red', 'blue', 'green'] AS word
+RETURN word, count(*) AS n
+ORDER BY n DESC`} />
 
-`acc` starts as an empty map. Each element rebuilds `acc` by
-merging in the updated count for `x` — `coalesce(acc[x], 0)`
-falls back to zero on the first occurrence of a key. The
-dynamic-key form `{[x]: …}` is what makes this a real histogram
-rather than a single `x` column.
+`UNWIND` turns each list item into a row. The aggregate groups by
+`word`, so repeated values collapse into counts without needing dynamic
+map keys.
 
 ### Nested / layered lists
 
@@ -336,11 +331,11 @@ row-level ordering, sort rows before collecting.
 <QueryCodeBlock code={String.raw`RETURN list.zip(['a', 'b', 'c'], [1, 2, 3])
 // [['a', 1], ['b', 2], ['c', 3]]`} />
 
-### Reduce to a single map
+### Reduce to a single value
 
 <QueryCodeBlock code={String.raw`WITH [{k: 'a', v: 1}, {k: 'b', v: 2}] AS kvs
-RETURN reduce(m = {}, kv IN kvs | m + {[kv.k]: kv.v})
-// {a: 1, b: 2}`} />
+RETURN reduce(total = 0, kv IN kvs | total + kv.v) AS total
+// 3`} />
 
 ### Running totals
 

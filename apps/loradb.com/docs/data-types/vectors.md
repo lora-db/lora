@@ -257,7 +257,7 @@ before accumulation, then widened back to `f64` for the result).
 
 ### Bounded similarity in `[0, 1]`
 
-<QueryCodeBlock code={String.raw`vector.similarity(a, b)
+<CypherSnippet code={String.raw`vector.similarity(a, b)
 vector.similarity(a, b, 'euclidean')`} />
 
 Both accept a `VECTOR` **or** a `LIST<NUMBER>` on either side. Lists
@@ -278,7 +278,7 @@ error.
 
 ### Signed distance metrics
 
-<QueryCodeBlock code={String.raw`vector.distance(a, b, EUCLIDEAN)
+<CypherSnippet code={String.raw`vector.distance(a, b, EUCLIDEAN)
 vector.distance(a, b, EUCLIDEAN_SQUARED)
 vector.distance(a, b, MANHATTAN)
 vector.distance(a, b, COSINE)
@@ -304,7 +304,7 @@ metric name is an error. A dimension mismatch is an error.
 
 ### Vector norms
 
-<QueryCodeBlock code={String.raw`vector.norm(v, EUCLIDEAN)   // sqrt(Σ xᵢ²)
+<CypherSnippet code={String.raw`vector.norm(v, EUCLIDEAN)   // sqrt(Σ xᵢ²)
 vector.norm(v, MANHATTAN)   // Σ |xᵢ|`} />
 
 Metric matching is case-insensitive; identifiers and quoted strings
@@ -327,10 +327,10 @@ metric errors.
 
 ## Passing vectors as parameters
 
-Every binding accepts the same canonical tagged shape on input and
-emits it on output. Build one via the helper for your language, or
-pass the literal object directly. The **HTTP transport does not yet
-forward parameters** — see the limitations section below.
+Every in-process binding accepts the same canonical tagged shape on
+input and emits it on output. Build one via the helper for your
+language, or pass the literal object directly. Over HTTP, pass a JSON
+numeric list and cast it in the query when you need a typed vector.
 
 ### Wire shape
 
@@ -454,19 +454,18 @@ db.execute_with_params(
 
 ### HTTP
 
-`POST /query` does **not** yet accept a `params` field, so a vector
-cannot be passed through as a parameter over HTTP. Either embed the
-vector literally in the query string —
+`POST /query` accepts JSON parameters. HTTP cannot construct the
+binding-specific tagged `VECTOR` helper object for you, so pass the
+coordinates as a JSON array and cast the parameter in the query:
 
 ```bash
 curl -s http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
-  -d '{"query":"RETURN [0.1,0.2,0.3]::VECTOR<FLOAT32>(3) AS v"}'
+  -d '{"query":"RETURN $q::VECTOR<FLOAT32>(3) AS v","format":"rows","params":{"q":[0.1,0.2,0.3]}}'
 ```
 
-— or run the engine through one of the in-process bindings above
-when you need host-side vectors. See
-[Queries → Parameters → HTTP API doesn't forward params](../queries/parameters#http-api-doesnt-forward-params).
+You can still embed the vector literally in the query string for
+manual probes. See [Queries → Parameters](../queries/parameters#http-api).
 
 ## Limitations
 
@@ -479,9 +478,9 @@ when you need host-side vectors. See
   surface; generate embeddings in application code.
 - **List-of-vectors as a property — not supported.** See
   [Storage](#restriction-no-list-of-vectors-as-a-property).
-- **Parameters over HTTP — not yet supported.** `POST /query`
-  ignores `params`; embed the vector in the query text or use an
-  in-process binding.
+- **Typed vector helpers over HTTP.** HTTP accepts JSON params, not
+  host-language helper constructors. Pass a numeric list and cast it
+  with `$q::VECTOR<COORD>(DIM)` when the query needs a typed vector.
 - **Dimension ≤ 4096.** Hard cap at construction time.
 - **Ordering by a vector column is unspecified.** Order by a scalar
   score instead.

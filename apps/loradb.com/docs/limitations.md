@@ -31,15 +31,15 @@ in the internal documentation.
 |---|---|
 | Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; explicit RANGE/TEXT/POINT/LOOKUP/VECTOR/FULLTEXT indexes and schema constraints exist; no ANN structure |
 | Concurrency | Snapshot reads can overlap; write commits and explicit read-write transactions serialize; timeout coverage is API-dependent |
-| Clauses | No general-purpose `CALL`, `FOREACH`, `LOAD CSV` |
+| Clauses | `FOREACH` is supported for updating clauses; no general-purpose `CALL` or `LOAD CSV` |
 | Patterns | No quantified path patterns |
 | Operators | No `BETWEEN`; cross-type comparisons return `null` |
 | Aggregates | No `GROUP BY` / `HAVING` keywords |
 | Functions | No external utility compatibility layer; case conversion is Unicode-aware but not locale-specific |
-| Parameters | No HTTP-level params; no parse-time type check |
+| Parameters | No dynamic labels / relationship types; no parse-time type check |
 | Spatial | No WKT I/O, no CRS transforms; `geo.within_bbox` exists for same-SRID boxes |
 | Vectors | VECTOR indexes are cataloged and queryable through flat-scan procedures; no ANN structure; no embedding generation; no list-of-vectors properties |
-| Browser playground | No parameter drawer, no shared hosted database, no true query abort; state is local to the browser origin |
+| Browser playground | Params are browser-local tab state; no shared hosted database, no true query abort, and no remote import |
 
 ## Clauses
 
@@ -47,7 +47,7 @@ in the internal documentation.
 |---|---|
 | General-purpose `CALL` | Not supported — analyzer rejects ordinary procedures such as `CALL db.labels()` |
 | Index procedure `CALL` | Supported for `db.index.vector.queryNodes`, `db.index.vector.queryRelationships`, `db.index.fulltext.queryNodes`, and `db.index.fulltext.queryRelationships` |
-| `FOREACH` | Not supported |
+| `FOREACH` | Supported for updating clauses (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, and nested `FOREACH`) |
 | `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | Supported for RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT indexes; see [Indexes](./queries/indexes) |
 | `CREATE CONSTRAINT` / `DROP CONSTRAINT` / `SHOW CONSTRAINTS` | Supported for uniqueness, existence, node key, relationship key, and property type constraints; see [Constraints](./queries/constraints) |
 | `LOAD CSV` | Not supported |
@@ -59,7 +59,7 @@ in the internal documentation.
 | Feature | Status |
 |---|---|
 | Quantified path patterns `((:X)-[:R]->(:Y)){1,3}` | Not supported |
-| Inline `WHERE` inside variable-length relationships | Not implemented — parses but is not evaluated |
+| Inline `WHERE` inside variable-length relationships | Not supported — rejected at parse time |
 
 ## Operators and expressions
 
@@ -116,15 +116,16 @@ in the internal documentation.
 | Dimension > 4096 | Not supported — rejected at construction time |
 | `ORDER BY` on a `VECTOR` column | Deterministic but implementation-defined; order by a scalar score instead |
 | Metric extensions (e.g. Minkowski, Chebyshev) | Not yet supported — current metrics are listed in [Vectors → Signed distance metrics](./data-types/vectors#signed-distance-metrics) |
-| Passing a `VECTOR` parameter over HTTP | Blocked by the HTTP parameters limitation below — build the vector with `[...]::VECTOR<COORD>(DIM)` in the query string or use an in-process binding |
+| Passing a typed `VECTOR` helper over HTTP | HTTP accepts JSON params, not host-language helper objects — pass a numeric list and cast it with `$q::VECTOR<COORD>(DIM)` |
 
 ## Parameters
 
 | Feature | Status |
 |---|---|
 | Parameter as a label or relationship type | Not supported |
+| Parameter as a property key | Not supported |
 | Parameter type checking at parse time | Not yet supported |
-| Parameters over HTTP | Not yet supported — the `/query` body ignores `params`; use an in-process binding |
+| Parameters over HTTP | Supported for JSON scalar, list, and map values on `/query`, `/explain`, and `/profile`; use query casts for typed values such as `DATE`, `POINT`, and `VECTOR` |
 
 ## Storage
 
@@ -158,16 +159,16 @@ in the internal documentation.
   authentication**. The optional `path` body field is passed straight
   to the OS. Do not enable them on a network-reachable host without
   authenticated ingress in front.
-- Parameters over HTTP — not yet supported (see Parameters above).
+- Multi-query transactions over HTTP — not supported. Each `/query`
+  call executes independently.
 - Multi-database — not supported. One process serves exactly one
   in-memory graph; run multiple processes for isolation.
 
 ## Browser playground
 
-- Host-side parameter input — not yet supported. The editor detects
-  `$name`-style placeholders, but the UI does not yet provide a params
-  drawer. Use trusted inline literals for playground-only examples and
-  parameters in application bindings.
+- Parameter values are local tab state. The playground supports a
+  JSON Params panel and share links can include that JSON, but params
+  are not stored in a hosted database or synced between users.
 - Shared hosted database — not supported. The hosted app runs against
   a browser-origin database; saved queries, snapshots, settings,
   history, and auto-restored graph state are local browser data.
@@ -217,7 +218,7 @@ See [Why LoraDB](./why) for the project's intended direction.
 - [**WAL and checkpoints**](./wal) — recovery, sync modes, and admin semantics.
 - [**Queries → Overview**](./queries/) — the supported subset.
 - [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
-- [**Parameters**](./queries/parameters) — typed parameter binding (Rust, Node, Python, WASM, Go, and Ruby bindings; HTTP does not yet forward params).
+- [**Parameters**](./queries/parameters) — typed parameter binding across bindings and JSON parameter binding over HTTP.
 - [**Schema-free**](./concepts/schema-free) — strict reads, permissive writes.
 - [**Functions → Overview**](./functions/overview) — supported functions.
 - [**Concepts → Graph Model**](./concepts/graph-model) — the underlying data model.

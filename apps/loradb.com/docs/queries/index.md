@@ -8,7 +8,7 @@ description: An index of every Cypher clause LoraDB supports — MATCH, WHERE, R
 
 LoraDB speaks a pragmatic subset of Cypher. Queries are strings that
 chain _clauses_ — see the [clause reference](#clause-reference)
-below, or jump into the [**Ten-Minute Tour**](../getting-started/tutorial)
+below, or jump into the [**Ten-Minute Tour**](/docs/getting-started/tutorial)
 for a guided run-through.
 
 <QueryCodeBlock code={String.raw`MATCH  (p:Person)-[:WORKS_AT]->(c:Company)
@@ -17,7 +17,7 @@ RETURN p.name, c.name
 ORDER  BY p.name`} />
 
 Each clause reads the rows emitted by the previous one and passes rows
-forward. [`RETURN`](./return-with) ends the pipeline.
+forward. [`RETURN`](/docs/queries/return-with) ends the pipeline.
 
 ## Anatomy of a query
 
@@ -40,45 +40,45 @@ sees the rows produced by the previous one.
 
 | Clause | Purpose |
 |---|---|
-| [**MATCH**](./match) | Find patterns of nodes and relationships |
-| [**CREATE**](./create) | Create nodes and relationships |
-| [**WHERE**](./where) | Filter rows |
-| [**Indexes**](./indexes) | Declare, inspect, query, and drop secondary indexes |
-| [**Constraints**](./constraints) | Add uniqueness, existence, key, and type checks |
-| [**RETURN / WITH**](./return-with) | Project, rename, order, and page results |
-| [**ORDER BY / SKIP / LIMIT**](./ordering) | Sort and paginate |
-| [**SET / REMOVE / DELETE**](./set-delete) | Mutate existing entities |
-| [**UNWIND / MERGE**](./unwind-merge) | Iterate over lists; create-or-match |
-| [**Aggregation**](./aggregation) | `count`, `collect`, `avg`, and group-by |
-| [**Paths**](./paths) | Variable-length traversals and shortest paths |
+| [**MATCH**](/docs/queries/match) | Find patterns of nodes and relationships |
+| [**CREATE**](/docs/queries/create) | Create nodes and relationships |
+| [**WHERE**](/docs/queries/where) | Filter rows |
+| [**Indexes**](/docs/queries/indexes) | Declare, inspect, query, and drop secondary indexes |
+| [**Constraints**](/docs/queries/constraints) | Add uniqueness, existence, key, and type checks |
+| [**RETURN / WITH**](/docs/queries/return-with) | Project, rename, order, and page results |
+| [**ORDER BY / SKIP / LIMIT**](/docs/queries/ordering) | Sort and paginate |
+| [**SET / REMOVE / DELETE**](/docs/queries/set-delete) | Mutate existing entities |
+| [**UNWIND / MERGE**](/docs/queries/unwind-merge) | Iterate over lists; create-or-match |
+| [**Aggregation**](/docs/queries/aggregation) | `count`, `collect`, `avg`, and group-by |
+| [**Paths**](/docs/queries/paths) | Variable-length traversals and shortest paths |
 
 For copy-paste examples covering every clause, see
-[**Query Examples**](./examples). For a single-page terse reference,
-see the [**Cheat sheet**](./cheat-sheet).
+[**Query Examples**](/docs/queries/examples). For a single-page terse reference,
+see the [**Cheat sheet**](/docs/queries/cheat-sheet).
 
 ## Where common tasks live
 
 | Task | Page |
 |---|---|
-| Look up by label + property | [MATCH](./match#inline-property-filter) |
-| Write new nodes/edges | [CREATE](./create) |
-| Upsert | [MERGE](./unwind-merge#merge) |
-| Bulk import | [UNWIND + CREATE](./unwind-merge#bulk-load-from-parameter) |
-| Patch a property map | [<CypherCode code="SET +=" />](./set-delete#merge-properties-) |
-| Replace all properties | [<CypherCode code="SET =" />](./set-delete#replace-all-properties-) |
-| Remove a property | [<CypherCode code="REMOVE" /> / <CypherCode code="SET n.p = null" />](./set-delete#remove) |
-| Delete with edges | [<CypherCode code="DETACH DELETE" />](./set-delete#detach-delete) |
-| Top-N | [<CypherCode code="ORDER BY + LIMIT" />](./ordering#top-n) |
-| Stable pagination | [Keyset pagination](./ordering#stable-pagination) |
-| Group and aggregate | [Aggregation walkthrough](./aggregation#a-five-step-walkthrough) |
-| HAVING-style filter | [<CypherCode code="WITH … WHERE" />](./return-with#having-style-filtering-with) |
-| Anti-join | [<CypherCode code="NOT EXISTS" />](./where#pattern-existence) |
-| Speed up common predicates | [<CypherCode code="CREATE INDEX" />](./indexes) |
-| Enforce uniqueness or property shape | [<CypherCode code="CREATE CONSTRAINT" />](./constraints) |
-| Shortest path | [<CypherCode code="shortestPath" />](./paths#shortest-paths) |
-| Inline related list | [Pattern comprehension](../functions/list#pattern-comprehension) |
-| Per-row conditional value | [CASE expressions](./return-with#case-expressions) |
-| Count rows matching a condition | [<CypherCode code="count(CASE WHEN … THEN 1 END)" />](./examples#conditional-count-case-inside-count) |
+| Look up by label + property | [MATCH](/docs/queries/match#inline-property-filter) |
+| Write new nodes/edges | [CREATE](/docs/queries/create) |
+| Upsert | [MERGE](/docs/queries/unwind-merge#merge) |
+| Bulk import | [UNWIND + CREATE](/docs/queries/unwind-merge#bulk-load-from-parameter) |
+| Patch a property map | [<CypherCode code="SET +=" />](/docs/queries/set-delete#merge-properties-) |
+| Replace all properties | [<CypherCode code="SET =" />](/docs/queries/set-delete#replace-all-properties-) |
+| Remove a property | [<CypherCode code="REMOVE" /> / <CypherCode code="SET n.p = null" />](/docs/queries/set-delete#remove) |
+| Delete with edges | [<CypherCode code="DETACH DELETE" />](/docs/queries/set-delete#detach-delete) |
+| Top-N | [<CypherCode code="ORDER BY + LIMIT" />](/docs/queries/ordering#top-n) |
+| Stable pagination | [Keyset pagination](/docs/queries/ordering#stable-pagination) |
+| Group and aggregate | [Aggregation walkthrough](/docs/queries/aggregation#a-five-step-walkthrough) |
+| HAVING-style filter | [<CypherCode code="WITH … WHERE" />](/docs/queries/return-with#having-style-filtering-with) |
+| Anti-join | [<CypherCode code="NOT EXISTS" />](/docs/queries/where#pattern-existence) |
+| Speed up common predicates | [<CypherCode code="CREATE INDEX" />](/docs/queries/indexes) |
+| Enforce uniqueness or property shape | [<CypherCode code="CREATE CONSTRAINT" />](/docs/queries/constraints) |
+| Shortest path | [<CypherCode code="shortestPath" />](/docs/queries/paths#shortest-paths) |
+| Inline related list | [Pattern comprehension](/docs/functions/list#pattern-comprehension) |
+| Per-row conditional value | [CASE expressions](/docs/queries/return-with#case-expressions) |
+| Count rows matching a condition | [<CypherCode code="count(CASE WHEN … THEN 1 END)" />](/docs/queries/examples#conditional-count-case-inside-count) |
 
 ## Execution model
 
@@ -86,29 +86,30 @@ see the [**Cheat sheet**](./cheat-sheet).
   bindings also expose explicit transactions; HTTP does not.
 - Auto-commit reads can overlap on Arc snapshots. Write commits and explicit
   read-write transactions serialize. See
-  [Limitations → Concurrency](../limitations#concurrency).
+  [Limitations → Concurrency](/docs/limitations#concurrency).
 - Names (labels, relationship types, property keys) are validated
-  against the live graph for [`MATCH`](./match); any name is accepted
-  by [`CREATE`](./create), [`MERGE`](./unwind-merge#merge), and
-  [`SET`](./set-delete).
+  against the live graph for [`MATCH`](/docs/queries/match); any name is accepted
+  by [`CREATE`](/docs/queries/create), [`MERGE`](/docs/queries/unwind-merge#merge), and
+  [`SET`](/docs/queries/set-delete).
 - Unknown function names are rejected at analysis time — see
-  [**Functions**](../functions/overview).
+  [**Functions**](/docs/functions/overview).
 
 ## Parameters
 
 Any value that isn't a constant should use a parameter. The short
-version follows; [**Parameters**](./parameters) has the full reference.
+version follows; [**Parameters**](/docs/queries/parameters) has the full reference.
 
 <QueryCodeBlock code={String.raw`MATCH (p:Person) WHERE p.name = $name RETURN p`} />
 
 Parameters are bound at call time from the host language:
 
-- [Rust](../getting-started/rust#parameterised-query) — `BTreeMap<String, LoraValue>`
-- [Node.js](../getting-started/node#parameterised-query) — plain object
-- [Python](../getting-started/python#parameterised-query) — `dict`
-- [WASM](../getting-started/wasm#parameterised-query) — plain object
-- [HTTP server](../getting-started/server#post-query) — **not yet**
-  supported, see [Limitations → Parameters](../limitations#parameters)
+- [Rust](/docs/getting-started/rust#parameterised-query) — `BTreeMap<String, LoraValue>`
+- [Node.js](/docs/getting-started/node#parameterised-query) — plain object
+- [Python](/docs/getting-started/python#parameterised-query) — `dict`
+- [WASM](/docs/getting-started/wasm#parameterised-query) — plain object
+- [Go](/docs/getting-started/go#parameterised-query) — `lora.Params`
+- [Ruby](/docs/getting-started/ruby#parameterised-query) — `Hash`
+- [HTTP server](/docs/api/http#post-query) — JSON `params` object
 
 Missing parameters resolve to `null`, which can silently produce empty
 results — set them or validate inputs before executing.
@@ -128,14 +129,14 @@ query. They also let the query planner cache plans across invocations.
 
 | Host value | LoraDB type |
 |---|---|
-| `null` / `None` / `undefined` | [`Null`](../data-types/scalars#null) |
-| `bool` | [`Boolean`](../data-types/scalars#boolean) |
-| `int` (Python) / `number` (JS, integer) / `i64` (Rust) | [`Integer`](../data-types/scalars#integer) |
-| `float` (Python) / `number` (JS, non-integer) / `f64` (Rust) | [`Float`](../data-types/scalars#float) |
-| `str` / `String` | [`String`](../data-types/scalars#string) |
-| list / array / `Vec` | [`List`](../data-types/lists-and-maps#lists) |
-| dict / object / `BTreeMap` | [`Map`](../data-types/lists-and-maps#maps) |
-| host helpers (`date()`, `wgs84()`, …) | [`Date`](../data-types/temporal), [`Point`](../data-types/spatial), etc. |
+| `null` / `None` / `undefined` | [`Null`](/docs/data-types/scalars#null) |
+| `bool` | [`Boolean`](/docs/data-types/scalars#boolean) |
+| `int` (Python) / `number` (JS, integer) / `i64` (Rust) | [`Integer`](/docs/data-types/scalars#integer) |
+| `float` (Python) / `number` (JS, non-integer) / `f64` (Rust) | [`Float`](/docs/data-types/scalars#float) |
+| `str` / `String` | [`String`](/docs/data-types/scalars#string) |
+| list / array / `Vec` | [`List`](/docs/data-types/lists-and-maps#lists) |
+| dict / object / `BTreeMap` | [`Map`](/docs/data-types/lists-and-maps#maps) |
+| host helpers (`date()`, `wgs84()`, …) | [`Date`](/docs/data-types/temporal), [`Point`](/docs/data-types/spatial), etc. |
 
 Host helpers are binding APIs. In query text, use cast syntax for
 typed construction, for example `'2026-05-01'::DATE` or
@@ -143,19 +144,19 @@ typed construction, for example `'2026-05-01'::DATE` or
 
 ## What's not supported
 
-See [**Limitations**](../limitations) for the full list. Short
-version: no general-purpose `CALL`, no `FOREACH`, no `LOAD CSV`, and no
+See [**Limitations**](/docs/limitations) for the full list. Short
+version: no general-purpose `CALL`, no `LOAD CSV`, and no
 multi-database (`USE`). Index and constraint DDL are supported for scoped
-catalog entries; see [Indexes](./indexes) and [Constraints](./constraints).
+catalog entries; see [Indexes](/docs/queries/indexes) and [Constraints](/docs/queries/constraints).
 
 ## See also
 
-- [**Ten-Minute Tour**](../getting-started/tutorial) — guided walkthrough.
-- [**Cheat sheet**](./cheat-sheet) — single-page quick reference.
-- [**Parameters**](./parameters) — typed parameter binding.
-- [**Query Examples**](./examples) — copy-paste recipes by shape.
-- [**Cookbook**](../cookbook) — scenario-driven recipes.
-- [**Functions**](../functions/overview) — every built-in.
-- [**Data types**](../data-types/overview) — value shapes for parameters and properties.
-- [**Graph model**](../concepts/graph-model) — the underlying data model.
-- [**Result formats**](../concepts/result-formats) — how results come back over the wire.
+- [**Ten-Minute Tour**](/docs/getting-started/tutorial) — guided walkthrough.
+- [**Cheat sheet**](/docs/queries/cheat-sheet) — single-page quick reference.
+- [**Parameters**](/docs/queries/parameters) — typed parameter binding.
+- [**Query Examples**](/docs/queries/examples) — copy-paste recipes by shape.
+- [**Cookbook**](/docs/cookbook) — scenario-driven recipes.
+- [**Functions**](/docs/functions/overview) — every built-in.
+- [**Data types**](/docs/data-types/overview) — value shapes for parameters and properties.
+- [**Graph model**](/docs/concepts/graph-model) — the underlying data model.
+- [**Result formats**](/docs/concepts/result-formats) — how results come back over the wire.

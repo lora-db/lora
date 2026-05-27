@@ -1,14 +1,14 @@
 ---
 title: Query Parameters
 sidebar_label: Parameters
-description: Bind host-side values into Cypher queries with parameters — how each binding forwards them, the HTTP transport caveat, and why parameters are the only safe alternative to string interpolation.
+description: Bind host-side values into Cypher queries with parameters — how each binding and the HTTP API forwards them, where parameters can appear, and why they are the safe alternative to string interpolation.
 ---
 
 # Query Parameters
 
 Parameters are the **only** safe way to mix host-side values into a
-query. Every in-process binding accepts them; the HTTP transport does
-not yet (see [caveat](#http-api-doesnt-forward-params)).
+query. Every binding accepts them, and `lora-server` accepts a JSON
+`params` object on `/query`, `/explain`, and `/profile`.
 
 <QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.id = $id RETURN u`} />
 
@@ -102,6 +102,16 @@ db.execute(
 ```
 
 More detail: [Ruby → Parameterised query](../getting-started/ruby#parameterised-query).
+
+### HTTP
+
+```bash
+curl -s http://127.0.0.1:4747/query \
+  -H 'content-type: application/json' \
+  -d '{"query":"MATCH (u:User) WHERE u.handle = $handle RETURN u","format":"rows","params":{"handle":"alice"}}'
+```
+
+More detail: [HTTP API → `POST /query`](../api/http#post-query).
 
 ## Host → LoraDB type mapping
 
@@ -208,7 +218,7 @@ The same helper exists in every in-process binding — see the
 table for Python, Go, Ruby, and Rust shapes.
 
 `vector.similarity` also
-accept a plain `LIST<NUMBER>` on either side, so for a one-off query
+accepts a plain `LIST<NUMBER>` on either side, so for a one-off query
 you can skip the helper and pass `{ q: [0.1, 0.2, 0.3] }` — the list
 is coerced to a `FLOAT32` vector whose dimension equals its length.
 The full tagged helper is required only when the vector will be
@@ -233,31 +243,29 @@ await db.execute(
 );
 ```
 
-## HTTP API doesn't forward params
+## HTTP API
 
-:::caution
+HTTP parameters are JSON, so the wire shape is intentionally simple:
 
-`POST /query` currently ignores any `params` body field. Bind via one
-of the in-process bindings (Rust, Node, Python, WASM, Go, or Ruby), or
-build the literal into the query string when values are trusted and
-encoded. Parameters over HTTP are on the roadmap — see
-[Limitations → Parameters](../limitations#parameters).
+| JSON value | LoraDB value |
+|---|---|
+| `null` | `Null` |
+| `true` / `false` | `Boolean` |
+| integer number | `Integer` |
+| decimal number | `Float` |
+| string | `String` |
+| array | `List` |
+| object | `Map` |
 
-:::
-
-If you must use HTTP today with dynamic values, serialise the value
-into the query yourself via a trusted encoder:
+The HTTP API does not expose host-language helper constructors such as
+`date(...)`, `wgs84(...)`, or `vector(...)`. Pass the JSON value and
+cast in the query when you need a typed value:
 
 ```bash
-NAME='Ada'
 curl -s http://127.0.0.1:4747/query \
   -H 'content-type: application/json' \
-  --data-binary "$(jq -n --arg q "MATCH (p:Person {name: '$NAME'}) RETURN p" \
-                   '{query: $q}')"
+  -d '{"query":"RETURN $day::DATE AS day, $q::VECTOR<FLOAT32>(3) AS q","format":"rows","params":{"day":"2026-05-26","q":[0.1,0.2,0.3]}}'
 ```
-
-For anything user-supplied, run against a local binding with real
-parameters and expose a narrower API on top.
 
 ## Common mistakes
 
@@ -292,6 +300,6 @@ are the only supported safe mixing mechanism.
 - [UNWIND + MERGE](./unwind-merge) — bulk load and upserts with
   parameters.
 - [Troubleshooting → Parameters](../troubleshooting#parameters) —
-  silent filtering, HTTP ignore, integer precision.
-- [Limitations → Parameters](../limitations#parameters) — HTTP and
-  identifier positions.
+  silent filtering, invalid params, integer precision.
+- [Limitations → Parameters](../limitations#parameters) — identifier
+  positions and parse-time type checks.

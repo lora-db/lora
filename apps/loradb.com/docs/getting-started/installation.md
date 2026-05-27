@@ -20,7 +20,68 @@ If you only want to try the query surface first, start with the
 [browser playground](./playground). It runs LoraDB through WASM without
 installing a package.
 
+<HowTo
+  name="Install LoraDB and run your first query"
+  description="The shortest happy path: pick the binding for your runtime, install one package, open an in-memory handle, and run a Cypher query."
+  totalTime="PT5M"
+  steps={[
+    {
+      name: "Pick a runtime",
+      text: "Choose the binding that matches your host: Node.js, Python, WebAssembly in the browser, Go, Ruby, the lora-database Rust crate for direct embedding, or the lora-server HTTP service. Every binding wraps the same engine.",
+      url: "#pick-a-platform",
+    },
+    {
+      name: "Install the package",
+      text: "Run npm install @loradb/lora-node, pip install lora-python, npm install @loradb/lora-wasm, go get github.com/lora-db/lora/crates/bindings/lora-go, gem install loradb, or cargo add lora-database depending on the runtime you picked.",
+      url: "#installation--setup",
+    },
+    {
+      name: "Open an in-memory database",
+      text: "Call Database.create() (Node, Python, Ruby) or its equivalent in your binding. The handle starts with an empty graph and is safe to share across threads / async tasks.",
+      url: "#creating-a-client--connection",
+    },
+    {
+      name: "Run a Cypher query",
+      text: "Execute CREATE (:Person {name: 'Ada'}) followed by MATCH (p:Person) RETURN p.name to confirm the install works end-to-end.",
+      url: "#running-your-first-query",
+    },
+    {
+      name: "Add persistence when ready",
+      text: "Save the graph with a snapshot (saveSnapshot / save_snapshot_to) or open with WAL-backed durability for continuous persistence. Snapshots are atomic on rename; WAL replays above the snapshot fence on recover.",
+      url: "#examples",
+    },
+  ]}
+/>
+
+## First-time checklist
+
+Before choosing an install path, decide three things:
+
+| Question | Recommendation |
+|---|---|
+| Do you need parameters for user input? | Use any binding or HTTP `/query` with `params`. Never interpolate raw input into query text. |
+| Should data survive process restarts? | Open a named `.loradb` archive, save snapshots, or use a WAL-backed open. Plain in-memory handles are scratch graphs. |
+| Will the graph be reachable over a network? | Prefer an in-process binding. If you use `lora-server`, keep it on `127.0.0.1` or put auth, TLS, and rate limiting in front. |
+
+The shortest happy path for most app developers is: install the
+binding for your host language, run the minimal example in that guide,
+then add persistence only when the prototype needs it.
+
 ## Installation / Setup
+
+### Requirements by surface
+
+| Surface | Extra requirements |
+|---|---|
+| Node / TS | Node.js 18+ for the published package; Node.js 20+ for repo-local workspace tooling |
+| Python | Python 3.8+; `maturin` only when building from source |
+| WASM | Node.js 20+ for bundling/testing |
+| Go | Go 1.21+, cgo enabled, C toolchain, and `liblora_ffi` |
+| Ruby | Ruby 3.1+, Bundler, and a native build toolchain |
+| Rust / server from source | Rust 1.87+ through `rustup` |
+
+Published packages hide most native build steps. Repo-local development needs
+the toolchains above because the bindings compile the Rust engine.
 
 ### Pick a platform
 
@@ -49,11 +110,12 @@ from a clone.
 | Run in the browser / Web Worker / edge | WASM |
 | Build a Go service or CLI (cgo) | Go |
 | Ship a Ruby app, worker, or Rails service | Ruby |
+| Evaluate from a shell or another language | HTTP server |
 
 All bindings share the same query surface and result shape — the
 Cypher is identical, only the host-language wrapper differs.
 
-### Other runtimes
+### Rust and HTTP server
 
 Two more paths share the same Cypher surface:
 
@@ -107,12 +169,12 @@ instances only when you intentionally want separate graphs or archives.
 
 If you want persistence, opt into it explicitly:
 
-- on `lora-node`, pass a database name and database directory to `createDatabase('app', { databaseDir: './data' })`;
-- on `lora-node`, use `openWalDatabase({ walDir: './data/wal' })` for an explicit WAL directory;
-- on Rust / `lora-server`, configure a WAL directory;
-- on Python, Go, and Ruby, pass a database name plus their `database_dir` /
+- On `lora-node`, pass a database name and database directory to `createDatabase('app', { databaseDir: './data' })`.
+- On `lora-node`, use `openWalDatabase({ walDir: './data/wal' })` for an explicit WAL directory.
+- On Rust / `lora-server`, configure a WAL directory.
+- On Python, Go, and Ruby, pass a database name plus their `database_dir` /
   `DatabaseDir` option for `.loradb` archives, or use `open_wal` /
-  `OpenWal` for an explicit WAL directory;
+  `OpenWal` for an explicit WAL directory.
 
 ### Bulk-load from the host
 
