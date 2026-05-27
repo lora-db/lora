@@ -36,7 +36,7 @@ That developer does not want a sales call first. They want to try the thing.
 For LoraDB, the first trust moment should look like this:
 
 ```bash
-cargo run --bin lora-server
+cargo run -p lora-server
 ```
 
 Then a query:

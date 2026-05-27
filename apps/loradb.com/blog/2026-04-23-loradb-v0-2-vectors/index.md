@@ -314,7 +314,7 @@ v0.2 makes that first loop work.
 Get the repo and run the server:
 
 ```bash
-cargo run --bin lora-server
+cargo run -p lora-server
 ```
 
 Then try a vector query from `curl` or any binding:

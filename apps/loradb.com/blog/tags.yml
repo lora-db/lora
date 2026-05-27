@@ -72,3 +72,68 @@ tooling:
   label: Tooling
   permalink: /tooling
   description: Developer tools — editor, canvas, packages, IDE features.
+
+vectors:
+  label: Vectors
+  permalink: /vectors
+  description: Vector values, similarity search, and embedding workflows.
+
+indexing:
+  label: Indexing
+  permalink: /indexing
+  description: Range, text, point, vector, and full-text index work.
+
+hnsw:
+  label: HNSW
+  permalink: /hnsw
+  description: Approximate nearest-neighbor indexing plans and tradeoffs.
+
+memory:
+  label: Memory
+  permalink: /memory
+  description: In-memory storage, allocation, and hot-path behavior.
+
+errors:
+  label: Errors
+  permalink: /errors
+  description: Error reporting, diagnostics, and user-facing failure modes.
+
+occ:
+  label: OCC
+  permalink: /occ
+  description: Optimistic concurrency control and write-conflict handling.
+
+wal:
+  label: WAL
+  permalink: /wal
+  description: Write-ahead logging, checkpoints, and recovery.
+
+import:
+  label: Import
+  permalink: /import
+  description: Loading external data into LoraDB.
+
+export:
+  label: Export
+  permalink: /export
+  description: Exporting graph data and query results.
+
+csv:
+  label: CSV
+  permalink: /csv
+  description: CSV import, export, and tabular interchange.
+
+jsonl:
+  label: JSONL
+  permalink: /jsonl
+  description: JSON Lines import and export workflows.
+
+json:
+  label: JSON
+  permalink: /json
+  description: JSON import, export, and API payloads.
+
+ingest:
+  label: Ingest
+  permalink: /ingest
+  description: Data ingestion patterns and pipelines.

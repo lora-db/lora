@@ -86,7 +86,7 @@ first.
 ### Run the server
 
 ```bash
-cargo run --bin lora-server
+cargo run -p lora-server
 ```
 
 By default, the server listens on `127.0.0.1:4747`.

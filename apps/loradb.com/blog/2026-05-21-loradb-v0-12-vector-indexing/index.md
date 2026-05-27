@@ -249,4 +249,4 @@ label and property, accept the defaults on the Tune step, and the
 generated DDL appears in the preview before you commit it.
 
 The full changelog and binaries are on the
-[v0.12.0 release page](https://github.com/loradb/loradb/releases/tag/v0.12.0).
+[v0.12.0 release page](https://github.com/lora-db/lora/releases/tag/v0.12.0).

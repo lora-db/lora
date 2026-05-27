@@ -126,14 +126,14 @@ A graph that needs server-side durability, multiple clients, operational
 controls, or production ingress still belongs in an application binding
 or the HTTP server.
 
-## What the playground does not do yet
+## What the v0.11 playground did not do yet
 
 The release is useful because the boundaries are clear:
 
-- **No parameter drawer.** The editor can detect parameter names, but
-  this first UI does not expose a host-side params panel. Docs examples
-  meant to run directly in the playground should use trusted inline
-  literals or seed data.
+- **No parameter drawer in v0.11.** The editor could detect parameter
+  names, but this first UI had no host-side params panel. Docs examples
+  meant to run directly in that release's playground needed trusted
+  inline literals or seed data.
 - **No multi-database selector.** The browser origin owns one local
   playground database.
 - **No true query abort.** The Cancel button drops the pending result
@@ -143,6 +143,15 @@ The release is useful because the boundaries are clear:
   machine. The app does not fetch remote URLs to seed a graph.
 - **Hash links only.** Share state lives in the URL hash so a static
   export can refresh cleanly.
+
+:::note Current playground
+
+This is a historical v0.11 release note. The current playground includes
+a JSON Params panel and can share active params with the query URL. See
+[Try LoraDB in the Playground](/docs/getting-started/playground) for the
+current behavior.
+
+:::
 
 ## New package surfaces
 

@@ -268,4 +268,4 @@ Or open [play.loradb.com](https://play.loradb.com), drop a CSV onto
 the page, and watch the Stats panel update as the import lands.
 
 The full changelog and binaries are on the
-[v0.14.0 release page](https://github.com/loradb/loradb/releases/tag/v0.14.0).
+[v0.14.0 release page](https://github.com/lora-db/lora/releases/tag/v0.14.0).

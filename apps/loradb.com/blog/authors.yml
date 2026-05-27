@@ -3,6 +3,11 @@ loradb:
   title: Engineering
   url: https://github.com/lora-db/lora
   image_url: /logos/loradb-mark.svg
+  description: >-
+    Engineering posts from the people building LoraDB — release notes,
+    architecture pieces, and design writing on the in-memory
+    property-graph engine, the Cypher pipeline, and the runtime
+    surfaces (Rust, Node.js, Python, WASM, Go, Ruby, HTTP).
   page: true
   socials:
     github: lora-db
@@ -13,6 +18,13 @@ joost:
   title: Author, LoraDB
   url: https://github.com/lora-db/lora
   image_url: /img/joost-van-berkel.jpeg
+  description: >-
+    Joost is the author of LoraDB — a local-first, in-memory
+    property-graph engine in Rust with a Cypher-like query engine.
+    He writes about graph databases, query engine architecture, and
+    AI-assisted engineering — the design tradeoffs behind the
+    engine, the release journey, and the work of building a database
+    in the open.
   page: true
   socials:
     github: zolero

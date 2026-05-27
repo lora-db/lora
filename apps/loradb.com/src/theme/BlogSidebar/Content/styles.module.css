@@ -1,0 +1,70 @@
+.monthGroup {
+  margin-top: 2rem;
+}
+
+.monthGroup:first-child {
+  margin-top: 0.6rem;
+}
+
+.monthGroupHeading {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.7rem;
+  font-weight: var(--ifm-font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ifm-color-emphasis-600);
+  margin: 0 0 0.35rem;
+}
+
+.monthGroupLabel {
+  flex: 0 0 auto;
+}
+
+.monthGroupRule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    var(--ifm-color-emphasis-300),
+    transparent
+  );
+}
+
+.monthGroupCount {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.65rem;
+  font-weight: var(--ifm-font-weight-semibold);
+  color: var(--ifm-color-emphasis-600);
+  background: var(--ifm-color-emphasis-100);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  line-height: 1.4;
+}
+
+.monthGroupItems :global(.clean-list) {
+  margin-top: 0;
+}
+
+.monthGroupItems :global(.clean-list) > li:first-child {
+  margin-top: 0;
+}
+
+[data-theme="dark"] .monthGroupHeading {
+  color: var(--ifm-color-emphasis-500);
+}
+
+[data-theme="dark"] .monthGroupRule {
+  background: linear-gradient(
+    to right,
+    var(--ifm-color-emphasis-400),
+    transparent
+  );
+}
+
+[data-theme="dark"] .monthGroupCount {
+  color: var(--ifm-color-emphasis-700);
+  background: var(--ifm-color-emphasis-200);
+}

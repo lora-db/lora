@@ -168,7 +168,7 @@ a strictly stronger one.
 
 The persistence staircase mirrors the adoption staircase.
 
-1. **Discovery.** A developer runs `cargo run --bin lora-server` and
+1. **Discovery.** A developer runs `cargo run -p lora-server` and
    types a query. There is no persistence to think about yet.
 2. **Local prototype.** They want to keep the graph between sessions.
    `--snapshot-path` and `--restore-from` are enough.

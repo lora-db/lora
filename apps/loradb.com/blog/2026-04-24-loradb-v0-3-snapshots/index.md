@@ -404,7 +404,7 @@ say so.
 Get the repo, build, and snapshot:
 
 ```bash
-cargo run --bin lora-server -- \
+cargo run -p lora-server -- \
   --snapshot-path /tmp/loradb.bin \
   --restore-from  /tmp/loradb.bin
 ```
