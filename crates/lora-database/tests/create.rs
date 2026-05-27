@@ -566,7 +566,6 @@ fn create_index_on_label_property() {
 
 // Lora: FOREACH (x IN list | CREATE (n:T {val: x}))
 #[test]
-#[ignore = "pending implementation"]
 fn foreach_create_from_list() {
     let db = TestDb::new();
     db.run("FOREACH (x IN [1, 2, 3] | CREATE (:Item {val: x}))");

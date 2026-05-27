@@ -786,7 +786,6 @@ fn remove_label_and_verify() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn foreach_update() {
     let db = TestDb::new();
     db.run("CREATE (:List {items: [1, 2, 3]})");

@@ -495,7 +495,6 @@ fn call_db_labels() {
 }
 
 #[test]
-#[ignore = "FOREACH clause not yet in grammar"]
 fn foreach_sets_property_on_list() {
     let db = TestDb::new();
     db.run("CREATE (a:User {name: 'Alice'})");
