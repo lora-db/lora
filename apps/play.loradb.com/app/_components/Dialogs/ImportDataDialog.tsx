@@ -129,15 +129,20 @@ function ImportDataDialog({ modalId, initialFile }: ImportDataDialogProps) {
   // Abort any in-flight import when the dialog unmounts — covers the
   // X button, ESC key, outside-click, and the Footer's Close button,
   // none of which route through the explicit Cancel handler.
-  useEffect(
-    () => () => {
+  //
+  // Re-arm `mountedRef` on every mount so React 18 StrictMode's
+  // mount → unmount → remount cycle doesn't leave the ref stuck at
+  // `false` for the lifetime of the component, which would silently
+  // drop every async `setPreview` / `setReviewStats` resolution.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       previewRequestRef.current += 1;
       reviewRequestRef.current += 1;
       abortRef.current?.abort(new DOMException("dialog closed", "AbortError"));
-    },
-    [],
-  );
+    };
+  }, []);
 
   const close = useCallback(() => modals.close(modalId), [modalId]);
 
