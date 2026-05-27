@@ -55,8 +55,8 @@ on nearly every feature branch.
 
 | File | Coverage area |
 |------|--------------|
-| `http.rs` | Core HTTP surface — routing, `/health`, `/query` happy / parse-error paths, create-then-match |
-| `admin.rs` | `POST /admin/snapshot/{save,load}` — body handling, default-path behavior, `path` override, opt-in 404 when `--snapshot-path` is unset, round-trip against a live server |
+| `http.rs` | Core HTTP surface — routing, `/health`, `/query`, `/explain`, happy / parse-error paths, params, and create-then-match |
+| `admin.rs` | Snapshot and WAL admin routes — `POST /admin/snapshot/{save,load}`, `/admin/checkpoint`, `/admin/wal/status`, `/admin/wal/truncate`, body handling, default-path behavior, `path` override, opt-in 404s, and round-trips against a live server |
 
 ## Ignored tests (58)
 
@@ -64,9 +64,8 @@ All ignored tests carry an explicit reason via `#[ignore = "..."]`. Categories:
 
 | Reason | Count | Category |
 |--------|-------|----------|
-| `pending implementation` | ~45 | Forward-looking: `CALL { … }` subqueries, `FOREACH`, constraints, some pattern / aggregation edge cases |
+| `pending implementation` | ~45 | Forward-looking: `CALL { … }` subqueries, constraints, some pattern / aggregation edge cases |
 | `stored procedures: CALL db.labels() not yet implemented` | 1 | Procedures |
-| `FOREACH clause not yet in grammar` | 1 | Clause |
 | `temporal types: date/time functions not yet implemented` | 2 | Historical — most temporal tests now pass |
 | `duration type: duration arithmetic not yet implemented` | 1 | Specific duration edge case |
 | `utility functions: compatibility utilities not yet implemented` | 1 | Functions |
@@ -156,5 +155,5 @@ authoritative performance tooling.
 2. **Concurrency tests** — exercise store lock behavior under parallel requests
 3. **Property-based testing** — generate random Cypher queries to stress the parser / executor
 4. **Property-based snapshot round-trips** — generate random graphs, save, load, assert structural equality
-5. **HTTP parameter tests** — parameters work through the Rust API but the HTTP server does not yet forward them
+5. **HTTP parameter coverage** — keep expanding JSON param conversion cases beyond the current success / invalid-shape tests
 6. **Temporal / spatial edge cases** — leap years, UTC offsets at boundaries, antipodal Haversine, cross-SRID comparisons

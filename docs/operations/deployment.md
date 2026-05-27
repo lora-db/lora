@@ -43,7 +43,7 @@ target/release/lora-server       # release
 ### Direct
 
 ```bash
-cargo run --bin lora-server
+cargo run -p lora-server
 # or
 ./target/release/lora-server
 ```
@@ -63,7 +63,7 @@ Run `./target/release/lora-server --help` for the full option list.
 
 | Flag | Env var | Effect |
 |---|---|---|
-| `--snapshot-path <PATH>` | `LORA_SERVER_SNAPSHOT_PATH` | Enables `POST /admin/snapshot/{save,load}` and sets the default file they operate on. If unset, the admin routes are not mounted and return `404`. |
+| `--snapshot-path <PATH>` | `LORA_SERVER_SNAPSHOT_PATH` | Enables `POST /admin/snapshot/{save,load}` and sets the default file they operate on. If unset, the snapshot admin routes are not mounted and return `404`. |
 | `--restore-from <PATH>` | — | Load a snapshot at startup, before accepting queries. A missing file logs and continues with an empty graph. A malformed file is fatal. |
 
 Typical cron-friendly setup — boot from, and save back to, the same file:
@@ -115,6 +115,8 @@ curl http://127.0.0.1:4747/health
 |--------|------|-------------|
 | `GET` | `/health` | Returns `{"status": "ok"}` |
 | `POST` | `/query` | Execute a Cypher query |
+| `POST` | `/explain` | Compile a query and return the plan without executing it |
+| `POST` | `/profile` | Execute a query and return the plan plus runtime metrics |
 | `POST` | `/admin/snapshot/save` | Save a snapshot (opt-in; requires `--snapshot-path`) |
 | `POST` | `/admin/snapshot/load` | Restore a snapshot (opt-in; requires `--snapshot-path`) |
 | `POST` | `/admin/checkpoint` | Write a WAL checkpoint snapshot (opt-in; requires `--wal-dir`) |
@@ -172,7 +174,7 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 2. **Write publication contention** -- write commits and explicit read-write transactions serialize; large writes, restores, and checkpoints can still affect latency
 3. **Durability depends on configuration** -- without `--wal-dir`, only snapshots survive crashes; with group/none sync modes, the crash window matches the chosen fsync policy. See [WAL](wal.md)
 4. **No auth** -- anyone who can reach the server's bind address (default `127.0.0.1:4747`) can execute arbitrary queries including `DETACH DELETE`. Bind to `0.0.0.0` only in trusted networks.
-5. **Admin surface has no auth** -- when `--snapshot-path` is set, `POST /admin/snapshot/{save,load}` is reachable by anyone who can hit the bind address. Treat it as privileged. See [Security → Admin surface](security.md#admin-surface).
+5. **Admin surface has no auth** -- when `--snapshot-path` or `--wal-dir` is set, the matching `POST /admin/*` routes are reachable by anyone who can hit the bind address. Treat them as privileged. See [Security → Admin surface](security.md#admin-surface).
 6. **Panic = abort** -- in release mode, any panic terminates the process immediately with no recovery
 
 ## Future considerations
@@ -187,7 +189,7 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 
 A typical adoption path:
 
-1. **Local development** — `cargo run --bin lora-server`, iterate on Cypher queries, embed in tests
+1. **Local development** — `cargo run -p lora-server`, iterate on Cypher queries, embed in tests
 2. **Internal / single-node** — self-host a release binary behind a reverse proxy on a trusted network
 3. **Scaling or reliability required** — you need persistence, backups, authenticated multi-user access, or concurrent reads
 

@@ -27,10 +27,10 @@ There are no:
 ## HTTP ingestion flow
 
 ```
-Client -> POST /query {"query": "CREATE ..."} -> lora-server -> Database::execute -> InMemoryGraph
+Client -> POST /query {"query": "CREATE ...", "params": {...}} -> lora-server -> Database::execute_with_params -> InMemoryGraph
 ```
 
-The same `Database::execute` / `execute_with_params` entry point handles writes from every other surface listed above.
+The same `Database::execute` / `execute_with_params` entry points handle writes from every other surface listed above.
 
 Every primitive write (`create_node`, `create_relationship`, property set/remove,
 label add/remove, delete, detach delete, clear) maps to a `GraphStorageMut`
@@ -49,7 +49,7 @@ for how the WAL drives it.
 ```bash
 curl -s localhost:4747/query \
   -H 'Content-Type: application/json' \
-  -d '{"query": "CREATE (n:User {name: \"Alice\", age: 32}) RETURN n"}'
+  -d '{"query": "CREATE (n:User {name: $name, age: $age}) RETURN n", "params": {"name": "Alice", "age": 32}}'
 ```
 
 ### Creating relationships
@@ -59,7 +59,7 @@ Relationships require both endpoint nodes to exist. The typical pattern is to fi
 ```bash
 curl -s localhost:4747/query \
   -H 'Content-Type: application/json' \
-  -d '{"query": "MATCH (a:User {name: \"Alice\"}), (b:User {name: \"Bob\"}) CREATE (a)-[:FOLLOWS {since: 2024}]->(b) RETURN a, b"}'
+  -d '{"query": "MATCH (a:User {name: $from}), (b:User {name: $to}) CREATE (a)-[:FOLLOWS {since: $since}]->(b) RETURN a, b", "params": {"from": "Alice", "to": "Bob", "since": 2024}}'
 ```
 
 ### Batch seeding

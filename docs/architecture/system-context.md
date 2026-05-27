@@ -16,10 +16,10 @@ An in-memory property graph database with a Cypher-like query language (a broad,
 ## What Lora is not
 
 - **Not a client for another graph database** -- it is a standalone engine, not a driver
-- **Not a distributed system** -- single-process, single-thread execution
+- **Not a distributed system** -- one process owns one graph
 - **Not replicated or clustered** -- point-in-time snapshots and optional WAL-backed recovery exist (`save_snapshot_to`, `load_snapshot_from`, `open_with_wal`; see [Snapshots](../operations/snapshots.md) and [WAL](../operations/wal.md)), but there is no replication or distributed storage. Without WAL, data between saves is lost on crash.
 - **Not openCypher-complete** -- implements a working subset of Cypher (see the support matrix for the specific clauses and functions that are covered, partial, or not yet implemented)
-- **Not production-grade** -- no authentication, only point-in-time persistence, no replication
+- **Not a managed production tier by itself** -- the bare HTTP server has no authentication, TLS, metrics, or replication; durability is local to snapshots / WAL and remains operator-managed
 
 > 🚀 **Production note** — The core engine is deliberately scoped to local and embedded use. Production concerns (continuous durability, replication, authentication, backups, multi-tenant isolation) are handled by the managed LoraDB platform at **<https://loradb.com>**, which runs the same Cypher surface on top.
 
@@ -75,7 +75,7 @@ C4Context
 The engine is reached through **multiple in-process surfaces**, all of which ultimately drive the same `lora_database::Database` pipeline:
 
 - **Direct Rust embedding** — depend on the `lora-database` crate and call `Database::execute` / `execute_with_params` from any host binary or library.
-- **HTTP API** (`lora-server`) — `POST /query` accepts `{"query": "...", "format": "..."}` and returns JSON.
+- **HTTP API** (`lora-server`) — `POST /query` accepts `{"query": "...", "params": {...}, "format": "..."}` and returns JSON. `params` and `format` are optional.
 - **C ABI** (`lora-ffi`) — a `#[no_mangle]` C-compatible surface around `Database`, used by the Go binding and available to any third-party cgo-style consumer.
 - **Language bindings** — `lora-node` (napi-rs), `lora-wasm` (wasm-bindgen / wasm-pack), `lora-python` (PyO3), `lora-go` (cgo over `lora-ffi`), `lora-ruby` (Magnus / rb-sys).
 

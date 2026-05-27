@@ -16,15 +16,13 @@
 |---------|-------------|-----------------|------|
 | General-purpose `CALL` | Parsed to AST | Only documented `db.index.vector.*` and `db.index.fulltext.*` procedures are supported; other procedures return an unsupported-feature error | Low — clear error |
 | General-purpose `CALL ... YIELD` | Parsed to AST | Only documented index query procedures are supported | Low — clear error |
-| `FOREACH` | Not in grammar | N/A | Low — parse error |
 | `LOAD CSV` | Not in grammar | N/A | Low |
 | `USE <graph>` (multi-database) | Not in grammar | N/A | Low |
 | `EXPLAIN` / `PROFILE` (Cypher keywords) | Not in grammar | API-only | Low — exposed as `db.explain()` / `db.profile()` API methods rather than Cypher syntax. `PROFILE` runs the query for real (including writes); `EXPLAIN` is plan-only. |
 | Quantified path patterns | Not in grammar | N/A | Low — future openCypher syntax |
-| Inline `WHERE` inside variable-length relationship | Parsed | Not evaluated | Low — 1 ignored test |
+| Inline `WHERE` inside variable-length relationship | Not in grammar | N/A | Low — parse error |
 | Type mismatch detection between comparable types | Accepted | Compared without error | Low — 1 ignored test |
 | Parameter as a label or relationship type | N/A | Not implemented | Low — not standard Cypher |
-| HTTP `POST /query` with a `params` field | N/A | Not wired up | **Medium** — Rust API supports parameters, HTTP layer does not |
 | Vector ANN execution | N/A | `CREATE VECTOR INDEX` and `db.index.vector.*` procedures are queryable, but they use flat scans over the indexed scope | **Medium** — fine for demos and small corpora; dedicated ANN execution is still needed for production-scale semantic retrieval |
 | List-of-`VECTOR` as a property | Parsed | Rejected at write time (`PropertyConversionError::NestedVectorInList`) | Low — loud error; shape decision to keep future indexing viable |
 
@@ -34,6 +32,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 | Feature | Evidence |
 |---------|----------|
+| HTTP `POST /query` with a `params` field | `crates/lora-server/src/app/routes.rs` parses JSON params and forwards them to `QueryRunner::execute_with_params`; `crates/lora-server/tests/http.rs` covers success and invalid-param cases |
 | Temporal types (`Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration`) | 89 passing tests in `tests/temporal.rs` |
 | Spatial types (`Point`: Cartesian 2D/3D and WGS-84 2D/3D — SRIDs 7203, 9157, 4326, 4979) | Tests in `tests/functions_extended.rs` and `tests/types_advanced.rs` |
 | `VECTOR` value type (six coordinate tags; cast-based construction; property storage on nodes and relationships; similarity / distance / norm functions; exhaustive kNN via `ORDER BY … LIMIT k`; cataloged vector index procedures with flat-scan execution) | Tests in `tests/vectors.rs` |
@@ -119,10 +118,9 @@ The following features were listed as gaps in earlier revisions of this document
 
 ### Short term (correctness / developer experience)
 
-1. Wire HTTP `params` body field through to `Database::execute_with_params`
-2. Add `tracing-subscriber` so the existing `tracing` instrumentation produces output
-3. Add configurable log level
-4. Add query length and result-size limits in the HTTP layer
+1. Add `tracing-subscriber` so the existing `tracing` instrumentation produces output
+2. Add configurable log level
+3. Add query length and result-size limits in the HTTP layer
 
 ### Medium term (robustness)
 

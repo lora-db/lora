@@ -36,7 +36,8 @@ informed as a fix is developed and released.
 
 In scope:
 
-- `lora-server` HTTP endpoints (`POST /query`, `GET /health`).
+- `lora-server` HTTP endpoints (`POST /query`, `GET /health`) and
+  opt-in admin endpoints when snapshots or WAL are enabled.
 - The Cypher parser, analyzer, compiler, and executor (panics, denial of
   service, memory corruption, sandbox escapes from expression evaluation).
 - The language bindings: `lora-node`, `lora-wasm`, `lora-python`,
@@ -47,11 +48,14 @@ In scope:
 
 Out of scope:
 
-- Known limitations documented in `README.md` (in-memory only, no auth, no
-  TLS, no transactions, global mutex). These are *design decisions*, not
-  vulnerabilities.
-- Issues that require running `lora-server` bound to `0.0.0.0` on an
-  untrusted network — the README explicitly calls that out as unsupported.
+- Known limitations documented in `README.md` and `loradb.com/docs/limitations`
+  (for example no built-in HTTP authentication, no TLS termination, no
+  clustering, single-process write serialization, and surface-dependent
+  persistence controls). These are *design decisions*, not vulnerabilities by
+  themselves.
+- Issues that require running `lora-server` or opt-in admin endpoints on an
+  untrusted network without an authenticated reverse proxy in front. The docs
+  explicitly call that deployment unsupported.
 - Third-party dependencies unless the bug is reachable through Lora's API
   surface.
 - The `apps/loradb.com` Docusaurus site (report documentation-site issues as

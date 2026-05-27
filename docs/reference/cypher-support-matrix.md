@@ -37,7 +37,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `EXPLAIN` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.explain(query, params?)`; deliberately not exposed as a Cypher keyword. |
 | `PROFILE` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.profile(query, params?)`; runs the query and reports per-operator timing. |
 | `CALL` / `CALL ... YIELD` | **Partial** | Supported for documented index procedures: `db.index.vector.queryNodes`, `db.index.vector.queryRelationships`, `db.index.fulltext.queryNodes`, and `db.index.fulltext.queryRelationships`. General-purpose procedures still return an unsupported-feature error. |
-| `FOREACH` | **Not yet implemented** | Not in grammar |
+| `FOREACH` | **Supported** | Updating clauses only (`CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, nested `FOREACH`) |
 | `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | **Supported** | RANGE/TEXT/POINT/LOOKUP/VECTOR indexes for nodes and relationships |
 | `CREATE CONSTRAINT` / `DROP CONSTRAINT` / `SHOW CONSTRAINTS` | **Supported** | Property uniqueness (single + composite), property existence (`IS NOT NULL`), node key, relationship key, and property type (`IS :: <TYPE>`) constraints — see §11 |
 | `LOAD CSV` | **Not yet implemented** | Not in grammar |
@@ -63,7 +63,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `shortestPath()` | **Supported** | Returns one shortest path, empty if none exists |
 | `allShortestPaths()` | **Supported** | Returns every path of minimum length |
 | Quantified path patterns | **Not yet implemented** | Future openCypher feature |
-| Inline WHERE inside variable-length | **Not yet implemented** | 1 ignored test |
+| Inline WHERE inside variable-length | **Not yet implemented** | Not in grammar |
 
 ## 3. Variable-length paths (detail)
 
@@ -230,7 +230,7 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 | `'...'::LOCAL_DATETIME` / `{...}::LOCAL_DATETIME` | **Supported** | |
 | `'...'::DURATION` / `{...}::DURATION` | **Supported** | ISO 8601 or `{years, months, days, hours, minutes, seconds}` |
 | `CAST(value AS TYPE)` / `TRY_CAST(value AS TYPE)` | **Supported** | Cast syntax in the Cypher grammar; `TRY_CAST` returns `null` on failed conversion |
-| `temporal.truncate(unit, date)` | **Partial** | Supported units: `"year"`, `"month"` |
+| `temporal.truncate(unit, date)` | **Partial** | Supported units: `"year"`, `"month"`, `"day"` |
 | `temporal.truncate(unit, datetime)` | **Partial** | Supported units: `"year"`, `"month"`, `"day"`, `"hour"` |
 | `temporal.between(a, b)` | **Supported** | Between dates or datetimes |
 | `temporal.in_days(a, b)` | **Supported** | `DATE` values |
@@ -261,11 +261,11 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | `CREATE INDEX name FOR ()-[r:TYPE]-() ON (r.prop)` | **Supported** | Relationship RANGE index |
 | `CREATE TEXT INDEX` | **Supported** | Node and relationship scopes; accelerates `STARTS WITH`, `CONTAINS`, `ENDS WITH` |
 | `CREATE POINT INDEX` | **Supported** | Node and relationship scopes; accelerates `geo.within_bbox` and `geo.distance(...) <= radius` candidates |
-| `CREATE LOOKUP INDEX ... ON EACH labels(n)` | **Supported** | Catalog-visible token index for labels |
-| `CREATE LOOKUP INDEX ... ON EACH type(r)` | **Supported** | Catalog-visible token index for relationship types |
+| `CREATE LOOKUP INDEX ... ON EACH node.labels(n)` | **Supported** | Catalog-visible token index for labels |
+| `CREATE LOOKUP INDEX ... ON EACH edge.type(r)` | **Supported** | Catalog-visible token index for relationship types |
 | `IF NOT EXISTS` | **Supported** | Duplicate name or equivalent schema becomes a no-op |
 | `DROP INDEX name [IF EXISTS]` | **Supported** | Missing index without `IF EXISTS` returns `42N51` |
-| `SHOW INDEXES` / `SHOW INDEX` | **Supported** | Returns name, type, entityType, labelsOrTypes, properties, state, populationPercent. Accepts type filter (`SHOW {ALL\|RANGE\|TEXT\|POINT\|LOOKUP\|FULLTEXT\|VECTOR} INDEXES`); `FULLTEXT` parses but returns empty until a full-text catalog kind exists. Accepts a YIELD-anchored tail: `YIELD {*\|items} [ORDER BY ...] [SKIP n] [LIMIT n] [WHERE expr] [RETURN items [ORDER BY ...] [SKIP n] [LIMIT n]]`. Same tail also accepted on `SHOW CONSTRAINTS`. |
+| `SHOW INDEXES` / `SHOW INDEX` | **Supported** | Returns name, type, entityType, labelsOrTypes, properties, state, populationPercent. Accepts type filter (`SHOW {ALL\|RANGE\|TEXT\|POINT\|LOOKUP\|FULLTEXT\|VECTOR} INDEXES`). Accepts a YIELD-anchored tail: `YIELD {*\|items} [ORDER BY ...] [SKIP n] [LIMIT n] [WHERE expr] [RETURN items [ORDER BY ...] [SKIP n] [LIMIT n]]`. Same tail also accepted on `SHOW CONSTRAINTS`. |
 | Duplicate index name | **Supported error** | Returns GQLSTATUS-shaped `22N71` |
 | Equivalent index under another name | **Supported error** | Returns GQLSTATUS-shaped `22N70` |
 | Composite RANGE index catalog entries | **Partial** | Accepted and shown; current optimizer rewrites are single-property |
@@ -274,7 +274,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | Node / relationship key constraints | **Supported** | Composition of existence + uniqueness; single + composite; node-key uses `IS NODE KEY`, rel-key uses `IS RELATIONSHIP KEY` |
 | Property type constraints (`IS :: T`) | **Supported** | Scalar (`BOOLEAN`/`STRING`/`INTEGER`/`FLOAT`/`DATE`/`LOCAL TIME`/`ZONED TIME`/`LOCAL DATETIME`/`ZONED DATETIME`/`DURATION`/`POINT`), `LIST<T NOT NULL>`, `VECTOR<COORD>(DIM)`, and closed dynamic unions (`T1 \| T2`); `MAP`/`ANY` rejected with `22N90` |
 | Vector index / ANN index | **Partial** | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS {indexConfig: {vector.dimensions, vector.similarity_function}}` (node + rel). Procedures `db.index.vector.queryNodes` / `queryRelationships` execute a flat scan over label-matching entities; ANN structure (HNSW) is a follow-up. |
-| Full-text indexing | **Supported (standard analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default); others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + non-alphanumeric split, intersect posting lists (AND semantics), score by summed TF, return `(node\|relationship, score)` rows sorted descending. |
+| Full-text indexing | **Supported (standard/simple analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default) and `'simple'`; others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + non-alphanumeric split, intersect posting lists (AND semantics), score by summed TF, return `(node\|relationship, score)` rows sorted descending. |
 
 ## 13b. Vector types and functions
 
@@ -357,7 +357,7 @@ Alias matching is case-insensitive.
 | Temporal / spatial parameters | **Supported** |
 | Parameter as label | **Not yet implemented** | Not standard Cypher |
 | Parameter type checking at parse time | **Not yet implemented** | |
-| Parameter support over HTTP | **Not yet implemented** | Use Rust or an in-process binding (`execute_with_params` / equivalent) |
+| Parameter support over HTTP | **Supported** | `/query`, `/explain`, and `/profile` accept a JSON `params` object; typed values need query casts where JSON has no native shape |
 
 ## 16. Write operations
 
@@ -428,15 +428,14 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 |---------|----------|--------|
 | `CALL` (standalone and YIELD) | Clause | Analyzer rejects with `UnsupportedFeature` |
 | `EXPLAIN` / `PROFILE` (as Cypher keywords) | Clause | Not in grammar — exposed instead as the `db.explain()` / `db.profile()` API methods so callers must explicitly request plan-only or instrumented execution. |
-| `FOREACH` | Clause | Not in grammar |
 | `LOAD CSV` | DDL | Not in grammar |
 | `USE <graph>` (multi-database) | Clause | Not in grammar |
 | Quantified path patterns | Pattern | Future openCypher syntax |
-| Inline WHERE inside variable-length | Pattern | 1 ignored test |
+| Inline WHERE inside variable-length | Pattern | Not in grammar |
 | Type mismatch detection in comparison | Validation | 1 ignored test |
 | Parameter as label | Parameters | Non-standard |
 | Parameter type checking at parse time | Parameters | |
-| Parameters over HTTP | Transport | In-process bindings only |
+| Typed helper constructors over HTTP | Transport | JSON params are supported, but helper constructors live in host bindings; use query casts for `DATE`, `POINT`, `VECTOR`, etc. |
 | Compatibility utility functions | Functions | No compatibility layer |
 | Authentication / TLS | Server | See [`../operations/security.md`](../operations/security.md) |
 

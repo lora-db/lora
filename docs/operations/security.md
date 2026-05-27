@@ -15,7 +15,7 @@ Lora is designed for local development and experimentation. It has **no security
 | Rate limiting | None |
 | Audit logging | None |
 | Encryption at rest | Snapshot encryption is available when callers pass snapshot options; WAL segments and `.loradb` archives are plaintext on disk unless the host filesystem encrypts them |
-| Admin surface auth | None (opt-in via `--snapshot-path`; see [Admin surface](#admin-surface) below) |
+| Admin surface auth | None (snapshot routes opt in via `--snapshot-path`; WAL routes opt in via `--wal-dir`; see [Admin surface](#admin-surface) below) |
 
 ## Risks
 
@@ -38,25 +38,44 @@ There is no maximum query length or result size. An attacker or accidental user 
 
 ### Admin surface
 
-When `lora-server` is started with `--snapshot-path <PATH>` (or `LORA_SERVER_SNAPSHOT_PATH`), two HTTP endpoints become available: `POST /admin/snapshot/save` and `POST /admin/snapshot/load`. Both accept an optional JSON body of the form `{"path": "/override/location.bin"}`.
+When `lora-server` is started with `--snapshot-path <PATH>` (or
+`LORA_SERVER_SNAPSHOT_PATH`), two snapshot endpoints become available:
+`POST /admin/snapshot/save` and `POST /admin/snapshot/load`. Both accept
+an optional JSON body of the form `{"path": "/override/location.bin"}`.
+When the server is started with `--wal-dir <DIR>` (or
+`LORA_SERVER_WAL_DIR`), the WAL admin routes mount independently:
+`POST /admin/wal/status`, `POST /admin/wal/truncate`, and
+`POST /admin/checkpoint`.
 
-This surface gives any client that can reach the admin port three attack primitives:
+This surface gives any client that can reach the server bind address several
+attack primitives:
 
 1. **Arbitrary write.** The optional `path` body field is passed straight to the OS. Any client can write files anywhere the server UID can write — including overwriting unrelated files on the host if the server runs with broad filesystem access.
 2. **Arbitrary read-as-restore.** Pointing `load` at an attacker-controlled file replaces the live graph. If the attacker can stage a file on disk, they can swap the entire database state.
-3. **Denial of service.** `load` holds the store write lock for the full restore duration, blocking other queries. Repeated calls turn the server unresponsive.
+3. **Recovery-state mutation.** WAL truncate and checkpoint routes can remove
+   sealed WAL history or write snapshot files. A malicious or mistaken caller
+   can weaken recovery options.
+4. **Denial of service.** `load` holds the store write lock for the full restore duration, blocking other queries. Repeated calls turn the server unresponsive.
 
 LoraDB's mitigation posture today:
 
-- **Opt-in.** The admin endpoints are not mounted when `--snapshot-path` is unset. Requests return `404`. This is the default.
+- **Opt-in by surface.** Snapshot save/load routes are not mounted when
+  `--snapshot-path` is unset. WAL routes are not mounted when `--wal-dir`
+  is unset. Requests to disabled admin routes return `404`.
 - **No auth layer.** There is no API key, JWT, basic-auth, or IP-allowlist middleware on the admin routes.
-- **No path-traversal validation.** The server performs no sandboxing of the optional `path` body field.
+- **No path-traversal validation.** Snapshot save/load and checkpoint requests
+  perform no sandboxing of an operator-supplied `path` body field.
 
 ### Recommended deployment pattern
 
-1. **Prefer disabled.** On a network-reachable host, do not set `--snapshot-path`. Snapshots are still available through in-process bindings (`db.save_snapshot(...)`) and through a separate operator tool.
+1. **Prefer disabled.** On a network-reachable host, do not expose admin routes
+   from the bare server. Avoid `--snapshot-path` and `--wal-dir` unless the
+   bind address is already restricted or the routes sit behind authenticated
+   ingress.
 2. **If enabled, gate it.** Place the admin routes behind authenticated ingress (reverse proxy with basic auth, mTLS, or a Unix-domain socket bound to a privileged local user). Treat the bind address as privileged.
-3. **Separate binds.** If you need public `/query` access alongside admin snapshots, bind the admin surface to `127.0.0.1` or a management interface and proxy-rewrite only the admin routes from the trusted path.
+3. **Separate binds.** If you need public `/query` access alongside admin
+   snapshots or WAL controls, bind the server to `127.0.0.1` or a management
+   interface and proxy-rewrite only the admin routes from the trusted path.
 4. **Never trust the `path` body on an untrusted network.** Even with auth, a compromised client with admin access can use the path override to write anywhere the server UID can. Prefer omitting the body so the server uses its configured `--snapshot-path`.
 
 > ⚠️ **Future releases may add authentication on the admin surface.** Until they do, the correct deployment is "admin disabled by default, and operators opt in only behind an auth boundary."
@@ -76,7 +95,10 @@ The project depends on well-known Rust crates (`axum`, `tokio`, `pest`, `serde`,
 3. Add query size limits
 4. Add rate limiting
 5. Add result size limits
-6. Disable the admin surface (unset `--snapshot-path` / `LORA_SERVER_SNAPSHOT_PATH`) or place it behind authenticated ingress. See [Admin surface](#admin-surface) above.
+6. Disable the admin surface (unset `--snapshot-path` /
+   `LORA_SERVER_SNAPSHOT_PATH` and `--wal-dir` / `LORA_SERVER_WAL_DIR`) or
+   place it behind authenticated ingress. See [Admin surface](#admin-surface)
+   above.
 
 ### Before handling sensitive data
 

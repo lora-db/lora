@@ -3,9 +3,20 @@
 ## Getting started
 
 1. Clone the repository
-2. Ensure Rust stable is installed (the `rust-toolchain.toml` will handle component installation)
-3. Run `cargo build` to verify the workspace compiles
-4. Run `cargo test --workspace` to verify all tests pass
+2. Ensure Rust 1.87+ is available through `rustup` (the `rust-toolchain.toml` pins stable and installs `rustfmt` / `clippy`)
+3. Install Node.js 20+ and enable Corepack if you will touch JS workspaces, the docs site, or the playground
+4. Run `cargo build --workspace` to verify the Rust workspace compiles
+5. Run `cargo test --workspace` to verify all Rust tests pass
+
+For JavaScript workspaces, bootstrap once from the repository root:
+
+```bash
+corepack enable
+yarn install --immutable
+```
+
+If you only want to try the query language before building locally, use
+the browser playground at <https://play.loradb.com>.
 
 ## Development workflow
 
@@ -19,18 +30,32 @@ cargo build --release          # release build (LTO enabled via .cargo/config.to
 ### Running the server
 
 ```bash
-cargo run --bin lora-server
+cargo run -p lora-server
 ```
 
-The server starts at `http://127.0.0.1:4747`. Use `POST /query` with `{"query": "..."}` to execute Cypher. Override with `--host`/`--port` or `LORA_SERVER_HOST`/`LORA_SERVER_PORT`.
+The server starts at `http://127.0.0.1:4747`. Use `POST /query` with `{"query": "...", "params": {...}, "format": "rows"}` to execute Cypher with optional parameters and response formatting. Override with `--host`/`--port` or `LORA_SERVER_HOST`/`LORA_SERVER_PORT`.
 
 ### Testing
 
 ```bash
 cargo test --workspace         # all tests
-cargo test -p lora-store     # single crate
+cargo test -p lora-store       # single crate
 cargo test -p lora-server      # server + HTTP integration tests
 ```
+
+For docs and frontend work:
+
+```bash
+yarn workspace loradb-docs validate-cypher --quiet
+yarn workspace @loradb/lora-query build
+yarn workspace loradb-docs build
+yarn workspace @loradb/play test
+```
+
+Docs examples that use `QueryCodeBlock` are treated as runnable
+Cypher. Use `CypherSnippet` for fragments, intentionally unsupported
+syntax, or examples that require setup not shown nearby. The docs site
+has additional authoring notes in `apps/loradb.com/CONTRIBUTING-DOCS.md`.
 
 ### Code quality
 
@@ -49,18 +74,23 @@ Core engine crates (every Cypher query walks these in order):
 
 1. **lora-ast** -- AST type definitions only, no logic
 2. **lora-parser** -- PEG grammar (pest) + lowering to AST
-3. **lora-store** -- `GraphStorage` / `GraphStorageMut` traits + `InMemoryGraph`
-4. **lora-analyzer** -- semantic analysis (variable scoping, label validation)
-5. **lora-compiler** -- logical plan, optimizer, physical plan
-6. **lora-executor** -- physical plan execution, expression evaluation
-7. **lora-database** -- orchestration layer; `Database::execute` drives the pipeline
-8. **lora-server** -- HTTP server (Axum), `QueryService` orchestrator
+3. **lora-builtins-meta** -- generated metadata for built-in functions/operators
+4. **lora-store** -- `GraphStorage` / `GraphStorageMut` traits + `InMemoryGraph`
+5. **lora-analyzer** -- semantic analysis (variable scoping, label validation)
+6. **lora-compiler** -- logical plan, optimizer, physical plan
+7. **lora-executor** -- physical plan execution, expression evaluation
+8. **lora-snapshot** -- columnar snapshot codec
+9. **lora-io** -- filesystem and `.loradb` container helpers
+10. **lora-wal** -- write-ahead log segments, replay, and checkpoint fences
+11. **lora-database** -- orchestration layer; `Database::execute` drives the pipeline
+12. **lora-server** -- HTTP server (Axum), `QueryService` orchestrator
 
 Binding / transport crates (each wraps `lora-database` for one host
 runtime):
 
 - **lora-ffi** -- C ABI (`catch_unwind` guards + release header) shared
   by `lora-go` and any third-party cgo consumer
+- **lora-binding-buffer** -- shared binary buffer helpers used by native bindings
 - **lora-node** -- napi-rs binding for Node.js / TypeScript
 - **lora-wasm** -- wasm-pack binding for browser + Node (WASM target)
 - **lora-python** -- PyO3 binding built with maturin
@@ -84,7 +114,13 @@ The general flow for adding a new clause or expression:
 6. Add plan nodes in `lora-compiler/src/logical.rs` and `physical.rs`
 7. Add planner logic in `lora-compiler/src/planner.rs`
 8. Add execution in `lora-executor/src/executor.rs`
-9. Add HTTP test cases in `lora-server/tests/queries.http`
+9. Add integration or HTTP test cases in the affected crate's `tests/`
+   directory, usually `crates/lora-database/tests/` or
+   `crates/lora-server/tests/http.rs`
+
+Update user-facing docs when the feature changes syntax, errors, or
+observable behavior. The public docs source lives in
+`apps/loradb.com/docs/`; implementation notes belong under `docs/`.
 
 ## Commit conventions
 
@@ -150,7 +186,8 @@ ci(commits): enforce conventional commits on pull requests
 ### Local setup (one-time)
 
 ```bash
-npm install    # installs commitlint + husky into the repo root
+corepack enable
+yarn install --immutable    # installs commitlint + husky into the repo root
 ```
 
 After that, `git commit` runs the Rust formatting and clippy gates through

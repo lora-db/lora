@@ -370,10 +370,10 @@ keeps the numerics predictable across storage types.
   mechanical: implement in `vector.rs`, wire into
   `eval_vector.distance_fn` / `eval_vector.norm_fn`, add a test in
   `crates/lora-database/tests/vectors.rs`.
-- **HTTP parameter forwarding.** `lora-server` does not accept a
-  `params` body — vectors passed over HTTP have to be embedded as
-  cast expressions such as `[1,2,3]::VECTOR<INTEGER>(3)` inside the
-  query string.
+- **Typed vector helpers over HTTP.** `lora-server` accepts JSON
+  `params`, but HTTP has no host-language helper constructors. Pass a
+  numeric list and cast it in the query, for example
+  `$q::VECTOR<INTEGER>(3)`.
 
 ## Schema validation
 

@@ -27,7 +27,7 @@ it needs a tag resolver.
 | ---------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | **Quality gates**            | `commitlint`, `workspace-quality`                                | Run on every PR + every push to `main`. Must be green to merge.                                  |
 | **Per-binding CI**           | `lora-server`, `lora-node`, `lora-wasm`, `lora-python`, `lora-ruby`, `lora-go` | Path-filtered per binding. Run on PR + push + manual dispatch. Must be green to merge.          |
-| **Docs / site**              | `loradb-docs`                                                    | Builds `apps/loradb.com`; deploys to GitHub Pages on tag push, `release.released`, and dispatch. |
+| **Docs / site**              | `loradb-docs`                                                    | Builds `apps/loradb.com`; deploys to Cloudflare Pages on tag push, `release.released`, and dispatch. |
 | **Server binary release**    | `release`                                                        | Tag-driven. Builds `lora-server` archives and creates a **draft** GitHub Release.                |
 | **Client package release**   | `packages-release`                                               | Tag-driven. Publishes `@loradb/lora-wasm`, `@loradb/lora-node`, `lora-python`, `lora-ruby`; verifies + archives the Go binding. |
 | **Crates.io release**        | `cargo-release`                                                  | Tag-driven. Publishes every public Rust crate to crates.io in dependency order.                  |
@@ -67,7 +67,7 @@ the workflow file itself. Bindings that share TS types
 
 | Workflow            | Trigger                                                                        | What it does                                                                                                                                                                                                                                                 |
 | ------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `loradb-docs.yml`   | Tag push `v*.*.*[-*]`, PR (path-filtered to `apps/loradb.com/**`), `release.released`, dispatch | Builds `apps/loradb.com` (Docusaurus). On PR, uploads the build output as an inspection artifact only. On every other trigger, uploads the Pages artifact and deploys to `github-pages` at https://loradb.com. Branch pushes to `main` are intentionally not deployed. |
+| `loradb-docs.yml`   | Tag push `v*.*.*[-*]`, PR (path-filtered to `apps/loradb.com/**`), `release.released`, dispatch | Builds `apps/loradb.com` (Docusaurus). On PR, uploads the build output as an inspection artifact only. On every other trigger, deploys the build directory to the Cloudflare Pages project `loradb-docs` at https://loradb.com. Branch pushes to `main` are intentionally not deployed. |
 
 ### Server binary release
 
@@ -181,7 +181,7 @@ path will succeed.
 | `pypi-publish`       | `packages-release` → `publish-python`      | OIDC trusted publisher configured on pypi.org for project `lora-python`, bound here.     | `PYPI_API_TOKEN` (project-scoped API token).                          |
 | `rubygems-publish`   | `packages-release` → `publish-ruby`        | OIDC trusted publisher configured on rubygems.org for gem `lora-ruby`, bound here.       | `RUBYGEMS_API_KEY` (gem-scoped API key with `push_rubygem`).          |
 | `crates-io-publish`  | `cargo-release` → `publish`                | **Required**: `CARGO_REGISTRY_TOKEN`. crates.io has no OIDC trusted publishing yet; if/when it ships, flip to `id-token: write` and delete the secret. | — |
-| `github-pages`       | `loradb-docs` → `deploy`                   | OIDC via `actions/deploy-pages@v4` (`id-token: write` on the job).                       | —                                                                     |
+| `production`         | `loradb-docs` → `deploy`                   | Cloudflare Pages direct upload via `cloudflare/wrangler-action@v3`.                      | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`                       |
 
 Bootstrap details (first publish of each name, trusted-publisher
 registration, yank / recovery semantics) live in

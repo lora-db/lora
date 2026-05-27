@@ -168,7 +168,9 @@ default `Arc<Database<InMemoryGraph>>`. No pipeline logic of its own.
 **Key files**:
 - `src/main.rs` — entry point; opens in-memory, snapshot-restored, WAL-backed, or snapshot+WAL recovered databases
 - `src/config/` — hand-rolled CLI/env parser for host, port, snapshot path, restore path, WAL directory, and WAL sync mode
-- `src/app.rs` — `GET /health`, `POST /query`, structured error responses, and opt-in snapshot/WAL admin routes
+- `src/app.rs` — `GET /health`, `POST /query`, `POST /explain`,
+  `POST /profile`, structured error responses, and opt-in snapshot/WAL
+  admin routes
 
 ## Architecture diagram
 

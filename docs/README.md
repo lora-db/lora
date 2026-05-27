@@ -15,6 +15,23 @@ Technical documentation for **contributors** to the Lora (LoraDB) engine and its
 - [Data Flow](architecture/data-flow.md) — end-to-end query execution pipeline
 - [Graph Engine](architecture/graph-engine.md) — in-memory storage internals
 
+## New contributor path
+
+Start with the smallest slice that answers your question:
+
+1. Read [System Context](architecture/system-context.md) to understand the boundaries.
+2. Read [Architecture Overview](architecture/overview.md) for the crate map.
+3. Read [Data Flow](architecture/data-flow.md) before changing query behavior.
+4. Read [Cypher Development](internals/cypher-development.md) before adding syntax or functions.
+5. Use [Testing Strategy](testing/strategy.md) to choose the right test layer.
+
+User-facing query, install, and API docs live in `apps/loradb.com/docs/`.
+Internal implementation notes live here. When a change affects both, update
+both in the same pull request so readers do not have to reconcile them.
+For public docs writing conventions, including `QueryCodeBlock`,
+`CypherSnippet`, and inline `CypherCode`, see
+[`apps/loradb.com/CONTRIBUTING-DOCS.md`](../apps/loradb.com/CONTRIBUTING-DOCS.md).
+
 ## Internals
 
 - [Value Model](internals/value-model.md) — `PropertyValue` / `LoraValue`, node & relationship records, indexes
@@ -34,6 +51,7 @@ Architectural Decision Records for non-trivial design choices.
 - [ADR-0001: Graph Architecture](decisions/0001-graph-architecture.md) — original storage decision; see [Graph Engine](architecture/graph-engine.md) for the current slot-indexed implementation
 - [ADR-0002: Cypher Query Conventions](decisions/0002-cypher-query-conventions.md) — grammar and pipeline design
 - [ADR-0003: Snapshot Format](decisions/0003-snapshot-format.md) — original snapshot decision; see [Snapshots](operations/snapshots.md) for the current `LORACOL1` columnar format
+- [ADR-0004: WAL](decisions/0004-wal.md) — durability boundaries, replay, checkpoints, and operator controls
 
 ## Performance
 
@@ -77,11 +95,26 @@ Keep user-facing prose out of this tree. If you find yourself explaining _what
 to write_ rather than _how it is implemented_, the content probably belongs on
 the website.
 
+## Documentation quality bar
+
+Before opening a docs PR, check the parts that apply:
+
+- New users can find the next step from the page they are on.
+- Commands name the directory they should run from when that matters.
+- Version numbers match `Cargo.toml`, `package.json`, or the package registry.
+- Examples avoid hidden state; if data must exist first, show the seed query.
+- Storage examples say whether data is in-memory, snapshot-backed,
+  `.loradb`-backed, or WAL-backed.
+- User-facing limitations link to `apps/loradb.com/docs/limitations.md`;
+  implementation risks link to [Known Risks](design/known-risks.md).
+- Public Cypher examples pass `yarn workspace loradb-docs validate-cypher`.
+- Docusaurus docs still build with `yarn workspace loradb-docs build`.
+
 ---
 
 ## From local to production
 
-Most contributors start here with a local `cargo run --bin lora-server`. As workloads grow, the single-node, in-memory design hits predictable edges:
+Most contributors start here with a local `cargo run -p lora-server`. As workloads grow, the single-node, in-memory design hits predictable edges:
 
 - **Scale** — single process, data lives in RAM, write commits serialize
 - **Reliability** — snapshots and optional WAL exist, but no replication

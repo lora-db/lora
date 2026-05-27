@@ -24,7 +24,7 @@ An in-process graph store with a Cypher-like query engine — small enough to em
   <a href="https://loradb.com"><img alt="Docs" src="https://img.shields.io/badge/docs-loradb.com-5b8def"></a>
 </p>
 
-<sub>Embedded · Rust · Cypher-like &nbsp;·&nbsp; Rust · Node · Python · WASM · Go · Ruby · HTTP &nbsp;·&nbsp; Zero daemons · runs in your process &nbsp;·&nbsp; Open source · readable end-to-end</sub>
+<sub>Embedded · Cypher-like &nbsp;·&nbsp; Rust · Node · Python · WASM · Go · Ruby · HTTP &nbsp;·&nbsp; Zero daemons · runs in your process &nbsp;·&nbsp; Source-available · readable end-to-end</sub>
 
 </div>
 
@@ -44,6 +44,17 @@ The graph belongs inside your process. Reach for LoraDB when you're building:
 
 Every stage of the pipeline — parser, analyzer, compiler, executor, store — is implemented in this workspace. No external query engine, readable end-to-end.
 
+## Start here
+
+If you're new to LoraDB, take this path:
+
+1. Try the browser playground at [play.loradb.com](https://play.loradb.com) to learn the query language without installing anything.
+2. Pick the binding for the application you are already building: Node, Python, WASM, Go, Ruby, Rust, or HTTP.
+3. Run the quick start below, then read the matching guide on [loradb.com/docs](https://loradb.com/docs).
+4. Decide whether your first prototype can stay in memory or needs persistence. Plain in-memory handles start empty on every process run; use snapshots, a named `.loradb` archive, or a WAL-backed open when data should survive restarts.
+
+Use the HTTP server for demos, `curl`, and polyglot integration. Use an in-process binding when you want the strongest host-language types, lower call overhead, or direct embedding.
+
 ## Installation
 
 LoraDB ships a single Rust engine with bindings for the major application runtimes, plus a standalone HTTP server. Pick the surface that matches your host.
@@ -53,7 +64,7 @@ LoraDB ships a single Rust engine with bindings for the major application runtim
 ```toml
 # Cargo.toml
 [dependencies]
-lora-database = "0.7"
+lora-database = "0.14"
 ```
 
 &nbsp;→ [crates.io/crates/lora-database](https://crates.io/crates/lora-database)
@@ -144,8 +155,8 @@ SHOW INDEXES;
 
 The optimizer can use declared RANGE, TEXT, and POINT indexes for matching
 node or relationship predicates such as equality/range comparisons, string
-prefix/substring/suffix filters, and `point.withinBBox(...)` /
-`point.distance(...) <= radius`.
+prefix/substring/suffix filters, and `geo.within_bbox(...)` /
+`geo.distance(...) <= radius`.
 
 ### Python
 
@@ -214,19 +225,36 @@ let result = db.execute("MATCH (n:User) RETURN n.name", None)?;
 ### HTTP (standalone server)
 
 ```bash
-cargo run --bin lora-server
+cargo run -p lora-server
 # => LoraDB server running at http://127.0.0.1:4747
 
 curl -s http://127.0.0.1:4747/query \
   -H 'Content-Type: application/json' \
-  -d '{"query": "CREATE (:User {name: \"Alice\"}) RETURN *"}'
+  -d '{"query": "CREATE (:User {name: $name}) RETURN *", "params": {"name": "Alice"}}'
 ```
 
-Result formats: `rows`, `rowArrays`, `graph` (default), `combined`. The HTTP body does not yet accept `params`; use an in-process binding for parameterized queries. See [loradb.com](https://loradb.com) for the full API.
+Result formats: `rows`, `rowArrays`, `graph` (default), `combined`.
+The HTTP body accepts JSON `params` for scalar, list, and map values:
+
+```bash
+curl -s http://127.0.0.1:4747/query \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "MATCH (u:User) WHERE u.name = $name RETURN u.name AS name", "format": "rows", "params": {"name": "Alice"}}'
+```
+
+See [loradb.com/docs/api/http](https://loradb.com/docs/api/http) for the full API.
 
 ## Documentation
 
 **📖 [loradb.com](https://loradb.com)** — language reference, cookbook, function catalogue, and API guides.
+
+If you're new, read in this order:
+
+1. [What is LoraDB](https://loradb.com/docs/) — fit, boundaries, and first query
+2. [Installation](https://loradb.com/docs/getting-started/installation) — pick a host language
+3. [Tutorial](https://loradb.com/docs/getting-started/tutorial) — ten-minute guided tour
+4. [Cheat sheet](https://loradb.com/docs/queries/cheat-sheet) — query syntax at a glance
+5. [Limitations](https://loradb.com/docs/limitations) — current edges before you commit
 
 In-repo references:
 
@@ -247,8 +275,8 @@ LoraDB is a Cargo workspace with Node, Python, WASM, Go, and Ruby bindings hangi
 
 **Prerequisites**
 
-- Rust stable (pinned in [`rust-toolchain.toml`](rust-toolchain.toml) — `rustfmt` + `clippy` components)
-- Node.js 20+ (only for `lora-node`, `lora-wasm`, and the `loradb.com` site)
+- Rust 1.87+ through `rustup` (the stable channel is pinned in [`rust-toolchain.toml`](rust-toolchain.toml); `rustfmt` + `clippy` are installed automatically)
+- Node.js 20+ for repo tooling, `lora-wasm`, packages, the docs site, and the playground. The published `@loradb/lora-node` runtime supports Node.js 18+.
 - Python 3.8+ with `maturin` (only for `lora-python`)
 - Go 1.21+ and a C toolchain with cgo enabled (only for `lora-go`)
 - Ruby 3.1+ with `bundler` (only for `lora-ruby`)
@@ -261,6 +289,27 @@ cd lora
 cargo build --workspace
 ```
 
+For JavaScript workspaces, enable the pinned Yarn release before running
+workspace scripts:
+
+```bash
+corepack enable
+yarn install --immutable
+```
+
+First-time sanity checks:
+
+```bash
+cargo test --workspace
+yarn workspace @loradb/lora-query build     # needed by docs + playground
+yarn workspace loradb-docs validate-cypher  # parser-check public Cypher examples
+yarn workspace loradb-docs build            # validates docs links/routes
+```
+
+If setup fails, check [Troubleshooting](https://loradb.com/docs/troubleshooting)
+first; the common fixes are a missing C toolchain, an old Node version, or a
+stale workspace dependency build.
+
 **Repository layout**
 
 ```
@@ -268,15 +317,20 @@ lora/
 ├── crates/
 │   ├── lora-ast/         AST types
 │   ├── lora-parser/      PEG grammar + lowering
+│   ├── lora-builtins-meta/
+│   │                     Generated metadata for functions/operators
 │   ├── lora-analyzer/    Semantic analysis
 │   ├── lora-compiler/    Logical + physical planning
 │   ├── lora-executor/    Plan interpreter
 │   ├── lora-store/       In-memory graph, value types, mutation events
+│   ├── lora-io/          Filesystem/container path handling
 │   ├── lora-snapshot/    Columnar snapshot codec
 │   ├── lora-wal/         Write-ahead log segments and replay
 │   ├── lora-database/    Pipeline entry point, transactions, durability
 │   ├── lora-server/      Axum HTTP server
 │   └── bindings/
+│       ├── lora-binding-buffer/
+│       │                 Shared binary buffer helpers for bindings
 │       ├── lora-ffi/     C ABI over lora-database (used by lora-go)
 │       ├── lora-node/    Node.js bindings (napi-rs)
 │       ├── lora-python/  Python bindings (PyO3 / maturin)
@@ -295,16 +349,16 @@ lora/
 cargo build --workspace
 
 # Release build of the HTTP server
-cargo build --release --bin lora-server
+cargo build --release -p lora-server
 
 # Node.js bindings
-cd crates/bindings/lora-node && npm run build
+yarn workspace @loradb/lora-node build
 
 # Python bindings (produces a wheel)
 cd crates/bindings/lora-python && maturin build --release
 
 # WebAssembly bindings
-cd crates/bindings/lora-wasm && npm run build
+yarn workspace @loradb/lora-wasm build
 
 # Shared FFI (static library consumed by lora-go)
 cargo build --release -p lora-ffi
