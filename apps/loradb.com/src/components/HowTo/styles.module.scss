@@ -1,0 +1,250 @@
+// HowTo block. Header (eyebrow, title, description, time badge) over a
+// vertical numbered timeline. Designed to sit at the top of a docs page
+// without dominating the surrounding prose.
+
+.howto {
+  --howto-surface: var(--ifm-color-emphasis-100);
+  --howto-line: var(--ifm-color-emphasis-300);
+
+  display: block;
+  margin: 2rem 0;
+  padding: 1.5rem 1.75rem 1.75rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 12px;
+  background: var(--howto-surface);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02),
+    0 4px 14px -10px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="dark"] .howto {
+  box-shadow: none;
+}
+
+.header {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.headerMeta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.55rem;
+}
+
+.eyebrow {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+}
+
+.time {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--ifm-color-emphasis-200);
+  color: var(--ifm-color-emphasis-800);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  svg {
+    flex-shrink: 0;
+    opacity: 0.75;
+  }
+}
+
+.title {
+  margin: 0 0 0.4rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--ifm-color-content);
+}
+
+.description {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  column-gap: 1rem;
+  padding-bottom: 1.4rem;
+
+  &:last-child {
+    padding-bottom: 0;
+  }
+
+  // Vertical timeline line running through the marker column,
+  // from below this step's number to the top of the next one.
+  &:not(:last-child)::before {
+    content: "";
+    position: absolute;
+    left: 1rem;
+    top: 2rem;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+    background: var(--howto-line);
+  }
+}
+
+.marker {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  width: 2rem;
+  height: 2rem;
+}
+
+.number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 50%;
+  // Signature brand blue→violet gradient, shared with the BrandGraph
+  // and homepage accents, so the timeline reads as LoraDB at a glance.
+  background: var(--brand-gradient);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+  // The ring matches the card surface so it visually punches a gap
+  // in the timeline line behind the number.
+  box-shadow: 0 0 0 4px var(--howto-surface);
+}
+
+.body {
+  padding-top: 0.15rem;
+  min-width: 0;
+}
+
+.stepName {
+  margin-bottom: 0.3rem;
+  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1.4;
+  color: var(--ifm-color-content);
+}
+
+.stepText {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: var(--ifm-color-content);
+
+  code {
+    padding: 0.08em 0.35em;
+    border-radius: 4px;
+    background: var(--ifm-color-emphasis-200);
+    color: var(--ifm-color-content);
+    font-size: 0.88em;
+    font-family: var(--ifm-font-family-monospace);
+  }
+
+  p {
+    margin-bottom: 0.5rem;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}
+
+.jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 999px;
+  background: var(--ifm-background-color);
+  color: var(--ifm-color-content);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--brand-accent-a);
+    background: var(--brand-accent-a-soft);
+    color: var(--brand-accent-a);
+    text-decoration: none;
+
+    .jumpArrow {
+      transform: translateX(2px);
+    }
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--brand-accent-a);
+    outline-offset: 2px;
+  }
+}
+
+.jumpArrow {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+@media (max-width: 600px) {
+  .howto {
+    padding: 1.25rem 1.25rem 1.5rem;
+    border-radius: 10px;
+  }
+
+  .headerMeta {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .title {
+    font-size: 1.15rem;
+  }
+
+  .step {
+    grid-template-columns: 1.6rem 1fr;
+    column-gap: 0.85rem;
+    padding-bottom: 1.1rem;
+  }
+
+  .marker {
+    width: 1.6rem;
+    height: 1.6rem;
+  }
+
+  .number {
+    width: 1.55rem;
+    height: 1.55rem;
+    font-size: 0.78rem;
+  }
+
+  .step:not(:last-child)::before {
+    left: 0.8rem;
+    top: 1.6rem;
+  }
+}

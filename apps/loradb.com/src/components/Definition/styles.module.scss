@@ -1,0 +1,40 @@
+// Definition block. Quiet bordered treatment that signals "this is a
+// term being defined" without competing with admonitions or callouts.
+
+.definition {
+  display: block;
+  margin: 1.5rem 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-left: 3px solid var(--ifm-color-primary);
+  border-radius: 6px;
+  background-color: var(--ifm-color-emphasis-0);
+}
+
+.term {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-style: normal;
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+  color: var(--ifm-color-content);
+}
+
+.body {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--ifm-color-content);
+
+  > :last-child {
+    margin-bottom: 0;
+  }
+
+  p {
+    margin-bottom: 0.6rem;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}

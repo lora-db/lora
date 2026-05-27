@@ -8,7 +8,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "docusaurus build",
+    "build": "docusaurus build && node scripts/inject-sitemap-lastmod.mjs",
     "clear": "docusaurus clear",
     "deploy": "docusaurus deploy",
     "docusaurus": "docusaurus",
@@ -17,7 +17,8 @@
     "swizzle": "docusaurus swizzle",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "validate-cypher": "node scripts/validate-docs-cypher.mjs"
+    "validate-cypher": "node scripts/validate-docs-cypher.mjs",
+    "indexnow": "node scripts/indexnow.mjs"
   },
   "browserslist": {
     "production": [

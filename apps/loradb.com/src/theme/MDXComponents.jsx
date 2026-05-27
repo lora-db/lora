@@ -10,6 +10,9 @@ import MDXComponents from "@theme-original/MDXComponents";
 import BenchmarkSummary from "@site/src/components/BenchmarkSummary";
 import CypherCode from "@site/src/components/CypherCode";
 import CypherSnippet from "@site/src/components/CypherSnippet";
+import Definition from "@site/src/components/Definition";
+import FAQ from "@site/src/components/FAQ";
+import HowTo from "@site/src/components/HowTo";
 import QueryCodeBlock from "@site/src/components/LoraQueryCodeBlock";
 
 export default {
@@ -17,5 +20,8 @@ export default {
   BenchmarkSummary,
   CypherCode,
   CypherSnippet,
+  Definition,
+  FAQ,
+  HowTo,
   QueryCodeBlock,
 };

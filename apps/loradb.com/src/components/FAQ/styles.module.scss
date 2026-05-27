@@ -1,0 +1,79 @@
+// FAQ accordion. Uses native <details> for zero-JS expand/collapse.
+
+.faq {
+  display: block;
+  margin: 1.5rem 0;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: var(--ifm-background-color);
+}
+
+.item {
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &[open] .question::after {
+    transform: rotate(180deg);
+  }
+}
+
+.question {
+  position: relative;
+  display: block;
+  padding: 1rem 2.5rem 1rem 1.25rem;
+  font-weight: 600;
+  font-size: 0.98rem;
+  line-height: 1.4;
+  color: var(--ifm-color-content);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+
+  // Hide the default details marker
+  &::-webkit-details-marker {
+    display: none;
+  }
+
+  // Custom caret
+  &::after {
+    content: "";
+    position: absolute;
+    right: 1.25rem;
+    top: 50%;
+    width: 0.6rem;
+    height: 0.6rem;
+    margin-top: -0.4rem;
+    border-right: 2px solid var(--ifm-color-emphasis-600);
+    border-bottom: 2px solid var(--ifm-color-emphasis-600);
+    transform: rotate(45deg);
+    transform-origin: center;
+    transition: transform 160ms ease;
+  }
+
+  &:hover {
+    background-color: var(--ifm-color-emphasis-100);
+  }
+}
+
+.answer {
+  padding: 0 1.25rem 1.1rem;
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: var(--ifm-color-content);
+
+  p {
+    margin-bottom: 0.6rem;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+
+  > :last-child {
+    margin-bottom: 0;
+  }
+}
