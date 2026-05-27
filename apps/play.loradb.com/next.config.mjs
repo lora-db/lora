@@ -6,7 +6,7 @@
 //   * the Cypher editor and parser (WASM via @loradb/lora-query),
 //   * the graph database engine (WASM via @loradb/lora-wasm, executed
 //     inside a Web Worker so the main thread stays responsive),
-//   * the WebGPU/WebGL canvas (@loradb/lora-graph-canvas),
+//   * the 2D canvas / WebGL graph surface (@loradb/lora-graph-canvas),
 //   * the result grid, history, and saved-query persistence (IndexedDB).
 //
 // There are no server actions, no `/api` routes, and no Node-runtime

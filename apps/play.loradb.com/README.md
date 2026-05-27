@@ -7,7 +7,11 @@ routes. Data persists locally via IndexedDB and `localStorage`.
 
 ## Development
 
+From the repository root:
+
 ```bash
+corepack enable
+yarn install --immutable
 yarn workspace @loradb/play dev
 ```
 
@@ -52,12 +56,12 @@ assets that any object store / CDN can serve as flat files.
 
 ### Recommended host: Cloudflare Pages
 
-The Docusaurus site at `apps/loradb.com` already occupies the single
-GitHub Pages site allowed per repo, so the playground deploys to
-Cloudflare Pages instead. The `.github/workflows/play-loradb.yml`
-workflow builds the static export on every push to `main` that touches
-the app or its workspace deps and uploads the result to Cloudflare via
-`cloudflare/wrangler-action@v3`.
+The playground deploys to Cloudflare Pages as a static export, matching
+the docs site's current hosting path while keeping a separate
+`play.loradb.com` project and cache surface. The
+`.github/workflows/play-loradb.yml` workflow builds the static export on
+every push to `main` that touches the app or its workspace deps and
+uploads the result to Cloudflare via `cloudflare/wrangler-action@v3`.
 
 One-time setup:
 
@@ -82,8 +86,8 @@ One-time setup:
      Edit). No other permissions are needed.
    - `CLOUDFLARE_ACCOUNT_ID` — visible in the right sidebar of any
      Cloudflare dashboard page.
-   The deploy job runs a pre-flight check that fails with a clear
-   `::error::` message if either secret is missing.
+     The deploy job runs a pre-flight check that fails with a clear
+     `::error::` message if either secret is missing.
 4. **Trigger the first deploy.** Either push a change under
    `apps/play.loradb.com/` to `main`, or run the workflow manually:
    ```bash

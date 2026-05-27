@@ -1,0 +1,8 @@
+# LoraDB Playground — https://play.loradb.com
+# Published as a static export hosted on Cloudflare Pages from
+# apps/play.loradb.com.
+
+User-agent: *
+Allow: /
+
+Sitemap: https://play.loradb.com/sitemap.xml

@@ -68,11 +68,26 @@ export function TopBar() {
       style={{ borderBottom: `1px solid ${tokens.border.subtle}` }}
     >
       <Group gap="sm" align="center" wrap="nowrap">
+        {/*
+          The brand text doubles as the logo-link back to the marketing
+          site. Plain anchor (not next/link) because the target is a
+          different host. `rel="noopener"` is enough — the destination is
+          ours, so we want referrer credit. Visible affordance for users
+          and a crawlable backlink for SEO.
+        */}
         <Text
+          component="a"
+          href="https://loradb.com"
+          target="_blank"
+          rel="noopener"
           fw={600}
           size="sm"
           c={tokens.fg.primary}
-          style={{ letterSpacing: 0.2 }}
+          aria-label="LoraDB — open the project home in a new tab"
+          style={{
+            letterSpacing: 0,
+            textDecoration: "none",
+          }}
         >
           LoraDB Playground
         </Text>

@@ -1,0 +1,13 @@
+# RFC 9116 — security.txt for play.loradb.com
+# https://datatracker.ietf.org/doc/html/rfc9116
+#
+# The Playground is a fully client-side static site served from
+# Cloudflare Pages. The disclosure policy lives in SECURITY.md in
+# the source repository (linked below as `Policy`).
+
+Contact: mailto:security@loradb.com
+Contact: https://github.com/lora-db/lora/security/advisories/new
+Expires: 2027-05-26T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://play.loradb.com/.well-known/security.txt
+Policy: https://github.com/lora-db/lora/blob/main/SECURITY.md
