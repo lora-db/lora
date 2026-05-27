@@ -15,14 +15,16 @@ dedicated vitest).
 
 ## Install (local dev)
 
+From the repository root:
+
 ```bash
-cd crates/bindings/lora-node
-npm install
-npm run build   # builds the Rust cdylib + TypeScript declarations
-npm test        # runs the vitest suite
+corepack enable
+yarn install --immutable
+yarn workspace @loradb/lora-node build   # Rust cdylib + TypeScript declarations
+yarn workspace @loradb/lora-node test    # vitest suite
 ```
 
-The `npm run build:native` step uses [`@napi-rs/cli`](https://napi.rs/) and
+The `build:native` step uses [`@napi-rs/cli`](https://napi.rs/) and
 produces a platform-specific `lora-node.<platform>-<arch>.node` artifact next
 to `package.json`.
 
@@ -235,12 +237,18 @@ Common ones:
 - `LORA_PARSE` — Cypher syntax could not be parsed
 - `LORA_SEMANTIC` — analysis failure (unknown variable, label, type mismatch, …)
 - `LORA_INVALID_PARAMS` — a parameter value could not be coerced to a `LoraValue`
+- `LORA_READ_ONLY` — mutating statement issued in a read-only context
+- `LORA_NOT_FOUND` — a named entity does not exist
+- `LORA_CONSTRAINT`, `LORA_UNIQUE_CONSTRAINT`, `LORA_NOT_NULL_CONSTRAINT`,
+  `LORA_FOREIGN_KEY`, `LORA_TRANSACTION` — graph constraint or transaction failure
 - `LORA_INVALID_VECTOR` — vector value failed dimension / coordinate-type validation
 - `LORA_TIMEOUT` — query exceeded its cooperative deadline
 - `LORA_DATABASE_NAME` — logical database name violates the portable-path rules
-- `LORA_IO`, `LORA_WAL_CORRUPTION`, `LORA_WAL_POISONED` — storage failures
+- `LORA_CONFIG`, `LORA_VALIDATION` — configuration or validation failure
+- `LORA_IO`, `LORA_CONNECTION`, `LORA_WAL_CORRUPTION`, `LORA_WAL_POISONED` — storage failures
 - `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO` — snapshot codec / crypto failures
 - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
+- `UNKNOWN` — catch-all for messages without a recognized code
 
 See `ts/types.ts` (`LoraErrorCode`) for the full list.
 

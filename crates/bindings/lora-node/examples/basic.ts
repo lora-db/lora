@@ -1,9 +1,9 @@
 /**
  * Basic usage example — create a small social graph and run typed queries.
  *
- * Run with:
- *   npm run build
- *   node --loader tsx examples/basic.ts
+ * Run from the repository root with:
+ *   corepack yarn workspace @loradb/lora-node build
+ *   corepack yarn dlx tsx crates/bindings/lora-node/examples/basic.ts
  *
  * or compile with tsc and run the JS output.
  */

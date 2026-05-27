@@ -212,10 +212,16 @@ Client-side (caller's mistake):
 - `LORA_TIMEOUT` — query exceeded its cooperative deadline
 - `LORA_DATABASE_NAME` — logical database name violates the portable-path rules
 - `LORA_CONFIG` — required parameters are missing or malformed
+- `LORA_VALIDATION` — a well-formed database operation failed validation
+- `LORA_UNIQUE_CONSTRAINT` — uniqueness rejected duplicate data
+- `LORA_NOT_NULL_CONSTRAINT` — an existence / NOT NULL constraint rejected missing data
+- `LORA_FOREIGN_KEY` — a relationship or dependent record references a missing entity
+- `LORA_TRANSACTION` — a transaction lifecycle rule was violated
 
 Server-side (engine condition):
 
 - `LORA_IO` — I/O failure outside the WAL / snapshot boundaries
+- `LORA_CONNECTION` — database backing connection or handle failed
 - `LORA_WAL_CORRUPTION` — WAL record was truncated, mis-CRC'd, or otherwise unreadable
 - `LORA_WAL_POISONED` — WAL is poisoned and no longer accepts durable writes
 - `LORA_SNAPSHOT_CODEC` — snapshot codec failure (bad magic, version, checksum, …)
@@ -278,8 +284,8 @@ meta, err = db.LoadSnapshotFrom(reader)
 
 - Linux (x86_64, arm64) — supported
 - macOS (x86_64, arm64) — supported
-- Windows — not supported in v0.1; revisit once the other bindings
-  ship a Windows Go target.
+- Windows — not currently shipped for `lora-go`; use one of the
+  Node.js, Python, WASM, Ruby, Rust, or HTTP surfaces on Windows.
 - FreeBSD / other — not tested.
 
 ## Building locally

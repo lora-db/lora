@@ -88,7 +88,7 @@ function loadNative() {
     `lora-node: no native binary found for ${platform}-${arch}. ` +
       `Tried local: ${localCandidates.join(", ")}. ` +
       `Tried npm: ${subpackageNames.join(", ")}. ` +
-      "For local development, run `npm run build` in the crate directory.",
+      "For local development, run `corepack yarn workspace @loradb/lora-node build` from the repository root, or `yarn run build` in the crate directory.",
   );
 }
 
