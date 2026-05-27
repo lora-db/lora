@@ -3,6 +3,76 @@ title: Contact the LoraDB Team
 description: How to reach the LoraDB team and community — bug reports, design discussion, security disclosure, and business inquiries.
 ---
 
+{/*
+  Per-page JSON-LD. ContactPage with mainEntity pointing at the
+  Organization gives crawlers a clean "this is where you reach LoraDB"
+  signal, and the explicit `contactPoint` array surfaces the same
+  routes the visible page lists (support, security, press). All
+  facts are truthful — only routes that exist on the visible page
+  appear here.
+*/}
+
+<script
+  type="application/ld+json"
+  dangerouslySetInnerHTML={{
+    __html: JSON.stringify({
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "ContactPage",
+          "@id": "https://loradb.com/contact#contactpage",
+          url: "https://loradb.com/contact",
+          name: "Contact the LoraDB team",
+          description:
+            "How to reach the LoraDB team and community — bug reports, design discussion, security disclosure, and business inquiries.",
+          isPartOf: { "@id": "https://loradb.com/#website" },
+          breadcrumb: { "@id": "https://loradb.com/contact#breadcrumb" },
+          mainEntity: {
+            "@id": "https://loradb.com/#organization",
+            "@type": "Organization",
+            name: "LoraDB",
+            url: "https://loradb.com",
+            contactPoint: [
+              {
+                "@type": "ContactPoint",
+                contactType: "customer support",
+                email: "hello@loradb.com",
+                url: "https://github.com/lora-db/lora/issues",
+                availableLanguage: ["English"],
+              },
+              {
+                "@type": "ContactPoint",
+                contactType: "security",
+                email: "security@loradb.com",
+                availableLanguage: ["English"],
+              },
+            ],
+          },
+          inLanguage: "en",
+        },
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://loradb.com/contact#breadcrumb",
+          itemListElement: [
+            {
+              "@type": "ListItem",
+              position: 1,
+              name: "Home",
+              item: "https://loradb.com",
+            },
+            {
+              "@type": "ListItem",
+              position: 2,
+              name: "Contact",
+              item: "https://loradb.com/contact",
+            },
+          ],
+        },
+      ],
+    }),
+  }}
+/>
+
 # Contact the LoraDB Team
 
 Building with LoraDB, hitting a wall, or weighing it up for a new
@@ -40,16 +110,11 @@ doesn't fit the public channels.
 
 ## Security
 
-Found a security issue? Please do **not** file a public issue. Email
-[security@loradb.com](mailto:security@loradb.com) directly and we'll
-coordinate a disclosure.
-
-:::note
-
-Most of the links above are placeholders until the project lands
-publicly.
-
-:::
+Found a security issue? Please do **not** file a public issue. Use
+GitHub's private vulnerability reporting from the repository Security
+tab, or email [security@loradb.com](mailto:security@loradb.com). Include
+the release tag or commit SHA, a short impact summary, and the smallest
+query or HTTP request that reproduces the issue.
 
 ## See also
 

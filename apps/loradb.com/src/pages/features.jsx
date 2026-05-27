@@ -2,24 +2,57 @@ import React from "react";
 import clsx from "clsx";
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
+import Head from "@docusaurus/Head";
 
+import CodeBlock from "@theme/CodeBlock";
 import CypherCode from "@site/src/components/CypherCode";
+import FAQ from "@site/src/components/FAQ";
 import LinkCard from "@site/src/components/LinkCard";
-import { useFormattedCypher } from "@site/src/lib/useFormattedCypher";
+import LoraQueryCodeBlock from "@site/src/components/LoraQueryCodeBlock";
 import styles from "./features.module.scss";
 
-/** Renders a Cypher coverage snippet with auto-formatting applied on
- *  mount. Kept inline here because the markup is trivial — the only
- *  reason for the indirection is to call the formatter hook per item
- *  without yanking the parent component apart. */
-function CoverageSnippet({ snippet }) {
-  const formatted = useFormattedCypher(snippet);
-  return (
-    <pre className={styles.coverageCode}>
-      <code>{formatted}</code>
-    </pre>
-  );
-}
+const SITE_URL = "https://loradb.com";
+
+// Per-page JSON-LD for the /features route. WebPage anchors the page
+// in the site graph, BreadcrumbList gives Google the Home → Features
+// trail for SERP breadcrumbs, and `mainEntity` points back at the
+// sitewide SoftwareApplication node so the two consolidate. Kept
+// truthful — no review counts, no ratings invented.
+const FEATURES_STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebPage",
+      "@id": `${SITE_URL}/features#webpage`,
+      url: `${SITE_URL}/features`,
+      name: "LoraDB features — Cypher coverage, surfaces, architecture, limits",
+      description:
+        "Cypher coverage, functions and data types, query pipeline, runtime surfaces (Rust, Node.js, Python, WASM, Go, Ruby, HTTP), operations, and the lines LoraDB will not pretend to cross.",
+      isPartOf: { "@id": `${SITE_URL}/#website` },
+      mainEntity: { "@id": `${SITE_URL}/#software` },
+      breadcrumb: { "@id": `${SITE_URL}/features#breadcrumb` },
+      inLanguage: "en",
+    },
+    {
+      "@type": "BreadcrumbList",
+      "@id": `${SITE_URL}/features#breadcrumb`,
+      itemListElement: [
+        {
+          "@type": "ListItem",
+          position: 1,
+          name: "Home",
+          item: SITE_URL,
+        },
+        {
+          "@type": "ListItem",
+          position: 2,
+          name: "Features",
+          item: `${SITE_URL}/features`,
+        },
+      ],
+    },
+  ],
+};
 
 // -------------------------------------------------------------------
 // Static content
@@ -34,6 +67,46 @@ const ANCHORS = [
   { id: "surfaces", label: "Surfaces" },
   { id: "operations", label: "Operations" },
   { id: "limits", label: "Limits" },
+  { id: "faq", label: "FAQ" },
+];
+
+// Six high-intent questions an evaluator typically lands on this
+// page to answer. Every answer is sourced from existing docs —
+// no claims invented here. The FAQ component emits FAQPage JSON-LD;
+// keeping it as the only FAQ on this page (the principles/coverage
+// blocks above don't use the FAQ primitive) is intentional —
+// FAQPage is a page-level schema and Google rejects multiple.
+const FAQ_ITEMS = [
+  {
+    question: "Does LoraDB support the full OpenCypher language?",
+    answer:
+      "No. LoraDB ships a pragmatic subset of Cypher — read clauses (MATCH, OPTIONAL MATCH, WHERE, WITH, RETURN), write clauses (CREATE, MERGE, SET, DELETE, REMOVE, FOREACH), iteration (UNWIND), variable-length paths, aggregation, and most built-in functions. The Limitations page lists everything that is not supported, including general-purpose CALL, LOAD CSV, quantified path patterns, and BETWEEN.",
+  },
+  {
+    question: "Is there an HTTP API?",
+    answer:
+      "Yes. lora-server is an Axum-based HTTP service that exposes POST /query, GET /health, and opt-in admin endpoints for snapshots and WAL operations. It is meant to live behind your own ingress — the crate has no auth surface, so you control the host process.",
+  },
+  {
+    question: "How does LoraDB persist data?",
+    answer:
+      "Two layers. Snapshots write the full graph to a single file with an atomic rename and are available on every binding (Rust, Node.js, Python, WASM, Go, Ruby, HTTP). WAL-backed durability is available on every filesystem-backed surface — commits append to a write-ahead log and replay on recover above the snapshot fence. WASM stays snapshot-only because the runtime has no filesystem.",
+  },
+  {
+    question: "How large a dataset can LoraDB handle?",
+    answer:
+      "LoraDB is bounded by the RAM of one host process. There is no sharding, no replication, no distributed storage. If the working set fits in memory and you want graph queries close to the code that uses them, LoraDB is the right tool; if the dataset is too large to fit in RAM on one machine, LoraDB is the wrong tool.",
+  },
+  {
+    question: "Can I run LoraDB in a serverless function or edge worker?",
+    answer:
+      "Yes, via the WebAssembly binding. The WASM build runs in any browser or modern WASM-capable runtime (Cloudflare Workers, Deno Deploy, browser tabs). The Playground itself is a static site running LoraDB entirely in the browser via WASM. The WASM surface is snapshot-only — there is no filesystem to write a WAL to.",
+  },
+  {
+    question: "Is LoraDB production-ready?",
+    answer:
+      "LoraDB is pre-1.0. The release journey is public — see the v0.1 through v0.14 blog posts for what was shipped and what was deferred. Security fixes land on main and ship in the next tagged release; older tags are not patched. Use it where you can roll forward; do not depend on storage format stability across minor versions until 1.0.",
+  },
 ];
 
 // Design principles — moved from the homepage's "value props" block
@@ -170,6 +243,7 @@ const SURFACES = [
     label: "Rust crate",
     file: "main.rs",
     note: "lora-database",
+    language: "rust",
     guideTo: "/docs/getting-started/rust",
     guideLabel: "Rust guide",
     code: `use lora_database::Database;
@@ -187,6 +261,7 @@ let result = db.execute(
     label: "HTTP server",
     file: "shell",
     note: "lora-server",
+    language: "bash",
     guideTo: "/docs/getting-started/server",
     guideLabel: "Server guide",
     code: `# Health check
@@ -205,6 +280,7 @@ curl -s http://127.0.0.1:4747/query \\
     label: "Node.js",
     file: "app.ts",
     note: "lora-node · prototype",
+    language: "typescript",
     guideTo: "/docs/getting-started/node",
     guideLabel: "Node.js guide",
     code: `import { createDatabase } from '@loradb/lora-node';
@@ -225,6 +301,7 @@ const result = await db.execute(
     label: "Python",
     file: "app.py",
     note: "lora-python · prototype",
+    language: "python",
     guideTo: "/docs/getting-started/python",
     guideLabel: "Python guide",
     code: `from lora_python import Database
@@ -242,6 +319,7 @@ result = db.execute(
     label: "WebAssembly",
     file: "main.ts",
     note: "lora-wasm · prototype",
+    language: "typescript",
     guideTo: "/docs/getting-started/wasm",
     guideLabel: "WASM guide",
     code: `import { createDatabase } from '@loradb/lora-wasm';
@@ -258,6 +336,7 @@ const result = await db.execute(
     label: "Go",
     file: "main.go",
     note: "lora-go · prototype",
+    language: "go",
     guideTo: "/docs/getting-started/go",
     guideLabel: "Go guide",
     code: `import lora "github.com/lora-db/lora/crates/bindings/lora-go"
@@ -277,6 +356,7 @@ r, _ := db.Execute(
     label: "Ruby",
     file: "app.rb",
     note: "lora-ruby · prototype",
+    language: "ruby",
     guideTo: "/docs/getting-started/ruby",
     guideLabel: "Ruby guide",
     code: `require "lora_ruby"
@@ -296,12 +376,12 @@ const BOUNDARIES = [
     body: "The graph lives in process memory. Durability is optional via snapshots and WAL, not a separate persistent storage backend.",
   },
   {
-    title: "No property indexes",
-    body: "Predicates are evaluated by scan. Plenty fast for the workloads above; not a substitute for an indexed planner.",
+    title: "Scoped indexes",
+    body: "RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT indexes exist for declared hot paths. The planner is still intentionally small: no global join optimizer or ANN vector structure.",
   },
   {
-    title: "Single global lock",
-    body: "The executor holds one mutex per database. Great for embedded and per-request use; not for high-fan-out concurrency.",
+    title: "Single-writer commits",
+    body: "Read-only queries can overlap on snapshots. Write commits and explicit read-write transactions serialize, so this is not built for high-fan-out write concurrency.",
   },
   {
     title: "No auth or TLS in core",
@@ -533,10 +613,15 @@ export default function Features() {
 
   return (
     <Layout
-      title="Features"
+      title="Features — Cypher coverage, surfaces, architecture, limits"
       description="LoraDB is an in-memory graph database with a pragmatic query engine, written in Rust. Explore the query pipeline, language coverage, runtime surfaces, and the lines we won't pretend to cross."
       wrapperClassName={styles.wrapper}
     >
+      <Head>
+        <script type="application/ld+json">
+          {JSON.stringify(FEATURES_STRUCTURED_DATA)}
+        </script>
+      </Head>
       <main className={styles.page}>
         {/* ---------- HERO ---------- */}
         <section className={styles.hero} aria-labelledby="features-hero-title">
@@ -683,7 +768,9 @@ export default function Features() {
                     <span className={styles.coverageDot} aria-hidden="true" />
                     <h3>{c.label}</h3>
                   </header>
-                  <CoverageSnippet snippet={c.snippet} />
+                  <div className={styles.coverageCode}>
+                    <LoraQueryCodeBlock code={c.snippet} lineWrap />
+                  </div>
                   <Link to={c.to} className={styles.coverageLink}>
                     {c.linkLabel}
                     <ArrowIcon />
@@ -906,20 +993,12 @@ export default function Features() {
                 id={`surface-panel-${surface.id}`}
                 aria-labelledby={`surface-tab-${surface.id}`}
               >
-                <div className={styles.codeCard}>
-                  <div className={styles.codeCardHeader}>
-                    <span className={styles.codeDots} aria-hidden="true">
-                      <span />
-                      <span />
-                      <span />
-                    </span>
-                    <span className={styles.codeCardLabel}>{surface.note}</span>
-                    <span className={styles.codeCardTitle}>{surface.file}</span>
-                  </div>
-                  <pre className={styles.codeCardBody}>
-                    <code>{surface.code}</code>
-                  </pre>
-                </div>
+                <CodeBlock
+                  language={surface.language}
+                  title={`${surface.note} · ${surface.file}`}
+                >
+                  {surface.code}
+                </CodeBlock>
                 <Link to={surface.guideTo} className={styles.surfaceGuideLink}>
                   {surface.guideLabel}
                   <ArrowIcon />
@@ -1004,6 +1083,25 @@ export default function Features() {
                 variant="compact"
               />
             </div>
+          </div>
+        </section>
+
+        {/* ---------- FAQ ---------- */}
+        <section
+          id="faq"
+          className={styles.boundary}
+          aria-labelledby="features-faq-title"
+        >
+          <div className={styles.sectionInner}>
+            <p className={styles.sectionEyebrow}>FAQ</p>
+            <h2 id="features-faq-title" className={styles.sectionTitle}>
+              Common questions about LoraDB.
+            </h2>
+            <p className={styles.boundaryLede}>
+              Short answers to what evaluators usually ask before installing.
+              The full reference lives in the docs.
+            </p>
+            <FAQ items={FAQ_ITEMS} />
           </div>
         </section>
 

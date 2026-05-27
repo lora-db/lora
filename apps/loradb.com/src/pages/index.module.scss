@@ -27,11 +27,23 @@
 
 .sectionEyebrow {
   margin: 0 0 1rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--brand-accent-a);
+
+  &::before {
+    content: '';
+    display: inline-block;
+    width: 18px;
+    height: 1px;
+    background: var(--brand-gradient);
+    border-radius: 1px;
+  }
 }
 
 .sectionTitle {
@@ -252,29 +264,41 @@
   max-width: 640px;
 }
 
-.codeCard {
-  overflow: hidden;
-  border-radius: 14px;
-  background: var(--token-secondary-bg-c);
-  border: 1px solid var(--brand-border-c);
-  box-shadow:
-    0 30px 60px -30px rgba(10, 20, 60, 0.25),
-    0 1px 0 0 rgba(255, 255, 255, 0.04) inset;
-  backdrop-filter: blur(8px);
-
-  html[data-theme='dark'] & {
-    background: rgba(14, 20, 32, 0.85);
-    border-color: rgba(77, 141, 255, 0.22);
-  }
-}
-
-.heroVisual .codeCard {
+// Hero overlay — positions the real lora-query editor over the brand
+// graph. The editor brings its own border/background; this wrapper
+// adds the elevation and a subtle ring so the surface feels intentional
+// against the glow behind it.
+.heroCode {
   position: absolute;
   left: 50%;
-  bottom: -2.5rem;
+  bottom: -1.75rem;
   transform: translateX(-50%);
   width: min(560px, 92%);
-  font-size: 0.78rem;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--token-secondary-bg-c);
+  box-shadow:
+    0 24px 60px -28px color-mix(in srgb, var(--brand-accent-a) 35%, transparent),
+    0 1px 0 0 rgba(255, 255, 255, 0.04) inset;
+
+  html[data-theme='dark'] & {
+    background: rgba(14, 20, 32, 0.92);
+    box-shadow:
+      0 24px 60px -28px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(77, 141, 255, 0.18);
+  }
+
+  // The LoraQueryCodeBlock wrapper renders its own margin and the
+  // editor itself draws a border + radius. Collapse both so the editor
+  // sits flush inside this elevated overlay.
+  > div { margin: 0; }
+
+  :global(.lora-query) {
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    --lq-font-size: 12.5px;
+  }
 
   @media (max-width: 960px) {
     position: relative;
@@ -286,45 +310,22 @@
   }
 }
 
-.codeCardHeader {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.55rem 0.85rem;
-  border-bottom: 1px solid var(--brand-border-c);
-  font-size: 0.72rem;
-  color: var(--ifm-secondary-heading-color);
-  font-family: var(--ifm-font-family-monospace);
-  opacity: 0.85;
-}
-
-.codeDots {
-  display: inline-flex;
-  gap: 0.35rem;
-
-  span {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--ifm-font-color-base) 20%, transparent);
-  }
-  span:nth-child(1) { background: #ff6b6b; opacity: 0.65; }
-  span:nth-child(2) { background: #ffd66b; opacity: 0.65; }
-  span:nth-child(3) { background: #6bd48a; opacity: 0.65; }
-}
-
-.codeCardTitle {
-  letter-spacing: 0.02em;
-  margin-left: auto;
-}
-
 .langTabs {
   display: inline-flex;
-  gap: 0.25rem;
-  padding: 0.15rem;
+  gap: 0.2rem;
+  padding: 0.25rem;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--brand-accent-a) 6%, transparent);
+  background: var(--token-secondary-bg-c);
   border: 1px solid var(--brand-border-c);
+  box-shadow: 0 6px 18px -14px color-mix(in srgb, var(--brand-accent-a) 60%, transparent);
+  margin-bottom: 0.9rem;
+  align-self: flex-start;
+  flex-wrap: wrap;
+
+  html[data-theme='dark'] & {
+    background: rgba(14, 20, 32, 0.8);
+    border-color: rgba(77, 141, 255, 0.22);
+  }
 }
 
 .langTab {
@@ -356,23 +357,6 @@
   color: #fff;
   background: var(--brand-gradient);
   box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--brand-accent-a) 60%, transparent);
-}
-
-.codeCardBody {
-  margin: 0;
-  padding: 1rem 1.15rem 1.15rem;
-  font-family: var(--ifm-font-family-monospace);
-  font-size: inherit;
-  line-height: 1.6;
-  color: var(--ifm-font-color-base);
-  white-space: pre;
-  overflow-x: auto;
-
-  code {
-    font-family: inherit;
-    background: transparent;
-    padding: 0;
-  }
 }
 
 .heroGlow {
@@ -642,8 +626,34 @@
   max-width: 36rem;
 }
 
-.startSnippet .codeCard {
-  font-size: 0.8125rem;
+.startSnippet {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.startCode {
+  min-width: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow:
+    0 24px 50px -28px color-mix(in srgb, var(--brand-accent-a) 30%, transparent),
+    0 0 0 1px var(--brand-border-c);
+
+  html[data-theme='dark'] & {
+    box-shadow:
+      0 24px 50px -28px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(77, 141, 255, 0.22);
+  }
+
+  // Docusaurus's CodeBlock applies its own margin and rounded border;
+  // collapse both so the snippet sits flush inside the elevated frame.
+  > :global(.theme-code-block),
+  > div {
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 
 // -------------------------------------------------------------------

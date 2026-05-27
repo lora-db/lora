@@ -2,11 +2,79 @@ import React from "react";
 import clsx from "clsx";
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
+import Head from "@docusaurus/Head";
 
+import CodeBlock from "@theme/CodeBlock";
 import BrandGraph from "@site/src/components/BrandGraph";
+import FAQ from "@site/src/components/FAQ";
 import LinkCard from "@site/src/components/LinkCard";
+import LoraQueryCodeBlock from "@site/src/components/LoraQueryCodeBlock";
 import StarOnGitHub from "@site/src/components/StarOnGitHub";
 import styles from "./index.module.scss";
+
+const SITE_URL = "https://loradb.com";
+
+// Per-page JSON-LD for the homepage. WebPage with mainEntity →
+// SoftwareApplication anchors the site root as the canonical product
+// page. The four entry points the page actually links to (install,
+// docs, features, playground) are exposed as a SiteNavigationElement
+// list so SERPs can offer them as sitelinks. Reuses sitewide @ids so
+// the graph consolidates instead of fanning out.
+const HOME_STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebPage",
+      "@id": `${SITE_URL}/#webpage`,
+      url: `${SITE_URL}/`,
+      name: "LoraDB — the embedded graph database for connected systems",
+      description:
+        "LoraDB is an in-process graph store with a Cypher-like query engine — small enough to embed in an agent, a robot, or a stream processor, and expressive enough to model the relationships those systems actually depend on.",
+      isPartOf: { "@id": `${SITE_URL}/#website` },
+      about: { "@id": `${SITE_URL}/#software` },
+      mainEntity: { "@id": `${SITE_URL}/#software` },
+      primaryImageOfPage: `${SITE_URL}/img/meta/og-image.png`,
+      inLanguage: "en",
+    },
+    {
+      "@type": "ItemList",
+      "@id": `${SITE_URL}/#primary-nav`,
+      name: "LoraDB primary navigation",
+      itemListElement: [
+        {
+          "@type": "SiteNavigationElement",
+          position: 1,
+          name: "Install LoraDB",
+          url: `${SITE_URL}/docs/getting-started/installation`,
+        },
+        {
+          "@type": "SiteNavigationElement",
+          position: 2,
+          name: "Documentation",
+          url: `${SITE_URL}/docs`,
+        },
+        {
+          "@type": "SiteNavigationElement",
+          position: 3,
+          name: "Features",
+          url: `${SITE_URL}/features`,
+        },
+        {
+          "@type": "SiteNavigationElement",
+          position: 4,
+          name: "Playground",
+          url: "https://play.loradb.com",
+        },
+        {
+          "@type": "SiteNavigationElement",
+          position: 5,
+          name: "Blog",
+          url: `${SITE_URL}/blog`,
+        },
+      ],
+    },
+  ],
+};
 
 const SAMPLE = `MATCH (a:Agent)-[:REMEMBERS]->(c:Context)
       -[:ABOUT]->(e:Entity)
@@ -21,6 +89,7 @@ const QUICKSTART_TABS = [
     id: "node",
     label: "Node.js",
     file: "quickstart.ts",
+    language: "typescript",
     code: `import { createDatabase } from '@loradb/lora-node';
 
 const db = await createDatabase();           // in-memory
@@ -40,6 +109,7 @@ console.log(result.rows);`,
     id: "python",
     label: "Python",
     file: "quickstart.py",
+    language: "python",
     code: `from lora_python import Database
 
 db = Database.create()
@@ -58,6 +128,7 @@ print(result["rows"])`,
     id: "wasm",
     label: "WASM",
     file: "quickstart.ts",
+    language: "typescript",
     code: `import { createDatabase } from '@loradb/lora-wasm';
 
 const db = await createDatabase();
@@ -76,6 +147,7 @@ console.log(result.rows);`,
     id: "go",
     label: "Go",
     file: "quickstart.go",
+    language: "go",
     code: `import lora "github.com/lora-db/lora/crates/bindings/lora-go"
 
 db, _ := lora.New()
@@ -97,6 +169,7 @@ fmt.Println(r.Rows)`,
     id: "ruby",
     label: "Ruby",
     file: "quickstart.rb",
+    language: "ruby",
     code: `require "lora_ruby"
 
 db = LoraRuby::Database.create
@@ -198,6 +271,29 @@ const WHERE_NEXT = [
   },
 ];
 
+// Homepage micro-FAQ. Three high-intent questions that map directly
+// to common short-form searches. Each answer is fact-only and links
+// to a doc page that goes deeper. Kept to three so the page still
+// reads as a router, not as a FAQ wall — the long-form FAQ lives on
+// /docs/why and a coverage-focused FAQ lives on /features.
+const FAQ_ITEMS = [
+  {
+    question: "What is LoraDB?",
+    answer:
+      "LoraDB is a local-first, in-memory property-graph engine written in Rust. It speaks a pragmatic subset of Cypher and runs in-process inside your application — through a Rust crate, five bindings (Node.js, Python, WASM, Go, Ruby), or an HTTP server.",
+  },
+  {
+    question: "Is LoraDB open source?",
+    answer:
+      "LoraDB is source-available under the Business Source License 1.1, with an automatic conversion to Apache 2.0 on the Change Date. The source code, issues, and discussions live in the public lora-db/lora repository on GitHub.",
+  },
+  {
+    question: "How is LoraDB different from Neo4j, Memgraph, or SQLite?",
+    answer:
+      "LoraDB is an embedded graph engine — it lives in the same process as the code that queries it, with no server to deploy and no protocol to speak. Hosted graph platforms (Neo4j, Memgraph) target operational tiers with full Cypher and clustering. SQLite is relational and embedded but does not natively model labelled property graphs or run Cypher. LoraDB fills the gap: graph-native, embedded, single-process.",
+  },
+];
+
 function Icon({ name }) {
   // Tiny, monochrome, currentColor SVGs. Deliberately abstract so
   // they feel system-like rather than stock-illustration.
@@ -280,6 +376,11 @@ export default function Home() {
       description="LoraDB is an embedded, Rust-native graph database with a Cypher-like engine — built for AI agents, robotics, and context-rich systems that reason over connected data."
       wrapperClassName={styles.homeWrapper}
     >
+      <Head>
+        <script type="application/ld+json">
+          {JSON.stringify(HOME_STRUCTURED_DATA)}
+        </script>
+      </Head>
       <main className={styles.home}>
         {/* ---------- HERO ---------- */}
         <section className={styles.hero}>
@@ -335,20 +436,10 @@ export default function Home() {
               <div className={styles.heroVisualInner}>
                 <BrandGraph />
                 <div
-                  className={styles.codeCard}
+                  className={styles.heroCode}
                   aria-label="Example Cypher query"
                 >
-                  <div className={styles.codeCardHeader}>
-                    <span className={styles.codeDots} aria-hidden="true">
-                      <span />
-                      <span />
-                      <span />
-                    </span>
-                    <span className={styles.codeCardTitle}>context.cypher</span>
-                  </div>
-                  <pre className={styles.codeCardBody}>
-                    <code>{SAMPLE}</code>
-                  </pre>
+                  <LoraQueryCodeBlock code={SAMPLE} lineWrap />
                 </div>
               </div>
             </div>
@@ -482,56 +573,66 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className={styles.startSnippet}>
+              <div
+                className={styles.startSnippet}
+                role="region"
+                aria-label="Quickstart code example"
+              >
                 <div
-                  className={styles.codeCard}
-                  role="region"
-                  aria-label="Quickstart code example"
+                  className={styles.langTabs}
+                  role="tablist"
+                  aria-label="Language"
                 >
-                  <div className={styles.codeCardHeader}>
-                    <span className={styles.codeDots} aria-hidden="true">
-                      <span />
-                      <span />
-                      <span />
-                    </span>
-                    <div
-                      className={styles.langTabs}
-                      role="tablist"
-                      aria-label="Language"
+                  {QUICKSTART_TABS.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={activeTab === t.id}
+                      tabIndex={activeTab === t.id ? 0 : -1}
+                      id={`lang-tab-${t.id}`}
+                      aria-controls={`lang-panel-${t.id}`}
+                      className={clsx(
+                        styles.langTab,
+                        activeTab === t.id && styles.langTabActive,
+                      )}
+                      onClick={() => setActiveTab(t.id)}
                     >
-                      {QUICKSTART_TABS.map((t) => (
-                        <button
-                          key={t.id}
-                          type="button"
-                          role="tab"
-                          aria-selected={activeTab === t.id}
-                          tabIndex={activeTab === t.id ? 0 : -1}
-                          id={`lang-tab-${t.id}`}
-                          aria-controls={`lang-panel-${t.id}`}
-                          className={clsx(
-                            styles.langTab,
-                            activeTab === t.id && styles.langTabActive,
-                          )}
-                          onClick={() => setActiveTab(t.id)}
-                        >
-                          {t.label}
-                        </button>
-                      ))}
-                    </div>
-                    <span className={styles.codeCardTitle}>
-                      {activeSnippet.file}
-                    </span>
-                  </div>
-                  <pre
-                    className={styles.codeCardBody}
-                    id={`lang-panel-${activeSnippet.id}`}
-                    role="tabpanel"
-                    aria-labelledby={`lang-tab-${activeSnippet.id}`}
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <div
+                  id={`lang-panel-${activeSnippet.id}`}
+                  role="tabpanel"
+                  aria-labelledby={`lang-tab-${activeSnippet.id}`}
+                  className={styles.startCode}
+                >
+                  <CodeBlock
+                    language={activeSnippet.language}
+                    title={activeSnippet.file}
                   >
-                    <code>{activeSnippet.code}</code>
-                  </pre>
+                    {activeSnippet.code}
+                  </CodeBlock>
                 </div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ---------- MICRO FAQ ---------- */}
+        <section className={styles.useCases} aria-labelledby="home-faq-title">
+          <div className={styles.sectionInner}>
+            <p className={styles.sectionEyebrow}>Common questions</p>
+            <h2 id="home-faq-title" className={styles.sectionTitle}>
+              The three questions readers ask first.
+            </h2>
+            <FAQ items={FAQ_ITEMS} defaultOpen />
+            <div className={styles.useCasesFooter}>
+              <Link to="/docs/why" className={styles.cookbookLink}>
+                Read the longer-form positioning
+                <ArrowGlyph />
+              </Link>
             </div>
           </div>
         </section>
