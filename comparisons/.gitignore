@@ -1,0 +1,20 @@
+# comparisons/ is a standalone Cargo + Yarn workspace, distinct from
+# the parent repo's workspace. Mirror the root .gitignore's transient
+# patterns locally so build/cache artifacts don't slip into the tree.
+
+# Rust / Cargo build output
+target/
+
+# Yarn v4 (Berry) — keep releases / plugins / sdks committed, ignore caches.
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+.yarn/install-state.gz
+
+# Local engine state / fixtures dropped by a bench run.
+data/
+*.loradb
