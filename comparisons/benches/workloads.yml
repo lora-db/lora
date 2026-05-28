@@ -1,0 +1,1144 @@
+# =============================================================================
+# Comparison workload catalogue
+#
+# Each entry describes a single benchmark group. The bench harness
+# (benches/comparison.rs) loads this file and runs every workload against
+# every engine in `src/engine.rs::registry()` that has a query string for
+# the workload.
+#
+# Schema:
+#   id           — stable identifier (becomes part of the criterion group)
+#   group        — logical bucket; criterion group name is "{group}/{id}"
+#   fixture      — empty | nodes | chain | star | social
+#   size         — optional size override (defaults via `defaults` block)
+#   iter         — read | per_iter_query | per_iter_seed | construct
+#   throughput   — none | elements | edges_minus_1 | edges_minus_2 |
+#                  edges_minus_3 | single
+#   queries      — map of engine_name → query string. `${size}`,
+#                  `${half_size}`, `${size_plus_1}` are substituted at
+#                  load time.
+#
+# To add a new database system: implement an engine module under
+# `src/engines/`, register it in `registry()`, and add its key (with a
+# query) to whichever workloads it supports.
+#
+# To add a new feature: add a YAML entry — no Rust changes required.
+# =============================================================================
+
+defaults:
+  size: 1000
+  fixture_size:
+    chain: 500
+    social: 500
+  # Group → website category. Lets the website report bucket workloads
+  # into a small set of "stories" without renaming every group.
+  categories:
+    setup: schema
+    writes: writes
+    scans: filtering
+    predicates: filtering
+    strings: text
+    numerics: numeric
+    aggregates: aggregation
+    pipeline: pipeline
+    lists: query_shaping
+    sort: query_shaping
+    traversals: graph_traversal
+    patterns: graph_traversal
+
+workloads:
+  # ---------------------------------------------------------------------
+  # setup — DB construction
+  # ---------------------------------------------------------------------
+  - id: construct_empty
+    group: setup
+    fixture: empty
+    iter: construct
+    queries:
+      lora: ""
+      helixdb: ""
+      grafeo: ""
+      memgraph: ""
+      neo4j: ""
+      kuzu: ""
+
+  # ---------------------------------------------------------------------
+  # writes
+  # ---------------------------------------------------------------------
+  - id: write_single
+    group: writes
+    fixture: empty
+    iter: per_iter_query
+    queries:
+      lora: "CREATE (:N {id: 1, name: 'a', value: 42})"
+      helixdb: "write_single"
+      grafeo: "INSERT (:N {id: 1, name: 'a', value: 42})"
+      surrealdb: "CREATE n:1 SET id = 1, name = 'a', value = 42 RETURN NONE;"
+      # Memgraph and Neo4j speak Cypher `CREATE`, not Grafeo's `INSERT`, so
+      # they need explicit queries rather than the grafeo alias fallback.
+      memgraph: "CREATE (:N {id: 1, name: 'a', value: 42})"
+      neo4j: "CREATE (:N {id: 1, name: 'a', value: 42})"
+    notes:
+      kuzu: "Omitted: Kuzu requires `CREATE NODE TABLE` before inserts; the empty fixture has no schema and adding one would change the iteration's measured cost."
+
+  - id: write_bulk
+    group: writes
+    fixture: nodes
+    iter: per_iter_seed
+    throughput: elements
+    queries:
+      lora: ""
+      helixdb: ""
+      grafeo: ""
+      memgraph: ""
+      neo4j: ""
+      kuzu: ""
+      surrealdb: ""
+
+  - id: update_set
+    group: writes
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node {id: ${half_size}}) SET n.touched = true"
+      helixdb: "update_set:${half_size}"
+      grafeo: "MATCH (n:Node {id: ${half_size}}) SET n.touched = true"
+      memgraph: "MATCH (n:Node {id: ${half_size}}) SET n.touched = true"
+      neo4j: "MATCH (n:Node {id: ${half_size}}) SET n.touched = true"
+      kuzu: "MATCH (n:Node {id: ${half_size}}) SET n.touched = true"
+      surrealdb: "UPDATE node SET touched = true WHERE id = ${half_size};"
+
+  - id: set_multiple_props
+    group: writes
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node {id: ${half_size}}) SET n.a = 1, n.b = 2"
+      helixdb: "set_multiple_props:${half_size}"
+      grafeo: "MATCH (n:Node {id: ${half_size}}) SET n.a = 1, n.b = 2"
+      memgraph: "MATCH (n:Node {id: ${half_size}}) SET n.a = 1, n.b = 2"
+      neo4j: "MATCH (n:Node {id: ${half_size}}) SET n.a = 1, n.b = 2"
+      kuzu: "MATCH (n:Node {id: ${half_size}}) SET n.a = 1, n.b = 2"
+      surrealdb: "UPDATE node SET a = 1, b = 2 WHERE id = ${half_size};"
+
+  - id: bulk_set_match
+    group: writes
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.value > 50 SET n.flagged = true"
+      helixdb: "bulk_set_match"
+      grafeo: "MATCH (n:Node) WHERE n.value > 50 SET n.flagged = true"
+      memgraph: "MATCH (n:Node) WHERE n.value > 50 SET n.flagged = true"
+      neo4j: "MATCH (n:Node) WHERE n.value > 50 SET n.flagged = true"
+      kuzu: "MATCH (n:Node) WHERE n.value > 50 SET n.flagged = true"
+      surrealdb: "UPDATE node SET flagged = true WHERE value > 50;"
+
+  - id: delete_node
+    group: writes
+    fixture: nodes
+    iter: per_iter_query
+    queries:
+      lora: "MATCH (n:Node {id: ${half_size}}) DELETE n"
+      helixdb: "delete_node:${half_size}"
+      grafeo: "MATCH (n:Node {id: ${half_size}}) DELETE n"
+      memgraph: "MATCH (n:Node {id: ${half_size}}) DELETE n"
+      neo4j: "MATCH (n:Node {id: ${half_size}}) DELETE n"
+      kuzu: "MATCH (n:Node {id: ${half_size}}) DELETE n"
+      surrealdb: "DELETE node WHERE id = ${half_size};"
+
+  - id: merge_existing
+    group: writes
+    fixture: nodes
+    indexes:
+      grafeo: [id]
+      memgraph: [id]
+      neo4j: [id]
+    queries:
+      lora: "MERGE (n:Node {id: ${half_size}})"
+      grafeo: "MERGE (n:Node {id: ${half_size}})"
+      memgraph: "MERGE (n:Node {id: ${half_size}})"
+      neo4j: "MERGE (n:Node {id: ${half_size}})"
+      kuzu: "MERGE (n:Node {id: ${half_size}})"
+    notes:
+      helixdb: "Omitted: HelixDB has no MERGE/upsert; emulating it needs conditional var_as_if branching."
+      surrealdb: "Omitted: SurrealDB's UPSERT semantics diverge from Cypher MERGE on which fields are matched vs set."
+
+  - id: merge_create
+    group: writes
+    fixture: nodes
+    iter: per_iter_query
+    indexes:
+      grafeo: [id]
+      memgraph: [id]
+      neo4j: [id]
+    queries:
+      lora: "MERGE (n:Node {id: ${size_plus_1}})"
+      grafeo: "MERGE (n:Node {id: ${size_plus_1}})"
+      memgraph: "MERGE (n:Node {id: ${size_plus_1}})"
+      neo4j: "MERGE (n:Node {id: ${size_plus_1}})"
+      kuzu: "MERGE (n:Node {id: ${size_plus_1}})"
+    notes:
+      helixdb: "Omitted: HelixDB has no MERGE/upsert (see merge_existing)."
+      surrealdb: "Omitted: see merge_existing — UPSERT semantics differ."
+
+  - id: bulk_edges
+    group: writes
+    fixture: nodes
+    size: 200
+    iter: per_iter_query
+    throughput: elements
+    indexes:
+      grafeo: [id]
+      memgraph: [id]
+      neo4j: [id]
+    queries:
+      lora: "UNWIND range(0, ${size_minus_1}) AS i MATCH (a:Node {id: i}), (b:Node {id: (i + 1) % ${size}}) CREATE (a)-[:LINKS]->(b)"
+      helixdb: "bulk_edges:${size}"
+      grafeo: "UNWIND range(0, ${size_minus_1}) AS i MATCH (a:Node {id: i}), (b:Node {id: (i + 1) % ${size}}) CREATE (a)-[:LINKS]->(b)"
+      memgraph: "UNWIND range(0, ${size_minus_1}) AS i MATCH (a:Node {id: i}), (b:Node {id: (i + 1) % ${size}}) CREATE (a)-[:LINKS]->(b)"
+      neo4j: "UNWIND range(0, ${size_minus_1}) AS i MATCH (a:Node {id: i}), (b:Node {id: (i + 1) % ${size}}) CREATE (a)-[:LINKS]->(b)"
+      kuzu: "UNWIND range(0, ${size_minus_1}) AS i MATCH (a:Node {id: i}), (b:Node {id: (i + 1) % ${size}}) CREATE (a)-[:LINKS]->(b)"
+    notes:
+      surrealdb: "Omitted: UNWIND-driven bulk RELATE requires scripted FOR loops; not a like-for-like comparison."
+
+  # ---------------------------------------------------------------------
+  # scans & lookups
+  # ---------------------------------------------------------------------
+  - id: scan_label
+    group: scans
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) RETURN n.id"
+      grafeo: "MATCH (n:Node) RETURN n.id"
+      memgraph: "MATCH (n:Node) RETURN n.id"
+      neo4j: "MATCH (n:Node) RETURN n.id"
+      kuzu: "MATCH (n:Node) RETURN n.id"
+      surrealdb: "SELECT id FROM node;"
+      helixdb: "scan_label"
+
+  - id: scan_filtered
+    group: scans
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) WHERE n.value > 50 RETURN n.id"
+      grafeo: "MATCH (n:Node) WHERE n.value > 50 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.value > 50 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.value > 50 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.value > 50 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE value > 50;"
+      helixdb: "scan_filtered"
+
+  - id: lookup_by_id
+    group: scans
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      grafeo: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      memgraph: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      neo4j: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      kuzu: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      surrealdb: "SELECT name FROM node WHERE id = ${half_size};"
+      helixdb: "lookup_by_id:${half_size}"
+
+  - id: lookup_by_id_indexed
+    group: scans
+    fixture: nodes
+    indexes:
+      grafeo: [id]
+      memgraph: [id]
+      neo4j: [id]
+      surrealdb: [id]
+    queries:
+      lora: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      grafeo: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      memgraph: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      neo4j: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      kuzu: "MATCH (n:Node {id: ${half_size}}) RETURN n.name"
+      surrealdb: "SELECT name FROM node WHERE id = ${half_size};"
+      helixdb: "lookup_by_id:${half_size}"
+
+  - id: range_filter
+    group: scans
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) WHERE n.value >= 25 AND n.value <= 75 RETURN n.id"
+      grafeo: "MATCH (n:Node) WHERE n.value >= 25 AND n.value <= 75 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.value >= 25 AND n.value <= 75 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.value >= 25 AND n.value <= 75 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.value >= 25 AND n.value <= 75 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE value >= 25 AND value <= 75;"
+
+  - id: distinct
+    group: scans
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) RETURN DISTINCT n.value"
+      grafeo: "MATCH (n:Node) RETURN DISTINCT n.value"
+      memgraph: "MATCH (n:Node) RETURN DISTINCT n.value"
+      neo4j: "MATCH (n:Node) RETURN DISTINCT n.value"
+      kuzu: "MATCH (n:Node) RETURN DISTINCT n.value"
+    notes:
+      helixdb: "Omitted: HelixDB's dedup is node-level; there is no SELECT DISTINCT <property>."
+      surrealdb: "Omitted: `value` is a reserved word in SurrealQL's SELECT VALUE clause; no clean equivalent."
+
+  # ---------------------------------------------------------------------
+  # predicates
+  # ---------------------------------------------------------------------
+  - id: where_or
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.value = 10 OR n.value = 20 RETURN n.id"
+      helixdb: "where_or"
+      grafeo: "MATCH (n:Node) WHERE n.value = 10 OR n.value = 20 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.value = 10 OR n.value = 20 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.value = 10 OR n.value = 20 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.value = 10 OR n.value = 20 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE value = 10 OR value = 20;"
+
+  - id: where_in_list
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.value IN [10, 20, 30] RETURN n.id"
+      helixdb: "where_in_list"
+      grafeo: "MATCH (n:Node) WHERE n.value IN [10, 20, 30] RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.value IN [10, 20, 30] RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.value IN [10, 20, 30] RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.value IN [10, 20, 30] RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE value IN [10, 20, 30];"
+
+  - id: where_not
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE NOT n.value > 50 RETURN n.id"
+      helixdb: "where_not"
+      grafeo: "MATCH (n:Node) WHERE NOT n.value > 50 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE NOT n.value > 50 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE NOT n.value > 50 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE NOT n.value > 50 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE !(value > 50);"
+
+  - id: where_compound_and_or
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.value > 25 AND (n.value < 50 OR n.id < 100) RETURN n.id"
+      helixdb: "where_compound_and_or"
+      grafeo: "MATCH (n:Node) WHERE n.value > 25 AND (n.value < 50 OR n.id < 100) RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.value > 25 AND (n.value < 50 OR n.id < 100) RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.value > 25 AND (n.value < 50 OR n.id < 100) RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.value > 25 AND (n.value < 50 OR n.id < 100) RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE value > 25 AND (value < 50 OR id < 100);"
+
+  - id: where_starts_with
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.name STARTS WITH 'node_5' RETURN n.id"
+      helixdb: "where_starts_with"
+      grafeo: "MATCH (n:Node) WHERE n.name STARTS WITH 'node_5' RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.name STARTS WITH 'node_5' RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.name STARTS WITH 'node_5' RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.name STARTS WITH 'node_5' RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE string::starts_with(name, 'node_5');"
+
+  - id: where_ends_with
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.name ENDS WITH '0' RETURN n.id"
+      helixdb: "where_ends_with"
+      grafeo: "MATCH (n:Node) WHERE n.name ENDS WITH '0' RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.name ENDS WITH '0' RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.name ENDS WITH '0' RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.name ENDS WITH '0' RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE string::ends_with(name, '0');"
+
+  - id: where_contains
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.name CONTAINS '99' RETURN n.id"
+      helixdb: "where_contains"
+      grafeo: "MATCH (n:Node) WHERE n.name CONTAINS '99' RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.name CONTAINS '99' RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.name CONTAINS '99' RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.name CONTAINS '99' RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE string::contains(name, '99');"
+
+  - id: where_modulo_eq
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.id % 7 = 0 RETURN n.id"
+      helixdb: "where_modulo_eq"
+      grafeo: "MATCH (n:Node) WHERE n.id % 7 = 0 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.id % 7 = 0 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.id % 7 = 0 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.id % 7 = 0 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE id % 7 = 0;"
+
+  - id: where_string_gte
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.name >= 'node_500' RETURN n.id"
+      helixdb: "where_string_gte"
+      grafeo: "MATCH (n:Node) WHERE n.name >= 'node_500' RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.name >= 'node_500' RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.name >= 'node_500' RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.name >= 'node_500' RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE name >= 'node_500';"
+
+  - id: where_two_props
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.value > 50 AND n.id < 100 RETURN n.id"
+      helixdb: "where_two_props"
+      grafeo: "MATCH (n:Node) WHERE n.value > 50 AND n.id < 100 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.value > 50 AND n.id < 100 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.value > 50 AND n.id < 100 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.value > 50 AND n.id < 100 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE value > 50 AND id < 100;"
+
+  - id: where_id_in_range
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE n.id >= 100 AND n.id <= 200 RETURN n.id"
+      helixdb: "where_id_in_range"
+      grafeo: "MATCH (n:Node) WHERE n.id >= 100 AND n.id <= 200 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE n.id >= 100 AND n.id <= 200 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE n.id >= 100 AND n.id <= 200 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE n.id >= 100 AND n.id <= 200 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE id >= 100 AND id <= 200;"
+
+  - id: where_subexpr
+    group: predicates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE (n.value + n.id) % 2 = 0 RETURN n.id"
+      helixdb: "where_subexpr"
+      grafeo: "MATCH (n:Node) WHERE (n.value + n.id) % 2 = 0 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE (n.value + n.id) % 2 = 0 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE (n.value + n.id) % 2 = 0 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE (n.value + n.id) % 2 = 0 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE (value + id) % 2 = 0;"
+
+  # ---------------------------------------------------------------------
+  # string functions
+  # ---------------------------------------------------------------------
+  - id: string_to_upper
+    group: strings
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN toUpper(n.name)"
+      grafeo: "MATCH (n:Node) RETURN toUpper(n.name)"
+      memgraph: "MATCH (n:Node) RETURN toUpper(n.name)"
+      neo4j: "MATCH (n:Node) RETURN toUpper(n.name)"
+      kuzu: "MATCH (n:Node) RETURN toUpper(n.name)"
+      surrealdb: "SELECT string::uppercase(name) AS upper FROM node;"
+    notes:
+      helixdb: "Omitted: HelixDB's DSL has no scalar string functions (upper/lower/substring/length/concat) — only property filters and graph traversal."
+
+  - id: string_to_lower
+    group: strings
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN toLower(n.name)"
+      grafeo: "MATCH (n:Node) RETURN toLower(n.name)"
+      memgraph: "MATCH (n:Node) RETURN toLower(n.name)"
+      neo4j: "MATCH (n:Node) RETURN toLower(n.name)"
+      kuzu: "MATCH (n:Node) RETURN toLower(n.name)"
+      surrealdb: "SELECT string::lowercase(name) AS lower FROM node;"
+    notes:
+      helixdb: "Omitted: no scalar string functions in the DSL (see string_to_upper)."
+
+  - id: string_substring
+    group: strings
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN substring(n.name, 0, 4)"
+      grafeo: "MATCH (n:Node) RETURN substring(n.name, 0, 4)"
+      memgraph: "MATCH (n:Node) RETURN substring(n.name, 0, 4)"
+      neo4j: "MATCH (n:Node) RETURN substring(n.name, 0, 4)"
+      kuzu: "MATCH (n:Node) RETURN substring(n.name, 0, 4)"
+      surrealdb: "SELECT string::slice(name, 0, 4) AS sub FROM node;"
+    notes:
+      helixdb: "Omitted: no scalar string functions in the DSL (see string_to_upper)."
+
+  - id: string_size
+    group: strings
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN size(n.name)"
+      grafeo: "MATCH (n:Node) RETURN size(n.name)"
+      memgraph: "MATCH (n:Node) RETURN size(n.name)"
+      neo4j: "MATCH (n:Node) RETURN size(n.name)"
+      kuzu: "MATCH (n:Node) RETURN size(n.name)"
+      surrealdb: "SELECT string::len(name) AS len FROM node;"
+    notes:
+      helixdb: "Omitted: no scalar string functions in the DSL (see string_to_upper)."
+
+  - id: string_concat
+    group: strings
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN n.name + '_x'"
+      grafeo: "MATCH (n:Node) RETURN n.name + '_x'"
+      memgraph: "MATCH (n:Node) RETURN n.name + '_x'"
+      neo4j: "MATCH (n:Node) RETURN n.name + '_x'"
+      kuzu: "MATCH (n:Node) RETURN n.name + '_x'"
+      surrealdb: "SELECT string::concat(name, '_x') AS joined FROM node;"
+
+  # ---------------------------------------------------------------------
+  # numeric functions
+  # ---------------------------------------------------------------------
+    notes:
+      helixdb: "Omitted: no scalar string functions in the DSL (see string_to_upper)."
+  - id: numeric_abs
+    group: numerics
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN math.abs(n.value - 50)"
+      grafeo: "MATCH (n:Node) RETURN abs(n.value - 50)"
+      memgraph: "MATCH (n:Node) RETURN abs(n.value - 50)"
+      neo4j: "MATCH (n:Node) RETURN abs(n.value - 50)"
+      kuzu: "MATCH (n:Node) RETURN abs(n.value - 50)"
+      surrealdb: "SELECT math::abs(value - 50) AS r FROM node;"
+    notes:
+      helixdb: "Omitted: HelixDB's Expr supports +,-,*,/,% but no abs/floor/ceil/round."
+
+  - id: numeric_modulo
+    group: numerics
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN n.value % 13"
+      helixdb: "numeric_modulo"
+      grafeo: "MATCH (n:Node) RETURN n.value % 13"
+      memgraph: "MATCH (n:Node) RETURN n.value % 13"
+      neo4j: "MATCH (n:Node) RETURN n.value % 13"
+      kuzu: "MATCH (n:Node) RETURN n.value % 13"
+    notes:
+      surrealdb: "Omitted: SurrealQL parser rejects bare `%` inside SELECT projections (same parse limit as grouped_aggregation)."
+
+  - id: numeric_pow
+    group: numerics
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN n.value * n.value"
+      helixdb: "numeric_pow"
+      grafeo: "MATCH (n:Node) RETURN n.value * n.value"
+      memgraph: "MATCH (n:Node) RETURN n.value * n.value"
+      neo4j: "MATCH (n:Node) RETURN n.value * n.value"
+      kuzu: "MATCH (n:Node) RETURN n.value * n.value"
+      surrealdb: "SELECT (value * value) AS r FROM node;"
+
+  - id: numeric_floor
+    group: numerics
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN math.floor(n.value / 7.0)"
+      grafeo: "MATCH (n:Node) RETURN floor(n.value / 7.0)"
+      memgraph: "MATCH (n:Node) RETURN floor(n.value / 7.0)"
+      neo4j: "MATCH (n:Node) RETURN floor(n.value / 7.0)"
+      kuzu: "MATCH (n:Node) RETURN floor(n.value / 7.0)"
+      surrealdb: "SELECT math::floor(value / 7.0) AS r FROM node;"
+    notes:
+      helixdb: "Omitted: HelixDB's Expr supports +,-,*,/,% but no abs/floor/ceil/round."
+
+  - id: numeric_ceil
+    group: numerics
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN math.ceil(n.value / 7.0)"
+      grafeo: "MATCH (n:Node) RETURN ceil(n.value / 7.0)"
+      memgraph: "MATCH (n:Node) RETURN ceil(n.value / 7.0)"
+      neo4j: "MATCH (n:Node) RETURN ceil(n.value / 7.0)"
+      kuzu: "MATCH (n:Node) RETURN ceiling(n.value / 7.0)"
+      surrealdb: "SELECT math::ceil(value / 7.0) AS r FROM node;"
+    notes:
+      helixdb: "Omitted: HelixDB's Expr supports +,-,*,/,% but no abs/floor/ceil/round."
+
+  - id: numeric_round
+    group: numerics
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN math.round(n.value / 7.0)"
+      grafeo: "MATCH (n:Node) RETURN round(n.value / 7.0)"
+      memgraph: "MATCH (n:Node) RETURN round(n.value / 7.0)"
+      neo4j: "MATCH (n:Node) RETURN round(n.value / 7.0)"
+      kuzu: "MATCH (n:Node) RETURN round(n.value / 7.0, 0)"
+      surrealdb: "SELECT math::round(value / 7.0) AS r FROM node;"
+
+  # ---------------------------------------------------------------------
+  # aggregations
+  # ---------------------------------------------------------------------
+    notes:
+      helixdb: "Omitted: HelixDB's Expr supports +,-,*,/,% but no abs/floor/ceil/round."
+  - id: aggregate_count
+    group: aggregates
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) RETURN count(n)"
+      grafeo: "MATCH (n:Node) RETURN count(n)"
+      memgraph: "MATCH (n:Node) RETURN count(n)"
+      neo4j: "MATCH (n:Node) RETURN count(n)"
+      kuzu: "MATCH (n:Node) RETURN count(n)"
+      surrealdb: "SELECT count() FROM node GROUP ALL;"
+    notes:
+      helixdb: "Omitted: the HelixDB enterprise-dev image rejects `count()` dynamic queries with `rate limit exceeded` (its other 9 workloads run fine). The count handler is wired in helixdb.rs and would run on a server without that limit."
+
+  - id: aggregate_sum
+    group: aggregates
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) RETURN sum(n.value)"
+      helixdb: "aggregate_sum"
+      grafeo: "MATCH (n:Node) RETURN sum(n.value)"
+      memgraph: "MATCH (n:Node) RETURN sum(n.value)"
+      neo4j: "MATCH (n:Node) RETURN sum(n.value)"
+      kuzu: "MATCH (n:Node) RETURN sum(n.value)"
+      surrealdb: "SELECT math::sum(value) FROM node GROUP ALL;"
+
+  - id: aggregate_min
+    group: aggregates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN min(n.value)"
+      helixdb: "aggregate_min"
+      grafeo: "MATCH (n:Node) RETURN min(n.value)"
+      memgraph: "MATCH (n:Node) RETURN min(n.value)"
+      neo4j: "MATCH (n:Node) RETURN min(n.value)"
+      kuzu: "MATCH (n:Node) RETURN min(n.value)"
+      surrealdb: "SELECT math::min(value) FROM node GROUP ALL;"
+
+  - id: aggregate_max
+    group: aggregates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN max(n.value)"
+      helixdb: "aggregate_max"
+      grafeo: "MATCH (n:Node) RETURN max(n.value)"
+      memgraph: "MATCH (n:Node) RETURN max(n.value)"
+      neo4j: "MATCH (n:Node) RETURN max(n.value)"
+      kuzu: "MATCH (n:Node) RETURN max(n.value)"
+      surrealdb: "SELECT math::max(value) FROM node GROUP ALL;"
+
+  - id: aggregate_avg
+    group: aggregates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN avg(n.value)"
+      helixdb: "aggregate_avg"
+      grafeo: "MATCH (n:Node) RETURN avg(n.value)"
+      memgraph: "MATCH (n:Node) RETURN avg(n.value)"
+      neo4j: "MATCH (n:Node) RETURN avg(n.value)"
+      kuzu: "MATCH (n:Node) RETURN avg(n.value)"
+      surrealdb: "SELECT math::mean(value) FROM node GROUP ALL;"
+
+  - id: aggregate_collect
+    group: aggregates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN collect(n.id)"
+      grafeo: "MATCH (n:Node) RETURN collect(n.id)"
+      memgraph: "MATCH (n:Node) RETURN collect(n.id)"
+      neo4j: "MATCH (n:Node) RETURN collect(n.id)"
+      kuzu: "MATCH (n:Node) RETURN collect(n.id)"
+      surrealdb: "SELECT array::group(id) AS ids FROM node GROUP ALL;"
+    notes:
+      helixdb: "Omitted: aggregate_by offers Count/Sum/Min/Max/Mean, no list collect."
+
+  - id: aggregate_count_distinct
+    group: aggregates
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN count(DISTINCT n.value)"
+      grafeo: "MATCH (n:Node) RETURN count(DISTINCT n.value)"
+      memgraph: "MATCH (n:Node) RETURN count(DISTINCT n.value)"
+      neo4j: "MATCH (n:Node) RETURN count(DISTINCT n.value)"
+      kuzu: "MATCH (n:Node) RETURN count(DISTINCT n.value)"
+    notes:
+      helixdb: "Omitted: needs count(DISTINCT); count() is rate-limited on the enterprise-dev image and value-level DISTINCT isn't exposed."
+      surrealdb: "Omitted: count(DISTINCT) has no direct SurrealQL aggregate; requires nested SELECT + array::distinct."
+
+  - id: top_k
+    group: aggregates
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) RETURN n.id, n.value ORDER BY n.value DESC LIMIT 10"
+      grafeo: "MATCH (n:Node) RETURN n.id, n.value ORDER BY n.value DESC LIMIT 10"
+      memgraph: "MATCH (n:Node) RETURN n.id, n.value ORDER BY n.value DESC LIMIT 10"
+      neo4j: "MATCH (n:Node) RETURN n.id, n.value ORDER BY n.value DESC LIMIT 10"
+      kuzu: "MATCH (n:Node) RETURN n.id, n.value ORDER BY n.value DESC LIMIT 10"
+      surrealdb: "SELECT id, value FROM node ORDER BY value DESC LIMIT 10;"
+
+  - id: grouped_aggregation
+    group: aggregates
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) RETURN n.value % 10 AS bucket, count(*) AS c ORDER BY bucket"
+      grafeo: "MATCH (n:Node) RETURN n.value % 10 AS bucket, count(*) AS c ORDER BY bucket"
+      memgraph: "MATCH (n:Node) RETURN n.value % 10 AS bucket, count(*) AS c ORDER BY bucket"
+      neo4j: "MATCH (n:Node) RETURN n.value % 10 AS bucket, count(*) AS c ORDER BY bucket"
+      kuzu: "MATCH (n:Node) RETURN n.value % 10 AS bucket, count(*) AS c ORDER BY bucket"
+    notes:
+      helixdb: "Omitted: group_count groups by a stored property, not a computed value % 10 key."
+      surrealdb: "Omitted: SurrealQL rejects `%` inside a SELECT projection that's then used as a GROUP BY key (parse error)."
+
+  # ---------------------------------------------------------------------
+  # pipeline & control flow
+  # ---------------------------------------------------------------------
+  - id: with_pipeline
+    group: pipeline
+    fixture: nodes
+    throughput: elements
+    queries:
+      lora: "MATCH (n:Node) WITH n.value AS v WHERE v > 50 RETURN count(v)"
+      grafeo: "MATCH (n:Node) WITH n.value AS v WHERE v > 50 RETURN count(v)"
+      memgraph: "MATCH (n:Node) WITH n.value AS v WHERE v > 50 RETURN count(v)"
+      neo4j: "MATCH (n:Node) WITH n.value AS v WHERE v > 50 RETURN count(v)"
+      kuzu: "MATCH (n:Node) WITH n.value AS v WHERE v > 50 RETURN count(v)"
+      surrealdb: "SELECT count() FROM node WHERE value > 50 GROUP ALL;"
+    notes:
+      helixdb: "Omitted: returns count(...); count() is rate-limited on the enterprise-dev image (see aggregate_count)."
+
+  - id: with_two_chained
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WITH n WHERE n.value > 25 WITH n WHERE n.value < 75 RETURN n.id"
+      helixdb: "with_two_chained"
+      grafeo: "MATCH (n:Node) WITH n WHERE n.value > 25 WITH n WHERE n.value < 75 RETURN n.id"
+      memgraph: "MATCH (n:Node) WITH n WHERE n.value > 25 WITH n WHERE n.value < 75 RETURN n.id"
+      neo4j: "MATCH (n:Node) WITH n WHERE n.value > 25 WITH n WHERE n.value < 75 RETURN n.id"
+      kuzu: "MATCH (n:Node) WITH n WHERE n.value > 25 WITH n WHERE n.value < 75 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE value > 25 AND value < 75;"
+
+  - id: with_distinct_then_count
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WITH DISTINCT n.value AS v RETURN count(v)"
+      grafeo: "MATCH (n:Node) WITH DISTINCT n.value AS v RETURN count(v)"
+      memgraph: "MATCH (n:Node) WITH DISTINCT n.value AS v RETURN count(v)"
+      neo4j: "MATCH (n:Node) WITH DISTINCT n.value AS v RETURN count(v)"
+      kuzu: "MATCH (n:Node) WITH DISTINCT n.value AS v RETURN count(v)"
+    notes:
+      helixdb: "Omitted: count() rate-limited and no value-level DISTINCT."
+      surrealdb: "Omitted: DISTINCT on `value` needs SELECT VALUE, where `value` is reserved (same parse limit as the `distinct` workload)."
+
+  - id: with_aggregate_then_filter
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WITH n.value % 10 AS b, count(*) AS c WHERE c > 50 RETURN b, c"
+      grafeo: "MATCH (n:Node) WITH n.value % 10 AS b, count(*) AS c WHERE c > 50 RETURN b, c"
+      memgraph: "MATCH (n:Node) WITH n.value % 10 AS b, count(*) AS c WHERE c > 50 RETURN b, c"
+      neo4j: "MATCH (n:Node) WITH n.value % 10 AS b, count(*) AS c WHERE c > 50 RETURN b, c"
+      kuzu: "MATCH (n:Node) WITH n.value % 10 AS b, count(*) AS c WHERE c > 50 RETURN b, c"
+    notes:
+      helixdb: "Omitted: group-then-having on a computed key (value % 10) isn't expressible; group_count keys on a stored property."
+      surrealdb: "Omitted: groups on `value % 10`; SurrealQL rejects `%` in a projection used as a GROUP BY key (same parse limit as grouped_aggregation)."
+
+  - id: case_when
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN CASE WHEN n.value > 50 THEN 'high' ELSE 'low' END"
+      helixdb: "case_when"
+      grafeo: "MATCH (n:Node) RETURN CASE WHEN n.value > 50 THEN 'high' ELSE 'low' END"
+      memgraph: "MATCH (n:Node) RETURN CASE WHEN n.value > 50 THEN 'high' ELSE 'low' END"
+      neo4j: "MATCH (n:Node) RETURN CASE WHEN n.value > 50 THEN 'high' ELSE 'low' END"
+      kuzu: "MATCH (n:Node) RETURN CASE WHEN n.value > 50 THEN 'high' ELSE 'low' END"
+      surrealdb: "SELECT IF value > 50 THEN 'high' ELSE 'low' END AS bucket FROM node;"
+
+  - id: coalesce_existing
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN coalesce(n.value, 0)"
+      helixdb: "coalesce_existing"
+      grafeo: "MATCH (n:Node) RETURN coalesce(n.value, 0)"
+      memgraph: "MATCH (n:Node) RETURN coalesce(n.value, 0)"
+      neo4j: "MATCH (n:Node) RETURN coalesce(n.value, 0)"
+      kuzu: "MATCH (n:Node) RETURN coalesce(n.value, 0)"
+      surrealdb: "SELECT (value ?? 0) AS v FROM node;"
+
+  - id: computed_in_return
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN n.value * 2 AS doubled"
+      helixdb: "computed_in_return"
+      grafeo: "MATCH (n:Node) RETURN n.value * 2 AS doubled"
+      memgraph: "MATCH (n:Node) RETURN n.value * 2 AS doubled"
+      neo4j: "MATCH (n:Node) RETURN n.value * 2 AS doubled"
+      kuzu: "MATCH (n:Node) RETURN n.value * 2 AS doubled"
+      surrealdb: "SELECT (value * 2) AS doubled FROM node;"
+
+  - id: predicate_via_function
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) WHERE size(n.name) > 5 RETURN n.id"
+      grafeo: "MATCH (n:Node) WHERE size(n.name) > 5 RETURN n.id"
+      memgraph: "MATCH (n:Node) WHERE size(n.name) > 5 RETURN n.id"
+      neo4j: "MATCH (n:Node) WHERE size(n.name) > 5 RETURN n.id"
+      kuzu: "MATCH (n:Node) WHERE size(n.name) > 5 RETURN n.id"
+      surrealdb: "SELECT id FROM node WHERE string::len(name) > 5;"
+    notes:
+      helixdb: "Omitted: WHERE size(name) needs a length() scalar the DSL doesn't provide."
+
+  - id: distinct_with_order
+    group: pipeline
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN DISTINCT n.value ORDER BY n.value"
+      grafeo: "MATCH (n:Node) RETURN DISTINCT n.value ORDER BY n.value"
+      memgraph: "MATCH (n:Node) RETURN DISTINCT n.value ORDER BY n.value"
+      neo4j: "MATCH (n:Node) RETURN DISTINCT n.value ORDER BY n.value"
+      kuzu: "MATCH (n:Node) RETURN DISTINCT n.value ORDER BY n.value"
+    notes:
+      helixdb: "Omitted: no value-level DISTINCT (see distinct)."
+      surrealdb: "Omitted: DISTINCT + ORDER BY on `value`, which is reserved in both SELECT VALUE and ORDER BY (see distinct, order_by_multi_key)."
+
+  # ---------------------------------------------------------------------
+  # lists & ranges
+  # ---------------------------------------------------------------------
+  - id: list_in_construction
+    group: lists
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN [n.id, n.value]"
+      helixdb: "list_in_construction"
+      grafeo: "MATCH (n:Node) RETURN [n.id, n.value]"
+      memgraph: "MATCH (n:Node) RETURN [n.id, n.value]"
+      neo4j: "MATCH (n:Node) RETURN [n.id, n.value]"
+      kuzu: "MATCH (n:Node) RETURN [n.id, n.value]"
+      surrealdb: "SELECT [id, value] AS pair FROM node;"
+
+  - id: list_unwind_explicit
+    group: lists
+    fixture: empty
+    queries:
+      lora: "UNWIND [1, 2, 3, 4, 5] AS x RETURN x"
+      grafeo: "UNWIND [1, 2, 3, 4, 5] AS x RETURN x"
+      memgraph: "UNWIND [1, 2, 3, 4, 5] AS x RETURN x"
+      neo4j: "UNWIND [1, 2, 3, 4, 5] AS x RETURN x"
+      kuzu: "UNWIND [1, 2, 3, 4, 5] AS x RETURN x"
+      surrealdb: "SELECT * FROM [1, 2, 3, 4, 5];"
+
+  - id: range_function
+    group: lists
+    fixture: empty
+    queries:
+      lora: "UNWIND range(1, 100) AS x RETURN x"
+      grafeo: "UNWIND range(1, 100) AS x RETURN x"
+      memgraph: "UNWIND range(1, 100) AS x RETURN x"
+      neo4j: "UNWIND range(1, 100) AS x RETURN x"
+      kuzu: "UNWIND range(1, 100) AS x RETURN x"
+    notes:
+      surrealdb: "Omitted: SurrealQL has no row-generating numeric range (no UNWIND/range equivalent); the explicit-list unwind is covered by list_unwind_explicit."
+
+  # ---------------------------------------------------------------------
+  # sort & paginate
+  # ---------------------------------------------------------------------
+  - id: order_by_id_asc
+    group: sort
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN n.id ORDER BY n.id LIMIT 100"
+      helixdb: "order_by_id_asc"
+      grafeo: "MATCH (n:Node) RETURN n.id ORDER BY n.id LIMIT 100"
+      memgraph: "MATCH (n:Node) RETURN n.id ORDER BY n.id LIMIT 100"
+      neo4j: "MATCH (n:Node) RETURN n.id ORDER BY n.id LIMIT 100"
+      kuzu: "MATCH (n:Node) RETURN n.id ORDER BY n.id LIMIT 100"
+      surrealdb: "SELECT id FROM node ORDER BY id ASC LIMIT 100;"
+
+  - id: order_by_multi_key
+    group: sort
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN n.id ORDER BY n.value DESC, n.id ASC LIMIT 50"
+      helixdb: "order_by_multi_key"
+      grafeo: "MATCH (n:Node) RETURN n.id ORDER BY n.value DESC, n.id ASC LIMIT 50"
+      memgraph: "MATCH (n:Node) RETURN n.id ORDER BY n.value DESC, n.id ASC LIMIT 50"
+      neo4j: "MATCH (n:Node) RETURN n.id ORDER BY n.value DESC, n.id ASC LIMIT 50"
+      kuzu: "MATCH (n:Node) RETURN n.id ORDER BY n.value DESC, n.id ASC LIMIT 50"
+    notes:
+      surrealdb: "Omitted: `value` is reserved in SurrealQL ORDER BY clauses (parse error)."
+
+  - id: skip_limit
+    group: sort
+    fixture: nodes
+    queries:
+      lora: "MATCH (n:Node) RETURN n.id ORDER BY n.id SKIP 100 LIMIT 50"
+      helixdb: "skip_limit"
+      grafeo: "MATCH (n:Node) RETURN n.id ORDER BY n.id SKIP 100 LIMIT 50"
+      memgraph: "MATCH (n:Node) RETURN n.id ORDER BY n.id SKIP 100 LIMIT 50"
+      neo4j: "MATCH (n:Node) RETURN n.id ORDER BY n.id SKIP 100 LIMIT 50"
+      kuzu: "MATCH (n:Node) RETURN n.id ORDER BY n.id SKIP 100 LIMIT 50"
+      surrealdb: "SELECT id FROM node ORDER BY id ASC LIMIT 50 START 100;"
+
+  # ---------------------------------------------------------------------
+  # traversals (chain)
+  # ---------------------------------------------------------------------
+  - id: traversal_one_hop
+    group: traversals
+    fixture: chain
+    throughput: edges_minus_1
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx"
+      grafeo: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN a.idx, b.idx"
+      surrealdb: "SELECT idx, ->next->chain.idx AS next_idx FROM chain;"
+      helixdb: "one_hop"
+
+  - id: traversal_two_hop
+    group: traversals
+    fixture: chain
+    throughput: edges_minus_2
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain) RETURN a.idx, c.idx"
+      grafeo: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain) RETURN a.idx, c.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain) RETURN a.idx, c.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain) RETURN a.idx, c.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain) RETURN a.idx, c.idx"
+      surrealdb: "SELECT idx, ->next->chain->next->chain.idx AS second_idx FROM chain;"
+      helixdb: "two_hop"
+
+  - id: traversal_three_hop
+    group: traversals
+    fixture: chain
+    throughput: edges_minus_3
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain)-[:NEXT]->(d:Chain) RETURN a.idx, d.idx"
+      grafeo: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain)-[:NEXT]->(d:Chain) RETURN a.idx, d.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain)-[:NEXT]->(d:Chain) RETURN a.idx, d.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain)-[:NEXT]->(d:Chain) RETURN a.idx, d.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT]->(b:Chain)-[:NEXT]->(c:Chain)-[:NEXT]->(d:Chain) RETURN a.idx, d.idx"
+      surrealdb: "SELECT idx, ->next->chain->next->chain->next->chain.idx AS third_idx FROM chain;"
+      helixdb: "three_hop"
+
+  - id: traversal_filter_one_hop
+    group: traversals
+    fixture: chain
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT]->(b:Chain) WHERE a.idx > 100 RETURN a.idx, b.idx"
+      grafeo: "MATCH (a:Chain)-[:NEXT]->(b:Chain) WHERE a.idx > 100 RETURN a.idx, b.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT]->(b:Chain) WHERE a.idx > 100 RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT]->(b:Chain) WHERE a.idx > 100 RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT]->(b:Chain) WHERE a.idx > 100 RETURN a.idx, b.idx"
+      surrealdb: "SELECT idx, ->next->chain.idx AS next_idx FROM chain WHERE idx > 100;"
+      helixdb: "filter_one_hop"
+
+  - id: traversal_count_one_hop
+    group: traversals
+    fixture: chain
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN count(*)"
+      grafeo: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN count(*)"
+      memgraph: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN count(*)"
+      neo4j: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN count(*)"
+      kuzu: "MATCH (a:Chain)-[:NEXT]->(b:Chain) RETURN count(*)"
+      surrealdb: "SELECT count() FROM next GROUP ALL;"
+
+  - id: traversal_undirected
+    group: traversals
+    fixture: chain
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      helixdb: "undirected"
+      grafeo: "MATCH (a:Chain)-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+    notes:
+      surrealdb: "Omitted: SurrealDB graph edges are directional; the undirected `-[:NEXT]-` pattern has no single like-for-like arrow form (forward and reverse are covered by traversal_one_hop and traversal_reverse)."
+
+  - id: traversal_reverse
+    group: traversals
+    fixture: chain
+    queries:
+      lora: "MATCH (a:Chain)<-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      helixdb: "reverse"
+      grafeo: "MATCH (a:Chain)<-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      memgraph: "MATCH (a:Chain)<-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)<-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)<-[:NEXT]-(b:Chain) RETURN a.idx, b.idx"
+      surrealdb: "SELECT idx, <-next<-chain.idx AS prev_idx FROM chain;"
+
+  - id: variable_length_path
+    group: traversals
+    fixture: chain
+    size: 100
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT*1..3]->(b:Chain) RETURN a.idx, b.idx"
+      grafeo: "MATCH (a:Chain)-[:NEXT*1..3]->(b:Chain) RETURN a.idx, b.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT*1..3]->(b:Chain) RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT*1..3]->(b:Chain) RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT*1..3]->(b:Chain) RETURN a.idx, b.idx"
+    notes:
+      helixdb: "Omitted: range-bounded variable-length expansion isn't mapped; fixed depths are benched as recursive_depth2/3/5."
+      surrealdb: "Omitted: SurrealQL recursive traversal takes a fixed depth `@{n}` (see recursive_depth2/3/5); a `1..3` range expanded from every start node has no like-for-like form."
+
+  - id: varlen_2_to_5
+    group: traversals
+    fixture: chain
+    size: 100
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT*2..5]->(b:Chain) RETURN a.idx, b.idx"
+      grafeo: "MATCH (a:Chain)-[:NEXT*2..5]->(b:Chain) RETURN a.idx, b.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT*2..5]->(b:Chain) RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT*2..5]->(b:Chain) RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT*2..5]->(b:Chain) RETURN a.idx, b.idx"
+    notes:
+      helixdb: "Omitted: range-bounded variable-length expansion isn't mapped (see variable_length_path)."
+      surrealdb: "Omitted: range-bounded variable-length expansion from every start node; see variable_length_path."
+
+  - id: varlen_exact_5
+    group: traversals
+    fixture: chain
+    size: 100
+    queries:
+      lora: "MATCH (a:Chain)-[:NEXT*5..5]->(b:Chain) RETURN a.idx, b.idx"
+      grafeo: "MATCH (a:Chain)-[:NEXT*5..5]->(b:Chain) RETURN a.idx, b.idx"
+      memgraph: "MATCH (a:Chain)-[:NEXT*5..5]->(b:Chain) RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)-[:NEXT*5..5]->(b:Chain) RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)-[:NEXT*5..5]->(b:Chain) RETURN a.idx, b.idx"
+    notes:
+      helixdb: "Omitted: range-bounded variable-length expansion isn't mapped (see variable_length_path)."
+      surrealdb: "Omitted: fixed-depth expansion from every start node; the anchored single-source equivalent is benched as recursive_depth5."
+
+  - id: direct_record_traversal
+    group: traversals
+    fixture: chain
+    throughput: single
+    queries:
+      lora: "MATCH (a:Chain {idx: 0})-[:NEXT]->(b:Chain) RETURN b.idx"
+      helixdb: "direct_record"
+      grafeo: "MATCH (a:Chain {idx: 0})-[:NEXT]->(b:Chain) RETURN b.idx"
+      memgraph: "MATCH (a:Chain {idx: 0})-[:NEXT]->(b:Chain) RETURN b.idx"
+      neo4j: "MATCH (a:Chain {idx: 0})-[:NEXT]->(b:Chain) RETURN b.idx"
+      kuzu: "MATCH (a:Chain {idx: 0})-[:NEXT]->(b:Chain) RETURN b.idx"
+      surrealdb: "chain:0->next->chain;"
+
+  - id: relation_filter
+    group: traversals
+    fixture: chain
+    queries:
+      lora: "MATCH (a:Chain)-[r:NEXT]->(b:Chain) WHERE r.step >= ${half_size} RETURN a.idx, b.idx"
+      helixdb: "relation_filter:${half_size}"
+      memgraph: "MATCH (a:Chain)-[r:NEXT]->(b:Chain) WHERE r.step >= ${half_size} RETURN a.idx, b.idx"
+      neo4j: "MATCH (a:Chain)-[r:NEXT]->(b:Chain) WHERE r.step >= ${half_size} RETURN a.idx, b.idx"
+      kuzu: "MATCH (a:Chain)-[r:NEXT]->(b:Chain) WHERE r.step >= ${half_size} RETURN a.idx, b.idx"
+      surrealdb: "SELECT idx, ->(next WHERE step >= ${half_size})->chain.idx AS later FROM chain;"
+    notes:
+      grafeo: "Omitted: grafeo's `create_edge` facade takes no edge properties, so the chain fixture has no `step` to filter on (see grafeo.rs seed_chain). memgraph/neo4j/kuzu seed `step` directly, so they do run this workload."
+
+  - id: recursive_depth2
+    group: traversals
+    fixture: chain
+    throughput: single
+    queries:
+      lora: "MATCH (a:Chain {idx: 0})-[:NEXT*2..2]->(b:Chain) RETURN b.idx"
+      helixdb: "recursive_depth2"
+      grafeo: "MATCH (a:Chain {idx: 0})-[:NEXT*2..2]->(b:Chain) RETURN b.idx"
+      memgraph: "MATCH (a:Chain {idx: 0})-[:NEXT*2..2]->(b:Chain) RETURN b.idx"
+      neo4j: "MATCH (a:Chain {idx: 0})-[:NEXT*2..2]->(b:Chain) RETURN b.idx"
+      kuzu: "MATCH (a:Chain {idx: 0})-[:NEXT*2..2]->(b:Chain) RETURN b.idx"
+      surrealdb: "SELECT @{2}(->next->chain).idx AS second_idx FROM chain:0;"
+
+  - id: recursive_depth3
+    group: traversals
+    fixture: chain
+    throughput: single
+    queries:
+      lora: "MATCH (a:Chain {idx: 0})-[:NEXT*3..3]->(b:Chain) RETURN b.idx"
+      helixdb: "recursive_depth3"
+      grafeo: "MATCH (a:Chain {idx: 0})-[:NEXT*3..3]->(b:Chain) RETURN b.idx"
+      memgraph: "MATCH (a:Chain {idx: 0})-[:NEXT*3..3]->(b:Chain) RETURN b.idx"
+      neo4j: "MATCH (a:Chain {idx: 0})-[:NEXT*3..3]->(b:Chain) RETURN b.idx"
+      kuzu: "MATCH (a:Chain {idx: 0})-[:NEXT*3..3]->(b:Chain) RETURN b.idx"
+      surrealdb: "SELECT @{3}(->next->chain).idx AS third_idx FROM chain:0;"
+
+  - id: recursive_depth5
+    group: traversals
+    fixture: chain
+    throughput: single
+    queries:
+      lora: "MATCH (a:Chain {idx: 0})-[:NEXT*5..5]->(b:Chain) RETURN b.idx"
+      helixdb: "recursive_depth5"
+      grafeo: "MATCH (a:Chain {idx: 0})-[:NEXT*5..5]->(b:Chain) RETURN b.idx"
+      memgraph: "MATCH (a:Chain {idx: 0})-[:NEXT*5..5]->(b:Chain) RETURN b.idx"
+      neo4j: "MATCH (a:Chain {idx: 0})-[:NEXT*5..5]->(b:Chain) RETURN b.idx"
+      kuzu: "MATCH (a:Chain {idx: 0})-[:NEXT*5..5]->(b:Chain) RETURN b.idx"
+      surrealdb: "SELECT @{5}(->next->chain).idx AS fifth_idx FROM chain:0;"
+
+  # ---------------------------------------------------------------------
+  # patterns (star + social)
+  # ---------------------------------------------------------------------
+  - id: star_fanout
+    group: patterns
+    fixture: star
+    throughput: elements
+    queries:
+      lora: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN l.id"
+      grafeo: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN l.id"
+      memgraph: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN l.id"
+      neo4j: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN l.id"
+      kuzu: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN l.id"
+      surrealdb: "SELECT ->arm->leaf.idx AS leaves FROM hub:center;"
+      helixdb: "star_fanout"
+
+  - id: star_fanout_count
+    group: patterns
+    fixture: star
+    queries:
+      lora: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN count(l)"
+      grafeo: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN count(l)"
+      memgraph: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN count(l)"
+      neo4j: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN count(l)"
+      kuzu: "MATCH (h:Hub)-[:ARM]->(l:Leaf) RETURN count(l)"
+      surrealdb: "SELECT count(->arm->leaf) AS leaves FROM hub:center;"
+    notes:
+      helixdb: "Omitted: the HelixDB enterprise-dev image rejects `count()` dynamic queries with `rate limit exceeded` (its other 9 workloads run fine); see aggregate_count."
+
+  - id: star_fanout_filter
+    group: patterns
+    fixture: star
+    queries:
+      lora: "MATCH (h:Hub)-[:ARM]->(l:Leaf) WHERE l.id < 100 RETURN l.id"
+      helixdb: "star_fanout_filter"
+      grafeo: "MATCH (h:Hub)-[:ARM]->(l:Leaf) WHERE l.id < 100 RETURN l.id"
+      memgraph: "MATCH (h:Hub)-[:ARM]->(l:Leaf) WHERE l.id < 100 RETURN l.id"
+      neo4j: "MATCH (h:Hub)-[:ARM]->(l:Leaf) WHERE l.id < 100 RETURN l.id"
+      kuzu: "MATCH (h:Hub)-[:ARM]->(l:Leaf) WHERE l.id < 100 RETURN l.id"
+      surrealdb: "SELECT ->arm->(leaf WHERE idx < 100).idx AS leaves FROM hub:center;"
+
+  - id: edge_subquery_clause
+    group: patterns
+    fixture: social
+    throughput: elements
+    queries:
+      lora: "MATCH (p:Person)-[k:KNOWS]->(f:Person) WHERE k.strength >= 3 RETURN p.idx, f.idx, k.strength"
+      helixdb: "edge_subquery"
+      memgraph: "MATCH (p:Person)-[k:KNOWS]->(f:Person) WHERE k.strength >= 3 RETURN p.idx, f.idx, k.strength"
+      neo4j: "MATCH (p:Person)-[k:KNOWS]->(f:Person) WHERE k.strength >= 3 RETURN p.idx, f.idx, k.strength"
+      kuzu: "MATCH (p:Person)-[k:KNOWS]->(f:Person) WHERE k.strength >= 3 RETURN p.idx, f.idx, k.strength"
+      surrealdb: "SELECT idx, ->(SELECT out.idx AS friend_idx, strength FROM knows WHERE strength >= 3) AS strong FROM person;"
+    notes:
+      grafeo: "Omitted: grafeo's `create_edge` facade takes no edge properties, so the social fixture has no `strength` to filter on (see grafeo.rs seed_social). memgraph/neo4j/kuzu seed `strength` directly, so they do run this workload."

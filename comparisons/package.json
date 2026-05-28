@@ -1,0 +1,21 @@
+{
+  "name": "lora-comparisons",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runner + table formatter for the lora-database vs other graph DBs comparison bench.",
+  "engines": {
+    "node": ">=14"
+  },
+  "scripts": {
+    "bench": "node scripts/compare.js",
+    "bench:mem": "node scripts/compare.js --mode=mem",
+    "bench:persistent": "node scripts/compare.js --mode=persistent",
+    "bench:both": "node scripts/compare.js --mode=both",
+    "bench:csv": "node scripts/compare.js --format=csv",
+    "bench:tsv": "node scripts/compare.js --format=tsv",
+    "bench:json": "node scripts/compare.js --format=json",
+    "report": "node scripts/compare.js --no-run",
+    "report:csv": "node scripts/compare.js --no-run --format=csv",
+    "report:json": "node scripts/compare.js --no-run --format=json"
+  }
+}

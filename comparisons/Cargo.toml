@@ -1,0 +1,61 @@
+[package]
+name = "comparison"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+grafeo = { version = "0.5.42", features = ["cypher", "wal"] }
+lora-database = { path = "../crates/lora-database" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+surrealdb = { version = "2.3.10", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+# Kuzu is an optional engine. It links a C++ core via the `kuzu` crate's
+# build script, which requires cmake and a C++ toolchain. Enable with
+# `cargo bench --features kuzu`. Default features (algo/fts/json/vector)
+# are kept on so the generated extension loader's symbols resolve at link
+# time; disabling them requires an explicit clean rebuild to regenerate
+# the loader cpp.
+kuzu = { version = "0.11", optional = true }
+
+# Memgraph is an optional, server-only engine talked to over the Bolt
+# protocol via the `rsmgclient` crate. Unlike the other engines there is
+# no embedded mode: enabling the feature only links the client library;
+# the bench expects a running Memgraph instance at `127.0.0.1:7687`.
+# Enable with `cargo bench --features memgraph`.
+rsmgclient = { version = "2.0.3", optional = true }
+
+# HelixDB is an optional, server-only engine. The `helix-db` crate on
+# crates.io is a client SDK (typed query-builder DSL + async HTTP
+# `Client`); there is no embedded mode. The bench expects a HelixDB
+# instance reachable at `http://127.0.0.1:6969` (override via
+# `HELIXDB_URL`). Enable with `cargo bench --features helixdb`.
+helix-db = { version = "2.0.0", optional = true }
+
+# Neo4j is an optional, server-only engine talked to over the Bolt
+# protocol via the `neo4rs` crate. Unlike Memgraph (which also speaks
+# Bolt) the default port is 7688 in this crate to avoid colliding with
+# Memgraph's 7687 when both are running side-by-side. The bench expects
+# a Neo4j instance reachable at `bolt://127.0.0.1:7688` (override via
+# `NEO4J_URL`). Enable with `cargo bench --features neo4j`.
+neo4rs = { version = "0.8.0", optional = true }
+
+[features]
+default = []
+kuzu = ["dep:kuzu"]
+memgraph = ["dep:rsmgclient"]
+neo4j = ["dep:neo4rs"]
+helixdb = ["dep:helix-db"]
+
+[[bench]]
+name = "comparison"
+harness = false

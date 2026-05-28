@@ -1,0 +1,39 @@
+# HelixDB server for the comparison bench.
+#
+# `comparisons/src/engines/helixdb.rs` talks to a HelixDB v2 instance over
+# HTTP at the dynamic-query endpoint `POST /v1/query`. HelixDB ships that
+# gateway as a prebuilt image which the `helix` CLI normally runs via
+# `helix run dev`; this compose file runs the same image directly so the
+# bench can point at it without the CLI.
+#
+# ── AUTH REQUIRED ───────────────────────────────────────────────────────
+# `ghcr.io/helixdb/database-dev` is a PRIVATE GHCR package — an anonymous
+# `docker pull` returns `denied`. Authenticate first with a token from your
+# HelixDB account (a GitHub PAT with `read:packages` that has been granted
+# access to the package):
+#
+#   echo "$HELIX_GHCR_TOKEN" | docker login ghcr.io -u <github-username> --password-stdin
+#   docker compose -f comparisons/helix/docker-compose.yml up -d
+#
+# Then run the HelixDB column of the bench:
+#
+#   cargo bench --features helixdb --bench comparison
+#
+# NOTE: untested end-to-end here because the image could not be pulled
+# without credentials. The container port (8080) and the in-memory /
+# dynamic-query defaults are taken from HelixDB's docs; adjust if the image
+# you have access to differs.
+# ─────────────────────────────────────────────────────────────────────────
+
+services:
+  helixdb:
+    image: ghcr.io/helixdb/database-dev:latest
+    container_name: helix-bench
+    # Adapter default is http://127.0.0.1:6969 (override via HELIXDB_URL).
+    # The gateway serves the query API on container port 8080.
+    ports:
+      - "6969:8080"
+    restart: unless-stopped
+    # Storage defaults to in-memory. Dynamic `POST /v1/query` is enabled
+    # when PATH_TO_QUERIES is unset — which is exactly what the bench's
+    # helixdb adapter relies on, so no query files are mounted.
