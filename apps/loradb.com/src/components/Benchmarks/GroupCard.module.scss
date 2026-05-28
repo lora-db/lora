@@ -1,0 +1,229 @@
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 1.2rem 1.25rem;
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  // Clip the gradient ::before stripe to the card's rounded corners so
+  // it never bleeds past the border arcs. Box-shadow draws outside the
+  // element and is unaffected by overflow:hidden, so the hover halo
+  // still renders correctly.
+  overflow: hidden;
+  transition: transform var(--t) var(--t-ease),
+    border-color var(--t) var(--t-ease),
+    box-shadow var(--t) var(--t-ease);
+
+  // Top accent stripe. `inset: -1px -1px auto -1px` walks the stripe
+  // onto the card's border so the stripe's edges align with the
+  // card's outer radius (the radius arc lives on the border, not the
+  // padding box). Combined with overflow:hidden above, the stripe is
+  // then clipped by the card's rounded corners — no half-pixel gap
+  // and no overhang past the border arc.
+  &::before {
+    content: '';
+    position: absolute;
+    inset: -1px -1px auto -1px;
+    height: 3px;
+    background: var(--brand-gradient);
+    opacity: 0;
+    transition: opacity var(--t) var(--t-ease);
+    pointer-events: none;
+  }
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: var(--brand-border-strong-c);
+    box-shadow: 0 14px 28px -18px color-mix(in srgb, var(--brand-accent-a) 35%, transparent);
+  }
+}
+
+// Cards where LoraDB wins: the gradient top stripe is permanently
+// visible so the eight Lora-wins groups read distinct from the four
+// competitor-wins groups at a glance.
+.cardWin::before {
+  opacity: 1;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+.name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--ifm-heading-color);
+  letter-spacing: -0.01em;
+  text-transform: capitalize;
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--brand-accent-a);
+  }
+}
+
+.count {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ifm-secondary-heading-color);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.winner {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+
+.winnerLabel {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+}
+
+.winnerValue {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--ifm-heading-color);
+  text-transform: capitalize;
+}
+
+.winnerValueLora {
+  color: var(--brand-accent-a);
+}
+
+// LoraDB row — emphasised on every card because LoraDB is the anchor.
+.lora {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.85rem;
+  border-radius: 10px;
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--brand-border-c);
+}
+
+.loraLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+}
+
+.loraValue {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ifm-heading-color);
+}
+
+.loraValueWinner {
+  color: var(--brand-accent-a);
+  font-weight: 700;
+}
+
+.chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-family: var(--ifm-font-family-monospace);
+  background: var(--brand-surface-c);
+  border: 1px solid var(--brand-border-c);
+  color: var(--ifm-secondary-heading-color);
+
+  html[data-theme='dark'] & {
+    background: rgba(77, 141, 255, 0.05);
+  }
+}
+
+.chipEngine {
+  font-weight: 700;
+  color: var(--ifm-heading-color);
+  font-family: var(--ifm-font-family-base);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chipValue {
+  color: var(--ifm-font-color-base);
+
+  // Append the `×` multiplier suffix via CSS so the chip reads e.g.
+  // "Kuzu 1.14×". formatRatio() already adds one `×`; this is a
+  // second, slightly muted glyph that anchors the chip rhythm.
+  // Winner / omitted chips opt out below.
+  &::after {
+    content: '×';
+    margin-left: 0.05rem;
+    opacity: 0.55;
+  }
+}
+
+.chip_winner .chipValue,
+.chip_omitted .chipValue {
+  &::after {
+    content: '';
+  }
+}
+
+// Winner chip — soft accent rather than a full gradient fill. Same
+// language as the LoraDB row above, so the card has two consistent
+// "accent" surfaces that read as one design.
+.chip_winner {
+  color: var(--brand-accent-a);
+  background: var(--brand-accent-a-soft);
+  border-color: var(--brand-border-strong-c);
+  font-weight: 700;
+
+  .chipEngine {
+    color: var(--brand-accent-a);
+  }
+
+  // Small dot before the engine name so the winning chip has one
+  // extra glanceable signal beyond colour alone (accessible for users
+  // with reduced colour perception).
+  .chipEngine::before {
+    content: '';
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-right: 0.35rem;
+    border-radius: 50%;
+    background: var(--brand-gradient);
+    transform: translateY(-1px);
+  }
+}
+
+.chip_omitted {
+  opacity: 0.55;
+  font-style: italic;
+}

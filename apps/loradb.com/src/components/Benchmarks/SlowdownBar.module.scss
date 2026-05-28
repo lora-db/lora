@@ -1,0 +1,92 @@
+.row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr) minmax(6rem, auto);
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.55rem 0;
+
+  @media (max-width: 600px) {
+    grid-template-columns: minmax(6rem, 7rem) minmax(0, 1fr) minmax(5rem, auto);
+    gap: 0.55rem;
+  }
+}
+
+.label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ifm-heading-color);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--brand-accent-a-soft);
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--brand-accent-a) 80%, transparent) 0%,
+    color-mix(in srgb, var(--brand-accent-b) 90%, transparent) 100%
+  );
+  transition: width var(--t-slow) var(--t-ease);
+}
+
+.value {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ifm-secondary-heading-color);
+  text-align: right;
+  white-space: nowrap;
+}
+
+// "Winner" row — the engine that fastest. Render the bar as a thin
+// gradient line so it reads as the baseline, not as a long slowdown.
+.winner {
+  .fill {
+    background: var(--brand-gradient);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--brand-accent-a) 50%, transparent);
+  }
+
+  .value {
+    color: var(--brand-accent-a);
+  }
+}
+
+.lora {
+  .label {
+    color: var(--brand-accent-a);
+    font-weight: 700;
+  }
+}
+
+.omitted {
+  opacity: 0.55;
+
+  .fill {
+    background: repeating-linear-gradient(
+      45deg,
+      var(--brand-border-c),
+      var(--brand-border-c) 4px,
+      transparent 4px,
+      transparent 8px
+    );
+  }
+
+  .value {
+    color: var(--ifm-secondary-heading-color);
+    font-style: italic;
+  }
+}

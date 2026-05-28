@@ -1,0 +1,57 @@
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.35rem;
+  border-radius: 999px;
+  background: var(--token-secondary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  box-shadow: 0 6px 18px -16px color-mix(in srgb, var(--brand-accent-a) 60%, transparent);
+
+  html[data-theme='dark'] & {
+    background: rgba(14, 20, 32, 0.7);
+  }
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--ifm-secondary-heading-color);
+  text-decoration: none;
+  transition: color var(--t) var(--t-ease),
+    background-color var(--t) var(--t-ease);
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--ifm-heading-color);
+    text-decoration: none;
+    background: var(--brand-accent-a-soft);
+  }
+}
+
+.pillActive {
+  color: #fff;
+  background: var(--brand-gradient);
+  box-shadow: 0 4px 10px -4px color-mix(in srgb, var(--brand-accent-a) 60%, transparent);
+
+  &:hover {
+    color: #fff;
+    background: var(--brand-gradient);
+  }
+}
+
+.pillDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.65;
+}

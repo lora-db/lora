@@ -1,0 +1,254 @@
+.wrap {
+  // Outer frame — provides the rounded edge that the inner scroll
+  // container would otherwise clip on its own.
+  border: 1px solid var(--brand-border-c);
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  overflow: hidden;
+  box-shadow: 0 12px 32px -24px color-mix(in srgb, var(--brand-accent-a) 30%, transparent);
+}
+
+.scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.scrollCompact {
+  .table th,
+  .table td {
+    padding: 0.7rem 0.85rem;
+  }
+}
+
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  // The outer wrapper draws the border; keep the table free of one
+  // so the inset shadow it inherits from infima doesn't double up.
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0.85rem 1rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ifm-secondary-heading-color);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: var(--brand-surface-c);
+  border-bottom: 1px solid var(--brand-border-c);
+
+  html[data-theme='dark'] & {
+    background: rgba(77, 141, 255, 0.05);
+  }
+}
+
+.table th,
+.table td {
+  padding: 0.85rem 1rem;
+  vertical-align: top;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.table tbody tr:last-child th,
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+// Thead
+.firstHeader,
+.engineHeader,
+.numericHeader,
+.winnerHeader {
+  background: var(--brand-surface-c);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--brand-border-c);
+
+  html[data-theme='dark'] & {
+    background: rgba(77, 141, 255, 0.05);
+  }
+}
+
+.firstHeader {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+}
+
+.engineHeaderLora {
+  color: var(--brand-accent-a);
+}
+
+.numericHeader {
+  text-align: right;
+}
+
+.winnerHeader {
+  text-align: left;
+}
+
+.headerInner {
+  display: inline-block;
+}
+
+// First column — sticky on horizontal scroll so the workload name
+// stays in view while the engine columns slide.
+.firstCell {
+  position: sticky;
+  left: 0;
+  background: var(--token-primary-bg-c);
+  z-index: 1;
+  text-align: left;
+  min-width: 12rem;
+  border-right: 1px solid var(--brand-border-c);
+
+  // Subtle drop-shadow that hints at the scroll edge.
+  box-shadow: 6px 0 12px -10px color-mix(in srgb, var(--brand-accent-a) 30%, transparent);
+}
+
+.rowLabel {
+  display: block;
+  font-weight: 600;
+  color: var(--ifm-heading-color);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+}
+
+.rowSub {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+  color: var(--ifm-secondary-heading-color);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.sizeCell {
+  text-align: right;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  color: var(--ifm-secondary-heading-color);
+  white-space: nowrap;
+}
+
+.cell {
+  text-align: left;
+  white-space: nowrap;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+}
+
+.cellTime {
+  display: block;
+  color: var(--ifm-heading-color);
+  font-weight: 600;
+}
+
+.cellRatio {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--ifm-secondary-heading-color);
+  letter-spacing: 0.02em;
+}
+
+.cellLora {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--brand-accent-a) 6%, transparent) 0%,
+    color-mix(in srgb, var(--brand-accent-a) 2%, transparent) 100%
+  );
+
+  .cellTime {
+    color: var(--brand-accent-a);
+  }
+}
+
+.cellWinner {
+  background: color-mix(in srgb, var(--brand-accent-a) 8%, transparent);
+
+  .cellTime {
+    color: var(--brand-accent-a);
+  }
+}
+
+.cellOverallWinner {
+  // Stronger highlight when this cell is THE winner of the row.
+  background: color-mix(in srgb, var(--brand-accent-a) 14%, transparent);
+}
+
+.cellOmitted {
+  background: transparent;
+}
+
+.omittedText {
+  display: inline-block;
+  font-style: italic;
+  color: var(--ifm-secondary-heading-color);
+  opacity: 0.7;
+  font-family: var(--ifm-font-family-base);
+}
+
+.totalRow {
+  background: var(--brand-surface-c);
+
+  html[data-theme='dark'] & {
+    background: rgba(77, 141, 255, 0.05);
+  }
+
+  th,
+  td {
+    border-top: 1px solid var(--brand-border-strong-c);
+  }
+
+  .rowLabel {
+    font-size: 0.9375rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .cellTime {
+    font-size: 0.875rem;
+  }
+}
+
+.winnerCell {
+  text-align: left;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.winnerEngine {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  color: var(--ifm-heading-color);
+}
+
+.winnerEngineLora {
+  color: var(--brand-accent-a);
+}
+
+.winnerDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-gradient);
+  flex-shrink: 0;
+}

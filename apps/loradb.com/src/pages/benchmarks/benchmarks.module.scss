@@ -1,0 +1,563 @@
+// Benchmark routes — overview + per-competitor pages share these
+// section primitives. Keeps the visual language identical to the
+// homepage and /features.
+
+.wrapper {
+  background: var(--token-primary-bg-c);
+}
+
+.page {
+  display: block;
+  color: var(--ifm-font-color-base);
+
+  // Anchor jumps land below both the Docusaurus navbar AND the sticky
+  // competitor-nav strip immediately under it. Mirrors the features
+  // page so the in-page TOC behaviour is consistent across the site.
+  // 88px = nav strip height (1.5rem padding × 2 + pill content + 1px
+  // border).
+  > section[id] {
+    scroll-margin-top: calc(var(--ifm-navbar-height, 60px) + 72px);
+  }
+}
+
+// -------------------------------------------------------------------
+// Shared section primitives
+// -------------------------------------------------------------------
+
+.sectionInner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.sectionEyebrow {
+  margin: 0 0 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brand-accent-a);
+
+  &::before {
+    content: '';
+    display: inline-block;
+    width: 18px;
+    height: 1px;
+    background: var(--brand-gradient);
+    border-radius: 1px;
+  }
+}
+
+.sectionTitle {
+  margin: 0 0 1rem;
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.18;
+  color: var(--ifm-heading-color);
+  max-width: 36ch;
+}
+
+.sectionLede {
+  margin: 0 0 2rem;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--ifm-font-color-base);
+  opacity: 0.82;
+  max-width: 56ch;
+}
+
+// -------------------------------------------------------------------
+// Nav strip — sits between hero and content as a sticky-ish breadcrumb
+// of competitor links.
+// -------------------------------------------------------------------
+
+// Sticky competitor-nav strip — pins under the Docusaurus navbar and
+// stays visible while the page scrolls. Mirrors the features page's
+// in-page anchor strip so the site reads as one design language.
+.navSection {
+  position: sticky;
+  top: var(--ifm-navbar-height, 60px);
+  z-index: 5;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--brand-border-c);
+  background: color-mix(in srgb, var(--token-primary-bg-c) 92%, transparent);
+  backdrop-filter: blur(10px);
+  // Match the Docusaurus navbar's hide animation so the two surfaces
+  // move as one. ifm-transition-fast = 200ms.
+  transition: transform var(--ifm-transition-fast, 200ms)
+    var(--ifm-transition-timing-default, ease-in-out);
+  will-change: transform;
+
+  // On mobile the strip eats too much vertical space and overlaps the
+  // navbar's mobile menu. Drop the sticky behaviour and let it scroll
+  // with the page; the pills still work, they just don't pin.
+  @media (max-width: 820px) {
+    position: static;
+    backdrop-filter: none;
+    transform: none !important;
+    transition: none;
+  }
+}
+
+// When the main Docusaurus navbar has been hidden by hideOnScroll,
+// lift the strip by the navbar height so it slides into the navbar's
+// now-empty slot. The end state: the strip's visible top is 0,
+// looking like the strip "took over" the top edge of the viewport.
+.navSectionLifted {
+  transform: translateY(calc(-1 * var(--ifm-navbar-height, 60px)));
+}
+
+.navRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.navHint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ifm-secondary-heading-color);
+  max-width: 36ch;
+}
+
+// -------------------------------------------------------------------
+// Strongest areas
+// -------------------------------------------------------------------
+
+.strongest {
+  padding: clamp(3rem, 6vh, 4.5rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.strongestChips {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.strongestChip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.5rem 0.85rem;
+  border-radius: 999px;
+  background: var(--brand-accent-a-soft);
+  border: 1px solid var(--brand-border-c);
+  font-size: 0.85rem;
+}
+
+.strongestChipName {
+  font-weight: 700;
+  color: var(--brand-accent-a);
+  text-transform: capitalize;
+  letter-spacing: -0.005em;
+}
+
+.strongestChipCount {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+}
+
+// -------------------------------------------------------------------
+// Ranking (slowdown bars)
+// -------------------------------------------------------------------
+
+.ranking {
+  padding: clamp(3rem, 6vh, 4.5rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.barCard {
+  padding: 1.25rem 1.5rem;
+  border-radius: 14px;
+  background: var(--token-primary-bg-c);
+  border: 1px solid var(--brand-border-c);
+  box-shadow: 0 12px 32px -24px color-mix(in srgb, var(--brand-accent-a) 30%, transparent);
+}
+
+.disclaimer {
+  margin-top: 1rem;
+  font-size: 0.8125rem;
+  color: var(--ifm-secondary-heading-color);
+  max-width: 60ch;
+  line-height: 1.5;
+
+  a {
+    color: var(--brand-accent-a);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+}
+
+// -------------------------------------------------------------------
+// Group cards
+// -------------------------------------------------------------------
+
+.groups {
+  padding: clamp(3rem, 6vh, 4.5rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+  background: var(--brand-surface-c);
+
+  html[data-theme='dark'] & {
+    background: rgba(77, 141, 255, 0.03);
+  }
+}
+
+.groupGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+// -------------------------------------------------------------------
+// Overview summary table
+// -------------------------------------------------------------------
+
+.overviewTable {
+  padding: clamp(3rem, 6vh, 4.5rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+// -------------------------------------------------------------------
+// Per-workload detail
+// -------------------------------------------------------------------
+
+.workloads {
+  padding: clamp(3rem, 6vh, 4.5rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.groupSections {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.groupSection {
+  scroll-margin-top: calc(var(--ifm-navbar-height, 60px) + 72px);
+}
+
+.groupSectionHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.groupSectionTitle {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--ifm-heading-color);
+  letter-spacing: -0.015em;
+  text-transform: capitalize;
+}
+
+.groupSectionCount {
+  margin-left: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--ifm-secondary-heading-color);
+  font-family: var(--ifm-font-family-monospace);
+}
+
+.groupSectionWinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8125rem;
+}
+
+.groupSectionWinnerLabel {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+}
+
+.groupSectionWinnerLora {
+  color: var(--brand-accent-a);
+  font-weight: 700;
+}
+
+.groupSectionWinnerOther {
+  color: var(--ifm-heading-color);
+  font-weight: 700;
+}
+
+// -------------------------------------------------------------------
+// Methodology
+// -------------------------------------------------------------------
+
+.disclosure {
+  padding: clamp(3rem, 6vh, 4.5rem) 0 clamp(4rem, 8vh, 6rem);
+}
+
+.disclosureGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.disclosureCard {
+  padding: 1.25rem 1.35rem;
+  border-radius: 14px;
+  border: 1px solid var(--brand-border-c);
+  background: var(--token-primary-bg-c);
+
+  h3 {
+    margin: 0 0 0.55rem;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--ifm-heading-color);
+  }
+
+  p {
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: var(--ifm-font-color-base);
+    opacity: 0.85;
+  }
+
+  a {
+    color: var(--brand-accent-a);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+}
+
+// -------------------------------------------------------------------
+// Competitor pages — additional sections layered on top of the same
+// primitives.
+// -------------------------------------------------------------------
+
+.competitorSummary {
+  padding: clamp(3rem, 6vh, 4.5rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.summaryCard {
+  position: relative;
+  padding: 1.25rem 1.35rem;
+  border-radius: 14px;
+  border: 1px solid var(--brand-border-c);
+  background: var(--token-primary-bg-c);
+}
+
+.summaryCardHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  margin-bottom: 0.35rem;
+}
+
+.summaryValue {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ifm-heading-color);
+  line-height: 1;
+}
+
+.summaryValueLora {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.summaryUnit {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ifm-secondary-heading-color);
+  letter-spacing: -0.005em;
+}
+
+.summaryLabel {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+}
+
+.summaryHint {
+  margin-top: 0.55rem;
+  font-size: 0.85rem;
+  color: var(--ifm-font-color-base);
+  opacity: 0.8;
+  line-height: 1.5;
+}
+
+// Per-group "head-to-head" rows on the competitor pages.
+.headToHead {
+  padding: clamp(3rem, 6vh, 4.5rem) 0;
+  border-bottom: 1px solid var(--brand-border-c);
+  background: var(--brand-surface-c);
+
+  html[data-theme='dark'] & {
+    background: rgba(77, 141, 255, 0.03);
+  }
+}
+
+.h2hList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.h2hRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  border: 1px solid var(--brand-border-c);
+  background: var(--token-primary-bg-c);
+  transition: border-color var(--t) var(--t-ease),
+    transform var(--t) var(--t-ease);
+
+  &:hover {
+    border-color: var(--brand-border-strong-c);
+    transform: translateY(-1px);
+  }
+
+  @media (max-width: 800px) {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+}
+
+.h2hName {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.h2hNameLabel {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ifm-heading-color);
+  text-transform: capitalize;
+}
+
+.h2hNameSub {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+}
+
+.h2hScores {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.h2hScore {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.6rem 0.8rem;
+  border-radius: 10px;
+  border: 1px solid var(--brand-border-c);
+  background: var(--brand-surface-c);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+
+  html[data-theme='dark'] & {
+    background: rgba(77, 141, 255, 0.04);
+  }
+}
+
+.h2hScoreLabel {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-secondary-heading-color);
+}
+
+.h2hScoreValue {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ifm-heading-color);
+}
+
+.h2hScoreLora .h2hScoreLabel,
+.h2hScoreLora .h2hScoreValue {
+  color: var(--brand-accent-a);
+}
+
+.h2hWin {
+  text-align: right;
+  font-size: 0.875rem;
+  color: var(--ifm-secondary-heading-color);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+
+  @media (max-width: 800px) {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+
+.h2hWinHeader {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.h2hWinScore {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.h2hWinScoreCounts {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ifm-heading-color);
+}
+
+.h2hWinScoreCountsLora {
+  color: var(--brand-accent-a);
+}
+
+.h2hWinScoreDivider {
+  font-weight: 400;
+  color: var(--ifm-secondary-heading-color);
+}

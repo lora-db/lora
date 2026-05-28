@@ -487,6 +487,7 @@ module.exports = {
         },
         { to: "/blog", label: "Blog", position: "left" },
         { to: "/features", label: "Features", position: "left" },
+        { to: "/benchmarks", label: "Benchmarks", position: "left" },
         { type: "search", position: "right" },
         {
           href: "https://discord.gg/vUgKb6C8Af",
@@ -558,6 +559,7 @@ module.exports = {
             { label: "What is LoraDB", to: "/docs" },
             { label: "Why LoraDB", to: "/docs/why" },
             { label: "Features", to: "/features" },
+            { label: "Benchmarks", to: "/benchmarks" },
             { label: "Blog", to: "/blog" },
             { label: "Contact", to: "/contact" },
           ],
