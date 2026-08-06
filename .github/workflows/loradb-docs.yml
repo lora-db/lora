@@ -13,9 +13,17 @@ name: loradb-docs
 #     (manual rebuild / recovery).
 #   - PR                                                              → build only
 #     (verify the site still builds; artefact uploaded for inspection, no deploy).
-#   - Push to `main`                                                  → NOT TRIGGERED.
-#     Docs only go live on a versioned release. For doc-only updates
-#     without a code release, cut a patch tag or use workflow_dispatch.
+#   - Push to `main` touching the docs paths below                    → build + deploy.
+#     Previously main was NOT a trigger and docs only went live on a
+#     versioned release. That coupled every content fix to a code release,
+#     so doc edits sat unpublished for weeks and search engines saw a
+#     static site. Content freshness is a ranking input, so docs now ship
+#     on merge.
+#
+#     `paths` keeps unrelated monorepo commits (Rust crates, bindings)
+#     from rebuilding the site. Note that GitHub does NOT evaluate path
+#     filters for tag pushes, so the release path above still deploys
+#     unconditionally even when a tag touches no file under these paths.
 #
 # Secrets required for deploy (configure under repo Settings → Secrets):
 #   CLOUDFLARE_API_TOKEN  — token scoped to "Pages — Edit"
@@ -24,9 +32,15 @@ name: loradb-docs
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-*"
+    paths:
+      - "apps/loradb.com/**"
+      - "packages/lora-query/**"
+      - ".github/workflows/loradb-docs.yml"
   pull_request:
     paths:
       - "apps/loradb.com/**"
@@ -41,9 +55,14 @@ permissions:
   deployments: write
 
 concurrency:
-  # Serialise deploys across ref boundaries (release + dispatch + tag push
-  # can't race each other) but let PR validation runs cancel stale builds
-  # of themselves.
+  # Serialise deploys across ref boundaries (main push + release + dispatch
+  # + tag push can't race each other) but let PR validation runs cancel
+  # stale builds of themselves.
+  #
+  # Deploys deliberately queue rather than cancel: they all share the one
+  # 'deploy' group, so enabling cancel-in-progress here would let a routine
+  # docs push abort an in-flight release deploy and leave the older build
+  # live. Back-to-back doc commits therefore cost one full build each.
   group: loradb-docs-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
