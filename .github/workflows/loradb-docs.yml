@@ -57,6 +57,15 @@ jobs:
         working-directory: apps/loradb.com
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history, not the default shallow (depth 1) clone.
+          # scripts/inject-sitemap-lastmod.mjs (run from the `build` script)
+          # derives each URL's <lastmod> from `git log -1` on the page's
+          # source file. A depth-1 clone has exactly one commit, so every
+          # lookup returns the same timestamp and the whole sitemap ships
+          # one identical build-time lastmod — which is what production
+          # has been serving (every URL stamped 2026-05-28).
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-rust
         with:

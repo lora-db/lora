@@ -33,6 +33,10 @@ const DEFAULT_MATCHERS = [
   // bio + Person JSON-LD + post list, so they stay indexable.
   (p) => p === "blog/authors.html" || p === "blog/authors/index.html",
   (p) => p.startsWith("blog/page/"),
+  // Per-author paginators: blog/authors/<slug>/page/2.html. Page 1 lives
+  // at blog/authors/<slug>.html and stays indexable (bio + Person JSON-LD);
+  // page 2+ is the same thin duplicate shape as /blog/page/N.
+  (p) => /^blog\/authors\/[^/]+\/page\//.test(p),
   (p) => p === "docs/tags.html" || p.startsWith("docs/tags/"),
   (p) => p === "blog/tags/index.html",
 ];

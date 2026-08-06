@@ -361,6 +361,15 @@ module.exports = {
           //   - /blog/archive       chronological archive (duplicates /blog)
           //   - /blog/authors       bare author index (thin — list of names)
           //   - /blog/page/**       paginator pages (duplicate /blog)
+          //   - /blog/authors/*/page/**
+          //                         per-author paginator pages. Page 1 of an
+          //                         author (/blog/authors/<slug>) stays
+          //                         indexable; page 2+ is the same thin
+          //                         paginator shape as /blog/page/N and was
+          //                         previously shipping in the sitemap as
+          //                         indexable, which is what put
+          //                         /blog/authors/loradb/page/2 into
+          //                         "crawled, currently not indexed".
           //   - /search             local search UI (needs JS + query string)
           //   - /404(.html)         error page
           //
@@ -377,6 +386,7 @@ module.exports = {
             "/docs/tags/**",
             "/blog/archive",
             "/blog/authors",
+            "/blog/authors/*/page/**",
             "/blog/page/**",
             "/search",
             "/404",
