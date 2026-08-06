@@ -4,8 +4,14 @@
 User-agent: *
 Allow: /
 
-# Local search page is a client-side index, not useful as a search result.
-Disallow: /search
+# /search is a client-side index, not useful as a search result. It is kept
+# out of the index with <meta name="robots" content="noindex"> (injected by
+# plugins/noindex), NOT with a Disallow rule.
+#
+# Disallow and noindex are mutually defeating: a disallowed URL is never
+# fetched, so the noindex tag on it is never read, and Google may still
+# list the bare URL from inbound links. Allowing the crawl is what lets
+# the noindex actually remove the page.
 
 # Explicit allow for the major AI / LLM crawlers. Some sites are opting
 # out of these; LoraDB opts in. The /llms.txt and /llms-full.txt files

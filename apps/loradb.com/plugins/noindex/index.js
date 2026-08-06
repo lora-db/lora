@@ -7,6 +7,13 @@
 //   - /blog/tags, /blog/tags/<tag>
 //   - /blog/authors, /blog/authors/<author>
 //   - /docs/tags, /docs/tags/<tag>
+//   - /blog/archive        chronological archive (duplicates /blog)
+//   - /search              local search UI (needs JS + a query string)
+//
+// This list must stay in step with `sitemap.ignorePatterns` in
+// docusaurus.config.js. The two had drifted: /blog/archive and /search
+// were excluded from the sitemap but never got the meta tag, so both
+// stayed crawlable and indexable.
 //
 // These routes are already excluded from sitemap.xml; flipping the meta
 // robots tag keeps them out of the index even when crawlers reach them
@@ -39,6 +46,14 @@ const DEFAULT_MATCHERS = [
   (p) => /^blog\/authors\/[^/]+\/page\//.test(p),
   (p) => p === "docs/tags.html" || p.startsWith("docs/tags/"),
   (p) => p === "blog/tags/index.html",
+  (p) => p === "blog/archive.html" || p === "blog/archive/index.html",
+  // Docusaurus' search page ships its own <meta property="robots"
+  // content="noindex, follow">, but `property` is not an attribute any
+  // crawler reads for robots directives — Google only honours
+  // `name="robots"`. The page therefore inherited the site-wide
+  // `name="robots" content="index, follow"` and was fully indexable.
+  // Rewriting the `name=` tag here is what actually takes effect.
+  (p) => p === "search.html" || p === "search/index.html",
 ];
 
 // Matches any <meta ...> tag that has a name="robots" attribute, no
