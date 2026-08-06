@@ -130,6 +130,12 @@ function routeToSource(route, blogSlugMap) {
   if (route === "/blog") {
     return newestBlogSource();
   }
+  // Author pages are generated from blog/authors.yml, not from a page
+  // source, so the /blog/<slug> lookup below can never resolve them and
+  // they fell through to the build timestamp on every run.
+  if (route.startsWith("/blog/authors")) {
+    return firstExisting(["blog/authors.yml"]);
+  }
   if (route.startsWith("/blog/")) {
     const slug = route.slice("/blog/".length).split("/")[0];
     return blogSlugMap.get(slug) || null;
@@ -140,6 +146,13 @@ function routeToSource(route, blogSlugMap) {
     `src/pages/${name}.tsx`,
     `src/pages/${name}.md`,
     `src/pages/${name}.mdx`,
+    // Directory-style pages, e.g. /benchmarks -> src/pages/benchmarks/index.jsx.
+    // Only the flat forms were tried before, so directory-backed landing
+    // pages also fell through to the build timestamp.
+    `src/pages/${name}/index.jsx`,
+    `src/pages/${name}/index.tsx`,
+    `src/pages/${name}/index.md`,
+    `src/pages/${name}/index.mdx`,
   ]);
 }
 

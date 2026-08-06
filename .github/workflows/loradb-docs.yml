@@ -151,3 +151,32 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy build --project-name=loradb-docs --branch=main
+
+      # apps/loradb.com/scripts/indexnow.mjs has existed (and been exposed
+      # as `yarn indexnow`) without ever running in CI, so the ping was only
+      # ever sent by hand. The ownership key at static/<KEY>.txt is already
+      # deployed, and the script needs no secrets.
+      #
+      # Sparse checkout because this job otherwise never checks out the
+      # repo — it only downloads the build artifact.
+      - name: Check out IndexNow script
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: apps/loradb.com/scripts
+          sparse-checkout-cone-mode: false
+          path: repo
+
+      # Runs after the upload so the URLs are actually fetchable when Bing
+      # and Yandex come to verify them. --since=7d keeps the payload to
+      # what changed rather than re-submitting all 96 URLs on every deploy;
+      # it depends on real per-page <lastmod>, which only started working
+      # once the build job stopped doing a shallow clone.
+      #
+      # Never fails the deploy: IndexNow is fire-and-forget, and a 4xx from
+      # a third-party endpoint is not a reason to red-flag a good release.
+      - name: Ping IndexNow
+        continue-on-error: true
+        run: |
+          node repo/apps/loradb.com/scripts/indexnow.mjs \
+            --sitemap=build/sitemap.xml \
+            --since=7d

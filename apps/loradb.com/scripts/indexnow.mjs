@@ -9,6 +9,10 @@
 //   node scripts/indexnow.mjs               # submit all URLs from sitemap
 //   node scripts/indexnow.mjs --since=24h   # only URLs whose <lastmod> is within 24h
 //   node scripts/indexnow.mjs --dry-run     # print what would be sent
+//   node scripts/indexnow.mjs --sitemap=P   # read the sitemap from P
+//
+// Wired into the deploy job of .github/workflows/loradb-docs.yml, which
+// runs it with --since after the Cloudflare Pages upload succeeds.
 //
 // Run after `yarn build` (and ideally after deploy, so the new pages are
 // actually fetchable). The key file at static/<KEY>.txt must be deployed
@@ -30,13 +34,18 @@ const HOST = "loradb.com";
 const KEY = "83ba3712c7aa856e69601ce9b0470cb8";
 const KEY_LOCATION = `https://${HOST}/${KEY}.txt`;
 const ENDPOINT = "https://api.indexnow.org/IndexNow";
-const SITEMAP_PATH = path.join(APP_ROOT, "build", "sitemap.xml");
+const DEFAULT_SITEMAP_PATH = path.join(APP_ROOT, "build", "sitemap.xml");
 
 function parseArgs(argv) {
-  const args = { dryRun: false, sinceMs: null };
+  const args = { dryRun: false, sinceMs: null, sitemap: DEFAULT_SITEMAP_PATH };
   for (const a of argv.slice(2)) {
     if (a === "--dry-run") args.dryRun = true;
-    else if (a.startsWith("--since=")) {
+    // The deploy job downloads the build artifact to a path of its own
+    // choosing and never checks out apps/loradb.com/build, so it needs to
+    // point the script at the sitemap explicitly.
+    else if (a.startsWith("--sitemap=")) {
+      args.sitemap = path.resolve(a.slice("--sitemap=".length));
+    } else if (a.startsWith("--since=")) {
       const v = a.slice("--since=".length);
       const m = v.match(/^(\d+)(h|d)$/);
       if (!m) {
@@ -65,7 +74,7 @@ function extractEntries(xml) {
 }
 
 async function main() {
-  const { dryRun, sinceMs } = parseArgs(process.argv);
+  const { dryRun, sinceMs, sitemap: SITEMAP_PATH } = parseArgs(process.argv);
 
   let xml;
   try {

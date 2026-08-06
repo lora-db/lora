@@ -58,6 +58,21 @@ function tierForUrl(url) {
     return { priority: 0.6, changefreq: "monthly" };
   }
 
+  // Benchmarks had no branch here, so all seven URLs fell through to the
+  // 0.4 catch-all — the lowest tier on the site. They are the opposite of
+  // low value: /benchmarks/lora-vs-<engine> are the highest-intent pages
+  // we publish (someone searching "neo4j alternative" or "kuzu vs" is
+  // already comparing engines), and they are backed by a measured harness
+  // rather than marketing copy. The index gets landing-page weight; the
+  // individual comparisons sit alongside pillar docs.
+  if (p === "/benchmarks") {
+    return { priority: 0.8, changefreq: "monthly" };
+  }
+
+  if (p.startsWith("/benchmarks/")) {
+    return { priority: 0.7, changefreq: "monthly" };
+  }
+
   return { priority: 0.4, changefreq: "monthly" };
 }
 
