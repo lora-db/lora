@@ -49,6 +49,16 @@ on:
   release:
     types: [released]
   workflow_dispatch:
+    inputs:
+      indexnow_since:
+        description: >-
+          IndexNow submission window. "7d" (the automatic default) submits
+          only pages whose <lastmod> moved in the last 7 days. Use "all" to
+          submit every URL in the sitemap, which is what you want for a
+          first-time seed or after a bulk content change.
+        required: false
+        default: "7d"
+        type: string
 
 permissions:
   contents: read
@@ -193,9 +203,19 @@ jobs:
       #
       # Never fails the deploy: IndexNow is fire-and-forget, and a 4xx from
       # a third-party endpoint is not a reason to red-flag a good release.
+      #
+      # The window defaults to 7d on automatic runs (push, tag, release);
+      # `github.event.inputs.*` is empty outside workflow_dispatch, so the
+      # || fallback covers those. Dispatching with indexnow_since=all drops
+      # the filter entirely and submits every sitemap URL.
       - name: Ping IndexNow
         continue-on-error: true
+        env:
+          SINCE: ${{ github.event.inputs.indexnow_since || '7d' }}
         run: |
-          node repo/apps/loradb.com/scripts/indexnow.mjs \
-            --sitemap=build/sitemap.xml \
-            --since=7d
+          args=(--sitemap=build/sitemap.xml)
+          if [[ "${SINCE}" != "all" ]]; then
+            args+=(--since="${SINCE}")
+          fi
+          echo "IndexNow window: ${SINCE}"
+          node repo/apps/loradb.com/scripts/indexnow.mjs "${args[@]}"
