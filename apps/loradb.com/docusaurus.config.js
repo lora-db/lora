@@ -452,11 +452,6 @@ module.exports = {
       { name: "twitter:site", content: "@loradb" },
       { name: "twitter:creator", content: "@loradb" },
       { name: "twitter:domain", content: "loradb.com" },
-      {
-        name: "twitter:title",
-        content: "LoraDB — the embedded graph database for connected systems",
-      },
-      { name: "twitter:description", content: SITE_DESCRIPTION },
       { name: "twitter:image", content: `${SITE_URL}/img/meta/og-image.png` },
       {
         name: "twitter:image:alt",
@@ -616,6 +611,7 @@ module.exports = {
       },
     ],
     require.resolve("./plugins/noindex"),
+    require.resolve("./plugins/twitter-meta"),
   ],
   scripts: [
     {
