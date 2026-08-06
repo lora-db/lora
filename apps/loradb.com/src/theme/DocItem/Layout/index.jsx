@@ -27,7 +27,14 @@ export default function LayoutWrapper(props) {
   const { siteConfig } = useDocusaurusContext();
 
   const siteUrl = siteConfig.url.replace(/\/$/, "");
-  const url = `${siteUrl}${metadata.permalink}`;
+  // Index docs (docs/index.md, docs/queries/index.md) carry a permalink
+  // with a trailing slash: "/docs/", "/docs/queries/". The site runs
+  // trailingSlash: false, so those forms 308-redirect and disagree with
+  // the <link rel="canonical"> emitted on the very same page. Feeding the
+  // raw permalink into url / mainEntityOfPage pointed the structured data
+  // at a redirect and split the page's identity across two URLs.
+  const permalink = metadata.permalink.replace(/\/+$/, "") || "/";
+  const url = `${siteUrl}${permalink}`;
 
   const schema = {
     "@context": "https://schema.org",

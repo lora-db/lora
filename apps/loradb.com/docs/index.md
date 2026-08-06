@@ -104,7 +104,7 @@ WHERE a.born < 1900
 RETURN a.name AS influencer, b.name AS influenced`} />
 
 Clauses stream rows: `MATCH` finds patterns, `WHERE` filters, `RETURN`
-projects. See [Queries → Overview](/docs/queries/) or jump into the
+projects. See [Queries → Overview](/docs/queries) or jump into the
 [**Cheat sheet**](/docs/queries/cheat-sheet) for a single-page reference.
 
 ### 4. Choose an API
@@ -145,7 +145,7 @@ before wiring LoraDB into an app:
 | [**Playground**](/docs/getting-started/playground) | Run LoraDB queries in your browser, inspect graph/table/JSON/analysis views, share query URLs, and export snapshots. |
 | [**Tutorial**](/docs/getting-started/tutorial) | A ten-minute guided tour — create, match, filter, aggregate, paths, CASE. |
 | [**Concepts**](/docs/concepts/graph-model) | Graph model, nodes, relationships, properties, [schema-free](/docs/concepts/schema-free), [result formats](/docs/concepts/result-formats). |
-| [**Queries**](/docs/queries/) | Clause reference, [parameters](/docs/queries/parameters), [cheat sheet](/docs/queries/cheat-sheet). |
+| [**Queries**](/docs/queries) | Clause reference, [parameters](/docs/queries/parameters), [cheat sheet](/docs/queries/cheat-sheet). |
 | [**Functions**](/docs/functions/overview) | String, math, list, aggregation, temporal, spatial, vector, type, and cast helpers. |
 | [**Data types**](/docs/data-types/overview) | Scalars, lists, maps, temporals, spatial points, [vectors](/docs/data-types/vectors) — how each round-trips. |
 | [**HTTP API**](/docs/api/http) | Endpoint reference for `lora-server`. |

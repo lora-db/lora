@@ -637,6 +637,7 @@ module.exports = {
     ],
     require.resolve("./plugins/noindex"),
     require.resolve("./plugins/twitter-meta"),
+    require.resolve("./plugins/canonical-urls"),
   ],
   scripts: [
     {
