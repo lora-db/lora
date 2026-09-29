@@ -48,6 +48,12 @@ impl LoraDate {
         Self::from_epoch_days(days)
     }
 
+    /// Nanoseconds since the Unix epoch at the start of this day. The
+    /// total order used by comparisons and RANGE indexes.
+    pub fn order_nanos(&self) -> i128 {
+        self.to_epoch_days() as i128 * 86_400 * 1_000_000_000
+    }
+
     pub fn to_epoch_days(&self) -> i64 {
         days_from_civil(self.year, self.month, self.day)
     }

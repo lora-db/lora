@@ -1097,6 +1097,9 @@ pub(super) fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
         (Relationship(x), Relationship(y)) => x.cmp(y),
         (Date(x), Date(y)) => x.cmp(y),
         (DateTime(x), DateTime(y)) => x.cmp(y),
+        (LocalDateTime(x), LocalDateTime(y)) => x.cmp(y),
+        (Time(x), Time(y)) => x.cmp(y),
+        (LocalTime(x), LocalTime(y)) => x.cmp(y),
         (Duration(x), Duration(y)) => x.cmp(y),
         (Vector(x), Vector(y)) => x.to_key_string().cmp(&y.to_key_string()),
         _ => type_rank(a)
@@ -1415,10 +1418,14 @@ fn range_comparison(actual: &LoraValue, bound: &LoraValue) -> Option<Ordering> {
     match (actual, bound) {
         (LoraValue::Null, _) | (_, LoraValue::Null) => None,
         (LoraValue::String(a), LoraValue::String(b)) => Some(a.cmp(b)),
-        (LoraValue::Date(a), LoraValue::Date(b)) => Some(a.to_epoch_days().cmp(&b.to_epoch_days())),
-        (LoraValue::DateTime(a), LoraValue::DateTime(b)) => {
-            Some(a.to_epoch_millis().cmp(&b.to_epoch_millis()))
-        }
+        (
+            LoraValue::Date(_)
+            | LoraValue::DateTime(_)
+            | LoraValue::LocalDateTime(_)
+            | LoraValue::Time(_)
+            | LoraValue::LocalTime(_),
+            _,
+        ) => actual.temporal_cmp(bound),
         (LoraValue::Duration(a), LoraValue::Duration(b)) => a
             .total_seconds_approx()
             .partial_cmp(&b.total_seconds_approx()),
@@ -2450,11 +2457,21 @@ impl OrderedRangeCursor {
         hi: Option<LoraValue>,
     ) -> Self {
         let descending = matches!(op.order, Some(SortDirection::Desc));
-        let string_bounds = (lo.is_some() || hi.is_some())
-            && lo
-                .iter()
-                .chain(hi.iter())
-                .all(|v| matches!(v, LoraValue::String(_)));
+        // Strings and temporals of one kind have a single contiguous,
+        // correctly ordered run in the index, so the walk can stream from
+        // it. Numbers cannot: integers and floats are keyed separately.
+        let mut bounds = lo.iter().chain(hi.iter());
+        let string_bounds = match bounds.next() {
+            Some(LoraValue::String(_)) => bounds.all(|v| matches!(v, LoraValue::String(_))),
+            Some(
+                first @ (LoraValue::Date(_)
+                | LoraValue::DateTime(_)
+                | LoraValue::LocalDateTime(_)
+                | LoraValue::Time(_)
+                | LoraValue::LocalTime(_)),
+            ) => bounds.all(|v| std::mem::discriminant(v) == std::mem::discriminant(first)),
+            _ => false,
+        };
         let index_label = single_label_hint(&op.labels).filter(|label| {
             string_bounds
                 && storage

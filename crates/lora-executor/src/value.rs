@@ -62,6 +62,25 @@ impl LoraValue {
             _ => None,
         }
     }
+
+    /// Cypher comparison of two temporal values of the same kind, by the
+    /// instant (or time of day) they denote. `None` when either side is not
+    /// a temporal of that kind; durations are not ordered.
+    pub(crate) fn temporal_cmp(&self, other: &LoraValue) -> Option<std::cmp::Ordering> {
+        let (a, b) = match (self, other) {
+            (LoraValue::Date(a), LoraValue::Date(b)) => (a.order_nanos(), b.order_nanos()),
+            (LoraValue::DateTime(a), LoraValue::DateTime(b)) => (a.order_nanos(), b.order_nanos()),
+            (LoraValue::LocalDateTime(a), LoraValue::LocalDateTime(b)) => {
+                (a.order_nanos(), b.order_nanos())
+            }
+            (LoraValue::Time(a), LoraValue::Time(b)) => (a.order_nanos(), b.order_nanos()),
+            (LoraValue::LocalTime(a), LoraValue::LocalTime(b)) => {
+                (a.order_nanos(), b.order_nanos())
+            }
+            _ => return None,
+        };
+        Some(a.cmp(&b))
+    }
 }
 
 impl Serialize for LoraValue {

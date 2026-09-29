@@ -87,6 +87,15 @@ impl LoraDateTime {
         }
     }
 
+    /// Nanoseconds since the Unix epoch, normalized to UTC: the instant
+    /// this value denotes. Comparisons and RANGE indexes order by it.
+    pub fn order_nanos(&self) -> i128 {
+        let days = days_from_civil(self.year, self.month, self.day) as i128;
+        let day_secs = self.hour as i128 * 3600 + self.minute as i128 * 60 + self.second as i128;
+        (days * 86_400 + day_secs - self.offset_seconds as i128) * 1_000_000_000
+            + self.nanosecond as i128
+    }
+
     /// Milliseconds since Unix epoch, normalized to UTC.
     pub fn to_epoch_millis(&self) -> i64 {
         let days = days_from_civil(self.year, self.month, self.day);
@@ -228,7 +237,11 @@ impl PartialOrd for LoraDateTime {
 
 impl Ord for LoraDateTime {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.to_epoch_millis().cmp(&other.to_epoch_millis())
+        // Instant first; the offset only breaks ties so `Ord` agrees with
+        // the field-wise `Eq`.
+        self.order_nanos()
+            .cmp(&other.order_nanos())
+            .then(self.offset_seconds.cmp(&other.offset_seconds))
     }
 }
 
@@ -296,6 +309,28 @@ impl LoraLocalDateTime {
             second: (day_secs % 60) as u32,
             nanosecond: nanos,
         }
+    }
+}
+
+impl LoraLocalDateTime {
+    /// Nanoseconds since the Unix epoch, reading the wall clock as UTC.
+    /// The total order used by comparisons and RANGE indexes.
+    pub fn order_nanos(&self) -> i128 {
+        let days = days_from_civil(self.year, self.month, self.day) as i128;
+        let day_secs = self.hour as i128 * 3600 + self.minute as i128 * 60 + self.second as i128;
+        (days * 86_400 + day_secs) * 1_000_000_000 + self.nanosecond as i128
+    }
+}
+
+impl PartialOrd for LoraLocalDateTime {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LoraLocalDateTime {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.order_nanos().cmp(&other.order_nanos())
     }
 }
 

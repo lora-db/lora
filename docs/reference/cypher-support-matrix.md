@@ -243,7 +243,7 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 | `temporal.between(a, b)` | **Supported** | Between dates or datetimes |
 | `temporal.in_days(a, b)` | **Supported** | `DATE` values |
 
-Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
+Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
 
 ## 13. Spatial types and functions
 
@@ -265,7 +265,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `CREATE INDEX name FOR (n:Label) ON (n.prop)` | **Supported** | RANGE index; name may be omitted or supplied by string parameter |
+| `CREATE INDEX name FOR (n:Label) ON (n.prop)` | **Supported** | RANGE index; name may be omitted or supplied by string parameter. Indexes numbers, strings, booleans, lists, maps and the temporal types `DATE`, `DATETIME`, `LOCAL_DATETIME`, `TIME`, `LOCAL_TIME` (ordered by the instant they denote). `DURATION`, `POINT` and `VECTOR` values are not held; a range bound of one of those types is answered by a scan |
 | `CREATE INDEX name FOR ()-[r:TYPE]-() ON (r.prop)` | **Supported** | Relationship RANGE index |
 | `CREATE TEXT INDEX` | **Supported** | Node and relationship scopes; accelerates `STARTS WITH`, `CONTAINS`, `ENDS WITH` |
 | `CREATE POINT INDEX` | **Supported** | Node and relationship scopes; accelerates `geo.within_bbox` and `geo.distance(...) <= radius` candidates |

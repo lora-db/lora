@@ -217,8 +217,16 @@ impl PropertyIndexState {
 }
 
 /// Hashable & sortable image of a [`PropertyValue`]. `None` from
-/// [`PropertyIndexKey::from_value`] means "no stable image" — temporal,
-/// spatial, and vector values fall through to the scan fallback today.
+/// [`PropertyIndexKey::from_value`] means "no stable image": durations
+/// (no total order), spatial, and vector values fall through to the scan
+/// fallback.
+///
+/// Temporal values (`Date`, `DateTime`, `LocalDateTime`, `Time`,
+/// `LocalTime`) are keyed by kind, then by the instant they denote
+/// (`order_nanos`, the order Cypher comparisons use), then by UTC offset.
+/// The offset only separates values that denote the same instant in
+/// different zones, so equality lookups stay exact while range probes
+/// widen a bound across every offset (see [`PropertyIndexKey::range_lower`]).
 ///
 /// `Ord` is hand-rolled (not derived) because [`crate::LoraBinary`]
 /// doesn't expose `Ord` on its segmented byte representation. The
@@ -240,6 +248,22 @@ pub(super) enum PropertyIndexKey {
     Binary(LoraBinary),
     List(Vec<PropertyIndexKey>),
     Map(BTreeMap<String, PropertyIndexKey>),
+    Temporal {
+        kind: TemporalKind,
+        nanos: i128,
+        offset: i32,
+    },
+}
+
+/// Temporal key families. Values of different kinds never compare in
+/// Cypher, so each kind occupies its own contiguous run of the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum TemporalKind {
+    Date,
+    LocalTime,
+    Time,
+    LocalDateTime,
+    DateTime,
 }
 
 impl PartialOrd for PropertyIndexKey {
@@ -260,6 +284,7 @@ impl Ord for PropertyIndexKey {
             PropertyIndexKey::Binary(_) => 5,
             PropertyIndexKey::List(_) => 6,
             PropertyIndexKey::Map(_) => 7,
+            PropertyIndexKey::Temporal { .. } => 8,
         };
         match tag(self).cmp(&tag(other)) {
             Ordering::Equal => match (self, other) {
@@ -280,6 +305,18 @@ impl Ord for PropertyIndexKey {
                 }
                 (PropertyIndexKey::List(a), PropertyIndexKey::List(b)) => a.cmp(b),
                 (PropertyIndexKey::Map(a), PropertyIndexKey::Map(b)) => a.cmp(b),
+                (
+                    PropertyIndexKey::Temporal {
+                        kind: ak,
+                        nanos: an,
+                        offset: ao,
+                    },
+                    PropertyIndexKey::Temporal {
+                        kind: bk,
+                        nanos: bn,
+                        offset: bo,
+                    },
+                ) => ak.cmp(bk).then(an.cmp(bn)).then(ao.cmp(bo)),
                 _ => Ordering::Equal, // unreachable given equal tags
             },
             ord => ord,
@@ -312,17 +349,74 @@ impl PropertyIndexKey {
                 .map(|(k, v)| Self::from_value(v).map(|indexed| (k.clone(), indexed)))
                 .collect::<Option<BTreeMap<_, _>>>()
                 .map(Self::Map),
-            // Temporal, spatial, and vector values have richer equality
-            // semantics and/or no stable hash representation in the storage
-            // crate today. Those continue to use the scan fallback.
-            PropertyValue::Date(_)
-            | PropertyValue::Time(_)
-            | PropertyValue::LocalTime(_)
-            | PropertyValue::DateTime(_)
-            | PropertyValue::LocalDateTime(_)
-            | PropertyValue::Duration(_)
-            | PropertyValue::Point(_)
-            | PropertyValue::Vector(_) => None,
+            PropertyValue::Date(v) => Some(Self::temporal(TemporalKind::Date, v.order_nanos(), 0)),
+            PropertyValue::LocalTime(v) => {
+                Some(Self::temporal(TemporalKind::LocalTime, v.order_nanos(), 0))
+            }
+            PropertyValue::Time(v) => Some(Self::temporal(
+                TemporalKind::Time,
+                v.order_nanos(),
+                v.offset_seconds,
+            )),
+            PropertyValue::LocalDateTime(v) => Some(Self::temporal(
+                TemporalKind::LocalDateTime,
+                v.order_nanos(),
+                0,
+            )),
+            PropertyValue::DateTime(v) => Some(Self::temporal(
+                TemporalKind::DateTime,
+                v.order_nanos(),
+                v.offset_seconds,
+            )),
+            // Durations have no total order in Cypher (a month has no fixed
+            // length), and spatial and vector values have no stable ordered
+            // image. Those use the scan fallback, and a range bound of one of
+            // these types makes the range probe fall back to a scan too.
+            PropertyValue::Duration(_) | PropertyValue::Point(_) | PropertyValue::Vector(_) => None,
+        }
+    }
+
+    fn temporal(kind: TemporalKind, nanos: i128, offset: i32) -> Self {
+        Self::Temporal {
+            kind,
+            nanos,
+            offset,
+        }
+    }
+
+    /// The smallest key a value `>= value` can have. Equal to
+    /// [`Self::from_value`] except for temporals, which widen to the lowest
+    /// offset so a bound matches every value denoting the same instant.
+    pub(super) fn range_lower(value: &PropertyValue) -> Option<Self> {
+        match Self::from_value(value)? {
+            Self::Temporal { kind, nanos, .. } => Some(Self::temporal(kind, nanos, i32::MIN)),
+            key => Some(key),
+        }
+    }
+
+    /// The largest key a value `<= value` can have; see [`Self::range_lower`].
+    pub(super) fn range_upper(value: &PropertyValue) -> Option<Self> {
+        match Self::from_value(value)? {
+            Self::Temporal { kind, nanos, .. } => Some(Self::temporal(kind, nanos, i32::MAX)),
+            key => Some(key),
+        }
+    }
+
+    /// For a one-sided temporal range, the other end of that temporal kind:
+    /// values of other types never satisfy a temporal comparison, so the
+    /// probe (and an ordered walk) stays inside the kind.
+    pub(super) fn kind_floor(&self) -> Option<Self> {
+        match self {
+            Self::Temporal { kind, .. } => Some(Self::temporal(*kind, i128::MIN, i32::MIN)),
+            _ => None,
+        }
+    }
+
+    /// Upper counterpart of [`Self::kind_floor`].
+    pub(super) fn kind_ceiling(&self) -> Option<Self> {
+        match self {
+            Self::Temporal { kind, .. } => Some(Self::temporal(*kind, i128::MAX, i32::MAX)),
+            _ => None,
         }
     }
 }
