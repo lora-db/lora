@@ -879,7 +879,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     /// Try to find an existing node/pattern in the graph matching the MERGE
-    /// pattern. If found, bind the variable in the row and return true.
+    /// pattern. If found, bind its variables in the row and return true.
+    /// On a miss the row is left untouched, so the create path sees only
+    /// the variables that were bound before the MERGE.
     fn try_match_merge_pattern(
         &self,
         row: &mut Row,
@@ -891,66 +893,18 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 labels,
                 properties,
             } => {
-                let eval_ctx = EvalContext {
-                    storage: &*self.ctx.storage,
-                    params: &self.ctx.params,
+                let expected_props = self.merge_expected_props(properties.as_ref(), row);
+                let Some(id) = self
+                    .merge_node_candidates(labels, &expected_props)
+                    .into_iter()
+                    .find(|&id| self.merge_node_matches(id, labels, &expected_props))
+                else {
+                    return Ok(false);
                 };
-                let expected_props = properties.as_ref().map(|e| eval_expr(e, row, &eval_ctx));
-
-                // ID-only candidate discovery; borrow the record during
-                // label/property filtering to avoid cloning non-matches.
-                // `MERGE (n:L {key: $k})` looks the key up in the property
-                // index instead of scanning every `:L` node, so an upsert
-                // costs the same on a large label as on a small one.
-                let indexed = match &expected_props {
-                    Some(LoraValue::Map(expected)) => {
-                        merge_candidates_from_index(&*self.ctx.storage, labels, expected)
-                    }
-                    _ => None,
-                };
-                let candidate_ids = match indexed {
-                    Some(ids) => ids,
-                    None if labels.is_empty() => self.ctx.storage.all_node_ids(),
-                    None => scan_node_ids_for_label_groups(&*self.ctx.storage, labels),
-                };
-
-                for id in candidate_ids {
-                    let matched = self
-                        .ctx
-                        .storage
-                        .with_node(id, |node| {
-                            if !node_matches_label_groups(&node.labels, labels) {
-                                return false;
-                            }
-                            if let Some(LoraValue::Map(expected)) = &expected_props {
-                                let all_match = expected.iter().all(|(key, expected_value)| {
-                                    node.properties
-                                        .get(key.as_str())
-                                        .map(|actual| {
-                                            value_matches_property_value(expected_value, actual)
-                                        })
-                                        .unwrap_or(false)
-                                });
-                                if !all_match {
-                                    return false;
-                                }
-                            }
-                            true
-                        })
-                        .unwrap_or(false);
-
-                    if !matched {
-                        continue;
-                    }
-
-                    // Found a match — bind the variable
-                    if let Some(var_id) = var {
-                        row.insert(*var_id, LoraValue::Node(id));
-                    }
-                    return Ok(true);
+                if let Some(var_id) = var {
+                    row.insert(*var_id, LoraValue::Node(id));
                 }
-
-                Ok(false)
+                Ok(true)
             }
 
             ResolvedPatternElement::ShortestPath { .. } => {
@@ -959,146 +913,168 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             }
 
             ResolvedPatternElement::NodeChain { head, chain } => {
-                // Resolve the head node — it should be already bound in the row.
-                let head_node_id = if let Some(var_id) = head.var {
-                    if let Some(LoraValue::Node(id)) = row.get(var_id) {
-                        *id
-                    } else {
-                        // Try to match head node as a standalone node pattern.
-                        let node_matched = self.try_match_merge_pattern(
-                            row,
-                            &ResolvedPatternPart {
-                                binding: None,
-                                element: ResolvedPatternElement::Node {
-                                    var: head.var,
-                                    labels: head.labels.clone(),
-                                    properties: head.properties.clone(),
-                                },
-                            },
-                        )?;
-                        if !node_matched {
-                            return Ok(false);
-                        }
-                        match row.get(var_id) {
-                            Some(LoraValue::Node(id)) => *id,
-                            _ => return Ok(false),
-                        }
+                // The head is usually bound by an earlier clause; otherwise
+                // every node matching it is a possible start.
+                let head_candidates = match head.var.and_then(|v| row.get(v)) {
+                    Some(LoraValue::Node(id)) => vec![*id],
+                    _ => {
+                        let expected = self.merge_expected_props(head.properties.as_ref(), row);
+                        self.merge_node_candidates(&head.labels, &expected)
+                            .into_iter()
+                            .filter(|&id| self.merge_node_matches(id, &head.labels, &expected))
+                            .collect()
                     }
-                } else {
-                    return Ok(false);
                 };
 
-                let mut current_node_id = head_node_id;
-
-                for step in chain {
-                    let eval_ctx = EvalContext {
-                        storage: &*self.ctx.storage,
-                        params: &self.ctx.params,
-                    };
-
-                    let direction = step.rel.direction;
-
-                    // Visit ID-only traversal candidates without allocating a
-                    // transient edge Vec for each MERGE chain step.
-                    let mut found = false;
-                    let _ = self.ctx.storage.try_for_each_expand_id(
-                        current_node_id,
-                        direction,
-                        &step.rel.types,
-                        |rel_id, node_id| {
-                            // Check target node labels and (optional) properties.
-                            let node_ok = self
-                                .ctx
-                                .storage
-                                .with_node(node_id, |node_rec| {
-                                    if !node_matches_label_groups(
-                                        &node_rec.labels,
-                                        &step.node.labels,
-                                    ) {
-                                        return false;
-                                    }
-                                    if let Some(props_expr) = &step.node.properties {
-                                        let expected = eval_expr(props_expr, row, &eval_ctx);
-                                        if let LoraValue::Map(expected_map) = &expected {
-                                            let all_match =
-                                                expected_map.iter().all(|(key, expected_val)| {
-                                                    node_rec
-                                                        .properties
-                                                        .get(key.as_str())
-                                                        .map(|actual| {
-                                                            value_matches_property_value(
-                                                                expected_val,
-                                                                actual,
-                                                            )
-                                                        })
-                                                        .unwrap_or(false)
-                                                });
-                                            if !all_match {
-                                                return false;
-                                            }
-                                        }
-                                    }
-                                    true
-                                })
-                                .unwrap_or(false);
-                            if !node_ok {
-                                return Ok::<(), ()>(());
-                            }
-
-                            // Check relationship properties.
-                            let rel_ok = self
-                                .ctx
-                                .storage
-                                .with_relationship(rel_id, |rel_rec| {
-                                    if let Some(rel_props_expr) = &step.rel.properties {
-                                        let expected = eval_expr(rel_props_expr, row, &eval_ctx);
-                                        if let LoraValue::Map(expected_map) = &expected {
-                                            let all_match =
-                                                expected_map.iter().all(|(key, expected_val)| {
-                                                    rel_rec
-                                                        .properties
-                                                        .get(key.as_str())
-                                                        .map(|actual| {
-                                                            value_matches_property_value(
-                                                                expected_val,
-                                                                actual,
-                                                            )
-                                                        })
-                                                        .unwrap_or(false)
-                                                });
-                                            if !all_match {
-                                                return false;
-                                            }
-                                        }
-                                    }
-                                    true
-                                })
-                                .unwrap_or(false);
-                            if !rel_ok {
-                                return Ok(());
-                            }
-
-                            // Match found — bind variables
-                            if let Some(rel_var) = step.rel.var {
-                                row.insert(rel_var, LoraValue::Relationship(rel_id));
-                            }
-                            if let Some(node_var) = step.node.var {
-                                row.insert(node_var, LoraValue::Node(node_id));
-                            }
-                            current_node_id = node_id;
-                            found = true;
-                            Err(())
-                        },
-                    );
-
-                    if !found {
-                        return Ok(false);
+                for head_id in head_candidates {
+                    let mut trial = row.clone();
+                    if let Some(var_id) = head.var {
+                        trial.insert(var_id, LoraValue::Node(head_id));
+                    }
+                    let mut used_rels = Vec::with_capacity(chain.len());
+                    if self.match_merge_chain(&mut trial, head_id, chain, &mut used_rels) {
+                        *row = trial;
+                        return Ok(true);
                     }
                 }
-
-                Ok(true)
+                Ok(false)
             }
         }
+    }
+
+    /// Match `chain` from `current`, backtracking over every candidate
+    /// edge. A step node or relationship already bound in the row (by an
+    /// earlier clause or earlier in the chain) must be the one reached;
+    /// the same relationship is never used twice in one pattern.
+    fn match_merge_chain(
+        &self,
+        row: &mut Row,
+        current: NodeId,
+        chain: &[lora_analyzer::ResolvedChain],
+        used_rels: &mut Vec<u64>,
+    ) -> bool {
+        let Some((step, rest)) = chain.split_first() else {
+            return true;
+        };
+
+        let bound_dst = match step.node.var.and_then(|v| row.get(v)) {
+            Some(LoraValue::Node(id)) => Some(*id),
+            _ => None,
+        };
+        let bound_rel = match step.rel.var.and_then(|v| row.get(v)) {
+            Some(LoraValue::Relationship(id)) => Some(*id),
+            _ => None,
+        };
+        let expected_node = self.merge_expected_props(step.node.properties.as_ref(), row);
+        let expected_rel = self.merge_expected_props(step.rel.properties.as_ref(), row);
+
+        let edges = self
+            .ctx
+            .storage
+            .expand_ids(current, step.rel.direction, &step.rel.types);
+        for (rel_id, node_id) in edges {
+            if bound_dst.is_some_and(|id| id != node_id)
+                || bound_rel.is_some_and(|id| id != rel_id)
+                || used_rels.contains(&rel_id)
+            {
+                continue;
+            }
+            if !self.merge_node_matches(node_id, &step.node.labels, &expected_node) {
+                continue;
+            }
+            if let Some(LoraValue::Map(expected_map)) = &expected_rel {
+                let rel_ok = self
+                    .ctx
+                    .storage
+                    .with_relationship(rel_id, |rel_rec| {
+                        expected_map.iter().all(|(key, expected_val)| {
+                            rel_rec
+                                .properties
+                                .get(key.as_str())
+                                .map(|actual| value_matches_property_value(expected_val, actual))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                if !rel_ok {
+                    continue;
+                }
+            }
+
+            let mut next = row.clone();
+            if let Some(rel_var) = step.rel.var {
+                next.insert(rel_var, LoraValue::Relationship(rel_id));
+            }
+            if let Some(node_var) = step.node.var {
+                next.insert(node_var, LoraValue::Node(node_id));
+            }
+            used_rels.push(rel_id);
+            if self.match_merge_chain(&mut next, node_id, rest, used_rels) {
+                *row = next;
+                return true;
+            }
+            used_rels.pop();
+        }
+        false
+    }
+
+    fn merge_expected_props(
+        &self,
+        properties: Option<&ResolvedExpr>,
+        row: &Row,
+    ) -> Option<LoraValue> {
+        let eval_ctx = EvalContext {
+            storage: &*self.ctx.storage,
+            params: &self.ctx.params,
+        };
+        properties.map(|e| eval_expr(e, row, &eval_ctx))
+    }
+
+    /// Candidate ids for a MERGE node pattern. `MERGE (n:L {key: $k})`
+    /// looks the key up in the property index instead of scanning every
+    /// `:L` node, so an upsert costs the same on a large label as on a
+    /// small one. Candidates are re-checked by [`Self::merge_node_matches`].
+    fn merge_node_candidates(
+        &self,
+        labels: &[Vec<String>],
+        expected_props: &Option<LoraValue>,
+    ) -> Vec<NodeId> {
+        let indexed = match expected_props {
+            Some(LoraValue::Map(expected)) => {
+                merge_candidates_from_index(&*self.ctx.storage, labels, expected)
+            }
+            _ => None,
+        };
+        match indexed {
+            Some(ids) => ids,
+            None if labels.is_empty() => self.ctx.storage.all_node_ids(),
+            None => scan_node_ids_for_label_groups(&*self.ctx.storage, labels),
+        }
+    }
+
+    fn merge_node_matches(
+        &self,
+        id: NodeId,
+        labels: &[Vec<String>],
+        expected_props: &Option<LoraValue>,
+    ) -> bool {
+        self.ctx
+            .storage
+            .with_node(id, |node| {
+                if !node_matches_label_groups(&node.labels, labels) {
+                    return false;
+                }
+                if let Some(LoraValue::Map(expected)) = expected_props {
+                    return expected.iter().all(|(key, expected_value)| {
+                        node.properties
+                            .get(key.as_str())
+                            .map(|actual| value_matches_property_value(expected_value, actual))
+                            .unwrap_or(false)
+                    });
+                }
+                true
+            })
+            .unwrap_or(false)
     }
 
     fn exec_delete(&mut self, plan: &PhysicalPlan, op: &DeleteExec) -> ExecResult<Vec<Row>> {
