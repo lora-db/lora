@@ -55,6 +55,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Write statements without `RETURN` return no rows | `tests/write_results.rs` |
 | Query deadlines and cancellation reach every execution path, including streaming writes; a bounded write that times out rolls back | `tests/timeouts.rs` |
 | RANGE indexes hold temporal values, so a range predicate on a `DATETIME` property is index-backed and `WHERE n.createdAt > $t ORDER BY n.createdAt DESC LIMIT k` streams from the index. Previously temporal values were left out of the index while range predicates were still planned through it, returning no rows | `tests/temporal_range_index.rs` |
+| Writes inside `CALL { ... }` run on the mutable executor, per outer row, with unit subqueries keeping the outer rows. Previously every write in a subquery body failed with `LORA_READ_ONLY` although `explain()` reported the query as mutating | `tests/call_subquery_writes.rs` |
 | A read with an early `LIMIT` stops scanning once the limit is met, also under a deadline and inside an explicit transaction. Previously both ran the full executor and materialized every row first | `tests/early_limit.rs` |
 | Node binding: exact 64-bit integers (`bigint`), per-call `timeoutMs` / `AbortSignal` and a database-wide `queryTimeoutMs`, interactive transactions (`db.begin()`), typed `LORA_LOCKED` for a directory held by another process, `{latitude, longitude}` point params, musl prebuilds | `crates/bindings/lora-node/test/{integers,timeouts,interactive,locking}.test.ts` |
 

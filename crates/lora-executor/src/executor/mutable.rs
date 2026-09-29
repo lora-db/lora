@@ -73,6 +73,9 @@ pub struct MutableExecutionContext<'a, S: GraphStorageMut> {
 pub struct MutableExecutor<'a, S: GraphStorageMut> {
     ctx: MutableExecutionContext<'a, S>,
     deadline: Option<Instant>,
+    /// The row a writing `CALL { ... }` body's bottom `Argument` yields:
+    /// the outer row it runs for. `None` outside such a body.
+    argument_seed: Option<Row>,
 }
 
 impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
@@ -80,11 +83,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         Self {
             ctx,
             deadline: None,
+            argument_seed: None,
         }
     }
 
     pub fn with_deadline(ctx: MutableExecutionContext<'a, S>, deadline: Option<Instant>) -> Self {
-        Self { ctx, deadline }
+        Self {
+            ctx,
+            deadline,
+            argument_seed: None,
+        }
     }
 
     #[inline]
@@ -245,7 +253,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_argument(&self, _op: &ArgumentExec) -> ExecResult<Vec<Row>> {
-        Ok(vec![Row::new()])
+        Ok(vec![self.argument_seed.clone().unwrap_or_default()])
     }
 
     fn exec_node_scan(&mut self, plan: &PhysicalPlan, op: &NodeScanExec) -> ExecResult<Vec<Row>> {
@@ -550,6 +558,31 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     ) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
         let mut out = Vec::with_capacity(input_rows.len());
+
+        if crate::pull::subtree_has_write(plan, op.inner) {
+            // A writing body runs on this executor, once per outer row,
+            // with the outer row seeded into its bottom `Argument`. Each
+            // run sees the writes of the runs before it.
+            let unit = op.new_vars.is_empty();
+            for outer_row in input_rows {
+                self.check_deadline()?;
+                let prev = self.argument_seed.replace(outer_row.clone());
+                let inner_rows = self.execute_node(plan, op.inner);
+                self.argument_seed = prev;
+                let inner_rows = inner_rows?;
+                if unit {
+                    // A unit subquery keeps the outer row as it is, once,
+                    // however many rows its body produced.
+                    out.push(outer_row);
+                    continue;
+                }
+                for inner_row in inner_rows {
+                    out.push(crate::executor::merge_optional_rows(&outer_row, &inner_row));
+                }
+            }
+            return Ok(out);
+        }
+
         let params = std::sync::Arc::new(self.ctx.params.clone());
         let storage_ref: &S = &*self.ctx.storage;
         for outer_row in input_rows {
@@ -641,7 +674,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         // SAFETY: see method-level comment.
         let storage_ref: &S = unsafe { &*storage_ptr };
-        let mut upstream = crate::pull::build_streaming(plan, input, storage_ref, params)?;
+        // Inside a writing `CALL { ... }` body the input's bottom
+        // `Argument` yields the outer row.
+        let mut upstream = match self.argument_seed.clone() {
+            Some(seed) => {
+                crate::pull::build_streaming_seeded(plan, input, storage_ref, params, seed)?
+            }
+            None => crate::pull::build_streaming(plan, input, storage_ref, params)?,
+        };
 
         let mut out = Vec::new();
         while let Some(mut row) = upstream.next_row()? {
@@ -1845,15 +1885,17 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 /// in other Cypher databases; the write operator's pass-through rows
 /// would otherwise leak as anonymous `_0` columns carrying internal ids.
 pub(crate) fn plan_ends_in_write(plan: &PhysicalPlan) -> bool {
-    matches!(
-        plan.nodes[plan.root],
+    match &plan.nodes[plan.root] {
         PhysicalOp::Create(_)
-            | PhysicalOp::Merge(_)
-            | PhysicalOp::Set(_)
-            | PhysicalOp::Delete(_)
-            | PhysicalOp::Remove(_)
-            | PhysicalOp::Foreach(_)
-    )
+        | PhysicalOp::Merge(_)
+        | PhysicalOp::Set(_)
+        | PhysicalOp::Delete(_)
+        | PhysicalOp::Remove(_)
+        | PhysicalOp::Foreach(_) => true,
+        // A query ending in a unit `CALL { ... }` returns no rows.
+        PhysicalOp::CallSubquery(op) => op.new_vars.is_empty(),
+        _ => false,
+    }
 }
 
 /// Candidate nodes for a MERGE node pattern from the property index, or
