@@ -75,6 +75,11 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p perf-smoke-out
+          # The gate compares against perf_smoke_baseline.json, not Criterion's
+          # saved runs. A partial target/criterion restored from the build
+          # cache makes Criterion print "Failed to access file .../base/
+          # sample.json" into the bencher lines, which the summary cannot parse.
+          rm -rf target/criterion
           cargo bench --locked -p lora-database --bench perf_smoke \
               -- --output-format bencher \
             | tee perf-smoke-out/bencher.log

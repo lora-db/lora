@@ -78,6 +78,10 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p bench-out
+          # Criterion's saved runs from the build cache would print errors
+          # into the bencher lines; the summary compares against its own
+          # baseline, so start without them.
+          rm -rf target/criterion
           cargo bench --locked -p lora-database --benches -- --output-format bencher \
             | tee bench-out/benchmarks.log
 
