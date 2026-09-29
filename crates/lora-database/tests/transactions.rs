@@ -1555,8 +1555,9 @@ mod streaming_writes {
                 "UNWIND list.range(1, {n}) AS i CREATE (:T {{i: i}})"
             ))
             .unwrap();
+        // A write without RETURN yields no rows, but every write applies.
         let count = stream.count();
-        assert_eq!(count, n);
+        assert_eq!(count, 0);
         assert_eq!(db.node_count(), n);
     }
 

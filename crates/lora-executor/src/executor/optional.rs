@@ -1,8 +1,65 @@
 //! Shared OPTIONAL MATCH row-composition helpers.
 
-use lora_analyzer::symbols::VarId;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use lora_analyzer::symbols::VarId;
+use lora_compiler::physical::{PhysicalNodeId, PhysicalPlan};
+use lora_store::GraphStorage;
+
+use crate::errors::ExecResult;
 use crate::value::{LoraValue, Row};
+
+/// Whether OPTIONAL MATCH can run its inner pattern once per input row,
+/// seeded with that row's bindings.
+///
+/// Seeding only reaches the inner plan's `Argument` leaf through the pull
+/// pipeline; a subtree that falls back to buffered execution ignores the
+/// seed and would redo its full, uncorrelated scan for every input row.
+pub(crate) fn optional_can_correlate(plan: &PhysicalPlan, inner: PhysicalNodeId) -> bool {
+    crate::pull::subtree_is_fully_streaming(plan, inner)
+}
+
+/// Correlated OPTIONAL MATCH: run the inner pattern seeded with each input
+/// row, so it expands from the nodes the row already binds (as MATCH does)
+/// instead of matching the pattern across the whole graph and joining.
+/// For `MATCH (f {key: k}) OPTIONAL MATCH (f)<-[:FOLLOWS]-()` that is the
+/// difference between touching one festival's followers per row and
+/// touching every follow edge in the graph per row.
+pub(crate) fn correlated_optional_match_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    plan: &PhysicalPlan,
+    inner: PhysicalNodeId,
+    input_rows: Vec<Row>,
+    new_vars: &[VarId],
+) -> ExecResult<Vec<Row>> {
+    let params = Arc::new(params.clone());
+    let mut out = Vec::with_capacity(input_rows.len());
+    for input_row in input_rows {
+        let mut source = crate::pull::build_streaming_seeded(
+            plan,
+            inner,
+            storage,
+            params.clone(),
+            input_row.clone(),
+        )?;
+        let mut matched = false;
+        while let Some(inner_row) = source.next_row()? {
+            // Seeded rows carry the input bindings already; the check is
+            // a guard should any operator rebind an outer variable.
+            if !optional_rows_compatible(&input_row, &inner_row) {
+                continue;
+            }
+            out.push(merge_optional_rows(&input_row, &inner_row));
+            matched = true;
+        }
+        if !matched {
+            out.push(null_extend_optional_row(input_row, new_vars));
+        }
+    }
+    Ok(out)
+}
 
 pub(crate) fn optional_match_rows(
     input_rows: Vec<Row>,
@@ -42,11 +99,7 @@ pub(crate) fn optional_rows_compatible(input_row: &Row, inner_row: &Row) -> bool
 
 pub(crate) fn merge_optional_rows(input_row: &Row, inner_row: &Row) -> Row {
     let mut merged = input_row.clone();
-    for (var, name, val) in inner_row.iter_named() {
-        if !merged.contains_key(*var) {
-            merged.insert_named(*var, name.into_owned(), val.clone());
-        }
-    }
+    merged.fill_missing_from(inner_row);
     merged
 }
 

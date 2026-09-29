@@ -125,7 +125,7 @@ where
         }
 
         let scored = snapshot.vector_search(&index_name, &query_vec, k, restrict_to.as_ref());
-        Ok(scored_rows(scored, Some(k), entity))
+        Ok(hydrated(scored_rows(scored, Some(k), entity), &*snapshot))
     }
 
     fn fulltext_query(
@@ -142,7 +142,7 @@ where
         validate_procedure_index(&def, StoredIndexKind::Fulltext, entity, "fulltext")?;
 
         let scored = snapshot.fulltext_search(&index_name, &query_text);
-        Ok(scored_rows(scored, None, entity))
+        Ok(hydrated(scored_rows(scored, None, entity), &*snapshot))
     }
 }
 
@@ -239,6 +239,14 @@ fn scored_rows(
                 NamedColumn::new("score", LoraValue::Float(score)),
             ])
         })
+        .collect()
+}
+
+/// Hits come back as full nodes / relationships (labels, type,
+/// properties), like any other query result, not bare ids.
+fn hydrated<G: GraphStorage>(rows: Vec<Row>, storage: &G) -> Vec<Row> {
+    rows.into_iter()
+        .map(|row| lora_executor::hydrate_row(row, storage))
         .collect()
 }
 

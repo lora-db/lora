@@ -21,7 +21,7 @@
 //! see zero performance change.
 
 use std::sync::atomic::AtomicUsize;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::fulltext_index::FulltextRegistry;
 use super::index_catalog::{IndexCatalog, StoredIndexEntity};
@@ -46,26 +46,64 @@ impl ScopedPropertyKey {
     }
 }
 
+/// A registry per entity kind, each behind `Arc` so cloning the graph
+/// (the staged copy a write works on) shares the registries. The first
+/// mutable access through [`IndexWrite`] copies a registry only if a
+/// clone still shares it. Maintenance paths check coverage through a read
+/// guard first, so writes that do not touch an index never copy it.
 #[derive(Debug, Default)]
 pub(super) struct EntityIndexStore<T> {
-    node: RwLock<T>,
-    relationship: RwLock<T>,
+    node: RwLock<Arc<T>>,
+    relationship: RwLock<Arc<T>>,
+}
+
+/// Read guard for one registry of an [`EntityIndexStore`].
+pub(super) struct IndexRead<'a, T>(RwLockReadGuard<'a, Arc<T>>);
+
+impl<T> std::ops::Deref for IndexRead<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// Write guard for one registry of an [`EntityIndexStore`]; mutable
+/// access copies the registry first if a graph clone still shares it.
+pub(super) struct IndexWrite<'a, T>(RwLockWriteGuard<'a, Arc<T>>);
+
+impl<T> std::ops::Deref for IndexWrite<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for IndexWrite<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
 }
 
 impl<T> EntityIndexStore<T> {
-    pub(super) fn read(&self, entity: StoredIndexEntity) -> RwLockReadGuard<'_, T> {
-        self.lock_for(entity)
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    pub(super) fn read(&self, entity: StoredIndexEntity) -> IndexRead<'_, T> {
+        IndexRead(
+            self.lock_for(entity)
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
-    pub(super) fn write(&self, entity: StoredIndexEntity) -> RwLockWriteGuard<'_, T> {
-        self.lock_for(entity)
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    pub(super) fn write(&self, entity: StoredIndexEntity) -> IndexWrite<'_, T> {
+        IndexWrite(
+            self.lock_for(entity)
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
-    fn lock_for(&self, entity: StoredIndexEntity) -> &RwLock<T> {
+    fn lock_for(&self, entity: StoredIndexEntity) -> &RwLock<Arc<T>> {
         match entity {
             StoredIndexEntity::Node => &self.node,
             StoredIndexEntity::Relationship => &self.relationship,
@@ -73,11 +111,19 @@ impl<T> EntityIndexStore<T> {
     }
 }
 
-impl<T: Clone> Clone for EntityIndexStore<T> {
+impl<T> Clone for EntityIndexStore<T> {
+    /// Shares both registries; O(1).
     fn clone(&self) -> Self {
+        let share = |lock: &RwLock<Arc<T>>| {
+            RwLock::new(
+                lock.read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            )
+        };
         Self {
-            node: RwLock::new(self.read(StoredIndexEntity::Node).clone()),
-            relationship: RwLock::new(self.read(StoredIndexEntity::Relationship).clone()),
+            node: share(&self.node),
+            relationship: share(&self.relationship),
         }
     }
 }

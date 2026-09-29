@@ -70,3 +70,40 @@ impl RowSource for ArgumentSource {
         }
     }
 }
+
+/// Enforces a query deadline inside a pull pipeline. Wrapped around every
+/// source when the query has a deadline, so even a loop that never yields
+/// a row (a filter rejecting a cartesian product, say) keeps checking:
+/// each pull from upstream passes through a wrapper. The clock is read
+/// every 64 pulls to keep the overhead negligible.
+pub(crate) struct DeadlineSource<'a> {
+    inner: Box<dyn RowSource + 'a>,
+    deadline: web_time::Instant,
+    tick: u32,
+}
+
+impl<'a> DeadlineSource<'a> {
+    pub(crate) fn wrap(
+        inner: Box<dyn RowSource + 'a>,
+        deadline: Option<web_time::Instant>,
+    ) -> Box<dyn RowSource + 'a> {
+        match deadline {
+            Some(deadline) => Box::new(Self {
+                inner,
+                deadline,
+                tick: 0,
+            }),
+            None => inner,
+        }
+    }
+}
+
+impl RowSource for DeadlineSource<'_> {
+    fn next_row(&mut self) -> ExecResult<Option<Row>> {
+        self.tick = self.tick.wrapping_add(1);
+        if self.tick.is_multiple_of(64) && crate::cancel::deadline_reached(self.deadline) {
+            return Err(crate::errors::ExecutorError::QueryTimeout);
+        }
+        self.inner.next_row()
+    }
+}

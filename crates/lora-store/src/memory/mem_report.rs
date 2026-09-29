@@ -27,9 +27,11 @@ use std::mem::size_of;
 
 use crate::{LoraBinary, LoraPoint, LoraVector, NodeRecord, PropertyValue, RelationshipRecord};
 
+use super::chunked_vec::ChunkedVec;
 use super::entity_index_store::{IndexBundle, ScopedPropertyKey};
 use super::fulltext_index::FulltextRegistry;
 use super::hnsw::HnswBackend;
+use super::id_set::IdSet;
 use super::index_catalog::{IndexCatalog, StoredIndexEntity};
 use super::point_index::PointRegistry;
 use super::property_index::{
@@ -80,9 +82,9 @@ pub struct MemoryReport {
     /// Same for `incoming`.
     pub incoming_bytes: usize,
 
-    /// `nodes_by_label: BTreeMap<String, Vec<NodeId>>`.
+    /// `nodes_by_label: BTreeMap<String, ChunkedVec<NodeId>>`.
     pub label_index_bytes: usize,
-    /// `relationships_by_type: BTreeMap<String, Vec<RelationshipId>>`.
+    /// `relationships_by_type: BTreeMap<String, ChunkedVec<RelationshipId>>`.
     pub type_index_bytes: usize,
 
     /// Hash-bucket property registry (`find_*_by_property`).
@@ -213,8 +215,15 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
 
 // ---------------- slab + adjacency ----------------
 
-fn node_slab_bytes(slab: &[Option<std::sync::Arc<NodeRecord>>]) -> usize {
-    let outer = std::mem::size_of_val(slab);
+/// Slot storage of a [`ChunkedVec`]: every allocated slot plus one
+/// `Arc<Vec<T>>` chunk header per chunk.
+fn chunked_outer_bytes<T>(v: &ChunkedVec<T>) -> usize {
+    v.capacity() * size_of::<T>()
+        + v.chunk_count() * (ARC_HEADER + size_of::<Vec<T>>() + size_of::<usize>())
+}
+
+fn node_slab_bytes(slab: &ChunkedVec<Option<std::sync::Arc<NodeRecord>>>) -> usize {
+    let outer = chunked_outer_bytes(slab);
     let mut payload = 0;
     for arc in slab.iter().flatten() {
         payload += ARC_HEADER + size_of::<NodeRecord>() + node_record_heap_bytes(arc);
@@ -222,8 +231,8 @@ fn node_slab_bytes(slab: &[Option<std::sync::Arc<NodeRecord>>]) -> usize {
     outer + payload
 }
 
-fn rel_slab_bytes(slab: &[Option<std::sync::Arc<RelationshipRecord>>]) -> usize {
-    let outer = std::mem::size_of_val(slab);
+fn rel_slab_bytes(slab: &ChunkedVec<Option<std::sync::Arc<RelationshipRecord>>>) -> usize {
+    let outer = chunked_outer_bytes(slab);
     let mut payload = 0;
     for arc in slab.iter().flatten() {
         payload += ARC_HEADER + size_of::<RelationshipRecord>() + rel_record_heap_bytes(arc);
@@ -241,20 +250,25 @@ fn rel_record_heap_bytes(record: &RelationshipRecord) -> usize {
     record.rel_type.capacity() + properties_heap_bytes(&record.properties)
 }
 
-fn adjacency_bytes<T>(adj: &[Vec<T>]) -> usize {
-    let outer = std::mem::size_of_val(adj);
-    let inner: usize = adj.iter().map(|v| v.capacity() * size_of::<T>()).sum();
+fn adjacency_bytes(adj: &ChunkedVec<super::graph::AdjList>) -> usize {
+    let outer = chunked_outer_bytes(adj);
+    // Inline lists (capacity <= 2) own no heap; spilled ones do.
+    let inner: usize = adj
+        .iter()
+        .filter(|v| v.spilled())
+        .map(|v| v.capacity() * size_of::<u64>())
+        .sum();
     outer + inner
 }
 
-fn label_or_type_bytes(map: &BTreeMap<String, Vec<u64>>) -> usize {
+fn label_or_type_bytes(map: &BTreeMap<String, ChunkedVec<u64>>) -> usize {
     let mut total = 0;
     for (key, ids) in map {
         total += BTREE_PER_ENTRY
             + size_of::<String>()
             + key.capacity()
-            + size_of::<Vec<u64>>()
-            + ids.capacity() * size_of::<u64>();
+            + size_of::<ChunkedVec<u64>>()
+            + chunked_outer_bytes(ids);
     }
     total
 }
@@ -324,15 +338,15 @@ fn vector_heap_bytes(v: &LoraVector) -> usize {
 }
 
 fn properties_heap_bytes(properties: &crate::Properties) -> usize {
-    let mut total = 0;
-    for value in properties.values() {
-        total += BTREE_PER_ENTRY
-            + ARC_HEADER
-            + size_of::<std::sync::Arc<str>>()
-            + size_of::<PropertyValue>()
-            + property_value_heap_bytes(value);
-    }
-    total
+    // `PropertyMap` is one contiguous slab of `(Arc<str>, PropertyValue)`
+    // slots. Keys are interned and shared across every record, so only
+    // the slot is charged here, not the key's own allocation.
+    let slots = properties.capacity() * size_of::<(std::sync::Arc<str>, PropertyValue)>();
+    slots
+        + properties
+            .values()
+            .map(property_value_heap_bytes)
+            .sum::<usize>()
 }
 
 // ---------------- secondary indexes ----------------
@@ -358,11 +372,11 @@ fn property_index_map_bytes(values: &PropertyIndex) -> usize {
     let mut total = 0;
     for (key, buckets) in values {
         total += HASHMAP_PER_ENTRY + size_of::<String>() + key.capacity();
-        for (indexed, ids) in buckets {
+        for (indexed, ids) in buckets.iter() {
             total += HASHMAP_PER_ENTRY
                 + property_index_key_bytes(indexed)
-                + size_of::<Vec<u64>>()
-                + ids.capacity() * size_of::<u64>();
+                + size_of::<IdSet>()
+                + ids.heap_bytes();
         }
     }
     total
@@ -375,7 +389,7 @@ fn property_index_key_bytes(key: &PropertyIndexKey) -> usize {
             | PropertyIndexKey::Bool(_)
             | PropertyIndexKey::Int(_)
             | PropertyIndexKey::Float(_) => 0,
-            PropertyIndexKey::String(s) => s.capacity(),
+            PropertyIndexKey::String(s) => 16 + s.len(),
             PropertyIndexKey::Binary(b) => binary_heap_bytes(b),
             PropertyIndexKey::List(items) => {
                 items.capacity() * size_of::<PropertyIndexKey>()
@@ -407,10 +421,11 @@ fn sorted_one(index: &SortedPropertyIndex) -> usize {
     let mut total = 0;
     for (scope, sorted_scope) in &index.by_scope {
         total += BTREE_PER_ENTRY + scoped_key_bytes(scope);
-        for (indexed, ids) in &sorted_scope.by_value {
+        for (indexed, ids) in sorted_scope.by_value.iter() {
             total += BTREE_PER_ENTRY
                 + property_index_key_bytes(indexed)
-                + ids.len() * (BTREE_PER_ENTRY + size_of::<u64>());
+                + size_of::<IdSet>()
+                + ids.heap_bytes();
         }
     }
     total
@@ -427,7 +442,7 @@ fn text_one(registry: &TrigramRegistry) -> usize {
     for (scope, trigram_scope) in &registry.by_scope {
         total += HASHMAP_PER_ENTRY + scoped_key_bytes(scope);
         for ids in trigram_scope.grams.values() {
-            total += BTREE_PER_ENTRY + 3 + ids.len() * (BTREE_PER_ENTRY + size_of::<u64>());
+            total += BTREE_PER_ENTRY + 3 + ids.heap_bytes();
         }
     }
     total
@@ -444,9 +459,7 @@ fn point_one(registry: &PointRegistry) -> usize {
     for (scope, scope_data) in &registry.by_scope {
         total += HASHMAP_PER_ENTRY + scoped_key_bytes(scope);
         for cell in scope_data.grid.cells.values() {
-            total += HASHMAP_PER_ENTRY
-                + size_of::<Vec<(LoraPoint, u64)>>()
-                + cell.capacity() * size_of::<(LoraPoint, u64)>();
+            total += HASHMAP_PER_ENTRY + cell.heap_bytes();
         }
     }
     total
@@ -470,15 +483,17 @@ fn fulltext_one(registry: &FulltextRegistry) -> usize {
         for property in &index.properties {
             total += property.capacity();
         }
-        for (term, postings) in &index.postings {
-            total += BTREE_PER_ENTRY + size_of::<String>() + term.capacity();
-            total += postings.len() * (BTREE_PER_ENTRY + size_of::<u64>() + size_of::<u32>());
+        // Term strings are shared `Arc<str>`s: charged once, on the
+        // postings key; the per-entity lists hold pointers.
+        for (term, postings) in index.postings.iter() {
+            total += BTREE_PER_ENTRY + size_of::<std::sync::Arc<str>>() + ARC_HEADER + term.len();
+            total += postings.heap_bytes();
         }
         for terms in index.entity_terms.values() {
-            total += BTREE_PER_ENTRY + size_of::<u64>();
-            for term in terms {
-                total += BTREE_PER_ENTRY + size_of::<String>() + term.capacity();
-            }
+            total += BTREE_PER_ENTRY
+                + size_of::<u64>()
+                + ARC_HEADER
+                + terms.len() * size_of::<std::sync::Arc<str>>();
         }
     }
     total

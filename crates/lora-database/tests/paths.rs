@@ -153,11 +153,10 @@ fn varlen_no_outgoing_returns_empty() {
 }
 
 #[test]
-fn varlen_wrong_type_returns_error_on_nonempty_graph() {
+fn varlen_unknown_type_matches_nothing_on_nonempty_graph() {
     let db = TestDb::new();
     db.seed_chain(5);
-    let err = db.run_err("MATCH (a:Chain {idx:0})-[:FRIEND*1..3]->(b) RETURN b");
-    assert!(err.contains("unknown relationship type"));
+    db.assert_count("MATCH (a:Chain {idx:0})-[:FRIEND*1..3]->(b) RETURN b", 0);
 }
 
 // ============================================================

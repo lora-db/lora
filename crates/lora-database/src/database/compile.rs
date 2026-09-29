@@ -42,14 +42,21 @@ where
         if let Some(plan) = self.plan_cache.get(query, store_epoch) {
             return Ok(plan);
         }
-        let document = parse_query(query)?;
+        // A write bumps the epoch, so a repeated mutating query misses the
+        // plan every time. Its parse is still valid (it depends only on the
+        // text), so reuse it and redo only analysis and planning.
+        let document = match self.plan_cache.document(query) {
+            Some(document) => document,
+            None => Arc::new(parse_query(query)?),
+        };
         let resolved = {
             let mut analyzer = Analyzer::new(store);
             analyzer.analyze(&document)?
         };
         let stats = store.graph_stats();
         let plan = Arc::new(Self::compile_resolved_with_stats(&resolved, &stats));
-        self.plan_cache.insert(query, store_epoch, plan.clone());
+        self.plan_cache
+            .insert_with_document(query, store_epoch, Some(document), plan.clone());
         Ok(plan)
     }
 }

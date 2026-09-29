@@ -7,8 +7,8 @@ use lora_analyzer::symbols::VarId;
 use lora_analyzer::{
     ResolvedCallSubquery, ResolvedClause, ResolvedCreate, ResolvedDelete, ResolvedExpr,
     ResolvedForeach, ResolvedMatch, ResolvedMerge, ResolvedPattern, ResolvedPatternElement,
-    ResolvedProjection, ResolvedQuery, ResolvedRemove, ResolvedReturn, ResolvedSet, ResolvedUnwind,
-    ResolvedWith,
+    ResolvedProjection, ResolvedQuery, ResolvedRemove, ResolvedReturn, ResolvedSet,
+    ResolvedSortItem, ResolvedUnwind, ResolvedWith,
 };
 
 pub struct Planner {
@@ -214,30 +214,14 @@ impl Planner {
     }
 
     fn plan_with(&mut self, input: PlanNodeId, with: &ResolvedWith) -> PlanNodeId {
-        let mut node = input;
-
-        // Sort before projection so sort expressions can access original variables.
-        if !with.order.is_empty() {
-            node = self.push(LogicalOp::Sort(Sort {
-                input: node,
-                items: with.order.clone(),
-                top_k: None,
-            }));
-        }
-
-        if with.skip.is_some() || with.limit.is_some() {
-            node = self.push(LogicalOp::Limit(Limit {
-                input: node,
-                skip: with.skip.clone(),
-                limit: with.limit.clone(),
-            }));
-        }
-
-        node = self.plan_projection_or_aggregation(
-            node,
+        let mut node = self.plan_projection_sort_limit(
+            input,
             &with.items,
             with.distinct,
             with.include_existing,
+            &with.order,
+            &with.skip,
+            &with.limit,
         );
 
         if let Some(pred) = &with.where_ {
@@ -251,35 +235,111 @@ impl Planner {
     }
 
     fn plan_return(&mut self, input: PlanNodeId, ret: &ResolvedReturn) -> PlanNodeId {
-        let mut node = input;
-
-        // Sort must happen BEFORE projection so that the sort expressions
-        // can access the original variables (e.g. n.name) which are not
-        // available after projection replaces the row with output VarIds.
-        if !ret.order.is_empty() {
-            node = self.push(LogicalOp::Sort(Sort {
-                input: node,
-                items: ret.order.clone(),
-                top_k: None,
-            }));
-        }
-
-        if ret.skip.is_some() || ret.limit.is_some() {
-            node = self.push(LogicalOp::Limit(Limit {
-                input: node,
-                skip: ret.skip.clone(),
-                limit: ret.limit.clone(),
-            }));
-        }
-
-        node = self.plan_projection_or_aggregation(
-            node,
+        self.plan_projection_sort_limit(
+            input,
             &ret.items,
             ret.distinct,
             ret.include_existing,
-        );
+            &ret.order,
+            &ret.skip,
+            &ret.limit,
+        )
+    }
 
-        node
+    /// Plan `items [ORDER BY ...] [SKIP ...] [LIMIT ...]` for WITH / RETURN.
+    ///
+    /// Cypher evaluates projection (with aggregation and DISTINCT) first,
+    /// then ORDER BY, then SKIP / LIMIT. Sort keys may name projected
+    /// aliases (`RETURN p.name AS name ORDER BY name`) and, unless the
+    /// projection aggregates or deduplicates, pre-projection variables too
+    /// (`RETURN p.name AS name ORDER BY p.age`).
+    ///
+    /// * Aggregation or DISTINCT changes the row set, so both must run
+    ///   before sorting and limiting; otherwise `LIMIT 1` would cut the
+    ///   input to one row before counting, and DISTINCT would dedupe an
+    ///   already-truncated list. Sort keys that restate a projected
+    ///   expression are pointed at that expression's output column.
+    /// * A plain projection maps rows 1:1. It first projects while keeping
+    ///   the input bindings, so keys can use both aliases and original
+    ///   variables, then sorts and limits, then trims the row down to the
+    ///   projected columns.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_projection_sort_limit(
+        &mut self,
+        input: PlanNodeId,
+        items: &[ResolvedProjection],
+        distinct: bool,
+        include_existing: bool,
+        order: &[ResolvedSortItem],
+        skip: &Option<ResolvedExpr>,
+        limit: &Option<ResolvedExpr>,
+    ) -> PlanNodeId {
+        let aggregates = items.iter().any(|item| expr_contains_aggregate(&item.expr));
+        let has_order = !order.is_empty();
+        let has_limit = skip.is_some() || limit.is_some();
+
+        if aggregates || distinct {
+            let mut node =
+                self.plan_projection_or_aggregation(input, items, distinct, include_existing);
+            if has_order {
+                node = self.push(LogicalOp::Sort(Sort {
+                    input: node,
+                    items: sort_keys_on_outputs(order, items),
+                    top_k: None,
+                }));
+            }
+            if has_limit {
+                node = self.push(LogicalOp::Limit(Limit {
+                    input: node,
+                    skip: skip.clone(),
+                    limit: limit.clone(),
+                }));
+            }
+            return node;
+        }
+
+        if !has_order {
+            // LIMIT on a 1:1 projection can run first and saves projecting
+            // rows that would be dropped.
+            let mut node = input;
+            if has_limit {
+                node = self.push(LogicalOp::Limit(Limit {
+                    input: node,
+                    skip: skip.clone(),
+                    limit: limit.clone(),
+                }));
+            }
+            return self.plan_projection_or_aggregation(node, items, false, include_existing);
+        }
+
+        let mut node = self.push(LogicalOp::Projection(Projection {
+            input,
+            distinct: false,
+            items: items.to_vec(),
+            include_existing: true,
+        }));
+        node = self.push(LogicalOp::Sort(Sort {
+            input: node,
+            items: order.to_vec(),
+            top_k: None,
+        }));
+        if has_limit {
+            node = self.push(LogicalOp::Limit(Limit {
+                input: node,
+                skip: skip.clone(),
+                limit: limit.clone(),
+            }));
+        }
+        if include_existing {
+            // WITH * / RETURN * keep every binding anyway.
+            return node;
+        }
+        self.push(LogicalOp::Projection(Projection {
+            input: node,
+            distinct: false,
+            items: passthrough_items(items),
+            include_existing: false,
+        }))
     }
 
     /// If any projection item contains an aggregate function, emit an
@@ -331,20 +391,10 @@ impl Planner {
         // rows, we can skip the extra projection when not needed.
         if distinct {
             // For DISTINCT we still need the dedup pass in exec_projection.
-            let passthrough_items: Vec<ResolvedProjection> = items
-                .iter()
-                .map(|item| ResolvedProjection {
-                    expr: ResolvedExpr::Variable(item.output),
-                    output: item.output,
-                    name: item.name.clone(),
-                    explicit_alias: item.explicit_alias,
-                    span: item.span,
-                })
-                .collect();
             self.push(LogicalOp::Projection(Projection {
                 input: node,
                 distinct: true,
-                items: passthrough_items,
+                items: passthrough_items(items),
                 include_existing: false,
             }))
         } else {
@@ -355,6 +405,51 @@ impl Planner {
     fn plan_unit_input(&mut self) -> PlanNodeId {
         self.push(LogicalOp::Argument(Argument))
     }
+}
+
+/// Projection items that re-emit each item's own output column.
+fn passthrough_items(items: &[ResolvedProjection]) -> Vec<ResolvedProjection> {
+    items
+        .iter()
+        .map(|item| ResolvedProjection {
+            expr: ResolvedExpr::Variable(item.output),
+            output: item.output,
+            name: item.name.clone(),
+            explicit_alias: item.explicit_alias,
+            span: item.span,
+        })
+        .collect()
+}
+
+/// Rewrite sort keys for a sort that runs after aggregation / DISTINCT,
+/// where only the projected columns exist. A key that restates a
+/// projected expression (`RETURN n.v AS v, count(*) AS c ORDER BY
+/// count(*)`) is pointed at that expression's output column. Alias keys
+/// already resolve to output columns in the analyzer.
+///
+/// Expressions are compared by their derived `Debug` form: structural,
+/// deterministic, and only paid once at planning time.
+fn sort_keys_on_outputs(
+    order: &[ResolvedSortItem],
+    items: &[ResolvedProjection],
+) -> Vec<ResolvedSortItem> {
+    let projected: Vec<(String, VarId)> = items
+        .iter()
+        .map(|item| (format!("{:?}", item.expr), item.output))
+        .collect();
+    order
+        .iter()
+        .map(|key| {
+            let shape = format!("{:?}", key.expr);
+            match projected.iter().find(|(expr, _)| *expr == shape) {
+                Some((_, output)) => ResolvedSortItem {
+                    expr: ResolvedExpr::Variable(*output),
+                    direction: key.direction,
+                },
+                None => key.clone(),
+            }
+        })
+        .collect()
 }
 
 /// Collect all VarIds introduced by a pattern (node vars, relationship vars).

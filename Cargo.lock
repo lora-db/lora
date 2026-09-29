@@ -971,7 +971,10 @@ dependencies = [
  "js-sys",
  "lora-ast",
  "serde",
+ "serde_json",
+ "smallvec 2.0.0-alpha.12",
  "thiserror",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -375,9 +375,10 @@ fn named_database_rejects_concurrent_archive_open() {
         Ok(_) => panic!("second archive open should fail"),
         Err(err) => err,
     };
+    assert_eq!(err.code(), lora_database::LoraErrorCode::Locked, "{err}");
     assert!(
-        err.to_string().contains("already open"),
-        "unexpected error: {err}"
+        err.to_string().contains("locked by another process"),
+        "{err}"
     );
 
     drop(first);

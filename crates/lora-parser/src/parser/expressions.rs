@@ -49,6 +49,8 @@ pub(super) fn lower_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
             lower_expression(expr)
         }
         Rule::exists_subquery => lower_exists_subquery(pair),
+        Rule::count_subquery => lower_count_subquery(pair),
+        Rule::label_predicate => lower_label_predicate(pair),
         _ => Err(unexpected_rule("expression", pair)),
     }
 }
@@ -847,4 +849,80 @@ pub(super) fn lower_generic_case_expression(pair: Pair<Rule>) -> Result<Expr, Pa
         else_expr,
         span,
     })
+}
+
+/// `COUNT { pattern [WHERE cond] }` → `size([pattern [WHERE cond] | 1])`,
+/// reusing pattern-comprehension evaluation.
+fn lower_count_subquery(pair: Pair<Rule>) -> Result<Expr, ParseError> {
+    let span = pair_span(&pair);
+    let mut pattern = None;
+    let mut where_ = None;
+    let mut inner = pair.into_inner();
+    while let Some(p) = inner.next() {
+        match p.as_rule() {
+            Rule::pattern_element => pattern = Some(super::patterns::lower_pattern_element(p)?),
+            Rule::WHERE => {
+                let expr = inner.next().ok_or_else(|| {
+                    ParseError::new("expected WHERE expression", span.start, span.end)
+                })?;
+                where_ = Some(Box::new(lower_expression(expr)?));
+            }
+            _ => {}
+        }
+    }
+    let pattern = pattern
+        .ok_or_else(|| ParseError::new("expected pattern in COUNT { }", span.start, span.end))?;
+    Ok(Expr::FunctionCall {
+        name: vec!["size".to_string()],
+        distinct: false,
+        args: vec![Expr::PatternComprehension {
+            pattern: Box::new(pattern),
+            where_,
+            map_expr: Box::new(Expr::Integer(1, span)),
+            span,
+        }],
+        span,
+    })
+}
+
+/// `n:A:B|C` → `node.has_label(n, 'A') AND (node.has_label(n, 'B') OR
+/// node.has_label(n, 'C'))`: label groups separated by `:` must all
+/// hold, alternatives inside a group joined by `|` need only one.
+fn lower_label_predicate(pair: Pair<Rule>) -> Result<Expr, ParseError> {
+    let span = pair_span(&pair);
+    let mut variable = None;
+    let mut groups = None;
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::variable => variable = Some(lower_variable(p)?),
+            Rule::node_labels => groups = Some(super::patterns::lower_node_labels(p)?),
+            _ => {}
+        }
+    }
+    let variable =
+        variable.ok_or_else(|| ParseError::new("expected variable", span.start, span.end))?;
+    let groups = groups.ok_or_else(|| ParseError::new("expected label", span.start, span.end))?;
+    let has_label = |label: &str| Expr::FunctionCall {
+        name: vec!["node".to_string(), "has_label".to_string()],
+        distinct: false,
+        args: vec![
+            Expr::Variable(variable.clone()),
+            Expr::String(label.to_string(), span),
+        ],
+        span,
+    };
+    let join = |exprs: Vec<Expr>, op: BinaryOp| {
+        exprs.into_iter().reduce(|lhs, rhs| Expr::Binary {
+            lhs: Box::new(lhs),
+            op,
+            rhs: Box::new(rhs),
+            span,
+        })
+    };
+    let conjuncts: Vec<Expr> = groups
+        .iter()
+        .filter_map(|group| join(group.iter().map(|l| has_label(l)).collect(), BinaryOp::Or))
+        .collect();
+    join(conjuncts, BinaryOp::And)
+        .ok_or_else(|| ParseError::new("expected label", span.start, span.end))
 }

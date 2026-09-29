@@ -246,6 +246,20 @@ impl GraphStorage for InMemoryGraph {
         Some(candidates.into_iter().collect())
     }
 
+    fn node_range_ordered_chunk(
+        &self,
+        label: &str,
+        property: &str,
+        lo: Option<&PropertyValue>,
+        hi: Option<&PropertyValue>,
+        descending: bool,
+        after: Option<(&PropertyValue, NodeId)>,
+        max: usize,
+    ) -> Option<Vec<NodeId>> {
+        self.sorted_indexes_read(crate::StoredIndexEntity::Node)
+            .ordered_chunk(label, property, lo, hi, descending, after, max)
+    }
+
     fn node_point_within_bbox(
         &self,
         label: &str,
@@ -331,7 +345,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn node_ids_by_label(&self, label: &str) -> Vec<NodeId> {
         match self.nodes_by_label.get(label) {
-            Some(ids) => ids.clone(),
+            Some(ids) => ids.iter().copied().collect(),
             None => Vec::new(),
         }
     }
@@ -350,7 +364,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn rel_ids_by_type(&self, rel_type: &str) -> Vec<RelationshipId> {
         match self.relationships_by_type.get(rel_type) {
-            Some(ids) => ids.clone(),
+            Some(ids) => ids.iter().copied().collect(),
             None => Vec::new(),
         }
     }
@@ -635,7 +649,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.nodes_by_label.get(label) {
-            for &id in ids {
+            for &id in ids.iter() {
                 if let Some(node) = self.node_at(id) {
                     for key in node.properties.keys() {
                         keys.insert(key.to_string());
@@ -651,7 +665,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.relationships_by_type.get(rel_type) {
-            for &id in ids {
+            for &id in ids.iter() {
                 if let Some(rel) = self.rel_at(id) {
                     for key in rel.properties.keys() {
                         keys.insert(key.to_string());
@@ -685,7 +699,7 @@ impl GraphStorage for InMemoryGraph {
                     return Vec::new();
                 };
                 ids.iter()
-                    .filter_map(|&id| self.node_at(id).cloned())
+                    .filter_map(|id| self.node_at(id).cloned())
                     .collect()
             }
             None => indexes
@@ -693,7 +707,7 @@ impl GraphStorage for InMemoryGraph {
                 .ids_for(key, value)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| self.node_at(id).cloned())
+                .filter_map(|id| self.node_at(id).cloned())
                 .collect(),
         }
     }
@@ -754,7 +768,7 @@ impl GraphStorage for InMemoryGraph {
                     return Vec::new();
                 };
                 ids.iter()
-                    .filter_map(|&id| self.rel_at(id).cloned())
+                    .filter_map(|id| self.rel_at(id).cloned())
                     .collect()
             }
             None => indexes
@@ -762,7 +776,7 @@ impl GraphStorage for InMemoryGraph {
                 .ids_for(key, value)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| self.rel_at(id).cloned())
+                .filter_map(|id| self.rel_at(id).cloned())
                 .collect(),
         }
     }

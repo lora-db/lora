@@ -81,6 +81,20 @@ impl InMemoryGraph {
     fn fulltext_reindex_node(&self, node: &NodeRecord) {
         use super::fulltext_index::term_counts_for_properties;
 
+        let relevant = self
+            .fulltext_indexes_read(StoredIndexEntity::Node)
+            .by_name()
+            .any(|(_, idx)| {
+                idx.covers_any_label(node.labels.iter().map(String::as_str))
+                    && (idx
+                        .properties
+                        .iter()
+                        .any(|p| node.properties.contains_key(p.as_str()))
+                        || idx.entity_terms.contains_key(&node.id))
+            });
+        if !relevant {
+            return;
+        }
         let mut registry = self.fulltext_indexes_write(StoredIndexEntity::Node);
         for (_, idx) in registry.by_name_mut() {
             if !idx.covers_any_label(node.labels.iter().map(String::as_str)) {
@@ -92,6 +106,12 @@ impl InMemoryGraph {
     }
 
     fn fulltext_remove_node(&self, node_id: u64) {
+        if !self
+            .fulltext_indexes_read(StoredIndexEntity::Node)
+            .indexes_entity(node_id)
+        {
+            return;
+        }
         self.fulltext_indexes_write(StoredIndexEntity::Node)
             .remove_entity_everywhere(node_id);
     }
@@ -99,6 +119,20 @@ impl InMemoryGraph {
     fn fulltext_reindex_relationship(&self, rel: &RelationshipRecord) {
         use super::fulltext_index::term_counts_for_properties;
 
+        let relevant = self
+            .fulltext_indexes_read(StoredIndexEntity::Relationship)
+            .by_name()
+            .any(|(_, idx)| {
+                idx.covers_any_label([rel.rel_type.as_str()])
+                    && (idx
+                        .properties
+                        .iter()
+                        .any(|p| rel.properties.contains_key(p.as_str()))
+                        || idx.entity_terms.contains_key(&rel.id))
+            });
+        if !relevant {
+            return;
+        }
         let mut registry = self.fulltext_indexes_write(StoredIndexEntity::Relationship);
         for (_, idx) in registry.by_name_mut() {
             if !idx.covers_any_label([rel.rel_type.as_str()]) {
@@ -110,6 +144,12 @@ impl InMemoryGraph {
     }
 
     fn fulltext_remove_relationship(&self, rel_id: u64) {
+        if !self
+            .fulltext_indexes_read(StoredIndexEntity::Relationship)
+            .indexes_entity(rel_id)
+        {
+            return;
+        }
         self.fulltext_indexes_write(StoredIndexEntity::Relationship)
             .remove_entity_everywhere(rel_id);
     }
@@ -196,8 +236,20 @@ impl InMemoryGraph {
             }),
         };
 
-        let mut registry = self.fulltext_indexes_write(entity);
         let owned_scopes: Vec<String> = scopes.iter().map(|s| s.to_string()).collect();
+        let covered = self
+            .fulltext_indexes_read(entity)
+            .by_name()
+            .any(|(_, idx)| {
+                idx.property_is_covered(key)
+                    && owned_scopes
+                        .iter()
+                        .any(|s| idx.labels.iter().any(|l| l == s))
+            });
+        if !covered {
+            return;
+        }
+        let mut registry = self.fulltext_indexes_write(entity);
         for (_, idx) in registry.by_name_mut().filter(|(_, idx)| {
             idx.property_is_covered(key)
                 && owned_scopes
@@ -243,6 +295,13 @@ impl InMemoryGraph {
             return;
         }
 
+        let scopes: Vec<&str> = scopes.into_iter().collect();
+        if !self
+            .text_indexes_read(entity)
+            .covers_any(scopes.iter().copied(), key)
+        {
+            return;
+        }
         let mut registry = self.text_indexes_write(entity);
         for scope in scopes {
             registry.update(scope, key, entity_id, old, new);
@@ -262,6 +321,13 @@ impl InMemoryGraph {
             return;
         }
 
+        let scopes: Vec<&str> = scopes.into_iter().collect();
+        if !self
+            .sorted_indexes_read(entity)
+            .covers_any(scopes.iter().copied(), key)
+        {
+            return;
+        }
         let mut registry = self.sorted_indexes_write(entity);
         for scope in scopes {
             registry.update(scope, key, entity_id, old, new);
@@ -289,6 +355,13 @@ impl InMemoryGraph {
             return;
         }
 
+        let scopes: Vec<&str> = scopes.into_iter().collect();
+        if !self
+            .point_indexes_read(entity)
+            .covers_any(scopes.iter().copied(), key)
+        {
+            return;
+        }
         let mut registry = self.point_indexes_write(entity);
         for scope in scopes {
             registry.update(scope, key, entity_id, old_pt, new_pt);

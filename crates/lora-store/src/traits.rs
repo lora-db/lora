@@ -759,6 +759,25 @@ pub trait GraphStorage {
         None
     }
 
+    /// Ids of `label` nodes with `property` in `[lo, hi]`, in index order
+    /// (value, then id), strictly after the `(value, id)` cursor `after`,
+    /// at most `max` of them; `descending` reverses the order. Bounds are
+    /// inclusive here; the executor refilters exact ones. `None` means no
+    /// ordered index covers `(label, property)`.
+    #[allow(clippy::too_many_arguments)]
+    fn node_range_ordered_chunk(
+        &self,
+        _label: &str,
+        _property: &str,
+        _lo: Option<&PropertyValue>,
+        _hi: Option<&PropertyValue>,
+        _descending: bool,
+        _after: Option<(&PropertyValue, NodeId)>,
+        _max: usize,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
     /// Spatial-index candidates inside the closed `[ll, ur]` 2D
     /// bounding box. The executor refilters every id with the precise
     /// predicate, including the z-coordinate when the indexed point

@@ -16,12 +16,12 @@ pub fn plan_result_columns(plan: &PhysicalPlan) -> Vec<String> {
 
 fn plan_columns_at(plan: &PhysicalPlan, node: PhysicalNodeId) -> Option<Vec<String>> {
     match &plan.nodes[node] {
-        PhysicalOp::Projection(p) => Some(p.items.iter().map(|i| i.name.clone()).collect()),
+        PhysicalOp::Projection(p) => Some(p.items.iter().map(|i| i.name.to_string()).collect()),
         PhysicalOp::HashAggregation(p) => Some(
             p.group_by
                 .iter()
                 .chain(p.aggregates.iter())
-                .map(|i| i.name.clone())
+                .map(|i| i.name.to_string())
                 .collect(),
         ),
         PhysicalOp::Limit(p) => plan_columns_at(plan, p.input),

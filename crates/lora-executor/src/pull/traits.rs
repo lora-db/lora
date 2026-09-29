@@ -236,8 +236,12 @@ fn build_streaming_dispatch<'a, S: GraphStorage + 'a>(
     params: Arc<BTreeMap<String, LoraValue>>,
     seed: Option<Row>,
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
-    build_streaming_inner(plan, node_id, storage, params, seed)
-        .map(|src| wrap_metered(node_id, src))
+    build_streaming_inner(plan, node_id, storage, params, seed).map(|src| {
+        super::source::DeadlineSource::wrap(
+            wrap_metered(node_id, src),
+            crate::cancel::active_deadline(),
+        )
+    })
 }
 
 fn build_streaming_inner<'a, S: GraphStorage + 'a>(
@@ -288,6 +292,11 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         PhysicalOp::NodeByPropertyRangeScan(op @ NodeByPropertyRangeScanExec { input, .. }) => {
             let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
+            if op.order.is_some() {
+                return Ok(Box::new(super::scan::OrderedRangeScanSource::new(
+                    upstream, ctx, op,
+                )));
+            }
             Ok(Box::new(BufferedIndexScanSource::node_range(
                 upstream, ctx, op,
             )))
@@ -531,10 +540,13 @@ fn build_buffered_subtree<'a, S: GraphStorage + 'a>(
     // The `Executor` consumes its `ExecutionContext` so we must
     // clone the params map for the fallback. In practice this is
     // small (typically empty or a handful of named parameters).
-    let executor = Executor::new(ExecutionContext {
-        storage,
-        params: (**params).clone(),
-    });
+    let executor = Executor::with_deadline(
+        ExecutionContext {
+            storage,
+            params: (**params).clone(),
+        },
+        crate::cancel::active_deadline(),
+    );
     let rows = executor.execute_subtree(plan, node_id)?;
     Ok(Box::new(BufferedRowSource::new(rows)))
 }

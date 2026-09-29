@@ -338,6 +338,21 @@ impl<'db> Transaction<'db> {
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
+    /// Execute a parameterised query inside the transaction that stops at an
+    /// absolute `deadline` (see [`crate::Database::execute_with_params_deadline`]).
+    /// Several statements can share one deadline to bound the whole
+    /// transaction.
+    pub fn execute_with_params_deadline(
+        &mut self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Instant,
+    ) -> Result<QueryResult, LoraError> {
+        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
     /// Execute a query inside the transaction and return hydrated rows before
     /// final result-format projection.
     pub fn execute_rows(&mut self, query: &str) -> Result<Vec<Row>, LoraError> {
@@ -360,6 +375,12 @@ impl<'db> Transaction<'db> {
         params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
+        if crate::Database::<InMemoryGraph>::is_schema_command_text(query) {
+            let document = parse_query(query)?;
+            if let lora_ast::Statement::Schema(command) = &document.statement {
+                return self.execute_schema_in_tx(command, &params);
+            }
+        }
         let compiled = self.compile_in_tx(query)?;
         self.execute_rows_compiled_deadline(&compiled, params, deadline)
     }
@@ -565,6 +586,49 @@ impl<'db> Transaction<'db> {
                 self.execute_live_compiled(compiled, params, deadline)
             }
         }
+    }
+
+    /// Schema DDL inside a transaction. `SHOW` reads the transaction's
+    /// view (including DDL applied earlier in it). `CREATE` / `DROP`
+    /// apply to the staged graph like a data write: they emit catalog
+    /// events into the transaction's WAL buffer, become visible to later
+    /// statements, and are published by `commit` or discarded by
+    /// `rollback`, all-or-nothing with the data statements.
+    fn execute_schema_in_tx(
+        &mut self,
+        command: &lora_ast::SchemaCommand,
+        params: &BTreeMap<String, LoraValue>,
+    ) -> Result<Vec<Row>> {
+        use crate::database::schema::{apply_schema_mutation, schema_command_is_read, show_schema};
+
+        if schema_command_is_read(command) {
+            if self.is_read_only_unchecked() {
+                self.precheck_open_no_savepoint()?;
+                let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
+                return show_schema(live.as_graph(), command, params);
+            }
+            let inner = self.begin_statement()?;
+            if let Some(staged) = inner.staged.as_ref() {
+                return show_schema(staged, command, params);
+            }
+            drop(inner);
+            let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
+            return show_schema(live.as_graph(), command, params);
+        }
+
+        if self.is_read_only_unchecked() {
+            return Err(TransactionError::ReadOnlyMutation.into());
+        }
+        let mut inner = self.begin_statement()?;
+        let savepoint = self.prepare_mutating_statement(&mut inner)?;
+        let result = {
+            let staged = inner.staged_mut()?;
+            apply_schema_mutation(staged, command, params)
+        };
+        if result.is_err() {
+            restore_savepoint(&mut inner, savepoint);
+        }
+        result
     }
 
     fn prepare_mutating_statement(

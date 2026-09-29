@@ -107,6 +107,23 @@ where
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
+    /// Execute a parameterised query that stops at an absolute `deadline`.
+    ///
+    /// Pair with [`lora_executor::CancellableDeadline`] to also cancel the
+    /// query from another thread before the deadline: a cancelled query
+    /// fails with a timeout error, aborts its WAL transaction, and releases
+    /// its locks, exactly like one that ran out of time.
+    pub fn execute_with_params_deadline(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Instant,
+    ) -> Result<QueryResult, LoraError> {
+        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
     /// Execute a query and return hydrated rows before final result-format
     /// projection.
     pub fn execute_rows(&self, query: &str) -> Result<Vec<Row>, LoraError> {
@@ -147,7 +164,13 @@ where
         // queries land here too once they ship). These bypass the
         // analyzer/compiler, which doesn't yet model standalone CALL.
         if super::procedures::is_procedure_call_text(query) {
-            let document = parse_query(query)?;
+            // `CALL ... YIELD ... RETURN` also starts with a procedure name
+            // but runs through the regular pipeline; reuse the cached parse
+            // so telling the two apart costs nothing after the first call.
+            let document = match self.plan_cache.document(query) {
+                Some(document) => document,
+                None => std::sync::Arc::new(parse_query(query)?),
+            };
             if let lora_ast::Statement::Query(lora_ast::Query::StandaloneCall(call)) =
                 &document.statement
             {

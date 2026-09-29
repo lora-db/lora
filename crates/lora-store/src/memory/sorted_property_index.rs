@@ -23,10 +23,13 @@
 //! lexicographic ordering for the inner data (strings, lists, maps).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 use crate::types::PropertyValue;
 
+use super::cow::CowOrdMap;
 use super::entity_index_store::ScopedPropertyKey;
+use super::id_set::IdSet;
 use super::property_index::PropertyIndexKey;
 
 /// Sorted bucket: every value seen for an indexed property mapped to
@@ -41,12 +44,28 @@ pub(super) struct SortedPropertyIndex {
 #[derive(Debug, Default, Clone)]
 pub(super) struct SortedScope {
     /// Keyed by sortable property key. Values are ids in that bucket.
-    pub(super) by_value: BTreeMap<PropertyIndexKey, BTreeSet<u64>>,
+    /// Copy-on-write partitions (see [`CowOrdMap`]): a write's staged
+    /// graph copy shares them and copies only the partition it changes.
+    pub(super) by_value: CowOrdMap<PropertyIndexKey, IdSet>,
     /// Refcount of catalog entries pointing at this scope.
     refcount: u32,
 }
 
 impl SortedPropertyIndex {
+    /// Whether any of `scopes` has an index on `property`. Checked through
+    /// a read guard before maintenance takes a (copy-on-write) write guard.
+    pub(super) fn covers_any<'a>(
+        &self,
+        scopes: impl IntoIterator<Item = &'a str>,
+        property: &str,
+    ) -> bool {
+        !self.by_scope.is_empty()
+            && scopes.into_iter().any(|scope| {
+                self.by_scope
+                    .contains_key(&ScopedPropertyKey::new(scope, property))
+            })
+    }
+
     pub(super) fn add_scope(&mut self, label: &str, property: &str) -> bool {
         let entry = self
             .by_scope
@@ -75,7 +94,7 @@ impl SortedPropertyIndex {
             .by_scope
             .get_mut(&ScopedPropertyKey::new(label, property))
         {
-            scope.by_value.entry(key).or_default().insert(id);
+            insert_id(scope, key, id);
         }
     }
 
@@ -97,7 +116,7 @@ impl SortedPropertyIndex {
             Self::remove_from_scope(scope, id, &old);
         }
         if let Some(new) = new.and_then(PropertyIndexKey::from_value) {
-            scope.by_value.entry(new).or_default().insert(id);
+            insert_id(scope, new, id);
         }
     }
 
@@ -120,30 +139,132 @@ impl SortedPropertyIndex {
         let hi_key = hi.and_then(PropertyIndexKey::from_value);
         let mut out = BTreeSet::new();
         match (&lo_key, &hi_key) {
-            (Some(l), Some(h)) => extend_ids(&mut out, scope.by_value.range(l..=h)),
-            (Some(l), None) => extend_ids(&mut out, scope.by_value.range(l..)),
-            (None, Some(h)) => extend_ids(&mut out, scope.by_value.range(..=h)),
+            (Some(l), Some(h)) => extend_ids(
+                &mut out,
+                scope
+                    .by_value
+                    .range(Bound::Included(l.clone()), Bound::Included(h.clone())),
+            ),
+            (Some(l), None) => extend_ids(
+                &mut out,
+                scope
+                    .by_value
+                    .range(Bound::Included(l.clone()), Bound::Unbounded),
+            ),
+            (None, Some(h)) => extend_ids(
+                &mut out,
+                scope
+                    .by_value
+                    .range(Bound::Unbounded, Bound::Included(h.clone())),
+            ),
             (None, None) => extend_ids(&mut out, scope.by_value.iter()),
         }
         Some(out)
     }
 
-    fn remove_from_scope(scope: &mut SortedScope, id: u64, key: &PropertyIndexKey) {
-        if let Some(bucket) = scope.by_value.get_mut(key) {
-            bucket.remove(&id);
-            if bucket.is_empty() {
-                scope.by_value.remove(key);
+    /// Ids in `[lo, hi]` (inclusive; the caller refilters exact bounds)
+    /// in value order, then id order within a value, starting strictly
+    /// after `after` and returning at most `max`. `descending` walks the
+    /// same order backwards. `None` when the scope is not indexed.
+    ///
+    /// Paging by `(value, id)` cursor rather than holding an iterator lets
+    /// a streaming scan pull one chunk at a time without keeping the index
+    /// lock between pulls; a `LIMIT` above it stops after a few chunks.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn ordered_chunk(
+        &self,
+        label: &str,
+        property: &str,
+        lo: Option<&PropertyValue>,
+        hi: Option<&PropertyValue>,
+        descending: bool,
+        after: Option<(&PropertyValue, u64)>,
+        max: usize,
+    ) -> Option<Vec<u64>> {
+        use std::ops::Bound;
+
+        let scope = self
+            .by_scope
+            .get(&ScopedPropertyKey::new(label, property))?;
+        let lo_key = lo.and_then(PropertyIndexKey::from_value);
+        let hi_key = hi.and_then(PropertyIndexKey::from_value);
+        let after = after.and_then(|(v, id)| PropertyIndexKey::from_value(v).map(|k| (k, id)));
+
+        // Narrow the value range to start at the cursor's value.
+        let (mut lower, mut upper) = (
+            lo_key.map_or(Bound::Unbounded, Bound::Included),
+            hi_key.map_or(Bound::Unbounded, Bound::Included),
+        );
+        if let Some((key, _)) = &after {
+            if descending {
+                upper = Bound::Included(key.clone());
+            } else {
+                lower = Bound::Included(key.clone());
             }
+        }
+        if let (Bound::Included(l), Bound::Included(u)) = (&lower, &upper) {
+            if l > u {
+                return Some(Vec::new());
+            }
+        }
+
+        let mut out = Vec::with_capacity(max.min(1024));
+        // Returns true once the chunk is full.
+        let mut push_bucket = |key: &PropertyIndexKey, ids: &IdSet| -> bool {
+            let cursor_id = after.as_ref().filter(|(k, _)| k == key).map(|(_, id)| *id);
+            for id in ids.iter_after(cursor_id, descending) {
+                if out.len() >= max {
+                    return true;
+                }
+                out.push(id);
+            }
+            out.len() >= max
+        };
+        let range = scope.by_value.range(lower, upper);
+        if descending {
+            for (key, ids) in range.rev() {
+                if push_bucket(key, ids) {
+                    break;
+                }
+            }
+        } else {
+            for (key, ids) in range {
+                if push_bucket(key, ids) {
+                    break;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    fn remove_from_scope(scope: &mut SortedScope, id: u64, key: &PropertyIndexKey) {
+        let emptied = scope
+            .by_value
+            .get_mut(key)
+            .is_some_and(|bucket| bucket.remove(id));
+        if emptied {
+            scope.by_value.remove(key);
+        }
+    }
+}
+
+fn insert_id(scope: &mut SortedScope, key: PropertyIndexKey, id: u64) {
+    match scope.by_value.get_mut(&key) {
+        Some(bucket) => {
+            bucket.insert(id);
+        }
+        None => {
+            scope.by_value.get_or_insert_with(key, || IdSet::new(id));
         }
     }
 }
 
 fn extend_ids<'a>(
     out: &mut BTreeSet<u64>,
-    iter: impl Iterator<Item = (&'a PropertyIndexKey, &'a BTreeSet<u64>)>,
+    iter: impl Iterator<Item = (&'a PropertyIndexKey, &'a IdSet)>,
 ) {
     for (_, ids) in iter {
-        out.extend(ids.iter().copied());
+        out.extend(ids.iter());
     }
 }
 

@@ -20,7 +20,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Clause | Status | Notes |
 |--------|--------|-------|
 | `MATCH` | **Supported** | Node, label, property, relationship, multi-hop, cross-product |
-| `OPTIONAL MATCH` | **Supported** | Returns null rows for missing patterns |
+| `OPTIONAL MATCH` | **Supported** | Returns null rows for missing patterns. A pattern anchored on already-bound variables expands from them per row, like `MATCH`, instead of matching the pattern across the whole graph and joining |
 | `WHERE` | **Supported** | All comparison, boolean, string, null, list, regex operators |
 | `RETURN` | **Supported** | Projection, aliases, star, computed expressions |
 | `CREATE` | **Supported** | Nodes, relationships, patterns, batch via UNWIND |
@@ -31,12 +31,12 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `WITH` | **Supported** | Variable piping, renaming, filtering, aggregation, star |
 | `UNWIND` | **Supported** | List unwinding, empty/null handling, `list.range()` |
 | `UNION` / `UNION ALL` | **Supported** | Deduplication, multi-branch, ORDER BY / LIMIT on result |
-| `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering |
-| `SKIP` / `LIMIT` | **Supported** | Pagination patterns |
+| `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering. Keys may name projection aliases, aggregates, or (for non-aggregating, non-DISTINCT projections) original variables. With a RANGE index or uniqueness constraint on the sort property and a range predicate on it (`WHERE n.key > $after ORDER BY n.key LIMIT k`), rows stream from the index and the scan stops after `k` rows |
+| `SKIP` / `LIMIT` | **Supported** | Pagination patterns. Applied after aggregation and `DISTINCT` |
 | `DISTINCT` | **Supported** | In RETURN and WITH |
 | `EXPLAIN` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.explain(query, params?)`; deliberately not exposed as a Cypher keyword. |
 | `PROFILE` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.profile(query, params?)`; runs the query and reports per-operator timing. |
-| `CALL` / `CALL ... YIELD` | **Partial** | Supported for documented index procedures: `db.index.vector.queryNodes`, `db.index.vector.queryRelationships`, `db.index.fulltext.queryNodes`, and `db.index.fulltext.queryRelationships`. General-purpose procedures still return an unsupported-feature error. |
+| `CALL` / `CALL ... YIELD` | **Partial** | Supported for the index procedures `db.index.vector.queryNodes`, `db.index.vector.queryRelationships`, `db.index.fulltext.queryNodes`, and `db.index.fulltext.queryRelationships`, both standalone and as a clause: `CALL proc(...) YIELD node [AS n], score [WHERE ...]` composes with later `MATCH` / `WITH` / `ORDER BY` / `LIMIT` and runs once per incoming row. Yielded nodes are fully bound (labels, properties). General-purpose procedures still return an unsupported-feature error. |
 | `FOREACH` | **Supported** | Updating clauses only (`CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, nested `FOREACH`) |
 | `CREATE INDEX` / `DROP INDEX` / `SHOW INDEXES` | **Supported** | RANGE/TEXT/POINT/LOOKUP/VECTOR indexes for nodes and relationships |
 | `CREATE CONSTRAINT` / `DROP CONSTRAINT` / `SHOW CONSTRAINTS` | **Supported** | Property uniqueness (single + composite), property existence (`IS NOT NULL`), node key, relationship key, and property type (`IS :: <TYPE>`) constraints — see §11 |
@@ -104,6 +104,8 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | List comprehension `[x IN list WHERE p \| e]` | **Supported** | |
 | Pattern comprehension `[pattern WHERE p \| e]` | **Supported** | |
 | `EXISTS { pattern }` subquery | **Supported** | In WHERE |
+| `COUNT { pattern [WHERE ...] }` subquery | **Supported** | Number of matches; `MATCH` keyword optional |
+| Label predicate `n:Label`, `n:A:B`, `n:A\|B` | **Supported** | Boolean expression, e.g. `WHERE n:Festival` |
 | `REDUCE(acc = init, x IN list \| expr)` | **Supported** | |
 | List predicates (`all`, `any`, `none`, `single`) | **Supported** | |
 | Operator precedence | **Supported** | Parenthesized expressions |
@@ -155,18 +157,18 @@ normalization supports NFC/NFD/NFKC/NFKD.
 | Function | Status |
 |----------|--------|
 | `string.lower`, `string.upper` (`toLower`, `toUpper` aliases) | **Supported** |
-| `string.trim`, `string.trim_left`, `string.trim_right` | **Supported** |
-| `string.replace(str, find, repl)` | **Supported** |
+| `string.trim`, `string.trim_left`, `string.trim_right` (`trim`, `ltrim`, `rtrim` aliases) | **Supported** |
+| `string.replace(str, find, repl)` (`replace` alias) | **Supported** |
 | `string.slice(str, start[, len])` | **Supported** |
 | `string.prefix(str, n)`, `string.suffix(str, n)` | **Supported** |
 | `string.find`, `string.count`, `string.before`, `string.after` | **Supported** |
-| `string.split(str, delim)`, `string.join(list, delim)`, `string.words(str)` | **Supported** |
+| `string.split(str, delim)` (`split` alias), `string.join(list, delim)`, `string.words(str)` | **Supported** |
 | `string.slugify`, `string.escape`, `string.url_encode`, `string.url_decode` | **Supported** |
 | `string.reverse(str)` / `value.reverse(str)` | **Supported** |
-| `string.length(str)`, `value.size(str)` / `size(str)` | **Supported** |
+| `string.length(str)` (`char_length`, `character_length` aliases), `value.size(str)` / `size(str)` | **Supported** |
 | `string.pad_left(str, len, pad)`, `string.pad_right(str, len, pad)` | **Supported** |
 | `toString`, `toInteger`, `toFloat`, `toBoolean` | **Supported** |
-| `string.normalize(str[, form])` | **Supported** (NFC/NFD/NFKC/NFKD) |
+| `string.normalize(str[, form])` (`normalize` alias) | **Supported** (NFC/NFD/NFKC/NFKD) |
 
 ## 8. Math functions
 
@@ -180,12 +182,18 @@ normalization supports NFC/NFD/NFKC/NFKD.
 | `math.pi()`, `math.e()` | **Supported** |
 | `math.random()` / `random()` | **Supported** (`[0, 1)` based on system-time nanos) |
 
+The standard Cypher names `abs`, `ceil`, `floor`, `round`, `sign`, `sqrt`,
+`log` (natural), `log10`, `exp`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`,
+`atan`, `atan2`, `degrees`, `radians`, `pi`, and `e` resolve to the `math.*`
+functions. `round` rounds half away from zero and returns an integer for
+integral results, where Neo4j returns a float.
+
 ## 9. List functions
 
 | Function | Status |
 |----------|--------|
 | `value.size(list)` / `size(list)` | **Supported** |
-| `list.first` / `head`, `list.rest`, `list.last` / `last` | **Supported** |
+| `list.first` / `head`, `list.rest` / `tail`, `list.last` / `last` | **Supported** |
 | `value.reverse(list)` / `reverse(list)` | **Supported** |
 | `list.range(start, end[, step])` | **Supported** |
 | `reduce(acc = init, x IN list \| expr)` | **Supported** |
@@ -274,7 +282,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | Node / relationship key constraints | **Supported** | Composition of existence + uniqueness; single + composite; node-key uses `IS NODE KEY`, rel-key uses `IS RELATIONSHIP KEY` |
 | Property type constraints (`IS :: T`) | **Supported** | Scalar (`BOOLEAN`/`STRING`/`INTEGER`/`FLOAT`/`DATE`/`LOCAL TIME`/`ZONED TIME`/`LOCAL DATETIME`/`ZONED DATETIME`/`DURATION`/`POINT`), `LIST<T NOT NULL>`, `VECTOR<COORD>(DIM)`, and closed dynamic unions (`T1 \| T2`); `MAP`/`ANY` rejected with `22N90` |
 | Vector index / ANN index | **Partial** | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS {indexConfig: {vector.dimensions, vector.similarity_function}}` (node + rel). Procedures `db.index.vector.queryNodes` / `queryRelationships` execute a flat scan over label-matching entities; ANN structure (HNSW) is a follow-up. |
-| Full-text indexing | **Supported (standard/simple analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default) and `'simple'`; others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + non-alphanumeric split, intersect posting lists (AND semantics), score by summed TF, return `(node\|relationship, score)` rows sorted descending. |
+| Full-text indexing | **Supported (standard/simple analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default) and `'simple'`; others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + ASCII folding (`Sónar` matches `Sonar`, `Øya` matches `Oya`) + non-alphanumeric split, intersect posting lists (AND semantics); a term ending in `*` matches every indexed term with that prefix. Scores are summed TF; rows `(node\|relationship, score)` come back sorted descending with full node / relationship values. |
 
 ## 13b. Vector types and functions
 
@@ -357,6 +365,8 @@ Alias matching is case-insensitive.
 | Temporal / spatial parameters | **Supported** |
 | Parameter as label | **Not yet implemented** | Not standard Cypher |
 | Parameter type checking at parse time | **Not yet implemented** | |
+| 64-bit integers from JavaScript | **Supported** | Node binding: pass `bigint`; results outside `Number.MIN_SAFE_INTEGER..MAX_SAFE_INTEGER` come back as `bigint`. An integer-valued `number` beyond 2^53 is rejected (`LORA_INVALID_PARAMS`) rather than stored rounded |
+| Point parameters as `{latitude, longitude[, height]}` | **Supported** | Same shape reads return; implies WGS-84 when no `srid` is given. `{x, y[, z]}` still works |
 | Parameter support over HTTP | **Supported** | `/query`, `/explain`, and `/profile` accept a JSON `params` object; typed values need query casts where JSON has no native shape |
 
 ## 16. Write operations
@@ -377,6 +387,8 @@ Alias matching is case-insensitive.
 | `MERGE` (node / relationship) | **Supported** |
 | `ON MATCH SET` / `ON CREATE SET` | **Supported** |
 | Batch create via `UNWIND` | **Supported** |
+| Write statement without `RETURN` | **Supported** | Returns no rows (the writes apply) |
+| Schema DDL inside a transaction | **Supported** | `CREATE` / `DROP` index or constraint commit or roll back together with the data statements around them |
 
 ## 17. Result formats
 
@@ -394,7 +406,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | Feature | Status |
 |---------|--------|
 | Parse error with span | **Supported** |
-| Unknown label / type / property in MATCH | **Supported** | Only on non-empty graph |
+| Unknown label / type / property | **Not an error** | Standard Cypher: a pattern naming a label or relationship type no entity carries matches nothing, and reading a missing key yields `null`. The answer never depends on whether matching data happens to exist (empty graph, last node deleted, `REMOVE`d, rolled back) |
 | Unknown variable in RETURN | **Supported** |
 | Duplicate variable binding / projection alias | **Supported** |
 | Duplicate map key | **Supported** |
@@ -426,7 +438,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 
 | Feature | Category | Reason |
 |---------|----------|--------|
-| `CALL` (standalone and YIELD) | Clause | Analyzer rejects with `UnsupportedFeature` |
+| `CALL` for procedures other than the index queries | Clause | Analyzer rejects with `UnsupportedFeature` |
 | `EXPLAIN` / `PROFILE` (as Cypher keywords) | Clause | Not in grammar — exposed instead as the `db.explain()` / `db.profile()` API methods so callers must explicitly request plan-only or instrumented execution. |
 | `LOAD CSV` | DDL | Not in grammar |
 | `USE <graph>` (multi-database) | Clause | Not in grammar |

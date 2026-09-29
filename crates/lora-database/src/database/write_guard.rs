@@ -147,7 +147,9 @@ where
                         staged: Some(staged),
                     });
                 }
-                Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                Err(TryLockError::WouldBlock)
+                    if lora_executor::cancel::deadline_reached(deadline) =>
+                {
                     return Err(ExecutorError::QueryTimeout.into());
                 }
                 Err(TryLockError::WouldBlock) => {

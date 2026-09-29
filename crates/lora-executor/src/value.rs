@@ -14,6 +14,7 @@ pub struct LoraPath {
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoraValue {
@@ -341,7 +342,11 @@ struct RowEntry {
     var: VarId,
     /// `None` means "use the fallback `_{key}` lazily". This avoids allocating
     /// a String for every anonymous variable on the insert hot path.
-    name: Option<String>,
+    ///
+    /// Shared `Arc<str>` rather than `String`: column names are fixed per
+    /// operator, so producers mint one `Arc` per column and every row (and
+    /// every row clone) holds a refcount instead of a private heap copy.
+    name: Option<Arc<str>>,
     value: LoraValue,
 }
 
@@ -373,7 +378,7 @@ impl Serialize for Row {
         let mut ser_map = serializer.serialize_map(Some(self.len()))?;
         for entry in self.entries.iter().flatten() {
             match &entry.name {
-                Some(name) => ser_map.serialize_entry(name.as_str(), &entry.value)?,
+                Some(name) => ser_map.serialize_entry(&**name, &entry.value)?,
                 None => {
                     let fallback = format!("_{}", entry.var);
                     ser_map.serialize_entry(fallback.as_str(), &entry.value)?;
@@ -403,7 +408,7 @@ impl Row {
             .get(key.0 as usize)
             .and_then(|slot| slot.as_ref())
             .map(|entry| match &entry.name {
-                Some(n) => n.clone(),
+                Some(n) => n.to_string(),
                 None => format!("_{}", entry.var),
             })
     }
@@ -425,7 +430,7 @@ impl Row {
         }
     }
 
-    pub fn insert_named(&mut self, key: VarId, name: impl Into<String>, value: LoraValue) {
+    pub fn insert_named(&mut self, key: VarId, name: impl Into<Arc<str>>, value: LoraValue) {
         let idx = self.ensure_slot(key);
         let was_set = self.entries[idx].is_some();
         self.entries[idx] = Some(RowEntry {
@@ -451,6 +456,19 @@ impl Row {
         }
     }
 
+    /// Copy every entry of `other` whose variable is unset in `self`,
+    /// keeping its name as stored (shared `Arc`, or none for anonymous
+    /// variables) rather than materializing the `_{key}` fallback.
+    pub fn fill_missing_from(&mut self, other: &Row) {
+        for entry in other.entries.iter().flatten() {
+            let idx = self.ensure_slot(entry.var);
+            if self.entries[idx].is_none() {
+                self.entries[idx] = Some(entry.clone());
+                self.len_set += 1;
+            }
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&VarId, &LoraValue)> {
         self.entries
             .iter()
@@ -466,7 +484,7 @@ impl Row {
     ) -> impl Iterator<Item = (&VarId, std::borrow::Cow<'_, str>, &LoraValue)> {
         self.entries.iter().flatten().map(|entry| {
             let name: std::borrow::Cow<'_, str> = match &entry.name {
-                Some(n) => std::borrow::Cow::Borrowed(n.as_str()),
+                Some(n) => std::borrow::Cow::Borrowed(&**n),
                 None => std::borrow::Cow::Owned(format!("_{}", entry.var)),
             };
             (&entry.var, name, &entry.value)
@@ -474,11 +492,17 @@ impl Row {
     }
 
     /// Consume the row and yield owned `(VarId, name, LoraValue)` triples.
-    /// Used by hydrate_row to avoid cloning values on the projection hot path.
-    pub fn into_iter_named(self) -> impl Iterator<Item = (VarId, String, LoraValue)> {
+    /// Used by hydrate_row to avoid cloning values on the projection hot path;
+    /// names come back as the shared `Arc<str>` so re-inserting them into a
+    /// new row costs a refcount, not an allocation.
+    pub fn into_iter_named(self) -> impl Iterator<Item = (VarId, Arc<str>, LoraValue)> {
         self.entries.into_iter().flatten().map(|entry| {
             let RowEntry { var, name, value } = entry;
-            (var, name.unwrap_or_else(|| format!("_{var}")), value)
+            (
+                var,
+                name.unwrap_or_else(|| Arc::from(format!("_{var}"))),
+                value,
+            )
         })
     }
 

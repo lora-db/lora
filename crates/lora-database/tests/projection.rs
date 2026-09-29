@@ -56,11 +56,12 @@ fn return_expression() {
 // ============================================================
 
 #[test]
-fn return_missing_property_is_rejected() {
+fn return_missing_property_is_null() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
-    let err = db.run_err("MATCH (n:User) RETURN n.nonexistent");
-    assert!(err.contains("unknown property"));
+    let rows = db.run("MATCH (n:User) RETURN n.nonexistent AS v");
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0]["v"].is_null());
 }
 
 #[test]

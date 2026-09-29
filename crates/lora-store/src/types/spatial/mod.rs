@@ -13,7 +13,7 @@ mod point;
 mod srid;
 
 pub use distance::{cartesian_distance, haversine_distance, point_distance};
-pub use point::LoraPoint;
+pub use point::{LoraPoint, NamedPointCoordinates};
 pub use srid::{
     resolve_srid, resolve_srid_checked, srid_from_crs_name, srid_is_3d, srid_is_geographic,
     srid_is_supported, PointKeyFamily, SridResolveError, CRS_CARTESIAN, CRS_CARTESIAN_3D,

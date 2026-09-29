@@ -436,7 +436,7 @@ have a default target.
 ### WAL/container root is already open
 
 **Symptom:** Opening a WAL-backed or container-backed database fails with
-an error that the WAL/container root is already open by another live handle.
+a `LORA_LOCKED` error saying the database directory is locked by another process or live handle.
 
 **Likely cause:** Another live process or database handle already owns
 that WAL directory or `.loradb` archive. LoraDB takes a lock so two appenders

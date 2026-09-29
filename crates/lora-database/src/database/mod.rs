@@ -20,7 +20,7 @@ mod profile;
 mod pull_mode;
 mod replay;
 mod row_projection;
-mod schema;
+pub(crate) mod schema;
 mod show_pipeline;
 mod stream;
 mod write_guard;

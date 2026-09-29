@@ -101,17 +101,22 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         plan: &PhysicalPlan,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         let rows = self.execute_rows(plan)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
     pub fn execute_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
         clear_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
+        if plan_ends_in_write(plan) {
+            return Ok(Vec::new());
+        }
         if !plan_may_need_hydration(plan) {
             return Ok(rows);
         }
@@ -127,11 +132,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         compiled: &CompiledQuery,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         let rows = self.execute_compiled_rows(compiled)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
     pub fn execute_compiled_rows(&mut self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
         if compiled.unions.is_empty() {
             return self.execute_rows(&compiled.physical);
@@ -166,6 +173,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     fn execute_and_hydrate(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
         let rows = self.execute_node(plan, plan.root)?;
+        if plan_ends_in_write(plan) {
+            return Ok(Vec::new());
+        }
         if !plan_may_need_hydration(plan) {
             return Ok(rows);
         }
@@ -457,7 +467,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
-        Ok(unwind_rows(input_rows, op, &eval_ctx))
+        unwind_rows(input_rows, op, &eval_ctx)
     }
 
     fn exec_hash_aggregation(
@@ -515,7 +525,19 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     ) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
 
-        // Inner plan is read-only and input-independent; execute once and reuse.
+        if super::optional::optional_can_correlate(plan, op.inner) {
+            let storage_ref: &S = &*self.ctx.storage;
+            return super::optional::correlated_optional_match_rows(
+                storage_ref,
+                &self.ctx.params,
+                plan,
+                op.inner,
+                input_rows,
+                &op.new_vars,
+            );
+        }
+
+        // Fallback: execute the inner plan once, uncorrelated, and join.
         let inner_rows = self.execute_node(plan, op.inner)?;
 
         Ok(optional_match_rows(input_rows, &inner_rows, &op.new_vars))
@@ -869,20 +891,28 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 labels,
                 properties,
             } => {
-                // ID-only candidate discovery; borrow the record during
-                // label/property filtering to avoid cloning non-matches.
-                let candidate_ids = if labels.is_empty() {
-                    self.ctx.storage.all_node_ids()
-                } else {
-                    scan_node_ids_for_label_groups(&*self.ctx.storage, labels)
-                };
-
-                // Filter by properties if specified
                 let eval_ctx = EvalContext {
                     storage: &*self.ctx.storage,
                     params: &self.ctx.params,
                 };
                 let expected_props = properties.as_ref().map(|e| eval_expr(e, row, &eval_ctx));
+
+                // ID-only candidate discovery; borrow the record during
+                // label/property filtering to avoid cloning non-matches.
+                // `MERGE (n:L {key: $k})` looks the key up in the property
+                // index instead of scanning every `:L` node, so an upsert
+                // costs the same on a large label as on a small one.
+                let indexed = match &expected_props {
+                    Some(LoraValue::Map(expected)) => {
+                        merge_candidates_from_index(&*self.ctx.storage, labels, expected)
+                    }
+                    _ => None,
+                };
+                let candidate_ids = match indexed {
+                    Some(ids) => ids,
+                    None if labels.is_empty() => self.ctx.storage.all_node_ids(),
+                    None => scan_node_ids_for_label_groups(&*self.ctx.storage, labels),
+                };
 
                 for id in candidate_ids {
                     let matched = self
@@ -1832,4 +1862,67 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         Ok(created.id)
     }
+}
+
+/// Whether a plan is a write statement with no `RETURN` (its root is the
+/// write operator itself). Such a statement produces no result rows, as
+/// in other Cypher databases; the write operator's pass-through rows
+/// would otherwise leak as anonymous `_0` columns carrying internal ids.
+pub(crate) fn plan_ends_in_write(plan: &PhysicalPlan) -> bool {
+    matches!(
+        plan.nodes[plan.root],
+        PhysicalOp::Create(_)
+            | PhysicalOp::Merge(_)
+            | PhysicalOp::Set(_)
+            | PhysicalOp::Delete(_)
+            | PhysicalOp::Remove(_)
+            | PhysicalOp::Foreach(_)
+    )
+}
+
+/// Candidate nodes for a MERGE node pattern from the property index, or
+/// `None` to fall back to a label scan. Every candidate is still checked
+/// against the full pattern, so the only requirement is that no real
+/// match is missed. MERGE compares `1` and `1.0` as equal while the index
+/// keys them apart, so numbers look up both images; values without an
+/// exact index image (lists, maps, NaN, floats beyond 2^53) scan.
+fn merge_candidates_from_index<S: lora_store::GraphStorage>(
+    storage: &S,
+    labels: &[Vec<String>],
+    expected: &std::collections::BTreeMap<String, LoraValue>,
+) -> Option<Vec<lora_store::NodeId>> {
+    use lora_store::PropertyValue;
+
+    // A single required label scopes the lookup; otherwise look up
+    // across labels and let the pattern check filter.
+    let label = match labels {
+        [group] if group.len() == 1 => Some(group[0].as_str()),
+        _ => None,
+    };
+    let (key, value) = expected.iter().find(|(_, v)| {
+        matches!(
+            v,
+            LoraValue::String(_) | LoraValue::Bool(_) | LoraValue::Int(_)
+        ) || matches!(v, LoraValue::Float(f) if f.is_finite() && f.abs() < 9_007_199_254_740_992.0)
+    })?;
+    let images: Vec<PropertyValue> = match value {
+        LoraValue::String(s) => vec![PropertyValue::String(s.clone())],
+        LoraValue::Bool(b) => vec![PropertyValue::Bool(*b)],
+        LoraValue::Int(i) => vec![PropertyValue::Int(*i), PropertyValue::Float(*i as f64)],
+        LoraValue::Float(f) => {
+            let mut v = vec![PropertyValue::Float(*f)];
+            if f.fract() == 0.0 {
+                v.push(PropertyValue::Int(*f as i64));
+            }
+            v
+        }
+        _ => return None,
+    };
+    let mut ids: Vec<lora_store::NodeId> = images
+        .iter()
+        .flat_map(|image| storage.find_node_ids_by_property(label, key, image))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
 }

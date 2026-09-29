@@ -60,7 +60,10 @@ pub use lora_wal::{SyncMode, WalConfig};
 
 // Re-export the core execution types so callers don't need a direct
 // dependency on `lora-executor`.
-pub use lora_executor::{ExecuteOptions, LoraValue, QueryResult, ResultFormat, Row};
+pub use lora_executor::cancel::deadline_reached;
+pub use lora_executor::{
+    CancellableDeadline, ExecuteOptions, LoraValue, QueryResult, ResultFormat, Row,
+};
 
 // Re-export the default in-memory backing store so callers only need to
 // depend on `lora-database` for the happy path.

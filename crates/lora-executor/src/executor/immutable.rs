@@ -79,6 +79,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         plan: &PhysicalPlan,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         let rows = self.execute_rows(plan)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
@@ -88,11 +89,13 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         compiled: &CompiledQuery,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         let rows = self.execute_compiled_rows(compiled)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
     pub fn execute_compiled_rows(&self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
         if compiled.unions.is_empty() {
             return self.execute_rows(&compiled.physical);
@@ -131,6 +134,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     where
         S: Sync,
     {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
         {
             self.check_deadline()?;
@@ -143,6 +147,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     }
 
     pub fn execute_rows(&self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
@@ -176,6 +181,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         plan: &PhysicalPlan,
         node_id: PhysicalNodeId,
     ) -> ExecResult<Vec<Row>> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.execute_node(plan, node_id)
     }
 
@@ -930,7 +936,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
-        Ok(unwind_rows(input_rows, op, &eval_ctx))
+        unwind_rows(input_rows, op, &eval_ctx)
     }
 
     fn exec_hash_aggregation(
@@ -1012,10 +1018,20 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     ) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
 
-        // The inner plan is built to start from Argument (an empty row) and is
-        // read-only, so its output does not depend on the upstream input. Execute
-        // it once and reuse the result across every input row, instead of
-        // producing |input_rows| × |inner_rows| allocations.
+        if super::optional::optional_can_correlate(plan, op.inner) {
+            return super::optional::correlated_optional_match_rows(
+                self.ctx.storage,
+                &self.ctx.params,
+                plan,
+                op.inner,
+                input_rows,
+                &op.new_vars,
+            );
+        }
+
+        // Fallback for inner plans the pull pipeline cannot seed: execute
+        // the pattern once, uncorrelated, and join it against every input
+        // row.
         let inner_rows = self.execute_node(plan, op.inner)?;
 
         Ok(optional_match_rows(input_rows, &inner_rows, &op.new_vars))

@@ -7,7 +7,11 @@ use lora_store::GraphCatalog;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Analyzer<'a, S: GraphCatalog + ?Sized> {
-    pub(super) storage: &'a S,
+    /// Analysis deliberately does not read the stored data: whether a
+    /// query is valid must not depend on which labels, types or keys
+    /// happen to exist right now. The catalog type stays in the signature
+    /// so callers keep constructing the analyzer against their store.
+    pub(super) _catalog: std::marker::PhantomData<&'a S>,
     pub(super) scopes: ScopeStack,
     pub(super) symbols: SymbolTable,
     /// Variables whose runtime value shape isn't tracked by the analyzer
@@ -27,9 +31,9 @@ pub(super) enum PatternContext {
 }
 
 impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
-    pub fn new(storage: &'a S) -> Self {
+    pub fn new(_storage: &'a S) -> Self {
         Self {
-            storage,
+            _catalog: std::marker::PhantomData,
             scopes: ScopeStack::new(),
             symbols: SymbolTable::default(),
             dynamic_property_vars: BTreeSet::new(),
@@ -131,7 +135,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         let mut clauses = Vec::new();
 
         for rc in &part.reading_clauses {
-            clauses.push(self.analyze_reading_clause(rc)?);
+            clauses.extend(self.analyze_reading_clause(rc)?);
         }
 
         for uc in &part.updating_clauses {
@@ -149,7 +153,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         let mut clauses = Vec::new();
 
         for rc in &q.reading_clauses {
-            clauses.push(self.analyze_reading_clause(rc)?);
+            clauses.extend(self.analyze_reading_clause(rc)?);
         }
 
         for uc in &q.updating_clauses {
@@ -166,15 +170,15 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     fn analyze_reading_clause(
         &mut self,
         rc: &ReadingClause,
-    ) -> Result<ResolvedClause, SemanticError> {
-        match rc {
-            ReadingClause::Match(m) => Ok(ResolvedClause::Match(self.analyze_match(m)?)),
-            ReadingClause::Unwind(u) => Ok(ResolvedClause::Unwind(self.analyze_unwind(u)?)),
-            ReadingClause::InQueryCall(c) => self.analyze_in_query_call(c),
+    ) -> Result<Vec<ResolvedClause>, SemanticError> {
+        Ok(match rc {
+            ReadingClause::Match(m) => vec![ResolvedClause::Match(self.analyze_match(m)?)],
+            ReadingClause::Unwind(u) => vec![ResolvedClause::Unwind(self.analyze_unwind(u)?)],
+            ReadingClause::InQueryCall(c) => self.analyze_in_query_call(c)?,
             ReadingClause::CallSubquery(c) => {
-                Ok(ResolvedClause::CallSubquery(self.analyze_call_subquery(c)?))
+                vec![ResolvedClause::CallSubquery(self.analyze_call_subquery(c)?)]
             }
-        }
+        })
     }
 
     /// Analyze a CALL { ... } subquery. The inner body is analyzed
@@ -200,7 +204,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             Some(ResolvedClause::Return(ret)) => ret
                 .items
                 .iter()
-                .map(|p| (p.name.clone(), p.output))
+                .map(|p| (p.name.to_string(), p.output))
                 .collect(),
             _ => {
                 return Err(SemanticError::UnsupportedFeature(
@@ -274,38 +278,28 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         }
     }
 
+    /// Label names are never rejected. Standard Cypher treats a label no
+    /// node carries as an empty match, not an error, and checking against
+    /// the stored data made the *kind* of answer depend on what happens to
+    /// exist right now: the same query errored after the last `:Comment`
+    /// was deleted, but not on an empty database. A pattern with an unknown
+    /// label simply matches nothing.
     pub(super) fn validate_label_name(
         &self,
-        label: &str,
-        context: PatternContext,
+        _label: &str,
+        _context: PatternContext,
     ) -> Result<(), SemanticError> {
-        if matches!(
-            context,
-            PatternContext::Write | PatternContext::OptionalRead
-        ) || self.storage.has_label_name(label)
-            || self.storage.node_count() == 0
-        {
-            Ok(())
-        } else {
-            Err(SemanticError::UnknownLabel(label.to_string()))
-        }
+        Ok(())
     }
 
+    /// Relationship types follow the same rule as labels: an unknown type
+    /// matches nothing.
     pub(super) fn validate_relationship_type_name(
         &self,
-        rel_type: &str,
-        context: PatternContext,
+        _rel_type: &str,
+        _context: PatternContext,
     ) -> Result<(), SemanticError> {
-        if matches!(
-            context,
-            PatternContext::Write | PatternContext::OptionalRead
-        ) || self.storage.has_relationship_type_name(rel_type)
-            || self.storage.relationship_count() == 0
-        {
-            Ok(())
-        } else {
-            Err(SemanticError::UnknownRelationshipType(rel_type.to_string()))
-        }
+        Ok(())
     }
 
     /// Analyze an expression that is the target of a SET operation.
@@ -329,20 +323,12 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         }
     }
 
-    pub(super) fn property_access_allowed(&self, base: &ResolvedExpr, key: &str) -> bool {
-        match base {
-            // Map literals and query parameters carry their own keys —
-            // there's nothing in the graph catalog to check against.
-            ResolvedExpr::Map(_) | ResolvedExpr::Parameter(_) => true,
-            // Variables whose value shape isn't tracked (UNWIND-bound
-            // row elements, etc.) — the catalog can't speak to keys on
-            // values that come from `$params` at execution time.
-            ResolvedExpr::Variable(id) if self.dynamic_property_vars.contains(id) => true,
-            _ => {
-                self.storage.has_property_key(key)
-                    || (self.storage.node_count() == 0 && self.storage.relationship_count() == 0)
-            }
-        }
+    /// Property access is always allowed: reading a key no entity carries
+    /// yields `null` (standard Cypher), including a key written earlier in
+    /// the same statement. Checking the stored catalog made the query's
+    /// validity depend on the data.
+    pub(super) fn property_access_allowed(&self, _base: &ResolvedExpr, _key: &str) -> bool {
+        true
     }
 
     pub(super) fn visible_bindings(&self) -> BTreeMap<String, VarId> {
@@ -364,7 +350,7 @@ fn return_column_info(clauses: &[ResolvedClause]) -> Option<Vec<(String, bool)>>
             return Some(
                 ret.items
                     .iter()
-                    .map(|p| (p.name.clone(), p.explicit_alias))
+                    .map(|p| (p.name.to_string(), p.explicit_alias))
                     .collect(),
             );
         }

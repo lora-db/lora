@@ -1,65 +1,65 @@
 {
   "_meta": {
     "default_tolerance_pct": 10,
-    "last_updated": "2026-05-23",
-    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario."
+    "last_updated": "2026-09-29",
+    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario. 2026-09-29: property maps became key-sorted vectors, index postings inline single ids, adjacency lists inline two edges. These are MemoryReport estimates; `cargo run --release -p lora-database --example heap_probe` measures real allocations. Later the same day: slabs, adjacency and label indexes became chunked copy-on-write vectors and index maps copy-on-write shards (structural sharing for staged writes)."
   },
   "benchmarks": {
     "node_only_10k": {
-      "total_bytes": 4896966,
-      "bytes_per_node": 428.9,
+      "total_bytes": 3668174,
+      "bytes_per_node": 309.2,
       "tolerance_pct": 10
     },
     "chain_1000.build": {
-      "total_bytes": 665387,
-      "bytes_per_node": 213.0,
-      "bytes_per_rel": 100.0,
+      "total_bytes": 514627,
+      "bytes_per_node": 173.3,
+      "bytes_per_rel": 100.3,
       "tolerance_pct": 10
     },
     "chain_10000.build": {
-      "total_bytes": 5834195,
-      "bytes_per_node": 213.0,
-      "bytes_per_rel": 100.0,
+      "total_bytes": 5161131,
+      "bytes_per_node": 173.3,
+      "bytes_per_rel": 101.2,
       "tolerance_pct": 10
     },
     "chain_100000.build": {
-      "total_bytes": 57764195,
-      "bytes_per_node": 213.0,
-      "bytes_per_rel": 100.0,
+      "total_bytes": 51531835,
+      "bytes_per_node": 173.1,
+      "bytes_per_rel": 100.9,
       "tolerance_pct": 10
     },
     "star_1000.build": {
-      "total_bytes": 416075,
-      "bytes_per_node": 212.0,
-      "bytes_per_rel": 99.0,
+      "total_bytes": 346187,
+      "bytes_per_node": 172.3,
+      "bytes_per_rel": 99.3,
       "tolerance_pct": 10
     },
     "star_10000.build": {
-      "total_bytes": 4102499,
-      "bytes_per_node": 212.0,
-      "bytes_per_rel": 99.0,
+      "total_bytes": 3594019,
+      "bytes_per_node": 173.2,
+      "bytes_per_rel": 100.2,
       "tolerance_pct": 10
     },
     "star_100000.build": {
-      "total_bytes": 41452499,
-      "bytes_per_node": 212.0,
-      "bytes_per_rel": 99.0,
+      "total_bytes": 35465315,
+      "bytes_per_node": 173.0,
+      "bytes_per_rel": 99.9,
       "tolerance_pct": 10
     },
     "social_20k_x8.build": {
-      "total_bytes": 53593249,
-      "bytes_per_node": 543.6,
-      "bytes_per_rel": 205.0,
+      "total_bytes": 42867985,
+      "bytes_per_node": 383.9,
+      "bytes_per_rel": 165.9,
       "tolerance_pct": 10
     },
     "vector_flat_5k_d128": {
-      "total_bytes": 6829412,
-      "bytes_per_node": 721.0,
+      "total_bytes": 6615020,
+      "bytes_per_node": 681.3,
       "tolerance_pct": 10
     },
     "vector_hnsw_5k_d128": {
-      "total_bytes": 10459212,
-      "bytes_per_node": 721.0,
+      "total_bytes": 10296500,
+      "bytes_per_node": 681.3,
       "tolerance_pct": 15
     }
   }

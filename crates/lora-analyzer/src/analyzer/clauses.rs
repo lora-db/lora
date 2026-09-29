@@ -3,7 +3,7 @@ use super::state::{Analyzer, PatternContext};
 use crate::{errors::*, resolved::*, symbols::*};
 use lora_ast::{
     Create, Delete, Expr, Foreach, InQueryCall, Match, Merge, ProjectionBody, ProjectionItem,
-    Remove, RemoveItem, Return, Set, SetItem, Unwind, UpdatingClause, With,
+    Remove, RemoveItem, Return, Set, SetItem, Unwind, UpdatingClause, Variable, With,
 };
 use lora_store::GraphCatalog;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,13 +63,99 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         Ok(ResolvedUnwind { expr, alias })
     }
 
+    /// `CALL proc(args) YIELD f [AS a], ... [WHERE cond]` as a clause.
+    ///
+    /// Supported procedures are the index queries. The call is rewritten
+    /// into clauses the rest of the pipeline already runs:
+    ///
+    /// ```text
+    /// UNWIND index.<op>(args) AS <hit>
+    /// WITH *, <hit>.f AS a, ... [WHERE cond]
+    /// ```
+    ///
+    /// so each hit becomes a row whose yielded variables are ordinary
+    /// bindings: a yielded `node` is a bound node that later `MATCH`
+    /// patterns expand from, and `score` is a number.
     pub(super) fn analyze_in_query_call(
         &mut self,
-        _call: &InQueryCall,
-    ) -> Result<ResolvedClause, SemanticError> {
-        Err(SemanticError::UnsupportedFeature(
-            "CALL ... YIELD is not yet supported by the analyzer".into(),
-        ))
+        call: &InQueryCall,
+    ) -> Result<Vec<ResolvedClause>, SemanticError> {
+        let span = call.span;
+        let qualified = call.procedure.name.parts.join(".");
+        let (function, entity_field) = match qualified.to_ascii_lowercase().as_str() {
+            "db.index.fulltext.querynodes" => ("fulltext_nodes", "node"),
+            "db.index.fulltext.queryrelationships" => ("fulltext_relationships", "relationship"),
+            "db.index.vector.querynodes" => ("vector_nodes", "node"),
+            "db.index.vector.queryrelationships" => ("vector_relationships", "relationship"),
+            _ => {
+                return Err(SemanticError::UnsupportedFeature(format!(
+                    "unknown procedure `{qualified}` (supported in CALL ... YIELD: \
+                     db.index.fulltext.queryNodes, db.index.fulltext.queryRelationships, \
+                     db.index.vector.queryNodes, db.index.vector.queryRelationships)"
+                )))
+            }
+        };
+        if call.yield_items.is_empty() {
+            return Err(SemanticError::UnsupportedFeature(format!(
+                "CALL {qualified}(...) inside a query needs YIELD (fields: {entity_field}, score)"
+            )));
+        }
+
+        // Unique per call site so two CALLs in one query don't collide.
+        let hit_name = format!("__call_hit_{}", span.start);
+        let hit = Variable {
+            name: hit_name,
+            span,
+        };
+        let unwind = Unwind {
+            expr: Expr::FunctionCall {
+                name: vec!["index".to_string(), function.to_string()],
+                distinct: false,
+                args: call.procedure.args.clone(),
+                span,
+            },
+            alias: hit.clone(),
+            span,
+        };
+
+        let mut items = vec![ProjectionItem::Star { span }];
+        for item in &call.yield_items {
+            let field = item
+                .field
+                .clone()
+                .unwrap_or_else(|| item.alias.name.clone());
+            if field != entity_field && field != "score" {
+                return Err(SemanticError::UnsupportedFeature(format!(
+                    "{qualified} yields `{entity_field}` and `score`, not `{field}`"
+                )));
+            }
+            items.push(ProjectionItem::Expr {
+                expr: Expr::Property {
+                    expr: Box::new(Expr::Variable(hit.clone())),
+                    key: field,
+                    span: item.span,
+                },
+                alias: Some(item.alias.clone()),
+                span: item.span,
+            });
+        }
+        let with = With {
+            body: ProjectionBody {
+                distinct: false,
+                items,
+                order: Vec::new(),
+                skip: None,
+                limit: None,
+                span,
+            },
+            where_: call.where_.clone(),
+            span,
+        };
+
+        Ok(vec![
+            ResolvedClause::Unwind(self.analyze_unwind(&unwind)?),
+            ResolvedClause::With(self.analyze_with(&with)?),
+        ])
     }
 
     pub(super) fn analyze_create(&mut self, c: &Create) -> Result<ResolvedCreate, SemanticError> {
@@ -308,7 +394,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                     items.push(ResolvedProjection {
                         expr: resolved,
                         output,
-                        name,
+                        name: name.into(),
                         explicit_alias: explicit,
                         span: *span,
                     });

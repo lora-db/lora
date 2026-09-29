@@ -503,3 +503,52 @@ impl<'a, S: GraphStorage> RowSource for BufferedIndexScanSource<'a, S> {
         }
     }
 }
+
+/// Ordered range scan (`op.order` set): yields nodes in `ORDER BY op.key`
+/// order, pulling ids from the index lazily so a LIMIT above stops it
+/// early. See [`crate::executor::OrderedRangeCursor`].
+pub struct OrderedRangeScanSource<'a, S: GraphStorage> {
+    upstream: Box<dyn RowSource + 'a>,
+    ctx: StreamCtx<'a, S>,
+    op: &'a NodeByPropertyRangeScanExec,
+    current: Option<(Row, crate::executor::OrderedRangeCursor)>,
+}
+
+impl<'a, S: GraphStorage> OrderedRangeScanSource<'a, S> {
+    pub(super) fn new(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a NodeByPropertyRangeScanExec,
+    ) -> Self {
+        Self {
+            upstream,
+            ctx,
+            op,
+            current: None,
+        }
+    }
+}
+
+impl<'a, S: GraphStorage> RowSource for OrderedRangeScanSource<'a, S> {
+    fn next_row(&mut self) -> ExecResult<Option<Row>> {
+        loop {
+            if let Some((row, cursor)) = self.current.as_mut() {
+                if let Some(id) = cursor.next_id(self.ctx.storage) {
+                    let mut out = row.clone();
+                    out.insert(self.op.var, LoraValue::Node(id));
+                    return Ok(Some(out));
+                }
+                self.current = None;
+            }
+            let Some(row) = self.upstream.next_row()? else {
+                return Ok(None);
+            };
+            let eval_ctx = self.ctx.eval_ctx();
+            let lo = self.op.lo.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
+            let hi = self.op.hi.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
+            let cursor =
+                crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, lo, hi);
+            self.current = Some((row, cursor));
+        }
+    }
+}

@@ -12,10 +12,15 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::cow::CowMap;
+use super::id_set::IdSet;
 use crate::types::PropertyValue;
 use crate::LoraBinary;
 
-pub(super) type PropertyValueBuckets = HashMap<PropertyIndexKey, Vec<u64>>;
+/// Value → ids for one property. A copy-on-write sharded map (see
+/// [`CowMap`]) so cloning the graph (the staged copy a write works on)
+/// shares it and a write copies only the shard its value lands in.
+pub(super) type PropertyValueBuckets = CowMap<PropertyIndexKey, IdSet>;
 pub(super) type PropertyIndex = HashMap<String, PropertyValueBuckets>;
 pub(super) type ScopedPropertyIndex = HashMap<String, PropertyIndex>;
 
@@ -71,12 +76,18 @@ impl PropertyIndexState {
         key: &str,
         value: PropertyIndexKey,
     ) {
-        values
-            .entry(key.to_string())
-            .or_default()
-            .entry(value)
-            .or_default()
-            .push(entity_id);
+        let buckets = match values.get_mut(key) {
+            Some(buckets) => buckets,
+            None => values.entry(key.to_string()).or_default(),
+        };
+        match buckets.get_mut(&value) {
+            Some(ids) => {
+                ids.insert(entity_id);
+            }
+            None => {
+                buckets.get_or_insert_with(value, || IdSet::new(entity_id));
+            }
+        }
     }
 
     fn remove_value(
@@ -87,13 +98,11 @@ impl PropertyIndexState {
     ) {
         let mut remove_key = false;
         if let Some(buckets) = values.get_mut(key) {
-            if let Some(ids) = buckets.get_mut(value) {
-                if let Some(pos) = ids.iter().position(|&id| id == entity_id) {
-                    ids.swap_remove(pos);
-                }
-                if ids.is_empty() {
-                    buckets.remove(value);
-                }
+            let emptied = buckets
+                .get_mut(value)
+                .is_some_and(|ids| ids.remove(entity_id));
+            if emptied {
+                buckets.remove(value);
             }
             remove_key = buckets.is_empty();
         }
@@ -113,12 +122,11 @@ impl PropertyIndexState {
             return;
         };
 
-        Self::insert_value(
-            self.scoped_values.entry(scope.to_string()).or_default(),
-            entity_id,
-            key,
-            indexed_value,
-        );
+        let scoped = match self.scoped_values.get_mut(scope) {
+            Some(scoped) => scoped,
+            None => self.scoped_values.entry(scope.to_string()).or_default(),
+        };
+        Self::insert_value(scoped, entity_id, key, indexed_value);
     }
 
     pub(super) fn insert_with_scopes<'a>(
@@ -134,12 +142,11 @@ impl PropertyIndexState {
 
         Self::insert_value(&mut self.values, entity_id, key, indexed_value.clone());
         for scope in scopes {
-            Self::insert_value(
-                self.scoped_values.entry(scope.to_string()).or_default(),
-                entity_id,
-                key,
-                indexed_value.clone(),
-            );
+            let scoped = match self.scoped_values.get_mut(scope) {
+                Some(scoped) => scoped,
+                None => self.scoped_values.entry(scope.to_string()).or_default(),
+            };
+            Self::insert_value(scoped, entity_id, key, indexed_value.clone());
         }
     }
 
@@ -188,12 +195,11 @@ impl PropertyIndexState {
         }
     }
 
-    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&[u64]> {
+    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&IdSet> {
         let indexed_value = PropertyIndexKey::from_value(value)?;
         self.values
             .get(key)
             .and_then(|values| values.get(&indexed_value))
-            .map(Vec::as_slice)
     }
 
     pub(super) fn scoped_ids_for(
@@ -201,13 +207,12 @@ impl PropertyIndexState {
         scope: &str,
         key: &str,
         value: &PropertyValue,
-    ) -> Option<&[u64]> {
+    ) -> Option<&IdSet> {
         let indexed_value = PropertyIndexKey::from_value(value)?;
         self.scoped_values
             .get(scope)
             .and_then(|values| values.get(key))
             .and_then(|values| values.get(&indexed_value))
-            .map(Vec::as_slice)
     }
 }
 
@@ -229,7 +234,9 @@ pub(super) enum PropertyIndexKey {
     Bool(bool),
     Int(i64),
     Float(u64),
-    String(String),
+    /// Shared so copying an index shard or partition (a write's staged
+    /// graph copy) bumps a refcount per key instead of reallocating it.
+    String(std::sync::Arc<str>),
     Binary(LoraBinary),
     List(Vec<PropertyIndexKey>),
     Map(BTreeMap<String, PropertyIndexKey>),
@@ -293,7 +300,7 @@ impl PropertyIndexKey {
                     Some(Self::Float(sortable_f64_bits(*v)))
                 }
             }
-            PropertyValue::String(v) => Some(Self::String(v.clone())),
+            PropertyValue::String(v) => Some(Self::String(std::sync::Arc::from(v.as_str()))),
             PropertyValue::Binary(v) => Some(Self::Binary(v.clone())),
             PropertyValue::List(values) => values
                 .iter()

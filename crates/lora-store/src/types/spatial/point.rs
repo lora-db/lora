@@ -30,6 +30,51 @@ pub struct LoraPoint {
     pub srid: u32,
 }
 
+/// Coordinates of a point supplied by name, as a binding receives them
+/// from a parameter map. Either naming works: `x` / `y` / `z` or
+/// `longitude` / `latitude` / `height`, the shape point values are read
+/// back in.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NamedPointCoordinates {
+    pub srid: Option<u32>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub z: Option<f64>,
+    pub longitude: Option<f64>,
+    pub latitude: Option<f64>,
+    pub height: Option<f64>,
+}
+
+impl NamedPointCoordinates {
+    /// Resolve into a point. Geographic names imply WGS-84 (4326, or 4979
+    /// with a height) when no SRID is given; otherwise the default stays
+    /// Cartesian (7203). Supplying both names for one axis with different
+    /// values is an error rather than a silent pick.
+    pub fn resolve(self) -> Result<LoraPoint, String> {
+        fn axis(a: Option<f64>, b: Option<f64>, names: &str) -> Result<Option<f64>, String> {
+            match (a, b) {
+                (Some(a), Some(b)) if a != b => {
+                    Err(format!("point {names} disagree; pass one or the other"))
+                }
+                (a, b) => Ok(a.or(b)),
+            }
+        }
+        let x = axis(self.x, self.longitude, "x and longitude")?
+            .ok_or("point.x (or point.longitude) must be a number")?;
+        let y = axis(self.y, self.latitude, "y and latitude")?
+            .ok_or("point.y (or point.latitude) must be a number")?;
+        let z = axis(self.z, self.height, "z and height")?;
+        let geographic_names =
+            self.longitude.is_some() || self.latitude.is_some() || self.height.is_some();
+        let srid = self.srid.unwrap_or(match (geographic_names, z.is_some()) {
+            (true, true) => SRID_WGS84_3D,
+            (true, false) => SRID_WGS84,
+            (false, _) => SRID_CARTESIAN,
+        });
+        Ok(LoraPoint { x, y, z, srid })
+    }
+}
+
 impl LoraPoint {
     pub fn cartesian(x: f64, y: f64) -> Self {
         Self {

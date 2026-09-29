@@ -145,6 +145,24 @@ impl Database<InMemoryGraph> {
         }
     }
 
+    /// Begin a transaction that does not borrow the database handle.
+    ///
+    /// # Safety
+    ///
+    /// The transaction holds lock guards that borrow from the database's
+    /// internal locks. The caller must keep this exact `Arc` alive until
+    /// the transaction is committed, rolled back or dropped, and must not
+    /// move it to another thread while it holds the writer lock (the guard
+    /// is not `Send`). Intended for language bindings that run one
+    /// interactive transaction on a dedicated thread next to its `Arc`.
+    pub unsafe fn begin_transaction_owned(
+        self: &Arc<Self>,
+        mode: TransactionMode,
+    ) -> Result<Transaction<'static>, LoraError> {
+        let tx = self.begin_transaction(mode)?;
+        Ok(std::mem::transmute::<Transaction<'_>, Transaction<'static>>(tx))
+    }
+
     /// Open a stream whose lifetime can be carried by an outer owner that
     /// also retains an `Arc<Database>`.
     ///

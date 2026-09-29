@@ -26,6 +26,7 @@ impl Optimizer {
         self.push_filter_below_projection(&mut plan);
         self.use_indexed_node_scans(&mut plan, stats);
         self.use_indexed_rel_scans(&mut plan, stats);
+        self.use_index_order_for_sorts(&mut plan);
         self.annotate_top_k_sorts(&mut plan);
         self.remove_redundant_limit(&mut plan);
         plan
@@ -49,6 +50,76 @@ impl Optimizer {
             }
 
             push_filter_below_projection_at(plan, i, input_id);
+        }
+    }
+
+    /// `MATCH (n:L) WHERE n.k > $x RETURN ... ORDER BY n.k LIMIT m` with a
+    /// range index on `(L, k)`: the range scan already walks that index,
+    /// so let it emit rows in `k` order and drop the Sort. With the Sort
+    /// gone nothing blocks between the scan and the LIMIT, so the query
+    /// streams and stops after `m` rows instead of sorting every match
+    /// (keyset pagination at a cost independent of label size).
+    ///
+    /// Applies when the Sort has a single key naming the scanned
+    /// variable's range property (directly or through a projection alias)
+    /// and only Filters and non-DISTINCT Projections, which keep rows 1:1
+    /// and in order, sit between Sort and scan. The Sort node becomes a
+    /// pass-through projection. Whether the index order can really be used
+    /// is decided per execution from the bound values (see the executor);
+    /// otherwise the scan sorts its own output, so results never change.
+    fn use_index_order_for_sorts(&self, plan: &mut LogicalPlan) {
+        for i in 0..plan.nodes.len() {
+            let LogicalOp::Sort(sort) = &plan.nodes[i] else {
+                continue;
+            };
+            if sort.items.len() != 1 {
+                continue;
+            }
+            let direction = sort.items[0].direction;
+            let sort_input = sort.input;
+            let mut key_expr = sort.items[0].expr.clone();
+
+            // Walk down to the scan, resolving an alias key through the
+            // projections passed on the way.
+            let mut cursor = sort_input;
+            let scan_id = loop {
+                match &plan.nodes[cursor] {
+                    LogicalOp::Projection(p) if !p.distinct => {
+                        if let ResolvedExpr::Variable(v) = &key_expr {
+                            if let Some(item) = p.items.iter().find(|item| item.output == *v) {
+                                key_expr = item.expr.clone();
+                            }
+                        }
+                        cursor = p.input;
+                    }
+                    LogicalOp::Filter(f) => cursor = f.input,
+                    LogicalOp::NodeByPropertyRangeScan(_) => break Some(cursor),
+                    _ => break None,
+                }
+            };
+            let Some(scan_id) = scan_id else { continue };
+            let LogicalOp::NodeByPropertyRangeScan(scan) = &plan.nodes[scan_id] else {
+                continue;
+            };
+            let key_matches = matches!(
+                &key_expr,
+                ResolvedExpr::Property { expr, property }
+                    if matches!(expr.as_ref(), ResolvedExpr::Variable(v) if *v == scan.var)
+                        && *property == scan.key
+            );
+            if !key_matches || scan.input.is_some() || scan.order.is_some() {
+                continue;
+            }
+
+            if let LogicalOp::NodeByPropertyRangeScan(scan) = &mut plan.nodes[scan_id] {
+                scan.order = Some(direction);
+            }
+            plan.nodes[i] = LogicalOp::Projection(Projection {
+                input: sort_input,
+                distinct: false,
+                items: Vec::new(),
+                include_existing: true,
+            });
         }
     }
 
@@ -221,6 +292,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
                 lo_inclusive: scan.lo_inclusive,
                 hi: scan.hi,
                 hi_inclusive: scan.hi_inclusive,
+                order: scan.order,
             })
         }
 
@@ -440,6 +512,7 @@ fn collect_index_candidates(
                     lo_inclusive: bounds.lo_inclusive,
                     hi: bounds.hi,
                     hi_inclusive: bounds.hi_inclusive,
+                    order: None,
                 },
             ));
         }
@@ -1479,6 +1552,7 @@ mod tests {
                 lo_inclusive: false,
                 hi: None,
                 hi_inclusive: false,
+                order: None,
             }),
             LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
                 input: None,

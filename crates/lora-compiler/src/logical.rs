@@ -128,6 +128,10 @@ pub struct NodeByPropertyRangeScan {
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,
     pub hi_inclusive: bool,
+    /// Set when the optimizer replaced an `ORDER BY var.key` above this
+    /// scan: rows must come out in that order (from the index when it can
+    /// supply it, otherwise sorted by the operator itself).
+    pub order: Option<lora_ast::SortDirection>,
 }
 
 /// Trigram-backed property scan rewritten from `Filter(NodeScan, var.prop OP "literal")`

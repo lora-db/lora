@@ -91,6 +91,7 @@ fn status_for(err: &LoraError) -> StatusCode {
             StatusCode::UNPROCESSABLE_ENTITY
         }
         LoraErrorCode::ConstraintViolation
+        | LoraErrorCode::Locked
         | LoraErrorCode::UniqueConstraint
         | LoraErrorCode::NotNullConstraint
         | LoraErrorCode::ForeignKeyViolation

@@ -8,19 +8,24 @@ use crate::errors::{ExecResult, ExecutorError};
 use crate::executor::{merge_optional_rows, null_extend_optional_row, optional_rows_compatible};
 use crate::value::Row;
 
-use super::{build_streaming, drain, RowSource, StreamCtx};
+use super::{build_streaming, build_streaming_seeded, drain, RowSource, StreamCtx};
 
-/// Streaming outer OPTIONAL MATCH source. The optional inner plan is
-/// independent of each incoming row in the current physical plan, so
-/// it is materialized once, then matched against each outer row as
-/// the outer cursor advances.
+/// Streaming outer OPTIONAL MATCH source.
+///
+/// When the inner plan is fully streamable it is run once per outer row,
+/// seeded with that row, so it expands from the outer row's bound nodes
+/// (as the eager executors do). Otherwise the
+/// inner plan is materialized once, uncorrelated, and joined against each
+/// outer row as the outer cursor advances.
 pub struct OptionalMatchSource<'a, S: GraphStorage> {
     upstream: Box<dyn RowSource + 'a>,
     ctx: StreamCtx<'a, S>,
     plan: &'a PhysicalPlan,
     inner: PhysicalNodeId,
     new_vars: &'a [VarId],
-    inner_rows: Option<Vec<Row>>,
+    correlated: bool,
+    /// Uncorrelated mode: the inner plan's rows, shared by every outer row.
+    shared_inner_rows: Option<Vec<Row>>,
     state: OptionalMatchState,
 }
 
@@ -31,6 +36,8 @@ enum OptionalMatchState {
     AwaitingInput,
     Scanning {
         input_row: Row,
+        /// Correlated mode: this outer row's own inner rows.
+        own_rows: Vec<Row>,
         inner_idx: usize,
         matched: bool,
     },
@@ -50,47 +57,55 @@ impl<'a, S: GraphStorage> OptionalMatchSource<'a, S> {
             plan,
             inner,
             new_vars,
-            inner_rows: None,
+            correlated: crate::executor::optional_can_correlate(plan, inner),
+            shared_inner_rows: None,
             state: OptionalMatchState::AwaitingInput,
         }
     }
 
-    fn ensure_inner_rows(&mut self) -> ExecResult<()> {
-        if self.inner_rows.is_none() {
+    fn inner_rows_for(&mut self, input_row: &Row) -> ExecResult<Vec<Row>> {
+        if self.correlated {
+            let mut inner = build_streaming_seeded(
+                self.plan,
+                self.inner,
+                self.ctx.storage,
+                self.ctx.params.clone(),
+                input_row.clone(),
+            )?;
+            return drain(inner.as_mut());
+        }
+        if self.shared_inner_rows.is_none() {
             let mut inner = build_streaming(
                 self.plan,
                 self.inner,
                 self.ctx.storage,
                 self.ctx.params.clone(),
             )?;
-            self.inner_rows = Some(drain(inner.as_mut())?);
+            self.shared_inner_rows = Some(drain(inner.as_mut())?);
         }
-        Ok(())
+        Ok(Vec::new())
     }
 }
 
 impl<'a, S: GraphStorage> RowSource for OptionalMatchSource<'a, S> {
     fn next_row(&mut self) -> ExecResult<Option<Row>> {
-        self.ensure_inner_rows()?;
         loop {
             if matches!(self.state, OptionalMatchState::AwaitingInput) {
                 let Some(input_row) = self.upstream.next_row()? else {
                     return Ok(None);
                 };
+                let own_rows = self.inner_rows_for(&input_row)?;
                 self.state = OptionalMatchState::Scanning {
                     input_row,
+                    own_rows,
                     inner_idx: 0,
                     matched: false,
                 };
             }
 
-            let Some(inner_rows) = self.inner_rows.as_ref() else {
-                return Err(ExecutorError::RuntimeError(
-                    "OPTIONAL MATCH inner rows were not initialized".into(),
-                ));
-            };
             let OptionalMatchState::Scanning {
                 input_row,
+                own_rows,
                 inner_idx,
                 matched,
             } = &mut self.state
@@ -98,6 +113,15 @@ impl<'a, S: GraphStorage> RowSource for OptionalMatchSource<'a, S> {
                 return Err(ExecutorError::RuntimeError(
                     "OPTIONAL MATCH cursor entered an invalid state".into(),
                 ));
+            };
+            let inner_rows: &[Row] = if self.correlated {
+                own_rows
+            } else {
+                self.shared_inner_rows.as_deref().ok_or_else(|| {
+                    ExecutorError::RuntimeError(
+                        "OPTIONAL MATCH inner rows were not initialized".into(),
+                    )
+                })?
             };
 
             while *inner_idx < inner_rows.len() {

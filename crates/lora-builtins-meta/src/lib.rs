@@ -424,6 +424,11 @@ pub const BUILTIN_SPECS: &[BuiltinSpec] = &[
     spec("json.path", 2, Some(2)),
     // -- geo.* --------------------------------------------------------------
     spec("geo.distance", 2, Some(2)),
+    // -- index.* (backs in-query `CALL db.index.* YIELD ...`) --------------
+    spec("index.fulltext_nodes", 2, Some(3)),
+    spec("index.fulltext_relationships", 2, Some(3)),
+    spec("index.vector_nodes", 3, Some(4)),
+    spec("index.vector_relationships", 3, Some(4)),
     spec("geo.within_bbox", 3, Some(3)),
     spec("geo.point", 1, Some(1)),
     // -- vector.* -----------------------------------------------------------
@@ -522,6 +527,45 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
     alias("tofloatornull", "cast.try"),
     alias("tobooleanornull", "cast.try"),
     alias("tostringornull", "cast.try"),
+    // Standard Cypher scalar names, so queries written from memory (by
+    // people or LLMs) work unchanged. Lookup is case-insensitive, so
+    // `startNode` resolves through `startnode`.
+    alias("split", "string.split"),
+    alias("trim", "string.trim"),
+    alias("ltrim", "string.trim_left"),
+    alias("rtrim", "string.trim_right"),
+    alias("replace", "string.replace"),
+    alias("normalize", "string.normalize"),
+    alias("char_length", "string.length"),
+    alias("character_length", "string.length"),
+    alias("point.distance", "geo.distance"),
+    alias("distance", "geo.distance"),
+    alias("abs", "math.abs"),
+    alias("ceil", "math.ceil"),
+    alias("floor", "math.floor"),
+    alias("round", "math.round"),
+    alias("sqrt", "math.sqrt"),
+    alias("sign", "math.sign"),
+    alias("log", "math.ln"),
+    alias("log10", "math.log10"),
+    alias("exp", "math.exp"),
+    alias("sin", "math.sin"),
+    alias("cos", "math.cos"),
+    alias("tan", "math.tan"),
+    alias("cot", "math.cot"),
+    alias("asin", "math.asin"),
+    alias("acos", "math.acos"),
+    alias("atan", "math.atan"),
+    alias("atan2", "math.atan2"),
+    alias("degrees", "math.degrees"),
+    alias("radians", "math.radians"),
+    alias("pi", "math.pi"),
+    alias("e", "math.e"),
+    alias("tail", "list.rest"),
+    alias("nodes", "path.nodes"),
+    alias("relationships", "path.edges"),
+    alias("startnode", "edge.start"),
+    alias("endnode", "edge.end"),
 ];
 
 pub fn builtin_spec(name: &str) -> Option<&'static BuiltinSpec> {

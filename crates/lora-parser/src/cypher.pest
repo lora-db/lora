@@ -343,6 +343,8 @@ map_projection_selector = {
 atom = {
     case_expression
     | exists_subquery
+    | count_subquery
+    | label_predicate
     | list_predicate
     | reduce_expression
     | cast_call_expression
@@ -358,6 +360,16 @@ atom = {
 exists_subquery = {
     EXISTS ~ lbrace ~ (MATCH ~ pattern ~ where_clause? | pattern) ~ rbrace
 }
+
+// `COUNT { (a)-[:R]->(b) WHERE ... }` — the number of matches of a
+// pattern. Lowered to `size([pattern WHERE ... | 1])`.
+count_subquery = {
+    COUNT ~ lbrace ~ MATCH? ~ pattern_element ~ (WHERE ~ expression)? ~ rbrace
+}
+
+// `n:Label`, `n:A:B` (all), `n:A|B` (any) as a boolean expression, e.g.
+// `WHERE n:Festival`. Lowered to `node.has_label` calls.
+label_predicate = { variable ~ node_labels }
 
 reduce_expression = {
     REDUCE ~ lparen ~ variable ~ eq ~ expression ~ comma ~ variable ~ IN ~ expression ~ pipe ~ expression ~ rparen

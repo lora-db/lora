@@ -6,7 +6,7 @@ use lora_ast::{Direction, RangeLiteral, Span};
 use lora_compiler::physical::{
     ArgumentExec, ExpandExec, NodeByLabelScanExec, PhysicalOp, PhysicalPlan,
 };
-use lora_store::{GraphStorageMut, InMemoryGraph};
+use lora_store::{GraphStorageMut, InMemoryGraph, Properties};
 
 use crate::value::LoraValue;
 
@@ -15,14 +15,14 @@ use super::{build_streaming, drain, subtree_is_fully_streaming};
 #[test]
 fn variable_length_expand_has_streaming_source() {
     let mut graph = InMemoryGraph::new();
-    let a = graph.create_node(vec!["N".into()], BTreeMap::new());
-    let b = graph.create_node(vec!["N".into()], BTreeMap::new());
-    let c = graph.create_node(vec!["N".into()], BTreeMap::new());
+    let a = graph.create_node(vec!["N".into()], Properties::new());
+    let b = graph.create_node(vec!["N".into()], Properties::new());
+    let c = graph.create_node(vec!["N".into()], Properties::new());
     graph
-        .create_relationship(a.id, b.id, "R", BTreeMap::new())
+        .create_relationship(a.id, b.id, "R", Properties::new())
         .unwrap();
     graph
-        .create_relationship(b.id, c.id, "R", BTreeMap::new())
+        .create_relationship(b.id, c.id, "R", Properties::new())
         .unwrap();
 
     let src = VarId(0);

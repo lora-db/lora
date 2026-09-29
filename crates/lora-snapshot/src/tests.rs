@@ -1,12 +1,10 @@
-use std::collections::BTreeMap;
-
-use lora_store::{NodeRecord, PropertyValue, RelationshipRecord, SnapshotPayload};
+use lora_store::{NodeRecord, Properties, PropertyValue, RelationshipRecord, SnapshotPayload};
 
 use crate::format::HEADER_LEN;
 use crate::*;
 
 fn payload() -> SnapshotPayload {
-    let mut alice_props = BTreeMap::new();
+    let mut alice_props = Properties::new();
     alice_props.insert("name".into(), PropertyValue::String("alice".into()));
     alice_props.insert("age".into(), PropertyValue::Int(42));
     alice_props.insert(
@@ -24,7 +22,7 @@ fn payload() -> SnapshotPayload {
         ]),
     );
 
-    let mut rel_props = BTreeMap::new();
+    let mut rel_props = Properties::new();
     rel_props.insert("since".into(), PropertyValue::Int(2024));
 
     SnapshotPayload {
@@ -39,7 +37,7 @@ fn payload() -> SnapshotPayload {
             NodeRecord {
                 id: 1,
                 labels: vec!["User".into()],
-                properties: BTreeMap::new(),
+                properties: Properties::new(),
             },
         ],
         relationships: vec![RelationshipRecord {
@@ -208,7 +206,7 @@ fn large_columnar_roundtrip() {
     let mut nodes = Vec::new();
     let mut relationships = Vec::new();
     for id in 0..1_000u64 {
-        let mut properties = BTreeMap::new();
+        let mut properties = Properties::new();
         properties.insert("name".into(), PropertyValue::String(format!("user-{id}")));
         properties.insert("rank".into(), PropertyValue::Int(id as i64));
         properties.insert("active".into(), PropertyValue::Bool(id % 2 == 0));
@@ -224,7 +222,7 @@ fn large_columnar_roundtrip() {
             src: id,
             dst: id + 1,
             rel_type: if id % 2 == 0 { "FOLLOWS" } else { "KNOWS" }.into(),
-            properties: BTreeMap::new(),
+            properties: Properties::new(),
         });
     }
     let payload = SnapshotPayload {

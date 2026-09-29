@@ -92,13 +92,13 @@ fn load_replaces_existing_state() {
     assert_eq!(target.node_count(), 2);
 
     target.load_snapshot_from(&path).unwrap();
-    // The pre-existing :B nodes must be gone — node_count is 1, and the :B
-    // label is no longer in the catalog (analyzer rejects a query against
-    // an unknown label, which itself proves the restore erased :B).
+    // The pre-existing :B nodes must be gone: node_count is 1 and a :B
+    // match finds nothing.
     assert_eq!(target.node_count(), 1);
     let rows = row_count(target.execute("MATCH (x:A) RETURN x", opts()).unwrap());
     assert_eq!(rows, 1);
-    assert!(target.execute("MATCH (x:B) RETURN x", opts()).is_err());
+    let rows = row_count(target.execute("MATCH (x:B) RETURN x", opts()).unwrap());
+    assert_eq!(rows, 0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
