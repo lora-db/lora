@@ -8,6 +8,7 @@
 //                      [--database <dir> [--name <db>]] [--json]
 //   lora-graphql compile <schema.graphql> --operations <file|dir>... [--out <dir>]
 //   lora-graphql analyze <schema.graphql> --database <dir> [--name <db>] [--sample <n>]
+//   lora-graphql migrate neo4j <schema.graphql> [--operations <file|dir>]...
 //   lora-graphql diff <old.graphql> <new.graphql> [--allow-breaking] [--json]
 
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -41,6 +42,7 @@ import {
 import { LoraGraphQL, type CheckOptions } from "./lora-graphql.js";
 import { loraDriver, type LoraDriver } from "./driver.js";
 import { usedFragments } from "./codegen.js";
+import { migrateNeo4j } from "./migrate.js";
 
 const USAGE = `lora-graphql <command>
 
@@ -58,6 +60,9 @@ const USAGE = `lora-graphql <command>
                                             operations.d.ts types
   analyze <schema.graphql> --database <dir> [--name <db>] [--sample <n>]
                                             statistics JSON for useStatistics()
+  migrate neo4j <schema.graphql> [--operations <file|dir>]...
+                                            rewrite an @neo4j/graphql SDL; TODOs for
+                                            what has no equivalent
   diff <old.graphql> <new.graphql> [--allow-breaking] [--json]
                                             database statements and API changes`;
 
@@ -97,6 +102,19 @@ export async function main(
         return await compile(need(positional, 1), operations, values, io);
       case "analyze":
         return await analyzeCommand(need(positional, 1), values, io);
+      case "migrate": {
+        const [from, file] = need(positional, 2);
+        if (from !== "neo4j") throw new UsageError("migrate supports neo4j");
+        const docs = [];
+        for (const path of operations) {
+          for (const f of await graphqlFiles(path)) docs.push(parse(f.source));
+        }
+        const result = migrateNeo4j(await read(file!), docs);
+        for (const t of result.todos) io.out(`# TODO(migrate): ${t}`);
+        if (result.todos.length > 0) io.out("");
+        io.out(result.typeDefs);
+        return 0;
+      }
       case "diff": {
         const [before, after] = need(positional, 2);
         return await diff(before!, after!, flags, io);

@@ -786,6 +786,44 @@ and claims, and is compiled per request (and cached).
 `analyze` samples a database's label counts and relationship degrees; pass
 its output to `lora.useStatistics()`.
 
+`migrate neo4j schema.graphql [--operations dir]` rewrites an
+`@neo4j/graphql` SDL: `@id` becomes `@key(generate: true)`, `@node` is
+added, `@fulltext`, `@subscription(events:)` and `@relationship` arguments
+are translated, and what has no equivalent (`@coalesce`, federation,
+`connectOrCreate`, type-level `@vector`) is removed and listed as
+`# TODO(migrate)` lines. With the client's operations (both the neo4j 5
+`title_CONTAINS` and neo4j 6 `{ title: { contains } }` filter forms),
+`@mutation`, `@filterable` and `@sortable` follow what they use; without
+them, every type keeps its mutations and a TODO says to narrow them.
+
+### Testing
+
+```ts
+import {
+  createTestLoraGraphQL,
+  expectSeeks,
+} from "@loradb/lora-graphql/testing";
+
+const t = await createTestLoraGraphQL({
+  typeDefs,
+  seed: ["CREATE (:Festival {key: 'f1', name: 'Sunland'})"],
+});
+expect(await t.data(`{ festival(key: "f1") { name } }`)).toEqual({
+  festival: { name: "Sunland" },
+});
+await expectSeeks(
+  t.lora,
+  `{ festivals(where: { name: { eq: "Sunland" } }) { key } }`,
+);
+t.close();
+```
+
+`createTestLoraGraphQL` builds an in-memory database with the schema
+asserted, runs the seed, and records every statement in `t.statements`.
+`expectSeeks` throws, listing each plan finding, unless every root field of
+the query uses the index access it was compiled for (`rowBudget` too).
+Both need `@loradb/lora-node` and work with any test runner.
+
 ## Drivers, limits and errors
 
 `loraDriver(db)` adapts a `Database` from `@loradb/lora-node` or

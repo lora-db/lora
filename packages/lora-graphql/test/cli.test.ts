@@ -198,3 +198,15 @@ test("check --database reports unused indexes; analyze prints statistics", async
   expect(analyzed.code).toBe(0);
   expect(JSON.parse(analyzed.out)).toMatchObject({ nodes: { Festival: 3 } });
 });
+
+test("migrate neo4j prints the rewritten SDL with TODOs first", async () => {
+  await writeFile(
+    join(dir, "neo4j.graphql"),
+    `type Movie @node { id: ID! @id title: String! @coalesce(value: "") }`,
+  );
+  const r = await cli("migrate", "neo4j", join(dir, "neo4j.graphql"));
+  expect(r.code).toBe(0);
+  const lines = r.out.split("\n");
+  expect(lines[0]).toMatch(/^# TODO\(migrate\): /);
+  expect(r.out).toContain("id: ID! @key(generate: true)");
+});

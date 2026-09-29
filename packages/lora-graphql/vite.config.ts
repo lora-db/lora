@@ -13,6 +13,7 @@ export default defineConfig({
       entry: {
         index: resolve(__dirname, "src/index.ts"),
         cli: resolve(__dirname, "src/cli.ts"),
+        testing: resolve(__dirname, "src/testing.ts"),
       },
       formats: ["es"],
       fileName: (_format, name) => `${name}.js`,
