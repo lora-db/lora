@@ -1320,10 +1320,7 @@ fn and_conjuncts(predicate: &ResolvedExpr) -> Vec<&ResolvedExpr> {
 }
 
 fn static_limit_bound(limit: &Limit) -> Option<usize> {
-    let limit_rows = match &limit.limit {
-        Some(expr) => static_non_negative_usize(expr)?,
-        None => return None,
-    };
+    let limit_rows = static_non_negative_usize(limit.limit.as_ref()?)?;
     let skip_rows = limit
         .skip
         .as_ref()
