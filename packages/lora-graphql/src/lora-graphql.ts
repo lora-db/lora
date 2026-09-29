@@ -786,6 +786,9 @@ export class LoraGraphQL {
       if (node.aggregate && fieldName === names.aggregateRoot(node)) {
         return { kind: "aggregate", node };
       }
+      if (node.aggregate && fieldName === names.groupedRoot(node)) {
+        return { kind: "grouped", node };
+      }
     }
     return undefined;
   }

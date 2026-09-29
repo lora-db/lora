@@ -108,19 +108,21 @@ test("field @authentication(jwt:) holds on read and on @cypher fields", async ()
   expect(await h.data(`{ adminCount }`, {}, admin)).toEqual({ adminCount: 2 });
 });
 
-test("field-level @authorization is refused where it cannot be enforced", () => {
+test("field-level @authorization on relationship and @cypher fields takes READ rules only", () => {
+  // Without operations a rule covers every operation, writes included.
   const rule = `@authorization(validate: [{ where: { jwt: { sub: { eq: "x" } } } }])`;
-  expect(() =>
-    buildModel(`
-      type A @node { key: ID! @key bs: [B!]! @relationship(type: "R", direction: OUT) ${rule} }
+  const read = `@authorization(validate: [{ operations: [READ], where: { jwt: { sub: { eq: "x" } } } }])`;
+  const rel = (r: string) => `
+      type A @node { key: ID! @key bs: [B!]! @relationship(type: "R", direction: OUT) ${r} }
       type B @node { key: ID! @key }
-    `),
-  ).toThrow(/supported on scalar fields only/);
-  expect(() =>
-    buildModel(`
-      type A @node { key: ID! @key n: Int @cypher(statement: "RETURN 1 AS n", columnName: "n") ${rule} }
-    `),
-  ).toThrow(/supported on scalar fields only/);
+    `;
+  const cypher = (r: string) => `
+      type A @node { key: ID! @key n: Int @cypher(statement: "RETURN 1 AS n", columnName: "n") ${r} }
+    `;
+  expect(() => buildModel(rel(rule))).toThrow(/takes READ rules only/);
+  expect(() => buildModel(cypher(rule))).toThrow(/takes READ rules only/);
+  expect(() => buildModel(rel(read))).not.toThrow();
+  expect(() => buildModel(cypher(read))).not.toThrow();
 });
 
 test("CREATE_RELATIONSHIP and DELETE_RELATIONSHIP validate rules", async () => {

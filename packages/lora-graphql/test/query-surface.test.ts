@@ -536,3 +536,243 @@ describe("nested delete", () => {
     expect(logo.updateVenue.info.nodesDeleted).toBe(1);
   });
 });
+
+describe("@groupBy", () => {
+  const typeDefs = /* GraphQL */ `
+    enum Kind {
+      TALK
+      WORKSHOP
+    }
+    type Session @node @query(aggregate: true) {
+      key: String! @key
+      kind: Kind! @groupBy @filterable
+      room: String @groupBy
+      title: String! @sortable
+      minutes: Int @sortable
+      length: Duration
+    }
+  `;
+  const seed = [
+    `CREATE (:Session {key: 's1', kind: 'TALK', room: 'A', title: 'Intro', minutes: 30, length: duration('PT30M')}),
+            (:Session {key: 's2', kind: 'TALK', room: 'B', title: 'Graphs at scale', minutes: 45, length: duration('PT45M')}),
+            (:Session {key: 's3', kind: 'WORKSHOP', room: 'A', title: 'Hands on', minutes: 120, length: duration('PT2H')}),
+            (:Session {key: 's4', kind: 'TALK', room: 'A', title: 'Q&A', minutes: 15, length: duration('PT15M')})`,
+  ];
+
+  test("aggregates per group, ordered by the group values", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{ sessionsGrouped: unknown[] }>(`{
+      sessionsGrouped(by: [kind]) {
+        by { kind room }
+        aggregate { count minutes { sum max } title { longest } length { sum } }
+      }
+    }`);
+    expect(d.sessionsGrouped).toEqual([
+      {
+        by: { kind: "TALK", room: null },
+        aggregate: {
+          count: 3,
+          minutes: { sum: 90, max: 45 },
+          title: { longest: "Graphs at scale" },
+          length: { sum: "PT1H30M" },
+        },
+      },
+      {
+        by: { kind: "WORKSHOP", room: null },
+        aggregate: {
+          count: 1,
+          minutes: { sum: 120, max: 120 },
+          title: { longest: "Hands on" },
+          length: { sum: "PT2H" },
+        },
+      },
+    ]);
+  });
+
+  test("several keys, a filter and a group limit", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{ sessionsGrouped: unknown[] }>(`{
+      sessionsGrouped(by: [room, kind], where: { kind: { eq: TALK } }, limit: 1) {
+        by { room kind } aggregate { count }
+      }
+    }`);
+    expect(d.sessionsGrouped).toEqual([
+      { by: { room: "A", kind: "TALK" }, aggregate: { count: 2 } },
+    ]);
+  });
+
+  test("@groupBy needs aggregates on the type", async () => {
+    const broken = `type T @node { key: String! @key k: String @groupBy }`;
+    await expect(
+      festivalHarness({ typeDefs: broken, seed: [] }),
+    ).rejects.toThrow("@groupBy needs @query(aggregate: true) on the type");
+  });
+});
+
+describe("@cypher returning interfaces, unions and plain objects", () => {
+  const typeDefs = /* GraphQL */ `
+    interface Event {
+      key: String!
+      title: String!
+    }
+    type Concert implements Event @node {
+      key: String! @key
+      title: String!
+      band: String
+    }
+    type Exhibition implements Event @node {
+      key: String! @key
+      title: String!
+      artist: String
+    }
+    union Headline = Concert | Exhibition
+    type VenueStats {
+      events: Int!
+      titles: [String!]!
+    }
+    type Venue @node {
+      key: String! @key
+      upcoming: [Event!]!
+        @cypher(
+          statement: "MATCH (this)-[:HOSTS]->(e) RETURN e ORDER BY e.title"
+          columnName: "e"
+        )
+      stats: VenueStats!
+        @cypher(
+          statement: "RETURN { events: size([(this)-[:HOSTS]->(e) | e]), titles: [(this)-[:HOSTS]->(e) | e.title] } AS s"
+          columnName: "s"
+        )
+    }
+    type Query {
+      headline(key: String!): Headline
+        @cypher(
+          statement: "MATCH (h) WHERE (h:Concert OR h:Exhibition) AND h.key = $key RETURN h"
+          columnName: "h"
+        )
+    }
+  `;
+  const seed = [
+    `CREATE (v:Venue {key: 'v1'}), (c:Concert {key: 'c1', title: 'B-side', band: 'Blur'}),
+            (e:Exhibition {key: 'e1', title: 'A-show', artist: 'Ann'})
+     CREATE (v)-[:HOSTS]->(c), (v)-[:HOSTS]->(e)`,
+  ];
+
+  test("an object field returning an interface list", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{ venue: unknown }>(`{
+      venue(key: "v1") {
+        upcoming { __typename key ... on Concert { band } ... on Exhibition { artist } }
+        stats { events titles }
+      }
+    }`);
+    expect(d.venue).toEqual({
+      upcoming: [
+        { __typename: "Exhibition", key: "e1", artist: "Ann" },
+        { __typename: "Concert", key: "c1", band: "Blur" },
+      ],
+      stats: { events: 2, titles: ["B-side", "A-show"] },
+    });
+  });
+
+  test("a root field returning a union", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{ headline: unknown }>(
+      `{ headline(key: "c1") { __typename ... on Concert { band } } }`,
+    );
+    expect(d.headline).toEqual({ __typename: "Concert", band: "Blur" });
+  });
+
+  test("an object type nothing returns is still an error", async () => {
+    const broken = typeDefs.replace(
+      "type VenueStats {",
+      "type Orphan { x: Int }\n    type VenueStats {",
+    );
+    await expect(
+      festivalHarness({ typeDefs: broken, seed: [] }),
+    ).rejects.toThrow(
+      "Orphan: object types need @node or @relationshipProperties, unless a @cypher field returns them",
+    );
+  });
+});
+
+describe("field-level @authorization on relationship and @cypher fields", () => {
+  const typeDefs = /* GraphQL */ `
+    type Venue @node {
+      key: String! @key
+      owner: String!
+      bookings: [Booking!]!
+        @relationship(type: "BOOKED", direction: IN)
+        @filterable
+        @authorization(
+          validate: [
+            {
+              operations: [READ]
+              where: { node: { owner: { eq: "$jwt.sub" } } }
+            }
+          ]
+        )
+      revenue: Int
+        @cypher(
+          statement: "RETURN size([(this)<-[:BOOKED]-(b) | b]) * 100 AS n"
+          columnName: "n"
+        )
+        @authorization(
+          validate: [
+            {
+              operations: [READ]
+              where: { node: { owner: { eq: "$jwt.sub" } } }
+            }
+          ]
+        )
+    }
+    type Booking @node {
+      key: String! @key
+    }
+  `;
+  const seed = [
+    `CREATE (v1:Venue {key: 'v1', owner: 'alice'}), (v2:Venue {key: 'v2', owner: 'bob'}),
+            (b1:Booking {key: 'b1'}), (b2:Booking {key: 'b2'})
+     CREATE (b1)-[:BOOKED]->(v1), (b2)-[:BOOKED]->(v2)`,
+  ];
+  const alice = { jwt: { sub: "alice" } };
+
+  test("the owner reads them; others get FORBIDDEN for that field only", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const own = await h.run(
+      `{ venue(key: "v1") { key revenue bookings { key } } }`,
+      {},
+      alice,
+    );
+    expect(own.errors).toBeUndefined();
+    expect(own.data).toEqual({
+      venue: { key: "v1", revenue: 100, bookings: [{ key: "b1" }] },
+    });
+    const other = await h.run(
+      `{ venue(key: "v2") { key revenue } }`,
+      {},
+      alice,
+    );
+    expect(other.data).toEqual({ venue: { key: "v2", revenue: null } });
+    expect(other.errors?.[0]?.extensions?.["code"]).toBe("FORBIDDEN");
+  });
+
+  test("filtering through the relationship applies the rule", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{ venues: Array<{ key: string }> }>(
+      `{ venues(where: { bookings: { some: { key: { eq: "b2" } } } }) { key } }`,
+      {},
+      alice,
+    );
+    expect(d.venues).toEqual([]);
+  });
+
+  test("write rules on these fields are refused", async () => {
+    const broken = typeDefs.replace(
+      "operations: [READ]",
+      "operations: [UPDATE]",
+    );
+    await expect(
+      festivalHarness({ typeDefs: broken, seed: [] }),
+    ).rejects.toThrow("takes READ rules only");
+  });
+});

@@ -73,6 +73,8 @@ export interface ScalarField extends FieldBase {
   relayId: boolean;
   filters: ReadonlySet<FilterOperator>;
   sortable: boolean;
+  /** `@groupBy`: a grouping key of `<plural>Grouped`. */
+  groupBy: boolean;
   /** Indexes requested explicitly with `@index`. */
   indexes: readonly IndexKind[];
   /** `@key(generate: true)`: creates fill a UUID when the input omits it. */
@@ -172,6 +174,10 @@ export interface CypherField extends FieldBase {
   /** The field's type; `node` names a @node type when it returns nodes. */
   type: TypeShape;
   node: string | undefined;
+  /** An interface or union over @node types, when it returns those. */
+  abstract: string | undefined;
+  /** A plain object type (no @node), when it returns maps. */
+  object: string | undefined;
   args: readonly CypherArgument[];
   /** `$parameters` the statement uses, in order of first use. */
   params: readonly string[];
@@ -282,6 +288,16 @@ export interface DeclaredRelationship {
   description: string | undefined;
 }
 
+/**
+ * An object type without @node, returned by @cypher fields as maps: its
+ * fields are read from the map's keys.
+ */
+export interface PlainObjectType {
+  name: string;
+  fields: ReadonlyMap<string, { name: string; type: TypeShape }>;
+  description: string | undefined;
+}
+
 export interface RelationshipPropertiesType {
   name: string;
   fields: ReadonlyMap<string, ScalarField>;
@@ -305,6 +321,8 @@ export interface GraphModel {
   mutations: readonly CypherField[];
   /** Problems that do not stop the model, e.g. an unused @cypher argument. */
   warnings: readonly ModelWarning[];
+  /** Object types without @node that @cypher fields return. */
+  objects: ReadonlyMap<string, PlainObjectType>;
   /** The `@jwt` claims shape, when declared: claim name → token path. */
   jwt: ReadonlyMap<string, string> | undefined;
   /** Secret cursors are signed with, when configured. */

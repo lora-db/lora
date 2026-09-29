@@ -1242,8 +1242,32 @@ export function buildSchema(
 
   // --- @cypher -----------------------------------------------------------------
 
+  // Object types without @node: shapes of @cypher results, read from maps.
+  const plainObjects = new Map<string, GraphQLObjectType>();
+  for (const plain of model.objects.values()) {
+    plainObjects.set(
+      plain.name,
+      new GraphQLObjectType({
+        name: plain.name,
+        description: plain.description,
+        fields: () =>
+          Object.fromEntries(
+            [...plain.fields.values()].map((f) => {
+              const base = namedType(f.type.named) as GraphQLOutputType;
+              const item =
+                f.type.list && f.type.itemRequired ? nonNull(base) : base;
+              const t: GraphQLOutputType = f.type.list ? listOf(item) : item;
+              return [f.name, { type: f.type.required ? nonNull(t) : t }];
+            }),
+          ),
+      }),
+    );
+  }
+
   const namedType = (named: string) =>
     objects.get(named) ??
+    abstractTypes.get(named) ??
+    plainObjects.get(named) ??
     enums.get(named) ??
     baseType(named as ScalarType, undefined);
 
@@ -1332,6 +1356,40 @@ export function buildSchema(
     );
   }
 
+  // `<plural>Grouped(by: [...])`: the aggregate once per group of @groupBy
+  // field values.
+  const groups = new Map<
+    string,
+    { field: GraphQLEnumType; group: GraphQLObjectType }
+  >();
+  for (const node of model.nodes.values()) {
+    if (!node.aggregate) continue;
+    const keys = [...node.fields.values()].filter(
+      (f): f is ScalarField => f.kind === "scalar" && f.groupBy,
+    );
+    if (keys.length === 0) continue;
+    const field = new GraphQLEnumType({
+      name: `${node.name}GroupField`,
+      values: Object.fromEntries(keys.map((f) => [f.name, { value: f.name }])),
+    });
+    const key = new GraphQLObjectType({
+      name: `${node.name}GroupKey`,
+      description:
+        "The group's values of the fields grouped by; the other fields are null.",
+      fields: Object.fromEntries(
+        keys.map((f) => [f.name, { type: scalarType(f) }]),
+      ),
+    });
+    const group = new GraphQLObjectType({
+      name: `${node.name}Group`,
+      fields: {
+        by: { type: nonNull(key) },
+        aggregate: { type: nonNull(aggregates.get(node.name)!) },
+      },
+    });
+    groups.set(node.name, { field, group });
+  }
+
   // --- Query -------------------------------------------------------------------
 
   const query: GraphQLFieldConfigMap<unknown, unknown> = {};
@@ -1371,6 +1429,19 @@ export function buildSchema(
         args: { where: { type: whereOf(node.name) } },
         resolve: root("aggregate", node),
       };
+      const grouped = groups.get(node.name);
+      if (grouped) {
+        query[names.groupedRoot(node)] = {
+          type: nonNull(listOf(nonNull(grouped.group))),
+          description: `${node.name} aggregates per group of values, ordered by them; at most \`limit\` groups.`,
+          args: {
+            by: { type: nonNull(listOf(nonNull(grouped.field))) },
+            where: { type: whereOf(node.name) },
+            limit: { type: GraphQLInt },
+          },
+          resolve: root("grouped", node),
+        };
+      }
     }
   }
   for (const node of model.nodes.values()) {
@@ -1573,6 +1644,10 @@ export function buildSchema(
       Object.keys(mutation).length > 0
         ? new GraphQLObjectType({ name: "Mutation", fields: mutation })
         : undefined,
-    types: [...objects.values(), ...abstractTypes.values()],
+    types: [
+      ...objects.values(),
+      ...abstractTypes.values(),
+      ...plainObjects.values(),
+    ],
   });
 }

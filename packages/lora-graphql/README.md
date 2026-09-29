@@ -103,27 +103,28 @@ and only by the operators listed; sortable only with `@sortable`;
 
 Model:
 
-| Directive                                                                   | On                | Meaning                                                                                                                                |
-| --------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `@node(labels:, plural:)`                                                   | type              | A node label set; default: the type name                                                                                               |
-| `@key(generate:)`                                                           | field             | Required, unique and immutable. The sort tie-breaker, cursor anchor and mutation address. `generate: true` fills a UUID on create      |
-| `@unique`                                                                   | field             | Uniqueness constraint                                                                                                                  |
-| `@index(kind: RANGE \| TEXT \| POINT)`                                      | field             | An explicit index, usually inferred                                                                                                    |
-| `@relationship(type:, direction:, properties:, queryDirection:, onDelete:)` | field             | An edge to a `@node` type, interface or union. `queryDirection: UNDIRECTED` reads both ways; `onDelete: DETACH \| CASCADE \| RESTRICT` |
-| `@relationshipProperties`                                                   | type              | Properties on a relationship type                                                                                                      |
-| `@alias(property:)`                                                         | field             | API name differs from the stored property                                                                                              |
-| `@private`                                                                  | field             | Stored, never exposed                                                                                                                  |
-| `@readonly`                                                                 | field             | Exposed, never client-settable                                                                                                         |
-| `@settable(onCreate:, onUpdate:)`                                           | field             | Which mutations may set it, e.g. set once on create                                                                                    |
-| `@selectable(onRead:, onAggregate:)`                                        | field             | `onRead: false` makes a field write-only                                                                                               |
-| `@default(value:)`                                                          | field             | Stored on create when the input omits it                                                                                               |
-| `@timestamp(operations: [CREATE, UPDATE])`                                  | field             | Set to the current time; never client-settable                                                                                         |
-| `@populatedBy(callback:, operations:)`                                      | field             | Computed by a named callback on write                                                                                                  |
-| `@cardinality(max:)`                                                        | list relationship | Declared fan-out, for cost estimates                                                                                                   |
-| `@cypher(statement:, columnName:)`                                          | field             | A field backed by a Cypher statement                                                                                                   |
-| `@fulltext(indexes: [{ name, fields, analyzer, queryName }])`               | type              | FULLTEXT indexes, each with a search root field                                                                                        |
-| `@vector(dimensions:, similarity:, queryName:)`                             | `[Float!]` field  | A VECTOR index and a similarity root field                                                                                             |
-| `@plural(value:)`                                                           | interface, union  | The root field's name                                                                                                                  |
+| Directive                                                                                                  | On                | Meaning                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@node(labels:, plural:)`                                                                                  | type              | A node label set; default: the type name                                                                                                                                                                                                 |
+| `@key(generate:)`                                                                                          | field             | Required, unique and immutable. The sort tie-breaker, cursor anchor and mutation address. `generate: true` fills a UUID on create                                                                                                        |
+| `@unique`                                                                                                  | field             | Uniqueness constraint                                                                                                                                                                                                                    |
+| `@index(kind: RANGE \| TEXT \| POINT)`                                                                     | field             | An explicit index, usually inferred                                                                                                                                                                                                      |
+| `@relationship(type:, direction:, properties:, queryDirection:, onDelete:, nestedOperations:, aggregate:)` | field             | An edge to a `@node` type, interface or union. `queryDirection: UNDIRECTED` reads both ways; `onDelete: DETACH \| CASCADE \| RESTRICT`; `nestedOperations` lists the nested writes inputs offer; `aggregate: false` drops its aggregates |
+| `@declareRelationship`                                                                                     | interface field   | Every implementation declares this relationship (type and direction may differ); select it on the interface                                                                                                                              |
+| `@relationshipProperties`                                                                                  | type              | Properties on a relationship type                                                                                                                                                                                                        |
+| `@alias(property:)`                                                                                        | field             | API name differs from the stored property                                                                                                                                                                                                |
+| `@private`                                                                                                 | field             | Stored, never exposed                                                                                                                                                                                                                    |
+| `@readonly`                                                                                                | field             | Exposed, never client-settable                                                                                                                                                                                                           |
+| `@settable(onCreate:, onUpdate:)`                                                                          | field             | Which mutations may set it, e.g. set once on create                                                                                                                                                                                      |
+| `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only                                                                                                                                                                                                 |
+| `@default(value:)`                                                                                         | field             | Stored on create when the input omits it                                                                                                                                                                                                 |
+| `@timestamp(operations: [CREATE, UPDATE])`                                                                 | field             | Set to the current time; never client-settable                                                                                                                                                                                           |
+| `@populatedBy(callback:, operations:)`                                                                     | field             | Computed by a named callback on write                                                                                                                                                                                                    |
+| `@cardinality(max:)`                                                                                       | list relationship | Declared fan-out, for cost estimates                                                                                                                                                                                                     |
+| `@cypher(statement:, columnName:)`                                                                         | field             | A field backed by a Cypher statement. Returns scalars, `@node` types, interfaces or unions over them, or object types without `@node` (read from a map)                                                                                  |
+| `@fulltext(indexes: [{ name, fields, analyzer, queryName }])`                                              | type              | FULLTEXT indexes, each with a search root field                                                                                                                                                                                          |
+| `@vector(dimensions:, similarity:, queryName:)`                                                            | `[Float!]` field  | A VECTOR index and a similarity root field                                                                                                                                                                                               |
+| `@plural(value:)`                                                                                          | interface, union  | The root field's name                                                                                                                                                                                                                    |
 
 API:
 
@@ -133,7 +134,8 @@ API:
 | `@mutation(operations: [CREATE, UPDATE, DELETE])`     | type                                         | Generated mutations; none without it                                                                       |
 | `@subscription(operations: [CREATE, UPDATE, DELETE])` | type                                         | Generated subscriptions; none without it                                                                   |
 | `@filterable(byValue: [...])`                         | field                                        | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters |
-| `@sortable`                                           | field                                        | Sort and paginate by this field                                                                            |
+| `@sortable`                                           | field                                        | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                  |
+| `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                 |
 | `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                           |
 | `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                |
 | `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                 |
@@ -224,6 +226,21 @@ string), `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`,
   (global 25) and asking for more than `max` (global 100) is a
   `LIMIT_EXCEEDED` error, not a silent clamp.
 
+### More query surface
+
+- **Edge sort.** A relationship connection sorts by `@sortable`
+  relationship properties: `followsConnection(sort: [{ edge: { since: DESC } }, { name: ASC }])`.
+  Cursors carry the edge value; relationship properties have no index, so
+  this sorts per parent, bounded by the page.
+- **Grouped aggregates.** `sessionsGrouped(by: [kind, room], where:, limit:)`
+  returns `[{ by { kind room } aggregate { count minutes { sum } } }]`,
+  ordered by the group values, at most `limit` groups.
+- **Richer aggregates.** Strings add `shortest` / `longest`, and aggregate
+  filters take `shortestLength`, `longestLength` and `averageLength`.
+  Durations aggregate `min`, `max`, `sum` and `avg`. Relationship
+  connections count `count { nodes edges }`: they differ when several
+  relationships lead to the same node.
+
 ## Interfaces and unions
 
 ```graphql
@@ -287,6 +304,13 @@ filter per member, and once any member is named, members not named are left
 out. Mutations connect, create and disconnect per member:
 `events: { connect: { Concert: [{ key: "c1" }] } }`. A single relationship
 to a union holds one node across all members.
+
+### Interface relationships
+
+An interface field under `@declareRelationship` is a relationship every
+implementation declares (with the same target and shape; the type and
+direction may differ), so `events { venue { name } }` works at interface
+level.
 
 ## Mutations
 
@@ -384,6 +408,16 @@ or deletes at most `maxBatch` nodes (default 1000). `@key` is not updatable.
 `info` reports `nodesCreated`, `nodesUpdated`, `nodesDeleted`,
 `relationshipsCreated` and `relationshipsDeleted`.
 
+### Nested delete and trimmed inputs
+
+`update: { stages: { delete: { where: { size: { gt: 2 } }, limit: 10 } } }`
+deletes connected nodes (a single relationship takes `delete: true`),
+bounded like bulk deletes and following `onDelete`. `limit` defaults to
+`maxBatch`; more matches is `LIMIT_EXCEEDED`.
+`@relationship(nestedOperations: [CONNECT])` keeps only the listed nested
+writes in the inputs, and `aggregate: false` removes the relationship's
+aggregates and aggregate filter.
+
 ## Search
 
 ```graphql
@@ -421,6 +455,11 @@ the library asks it for four times the page when a filter is present.
 `@vector` fields are stored as VECTOR values, which the index requires, and
 read back as `[Float!]`. Both indexes are part of S1 and created by
 `assertSchema({ create: true })`; read rules apply to every result.
+
+Every search also has a connection: `searchDocsConnection(query:, where:,
+first:, after:)` pages by keyset on (score, key). A vector index returns
+its top candidates before any filter, so vector connections page within
+`4 × @limit(max:)` candidates.
 
 ## @cypher fields
 
@@ -465,6 +504,18 @@ Statements are checked, not trusted:
 - in `check()`: every statement is planned with `explain()`, so a syntax
   error, an unknown function or a missing column fails CI with the engine's
   message, not the first request.
+
+### Filters, sorts and richer results
+
+A scalar `@cypher` field of a `@node` type may take `@filterable` and
+`@sortable`: the statement then runs per node in a `CALL` before the
+filter, in root fields only (through a relationship it is refused). No
+index applies, and the model warns so `check` reports it.
+
+A `@cypher` field may return an interface or union over `@node` types
+(each node is projected as the member its label says) or an object type
+without `@node`, whose fields are read from the returned map:
+`RETURN { events: count(e), titles: collect(e.title) } AS s`.
 
 ## Authorization
 
@@ -554,6 +605,10 @@ type Post
 - Rules are checked against the model at startup: an unknown field,
   operator or (with `@jwt`) claim, or a test that is empty or null, is an
   error, not an open door.
+
+Relationship and `@cypher` fields take field-level `@authorization`
+with READ validate rules: a row failing the rule reads the field as
+`FORBIDDEN`, and filtering through the field applies the rule too.
 
 ## The smart layer
 

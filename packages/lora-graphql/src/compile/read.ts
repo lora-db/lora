@@ -67,7 +67,12 @@ import {
 import { memberFields } from "../model/relations.js";
 import { collectFields, fieldArgs, subSelections } from "./selection.js";
 
-export type RootKind = "list" | "single" | "connection" | "aggregate";
+export type RootKind =
+  | "list"
+  | "single"
+  | "connection"
+  | "aggregate"
+  | "grouped";
 
 /** How the plan of a statement is expected to find its first rows (S2). */
 export interface SeekExpectation {
@@ -157,6 +162,8 @@ export function compileRoot(
       return compileConnection(ctx, node, args, sets);
     case "aggregate":
       return compileAggregate(ctx, node, args, sets);
+    case "grouped":
+      return compileGrouped(ctx, node, args, sets);
   }
 }
 
@@ -453,14 +460,25 @@ function aggregateReturn(
   variable: string,
   base: Array<{ expr: Expr; alias: string }>,
   wanted: WantedAggregate[],
+  group?: { keys: Array<{ expr: Expr; alias: string }>; limit: Expr },
 ): Clause[] {
   const native = wanted.filter(nativeAggregate).map((w) => ({
     expr: fn(w.agg, prop(v(variable), w.field.property)),
     alias: w.column,
   }));
   const folded = wanted.filter((w) => !nativeAggregate(w));
+  const keys = group?.keys ?? [];
+  const order = group
+    ? {
+        orderBy: keys.map((k) => ({
+          expr: v(k.alias),
+          direction: "ASC" as const,
+        })),
+        limit: group.limit,
+      }
+    : {};
   if (folded.length === 0) {
-    return [{ kind: "return", items: [...base, ...native] }];
+    return [{ kind: "return", items: [...keys, ...base, ...native], ...order }];
   }
   const lists = new Map<ScalarField, string>();
   for (const w of folded) {
@@ -473,6 +491,7 @@ function aggregateReturn(
     {
       kind: "with",
       items: [
+        ...keys,
         ...carried,
         ...[...lists].map(([f, alias]) => ({
           expr: fn("collect", prop(v(variable), f.property)),
@@ -482,8 +501,12 @@ function aggregateReturn(
     },
     {
       kind: "return",
+      ...order,
       items: [
-        ...carried.map((i) => ({ expr: v(i.alias), alias: i.alias })),
+        ...[...keys, ...carried].map((i) => ({
+          expr: v(i.alias),
+          alias: i.alias,
+        })),
         ...folded.map((w) => ({
           expr: listAggregate(
             ctx,
@@ -510,9 +533,107 @@ function compileAggregate(
   const root = rootMatch(ctx, node, args["where"] as Where | undefined, []);
   const items: Array<{ expr: Expr; alias: string }> = [
     { expr: fn("count", v("this")), alias: "count" },
+    ...deniedItem(ctx, node, "this"),
   ];
+  const wanted = aggregateWanted(ctx, node, aggType, sets);
+  const clauses: Clause[] = [
+    ...root.clauses,
+    ...aggregateReturn(ctx, "this", items, wanted),
+  ];
+  return finish(
+    ctx,
+    clauses,
+    [...items.map((i) => i.alias), ...wanted.map((w) => w.column)],
+    ([r]) => {
+      assertNoneDenied(r!.rows[0]);
+      return aggregateRow(r!.rows[0] ?? { count: 0 }, wanted);
+    },
+    root.expectation,
+  );
+}
+
+/**
+ * `<plural>Grouped(by: [...])`: one row per group of values, ordered by
+ * them, at most `limit` groups. The values are collected per group and
+ * folded (an aggregate nested in another call is not aggregated, E16).
+ */
+function compileGrouped(
+  ctx: CompileContext,
+  node: NodeType,
+  args: Args,
+  sets: SelectionSetNode[],
+): CompiledRead {
+  const by = [...new Set((args["by"] as string[] | null) ?? [])];
+  if (by.length === 0) {
+    throw requestError("BAD_USER_INPUT", "`by` names at least one field");
+  }
+  const fields = by.map((name) => {
+    const f = node.fields.get(name) as ScalarField;
+    checkFieldAuthentication(ctx, node.name, f);
+    refuseRowRules(ctx, node, f, "group by");
+    return f;
+  });
+  const limit = resolveLimit(args["limit"], node.limit, "limit");
+  const groupType = ctx.schema.getType(
+    `${node.name}Group`,
+  ) as GraphQLObjectType;
+  const aggType = ctx.schema.getType(
+    names.aggregate(node.name),
+  ) as GraphQLObjectType;
+  const aggSets: SelectionSetNode[] = [];
+  for (const [, nodes] of collectFields(ctx, groupType, sets)) {
+    if (nodes[0]!.name.value === "aggregate") {
+      aggSets.push(...subSelections(nodes));
+    }
+  }
+  const wanted = aggregateWanted(ctx, node, aggType, aggSets);
+  const root = rootMatch(ctx, node, args["where"] as Where | undefined, []);
+  const keys = fields.map((f, i) => ({
+    expr: prop(v("this"), f.property),
+    alias: `by_${i}`,
+  }));
+  const items: Array<{ expr: Expr; alias: string }> = [
+    { expr: fn("count", v("this")), alias: "count" },
+    ...deniedItem(ctx, node, "this"),
+  ];
+  ctx.cost += limit;
+  const clauses: Clause[] = [
+    ...root.clauses,
+    ...aggregateReturn(ctx, "this", items, wanted, {
+      keys,
+      limit: bind(ctx, limit),
+    }),
+  ];
+  return finish(
+    ctx,
+    clauses,
+    [
+      ...keys.map((k) => k.alias),
+      ...items.map((i) => i.alias),
+      ...wanted.map((w) => w.column),
+    ],
+    ([r]) =>
+      r!.rows.map((row) => {
+        assertNoneDenied(row);
+        return {
+          by: Object.fromEntries(
+            fields.map((f, i) => [f.name, row[`by_${i}`] ?? null]),
+          ),
+          aggregate: aggregateRow(row, wanted),
+        };
+      }),
+    root.expectation,
+  );
+}
+
+/** The field aggregates an aggregate selection asks for. */
+function aggregateWanted(
+  ctx: CompileContext,
+  node: NodeType,
+  aggType: GraphQLObjectType,
+  sets: SelectionSetNode[],
+): WantedAggregate[] {
   const wanted: WantedAggregate[] = [];
-  const plan: Array<{ field: string; fn: string; column: string }> = [];
   for (const [, nodes] of collectFields(ctx, aggType, sets)) {
     const fieldName = nodes[0]!.name.value;
     const field = node.fields.get(fieldName);
@@ -526,32 +647,24 @@ function compileAggregate(
       const agg = sub[0]!.name.value;
       if (!AGGREGATES.has(agg)) continue;
       const column = `${fieldName}_${agg}`;
-      if (plan.some((p) => p.column === column)) continue;
-      plan.push({ field: fieldName, fn: agg, column });
+      if (wanted.some((w) => w.column === column)) continue;
       wanted.push({ field, agg, column });
     }
   }
-  items.push(...deniedItem(ctx, node, "this"));
-  const clauses: Clause[] = [
-    ...root.clauses,
-    ...aggregateReturn(ctx, "this", items, wanted),
-  ];
-  return finish(
-    ctx,
-    clauses,
-    [...items.map((i) => i.alias), ...wanted.map((w) => w.column)],
-    ([r]) => {
-      assertNoneDenied(r!.rows[0]);
-      const row = r!.rows[0] ?? { count: 0 };
-      const out: Record<string, unknown> = { count: row["count"] ?? 0 };
-      for (const p of plan) {
-        const bucket = (out[p.field] ??= {}) as Record<string, unknown>;
-        bucket[p.fn] = row[p.column] ?? null;
-      }
-      return out;
-    },
-    root.expectation,
-  );
+  return wanted;
+}
+
+/** `{ count, <field>: { <fn>: value } }` from an aggregate row. */
+function aggregateRow(
+  row: Record<string, unknown>,
+  wanted: WantedAggregate[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { count: row["count"] ?? 0 };
+  for (const w of wanted) {
+    const bucket = (out[w.field.name] ??= {}) as Record<string, unknown>;
+    bucket[w.agg] = row[w.column] ?? null;
+  }
+  return out;
 }
 
 /**
@@ -588,6 +701,25 @@ export function compileCypherRoot(
         kind: "with",
         items: [{ expr: v(column), alias: "this" }],
         where: authFilter(ctx, node, "this", "READ"),
+      },
+      ...projection.pre,
+      { kind: "return", items: [{ expr: projection.expr, alias: "this" }] },
+    );
+  } else if (field.abstract) {
+    const abstract = ctx.model.abstracts.get(field.abstract)!;
+    const rows = field.type.list ? abstract.limit.max : 1;
+    const projection = projectAbstract(
+      ctx,
+      abstract,
+      "this",
+      subSelections(fieldNodes),
+      rows,
+    );
+    clauses.push(
+      {
+        kind: "with",
+        items: [{ expr: v(column), alias: "this" }],
+        where: projection.where,
       },
       ...projection.pre,
       { kind: "return", items: [{ expr: projection.expr, alias: "this" }] },
@@ -1782,7 +1914,27 @@ export function projectNode(
       );
     }
     pre.push(...result.pre);
-    entries.push({ kind: "entry", key, value: result.expr });
+    // A field-level READ rule on a relationship or @cypher field: a row
+    // failing it reads as FORBIDDEN, like a scalar field's.
+    const guarded = field ?? connectionOf(node, fieldName);
+    const rule = guarded
+      ? fieldValidate(ctx, node, guarded, variable, "READ")
+      : undefined;
+    entries.push({
+      kind: "entry",
+      key,
+      value: rule
+        ? {
+            kind: "case",
+            when: fn("coalesce", rule, lit(false)),
+            then: result.expr,
+            else: {
+              kind: "map",
+              entries: [{ key: "__forbidden", value: lit(true) }],
+            },
+          }
+        : result.expr,
+    });
   }
   // Read validation: the resolvers turn `false` into a FORBIDDEN error.
   const validate = authValidate(ctx, node, variable, "READ", "BEFORE");
@@ -2121,6 +2273,58 @@ function projectRelationshipConnection(
 }
 
 /**
+ * A node `variable` of an interface or union, projected as the member its
+ * label says, with `__typename`. `where` keeps the nodes of some member
+ * the caller may read; others (and non-members) are dropped.
+ */
+function projectAbstract(
+  ctx: CompileContext,
+  abstract: AbstractType,
+  variable: string,
+  sets: SelectionSetNode[],
+  rows: number,
+): { pre: Clause[]; where: Expr; expr: Expr } {
+  const pre: Clause[] = [];
+  const branches: Array<{ when: Expr; then: Expr }> = [];
+  for (const name of abstract.members) {
+    const member = ctx.model.nodes.get(name)!;
+    checkAuthentication(ctx, member, "READ");
+    ctx.reads.labels.add(member.labels[0]!);
+    const projection = projectNode(ctx, member, variable, sets, rows);
+    pre.push(...projection.pre);
+    const expr = projection.expr as Extract<Expr, { kind: "mapProjection" }>;
+    branches.push({
+      when:
+        and(
+          { kind: "hasLabels", variable, labels: [member.labels[0]!] },
+          coalesceFalse(authFilter(ctx, member, variable, "READ")),
+        ) ?? lit(true),
+      then: {
+        ...expr,
+        entries: [
+          ...expr.entries,
+          { kind: "entry", key: "__typename", value: lit(member.name) },
+        ],
+      },
+    });
+  }
+  const chain = branches.reduceRight<Expr>(
+    (otherwise, b) => ({
+      kind: "case",
+      when: b.when,
+      then: b.then,
+      else: otherwise,
+    }),
+    lit(null),
+  );
+  return {
+    pre,
+    where: or(...branches.map((b) => b.when)) ?? lit(false),
+    expr: chain,
+  };
+}
+
+/**
  * An object `@cypher` field, run once per parent:
  *
  *   CALL { WITH parent WITH parent AS this
@@ -2168,6 +2372,20 @@ function projectCypher(
         kind: "with",
         items: [{ expr: v(column), alias: x }],
         where: authFilter(ctx, target, x, "READ"),
+      },
+      ...nested.pre,
+      ...gather(nested.expr),
+    );
+  } else if (field.abstract) {
+    const x = freshVar(ctx, `${out}_node`);
+    const abstract = ctx.model.abstracts.get(field.abstract)!;
+    const per = field.type.list ? abstract.limit.default : 1;
+    const nested = projectAbstract(ctx, abstract, x, sets, rows * per);
+    body.push(
+      {
+        kind: "with",
+        items: [{ expr: v(column), alias: x }],
+        where: nested.where,
       },
       ...nested.pre,
       ...gather(nested.expr),

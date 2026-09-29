@@ -13,6 +13,9 @@ export const directiveTypeDefs = /* GraphQL */ `
   "On an interface field: every implementation declares this relationship (with @relationship, possibly of different types or directions), so clients can select it on the interface."
   directive @declareRelationship on FIELD_DEFINITION
 
+  "Offer this field as a grouping key of <plural>Grouped (needs @query(aggregate: true))."
+  directive @groupBy on FIELD_DEFINITION
+
   "A uniqueness constraint."
   directive @unique on FIELD_DEFINITION
 
