@@ -186,7 +186,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm to a version that supports --provenance (>=9.5)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: yarn install (immutable)
         working-directory: .
@@ -297,7 +297,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm to a version that supports --provenance (>=9.5)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: yarn install (immutable)
         working-directory: .
@@ -394,7 +394,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm to a version that supports --provenance (>=9.5)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: yarn install (immutable)
         working-directory: .
@@ -500,7 +500,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm to a version that supports --provenance (>=9.5)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: yarn install (immutable)
         working-directory: .
@@ -613,6 +613,13 @@ jobs:
           TARGET: ${{ matrix.target }}
           ZIG: ${{ matrix.cross == 'zig' && '--zig' || '' }}
         run: |
+          # Current stable Rust (1.98) passes `--fix-cortex-a53-843419` when
+          # linking for aarch64 Linux, which zig's linker rejects. Build those
+          # targets with 1.95, which linked them for v0.15.
+          if [ -n "$ZIG" ] && [[ "$TARGET" == aarch64-* ]]; then
+            rustup toolchain install 1.95.0 --profile minimal --target "$TARGET" --no-self-update
+            export RUSTUP_TOOLCHAIN=1.95.0
+          fi
           corepack yarn exec napi build --platform --release --js false --target "$TARGET" $ZIG
 
       - name: Verify the expected .node file exists
@@ -663,7 +670,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm to a version that supports --provenance (>=9.5)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: yarn install (immutable; @napi-rs/cli + tsc are needed below)
         working-directory: .
