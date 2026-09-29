@@ -16,6 +16,8 @@ import {
   type GraphQLResolveInfo,
   type GraphQLSchema,
   type OperationDefinitionNode,
+  type GraphQLFieldResolver,
+  type GraphQLScalarType,
   type ValidationRule,
 } from "graphql";
 import {
@@ -128,6 +130,19 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   maxQueuedChanges?: number;
   /** Named callbacks for `@populatedBy(callback:)`. */
   callbacks?: Record<string, PopulatedByCallback>;
+  /**
+   * Implementations of custom scalars declared with `@storedAs`, e.g. one
+   * that validates e-mail addresses. Without one a scalar passes through.
+   */
+  scalars?: Record<string, GraphQLScalarType>;
+  /**
+   * Resolvers of `@customResolver` fields, by type and field name. The
+   * source holds the node's selected fields plus the field's `requires`.
+   */
+  resolvers?: Record<
+    string,
+    Record<string, GraphQLFieldResolver<Record<string, unknown>, unknown>>
+  >;
   /** Called with every statement before it runs; for logging and tests. */
   onStatement?: (event: StatementEvent) => void;
   /**
@@ -261,6 +276,8 @@ export class LoraGraphQL {
   readonly #maxBatch: number;
   readonly #maxQueued: number;
   readonly #callbacks: Record<string, PopulatedByCallback>;
+  readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
+  readonly #scalars: LoraGraphQLOptions["scalars"];
   /** Estimated cost spent per request context and operation. */
   readonly #spent = new WeakMap<object, Map<unknown, number>>();
   readonly #jwt: (context: unknown) => Record<string, unknown> | undefined;
@@ -306,6 +323,17 @@ export class LoraGraphQL {
           : [],
       ),
     );
+    this.#resolvers = options.resolvers ?? {};
+    this.#scalars = options.scalars;
+    for (const n of this.model.nodes.values()) {
+      for (const f of n.fields.values()) {
+        if (f.kind === "custom" && !this.#resolvers[n.name]?.[f.name]) {
+          missing.push(
+            `${n.name}.${f.name}: @customResolver needs resolvers.${n.name}.${f.name}`,
+          );
+        }
+      }
+    }
     if (missing.length > 0) {
       throw new ModelError(missing.map((message) => ({ message })));
     }
@@ -366,7 +394,10 @@ export class LoraGraphQL {
         },
         fn,
       );
-    this.#schema ??= buildSchema(this.model, {
+    if (this.#schema) return this.#schema;
+    const schema = buildSchema(this.model, {
+      scalars: this.#scalars,
+      customResolver: (node, field) => this.#resolvers[node.name]![field.name]!,
       subscribe: (node, args, context) => this.#subscribe(node, args, context),
       resolveChangedNode: (node, event, info, context) =>
         event.operation === "DELETE"
@@ -399,7 +430,9 @@ export class LoraGraphQL {
       resolveMutation: (op, node, info, context) =>
         span(info, () => this.#resolveMutation(op, node, info, context)),
     });
-    return this.#schema;
+    checkCustomRequires(this.model, schema);
+    this.#schema = schema;
+    return schema;
   }
 
   /** The client-facing SDL: generated types only, no model directives. */
@@ -1445,6 +1478,60 @@ function findOperation(
     );
   }
   return op;
+}
+
+/**
+ * Every `@customResolver(requires:)` is a valid selection on its type and
+ * does not require custom fields (they are computed after the read).
+ */
+function checkCustomRequires(model: GraphModel, schema: GraphQLSchema): void {
+  const problems: Array<{ type: string; field: string; message: string }> = [];
+  for (const node of model.nodes.values()) {
+    for (const f of node.fields.values()) {
+      if (f.kind !== "custom" || !f.requires) continue;
+      let doc: DocumentNode;
+      try {
+        doc = parse(`fragment R on ${node.name} { ${f.requires} }`);
+      } catch (err) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message: `requires: ${(err as Error).message}`,
+        });
+        continue;
+      }
+      const errors = validate(
+        schema,
+        doc,
+        specifiedRules.filter((r) => r.name !== "NoUnusedFragmentsRule"),
+      );
+      for (const e of errors) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message: `requires: ${e.message}`,
+        });
+      }
+      for (const name of requiredCustomFields(node, f.requires)) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message: `requires: ${name} is a @customResolver field`,
+        });
+      }
+    }
+  }
+  if (problems.length > 0) throw new ModelError(problems);
+}
+
+function requiredCustomFields(node: NodeType, requires: string): string[] {
+  const doc = parse(`{ ${requires} }`);
+  const op = doc.definitions[0] as OperationDefinitionNode;
+  return op.selectionSet.selections.flatMap((s) =>
+    s.kind === Kind.FIELD && node.fields.get(s.name.value)?.kind === "custom"
+      ? [s.name.value]
+      : [],
+  );
 }
 
 /**

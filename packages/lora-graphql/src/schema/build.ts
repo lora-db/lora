@@ -24,7 +24,7 @@ import {
   type GraphQLInputType,
   type GraphQLOutputType,
   type GraphQLResolveInfo,
-  type GraphQLScalarType,
+  GraphQLScalarType,
 } from "graphql";
 import { encodeCursor } from "../compile/cursor.js";
 import type {
@@ -37,6 +37,7 @@ import { ModelError, requestError } from "../errors.js";
 import { lowerFirst } from "../model/build.js";
 import type {
   AbstractType,
+  CustomField,
   CypherField,
   FilterOperator,
   GraphModel,
@@ -76,6 +77,13 @@ export interface SchemaHooks {
     info: GraphQLResolveInfo,
     context: unknown,
   ) => Promise<unknown>;
+  /** Implementations of custom scalars, by name (the scalars option). */
+  scalars?: Readonly<Record<string, GraphQLScalarType>> | undefined;
+  /** The resolver of a `@customResolver` field (from the resolvers option). */
+  customResolver: (
+    node: NodeType,
+    field: CustomField,
+  ) => GraphQLFieldResolver<Record<string, unknown>, unknown>;
   resolveSearch: (
     node: NodeType,
     index: SearchIndex,
@@ -283,9 +291,32 @@ export function buildSchema(
       })
     : undefined;
 
+  // Custom scalars: the implementation given in the scalars option, or a
+  // pass-through that serializes and parses like its storage type.
+  const customScalars = new Map<string, GraphQLScalarType>();
+  const customScalar = (name: string): GraphQLScalarType | undefined => {
+    const stored = model.scalars.get(name);
+    if (!stored) return undefined;
+    let t = customScalars.get(name);
+    if (!t) {
+      const base = baseType(stored, undefined) as GraphQLScalarType;
+      t =
+        hooks.scalars?.[name] ??
+        new GraphQLScalarType({
+          name,
+          description: `Stored as ${stored}.`,
+          serialize: base.serialize,
+          parseValue: base.parseValue,
+          parseLiteral: base.parseLiteral,
+        });
+      customScalars.set(name, t);
+    }
+    return t;
+  };
   const scalarType = (
     f: ScalarField,
   ): GraphQLScalarType | GraphQLEnumType | GraphQLObjectType =>
+    (f.customScalar && customScalar(f.customScalar)) ||
     baseType(f.type, f.enumName);
   const baseType = (
     type: ScalarType,
@@ -420,6 +451,15 @@ export function buildSchema(
           break;
         case "CASE_INSENSITIVE":
           type = caseInsensitiveFilter(owner, f);
+          break;
+        case "CONTAINS":
+        case "STARTS_WITH":
+        case "ENDS_WITH":
+          // A fragment of a custom scalar's value is not one: text
+          // operators take the storage type.
+          type = f.customScalar
+            ? (baseType(f.type, undefined) as GraphQLInputType)
+            : base;
           break;
         default:
           type = base;
@@ -1136,6 +1176,18 @@ export function buildSchema(
             };
             continue;
           }
+          if (f.kind === "custom") {
+            const base = namedType(f.type.named) as GraphQLOutputType;
+            const item =
+              f.type.list && f.type.itemRequired ? nonNull(base) : base;
+            const t: GraphQLOutputType = f.type.list ? listOf(item) : item;
+            fields[f.name] = {
+              type: f.type.required ? nonNull(t) : t,
+              description: f.description,
+              resolve: hooks.customResolver(node, f),
+            };
+            continue;
+          }
           const target = outputOf(f.target);
           if (!f.list) {
             fields[f.name] = {
@@ -1269,6 +1321,7 @@ export function buildSchema(
     abstractTypes.get(named) ??
     plainObjects.get(named) ??
     enums.get(named) ??
+    customScalar(named) ??
     baseType(named as ScalarType, undefined);
 
   function cypherOutput(f: CypherField): GraphQLOutputType {

@@ -65,6 +65,8 @@ export interface ScalarField extends FieldBase {
   type: ScalarType;
   /** Enum type name when `type` is `Enum`. */
   enumName: string | undefined;
+  /** The custom scalar clients see, when the field is one (`@storedAs`). */
+  customScalar?: string | undefined;
   list: boolean;
   required: boolean;
   key: boolean;
@@ -189,7 +191,21 @@ export interface CypherField extends FieldBase {
   description: string | undefined;
 }
 
-export type Field = ScalarField | RelationshipField | CypherField;
+/**
+ * A field computed in JavaScript (`@customResolver`): never stored or
+ * filtered; `requires` is fetched with the node so the resolver can use it.
+ */
+export interface CustomField extends FieldBase {
+  kind: "custom";
+  name: string;
+  owner: string;
+  /** Selection on the owner type, e.g. `name genre { name }`. */
+  requires: string | undefined;
+  type: TypeShape;
+  description: string | undefined;
+}
+
+export type Field = ScalarField | RelationshipField | CypherField | CustomField;
 
 /** `{ node, jwt, AND, OR, NOT }`, as written in `@authorization`. */
 export type AuthorizationWhere = Record<string, unknown>;
@@ -321,6 +337,8 @@ export interface GraphModel {
   mutations: readonly CypherField[];
   /** Problems that do not stop the model, e.g. an unused @cypher argument. */
   warnings: readonly ModelWarning[];
+  /** Custom scalars (`@storedAs`), by name: their storage type. */
+  scalars: ReadonlyMap<string, ScalarType>;
   /** Object types without @node that @cypher fields return. */
   objects: ReadonlyMap<string, PlainObjectType>;
   /** The `@jwt` claims shape, when declared: claim name → token path. */

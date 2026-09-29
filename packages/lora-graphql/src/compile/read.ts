@@ -5,8 +5,10 @@
 
 import {
   getNamedType,
+  parse,
   type FieldNode,
   type GraphQLObjectType,
+  type OperationDefinitionNode,
   type SelectionSetNode,
 } from "graphql";
 import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
@@ -1775,6 +1777,17 @@ function keysetPredicate(
 // Projection
 // ---------------------------------------------------------------------------
 
+const requiresCache = new Map<string, SelectionSetNode>();
+
+/** A `requires` string as a selection set, parsed once. */
+function requiresSelection(requires: string): SelectionSetNode {
+  const cached = requiresCache.get(requires);
+  if (cached) return cached;
+  const op = parse(`{ ${requires} }`).definitions[0] as OperationDefinitionNode;
+  requiresCache.set(requires, op.selectionSet);
+  return op.selectionSet;
+}
+
 export interface Projection {
   /** Subqueries that must run before the projection is evaluated. */
   pre: Clause[];
@@ -1797,9 +1810,24 @@ export function projectNode(
   const defs = objType.getFields();
   const entries: ProjectionEntry[] = [];
   const pre: Clause[] = [];
-  for (const [key, nodes] of collectFields(ctx, objType, sets)) {
+  // A @customResolver field is computed in JavaScript from its `requires`
+  // selection, which is read here with the node's other fields.
+  const selected = collectFields(ctx, objType, sets);
+  const required: SelectionSetNode[] = [];
+  for (const [, nodes] of selected) {
+    const f = node.fields.get(nodes[0]!.name.value);
+    if (f?.kind === "custom" && f.requires) {
+      required.push(requiresSelection(f.requires));
+    }
+  }
+  const all =
+    required.length > 0
+      ? collectFields(ctx, objType, [...sets, ...required])
+      : selected;
+  for (const [key, nodes] of all) {
     const fieldName = nodes[0]!.name.value;
     if (fieldName === "__typename") continue;
+    if (node.fields.get(fieldName)?.kind === "custom") continue;
     if (fieldName === "id" && node.key.relayId) {
       entries.push({
         kind: "entry",

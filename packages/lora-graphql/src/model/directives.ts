@@ -16,6 +16,21 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Offer this field as a grouping key of <plural>Grouped (needs @query(aggregate: true))."
   directive @groupBy on FIELD_DEFINITION
 
+  "A field computed in JavaScript by the resolver passed in the resolvers option. requires is a selection on this type (for example name capacity) fetched in the same statement, so the resolver reads it from its source."
+  directive @customResolver(requires: String) on FIELD_DEFINITION
+
+  "On a custom scalar: how its values are stored. Filters, sorts and indexes follow the storage type; the scalar is passed through unless the scalars option supplies an implementation."
+  directive @storedAs(type: StorageType!) on SCALAR
+
+  enum StorageType {
+    STRING
+    INT
+    FLOAT
+    BOOLEAN
+    DATETIME
+    DATE
+  }
+
   "A uniqueness constraint."
   directive @unique on FIELD_DEFINITION
 
