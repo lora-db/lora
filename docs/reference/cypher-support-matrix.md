@@ -27,7 +27,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `SET` | **Supported** | Property add/update/replace/merge, label add |
 | `REMOVE` | **Supported** | Property removal, label removal |
 | `DELETE` / `DETACH DELETE` | **Supported** | Plain delete requires no incident relationships |
-| `MERGE` | **Supported** | Node and relationship merge, ON MATCH / ON CREATE |
+| `MERGE` | **Supported** | Node and relationship merge, ON MATCH / ON CREATE. Endpoints bound by earlier clauses are honoured, and a pattern that does not match is created whole |
 | `WITH` | **Supported** | Variable piping, renaming, filtering, aggregation, star |
 | `UNWIND` | **Supported** | List unwinding, empty/null handling, `list.range()` |
 | `UNION` / `UNION ALL` | **Supported** | Deduplication, multi-branch, ORDER BY / LIMIT on result |
@@ -276,6 +276,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | `SHOW INDEXES` / `SHOW INDEX` | **Supported** | Returns name, type, entityType, labelsOrTypes, properties, state, populationPercent. Accepts type filter (`SHOW {ALL\|RANGE\|TEXT\|POINT\|LOOKUP\|FULLTEXT\|VECTOR} INDEXES`). Accepts a YIELD-anchored tail: `YIELD {*\|items} [ORDER BY ...] [SKIP n] [LIMIT n] [WHERE expr] [RETURN items [ORDER BY ...] [SKIP n] [LIMIT n]]`. Same tail also accepted on `SHOW CONSTRAINTS`. |
 | Duplicate index name | **Supported error** | Returns GQLSTATUS-shaped `22N71` |
 | Equivalent index under another name | **Supported error** | Returns GQLSTATUS-shaped `22N70` |
+| Equality and `IN` seeks | **Supported** | `n.key = v` and `n.key IN list` in a WHERE are pushed down to the scan of `n` wherever it sits in the pattern and run as index seeks (one per distinct `IN` element); a chain starts from whichever end can seek |
 | Composite RANGE index catalog entries | **Partial** | Accepted and shown; current optimizer rewrites are single-property |
 | Property uniqueness constraints | **Supported** | Single + composite; backed by a RANGE index of the same name; mutation-time enforcement returns `22N79` |
 | Property existence constraints (`IS NOT NULL`) | **Supported** | Single property only; rejects CREATE missing the prop, REMOVE of the prop, and SET-label that would activate it on an incomplete node; returns `22N77` |
