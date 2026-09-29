@@ -137,6 +137,7 @@ function scalars(fields: ReadonlyMap<string, Field>): Map<string, ScalarField> {
 function publicSchema(model: GraphModel): GraphQLSchema {
   const never = () => Promise.reject(new Error("not connected"));
   return buildSchema(model, {
+    customResolver: () => () => null,
     resolveSearch: never,
     resolveAbstract: never,
     subscribe: () => {

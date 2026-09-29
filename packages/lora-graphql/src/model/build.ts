@@ -10,8 +10,10 @@ import {
   isObjectType,
   isScalarType,
   isUnionType,
+  Kind,
   parse,
   type DocumentNode,
+  type GraphQLNamedType,
   type GraphQLDirective,
   type GraphQLField,
   type GraphQLInputType,
@@ -143,6 +145,7 @@ export function buildModel(
   );
 
   const enums = new Map<string, EnumType>();
+  const scalars = new Map<string, ScalarType>();
   const nodeTypes: GraphQLObjectType[] = [];
   const propsTypes: GraphQLObjectType[] = [];
   const plainTypes: GraphQLObjectType[] = [];
@@ -153,10 +156,13 @@ export function buildModel(
   const warnings: ModelWarning[] = [];
   for (const t of userTypes) {
     if (isScalarType(t)) {
-      if (!(t.name in BUILTIN_SCALARS)) {
+      const stored = storageOf(t);
+      if (stored && !(t.name in BUILTIN_SCALARS)) scalars.set(t.name, stored);
+      if (!(t.name in BUILTIN_SCALARS) && !stored) {
         problems.push({
           type: t.name,
-          message: "custom scalars are not supported; use a built-in scalar",
+          message:
+            "a custom scalar needs @storedAs(type:) to say how its values are stored",
         });
       }
       continue;
@@ -291,6 +297,8 @@ export function buildModel(
     });
   }
 
+  const at0 = (type: string, field: string) => (message: string) =>
+    problems.push({ type, field, message });
   const nodes = new Map<string, NodeType>();
   const primaryLabels = new Map<string, string>();
   const rootFieldOwners = new Map<string, string>();
@@ -319,6 +327,39 @@ export function buildModel(
           type: t.name,
           field: f.name,
           message: "names starting with `__` are reserved",
+        });
+        continue;
+      }
+      const custom = directive(d("customResolver"), f, (message) =>
+        problems.push({ type: t.name, field: f.name, message }),
+      );
+      if (custom !== undefined) {
+        for (const other of [
+          "cypher",
+          "relationship",
+          "key",
+          "filterable",
+          "sortable",
+          "groupBy",
+        ]) {
+          if (f.astNode?.directives?.some((x) => x.name.value === other)) {
+            problems.push({
+              type: t.name,
+              field: f.name,
+              message: `@${other} cannot be combined with @customResolver`,
+            });
+          }
+        }
+        fields.set(f.name, {
+          kind: "custom",
+          authentication: authOps(
+            directive(d("authentication"), f, at0(t.name, f.name)),
+          ),
+          name: f.name,
+          owner: t.name,
+          requires: custom["requires"] as string | undefined,
+          type: { named: named.name, ...shapeOf(unwrap(f.type)) },
+          description: f.description ?? undefined,
         });
         continue;
       }
@@ -682,6 +723,7 @@ export function buildModel(
     mutations: mutationFields,
     warnings,
     objects,
+    scalars,
     jwt: jwtShape,
     cursorSecret: options.cursorSecret,
   };
@@ -741,9 +783,15 @@ function buildScalarField(
     enumName = named.name;
   } else if (named.name in BUILTIN_SCALARS) {
     type = BUILTIN_SCALARS[named.name]!;
+  } else if (storageOf(named)) {
+    type = storageOf(named)!;
   } else {
     return undefined;
   }
+  const customScalar =
+    isScalarType(named) && !(named.name in BUILTIN_SCALARS)
+      ? named.name
+      : undefined;
   if (shape.list && !shape.itemRequired) {
     at("list items must be non-null, e.g. [String!]");
   }
@@ -911,6 +959,7 @@ function buildScalarField(
     property,
     type,
     enumName,
+    customScalar,
     list: shape.list,
     required: shape.required,
     key,
@@ -1200,7 +1249,27 @@ function unwrap(type: GraphQLOutputType): {
 
 function isScalarLike(name: string, schema: GraphQLSchema): boolean {
   const t = schema.getType(name);
-  return name in BUILTIN_SCALARS || (t !== undefined && isEnumType(t));
+  return (
+    name in BUILTIN_SCALARS ||
+    (t !== undefined && (isEnumType(t) || storageOf(t) !== undefined))
+  );
+}
+
+const STORAGE_TYPES: Record<string, ScalarType> = {
+  STRING: "String",
+  INT: "Int",
+  FLOAT: "Float",
+  BOOLEAN: "Boolean",
+  DATETIME: "DateTime",
+  DATE: "Date",
+};
+
+/** A custom scalar's storage type, from its `@storedAs(type:)`. */
+export function storageOf(t: GraphQLNamedType): ScalarType | undefined {
+  if (!isScalarType(t)) return undefined;
+  const d = t.astNode?.directives?.find((x) => x.name.value === "storedAs");
+  const arg = d?.arguments?.find((a) => a.name.value === "type")?.value;
+  return arg && arg.kind === Kind.ENUM ? STORAGE_TYPES[arg.value] : undefined;
 }
 
 export function lowerFirst(s: string): string {
@@ -1583,8 +1652,10 @@ function checkNodeWhere(
     const field = node.fields.get(k);
     if (!field) {
       at(`${here}: ${node.name} has no field ${k}`);
-    } else if (field.kind === "cypher") {
-      at(`${here}: @cypher fields cannot be used in rules`);
+    } else if (field.kind === "cypher" || field.kind === "custom") {
+      at(
+        `${here}: ${field.kind === "cypher" ? "@cypher" : "@customResolver"} fields cannot be used in rules`,
+      );
     } else if (field.kind === "scalar") {
       if (!isRecord(value) || Object.keys(value).length === 0) {
         at(`${here} must be a non-empty operator object`);
