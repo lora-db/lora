@@ -2,7 +2,6 @@
 title: Migrating from @neo4j/graphql
 sidebar_label: Migrating from @neo4j/graphql
 description: How @loradb/lora-graphql differs from @neo4j/graphql, what the lora-graphql migrate neo4j command rewrites for you, and what needs a manual decision.
-unlisted: true
 ---
 
 # Migrating from @neo4j/graphql
@@ -31,7 +30,7 @@ will notice. Read the comparison before you move a production API.
 | JWT decoded and verified by the library | Your server verifies the JWT; the library reads verified claims |
 | You create indexes | Inferred from the API, created by `assertSchema()`, verified with `explain()` |
 | Unbounded lists; query complexity left to you | Every list bounded; a cost limit per operation |
-| Subscriptions over CDC | `@subscription`, from writes made through the library in this process |
+| Subscriptions over CDC | `@subscription`, from library writes, or every committed write with `changeFeed: true` |
 | Interfaces and unions with `UNION` | Per-member subqueries merged by sort, each using its own indexes |
 | `connectOrCreate` | `upsert<Plural>` |
 | Federation | Not supported |
@@ -113,11 +112,12 @@ bite:
 - **Indexes come from the API.** Drop hand-written index DDL for what the
   API uses and run `assertSchema({ create: true })`, or apply
   `lora-graphql requirements --ddl` in your migrations.
-- **Subscriptions are in-process.** Events come from mutations made
-  through the library in this process, not from a database change feed.
-  `@cypher` mutations produce a broad change with no write-set. Writes
-  from other processes or raw Cypher are not seen. If you rely on CDC for
-  cross-process events, keep that path until the engine change feed ships.
+- **Subscriptions follow library writes unless you opt into the feed.**
+  By default events come from mutations made through the library in this
+  process, and `@cypher` mutations produce a broad change. With
+  `changeFeed: true` (lora-node) they come from the engine's committed
+  change feed instead, which covers raw Cypher and other processes and
+  resumes after restarts from the WAL, like CDC.
 - **`@cypher` is the same idea with stricter checks.** Parameters must be
   field arguments or `$jwt`, and statements on `Query` fields may not
   write. `check` plans every statement.

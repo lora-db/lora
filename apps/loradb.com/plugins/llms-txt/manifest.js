@@ -130,6 +130,20 @@ module.exports = {
       entries: [{ ...docEntry("api/http"), title: "HTTP API" }],
     },
     {
+      title: "GraphQL",
+      intro:
+        "@loradb/lora-graphql: a schema-first GraphQL API over LoraDB, compiled to Cypher.",
+      entries: [
+        docEntry("graphql/index"),
+        docEntry("graphql/directives"),
+        docEntry("graphql/generated-api"),
+        docEntry("graphql/smart-layer"),
+        docEntry("graphql/authorization"),
+        docEntry("graphql/translation-rules"),
+        docEntry("graphql/migrating-from-neo4j"),
+      ],
+    },
+    {
       title: "Guides and reference",
       entries: [
         docEntry("cookbook"),
