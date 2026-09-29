@@ -15,7 +15,7 @@ const typeDefs = /* GraphQL */ `
       ]
     ) {
     key: String! @key
-    title: String!
+    title: String! @filterable
     published: Boolean!
     tags: [Tag!]! @relationship(type: "TAGGED", direction: OUT)
   }
@@ -127,4 +127,47 @@ test("changes to nodes the subscriber cannot read are not sent", async () => {
   expect(sub.events).toEqual([
     { postChanged: { operation: "CREATE", key: "pub" } },
   ]);
+});
+
+test("where filters events on the node after the write", async () => {
+  const sub = await listen(
+    `subscription { postChanged(where: { title: { eq: "Match" } }) { operation key } }`,
+  );
+  await h.data(
+    `mutation { createPosts(input: [{ key: "x", title: "Other", published: true }, { key: "y", title: "Match", published: true }]) { info { nodesCreated } } }`,
+  );
+  await settle();
+  await sub.stop();
+  expect(sub.events).toEqual([
+    { postChanged: { operation: "CREATE", key: "y" } },
+  ]);
+});
+
+test("changes() ends a consumer that falls too far behind", async () => {
+  const stream = h.lora.changes({ maxQueued: 1 });
+  await h.data(
+    `mutation { createTags(input: [{ key: "a" }]) { info { nodesCreated } } }`,
+  );
+  await h.data(
+    `mutation { createTags(input: [{ key: "b" }]) { info { nodesCreated } } }`,
+  );
+  expect((await stream.next()).value).toMatchObject({
+    created: [{ key: "a" }],
+  });
+  await expect(stream.next()).rejects.toThrow(/fell 1 changes behind/);
+});
+
+test("@authentication(operations: [SUBSCRIBE])", async () => {
+  const t = await festivalHarness({
+    seed: [],
+    typeDefs: `type Secret @node @mutation @subscription @authentication(operations: [SUBSCRIBE]) { key: String! @key }`,
+  });
+  const r = await subscribe({
+    schema: t.lora.getSchema(),
+    document: parse(`subscription { secretChanged { key } }`),
+    contextValue: {},
+  });
+  const first = await (r as AsyncIterableIterator<ExecutionResult>).next?.();
+  const errors = (first?.value ?? r) as ExecutionResult;
+  expect(errors.errors?.[0]?.extensions?.["code"]).toBe("UNAUTHENTICATED");
 });

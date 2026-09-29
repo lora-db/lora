@@ -31,17 +31,29 @@ export type FilterOperator =
   | "STARTS_WITH"
   | "ENDS_WITH"
   | "WITHIN_BBOX"
-  | "DISTANCE";
+  | "DISTANCE"
+  | "INCLUDES"
+  | "IS_NULL"
+  | "CASE_INSENSITIVE";
 
 export type IndexKind = "RANGE" | "TEXT" | "POINT";
 
 export type MutationOperation = "CREATE" | "UPDATE" | "DELETE";
-export type AuthOperation = "READ" | MutationOperation;
+export type AuthOperation =
+  | "READ"
+  | MutationOperation
+  | "CREATE_RELATIONSHIP"
+  | "DELETE_RELATIONSHIP"
+  | "SUBSCRIBE";
 
 /** Field-level options shared by every field kind. */
 interface FieldBase {
   /** Operations on which reading this field needs an authenticated request. */
   authentication: ReadonlySet<AuthOperation> | undefined;
+  /** Claims `@authentication(jwt:)` requires, when set. */
+  authenticationJwt?: AuthorizationWhere | undefined;
+  /** Field-level `@authorization` (validate rules only). */
+  authorization?: Authorization | undefined;
 }
 
 export interface ScalarField extends FieldBase {
@@ -71,6 +83,14 @@ export interface ScalarField extends FieldBase {
   timestamp: ReadonlySet<"CREATE" | "UPDATE"> | undefined;
   /** Never client-settable (`@readonly`, `@timestamp`, `@private`). */
   readonly: boolean;
+  /** `@settable`: which mutations may set it (both false when readonly). */
+  settableOn: { create: boolean; update: boolean };
+  /** `@selectable`: readable (false: write-only), and aggregatable. */
+  selectableOn: { read: boolean; aggregate: boolean };
+  /** `@populatedBy`: a named callback computes it on these operations. */
+  populatedBy:
+    | { callback: string; operations: ReadonlySet<"CREATE" | "UPDATE"> }
+    | undefined;
   /** `@vector`: stored as a VECTOR, searchable by similarity. */
   vector:
     | { dimensions: number; similarity: "COSINE" | "EUCLIDEAN" }
@@ -92,7 +112,18 @@ export interface RelationshipField extends FieldBase {
   required: boolean;
   /** `@relationshipProperties` type name. */
   properties: string | undefined;
+  /**
+   * The concrete @node types the field reaches: the target itself, or an
+   * interface's implementations / a union's members.
+   */
+  members: readonly string[];
+  /** For a member copy of a polymorphic field: the field it came from. */
+  via?: RelationshipField | undefined;
   filterable: boolean;
+  /** UNDIRECTED: reads follow the relationship both ways. */
+  queryDirection: "DIRECTED" | "UNDIRECTED";
+  /** What deleting the owner does to nodes reached through the field. */
+  onDelete: "DETACH" | "CASCADE" | "RESTRICT";
   cardinality: number | undefined;
   limit: PageLimit | undefined;
   description: string | undefined;
@@ -176,9 +207,13 @@ export interface NodeType {
   limit: PageLimit;
   /** Operations that need an authenticated request. */
   authentication: ReadonlySet<AuthOperation> | undefined;
+  /** Claims `@authentication(jwt:)` requires, when set. */
+  authenticationJwt: AuthorizationWhere | undefined;
   authorization: Authorization | undefined;
   /** Full-text and vector indexes with their search root fields. */
   search: readonly SearchIndex[];
+  /** Interfaces the type implements. */
+  interfaces: readonly string[];
   description: string | undefined;
 }
 
@@ -200,6 +235,20 @@ export type SearchIndex =
       queryName: string;
     };
 
+/** An interface over @node types, or a union of them. */
+export interface AbstractType {
+  kind: "interface" | "union";
+  name: string;
+  /** Concrete @node types: implementations or members. */
+  members: readonly string[];
+  /** An interface's scalar fields, as declared on the interface. */
+  fields: ReadonlyMap<string, ScalarField>;
+  plural: string;
+  read: boolean;
+  limit: PageLimit;
+  description: string | undefined;
+}
+
 export interface RelationshipPropertiesType {
   name: string;
   fields: ReadonlyMap<string, ScalarField>;
@@ -214,6 +263,8 @@ export interface EnumType {
 
 export interface GraphModel {
   nodes: ReadonlyMap<string, NodeType>;
+  /** Interfaces and unions over @node types. */
+  abstracts: ReadonlyMap<string, AbstractType>;
   enums: ReadonlyMap<string, EnumType>;
   relationshipProperties: ReadonlyMap<string, RelationshipPropertiesType>;
   /** `@cypher` fields declared on `Query` and `Mutation`. */
@@ -221,6 +272,8 @@ export interface GraphModel {
   mutations: readonly CypherField[];
   /** Problems that do not stop the model, e.g. an unused @cypher argument. */
   warnings: readonly ModelWarning[];
+  /** The `@jwt` claims shape, when declared: claim name → token path. */
+  jwt: ReadonlyMap<string, string> | undefined;
 }
 
 export interface ModelWarning {

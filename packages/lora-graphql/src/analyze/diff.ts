@@ -138,6 +138,7 @@ function publicSchema(model: GraphModel): GraphQLSchema {
   const never = () => Promise.reject(new Error("not connected"));
   return buildSchema(model, {
     resolveSearch: never,
+    resolveAbstract: never,
     subscribe: () => {
       throw new Error("not connected");
     },

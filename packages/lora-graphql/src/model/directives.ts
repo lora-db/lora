@@ -21,7 +21,47 @@ export const directiveTypeDefs = /* GraphQL */ `
     type: String!
     direction: RelationshipDirection!
     properties: String
+    "UNDIRECTED reads follow the relationship both ways; writes use direction."
+    queryDirection: QueryDirection = DIRECTED
+    "What deleting this node does to nodes reached through the field."
+    onDelete: OnDelete = DETACH
   ) on FIELD_DEFINITION
+
+  enum QueryDirection {
+    DIRECTED
+    UNDIRECTED
+  }
+
+  "DETACH removes the relationships; CASCADE deletes the related nodes too; RESTRICT refuses while any exist."
+  enum OnDelete {
+    DETACH
+    CASCADE
+    RESTRICT
+  }
+
+  "Which mutations may set the field. @readonly is onCreate: false, onUpdate: false."
+  directive @settable(
+    onCreate: Boolean = true
+    onUpdate: Boolean = true
+  ) on FIELD_DEFINITION
+
+  "Whether the field can be read (onRead: false makes it write-only) or aggregated."
+  directive @selectable(
+    onRead: Boolean = true
+    onAggregate: Boolean = true
+  ) on FIELD_DEFINITION
+
+  "Set by a callback passed to LoraGraphQL({ callbacks }) on these operations; never client-settable."
+  directive @populatedBy(
+    callback: String!
+    operations: [TimestampOperation!]! = [CREATE, UPDATE]
+  ) on FIELD_DEFINITION
+
+  "The shape of the request's claims. Rules may only test declared claims."
+  directive @jwt on OBJECT
+
+  "Where a declared claim lives in the token, e.g. app_metadata.roles."
+  directive @jwtClaim(path: String!) on FIELD_DEFINITION
 
   "Properties carried by a relationship type."
   directive @relationshipProperties on OBJECT
@@ -36,7 +76,13 @@ export const directiveTypeDefs = /* GraphQL */ `
   directive @cardinality(max: Int!) on FIELD_DEFINITION
 
   "Generated read operations for a node type. Reads are on by default."
-  directive @query(read: Boolean = true, aggregate: Boolean = false) on OBJECT
+  directive @query(
+    read: Boolean = true
+    aggregate: Boolean = false
+  ) on OBJECT | INTERFACE | UNION
+
+  "The plural of an interface or union, for its root field."
+  directive @plural(value: String!) on INTERFACE | UNION
 
   "Filter operators for a field. Without arguments: EQ and IN. On a relationship field: enables relationship filters."
   directive @filterable(byValue: [FilterOperator!]) on FIELD_DEFINITION
@@ -45,7 +91,10 @@ export const directiveTypeDefs = /* GraphQL */ `
   directive @sortable on FIELD_DEFINITION
 
   "Page size bounds for lists of this type."
-  directive @limit(default: Int, max: Int) on OBJECT | FIELD_DEFINITION
+  directive @limit(
+    default: Int
+    max: Int
+  ) on OBJECT | INTERFACE | UNION | FIELD_DEFINITION
 
   "Expose an opaque global id derived from this @key field."
   directive @relayId on FIELD_DEFINITION
@@ -105,14 +154,24 @@ export const directiveTypeDefs = /* GraphQL */ `
 
   "Require an authenticated request (a jwt in the context) for these operations."
   directive @authentication(
-    operations: [AuthOperation!]! = [READ, CREATE, UPDATE, DELETE]
+    operations: [AuthOperation!]! = [
+      READ
+      CREATE
+      UPDATE
+      DELETE
+      CREATE_RELATIONSHIP
+      DELETE_RELATIONSHIP
+      SUBSCRIBE
+    ]
+    "Claims the request must also satisfy, such as a role in roles."
+    jwt: AuthorizationWhere
   ) on OBJECT | FIELD_DEFINITION
 
   "Row-level rules over the node and the request's claims, compiled into the statements."
   directive @authorization(
     filter: [AuthorizationFilterRule!]
     validate: [AuthorizationValidateRule!]
-  ) on OBJECT
+  ) on OBJECT | FIELD_DEFINITION
 
   input AuthorizationFilterRule {
     operations: [AuthOperation!]! = [READ, UPDATE, DELETE]
@@ -143,6 +202,9 @@ export const directiveTypeDefs = /* GraphQL */ `
     CREATE
     UPDATE
     DELETE
+    CREATE_RELATIONSHIP
+    DELETE_RELATIONSHIP
+    SUBSCRIBE
   }
 
   enum AuthorizationWhen {
@@ -179,6 +241,9 @@ export const directiveTypeDefs = /* GraphQL */ `
     ENDS_WITH
     WITHIN_BBOX
     DISTANCE
+    INCLUDES
+    IS_NULL
+    CASE_INSENSITIVE
   }
 
   scalar BigInt
@@ -208,6 +273,8 @@ export const directiveTypeDefs = /* GraphQL */ `
 
 /** Names defined by the prelude; never treated as user types. */
 export const PRELUDE_TYPES = new Set([
+  "QueryDirection",
+  "OnDelete",
   "FulltextIndex",
   "FulltextAnalyzer",
   "VectorSimilarity",

@@ -39,12 +39,15 @@ export async function analyze(
     );
     for (const f of rels) {
       if (f.kind !== "relationship") continue;
-      const target = model.nodes.get(f.target)!;
+      // Any member of an interface or union counts.
+      const labels = f.members
+        .map((m) => model.nodes.get(m)!.labels[0]!)
+        .map((l) => `x:${name(l)}`)
+        .join(" OR ");
       const inner = `[:${name(f.type)}]`;
       const arrow =
-        f.direction === "OUT"
-          ? `-${inner}->(:${name(target.labels[0]!)})`
-          : `<-${inner}-(:${name(target.labels[0]!)})`;
+        (f.direction === "OUT" ? `-${inner}->(x)` : `<-${inner}-(x)`) +
+        ` WHERE ${labels}`;
       statements.push({
         text: `MATCH (n:${label}) WITH n LIMIT $sample RETURN size([(n)${arrow} | 1]) AS d`,
         params: { sample } as never,

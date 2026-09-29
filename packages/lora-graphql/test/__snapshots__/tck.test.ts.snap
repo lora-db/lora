@@ -214,10 +214,12 @@ WITH this ORDER BY this.key ASC LIMIT $p2
 CALL {
   WITH this
   MATCH (this)<-[:IN_GENRE]-(this_festivals:Festival)
+  WHERE this_festivals:Festival
   WITH this_festivals ORDER BY this_festivals.key ASC LIMIT $p0
   CALL {
     WITH this_festivals
     MATCH (this_festivals)<-[:HEADLINES]-(this_festivals_headliners:Artist)
+    WHERE this_festivals_headliners:Artist
     WITH this_festivals_headliners ORDER BY this_festivals_headliners.name ASC LIMIT $p1
     RETURN collect(this_festivals_headliners { .name }) AS this_festivals_headliners_list
   }
@@ -287,7 +289,7 @@ WHERE this.key = $p0
 CALL {
   WITH this
   MATCH (this)<-[this_followersConnection_rel:FOLLOWS]-(this_followersConnection:User)
-  WHERE this_followersConnection_rel.since >= $p1
+  WHERE this_followersConnection:User AND this_followersConnection_rel.since >= $p1
   WITH this_followersConnection_rel, this_followersConnection ORDER BY this_followersConnection.key ASC LIMIT $p7
   RETURN collect({ node: this_followersConnection { .key }, __cursor: [this_followersConnection.key], properties: this_followersConnection_rel { .since } }) AS this_followersConnection_rows
 }
@@ -317,17 +319,19 @@ exports[`TCK > relationship filters 1`] = `
       {
         "params": {
           "p0": "H",
-          "p1": "u1",
-          "p2": 1,
+          "p1": "H",
+          "p2": "u1",
           "p3": "u1",
-          "p4": 10,
+          "p4": 1,
+          "p5": "u1",
+          "p6": 10,
         },
         "text": "MATCH (this_followers_anchor:User)
-WHERE this_followers_anchor.key = $p3
+WHERE this_followers_anchor.key = $p5
 MATCH (this_followers_anchor)-[:FOLLOWS]->(this:Festival)
-WHERE size([(this)-[:IN_GENRE]->(this_genre:Genre) WHERE this_genre.name STARTS WITH $p0 | 1]) > 0 AND size([(this)<-[:FOLLOWS]-(this_followers:User) WHERE this_followers.key = $p1 | 1]) > 0 AND size([(this)<-[:FOLLOWS]-(this_followers1:User) | 1]) > $p2
+WHERE this:Festival AND size([(this)-[this_genre_rel:IN_GENRE]->(this_genre:Genre) WHERE this_genre.name STARTS WITH $p1 | 1]) > 0 AND size([(this)<-[this_followers_rel:FOLLOWS]-(this_followers:User) WHERE this_followers.key = $p3 | 1]) > 0 AND size(reduce(seen = [], seen_key IN [(this)<-[this_followers1_rel:FOLLOWS]-(this_followers1:User) | ["User", this_followers1.key]] | CASE WHEN seen_key IN seen THEN seen ELSE seen + [seen_key] END)) > $p4
 WITH DISTINCT this
-WITH this ORDER BY this.key ASC LIMIT $p4
+WITH this ORDER BY this.key ASC LIMIT $p6
 RETURN this { .key } AS this",
       },
     ],
@@ -480,6 +484,14 @@ type FestivalAggregate {
   startsAt: DateTimeAggregate!
 }
 
+type FestivalAggregateNode {
+  capacity: IntAggregate!
+  key: StringAggregate!
+  name: StringAggregate!
+  startsAt: DateTimeAggregate!
+  title: StringAggregate!
+}
+
 input FestivalCapacityFilter {
   """Equal to."""
   eq: Int
@@ -495,9 +507,17 @@ input FestivalCapacityFilter {
 }
 
 type FestivalConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: FestivalConnectionAggregate!
   edges: [FestivalEdge!]!
   pageInfo: PageInfo!
   totalCount: Int!
+}
+
+type FestivalConnectionAggregate {
+  """Matching nodes."""
+  count: Int!
+  node: FestivalAggregateNode!
 }
 
 type FestivalEdge {
@@ -509,6 +529,20 @@ type FestivalFollowersConnection {
   edges: [FestivalFollowersEdge!]!
   pageInfo: PageInfo!
   totalCount: Int!
+}
+
+input FestivalFollowersConnectionFilter {
+  """Every pair matches."""
+  all: FestivalFollowersConnectionWhere
+
+  """No pair matches."""
+  none: FestivalFollowersConnectionWhere
+
+  """Exactly one pair matches."""
+  single: FestivalFollowersConnectionWhere
+
+  """At least one pair matches."""
+  some: FestivalFollowersConnectionWhere
 }
 
 input FestivalFollowersConnectionWhere {
@@ -523,6 +557,9 @@ type FestivalFollowersEdge {
 }
 
 input FestivalFollowersFilter {
+  """Aggregates of the related nodes (and relationship properties)."""
+  aggregate: FestivalFollowersFilterAggregate
+
   """Every related node matches."""
   all: UserWhere
 
@@ -537,6 +574,12 @@ input FestivalFollowersFilter {
 
   """At least one related node matches."""
   some: UserWhere
+}
+
+input FestivalFollowersFilterAggregate {
+  count: CountFilter
+  edge: FollowsAggregateWhere
+  node: UserAggregateWhere
 }
 
 input FestivalKeyFilter {
@@ -593,6 +636,9 @@ input FestivalWhere {
   capacity: FestivalCapacityFilter
   followers: FestivalFollowersFilter
 
+  """Quantifiers over followers with their relationship properties."""
+  followersConnection: FestivalFollowersConnectionFilter
+
   """Has a related Genre matching the filter."""
   genre: GenreWhere
   key: FestivalKeyFilter
@@ -601,8 +647,24 @@ input FestivalWhere {
   status: FestivalStatusFilter
 }
 
+input FloatComparison {
+  eq: Float
+  gt: Float
+  gte: Float
+  lt: Float
+  lte: Float
+}
+
 type Follows {
   since: Int!
+}
+
+type FollowsAggregateEdge {
+  since: IntAggregate!
+}
+
+input FollowsAggregateWhere {
+  since: IntAggregateFilter
 }
 
 input FollowsSinceFilter {
@@ -689,6 +751,21 @@ type IntAggregate {
   max: Int
   min: Int
   sum: Float
+}
+
+input IntAggregateFilter {
+  avg: FloatComparison
+  max: IntComparison
+  min: IntComparison
+  sum: FloatComparison
+}
+
+input IntComparison {
+  eq: Int
+  gt: Int
+  gte: Int
+  lt: Int
+  lte: Int
 }
 
 """An object with a global id."""
@@ -800,6 +877,19 @@ type StringAggregate {
   min: String
 }
 
+input StringAggregateFilter {
+  max: StringComparison
+  min: StringComparison
+}
+
+input StringComparison {
+  eq: String
+  gt: String
+  gte: String
+  lt: String
+  lte: String
+}
+
 type User {
   follows(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
   followsConnection(
@@ -816,6 +906,11 @@ type User {
   name: String
 }
 
+input UserAggregateWhere {
+  key: StringAggregateFilter
+  name: StringAggregateFilter
+}
+
 type UserConnection {
   edges: [UserEdge!]!
   pageInfo: PageInfo!
@@ -828,9 +923,18 @@ type UserEdge {
 }
 
 type UserFollowsConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: UserFollowsConnectionAggregate!
   edges: [UserFollowsEdge!]!
   pageInfo: PageInfo!
   totalCount: Int!
+}
+
+type UserFollowsConnectionAggregate {
+  """Matching nodes."""
+  count: Int!
+  edge: FollowsAggregateEdge!
+  node: FestivalAggregateNode!
 }
 
 input UserFollowsConnectionWhere {

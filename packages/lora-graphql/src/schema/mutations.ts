@@ -1,9 +1,11 @@
 // The generated Mutation surface: only for types with @mutation, keyed
 // by @key (so every write-set is exact), with nested connect / create /
-// disconnect on relationships.
+// update / disconnect on relationships, math and list operators, and bulk
+// updates and deletes that resolve their keys first.
 
 import {
   GraphQLBoolean,
+  GraphQLFloat,
   GraphQLInputObjectType,
   GraphQLInt,
   GraphQLList,
@@ -13,6 +15,7 @@ import {
   type GraphQLInputFieldConfigMap,
   type GraphQLInputType,
   type GraphQLResolveInfo,
+  type GraphQLScalarType,
 } from "graphql";
 import type {
   GraphModel,
@@ -22,10 +25,18 @@ import type {
   RelationshipPropertiesType,
   ScalarField,
 } from "../model/types.js";
+import { memberFields } from "../model/relations.js";
 import { upperFirst } from "./names.js";
 
+/** A generated mutation: the single-node ones, and the bulk ones by where. */
+export type MutationKind =
+  | MutationOperation
+  | "UPSERT"
+  | "UPDATE_MANY"
+  | "DELETE_MANY";
+
 export type MutationResolver = (
-  operation: MutationOperation | "UPSERT",
+  operation: MutationKind,
   node: NodeType,
   info: GraphQLResolveInfo,
   context: unknown,
@@ -36,18 +47,24 @@ export const mutationNames = {
   update: (t: NodeType) => `update${t.name}`,
   delete: (t: NodeType) => `delete${t.name}`,
   upsert: (t: NodeType) => `upsert${upperFirst(t.plural)}`,
+  updateMany: (t: NodeType) => `update${upperFirst(t.plural)}`,
+  deleteMany: (t: NodeType) => `delete${upperFirst(t.plural)}`,
   upsertInput: (t: string) => `${t}UpsertInput`,
   upsertPayload: (t: NodeType) => `Upsert${upperFirst(t.plural)}Payload`,
   createInput: (t: string) => `${t}CreateInput`,
   updateInput: (t: string) => `${t}UpdateInput`,
+  adjustInput: (t: string) => `${t}AdjustInput`,
   createPayload: (t: NodeType) => `Create${upperFirst(t.plural)}Payload`,
   updatePayload: (t: NodeType) => `Update${t.name}Payload`,
+  updateManyPayload: (t: NodeType) => `Update${upperFirst(t.plural)}Payload`,
   relationCreate: (t: string, f: string) =>
     `${t}${upperFirst(f)}CreateRelationInput`,
   relationUpdate: (t: string, f: string) =>
     `${t}${upperFirst(f)}UpdateRelationInput`,
   connect: (t: string, f: string) => `${t}${upperFirst(f)}ConnectInput`,
   nestedCreate: (t: string, f: string) => `${t}${upperFirst(f)}CreateNodeInput`,
+  nestedUpdate: (t: string, f: string) =>
+    `${t}${upperFirst(f)}UpdateConnectedInput`,
   /** Payload field holding the created nodes / the updated node. */
   createdField: (t: NodeType) => t.plural,
   updatedField: (t: NodeType) =>
@@ -61,13 +78,12 @@ export interface MutationSchemaContext {
   model: GraphModel;
   object: (typeName: string) => GraphQLObjectType;
   inputType: (f: ScalarField) => GraphQLInputType;
+  where: (typeName: string) => GraphQLInputType;
 }
 
-/** Whether a field may be set by clients on `op`. */
+/** Whether clients may set a field on `op` (`@settable`, `@readonly`, …). */
 export function settable(f: ScalarField, op: "CREATE" | "UPDATE"): boolean {
-  if (f.readonly) return false;
-  if (op === "UPDATE" && f.key) return false;
-  return true;
+  return op === "CREATE" ? f.settableOn.create : f.settableOn.update;
 }
 
 /** Whether the create input must carry the field. */
@@ -76,8 +92,25 @@ export function requiredOnCreate(f: ScalarField): boolean {
     f.required &&
     !f.defaultValue &&
     !f.timestamp?.has("CREATE") &&
+    !f.populatedBy?.operations.has("CREATE") &&
     !(f.key && f.generate)
   );
+}
+
+/** A type with nothing settable after create has no update. */
+export function isUpdatable(node: NodeType): boolean {
+  return [...node.fields.values()].some(
+    (f) =>
+      f.kind === "relationship" ||
+      (f.kind === "scalar" && settable(f, "UPDATE")),
+  );
+}
+
+/** Numeric and list fields take operators in `adjust`. */
+export function adjustable(f: ScalarField): boolean {
+  if (!settable(f, "UPDATE") || f.vector) return false;
+  if (f.list) return f.type !== "Point" && f.type !== "CartesianPoint";
+  return f.type === "Int" || f.type === "Float" || f.type === "BigInt";
 }
 
 export function buildMutations(
@@ -123,6 +156,12 @@ export function buildMutations(
     once(`${props.name}CreateInput`, () =>
       scalarInputs(props.fields.values(), "CREATE"),
     );
+  const propsUpdate = (props: RelationshipPropertiesType) => {
+    const fields = scalarInputs(props.fields.values(), "UPDATE");
+    return Object.keys(fields).length > 0
+      ? once(`${props.name}UpdateInput`, () => fields)
+      : undefined;
+  };
   const propsRequired = (props: RelationshipPropertiesType) =>
     [...props.fields.values()].some(
       (f) => settable(f, "CREATE") && requiredOnCreate(f),
@@ -143,7 +182,7 @@ export function buildMutations(
         [target.key.name]: { type: nonNull(ctx.inputType(target.key)) },
         ...edgeField(rel),
       }),
-      `Connect an existing ${target.name} by ${target.key.name}.`,
+      `Connect an existing ${target.name} by ${target.key.name}. Connecting a connected pair updates the relationship's properties.`,
     );
   };
 
@@ -153,14 +192,88 @@ export function buildMutations(
       ...edgeField(rel),
     }));
 
+  // `update: [{ key, edge, node }]`: change a connected pair in place.
+  const nestedUpdateInput = (owner: NodeType, rel: RelationshipField) => {
+    const target = model.nodes.get(rel.target)!;
+    const props = rel.properties
+      ? model.relationshipProperties.get(rel.properties)
+      : undefined;
+    const edge = props ? propsUpdate(props) : undefined;
+    const node =
+      target.mutations.has("UPDATE") && isUpdatable(target)
+        ? updateInput(target)
+        : undefined;
+    if (!edge && !node) return undefined;
+    return once(mutationNames.nestedUpdate(owner.name, rel.name), () => ({
+      ...(rel.list
+        ? { [target.key.name]: { type: nonNull(ctx.inputType(target.key)) } }
+        : {}),
+      ...(edge ? { edge: { type: edge } } : {}),
+      ...(node ? { node: { type: node } } : {}),
+    }));
+  };
+
   const canCreate = (rel: RelationshipField) =>
     model.nodes.get(rel.target)!.mutations.has("CREATE");
+
+  // Over an interface or union: the same inputs, one field per member.
+  const polymorphicFields = (
+    owner: NodeType,
+    rel: RelationshipField,
+    update: boolean,
+  ): GraphQLInputFieldConfigMap => {
+    const members = memberFields(model, rel).map((m) => ({
+      member: m.target,
+      // A naming copy, so each member's inputs get their own type names.
+      rel: { ...m, name: `${rel.name}${m.target}` },
+    }));
+    const byMember = (
+      suffix: string,
+      type: (m: (typeof members)[number]) => GraphQLInputType | undefined,
+    ) => {
+      const fields: GraphQLInputFieldConfigMap = {};
+      for (const m of members) {
+        const t = type(m);
+        if (t) fields[m.member] = { type: t };
+      }
+      return Object.keys(fields).length > 0
+        ? once(`${owner.name}${upperFirst(rel.name)}${suffix}`, () => fields)
+        : undefined;
+    };
+    const out: GraphQLInputFieldConfigMap = {};
+    const connect = byMember("ConnectMembers", (m) => {
+      const t = connectInput(owner, m.rel);
+      return rel.list ? listOf(nonNull(t)) : t;
+    });
+    if (connect) out["connect"] = { type: connect };
+    const create = byMember("CreateMembers", (m) => {
+      if (!model.nodes.get(m.member)!.mutations.has("CREATE")) return undefined;
+      const t = nestedCreateInput(owner, m.rel);
+      return rel.list ? listOf(nonNull(t)) : t;
+    });
+    if (create) out["create"] = { type: create };
+    if (update) {
+      out["disconnect"] = rel.list
+        ? {
+            type: byMember("DisconnectMembers", (m) =>
+              listOf(nonNull(ctx.inputType(model.nodes.get(m.member)!.key))),
+            )!,
+          }
+        : {
+            type: GraphQLBoolean,
+            description: `true removes the current ${rel.target}.`,
+          };
+    }
+    return out;
+  };
 
   const relationFields = (
     owner: NodeType,
     rel: RelationshipField,
     update: boolean,
   ): GraphQLInputFieldConfigMap => {
+    if (model.abstracts.has(rel.target))
+      return polymorphicFields(owner, rel, update);
     const target = model.nodes.get(rel.target)!;
     const connect = connectInput(owner, rel);
     const fields: GraphQLInputFieldConfigMap = {
@@ -180,24 +293,39 @@ export function buildMutations(
             type: GraphQLBoolean,
             description: `true removes the current ${target.name}.`,
           };
+      const nested = nestedUpdateInput(owner, rel);
+      if (nested) {
+        fields["update"] = {
+          type: rel.list ? listOf(nonNull(nested)) : nested,
+          description: `Update connected ${target.name} nodes or their relationship properties in place.`,
+        };
+      }
     }
     return fields;
   };
 
+  const scalarsOf = (node: NodeType) =>
+    [...node.fields.values()].filter(
+      (f): f is ScalarField => f.kind === "scalar",
+    );
+
   const createInput = (node: NodeType): GraphQLInputObjectType =>
     once(mutationNames.createInput(node.name), () => {
-      const fields = scalarInputs(
-        [...node.fields.values()].filter(
-          (f): f is ScalarField => f.kind === "scalar",
-        ),
-        "CREATE",
-      );
+      const fields = scalarInputs(scalarsOf(node), "CREATE");
       for (const rel of node.fields.values()) {
         if (rel.kind !== "relationship") continue;
         const t = once(mutationNames.relationCreate(node.name, rel.name), () =>
           relationFields(node, rel, false),
         );
-        fields[rel.name] = { type: rel.required && !rel.list ? nonNull(t) : t };
+        // Required single relationships are checked when the mutation
+        // runs: a nested create's parent link can satisfy them.
+        fields[rel.name] = {
+          type: t,
+          description:
+            rel.required && !rel.list
+              ? `Required: connect or create one, unless this ${node.name} is created under it.`
+              : undefined,
+        };
       }
       return fields;
     });
@@ -227,14 +355,9 @@ export function buildMutations(
       return fields;
     });
 
-  const updateInput = (node: NodeType): GraphQLInputObjectType =>
-    once(mutationNames.updateInput(node.name), () => {
-      const fields = scalarInputs(
-        [...node.fields.values()].filter(
-          (f): f is ScalarField => f.kind === "scalar",
-        ),
-        "UPDATE",
-      );
+  function updateInput(node: NodeType): GraphQLInputObjectType {
+    return once(mutationNames.updateInput(node.name), () => {
+      const fields = scalarInputs(scalarsOf(node), "UPDATE");
       for (const rel of node.fields.values()) {
         if (rel.kind !== "relationship") continue;
         fields[rel.name] = {
@@ -245,6 +368,66 @@ export function buildMutations(
       }
       return fields;
     });
+  }
+
+  // --- adjust: math and list operators ---------------------------------------
+
+  const numericAdjust = new Map<string, GraphQLInputObjectType>();
+  const adjustType = (f: ScalarField): GraphQLInputObjectType => {
+    const base = ctx.inputType(f) as GraphQLScalarType;
+    if (f.list) {
+      const name = `${base.name}ListAdjust`;
+      let t = numericAdjust.get(name);
+      if (!t) {
+        t = new GraphQLInputObjectType({
+          name,
+          fields: {
+            push: {
+              type: listOf(nonNull(base)),
+              description: "Append these values (a missing list starts empty).",
+            },
+            pop: {
+              type: GraphQLInt,
+              description: "Remove this many values from the end.",
+            },
+            remove: {
+              type: listOf(nonNull(base)),
+              description: "Remove every occurrence of these values.",
+            },
+          },
+        });
+        numericAdjust.set(name, t);
+      }
+      return t;
+    }
+    const name = `${base.name}Adjust`;
+    let t = numericAdjust.get(name);
+    if (!t) {
+      const operand = f.type === "Float" ? GraphQLFloat : base;
+      t = new GraphQLInputObjectType({
+        name,
+        description:
+          "One operation, applied to the stored value atomically; a missing value counts as 0.",
+        fields: {
+          add: { type: operand },
+          subtract: { type: operand },
+          ...(f.type === "BigInt"
+            ? {}
+            : { multiply: { type: operand }, divide: { type: operand } }),
+        },
+      });
+      numericAdjust.set(name, t);
+    }
+    return t;
+  };
+
+  const adjustInput = (node: NodeType): GraphQLInputObjectType | undefined => {
+    const fields = scalarsOf(node).filter(adjustable);
+    if (fields.length === 0) return undefined;
+    return once(mutationNames.adjustInput(node.name), () =>
+      Object.fromEntries(fields.map((f) => [f.name, { type: adjustType(f) }])),
+    );
+  };
 
   const info = new GraphQLObjectType({
     name: "MutationInfo",
@@ -258,12 +441,27 @@ export function buildMutations(
     },
   });
 
+  const listPayload = (name: string, node: NodeType) =>
+    new GraphQLNonNull(
+      new GraphQLObjectType({
+        name,
+        fields: {
+          [mutationNames.createdField(node)]: {
+            type: new GraphQLNonNull(
+              new GraphQLList(new GraphQLNonNull(ctx.object(node.name))),
+            ),
+          },
+          info: { type: new GraphQLNonNull(info) },
+        },
+      }),
+    );
+
   const out: GraphQLFieldConfigMap<unknown, unknown> = {};
   for (const node of model.nodes.values()) {
     const obj = ctx.object(node.name);
     const key = { type: nonNull(ctx.inputType(node.key)) };
     const run =
-      (op: MutationOperation | "UPSERT") =>
+      (op: MutationKind) =>
       (
         _src: unknown,
         _args: unknown,
@@ -271,32 +469,23 @@ export function buildMutations(
         i: GraphQLResolveInfo,
       ) =>
         resolve(op, node, i, context);
+    const updatable = isUpdatable(node);
+    const adjust = adjustInput(node);
+    const updateArgs = {
+      ...(updatable ? { update: { type: updateInput(node) } } : {}),
+      ...(adjust
+        ? { adjust: { type: adjust, description: "Math and list operators." } }
+        : {}),
+    };
+
     if (node.mutations.has("CREATE")) {
       out[mutationNames.create(node)] = {
         description: `Create ${node.name} nodes, with their relationships, atomically.`,
-        type: new GraphQLNonNull(
-          new GraphQLObjectType({
-            name: mutationNames.createPayload(node),
-            fields: {
-              [mutationNames.createdField(node)]: {
-                type: new GraphQLNonNull(
-                  new GraphQLList(new GraphQLNonNull(obj)),
-                ),
-              },
-              info: { type: new GraphQLNonNull(info) },
-            },
-          }),
-        ),
+        type: listPayload(mutationNames.createPayload(node), node),
         args: { input: { type: nonNull(listOf(nonNull(createInput(node)))) } },
         resolve: run("CREATE"),
       };
     }
-    // A type with nothing settable after create has no update.
-    const updatable = [...node.fields.values()].some(
-      (f) =>
-        f.kind === "relationship" ||
-        (f.kind === "scalar" && settable(f, "UPDATE")),
-    );
     if (node.mutations.has("UPDATE") && updatable) {
       out[mutationNames.update(node)] = {
         description: `Update the ${node.name} with this ${node.key.name}. The payload's ${mutationNames.updatedField(node)} is null when there is none.`,
@@ -309,39 +498,45 @@ export function buildMutations(
             },
           }),
         ),
-        args: {
-          [node.key.name]: key,
-          update: { type: nonNull(updateInput(node)) },
-        },
+        args: { [node.key.name]: key, ...updateArgs },
         resolve: run("UPDATE"),
+      };
+      out[mutationNames.updateMany(node)] = {
+        description: `Update every ${node.name} matching \`where\`, atomically. Fails, writing nothing, when more than \`limit\` match (default: the mutation batch limit). Relationships are updated one node at a time, with update${node.name}.`,
+        type: listPayload(mutationNames.updateManyPayload(node), node),
+        args: {
+          where: { type: nonNull(ctx.where(node.name)) },
+          ...updateArgs,
+          limit: { type: GraphQLInt },
+        },
+        resolve: run("UPDATE_MANY"),
       };
     }
     if (node.mutations.has("CREATE") && node.mutations.has("UPDATE")) {
       out[mutationNames.upsert(node)] = {
         description: `Create the ${node.name} nodes whose ${node.key.name} is new and update the others, atomically. Fields required on create are required only for new nodes.`,
-        type: new GraphQLNonNull(
-          new GraphQLObjectType({
-            name: mutationNames.upsertPayload(node),
-            fields: {
-              [mutationNames.createdField(node)]: {
-                type: new GraphQLNonNull(
-                  new GraphQLList(new GraphQLNonNull(obj)),
-                ),
-              },
-              info: { type: new GraphQLNonNull(info) },
-            },
-          }),
-        ),
-        args: { input: { type: nonNull(listOf(nonNull(upsertInput(node)))) } },
+        type: listPayload(mutationNames.upsertPayload(node), node),
+        args: {
+          input: { type: nonNull(listOf(nonNull(upsertInput(node)))) },
+        },
         resolve: run("UPSERT"),
       };
     }
     if (node.mutations.has("DELETE")) {
       out[mutationNames.delete(node)] = {
-        description: `Delete the ${node.name} with this ${node.key.name} and its relationships.`,
+        description: `Delete the ${node.name} with this ${node.key.name}, its relationships, and what @relationship(onDelete: CASCADE) reaches.`,
         type: new GraphQLNonNull(info),
         args: { [node.key.name]: key },
         resolve: run("DELETE"),
+      };
+      out[mutationNames.deleteMany(node)] = {
+        description: `Delete every ${node.name} matching \`where\`, atomically. Fails, deleting nothing, when more than \`limit\` match (default: the mutation batch limit).`,
+        type: new GraphQLNonNull(info),
+        args: {
+          where: { type: nonNull(ctx.where(node.name)) },
+          limit: { type: GraphQLInt },
+        },
+        resolve: run("DELETE_MANY"),
       };
     }
   }

@@ -15,6 +15,7 @@ import {
   GraphQLObjectType,
   GraphQLSchema,
   GraphQLString,
+  GraphQLUnionType,
   type GraphQLFieldConfig,
   type GraphQLFieldConfigArgumentMap,
   type GraphQLFieldConfigMap,
@@ -35,6 +36,7 @@ import type {
 import { ModelError, requestError } from "../errors.js";
 import { lowerFirst } from "../model/build.js";
 import type {
+  AbstractType,
   CypherField,
   FilterOperator,
   GraphModel,
@@ -58,6 +60,11 @@ export interface ChangeEvent {
 }
 
 export interface SchemaHooks {
+  resolveAbstract: (
+    abstract: AbstractType,
+    info: GraphQLResolveInfo,
+    context: unknown,
+  ) => Promise<unknown>;
   subscribe: (
     node: NodeType,
     args: Record<string, unknown>,
@@ -113,13 +120,29 @@ const nonNull = <T extends GraphQLOutputType | GraphQLInputType>(t: T) =>
 const listOf = <T extends GraphQLOutputType | GraphQLInputType>(t: T) =>
   new GraphQLList(t);
 
-/** Values under response keys: the compiler projects each alias. */
+/**
+ * Values under response keys: the compiler projects each alias. A field
+ * whose row-level READ rule failed arrives as `{ __forbidden: true }`.
+ */
 const byResponseKey: GraphQLFieldResolver<Record<string, unknown>, unknown> = (
   source,
   _args,
   _ctx,
   info,
-) => source[info.path.key as string];
+) => {
+  const value = source[info.path.key as string];
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { __forbidden?: unknown }).__forbidden === true
+  ) {
+    throw requestError(
+      "FORBIDDEN",
+      `not allowed to read ${info.parentType.name}.${info.fieldName}`,
+    );
+  }
+  return value;
+};
 
 /** A stored VECTOR as its numbers. */
 const vectorByResponseKey: GraphQLFieldResolver<
@@ -152,6 +175,9 @@ const OPERATOR_FIELDS: Record<FilterOperator, string> = {
   ENDS_WITH: "endsWith",
   WITHIN_BBOX: "withinBBox",
   DISTANCE: "distance",
+  INCLUDES: "includes",
+  IS_NULL: "isNull",
+  CASE_INSENSITIVE: "caseInsensitive",
 };
 
 const OPERATOR_DOCS: Record<FilterOperator, string> = {
@@ -166,6 +192,10 @@ const OPERATOR_DOCS: Record<FilterOperator, string> = {
   ENDS_WITH: "Ends with.",
   WITHIN_BBOX: "Inside the bounding box, edges included.",
   DISTANCE: "Within this distance of a point (metres for geographic points).",
+  INCLUDES: "The list contains this value.",
+  IS_NULL: "true: the value is absent; false: it is present.",
+  CASE_INSENSITIVE:
+    "The same string operators, ignoring case. Not index-backed: prefer @fulltext for search.",
 };
 
 export function buildSchema(
@@ -346,23 +376,54 @@ export function buildSchema(
         ? cartesianPointInput
         : (scalarType(f) as GraphQLInputType);
 
+  // String operators, ignoring case: `toLower(x) <op> lower(value)`.
+  const caseInsensitiveFilter = (owner: string, f: ScalarField) => {
+    const text = new Set<FilterOperator>([
+      "EQ",
+      ...[...f.filters].filter((op) =>
+        ["IN", "CONTAINS", "STARTS_WITH", "ENDS_WITH"].includes(op),
+      ),
+    ]);
+    const fields: GraphQLInputFieldConfigMap = {};
+    for (const op of text) {
+      fields[OPERATOR_FIELDS[op]] = {
+        type: op === "IN" ? listOf(nonNull(GraphQLString)) : GraphQLString,
+        description: OPERATOR_DOCS[op],
+      };
+    }
+    return new GraphQLInputObjectType({
+      name: `${names.fieldFilter(owner, f.name)}CaseInsensitive`,
+      fields,
+    });
+  };
+
   const fieldFilter = (owner: string, f: ScalarField) => {
     const base = inputTypeOf(f);
     const fields: GraphQLInputFieldConfigMap = {};
     const kinds = f.type === "CartesianPoint" ? spatial.cartesian : spatial.geo;
     for (const op of f.filters) {
       const name = OPERATOR_FIELDS[op];
-      fields[name] = {
-        type:
-          op === "IN"
-            ? listOf(nonNull(base))
-            : op === "WITHIN_BBOX"
-              ? kinds.bbox
-              : op === "DISTANCE"
-                ? kinds.distance
-                : base,
-        description: OPERATOR_DOCS[op],
-      };
+      let type: GraphQLInputType;
+      switch (op) {
+        case "IN":
+          type = listOf(nonNull(base));
+          break;
+        case "WITHIN_BBOX":
+          type = kinds.bbox;
+          break;
+        case "DISTANCE":
+          type = kinds.distance;
+          break;
+        case "IS_NULL":
+          type = GraphQLBoolean;
+          break;
+        case "CASE_INSENSITIVE":
+          type = caseInsensitiveFilter(owner, f);
+          break;
+        default:
+          type = base;
+      }
+      fields[name] = { type, description: OPERATOR_DOCS[op] };
     }
     return new GraphQLInputObjectType({
       name: names.fieldFilter(owner, f.name),
@@ -395,6 +456,12 @@ export function buildSchema(
                 ? undefined
                 : `Has a related ${f.target} matching the filter.`,
             };
+            if (f.list && f.properties && !polymorphic(f)) {
+              fields[names.connectionField(f.name)] = {
+                type: connectionFilter(node, f),
+                description: `Quantifiers over ${f.name} with their relationship properties.`,
+              };
+            }
           }
         }
         return fields;
@@ -402,6 +469,51 @@ export function buildSchema(
     });
     wheres.set(node.name, where);
   }
+
+  // Interfaces: their filterable fields, applied to every implementation,
+  // and `typename` to pick implementations. Unions: one where per member.
+  for (const abstract of model.abstracts.values()) {
+    const implementation =
+      abstract.kind === "interface"
+        ? new GraphQLEnumType({
+            name: `${abstract.name}Implementation`,
+            values: Object.fromEntries(abstract.members.map((m) => [m, {}])),
+          })
+        : undefined;
+    const where: GraphQLInputObjectType = new GraphQLInputObjectType({
+      name: names.where(abstract.name),
+      description:
+        abstract.kind === "interface"
+          ? `Filters ${abstract.name} nodes of every implementation.`
+          : `Filters ${abstract.name} members. With any member named, members not named are left out.`,
+      fields: () => {
+        if (abstract.kind === "union") {
+          return Object.fromEntries(
+            abstract.members.map((m) => [m, { type: whereOf(m) }]),
+          );
+        }
+        const fields: GraphQLInputFieldConfigMap = {
+          AND: { type: listOf(nonNull(where)) },
+          OR: { type: listOf(nonNull(where)) },
+          NOT: { type: where },
+          typename: {
+            type: listOf(nonNull(implementation!)),
+            description: "Only these implementations.",
+          },
+        };
+        for (const f of abstract.fields.values()) {
+          if (f.filters.size > 0) {
+            fields[f.name] = { type: fieldFilter(abstract.name, f) };
+          }
+        }
+        return fields;
+      },
+    });
+    wheres.set(abstract.name, where);
+  }
+
+  const polymorphic = (rel: RelationshipField) =>
+    model.abstracts.has(rel.target);
 
   const relationFilter = (node: NodeType, rel: RelationshipField) =>
     new GraphQLInputObjectType({
@@ -427,8 +539,149 @@ export function buildSchema(
           type: countFilter,
           description: "The number of related nodes.",
         },
+        ...(polymorphic(rel)
+          ? {}
+          : {
+              aggregate: {
+                type: relationAggregateFilter(node, rel),
+                description:
+                  "Aggregates of the related nodes (and relationship properties).",
+              },
+            }),
       },
     });
+
+  // --- Connection and aggregate filters -------------------------------------
+
+  const connectionWheres = new Map<string, GraphQLInputObjectType>();
+  const connectionWhere = (node: NodeType, rel: RelationshipField) => {
+    const name = names.relConnectionWhere(node.name, rel.name);
+    let t = connectionWheres.get(name);
+    if (!t) {
+      const props = model.relationshipProperties.get(rel.properties!)!;
+      const edgeWhere = propsWhere(props);
+      t = new GraphQLInputObjectType({
+        name,
+        fields: () => ({
+          node: { type: whereOf(rel.target) },
+          ...(edgeWhere ? { edge: { type: edgeWhere } } : {}),
+        }),
+      });
+      connectionWheres.set(name, t);
+    }
+    return t;
+  };
+
+  const connectionFilter = (node: NodeType, rel: RelationshipField) => {
+    const pair = connectionWhere(node, rel);
+    return new GraphQLInputObjectType({
+      name: `${names.relConnection(node.name, rel.name)}Filter`,
+      fields: {
+        some: { type: pair, description: "At least one pair matches." },
+        all: { type: pair, description: "Every pair matches." },
+        none: { type: pair, description: "No pair matches." },
+        single: { type: pair, description: "Exactly one pair matches." },
+      },
+    });
+  };
+
+  const comparisons = new Map<string, GraphQLInputObjectType>();
+  const comparison = (base: GraphQLScalarType) => {
+    let t = comparisons.get(base.name);
+    if (!t) {
+      t = new GraphQLInputObjectType({
+        name: `${base.name}Comparison`,
+        fields: {
+          eq: { type: base },
+          lt: { type: base },
+          lte: { type: base },
+          gt: { type: base },
+          gte: { type: base },
+        },
+      });
+      comparisons.set(base.name, t);
+    }
+    return t;
+  };
+
+  /** Fields whose values can be aggregated: ordered scalars, not lists. */
+  const aggregatable = (f: ScalarField) =>
+    !f.list &&
+    !f.private &&
+    f.selectableOn.aggregate &&
+    f.selectableOn.read &&
+    !["Boolean", "Enum", "Point", "CartesianPoint", "Duration"].includes(
+      f.type,
+    );
+  const isNumeric = (f: ScalarField) =>
+    f.type === "Int" || f.type === "Float" || f.type === "BigInt";
+
+  const aggregateFieldFilters = new Map<string, GraphQLInputObjectType>();
+  const aggregateFieldFilter = (f: ScalarField) => {
+    const base = scalarType(f) as GraphQLScalarType;
+    const name = `${base.name}AggregateFilter`;
+    let t = aggregateFieldFilters.get(name);
+    if (!t) {
+      t = new GraphQLInputObjectType({
+        name,
+        fields: {
+          min: { type: comparison(base) },
+          max: { type: comparison(base) },
+          ...(isNumeric(f)
+            ? {
+                avg: { type: comparison(GraphQLFloat) },
+                sum: {
+                  type: comparison(f.type === "Int" ? GraphQLFloat : base),
+                },
+              }
+            : {}),
+        },
+      });
+      aggregateFieldFilters.set(name, t);
+    }
+    return t;
+  };
+
+  const aggregateWheres = new Map<string, GraphQLInputObjectType | undefined>();
+  const aggregateWhere = (typeName: string, fields: Iterable<ScalarField>) => {
+    if (aggregateWheres.has(typeName)) return aggregateWheres.get(typeName);
+    const usable = [...fields].filter(aggregatable);
+    const t =
+      usable.length > 0
+        ? new GraphQLInputObjectType({
+            name: `${typeName}AggregateWhere`,
+            fields: Object.fromEntries(
+              usable.map((f) => [f.name, { type: aggregateFieldFilter(f) }]),
+            ),
+          })
+        : undefined;
+    aggregateWheres.set(typeName, t);
+    return t;
+  };
+
+  const relationAggregateFilter = (node: NodeType, rel: RelationshipField) => {
+    const target = model.nodes.get(rel.target)!;
+    const nodeWhere = aggregateWhere(
+      target.name,
+      [...target.fields.values()].filter(
+        (f): f is ScalarField => f.kind === "scalar",
+      ),
+    );
+    const props = rel.properties
+      ? model.relationshipProperties.get(rel.properties)
+      : undefined;
+    const edgeWhere = props
+      ? aggregateWhere(props.name, props.fields.values())
+      : undefined;
+    return new GraphQLInputObjectType({
+      name: `${names.relationFilter(node.name, rel.name)}Aggregate`,
+      fields: {
+        count: { type: countFilter },
+        ...(nodeWhere ? { node: { type: nodeWhere } } : {}),
+        ...(edgeWhere ? { edge: { type: edgeWhere } } : {}),
+      },
+    });
+  };
 
   const propsWheres = new Map<string, GraphQLInputObjectType | undefined>();
   const propsWhere = (props: RelationshipPropertiesType) => {
@@ -476,11 +729,64 @@ export function buildSchema(
       }),
     );
   }
+  for (const abstract of model.abstracts.values()) {
+    const sortable = [...abstract.fields.values()].filter((f) => f.sortable);
+    if (abstract.kind !== "interface" || sortable.length === 0) continue;
+    sorts.set(
+      abstract.name,
+      new GraphQLInputObjectType({
+        name: names.sort(abstract.name),
+        description: `Sorts ${abstract.name} nodes of every implementation. Ties break by type name, then key.`,
+        fields: Object.fromEntries(
+          sortable.map((f) => [f.name, { type: sortDirection }]),
+        ),
+      }),
+    );
+  }
 
   // --- Objects and connections ----------------------------------------------
 
   const objects = new Map<string, GraphQLObjectType>();
   const connections = new Map<string, GraphQLObjectType>();
+
+  // Interfaces and unions over @node types; `__typename` in each projected
+  // node tells them apart.
+  const abstractTypes = new Map<
+    string,
+    GraphQLInterfaceType | GraphQLUnionType
+  >();
+  const resolveType = (value: unknown) =>
+    (value as { __typename?: string }).__typename ?? undefined;
+  for (const abstract of model.abstracts.values()) {
+    abstractTypes.set(
+      abstract.name,
+      abstract.kind === "interface"
+        ? new GraphQLInterfaceType({
+            name: abstract.name,
+            description: abstract.description,
+            fields: () =>
+              Object.fromEntries(
+                [...abstract.fields.values()]
+                  .filter((f) => !f.private && f.selectableOn.read)
+                  .map((f) => [
+                    f.name,
+                    { type: scalarOutput(f), description: f.description },
+                  ]),
+              ),
+            resolveType,
+          })
+        : new GraphQLUnionType({
+            name: abstract.name,
+            description: abstract.description,
+            types: () => abstract.members.map((m) => objects.get(m)!),
+            resolveType,
+          }),
+    );
+  }
+  const outputOf = (
+    name: string,
+  ): GraphQLObjectType | GraphQLInterfaceType | GraphQLUnionType =>
+    objects.get(name) ?? abstractTypes.get(name)!;
 
   const connectionResolvers = {
     edges: (src: RawConnection) =>
@@ -518,6 +824,7 @@ export function buildSchema(
     edgeName: string,
     nodeType: () => GraphQLObjectType,
     propertiesType?: () => GraphQLObjectType,
+    aggregate?: () => GraphQLObjectType | undefined,
   ) => {
     const edge = new GraphQLObjectType<SortedEdge>({
       name: edgeName,
@@ -555,8 +862,74 @@ export function buildSchema(
           type: nonNull(GraphQLInt),
           resolve: connectionResolvers.totalCount,
         },
+        ...(aggregate?.()
+          ? {
+              aggregate: {
+                type: nonNull(aggregate()!),
+                description:
+                  "Aggregates over every matching node (not just this page).",
+                resolve: (src: RawConnection) =>
+                  (src as RawConnection & { __aggregate?: unknown })
+                    .__aggregate,
+              },
+            }
+          : {}),
       }),
     });
+  };
+
+  /**
+   * `{ count, node { f { min max avg sum } }, edge { … } }` for connections
+   * whose target has @query(aggregate: true).
+   */
+  const connectionAggregates = new Map<string, GraphQLObjectType>();
+  const aggregateSides = new Map<string, GraphQLObjectType | undefined>();
+  const connectionAggregate = (
+    name: string,
+    target: NodeType,
+    props: RelationshipPropertiesType | undefined,
+  ): GraphQLObjectType | undefined => {
+    if (!target.aggregate) return undefined;
+    let t = connectionAggregates.get(name);
+    if (!t) {
+      const side = (sideName: string, fields: Iterable<ScalarField>) => {
+        if (aggregateSides.has(sideName)) return aggregateSides.get(sideName);
+        const usable = [...fields].filter(aggregatable);
+        const made =
+          usable.length > 0
+            ? new GraphQLObjectType({
+                name: sideName,
+                fields: Object.fromEntries(
+                  usable.map((f) => [
+                    f.name,
+                    { type: nonNull(aggregateFieldType(f)) },
+                  ]),
+                ),
+              })
+            : undefined;
+        aggregateSides.set(sideName, made);
+        return made;
+      };
+      const node = side(
+        `${target.name}AggregateNode`,
+        [...target.fields.values()].filter(
+          (f): f is ScalarField => f.kind === "scalar",
+        ),
+      );
+      const edge = props
+        ? side(`${props.name}AggregateEdge`, props.fields.values())
+        : undefined;
+      t = new GraphQLObjectType({
+        name,
+        fields: {
+          count: { type: nonNull(GraphQLInt), description: "Matching nodes." },
+          ...(node ? { node: { type: nonNull(node) } } : {}),
+          ...(edge ? { edge: { type: nonNull(edge) } } : {}),
+        },
+      });
+      connectionAggregates.set(name, t);
+    }
+    return t;
   };
 
   const propsObjects = new Map<string, GraphQLObjectType>();
@@ -587,7 +960,9 @@ export function buildSchema(
 
   const listArgs = (target: string): GraphQLFieldConfigArgumentMap => ({
     where: { type: whereOf(target) },
-    sort: { type: listOf(nonNull(sorts.get(target)!)) },
+    ...(sorts.has(target)
+      ? { sort: { type: listOf(nonNull(sorts.get(target)!)) } }
+      : {}),
     limit: { type: GraphQLInt },
   });
 
@@ -610,7 +985,14 @@ export function buildSchema(
     const obj: GraphQLObjectType = new GraphQLObjectType({
       name: node.name,
       description: node.description,
-      interfaces: node.key.relayId && nodeInterface ? [nodeInterface] : [],
+      interfaces: () => [
+        ...(node.key.relayId && nodeInterface ? [nodeInterface] : []),
+        ...node.interfaces
+          .map((i) => abstractTypes.get(i))
+          .filter(
+            (t): t is GraphQLInterfaceType => t instanceof GraphQLInterfaceType,
+          ),
+      ],
       fields: () => {
         const fields: GraphQLFieldConfigMap<
           Record<string, unknown>,
@@ -626,7 +1008,7 @@ export function buildSchema(
         }
         for (const f of node.fields.values()) {
           if (f.kind === "scalar") {
-            if (f.private) continue;
+            if (f.private || !f.selectableOn.read) continue;
             fields[f.name] = {
               type: scalarOutput(f),
               description: f.description,
@@ -644,7 +1026,7 @@ export function buildSchema(
             };
             continue;
           }
-          const target = objects.get(f.target)!;
+          const target = outputOf(f.target);
           if (!f.list) {
             fields[f.name] = {
               type: f.required ? nonNull(target) : target,
@@ -660,10 +1042,12 @@ export function buildSchema(
             args: listArgs(f.target),
             resolve: nodesByResponseKey,
           };
-          fields[names.connectionField(f.name)] = relationshipConnectionField(
-            node,
-            f,
-          );
+          if (!polymorphic(f)) {
+            fields[names.connectionField(f.name)] = relationshipConnectionField(
+              node,
+              f,
+            );
+          }
         }
         return fields;
       },
@@ -675,6 +1059,13 @@ export function buildSchema(
         names.connection(node.name),
         names.edge(node.name),
         () => obj,
+        undefined,
+        () =>
+          connectionAggregate(
+            `${names.connection(node.name)}Aggregate`,
+            node,
+            undefined,
+          ),
       ),
     );
   }
@@ -691,19 +1082,18 @@ export function buildSchema(
       };
     }
     const props = model.relationshipProperties.get(rel.properties!)!;
-    const edgeWhere = propsWhere(props);
-    const where = new GraphQLInputObjectType({
-      name: names.relConnectionWhere(node.name, rel.name),
-      fields: {
-        node: { type: whereOf(rel.target) },
-        ...(edgeWhere ? { edge: { type: edgeWhere } } : {}),
-      },
-    });
+    const where = connectionWhere(node, rel);
     const conn = makeConnection(
       names.relConnection(node.name, rel.name),
       names.relEdge(node.name, rel.name),
       () => objects.get(rel.target)!,
       () => propsObject(props),
+      () =>
+        connectionAggregate(
+          `${names.relConnection(node.name, rel.name)}Aggregate`,
+          model.nodes.get(rel.target)!,
+          props,
+        ),
     );
     return {
       type: nonNull(conn),
@@ -779,6 +1169,7 @@ export function buildSchema(
       if (
         f.kind === "scalar" &&
         (f.key || f.sortable) &&
+        f.selectableOn.aggregate &&
         f.type !== "Boolean" &&
         f.type !== "Enum"
       ) {
@@ -881,6 +1272,17 @@ export function buildSchema(
     };
   }
 
+  for (const abstract of model.abstracts.values()) {
+    if (!abstract.read) continue;
+    query[abstract.plural] = {
+      type: nonNull(listOf(nonNull(abstractTypes.get(abstract.name)!))),
+      description: `${abstract.name} nodes of every ${abstract.kind === "interface" ? "implementation" : "member"}, at most \`limit\` (default ${abstract.limit.default}, max ${abstract.limit.max}).`,
+      args: listArgs(abstract.name),
+      resolve: (_src, _args, context, info) =>
+        hooks.resolveAbstract(abstract, info, context),
+    };
+  }
+
   for (const f of model.queries) {
     query[f.name] = {
       type: cypherOutput(f),
@@ -896,6 +1298,7 @@ export function buildSchema(
       model,
       object: (name) => objects.get(name)!,
       inputType: inputTypeOf,
+      where: (name) => whereOf(name),
     },
     hooks.resolveMutation,
   );
@@ -941,6 +1344,11 @@ export function buildSchema(
       args: {
         [node.key.name]: { type: keyType },
         operations: { type: listOf(nonNull(changeOperation)) },
+        where: {
+          type: whereOf(node.name),
+          description:
+            "Only nodes matching this, as they are after the write. Deletions are then not sent.",
+        },
       },
       subscribe: (_src, args, context) =>
         hooks.subscribe(node, args as Record<string, unknown>, context),
@@ -964,6 +1372,6 @@ export function buildSchema(
       Object.keys(mutation).length > 0
         ? new GraphQLObjectType({ name: "Mutation", fields: mutation })
         : undefined,
-    types: [...objects.values()],
+    types: [...objects.values(), ...abstractTypes.values()],
   });
 }

@@ -29,6 +29,7 @@ import { checkPlans, type PlanReport } from "./analyze/plans.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
 import {
+  compileAbstractRoot,
   compileCypherRoot,
   compileRoot,
   compileSearch,
@@ -37,15 +38,18 @@ import {
   type RootKind,
 } from "./compile/read.js";
 import { fieldArgs, type SelectionContext } from "./compile/selection.js";
-import type { LoraDriver, Statement } from "./driver.js";
+import type { LoraDriver, QueryResult, Statement } from "./driver.js";
 import { affects, type WriteChange } from "./execute/changes.js";
 import { executeCypherMutation } from "./execute/cypher-mutation.js";
+import { LoraTransaction } from "./execute/transaction.js";
+import type { MutationKind } from "./schema/mutations.js";
 import {
   executeMutation,
   mapWriteError,
   type MutationEnv,
+  type PopulatedByCallback,
 } from "./execute/mutate.js";
-import { requestError } from "./errors.js";
+import { ModelError, requestError } from "./errors.js";
 import { buildModel, type ModelOptions } from "./model/build.js";
 import type {
   CypherField,
@@ -60,10 +64,12 @@ import {
   authFilter,
   authValidate,
   checkAuthentication,
+  checkFieldAuthentication,
 } from "./compile/auth.js";
-import { bin, fn, printClauses, prop, v, and } from "./compile/cypher.js";
+import { and, bin, printClauses, prop, v } from "./compile/cypher.js";
 import { bind } from "./compile/context.js";
 import { keyOf } from "./compile/read.js";
+import { compileNodeWhere } from "./compile/filter.js";
 import { fromGlobalId } from "./schema/global-id.js";
 import { assertReadable } from "./schema/guard.js";
 import { names } from "./schema/names.js";
@@ -88,10 +94,18 @@ export interface LoraGraphQLOptions extends ModelOptions {
    */
   jwt?: (context: unknown) => Record<string, unknown> | undefined;
   /**
-   * Most nodes one mutation may create, nested creates included. Default
-   * 1000: larger imports belong in a Cypher load, not a GraphQL request.
+   * Most nodes one mutation may create or delete, nested ones included.
+   * Default 1000: larger imports belong in a Cypher load, not a GraphQL
+   * request. Also the default `limit` of bulk updates and deletes.
    */
   maxBatch?: number;
+  /**
+   * Changes a `changes()` consumer or subscriber may fall behind before it
+   * is ended with an error. Default 1000.
+   */
+  maxQueuedChanges?: number;
+  /** Named callbacks for `@populatedBy(callback:)`. */
+  callbacks?: Record<string, PopulatedByCallback>;
   /** Called with every statement before it runs; for logging and tests. */
   onStatement?: (event: StatementEvent) => void;
 }
@@ -107,6 +121,11 @@ export interface LoraGraphQLContext {
   jwt?: Record<string, unknown>;
   /** Cancels the request's statements when aborted. */
   signal?: AbortSignal;
+  /**
+   * Run in this transaction (from `lora.begin()`) instead of one per
+   * field: the caller commits, together with its own Cypher.
+   */
+  transaction?: LoraTransaction;
 }
 
 export interface AssertSchemaOptions {
@@ -161,6 +180,10 @@ export class LoraGraphQL {
   readonly #timeoutMs: number;
   readonly #maxCost: number;
   readonly #maxBatch: number;
+  readonly #maxQueued: number;
+  readonly #callbacks: Record<string, PopulatedByCallback>;
+  /** Estimated cost spent per request context and operation. */
+  readonly #spent = new WeakMap<object, Map<unknown, number>>();
   readonly #jwt: (context: unknown) => Record<string, unknown> | undefined;
   readonly #onStatement: LoraGraphQLOptions["onStatement"];
   readonly #listeners = new Set<(change: WriteChange) => void>();
@@ -176,6 +199,20 @@ export class LoraGraphQL {
     this.#timeoutMs = options.timeoutMs ?? 10_000;
     this.#maxCost = options.maxCost ?? 50_000;
     this.#maxBatch = options.maxBatch ?? 1000;
+    this.#maxQueued = options.maxQueuedChanges ?? 1000;
+    this.#callbacks = options.callbacks ?? {};
+    const missing = [...this.model.nodes.values()].flatMap((n) =>
+      [...n.fields.values()].flatMap((f) =>
+        f.kind === "scalar" &&
+        f.populatedBy &&
+        !(f.populatedBy.callback in this.#callbacks)
+          ? [`${n.name}.${f.name}: no callback named ${f.populatedBy.callback}`]
+          : [],
+      ),
+    );
+    if (missing.length > 0) {
+      throw new ModelError(missing.map((message) => ({ message })));
+    }
     this.#jwt =
       options.jwt ??
       ((context) => (context as LoraGraphQLContext | undefined)?.jwt);
@@ -190,6 +227,17 @@ export class LoraGraphQL {
         event.operation === "DELETE"
           ? Promise.resolve(null)
           : this.#resolveByKey(node, event.key, info, context),
+      resolveAbstract: (abstract, info, context) => {
+        const ctx = this.#context(infoContext(info), context);
+        const args = this.#args(ctx, info.parentType, info.fieldNodes);
+        const compiled = compileAbstractRoot(
+          ctx,
+          abstract,
+          args,
+          info.fieldNodes,
+        );
+        return this.#run(info.fieldName, compiled, context, info);
+      },
       resolveSearch: (node, index, info, context) =>
         this.#resolveSearch(node, index, info, context),
       resolveRoot: (kind, node, info, context) =>
@@ -380,8 +428,13 @@ export class LoraGraphQL {
       const root = this.#rootOf(sel.name.value);
       const search = this.#searchOf(sel.name.value);
       let compiled: CompiledRead | undefined;
+      const abstract = [...this.model.abstracts.values()].find(
+        (x) => x.read && x.plural === sel.name.value,
+      );
       if (cypher) compiled = compileCypherRoot(ctx, cypher, args, [sel]);
-      else if (search) {
+      else if (abstract) {
+        compiled = compileAbstractRoot(ctx, abstract, args, [sel]);
+      } else if (search) {
         compiled = compileSearch(ctx, search.node, search.index, args, [sel]);
       } else if (root) {
         compiled = compileRoot(ctx, root.kind, root.node, args, [sel]);
@@ -501,13 +554,22 @@ export class LoraGraphQL {
    * resolver. Only writes made through this instance are seen.
    */
   changes(
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; maxQueued?: number } = {},
   ): AsyncIterableIterator<WriteChange> {
+    const limit = options.maxQueued ?? this.#maxQueued;
     const queue: WriteChange[] = [];
     let wake: (() => void) | undefined;
     let done = false;
+    let overflow = false;
     const stop = this.onWrite((change) => {
-      queue.push(change);
+      // A consumer that falls this far behind is ended with an error,
+      // instead of holding every write in memory.
+      if (queue.length >= limit) {
+        overflow = true;
+        stop();
+      } else {
+        queue.push(change);
+      }
       wake?.();
     });
     const finish = () => {
@@ -519,13 +581,19 @@ export class LoraGraphQL {
     const iterator: AsyncIterableIterator<WriteChange> = {
       [Symbol.asyncIterator]: () => iterator,
       next: async () => {
-        while (queue.length === 0 && !done) {
+        while (queue.length === 0 && !done && !overflow) {
           await new Promise<void>((resolve) => (wake = resolve));
           wake = undefined;
         }
-        return queue.length > 0
-          ? { value: queue.shift()!, done: false }
-          : { value: undefined, done: true };
+        if (queue.length > 0) return { value: queue.shift()!, done: false };
+        if (overflow && !done) {
+          done = true;
+          throw requestError(
+            "LIMIT_EXCEEDED",
+            `the subscriber fell ${limit} changes behind; resubscribe and reload`,
+          );
+        }
+        return { value: undefined, done: true };
       },
       return: async () => {
         finish();
@@ -577,7 +645,36 @@ export class LoraGraphQL {
     return newContext(base, this.model, {
       jwt: this.#jwt(context),
       degrees: this.#degrees,
+      requestContext: context,
     });
+  }
+
+  /**
+   * Charge `cost` to the operation: the limit holds per operation, so
+   * aliasing a root field many times does not multiply it.
+   */
+  #charge(
+    field: string,
+    cost: number,
+    context: unknown,
+    info?: GraphQLResolveInfo,
+  ) {
+    let total = cost;
+    if (info && context !== null && typeof context === "object") {
+      const byOperation =
+        this.#spent.get(context) ?? new Map<unknown, number>();
+      total = (byOperation.get(info.operation) ?? 0) + cost;
+      byOperation.set(info.operation, total);
+      this.#spent.set(context, byOperation);
+    }
+    if (total > this.#maxCost) {
+      throw requestError(
+        "COST_EXCEEDED",
+        `${field} would bring the operation to about ${Math.ceil(total)} rows touched; the limit is ${this.#maxCost}. Ask for smaller pages or fewer nested lists.`,
+        undefined,
+        { cost: Math.ceil(total), maxCost: this.#maxCost },
+      );
+    }
   }
 
   #args(
@@ -593,29 +690,26 @@ export class LoraGraphQL {
     field: string,
     compiled: CompiledRead,
     context: unknown,
+    info?: GraphQLResolveInfo,
   ): Promise<unknown> {
-    if (compiled.cost > this.#maxCost) {
-      throw requestError(
-        "COST_EXCEEDED",
-        `${field} would touch about ${Math.ceil(compiled.cost)} rows; the limit is ${this.#maxCost}. Ask for smaller pages or fewer nested lists.`,
-        undefined,
-        { cost: Math.ceil(compiled.cost), maxCost: this.#maxCost },
-      );
-    }
+    this.#charge(field, compiled.cost, context, info);
     for (const statement of compiled.statements) {
       this.#onStatement?.({ field, statement });
     }
     const signal = (context as LoraGraphQLContext | undefined)?.signal;
+    const owned = (context as LoraGraphQLContext | undefined)?.transaction;
     let results;
     try {
-      results = await this.#driver.run(compiled.statements, {
-        mode: compiled.mode,
-        timeoutMs: this.#timeoutMs,
-        signal,
-        // Queries and object @cypher fields are checked read-only when
-        // the model is built; writes never reach this path.
-        verified: compiled.mode === "read",
-      });
+      results = owned
+        ? await runInOrder(owned, compiled.statements)
+        : await this.#driver.run(compiled.statements, {
+            mode: compiled.mode,
+            timeoutMs: this.#timeoutMs,
+            signal,
+            // Queries and object @cypher fields are checked read-only when
+            // the model is built; writes never reach this path.
+            verified: compiled.mode === "read",
+          });
     } catch (err) {
       throw this.#databaseError(err);
     }
@@ -649,7 +743,7 @@ export class LoraGraphQL {
     const ctx = this.#context(infoContext(info), context);
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
     const compiled = compileRoot(ctx, kind, node, args, info.fieldNodes);
-    return this.#run(info.fieldName, compiled, context);
+    return this.#run(info.fieldName, compiled, context, info);
   }
 
   /**
@@ -658,7 +752,7 @@ export class LoraGraphQL {
    * deletions of rule-protected types are only sent to subscribers that
    * follow that key (they cannot be checked after the fact).
    */
-  async *#subscribe(
+  #subscribe(
     node: NodeType,
     args: Record<string, unknown>,
     context: unknown,
@@ -668,8 +762,27 @@ export class LoraGraphQL {
       fragments: {},
       variables: {},
     };
-    checkAuthentication(this.#context(base, context), node, "READ");
+    // Checked now, so an unauthenticated subscribe fails as a result
+    // rather than as a broken stream.
+    const ctx = this.#context(base, context);
+    checkAuthentication(ctx, node, "SUBSCRIBE");
+    checkAuthentication(ctx, node, "READ");
+    // Rules the claims alone decide against fail here too.
+    for (const op of ["SUBSCRIBE", "READ"] as const) {
+      authFilter(ctx, node, "n", op);
+      authValidate(ctx, node, "n", op, "BEFORE");
+    }
+    return this.#events(node, args, context, base);
+  }
+
+  async *#events(
+    node: NodeType,
+    args: Record<string, unknown>,
+    context: unknown,
+    base: SelectionContext,
+  ): AsyncGenerator<ChangeEvent> {
     const key = args[node.key.name];
+    const where = args["where"] as Record<string, unknown> | null | undefined;
     const wanted = new Set(
       (
         (args["operations"] as MutationOperation[] | null) ?? [
@@ -679,57 +792,88 @@ export class LoraGraphQL {
         ]
       ).filter((op) => node.subscriptions.has(op)),
     );
+    const ruled = (r: { operations: ReadonlySet<string> }) =>
+      r.operations.has("READ") || r.operations.has("SUBSCRIBE");
     const guarded =
-      !!node.authorization?.filter.some((r) => r.operations.has("READ")) ||
-      !!node.authorization?.validate.some((r) => r.operations.has("READ"));
+      !!node.authorization?.filter.some(ruled) ||
+      !!node.authorization?.validate.some(ruled);
+    // Whether events must be checked in the database: read rules, or a
+    // `where` (on the node as it is after the write).
+    const check = guarded || (where != null && Object.keys(where).length > 0);
     const signal = (context as LoraGraphQLContext | undefined)?.signal;
     for await (const change of this.changes(signal ? { signal } : {})) {
-      for (const event of changeEvents(change, node)) {
-        if (!wanted.has(event.operation)) continue;
-        if (key != null && keyOf(event.key) !== keyOf(key)) continue;
-        if (guarded) {
-          if (event.operation === "DELETE" && key == null) continue;
-          if (
-            event.operation !== "DELETE" &&
-            !(await this.#visible(node, event.key, base, context))
-          ) {
-            continue;
-          }
+      const events = changeEvents(change, node).filter(
+        (e) =>
+          wanted.has(e.operation) &&
+          (key == null || keyOf(e.key) === keyOf(key)),
+      );
+      if (events.length === 0) continue;
+      // A deleted node cannot be checked: its deletion reaches only
+      // subscribers that follow its key, and only unfiltered ones.
+      const deletions = events.filter(
+        (e) => e.operation === "DELETE" && (!check || (key != null && !where)),
+      );
+      const live = events.filter((e) => e.operation !== "DELETE");
+      const visible = check
+        ? await this.#visible(
+            node,
+            live.map((e) => e.key),
+            where,
+            base,
+            context,
+          )
+        : undefined;
+      for (const event of [...live, ...deletions]) {
+        if (
+          event.operation !== "DELETE" &&
+          visible &&
+          !visible.has(keyOf(event.key))
+        ) {
+          continue;
         }
         yield event;
       }
     }
   }
 
+  /** Which of `keys` the subscriber may read (and `where` matches), in one query. */
   async #visible(
     node: NodeType,
-    key: unknown,
+    keys: unknown[],
+    where: Record<string, unknown> | null | undefined,
     base: SelectionContext,
     context: unknown,
-  ): Promise<boolean> {
+  ): Promise<Set<string>> {
+    if (keys.length === 0) return new Set();
     const ctx = this.#context(base, context);
-    const where = and(
-      bin("=", prop(v("n"), node.key.property), bind(ctx, key)),
-      authFilter(ctx, node, "n", "READ"),
-      authValidate(ctx, node, "n", "READ", "BEFORE"),
-    );
     const text = printClauses([
+      { kind: "unwind", expr: bind(ctx, keys), alias: "k" },
       {
         kind: "match",
         pattern: {
           start: { variable: "n", labels: [node.labels[0]!] },
           hops: [],
         },
-        where,
+        where: and(
+          bin("=", prop(v("n"), node.key.property), v("k")),
+          compileNodeWhere(ctx, node, "n", where),
+          authFilter(ctx, node, "n", "READ"),
+          authValidate(ctx, node, "n", "READ", "BEFORE"),
+          authFilter(ctx, node, "n", "SUBSCRIBE"),
+          authValidate(ctx, node, "n", "SUBSCRIBE", "BEFORE"),
+        ),
       },
-      { kind: "return", items: [{ expr: fn("count", v("n")), alias: "c" }] },
+      {
+        kind: "return",
+        items: [{ expr: prop(v("n"), node.key.property), alias: "key" }],
+      },
     ]);
     const [result] = await this.#driver.run([{ text, params: ctx.params }], {
       mode: "read",
       timeoutMs: this.#timeoutMs,
       verified: true,
     });
-    return Number(result!.rows[0]?.["c"] ?? 0) > 0;
+    return new Set(result!.rows.map((r) => keyOf(r["key"])));
   }
 
   #resolveByKey(
@@ -746,7 +890,7 @@ export class LoraGraphQL {
       { [node.key.name]: key },
       info.fieldNodes,
     );
-    return this.#run(info.fieldName, compiled, context);
+    return this.#run(info.fieldName, compiled, context, info);
   }
 
   #resolveSearch(
@@ -758,7 +902,7 @@ export class LoraGraphQL {
     const ctx = this.#context(infoContext(info), context);
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
     const compiled = compileSearch(ctx, node, index, args, info.fieldNodes);
-    return this.#run(info.fieldName, compiled, context);
+    return this.#run(info.fieldName, compiled, context, info);
   }
 
   async #resolveNode(
@@ -796,16 +940,17 @@ export class LoraGraphQL {
     context: unknown,
   ): Promise<unknown> {
     const ctx = this.#context(infoContext(info), context);
-    if (field.authentication && !ctx.jwt) {
-      throw requestError(
-        "UNAUTHENTICATED",
-        `${field.owner}.${field.name} needs an authenticated request`,
-      );
-    }
+    // A root query reads; a root mutation's operations are its own, so
+    // any listed operation guards it.
+    const op =
+      field.owner === "Mutation"
+        ? [...(field.authentication ?? [])][0]
+        : ("READ" as const);
+    if (op) checkFieldAuthentication(ctx, field.owner, field, op);
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
     if (field.owner !== "Mutation") {
       const compiled = compileCypherRoot(ctx, field, args, info.fieldNodes);
-      return this.#run(info.fieldName, compiled, context);
+      return this.#run(info.fieldName, compiled, context, info);
     }
     let value: unknown;
     try {
@@ -836,7 +981,7 @@ export class LoraGraphQL {
   }
 
   async #resolveMutation(
-    op: MutationOperation | "UPSERT",
+    op: MutationKind,
     node: NodeType,
     info: GraphQLResolveInfo,
     context: unknown,
@@ -852,7 +997,9 @@ export class LoraGraphQL {
         info.fieldNodes,
         info.fieldName,
       );
-      this.#emit(change);
+      const owned = (context as LoraGraphQLContext | undefined)?.transaction;
+      if (owned) owned.record(change);
+      else this.#emit(change);
       return payload;
     } catch (err) {
       throw this.#databaseError(err);
@@ -873,9 +1020,30 @@ export class LoraGraphQL {
       signal: (context as LoraGraphQLContext | undefined)?.signal,
       degrees: this.#degrees,
       maxBatch: this.#maxBatch,
+      requestContext: context,
+      callbacks: this.#callbacks,
+      transaction: (context as LoraGraphQLContext | undefined)?.transaction
+        ?.driverTransaction,
       onStatement: (statement) =>
         this.#onStatement?.({ field: info.fieldName, statement }),
     };
+  }
+
+  /**
+   * Open a transaction the caller owns. Put it in the GraphQL context as
+   * `transaction`: every operation of those requests runs in it, next to
+   * the application's own `tx.execute(cypher)`. Nothing is visible to
+   * others, and no change event fires, until `tx.commit()`.
+   */
+  async begin(): Promise<LoraTransaction> {
+    if (!this.#driver.begin) {
+      throw new Error("transactions need @loradb/lora-node");
+    }
+    const tx = await this.#driver.begin({
+      mode: "write",
+      timeoutMs: this.#timeoutMs,
+    });
+    return new LoraTransaction(tx, (change) => this.#emit(change));
   }
 
   #emit(change: WriteChange): void {
@@ -904,6 +1072,15 @@ function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
   for (const e of change.entities)
     if (e.type === node.name) add("UPDATE", e.key);
   return [...out.values()];
+}
+
+async function runInOrder(
+  tx: LoraTransaction,
+  statements: Statement[],
+): Promise<QueryResult[]> {
+  const out: QueryResult[] = [];
+  for (const s of statements) out.push(await tx.driverTransaction.execute(s));
+  return out;
 }
 
 function infoContext(info: GraphQLResolveInfo): SelectionContext {

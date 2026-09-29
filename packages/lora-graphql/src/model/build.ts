@@ -4,15 +4,19 @@ import {
   getDirectiveValues,
   getNamedType,
   isEnumType,
+  isInterfaceType,
   isListType,
   isNonNullType,
   isObjectType,
   isScalarType,
+  isUnionType,
   parse,
   type DocumentNode,
   type GraphQLDirective,
   type GraphQLField,
   type GraphQLInputType,
+  type GraphQLInterfaceType,
+  type GraphQLUnionType,
   type GraphQLObjectType,
   type GraphQLOutputType,
   type GraphQLSchema,
@@ -22,6 +26,7 @@ import { ModelError, type ModelProblem } from "../errors.js";
 import { directiveTypeDefs, PRELUDE_TYPES } from "./directives.js";
 import { codeOnly, scanParams } from "./cypher-lexer.js";
 import type {
+  AbstractType,
   SearchIndex,
   AuthOperation,
   Authorization,
@@ -132,6 +137,9 @@ export function buildModel(
   const nodeTypes: GraphQLObjectType[] = [];
   const propsTypes: GraphQLObjectType[] = [];
   const rootTypes: GraphQLObjectType[] = [];
+  const interfaceTypes: GraphQLInterfaceType[] = [];
+  const unionTypes: GraphQLUnionType[] = [];
+  let jwtShape: Map<string, string> | undefined;
   const warnings: ModelWarning[] = [];
   for (const t of userTypes) {
     if (isScalarType(t)) {
@@ -154,10 +162,19 @@ export function buildModel(
       });
       continue;
     }
+    if (isInterfaceType(t)) {
+      interfaceTypes.push(t);
+      continue;
+    }
+    if (isUnionType(t)) {
+      unionTypes.push(t);
+      continue;
+    }
     if (!isObjectType(t)) {
       problems.push({
         type: t.name,
-        message: "only object types, enums and scalars are supported",
+        message:
+          "only object types, interfaces, unions, enums and scalars are supported",
       });
       continue;
     }
@@ -170,6 +187,20 @@ export function buildModel(
         });
       } else {
         rootTypes.push(t);
+      }
+      continue;
+    }
+    if (directive(d("jwt"), t, atType(t.name)) !== undefined) {
+      if (jwtShape) {
+        problems.push({
+          type: t.name,
+          message: "only one @jwt type is allowed",
+        });
+      }
+      jwtShape = new Map();
+      for (const f of Object.values(t.getFields())) {
+        const claim = directive(d("jwtClaim"), f, atType(t.name));
+        jwtShape.set(f.name, (claim?.["path"] as string | undefined) ?? f.name);
       }
       continue;
     }
@@ -194,6 +225,12 @@ export function buildModel(
   }
 
   const nodeNames = new Set(nodeTypes.map((t) => t.name));
+  // Relationships may target an interface or union over @node types.
+  const targetNames = new Set([
+    ...nodeNames,
+    ...interfaceTypes.map((t) => t.name),
+    ...unionTypes.map((t) => t.name),
+  ]);
   const propsNames = new Set(propsTypes.map((t) => t.name));
 
   const relationshipProperties = new Map<string, RelationshipPropertiesType>();
@@ -260,7 +297,7 @@ export function buildModel(
         if (cypher) fields.set(cypher.name, cypher);
         continue;
       }
-      if (nodeNames.has(named.name)) {
+      if (targetNames.has(named.name)) {
         const rel = buildRelationshipField(
           t,
           f,
@@ -387,8 +424,12 @@ export function buildModel(
       authentication: authentication
         ? new Set(authentication["operations"] as AuthOperation[])
         : undefined,
+      authenticationJwt: authentication?.["jwt"] as
+        | AuthorizationWhere
+        | undefined,
       authorization,
       search,
+      interfaces: t.getInterfaces().map((i) => i.name),
       subscriptions: new Set<MutationOperation>(
         (subscription?.["operations"] as MutationOperation[] | undefined) ?? [],
       ),
@@ -401,6 +442,78 @@ export function buildModel(
       ),
       description: t.description ?? undefined,
     });
+  }
+
+  // --- Interfaces and unions ----------------------------------------------
+  const abstracts = new Map<string, AbstractType>();
+  for (const t of [...interfaceTypes, ...unionTypes]) {
+    const at = atType(t.name);
+    const members = (
+      isInterfaceType(t) ? schema.getPossibleTypes(t) : t.getTypes()
+    ).map((m) => m.name);
+    for (const m of members) {
+      if (!nodes.has(m)) {
+        at(
+          `${m} is not a @node type; interfaces and unions range over @node types`,
+        );
+      }
+    }
+    if (members.length === 0) at("has no @node implementations");
+    const fields = new Map<string, ScalarField>();
+    if (isInterfaceType(t)) {
+      for (const f of Object.values(t.getFields())) {
+        const field = buildScalarField(
+          t as unknown as GraphQLObjectType,
+          f as GraphQLField<unknown, unknown>,
+          d,
+          problems,
+          { allowKey: false },
+        );
+        if (!field) continue;
+        fields.set(field.name, field);
+        // What the interface lets clients filter and sort by, every
+        // implementation supports (and indexes).
+        for (const m of members) {
+          const mf = nodes.get(m)?.fields.get(f.name);
+          if (mf?.kind !== "scalar") continue;
+          (mf as unknown as { filters: ReadonlySet<FilterOperator> }).filters =
+            new Set([...mf.filters, ...field.filters]);
+          if (field.sortable && !mf.list)
+            (mf as { sortable: boolean }).sortable = true;
+        }
+      }
+    }
+    const query = directive(d("query"), t, at) ?? {};
+    const plural =
+      (directive(d("plural"), t, at)?.["value"] as string | undefined) ??
+      defaultPlural(t.name);
+    const other = rootFieldOwners.get(plural);
+    if (other)
+      at(`root field \`${plural}\` collides with ${other}; set @plural`);
+    rootFieldOwners.set(plural, t.name);
+    abstracts.set(t.name, {
+      kind: isInterfaceType(t) ? "interface" : "union",
+      name: t.name,
+      members,
+      fields,
+      plural,
+      read: (query["read"] as boolean | undefined) ?? true,
+      limit: resolveLimit(
+        directive(d("limit"), t, at),
+        globalLimit,
+        t.name,
+        undefined,
+        problems,
+      ),
+      description: t.description ?? undefined,
+    });
+  }
+  for (const node of nodes.values()) {
+    for (const f of node.fields.values()) {
+      if (f.kind !== "relationship") continue;
+      (f as { members: readonly string[] }).members = abstracts.get(f.target)
+        ?.members ?? [f.target];
+    }
   }
 
   const queries: CypherField[] = [];
@@ -438,19 +551,47 @@ export function buildModel(
       ...(node.authorization?.filter ?? []),
       ...(node.authorization?.validate ?? []),
     ];
+    for (const f of node.fields.values()) {
+      if (!f.authorization) continue;
+      if (f.authorization.filter.length > 0) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message:
+            "field-level @authorization takes validate rules; filter rules belong on the type",
+        });
+      }
+      rules.push(...f.authorization.validate);
+    }
     for (const rule of rules) {
-      checkAuthorizationWhere(nodes, node, rule.where, problems);
+      checkAuthorizationWhere(nodes, node, rule.where, problems, jwtShape);
+    }
+    for (const where of [
+      node.authenticationJwt,
+      ...[...node.fields.values()].map((f) => f.authenticationJwt),
+    ]) {
+      if (where) {
+        checkAuthorizationWhere(
+          nodes,
+          node,
+          { jwt: where },
+          problems,
+          jwtShape,
+        );
+      }
     }
   }
 
   if (problems.length > 0) throw new ModelError(dedupeProblems(problems));
   return {
     nodes,
+    abstracts,
     enums,
     relationshipProperties,
     queries,
     mutations: mutationFields,
     warnings,
+    jwt: jwtShape,
   };
 }
 
@@ -492,6 +633,15 @@ function buildScalarField(
   const timestampArgs = directive(d("timestamp"), f, at);
   const readonlyFlag = directive(d("readonly"), f, at) !== undefined;
   const authentication = directive(d("authentication"), f, at);
+  const settableArgs = directive(d("settable"), f, at);
+  const selectableArgs = directive(d("selectable"), f, at);
+  const populatedArgs = directive(d("populatedBy"), f, at);
+  const fieldAuthorization = readAuthorization(
+    directive(d("authorization"), f, at),
+  );
+  if (key && (settableArgs || selectableArgs || populatedArgs)) {
+    at("@key cannot take @settable, @selectable or @populatedBy");
+  }
   const vectorArgs = directive(d("vector"), f, at);
   let vector: ScalarField["vector"];
   if (vectorArgs) {
@@ -549,14 +699,28 @@ function buildScalarField(
 
   let filters = new Set<FilterOperator>();
   if (filterable) {
-    const allowed = ALLOWED_OPS[type];
+    // Lists: membership and presence. Scalars: the type's operators, plus
+    // IS_NULL when nullable and CASE_INSENSITIVE on strings.
+    const allowed: FilterOperator[] = shape.list
+      ? type === "Point" || type === "CartesianPoint" || vectorArgs
+        ? []
+        : ["INCLUDES", ...(shape.required ? [] : (["IS_NULL"] as const))]
+      : [
+          ...ALLOWED_OPS[type],
+          ...(shape.required ? [] : (["IS_NULL"] as const)),
+          ...(type === "String" || type === "ID"
+            ? (["CASE_INSENSITIVE"] as const)
+            : []),
+        ];
     // Without byValue: equality, and membership where the type has it.
     const requested =
       (filterable["byValue"] as FilterOperator[] | undefined) ??
-      (["EQ", "IN"] as FilterOperator[]).filter((op) => allowed.includes(op));
+      (shape.list
+        ? (["INCLUDES"] as FilterOperator[])
+        : (["EQ", "IN"] as FilterOperator[])
+      ).filter((op) => allowed.includes(op));
     const bad = requested.filter((op) => !allowed.includes(op));
-    if (shape.list) at("list fields cannot be @filterable yet");
-    else if (bad.length > 0) {
+    if (bad.length > 0) {
       at(
         `${type} does not support ${bad.join(", ")}` +
           (allowed.length > 0 ? ` (allowed: ${allowed.join(", ")})` : ""),
@@ -622,13 +786,54 @@ function buildScalarField(
     generate,
     defaultValue,
     timestamp,
-    readonly: readonlyFlag || isPrivate || timestamp !== undefined,
+    readonly:
+      readonlyFlag || isPrivate || timestamp !== undefined || !!populatedArgs,
+    settableOn: {
+      create:
+        !(readonlyFlag || isPrivate || timestamp || populatedArgs) &&
+        ((settableArgs?.["onCreate"] as boolean | undefined) ?? true),
+      update:
+        !key &&
+        !(readonlyFlag || isPrivate || timestamp || populatedArgs) &&
+        ((settableArgs?.["onUpdate"] as boolean | undefined) ?? true),
+    },
+    selectableOn: {
+      read:
+        !isPrivate &&
+        ((selectableArgs?.["onRead"] as boolean | undefined) ?? true),
+      aggregate:
+        (selectableArgs?.["onAggregate"] as boolean | undefined) ?? true,
+    },
+    populatedBy: populatedArgs
+      ? {
+          callback: populatedArgs["callback"] as string,
+          operations: new Set(
+            populatedArgs["operations"] as Array<"CREATE" | "UPDATE">,
+          ),
+        }
+      : undefined,
     vector,
     authentication: authentication
       ? new Set(authentication["operations"] as AuthOperation[])
       : undefined,
+    authenticationJwt: authentication?.["jwt"] as
+      | AuthorizationWhere
+      | undefined,
+    authorization: fieldAuthorization,
     description: f.description ?? undefined,
   };
+  if (populatedArgs && (timestamp || defaultArgs)) {
+    at("@populatedBy cannot be combined with @timestamp or @default");
+  }
+  if (
+    !isPrivate &&
+    !field.selectableOn.read &&
+    (field.filters.size > 0 || field.sortable)
+  ) {
+    at(
+      "a field with @selectable(onRead: false) cannot be @filterable or @sortable",
+    );
+  }
   if (vectorQuery) vectorQueryNames.set(field, vectorQuery);
   return field;
 }
@@ -677,6 +882,11 @@ function buildRelationshipField(
 ): RelationshipField | undefined {
   const at = (message: string) =>
     problems.push({ type: t.name, field: f.name, message });
+  if (directive(d("authorization"), f, at) !== undefined) {
+    at(
+      "field-level @authorization is supported on scalar fields only; put the rule on the related type",
+    );
+  }
   const rel = directive(d("relationship"), f, at);
   if (!rel) {
     at(
@@ -729,12 +939,19 @@ function buildRelationshipField(
     list: shape.list,
     required: shape.required,
     properties,
+    // Filled in once interfaces and unions are known.
+    members: [],
     filterable: filterable !== undefined,
+    queryDirection: rel["queryDirection"] as "DIRECTED" | "UNDIRECTED",
+    onDelete: rel["onDelete"] as "DETACH" | "CASCADE" | "RESTRICT",
     cardinality,
     limit: limitArgs
       ? resolveLimit(limitArgs, globalLimit, t.name, f.name, problems)
       : undefined,
     authentication: authOps(directive(d("authentication"), f, at)),
+    authenticationJwt: directive(d("authentication"), f, at)?.["jwt"] as
+      | AuthorizationWhere
+      | undefined,
     description: f.description ?? undefined,
   };
 }
@@ -884,6 +1101,11 @@ function buildCypherField(
     warnings.push({ type: owner, field: f.name, message });
   const args = directive(d("cypher"), f, at);
   if (!args) return undefined;
+  if (directive(d("authorization"), f, at) !== undefined) {
+    at(
+      "field-level @authorization is supported on scalar fields only; guard a @cypher field with @authentication or inside its statement",
+    );
+  }
   const statement = args["statement"] as string;
   for (const other of [
     "relationship",
@@ -979,6 +1201,9 @@ function buildCypherField(
     args: cypherArgs,
     params,
     authentication: authOps(directive(d("authentication"), f, at)),
+    authenticationJwt: directive(d("authentication"), f, at)?.["jwt"] as
+      | AuthorizationWhere
+      | undefined,
     description: f.description ?? undefined,
   };
 }
@@ -1082,6 +1307,7 @@ function checkAuthorizationWhere(
   node: NodeType,
   where: unknown,
   problems: ModelProblem[],
+  jwtShape?: ReadonlyMap<string, string>,
 ) {
   const at = (message: string) =>
     problems.push({ type: node.name, message: `@authorization: ${message}` });
@@ -1096,10 +1322,19 @@ function checkAuthorizationWhere(
         visit(value, here);
       } else if (k === "node") {
         checkNodeWhere(nodes, node, value, here, at);
+        if (jwtShape) {
+          for (const ref of claimRefs(value)) {
+            if (!jwtShape.has(ref))
+              at(`${here}: $jwt.${ref} is not a claim of the @jwt type`);
+          }
+        }
       } else if (k === "jwt") {
         if (!isRecord(value)) at(`${here} must be an object`);
         else {
           for (const [claim, ops] of Object.entries(value)) {
+            if (jwtShape && !jwtShape.has(claim)) {
+              at(`${here}.${claim}: not a claim of the @jwt type`);
+            }
             if (!isRecord(ops))
               at(`${here}.${claim} must be an operator object`);
             else {
@@ -1273,4 +1508,16 @@ function snakeCase(s: string): string {
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[^A-Za-z0-9]+/g, "_")
     .toLowerCase();
+}
+
+/** Claim names referenced as "$jwt.name…" strings anywhere in a value. */
+function claimRefs(value: unknown): string[] {
+  if (typeof value === "string") {
+    return value.startsWith("$jwt.") ? [value.slice(5).split(".")[0]!] : [];
+  }
+  if (Array.isArray(value)) return value.flatMap(claimRefs);
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).flatMap(claimRefs);
+  }
+  return [];
 }

@@ -45,7 +45,10 @@ export type {
   RelationshipRef,
   WriteChange,
 } from "./execute/changes.js";
-export type { MutationInfo } from "./execute/mutate.js";
+export type { MutationInfo, PopulatedByCallback } from "./execute/mutate.js";
+export type { MutationKind } from "./schema/mutations.js";
+export type { ChangeEvent } from "./schema/build.js";
+export { LoraTransaction } from "./execute/transaction.js";
 export {
   ModelError,
   formatProblem,

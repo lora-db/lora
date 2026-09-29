@@ -17,6 +17,8 @@ export interface CompileContext extends SelectionContext {
   cost: number;
   /** Degree statistics from `analyze()`, by `Owner.field`. */
   degrees: ReadonlyMap<string, number>;
+  /** The GraphQL context, for `"$context.path"` values in rules. */
+  requestContext: unknown;
 }
 
 export function newContext(
@@ -25,6 +27,7 @@ export function newContext(
   options: {
     jwt?: Record<string, unknown> | undefined;
     degrees?: ReadonlyMap<string, number>;
+    requestContext?: unknown;
   } = {},
 ): CompileContext {
   return {
@@ -37,6 +40,7 @@ export function newContext(
     inAuth: false,
     cost: 0,
     degrees: options.degrees ?? new Map(),
+    requestContext: options.requestContext,
   };
 }
 

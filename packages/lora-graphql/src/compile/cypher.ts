@@ -14,7 +14,11 @@ export type BinaryOp =
   | "IN"
   | "CONTAINS"
   | "STARTS WITH"
-  | "ENDS WITH";
+  | "ENDS WITH"
+  | "+"
+  | "-"
+  | "*"
+  | "/";
 
 export type Expr =
   | { kind: "var"; name: string }
@@ -40,7 +44,26 @@ export type Expr =
       from: Expr | undefined;
       to: Expr | undefined;
     }
-  | { kind: "case"; when: Expr; then: Expr; else: Expr };
+  | { kind: "case"; when: Expr; then: Expr; else: Expr }
+  /** `[v IN list WHERE … | projection]` */
+  | {
+      kind: "listComprehension";
+      variable: string;
+      list: Expr;
+      where: Expr | undefined;
+      projection: Expr | undefined;
+    }
+  /** `reduce(acc = init, v IN list | step)` */
+  | {
+      kind: "reduce";
+      accumulator: string;
+      init: Expr;
+      variable: string;
+      list: Expr;
+      step: Expr;
+    }
+  /** `v:Label1:Label2` */
+  | { kind: "hasLabels"; variable: string; labels: string[] };
 
 export interface MapEntry {
   key: string;
@@ -59,7 +82,8 @@ export interface NodePattern {
 export interface RelPattern {
   variable?: string;
   type: string;
-  direction: "OUT" | "IN";
+  /** BOTH: an undirected pattern, `-[:T]-`. */
+  direction: "OUT" | "IN" | "BOTH";
 }
 
 /** A linear pattern: node (rel node)*. */
@@ -264,6 +288,12 @@ export function printExpr(e: Expr): string {
       const where = e.where ? ` WHERE ${printExpr(e.where)}` : "";
       return `[${printPattern(e.pattern)}${where} | ${printExpr(e.projection)}]`;
     }
+    case "listComprehension":
+      return `[${name(e.variable)} IN ${printExpr(e.list)}${e.where ? ` WHERE ${printExpr(e.where)}` : ""}${e.projection ? ` | ${printExpr(e.projection)}` : ""}]`;
+    case "reduce":
+      return `reduce(${name(e.accumulator)} = ${printExpr(e.init)}, ${name(e.variable)} IN ${printExpr(e.list)} | ${printExpr(e.step)})`;
+    case "hasLabels":
+      return `${name(e.variable)}${e.labels.map((l) => ":" + name(l)).join("")}`;
     case "case":
       return `CASE WHEN ${printExpr(e.when)} THEN ${printExpr(e.then)} ELSE ${printExpr(e.else)} END`;
     case "slice":
@@ -287,6 +317,10 @@ const PRECEDENCE: Record<BinaryOp, number> = {
   CONTAINS: 4,
   "STARTS WITH": 4,
   "ENDS WITH": 4,
+  "+": 5,
+  "-": 5,
+  "*": 6,
+  "/": 6,
 };
 const NOT_PRECEDENCE = 3;
 
@@ -321,7 +355,12 @@ export function printPattern(p: Pattern): string {
   let s = printNode(p.start);
   for (const { rel, node } of p.hops) {
     const inner = `[${rel.variable ? name(rel.variable) : ""}:${name(rel.type)}]`;
-    s += rel.direction === "OUT" ? `-${inner}->` : `<-${inner}-`;
+    s +=
+      rel.direction === "OUT"
+        ? `-${inner}->`
+        : rel.direction === "IN"
+          ? `<-${inner}-`
+          : `-${inner}-`;
     s += printNode(node);
   }
   return s;
@@ -358,11 +397,22 @@ export function printClauses(clauses: Clause[], indent = ""): string {
 
 function printClause(c: Clause, indent: string): string {
   switch (c.kind) {
-    case "match":
+    case "match": {
+      // LoraDB 0.15 ignores the labels of every node after the first in a
+      // MATCH pattern; test them explicitly so expansions stay typed.
+      const labelTests: Expr[] = c.pattern.hops
+        .filter((h) => h.node.variable && h.node.labels.length > 0)
+        .map((h) => ({
+          kind: "hasLabels" as const,
+          variable: h.node.variable!,
+          labels: h.node.labels,
+        }));
+      const where = and(...labelTests, c.where);
       return (
         `MATCH ${printPattern(c.pattern)}` +
-        (c.where ? `\n${indent}WHERE ${printExpr(c.where)}` : "")
+        (where ? `\n${indent}WHERE ${printExpr(where)}` : "")
       );
+    }
     case "unwind":
       return `UNWIND ${printExpr(c.expr)} AS ${name(c.alias)}`;
     case "procedure": {

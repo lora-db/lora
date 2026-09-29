@@ -17,27 +17,28 @@ checks hand-written `@cypher` before anything runs.
 > `yarn typecheck`, `yarn test` and `yarn lint` green. Behaviours of the engine this
 > plan depends on are listed under [Engine prerequisites](#engine-prerequisites) —
 > check each against the current code before relying on it; several are being worked
-> on. Facts marked *verified* were run against `@loradb/lora-node` 0.15.0.
+> on. Facts marked _verified_ were run against `@loradb/lora-node` 0.15.0.
 
 ## Status
 
 Implemented in `packages/lora-graphql` (see its README for the user-facing
 reference):
 
-| Phase | State |
-| --- | --- |
-| 0: skeleton, driver | Done. One structural driver for both bindings; interactive transactions for mutations. The offline `lora-query` parser build (E12) was not needed: `@cypher` is linted with a small lexer offline and planned with `explain()` online. |
-| 1: model, S1, `assertSchema` | Done |
-| 2: reads, variants, S2 | Done. Variants are the specialisation itself: statement text depends only on the input's shape, so LoraDB's plan cache serves repeats. |
-| 3: `@cypher`, S4 | Done: object, Query and Mutation fields; parameter and write-clause checks at startup; `explain()` checks in `check()` |
-| 4: mutations, write-sets | Done: create / update / delete by `@key`, nested connect / create / disconnect, cardinality and connect-target checks, `@default`, `@timestamp`, `@readonly`, `@key(generate:)` |
-| 5: authorization | Done: claim checks folded at compile time; node rules compiled; filter and validate (BEFORE / AFTER / READ) |
-| 6: AOT, S8 types | Partly: `persist()` validates operations at startup and runs them by id. No emitted manifest or TypeScript types (graphql-codegen over `printPublicSchema()` covers S8). |
-| 7: change tracking | Done: `onWrite`, `changes()`, `affects()` |
-| 8: statistics | Done: related-node key anchoring, cost estimates with `maxCost`, `analyze()` degrees |
-| 9: evolution | Done: `diffSchemas` and `lora-graphql diff` |
-| 10: hardening | Benchmarks (`yarn bench`) and CLI done; loradb.com pages and release not started |
-| Beyond the plan | Backward pagination (`last` / `before`), `upsert` mutations, `@fulltext` search (E4 is fixed), `@vector` similarity search, generated `@subscription` fields. Interfaces and unions remain: without `UNION` inside `CALL { }` they need one statement per implementing type. |
+| Phase                             | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0: skeleton, driver               | Done. One structural driver for both bindings; interactive transactions for mutations. The offline `lora-query` parser build (E12) was not needed: `@cypher` is linted with a small lexer offline and planned with `explain()` online.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 1: model, S1, `assertSchema`      | Done                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 2: reads, variants, S2            | Done. Variants are the specialisation itself: statement text depends only on the input's shape, so LoraDB's plan cache serves repeats.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 3: `@cypher`, S4                  | Done: object, Query and Mutation fields; parameter and write-clause checks at startup; `explain()` checks in `check()`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 4: mutations, write-sets          | Done: create / update / delete by `@key`, nested connect / create / disconnect, cardinality and connect-target checks, `@default`, `@timestamp`, `@readonly`, `@key(generate:)`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 5: authorization                  | Done: claim checks folded at compile time; node rules compiled; filter and validate (BEFORE / AFTER / READ)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 6: AOT, S8 types                  | Partly: `persist()` validates operations at startup and runs them by id. No emitted manifest or TypeScript types (graphql-codegen over `printPublicSchema()` covers S8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 7: change tracking                | Done: `onWrite`, `changes()`, `affects()`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 8: statistics                     | Done: related-node key anchoring, cost estimates with `maxCost`, `analyze()` degrees                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 9: evolution                      | Done: `diffSchemas` and `lora-graphql diff`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 10: hardening                     | Benchmarks (`yarn bench`) and CLI done; loradb.com pages and release not started                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Beyond the plan                   | Backward pagination (`last` / `before`), `upsert` mutations, `@fulltext` search (E4 is fixed), `@vector` similarity search, generated `@subscription` fields.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Parity pass with `@neo4j/graphql` | Interfaces and unions (root fields, relationships, filters, nested writes; one `CALL` per implementing type, merged by sort key); connection aggregates and aggregate / connection filters; `includes`, `isNull`, case-insensitive filters; `adjust` math and list operators; relationship property updates in place; bulk `update<Types>` / `delete<Types>` by `where`; `onDelete: CASCADE / RESTRICT`; required relationships; `@settable`, `@selectable`, `@populatedBy`; `@jwt` / `@jwtClaim`, `$context` values, field-level `@authorization`, `@authentication(jwt:)`, CREATE_RELATIONSHIP / DELETE_RELATIONSHIP / SUBSCRIBE rules; caller-owned transactions (`begin()`); cost limit per operation; bounded subscription queues. |
 
 Open decisions, as resolved: nested operator filters; no offset
 pagination; authorization in the library; no variant cap (specialisation
@@ -49,16 +50,20 @@ labels return no rows), E4 fixed (full-text via `CALL … YIELD`), E6 fixed
 sort key streams from a RANGE index under a range predicate). E9 and E10
 remain. New findings, each worked around in the package:
 
-| # | Behaviour | Where |
-| --- | --- | --- |
+| #   | Behaviour                                                                                                             | Where                                                                                                   |
+| --- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | E13 | Reads under a deadline or in a transaction do not stop early at `LIMIT` (the pull path requires `deadline.is_none()`) | `crates/lora-database/src/database/execute.rs`, read-only branch of `execute_rows_with_params_deadline` |
-| E14 | `MERGE (a)-[r:T]->(b)` and `[(a)-[:T]->(b) \| …]` ignore an already-bound `b` and reuse any `T` edge of `a` | planner / executor |
-| E15 | Writes inside `CALL { }` fail with `LORA_READ_ONLY`, though `explain()` says `mutating` | executor |
-| E16 | An aggregate nested in another call (`head(collect(x))`, `collect(x)[0..2]`) is not aggregated | analyzer |
-| E17 | RANGE indexes skip temporal values, yet range predicates on temporals are planned through them and return no rows | `PropertyIndexKey::from_value`, `crates/lora-store/src/memory/property_index.rs` |
-| E18 | `x IN $list` plans a label scan; equality seeks | optimizer |
-| E19 | `null` values in a property map are stored as properties (`keys(n)` includes them) | store |
-| E20 | Existence constraints are checked at `CREATE`, before a following `SET` | executor |
+| E14 | `MERGE (a)-[r:T]->(b)` and `[(a)-[:T]->(b) \| …]` ignore an already-bound `b` and reuse any `T` edge of `a`           | planner / executor                                                                                      |
+| E15 | Writes inside `CALL { }` fail with `LORA_READ_ONLY`, though `explain()` says `mutating`                               | executor                                                                                                |
+| E16 | An aggregate nested in another call (`head(collect(x))`, `collect(x)[0..2]`) is not aggregated                        | analyzer                                                                                                |
+| E17 | RANGE indexes skip temporal values, yet range predicates on temporals are planned through them and return no rows     | `PropertyIndexKey::from_value`, `crates/lora-store/src/memory/property_index.rs`                        |
+| E18 | `x IN $list` plans a label scan; equality seeks                                                                       | optimizer                                                                                               |
+| E19 | `null` values in a property map are stored as properties (`keys(n)` includes them)                                    | store                                                                                                   |
+| E20 | Existence constraints are checked at `CREATE`, before a following `SET`                                               | executor                                                                                                |
+| E21 | `MATCH (a:A)-[:T]->(b:B)` ignores the labels of every node but the first                                              | planner (the package adds `WHERE b:B`)                                                                  |
+| E22 | Integer `/` integer returns a float                                                                                   | expression evaluator (the package wraps `toInteger`)                                                    |
+| E23 | Negative list slice bounds (`l[..-1]`) return wrong results                                                           | expression evaluator (the package writes `l[..size(l) - n]`)                                            |
+| E24 | `COUNT { … RETURN DISTINCT }`, `EXISTS { }` and `UNION` inside `CALL { }` are not supported                           | parser / analyzer (the package uses `reduce` and per-type `CALL`s)                                      |
 
 ## Why
 
@@ -67,7 +72,7 @@ GraphQL API) currently hand-write three layers per entity: the GraphQL SDL, reso
 and Cypher repositories — plus DataLoaders to avoid N+1, plus the knowledge of which
 Cypher constructs are fast or safe on LoraDB, which indexes each filter needs, and
 which cache entries a write invalidates. A declarative layer removes the boilerplate;
-a *reasoning* layer removes the expertise tax, and keeps it correct as the schema
+a _reasoning_ layer removes the expertise tax, and keeps it correct as the schema
 evolves.
 
 ## Goals
@@ -105,15 +110,15 @@ evolves.
   snapshots, WAL persistence, and `explain()` / `profile()`.
 - `explain()` returns the plan `shape` (`readOnly` / `mutating`), the
   `resultColumns`, and an operator tree; `estimatedRows` is reserved for a future cost
-  model (`null` today). *Verified*: the leaf operator shows exactly how rows are found —
+  model (`null` today). _Verified_: the leaf operator shows exactly how rows are found —
 
-  | Filter | Declared index | Leaf operator |
-  | --- | --- | --- |
-  | `n.p = $v` | none needed | `NodeByPropertyScan` (lazy exact-match index, ADR-0001) |
-  | `n.p > $v` (range) | RANGE | `NodeByPropertyRangeScan` — without it: `NodeByLabelScan` (full scan) |
-  | `n.p CONTAINS $v` / `STARTS WITH` | TEXT | `NodeByTextScan` — without it: `NodeByLabelScan` |
-  | `geo.within_bbox(n.p, …)` | POINT | `NodeByPointScan` |
-  | `ORDER BY n.p LIMIT k` | RANGE | `Sort{top_k}` over `NodeByLabelScan` either way (E5) |
+  | Filter                            | Declared index | Leaf operator                                                         |
+  | --------------------------------- | -------------- | --------------------------------------------------------------------- |
+  | `n.p = $v`                        | none needed    | `NodeByPropertyScan` (lazy exact-match index, ADR-0001)               |
+  | `n.p > $v` (range)                | RANGE          | `NodeByPropertyRangeScan` — without it: `NodeByLabelScan` (full scan) |
+  | `n.p CONTAINS $v` / `STARTS WITH` | TEXT           | `NodeByTextScan` — without it: `NodeByLabelScan`                      |
+  | `geo.within_bbox(n.p, …)`         | POINT          | `NodeByPointScan`                                                     |
+  | `ORDER BY n.p LIMIT k`            | RANGE          | `Sort{top_k}` over `NodeByLabelScan` either way (E5)                  |
 
   `profile()` adds per-operator row counts and timings — enough to check how much of
   the graph a query shape touches, not just which operators it uses.
@@ -165,52 +170,52 @@ import { LoraGraphQL } from "@loradb/lora-graphql";
 import { LoraNodeDriver } from "@loradb/lora-graphql/driver/lora-node";
 
 const lora = new LoraGraphQL({ typeDefs, driver: new LoraNodeDriver(db) });
-await lora.assertSchema({ create: true });   // inferred constraints + indexes, catalog
-const schema = await lora.getSchema();       // executable GraphQLSchema
-lora.printPublicSchema();                     // client-facing SDL, no directives
+await lora.assertSchema({ create: true }); // inferred constraints + indexes, catalog
+const schema = await lora.getSchema(); // executable GraphQLSchema
+lora.printPublicSchema(); // client-facing SDL, no directives
 lora.onWrite((change) => cache.invalidate(change.entities)); // S5
 ```
 
 The CLI wraps the build-time capabilities:
 
-| Command | Does |
-| --- | --- |
-| `lora-graphql print` | Public SDL |
-| `lora-graphql check` | Model validation, `@cypher` lint, index inference, plan checks — the CI gate |
-| `lora-graphql compile <operations>` | Ahead-of-time compilation of persisted operations (S3) |
-| `lora-graphql diff <old> <new>` | Database migration + API breaking-change report (S7) |
-| `lora-graphql analyze` | Cardinality statistics from a live database (S6) |
+| Command                             | Does                                                                         |
+| ----------------------------------- | ---------------------------------------------------------------------------- |
+| `lora-graphql print`                | Public SDL                                                                   |
+| `lora-graphql check`                | Model validation, `@cypher` lint, index inference, plan checks — the CI gate |
+| `lora-graphql compile <operations>` | Ahead-of-time compilation of persisted operations (S3)                       |
+| `lora-graphql diff <old> <new>`     | Database migration + API breaking-change report (S7)                         |
+| `lora-graphql analyze`              | Cardinality statistics from a live database (S6)                             |
 
 ## Directive Vocabulary
 
 Model:
 
-| Directive | On | Meaning |
-| --- | --- | --- |
-| `@node(labels: [String!])` | OBJECT | A node label (default: the type name) |
-| `@key` | FIELD | Natural key: required, unique; used for `connect` and global ids |
-| `@unique` | FIELD | Uniqueness constraint |
-| `@index(kind: RANGE \| POINT \| TEXT \| FULLTEXT)` | FIELD | An explicit index — usually **unnecessary**: inferred from `@filterable` / `@sortable` (S1) |
-| `@relationship(type: String!, direction: IN \| OUT, properties: String)` | FIELD | An edge; the target type is the field's type |
-| `@relationshipProperties` | OBJECT | Properties carried by a relationship type |
-| `@alias(property: String!)` | FIELD | API name differs from the stored property |
-| `@default(value: …)` · `@timestamp(operations: [CREATE, UPDATE])` | FIELD | Set on write |
-| `@private` | FIELD | Stored, never exposed |
-| `@cardinality(max: Int!)` | FIELD (relationship) | Declared upper bound, used by cost estimates until statistics exist (S6) |
+| Directive                                                                | On                   | Meaning                                                                                     |
+| ------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------- |
+| `@node(labels: [String!])`                                               | OBJECT               | A node label (default: the type name)                                                       |
+| `@key`                                                                   | FIELD                | Natural key: required, unique; used for `connect` and global ids                            |
+| `@unique`                                                                | FIELD                | Uniqueness constraint                                                                       |
+| `@index(kind: RANGE \| POINT \| TEXT \| FULLTEXT)`                       | FIELD                | An explicit index — usually **unnecessary**: inferred from `@filterable` / `@sortable` (S1) |
+| `@relationship(type: String!, direction: IN \| OUT, properties: String)` | FIELD                | An edge; the target type is the field's type                                                |
+| `@relationshipProperties`                                                | OBJECT               | Properties carried by a relationship type                                                   |
+| `@alias(property: String!)`                                              | FIELD                | API name differs from the stored property                                                   |
+| `@default(value: …)` · `@timestamp(operations: [CREATE, UPDATE])`        | FIELD                | Set on write                                                                                |
+| `@private`                                                               | FIELD                | Stored, never exposed                                                                       |
+| `@cardinality(max: Int!)`                                                | FIELD (relationship) | Declared upper bound, used by cost estimates until statistics exist (S6)                    |
 
 API shape (restrictive by default):
 
-| Directive | On | Meaning |
-| --- | --- | --- |
-| `@query(read: Boolean = true, aggregate: Boolean = false)` | OBJECT | Generated reads |
-| `@mutation(operations: [CREATE, UPDATE, DELETE])` | OBJECT | Generated mutations — **none by default** |
-| `@filterable(byValue: [EQ, IN, CONTAINS, STARTS_WITH, LT, GT, …])` | FIELD | Filter operators (default `EQ` / `IN`); each implies an index kind (S1) |
-| `@sortable` | FIELD | Sort/keyset-paginate on this field; implies a RANGE index |
-| `@limit(default: Int, max: Int)` | OBJECT | Page size bounds (max capped globally) |
-| `@relayId` | FIELD | Opaque global `id` derived from `@key` |
-| `@cypher(statement: String!, columnName: String!)` | FIELD | Custom statement; `this` = parent node; arguments are `$name`; `$jwt` available |
-| `@fulltext(indexes: [{ name, fields }])` | OBJECT | Full-text search (needs E4) |
-| `@authentication` / `@authorization(filter:, validate:)` | OBJECT, FIELD | Rules over `$jwt`, compiled into predicates (Phase 5) |
+| Directive                                                          | On            | Meaning                                                                         |
+| ------------------------------------------------------------------ | ------------- | ------------------------------------------------------------------------------- |
+| `@query(read: Boolean = true, aggregate: Boolean = false)`         | OBJECT        | Generated reads                                                                 |
+| `@mutation(operations: [CREATE, UPDATE, DELETE])`                  | OBJECT        | Generated mutations — **none by default**                                       |
+| `@filterable(byValue: [EQ, IN, CONTAINS, STARTS_WITH, LT, GT, …])` | FIELD         | Filter operators (default `EQ` / `IN`); each implies an index kind (S1)         |
+| `@sortable`                                                        | FIELD         | Sort/keyset-paginate on this field; implies a RANGE index                       |
+| `@limit(default: Int, max: Int)`                                   | OBJECT        | Page size bounds (max capped globally)                                          |
+| `@relayId`                                                         | FIELD         | Opaque global `id` derived from `@key`                                          |
+| `@cypher(statement: String!, columnName: String!)`                 | FIELD         | Custom statement; `this` = parent node; arguments are `$name`; `$jwt` available |
+| `@fulltext(indexes: [{ name, fields }])`                           | OBJECT        | Full-text search (needs E4)                                                     |
+| `@authentication` / `@authorization(filter:, validate:)`           | OBJECT, FIELD | Rules over `$jwt`, compiled into predicates (Phase 5)                           |
 
 ## Generated API
 
@@ -234,15 +239,15 @@ Every rule reflects measured LoraDB behaviour:
 
 1. **No `OPTIONAL MATCH`**: optional and list relationships are **pattern
    comprehensions** — `head([(this)-[:IN_GENRE]->(g:Genre) | g { .name }])`
-   (*verified*; ~17–130× faster than `OPTIONAL MATCH`, E2). `head()`, not `first()`
+   (_verified_; ~17–130× faster than `OPTIONAL MATCH`, E2). `head()`, not `first()`
    (E10).
 2. **No `COUNT { … }` / `CALL { … }` in generated reads**: counts are
    `size([pattern | 1])`.
-3. **Map projections** (`n { .a, .b }`, *verified*) — never `RETURN n`.
+3. **Map projections** (`n { .a, .b }`, _verified_) — never `RETURN n`.
 4. **Everything bounded**: every list has a `LIMIT`; no variable-length patterns;
    every statement runs with a `timeoutMs`.
 5. **Keyset predicates written out**: `s > $s OR (s = $s AND key > $key)` — never
-   `[s, key] > $after`, which silently returns no rows (E9, *verified*).
+   `[s, key] > $after`, which silently returns no rows (E9, _verified_).
 6. **Parameters for all values**; labels, types and property names only from the
    validated model.
 7. **Specialised, not generic, predicates**: an absent optional filter is left out of
@@ -255,8 +260,28 @@ Every rule reflects measured LoraDB behaviour:
 Example — this operation (only `name.contains` supplied, `after` absent):
 
 ```graphql
-{ festivalsConnection(first: 2, where: { name: { contains: "land" } }, sort: [{ name: ASC }]) {
-    edges { node { key name genre { name } followerCount } } pageInfo { hasNextPage endCursor } } }
+{
+  festivalsConnection(
+    first: 2
+    where: { name: { contains: "land" } }
+    sort: [{ name: ASC }]
+  ) {
+    edges {
+      node {
+        key
+        name
+        genre {
+          name
+        }
+        followerCount
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
 ```
 
 compiles to (shape, not final text):
@@ -282,14 +307,14 @@ plan starts with `NodeByTextScan`, which the plan check (S2) asserts.
 The public API already says how each property will be queried, so the library derives
 the indexes instead of trusting the author to declare them:
 
-| API declares | Required index | Plan it produces (*verified*) |
-| --- | --- | --- |
-| `@key` / `@unique` | uniqueness constraint | `NodeByPropertyScan` |
-| `@filterable(EQ, IN)` | none (lazy exact-match) | `NodeByPropertyScan` |
-| `@filterable(LT, LTE, GT, GTE)`, `@sortable` | RANGE | `NodeByPropertyRangeScan` |
-| `@filterable(CONTAINS, STARTS_WITH, ENDS_WITH)` | TEXT | `NodeByTextScan` |
-| `Point` with `@filterable(WITHIN_BBOX, DISTANCE)` | POINT | `NodeByPointScan` |
-| `@fulltext` | FULLTEXT | (E4) |
+| API declares                                      | Required index          | Plan it produces (_verified_) |
+| ------------------------------------------------- | ----------------------- | ----------------------------- |
+| `@key` / `@unique`                                | uniqueness constraint   | `NodeByPropertyScan`          |
+| `@filterable(EQ, IN)`                             | none (lazy exact-match) | `NodeByPropertyScan`          |
+| `@filterable(LT, LTE, GT, GTE)`, `@sortable`      | RANGE                   | `NodeByPropertyRangeScan`     |
+| `@filterable(CONTAINS, STARTS_WITH, ENDS_WITH)`   | TEXT                    | `NodeByTextScan`              |
+| `Point` with `@filterable(WITHIN_BBOX, DISTANCE)` | POINT                   | `NodeByPointScan`             |
+| `@fulltext`                                       | FULLTEXT                | (E4)                          |
 
 `assertSchema()` creates or verifies exactly this set (explicit `@index` adds to it);
 `lora-graphql check` lists indexes that exist but nothing uses, and filters that would
@@ -297,7 +322,7 @@ need an index the database lacks.
 
 ### S2 — Plans are checked, not hoped for
 
-For every generated operation *shape* — each TCK case, each persisted operation, and a
+For every generated operation _shape_ — each TCK case, each persisted operation, and a
 sampled set of variants per type — `check` runs `explain()` against a database with the
 asserted schema and fails on:
 
@@ -314,7 +339,7 @@ model), `check` adds per-shape row budgets.
 
 ### S3 — Compiled once, specialised by variables
 
-- **Variants**: an operation compiles to one statement per *variable shape* — which
+- **Variants**: an operation compiles to one statement per _variable shape_ — which
   optional filters, cursors and sorts are actually present — so every variant keeps its
   predicates index-friendly (rule 7). Variants per operation are capped (default 32);
   past the cap the rarest shapes share a generic statement, and `check` reports it.
@@ -366,12 +391,12 @@ direction). The compiler uses them to:
 
 - **choose the anchor**: for `festivals(where: { followers: { some: { key: { eq: $u } } } })`
   start from the user (a key seek) and expand, instead of scanning festivals. LoraDB
-  doesn't reorder this itself (no join ordering — `known-risks.md`). *Verified* on 1,000
+  doesn't reorder this itself (no join ordering — `known-risks.md`). _Verified_ on 1,000
   festivals / 100 users: the filter form plans `NodeByLabelScan` and touches 1,000 rows
   (0.46 ms); the anchored form plans `NodeByPropertyScan ← Expand` and touches 10
   (0.01 ms) — same result, ~46× faster, and the gap grows with the label;
 - **estimate work** per operation (rows × fan-out through each relationship, using p99
-  degree or `@cardinality`) and reject operations over the budget *before* running
+  degree or `@cardinality`) and reject operations over the budget _before_ running
   them — a cost limit grounded in the data, instead of a static depth limit;
 - **size variants**: the S3 variant cap favours the shapes the estimates say are
   expensive.
@@ -404,20 +429,20 @@ clients and hand-written statements are checked by `tsc`, not at runtime.
 Behaviours of LoraDB 0.15.0 that constrain the library (reproductions in Festimap's
 `docs/LORADB_REQUESTS.md`). The plan works around each; every fix removes a workaround.
 
-| # | Behaviour today | Needed for | Workaround until fixed |
-| --- | --- | --- | --- |
-| E1 | Labels/properties exist only while stored data carries them; unknown names are compile-time errors; the check is skipped on an empty database | Stable reads on empty labels; offline S4 name checks matching the engine | Catalog node from `assertSchema()`; empty-label errors → empty results |
-| E2 | `OPTIONAL MATCH` ~17–130× slower than a pattern comprehension | — (rule 1 avoids it) | Pattern comprehensions only |
-| E3 | Schema commands rejected inside `transaction()` | Atomic `assertSchema` | DDL one idempotent statement at a time |
-| E4 | No `CALL … YIELD`; procedure results lose labels/properties | `@fulltext`, procedure-backed `@cypher` | `@fulltext` disabled |
-| E5 | No index-ordered `ORDER BY … LIMIT` (`Sort` over a full scan, *verified*) | Connection latency independent of label size; S2 would otherwise flag every sorted page | S2 exempts `Sort{top_k}` until fixed, and reports it |
-| E6 | Integers above 2^53 silently rounded | A `BigInt` scalar | `Int` only, validated safe |
-| E7 | No interactive transactions in the binding | Caller-owned `executionContext` | Mutations as one batch |
-| E8 | Per-query timeout / cancellation | Rule 4 | **In progress** in `lora-node` — use it |
-| E9 | List comparison (`[a, b] > $list`) silently returns no rows | Compact keyset predicates | Expanded predicates (rule 5) |
-| E10 | `first()` unknown although listed in the support matrix | — | `head()` |
-| E11 | `explain()` has no `estimatedRows` yet | Engine-side cost for S2/S6 | The library's own estimates (S6) |
-| E12 | `lora-query`'s parser ships as a bundler-target WASM only | Offline S4 in Node / CLI | Build a `--target nodejs` (or `web` + `init`) variant |
+| #   | Behaviour today                                                                                                                               | Needed for                                                                              | Workaround until fixed                                                 |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| E1  | Labels/properties exist only while stored data carries them; unknown names are compile-time errors; the check is skipped on an empty database | Stable reads on empty labels; offline S4 name checks matching the engine                | Catalog node from `assertSchema()`; empty-label errors → empty results |
+| E2  | `OPTIONAL MATCH` ~17–130× slower than a pattern comprehension                                                                                 | — (rule 1 avoids it)                                                                    | Pattern comprehensions only                                            |
+| E3  | Schema commands rejected inside `transaction()`                                                                                               | Atomic `assertSchema`                                                                   | DDL one idempotent statement at a time                                 |
+| E4  | No `CALL … YIELD`; procedure results lose labels/properties                                                                                   | `@fulltext`, procedure-backed `@cypher`                                                 | `@fulltext` disabled                                                   |
+| E5  | No index-ordered `ORDER BY … LIMIT` (`Sort` over a full scan, _verified_)                                                                     | Connection latency independent of label size; S2 would otherwise flag every sorted page | S2 exempts `Sort{top_k}` until fixed, and reports it                   |
+| E6  | Integers above 2^53 silently rounded                                                                                                          | A `BigInt` scalar                                                                       | `Int` only, validated safe                                             |
+| E7  | No interactive transactions in the binding                                                                                                    | Caller-owned `executionContext`                                                         | Mutations as one batch                                                 |
+| E8  | Per-query timeout / cancellation                                                                                                              | Rule 4                                                                                  | **In progress** in `lora-node` — use it                                |
+| E9  | List comparison (`[a, b] > $list`) silently returns no rows                                                                                   | Compact keyset predicates                                                               | Expanded predicates (rule 5)                                           |
+| E10 | `first()` unknown although listed in the support matrix                                                                                       | —                                                                                       | `head()`                                                               |
+| E11 | `explain()` has no `estimatedRows` yet                                                                                                        | Engine-side cost for S2/S6                                                              | The library's own estimates (S6)                                       |
+| E12 | `lora-query`'s parser ships as a bundler-target WASM only                                                                                     | Offline S4 in Node / CLI                                                                | Build a `--target nodejs` (or `web` + `init`) variant                  |
 
 ## Phases
 
@@ -466,7 +491,7 @@ statement.
 
 - On `Query` / `Mutation` fields: run with arguments as parameters; nodes returned are
   projected with the selection set. On object fields: inlined when `RETURN <expr>`,
-  otherwise batched per parent (`UNWIND $parents …`, *verified* shape).
+  otherwise batched per parent (`UNWIND $parents …`, _verified_ shape).
 - **S4**: offline lint (parser) and online checks (`explain()`), both in `check` and at
   `getSchema()`.
 

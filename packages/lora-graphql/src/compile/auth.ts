@@ -9,6 +9,8 @@
 import { requestError } from "../errors.js";
 import type {
   AuthOperation,
+  Authorization,
+  AuthorizationValidateRule,
   AuthorizationWhere,
   NodeType,
 } from "../model/types.js";
@@ -26,13 +28,30 @@ export function checkFieldAuthentication(
   field: {
     name: string;
     authentication: ReadonlySet<AuthOperation> | undefined;
+    authenticationJwt?: AuthorizationWhere | undefined;
   },
+  op: AuthOperation = "READ",
 ): void {
-  if (!ctx.inAuth && field.authentication?.has("READ") && !ctx.jwt) {
+  if (ctx.inAuth || !field.authentication?.has(op)) return;
+  if (!ctx.jwt || !claimsSatisfy(ctx, field.authenticationJwt)) {
     throw requestError(
       "UNAUTHENTICATED",
       `${owner}.${field.name} needs an authenticated request`,
     );
+  }
+}
+
+/** Claims `@authentication(jwt:)` demands; true when there is none. */
+function claimsSatisfy(
+  ctx: CompileContext,
+  where: AuthorizationWhere | undefined,
+): boolean {
+  if (!where) return true;
+  try {
+    return compileRulePart(ctx, undefined, "", { jwt: where }) === true;
+  } catch (err) {
+    if (err instanceof MissingClaim) return false;
+    throw err;
   }
 }
 
@@ -42,7 +61,11 @@ export function checkAuthentication(
   node: NodeType,
   op: AuthOperation,
 ): void {
-  if (!ctx.inAuth && node.authentication?.has(op) && !ctx.jwt) {
+  if (
+    !ctx.inAuth &&
+    node.authentication?.has(op) &&
+    (!ctx.jwt || !claimsSatisfy(ctx, node.authenticationJwt))
+  ) {
     throw requestError(
       "UNAUTHENTICATED",
       `${op.toLowerCase()} on ${node.name} needs an authenticated request`,
@@ -86,11 +109,48 @@ export function authValidate(
   op: AuthOperation,
   when: "BEFORE" | "AFTER",
 ): Expr | undefined {
-  if (ctx.inAuth) return undefined;
-  const rules = (node.authorization?.validate ?? []).filter(
-    (r) => r.operations.has(op) && r.when.has(when),
+  return validateRules(
+    ctx,
+    node,
+    variable,
+    op,
+    (node.authorization?.validate ?? []).filter(
+      (r) => r.operations.has(op) && r.when.has(when),
+    ),
   );
-  if (rules.length === 0) return undefined;
+}
+
+/**
+ * Field-level validate rules for `op` on `field` of `variable`: the
+ * condition reading (or writing) the field needs. Undefined when none.
+ */
+export function fieldValidate(
+  ctx: CompileContext,
+  node: NodeType,
+  field: { authorization?: Authorization | undefined },
+  variable: string,
+  op: AuthOperation,
+  when: "BEFORE" | "AFTER" = "BEFORE",
+): Expr | undefined {
+  return validateRules(
+    ctx,
+    node,
+    variable,
+    op,
+    (field.authorization?.validate ?? []).filter(
+      (r) => r.operations.has(op) && r.when.has(when),
+    ),
+  );
+}
+
+function validateRules(
+  ctx: CompileContext,
+  node: NodeType,
+  variable: string,
+  op: AuthOperation,
+  rules: readonly AuthorizationValidateRule[],
+): Expr | undefined {
+  if (ctx.inAuth || rules.length === 0) return undefined;
   if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
     throw requestError(
       "UNAUTHENTICATED",
@@ -134,38 +194,42 @@ function compileRule(
   }
 }
 
+/**
+ * A test that needs a claim (or context value) the request lacks is
+ * unknown. Unknown is false where it stands, but a NOT cannot turn it into
+ * true: under a NOT, it makes the whole negated branch false, up to the
+ * nearest AND / OR outside every NOT (or the rule itself).
+ */
 function compileRulePart(
   ctx: CompileContext,
-  node: NodeType,
+  node: NodeType | undefined,
   variable: string,
   where: AuthorizationWhere,
+  underNot = false,
 ): Folded {
+  const child = (w: Where, negated = underNot): Folded => {
+    if (negated) return compileRulePart(ctx, node, variable, w, true);
+    try {
+      return compileRulePart(ctx, node, variable, w, false);
+    } catch (err) {
+      if (err instanceof MissingClaim) return false;
+      throw err;
+    }
+  };
   const parts: Folded[] = [];
   for (const [key, value] of Object.entries(where)) {
     if (value === null || value === undefined) continue;
     if (key === "AND") {
-      parts.push(
-        foldAnd(
-          (value as Where[]).map((w) =>
-            compileRulePart(ctx, node, variable, w),
-          ),
-        ),
-      );
+      parts.push(foldAnd((value as Where[]).map((w) => child(w))));
     } else if (key === "OR") {
-      parts.push(
-        foldOr(
-          (value as Where[]).map((w) =>
-            compileRulePart(ctx, node, variable, w),
-          ),
-        ),
-      );
+      parts.push(foldOr((value as Where[]).map((w) => child(w))));
     } else if (key === "NOT") {
-      const inner = compileRulePart(ctx, node, variable, value as Where);
+      const inner = compileRulePart(ctx, node, variable, value as Where, true);
       parts.push(typeof inner === "boolean" ? !inner : not(inner));
     } else if (key === "jwt") {
-      parts.push(matchClaims(ctx.jwt, value as Where));
-    } else if (key === "node") {
-      const bound = substitute(value, ctx.jwt);
+      parts.push(matchClaims(ctx, value as Where));
+    } else if (key === "node" && node) {
+      const bound = substitute(value, ctx);
       if (!bound.ok) throw new MissingClaim();
       const wasInAuth = ctx.inAuth;
       ctx.inAuth = true;
@@ -209,11 +273,18 @@ function toExpr(f: Folded): Expr | undefined {
 // Claims
 // ---------------------------------------------------------------------------
 
-export function claim(
-  jwt: Record<string, unknown> | undefined,
-  path: string,
-): unknown {
-  let cur: unknown = jwt;
+/**
+ * A claim by name. With a `@jwt` type, the name's first segment maps to its
+ * `@jwtClaim(path:)`, whether the token arrived decoded or not.
+ */
+export function claim(ctx: CompileContext, path: string): unknown {
+  const [head, ...rest] = path.split(".");
+  const mapped = ctx.model.jwt?.get(head!) ?? head!;
+  return lookupPath(ctx.jwt, [mapped, ...rest].join("."));
+}
+
+function lookupPath(root: unknown, path: string): unknown {
+  let cur: unknown = root;
   for (const part of path.split(".")) {
     if (cur === null || typeof cur !== "object") return undefined;
     cur = (cur as Record<string, unknown>)[part];
@@ -221,19 +292,27 @@ export function claim(
   return cur;
 }
 
-/** Replace `"$jwt.path"` strings; not ok when a referenced claim is absent. */
+/**
+ * Replace `"$jwt.path"` and `"$context.path"` strings; not ok when a
+ * referenced value is absent.
+ */
 function substitute(
   value: unknown,
-  jwt: Record<string, unknown> | undefined,
+  ctx: CompileContext,
 ): { ok: boolean; value: unknown } {
-  if (typeof value === "string" && value.startsWith("$jwt.")) {
-    const v = claim(jwt, value.slice(5));
+  if (
+    typeof value === "string" &&
+    (value.startsWith("$jwt.") || value.startsWith("$context."))
+  ) {
+    const v = value.startsWith("$jwt.")
+      ? claim(ctx, value.slice(5))
+      : lookupPath(ctx.requestContext, value.slice(9));
     return v === undefined || v === null
       ? { ok: false, value: undefined }
       : { ok: true, value: v };
   }
   if (Array.isArray(value)) {
-    const items = value.map((x) => substitute(x, jwt));
+    const items = value.map((x) => substitute(x, ctx));
     return {
       ok: items.every((i) => i.ok),
       value: items.map((i) => i.value),
@@ -242,7 +321,7 @@ function substitute(
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      const r = substitute(v, jwt);
+      const r = substitute(v, ctx);
       if (!r.ok) return { ok: false, value: undefined };
       out[k] = r.value;
     }
@@ -251,16 +330,18 @@ function substitute(
   return { ok: true, value };
 }
 
-function matchClaims(
-  jwt: Record<string, unknown> | undefined,
-  where: Where,
-): boolean {
-  if (!jwt) return false;
+function matchClaims(ctx: CompileContext, where: Where): boolean {
+  if (!ctx.jwt) throw new MissingClaim();
   return Object.entries(where).every(([path, ops]) => {
-    const v = claim(jwt, path);
-    return Object.entries(ops as Where).every(([op, expected]) =>
-      claimOp(v, op, expected),
-    );
+    const v = claim(ctx, path);
+    return Object.entries(ops as Where).every(([op, expected]) => {
+      // A test of a claim the token lacks cannot pass or fail: the whole
+      // rule denies, even under NOT. Only `exists` asks about absence.
+      if (op !== "exists" && (v === undefined || v === null)) {
+        throw new MissingClaim();
+      }
+      return claimOp(v, op, expected);
+    });
   });
 }
 

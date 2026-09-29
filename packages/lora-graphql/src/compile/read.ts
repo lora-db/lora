@@ -13,9 +13,12 @@ import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
 import type { QueryResult, Statement } from "../driver.js";
 import { requestError } from "../errors.js";
 import { renameParams } from "../model/cypher-lexer.js";
+import { listAggregate, type ListAggregate } from "./aggregate.js";
 import type {
+  AbstractType,
   CypherField,
   NodeType,
+  RelationshipPropertiesType,
   SearchIndex,
   PageLimit,
   RelationshipField,
@@ -27,6 +30,7 @@ import {
   authValidate,
   checkAuthentication,
   checkFieldAuthentication,
+  fieldValidate,
 } from "./auth.js";
 import { bind, freshVar, type CompileContext } from "./context.js";
 import { decodeCursor } from "./cursor.js";
@@ -47,10 +51,12 @@ import {
   type SortItem,
 } from "./cypher.js";
 import {
+  compileMemberWhere,
   compileNodeWhere,
   compilePropsWhere,
   relationshipPattern,
 } from "./filter.js";
+import { memberFields } from "../model/relations.js";
 import { collectFields, fieldArgs, subSelections } from "./selection.js";
 
 export type RootKind = "list" | "single" | "connection" | "aggregate";
@@ -246,74 +252,144 @@ function compileConnection(
   const edgeType = ctx.schema.getType(
     names.edge(node.name),
   ) as GraphQLObjectType;
-  const sel = connectionSelections(ctx, connType, edgeType, sets);
+  const sel = connectionSelections(
+    ctx,
+    connType,
+    edgeType,
+    sets,
+    node,
+    undefined,
+  );
 
-  const root = rootMatch(ctx, node, where, sort, cursor);
-  const projection = projectNode(ctx, node, "this", sel.node, first + 1);
-  const clauses: Clause[] = [
-    ...root.clauses,
-    {
-      kind: "with",
-      items: [{ expr: v("this") }],
-      orderBy: sortItems("this", sort),
-      limit: bind(ctx, first + 1),
-    },
-    ...projection.pre,
-    {
-      kind: "return",
-      items: [
-        { expr: projection.expr, alias: "node" },
-        { expr: cursorValues("this", sort), alias: "__cursor" },
-      ],
-    },
-  ];
+  const statements: Statement[] = [];
+  let expectation: Omit<SeekExpectation, "statement"> | undefined;
+  let columns: string[] = [];
+  // The page, unless only counts or aggregates were asked for.
+  if (sel.page) {
+    const root = rootMatch(ctx, node, where, sort, cursor);
+    expectation = root.expectation;
+    const projection = projectNode(ctx, node, "this", sel.node, first + 1);
+    statements.push({
+      text: printClauses([
+        ...root.clauses,
+        {
+          kind: "with",
+          items: [{ expr: v("this") }],
+          orderBy: sortItems("this", sort),
+          limit: bind(ctx, first + 1),
+        },
+        ...projection.pre,
+        {
+          kind: "return",
+          items: [
+            { expr: projection.expr, alias: "node" },
+            { expr: cursorValues("this", sort), alias: "__cursor" },
+          ],
+        },
+      ]),
+      params: ctx.params,
+    });
+    columns = ["node", "__cursor"];
+  }
 
-  const extra: Statement[] = [];
-  if (sel.totalCount) {
-    const countCtx: CompileContext = {
+  // totalCount and aggregates: one pass over every match, in the same
+  // read transaction.
+  const stats = sel.totalCount || sel.aggregate !== undefined;
+  let statsColumns: Array<{ column: string; path: string[] }> = [];
+  if (stats) {
+    const statsCtx: CompileContext = {
       ...ctx,
       params: {},
       vars: new Set(["this"]),
     };
-    const countRoot = rootMatch(countCtx, node, where, []);
-    extra.push({
-      text: printClauses([
-        ...countRoot.clauses,
-        {
-          kind: "return",
-          items: [
-            { expr: fn("count", v("this")), alias: "totalCount" },
-            ...deniedItem(countCtx, node, "this"),
-          ],
-        },
-      ]),
-      params: countCtx.params,
+    const statsRoot = rootMatch(statsCtx, node, where, []);
+    expectation ??= statsRoot.expectation;
+    const items: Array<{ expr: Expr; alias: string }> = [
+      { expr: fn("count", v("this")), alias: "totalCount" },
+      ...deniedItem(statsCtx, node, "this"),
+    ];
+    for (const { field, fns } of sel.aggregate?.node ?? []) {
+      for (const agg of fns) {
+        const column = `node_${field.name}_${agg}`;
+        items.push({
+          expr: fn(agg, prop(v("this"), field.property)),
+          alias: column,
+        });
+        statsColumns.push({ column, path: ["node", field.name, agg] });
+      }
+    }
+    statements.push({
+      text: printClauses([...statsRoot.clauses, { kind: "return", items }]),
+      params: statsCtx.params,
     });
   }
+  statsColumns = statsColumns.slice();
 
-  return finish(
-    ctx,
-    clauses,
-    ["node", "__cursor"],
-    ([page, count]): RawConnection => {
-      if (count) assertNoneDenied(count.rows[0]);
+  return {
+    statements,
+    columns,
+    reads: readSet(ctx),
+    expectations: expectation ? [{ statement: 0, ...expectation }] : [],
+    cost: ctx.cost + (stats ? 1 : 0),
+    mode: "read",
+    shape: (results): RawConnection => {
+      const page = sel.page ? results[0] : undefined;
+      const count = stats ? results[sel.page ? 1 : 0] : undefined;
+      const row = count?.rows[0];
+      if (count) assertNoneDenied(row);
+      let aggregate: Record<string, unknown> | undefined;
+      if (sel.aggregate) {
+        aggregate = { count: row?.["totalCount"] ?? 0 };
+        for (const { column, path } of statsColumns) {
+          setPath(aggregate, path, row?.[column] ?? null);
+        }
+      }
       return {
-        __rows: page!.rows.map((row) => ({
-          node: row["node"],
-          __cursor: row["__cursor"] as unknown[],
+        __rows: (page?.rows ?? []).map((r) => ({
+          node: r["node"],
+          __cursor: r["__cursor"] as unknown[],
         })),
         __first: first,
         __after: cursor !== undefined,
         __backward: backward,
         __sort: signature,
-        ...(count
-          ? { __totalCount: count.rows[0]?.["totalCount"] as number }
-          : {}),
+        ...(count ? { __totalCount: row?.["totalCount"] as number } : {}),
+        ...(aggregate ? { __aggregate: aggregate } : {}),
       };
     },
-    root.expectation,
-    extra,
-  );
+  };
+}
+
+/**
+ * Sorting or aggregating over a field with row-level READ rules would
+ * reveal values of rows the rules hide: refused unless the claims alone
+ * already settle the rules.
+ */
+function refuseRowRules(
+  ctx: CompileContext,
+  node: NodeType,
+  field: ScalarField,
+  what: string,
+): void {
+  const probe = { ...ctx, params: {}, vars: new Set(ctx.vars) };
+  if (fieldValidate(probe, node, field, "probe", "READ")) {
+    throw requestError(
+      "FORBIDDEN",
+      `cannot ${what} ${node.name}.${field.name}: it has row-level read rules`,
+    );
+  }
+}
+
+function setPath(
+  target: Record<string, unknown>,
+  path: string[],
+  value: unknown,
+) {
+  let cur = target;
+  for (const part of path.slice(0, -1)) {
+    cur = (cur[part] ??= {}) as Record<string, unknown>;
+  }
+  cur[path[path.length - 1]!] = value;
 }
 
 const AGGREGATES = new Set(["min", "max", "avg", "sum"]);
@@ -337,6 +413,7 @@ function compileAggregate(
     const field = node.fields.get(fieldName);
     if (!field || field.kind !== "scalar") continue;
     checkFieldAuthentication(ctx, node.name, field);
+    refuseRowRules(ctx, node, field, "aggregate");
     const fieldType = getNamedType(
       aggType.getFields()[fieldName]!.type,
     ) as GraphQLObjectType;
@@ -431,6 +508,251 @@ export function compileCypherRoot(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Interfaces and unions
+// ---------------------------------------------------------------------------
+
+interface MemberSort {
+  name: string;
+  direction: "ASC" | "DESC";
+}
+
+function resolveAbstractSort(
+  ctx: CompileContext,
+  abstract: AbstractType,
+  value: unknown,
+): MemberSort[] {
+  const keys: MemberSort[] = [];
+  for (const item of (value as Array<Record<string, unknown>> | null) ?? []) {
+    const entries = Object.entries(item).filter(([, d]) => d != null);
+    if (entries.length !== 1) {
+      throw requestError(
+        "BAD_USER_INPUT",
+        "each `sort` item names exactly one field",
+      );
+    }
+    const [name, direction] = entries[0]!;
+    for (const member of abstract.members) {
+      const f = ctx.model.nodes.get(member)!.fields.get(name);
+      if (f?.kind === "scalar") {
+        checkFieldAuthentication(ctx, member, f);
+        refuseRowRules(ctx, ctx.model.nodes.get(member)!, f, "sort by");
+      }
+    }
+    keys.push({ name, direction: direction as "ASC" | "DESC" });
+  }
+  return keys;
+}
+
+/**
+ * One member's slice of an interface or union list: its nodes filtered,
+ * sorted and limited on their own (so each can use its indexes), projected
+ * with `__typename` and the sort values the merge orders by.
+ */
+function memberList(
+  ctx: CompileContext,
+  abstract: AbstractType,
+  member: NodeType,
+  source: (x: string) => {
+    pattern: import("./cypher.js").Pattern;
+    where: Expr | undefined;
+  },
+  where: Record<string, unknown> | null | undefined,
+  sort: MemberSort[],
+  limit: Expr,
+  sets: SelectionSetNode[],
+  rows: number,
+): { body: Clause[]; list: string } | undefined {
+  const x = freshVar(ctx, `this_${member.name}`);
+  const filter = compileMemberWhere(ctx, abstract, member, x, where);
+  if (filter === false) return undefined;
+  checkAuthentication(ctx, member, "READ");
+  ctx.reads.labels.add(member.labels[0]!);
+  const from = source(x);
+  const sortExprs: SortItem[] = [
+    ...sort.map((k) => {
+      const f = member.fields.get(k.name) as ScalarField;
+      return { expr: prop(v(x), f.property), direction: k.direction };
+    }),
+    { expr: prop(v(x), member.key.property), direction: "ASC" as const },
+  ];
+  const projection = projectNode(ctx, member, x, sets, rows);
+  const expr = projection.expr as Extract<Expr, { kind: "mapProjection" }>;
+  const list = freshVar(ctx, `${x}_list`);
+  const tagged: Expr = {
+    ...expr,
+    entries: [
+      ...expr.entries,
+      { kind: "entry", key: "__typename", value: lit(member.name) },
+      { kind: "entry", key: "__key", value: prop(v(x), member.key.property) },
+      ...sort.map((k, i) => ({
+        kind: "entry" as const,
+        key: `__s${i}`,
+        value: sortExprs[i]!.expr,
+      })),
+    ],
+  };
+  return {
+    list,
+    body: [
+      {
+        kind: "match",
+        pattern: from.pattern,
+        where: and(from.where, filter, authFilter(ctx, member, x, "READ")),
+      },
+      { kind: "with", items: [{ expr: v(x) }], orderBy: sortExprs, limit },
+      ...projection.pre,
+      { kind: "return", items: [{ expr: fn("collect", tagged), alias: list }] },
+    ],
+  };
+}
+
+/** The merged order: requested fields, then type name, then key. */
+function mergedOrder(item: string, sort: MemberSort[]): SortItem[] {
+  return [
+    ...sort.map((k, i) => ({
+      expr: prop(v(item), `__s${i}`),
+      direction: k.direction,
+    })),
+    { expr: prop(v(item), "__typename"), direction: "ASC" as const },
+    { expr: prop(v(item), "__key"), direction: "ASC" as const },
+  ];
+}
+
+/** `events(where, sort, limit)` over an interface's implementations or a union's members. */
+export function compileAbstractRoot(
+  ctx: CompileContext,
+  abstract: AbstractType,
+  args: Args,
+  fieldNodes: readonly FieldNode[],
+): CompiledRead {
+  const limitValue = resolveLimit(args["limit"], abstract.limit, "limit");
+  const sort = resolveAbstractSort(ctx, abstract, args["sort"]);
+  const limit = bind(ctx, limitValue);
+  const sets = subSelections(fieldNodes);
+  const calls: Clause[] = [];
+  const lists: string[] = [];
+  for (const name of abstract.members) {
+    const member = ctx.model.nodes.get(name)!;
+    const slice = memberList(
+      ctx,
+      abstract,
+      member,
+      (x) => ({
+        pattern: {
+          start: { variable: x, labels: [member.labels[0]!] },
+          hops: [],
+        },
+        where: undefined,
+      }),
+      args["where"] as Record<string, unknown> | undefined,
+      sort,
+      limit,
+      sets,
+      limitValue,
+    );
+    if (!slice) continue;
+    calls.push({ kind: "call", imports: [], body: slice.body });
+    lists.push(slice.list);
+  }
+  const clauses: Clause[] = [
+    ...calls,
+    {
+      kind: "unwind",
+      expr:
+        lists.length === 0
+          ? { kind: "list", items: [] }
+          : lists.map((l) => v(l)).reduce((a, b) => bin("+", a, b)),
+      alias: "this",
+    },
+    {
+      kind: "with",
+      items: [{ expr: v("this") }],
+      orderBy: mergedOrder("this", sort),
+      limit,
+    },
+    { kind: "return", items: [{ expr: v("this"), alias: "this" }] },
+  ];
+  return finish(
+    ctx,
+    clauses,
+    ["this"],
+    ([r]) => r!.rows.map((row) => row["this"]),
+    undefined,
+  );
+}
+
+/** A relationship field whose target is an interface or union. */
+function projectPolymorphic(
+  ctx: CompileContext,
+  parent: string,
+  rel: RelationshipField,
+  key: string,
+  args: Args,
+  sets: SelectionSetNode[],
+  rows: number,
+): Projection {
+  const abstract = ctx.model.abstracts.get(rel.target)!;
+  ctx.reads.relationships.add(rel.type);
+  const limitValue = rel.list
+    ? resolveLimit(args["limit"], rel.limit ?? abstract.limit, "limit")
+    : 1;
+  const sort = rel.list ? resolveAbstractSort(ctx, abstract, args["sort"]) : [];
+  const limit = bind(ctx, limitValue);
+  const body: Clause[] = [];
+  const lists: string[] = [];
+  for (const field of memberFields(ctx.model, rel)) {
+    const member = ctx.model.nodes.get(field.target)!;
+    const slice = memberList(
+      ctx,
+      abstract,
+      member,
+      (x) => ({
+        pattern: relationshipPattern(parent, field, member.labels[0]!, x),
+        where: undefined,
+      }),
+      args["where"] as Record<string, unknown> | undefined,
+      sort,
+      limit,
+      sets,
+      rows * limitValue,
+    );
+    if (!slice) continue;
+    body.push({ kind: "call", imports: [parent], body: slice.body });
+    lists.push(slice.list);
+  }
+  if (lists.length === 0) {
+    return {
+      pre: [],
+      expr: rel.list ? { kind: "list", items: [] } : lit(null),
+    };
+  }
+  const item = freshVar(ctx, `${parent}_${key}_item`);
+  const out = freshVar(ctx, `${parent}_${key}`);
+  body.push(
+    {
+      kind: "unwind",
+      expr: lists.map((l) => v(l)).reduce((a, b) => bin("+", a, b)),
+      alias: item,
+    },
+    {
+      kind: "with",
+      items: [{ expr: v(item) }],
+      orderBy: mergedOrder(item, sort),
+      limit,
+    },
+    ...(rel.list
+      ? [
+          {
+            kind: "return" as const,
+            items: [{ expr: fn("collect", v(item)), alias: out }],
+          },
+        ]
+      : collectOne(v(item), out)),
+  );
+  return { pre: [{ kind: "call", imports: [parent], body }], expr: v(out) };
+}
+
 /** A search root field's value: nodes with their scores. */
 export interface SearchResult {
   node: unknown;
@@ -494,12 +816,19 @@ export function compileSearch(
     let source: Expr;
     let exclude: Expr | undefined;
     if (to != null) {
+      checkFieldAuthentication(ctx, node.name, index.field);
       clauses.push({
         kind: "match",
         pattern: { start: { variable: "anchor", labels: [label] }, hops: [] },
+        // The anchor's vector is read to rank the others: it must be
+        // readable, or an unreadable node's vector would leak through them.
         where: and(
           bin("=", prop(v("anchor"), node.key.property), bind(ctx, to)),
           authFilter(ctx, node, "anchor", "READ"),
+          coalesceFalse(authValidate(ctx, node, "anchor", "READ", "BEFORE")),
+          coalesceFalse(
+            fieldValidate(ctx, node, index.field, "anchor", "READ"),
+          ),
         ),
       });
       source = prop(v("anchor"), index.field.property);
@@ -677,8 +1006,13 @@ function rootMatch(
   if (anchorField && rest) {
     const ops = rest[anchorField.name] as Where;
     const values = dedupe(ops["in"] as unknown[]);
-    const { in: _in, ...otherOps } = ops;
-    rest = { ...rest, [anchorField.name]: otherOps };
+    // Filtering on the field reveals it, as reading it does. A field with
+    // READ rules keeps its `in` in the WHERE too, where the rules apply.
+    checkFieldAuthentication(ctx, node.name, anchorField);
+    if (!anchorField.authorization?.validate.length) {
+      const { in: _in, ...otherOps } = ops;
+      rest = { ...rest, [anchorField.name]: otherOps };
+    }
     const item = freshVar(ctx, `this_${anchorField.name}`);
     clauses.push({ kind: "unwind", expr: bind(ctx, values), alias: item });
     anchor = bin("=", prop(v("this"), anchorField.property), v(item));
@@ -782,6 +1116,8 @@ function findRelatedAnchor(
   for (const [key, value] of Object.entries(where)) {
     const rel = node.fields.get(key);
     if (rel?.kind !== "relationship" || value == null) continue;
+    // Through an interface or union there is no single key to seek on.
+    if (ctx.model.abstracts.has(rel.target)) continue;
     const target = ctx.model.nodes.get(rel.target)!;
     const inner = rel.list
       ? ((value as Where)["some"] ?? (value as Where)["single"])
@@ -942,6 +1278,7 @@ function resolveSort(
     const field = node.fields.get(fieldName) as ScalarField;
     // Ordering by a field reveals it, and cursors carry its values.
     checkFieldAuthentication(ctx, node.name, field);
+    refuseRowRules(ctx, node, field, "sort by");
     if (keys.some((k) => k.field === field)) {
       throw requestError(
         "BAD_USER_INPUT",
@@ -1110,24 +1447,50 @@ export function projectNode(
     const def = defs[fieldName];
     const field = node.fields.get(fieldName);
     const rel = field ?? connectionOf(node, fieldName);
-    if (rel?.authentication?.has("READ") && !ctx.jwt) {
-      throw requestError(
-        "UNAUTHENTICATED",
-        `${node.name}.${fieldName} needs an authenticated request`,
-      );
-    }
+    if (rel) checkFieldAuthentication(ctx, node.name, rel);
     if (field?.kind === "scalar") {
-      entries.push(
-        key === field.property
-          ? { kind: "property", key }
-          : { kind: "entry", key, value: prop(v(variable), field.property) },
-      );
+      const rule = fieldValidate(ctx, node, field, variable, "READ");
+      if (rule) {
+        // Field-level READ rule: a row failing it reads as FORBIDDEN.
+        entries.push({
+          kind: "entry",
+          key,
+          value: {
+            kind: "case",
+            when: fn("coalesce", rule, lit(false)),
+            then: prop(v(variable), field.property),
+            else: {
+              kind: "map",
+              entries: [{ key: "__forbidden", value: lit(true) }],
+            },
+          },
+        });
+      } else {
+        entries.push(
+          key === field.property
+            ? { kind: "property", key }
+            : { kind: "entry", key, value: prop(v(variable), field.property) },
+        );
+      }
       continue;
     }
     const args = def ? fieldArgs(ctx, def, nodes[0]!) : {};
     const nested = subSelections(nodes);
     let result: Projection;
-    if (field?.kind === "relationship") {
+    if (
+      field?.kind === "relationship" &&
+      ctx.model.abstracts.has(field.target)
+    ) {
+      result = projectPolymorphic(
+        ctx,
+        variable,
+        field,
+        key,
+        args,
+        nested,
+        rows,
+      );
+    } else if (field?.kind === "relationship") {
       result = projectRelationship(
         ctx,
         variable,
@@ -1244,23 +1607,8 @@ function projectRelationship(
     sets,
     rows * fanOut(ctx, rel, limit),
   );
-  if ((!userSort || userSort.length === 0) && nested.pre.length === 0) {
-    // [(this)-[:T]->(x:Target) WHERE … | x { … }][..$limit]
-    return {
-      pre: [],
-      expr: {
-        kind: "slice",
-        target: {
-          kind: "comprehension",
-          pattern,
-          where,
-          projection: nested.expr,
-        },
-        from: undefined,
-        to: limitParam,
-      },
-    };
-  }
+  // Without a sort, related nodes come back in @key order: deterministic,
+  // and limited before they are projected.
   const sort = resolveSort(ctx, target, userSort, false);
   const out = freshVar(ctx, `${x}_list`);
   return {
@@ -1322,7 +1670,14 @@ function projectRelationshipConnection(
   const edgeType = ctx.schema.getType(
     own ? names.relEdge(rel.owner, rel.name) : names.edge(target.name),
   ) as GraphQLObjectType;
-  const sel = connectionSelections(ctx, connType, edgeType, sets);
+  const sel = connectionSelections(
+    ctx,
+    connType,
+    edgeType,
+    sets,
+    target,
+    props,
+  );
 
   const x = freshVar(ctx, `${parent}_${key}`);
   const r = freshVar(ctx, `${x}_rel`);
@@ -1366,7 +1721,63 @@ function projectRelationshipConnection(
     { key: "__backward", value: bind(ctx, backward) },
     { key: "__sort", value: bind(ctx, signature) },
   ];
-  if (sel.totalCount) {
+  // All matching pairs, for totalCount and aggregates.
+  const matching = (projection: (nv: string, rv: string) => Expr): Expr => {
+    const cx = freshVar(ctx, `${x}_all`);
+    const cr = freshVar(ctx, `${cx}_rel`);
+    return {
+      kind: "comprehension",
+      pattern: relationshipPattern(parent, rel, label, cx, cr),
+      where: filterFor(cx, cr),
+      projection: projection(cx, cr),
+    };
+  };
+  if (sel.aggregate) {
+    const sides: Array<{ key: string; value: Expr }> = [];
+    for (const side of ["node", "edge"] as const) {
+      const fields = sel.aggregate[side];
+      if (fields.length === 0) continue;
+      sides.push({
+        key: side,
+        value: {
+          kind: "map",
+          entries: fields.map(({ field, fns }) => ({
+            key: field.name,
+            value: {
+              kind: "map",
+              entries: fns.map((agg) => ({
+                key: agg,
+                value: listAggregate(
+                  ctx,
+                  agg as ListAggregate,
+                  matching((nv, rv) =>
+                    prop(v(side === "node" ? nv : rv), field.property),
+                  ),
+                ),
+              })),
+            },
+          })),
+        },
+      });
+    }
+    connection.push({
+      key: "__aggregate",
+      value: {
+        kind: "map",
+        entries: [
+          {
+            key: "count",
+            value: fn(
+              "size",
+              matching(() => lit(1)),
+            ),
+          },
+          ...sides,
+        ],
+      },
+    });
+  }
+  if (sel.totalCount || sel.aggregate) {
     const cx = freshVar(ctx, `${x}_count`);
     const cr = freshVar(ctx, `${cx}_rel`);
     connection.push({
@@ -1392,6 +1803,11 @@ function projectRelationshipConnection(
     }
   }
 
+  if (!sel.page) {
+    // Only counts or aggregates: no page to read.
+    connection[0] = { key: "__rows", value: { kind: "list", items: [] } };
+    return { pre: [], expr: { kind: "map", entries: connection } };
+  }
   return {
     pre: [
       {
@@ -1547,24 +1963,88 @@ function projectProperties(
   return { kind: "mapProjection", variable, entries };
 }
 
+/** Aggregates a connection's `aggregate { … }` asks for. */
+interface AggregateSpec {
+  node: Array<{ field: ScalarField; fns: string[] }>;
+  edge: Array<{ field: ScalarField; fns: string[] }>;
+}
+
 /** What a connection selection asks for, merged across aliases. */
 function connectionSelections(
   ctx: CompileContext,
   connType: GraphQLObjectType,
   edgeType: GraphQLObjectType,
   sets: SelectionSetNode[],
+  target: NodeType,
+  props: RelationshipPropertiesType | undefined,
 ): {
   node: SelectionSetNode[];
   properties: SelectionSetNode[];
   totalCount: boolean;
+  /** `edges` or `pageInfo` selected: the page must be read. */
+  page: boolean;
+  aggregate: AggregateSpec | undefined;
 } {
   const node: SelectionSetNode[] = [];
   const properties: SelectionSetNode[] = [];
   let totalCount = false;
+  let page = false;
+  let aggregate: AggregateSpec | undefined;
   for (const [, nodes] of collectFields(ctx, connType, sets)) {
     const name = nodes[0]!.name.value;
     if (name === "totalCount") totalCount = true;
+    if (name === "pageInfo") page = true;
+    if (name === "aggregate") {
+      aggregate ??= { node: [], edge: [] };
+      const aggType = getNamedType(
+        connType.getFields()["aggregate"]!.type,
+      ) as GraphQLObjectType;
+      for (const [, side] of collectFields(
+        ctx,
+        aggType,
+        subSelections(nodes),
+      )) {
+        const sideName = side[0]!.name.value;
+        if (sideName !== "node" && sideName !== "edge") continue;
+        const sideType = getNamedType(
+          aggType.getFields()[sideName]!.type,
+        ) as GraphQLObjectType;
+        for (const [, fieldNodes] of collectFields(
+          ctx,
+          sideType,
+          subSelections(side),
+        )) {
+          const fieldName = fieldNodes[0]!.name.value;
+          const field =
+            sideName === "node"
+              ? target.fields.get(fieldName)
+              : props?.fields.get(fieldName);
+          if (field?.kind !== "scalar") continue;
+          if (sideName === "node") {
+            checkFieldAuthentication(ctx, target.name, field);
+            refuseRowRules(ctx, target, field, "aggregate");
+          }
+          const fieldType = getNamedType(
+            sideType.getFields()[fieldName]!.type,
+          ) as GraphQLObjectType;
+          const fns = [
+            ...collectFields(
+              ctx,
+              fieldType,
+              subSelections(fieldNodes),
+            ).values(),
+          ]
+            .map((n) => n[0]!.name.value)
+            .filter((f) => AGGREGATES.has(f));
+          const list = aggregate[sideName];
+          const existing = list.find((e) => e.field === field);
+          if (existing) existing.fns = [...new Set([...existing.fns, ...fns])];
+          else list.push({ field, fns });
+        }
+      }
+    }
     if (name !== "edges") continue;
+    page = true;
     for (const [, edgeNodes] of collectFields(
       ctx,
       edgeType,
@@ -1576,5 +2056,10 @@ function connectionSelections(
         properties.push(...subSelections(edgeNodes));
     }
   }
-  return { node, properties, totalCount };
+  return { node, properties, totalCount, page, aggregate };
+}
+
+/** A rule condition as a WHERE predicate: an unknown result excludes. */
+function coalesceFalse(e: Expr | undefined): Expr | undefined {
+  return e && fn("coalesce", e, lit(false));
 }

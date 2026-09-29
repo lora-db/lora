@@ -419,3 +419,47 @@ describe("assertSchema", () => {
     expect(report.missing.map((r) => r.name)).toContain("festival_name_text");
   });
 });
+
+describe("connection aggregates", () => {
+  test("root: over every match, not just the page", async () => {
+    const d = await h.data<{ festivalsConnection: unknown }>(`{
+      festivalsConnection(first: 1, where: { capacity: { gte: 27000 } }) {
+        totalCount
+        aggregate { count node { capacity { min max avg sum } name { min } } }
+      }
+    }`);
+    expect(d.festivalsConnection).toEqual({
+      totalCount: 3,
+      aggregate: {
+        count: 3,
+        node: {
+          capacity: { min: 27000, max: 29000, avg: 28000, sum: 84000 },
+          name: { min: "Moonfest 28" },
+        },
+      },
+    });
+  });
+
+  test("nested: per parent, through the relationship", async () => {
+    const d = await h.data<{ genre: unknown }>(`{
+      genre(key: "techno") {
+        festivalsConnection(where: { capacity: { lt: 10000 } }) {
+          aggregate { count node { capacity { max } } }
+        }
+      }
+    }`);
+    expect(d.genre).toEqual({
+      festivalsConnection: {
+        aggregate: { count: 3, node: { capacity: { max: 9000 } } },
+      },
+    });
+  });
+
+  test("totalCount alone reads no page", async () => {
+    const [c] = h.lora.compile(`{ festivalsConnection { totalCount } }`);
+    expect(c!.compiled.statements).toHaveLength(1);
+    expect(c!.compiled.statements[0]!.text).toMatch(
+      /count\(this\) AS totalCount/,
+    );
+  });
+});

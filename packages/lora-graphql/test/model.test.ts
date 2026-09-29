@@ -60,7 +60,7 @@ describe("model validation", () => {
       "A.b: B is a @node type; add @relationship(type:, direction:)",
       "A.c: relationship type `has-c` must be SCREAMING_SNAKE_CASE",
       "A.tags: list items must be non-null, e.g. [String!]",
-      "A.n: Int does not support CONTAINS (allowed: EQ, IN, LT, LTE, GT, GTE)",
+      "A.n: Int does not support CONTAINS (allowed: EQ, IN, LT, LTE, GT, GTE, IS_NULL)",
       "A.p: Point cannot be @sortable",
       "A: a @node type needs exactly one @key field",
       "B.key: @key must be String, ID, Int or BigInt",
