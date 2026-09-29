@@ -15,6 +15,8 @@ export const names = {
   edge: (type: string) => `${type}Edge`,
   aggregate: (type: string) => `${type}Aggregate`,
   match: (type: string) => `${type}Match`,
+  searchConnection: (type: string) => `${type}SearchConnection`,
+  searchEdge: (type: string) => `${type}SearchEdge`,
   relationFilter: (type: string, field: string) =>
     `${type}${upperFirst(field)}Filter`,
   relConnection: (type: string, field: string) =>
@@ -40,14 +42,17 @@ export function hasOwnConnection(rel: RelationshipField): boolean {
 
 /**
  * The connection and edge type names of a list relationship's connection:
- * its own when it has properties or opts out of aggregates, the target's
- * otherwise.
+ * its own when it has properties or aggregates (whose count covers
+ * relationships too) or opts out of them, the target's otherwise.
  */
-export function connectionTypeNames(rel: RelationshipField): {
+export function connectionTypeNames(
+  rel: RelationshipField,
+  target: NodeType,
+): {
   connection: string;
   edge: string;
 } {
-  return hasOwnConnection(rel) || !rel.aggregate
+  return hasOwnConnection(rel) || !rel.aggregate || target.aggregate
     ? {
         connection: names.relConnection(rel.owner, rel.name),
         edge: names.relEdge(rel.owner, rel.name),

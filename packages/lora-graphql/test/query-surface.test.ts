@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "vitest";
 import { festivalHarness } from "./harness.js";
-import { festivalTypeDefs } from "./fixtures.js";
+import { appTypeDefs, festivalTypeDefs } from "./fixtures.js";
 
 const sortableFollows = festivalTypeDefs.replace(
   "since: Int! @filterable",
@@ -227,5 +227,312 @@ describe("nestedOperations and aggregate: false", () => {
     await expect(
       festivalHarness({ typeDefs: broken, seed: [] }),
     ).rejects.toThrow("a required relationship needs CONNECT or CREATE");
+  });
+});
+
+describe("richer aggregates", () => {
+  const typeDefs = /* GraphQL */ `
+    type Band @node @query(aggregate: true) {
+      key: String! @key
+      name: String! @sortable
+      set: Duration
+      fans: [Fan!]! @relationship(type: "LIKES", direction: IN) @filterable
+    }
+    type Fan @node @query(aggregate: true) {
+      key: String! @key
+      nick: String! @sortable
+      likes: [Band!]! @relationship(type: "LIKES", direction: OUT) @filterable
+    }
+  `;
+  const seed = [
+    `CREATE (:Band {key: 'b1', name: 'Blur', set: duration('PT1H')}),
+            (:Band {key: 'b2', name: 'Pulp', set: duration('PT3H')}),
+            (:Band {key: 'b3', name: 'The Verve', set: duration('PT2H')})`,
+    `CREATE (:Fan {key: 'f1', nick: 'al'}), (:Fan {key: 'f2', nick: 'bea'}), (:Fan {key: 'f3', nick: 'cordelia'})`,
+    `MATCH (f:Fan), (b:Band) WHERE b.key = 'b1' CREATE (f)-[:LIKES]->(b)`,
+    // A parallel relationship: f1 likes b1 twice.
+    `MATCH (f:Fan {key: 'f1'}), (b:Band {key: 'b1'}) CREATE (f)-[:LIKES]->(b)`,
+    `MATCH (f:Fan {key: 'f2'}), (b:Band {key: 'b2'}) CREATE (f)-[:LIKES]->(b)`,
+  ];
+
+  test("strings: shortest and longest, at the root and through a relationship", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<Record<string, unknown>>(`{
+      bandsAggregate { name { shortest longest min } }
+      bandsConnection { aggregate { node { name { shortest longest } } } }
+      band(key: "b1") { fansConnection { aggregate { node { nick { shortest longest } } } } }
+    }`);
+    expect(d).toEqual({
+      bandsAggregate: {
+        name: { shortest: "Blur", longest: "The Verve", min: "Blur" },
+      },
+      bandsConnection: {
+        aggregate: {
+          node: { name: { shortest: "Blur", longest: "The Verve" } },
+        },
+      },
+      band: {
+        fansConnection: {
+          aggregate: {
+            node: { nick: { shortest: "al", longest: "cordelia" } },
+          },
+        },
+      },
+    });
+  });
+
+  test("durations: min, max, sum and avg (not LoraDB's max, see E25)", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<Record<string, unknown>>(`{
+      bandsAggregate { set { min max sum avg } }
+      fan(key: "f1") { likesConnection { aggregate { node { set { max sum } } } } }
+    }`);
+    expect(d).toEqual({
+      bandsAggregate: {
+        set: { min: "PT1H", max: "PT3H", sum: "PT6H", avg: "PT2H" },
+      },
+      fan: {
+        likesConnection: {
+          aggregate: { node: { set: { max: "PT1H", sum: "PT2H" } } },
+        },
+      },
+    });
+  });
+
+  test("count { nodes edges } tells parallel relationships apart", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{ band: unknown }>(
+      `{ band(key: "b1") { fansConnection { aggregate { count { nodes edges } } } } }`,
+    );
+    expect(d.band).toEqual({
+      fansConnection: { aggregate: { count: { nodes: 3, edges: 4 } } },
+    });
+  });
+
+  test("filters on string length", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const keys = async (where: string) =>
+      (
+        await h.data<{ bands: Array<{ key: string }> }>(
+          `{ bands(where: ${where}, sort: [{ name: ASC }]) { key } }`,
+        )
+      ).bands.map((b) => b.key);
+    expect(
+      await keys(
+        `{ fans: { aggregate: { node: { nick: { longestLength: { gte: 5 } } } } } }`,
+      ),
+    ).toEqual(["b1"]);
+    expect(
+      await keys(
+        `{ fans: { aggregate: { node: { nick: { shortestLength: { eq: 3 } } } } } }`,
+      ),
+    ).toEqual(["b2"]);
+    expect(
+      await keys(
+        `{ fans: { aggregate: { node: { nick: { averageLength: { lt: 3.5 } } } } } }`,
+      ),
+    ).toEqual(["b2"]);
+  });
+});
+
+describe("filter and sort on @cypher fields", () => {
+  const typeDefs = appTypeDefs.replace(
+    'followerCount: Int!\n      @cypher(statement: "RETURN size([(this)<-[:FOLLOWS]-(:User) | 1]) AS n")',
+    'followerCount: Int!\n      @cypher(statement: "RETURN size([(this)<-[:FOLLOWS]-(:User) | 1]) AS n")\n      @filterable(byValue: [EQ, GT])\n      @sortable',
+  );
+  const seed = [
+    "UNWIND range(1, 6) AS i CREATE (:Festival {key: 'f' + toString(i), name: 'F' + toString(i)})",
+    "UNWIND range(1, 4) AS i CREATE (:User {key: 'u' + toString(i)})",
+    // f1: 4 followers, f2: 3, f3: 2, f4: 1, f5 and f6: none.
+    "MATCH (u:User), (f:Festival) WHERE toInteger(substring(f.key, 1)) <= 5 - toInteger(substring(u.key, 1)) CREATE (u)-[:FOLLOWS]->(f)",
+  ];
+
+  test("root lists filter and sort by the computed value", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{ festivals: unknown[] }>(`{
+      festivals(where: { followerCount: { gt: 1 } }, sort: [{ followerCount: ASC }]) { key followerCount }
+    }`);
+    expect(d.festivals).toEqual([
+      { key: "f3", followerCount: 2 },
+      { key: "f2", followerCount: 3 },
+      { key: "f1", followerCount: 4 },
+    ]);
+    const mixed = await h.data<{ festivals: Array<{ key: string }> }>(`{
+      festivals(where: { OR: [{ followerCount: { eq: 0 } }, { name: { eq: "F1" } }] }) { key }
+    }`);
+    expect(mixed.festivals.map((f) => f.key).sort()).toEqual([
+      "f1",
+      "f5",
+      "f6",
+    ]);
+  });
+
+  test("connections page by the computed value", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const keys: string[] = [];
+    let after: string | null = null;
+    for (;;) {
+      const d: {
+        festivalsConnection: {
+          edges: Array<{ node: { key: string } }>;
+          pageInfo: { endCursor: string; hasNextPage: boolean };
+        };
+      } = await h.data(
+        `query($after: String) { festivalsConnection(first: 4, after: $after, sort: [{ followerCount: DESC }]) {
+            edges { node { key } } pageInfo { endCursor hasNextPage } } }`,
+        { after },
+      );
+      keys.push(...d.festivalsConnection.edges.map((e) => e.node.key));
+      if (!d.festivalsConnection.pageInfo.hasNextPage) break;
+      after = d.festivalsConnection.pageInfo.endCursor;
+    }
+    expect(keys).toEqual(["f1", "f2", "f3", "f4", "f5", "f6"]);
+  });
+
+  test("through a relationship it is refused; the model warns it scans", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const r = await h.run(
+      `{ users { follows(sort: [{ followerCount: DESC }]) { key } } }`,
+    );
+    expect(r.errors?.[0]?.message).toContain("sort by it in a root field only");
+    expect(h.lora.model.warnings.map((w) => w.message)).toContain(
+      "filtering or sorting by followerCount runs its statement for every Festival considered: no index applies",
+    );
+  });
+});
+
+describe("search results as connections", () => {
+  const typeDefs = /* GraphQL */ `
+    type Doc
+      @node
+      @fulltext(indexes: [{ fields: ["body"] }])
+      @limit(default: 10, max: 10) {
+      key: String! @key
+      body: String!
+      embedding: [Float!] @vector(dimensions: 2, similarity: COSINE)
+    }
+  `;
+  const seed = [
+    `UNWIND range(1, 12) AS i CREATE (:Doc {
+       key: 'd' + right('0' + toString(i), 2),
+       body: CASE WHEN i % 3 = 0 THEN 'lora lora lora' ELSE 'lora graph' END,
+       embedding: [toFloat(i), toFloat(13 - i)] })`,
+  ];
+
+  const walk = async (
+    h: Awaited<ReturnType<typeof festivalHarness>>,
+    field: string,
+    args: string,
+  ) => {
+    const pages: string[][] = [];
+    let after: string | null = null;
+    for (;;) {
+      const d: Record<
+        string,
+        {
+          edges: Array<{ node: { key: string }; score: number }>;
+          pageInfo: { endCursor: string; hasNextPage: boolean };
+        }
+      > = await h.data(
+        `query($after: String) { ${field}(${args}, first: 5, after: $after) {
+            edges { score node { key } } pageInfo { endCursor hasNextPage } } }`,
+        { after },
+      );
+      const conn = d[field]!;
+      pages.push(conn.edges.map((e) => e.node.key));
+      if (!conn.pageInfo.hasNextPage) break;
+      after = conn.pageInfo.endCursor;
+    }
+    return pages;
+  };
+
+  test("full-text: every match once, in score order, page by page", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const list = await h.data<{ searchDocs: Array<{ node: { key: string } }> }>(
+      `{ searchDocs(query: "lora", limit: 10) { node { key } } }`,
+    );
+    const pages = await walk(h, "searchDocsConnection", `query: "lora"`);
+    expect(pages.map((p) => p.length)).toEqual([5, 5, 2]);
+    expect(pages.flat().slice(0, 10)).toEqual(
+      list.searchDocs.map((r) => r.node.key),
+    );
+    expect(new Set(pages.flat()).size).toBe(12);
+  });
+
+  test("vector: pages within the candidate pool", async () => {
+    const h = await festivalHarness({
+      typeDefs: typeDefs.replace("@node\n", "@node\n      @mutation\n"),
+      seed: [],
+    });
+    const input = Array.from({ length: 12 }, (_, n) => {
+      const i = n + 1;
+      return `{ key: "d${String(i).padStart(2, "0")}", body: "x", embedding: [${i}, ${13 - i}] }`;
+    });
+    await h.data(
+      `mutation { createDocs(input: [${input.join(", ")}]) { info { nodesCreated } } }`,
+    );
+    const pages = await walk(h, "similarDocsConnection", `vector: [1, 0]`);
+    const all = pages.flat();
+    expect(all).toHaveLength(12);
+    expect(all[0]).toBe("d12");
+  });
+});
+
+describe("nested delete", () => {
+  const typeDefs = /* GraphQL */ `
+    type Venue @node @mutation {
+      key: String! @key
+      stages: [Stage!]! @relationship(type: "HAS", direction: OUT)
+      logo: Image @relationship(type: "SHOWS", direction: OUT)
+    }
+    type Stage @node @mutation {
+      key: String! @key
+      size: Int @filterable(byValue: [LT, GT])
+      venue: Venue! @relationship(type: "HAS", direction: IN)
+    }
+    type Image @node @mutation {
+      key: String! @key
+    }
+  `;
+  const seed = [
+    `CREATE (v:Venue {key: 'v1'}), (w:Venue {key: 'v2'}), (i:Image {key: 'i1'})
+     CREATE (v)-[:SHOWS]->(i)
+     WITH v, w UNWIND range(1, 4) AS n
+     CREATE (v)-[:HAS]->(:Stage {key: 's' + toString(n), size: n})
+     CREATE (w)-[:HAS]->(:Stage {key: 'w' + toString(n), size: n})`,
+  ];
+
+  test("deletes the connected nodes where matches, and only those", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const d = await h.data<{
+      updateVenue: { info: { nodesDeleted: number } };
+    }>(`mutation {
+      updateVenue(key: "v1", update: { stages: { delete: { where: { size: { gt: 2 } } } } }) {
+        info { nodesDeleted } venue { stages { key } }
+      }
+    }`);
+    expect(d.updateVenue).toEqual({
+      info: { nodesDeleted: 2 },
+      venue: { stages: [{ key: "s1" }, { key: "s2" }] },
+    });
+    // The other venue's stages of the same size stay.
+    const rows = await h.db.execute(
+      "MATCH (s:Stage) WHERE s.size > 2 RETURN s.key AS k ORDER BY k",
+    );
+    expect(rows.rows.map((r) => r["k"])).toEqual(["w3", "w4"]);
+  });
+
+  test("bounded by limit; a single relationship takes true", async () => {
+    const h = await festivalHarness({ typeDefs, seed });
+    const over = await h.run(`mutation {
+      updateVenue(key: "v1", update: { stages: { delete: { limit: 3 } } }) { info { nodesDeleted } }
+    }`);
+    expect(over.errors?.[0]?.extensions?.["code"]).toBe("LIMIT_EXCEEDED");
+    const logo = await h.data<{
+      updateVenue: { info: { nodesDeleted: number } };
+    }>(`mutation {
+      updateVenue(key: "v1", update: { logo: { delete: true } }) { info { nodesDeleted } }
+    }`);
+    expect(logo.updateVenue.info.nodesDeleted).toBe(1);
   });
 });

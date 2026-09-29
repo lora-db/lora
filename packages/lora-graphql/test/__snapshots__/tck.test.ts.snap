@@ -379,7 +379,7 @@ exports[`public schema 1`] = `
     last: Int
     sort: [FestivalSort!]
     where: FestivalWhere
-  ): FestivalConnection!
+  ): ArtistPlaysConnection!
 }
 
 type ArtistConnection {
@@ -407,6 +407,24 @@ input ArtistNameFilter {
 
   """Equal to."""
   eq: String
+}
+
+type ArtistPlaysConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: ArtistPlaysConnectionAggregate!
+  edges: [ArtistPlaysEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type ArtistPlaysConnectionAggregate {
+  count: RelationshipCount!
+  node: FestivalAggregateNode!
+}
+
+type ArtistPlaysEdge {
+  cursor: String!
+  node: Festival!
 }
 
 """Sorts Artist nodes. One field per item; the @key breaks ties."""
@@ -696,7 +714,7 @@ type Genre {
     last: Int
     sort: [FestivalSort!]
     where: FestivalWhere
-  ): FestivalConnection!
+  ): GenreFestivalsConnection!
   key: String!
   name: String!
 }
@@ -710,6 +728,24 @@ type GenreConnection {
 type GenreEdge {
   cursor: String!
   node: Genre!
+}
+
+type GenreFestivalsConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: GenreFestivalsConnectionAggregate!
+  edges: [GenreFestivalsEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type GenreFestivalsConnectionAggregate {
+  count: RelationshipCount!
+  node: FestivalAggregateNode!
+}
+
+type GenreFestivalsEdge {
+  cursor: String!
+  node: Festival!
 }
 
 input GenreKeyFilter {
@@ -858,6 +894,14 @@ type Query {
   ): UserConnection!
 }
 
+"""
+Related nodes, and the relationships to them: they differ when several relationships lead to the same node.
+"""
+type RelationshipCount {
+  edges: Int!
+  nodes: Int!
+}
+
 enum SortDirection {
   """Ascending; nulls last."""
   ASC
@@ -873,13 +917,21 @@ enum Status {
 }
 
 type StringAggregate {
+  """The longest value."""
+  longest: String
   max: String
   min: String
+
+  """The shortest value."""
+  shortest: String
 }
 
 input StringAggregateFilter {
+  averageLength: FloatComparison
+  longestLength: IntComparison
   max: StringComparison
   min: StringComparison
+  shortestLength: IntComparison
 }
 
 input StringComparison {
@@ -931,8 +983,7 @@ type UserFollowsConnection {
 }
 
 type UserFollowsConnectionAggregate {
-  """Matching nodes."""
-  count: Int!
+  count: RelationshipCount!
   edge: FollowsAggregateEdge!
   node: FestivalAggregateNode!
 }

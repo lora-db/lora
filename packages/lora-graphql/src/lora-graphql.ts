@@ -361,8 +361,10 @@ export class LoraGraphQL {
           );
           return this.#run(info.fieldName, compiled, context, info);
         }),
-      resolveSearch: (node, index, info, context) =>
-        span(info, () => this.#resolveSearch(node, index, info, context)),
+      resolveSearch: (node, index, info, context, connection) =>
+        span(info, () =>
+          this.#resolveSearch(node, index, info, context, connection),
+        ),
       resolveRoot: (kind, node, info, context) =>
         span(info, () => this.#resolveRoot(kind, node, info, context)),
       resolveNode: (id, info, context) =>
@@ -559,7 +561,14 @@ export class LoraGraphQL {
       else if (abstract) {
         compiled = compileAbstractRoot(ctx, abstract, args, [sel]);
       } else if (search) {
-        compiled = compileSearch(ctx, search.node, search.index, args, [sel]);
+        compiled = compileSearch(
+          ctx,
+          search.node,
+          search.index,
+          args,
+          [sel],
+          search.connection,
+        );
       } else if (root) {
         compiled = compileRoot(ctx, root.kind, root.node, args, [sel]);
       }
@@ -783,11 +792,17 @@ export class LoraGraphQL {
 
   #searchOf(
     fieldName: string,
-  ): { node: NodeType; index: SearchIndex } | undefined {
+  ): { node: NodeType; index: SearchIndex; connection: boolean } | undefined {
     for (const node of this.model.nodes.values()) {
       if (!node.read) continue;
-      const index = node.search.find((s) => s.queryName === fieldName);
-      if (index) return { node, index };
+      for (const index of node.search) {
+        if (index.queryName === fieldName) {
+          return { node, index, connection: false };
+        }
+        if (`${index.queryName}Connection` === fieldName) {
+          return { node, index, connection: true };
+        }
+      }
     }
     return undefined;
   }
@@ -1106,10 +1121,18 @@ export class LoraGraphQL {
     index: SearchIndex,
     info: GraphQLResolveInfo,
     context: unknown,
+    connection = false,
   ): Promise<unknown> {
     const ctx = this.#context(infoContext(info), context);
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
-    const compiled = compileSearch(ctx, node, index, args, info.fieldNodes);
+    const compiled = compileSearch(
+      ctx,
+      node,
+      index,
+      args,
+      info.fieldNodes,
+      connection,
+    );
     return this.#run(info.fieldName, compiled, context, info);
   }
 

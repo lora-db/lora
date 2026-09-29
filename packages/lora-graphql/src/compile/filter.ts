@@ -97,6 +97,17 @@ function nodeKeys(
       checkFieldAuthentication(ctx, node.name, f);
       return (value) => relationshipPredicate(ctx, variable, f, value as Where);
     }
+    if (f?.kind === "cypher" && f.computed) {
+      checkFieldAuthentication(ctx, node.name, f);
+      const bound = ctx.computed.get(`${variable}\0${f.name}`);
+      if (!bound) {
+        throw requestError(
+          "BAD_USER_INPUT",
+          `${node.name}.${f.name} is computed by @cypher: filter by it in a root field's where, not through a relationship or search`,
+        );
+      }
+      return (value) => scalarPredicate(ctx, v(bound), value as Where);
+    }
     // `<field>Connection`: quantifiers over { node, edge } of a list
     // relationship with properties.
     if (key.endsWith("Connection")) {
@@ -528,7 +539,15 @@ function nonEmptyPair(
   );
 }
 
-const AGGREGATE_KEYS = new Set<ListAggregate>(["min", "max", "avg", "sum"]);
+const AGGREGATE_KEYS = new Set<ListAggregate>([
+  "min",
+  "max",
+  "avg",
+  "sum",
+  "shortestLength",
+  "longestLength",
+  "averageLength",
+]);
 
 /**
  * `followers: { aggregate: { node: { age: { avg: { gt: 30 } } }, edge: … } }`:
@@ -575,7 +594,9 @@ function aggregatePredicate(
           () => undefined,
           (x, r) => prop(v(onEdge ? r : x), field.property),
         );
-        const aggregate = listAggregate(ctx, agg as ListAggregate, values);
+        const aggregate = listAggregate(ctx, agg as ListAggregate, values, {
+          duration: field.type === "Duration",
+        });
         parts.push(scalarPredicate(ctx, aggregate, bounds as Where));
       }
     }

@@ -19,6 +19,11 @@ export interface CompileContext extends SelectionContext {
   degrees: ReadonlyMap<string, number>;
   /** The GraphQL context, for `"$context.path"` values in rules. */
   requestContext: unknown;
+  /**
+   * Variables holding computed (`@cypher`) field values in the current
+   * statement, by `variable + "\0" + field`: set by the root match.
+   */
+  computed: Map<string, string>;
 }
 
 export function newContext(
@@ -41,6 +46,7 @@ export function newContext(
     cost: 0,
     degrees: options.degrees ?? new Map(),
     requestContext: options.requestContext,
+    computed: new Map(),
   };
 }
 

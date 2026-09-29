@@ -81,6 +81,7 @@ export interface SchemaHooks {
     index: SearchIndex,
     info: GraphQLResolveInfo,
     context: unknown,
+    connection: boolean,
   ) => Promise<unknown>;
   resolveRoot: RootResolver;
   resolveNode: NodeResolver;
@@ -449,6 +450,14 @@ export function buildSchema(
             if (f.filters.size > 0 && !f.private) {
               fields[f.name] = { type: fieldFilter(node.name, f) };
             }
+          } else if (f.kind === "cypher") {
+            if (f.computed && f.computed.filters.size > 0) {
+              fields[f.name] = {
+                type: fieldFilter(node.name, f.computed),
+                description:
+                  "Computed by @cypher for every node considered: no index applies.",
+              };
+            }
           } else if (f.kind === "relationship" && f.filterable) {
             fields[f.name] = {
               type: f.list ? relationFilter(node, f) : whereOf(f.target),
@@ -610,9 +619,7 @@ export function buildSchema(
     !f.private &&
     f.selectableOn.aggregate &&
     f.selectableOn.read &&
-    !["Boolean", "Enum", "Point", "CartesianPoint", "Duration"].includes(
-      f.type,
-    );
+    !["Boolean", "Enum", "Point", "CartesianPoint"].includes(f.type);
   const isNumeric = (f: ScalarField) =>
     f.type === "Int" || f.type === "Float" || f.type === "BigInt";
 
@@ -633,6 +640,19 @@ export function buildSchema(
                 sum: {
                   type: comparison(f.type === "Int" ? GraphQLFloat : base),
                 },
+              }
+            : {}),
+          ...(f.type === "Duration"
+            ? {
+                avg: { type: comparison(base) },
+                sum: { type: comparison(base) },
+              }
+            : {}),
+          ...(f.type === "String" || f.type === "ID"
+            ? {
+                shortestLength: { type: comparison(GraphQLInt) },
+                longestLength: { type: comparison(GraphQLInt) },
+                averageLength: { type: comparison(GraphQLFloat) },
               }
             : {}),
         },
@@ -718,6 +738,11 @@ export function buildSchema(
     for (const f of node.fields.values()) {
       if (f.kind === "scalar" && (f.key || f.sortable)) {
         fields[f.name] = { type: sortDirection };
+      } else if (f.kind === "cypher" && f.computed?.sortable) {
+        fields[f.name] = {
+          type: sortDirection,
+          description: "Computed by @cypher per node: root fields only.",
+        };
       }
     }
     sorts.set(
@@ -912,10 +937,20 @@ export function buildSchema(
    */
   const connectionAggregates = new Map<string, GraphQLObjectType>();
   const aggregateSides = new Map<string, GraphQLObjectType | undefined>();
+  const relationshipCount = new GraphQLObjectType({
+    name: "RelationshipCount",
+    description:
+      "Related nodes, and the relationships to them: they differ when several relationships lead to the same node.",
+    fields: {
+      nodes: { type: nonNull(GraphQLInt) },
+      edges: { type: nonNull(GraphQLInt) },
+    },
+  });
   const connectionAggregate = (
     name: string,
     target: NodeType,
     props: RelationshipPropertiesType | undefined,
+    relationship = false,
   ): GraphQLObjectType | undefined => {
     if (!target.aggregate) return undefined;
     let t = connectionAggregates.get(name);
@@ -950,7 +985,9 @@ export function buildSchema(
       t = new GraphQLObjectType({
         name,
         fields: {
-          count: { type: nonNull(GraphQLInt), description: "Matching nodes." },
+          count: relationship
+            ? { type: nonNull(relationshipCount) }
+            : { type: nonNull(GraphQLInt), description: "Matching nodes." },
           ...(node ? { node: { type: nonNull(node) } } : {}),
           ...(edge ? { edge: { type: nonNull(edge) } } : {}),
         },
@@ -1148,14 +1185,27 @@ export function buildSchema(
     rel: RelationshipField,
   ): GraphQLFieldConfig<Record<string, unknown>, unknown> {
     if (!hasOwnConnection(rel)) {
-      // Opting out of aggregates needs a connection type without them.
-      const conn = rel.aggregate
-        ? connections.get(rel.target)!
-        : makeConnection(
-            names.relConnection(node.name, rel.name),
-            names.relEdge(node.name, rel.name),
-            () => objects.get(rel.target)!,
-          );
+      // Aggregates through a relationship count relationships too, and
+      // opting out removes them: both need a connection type of its own.
+      const target = model.nodes.get(rel.target)!;
+      const conn =
+        rel.aggregate && !target.aggregate
+          ? connections.get(rel.target)!
+          : makeConnection(
+              names.relConnection(node.name, rel.name),
+              names.relEdge(node.name, rel.name),
+              () => objects.get(rel.target)!,
+              undefined,
+              rel.aggregate
+                ? () =>
+                    connectionAggregate(
+                      `${names.relConnection(node.name, rel.name)}Aggregate`,
+                      target,
+                      undefined,
+                      true,
+                    )
+                : undefined,
+            );
       return {
         type: nonNull(conn),
         args: connectionArgs(rel.target),
@@ -1175,6 +1225,7 @@ export function buildSchema(
               `${names.relConnection(node.name, rel.name)}Aggregate`,
               model.nodes.get(rel.target)!,
               props,
+              true,
             )
         : undefined,
     );
@@ -1239,6 +1290,15 @@ export function buildSchema(
                 sum: { type: f.type === "Int" ? GraphQLFloat : base },
               }
             : {}),
+          ...(f.type === "Duration"
+            ? { avg: { type: base }, sum: { type: base } }
+            : {}),
+          ...(f.type === "String" || f.type === "ID"
+            ? {
+                shortest: { type: base, description: "The shortest value." },
+                longest: { type: base, description: "The longest value." },
+              }
+            : {}),
         },
       });
       aggregateFieldTypes.set(name, t);
@@ -1253,9 +1313,12 @@ export function buildSchema(
       count: { type: nonNull(GraphQLInt) },
     };
     for (const f of node.fields.values()) {
+      // Sortable fields opt in; durations cannot be sortable, so they
+      // take part whenever they are aggregatable.
       if (
         f.kind === "scalar" &&
-        (f.key || f.sortable) &&
+        (f.key || f.sortable || f.type === "Duration") &&
+        !f.list &&
         f.selectableOn.aggregate &&
         f.type !== "Boolean" &&
         f.type !== "Enum"
@@ -1324,10 +1387,61 @@ export function buildSchema(
         },
       },
     });
+    const searchEdge = new GraphQLObjectType<SortedEdge & { score: number }>({
+      name: names.searchEdge(node.name),
+      fields: {
+        cursor: {
+          type: nonNull(GraphQLString),
+          resolve: (src) =>
+            encodeCursor(src.__sort, src.__cursor, model.cursorSecret),
+        },
+        score: { type: nonNull(GraphQLFloat) },
+        node: {
+          type: nonNull(obj),
+          resolve: (src) => assertReadable(src.node),
+        },
+      },
+    });
+    const searchConnection = new GraphQLObjectType({
+      name: names.searchConnection(node.name),
+      description: `${node.name} search results, highest score first, paged with cursors.`,
+      fields: {
+        edges: {
+          type: nonNull(listOf(nonNull(searchEdge))),
+          resolve: connectionResolvers.edges,
+        },
+        pageInfo: {
+          type: nonNull(pageInfo),
+          resolve: connectionResolvers.pageInfo,
+        },
+      },
+    });
     for (const index of node.search) {
       const common = {
         where: { type: whereOf(node.name) },
         limit: { type: GraphQLInt },
+      };
+      const inputs =
+        index.kind === "fulltext"
+          ? { query: { type: nonNull(GraphQLString) } }
+          : {
+              vector: { type: listOf(nonNull(GraphQLFloat)) },
+              to: { type: scalarType(node.key) as GraphQLInputType },
+            };
+      query[`${index.queryName}Connection`] = {
+        type: nonNull(searchConnection),
+        description:
+          index.kind === "fulltext"
+            ? `${index.queryName}, paged with cursors.`
+            : `${index.queryName}, paged with cursors within the top ${Math.max(node.limit.max * 4, 1)} candidates.`,
+        args: {
+          ...inputs,
+          where: { type: whereOf(node.name) },
+          first: { type: GraphQLInt },
+          after: { type: GraphQLString },
+        },
+        resolve: (_src, _args, context, info) =>
+          hooks.resolveSearch(node, index, info, context, true),
       };
       query[index.queryName] = {
         type: nonNull(listOf(nonNull(match))),
@@ -1344,7 +1458,7 @@ export function buildSchema(
                 ...common,
               },
         resolve: (_src, _args, context, info) =>
-          hooks.resolveSearch(node, index, info, context),
+          hooks.resolveSearch(node, index, info, context, false),
       };
     }
   }

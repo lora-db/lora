@@ -67,6 +67,7 @@ remain. New findings, each worked around in the package:
 | E22 | Integer `/` integer returns a float                                                                                   | expression evaluator (the package wraps `toInteger`)                                                    |
 | E23 | Negative list slice bounds (`l[..-1]`) return wrong results                                                           | expression evaluator (the package writes `l[..size(l) - n]`)                                            |
 | E24 | `COUNT { … RETURN DISTINCT }`, `EXISTS { }` and `UNION` inside `CALL { }` are not supported                           | parser / analyzer (the package uses `reduce` and per-type `CALL`s)                                      |
+| E25 | `max`, `sum` and `avg` over durations are wrong (`max` returns the smallest; `sum` and `avg` return null)             | aggregate functions (the package folds durations with `reduce`)                                         |
 
 ## Why
 

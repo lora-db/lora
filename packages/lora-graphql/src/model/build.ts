@@ -1188,8 +1188,6 @@ function buildCypherField(
     "key",
     "unique",
     "alias",
-    "sortable",
-    "filterable",
     "index",
     "default",
     "timestamp",
@@ -1266,7 +1264,37 @@ function buildCypherField(
     );
   }
 
-  return {
+  // Opt-in filters and sorts: computed per row, so never through an index.
+  let computed: ScalarField | undefined;
+  if (
+    directive(d("filterable"), f, at) !== undefined ||
+    directive(d("sortable"), f, at) !== undefined
+  ) {
+    if (ctx.root !== undefined) {
+      at("@filterable and @sortable on @cypher apply to @node type fields");
+    } else if (node || shape.list) {
+      at(
+        "only scalar, non-list @cypher fields can be @filterable or @sortable",
+      );
+    } else if (cypherArgs.some((a) => a.defaultValue === undefined)) {
+      at(
+        "a @filterable or @sortable @cypher field needs a default for every argument",
+      );
+    } else {
+      computed = buildScalarField(
+        { name: owner } as GraphQLObjectType,
+        f,
+        d,
+        problems,
+        { allowKey: false },
+      );
+      warn(
+        `filtering or sorting by ${f.name} runs its statement for every ${owner} considered: no index applies`,
+      );
+    }
+  }
+
+  const field: CypherField = {
     kind: "cypher",
     name: f.name,
     owner,
@@ -1276,12 +1304,15 @@ function buildCypherField(
     node,
     args: cypherArgs,
     params,
+    computed,
     authentication: authOps(directive(d("authentication"), f, at)),
     authenticationJwt: directive(d("authentication"), f, at)?.["jwt"] as
       | AuthorizationWhere
       | undefined,
     description: f.description ?? undefined,
   };
+  if (computed) computed.computedBy = field;
+  return field;
 }
 
 /** The column of a statement ending in `RETURN x` or `RETURN … AS x`. */

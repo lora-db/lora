@@ -13,7 +13,11 @@ import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
 import type { QueryResult, Statement } from "../driver.js";
 import { requestError } from "../errors.js";
 import { renameParams } from "../model/cypher-lexer.js";
-import { listAggregate, type ListAggregate } from "./aggregate.js";
+import {
+  distinctCount,
+  listAggregate,
+  type ListAggregate,
+} from "./aggregate.js";
 import type {
   AbstractType,
   CypherField,
@@ -100,10 +104,21 @@ interface SortKey {
   direction: "ASC" | "DESC";
   /** A relationship property (`sort: [{ edge: { ... } }]`), not a node field. */
   edge?: boolean;
+  /** For a computed (`@cypher`) field: the variable holding its value. */
+  computed?: string;
 }
 
 /** The value a sort key orders by: `node.prop`, or `rel.prop` for edge keys. */
 function keyExpr(k: SortKey, variable: string, edge?: string): Expr {
+  if (k.field.computedBy) {
+    if (!k.computed) {
+      throw requestError(
+        "BAD_USER_INPUT",
+        `${k.field.computedBy.owner}.${k.field.name} is computed by @cypher: sort by it in a root field only`,
+      );
+    }
+    return v(k.computed);
+  }
   return prop(v(k.edge ? edge! : variable), k.field.property);
 }
 
@@ -190,7 +205,7 @@ function compileList(
     ...root.clauses,
     {
       kind: "with",
-      items: [{ expr: v("this") }],
+      items: [{ expr: v("this") }, ...root.carry.map((c) => ({ expr: v(c) }))],
       orderBy: sortItems("this", sort),
       limit: bind(ctx, limit),
     },
@@ -285,7 +300,10 @@ function compileConnection(
         ...root.clauses,
         {
           kind: "with",
-          items: [{ expr: v("this") }],
+          items: [
+            { expr: v("this") },
+            ...root.carry.map((c) => ({ expr: v(c) })),
+          ],
           orderBy: sortItems("this", sort),
           limit: bind(ctx, first + 1),
         },
@@ -312,6 +330,7 @@ function compileConnection(
       ...ctx,
       params: {},
       vars: new Set(["this"]),
+      computed: new Map(),
     };
     const statsRoot = rootMatch(statsCtx, node, where, []);
     expectation ??= statsRoot.expectation;
@@ -319,18 +338,19 @@ function compileConnection(
       { expr: fn("count", v("this")), alias: "totalCount" },
       ...deniedItem(statsCtx, node, "this"),
     ];
+    const wanted: WantedAggregate[] = [];
     for (const { field, fns } of sel.aggregate?.node ?? []) {
       for (const agg of fns) {
         const column = `node_${field.name}_${agg}`;
-        items.push({
-          expr: fn(agg, prop(v("this"), field.property)),
-          alias: column,
-        });
+        wanted.push({ field, agg, column });
         statsColumns.push({ column, path: ["node", field.name, agg] });
       }
     }
     statements.push({
-      text: printClauses([...statsRoot.clauses, { kind: "return", items }]),
+      text: printClauses([
+        ...statsRoot.clauses,
+        ...aggregateReturn(statsCtx, "this", items, wanted),
+      ]),
       params: statsCtx.params,
     });
   }
@@ -403,7 +423,80 @@ function setPath(
   cur[path[path.length - 1]!] = value;
 }
 
-const AGGREGATES = new Set(["min", "max", "avg", "sum"]);
+const AGGREGATES = new Set(["min", "max", "avg", "sum", "shortest", "longest"]);
+
+interface WantedAggregate {
+  field: ScalarField;
+  agg: string;
+  column: string;
+}
+
+/**
+ * Whether an aggregate function computes this correctly. Shortest and
+ * longest have none; LoraDB's `max`, `sum` and `avg` over durations are
+ * wrong (E25). Those are folded from a `collect()` instead.
+ */
+function nativeAggregate(w: WantedAggregate): boolean {
+  return (
+    w.field.type !== "Duration" && w.agg !== "shortest" && w.agg !== "longest"
+  );
+}
+
+/**
+ * The RETURN of an aggregate statement over `variable`: `base` items
+ * (already aggregate expressions) and one column per wanted aggregate.
+ * Folded aggregates need their values collected first, in a WITH: an
+ * aggregate nested in another call is not aggregated (E16).
+ */
+function aggregateReturn(
+  ctx: CompileContext,
+  variable: string,
+  base: Array<{ expr: Expr; alias: string }>,
+  wanted: WantedAggregate[],
+): Clause[] {
+  const native = wanted.filter(nativeAggregate).map((w) => ({
+    expr: fn(w.agg, prop(v(variable), w.field.property)),
+    alias: w.column,
+  }));
+  const folded = wanted.filter((w) => !nativeAggregate(w));
+  if (folded.length === 0) {
+    return [{ kind: "return", items: [...base, ...native] }];
+  }
+  const lists = new Map<ScalarField, string>();
+  for (const w of folded) {
+    if (!lists.has(w.field)) {
+      lists.set(w.field, freshVar(ctx, `${w.field.name}_values`));
+    }
+  }
+  const carried = [...base, ...native];
+  return [
+    {
+      kind: "with",
+      items: [
+        ...carried,
+        ...[...lists].map(([f, alias]) => ({
+          expr: fn("collect", prop(v(variable), f.property)),
+          alias,
+        })),
+      ],
+    },
+    {
+      kind: "return",
+      items: [
+        ...carried.map((i) => ({ expr: v(i.alias), alias: i.alias })),
+        ...folded.map((w) => ({
+          expr: listAggregate(
+            ctx,
+            w.agg as ListAggregate,
+            v(lists.get(w.field)!),
+            { duration: w.field.type === "Duration" },
+          ),
+          alias: w.column,
+        })),
+      ],
+    },
+  ];
+}
 
 function compileAggregate(
   ctx: CompileContext,
@@ -418,6 +511,7 @@ function compileAggregate(
   const items: Array<{ expr: Expr; alias: string }> = [
     { expr: fn("count", v("this")), alias: "count" },
   ];
+  const wanted: WantedAggregate[] = [];
   const plan: Array<{ field: string; fn: string; column: string }> = [];
   for (const [, nodes] of collectFields(ctx, aggType, sets)) {
     const fieldName = nodes[0]!.name.value;
@@ -434,18 +528,18 @@ function compileAggregate(
       const column = `${fieldName}_${agg}`;
       if (plan.some((p) => p.column === column)) continue;
       plan.push({ field: fieldName, fn: agg, column });
-      items.push({
-        expr: fn(agg, prop(v("this"), field.property)),
-        alias: column,
-      });
+      wanted.push({ field, agg, column });
     }
   }
   items.push(...deniedItem(ctx, node, "this"));
-  const clauses: Clause[] = [...root.clauses, { kind: "return", items }];
+  const clauses: Clause[] = [
+    ...root.clauses,
+    ...aggregateReturn(ctx, "this", items, wanted),
+  ];
   return finish(
     ctx,
     clauses,
-    items.map((i) => i.alias),
+    [...items.map((i) => i.alias), ...wanted.map((w) => w.column)],
     ([r]) => {
       assertNoneDenied(r!.rows[0]);
       const row = r!.rows[0] ?? { count: 0 };
@@ -780,20 +874,49 @@ export interface SearchResult {
  * Vector search asks the index for more candidates than the page when a
  * filter may drop some, because the index returns the top k before WHERE.
  */
+/** The order search results come in, as a cursor signature. */
+const SEARCH_SORT = "score:DESC,key:ASC";
+
+/**
+ * A search as a connection (`connection: true`): pages forward by keyset
+ * on (score DESC, key ASC). A vector index returns its top candidates
+ * before any filter, so vector connections page within a fixed pool of
+ * `4 × @limit(max:)` candidates.
+ */
 export function compileSearch(
   ctx: CompileContext,
   node: NodeType,
   index: SearchIndex,
   args: Args,
   fieldNodes: readonly FieldNode[],
+  connection = false,
 ): CompiledRead {
   checkAuthentication(ctx, node, "READ");
   const label = node.labels[0]!;
   ctx.reads.labels.add(label);
-  const limit = resolveLimit(args["limit"], node.limit, "limit");
+  const limit = connection
+    ? resolveLimit(args["first"], node.limit, "first")
+    : resolveLimit(args["limit"], node.limit, "limit");
+  const after = connection
+    ? (args["after"] as string | null | undefined)
+    : null;
+  const cursor =
+    after != null
+      ? decodeCursor(after, SEARCH_SORT, 2, ctx.model.cursorSecret)
+      : undefined;
+  const keyset = cursor
+    ? or(
+        bin("<", v("score"), bind(ctx, cursor[0])),
+        and(
+          bin("=", v("score"), bind(ctx, cursor[0])),
+          bin(">", prop(v("this"), node.key.property), bind(ctx, cursor[1])),
+        ),
+      )
+    : undefined;
   const where = and(
     compileNodeWhere(ctx, node, "this", args["where"] as Where | undefined),
     authFilter(ctx, node, "this", "READ"),
+    keyset,
   );
   const clauses: Clause[] = [];
   if (index.kind === "fulltext") {
@@ -820,10 +943,10 @@ export function compileSearch(
         `\`vector\` has ${vector.length} dimensions; ${node.name}.${index.field.name} has ${index.dimensions}`,
       );
     }
-    const candidates = Math.min(
-      (limit + (to != null ? 1 : 0)) * (where ? 4 : 1),
-      Math.max(node.limit.max * 4, 1),
-    );
+    const pool = Math.max(node.limit.max * 4, 1);
+    const candidates = connection
+      ? pool
+      : Math.min((limit + (to != null ? 1 : 0)) * (where ? 4 : 1), pool);
     let source: Expr;
     let exclude: Expr | undefined;
     if (to != null) {
@@ -859,13 +982,10 @@ export function compileSearch(
       where: and(exclude, where),
     });
   }
-  const projection = projectNode(
-    ctx,
-    node,
-    "this",
-    searchNodeSelections(ctx, node, fieldNodes),
-    limit,
-  );
+  const selections = connection
+    ? searchConnectionSelections(ctx, node, fieldNodes)
+    : searchNodeSelections(ctx, node, fieldNodes);
+  const projection = projectNode(ctx, node, "this", selections, limit);
   clauses.push(
     {
       kind: "with",
@@ -874,7 +994,8 @@ export function compileSearch(
         { expr: v("score"), direction: "DESC" },
         { expr: prop(v("this"), node.key.property), direction: "ASC" },
       ],
-      limit: bind(ctx, limit),
+      // One more than the page, to tell whether another follows.
+      limit: bind(ctx, connection ? limit + 1 : limit),
     },
     ...projection.pre,
     {
@@ -882,9 +1003,39 @@ export function compileSearch(
       items: [
         { expr: projection.expr, alias: "node" },
         { expr: v("score"), alias: "score" },
+        ...(connection
+          ? [
+              {
+                expr: {
+                  kind: "list" as const,
+                  items: [v("score"), prop(v("this"), node.key.property)],
+                },
+                alias: "__cursor",
+              },
+            ]
+          : []),
       ],
     },
   );
+  if (connection) {
+    return finish(
+      ctx,
+      clauses,
+      ["node", "score", "__cursor"],
+      ([r]): RawConnection => ({
+        __rows: r!.rows.map((row) => ({
+          node: row["node"],
+          score: row["score"],
+          __cursor: row["__cursor"] as unknown[],
+        })),
+        __first: limit,
+        __after: cursor !== undefined,
+        __backward: false,
+        __sort: SEARCH_SORT,
+      }),
+      undefined,
+    );
+  }
   return finish(
     ctx,
     clauses,
@@ -896,6 +1047,28 @@ export function compileSearch(
       })),
     undefined,
   );
+}
+
+/** The `edges { node }` selections of a search connection. */
+function searchConnectionSelections(
+  ctx: CompileContext,
+  node: NodeType,
+  fieldNodes: readonly FieldNode[],
+): SelectionSetNode[] {
+  const connType = ctx.schema.getType(
+    names.searchConnection(node.name),
+  ) as GraphQLObjectType;
+  const edgeType = ctx.schema.getType(
+    names.searchEdge(node.name),
+  ) as GraphQLObjectType;
+  return connectionSelections(
+    ctx,
+    connType,
+    edgeType,
+    subSelections(fieldNodes),
+    node,
+    undefined,
+  ).node;
 }
 
 /** The `node` selections of a `<Type>Match` list, merged across aliases. */
@@ -1002,6 +1175,8 @@ function rootMatch(
 ): {
   clauses: Clause[];
   expectation: Omit<SeekExpectation, "statement"> | undefined;
+  /** Computed values the following clauses must carry. */
+  carry: string[];
 } {
   checkAuthentication(ctx, node, "READ");
   const label = node.labels[0]!;
@@ -1034,14 +1209,30 @@ function rootMatch(
     };
   }
 
+  // Computed (@cypher) fields the filter or sort uses: each runs once per
+  // node, in a CALL after the MATCH, and the filter moves after them.
+  const computed = computedFields(node, rest, sort);
+  const carry: string[] = [];
+  const computedClauses: Clause[] = [];
+  for (const field of computed) {
+    const projection = projectCypher(ctx, "this", field, field.name, {}, [], 1);
+    const out = (projection.expr as { name: string }).name;
+    ctx.computed.set(`this\0${field.name}`, out);
+    for (const k of sort) if (k.field.computedBy === field) k.computed = out;
+    computedClauses.push(...projection.pre);
+    carry.push(out);
+  }
+
   const predicate = compileNodeWhere(ctx, node, "this", rest);
-  expectation ??= rest ? seekFromWhere(node, rest) : undefined;
+  if (computed.length === 0) {
+    expectation ??= rest ? seekFromWhere(node, rest) : undefined;
+  }
 
   // Nothing to seek on, but a relationship filter names a related node by
   // key: start from that node and expand, instead of scanning the label.
   // The filter itself stays in the WHERE, so the result is unchanged.
   let related: RelatedAnchor | undefined;
-  if (!expectation && !anchor && rest) {
+  if (!expectation && !anchor && rest && computed.length === 0) {
     related = findRelatedAnchor(ctx, node, rest);
     if (related) {
       clauses.push(...related.clauses);
@@ -1053,6 +1244,7 @@ function rootMatch(
   if (cursor) {
     keyset = keysetPredicate(ctx, "this", sort, cursor);
     if (
+      computed.length === 0 &&
       !expectation &&
       leadBound(sort[0]!) &&
       !RANGE_UNINDEXABLE.has(sort[0]!.field.type)
@@ -1076,6 +1268,7 @@ function rootMatch(
     !anchor &&
     !keyset &&
     !related &&
+    computed.length === 0 &&
     lead &&
     lead.direction === "ASC" &&
     leadBound(lead) &&
@@ -1096,8 +1289,8 @@ function rootMatch(
       : { start: { variable: "this", labels: [label] }, hops: [] },
     where: and(
       anchor,
-      predicate,
-      keyset,
+      computed.length === 0 ? predicate : undefined,
+      computed.length === 0 ? keyset : undefined,
       bound,
       authFilter(ctx, node, "this", "READ"),
     ),
@@ -1110,7 +1303,39 @@ function rootMatch(
       items: [{ expr: v("this") }],
     });
   }
-  return { clauses, expectation };
+  if (computed.length > 0) {
+    clauses.push(...computedClauses, {
+      kind: "with",
+      items: [{ expr: v("this") }, ...carry.map((c) => ({ expr: v(c) }))],
+      where: and(predicate, keyset),
+    });
+  }
+  return { clauses, expectation, carry };
+}
+
+/** The computed (`@cypher`) fields a root filter or sort refers to. */
+function computedFields(
+  node: NodeType,
+  where: Where | undefined,
+  sort: SortKey[],
+): CypherField[] {
+  const out = new Set<CypherField>();
+  const walk = (w: Where | undefined) => {
+    for (const [key, value] of Object.entries(w ?? {})) {
+      if (value === null || value === undefined) continue;
+      if (key === "AND" || key === "OR") {
+        for (const item of value as Where[]) walk(item);
+      } else if (key === "NOT") {
+        walk(value as Where);
+      } else {
+        const f = node.fields.get(key);
+        if (f?.kind === "cypher" && f.computed) out.add(f);
+      }
+    }
+  };
+  walk(where);
+  for (const k of sort) if (k.field.computedBy) out.add(k.field.computedBy);
+  return [...out];
 }
 
 interface RelatedAnchor {
@@ -1302,9 +1527,13 @@ function resolveSort(
       keys.push({ field, direction: dir as "ASC" | "DESC", edge: true });
       continue;
     }
-    const field = node.fields.get(fieldName) as ScalarField;
+    const declared = node.fields.get(fieldName)!;
+    const field =
+      declared.kind === "cypher"
+        ? declared.computed!
+        : (declared as ScalarField);
     // Ordering by a field reveals it, and cursors carry its values.
-    checkFieldAuthentication(ctx, node.name, field);
+    checkFieldAuthentication(ctx, node.name, declared);
     refuseRowRules(ctx, node, field, "sort by");
     if (keys.some((k) => !k.edge && k.field === field)) {
       throw requestError(
@@ -1700,7 +1929,7 @@ function projectRelationshipConnection(
   );
 
   const own = hasOwnConnection(rel);
-  const typeNames = connectionTypeNames(rel);
+  const typeNames = connectionTypeNames(rel, target);
   const connType = ctx.schema.getType(
     typeNames.connection,
   ) as GraphQLObjectType;
@@ -1788,6 +2017,7 @@ function projectRelationshipConnection(
                   matching((nv, rv) =>
                     prop(v(side === "node" ? nv : rv), field.property),
                   ),
+                  { duration: field.type === "Duration" },
                 ),
               })),
             },
@@ -1801,11 +2031,28 @@ function projectRelationshipConnection(
         kind: "map",
         entries: [
           {
+            // Related nodes, and relationships: they differ when several
+            // relationships lead to the same node.
             key: "count",
-            value: fn(
-              "size",
-              matching(() => lit(1)),
-            ),
+            value: {
+              kind: "map",
+              entries: [
+                {
+                  key: "nodes",
+                  value: distinctCount(
+                    ctx,
+                    matching((nv) => prop(v(nv), target.key.property)),
+                  ),
+                },
+                {
+                  key: "edges",
+                  value: fn(
+                    "size",
+                    matching(() => lit(1)),
+                  ),
+                },
+              ],
+            },
           },
           ...sides,
         ],
