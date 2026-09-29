@@ -396,7 +396,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn node_ids_by_label(&self, label: &str) -> Vec<NodeId> {
         match self.nodes_by_label.get(label) {
-            Some(ids) => ids.iter().copied().collect(),
+            Some(ids) => ids.to_vec(),
             None => Vec::new(),
         }
     }
@@ -415,7 +415,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn rel_ids_by_type(&self, rel_type: &str) -> Vec<RelationshipId> {
         match self.relationships_by_type.get(rel_type) {
-            Some(ids) => ids.iter().copied().collect(),
+            Some(ids) => ids.to_vec(),
             None => Vec::new(),
         }
     }

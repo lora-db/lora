@@ -82,6 +82,21 @@ impl<T> ChunkedVec<T> {
         self.chunks.iter().flat_map(|chunk| chunk.iter())
     }
 
+    /// The elements as one `Vec`, copied a chunk at a time into an exact
+    /// allocation. Collecting `iter()` instead grows the vector by doubling
+    /// and copies element by element, which doubled the cost of opening a
+    /// label scan.
+    pub(super) fn to_vec(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        let mut out = Vec::with_capacity(self.len);
+        for chunk in &self.chunks {
+            out.extend_from_slice(chunk);
+        }
+        out
+    }
+
     /// Allocated slots, for the memory estimator.
     pub(super) fn capacity(&self) -> usize {
         self.chunks.iter().map(|c| c.capacity()).sum()
@@ -211,6 +226,7 @@ mod tests {
             reference.swap_remove(reference.len() - 1)
         );
         assert!(v.iter().eq(reference.iter()));
+        assert_eq!(v.to_vec(), reference);
         v.resize_with(10, || 0);
         reference.truncate(10);
         assert!(v.iter().eq(reference.iter()));
@@ -218,6 +234,8 @@ mod tests {
         reference.resize(CHUNK + 2, 9);
         assert!(v.iter().eq(reference.iter()));
         assert_eq!(v.get(v.len() - 1), reference.last());
+        assert_eq!(v.to_vec(), reference);
+        assert_eq!(ChunkedVec::<usize>::new().to_vec(), Vec::<usize>::new());
     }
 
     #[test]
