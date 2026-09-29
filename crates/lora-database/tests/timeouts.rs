@@ -50,9 +50,12 @@ fn streaming_write_honours_its_deadline_and_leaves_nothing() {
 #[test]
 fn filter_that_never_yields_still_times_out() {
     let db = seeded();
+    // The condition reads both variables, so it cannot be pushed down to
+    // either scan (a lone `a.i = -1` now becomes an empty index seek) and
+    // the filter really does reject all 4e8 rows of the product.
     let took = timed_out(
         &db,
-        "MATCH (a:A), (b:B) WHERE a.i = -1 SET a.hit = true",
+        "MATCH (a:A), (b:B) WHERE a.i + b.i = -1 SET a.hit = true",
         Duration::from_millis(50),
     );
     assert!(took < Duration::from_secs(2), "took {took:?}");

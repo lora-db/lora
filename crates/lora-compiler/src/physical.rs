@@ -103,6 +103,9 @@ pub struct NodeByPropertyScanExec {
     pub labels: Vec<Vec<String>>,
     pub key: String,
     pub value: ResolvedExpr,
+    /// `true` when `value` is a list and the scan seeks `key IN value`
+    /// (one index lookup per distinct element) instead of `key = value`.
+    pub in_list: bool,
 }
 
 #[derive(Debug, Clone)]

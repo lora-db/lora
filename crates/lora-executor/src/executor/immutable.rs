@@ -476,6 +476,17 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             Some(input) => self.execute_node_parallel_safe(plan, input)?,
             None => vec![Row::new()],
         };
+        if op.in_list {
+            // An IN seek touches one index bucket per element; the
+            // sequential path is already cheap.
+            return node_by_property_scan_rows(
+                self.ctx.storage,
+                &self.ctx.params,
+                base_rows,
+                op,
+                self.deadline,
+            );
+        }
         let eval_ctx = EvalContext {
             storage: self.ctx.storage,
             params: &self.ctx.params,

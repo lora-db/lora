@@ -345,55 +345,30 @@ pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
     let eval_ctx = EvalContext { storage, params };
     let mut out = Vec::new();
 
-    if deadline.is_none() {
-        for row in base_rows {
-            let expected = eval_expr(&op.value, &row, &eval_ctx);
-
-            if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
-                if node_matches_property_filter(
-                    storage,
-                    existing_id,
-                    &op.labels,
-                    &op.key,
-                    &expected,
-                ) {
-                    out.push(row);
-                }
-                continue;
-            }
-
-            let candidates =
-                indexed_node_property_candidates(storage, &op.labels, &op.key, &expected);
-            for id in candidates.ids {
-                if !candidates.prefiltered
-                    && !node_matches_property_filter(storage, id, &op.labels, &op.key, &expected)
-                {
-                    continue;
-                }
-                let mut new_row = row.clone();
-                new_row.insert(op.var, LoraValue::Node(id));
-                out.push(new_row);
-            }
-        }
-        return Ok(out);
-    }
-
     for row in base_rows {
         check_optional_deadline(deadline)?;
         let expected = eval_expr(&op.value, &row, &eval_ctx);
 
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
-            if node_matches_property_filter(storage, existing_id, &op.labels, &op.key, &expected) {
+            if property_scan_matches(
+                storage,
+                existing_id,
+                &op.labels,
+                &op.key,
+                &expected,
+                op.in_list,
+            ) {
                 out.push(row);
             }
             continue;
         }
 
-        let candidates = indexed_node_property_candidates(storage, &op.labels, &op.key, &expected);
+        let candidates =
+            property_scan_candidates(storage, &op.labels, &op.key, &expected, op.in_list);
         for id in candidates.ids {
             check_optional_deadline(deadline)?;
             if !candidates.prefiltered
-                && !node_matches_property_filter(storage, id, &op.labels, &op.key, &expected)
+                && !property_scan_matches(storage, id, &op.labels, &op.key, &expected, op.in_list)
             {
                 continue;
             }
@@ -427,10 +402,17 @@ pub(crate) fn count_all_scan_aggregation_rows<S: GraphStorage>(
         return None;
     }
     let specs = crate::pull::classify_streamable_aggregates(&op.aggregates)?;
-    if !specs
-        .iter()
-        .all(|spec| matches!(spec.kind, crate::pull::StreamableAggKind::CountAll))
-    {
+    let scan_var = scan_subtree_var(plan, op.input)?;
+    // `count(*)` counts rows; `count(n)` of the scanned node counts the
+    // same rows, since a scan never binds `n` to null.
+    let counts_rows = specs.iter().all(|spec| match spec.kind {
+        crate::pull::StreamableAggKind::CountAll => true,
+        crate::pull::StreamableAggKind::CountField => {
+            matches!(&spec.arg, Some(ResolvedExpr::Variable(v)) if *v == scan_var)
+        }
+        _ => false,
+    });
+    if !counts_rows {
         return None;
     }
 
@@ -443,6 +425,14 @@ pub(crate) fn count_all_scan_aggregation_rows<S: GraphStorage>(
     Some(vec![row])
 }
 
+fn scan_subtree_var(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> Option<VarId> {
+    match &plan.nodes[node_id] {
+        PhysicalOp::NodeScan(op) => Some(op.var),
+        PhysicalOp::NodeByLabelScan(op) => Some(op.var),
+        _ => None,
+    }
+}
+
 fn count_rows_for_scan_subtree<S: GraphStorage>(
     storage: &S,
     plan: &PhysicalPlan,
@@ -453,6 +443,12 @@ fn count_rows_for_scan_subtree<S: GraphStorage>(
             Some(storage.node_count())
         }
         PhysicalOp::NodeByLabelScan(op) if scan_input_is_argument(plan, op.input) => {
+            // One label: the label index already holds the answer.
+            if let [group] = op.labels.as_slice() {
+                if let [label] = group.as_slice() {
+                    return Some(storage.node_count_by_label(label));
+                }
+            }
             let ids = scan_node_ids_for_label_groups(storage, &op.labels);
             if label_group_candidates_prefiltered(&op.labels) {
                 return Some(ids.len());
@@ -1609,6 +1605,92 @@ pub(crate) fn indexed_node_property_candidates<S: GraphStorage>(
     NodePropertyCandidates {
         ids: out,
         prefiltered: labels.is_empty() || label_hint.is_some(),
+    }
+}
+
+/// Candidate ids for a `NodeByPropertyScan`. With `in_list` the scan
+/// seeks `key IN expected`: one lookup per distinct list element, the
+/// union deduplicated. A `null` list matches nothing. Any other non-list
+/// value yields every labelled node unfiltered, so the `Filter` kept
+/// above the scan evaluates (and reports) the predicate itself.
+pub(crate) fn property_scan_candidates<S: GraphStorage>(
+    storage: &S,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+    in_list: bool,
+) -> NodePropertyCandidates {
+    if !in_list {
+        return indexed_node_property_candidates(storage, labels, key, expected);
+    }
+    match expected {
+        LoraValue::Null => NodePropertyCandidates {
+            ids: Vec::new(),
+            prefiltered: true,
+        },
+        LoraValue::List(items) => {
+            let mut seen = BTreeSet::new();
+            let mut ids = Vec::new();
+            for item in items {
+                if matches!(item, LoraValue::Null) {
+                    continue;
+                }
+                let candidates = indexed_node_property_candidates(storage, labels, key, item);
+                for id in candidates.ids {
+                    if seen.contains(&id) {
+                        continue;
+                    }
+                    if !candidates.prefiltered
+                        && !node_matches_property_filter(storage, id, labels, key, item)
+                    {
+                        continue;
+                    }
+                    seen.insert(id);
+                    ids.push(id);
+                }
+            }
+            NodePropertyCandidates {
+                ids,
+                prefiltered: true,
+            }
+        }
+        _ => NodePropertyCandidates {
+            ids: scan_node_ids_for_label_groups(storage, labels)
+                .into_iter()
+                .filter(|&id| {
+                    storage
+                        .with_node(id, |n| node_matches_label_groups(&n.labels, labels))
+                        .unwrap_or(false)
+                })
+                .collect(),
+            prefiltered: true,
+        },
+    }
+}
+
+/// Whether `node_id` passes a `NodeByPropertyScan` (labels plus
+/// `key = expected`, or `key IN expected` when `in_list`). Mirrors
+/// [`property_scan_candidates`], including its non-list fallback.
+pub(crate) fn property_scan_matches<S: GraphStorage>(
+    storage: &S,
+    node_id: NodeId,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+    in_list: bool,
+) -> bool {
+    if !in_list {
+        return node_matches_property_filter(storage, node_id, labels, key, expected);
+    }
+    match expected {
+        LoraValue::Null => false,
+        LoraValue::List(items) => items.iter().any(|item| {
+            !matches!(item, LoraValue::Null)
+                && node_matches_property_filter(storage, node_id, labels, key, item)
+        }),
+        _ => storage
+            .with_node(node_id, |n| node_matches_label_groups(&n.labels, labels))
+            .unwrap_or(false),
     }
 }
 

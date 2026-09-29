@@ -279,6 +279,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
                 labels: scan.labels,
                 key: scan.key,
                 value: scan.value,
+                in_list: scan.in_list,
             })
         }
 
@@ -487,14 +488,40 @@ fn collect_index_candidates(
 ) -> Vec<LogicalOp> {
     let mut out = Vec::new();
 
-    if let Some((var, key, value)) = property_equality_for_var(predicate, scan.var) {
+    // One candidate per equality conjunct, so an indexed key wins over an
+    // unindexed one that happens to come first in the WHERE.
+    let mut seen_keys = BTreeSet::new();
+    for (key, value) in property_equalities_for_var(predicate, scan.var) {
+        if !seen_keys.insert(key.clone()) {
+            continue;
+        }
         out.push(LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
             input: scan.input,
-            var,
+            var: scan.var,
             labels: scan.labels.clone(),
             key,
             value,
+            in_list: false,
         }));
+    }
+
+    // `var.key IN list`: one seek per distinct element. The store builds a
+    // property index on first lookup, so this costs one lookup per element;
+    // `score_logical_op` weighs it by the list length when that is known.
+    if first_simple_label(&scan.labels).is_some() {
+        for (key, list) in property_in_lists_for_var(predicate, scan.var) {
+            if !seen_keys.insert(key.clone()) {
+                continue;
+            }
+            out.push(LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
+                input: scan.input,
+                var: scan.var,
+                labels: scan.labels.clone(),
+                key,
+                value: list,
+                in_list: true,
+            }));
+        }
     }
 
     if let Some(bounds) = collect_range_bounds(predicate, scan.var) {
@@ -706,7 +733,17 @@ fn score_logical_op(op: &LogicalOp, stats: &GraphStats) -> Option<u64> {
         },
         LogicalOp::NodeByPropertyScan(scan) => {
             let label = first_simple_label(&scan.labels)?;
-            stats.estimate_node_property_equality(label, &scan.key)
+            let per_value = stats.estimate_node_property_equality(label, &scan.key)?;
+            if !scan.in_list {
+                return Some(per_value);
+            }
+            // A literal list costs one seek per element; a parameter or
+            // other list-valued expression is assumed short.
+            let elements = match &scan.value {
+                ResolvedExpr::List(items) => items.len().max(1) as u64,
+                _ => 1,
+            };
+            Some(per_value.saturating_mul(elements))
         }
         LogicalOp::NodeByPropertyRangeScan(scan) => {
             // Conservative one-third selectivity: a one-sided range
@@ -1210,30 +1247,76 @@ fn text_predicate_for_var(predicate: &ResolvedExpr, var: VarId) -> Option<TextCa
     })
 }
 
-fn property_equality_for_var(
+/// Every `var.key = value` conjunct of an AND-tree, in order, where
+/// `value` does not mention `var`.
+fn property_equalities_for_var(
     predicate: &ResolvedExpr,
     var: VarId,
-) -> Option<(VarId, String, ResolvedExpr)> {
-    let ResolvedExpr::Binary { lhs, op, rhs } = predicate else {
-        return None;
-    };
-
-    if matches!(op, BinaryOp::And) {
-        return property_equality_for_var(lhs, var).or_else(|| property_equality_for_var(rhs, var));
+) -> Vec<(String, ResolvedExpr)> {
+    let mut out = Vec::new();
+    for conjunct in and_conjuncts(predicate) {
+        let ResolvedExpr::Binary {
+            lhs,
+            op: BinaryOp::Eq,
+            rhs,
+        } = conjunct
+        else {
+            continue;
+        };
+        if let Some(key) =
+            property_access_for_var(lhs, var).filter(|_| !collect_vars(rhs).contains(&var))
+        {
+            out.push((key, (**rhs).clone()));
+        } else if let Some(key) =
+            property_access_for_var(rhs, var).filter(|_| !collect_vars(lhs).contains(&var))
+        {
+            out.push((key, (**lhs).clone()));
+        }
     }
+    out
+}
 
-    if !matches!(op, BinaryOp::Eq) {
-        return None;
+/// Every `var.key IN list` conjunct of an AND-tree, in order, where `list`
+/// does not mention `var`.
+fn property_in_lists_for_var(predicate: &ResolvedExpr, var: VarId) -> Vec<(String, ResolvedExpr)> {
+    let mut out = Vec::new();
+    for conjunct in and_conjuncts(predicate) {
+        let ResolvedExpr::Binary {
+            lhs,
+            op: BinaryOp::In,
+            rhs,
+        } = conjunct
+        else {
+            continue;
+        };
+        if collect_vars(rhs).contains(&var) {
+            continue;
+        }
+        if let Some(key) = property_access_for_var(lhs, var) {
+            out.push((key, (**rhs).clone()));
+        }
     }
+    out
+}
 
-    property_access_for_var(lhs, var)
-        .filter(|_| !collect_vars(rhs).contains(&var))
-        .map(|key| (var, key, (**rhs).clone()))
-        .or_else(|| {
-            property_access_for_var(rhs, var)
-                .filter(|_| !collect_vars(lhs).contains(&var))
-                .map(|key| (var, key, (**lhs).clone()))
-        })
+/// Flatten an AND-tree into its conjuncts, left to right.
+fn and_conjuncts(predicate: &ResolvedExpr) -> Vec<&ResolvedExpr> {
+    let mut out = Vec::new();
+    let mut stack = vec![predicate];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            ResolvedExpr::Binary {
+                lhs,
+                op: BinaryOp::And,
+                rhs,
+            } => {
+                stack.push(rhs);
+                stack.push(lhs);
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn static_limit_bound(limit: &Limit) -> Option<usize> {
@@ -1466,6 +1549,7 @@ mod tests {
             labels: person_labels(),
             key: "id".to_string(),
             value: lit_int(7),
+            in_list: false,
         });
         assert_eq!(score_logical_op(&op, &stats), Some(10));
     }
@@ -1490,6 +1574,7 @@ mod tests {
                 labels: person_labels(),
                 key: "id".to_string(),
                 value: lit_int(7),
+                in_list: false,
             }),
             &stats,
         );
@@ -1560,6 +1645,7 @@ mod tests {
                 labels: person_labels(),
                 key: "id".to_string(),
                 value: lit_int(7),
+                in_list: false,
             }),
         ];
         let pick = pick_best_candidate(&original, candidates, &stats).expect("expected a pick");
@@ -1592,6 +1678,7 @@ mod tests {
             labels: vec![vec!["Missing".to_string()]],
             key: "id".to_string(),
             value: lit_int(7),
+            in_list: false,
         })];
         assert!(pick_best_candidate(&original, candidates, &stats).is_none());
     }

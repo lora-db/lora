@@ -10,9 +10,17 @@ use lora_analyzer::{
     ResolvedProjection, ResolvedQuery, ResolvedRemove, ResolvedReturn, ResolvedSet,
     ResolvedSortItem, ResolvedUnwind, ResolvedWith,
 };
+use lora_store::GraphStats;
+use std::collections::BTreeSet;
 
 pub struct Planner {
     nodes: Vec<LogicalOp>,
+    /// Cardinalities used to pick which end of a pattern to start from.
+    stats: GraphStats,
+    /// Variables bound by the clauses planned so far. Only a hint for
+    /// choosing a pattern's starting point: a wrong entry costs speed,
+    /// never correctness, because scans re-check bound variables.
+    bound: BTreeSet<VarId>,
 }
 
 impl Default for Planner {
@@ -23,13 +31,36 @@ impl Default for Planner {
 
 impl Planner {
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self::with_stats(&GraphStats::default())
+    }
+
+    pub fn with_stats(stats: &GraphStats) -> Self {
+        Self {
+            nodes: Vec::new(),
+            stats: stats.clone(),
+            bound: BTreeSet::new(),
+        }
     }
 
     pub(crate) fn push(&mut self, op: LogicalOp) -> PlanNodeId {
         let id = self.nodes.len();
         self.nodes.push(op);
         id
+    }
+
+    pub(crate) fn stats(&self) -> &GraphStats {
+        &self.stats
+    }
+
+    pub(crate) fn is_bound(&self, var: VarId) -> bool {
+        self.bound.contains(&var)
+    }
+
+    fn bind_projection(&mut self, items: &[ResolvedProjection], include_existing: bool) {
+        if !include_existing {
+            self.bound.clear();
+        }
+        self.bound.extend(items.iter().map(|item| item.output));
     }
 
     pub fn plan(&mut self, query: &ResolvedQuery) -> LogicalPlan {
@@ -45,7 +76,40 @@ impl Planner {
         let mut input = None;
 
         for clause in &query.clauses {
-            input = Some(match clause {
+            input = Some(self.plan_clause(input, clause));
+            self.track_bindings(clause);
+        }
+
+        input.unwrap_or_else(|| self.plan_unit_input())
+    }
+
+    /// Record the variables `clause` leaves bound for the clauses after it.
+    fn track_bindings(&mut self, clause: &ResolvedClause) {
+        match clause {
+            ResolvedClause::Match(m) => self.bound.extend(collect_pattern_vars(&m.pattern)),
+            ResolvedClause::Create(c) => self.bound.extend(collect_pattern_vars(&c.pattern)),
+            ResolvedClause::Merge(m) => {
+                let pattern = ResolvedPattern {
+                    parts: vec![m.pattern_part.clone()],
+                };
+                self.bound.extend(collect_pattern_vars(&pattern));
+            }
+            ResolvedClause::Unwind(u) => {
+                self.bound.insert(u.alias);
+            }
+            ResolvedClause::With(w) => self.bind_projection(&w.items, w.include_existing),
+            ResolvedClause::Return(r) => self.bind_projection(&r.items, r.include_existing),
+            ResolvedClause::CallSubquery(c) => self.bound.extend(c.return_vars.iter().copied()),
+            ResolvedClause::Delete(_)
+            | ResolvedClause::Set(_)
+            | ResolvedClause::Remove(_)
+            | ResolvedClause::Foreach(_) => {}
+        }
+    }
+
+    fn plan_clause(&mut self, input: Option<PlanNodeId>, clause: &ResolvedClause) -> PlanNodeId {
+        {
+            match clause {
                 ResolvedClause::Match(m) => self.plan_match(input, m),
 
                 ResolvedClause::Unwind(u) => {
@@ -97,10 +161,8 @@ impl Planner {
                     let upstream = input.unwrap_or_else(|| self.plan_unit_input());
                     self.plan_call_subquery(upstream, c)
                 }
-            });
+            }
         }
-
-        input.unwrap_or_else(|| self.plan_unit_input())
     }
 
     /// Plan a `CALL { ... }` subquery: build the inner plan starting
@@ -111,7 +173,11 @@ impl Planner {
             clauses: call.clauses.clone(),
             unions: Vec::new(),
         };
+        // The inner query sees the outer row; its own WITH / RETURN must
+        // not change what the outer query considers bound.
+        let outer_bound = self.bound.clone();
         let inner = self.plan_query(&inner_query);
+        self.bound = outer_bound;
         self.push(LogicalOp::CallSubquery(crate::logical::CallSubquery {
             input,
             inner,
@@ -128,16 +194,13 @@ impl Planner {
             let new_vars = collect_pattern_vars(&m.pattern);
 
             // Build inner match plan WITHOUT the upstream input — the executor
-            // will inject each upstream row individually.
+            // will inject each upstream row individually. The WHERE belongs
+            // to the OPTIONAL MATCH, so its conjuncts are only ever placed
+            // inside this inner plan, never above the OptionalMatch.
             let mut pattern_planner = PatternPlanner::new(self);
-            let mut inner = pattern_planner.plan_pattern(None, &m.pattern);
-
-            if let Some(pred) = &m.where_ {
-                inner = self.push(LogicalOp::Filter(Filter {
-                    input: inner,
-                    predicate: pred.clone(),
-                }));
-            }
+            let (inner, residual) =
+                pattern_planner.plan_pattern_with_where(None, &m.pattern, m.where_.as_ref());
+            let inner = self.push_conjuncts(inner, residual);
 
             self.push(LogicalOp::OptionalMatch(OptionalMatch {
                 input: upstream,
@@ -146,16 +209,25 @@ impl Planner {
             }))
         } else {
             let mut pattern_planner = PatternPlanner::new(self);
-            let mut node = pattern_planner.plan_pattern(input, &m.pattern);
+            let (node, residual) =
+                pattern_planner.plan_pattern_with_where(input, &m.pattern, m.where_.as_ref());
+            self.push_conjuncts(node, residual)
+        }
+    }
 
-            if let Some(pred) = &m.where_ {
-                node = self.push(LogicalOp::Filter(Filter {
-                    input: node,
-                    predicate: pred.clone(),
-                }));
-            }
-
-            node
+    /// A `Filter` over `input` holding `conjuncts` ANDed in order, or
+    /// `input` itself when there are none.
+    fn push_conjuncts(&mut self, input: PlanNodeId, conjuncts: Vec<ResolvedExpr>) -> PlanNodeId {
+        let predicate = conjuncts
+            .into_iter()
+            .reduce(|acc, next| ResolvedExpr::Binary {
+                lhs: Box::new(acc),
+                op: lora_ast::BinaryOp::And,
+                rhs: Box::new(next),
+            });
+        match predicate {
+            Some(predicate) => self.push(LogicalOp::Filter(Filter { input, predicate })),
+            None => input,
         }
     }
 

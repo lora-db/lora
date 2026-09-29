@@ -144,6 +144,13 @@ pub trait GraphStorage {
         self.all_rel_ids().len()
     }
 
+    /// Number of nodes carrying `label`: exactly the rows a scan of
+    /// [`Self::node_ids_by_label`] yields. Backends with a label index
+    /// should answer this without materializing the ids.
+    fn node_count_by_label(&self, label: &str) -> usize {
+        self.node_ids_by_label(label).len()
+    }
+
     // ---------- Defaulted: record-returning scans ----------
     //
     // These synthesize full-record scans from id scans + point lookups. That

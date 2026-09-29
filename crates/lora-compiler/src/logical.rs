@@ -112,6 +112,9 @@ pub struct NodeByPropertyScan {
     pub labels: Vec<Vec<String>>,
     pub key: String,
     pub value: ResolvedExpr,
+    /// `false`: seek `key = value`. `true`: `value` evaluates to a list and
+    /// the scan seeks `key IN value`, one lookup per distinct element.
+    pub in_list: bool,
 }
 
 /// Range-bounded property scan rewritten from `Filter(NodeScan, var.prop CMP value)`
