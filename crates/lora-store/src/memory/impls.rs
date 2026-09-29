@@ -113,6 +113,57 @@ impl GraphStorage for InMemoryGraph {
         .map_err(|e| format!("[{}] {e}", e.gql_status()))
     }
 
+    fn check_node_create_deferring_existence(
+        &self,
+        labels: &[String],
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_create_deferred(
+            &catalog, self, labels, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_create_deferring_existence(
+        &self,
+        rel_type: &str,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_create_deferred(
+            &catalog, self, rel_type, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_node_existence_constraints(&self, node_id: NodeId) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_existence(&catalog, self, node_id)
+            .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_existence_constraints(
+        &self,
+        rel_id: RelationshipId,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_existence(&catalog, self, rel_id)
+            .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
     fn check_node_set_property_against_constraints(
         &self,
         node_id: NodeId,

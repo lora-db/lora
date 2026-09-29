@@ -76,6 +76,13 @@ pub struct MutableExecutor<'a, S: GraphStorageMut> {
     /// The row a writing `CALL { ... }` body's bottom `Argument` yields:
     /// the outer row it runs for. `None` outside such a body.
     argument_seed: Option<Row>,
+    /// When set, existence constraints on created entities are checked
+    /// once the statement finishes rather than at `CREATE`, so a later
+    /// `SET` (or `ON CREATE SET`) in the same statement can supply the
+    /// property. See [`plan_defers_existence`].
+    defer_existence: bool,
+    /// Entities created while `defer_existence` is on, still to check.
+    pending_existence: Vec<EntityTarget>,
 }
 
 impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
@@ -84,6 +91,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             ctx,
             deadline: None,
             argument_seed: None,
+            defer_existence: false,
+            pending_existence: Vec::new(),
         }
     }
 
@@ -92,6 +101,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             ctx,
             deadline,
             argument_seed: None,
+            defer_existence: false,
+            pending_existence: Vec::new(),
         }
     }
 
@@ -115,6 +126,35 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     pub fn execute_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        self.defer_existence = plan_defers_existence(plan);
+        let rows = self.execute_plan_rows(plan)?;
+        self.check_pending_existence()?;
+        Ok(rows)
+    }
+
+    /// Defer existence checks on created entities to the end of the
+    /// statement (see [`plan_defers_existence`]); the caller then runs
+    /// [`Self::check_pending_existence`].
+    pub(crate) fn defer_existence_checks(&mut self, defer: bool) {
+        self.defer_existence = defer;
+    }
+
+    /// Check the existence constraints deferred so far, clearing them.
+    pub(crate) fn check_pending_existence(&mut self) -> ExecResult<()> {
+        for target in std::mem::take(&mut self.pending_existence) {
+            let checked = match target {
+                EntityTarget::Node(id) => self.ctx.storage.check_node_existence_constraints(id),
+                EntityTarget::Relationship(id) => self
+                    .ctx
+                    .storage
+                    .check_relationship_existence_constraints(id),
+            };
+            checked.map_err(ExecutorError::ConstraintViolation)?;
+        }
+        Ok(())
+    }
+
+    fn execute_plan_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
@@ -148,8 +188,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     pub fn execute_compiled_rows(&mut self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
         let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
+        self.defer_existence = plan_defers_existence(&compiled.physical)
+            || !compiled.unions.is_empty()
+                && compiled
+                    .unions
+                    .iter()
+                    .any(|b| plan_defers_existence(&b.physical));
         if compiled.unions.is_empty() {
-            return self.execute_rows(&compiled.physical);
+            let rows = self.execute_plan_rows(&compiled.physical)?;
+            self.check_pending_existence()?;
+            return Ok(rows);
         }
 
         clear_eval_error();
@@ -175,6 +223,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             all_rows = dedup_rows(all_rows);
         }
 
+        self.check_pending_existence()?;
         Ok(all_rows)
     }
 
@@ -1429,6 +1478,21 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             eval_expr(expr, row, &eval_ctx)
         };
 
+        // `SET n.a = null` removes the property.
+        if matches!(new_value, LoraValue::Null) {
+            return match owner {
+                LoraValue::Node(node_id) => {
+                    self.remove_entity_property(EntityTarget::Node(node_id), property)
+                }
+                LoraValue::Relationship(rel_id) => {
+                    self.remove_entity_property(EntityTarget::Relationship(rel_id), property)
+                }
+                other => Err(ExecutorError::InvalidSetTarget {
+                    found: value_kind(&other),
+                }),
+            };
+        }
+
         match owner {
             LoraValue::Node(node_id) => {
                 let prop = lora_value_to_property(new_value)
@@ -1464,6 +1528,36 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 found: value_kind(&other),
             }),
         }
+    }
+
+    /// Remove one property, checking constraints first. Removing a
+    /// property the entity does not have is a no-op.
+    fn remove_entity_property(&mut self, target: EntityTarget, property: &str) -> ExecResult<()> {
+        match target {
+            EntityTarget::Node(node_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_node_remove_property_against_constraints(node_id, property)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
+                self.ctx.storage.remove_node_property(node_id, property);
+            }
+            EntityTarget::Relationship(rel_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_relationship_remove_property_against_constraints(rel_id, property)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
+                self.ctx
+                    .storage
+                    .remove_relationship_property(rel_id, property);
+            }
+        }
+        Ok(())
     }
 
     fn remove_property_from_expr(&mut self, row: &Row, expr: &ResolvedExpr) -> ExecResult<()> {
@@ -1527,6 +1621,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         let mut props: Properties = Properties::new();
         for (k, v) in map {
+            // `SET n = {a: null}` leaves `a` absent.
+            if matches!(v, LoraValue::Null) {
+                continue;
+            }
             let prop = lora_value_to_property(v)
                 .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
             props.insert(lora_store::intern_owned(k), prop);
@@ -1573,6 +1671,11 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         match target {
             EntityTarget::Node(node_id) => {
                 for (k, v) in map {
+                    // `SET n += {a: null}` removes `a`.
+                    if matches!(v, LoraValue::Null) {
+                        self.remove_entity_property(target, &k)?;
+                        continue;
+                    }
                     let prop = lora_value_to_property(v)
                         .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
                     if let Err(msg) = self
@@ -1587,6 +1690,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             }
             EntityTarget::Relationship(rel_id) => {
                 for (k, v) in map {
+                    if matches!(v, LoraValue::Null) {
+                        self.remove_entity_property(target, &k)?;
+                        continue;
+                    }
                     let prop = lora_value_to_property(v)
                         .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
                     if let Err(msg) = self
@@ -1784,18 +1891,24 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         let flat_labels = flatten_label_groups(labels);
         debug!("creating node with labels={flat_labels:?}");
-        if let Err(msg) = self
-            .ctx
-            .storage
-            .check_node_create_against_constraints(&flat_labels, &properties)
-        {
-            return Err(ExecutorError::ConstraintViolation(msg));
-        }
+        let checked = if self.defer_existence {
+            self.ctx
+                .storage
+                .check_node_create_deferring_existence(&flat_labels, &properties)
+        } else {
+            self.ctx
+                .storage
+                .check_node_create_against_constraints(&flat_labels, &properties)
+        };
+        checked.map_err(ExecutorError::ConstraintViolation)?;
         let created = self
             .ctx
             .storage
             .try_create_node(flat_labels, properties)
             .ok_or(ExecutorError::NodeCreateFailed)?;
+        if self.defer_existence {
+            self.pending_existence.push(EntityTarget::Node(created.id));
+        }
 
         if let Some(var_id) = var {
             row.insert(var_id, LoraValue::Node(created.id));
@@ -1854,13 +1967,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         debug!("creating relationship: src={src}, dst={dst}, type={rel_type}");
 
-        if let Err(msg) = self
-            .ctx
-            .storage
-            .check_relationship_create_against_constraints(rel_type, &properties)
-        {
-            return Err(ExecutorError::ConstraintViolation(msg));
-        }
+        let checked = if self.defer_existence {
+            self.ctx
+                .storage
+                .check_relationship_create_deferring_existence(rel_type, &properties)
+        } else {
+            self.ctx
+                .storage
+                .check_relationship_create_against_constraints(rel_type, &properties)
+        };
+        checked.map_err(ExecutorError::ConstraintViolation)?;
 
         let created = self
             .ctx
@@ -1871,6 +1987,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 dst,
                 rel_type: rel_type.clone(),
             })?;
+        if self.defer_existence {
+            self.pending_existence
+                .push(EntityTarget::Relationship(created.id));
+        }
 
         if let Some(var_id) = rel.var {
             row.insert(var_id, LoraValue::Relationship(created.id));
@@ -1878,6 +1998,28 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         Ok(created.id)
     }
+}
+
+/// Whether existence constraints on entities a plan creates must wait
+/// for the end of the statement. They can be checked at `CREATE` only
+/// when nothing after it can add a property: every write is a `CREATE`
+/// or a `DELETE`, with at most one `CREATE`. Checking early keeps a
+/// failing create from mutating anything, which the in-place write path
+/// relies on.
+pub(crate) fn plan_defers_existence(plan: &PhysicalPlan) -> bool {
+    let mut creates = 0;
+    for op in &plan.nodes {
+        match op {
+            PhysicalOp::Create(_) => creates += 1,
+            PhysicalOp::Delete(_) => {}
+            PhysicalOp::Merge(_)
+            | PhysicalOp::Set(_)
+            | PhysicalOp::Remove(_)
+            | PhysicalOp::Foreach(_) => return true,
+            _ => {}
+        }
+    }
+    creates > 1
 }
 
 /// Whether a plan is a write statement with no `RETURN` (its root is the

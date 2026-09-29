@@ -768,10 +768,16 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
 ) -> ExecResult<Properties> {
     let eval_ctx = EvalContext { storage, params };
 
+    // A `null` value in a property map means "no property": it is never
+    // stored, so `keys(n)` and existence checks do not see it.
     if let ResolvedExpr::Map(items) = expr {
         let mut out = Properties::new();
         for (k, v) in items {
-            let prop = lora_value_to_property(eval_expr(v, row, &eval_ctx))
+            let value = eval_expr(v, row, &eval_ctx);
+            if matches!(value, LoraValue::Null) {
+                continue;
+            }
+            let prop = lora_value_to_property(value)
                 .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
             out.insert(lora_store::intern(k), prop);
         }
@@ -782,6 +788,9 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
         LoraValue::Map(map) => {
             let mut out = Properties::new();
             for (k, v) in map {
+                if matches!(v, LoraValue::Null) {
+                    continue;
+                }
                 let prop = lora_value_to_property(v)
                     .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
                 // Route every CREATE/SET property key through the

@@ -24,7 +24,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `WHERE` | **Supported** | All comparison, boolean, string, null, list, regex operators |
 | `RETURN` | **Supported** | Projection, aliases, star, computed expressions |
 | `CREATE` | **Supported** | Nodes, relationships, patterns, batch via UNWIND |
-| `SET` | **Supported** | Property add/update/replace/merge, label add |
+| `SET` | **Supported** | Property add/update/replace/merge, label add. A `null` value removes the property (`SET n.a = null`, `SET n += {a: null}`); `null` values in a `CREATE` or `SET n = {...}` map are not stored |
 | `REMOVE` | **Supported** | Property removal, label removal |
 | `DELETE` / `DETACH DELETE` | **Supported** | Plain delete requires no incident relationships |
 | `MERGE` | **Supported** | Node and relationship merge, ON MATCH / ON CREATE. Endpoints bound by earlier clauses are honoured, and a pattern that does not match is created whole |
@@ -280,7 +280,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | Equality and `IN` seeks | **Supported** | `n.key = v` and `n.key IN list` in a WHERE are pushed down to the scan of `n` wherever it sits in the pattern and run as index seeks (one per distinct `IN` element); a chain starts from whichever end can seek |
 | Composite RANGE index catalog entries | **Partial** | Accepted and shown; current optimizer rewrites are single-property |
 | Property uniqueness constraints | **Supported** | Single + composite; backed by a RANGE index of the same name; mutation-time enforcement returns `22N79` |
-| Property existence constraints (`IS NOT NULL`) | **Supported** | Single property only; rejects CREATE missing the prop, REMOVE of the prop, and SET-label that would activate it on an incomplete node; returns `22N77` |
+| Property existence constraints (`IS NOT NULL`) | **Supported** | Single property only; rejects CREATE missing the prop, REMOVE of the prop, and SET-label that would activate it on an incomplete node; returns `22N77`. An entity created by a statement that also sets properties (`CREATE ... SET`, `MERGE ... ON CREATE SET`) is checked when the statement finishes |
 | Node / relationship key constraints | **Supported** | Composition of existence + uniqueness; single + composite; node-key uses `IS NODE KEY`, rel-key uses `IS RELATIONSHIP KEY` |
 | Property type constraints (`IS :: T`) | **Supported** | Scalar (`BOOLEAN`/`STRING`/`INTEGER`/`FLOAT`/`DATE`/`LOCAL TIME`/`ZONED TIME`/`LOCAL DATETIME`/`ZONED DATETIME`/`DURATION`/`POINT`), `LIST<T NOT NULL>`, `VECTOR<COORD>(DIM)`, and closed dynamic unions (`T1 \| T2`); `MAP`/`ANY` rejected with `22N90` |
 | Vector index / ANN index | **Partial** | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS {indexConfig: {vector.dimensions, vector.similarity_function}}` (node + rel). Procedures `db.index.vector.queryNodes` / `queryRelationships` execute a flat scan over label-matching entities; ANN structure (HNSW) is a follow-up. |

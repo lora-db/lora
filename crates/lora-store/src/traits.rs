@@ -655,6 +655,42 @@ pub trait GraphStorage {
         Ok(())
     }
 
+    /// [`Self::check_node_create_against_constraints`] minus existence
+    /// checks, for a statement that runs
+    /// [`Self::check_node_existence_constraints`] once it finishes (a later
+    /// `SET` may still supply the property). Defaults to the full check.
+    fn check_node_create_deferring_existence(
+        &self,
+        labels: &[String],
+        properties: &Properties,
+    ) -> Result<(), String> {
+        self.check_node_create_against_constraints(labels, properties)
+    }
+
+    /// Relationship counterpart of
+    /// [`Self::check_node_create_deferring_existence`].
+    fn check_relationship_create_deferring_existence(
+        &self,
+        rel_type: &str,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        self.check_relationship_create_against_constraints(rel_type, properties)
+    }
+
+    /// Existence (and key) constraints on a node as it stands now; a
+    /// deleted node passes. Default `Ok(())`.
+    fn check_node_existence_constraints(&self, _node_id: NodeId) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Relationship counterpart of [`Self::check_node_existence_constraints`].
+    fn check_relationship_existence_constraints(
+        &self,
+        _rel_id: RelationshipId,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Mutation-time pre-check: would setting `key = value` on this
     /// node violate any registered constraint? Default `Ok(())`.
     fn check_node_set_property_against_constraints(
