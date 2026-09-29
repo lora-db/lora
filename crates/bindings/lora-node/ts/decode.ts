@@ -31,6 +31,7 @@ const TAG_FALSE = 0x01;
 const TAG_TRUE = 0x02;
 const TAG_I32 = 0x03;
 const TAG_I64 = 0x04;
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const TAG_F64 = 0x05;
 const TAG_STRING = 0x06;
 const TAG_LIST = 0x07;
@@ -107,15 +108,27 @@ class Reader {
   }
 
   /**
-   * Reads an i64 LE and returns it as a JS Number. Values outside the
-   * `Number.MAX_SAFE_INTEGER` range silently lose precision — same
-   * behaviour the binding has always had on the read path. Callers that
-   * need exact representation of large ints should use a separate
-   * binding-side path; this is a hot loop.
+   * Reads an i64 LE. Values inside the safe-integer range come back as a
+   * JS `number`; anything outside it comes back as a `bigint` so it is
+   * never silently rounded.
    */
+  i64(): number | bigint {
+    const lo = this.view.getUint32(this.off, true);
+    const hi = this.view.getInt32(this.off + 4, true);
+    // |hi| < 2^21 means |value| < 2^53: exactly representable. Two
+    // getInt32 calls beat getBigInt64 + Number(BigInt) by ~3x in V8, so
+    // only the rare out-of-range value pays for the BigInt read.
+    if (hi >= -0x20_0000 && hi < 0x20_0000) {
+      this.off += 8;
+      return hi * 0x1_0000_0000 + lo;
+    }
+    const big = this.view.getBigInt64(this.off, true);
+    this.off += 8;
+    return big >= -MAX_SAFE && big <= MAX_SAFE ? Number(big) : big;
+  }
+
+  /** i64 that is known to be a small id (node/relationship ids). */
   i64AsNumber(): number {
-    // Two getInt32 calls beat getBigInt64 + Number(BigInt) by ~3× in V8.
-    // Manual reconstruction is exact for the |x| < 2^53 range.
     const lo = this.view.getUint32(this.off, true);
     const hi = this.view.getInt32(this.off + 4, true);
     this.off += 8;
@@ -152,7 +165,7 @@ function readValue(r: Reader): any {
     case TAG_I32:
       return r.i32();
     case TAG_I64:
-      return r.i64AsNumber();
+      return r.i64();
     case TAG_F64:
       return r.f64();
     case TAG_STRING:

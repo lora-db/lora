@@ -438,6 +438,16 @@ jobs:
             target: aarch64-unknown-linux-gnu
             triple: linux-arm64-gnu
             cross: zig
+          # musl (Alpine and other musl-based images). Cross-compiled with
+          # zig, which ships a musl libc for both architectures.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            triple: linux-x64-musl
+            cross: zig
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            triple: linux-arm64-musl
+            cross: zig
           - os: macos-latest
             target: x86_64-apple-darwin
             triple: darwin-x64
@@ -463,7 +473,7 @@ jobs:
           cache-key: lora-node-release-${{ matrix.triple }}
           targets: ${{ matrix.target }}
 
-      - name: Install zig for linux-arm64 cross-compile
+      - name: Install zig for cross-compiled Linux targets
         if: matrix.cross == 'zig'
         # `mlugg/setup-zig` is the actively-maintained successor to
         # `goto-bus-stop/setup-zig` (which is no longer maintained and
@@ -583,7 +593,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected="linux-x64-gnu linux-arm64-gnu darwin-x64 darwin-arm64 win32-x64-msvc"
+          expected="linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64 win32-x64-msvc"
           missing=0
           for triple in $expected; do
             bin="npm/${triple}/lora-node.${triple}.node"
@@ -604,7 +614,7 @@ jobs:
           node <<'EOF'
           const fs = require('node:fs');
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const triples = ['linux-x64-gnu', 'linux-arm64-gnu', 'darwin-x64', 'darwin-arm64', 'win32-x64-msvc'];
+          const triples = ['linux-x64-gnu', 'linux-arm64-gnu', 'linux-x64-musl', 'linux-arm64-musl', 'darwin-x64', 'darwin-arm64', 'win32-x64-msvc'];
           pkg.optionalDependencies = Object.fromEntries(
             triples.map((t) => [`@loradb/lora-node-${t}`, pkg.version])
           );

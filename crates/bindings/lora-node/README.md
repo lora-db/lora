@@ -48,6 +48,46 @@ for (const row of res.rows) {
 }
 ```
 
+### Timeouts and cancellation
+
+Every `execute()`, `stream()` and `transaction()` call takes an optional
+third argument. A query that runs out of time or is cancelled stops at its
+next check point, rolls back any writes, releases its locks, and rejects:
+with a `LoraError` coded `LORA_TIMEOUT` for `timeoutMs`, or with the
+signal's reason (an `AbortError`) for `signal`.
+
+```ts
+await db.execute(query, params, { timeoutMs: 250 });
+
+const controller = new AbortController();
+const pending = db.execute(query, params, { signal: controller.signal });
+controller.abort(); // rejects with AbortError
+
+// Database-wide default; a call can override it, and `timeoutMs: 0` opts out.
+const bounded = await createDatabase("app", { queryTimeoutMs: 1000 });
+```
+
+### Interactive transactions
+
+`db.begin()` opens a transaction you can drive statement by statement,
+with application logic in between. A `read_write` transaction holds the
+writer lock until it commits or rolls back, so no other write interleaves
+(other writers wait; keep it short). A failed statement rolls it back, and
+an unfinished transaction rolls back when disposed.
+
+```ts
+await using tx = await db.begin("read_write");
+const { rows } = await tx.execute("MATCH (t:Trip {key: $k}) RETURN t.free AS free", { k });
+if ((rows[0].free as number) > 0) {
+  await tx.execute("MATCH (t:Trip {key: $k}) SET t.free = t.free - 1", { k });
+}
+await tx.commit();
+```
+
+Schema commands (`CREATE CONSTRAINT`, `CREATE INDEX`, `DROP ...`) work
+inside `transaction()` and `db.begin()` and commit or roll back together
+with the data statements.
+
 ### Explain & Profile
 
 `db.explain()` and `db.profile()` are first-class methods alongside
@@ -175,6 +215,7 @@ await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
 | TS type                 | Runtime shape                                                                 |
 |-------------------------|-------------------------------------------------------------------------------|
 | `null`/`boolean`/`number`/`string` | pass-through JS primitives                                                     |
+| `bigint`              | integers outside `Number.MIN_SAFE_INTEGER..MAX_SAFE_INTEGER` (exact 64-bit)     |
 | `LoraValue[]` / object | homogeneous arrays and nested records                                          |
 | `LoraNode`            | `{ kind: "node", id, labels, properties }`                                      |
 | `LoraRelationship`    | `{ kind: "relationship", id, startId, endId, type, properties }`                |
@@ -190,6 +231,14 @@ await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
 | `{ kind: "point", srid: 9157, crs: "cartesian-3D", x, y, z }`                                                | Cartesian 3D         |
 | `{ kind: "point", srid: 4326, crs: "WGS-84-2D", x, y, longitude, latitude }`                                 | WGS-84 2D            |
 | `{ kind: "point", srid: 4979, crs: "WGS-84-3D", x, y, z, longitude, latitude, height }`                      | WGS-84 3D            |
+
+Point parameters accept the same shape reads return: `{ kind: "point",
+latitude, longitude[, height] }` (WGS-84 unless `srid` says otherwise) or
+`{ kind: "point", srid, x, y[, z] }`.
+
+Integer parameters outside the safe range must be passed as `bigint`; an
+integer-valued `number` past 2^53 is rejected with `LORA_INVALID_PARAMS`
+because JavaScript has already rounded it.
 
 Helper constructors (`date("2025-01-15")`, `cartesian(1, 2)`, `cartesian3d(1, 2, 3)`,
 `wgs84(lon, lat)`, `wgs84_3d(lon, lat, height)`, `duration("P1M")`, …) and
@@ -247,6 +296,7 @@ Common ones:
 - `LORA_CONFIG`, `LORA_VALIDATION` — configuration or validation failure
 - `LORA_IO`, `LORA_CONNECTION`, `LORA_WAL_CORRUPTION`, `LORA_WAL_POISONED` — storage failures
 - `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO` — snapshot codec / crypto failures
+- `LORA_LOCKED` — the database directory is locked by another process
 - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
 - `UNKNOWN` — catch-all for messages without a recognized code
 
@@ -260,14 +310,13 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   `Database` (e.g. 2 000 parallel `CREATE`s via `Promise.all`) works but
   queues behind that write lock. Prefer `await`-in-a-loop or a single batched
   query for heavy write workloads.
-- **I64 precision.** Integer values above `Number.MAX_SAFE_INTEGER`
-  (2^53) are returned as JS `number` and lose precision. A `bigint`-aware
-  path would require extending the value serializer.
-- **Cancellation.** The napi `Task` abstraction does not support
-  cancellation once dispatched; a runaway query runs to completion.
+- **Stream timeouts.** `stream()` checks its deadline between rows, so a
+  single pull that does a lot of work (a large aggregation) finishes before
+  the check fires. `execute()` and `transaction()` check throughout.
 - **WAL surface.** Node persistence exposes container-backed initialization,
   `syncMode: "groupSync"`, and `db.sync()`. Checkpoint, truncate,
   and status controls are not exposed yet.
 - **Archive ownership.** One archive can only be open by one writer process at a
   time. Multiple Node handles in the same process share the same live engine;
-  a second process is rejected while the first holds the archive lock.
+  a second process is rejected with `LORA_LOCKED` while the first holds the
+  archive lock, which `dispose()` releases.

@@ -26,6 +26,10 @@ export type LoraParam =
   | null
   | boolean
   | number
+  // Use bigint for integers outside the safe-integer range; a `number`
+  // that is an integer but not a safe integer is rejected rather than
+  // rounded.
+  | bigint
   | string
   | LoraParam[]
   | { [key: string]: LoraParam }
@@ -269,6 +273,9 @@ export type LoraValue =
   | null
   | boolean
   | number
+  // Integers outside Number.MIN_SAFE_INTEGER..MAX_SAFE_INTEGER are
+  // returned as bigint so they round-trip exactly.
+  | bigint
   | string
   | LoraValue[]
   | { [key: string]: LoraValue }
@@ -616,6 +623,7 @@ export interface RowParseError {
  * - `LORA_NOT_NULL_CONSTRAINT` — an existence / NOT NULL constraint rejected missing data
  * - `LORA_FOREIGN_KEY` — a relationship or dependent record references a missing entity
  * - `LORA_TRANSACTION` — a transaction lifecycle rule was violated
+ * - `LORA_LOCKED` — the database directory is locked by another process or handle
  *
  * Server errors (engine-side):
  * - `LORA_IO` — I/O failure outside the WAL / snapshot boundaries
@@ -646,6 +654,7 @@ export type LoraErrorCode =
   | "LORA_NOT_NULL_CONSTRAINT"
   | "LORA_FOREIGN_KEY"
   | "LORA_TRANSACTION"
+  | "LORA_LOCKED"
   | "LORA_IO"
   | "LORA_CONNECTION"
   | "LORA_WAL_CORRUPTION"
@@ -672,6 +681,7 @@ const KNOWN_ERROR_CODES = new Set<LoraErrorCode>([
   "LORA_NOT_NULL_CONSTRAINT",
   "LORA_FOREIGN_KEY",
   "LORA_TRANSACTION",
+  "LORA_LOCKED",
   "LORA_IO",
   "LORA_CONNECTION",
   "LORA_WAL_CORRUPTION",

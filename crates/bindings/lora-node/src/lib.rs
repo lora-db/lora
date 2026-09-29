@@ -22,13 +22,14 @@ use napi::{Env, Error as NapiError, JsUnknown, Status};
 use napi_derive::napi;
 
 use lora_database::{
-    snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
-    DatabaseName, DatabaseOpenOptions, InMemoryGraph, LoraError, LoraErrorCode, SnapshotConfig,
-    SnapshotCredentials, SnapshotOptions, SyncMode, WalConfig,
+    snapshot_credentials_from_json, snapshot_options_from_json, CancellableDeadline,
+    Database as InnerDatabase, DatabaseName, DatabaseOpenOptions, InMemoryGraph, LoraError,
+    LoraErrorCode, SnapshotConfig, SnapshotCredentials, SnapshotOptions, SyncMode, WalConfig,
 };
 
 mod encode;
 mod errors;
+mod interactive;
 mod json;
 mod tasks;
 mod to_napi;
@@ -71,7 +72,18 @@ pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
     streams: Mutex<BTreeMap<u32, NativeQueryStream>>,
     next_stream_id: AtomicU32,
+    /// Database-wide timeout applied when a call passes none.
+    default_timeout_ms: Option<u32>,
+    /// Cancellation handles for in-flight queries started with an
+    /// `AbortSignal`, keyed by the token handed to JS.
+    cancels: Mutex<BTreeMap<u32, SharedCancel>>,
+    next_cancel_id: AtomicU32,
+    /// Open interactive transactions (see [`interactive`]).
+    txs: TxRegistry,
+    next_tx_id: AtomicU32,
 }
+
+pub(crate) type TxRegistry = Arc<Mutex<BTreeMap<u32, Arc<interactive::TxActor>>>>;
 
 #[napi]
 impl Database {
@@ -95,6 +107,7 @@ impl Database {
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] snapshot_options: Option<
             serde_json::Value,
         >,
+        #[napi(ts_arg_type = "number | null | undefined")] query_timeout_ms: Option<u32>,
     ) -> Result<Self> {
         let explicit_wal = wal_dir.is_some()
             || snapshot_dir.is_some()
@@ -131,6 +144,11 @@ impl Database {
             db: Mutex::new(Some(db)),
             streams: Mutex::new(BTreeMap::new()),
             next_stream_id: AtomicU32::new(1),
+            default_timeout_ms: query_timeout_ms.filter(|ms| *ms > 0),
+            cancels: Mutex::new(BTreeMap::new()),
+            next_cancel_id: AtomicU32::new(1),
+            txs: Arc::new(Mutex::new(BTreeMap::new())),
+            next_tx_id: AtomicU32::new(1),
         })
     }
 
@@ -152,6 +170,11 @@ impl Database {
     /// per-cell napi syscalls that otherwise dominate wall-clock cost
     /// on bulk reads. See `crates/bindings/lora-node/src/encode.rs`
     /// for the wire format.
+    ///
+    /// `timeout_ms` bounds the query (falling back to the database-wide
+    /// `queryTimeoutMs`); `cancel_token` from [`Self::create_cancel_token`]
+    /// lets JS cancel it early. Either way an expired query rejects with
+    /// `LORA_TIMEOUT`, aborts its WAL transaction and releases its locks.
     #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn execute(
         &self,
@@ -159,12 +182,59 @@ impl Database {
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
             serde_json::Value,
         >,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
     ) -> Result<AsyncTask<ExecuteTask>> {
         Ok(AsyncTask::new(ExecuteTask {
             db: self.inner()?,
             query,
             params,
+            limit: self.limit(timeout_ms, cancel_token)?,
         }))
+    }
+
+    /// Create a cancellation token for one query. `timeout_ms` (or the
+    /// database default) is folded into it, so pass the token instead of
+    /// a timeout. Release it with [`Self::release_cancel_token`] once the
+    /// query settles.
+    #[napi]
+    pub fn create_cancel_token(
+        &self,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
+    ) -> Result<u32> {
+        let timeout = self.effective_timeout(timeout_ms);
+        let handle = Arc::new(Mutex::new(CancellableDeadline::new(timeout)));
+        let id = self.next_cancel_id.fetch_add(1, Ordering::Relaxed);
+        self.cancels
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
+            .insert(id, handle);
+        Ok(id)
+    }
+
+    /// Cancel the query holding `token`. It stops at its next check point
+    /// and rejects with `LORA_TIMEOUT`. Unknown tokens are ignored.
+    #[napi]
+    pub fn cancel_query(&self, token: u32) -> Result<()> {
+        let handle = self
+            .cancels
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
+            .get(&token)
+            .cloned();
+        if let Some(handle) = handle {
+            handle.lock().unwrap_or_else(|p| p.into_inner()).cancel();
+        }
+        Ok(())
+    }
+
+    #[napi]
+    pub fn release_cancel_token(&self, token: u32) -> Result<()> {
+        self.cancels
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
+            .remove(&token);
+        Ok(())
     }
 
     /// Compile a query and return its execution plan without running it.
@@ -220,7 +290,11 @@ impl Database {
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
             serde_json::Value,
         >,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
     ) -> Result<u32> {
+        let limit = self.limit(timeout_ms, cancel_token)?;
+        let deadline = limit.deadline();
         let params_map = match params {
             None | Some(serde_json::Value::Null) => BTreeMap::new(),
             Some(other) => json_value_to_params(other)?,
@@ -233,7 +307,15 @@ impl Database {
             .streams
             .lock()
             .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
-        streams.insert(stream_id, NativeQueryStream { _db: db, stream });
+        streams.insert(
+            stream_id,
+            NativeQueryStream {
+                _db: db,
+                stream,
+                deadline,
+                _limit: limit,
+            },
+        );
         Ok(stream_id)
     }
 
@@ -258,6 +340,19 @@ impl Database {
         let stream = streams
             .get_mut(&stream_id)
             .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
+        // Rows are pulled one call at a time, so the stream's deadline (or
+        // cancellation) is enforced between rows; closing the stream drops
+        // its read snapshot.
+        if stream.deadline.is_some_and(lora_executor_deadline_reached) {
+            streams.remove(&stream_id);
+            return Err(NapiError::new(
+                Status::GenericFailure,
+                format_lora_error(&LoraError::new(
+                    LoraErrorCode::Timeout,
+                    "query exceeded its deadline or was cancelled",
+                )),
+            ));
+        }
         match stream.stream.next_row() {
             Ok(Some(row)) => Ok(Some(row_to_napi(&env, &row)?.into_unknown())),
             Ok(None) => {
@@ -298,12 +393,69 @@ impl Database {
             ts_arg_type = "\"read_write\" | \"read_only\" | \"readwrite\" | \"readonly\" | null | undefined"
         )]
         mode: Option<String>,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
     ) -> Result<AsyncTask<TransactionTask>> {
         Ok(AsyncTask::new(TransactionTask {
             db: self.inner()?,
             statements,
             mode,
+            limit: self.limit(timeout_ms, cancel_token)?,
         }))
+    }
+
+    /// Begin an interactive transaction. Resolves with a transaction id
+    /// once it is open; a read-write transaction holds the writer lock
+    /// (other writers wait) until it commits or rolls back.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn begin_transaction(
+        &self,
+        #[napi(
+            ts_arg_type = "\"read_write\" | \"read_only\" | \"readwrite\" | \"readonly\" | null | undefined"
+        )]
+        mode: Option<String>,
+    ) -> Result<AsyncTask<tasks::BeginTxTask>> {
+        Ok(AsyncTask::new(tasks::BeginTxTask {
+            db: self.inner()?,
+            mode,
+            id: self.next_tx_id.fetch_add(1, Ordering::Relaxed),
+            registry: self.txs.clone(),
+        }))
+    }
+
+    /// Run one statement inside interactive transaction `tx_id`. A failed
+    /// statement rolls the transaction back.
+    #[napi(ts_return_type = "Promise<Buffer>")]
+    pub fn tx_execute(
+        &self,
+        tx_id: u32,
+        query: String,
+        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
+            serde_json::Value,
+        >,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
+    ) -> Result<AsyncTask<tasks::TxExecuteTask>> {
+        Ok(AsyncTask::new(tasks::TxExecuteTask {
+            actor: self.tx_actor(tx_id)?,
+            query,
+            params,
+            limit: self.limit(timeout_ms, cancel_token)?,
+            registry: self.txs.clone(),
+            id: tx_id,
+        }))
+    }
+
+    /// Commit (`commit = true`) or roll back interactive transaction `tx_id`.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn tx_finish(&self, tx_id: u32, commit: bool) -> Result<AsyncTask<tasks::TxFinishTask>> {
+        let actor = self
+            .txs
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
+            .remove(&tx_id)
+            .ok_or_else(|| interactive::napi_err(tx_closed_message()))?;
+        Ok(AsyncTask::new(tasks::TxFinishTask { actor, commit }))
     }
 
     /// Force pending WAL bytes and the portable container mirror to disk.
@@ -337,6 +489,11 @@ impl Database {
     /// handle until it finishes; new operations fail with `database is closed`.
     #[napi]
     pub fn dispose(&self) -> Result<()> {
+        // Dropping an open transaction's actor rolls it back and releases
+        // the writer lock.
+        if let Ok(mut txs) = self.txs.lock() {
+            txs.clear();
+        }
         self.streams
             .lock()
             .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?
@@ -623,7 +780,7 @@ fn parse_sync_mode(
 
 impl Default for Database {
     fn default() -> Self {
-        Self::new(None, None, None, None, None, None, None, None, None)
+        Self::new(None, None, None, None, None, None, None, None, None, None)
             .expect("in-memory Database::default should not fail")
     }
 }
@@ -631,4 +788,87 @@ impl Default for Database {
 pub struct NativeQueryStream {
     _db: Arc<InnerDatabase<InMemoryGraph>>,
     stream: lora_database::QueryStream<'static>,
+    deadline: Option<std::time::Instant>,
+    /// Keeps a cancellation handle alive for the stream's lifetime.
+    _limit: QueryLimit,
+}
+
+type SharedCancel = Arc<Mutex<CancellableDeadline>>;
+
+fn lora_executor_deadline_reached(deadline: std::time::Instant) -> bool {
+    lora_database::deadline_reached(deadline)
+}
+
+/// How long a query may run: nothing, a plain timeout, or a cancellable
+/// deadline shared with JS through a token.
+pub(crate) enum QueryLimit {
+    None,
+    Timeout(std::time::Duration),
+    Cancellable(SharedCancel),
+}
+
+impl QueryLimit {
+    /// Absolute deadline, computed when the query actually starts so
+    /// time spent queued on the libuv pool does not count against a
+    /// plain timeout.
+    pub(crate) fn deadline(&self) -> Option<std::time::Instant> {
+        match self {
+            QueryLimit::None => None,
+            QueryLimit::Timeout(d) => Some(
+                std::time::Instant::now()
+                    .checked_add(*d)
+                    .unwrap_or_else(std::time::Instant::now),
+            ),
+            QueryLimit::Cancellable(handle) => {
+                Some(handle.lock().unwrap_or_else(|p| p.into_inner()).deadline())
+            }
+        }
+    }
+}
+
+impl Database {
+    fn effective_timeout(&self, timeout_ms: Option<u32>) -> Option<std::time::Duration> {
+        timeout_ms
+            .or(self.default_timeout_ms)
+            .filter(|ms| *ms > 0)
+            .map(|ms| std::time::Duration::from_millis(u64::from(ms)))
+    }
+
+    pub(crate) fn limit(
+        &self,
+        timeout_ms: Option<u32>,
+        cancel_token: Option<u32>,
+    ) -> Result<QueryLimit> {
+        if let Some(token) = cancel_token {
+            let handle = self
+                .cancels
+                .lock()
+                .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
+                .get(&token)
+                .cloned();
+            if let Some(handle) = handle {
+                return Ok(QueryLimit::Cancellable(handle));
+            }
+        }
+        Ok(match self.effective_timeout(timeout_ms) {
+            Some(d) => QueryLimit::Timeout(d),
+            None => QueryLimit::None,
+        })
+    }
+}
+
+fn tx_closed_message() -> String {
+    "LORA_TRANSACTION: transaction is no longer open (already committed, rolled back, or failed)"
+        .to_string()
+}
+
+impl Database {
+    fn tx_actor(&self, tx_id: u32) -> Result<Arc<interactive::TxActor>> {
+        self.txs
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
+            .get(&tx_id)
+            .cloned()
+            .ok_or_else(|| interactive::napi_err(tx_closed_message()))
+    }
 }

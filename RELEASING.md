@@ -321,7 +321,8 @@ These would be reasonable next steps but are out of scope for now:
 - Code signing (Authenticode on Windows, codesign/notarization on macOS).
 - Reproducible-build flags (`--remap-path-prefix`, `SOURCE_DATE_EPOCH`).
 - Publishing to additional package managers (winget, Homebrew, apt, etc.).
-- musl / 32-bit / ARM Windows targets for `lora-server` or `lora-node`.
+- musl / 32-bit / ARM Windows targets for `lora-server`, and 32-bit / ARM
+  Windows targets for `lora-node` (which does ship musl builds).
 - Bench regression gating (e.g. fail the release if a benchmark regresses
   beyond a threshold vs. the previous tag). Requires a low-noise runner.
 - Auto-committing `CHANGELOG.md` back to `main`. The release ships it as an
@@ -368,12 +369,15 @@ Shipped triples (bumped in lockstep with the root version):
 | -------------------------- | --------------------------------------- | ------------------ |
 | `linux-x64-gnu`            | `@loradb/lora-node-linux-x64-gnu`       | `ubuntu-latest`    |
 | `linux-arm64-gnu`          | `@loradb/lora-node-linux-arm64-gnu`     | `ubuntu-latest` + zig cross |
+| `linux-x64-musl`           | `@loradb/lora-node-linux-x64-musl`      | `ubuntu-latest` + zig cross |
+| `linux-arm64-musl`         | `@loradb/lora-node-linux-arm64-musl`    | `ubuntu-latest` + zig cross |
 | `darwin-x64`               | `@loradb/lora-node-darwin-x64`          | `macos-latest` (cross from arm64 host) |
 | `darwin-arm64`             | `@loradb/lora-node-darwin-arm64`        | `macos-latest`     |
 | `win32-x64-msvc`           | `@loradb/lora-node-win32-x64-msvc`      | `windows-latest`   |
 
-musl Linux, freebsd, arm32, and Windows-arm64 are intentionally not
-built. `ts/native.js` will throw a clear "no native binary for this
+freebsd, arm32, and Windows-arm64 are intentionally not built. The musl
+builds cover Alpine-based images; the loader picks them by checking
+`ldd --version`. `ts/native.js` will throw a clear "no native binary for this
 platform" error on unsupported hosts instead of crashing silently.
 
 To add a triple: extend `napi.triples.additional` in

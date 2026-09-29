@@ -12,6 +12,9 @@ use napi::{Env, JsObject, JsUnknown};
 use lora_database::{LoraValue, PlanShape, PlanTreeNode, QueryPlan, QueryProfile, Row};
 use lora_store::{LoraBinary, LoraPoint, LoraVector, VectorValues};
 
+/// `Number.MAX_SAFE_INTEGER` (2^53 - 1).
+const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
+
 pub(crate) fn plan_to_napi(env: &Env, plan: &QueryPlan) -> Result<JsObject> {
     let mut obj = env.create_object()?;
     obj.set_named_property("query", env.create_string(&plan.query)?)?;
@@ -70,6 +73,11 @@ pub(crate) fn lora_value_to_napi(env: &Env, value: &LoraValue) -> Result<JsUnkno
     Ok(match value {
         LoraValue::Null => env.get_null()?.into_unknown(),
         LoraValue::Bool(b) => env.get_boolean(*b)?.into_unknown(),
+        // Outside the JS safe-integer range a Number would round the
+        // value, so hand back a BigInt instead.
+        LoraValue::Int(i) if !(-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(i) => {
+            env.create_bigint_from_i64(*i)?.into_unknown()?
+        }
         LoraValue::Int(i) => env.create_int64(*i)?.into_unknown(),
         LoraValue::Float(f) => env.create_double(*f)?.into_unknown(),
         LoraValue::String(s) => env.create_string(s)?.into_unknown(),

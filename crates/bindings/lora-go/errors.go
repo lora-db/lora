@@ -53,6 +53,9 @@ const (
 	CodeForeignKey Code = "LORA_FOREIGN_KEY"
 	// CodeTransaction — a transaction lifecycle rule was violated.
 	CodeTransaction Code = "LORA_TRANSACTION"
+	// CodeLocked — the database directory is locked by another process
+	// or live handle.
+	CodeLocked Code = "LORA_LOCKED"
 
 	// -------- Server errors --------
 
@@ -105,6 +108,7 @@ var allKnownCodes = []Code{
 	CodeNotNullConstraint,
 	CodeForeignKey,
 	CodeTransaction,
+	CodeLocked,
 	CodeIO,
 	CodeConnection,
 	CodeWalCorruption,

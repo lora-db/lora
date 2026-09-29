@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-napi = { version = "2", default-features = false, features = ["napi4", "serde-json"] }
+napi = { version = "2", default-features = false, features = ["napi6", "serde-json"] }
 napi-derive = "2"
 
 serde = { workspace = true }

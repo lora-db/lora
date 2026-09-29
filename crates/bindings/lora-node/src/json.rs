@@ -12,11 +12,14 @@ use napi::{Error as NapiError, Status};
 
 use lora_database::LoraValue;
 use lora_store::{
-    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
-    LoraTime, LoraVector, RawCoordinate, VectorCoordinateType,
+    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraTime,
+    LoraVector, RawCoordinate, VectorCoordinateType,
 };
 
 use super::INVALID_PARAMS_CODE;
+
+/// `Number.MAX_SAFE_INTEGER` (2^53 - 1).
+const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
 
 pub(crate) fn json_value_to_params(
     value: serde_json::Value,
@@ -43,6 +46,18 @@ pub(crate) fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue
         J::Bool(b) => Ok(LoraValue::Bool(b)),
         J::Number(n) => {
             if let Some(i) = n.as_i64() {
+                // A JS number has 53 bits of integer precision. An
+                // integer-valued number beyond that has already been
+                // rounded by JS; storing it would silently corrupt the
+                // value, so refuse it and point at bigint.
+                if !(-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&i) {
+                    return Err(NapiError::new(
+                        Status::InvalidArg,
+                        format!(
+                            "{INVALID_PARAMS_CODE}: integer {i} is outside the JavaScript safe-integer range and may already be rounded; pass it as a bigint"
+                        ),
+                    ));
+                }
                 Ok(LoraValue::Int(i))
             } else if let Some(f) = n.as_f64() {
                 Ok(LoraValue::Float(f))
@@ -64,6 +79,27 @@ pub(crate) fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue
         J::Object(obj) => {
             if let Some(serde_json::Value::String(kind)) = obj.get("kind") {
                 match kind.as_str() {
+                    // Exact 64-bit integer, produced by the TS wrapper for
+                    // `bigint` params (`{ kind: "integer", value: "<decimal>" }`).
+                    "integer" => {
+                        let raw = obj.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                            NapiError::new(
+                                Status::InvalidArg,
+                                format!(
+                                    "{INVALID_PARAMS_CODE}: integer.value must be a decimal string"
+                                ),
+                            )
+                        })?;
+                        let i: i64 = raw.parse().map_err(|_| {
+                            NapiError::new(
+                                Status::InvalidArg,
+                                format!(
+                                    "{INVALID_PARAMS_CODE}: integer {raw} does not fit in a signed 64-bit integer"
+                                ),
+                            )
+                        })?;
+                        return Ok(LoraValue::Int(i));
+                    }
                     "date" => {
                         let iso = require_iso(&obj, "date")?;
                         let d = LoraDate::parse(iso).map_err(invalid_param)?;
@@ -95,17 +131,17 @@ pub(crate) fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue
                         return Ok(LoraValue::Duration(d));
                     }
                     "point" => {
-                        let srid = obj.get("srid").and_then(|v| v.as_u64()).unwrap_or(7203) as u32;
-                        let x = obj
-                            .get("x")
-                            .and_then(|v| v.as_f64())
-                            .ok_or_else(|| invalid_param("point.x must be a number"))?;
-                        let y = obj
-                            .get("y")
-                            .and_then(|v| v.as_f64())
-                            .ok_or_else(|| invalid_param("point.y must be a number"))?;
-                        let z = obj.get("z").and_then(|v| v.as_f64());
-                        return Ok(LoraValue::Point(LoraPoint { x, y, z, srid }));
+                        let coords = lora_store::NamedPointCoordinates {
+                            srid: obj.get("srid").and_then(|v| v.as_u64()).map(|v| v as u32),
+                            x: obj.get("x").and_then(|v| v.as_f64()),
+                            y: obj.get("y").and_then(|v| v.as_f64()),
+                            z: obj.get("z").and_then(|v| v.as_f64()),
+                            longitude: obj.get("longitude").and_then(|v| v.as_f64()),
+                            latitude: obj.get("latitude").and_then(|v| v.as_f64()),
+                            height: obj.get("height").and_then(|v| v.as_f64()),
+                        };
+                        let point = coords.resolve().map_err(invalid_param)?;
+                        return Ok(LoraValue::Point(point));
                     }
                     "vector" => {
                         let v = vector_from_json_map(&obj).map_err(invalid_param)?;

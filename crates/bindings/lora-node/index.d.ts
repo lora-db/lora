@@ -27,7 +27,7 @@ export declare class Database {
    *   `.loradb` path under `database_dir`, or the current directory when no
    *   directory is provided.
    */
-  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "groupSync" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined)
+  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "groupSync" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined, queryTimeoutMs?: number | null | undefined)
   /**
    * Execute a Lora query on the libuv threadpool.
    *
@@ -47,8 +47,26 @@ export declare class Database {
    * per-cell napi syscalls that otherwise dominate wall-clock cost
    * on bulk reads. See `crates/bindings/lora-node/src/encode.rs`
    * for the wire format.
+   *
+   * `timeout_ms` bounds the query (falling back to the database-wide
+   * `queryTimeoutMs`); `cancel_token` from [`Self::create_cancel_token`]
+   * lets JS cancel it early. Either way an expired query rejects with
+   * `LORA_TIMEOUT`, aborts its WAL transaction and releases its locks.
    */
-  execute(query: string, params?: Record<string, any> | null | undefined): Promise<Buffer>
+  execute(query: string, params?: Record<string, any> | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer>
+  /**
+   * Create a cancellation token for one query. `timeout_ms` (or the
+   * database default) is folded into it, so pass the token instead of
+   * a timeout. Release it with [`Self::release_cancel_token`] once the
+   * query settles.
+   */
+  createCancelToken(timeoutMs?: number | null | undefined): number
+  /**
+   * Cancel the query holding `token`. It stops at its next check point
+   * and rejects with `LORA_TIMEOUT`. Unknown tokens are ignored.
+   */
+  cancelQuery(token: number): void
+  releaseCancelToken(token: number): void
   /**
    * Compile a query and return its execution plan without running it.
    *
@@ -73,7 +91,7 @@ export declare class Database {
    * from the executor one `next()` call at a time instead of materializing
    * the whole result up front.
    */
-  openStream(query: string, params?: Record<string, any> | null | undefined): number
+  openStream(query: string, params?: Record<string, any> | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): number
   streamColumns(streamId: number): string[]
   streamNext(streamId: number): Record<string, any> | null
   streamClose(streamId: number): void
@@ -84,7 +102,20 @@ export declare class Database {
    * returned in statement order. If any statement fails, the transaction is
    * rolled back by dropping the native transaction before commit.
    */
-  transaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<Buffer[]>
+  transaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer[]>
+  /**
+   * Begin an interactive transaction. Resolves with a transaction id
+   * once it is open; a read-write transaction holds the writer lock
+   * (other writers wait) until it commits or rolls back.
+   */
+  beginTransaction(mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<number>
+  /**
+   * Run one statement inside interactive transaction `tx_id`. A failed
+   * statement rolls the transaction back.
+   */
+  txExecute(txId: number, query: string, params?: Record<string, any> | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer>
+  /** Commit (`commit = true`) or roll back interactive transaction `tx_id`. */
+  txFinish(txId: number, commit: boolean): Promise<void>
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>
   /**
