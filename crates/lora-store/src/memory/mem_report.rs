@@ -388,7 +388,8 @@ fn property_index_key_bytes(key: &PropertyIndexKey) -> usize {
             PropertyIndexKey::Null
             | PropertyIndexKey::Bool(_)
             | PropertyIndexKey::Int(_)
-            | PropertyIndexKey::Float(_) => 0,
+            | PropertyIndexKey::Float(_)
+            | PropertyIndexKey::Temporal { .. } => 0,
             PropertyIndexKey::String(s) => 16 + s.len(),
             PropertyIndexKey::Binary(b) => binary_heap_bytes(b),
             PropertyIndexKey::List(items) => {

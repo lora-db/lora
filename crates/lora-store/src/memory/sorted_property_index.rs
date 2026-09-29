@@ -135,30 +135,14 @@ impl SortedPropertyIndex {
         let scope = self
             .by_scope
             .get(&ScopedPropertyKey::new(label, property))?;
-        let lo_key = lo.and_then(PropertyIndexKey::from_value);
-        let hi_key = hi.and_then(PropertyIndexKey::from_value);
+        let (lower, upper) = probe_bounds(lo, hi)?;
         let mut out = BTreeSet::new();
-        match (&lo_key, &hi_key) {
-            (Some(l), Some(h)) => extend_ids(
-                &mut out,
-                scope
-                    .by_value
-                    .range(Bound::Included(l.clone()), Bound::Included(h.clone())),
-            ),
-            (Some(l), None) => extend_ids(
-                &mut out,
-                scope
-                    .by_value
-                    .range(Bound::Included(l.clone()), Bound::Unbounded),
-            ),
-            (None, Some(h)) => extend_ids(
-                &mut out,
-                scope
-                    .by_value
-                    .range(Bound::Unbounded, Bound::Included(h.clone())),
-            ),
-            (None, None) => extend_ids(&mut out, scope.by_value.iter()),
+        if let (Bound::Included(l), Bound::Included(u)) = (&lower, &upper) {
+            if l > u {
+                return Some(out);
+            }
         }
+        extend_ids(&mut out, scope.by_value.range(lower, upper));
         Some(out)
     }
 
@@ -181,20 +165,13 @@ impl SortedPropertyIndex {
         after: Option<(&PropertyValue, u64)>,
         max: usize,
     ) -> Option<Vec<u64>> {
-        use std::ops::Bound;
-
         let scope = self
             .by_scope
             .get(&ScopedPropertyKey::new(label, property))?;
-        let lo_key = lo.and_then(PropertyIndexKey::from_value);
-        let hi_key = hi.and_then(PropertyIndexKey::from_value);
         let after = after.and_then(|(v, id)| PropertyIndexKey::from_value(v).map(|k| (k, id)));
 
         // Narrow the value range to start at the cursor's value.
-        let (mut lower, mut upper) = (
-            lo_key.map_or(Bound::Unbounded, Bound::Included),
-            hi_key.map_or(Bound::Unbounded, Bound::Included),
-        );
+        let (mut lower, mut upper) = probe_bounds(lo, hi)?;
         if let Some((key, _)) = &after {
             if descending {
                 upper = Bound::Included(key.clone());
@@ -246,6 +223,36 @@ impl SortedPropertyIndex {
             scope.by_value.remove(key);
         }
     }
+}
+
+/// Index bounds for an inclusive `[lo, hi]` probe. `None` when a bound has
+/// no index image (a duration, say): values of that type are not indexed,
+/// so the caller must scan. Temporal bounds widen across UTC offsets, and a
+/// one-sided temporal range is capped at the end of its temporal kind.
+fn probe_bounds(
+    lo: Option<&PropertyValue>,
+    hi: Option<&PropertyValue>,
+) -> Option<(Bound<PropertyIndexKey>, Bound<PropertyIndexKey>)> {
+    let lo_key = match lo {
+        Some(v) => Some(PropertyIndexKey::range_lower(v)?),
+        None => None,
+    };
+    let hi_key = match hi {
+        Some(v) => Some(PropertyIndexKey::range_upper(v)?),
+        None => None,
+    };
+    let (lo_key, hi_key) = match (lo_key, hi_key) {
+        (Some(l), None) => {
+            let h = l.kind_ceiling();
+            (Some(l), h)
+        }
+        (None, Some(h)) => (h.kind_floor(), Some(h)),
+        other => other,
+    };
+    Some((
+        lo_key.map_or(Bound::Unbounded, Bound::Included),
+        hi_key.map_or(Bound::Unbounded, Bound::Included),
+    ))
 }
 
 fn insert_id(scope: &mut SortedScope, key: PropertyIndexKey, id: u64) {
