@@ -17,7 +17,7 @@ use web_time::Instant;
 use anyhow::Result;
 use lora_ast::Statement;
 use lora_executor::{
-    classify_stream, collect_compiled, project_rows, ExecuteOptions, LoraValue,
+    classify_stream, collect_compiled_with_deadline, project_rows, ExecuteOptions, LoraValue,
     MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
 };
 use lora_parser::parse_query;
@@ -190,8 +190,11 @@ where
             if let Some(rec) = &self.wal {
                 ensure_wal_query_can_start(rec)?;
             }
-            if deadline.is_none() && should_collect_read_via_pull(&compiled) {
-                return collect_compiled(&*store, params, &compiled).map_err(anyhow::Error::from);
+            if should_collect_read_via_pull(&compiled) {
+                // The pull pipeline checks the deadline as rows are pulled,
+                // so a bounded read still stops early at its LIMIT.
+                return collect_compiled_with_deadline(&*store, params, &compiled, deadline)
+                    .map_err(anyhow::Error::from);
             }
             let executor = lora_executor::Executor::with_deadline(
                 lora_executor::ExecutionContext {

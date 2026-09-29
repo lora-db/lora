@@ -974,6 +974,12 @@ fn execute_read_compiled(
     params: BTreeMap<String, LoraValue>,
     deadline: Option<Instant>,
 ) -> Result<Vec<Row>> {
+    // Same fast path as auto-commit reads: a plan with an early LIMIT runs
+    // on the pull pipeline so it stops scanning once the LIMIT is met.
+    if crate::database::pull_mode::should_collect_read_via_pull(compiled) {
+        return lora_executor::collect_compiled_with_deadline(storage, params, compiled, deadline)
+            .map_err(anyhow::Error::from);
+    }
     let executor = Executor::with_deadline(ExecutionContext { storage, params }, deadline);
     executor
         .execute_compiled_rows(compiled)
