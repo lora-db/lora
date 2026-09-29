@@ -1,0 +1,23 @@
+{
+  "name": "lora-graphql-example-apollo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts",
+    "token": "tsx token.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@apollo/server": "^5.5.1",
+    "@loradb/lora-graphql": "file:../..",
+    "@loradb/lora-node": "^0.15.0",
+    "graphql": "^16.11.0",
+    "jose": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0"
+  }
+}

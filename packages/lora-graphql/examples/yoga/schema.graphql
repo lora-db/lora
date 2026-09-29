@@ -1,0 +1,25 @@
+type Claims @jwt {
+  sub: String!
+  roles: [String!]
+}
+
+type Festival
+  @node
+  @mutation
+  @subscription
+  @query(aggregate: true)
+  @authentication(
+    operations: [CREATE, UPDATE, DELETE]
+    jwt: { roles: { includes: "editor" } }
+  ) {
+  key: ID! @key(generate: true) @relayId
+  name: String! @filterable(byValue: [EQ, CONTAINS]) @sortable
+  capacity: Int @filterable(byValue: [GTE, LT]) @sortable
+  createdAt: DateTime @timestamp(operations: [CREATE])
+  genre: Genre @relationship(type: "IN_GENRE", direction: OUT) @filterable
+}
+
+type Genre @node {
+  key: String! @key @relayId
+  name: String! @filterable @sortable
+}
