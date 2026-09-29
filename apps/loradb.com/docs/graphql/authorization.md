@@ -2,7 +2,6 @@
 title: GraphQL Authorization and Security
 sidebar_label: Authorization
 description: Production security for @loradb/lora-graphql (verified JWTs, masked errors, document guards, persisted operations, signed cursors) and the @authentication and @authorization rules compiled into every statement.
-unlisted: true
 ---
 
 # Authorization and security

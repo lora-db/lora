@@ -97,6 +97,20 @@ module.exports = {
     },
     {
       type: 'category',
+      label: 'GraphQL',
+      collapsed: true,
+      items: [
+        'graphql/index',
+        'graphql/directives',
+        'graphql/generated-api',
+        'graphql/smart-layer',
+        'graphql/authorization',
+        'graphql/translation-rules',
+        'graphql/migrating-from-neo4j',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Guides & Reference',
       collapsed: false,
       items: ['cookbook', 'snapshot', 'wal', 'performance', 'errors', 'limitations', 'troubleshooting'],

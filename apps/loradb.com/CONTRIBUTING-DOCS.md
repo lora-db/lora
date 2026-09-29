@@ -168,39 +168,16 @@ tokenizer's keyword list and regexes in
 `src/components/CypherCode/tokenize.js`. Adding a missing keyword is
 a one-line change.
 
-## Unlisted pages (GraphQL)
+## Unlisted pages
 
-The `@loradb/lora-graphql` pages in `docs/graphql/` ship ahead of the
-package's first npm release. Each has `unlisted: true` in its front
-matter and none is in `sidebars.js`, so a deploy builds them (reachable
-by URL, `noindex`, left out of the sitemap and search) without
-advertising a package that cannot be installed yet. Link between them
-with explicit site paths (`/docs/graphql/directives`).
-
-To list them with the release:
-
-1. Remove `unlisted: true` from every file in `docs/graphql/`.
-2. Add a category to `sidebars.js`, for example:
-
-   ```js
-   {
-     type: 'category',
-     label: 'GraphQL',
-     items: [
-       'graphql/index',
-       'graphql/directives',
-       'graphql/generated-api',
-       'graphql/smart-layer',
-       'graphql/authorization',
-       'graphql/translation-rules',
-       'graphql/migrating-from-neo4j',
-     ],
-   },
-   ```
-
-3. Add the pages to `plugins/llms-txt/manifest.js` if they should be in
-   the LLM bundle.
-4. Run `corepack yarn workspace loradb-docs build`.
+A page can ship ahead of what it documents with `unlisted: true` in its
+front matter and no `sidebars.js` entry: a deploy builds it (reachable by
+URL, `noindex`, left out of the sitemap and search) without advertising it.
+To list it, drop `unlisted`, add it to `sidebars.js` (and to
+`plugins/llms-txt/manifest.js` if it belongs in the LLM bundle), and run
+`corepack yarn workspace loradb-docs build`. The GraphQL pages in
+`docs/graphql/` were listed this way with the first `@loradb/lora-graphql`
+release.
 
 ## Historical posts
 

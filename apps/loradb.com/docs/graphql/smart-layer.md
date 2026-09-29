@@ -2,7 +2,6 @@
 title: The GraphQL Smart Layer
 sidebar_label: Smart layer
 description: How @loradb/lora-graphql reasons about the Cypher it generates, from inferred indexes and plan checks to compile caching, @cypher checks, write-sets, cost limits, schema diffs and typed tooling.
-unlisted: true
 ---
 
 # The smart layer
@@ -174,11 +173,14 @@ Festival write.
 
 Limits worth knowing:
 
-- Only writes made through the library, in this process, are seen. Writes
-  from `db.execute()`, another process, or your own Cypher in a
-  transaction are not.
-- `@cypher` mutations are reported with `broad: true` and no entities:
-  treat everything as changed.
+- By default only writes made through the library, in this process, are
+  seen, and `@cypher` mutations are reported with `broad: true` and no
+  entities: treat everything as changed.
+- With `changeFeed: true` (lora-node), `changes()` and subscriptions are
+  fed by the engine's committed change feed: every write from any path or
+  process, with keys and relationship fields resolved, resuming from its
+  last position if it falls behind. `onWrite` still reports this
+  instance's mutations. Call `lora.close()` to stop the feed.
 - A `changes()` consumer that falls `maxQueuedChanges` (default 1000)
   behind is ended with an error rather than buffered without bound.
 - `onWrite` and `changes()` receive the full write-set without applying

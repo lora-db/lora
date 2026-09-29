@@ -2,7 +2,6 @@
 title: GraphQL for LoraDB
 sidebar_label: Getting started
 description: Install @loradb/lora-graphql, describe the graph and the public API in one annotated SDL, create the indexes it needs, and serve it from any graphql-js server.
-unlisted: true
 ---
 
 # GraphQL for LoraDB
@@ -253,12 +252,12 @@ installed.
   per type and per field.
 - JWT verification. Your server verifies the token.
 - Federation.
-- Subscriptions across processes. Subscriptions and change events see the
-  writes made through the library in this process only; `@cypher`
-  mutations report a broad change with no write-set, and writes made
-  elsewhere (other processes, `db.execute()`, or your own Cypher through
-  `tx.execute()`) are not seen. An engine change feed that lifts this is
-  in progress; until it ships, plan for in-process events only.
+- Cross-process subscriptions by default. Without options, subscriptions
+  and change events see the writes made through the library in this
+  process. With `changeFeed: true` (lora-node) they are fed by the
+  engine's committed change feed and see every write, from any process or
+  path, in commit order; see
+  [change tracking](/docs/graphql/smart-layer).
 
 ## Next
 

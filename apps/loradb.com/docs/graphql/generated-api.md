@@ -2,7 +2,6 @@
 title: The Generated GraphQL API
 sidebar_label: Generated API
 description: What @loradb/lora-graphql generates for each type, from root queries, keyset connections and aggregates to search, mutations with nested writes, upserts and bulk writes, and subscriptions.
-unlisted: true
 ---
 
 # The generated API
@@ -378,10 +377,13 @@ subscription {
 }
 ```
 
-- Events come from the write-sets of mutations made through the library,
-  in this process. `@cypher` mutations have no write-set, and writes made
-  elsewhere (another process, `db.execute()`, your own Cypher in a
-  transaction) are not seen.
+- By default events come from the write-sets of mutations made through
+  the library, in this process: `@cypher` mutations have no write-set, and
+  writes made elsewhere are not seen. With `changeFeed: true` (lora-node)
+  events come from the engine's committed change feed instead: every
+  write, whichever path or process made it, in commit order.
+  `previousState` needs library writes (the feed carries the state after
+  the write).
 - A node that gained or lost a relationship is an `UPDATE`. With
   `@subscription(relationships: true)` the type also sends `CONNECT` and
   `DISCONNECT` events with `relationship { field type relatedType relatedKey }`.

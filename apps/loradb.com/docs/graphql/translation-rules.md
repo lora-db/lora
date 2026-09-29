@@ -2,7 +2,6 @@
 title: GraphQL Translation Rules
 sidebar_label: Translation rules
 description: How @loradb/lora-graphql compiles GraphQL operations into LoraDB Cypher, with the statement shapes it chooses and the measurements behind them.
-unlisted: true
 ---
 
 # Translation rules

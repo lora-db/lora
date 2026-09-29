@@ -2,7 +2,6 @@
 title: GraphQL Directive Reference
 sidebar_label: Directives
 description: Every directive @loradb/lora-graphql understands, grouped into model directives (how the graph is stored) and API directives (what clients may do).
-unlisted: true
 ---
 
 # Directive reference
