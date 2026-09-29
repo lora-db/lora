@@ -95,7 +95,12 @@ function nodeKeys(
     }
     if (f?.kind === "relationship") {
       checkFieldAuthentication(ctx, node.name, f);
-      return (value) => relationshipPredicate(ctx, variable, f, value as Where);
+      // Filtering through the field reveals it, as reading it does.
+      const rule = fieldValidate(ctx, node, f, variable, "READ");
+      return (value) => {
+        const pred = relationshipPredicate(ctx, variable, f, value as Where);
+        return pred && and(rule, pred);
+      };
     }
     if (f?.kind === "cypher" && f.computed) {
       checkFieldAuthentication(ctx, node.name, f);
@@ -106,7 +111,11 @@ function nodeKeys(
           `${node.name}.${f.name} is computed by @cypher: filter by it in a root field's where, not through a relationship or search`,
         );
       }
-      return (value) => scalarPredicate(ctx, v(bound), value as Where);
+      const rule = fieldValidate(ctx, node, f, variable, "READ");
+      return (value) => {
+        const pred = scalarPredicate(ctx, v(bound), value as Where);
+        return pred && and(rule, pred);
+      };
     }
     // `<field>Connection`: quantifiers over { node, edge } of a list
     // relationship with properties.
@@ -114,8 +123,11 @@ function nodeKeys(
       const rel = node.fields.get(key.slice(0, -"Connection".length));
       if (rel?.kind === "relationship" && rel.list && rel.properties) {
         checkFieldAuthentication(ctx, node.name, rel);
-        return (value) =>
-          connectionPredicate(ctx, variable, rel, value as Where);
+        const rule = fieldValidate(ctx, node, rel, variable, "READ");
+        return (value) => {
+          const pred = connectionPredicate(ctx, variable, rel, value as Where);
+          return pred && and(rule, pred);
+        };
       }
     }
     return undefined;

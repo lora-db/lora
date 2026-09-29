@@ -44,6 +44,7 @@ import type {
   DeclaredRelationship,
   NestedOperation,
   NodeType,
+  PlainObjectType,
   PageLimit,
   RelationshipField,
   RelationshipPropertiesType,
@@ -144,6 +145,7 @@ export function buildModel(
   const enums = new Map<string, EnumType>();
   const nodeTypes: GraphQLObjectType[] = [];
   const propsTypes: GraphQLObjectType[] = [];
+  const plainTypes: GraphQLObjectType[] = [];
   const rootTypes: GraphQLObjectType[] = [];
   const interfaceTypes: GraphQLInterfaceType[] = [];
   const unionTypes: GraphQLUnionType[] = [];
@@ -225,14 +227,38 @@ export function buildModel(
     } else if (isProps) {
       propsTypes.push(t);
     } else {
-      problems.push({
-        type: t.name,
-        message: "object types need @node or @relationshipProperties",
-      });
+      // A plain object type: valid when a @cypher field returns it.
+      plainTypes.push(t);
     }
   }
 
   const nodeNames = new Set(nodeTypes.map((t) => t.name));
+  const plainNames = new Set(plainTypes.map((t) => t.name));
+  const objects = new Map<string, PlainObjectType>();
+  for (const t of plainTypes) {
+    const fields = new Map<string, { name: string; type: TypeShape }>();
+    for (const f of Object.values(t.getFields())) {
+      const named = getNamedType(f.type).name;
+      if (!isScalarLike(named, schema)) {
+        problems.push({
+          type: t.name,
+          field: f.name,
+          message:
+            "fields of an object type without @node are scalars or enums",
+        });
+        continue;
+      }
+      fields.set(f.name, {
+        name: f.name,
+        type: { named, ...shapeOf(unwrap(f.type)) },
+      });
+    }
+    objects.set(t.name, {
+      name: t.name,
+      fields,
+      description: t.description ?? undefined,
+    });
+  }
   // Relationships may target an interface or union over @node types.
   const targetNames = new Set([
     ...nodeNames,
@@ -299,6 +325,7 @@ export function buildModel(
       if (f.astNode?.directives?.some((x) => x.name.value === "cypher")) {
         const cypher = buildCypherField(t.name, f, d, problems, warnings, {
           nodeNames,
+          plainNames,
           schema,
           root: undefined,
         });
@@ -533,6 +560,13 @@ export function buildModel(
   }
   for (const node of nodes.values()) {
     for (const f of node.fields.values()) {
+      if (f.kind === "scalar" && f.groupBy && !node.aggregate) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message: "@groupBy needs @query(aggregate: true) on the type",
+        });
+      }
       if (f.kind !== "relationship") continue;
       (f as { members: readonly string[] }).members = abstracts.get(f.target)
         ?.members ?? [f.target];
@@ -567,6 +601,7 @@ export function buildModel(
       }
       const field = buildCypherField(t.name, f, d, problems, warnings, {
         nodeNames,
+        plainNames,
         schema,
         root: t.name as "Query" | "Mutation",
       });
@@ -619,6 +654,24 @@ export function buildModel(
     }
   }
 
+  // A plain object type exists to shape @cypher results.
+  const returned = new Set(
+    [
+      ...[...nodes.values()].flatMap((n) => [...n.fields.values()]),
+      ...queries,
+      ...mutationFields,
+    ].flatMap((f) => (f.kind === "cypher" && f.object ? [f.object] : [])),
+  );
+  for (const name of objects.keys()) {
+    if (!returned.has(name)) {
+      problems.push({
+        type: name,
+        message:
+          "object types need @node or @relationshipProperties, unless a @cypher field returns them",
+      });
+    }
+  }
+
   if (problems.length > 0) throw new ModelError(dedupeProblems(problems));
   return {
     nodes,
@@ -628,6 +681,7 @@ export function buildModel(
     queries,
     mutations: mutationFields,
     warnings,
+    objects,
     jwt: jwtShape,
     cursorSecret: options.cursorSecret,
   };
@@ -700,6 +754,7 @@ function buildScalarField(
   const isPrivate = directive(d("private"), f, at) !== undefined;
   const relayId = directive(d("relayId"), f, at) !== undefined;
   const sortable = directive(d("sortable"), f, at) !== undefined;
+  const groupBy = directive(d("groupBy"), f, at) !== undefined;
   const filterable = directive(d("filterable"), f, at);
   const alias = directive(d("alias"), f, at);
   const index = directive(d("index"), f, at);
@@ -813,6 +868,16 @@ function buildScalarField(
   if (sortable && (shape.list || UNSORTABLE.has(type))) {
     at(`${shape.list ? "lists" : type} cannot be @sortable`);
   }
+  if (
+    groupBy &&
+    (shape.list ||
+      type === "Point" ||
+      type === "CartesianPoint" ||
+      isPrivate ||
+      !opts.allowKey)
+  ) {
+    at("@groupBy needs a readable, non-list, non-Point field of a @node type");
+  }
 
   const property = (alias?.["property"] as string | undefined) ?? f.name;
   if (property.length === 0) at("@alias(property:) is empty");
@@ -856,6 +921,7 @@ function buildScalarField(
     relayId,
     filters,
     sortable: sortable && !isPrivate,
+    groupBy,
     indexes,
     generate,
     defaultValue,
@@ -956,11 +1022,7 @@ function buildRelationshipField(
 ): RelationshipField | undefined {
   const at = (message: string) =>
     problems.push({ type: t.name, field: f.name, message });
-  if (directive(d("authorization"), f, at) !== undefined) {
-    at(
-      "field-level @authorization is supported on scalar fields only; put the rule on the related type",
-    );
-  }
+  const authorization = readOnlyRules(directive(d("authorization"), f, at), at);
   const rel = directive(d("relationship"), f, at);
   if (!rel) {
     at(
@@ -1005,6 +1067,7 @@ function buildRelationshipField(
 
   return {
     kind: "relationship",
+    authorization,
     name: f.name,
     owner: t.name,
     type,
@@ -1167,6 +1230,7 @@ function buildCypherField(
   warnings: ModelWarning[],
   ctx: {
     nodeNames: Set<string>;
+    plainNames: Set<string>;
     schema: GraphQLSchema;
     root: "Query" | "Mutation" | undefined;
   },
@@ -1177,11 +1241,7 @@ function buildCypherField(
     warnings.push({ type: owner, field: f.name, message });
   const args = directive(d("cypher"), f, at);
   if (!args) return undefined;
-  if (directive(d("authorization"), f, at) !== undefined) {
-    at(
-      "field-level @authorization is supported on scalar fields only; guard a @cypher field with @authentication or inside its statement",
-    );
-  }
+  const authorization = readOnlyRules(directive(d("authorization"), f, at), at);
   const statement = args["statement"] as string;
   for (const other of [
     "relationship",
@@ -1191,6 +1251,7 @@ function buildCypherField(
     "index",
     "default",
     "timestamp",
+    "groupBy",
   ]) {
     if (directive(d(other), f, at))
       at(`@${other} cannot be combined with @cypher`);
@@ -1199,8 +1260,16 @@ function buildCypherField(
   const shape = unwrap(f.type);
   const named = getNamedType(f.type).name;
   const node = ctx.nodeNames.has(named) ? named : undefined;
-  if (!node && !isScalarLike(named, ctx.schema)) {
-    at("@cypher fields return scalars, enums or @node types");
+  const namedType = ctx.schema.getType(named);
+  const abstract =
+    namedType && (isInterfaceType(namedType) || isUnionType(namedType))
+      ? named
+      : undefined;
+  const object = ctx.plainNames.has(named) ? named : undefined;
+  if (!node && !abstract && !object && !isScalarLike(named, ctx.schema)) {
+    at(
+      "@cypher fields return scalars, enums, @node types, interfaces or unions over them, or object types without @node",
+    );
     return undefined;
   }
   if (shape.depth > 1) at("nested lists are not supported");
@@ -1272,7 +1341,7 @@ function buildCypherField(
   ) {
     if (ctx.root !== undefined) {
       at("@filterable and @sortable on @cypher apply to @node type fields");
-    } else if (node || shape.list) {
+    } else if (node || abstract || object || shape.list) {
       at(
         "only scalar, non-list @cypher fields can be @filterable or @sortable",
       );
@@ -1296,12 +1365,15 @@ function buildCypherField(
 
   const field: CypherField = {
     kind: "cypher",
+    authorization,
     name: f.name,
     owner,
     statement,
     columnName,
     type: { named, ...shapeOf(shape) },
     node,
+    abstract,
+    object,
     args: cypherArgs,
     params,
     computed,
@@ -1363,6 +1435,26 @@ function authOps(
   args: Record<string, unknown> | undefined,
 ): Set<AuthOperation> | undefined {
   return args ? new Set(args["operations"] as AuthOperation[]) : undefined;
+}
+
+/**
+ * Field-level rules on a relationship or @cypher field: READ validate rules
+ * only, checked for each row that reads (or filters on) the field.
+ */
+function readOnlyRules(
+  args: Record<string, unknown> | undefined,
+  at: (message: string) => void,
+): Authorization | undefined {
+  const rules = readAuthorization(args);
+  if (!rules) return undefined;
+  if (
+    rules.validate.some((r) => [...r.operations].some((op) => op !== "READ"))
+  ) {
+    at(
+      "field-level @authorization on a relationship or @cypher field takes READ rules only; write rules belong on the types",
+    );
+  }
+  return rules;
 }
 
 function readAuthorization(

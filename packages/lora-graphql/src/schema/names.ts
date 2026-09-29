@@ -29,6 +29,7 @@ export const names = {
   listRoot: (t: NodeType) => t.plural,
   connectionRoot: (t: NodeType) => `${t.plural}Connection`,
   aggregateRoot: (t: NodeType) => `${t.plural}Aggregate`,
+  groupedRoot: (t: NodeType) => `${t.plural}Grouped`,
   singleRoot: (t: NodeType) => lowerFirst(t.name),
 };
 

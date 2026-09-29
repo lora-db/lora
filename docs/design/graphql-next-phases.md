@@ -188,6 +188,15 @@ their queries.
 
 ## Phase 14: Query Surface Gaps
 
+**Status: done.** All ten items, in `test/query-surface.test.ts`. Choices
+worth knowing: `count { nodes edges }` applies to relationship
+connections, which now get their own types (root connections keep
+`count: Int!`); `@cypher` filters and sorts work in root fields only;
+vector search connections page within a fixed candidate pool; `@groupBy`
+is a field directive with a `<plural>Grouped(by:)` root; field-level
+rules on relationship and `@cypher` fields take READ rules only. Durations
+aggregate with `reduce` because of E25.
+
 Remaining differences from `@neo4j/graphql` that real apps hit, in
 order of value over effort.
 

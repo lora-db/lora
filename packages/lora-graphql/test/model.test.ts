@@ -56,7 +56,6 @@ describe("model validation", () => {
         type D { x: Int }
       `),
     ).toEqual([
-      "D: object types need @node or @relationshipProperties",
       "A.b: B is a @node type; add @relationship(type:, direction:)",
       "A.c: relationship type `has-c` must be SCREAMING_SNAKE_CASE",
       "A.tags: list items must be non-null, e.g. [String!]",
@@ -66,6 +65,7 @@ describe("model validation", () => {
       "B.key: @key must be String, ID, Int or BigInt",
       "B.key: @key fields must be non-null",
       "C: only one @key field is allowed (found k1, k2)",
+      "D: object types need @node or @relationshipProperties, unless a @cypher field returns them",
     ]);
   });
 
