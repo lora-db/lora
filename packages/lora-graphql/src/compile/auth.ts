@@ -287,7 +287,7 @@ export function claim(ctx: CompileContext, path: string): unknown {
  * A value by dotted path, through own properties only: `$context.x` must
  * not reach `constructor`, `__proto__` or anything else inherited.
  */
-function lookupPath(root: unknown, path: string): unknown {
+export function lookupPath(root: unknown, path: string): unknown {
   let cur: unknown = root;
   for (const part of path.split(".")) {
     if (cur === null || typeof cur !== "object" || !Object.hasOwn(cur, part)) {
@@ -354,9 +354,12 @@ function substitute(
     typeof value === "string" &&
     (value.startsWith("$jwt.") || value.startsWith("$context."))
   ) {
-    const v = value.startsWith("$jwt.")
-      ? claim(ctx, value.slice(5))
-      : lookupPath(ctx.requestContext, value.slice(9));
+    let v: unknown;
+    if (value.startsWith("$jwt.")) v = claim(ctx, value.slice(5));
+    else {
+      v = lookupPath(ctx.requestContext, value.slice(9));
+      ctx.contextReads.push([value.slice(9), v]);
+    }
     return v === undefined || v === null
       ? { ok: false, value: undefined }
       : { ok: true, value: v };

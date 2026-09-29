@@ -828,6 +828,19 @@ object with `counter(name, value, attributes)` and
 `onCost` sees every estimate. `execute()` also returns the operation's
 estimate as `extensions.cost`, so clients can tune their queries.
 
+### Compile cache
+
+`execute()` caches parsed documents, and each read root field caches its
+compiled statements per field node, exact variables, claims and the
+`$context` values the compile read (claims are folded into the text, so
+each distinct set gets its own compile). A repeated `festivals(limit: 20)`
+drops from 0.14 ms to 0.06 ms end to end. Servers that parse every request
+themselves get new field nodes each time and do not benefit; use
+`execute()` or persisted operations.
+
+`check({ rowBudget })` flags statements whose largest engine row estimate
+exceeds the budget; every plan report carries `estimatedRows` either way.
+
 ### Versions
 
 `@loradb/lora-graphql` is released in lockstep with `@loradb/lora-node`:

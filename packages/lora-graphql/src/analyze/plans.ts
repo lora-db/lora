@@ -6,7 +6,12 @@ import type { LoraDriver, PlanNode, QueryPlan, Statement } from "../driver.js";
 import type { CompiledRead, SeekExpectation } from "../compile/read.js";
 
 export interface PlanFinding {
-  rule: "full-scan" | "mutating-read" | "result-columns" | "scan-expand";
+  rule:
+    | "full-scan"
+    | "mutating-read"
+    | "result-columns"
+    | "scan-expand"
+    | "row-budget";
   message: string;
   statement: string;
 }
@@ -16,6 +21,12 @@ export interface PlanReport {
   plan: QueryPlan;
   /** Operator names from root to leaves, depth first. */
   operators: string[];
+  /**
+   * The engine's largest row estimate among the statement's scans and
+   * seeks (from graph statistics), or null when it has none. A scan that
+   * streams in index order under a LIMIT reads fewer rows than this.
+   */
+  estimatedRows: number | null;
   findings: PlanFinding[];
 }
 
@@ -29,6 +40,7 @@ const SEEK_OPERATORS: Record<SeekExpectation["access"], string[]> = {
 export async function checkPlans(
   driver: LoraDriver,
   compiled: CompiledRead,
+  options: { rowBudget?: number } = {},
 ): Promise<PlanReport[]> {
   if (!driver.explain) {
     throw new Error(
@@ -75,10 +87,26 @@ export async function checkPlans(
         });
       }
     }
+    const estimates = nodes
+      .filter((n) => n.operator.endsWith("Scan") && n.estimatedRows !== null)
+      .map((n) => n.estimatedRows!);
+    const estimatedRows = estimates.length > 0 ? Math.max(...estimates) : null;
+    if (
+      options.rowBudget !== undefined &&
+      estimatedRows !== null &&
+      estimatedRows > options.rowBudget
+    ) {
+      findings.push({
+        rule: "row-budget",
+        message: `the engine estimates ${estimatedRows} rows scanned; the budget is ${options.rowBudget}`,
+        statement: statement.text,
+      });
+    }
     reports.push({
       statement,
       plan,
       operators: nodes.map((n) => n.operator),
+      estimatedRows,
       findings,
     });
   }
