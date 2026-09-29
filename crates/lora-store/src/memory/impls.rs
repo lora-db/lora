@@ -507,6 +507,10 @@ impl GraphStorage for InMemoryGraph {
         self.live_rel_count
     }
 
+    fn node_count_by_label(&self, label: &str) -> usize {
+        self.nodes_by_label.get(label).map_or(0, |ids| ids.len())
+    }
+
     // ---------- Overrides: record-returning scans (direct iteration) ----------
 
     fn all_nodes(&self) -> Vec<NodeRecord> {

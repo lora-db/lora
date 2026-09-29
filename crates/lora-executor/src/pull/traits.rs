@@ -281,11 +281,12 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             labels,
             key,
             value,
+            in_list,
         }) => {
             let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(NodeByPropertyScanSource::new(
-                upstream, ctx, *var, labels, key, value,
+                upstream, ctx, *var, labels, key, value, *in_list,
             )))
         }
 
@@ -441,11 +442,23 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             )))
         }
 
-        PhysicalOp::HashAggregation(HashAggregationExec {
-            input,
-            group_by,
-            aggregates,
-        }) => {
+        PhysicalOp::HashAggregation(
+            agg @ HashAggregationExec {
+                input,
+                group_by,
+                aggregates,
+            },
+        ) => {
+            // `MATCH (n:L) RETURN count(n)`: answer from the label count.
+            // A seeded run (CALL / OPTIONAL MATCH body) may bind the
+            // scanned variable, so it always scans.
+            if seed.is_none() {
+                if let Some(rows) =
+                    crate::executor::count_all_scan_aggregation_rows(storage, plan, agg)
+                {
+                    return Ok(Box::new(BufferedRowSource::new(rows)));
+                }
+            }
             let upstream =
                 build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);

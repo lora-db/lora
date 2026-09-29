@@ -67,8 +67,9 @@ pub(crate) use helpers::{
     hydrate_relationship_record, indexed_node_property_candidates,
     label_group_candidates_prefiltered, node_by_point_scan_rows, node_by_property_range_scan_rows,
     node_by_text_scan_rows, node_matches_label_groups, node_matches_property_filter,
-    plan_may_need_hydration, rel_by_point_scan_rows, rel_by_property_range_scan_rows,
-    rel_by_text_scan_rows, resolve_range, scan_node_ids_for_label_groups, GroupValueKey,
+    plan_may_need_hydration, property_scan_candidates, property_scan_matches,
+    rel_by_point_scan_rows, rel_by_property_range_scan_rows, rel_by_text_scan_rows, resolve_range,
+    scan_node_ids_for_label_groups, GroupValueKey, NodePropertyCandidates,
 };
 pub(crate) use optional::{
     merge_optional_rows, null_extend_optional_row, optional_can_correlate, optional_match_rows,

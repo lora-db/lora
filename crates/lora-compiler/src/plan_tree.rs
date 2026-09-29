@@ -153,6 +153,9 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             }
             d.insert("key".to_string(), n.key.clone());
             d.insert("value".to_string(), expr_str(&n.value));
+            if n.in_list {
+                d.insert("mode".to_string(), "in".to_string());
+            }
             PlanDescription::with_children("NodeByPropertyScan", d, opt_input(n.input))
         }
         PhysicalOp::NodeByPropertyRangeScan(n) => {
