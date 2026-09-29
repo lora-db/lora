@@ -61,6 +61,7 @@ impl Database<InMemoryGraph> {
             live,
             self.wal.clone(),
             self.snapshots.clone(),
+            self.changes.clone(),
             mode,
         ))
     }

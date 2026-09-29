@@ -56,6 +56,12 @@ const (
 	// CodeLocked — the database directory is locked by another process
 	// or live handle.
 	CodeLocked Code = "LORA_LOCKED"
+	// CodeChangesTruncated — a change feed was asked to resume from an
+	// LSN the database no longer retains.
+	CodeChangesTruncated Code = "LORA_CHANGES_TRUNCATED"
+	// CodeChangesLagged — a change feed subscriber fell further behind
+	// than its buffer allows; resume from the last LSN it processed.
+	CodeChangesLagged Code = "LORA_CHANGES_LAGGED"
 
 	// -------- Server errors --------
 
@@ -109,6 +115,8 @@ var allKnownCodes = []Code{
 	CodeForeignKey,
 	CodeTransaction,
 	CodeLocked,
+	CodeChangesTruncated,
+	CodeChangesLagged,
 	CodeIO,
 	CodeConnection,
 	CodeWalCorruption,
@@ -153,7 +161,8 @@ func (e *LoraError) IsClient() bool {
 	case CodeParse, CodeSemantic, CodeInvalidParams, CodeReadOnly,
 		CodeNotFound, CodeConstraint, CodeInvalidVector, CodeTimeout,
 		CodeDatabaseName, CodeConfig, CodeValidation, CodeUniqueConstraint,
-		CodeNotNullConstraint, CodeForeignKey, CodeTransaction:
+		CodeNotNullConstraint, CodeForeignKey, CodeTransaction,
+		CodeChangesTruncated, CodeChangesLagged:
 		return true
 	default:
 		return false

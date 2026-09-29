@@ -14,7 +14,10 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 
-use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent, MutationRecorder};
+use lora_store::{
+    DeletedRecordSink, GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent,
+    MutationRecorder,
+};
 
 /// Best-effort: install a mutation recorder on the storage when the
 /// concrete type is `InMemoryGraph`. The WAL's recorder lives on the
@@ -29,6 +32,18 @@ pub(crate) fn install_recorder_if_inmemory<S: GraphStorage + Any + Sized>(
     let any: &mut dyn Any = store;
     if let Some(graph) = any.downcast_mut::<InMemoryGraph>() {
         graph.set_mutation_recorder(recorder);
+    }
+}
+
+/// Best-effort: install a [`DeletedRecordSink`] when the storage is
+/// `InMemoryGraph`.
+pub(crate) fn install_deleted_sink_if_inmemory<S: GraphStorage + Any + Sized>(
+    store: &mut S,
+    sink: Option<Arc<dyn DeletedRecordSink>>,
+) {
+    let any: &mut dyn Any = store;
+    if let Some(graph) = any.downcast_mut::<InMemoryGraph>() {
+        graph.set_deleted_record_sink(sink);
     }
 }
 

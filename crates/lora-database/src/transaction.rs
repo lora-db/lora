@@ -19,6 +19,7 @@ use lora_parser::parse_query;
 use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::WalRecorder;
 
+use crate::changes::ChangeHub;
 use crate::error::LoraError;
 use crate::explain::{OperatorMetrics, ProfileMetrics, QueryPlan, QueryProfile};
 use crate::live_store::LiveStore;
@@ -252,6 +253,7 @@ pub struct Transaction<'db> {
     pub(crate) inner: Arc<Mutex<TxInner>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
     pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
+    pub(crate) changes: Arc<ChangeHub>,
     mode: TransactionMode,
 }
 
@@ -261,9 +263,12 @@ impl<'db> Transaction<'db> {
         live: LiveStoreGuard<'db>,
         wal: Option<Arc<WalRecorder>>,
         snapshots: Option<Arc<ManagedSnapshotStore>>,
+        changes: Arc<ChangeHub>,
         mode: TransactionMode,
     ) -> Self {
-        let buffer_mutations = wal.is_some();
+        // The buffer feeds the WAL at commit and, while a change feed is
+        // capturing, the feed's batch.
+        let buffer_mutations = wal.is_some() || changes.is_active();
         let inner = TxInner {
             staged: None,
             buffer: Arc::new(Mutex::new(Vec::new())),
@@ -279,6 +284,7 @@ impl<'db> Transaction<'db> {
             inner: Arc::new(Mutex::new(inner)),
             wal,
             snapshots,
+            changes,
             mode,
         }
     }
@@ -793,8 +799,35 @@ impl<'db> Transaction<'db> {
             mode,
         } = self.take_commit_state()?;
 
-        let wrote_wal_commit = self.replay_commit_wal(mode, buffer_events)?;
+        let capture = self.changes.is_active()
+            && matches!(mode, TransactionMode::ReadWrite)
+            && staged.is_some()
+            && !buffer_events.is_empty();
+        let (wrote_wal_commit, captured) = if capture && self.wal.is_some() {
+            let events = buffer_events.clone();
+            let lsn = self.replay_commit_wal_lsn(mode, buffer_events)?;
+            (lsn.is_some(), lsn.map(|lsn| (Some(lsn), events)))
+        } else if capture {
+            (false, Some((None, buffer_events)))
+        } else {
+            (self.replay_commit_wal(mode, buffer_events)?, None)
+        };
         self.publish_staged_graph(mode, staged, wrote_wal_commit)?;
+
+        if let Some((lsn, events)) = captured {
+            // Still holding the writer lease, so the batch is ordered
+            // against the next commit.
+            if let Some(LiveStoreGuard::Write(lease)) = &self.live {
+                let post = lease.store.load_full();
+                crate::changes::publish_committed(
+                    &self.changes,
+                    lsn.map(|lsn| lsn.raw()),
+                    &events,
+                    &crate::changes::PreImages::for_events(&events, Some(&lease.snapshot)),
+                    &post,
+                );
+            }
+        }
 
         self.live.take();
         Ok(())
@@ -849,6 +882,23 @@ impl<'db> Transaction<'db> {
         }
 
         Ok(rec.commit_events(buffer_events)?.wrote())
+    }
+
+    /// [`Self::replay_commit_wal`] for a capturing change feed: returns the
+    /// commit LSN instead of a flag.
+    fn replay_commit_wal_lsn(
+        &self,
+        mode: TransactionMode,
+        buffer_events: Vec<MutationEvent>,
+    ) -> Result<Option<lora_wal::Lsn>> {
+        let Some(rec) = &self.wal else {
+            return Ok(None);
+        };
+        if !matches!(mode, TransactionMode::ReadWrite) {
+            ensure_wal_not_poisoned(rec)?;
+            return Ok(None);
+        }
+        Ok(rec.commit_events_lsn(buffer_events)?)
     }
 
     fn publish_staged_graph(

@@ -72,6 +72,12 @@ pub enum LoraErrorCode {
     TransactionFailure,
     /// The database directory is held by another process or live handle.
     Locked,
+    /// A change feed was asked to resume from an LSN the database no
+    /// longer retains (or never produced).
+    ChangesTruncated,
+    /// A change feed subscriber fell further behind than its buffer allows;
+    /// resume from the last LSN it processed.
+    ChangesLagged,
 
     // -------- Server errors --------
     /// I/O failure outside the WAL / snapshot boundaries.
@@ -128,6 +134,8 @@ impl LoraErrorCode {
             Self::ForeignKeyViolation => "LORA_FOREIGN_KEY",
             Self::TransactionFailure => "LORA_TRANSACTION",
             Self::Locked => "LORA_LOCKED",
+            Self::ChangesTruncated => "LORA_CHANGES_TRUNCATED",
+            Self::ChangesLagged => "LORA_CHANGES_LAGGED",
             Self::Io => "LORA_IO",
             Self::Connection => "LORA_CONNECTION",
             Self::WalCorruption => "LORA_WAL_CORRUPTION",
@@ -156,7 +164,9 @@ impl LoraErrorCode {
             | Self::NotNullConstraint
             | Self::ForeignKeyViolation
             | Self::TransactionFailure
-            | Self::Locked => LoraErrorCategory::Client,
+            | Self::Locked
+            | Self::ChangesTruncated
+            | Self::ChangesLagged => LoraErrorCategory::Client,
             Self::Io
             | Self::Connection
             | Self::WalCorruption
@@ -747,6 +757,11 @@ mod tests {
         );
         assert_eq!(LoraErrorCode::Connection.as_str(), "LORA_CONNECTION");
         assert_eq!(LoraErrorCode::Locked.as_str(), "LORA_LOCKED");
+        assert_eq!(
+            LoraErrorCode::ChangesTruncated.as_str(),
+            "LORA_CHANGES_TRUNCATED"
+        );
+        assert_eq!(LoraErrorCode::ChangesLagged.as_str(), "LORA_CHANGES_LAGGED");
         assert_eq!(LoraErrorCode::Internal.as_str(), "LORA_INTERNAL");
     }
 

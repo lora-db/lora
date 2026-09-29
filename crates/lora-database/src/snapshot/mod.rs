@@ -276,7 +276,11 @@ impl Database<InMemoryGraph> {
         // Publish the staged graph atomically into the live store; dropping
         // the guard without `publish` would discard the restore (rollback
         // semantics on the writer lease).
-        guard.publish();
+        guard.publish_in_place();
+        // Still under the writer lock: change feeds see the restore in
+        // commit order.
+        self.publish_reset();
+        drop(guard);
         Ok(meta)
     }
 

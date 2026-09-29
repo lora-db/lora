@@ -1171,6 +1171,9 @@ impl GraphStorageMut for InMemoryGraph {
     fn delete_relationship(&mut self, rel_id: RelationshipId) -> bool {
         let applied = match self.take_rel(rel_id) {
             Some(rel) => {
+                if let Some(sink) = &self.deleted_sink {
+                    sink.relationship_deleted(&rel);
+                }
                 self.on_relationship_deleted(&rel);
                 true
             }
@@ -1196,6 +1199,9 @@ impl GraphStorageMut for InMemoryGraph {
             None => return false,
         };
 
+        if let Some(sink) = &self.deleted_sink {
+            sink.node_deleted(&node);
+        }
         self.on_node_deleted(&node);
 
         // take_node already cleared the per-node adjacency Vecs.
@@ -1240,8 +1246,10 @@ impl GraphStorageMut for InMemoryGraph {
         // event plus whatever follows. Matches WAL semantics where the log
         // is the source of truth across a truncation.
         let recorder = self.recorder.take();
+        let deleted_sink = self.deleted_sink.take();
         *self = Self::default();
         self.recorder = recorder;
+        self.deleted_sink = deleted_sink;
         self.emit(|| MutationEvent::Clear);
     }
 

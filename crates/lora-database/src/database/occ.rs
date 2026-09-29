@@ -59,7 +59,12 @@ where
         // writes take the staged path, where a failure discards every
         // change instead of leaving a partial write behind.
         if deadline.is_none() && live_fast_path_safe(compiled) {
-            self.run_live_fast_with_durable_recorder(run)
+            let may_delete = compiled
+                .physical
+                .nodes
+                .iter()
+                .any(|op| matches!(op, PhysicalOp::Delete(_)));
+            self.run_live_fast_with_durable_recorder(may_delete, run)
         } else {
             self.run_with_durable_recorder(run)
         }

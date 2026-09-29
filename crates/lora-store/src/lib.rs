@@ -69,7 +69,9 @@ pub use memory::{
 };
 
 // ---------- Mutation stream + write-set vocabulary ----------
-pub use mutation::{ClosureRecorder, MutationEvent, MutationRecorder, MutationWriteSet};
+pub use mutation::{
+    ClosureRecorder, DeletedRecordSink, MutationEvent, MutationRecorder, MutationWriteSet,
+};
 
 // ---------- Concurrency primitives ----------
 pub use lock_table::{LockTable, WriteSetLocks, LOCK_TABLE_SHARDS};

@@ -9,8 +9,8 @@ use std::sync::{Arc, RwLock, RwLockWriteGuard};
 use lora_ast::Direction;
 
 use crate::{
-    LoraPoint, MutationEvent, MutationRecorder, NodeId, NodeRecord, Properties, PropertyValue,
-    RelationshipId, RelationshipRecord,
+    DeletedRecordSink, LoraPoint, MutationEvent, MutationRecorder, NodeId, NodeRecord, Properties,
+    PropertyValue, RelationshipId, RelationshipRecord,
 };
 
 use super::chunked_vec::ChunkedVec;
@@ -113,6 +113,12 @@ pub struct InMemoryGraph {
     /// updated. The recorder is not part of the graph's identity, so Clone
     /// and snapshot restore both reset it to `None`.
     pub(super) recorder: Option<Arc<dyn MutationRecorder>>,
+
+    /// Optional sink that sees each node / relationship record just before
+    /// a delete drops it. Change feeds use it to report deleted entities
+    /// without copying the graph. Like the recorder, it is not part of the
+    /// graph's identity and is dropped on clone.
+    pub(super) deleted_sink: Option<Arc<dyn DeletedRecordSink>>,
 }
 
 impl std::fmt::Debug for InMemoryGraph {
@@ -178,6 +184,7 @@ impl Clone for InMemoryGraph {
             constraint_catalog: RwLock::new(self.constraint_catalog_read().clone()),
             active_constraints: AtomicUsize::new(self.active_constraint_count()),
             recorder: None,
+            deleted_sink: None,
         }
     }
 }
@@ -207,6 +214,11 @@ impl InMemoryGraph {
     /// mutation *after* it has been applied.
     pub fn set_mutation_recorder(&mut self, recorder: Option<Arc<dyn MutationRecorder>>) {
         self.recorder = recorder;
+    }
+
+    /// Install (or clear) the [`DeletedRecordSink`].
+    pub fn set_deleted_record_sink(&mut self, sink: Option<Arc<dyn DeletedRecordSink>>) {
+        self.deleted_sink = sink;
     }
 
     /// Handle to the currently-installed recorder, if any.
