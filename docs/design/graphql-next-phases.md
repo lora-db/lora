@@ -378,6 +378,16 @@ values before an update or delete.
 
 ## Phase 19: Docs Site, Examples and Migration
 
+**Status: done (items 1 to 4; item 5 is "later").** Seven pages in
+`apps/loradb.com/docs/graphql/`, unlisted and out of the sidebar until the
+first npm release (`CONTRIBUTING-DOCS.md` says how to list them); Yoga,
+Apollo Server and graphql-http examples in `packages/lora-graphql/examples/`
+(npm, outside the workspaces; they need a lora-node built from this tree
+until the lockstep release); `@loradb/lora-graphql/testing`; and
+`lora-graphql migrate neo4j`. The Yoga example showed that entity-only
+cache invalidation misses lists and counts, so the docs now invalidate
+per type.
+
 1. **loradb.com pages:**
    - getting started;
    - directive reference;
