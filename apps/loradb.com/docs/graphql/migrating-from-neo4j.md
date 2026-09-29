@@ -43,19 +43,27 @@ lora-graphql migrate neo4j schema.graphql --operations src/operations
 ```
 
 `lora-graphql migrate neo4j <schema.graphql> [--operations <file|dir>]`
-rewrites an `@neo4j/graphql` SDL into a starting point:
+prints the rewritten SDL on standard output, preceded by one
+`# TODO(migrate): ...` line per decision left to you:
 
-- `@id` becomes `@key(generate: true)`.
-- `@node`, `@mutation`, `@query`, `@filterable` and `@sortable` are
-  added from observed usage. Pass `--operations` with your client
-  operations (a file or a directory) so the opt-ins follow what clients
-  actually use, then review what the output opts in either way.
-- What has no equivalent, such as federation or CDC-based subscriptions,
-  gets a TODO comment instead of a silent rewrite.
+- `@id` becomes `@key(generate: true)`, and `@node` is added where it is
+  missing.
+- `@fulltext`, `@subscription(events:)` and the `@relationship`
+  arguments (`queryDirection`, `nestedOperations`) are translated.
+- `@mutation`, `@filterable` and `@sortable` are opt-in here. With
+  `--operations` (your client operations, in either the neo4j 5
+  `title_CONTAINS` or the neo4j 6 `{ title: { contains } }` form), they
+  follow what the operations use. Without it, every type keeps its
+  mutations, as in `@neo4j/graphql`, and a TODO says to narrow them.
+- What has no equivalent (`@coalesce`, federation, `connectOrCreate`,
+  type-level `@vector`) is removed and listed as a TODO. `@authorization`
+  and `@authentication` rules are kept, with a TODO to check their filter
+  operators.
 
-The output is a draft, not a finished schema. Save it (below as
-`schema.lora.graphql`), diff it against the original, resolve every TODO,
-and then run the checks below.
+The output is a draft, not a finished schema. Save it
+(`lora-graphql migrate neo4j schema.graphql > schema.lora.graphql`), diff
+it against the original, resolve every TODO, and then run the checks
+below.
 
 ## Then check it
 

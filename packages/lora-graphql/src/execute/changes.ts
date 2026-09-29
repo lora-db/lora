@@ -40,9 +40,9 @@ export interface WriteChange {
   disconnected: RelationshipRef[];
   /**
    * Every node whose observable state changed: created, updated and
-   * deleted nodes, and both ends of every relationship written. Ready for
-   * a response cache's entity invalidation, e.g. GraphQL Yoga's
-   * `cache.invalidate(change.entities.map(e => ({ typename: e.type, id: e.key })))`.
+   * deleted nodes, and both ends of every relationship written. A
+   * response cache should invalidate by `types` too: lists, counts and
+   * connections change without naming an entity (see the Yoga example).
    */
   entities: EntityRef[];
   /** Node types in `entities`: lists of these types may have changed. */
