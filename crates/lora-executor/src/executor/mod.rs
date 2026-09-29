@@ -50,7 +50,7 @@ mod sort;
 
 pub use helpers::value_matches_property_value;
 pub use immutable::{ExecutionContext, Executor};
-pub(crate) use mutable::plan_ends_in_write;
+pub(crate) use mutable::{plan_defers_existence, plan_ends_in_write};
 pub use mutable::{MutableExecutionContext, MutableExecutor};
 
 // Crate-internal re-exports needed by callers in `crate::pull` and

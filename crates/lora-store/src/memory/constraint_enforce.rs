@@ -139,7 +139,7 @@ impl InMemoryGraph {
             if !node.labels.iter().any(|l| l == label) {
                 continue;
             }
-            validate_record_against_constraint(def, &node.properties, &mut seen)?;
+            validate_record_against_constraint(def, &node.properties, &mut seen, true)?;
         }
         Ok(())
     }
@@ -154,7 +154,7 @@ impl InMemoryGraph {
             if rel.rel_type != rel_type {
                 continue;
             }
-            validate_record_against_constraint(def, &rel.properties, &mut seen)?;
+            validate_record_against_constraint(def, &rel.properties, &mut seen, true)?;
         }
         Ok(())
     }
@@ -164,9 +164,10 @@ fn validate_record_against_constraint(
     def: &ConstraintDefinition,
     properties: &Properties,
     seen: &mut HashSet<String>,
+    check_existence: bool,
 ) -> Result<(), ConstraintViolation> {
     // 1) Existence checks.
-    if def.kind.requires_existence() {
+    if check_existence && def.kind.requires_existence() {
         let missing: Vec<String> = def
             .properties
             .iter()
@@ -484,6 +485,15 @@ fn check_record_constraints(
     graph: &InMemoryGraph,
     record: ConstraintRecord<'_>,
 ) -> Result<(), ConstraintViolation> {
+    check_record_constraints_with(catalog, graph, record, true)
+}
+
+fn check_record_constraints_with(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    record: ConstraintRecord<'_>,
+    check_existence: bool,
+) -> Result<(), ConstraintViolation> {
     for def in catalog.iter() {
         if !record.applies_to(def) {
             continue;
@@ -491,7 +501,7 @@ fn check_record_constraints(
 
         let properties = record.properties();
         let mut probe: HashSet<String> = HashSet::new();
-        validate_record_against_constraint(def, properties, &mut probe)?;
+        validate_record_against_constraint(def, properties, &mut probe, check_existence)?;
 
         if def.kind.requires_uniqueness() {
             if let Some(tuple) = constrained_tuple(def, properties) {
@@ -540,6 +550,102 @@ pub(crate) fn check_relationship_create(
             skip: None,
         },
     )
+}
+
+/// [`check_node_create`] without the existence checks, for a statement
+/// that checks existence once it has finished (a later `SET` in the same
+/// statement may still supply the property). Pair with
+/// [`check_node_existence`].
+pub(crate) fn check_node_create_deferred(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    labels: &[String],
+    properties: &Properties,
+) -> Result<(), ConstraintViolation> {
+    check_record_constraints_with(
+        catalog,
+        graph,
+        ConstraintRecord::Node {
+            labels: NodeLabelMatcher::AnyOf(labels),
+            properties,
+            skip: None,
+        },
+        false,
+    )
+}
+
+/// Relationship counterpart of [`check_node_create_deferred`].
+pub(crate) fn check_relationship_create_deferred(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    rel_type: &str,
+    properties: &Properties,
+) -> Result<(), ConstraintViolation> {
+    check_record_constraints_with(
+        catalog,
+        graph,
+        ConstraintRecord::Relationship {
+            rel_type,
+            properties,
+            skip: None,
+        },
+        false,
+    )
+}
+
+/// Existence (and key) constraints on a node as it stands now. A node
+/// that no longer exists passes.
+pub(crate) fn check_node_existence(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    node_id: NodeId,
+) -> Result<(), ConstraintViolation> {
+    let Some(node) = graph.node_at(node_id) else {
+        return Ok(());
+    };
+    for def in catalog.iter() {
+        if def.entity != StoredIndexEntity::Node
+            || !def.kind.requires_existence()
+            || !node.labels.iter().any(|l| l == &def.label)
+        {
+            continue;
+        }
+        if let Some(missing) = def
+            .properties
+            .iter()
+            .find(|p| !node.properties.contains_key(p.as_str()))
+        {
+            return Err(missing_property_violation(def, missing));
+        }
+    }
+    Ok(())
+}
+
+/// Relationship counterpart of [`check_node_existence`].
+pub(crate) fn check_relationship_existence(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    rel_id: RelationshipId,
+) -> Result<(), ConstraintViolation> {
+    let Some(rel) = graph.rel_at(rel_id) else {
+        return Ok(());
+    };
+    for def in catalog.iter() {
+        if def.entity != StoredIndexEntity::Relationship
+            || !def.kind.requires_existence()
+            || rel.rel_type != def.label
+        {
+            continue;
+        }
+        if let Some(missing) = def
+            .properties
+            .iter()
+            .find(|p| !rel.properties.contains_key(p.as_str()))
+        {
+            return Err(missing_property_violation(def, missing));
+        }
+    }
+    Ok(())
 }
 
 /// Whether another node with `label` already holds `target` for `keys`.

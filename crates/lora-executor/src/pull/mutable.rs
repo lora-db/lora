@@ -286,8 +286,12 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for StreamingWriteCur
             storage: storage_mut,
             params: self.params.clone(),
         });
+        // The write op is the only one in the plan, so a row is a whole
+        // statement's worth of writes for existence checks.
+        exec.defer_existence_checks(crate::executor::plan_defers_existence(self.plan));
         let op = &self.plan.nodes[self.write_op_node];
         exec.apply_write_op(op, &mut row)?;
+        exec.check_pending_existence()?;
         let row = exec.hydrate_row(row);
         Ok(Some(row))
     }
