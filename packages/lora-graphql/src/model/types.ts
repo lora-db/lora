@@ -1,0 +1,224 @@
+// The validated graph model: what the annotated SDL says about labels,
+// properties, relationships and the API surface. Everything downstream
+// (schema generation, compilation, index inference) reads only this.
+
+export type ScalarType =
+  | "String"
+  | "ID"
+  | "Int"
+  | "Float"
+  | "Boolean"
+  | "BigInt"
+  | "Date"
+  | "Time"
+  | "LocalTime"
+  | "DateTime"
+  | "LocalDateTime"
+  | "Duration"
+  | "Point"
+  | "CartesianPoint"
+  /** A user-declared enum, stored as its value name. */
+  | "Enum";
+
+export type FilterOperator =
+  | "EQ"
+  | "IN"
+  | "LT"
+  | "LTE"
+  | "GT"
+  | "GTE"
+  | "CONTAINS"
+  | "STARTS_WITH"
+  | "ENDS_WITH"
+  | "WITHIN_BBOX"
+  | "DISTANCE";
+
+export type IndexKind = "RANGE" | "TEXT" | "POINT";
+
+export type MutationOperation = "CREATE" | "UPDATE" | "DELETE";
+export type AuthOperation = "READ" | MutationOperation;
+
+/** Field-level options shared by every field kind. */
+interface FieldBase {
+  /** Operations on which reading this field needs an authenticated request. */
+  authentication: ReadonlySet<AuthOperation> | undefined;
+}
+
+export interface ScalarField extends FieldBase {
+  kind: "scalar";
+  /** API field name. */
+  name: string;
+  /** Stored property name (differs from `name` under `@alias`). */
+  property: string;
+  type: ScalarType;
+  /** Enum type name when `type` is `Enum`. */
+  enumName: string | undefined;
+  list: boolean;
+  required: boolean;
+  key: boolean;
+  unique: boolean;
+  private: boolean;
+  relayId: boolean;
+  filters: ReadonlySet<FilterOperator>;
+  sortable: boolean;
+  /** Indexes requested explicitly with `@index`. */
+  indexes: readonly IndexKind[];
+  /** `@key(generate: true)`: creates fill a UUID when the input omits it. */
+  generate: boolean;
+  /** `@default(value:)`, stored on create when the input omits the field. */
+  defaultValue: { value: unknown } | undefined;
+  /** `@timestamp`: set to the current time by these operations. */
+  timestamp: ReadonlySet<"CREATE" | "UPDATE"> | undefined;
+  /** Never client-settable (`@readonly`, `@timestamp`, `@private`). */
+  readonly: boolean;
+  description: string | undefined;
+}
+
+export interface RelationshipField extends FieldBase {
+  kind: "relationship";
+  name: string;
+  /** Node type that declares the field. */
+  owner: string;
+  /** Relationship type, e.g. `IN_GENRE`. */
+  type: string;
+  direction: "IN" | "OUT";
+  /** Target node type name. */
+  target: string;
+  list: boolean;
+  required: boolean;
+  /** `@relationshipProperties` type name. */
+  properties: string | undefined;
+  filterable: boolean;
+  cardinality: number | undefined;
+  limit: PageLimit | undefined;
+  description: string | undefined;
+}
+
+/** How a `@cypher` field's value, or one of its arguments, is typed. */
+export interface TypeShape {
+  /** Named type: a scalar, enum or (for results) node type name. */
+  named: string;
+  list: boolean;
+  required: boolean;
+  itemRequired: boolean;
+}
+
+export interface CypherArgument {
+  name: string;
+  type: TypeShape;
+  defaultValue: unknown;
+  description: string | undefined;
+}
+
+export interface CypherField extends FieldBase {
+  kind: "cypher";
+  name: string;
+  /** Node type name, or `Query` / `Mutation` for root fields. */
+  owner: string;
+  statement: string;
+  /** The result column holding the field's value. */
+  columnName: string;
+  /** The field's type; `node` names a @node type when it returns nodes. */
+  type: TypeShape;
+  node: string | undefined;
+  args: readonly CypherArgument[];
+  /** `$parameters` the statement uses, in order of first use. */
+  params: readonly string[];
+  description: string | undefined;
+}
+
+export type Field = ScalarField | RelationshipField | CypherField;
+
+/** `{ node, jwt, AND, OR, NOT }`, as written in `@authorization`. */
+export type AuthorizationWhere = Record<string, unknown>;
+
+export interface AuthorizationFilterRule {
+  operations: ReadonlySet<AuthOperation>;
+  requireAuthentication: boolean;
+  where: AuthorizationWhere;
+}
+
+export interface AuthorizationValidateRule {
+  operations: ReadonlySet<AuthOperation>;
+  when: ReadonlySet<"BEFORE" | "AFTER">;
+  requireAuthentication: boolean;
+  where: AuthorizationWhere;
+}
+
+export interface Authorization {
+  filter: readonly AuthorizationFilterRule[];
+  validate: readonly AuthorizationValidateRule[];
+}
+
+export interface PageLimit {
+  default: number;
+  max: number;
+}
+
+export interface NodeType {
+  name: string;
+  /** First label is the primary label every MATCH uses. */
+  labels: readonly string[];
+  /** Plural used for root fields, e.g. `festivals`. */
+  plural: string;
+  fields: ReadonlyMap<string, Field>;
+  key: ScalarField;
+  read: boolean;
+  aggregate: boolean;
+  /** Generated mutations; empty unless `@mutation`. */
+  mutations: ReadonlySet<MutationOperation>;
+  limit: PageLimit;
+  /** Operations that need an authenticated request. */
+  authentication: ReadonlySet<AuthOperation> | undefined;
+  authorization: Authorization | undefined;
+  description: string | undefined;
+}
+
+export interface RelationshipPropertiesType {
+  name: string;
+  fields: ReadonlyMap<string, ScalarField>;
+  description: string | undefined;
+}
+
+export interface EnumType {
+  name: string;
+  values: ReadonlyArray<{ name: string; description: string | undefined }>;
+  description: string | undefined;
+}
+
+export interface GraphModel {
+  nodes: ReadonlyMap<string, NodeType>;
+  enums: ReadonlyMap<string, EnumType>;
+  relationshipProperties: ReadonlyMap<string, RelationshipPropertiesType>;
+  /** `@cypher` fields declared on `Query` and `Mutation`. */
+  queries: readonly CypherField[];
+  mutations: readonly CypherField[];
+  /** Problems that do not stop the model, e.g. an unused @cypher argument. */
+  warnings: readonly ModelWarning[];
+}
+
+export interface ModelWarning {
+  type: string;
+  field?: string;
+  message: string;
+}
+
+export function scalarFields(t: {
+  fields: ReadonlyMap<string, Field>;
+}): ScalarField[] {
+  return [...t.fields.values()].filter(
+    (f): f is ScalarField => f.kind === "scalar",
+  );
+}
+
+export function cypherFields(t: NodeType): CypherField[] {
+  return [...t.fields.values()].filter(
+    (f): f is CypherField => f.kind === "cypher",
+  );
+}
+
+export function relationshipFields(t: NodeType): RelationshipField[] {
+  return [...t.fields.values()].filter(
+    (f): f is RelationshipField => f.kind === "relationship",
+  );
+}
