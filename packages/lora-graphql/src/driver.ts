@@ -62,6 +62,34 @@ export interface LoraDriver {
   begin?(options: RunOptions): Promise<DriverTransaction>;
   /** Plan a statement without running it. Optional: the WASM binding has no `explain()`. */
   explain?(statement: Statement): Promise<QueryPlan>;
+  /** The engine's committed change feed (lora-node `db.changes()`). */
+  changes?(options: {
+    fromLsn?: number;
+    signal?: AbortSignal;
+  }): AsyncIterable<DriverChangeBatch> & { ready: Promise<void> };
+}
+
+/** One change of a committed write, as lora-node reports it. */
+export interface DriverChange {
+  kind:
+    | "nodeCreated"
+    | "nodeUpdated"
+    | "nodeDeleted"
+    | "relationshipCreated"
+    | "relationshipUpdated"
+    | "relationshipDeleted"
+    | "reset";
+  id?: number;
+  labels?: string[];
+  type?: string;
+  startId?: number;
+  endId?: number;
+  properties?: Record<string, unknown>;
+}
+
+export interface DriverChangeBatch {
+  lsn: number;
+  changes: DriverChange[];
 }
 
 /** The subset of a LoraDB `Database` the adapter calls. */
@@ -72,6 +100,10 @@ export interface LoraDatabaseLike {
     options?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<QueryResult[]>;
   explain?(query: string, params?: never): Promise<QueryPlan>;
+  changes?(options?: {
+    fromLsn?: number;
+    signal?: AbortSignal;
+  }): AsyncIterable<DriverChangeBatch> & { ready: Promise<void> };
   stream?(
     query: string,
     params?: never,
@@ -146,6 +178,9 @@ export function loraDriver(db: LoraDatabaseLike): LoraDriver {
   if (typeof db.explain === "function") {
     const explain = db.explain.bind(db);
     driver.explain = (s) => explain(s.text, s.params as never);
+  }
+  if (typeof db.changes === "function") {
+    driver.changes = db.changes.bind(db);
   }
   return driver;
 }
