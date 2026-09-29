@@ -3,6 +3,7 @@ export {
   type AssertSchemaOptions,
   type CheckOptions,
   type CheckReport,
+  type CostEvent,
   type DatabaseErrorEvent,
   type ExecuteArgs,
   type LoraGraphQLContext,
@@ -58,6 +59,14 @@ export {
   type ModelProblem,
 } from "./errors.js";
 export { toGlobalId, fromGlobalId } from "./schema/global-id.js";
+export type {
+  Attributes,
+  MetricsLike,
+  ObservabilityOptions,
+  SpanLike,
+  StatementEndEvent,
+  TracerLike,
+} from "./observe.js";
 export {
   envelopPlugin,
   parseOptions,

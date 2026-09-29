@@ -155,6 +155,14 @@ systematic version of the two adversarial reviews, which found 9 and then
 
 ## Phase 13: CI, Release and Observability
 
+**Status: done.** `.github/workflows/lora-graphql.yml` runs lint,
+typecheck, tests, build and a pack check against lora-node built from the
+tree, plus a non-blocking job against the published binding the peer
+range names. `packages-release.yml` builds and publishes the package
+(after `publish-node`), and `sync-versions.mjs` keeps its version and
+peer range in lockstep. `onStatementEnd`, `tracer` / `traceStatements`,
+`metrics`, `budget` / `onCost`, and `extensions.cost` from `execute()`.
+
 **1. CI.** No workflow runs the package's typecheck, lint, tests and build,
 and `packages-release.yml` has no job for it (lora-query and
 lora-graph-canvas both have one). Add both. Run the tests against the

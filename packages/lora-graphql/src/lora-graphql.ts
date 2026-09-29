@@ -60,6 +60,11 @@ import {
   type DocumentGuards,
 } from "./guards.js";
 import { buildModel, type ModelOptions } from "./model/build.js";
+import {
+  Observer,
+  type ObservabilityOptions,
+  type StatementMeta,
+} from "./observe.js";
 import type {
   CypherField,
   GraphModel,
@@ -83,7 +88,7 @@ import { fromGlobalId } from "./schema/global-id.js";
 import { assertReadable } from "./schema/guard.js";
 import { names } from "./schema/names.js";
 
-export interface LoraGraphQLOptions extends ModelOptions {
+export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   /** Annotated SDL: the graph model and the API in one document. */
   typeDefs: string | DocumentNode;
   driver: LoraDriver;
@@ -96,6 +101,13 @@ export interface LoraGraphQLOptions extends ModelOptions {
    * Default 50 000; `Infinity` disables.
    */
   maxCost?: number;
+  /**
+   * The cost limit for one request, from its context (for example by
+   * user or plan). Undefined falls back to `maxCost`.
+   */
+  budget?: (context: unknown) => number | undefined;
+  /** Called with every root field's cost estimate, before it runs. */
+  onCost?: (event: CostEvent) => void;
   /**
    * The request's verified claims, from the GraphQL context. Default:
    * `context.jwt`. The library never verifies tokens: do that in the
@@ -136,6 +148,17 @@ export interface LoraGraphQLOptions extends ModelOptions {
    * by `id`. Default false.
    */
   persistedOnly?: boolean;
+}
+
+export interface CostEvent {
+  field: string;
+  /** Estimated rows this root field touches. */
+  cost: number;
+  /** Estimated rows of the operation so far, this field included. */
+  total: number;
+  /** The limit that applies: `budget(context)` or `maxCost`. */
+  limit: number;
+  context: unknown;
 }
 
 export interface DatabaseErrorEvent {
@@ -226,6 +249,11 @@ export class LoraGraphQL {
   readonly #jwt: (context: unknown) => Record<string, unknown> | undefined;
   readonly #onStatement: LoraGraphQLOptions["onStatement"];
   readonly #maskErrors: boolean;
+  readonly #observer: Observer;
+  readonly #budget: LoraGraphQLOptions["budget"];
+  readonly #onCost: LoraGraphQLOptions["onCost"];
+  /** Persisted operation ids by operation node, for statement events. */
+  readonly #persistedIds = new WeakMap<OperationDefinitionNode, string>();
   readonly #guards: DocumentGuards | false;
   readonly #persistedOnly: boolean;
   readonly #onError: LoraGraphQLOptions["onError"];
@@ -263,6 +291,9 @@ export class LoraGraphQL {
     this.#maskErrors = options.maskErrors ?? nodeEnv() === "production";
     this.#onError = options.onError;
     this.#guards = options.guards ?? {};
+    this.#observer = new Observer(options);
+    this.#budget = options.budget;
+    this.#onCost = options.onCost;
     this.#persistedOnly = options.persistedOnly ?? false;
   }
 
@@ -302,32 +333,44 @@ export class LoraGraphQL {
 
   /** The executable schema, for any graphql-js server. */
   getSchema(): GraphQLSchema {
+    const span = <T>(info: GraphQLResolveInfo, fn: () => Promise<T>) =>
+      this.#observer.field(
+        {
+          field: info.fieldName,
+          operationName: info.operation.name?.value,
+        },
+        fn,
+      );
     this.#schema ??= buildSchema(this.model, {
       subscribe: (node, args, context) => this.#subscribe(node, args, context),
       resolveChangedNode: (node, event, info, context) =>
         event.operation === "DELETE"
           ? Promise.resolve(null)
-          : this.#resolveByKey(node, event.key, info, context),
-      resolveAbstract: (abstract, info, context) => {
-        const ctx = this.#context(infoContext(info), context);
-        const args = this.#args(ctx, info.parentType, info.fieldNodes);
-        const compiled = compileAbstractRoot(
-          ctx,
-          abstract,
-          args,
-          info.fieldNodes,
-        );
-        return this.#run(info.fieldName, compiled, context, info);
-      },
+          : span(info, () =>
+              this.#resolveByKey(node, event.key, info, context),
+            ),
+      resolveAbstract: (abstract, info, context) =>
+        span(info, () => {
+          const ctx = this.#context(infoContext(info), context);
+          const args = this.#args(ctx, info.parentType, info.fieldNodes);
+          const compiled = compileAbstractRoot(
+            ctx,
+            abstract,
+            args,
+            info.fieldNodes,
+          );
+          return this.#run(info.fieldName, compiled, context, info);
+        }),
       resolveSearch: (node, index, info, context) =>
-        this.#resolveSearch(node, index, info, context),
+        span(info, () => this.#resolveSearch(node, index, info, context)),
       resolveRoot: (kind, node, info, context) =>
-        this.#resolveRoot(kind, node, info, context),
-      resolveNode: (id, info, context) => this.#resolveNode(id, info, context),
+        span(info, () => this.#resolveRoot(kind, node, info, context)),
+      resolveNode: (id, info, context) =>
+        span(info, () => this.#resolveNode(id, info, context)),
       resolveCypher: (field, info, context) =>
-        this.#resolveCypher(field, info, context),
+        span(info, () => this.#resolveCypher(field, info, context)),
       resolveMutation: (op, node, info, context) =>
-        this.#resolveMutation(op, node, info, context),
+        span(info, () => this.#resolveMutation(op, node, info, context)),
     });
     return this.#schema;
   }
@@ -563,6 +606,11 @@ export class LoraGraphQL {
           problems.push(`${id}: ${errors.map((e) => e.message).join("; ")}`);
         } else {
           this.#persisted.set(id, doc);
+          for (const def of doc.definitions) {
+            if (def.kind === Kind.OPERATION_DEFINITION) {
+              this.#persistedIds.set(def, id);
+            }
+          }
         }
       } catch (err) {
         problems.push(
@@ -619,13 +667,27 @@ export class LoraGraphQL {
         errors: [new GraphQLError("execute() needs a source or an id")],
       };
     }
-    return graphqlExecute({
+    const contextValue = args.context ?? {};
+    const result = await graphqlExecute({
       schema: this.getSchema(),
       document,
       variableValues: args.variables,
       operationName: args.operationName,
-      contextValue: args.context ?? {},
+      contextValue,
     });
+    // The operation's cost estimate, so clients can tune their queries.
+    const spent =
+      contextValue !== null && typeof contextValue === "object"
+        ? this.#spent.get(contextValue)
+        : undefined;
+    if (spent && spent.size > 0) {
+      const cost = [...spent.values()].reduce((a, b) => a + b, 0);
+      return {
+        ...result,
+        extensions: { ...result.extensions, cost: Math.ceil(cost) },
+      };
+    }
+    return result;
   }
 
   // -------------------------------------------------------------------------
@@ -756,12 +818,18 @@ export class LoraGraphQL {
       byOperation.set(info.operation, total);
       this.#spent.set(context, byOperation);
     }
-    if (total > this.#maxCost) {
+    const limit = this.#budget?.(context) ?? this.#maxCost;
+    try {
+      this.#onCost?.({ field, cost, total, limit, context });
+    } catch {
+      // Observers must not fail the request.
+    }
+    if (total > limit) {
       throw requestError(
         "COST_EXCEEDED",
-        `${field} would bring the operation to about ${Math.ceil(total)} rows touched; the limit is ${this.#maxCost}. Ask for smaller pages or fewer nested lists.`,
+        `${field} would bring the operation to about ${Math.ceil(total)} rows touched; the limit is ${limit}. Ask for smaller pages or fewer nested lists.`,
         undefined,
-        { cost: Math.ceil(total), maxCost: this.#maxCost },
+        { cost: Math.ceil(total), maxCost: limit },
       );
     }
   }
@@ -789,20 +857,40 @@ export class LoraGraphQL {
     const owned = (context as LoraGraphQLContext | undefined)?.transaction;
     let results;
     try {
-      results = owned
-        ? await runInOrder(owned, compiled.statements)
-        : await this.#driver.run(compiled.statements, {
-            mode: compiled.mode,
-            timeoutMs: this.#timeoutMs,
-            signal,
-            // Queries and object @cypher fields are checked read-only when
-            // the model is built; writes never reach this path.
-            verified: compiled.mode === "read",
-          });
+      results = await this.#observer.statements(
+        this.#meta(field, compiled.mode, info, compiled.cost),
+        compiled.statements,
+        () =>
+          owned
+            ? runInOrder(owned, compiled.statements)
+            : this.#driver.run(compiled.statements, {
+                mode: compiled.mode,
+                timeoutMs: this.#timeoutMs,
+                signal,
+                // Queries and object @cypher fields are checked read-only
+                // when the model is built; writes never reach this path.
+                verified: compiled.mode === "read",
+              }),
+      );
     } catch (err) {
       throw this.#databaseError(field, err);
     }
     return assertReadable(compiled.shape(results));
+  }
+
+  #meta(
+    field: string,
+    mode: "read" | "write",
+    info: GraphQLResolveInfo | undefined,
+    cost?: number,
+  ): StatementMeta {
+    return {
+      field,
+      mode,
+      cost,
+      operationName: info?.operation.name?.value,
+      persistedId: info && this.#persistedIds.get(info.operation),
+    };
   }
 
   #databaseError(field: string, err: unknown): unknown {
@@ -1146,6 +1234,14 @@ export class LoraGraphQL {
         ?.driverTransaction,
       onStatement: (statement) =>
         this.#onStatement?.({ field: info.fieldName, statement }),
+      observe: this.#observer.active
+        ? (statement, run) =>
+            this.#observer.statements(
+              this.#meta(info.fieldName, "write", info),
+              [statement],
+              run,
+            )
+        : undefined,
     };
   }
 

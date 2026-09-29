@@ -9,7 +9,7 @@ import { subSelections } from "../compile/selection.js";
 import { requestError } from "../errors.js";
 import { assertReadable } from "../schema/guard.js";
 import type { CypherField } from "../model/types.js";
-import type { MutationEnv } from "./mutate.js";
+import { runStatement, type MutationEnv } from "./mutate.js";
 
 export async function executeCypherMutation(
   env: MutationEnv,
@@ -35,8 +35,7 @@ export async function executeCypherMutation(
     signal: env.signal,
   });
   try {
-    env.onStatement?.(statement);
-    const result = await tx.execute(statement);
+    const result = await runStatement(env, tx, statement);
     const values = result.rows.map((row) => row[field.columnName]);
     let value: unknown[] = values;
     if (field.node) {
@@ -61,9 +60,10 @@ export async function executeCypherMutation(
         keys,
         subSelections(fieldNodes),
       );
-      env.onStatement?.(read.statements[0]!);
       value = assertReadable(
-        read.shape([await tx.execute(read.statements[0]!)]) as unknown[],
+        read.shape([
+          await runStatement(env, tx, read.statements[0]!),
+        ]) as unknown[],
       );
     }
     await tx.commit();
