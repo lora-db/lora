@@ -76,7 +76,7 @@ describe("Transaction.executeMany", () => {
       tx.executeMany(
         [
           { query: "CREATE (:Partial)" },
-          { query: "MATCH (a:A), (b:A) WHERE a.i = -1 RETURN a" },
+          { query: "MATCH (a:A), (b:A) WHERE a.i + b.i = -1 RETURN a" },
         ],
         { timeoutMs: 50 },
       ),

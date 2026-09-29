@@ -128,7 +128,7 @@ fn bounded_limit_read_still_times_out() {
     let db = seeded();
     // A cartesian filter that never yields: LIMIT cannot help, the
     // deadline has to stop it from inside the pull pipeline.
-    let q = "MATCH (a:Item), (b:Item) WHERE a.i = -1 RETURN a LIMIT 1";
+    let q = "MATCH (a:Item), (b:Item) WHERE a.i + b.i = -1 RETURN a LIMIT 1";
     let start = Instant::now();
     let err = db
         .service
@@ -153,7 +153,7 @@ fn bounded_limit_read_in_transaction_times_out_and_keeps_the_transaction() {
         .begin_transaction(TransactionMode::ReadWrite)
         .unwrap();
     tx.execute_rows("CREATE (:Marker)").unwrap();
-    let q = "MATCH (a:Item), (b:Item) WHERE a.i = -1 RETURN a LIMIT 1";
+    let q = "MATCH (a:Item), (b:Item) WHERE a.i + b.i = -1 RETURN a LIMIT 1";
     let start = Instant::now();
     let err = tx
         .execute_with_timeout(q, None, Duration::from_millis(50))
