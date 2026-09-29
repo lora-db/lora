@@ -18,6 +18,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import type {
+  LoraChangeBatch,
   LoraParams,
   LoraQueryPlan,
   LoraQueryProfile,
@@ -287,6 +288,243 @@ class NativeRowStream<
   }
 }
 
+/** Options for `db.changes()`. */
+export interface ChangesOptions {
+  /**
+   * Resume after this LSN: the feed first yields every retained batch with
+   * a greater LSN, then live batches. Omit to start with the next commit.
+   * An LSN the database no longer retains rejects with
+   * `LORA_CHANGES_TRUNCATED`.
+   */
+  fromLsn?: number | bigint;
+  /** Stop the feed when this signal aborts; `next()` rejects with its reason. */
+  signal?: AbortSignal;
+  /**
+   * Undelivered batches the feed may hold before it ends with
+   * `LORA_CHANGES_LAGGED`. Defaults to 1024.
+   */
+  bufferSize?: number;
+}
+
+/**
+ * Committed changes, one batch per committed write, in commit order.
+ * Iterate with `for await`; `break` (or `close()`) unsubscribes.
+ */
+export interface ChangeFeed extends AsyncIterableIterator<LoraChangeBatch> {
+  /**
+   * Resolves once the feed is subscribed: every commit that finishes after
+   * this point is delivered. Rejects with the open error (for example
+   * `LORA_CHANGES_TRUNCATED`), which `next()` also surfaces.
+   */
+  readonly ready: Promise<void>;
+  /** LSN of the last batch delivered, or `fromLsn` before the first one. */
+  readonly lastLsn: number | undefined;
+  close(): void;
+}
+
+const CHANGES_POLL_MAX = 256;
+
+class NativeChangeFeed implements ChangeFeed {
+  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #signal: AbortSignal | undefined;
+  readonly #onDone: (feed: NativeChangeFeed) => void;
+  readonly #opened: Promise<number>;
+  readonly ready: Promise<void>;
+  #id: number | undefined;
+  #buffer: LoraChangeBatch[] = [];
+  #done = false;
+  #error: unknown = undefined;
+  #lastLsn: number | undefined;
+  #wakeSeq = 0;
+  #wake: (() => void) | undefined;
+  #queue: Promise<unknown> = Promise.resolve();
+  #onAbort: (() => void) | undefined;
+
+  constructor(
+    inner: InstanceType<typeof NativeDatabase>,
+    options: ChangesOptions | undefined,
+    onDone: (feed: NativeChangeFeed) => void,
+  ) {
+    this.#inner = inner;
+    this.#signal = options?.signal;
+    this.#onDone = onDone;
+    const fromLsn = normalizeLsn(options?.fromLsn);
+    this.#lastLsn = fromLsn ?? undefined;
+    const bufferSize = normalizeBufferSize(options?.bufferSize);
+    if (this.#signal?.aborted) {
+      this.#done = true;
+      this.#error = this.#signal.reason;
+      this.#opened = Promise.reject(this.#signal.reason);
+    } else {
+      // Subscribes synchronously when capture is already on, so writes
+      // issued after `changes()` returns are never missed.
+      let opening: Promise<number>;
+      try {
+        opening = inner.openChanges(fromLsn, bufferSize, () => this.#onWake());
+      } catch (err) {
+        opening = Promise.reject(err);
+      }
+      this.#opened = opening.then((id) => {
+        this.#id = id;
+        if (this.#done) this.#closeNative();
+        return id;
+      });
+      if (this.#signal) {
+        const signal = this.#signal;
+        this.#onAbort = () => {
+          this.#buffer = [];
+          this.#end(signal.reason);
+        };
+        signal.addEventListener("abort", this.#onAbort, { once: true });
+      }
+    }
+    this.ready = this.#opened.then(
+      () => undefined,
+      (err) => {
+        throw wrapError(err);
+      },
+    );
+    // `ready` is optional to await; its rejection also reaches `next()`.
+    this.ready.catch(() => undefined);
+  }
+
+  get lastLsn(): number | undefined {
+    return this.#lastLsn;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<LoraChangeBatch> {
+    return this;
+  }
+
+  next(): Promise<IteratorResult<LoraChangeBatch>> {
+    // Serialize concurrent `next()` calls so batches stay in order.
+    const result = this.#queue.then(() => this.#next());
+    this.#queue = result.catch(() => undefined);
+    return result;
+  }
+
+  async return(): Promise<IteratorResult<LoraChangeBatch>> {
+    this.close();
+    return { done: true, value: undefined };
+  }
+
+  close(): void {
+    this.#buffer = [];
+    this.#end(undefined);
+  }
+
+  /** Called by `dispose()`: the native side already dropped the feed. */
+  disposed(): void {
+    this.#id = undefined;
+    this.#end(undefined);
+  }
+
+  async #next(): Promise<IteratorResult<LoraChangeBatch>> {
+    for (;;) {
+      const buffered = this.#buffer.shift();
+      if (buffered) {
+        this.#lastLsn = buffered.lsn;
+        return { done: false, value: buffered };
+      }
+      if (this.#done) {
+        const err = this.#error;
+        this.#error = undefined;
+        if (err !== undefined) throw err;
+        return { done: true, value: undefined };
+      }
+      let id: number;
+      try {
+        id = await this.#opened;
+      } catch (err) {
+        this.#end(wrapError(err));
+        continue;
+      }
+      if (this.#done) continue;
+      const seq = this.#wakeSeq;
+      let polled: Awaited<
+        ReturnType<InstanceType<typeof NativeDatabase>["changesPoll"]>
+      >;
+      try {
+        polled = await this.#inner.changesPoll(id, CHANGES_POLL_MAX);
+      } catch (err) {
+        this.#end(this.#done ? undefined : wrapError(err));
+        continue;
+      }
+      this.#buffer.push(...(polled.batches as LoraChangeBatch[]));
+      if (polled.closed) {
+        this.#end(undefined);
+        continue;
+      }
+      if (polled.batches.length === 0 && seq === this.#wakeSeq && !this.#done) {
+        await new Promise<void>((resolve) => {
+          this.#wake = resolve;
+        });
+      }
+    }
+  }
+
+  #onWake(): void {
+    this.#wakeSeq += 1;
+    const wake = this.#wake;
+    this.#wake = undefined;
+    wake?.();
+  }
+
+  #end(error: unknown): void {
+    if (this.#done) {
+      if (error !== undefined && this.#error === undefined) this.#error = error;
+      return;
+    }
+    this.#done = true;
+    this.#error = error;
+    if (this.#onAbort && this.#signal) {
+      this.#signal.removeEventListener("abort", this.#onAbort);
+      this.#onAbort = undefined;
+    }
+    this.#closeNative();
+    this.#onDone(this);
+    this.#onWake();
+  }
+
+  #closeNative(): void {
+    const id = this.#id;
+    if (id === undefined) return;
+    this.#id = undefined;
+    try {
+      this.#inner.changesClose(id);
+    } catch {
+      // Already gone (database disposed).
+    }
+  }
+}
+
+function normalizeLsn(lsn: number | bigint | undefined): number | null {
+  if (lsn === undefined) return null;
+  const value = typeof lsn === "bigint" ? Number(lsn) : lsn;
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    (typeof lsn === "bigint" && BigInt(value) !== lsn)
+  ) {
+    throw new LoraError(
+      `\`fromLsn\` must be a non-negative safe integer, got ${String(lsn)}`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+  return value;
+}
+
+function normalizeBufferSize(size: number | undefined): number | null {
+  if (size === undefined) return null;
+  if (!Number.isInteger(size) || size < 1 || size > 0xffff_ffff) {
+    throw new LoraError(
+      `\`bufferSize\` must be a positive integer, got ${String(size)}`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+  return size;
+}
+
 function isFetchUrl(url: URL): boolean {
   return (
     url.protocol === "http:" ||
@@ -475,6 +713,7 @@ function normalizeSnapshotLoadOptions(
  */
 class DatabaseImpl {
   readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #feeds = new Set<NativeChangeFeed>();
 
   constructor(inner: InstanceType<typeof NativeDatabase>) {
     this.#inner = inner;
@@ -713,7 +952,36 @@ class DatabaseImpl {
       this.#inner.dispose();
     } catch (err) {
       throw wrapError(err);
+    } finally {
+      for (const feed of [...this.#feeds]) feed.disposed();
+      this.#feeds.clear();
     }
+  }
+
+  /**
+   * Subscribe to committed changes: one `LoraChangeBatch` per committed
+   * write (auto-commit query, transaction, streamed write, `clear()`,
+   * snapshot restore), in commit order. Rolled-back work never appears.
+   *
+   * ```ts
+   * for await (const batch of db.changes({ fromLsn: saved })) {
+   *   for (const change of batch.changes) handle(change);
+   *   saved = batch.lsn;
+   * }
+   * ```
+   *
+   * Writers never wait for the feed. A consumer that falls more than
+   * `bufferSize` batches behind gets `LORA_CHANGES_LAGGED` after the
+   * buffered batches and should resume with `fromLsn: feed.lastLsn`.
+   * `dispose()` ends every feed. An open feed does not keep the process
+   * alive on its own.
+   */
+  changes(options?: ChangesOptions): ChangeFeed {
+    const feed = new NativeChangeFeed(this.#inner, options, (done) =>
+      this.#feeds.delete(done),
+    );
+    this.#feeds.add(feed);
+    return feed;
   }
 
   saveSnapshot(): Promise<Buffer>;

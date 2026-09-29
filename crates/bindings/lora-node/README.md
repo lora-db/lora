@@ -102,6 +102,69 @@ Schema commands (`CREATE CONSTRAINT`, `CREATE INDEX`, `DROP ...`) work
 inside `transaction()` and `db.begin()` and commit or roll back together
 with the data statements.
 
+### Change feed
+
+`db.changes()` yields one `LoraChangeBatch` per committed write, in commit
+order. Every write path counts: `execute()`, `stream()`, `transaction()`,
+`db.begin()` / `executeMany()`, imports, `clear()` and `loadSnapshot()`.
+Rolled-back work never appears.
+
+```ts
+const feed = db.changes({ fromLsn: savedLsn }); // omit fromLsn to start now
+await feed.ready; // optional: every commit after this point is delivered
+for await (const batch of feed) {
+  for (const change of batch.changes) {
+    if (change.kind === "nodeUpdated" && change.labels.includes("User")) {
+      invalidate(change.properties.id, change.setKeys);
+    }
+  }
+  savedLsn = batch.lsn;
+}
+```
+
+A batch is `{ lsn, changes }`. `lsn` is a strictly increasing resume
+token. Each change reports the net effect of the write on one entity, in
+the order the write first touched it:
+
+| `kind`                                       | Fields                                                                                 |
+| -------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `nodeCreated`, `nodeDeleted`                 | `id`, `labels`, `properties`                                                           |
+| `nodeUpdated`                                | `id`, `labels`, `properties`, `setKeys`, `removedKeys`, `addedLabels`, `removedLabels` |
+| `relationshipCreated`, `relationshipDeleted` | `id`, `type`, `startId`, `endId`, `properties`                                         |
+| `relationshipUpdated`                        | the relationship fields plus `setKeys`, `removedKeys`                                  |
+| `reset`                                      | none: the whole graph was replaced (`clear()`, `loadSnapshot()`)                       |
+
+Created and updated entities carry their state after the commit. Deleted
+entities carry their last committed state, so a consumer can still read
+their keys. An entity created and deleted in the same write is left out.
+When a write touches a key or label more than once, the last operation
+decides whether it is listed as set or removed.
+
+Resuming:
+
+- In-memory databases number commits with a process-local counter and keep
+  the last 1024 batches. `fromLsn` works within that window.
+- WAL-backed databases (`databaseName`, `openWalDatabase`) use the WAL's
+  commit LSN. `fromLsn` resumes across restarts for as far back as the WAL
+  holds history: the feed rebuilds older batches by replaying the WAL from
+  an empty graph or a managed checkpoint snapshot, so an old resume point
+  costs a replay.
+- An LSN the database no longer retains fails with
+  `LORA_CHANGES_TRUNCATED`: start a new feed and re-read current state.
+
+Writers never wait for a feed. Each feed buffers up to `bufferSize` batches
+(default 1024); a consumer that falls further behind receives the buffered
+batches and then `LORA_CHANGES_LAGGED`, and should resume with
+`fromLsn: feed.lastLsn`. `break`, `feed.close()`, an aborted `signal`
+(`next()` rejects with its reason) and `db.dispose()` end the feed. An open
+feed does not keep the process alive on its own.
+
+Capture starts with the first `changes()` call on a database and stays on
+until it closes. It costs about 0.5 µs per single-row write in the engine
+(and about 35% on bulk `UNWIND` writes) plus the consumer's own work.
+Snapshot restores on a WAL-backed database appear in the live feed as
+`reset` but are not part of the WAL history a later resume replays.
+
 ### Explain & Profile
 
 `db.explain()` and `db.profile()` are first-class methods alongside
@@ -311,6 +374,8 @@ Common ones:
 - `LORA_IO`, `LORA_CONNECTION`, `LORA_WAL_CORRUPTION`, `LORA_WAL_POISONED` — storage failures
 - `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO` — snapshot codec / crypto failures
 - `LORA_LOCKED` — the database directory is locked by another process
+- `LORA_CHANGES_TRUNCATED`, `LORA_CHANGES_LAGGED`: a change feed cannot
+  resume from its `fromLsn`, or fell behind its buffer (see Change feed)
 - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
 - `UNKNOWN` — catch-all for messages without a recognized code
 

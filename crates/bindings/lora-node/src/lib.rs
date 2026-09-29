@@ -27,6 +27,7 @@ use lora_database::{
     LoraErrorCode, SnapshotConfig, SnapshotCredentials, SnapshotOptions, SyncMode, WalConfig,
 };
 
+mod changes;
 mod encode;
 mod errors;
 mod interactive;
@@ -81,6 +82,9 @@ pub struct Database {
     /// Open interactive transactions (see [`interactive`]).
     txs: TxRegistry,
     next_tx_id: AtomicU32,
+    /// Open change feeds (see [`changes`]).
+    feeds: changes::FeedRegistry,
+    next_feed_id: AtomicU32,
 }
 
 pub(crate) type TxRegistry = Arc<Mutex<BTreeMap<u32, Arc<interactive::TxActor>>>>;
@@ -149,6 +153,8 @@ impl Database {
             next_cancel_id: AtomicU32::new(1),
             txs: Arc::new(Mutex::new(BTreeMap::new())),
             next_tx_id: AtomicU32::new(1),
+            feeds: Arc::new(Mutex::new(changes::FeedSet::default())),
+            next_feed_id: AtomicU32::new(1),
         })
     }
 
@@ -480,6 +486,101 @@ impl Database {
         Ok(AsyncTask::new(tasks::TxFinishTask { actor, commit }))
     }
 
+    /// Open a committed-change feed. Resolves with a feed id once the feed
+    /// is registered. `on_wake` fires (on the JS thread) whenever the feed
+    /// may have something new: call [`Self::changes_poll`] then.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn open_changes(
+        &self,
+        env: Env,
+        #[napi(ts_arg_type = "number | null | undefined")] from_lsn: Option<f64>,
+        #[napi(ts_arg_type = "number | null | undefined")] buffer_size: Option<u32>,
+        #[napi(ts_arg_type = "() => void")] on_wake: JsFunction,
+    ) -> Result<AsyncTask<changes::OpenChangesTask>> {
+        let from_lsn = match from_lsn {
+            None => None,
+            Some(lsn) if lsn.is_finite() && lsn >= 0.0 && lsn.fract() == 0.0 => Some(lsn as u64),
+            Some(_) => {
+                return Err(NapiError::new(
+                    Status::InvalidArg,
+                    format!("{INVALID_PARAMS_CODE}: `fromLsn` must be a non-negative integer"),
+                ))
+            }
+        };
+        let buffer_size = match buffer_size {
+            None => lora_database::DEFAULT_FEED_BUFFER,
+            Some(0) => {
+                return Err(NapiError::new(
+                    Status::InvalidArg,
+                    format!("{INVALID_PARAMS_CODE}: `bufferSize` must be greater than 0"),
+                ))
+            }
+            Some(n) => n as usize,
+        };
+        let mut waker: changes::Waker =
+            on_wake.create_threadsafe_function(0, |_ctx| Ok(Vec::<u32>::new()))?;
+        waker.unref(&env)?;
+        let db = self.inner()?;
+        let options = lora_database::ChangeFeedOptions {
+            from_lsn,
+            buffer_size,
+        };
+        let opened = db.try_changes(options);
+        Ok(AsyncTask::new(changes::OpenChangesTask {
+            db,
+            options,
+            opened,
+            waker: Some(waker),
+            registry: self.feeds.clone(),
+            id: self.next_feed_id.fetch_add(1, Ordering::Relaxed),
+        }))
+    }
+
+    /// Drain up to `max` batches from feed `feed_id`. Resolves with
+    /// `{ batches, closed }`; rejects with `LORA_CHANGES_LAGGED` (or another
+    /// coded error) once the feed fails. Never waits for new commits.
+    #[napi(
+        ts_return_type = "Promise<{ batches: Array<{ lsn: number; changes: Array<Record<string, any>> }>; closed: boolean }>"
+    )]
+    pub fn changes_poll(
+        &self,
+        feed_id: u32,
+        #[napi(ts_arg_type = "number | null | undefined")] max: Option<u32>,
+    ) -> Result<AsyncTask<changes::PollChangesTask>> {
+        let feed = self
+            .feeds
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "change feed registry poisoned"))?
+            .feeds
+            .get(&feed_id)
+            .cloned()
+            .ok_or_else(|| {
+                NapiError::new(
+                    Status::GenericFailure,
+                    "LORA_INTERNAL: change feed is closed",
+                )
+            })?;
+        Ok(AsyncTask::new(changes::PollChangesTask {
+            feed,
+            max: max.unwrap_or(256).max(1) as usize,
+        }))
+    }
+
+    /// Close feed `feed_id`. Idempotent.
+    #[napi]
+    pub fn changes_close(&self, feed_id: u32) -> Result<()> {
+        let feed = self
+            .feeds
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "change feed registry poisoned"))?
+            .feeds
+            .remove(&feed_id);
+        if let Some(feed) = feed {
+            feed.close();
+        }
+        Ok(())
+    }
+
     /// Force pending WAL bytes and the portable container mirror to disk.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn sync(&self) -> Result<AsyncTask<SyncTask>> {
@@ -515,6 +616,10 @@ impl Database {
         // the writer lock.
         if let Ok(mut txs) = self.txs.lock() {
             txs.clear();
+        }
+        // End every change feed opened through this handle.
+        if let Ok(mut feeds) = self.feeds.lock() {
+            feeds.close_all();
         }
         self.streams
             .lock()
