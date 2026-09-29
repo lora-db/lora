@@ -10,10 +10,9 @@ name: lora-graphql
 #              check. This is the blocking gate, and it also catches a
 #              stale lora-node dist/ locally-built binaries can hide.
 #   published: runs the same tests against the @loradb/lora-node release
-#              the peer range names. The package is released in lockstep
-#              with lora-node, so between releases the tests may use
-#              binding features that are not published yet: this job
-#              reports that drift without blocking the PR.
+#              the peer range names, and skips (with a notice) while that
+#              version is not on npm yet, as between a version bump and its
+#              release. Non-blocking.
 
 on:
   push:
@@ -113,9 +112,18 @@ jobs:
         run: corepack yarn install --immutable
 
       - name: Install the @loradb/lora-node release the peer range names
+        id: pinned
         run: |
           range=$(node -p "require('./packages/lora-graphql/package.json').peerDependencies['@loradb/lora-node']")
           echo "peer range: $range"
+          # Between a version bump and its release the range names a binding
+          # that is not on npm yet: nothing to test against, so skip.
+          if [ -z "$(npm view "@loradb/lora-node@$range" version 2>/dev/null)" ]; then
+            echo "::notice::@loradb/lora-node@$range is not published yet; skipping the published-binding tests"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/pinned"
           (cd "$RUNNER_TEMP/pinned" && npm init -y >/dev/null && npm install "@loradb/lora-node@$range")
           rm -rf node_modules/@loradb/lora-node
@@ -123,4 +131,5 @@ jobs:
           node -p "'using @loradb/lora-node ' + require('@loradb/lora-node/package.json').version"
 
       - name: Vitest
+        if: steps.pinned.outputs.available == 'true'
         run: corepack yarn workspace @loradb/lora-graphql test
