@@ -606,3 +606,25 @@ pub fn collect_compiled<'a, S: GraphStorage + 'a>(
     let mut cursor = PullExecutor::new(storage, params).open_compiled(compiled)?;
     drain(cursor.as_mut())
 }
+
+/// [`collect_compiled`] bounded by a cooperative `deadline`.
+///
+/// The deadline is made active for the whole open-and-drain, so every
+/// source in the pipeline (including ones built lazily mid-query by
+/// `OPTIONAL MATCH` or `CALL {}`, and buffered sub-executors) checks it.
+/// Because the pipeline is pulled, a `LIMIT` still stops the scan early.
+pub fn collect_compiled_with_deadline<'a, S: GraphStorage + 'a>(
+    storage: &'a S,
+    params: BTreeMap<String, LoraValue>,
+    compiled: &'a CompiledQuery,
+    deadline: Option<web_time::Instant>,
+) -> ExecResult<Vec<Row>> {
+    let _deadline_scope = crate::cancel::DeadlineScope::enter(deadline);
+    if let Some(deadline) = deadline {
+        if crate::cancel::deadline_reached(deadline) {
+            return Err(ExecutorError::QueryTimeout);
+        }
+    }
+    let mut cursor = PullExecutor::new(storage, params).open_compiled(compiled)?;
+    drain(cursor.as_mut())
+}

@@ -17,7 +17,7 @@ mod graph_api;
 mod occ;
 mod procedures;
 mod profile;
-mod pull_mode;
+pub(crate) mod pull_mode;
 mod replay;
 mod row_projection;
 pub(crate) mod schema;
