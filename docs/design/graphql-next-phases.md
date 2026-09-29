@@ -43,6 +43,15 @@ start any time in `crates/`; each fix removes a workaround in the package.
 
 ## Phase 11: Mutation Statements Seek, Then Expand
 
+**Status: done.** Measured on the bench graph (`bench/mutate.bench.ts`):
+a create with a genre and two followers connected takes 0.78 ms (was
+262 ms) in 3 statements (was 6). A follower disconnect takes 0.7 ms (was
+63 ms). The pre-delete as seek then expand is 1989x faster than the
+single pattern. `scanExpands()` in `src/analyze/plans.ts` flags an
+`Expand` fed by a full scan, and `test/mutation-plans.test.ts` runs it
+over every kind of mutation statement. On the old code it reports 12
+findings. The engine follow-up in Phase 16 still stands.
+
 The largest measured problem. A create with one genre connect and two
 follower connects takes **262 ms**; a plain create takes 0.53 ms.
 

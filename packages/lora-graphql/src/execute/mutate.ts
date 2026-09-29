@@ -153,6 +153,20 @@ class WritePlan {
   }
 
   /**
+   * Whether this plan creates the `type` node with `key`. Creates run
+   * before links, so such a node has only the relationships this plan
+   * gives it.
+   */
+  isFresh(type: string, key: unknown): boolean {
+    for (const [node, rows] of this.creates) {
+      if (node.name !== type) continue;
+      const k = keyOf(key);
+      if (rows.some((r) => keyOf(r.key) === k)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Plan a node creation (and its nested writes); returns its key.
    * `parent` is the relationship a nested create hangs from: it satisfies
    * the new node's required field pointing back.
@@ -459,6 +473,29 @@ function labelTest(variable: string, node: NodeType): string {
   return `${name(variable)}:${name(node.labels[0]!)}`;
 }
 
+/**
+ * `MATCH (a:Owner) WHERE a.key = <key>` then `MATCH (a)-[r:T]->(b:Target)
+ * WHERE b:Target`, for callers to extend with ` AND ...`. The key test gets
+ * its own MATCH so it becomes an index seek: LoraDB 0.15 only seeks when
+ * the test sits directly on a node scan, and one pattern with the test in
+ * its WHERE expands every relationship of the type first.
+ */
+function seekThenExpand(
+  a: string,
+  owner: NodeType,
+  key: string,
+  rel: RelationshipField,
+  r: string,
+  b: string,
+  target: NodeType,
+): string {
+  return (
+    `MATCH (${name(a)}:${name(owner.labels[0]!)}) WHERE ${name(a)}.${name(owner.key.property)} = ${key}\n` +
+    `MATCH (${name(a)})${arrow(rel, r, b, target)}\n` +
+    `WHERE ${labelTest(b, target)}`
+  );
+}
+
 /** `AND (<expr>)`, or nothing. */
 const andText = (e: Expr | undefined) => (e ? ` AND (${printExpr(e)})` : "");
 
@@ -573,8 +610,7 @@ class Runner {
         andText(authFilter(ctx, owner, "a", "DELETE_RELATIONSHIP"));
       const matchText =
         (d.to ? `UNWIND ${printExpr(bind(ctx, d.to))} AS k\n` : "") +
-        `MATCH (a:${name(owner.labels[0]!)})${arrow(d.rel, "r", "b", target)}\n` +
-        `WHERE ${labelTest("b", target)} AND a.${name(owner.key.property)} = ${from}` +
+        seekThenExpand("a", owner, from, d.rel, "r", "b", target) +
         (d.to ? ` AND b.${name(target.key.property)} = k` : "") +
         `${guard}\n`;
       const returned = `b.${name(target.key.property)} AS key`;
@@ -639,18 +675,26 @@ class Runner {
       // Connecting an already-connected pair keeps one relationship and
       // updates its properties. It is replaced rather than merged: LoraDB
       // 0.15 ignores the bound end node of a MERGE relationship pattern.
-      const existing = await this.run(
-        `UNWIND ${printExpr(
-          bind(
-            ctx,
-            links.map((l) => ({ from: l.from, to: l.to })),
-          ),
-        )} AS row\n` +
-          `MATCH (a:${name(owner.labels[0]!)})${arrow(rel, "r", "b", target)}\n` +
-          `WHERE ${labelTest("b", target)} AND a.${name(owner.key.property)} = row.from AND b.${name(target.key.property)} = row.to\n` +
-          `WITH row, r, properties(r) AS old DELETE r RETURN row.from AS from, row.to AS to, old`,
-        ctx,
+      // A node this plan creates has no relationship to replace.
+      const old = links.filter(
+        (l) =>
+          !plan.isFresh(rel.owner, l.from) && !plan.isFresh(rel.target, l.to),
       );
+      const existing =
+        old.length === 0
+          ? []
+          : await this.run(
+              `UNWIND ${printExpr(
+                bind(
+                  ctx,
+                  old.map((l) => ({ from: l.from, to: l.to })),
+                ),
+              )} AS row\n` +
+                seekThenExpand("a", owner, "row.from", rel, "r", "b", target) +
+                ` AND b.${name(target.key.property)} = row.to\n` +
+                `WITH row, r, properties(r) AS old DELETE r RETURN row.from AS from, row.to AS to, old`,
+              ctx,
+            );
       const previous = new Map<string, Input>();
       for (const row of existing) {
         previous.set(
@@ -758,8 +802,15 @@ class Runner {
       const target = this.env.model.nodes.get(u.rel.target)!;
       const ctx = this.ctx();
       const text =
-        `MATCH (a:${name(owner.labels[0]!)})${arrow(u.rel, "r", "b", target)}\n` +
-        `WHERE ${labelTest("b", target)} AND a.${name(owner.key.property)} = ${printExpr(bind(ctx, u.from))}` +
+        seekThenExpand(
+          "a",
+          owner,
+          printExpr(bind(ctx, u.from)),
+          u.rel,
+          "r",
+          "b",
+          target,
+        ) +
         (u.to !== undefined
           ? ` AND b.${name(target.key.property)} = ${printExpr(bind(ctx, u.to))}`
           : "") +
@@ -784,8 +835,15 @@ class Runner {
       const target = this.env.model.nodes.get(u.rel.target)!;
       const ctx = this.ctx();
       const rows = await this.run(
-        `MATCH (a:${name(owner.labels[0]!)})${arrow(u.rel, "", "b", target)}\n` +
-          `WHERE ${labelTest("b", target)} AND a.${name(owner.key.property)} = ${printExpr(bind(ctx, u.from))}` +
+        seekThenExpand(
+          "a",
+          owner,
+          printExpr(bind(ctx, u.from)),
+          u.rel,
+          "",
+          "b",
+          target,
+        ) +
           (u.to !== undefined
             ? ` AND b.${name(target.key.property)} = ${printExpr(bind(ctx, u.to))}`
             : "") +
@@ -955,23 +1013,38 @@ class Runner {
    */
   async checkCardinality(plan: WritePlan): Promise<void> {
     const model = this.env.model;
-    const touched = new Map<
-      string,
-      { field: RelationshipField; keys: unknown[] }
-    >();
-    const add = (field: RelationshipField, key: unknown) => {
+    interface Touched {
+      field: RelationshipField;
+      keys: unknown[];
+      /** Links per key, for keys of nodes this plan creates. */
+      fresh: Map<string, number>;
+    }
+    const touched = new Map<string, Touched>();
+    // `type` is the node's concrete type: a node this plan creates that
+    // gains exactly one link on the field cannot hold more than one.
+    const add = (field: RelationshipField, key: unknown, type: string) => {
       const id = `${field.owner}.${field.name}`;
-      const entry = touched.get(id) ?? { field, keys: [] };
+      const entry: Touched = touched.get(id) ?? {
+        field,
+        keys: [],
+        fresh: new Map(),
+      };
       entry.keys.push(key);
+      if (plan.isFresh(type, key)) {
+        const k = keyOf(key);
+        entry.fresh.set(k, (entry.fresh.get(k) ?? 0) + 1);
+      }
       touched.set(id, entry);
     };
     for (const link of plan.links) {
-      if (!link.rel.list) add(declared(link.rel), link.from);
+      if (!link.rel.list) add(declared(link.rel), link.from, link.rel.owner);
       for (const f of inverseFields(model, link.rel)) {
-        if (!f.list) add(f, link.to);
+        if (!f.list) add(f, link.to, link.rel.target);
       }
     }
-    for (const { field, keys } of touched.values()) {
+    for (const { field, keys: all, fresh } of touched.values()) {
+      const keys = all.filter((k) => fresh.get(keyOf(k)) !== 1);
+      if (keys.length === 0) continue;
       const owner = model.nodes.get(field.owner)!;
       const ctx = this.ctx();
       const text =
@@ -1183,7 +1256,8 @@ class Runner {
             const c = this.ctx();
             const related = await this.run(
               `UNWIND ${printExpr(bind(c, found))} AS k\n` +
-                `MATCH (n:${name(node.labels[0]!)})${arrow(f, "", "m", target)} WHERE ${labelTest("m", target)} AND n.${name(node.key.property)} = k\n` +
+                seekThenExpand("n", node, "k", f, "", "m", target) +
+                "\n" +
                 `RETURN DISTINCT m.${name(target.key.property)} AS key`,
               c,
             );
@@ -1213,7 +1287,8 @@ class Runner {
         const ctx = this.ctx();
         const rows = await this.run(
           `UNWIND ${printExpr(bind(ctx, nodeKeys))} AS k\n` +
-            `MATCH (n:${name(node.labels[0]!)})${arrow(f, "", "m", target)} WHERE ${labelTest("m", target)} AND n.${name(node.key.property)} = k\n` +
+            seekThenExpand("n", node, "k", f, "", "m", target) +
+            "\n" +
             `RETURN n.${name(node.key.property)} AS key, m.${name(target.key.property)} AS related`,
           ctx,
         );
@@ -1239,7 +1314,8 @@ class Runner {
           } as const;
           const rows = await this.run(
             `UNWIND ${printExpr(bind(ctx, nodeKeys))} AS k\n` +
-              `MATCH (n:${name(node.labels[0]!)})${arrow(back, "", "o", owner)} WHERE ${labelTest("o", owner)} AND n.${name(node.key.property)} = k\n` +
+              seekThenExpand("n", node, "k", back, "", "o", owner) +
+              "\n" +
               `RETURN DISTINCT o.${name(owner.key.property)} AS key`,
             ctx,
           );
