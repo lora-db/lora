@@ -37,6 +37,11 @@ enum Command {
         deadline: Option<Instant>,
         reply: Reply<QueryResult>,
     },
+    ExecuteMany {
+        statements: Vec<(String, BTreeMap<String, LoraValue>)>,
+        deadline: Option<Instant>,
+        reply: Reply<Vec<QueryResult>>,
+    },
     Commit {
         reply: Reply<()>,
     },
@@ -112,6 +117,21 @@ impl TxActor {
         })
     }
 
+    /// Run `statements` in order in one round trip to the actor. Stops at
+    /// the first failure, which rolls the transaction back like a failed
+    /// [`Self::execute`]; one `deadline` bounds the whole batch.
+    pub(crate) fn execute_many(
+        &self,
+        statements: Vec<(String, BTreeMap<String, LoraValue>)>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<QueryResult>, String> {
+        self.call(|reply| Command::ExecuteMany {
+            statements,
+            deadline,
+            reply,
+        })
+    }
+
     pub(crate) fn commit(&self) -> Result<(), String> {
         self.call(|reply| Command::Commit { reply })
     }
@@ -174,6 +194,46 @@ fn run(
                     // statements build on a partial state.
                     let _ = tx.rollback();
                     return;
+                }
+            }
+            Command::ExecuteMany {
+                statements,
+                deadline,
+                reply,
+            } => {
+                let total = statements.len();
+                let mut results = Vec::with_capacity(total);
+                let mut failure = None;
+                for (index, (query, params)) in statements.into_iter().enumerate() {
+                    let result = match deadline {
+                        Some(deadline) => {
+                            tx.execute_with_params_deadline(&query, options, params, deadline)
+                        }
+                        None => tx.execute_with_params(&query, options, params),
+                    };
+                    match result {
+                        Ok(result) => results.push(result),
+                        Err(e) => {
+                            failure = Some(format!(
+                                "{} (statement {} of {total})",
+                                format_lora_error(&e),
+                                index + 1
+                            ));
+                            break;
+                        }
+                    }
+                }
+                match failure {
+                    None => {
+                        let _ = reply.send(Ok(results));
+                    }
+                    Some(message) => {
+                        let _ = reply.send(Err(message));
+                        // Same as a failed `Execute`: the transaction is
+                        // rolled back and closed.
+                        let _ = tx.rollback();
+                        return;
+                    }
                 }
             }
             Command::Commit { reply } => {

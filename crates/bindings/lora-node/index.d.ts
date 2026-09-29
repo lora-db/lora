@@ -114,6 +114,13 @@ export declare class Database {
    * statement rolls the transaction back.
    */
   txExecute(txId: number, query: string, params?: Record<string, any> | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer>
+  /**
+   * Run several statements inside interactive transaction `tx_id` in one
+   * call. Results come back in statement order. The first failing
+   * statement stops the batch and rolls the transaction back; one
+   * timeout bounds the whole batch.
+   */
+  txExecuteMany(txId: number, statements: Array<{ query: string; params?: Record<string, any> | null }>, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer[]>
   /** Commit (`commit = true`) or roll back interactive transaction `tx_id`. */
   txFinish(txId: number, commit: boolean): Promise<void>
   /** Force pending WAL bytes and the portable container mirror to disk. */

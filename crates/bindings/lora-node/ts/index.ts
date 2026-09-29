@@ -887,6 +887,56 @@ export class Transaction {
     }
   }
 
+  /**
+   * Run several statements inside the transaction in one native call and
+   * return their results in order. Each statement sees the writes of the
+   * ones before it. This saves the per-call round trip of calling
+   * `execute()` once per statement.
+   *
+   * The batch stops at the first failing statement: the transaction is
+   * rolled back (as with a failed `execute()`) and the promise rejects
+   * with that statement's error, whose message ends with
+   * `(statement i of n)`. `options.timeoutMs` and `options.signal` bound
+   * the whole batch.
+   */
+  async executeMany<
+    T extends Record<string, LoraValue> = Record<string, LoraValue>,
+  >(
+    statements: TransactionStatement[],
+    options?: QueryOptions,
+  ): Promise<Array<QueryResult<T>>> {
+    this.#assertOpen();
+    let encoded: TransactionStatement[];
+    try {
+      encoded = statements.map((st) =>
+        st.params == null ? st : { ...st, params: encodeParams(st.params) },
+      );
+    } catch (err) {
+      // Invalid params: nothing ran, the transaction stays open.
+      throw wrapError(err);
+    }
+    try {
+      const buffers = await runLimited(
+        this.#inner,
+        options,
+        (timeoutMs, token) =>
+          this.#inner.txExecuteMany(
+            this.#id,
+            encoded as Array<{
+              query: string;
+              params?: Record<string, unknown> | null;
+            }>,
+            timeoutMs,
+            token,
+          ),
+      );
+      return buffers.map((buf) => decodeResult(buf)) as Array<QueryResult<T>>;
+    } catch (err) {
+      this.#open = false;
+      throw wrapError(err);
+    }
+  }
+
   /** Commit every write made in the transaction and release the writer lock. */
   async commit(): Promise<void> {
     await this.#finish(true);
