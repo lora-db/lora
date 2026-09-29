@@ -315,6 +315,17 @@ lookups take 0.21 ms against 0.10 ms).
 
 ## Phase 17: Extensibility and Typed Tooling
 
+**Status: done.** `@customResolver(requires:)` with a `resolvers` option;
+custom scalars with `@storedAs(type:)` and a `scalars` option;
+`lora-graphql compile` writing `manifest.json` and `operations.d.ts`, with
+`loadManifest()`; `check` with `--variables`, `--baseline`,
+`--row-budget`, `--database` and unused-index reporting; schema lint; and
+`lora-graphql analyze`. Two deviations from the plan: the manifest holds
+validated documents, not statements per variant (statement text depends
+on variable values and claims, so it is compiled per request and cached),
+and `check` plan-checks queries only, since mutation statements need the
+data they write against.
+
 1. **Custom resolvers.** Add a `resolvers` option plus `@customResolver(requires:)`
    for fields computed in JavaScript. The `requires` selection is fetched
    in the same statement, and the fields it names are validated at

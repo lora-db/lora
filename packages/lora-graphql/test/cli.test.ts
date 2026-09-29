@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.js";
@@ -49,10 +49,82 @@ test("check plans every operation against an in-memory database", async () => {
     join(dir, "ops"),
   );
   expect(r.err).toBe("");
-  expect(r.out).toBe(
+  expect(r.out.split("\n").at(-1)).toBe(
     "ok       2 root field(s) in 2 operation(s) seek as expected",
   );
+  // Lint notes are reported, not failures.
+  expect(r.out).toContain("lint     Festival.followers: no @cardinality");
   expect(r.code).toBe(0);
+});
+
+test("check --baseline records plans, then fails when one changes", async () => {
+  const baseline = join(dir, "plans.json");
+  const args = [
+    "check",
+    join(dir, "schema.graphql"),
+    "--operations",
+    join(dir, "ops"),
+    "--baseline",
+    baseline,
+  ];
+  expect((await cli(...args)).code).toBe(0);
+  const recorded = JSON.parse(await readFile(baseline, "utf8"));
+  const key = Object.keys(recorded)[0]!;
+  recorded[key][0] = ["Projection"];
+  await writeFile(baseline, JSON.stringify(recorded));
+  const changed = await cli(...args);
+  expect(changed.code).toBe(1);
+  expect(changed.out).toContain("the plan differs from the baseline");
+  expect((await cli(...args, "--update-baseline")).code).toBe(0);
+  expect((await cli(...args)).code).toBe(0);
+});
+
+test("check --row-budget and --variables", async () => {
+  await writeFile(
+    join(dir, "vars.json"),
+    JSON.stringify({ Search: { q: "land" } }),
+  );
+  const r = await cli(
+    "check",
+    join(dir, "schema.graphql"),
+    "--operations",
+    join(dir, "ops"),
+    "--variables",
+    join(dir, "vars.json"),
+    "--row-budget",
+    "0",
+    "--json",
+  );
+  const report = JSON.parse(r.out);
+  const search = report.plans.find((p: { operation: string }) =>
+    p.operation.endsWith("#Search"),
+  );
+  expect(search.reports[0].statement.params).toMatchObject({ p0: "land" });
+  expect(r.code).toBe(0);
+});
+
+test("compile writes a manifest and types", async () => {
+  const out = join(dir, "compiled");
+  const r = await cli(
+    "compile",
+    join(dir, "schema.graphql"),
+    "--operations",
+    join(dir, "ops"),
+    "--out",
+    out,
+  );
+  expect(r.code).toBe(0);
+  const manifest = JSON.parse(
+    await readFile(join(out, "manifest.json"), "utf8"),
+  );
+  expect(Object.keys(manifest.operations).map((k) => k.split("#")[1])).toEqual([
+    "Search",
+    "Page",
+  ]);
+  const types = await readFile(join(out, "operations.d.ts"), "utf8");
+  expect(types).toContain(
+    "export interface SearchVariables {\n  q: string;\n}",
+  );
 });
 
 test("diff exits non-zero on breaking changes", async () => {
@@ -85,4 +157,44 @@ test("model errors and usage", async () => {
   expect(bad.code).toBe(1);
   expect(bad.err).toMatch(/A: a @node type needs exactly one @key field/);
   expect((await cli("nope")).code).toBe(2);
+});
+
+test("check --database reports unused indexes; analyze prints statistics", async () => {
+  const { createDatabase } = await import("@loradb/lora-node");
+  const databaseDir = join(dir, "db");
+  const db = await createDatabase("app", { databaseDir });
+  const { LoraGraphQL, loraDriver } = await import("../src/index.js");
+  await new LoraGraphQL({
+    typeDefs: festivalTypeDefs,
+    driver: loraDriver(db),
+  }).assertSchema({
+    create: true,
+  });
+  await db.execute(
+    "CREATE INDEX extra_idx FOR (f:Festival) ON (f.internalNotes)",
+  );
+  await db.execute(
+    "UNWIND range(1, 3) AS i CREATE (:Festival {key: 'f' + toString(i), name: 'F', displayTitle: 'x'})",
+  );
+  db.dispose();
+
+  const checked = await cli(
+    "check",
+    join(dir, "schema.graphql"),
+    "--database",
+    databaseDir,
+  );
+  expect(checked.out).toContain(
+    "unused   RANGE index extra_idx on :Festival(internalNotes)",
+  );
+  expect(checked.code).toBe(0);
+
+  const analyzed = await cli(
+    "analyze",
+    join(dir, "schema.graphql"),
+    "--database",
+    databaseDir,
+  );
+  expect(analyzed.code).toBe(0);
+  expect(JSON.parse(analyzed.out)).toMatchObject({ nodes: { Festival: 3 } });
 });

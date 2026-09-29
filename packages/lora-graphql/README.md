@@ -742,14 +742,39 @@ for the commit. A failed mutation rolls the transaction back.
 lora-graphql print schema.graphql              # the public SDL
 lora-graphql requirements schema.graphql --ddl # constraints and indexes, as DDL
 lora-graphql check schema.graphql --operations src/operations
+lora-graphql compile schema.graphql --operations src/operations --out generated
+lora-graphql analyze schema.graphql --database ./data   # statistics JSON
 lora-graphql diff old.graphql new.graphql      # exit 1 on breaking changes
 lora-graphql directives                        # directive SDL for editors
 ```
 
 `check` builds an in-memory LoraDB (needs `@loradb/lora-node`), asserts the
 schema, plans every `@cypher` statement and every query in the operation
-files (required variables get sample values), and exits non-zero on any
-finding. It is the CI gate.
+files, and exits non-zero on any finding. It is the CI gate. Options:
+
+- `--variables vars.json`: variables per operation name, instead of
+  sample values for the required ones.
+- `--baseline plans.json`: the operators of every statement; a plan that
+  differs fails, so plan changes show up in review (`--update-baseline`
+  accepts them; a missing file is written).
+- `--row-budget n`: fail statements the engine estimates to scan more rows.
+- `--database dir [--name app]`: check an existing database as it is, and
+  report indexes it has that the API does not use.
+
+It also prints lint notes that do not fail the run: mutations without
+rules, `CASE_INSENSITIVE` and `IS_NULL` filters (no index applies), and
+list relationships without `@cardinality` or statistics.
+
+`compile` validates persisted operations (`.graphql` files, one entry per
+operation, or a JSON map of id to source) into `manifest.json`, which
+`lora.loadManifest()` registers without parsing or validating again, and
+`operations.d.ts` with `<Operation>Variables` and `<Operation>Result`
+types. The manifest records a hash of the public schema and is refused
+for any other. Statement text is not in it: it depends on variable values
+and claims, and is compiled per request (and cached).
+
+`analyze` samples a database's label counts and relationship degrees; pass
+its output to `lora.useStatistics()`.
 
 ## Drivers, limits and errors
 

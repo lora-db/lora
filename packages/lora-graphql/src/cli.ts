@@ -3,11 +3,15 @@
 //   lora-graphql print <schema.graphql>
 //   lora-graphql directives
 //   lora-graphql requirements <schema.graphql> [--ddl]
-//   lora-graphql check <schema.graphql> [--operations <file|dir>]... [--json]
+//   lora-graphql check <schema.graphql> [--operations <file|dir>]... [--variables <file>]
+//                      [--baseline <file> [--update-baseline]] [--row-budget <n>]
+//                      [--database <dir> [--name <db>]] [--json]
+//   lora-graphql compile <schema.graphql> --operations <file|dir>... [--out <dir>]
+//   lora-graphql analyze <schema.graphql> --database <dir> [--name <db>] [--sample <n>]
 //   lora-graphql diff <old.graphql> <new.graphql> [--allow-breaking] [--json]
 
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
 import {
   getNamedType,
   isEnumType,
@@ -16,6 +20,7 @@ import {
   isNonNullType,
   Kind,
   parse,
+  print as printAst,
   typeFromAST,
   visit,
   type DefinitionNode,
@@ -35,6 +40,7 @@ import {
 } from "./analyze/indexes.js";
 import { LoraGraphQL, type CheckOptions } from "./lora-graphql.js";
 import { loraDriver, type LoraDriver } from "./driver.js";
+import { usedFragments } from "./codegen.js";
 
 const USAGE = `lora-graphql <command>
 
@@ -42,8 +48,16 @@ const USAGE = `lora-graphql <command>
   directives                                the directive definitions, for editors
   requirements <schema.graphql> [--ddl]     constraints and indexes the API needs
   check <schema.graphql> [--operations <file|dir>]... [--json]
-                                            CI gate: model, @cypher statements and the
-                                            plans of your operations, on an in-memory LoraDB
+        [--variables <file>] [--baseline <file> [--update-baseline]]
+        [--row-budget <n>] [--database <dir> [--name <db>]]
+                                            CI gate: model, lint, @cypher statements and
+                                            the plans of your operations, on an in-memory
+                                            LoraDB (or an existing one with --database)
+  compile <schema.graphql> --operations <file|dir>... [--out <dir>]
+                                            persisted-operation manifest.json and
+                                            operations.d.ts types
+  analyze <schema.graphql> --database <dir> [--name <db>] [--sample <n>]
+                                            statistics JSON for useStatistics()
   diff <old.graphql> <new.graphql> [--allow-breaking] [--json]
                                             database statements and API changes`;
 
@@ -57,15 +71,16 @@ export async function main(
   io: Io = defaultIo,
 ): Promise<number> {
   const [command, ...rest] = argv;
-  const flags = new Set(
-    rest.filter((a) => a.startsWith("--") && a !== "--operations"),
-  );
+  const flags = new Set<string>();
+  const values = new Map<string, string>();
   const positional: string[] = [];
   const operations: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
     if (a === "--operations") operations.push(rest[++i] ?? "");
-    else if (!a.startsWith("--")) positional.push(a);
+    else if (VALUE_FLAGS.has(a)) values.set(a, rest[++i] ?? "");
+    else if (a.startsWith("--")) flags.add(a);
+    else positional.push(a);
   }
   try {
     switch (command) {
@@ -77,12 +92,11 @@ export async function main(
       case "requirements":
         return await requirements(need(positional, 1), flags.has("--ddl"), io);
       case "check":
-        return await check(
-          need(positional, 1),
-          operations,
-          flags.has("--json"),
-          io,
-        );
+        return await check(need(positional, 1), operations, flags, values, io);
+      case "compile":
+        return await compile(need(positional, 1), operations, values, io);
+      case "analyze":
+        return await analyzeCommand(need(positional, 1), values, io);
       case "diff": {
         const [before, after] = need(positional, 2);
         return await diff(before!, after!, flags, io);
@@ -106,6 +120,16 @@ export async function main(
 }
 
 class UsageError extends Error {}
+
+const VALUE_FLAGS = new Set([
+  "--out",
+  "--variables",
+  "--baseline",
+  "--row-budget",
+  "--database",
+  "--name",
+  "--sample",
+]);
 
 function need(positional: string[], n: number): string[] {
   if (positional.length < n)
@@ -144,43 +168,125 @@ async function requirements(
   return 0;
 }
 
+/** The node binding's createDatabase, or a message saying how to get it. */
+async function nodeBinding(
+  io: Io,
+  command: string,
+): Promise<
+  | ((name?: string, options?: { databaseDir?: string }) => Promise<unknown>)
+  | undefined
+> {
+  try {
+    const { createDatabase } =
+      (await import("@loradb/lora-node")) as unknown as {
+        createDatabase: (
+          name?: string,
+          options?: { databaseDir?: string },
+        ) => Promise<unknown>;
+      };
+    return createDatabase;
+  } catch {
+    io.err(
+      `${command} needs @loradb/lora-node: npm install --save-dev @loradb/lora-node`,
+    );
+    return undefined;
+  }
+}
+
 async function check(
   [file]: string[],
   operationPaths: string[],
-  json: boolean,
+  flags: Set<string>,
+  values: Map<string, string>,
   io: Io,
 ): Promise<number> {
+  const json = flags.has("--json");
   const typeDefs = await read(file!);
-  let createDatabase: (() => Promise<unknown>) | undefined;
-  try {
-    ({ createDatabase } = (await import("@loradb/lora-node")) as unknown as {
-      createDatabase: () => Promise<unknown>;
-    });
-  } catch {
-    io.err(
-      "check needs @loradb/lora-node: npm install --save-dev @loradb/lora-node",
-    );
-    return 1;
-  }
-  const db = await createDatabase();
+  const createDatabase = await nodeBinding(io, "check");
+  if (!createDatabase) return 1;
+  // An existing database is checked as it is; an in-memory one gets what
+  // the API needs, so only the plans are under test.
+  const databaseDir = values.get("--database");
+  const db = await createDatabase(
+    databaseDir ? (values.get("--name") ?? "app") : undefined,
+    databaseDir ? { databaseDir } : {},
+  );
   const lora = new LoraGraphQL({
     typeDefs,
     driver: loraDriver(db as Parameters<typeof loraDriver>[0]),
   });
-  await lora.assertSchema({ create: true });
+  if (!databaseDir) await lora.assertSchema({ create: true });
   const schema = lora.getSchema();
+  const fixtures = values.has("--variables")
+    ? (JSON.parse(await read(values.get("--variables")!)) as Record<
+        string,
+        Record<string, unknown>
+      >)
+    : {};
   const operations: NonNullable<CheckOptions["operations"]> = [];
   for (const path of operationPaths) {
     for (const f of await graphqlFiles(path)) {
-      operations.push(...operationsIn(schema, f.path, f.source));
+      for (const op of operationsIn(schema, f.path, f.source)) {
+        const given =
+          fixtures[op.name!] ?? fixtures[op.name!.split("#")[1] ?? ""];
+        operations.push(given ? { ...op, variables: given } : op);
+      }
     }
   }
-  const report = await lora.check({ operations });
+  const rowBudget = values.has("--row-budget")
+    ? Number(values.get("--row-budget"))
+    : undefined;
+  const report = await lora.check({
+    operations,
+    ...(rowBudget !== undefined ? { rowBudget } : {}),
+  });
+
+  // Plan baseline: the operators of every statement, so a plan change
+  // shows up in review.
+  const baselinePath = values.get("--baseline");
+  const current: Record<string, string[][]> = {};
+  for (const p of report.plans) {
+    current[`${p.operation} › ${p.field}`] = p.reports.map((r) => r.operators);
+  }
+  const changed: string[] = [];
+  if (baselinePath) {
+    let before: Record<string, string[][]> | undefined;
+    try {
+      before = JSON.parse(await read(baselinePath)) as Record<
+        string,
+        string[][]
+      >;
+    } catch {
+      before = undefined;
+    }
+    if (flags.has("--update-baseline") || !before) {
+      await writeFile(baselinePath, JSON.stringify(current, null, 2) + "\n");
+    } else {
+      for (const key of new Set([
+        ...Object.keys(before),
+        ...Object.keys(current),
+      ])) {
+        if (JSON.stringify(before[key]) !== JSON.stringify(current[key])) {
+          changed.push(key);
+        }
+      }
+    }
+  }
+  const ok = report.ok && changed.length === 0;
+
   if (json) {
-    io.out(JSON.stringify(report, null, 2));
-    return report.ok ? 0 : 1;
+    io.out(JSON.stringify({ ...report, ok, planChanges: changed }, null, 2));
+    return ok ? 0 : 1;
   }
   for (const w of report.warnings) io.out(`warning  ${formatProblem(w)}`);
+  for (const w of report.lint) io.out(`lint     ${formatProblem(w)}`);
+  for (const u of report.unused) {
+    io.out(
+      `unused   ${u.type} index ${u.name} on :${u.labels.join(":")}(${u.properties.join(", ")})`,
+    );
+  }
+  for (const m of report.missing)
+    io.out(`error    missing ${describeRequirement(m)}`);
   for (const c of report.cypher)
     io.out(`error    ${c.type}.${c.field}: ${c.message}`);
   for (const e of report.errors)
@@ -192,13 +298,114 @@ async function check(
       }
     }
   }
+  for (const key of changed) {
+    io.out(
+      `error    ${key}: the plan differs from the baseline (--update-baseline to accept)`,
+    );
+  }
   const checked = report.plans.length;
   io.out(
-    report.ok
+    ok
       ? `ok       ${checked} root field(s) in ${operations.length} operation(s) seek as expected`
       : "failed",
   );
-  return report.ok ? 0 : 1;
+  return ok ? 0 : 1;
+}
+
+/** Persisted operations from .graphql files (one per operation) or JSON (id → source). */
+async function persistedOperations(
+  paths: string[],
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const path of paths) {
+    const info = await stat(path);
+    if (info.isFile() && path.endsWith(".json")) {
+      Object.assign(
+        out,
+        JSON.parse(await read(path)) as Record<string, string>,
+      );
+      continue;
+    }
+    for (const f of await graphqlFiles(path)) {
+      const doc = parse(f.source);
+      const fragments = new Map(
+        doc.definitions
+          .filter(
+            (d): d is FragmentDefinitionNode =>
+              d.kind === Kind.FRAGMENT_DEFINITION,
+          )
+          .map((d) => [d.name.value, d]),
+      );
+      const rel = relative(process.cwd(), f.path);
+      doc.definitions
+        .filter(
+          (d): d is OperationDefinitionNode =>
+            d.kind === Kind.OPERATION_DEFINITION,
+        )
+        .forEach((op, i) => {
+          const id = `${rel}#${op.name?.value ?? i + 1}`;
+          out[id] = printAst({
+            kind: Kind.DOCUMENT,
+            definitions: [op, ...usedFragments(op, fragments)],
+          });
+        });
+    }
+  }
+  return out;
+}
+
+async function compile(
+  [file]: string[],
+  operationPaths: string[],
+  values: Map<string, string>,
+  io: Io,
+): Promise<number> {
+  if (operationPaths.length === 0) {
+    throw new UsageError("compile needs --operations <file|dir>");
+  }
+  const lora = offline(await read(file!));
+  const manifest = lora.buildManifest(
+    await persistedOperations(operationPaths),
+  );
+  const outDir = values.get("--out") ?? "lora-graphql";
+  await mkdir(outDir, { recursive: true });
+  await writeFile(
+    join(outDir, "manifest.json"),
+    JSON.stringify(manifest) + "\n",
+  );
+  await writeFile(
+    join(outDir, "operations.d.ts"),
+    lora.generateTypes(manifest),
+  );
+  io.out(
+    `wrote ${Object.keys(manifest.operations).length} operation(s) to ${join(outDir, "manifest.json")} and ${join(outDir, "operations.d.ts")}`,
+  );
+  return 0;
+}
+
+async function analyzeCommand(
+  [file]: string[],
+  values: Map<string, string>,
+  io: Io,
+): Promise<number> {
+  const databaseDir = values.get("--database");
+  if (!databaseDir) throw new UsageError("analyze needs --database <dir>");
+  const createDatabase = await nodeBinding(io, "analyze");
+  if (!createDatabase) return 1;
+  const db = await createDatabase(values.get("--name") ?? "app", {
+    databaseDir,
+  });
+  const lora = new LoraGraphQL({
+    typeDefs: await read(file!),
+    driver: loraDriver(db as Parameters<typeof loraDriver>[0]),
+  });
+  const sample = values.has("--sample")
+    ? Number(values.get("--sample"))
+    : undefined;
+  const stats = await lora.analyze(sample !== undefined ? { sample } : {});
+  io.out(JSON.stringify(stats, null, 2));
+  (db as { dispose?: () => void }).dispose?.();
+  return 0;
 }
 
 async function graphqlFiles(
