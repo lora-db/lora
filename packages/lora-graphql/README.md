@@ -214,9 +214,10 @@ string), `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`,
   `aggregate` reads no page.
 - `sort` takes one field per item. Lists sort by the requested fields only;
   connections always end on a unique, non-null field (the `@key`, or an
-  earlier required `@unique` field) so cursors are stable. A cursor is signed
+  earlier required `@unique` field) so cursors are stable. A cursor is tagged
   with its sort, and replaying it under another sort is an `INVALID_CURSOR`
-  error. Nested lists without a sort come in `@key` order.
+  error. With `cursorSecret` it is also signed (HMAC-SHA-256), and any
+  cursor the server did not issue is rejected. Nested lists without a sort come in `@key` order.
 - Nulls sort last ascending and first descending, as in Cypher, and keyset
   pages handle them.
 - Every list is bounded: `limit` / `first` default to `@limit(default:)`
@@ -713,12 +714,38 @@ which only the Node binding has, so the WASM binding serves reads.
 | `callbacks`                 |               | Named callbacks for `@populatedBy`                  |
 | `jwt`                       | `context.jwt` | Where the claims are                                |
 | `onStatement`               |               | Observe every statement                             |
+| `cursorSecret`              |               | Sign cursors; reject unsigned or forged ones        |
+| `maskErrors`                | production    | Clients get `DATABASE_ERROR` and an `id` only       |
+| `onError`                   |               | Receives each database error's detail and `id`      |
+| `guards`                    | see below     | Document limits; `false` turns them off             |
+| `persistedOnly`             | false         | `execute()` runs persisted operations only          |
 
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
 `NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`) and
-`DATABASE_ERROR`. An invalid SDL throws one `ModelError` listing every
-problem, each located by type and field.
+`DATABASE_ERROR` (with an `id`, also given to `onError`). An invalid SDL
+throws one `ModelError` listing every problem, each located by type and
+field.
+
+### Security defaults
+
+`maxCost` bounds the rows an operation touches; the document guards bound
+the document before that. `execute()` and `persist()` apply them, and
+`lora.validationRules()` / `lora.envelopPlugin()` bring them to any other
+server (GraphQL Yoga takes the plugin as is):
+
+| Guard           | Default    | Limit                                    |
+| --------------- | ---------- | ---------------------------------------- |
+| `maxDepth`      | 12         | Field nesting, through fragments         |
+| `maxAliases`    | 30         | Aliased fields per document              |
+| `maxRootFields` | 20         | Root fields per operation                |
+| `maxTokens`     | 5000       | Lexer tokens per document, while parsing |
+| `introspection` | production | Off when `NODE_ENV` is `production`      |
+
+With `NODE_ENV=production`, database errors are masked and introspection
+is off unless configured otherwise. See
+[the threat model](../../docs/design/graphql-threat-model.md) for what
+the library trusts and where each check runs.
 
 ## Translation rules
 
@@ -743,7 +770,7 @@ Measured on LoraDB 0.15 over 20 000 festivals and 100 000 relationships
 | ----------------------------------------------------------- | ---------------------------------------------------------------- |
 | Every type gets every operation                             | Reads by default; mutations and subscriptions opt in             |
 | Every field filterable by every operator                    | `@filterable(byValue:)`, checked against the type                |
-| Offset cursors (`arrayconnection:N`)                        | Keyset cursors signed with their sort, in both directions        |
+| Offset cursors (`arrayconnection:N`)                        | Keyset cursors tagged with their sort (signed with a secret)     |
 | `update`/`delete` with an optional `where`                  | By `@key`, or bulk with a required, bounded `where`              |
 | `connect: { where }`, silently a no-op when nothing matches | Connect by key; a missing target is `NOT_FOUND`                  |
 | Single relationships not enforced; required ones refused    | Enforced from both sides; required ones supported                |

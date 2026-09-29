@@ -54,6 +54,12 @@ export interface ModelOptions {
   defaultLimit?: number;
   /** Hard cap on any page size; `@limit(max:)` may only lower it. */
   maxLimit?: number;
+  /**
+   * Sign cursors with HMAC-SHA-256 under this secret, and reject cursors
+   * whose signature does not match. Without it cursors are only tagged
+   * with their sort. Changing the secret invalidates every cursor.
+   */
+  cursorSecret?: string;
 }
 
 export const DEFAULT_LIMIT = 25;
@@ -592,6 +598,7 @@ export function buildModel(
     mutations: mutationFields,
     warnings,
     jwt: jwtShape,
+    cursorSecret: options.cursorSecret,
   };
 }
 

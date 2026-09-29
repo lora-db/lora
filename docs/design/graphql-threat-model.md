@@ -1,0 +1,90 @@
+# GraphQL: Threat Model
+
+What `packages/lora-graphql` defends against, what it trusts, and where
+each check runs. Companion to
+[graphql-implementation-plan.md](graphql-implementation-plan.md) and
+Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
+
+## Trust boundaries
+
+| Input                              | Trusted?      | Why                                                                                                                                                                                           |
+| ---------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The annotated SDL (`typeDefs`)     | Yes           | Written by the application. It decides what is exposed and which rules apply.                                                                                                                 |
+| `@cypher` statements               | Yes           | Trusted code. They run with the database's full access and can read `$jwt`. Rules on the owning type do not reach inside them. Review them like any other server code.                        |
+| `@populatedBy` callbacks           | Yes           | Application code, run in the server process.                                                                                                                                                  |
+| The GraphQL context and its `jwt`  | Yes, as given | The library never verifies tokens. The server verifies the JWT and puts the verified claims in the context. A server that copies unverified claims into the context grants whatever they say. |
+| Documents, variables, cursors, ids | No            | Everything a client sends. Parsed, validated, bounded and bound as parameters, never spliced into Cypher text.                                                                                |
+
+## What a client can and cannot do
+
+- **Cypher injection.** Values are bound as `$pN` parameters. Labels,
+  types and property names come from the model, never from the request.
+- **Read past the rules.** `@authorization` filter rules and READ validate
+  rules are compiled into every statement that reads the type: lists,
+  connections, `totalCount`, aggregates, relationship fields, search,
+  `node(id:)` and subscription events. `test/auth-properties.test.ts`
+  checks this against a reference evaluator over random graphs, claims,
+  contexts and nested filters.
+- **Probe with claims.** A rule that needs a claim or context value the
+  request lacks denies, and a `NOT` cannot turn that into a grant. Claim
+  and context paths read own properties only, so `constructor`,
+  `__proto__` and other inherited names resolve to nothing. `eq`, `in`
+  and `includes` on claims compare structurally.
+- **Forge cursors.** Without `cursorSecret`, cursors are tagged with
+  their sort, not signed: a client can craft one, but it only moves a
+  page's start within rows the caller may read, because sorting on fields
+  with row rules is refused. With `cursorSecret`, cursors carry an
+  HMAC-SHA-256 signature and any other cursor is rejected.
+- **Exhaust the server.** `maxCost` bounds the rows an operation touches
+  before it runs. The document guards bound the work before that: depth,
+  aliases, root fields, lexer tokens. `persistedOnly` removes ad-hoc
+  documents altogether. `timeoutMs` bounds every statement, and a
+  mutation's size is bounded by `maxBatch`.
+- **Learn the schema.** Introspection is off by default when `NODE_ENV`
+  is `production` (`guards.introspection`). The public schema is still
+  whatever the SDL exposes; hiding introspection is not access control.
+- **Read internals from errors.** Database errors can name labels,
+  properties and Cypher. With `maskErrors` (on by default in production)
+  the client gets `DATABASE_ERROR` and an `id`, and `onError` gets the
+  detail. Errors the package writes itself (`FORBIDDEN`, `NOT_FOUND`,
+  constraint violations) stay readable, without the engine error they
+  were mapped from.
+
+## Writes and change events
+
+- A mutation runs in one transaction. BEFORE rules are checked before
+  the first write and AFTER rules before commit; a failure rolls back.
+- `onWrite` listeners and `changes()` receive the exact write-set
+  (types, keys, relationship refs) of committed writes, without applying
+  READ rules. They are server-side hooks: do not forward them to clients
+  unfiltered.
+- Subscription events are filtered per subscriber with the READ and
+  SUBSCRIBE rules, in the database, after the write. A deleted node
+  cannot be checked after the fact: its deletion only reaches subscribers
+  that follow that key, and only unfiltered ones.
+- A `@cypher` mutation has no known write-set. It emits one broad event
+  (`broad: true`) that names nothing.
+
+## Where each check runs
+
+| Check                                             | When                               |
+| ------------------------------------------------- | ---------------------------------- |
+| Model validity, rule fields, `@cypher` parameters | Startup (`new LoraGraphQL`)        |
+| `@cypher` read-only for queries                   | Startup; planned with `check()`    |
+| Persisted documents                               | `persist()`                        |
+| Document guards                                   | Parse and validation, per request  |
+| `@authentication`, claim-only rule parts          | Compile time, per request          |
+| Node rules (filter, validate)                     | In the database, in the statement  |
+| Cost limit                                        | Compile time, before the statement |
+| Timeouts, cancellation                            | In the database                    |
+
+## Operator checklist
+
+- Verify the JWT in the server and put only verified claims in the
+  context.
+- Set `cursorSecret` from a secret store when cursors must not be
+  forgeable.
+- Run with `NODE_ENV=production`, or set `maskErrors` and
+  `guards.introspection` explicitly.
+- Prefer `persistedOnly` for first-party clients.
+- Review every `@cypher` statement as trusted code.

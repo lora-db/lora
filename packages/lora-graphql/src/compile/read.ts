@@ -1333,7 +1333,9 @@ function resolvePage(
     | null
     | undefined;
   const cursor =
-    raw != null ? decodeCursor(raw, signature, requested.length) : undefined;
+    raw != null
+      ? decodeCursor(raw, signature, requested.length, ctx.model.cursorSecret)
+      : undefined;
   const sort = backward
     ? requested.map((k) => ({
         ...k,

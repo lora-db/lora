@@ -274,6 +274,8 @@ export interface GraphModel {
   warnings: readonly ModelWarning[];
   /** The `@jwt` claims shape, when declared: claim name → token path. */
   jwt: ReadonlyMap<string, string> | undefined;
+  /** Secret cursors are signed with, when configured. */
+  cursorSecret: string | undefined;
 }
 
 export interface ModelWarning {
