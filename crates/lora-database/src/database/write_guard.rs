@@ -37,13 +37,18 @@ use web_time::Instant;
 
 use anyhow::{anyhow, Result};
 use lora_executor::ExecutorError;
-use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationRecorder};
+use lora_store::{
+    DeletedRecordSink, GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent,
+    MutationRecorder,
+};
+
+use crate::changes::{CaptureRecorder, PreImageSink};
 use lora_wal::WalRecorder;
 
 use crate::database::Database;
 use crate::wal::write_scope::{ensure_wal_query_can_start, WalAbortPolicy, WalWriteScope};
 
-use super::replay::install_recorder_if_inmemory;
+use super::replay::{install_deleted_sink_if_inmemory, install_recorder_if_inmemory};
 
 /// Working copy + writer-mutex lease produced by
 /// [`Database::write_store`]. The caller mutates the inner `S`, then
@@ -69,6 +74,12 @@ where
     /// Atomically replace the live store with the staged graph. After
     /// this returns, subsequent reads see the new state.
     pub(crate) fn publish(mut self) {
+        self.publish_in_place();
+    }
+
+    /// Publish the staged graph but keep holding the writer lock, so the
+    /// caller can finish commit-ordered work (the change feed) first.
+    pub(crate) fn publish_in_place(&mut self) {
         if let Some(staged) = self.staged.take() {
             self.db.store.store(Arc::new(staged));
         }
@@ -231,6 +242,7 @@ where
     /// recover from snapshot + WAL.
     pub(crate) fn run_live_fast_with_durable_recorder<R>(
         &self,
+        may_delete: bool,
         f: impl FnOnce(&mut S) -> Result<R>,
     ) -> Result<R> {
         let _commit_lock = self
@@ -243,20 +255,54 @@ where
             rec.arm()?;
         }
 
+        let capture = self.changes.is_active();
         let mut handle = self.store.write();
+        let capture_rec =
+            (capture && self.wal.is_none()).then(|| Arc::new(CaptureRecorder::default()));
+        // A captured delete needs the deleted records. The write mutates the
+        // live graph in place, so collect them as the store drops them
+        // instead of keeping a pre-write copy.
+        let deleted = (capture && may_delete).then(|| Arc::new(PreImageSink::default()));
 
         let result = {
             let live = handle.as_mut();
             if let Some(rec) = self.wal.as_ref() {
                 install_recorder_if_inmemory(live, Some(rec.clone() as Arc<dyn MutationRecorder>));
+            } else if let Some(cap) = &capture_rec {
+                install_recorder_if_inmemory(live, Some(cap.clone() as Arc<dyn MutationRecorder>));
             }
-            f(live)
+            if let Some(sink) = &deleted {
+                install_deleted_sink_if_inmemory(
+                    live,
+                    Some(sink.clone() as Arc<dyn DeletedRecordSink>),
+                );
+            }
+            let result = f(live);
+            if capture_rec.is_some() {
+                install_recorder_if_inmemory(live, None);
+            }
+            if deleted.is_some() {
+                install_deleted_sink_if_inmemory(live, None);
+            }
+            result
         };
 
+        let mut committed: Option<(Option<lora_wal::Lsn>, Vec<MutationEvent>)> = None;
         if let Some(rec) = self.wal.as_ref() {
             match &result {
                 Ok(_) => {
-                    if rec.commit()?.wrote() {
+                    let wrote = if capture {
+                        match rec.commit_capture()? {
+                            Some((lsn, events)) => {
+                                committed = Some((Some(lsn), events));
+                                true
+                            }
+                            None => false,
+                        }
+                    } else {
+                        rec.commit()?.wrote()
+                    };
+                    if wrote {
                         let live = handle.snapshot();
                         self.observe_snapshot_commit_if_needed(&*live, rec)?;
                     }
@@ -268,6 +314,17 @@ where
                     }
                 }
             }
+        } else if let (Some(cap), Ok(_)) = (&capture_rec, &result) {
+            committed = Some((None, cap.take()));
+        }
+
+        if let Some((lsn, events)) = committed {
+            let post = handle.snapshot();
+            // Release the store write lock before fan-out; the writer mutex
+            // still orders this batch against the next commit.
+            drop(handle);
+            let pre = deleted.map(|sink| sink.take()).unwrap_or_default();
+            self.publish_changes_with(lsn, &events, &pre, &post);
         }
 
         result
@@ -283,12 +340,32 @@ where
         abort_policy: WalAbortPolicy,
         f: impl FnOnce(&mut S) -> Result<R>,
     ) -> Result<R> {
+        let capture = self.changes.is_active();
         let Some(rec) = self.wal.clone() else {
             // No WAL: just run the closure, publish on success.
+            let capture_rec = capture.then(|| Arc::new(CaptureRecorder::default()));
             let staged = guard.staged_mut_or_error()?;
+            if let Some(cap) = &capture_rec {
+                install_recorder_if_inmemory(
+                    staged,
+                    Some(cap.clone() as Arc<dyn MutationRecorder>),
+                );
+            }
             let result = f(staged);
+            if capture_rec.is_some() {
+                install_recorder_if_inmemory(staged, None);
+            }
             if result.is_ok() {
-                guard.publish();
+                match capture_rec {
+                    Some(cap) => {
+                        let events = cap.take();
+                        let pre = self.store.load_full();
+                        guard.publish_in_place();
+                        let post = self.store.load_full();
+                        self.publish_changes(None, &events, Some(&*pre), &post);
+                    }
+                    None => guard.publish(),
+                }
             }
             return result;
         };
@@ -307,7 +384,7 @@ where
             let staged = guard.staged_mut_or_error()?;
             f(staged)
         };
-        let wrote_commit = scope.finish(&result)?;
+        let (wrote_commit, captured) = scope.finish(&result, capture)?;
         if wrote_commit {
             let staged = guard.staged_or_error()?;
             self.observe_snapshot_commit_if_needed(staged, &rec)?;
@@ -330,7 +407,15 @@ where
                     Some(rec.clone() as Arc<dyn MutationRecorder>),
                 );
             }
-            guard.publish();
+            match captured {
+                Some((lsn, events)) => {
+                    let pre = self.store.load_full();
+                    guard.publish_in_place();
+                    let post = self.store.load_full();
+                    self.publish_changes(Some(lsn), &events, Some(&*pre), &post);
+                }
+                None => guard.publish(),
+            }
         }
         result
     }

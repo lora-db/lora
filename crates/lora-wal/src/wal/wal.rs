@@ -412,9 +412,19 @@ impl Wal {
     /// Returns [`WroteCommit::No`] for an empty event list (no records
     /// are written, no fsync is issued).
     pub fn commit_tx(&self, events: Vec<MutationEvent>) -> Result<WroteCommit, WalError> {
+        Ok(match self.commit_tx_lsn(events)? {
+            Some(_) => WroteCommit::Yes,
+            None => WroteCommit::No,
+        })
+    }
+
+    /// Same as [`Self::commit_tx`], but returns the LSN of the `TxCommit`
+    /// record it wrote (`None` when `events` was empty and nothing was
+    /// written). Change feeds use it as the transaction's resume token.
+    pub fn commit_tx_lsn(&self, events: Vec<MutationEvent>) -> Result<Option<Lsn>, WalError> {
         self.check_healthy()?;
         if events.is_empty() {
-            return Ok(WroteCommit::No);
+            return Ok(None);
         }
 
         // Phase 1: allocate the LSN window and encode all three
@@ -423,7 +433,7 @@ impl Wal {
         // lock acquisitions (begin / append_batch / commit / flush)
         // into one is the lock-side win that pairs with the
         // lock-free emit short-circuit on the recorder side.
-        {
+        let commit_lsn = {
             let mut state = self.lock_state()?;
             self.maybe_rotate(&mut state)?;
             let begin_lsn = state.next_lsn;
@@ -449,14 +459,15 @@ impl Wal {
                 lsn: commit_lsn,
                 tx_begin_lsn: begin_lsn,
             })?;
-        }
+            commit_lsn
+        };
 
         // Phase 2: make commit bytes visible to the OS page cache. Storage
         // durability is provided by the GroupSync flusher or an explicit
         // force_fsync/checkpoint/sync/drop boundary.
         self.flush_inner(FlushKind::PerConfiguredMode)?;
 
-        Ok(WroteCommit::Yes)
+        Ok(Some(commit_lsn))
     }
 
     /// Append a `Checkpoint` marker. `snapshot_lsn` should equal the

@@ -14,6 +14,7 @@
 //! db.execute("CREATE (:User {name: 'alice'})", None).unwrap();
 //! ```
 
+mod changes;
 mod database;
 mod durable_io;
 mod error;
@@ -27,6 +28,10 @@ mod stream;
 mod transaction;
 mod wal;
 
+pub use changes::{
+    Change, ChangeBatch, ChangeFeed, ChangeFeedCloser, ChangeFeedOptions, ChangePoll,
+    DEFAULT_FEED_BUFFER, DEFAULT_RETENTION,
+};
 pub use database::{Database, GraphDirection, QueryRunner};
 pub use error::{LoraError, LoraErrorCategory, LoraErrorCode};
 pub use io::{ExportStats, ImportStats, DEFAULT_IMPORT_BATCH_SIZE};

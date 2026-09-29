@@ -87,11 +87,13 @@ fn status_for(err: &LoraError) -> StatusCode {
         // Client-category
         LoraErrorCode::Timeout => StatusCode::REQUEST_TIMEOUT,
         LoraErrorCode::NotFound => StatusCode::NOT_FOUND,
+        LoraErrorCode::ChangesTruncated => StatusCode::GONE,
         LoraErrorCode::InvalidParams | LoraErrorCode::InvalidVector | LoraErrorCode::Validation => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
         LoraErrorCode::ConstraintViolation
         | LoraErrorCode::Locked
+        | LoraErrorCode::ChangesLagged
         | LoraErrorCode::UniqueConstraint
         | LoraErrorCode::NotNullConstraint
         | LoraErrorCode::ForeignKeyViolation

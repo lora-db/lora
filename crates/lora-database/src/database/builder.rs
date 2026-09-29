@@ -241,6 +241,7 @@ impl Database<InMemoryGraph> {
             snapshots,
             named_archive,
             plan_cache: Arc::new(PlanCache::new()),
+            changes: Arc::new(crate::changes::ChangeHub::default()),
         }
     }
 }
@@ -259,6 +260,7 @@ where
             snapshots: None,
             named_archive: None,
             plan_cache: Arc::new(PlanCache::new()),
+            changes: Arc::new(crate::changes::ChangeHub::default()),
         }
     }
 

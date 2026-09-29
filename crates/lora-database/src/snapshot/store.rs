@@ -82,6 +82,26 @@ impl ManagedSnapshotStore {
         Ok(info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
     }
 
+    /// Managed snapshot files whose LSN fence is at or below `lsn`,
+    /// newest first. Used by change-feed history replay to find a base.
+    pub(crate) fn snapshot_files_at_or_below(&self, lsn: Lsn) -> Result<Vec<(Lsn, PathBuf)>> {
+        let mut files = snapshot_files(&self.config.dir)?;
+        files.retain(|(file_lsn, _)| *file_lsn <= lsn);
+        files.sort_by_key(|(file_lsn, _)| std::cmp::Reverse(*file_lsn));
+        Ok(files)
+    }
+
+    /// Load one managed snapshot file into `graph`, returning its LSN
+    /// fence.
+    pub(crate) fn load_file_into(&self, path: &Path, graph: &mut InMemoryGraph) -> Result<Lsn> {
+        let file = File::open(path).with_context(|| format!("open snapshot {}", path.display()))?;
+        let (payload, info) =
+            read_snapshot(BufReader::new(file), self.config.codec.encryption.as_ref())
+                .with_context(|| format!("load snapshot {}", path.display()))?;
+        graph.load_snapshot_payload(payload)?;
+        Ok(info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
+    }
+
     pub(crate) fn checkpoint(
         &self,
         graph: &InMemoryGraph,
