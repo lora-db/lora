@@ -19,7 +19,8 @@ export interface RelationshipRef {
 }
 
 export interface WriteChange {
-  operation: MutationOperation | "UPSERT" | "CYPHER";
+  /** `EXTERNAL`: from the engine's change feed (`changeFeed: true`). */
+  operation: MutationOperation | "UPSERT" | "CYPHER" | "EXTERNAL";
   /** When the change was committed (ISO-8601), set when it is emitted. */
   timestamp?: string;
   /**

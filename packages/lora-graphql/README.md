@@ -723,6 +723,15 @@ the cost of one read per write. Subscribers whose checks compile to the
 same statement share it: twenty subscribers with the same `where` and
 claims cost one visibility query and one node read per write.
 
+By default subscriptions see the writes this instance makes. With
+`changeFeed: true` (lora-node), subscriptions and `changes()` are fed by
+the engine's committed change feed instead: every write, whichever path or
+process made it (hand-written Cypher, `@cypher` mutations, imports), in
+commit order, with relationship ends resolved to their `@key`s. A consumer
+that falls behind resumes from its last position. `onWrite` still reports
+this instance's mutations, and `previousState` needs them: the feed carries
+the state after the write. Call `lora.close()` to stop the feed.
+
 ## Transactions
 
 ```ts

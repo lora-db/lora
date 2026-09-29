@@ -47,6 +47,7 @@ import type { LoraDriver, QueryResult, Statement } from "./driver.js";
 import { affects, type WriteChange } from "./execute/changes.js";
 import { executeCypherMutation } from "./execute/cypher-mutation.js";
 import { LoraTransaction } from "./execute/transaction.js";
+import { EngineFeed } from "./execute/feed.js";
 import type { MutationKind } from "./schema/mutations.js";
 import {
   executeMutation,
@@ -141,6 +142,13 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * that validates e-mail addresses. Without one a scalar passes through.
    */
   scalars?: Record<string, GraphQLScalarType>;
+  /**
+   * Feed subscriptions and `changes()` from the engine's committed change
+   * feed (lora-node `db.changes()`): writes from every path and process,
+   * in commit order. `onWrite` still reports this instance's mutations,
+   * and `previousState` needs them. Default false.
+   */
+  changeFeed?: boolean;
   /**
    * Resolvers of `@customResolver` fields, by type and field name. The
    * source holds the node's selected fields plus the field's `requires`.
@@ -307,6 +315,10 @@ export class LoraGraphQL {
   readonly #persistedOnly: boolean;
   readonly #onError: LoraGraphQLOptions["onError"];
   readonly #listeners = new Set<(change: WriteChange) => void>();
+  /** Consumers of `changes()` when the engine feed is on. */
+  readonly #feedListeners = new Set<(change: WriteChange) => void>();
+  readonly #feed: EngineFeed | undefined;
+  #feedReady: Promise<void> | undefined;
   readonly #documents = new Map<string, DocumentNode>();
   readonly #persisted = new Map<string, DocumentNode>();
   #degrees = new Map<string, number>();
@@ -368,6 +380,23 @@ export class LoraGraphQL {
     this.#maskErrors = options.maskErrors ?? nodeEnv() === "production";
     this.#onError = options.onError;
     this.#guards = options.guards ?? {};
+    if (options.changeFeed) {
+      if (!options.driver.changes) {
+        throw new Error(
+          "changeFeed needs a driver with changes() (@loradb/lora-node)",
+        );
+      }
+      this.#feed = new EngineFeed(options.driver, this.model, (change) => {
+        change.timestamp ??= new Date().toISOString();
+        for (const l of this.#feedListeners) {
+          try {
+            l(change);
+          } catch {
+            // A consumer's failure must not stop the feed.
+          }
+        }
+      });
+    }
     this.#observer = new Observer(options);
     this.#budget = options.budget;
     this.#onCost = options.onCost;
@@ -887,7 +916,7 @@ export class LoraGraphQL {
     let wake: (() => void) | undefined;
     let done = false;
     let overflow = false;
-    const stop = this.onWrite((change) => {
+    const listener = (change: WriteChange) => {
       // A consumer that falls this far behind is ended with an error,
       // instead of holding every write in memory.
       if (queue.length >= limit) {
@@ -897,7 +926,17 @@ export class LoraGraphQL {
         queue.push(change);
       }
       wake?.();
-    });
+    };
+    let stop: () => void;
+    let ready: Promise<void> | undefined;
+    if (this.#feed) {
+      this.#feedListeners.add(listener);
+      stop = () => this.#feedListeners.delete(listener);
+      this.#feedReady ??= this.#feed.start();
+      ready = this.#feedReady;
+    } else {
+      stop = this.onWrite(listener);
+    }
     const finish = () => {
       done = true;
       stop();
@@ -907,6 +946,7 @@ export class LoraGraphQL {
     const iterator: AsyncIterableIterator<WriteChange> = {
       [Symbol.asyncIterator]: () => iterator,
       next: async () => {
+        if (ready) await ready;
         while (queue.length === 0 && !done && !overflow) {
           await new Promise<void>((resolve) => (wake = resolve));
           wake = undefined;
@@ -1536,6 +1576,12 @@ export class LoraGraphQL {
       timeoutMs: this.#timeoutMs,
     });
     return new LoraTransaction(tx, (change) => this.#emit(change));
+  }
+
+  /** Stop the engine change feed (with `changeFeed: true`). */
+  close(): void {
+    this.#feed?.stop();
+    this.#feedReady = undefined;
   }
 
   #emit(change: WriteChange): void {
