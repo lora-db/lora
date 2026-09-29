@@ -448,12 +448,21 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
     }
 
     /// Entries with keys in `(lower, upper)`, in key order (reversible).
+    /// An empty or inverted range (`x > 5 AND x < 5`) yields nothing:
+    /// `BTreeMap::range` would panic on it, and a panic aborts the host.
     pub(super) fn range(
         &self,
         lower: std::ops::Bound<K>,
         upper: std::ops::Bound<K>,
     ) -> impl DoubleEndedIterator<Item = (&K, &V)> + '_ {
         use std::ops::Bound;
+        let empty = match (&lower, &upper) {
+            (Bound::Included(l), Bound::Included(u)) => l > u,
+            (Bound::Included(l) | Bound::Excluded(l), Bound::Included(u) | Bound::Excluded(u)) => {
+                l >= u
+            }
+            _ => false,
+        };
         let first = match &lower {
             Bound::Included(k) | Bound::Excluded(k) => self.part_for(k),
             Bound::Unbounded => 0,
@@ -462,7 +471,7 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
             Bound::Included(k) | Bound::Excluded(k) => self.part_for(k),
             Bound::Unbounded => self.parts.len().saturating_sub(1),
         };
-        let parts: &[Arc<BTreeMap<K, V>>] = if self.parts.is_empty() || first > last {
+        let parts: &[Arc<BTreeMap<K, V>>] = if empty || self.parts.is_empty() || first > last {
             &[]
         } else {
             &self.parts[first..=last]
@@ -480,6 +489,27 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ord_map_empty_and_inverted_ranges_yield_nothing() {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let mut m: CowOrdMap<i64, ()> = CowOrdMap::default();
+        for i in 0..2000 {
+            m.get_or_insert_with(i, || ());
+        }
+        for (lo, hi) in [
+            (Excluded(5), Excluded(5)),
+            (Included(5), Excluded(5)),
+            (Excluded(5), Included(5)),
+            (Included(9), Included(3)),
+            (Excluded(1500), Excluded(10)),
+        ] {
+            assert_eq!(m.range(lo, hi).count(), 0);
+            assert_eq!(m.range(lo, hi).rev().count(), 0);
+        }
+        assert_eq!(m.range(Included(5), Included(5)).count(), 1);
+        assert_eq!(m.range(Unbounded, Excluded(0)).count(), 0);
+    }
 
     #[test]
     fn cow_map_behaves_like_a_map_and_shares_on_clone() {
