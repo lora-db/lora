@@ -105,4 +105,6 @@ pub(crate) use context::StreamCtx;
 pub use hydration::hydrate_row;
 pub(crate) use hydration::{hydrate_value, HydratingSource};
 pub(crate) use source::ArgumentSource;
-pub(crate) use traits::{build_streaming, build_streaming_seeded, subtree_is_fully_streaming};
+pub(crate) use traits::{
+    build_streaming, build_streaming_seeded, subtree_has_write, subtree_is_fully_streaming,
+};

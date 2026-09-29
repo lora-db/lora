@@ -196,6 +196,9 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::Sort(o) => Some(o.input),
         PhysicalOp::HashAggregation(o) => Some(o.input),
         PhysicalOp::OptionalMatch(o) => Some(o.input),
+        // A `CALL { ... }` that writes runs on the mutable executor, never
+        // on the read-only pull pipeline.
+        PhysicalOp::CallSubquery(o) if subtree_has_write(plan, o.inner) => return false,
         PhysicalOp::CallSubquery(o) => Some(o.input),
         PhysicalOp::PathBuild(o) => Some(o.input),
         // Already filtered by is_streaming_op above.
@@ -205,6 +208,42 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         None => true,
         Some(c) => subtree_is_fully_streaming(plan, c),
     }
+}
+
+/// True if any operator in the subtree rooted at `node_id`, including
+/// nested `OPTIONAL MATCH` and `CALL { ... }` bodies, writes.
+pub(crate) fn subtree_has_write(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
+    let op = &plan.nodes[node_id];
+    let (first, second) = match op {
+        PhysicalOp::Create(_)
+        | PhysicalOp::Merge(_)
+        | PhysicalOp::Delete(_)
+        | PhysicalOp::Set(_)
+        | PhysicalOp::Remove(_)
+        | PhysicalOp::Foreach(_) => return true,
+        PhysicalOp::Argument(_) => (None, None),
+        PhysicalOp::NodeScan(o) => (o.input, None),
+        PhysicalOp::NodeByLabelScan(o) => (o.input, None),
+        PhysicalOp::NodeByPropertyScan(o) => (o.input, None),
+        PhysicalOp::NodeByPropertyRangeScan(o) => (o.input, None),
+        PhysicalOp::NodeByTextScan(o) => (o.input, None),
+        PhysicalOp::NodeByPointScan(o) => (o.input, None),
+        PhysicalOp::RelByPropertyRangeScan(o) => (o.input, None),
+        PhysicalOp::RelByTextScan(o) => (o.input, None),
+        PhysicalOp::RelByPointScan(o) => (o.input, None),
+        PhysicalOp::Expand(o) => (Some(o.input), None),
+        PhysicalOp::Filter(o) => (Some(o.input), None),
+        PhysicalOp::Projection(o) => (Some(o.input), None),
+        PhysicalOp::Unwind(o) => (Some(o.input), None),
+        PhysicalOp::HashAggregation(o) => (Some(o.input), None),
+        PhysicalOp::Sort(o) => (Some(o.input), None),
+        PhysicalOp::Limit(o) => (Some(o.input), None),
+        PhysicalOp::PathBuild(o) => (Some(o.input), None),
+        PhysicalOp::OptionalMatch(o) => (Some(o.input), Some(o.inner)),
+        PhysicalOp::CallSubquery(o) => (Some(o.input), Some(o.inner)),
+    };
+    first.is_some_and(|c| subtree_has_write(plan, c))
+        || second.is_some_and(|c| subtree_has_write(plan, c))
 }
 
 pub(crate) fn build_streaming<'a, S: GraphStorage + 'a>(

@@ -162,6 +162,19 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
 
         if let Some(ret) = &q.return_clause {
             clauses.push(ResolvedClause::Return(self.analyze_return(ret)?));
+        } else if q.updating_clauses.is_empty() {
+            // The parser only lets a query end in a reading clause when it
+            // is a `CALL { ... }`; it must be a unit subquery.
+            match clauses.last() {
+                Some(ResolvedClause::CallSubquery(call)) if call.return_vars.is_empty() => {}
+                _ => {
+                    return Err(SemanticError::UnsupportedFeature(
+                        "a query can only end in CALL { ... } when the subquery ends in an \
+                         updating clause; add a RETURN"
+                            .into(),
+                    ))
+                }
+            }
         }
 
         Ok(clauses)
@@ -206,9 +219,21 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 .iter()
                 .map(|p| (p.name.to_string(), p.output))
                 .collect(),
+            // A unit subquery: its body ends in an update and returns
+            // nothing. It runs once per outer row for its side effects and
+            // leaves the outer rows (and scope) unchanged.
+            Some(
+                ResolvedClause::Create(_)
+                | ResolvedClause::Merge(_)
+                | ResolvedClause::Delete(_)
+                | ResolvedClause::Set(_)
+                | ResolvedClause::Remove(_)
+                | ResolvedClause::Foreach(_),
+            ) => Vec::new(),
+            Some(ResolvedClause::CallSubquery(inner)) if inner.return_vars.is_empty() => Vec::new(),
             _ => {
                 return Err(SemanticError::UnsupportedFeature(
-                    "CALL { ... } subquery must end with RETURN".into(),
+                    "CALL { ... } subquery must end with RETURN or an updating clause".into(),
                 ));
             }
         };
