@@ -663,9 +663,11 @@ reported as an API break with no data migration.
 
 ```ts
 lora.onWrite((change) => {
-  cache.invalidate(
-    change.entities.map((e) => ({ typename: e.type, id: e.key })),
-  );
+  // Per type: lists, counts and connections of these types may have
+  // changed, not only the entities. A broad change (a @cypher mutation)
+  // names nothing, so it invalidates every type.
+  const types = change.broad ? allNodeTypes : change.types;
+  cache.invalidate(types.map((typename) => ({ typename })));
 });
 
 for await (const change of lora.changes({ signal })) publish(change);
