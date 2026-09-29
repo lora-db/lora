@@ -965,10 +965,22 @@ class Runner {
       )} AS k\n` +
         `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k` +
         andText(authFilter(ctx, node, "n", "UPDATE")) +
-        `\nRETURN n.${name(node.key.property)} AS key, ${before ? printExpr(before) : "true"} AS ok`,
+        `\nRETURN n.${name(node.key.property)} AS key, ${before ? printExpr(before) : "true"} AS ok` +
+        (node.subscriptionOptions.previousState
+          ? ", properties(n) AS props"
+          : ""),
       ctx,
     );
     if (found.some((r) => r["ok"] !== true)) throw forbidden(node, "UPDATE");
+    if (node.subscriptionOptions.previousState) {
+      for (const r of found) {
+        (this.change.before ??= []).push({
+          type: node.name,
+          key: r["key"],
+          properties: (r["props"] as Record<string, unknown>) ?? {},
+        });
+      }
+    }
     const visible = new Set(found.map((r) => keyOf(r["key"])));
     const todo = rows.filter((r) => visible.has(keyOf(r.key)));
     if (todo.length === 0) return [];
@@ -1400,6 +1412,22 @@ class Runner {
     }
     for (const [node, keysByNode] of doomed) {
       const nodeKeys = [...keysByNode.values()];
+      if (node.subscriptionOptions.previousState) {
+        const pctx = this.ctx();
+        const rows = await this.run(
+          `UNWIND ${printExpr(bind(pctx, nodeKeys))} AS k\n` +
+            `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k\n` +
+            `RETURN n.${name(node.key.property)} AS key, properties(n) AS props`,
+          pctx,
+        );
+        for (const r of rows) {
+          (this.change.before ??= []).push({
+            type: node.name,
+            key: r["key"],
+            properties: (r["props"] as Record<string, unknown>) ?? {},
+          });
+        }
+      }
       const ctx = this.ctx();
       await this.run(
         `UNWIND ${printExpr(bind(ctx, nodeKeys))} AS k\n` +

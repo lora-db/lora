@@ -170,6 +170,10 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Generated subscriptions to changes made through the library. None without this directive."
   directive @subscription(
     operations: [MutationOperation!]! = [CREATE, UPDATE, DELETE]
+    "Also send CONNECT and DISCONNECT events for the type's relationships."
+    relationships: Boolean = false
+    "Send the stored values before an update or delete (one extra read per write)."
+    previousState: Boolean = false
   ) on OBJECT
 
   "Generated mutations for a node type. None without this directive."

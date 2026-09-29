@@ -247,6 +247,8 @@ export interface NodeType {
   mutations: ReadonlySet<MutationOperation>;
   /** Change events to subscribe to; empty unless `@subscription`. */
   subscriptions: ReadonlySet<MutationOperation>;
+  /** `@subscription(relationships:, previousState:)`. */
+  subscriptionOptions: { relationships: boolean; previousState: boolean };
   limit: PageLimit;
   /** Operations that need an authenticated request. */
   authentication: ReadonlySet<AuthOperation> | undefined;

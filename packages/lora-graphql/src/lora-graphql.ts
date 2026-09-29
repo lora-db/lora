@@ -78,7 +78,6 @@ import type {
   CypherField,
   GraphModel,
   ModelWarning,
-  MutationOperation,
   NodeType,
   SearchIndex,
 } from "./model/types.js";
@@ -319,6 +318,15 @@ export class LoraGraphQL {
    * `$context` values the compile read.
    */
   readonly #compiled = new WeakMap<FieldNode, CompiledEntry[]>();
+  /**
+   * Reads made for subscribers of one change, by statement text and
+   * parameters: subscribers whose checks or node reads compile to the same
+   * statement share one database call.
+   */
+  readonly #sharedReads = new WeakMap<
+    object,
+    Map<string, Promise<QueryResult[]>>
+  >();
   #statistics: Statistics | undefined;
   #schema: GraphQLSchema | undefined;
 
@@ -419,7 +427,13 @@ export class LoraGraphQL {
         event.operation === "DELETE"
           ? Promise.resolve(null)
           : span(info, () =>
-              this.#resolveByKey(node, event.key, info, context),
+              this.#resolveByKey(
+                node,
+                event.key,
+                info,
+                context,
+                (event as { [CHANGE]?: WriteChange })[CHANGE],
+              ),
             ),
       resolveAbstract: (abstract, info, context) =>
         span(info, () => {
@@ -1013,11 +1027,33 @@ export class LoraGraphQL {
     return fieldArgs(ctx, def, fieldNodes[0]!);
   }
 
+  /** `run` once per change for each distinct statement set. */
+  #shared(
+    change: object | undefined,
+    statements: Statement[],
+    run: () => Promise<QueryResult[]>,
+  ): Promise<QueryResult[]> {
+    const key = change ? stableKey(statements) : undefined;
+    if (!change || key === undefined) return run();
+    let reads = this.#sharedReads.get(change);
+    if (!reads) {
+      reads = new Map();
+      this.#sharedReads.set(change, reads);
+    }
+    let pending = reads.get(key);
+    if (!pending) {
+      pending = run();
+      reads.set(key, pending);
+    }
+    return pending;
+  }
+
   async #run(
     field: string,
     compiled: CompiledRead,
     context: unknown,
     info?: GraphQLResolveInfo,
+    change?: object,
   ): Promise<unknown> {
     this.#charge(field, compiled.cost, context, info);
     for (const statement of compiled.statements) {
@@ -1033,14 +1069,16 @@ export class LoraGraphQL {
         () =>
           owned
             ? runInOrder(owned, compiled.statements)
-            : this.#driver.run(compiled.statements, {
-                mode: compiled.mode,
-                timeoutMs: this.#timeoutMs,
-                signal,
-                // Queries and object @cypher fields are checked read-only
-                // when the model is built; writes never reach this path.
-                verified: compiled.mode === "read",
-              }),
+            : this.#shared(change, compiled.statements, () =>
+                this.#driver.run(compiled.statements, {
+                  mode: compiled.mode,
+                  timeoutMs: this.#timeoutMs,
+                  signal,
+                  // Queries and object @cypher fields are checked read-only
+                  // when the model is built; writes never reach this path.
+                  verified: compiled.mode === "read",
+                }),
+              ),
       );
     } catch (err) {
       throw this.#databaseError(field, err);
@@ -1207,14 +1245,15 @@ export class LoraGraphQL {
   ): AsyncGenerator<ChangeEvent> {
     const key = args[node.key.name];
     const where = args["where"] as Record<string, unknown> | null | undefined;
+    const offered = new Set<string>(node.subscriptions);
+    if (node.subscriptionOptions.relationships) {
+      offered.add("CONNECT");
+      offered.add("DISCONNECT");
+    }
     const wanted = new Set(
-      (
-        (args["operations"] as MutationOperation[] | null) ?? [
-          "CREATE",
-          "UPDATE",
-          "DELETE",
-        ]
-      ).filter((op) => node.subscriptions.has(op)),
+      ((args["operations"] as string[] | null) ?? [...offered]).filter((op) =>
+        offered.has(op),
+      ),
     );
     const ruled = (r: { operations: ReadonlySet<string> }) =>
       r.operations.has("READ") || r.operations.has("SUBSCRIBE");
@@ -1245,6 +1284,7 @@ export class LoraGraphQL {
             where,
             base,
             context,
+            change,
           )
         : undefined;
       for (const event of [...live, ...deletions]) {
@@ -1267,6 +1307,7 @@ export class LoraGraphQL {
     where: Record<string, unknown> | null | undefined,
     base: SelectionContext,
     context: unknown,
+    change?: object,
   ): Promise<Set<string>> {
     if (keys.length === 0) return new Set();
     const ctx = this.#context(base, context);
@@ -1292,11 +1333,14 @@ export class LoraGraphQL {
         items: [{ expr: prop(v("n"), node.key.property), alias: "key" }],
       },
     ]);
-    const [result] = await this.#driver.run([{ text, params: ctx.params }], {
-      mode: "read",
-      timeoutMs: this.#timeoutMs,
-      verified: true,
-    });
+    const statements = [{ text, params: ctx.params }];
+    const [result] = await this.#shared(change, statements, () =>
+      this.#driver.run(statements, {
+        mode: "read",
+        timeoutMs: this.#timeoutMs,
+        verified: true,
+      }),
+    );
     return new Set(result!.rows.map((r) => keyOf(r["key"])));
   }
 
@@ -1305,6 +1349,7 @@ export class LoraGraphQL {
     key: unknown,
     info: GraphQLResolveInfo,
     context: unknown,
+    change?: object,
   ): Promise<unknown> {
     const ctx = this.#context(infoContext(info), context);
     const compiled = compileRoot(
@@ -1314,7 +1359,7 @@ export class LoraGraphQL {
       { [node.key.name]: key },
       info.fieldNodes,
     );
-    return this.#run(info.fieldName, compiled, context, info);
+    return this.#run(info.fieldName, compiled, context, info, change);
   }
 
   #resolveSearch(
@@ -1494,6 +1539,7 @@ export class LoraGraphQL {
   }
 
   #emit(change: WriteChange): void {
+    change.timestamp ??= new Date().toISOString();
     for (const listener of this.#listeners) {
       try {
         listener(change);
@@ -1504,12 +1550,36 @@ export class LoraGraphQL {
   }
 }
 
+/** The write an event came from, for reads shared across its subscribers. */
+const CHANGE = Symbol("change");
+
 /** A write's events for one node type, one per node, most specific first. */
 function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
   const out = new Map<string, ChangeEvent>();
+  const previous = new Map<string, Record<string, unknown>>();
+  for (const b of change.before ?? []) {
+    if (b.type === node.name) previous.set(keyOf(b.key), b.properties);
+  }
+  const make = (
+    operation: ChangeEvent["operation"],
+    key: unknown,
+    extra: Partial<ChangeEvent> = {},
+  ): ChangeEvent => {
+    const event: ChangeEvent = {
+      operation,
+      key,
+      timestamp: change.timestamp,
+      ...extra,
+    };
+    if (operation === "UPDATE" || operation === "DELETE") {
+      event.previous = previous.get(keyOf(key));
+    }
+    Object.defineProperty(event, CHANGE, { value: change });
+    return event;
+  };
   const add = (operation: ChangeEvent["operation"], key: unknown) => {
     const id = keyOf(key);
-    if (!out.has(id)) out.set(id, { operation, key });
+    if (!out.has(id)) out.set(id, make(operation, key));
   };
   for (const e of change.deleted)
     if (e.type === node.name) add("DELETE", e.key);
@@ -1518,7 +1588,33 @@ function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
   // Updated nodes, and nodes that gained or lost a relationship.
   for (const e of change.entities)
     if (e.type === node.name) add("UPDATE", e.key);
-  return [...out.values()];
+  const events = [...out.values()];
+  if (node.subscriptionOptions.relationships) {
+    for (const [operation, refs] of [
+      ["CONNECT", change.connected],
+      ["DISCONNECT", change.disconnected],
+    ] as const) {
+      for (const r of refs) {
+        for (const [self, other] of [
+          [r.from, r.to],
+          [r.to, r.from],
+        ] as const) {
+          if (self.type !== node.name) continue;
+          events.push(
+            make(operation, self.key, {
+              relationship: {
+                field: r.field,
+                type: r.type,
+                relatedType: other.type,
+                relatedKey: other.key,
+              },
+            }),
+          );
+        }
+      }
+    }
+  }
+  return events;
 }
 
 async function runInOrder(
