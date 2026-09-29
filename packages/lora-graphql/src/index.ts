@@ -29,6 +29,7 @@ export {
 } from "./analyze/indexes.js";
 export {
   checkPlans,
+  scanExpands,
   type PlanFinding,
   type PlanReport,
 } from "./analyze/plans.js";
