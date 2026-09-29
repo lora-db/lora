@@ -446,6 +446,28 @@ impl Database {
         }))
     }
 
+    /// Run several statements inside interactive transaction `tx_id` in one
+    /// call. Results come back in statement order. The first failing
+    /// statement stops the batch and rolls the transaction back; one
+    /// timeout bounds the whole batch.
+    #[napi(ts_return_type = "Promise<Buffer[]>")]
+    pub fn tx_execute_many(
+        &self,
+        tx_id: u32,
+        #[napi(ts_arg_type = "Array<{ query: string; params?: Record<string, any> | null }>")]
+        statements: serde_json::Value,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
+    ) -> Result<AsyncTask<tasks::TxExecuteManyTask>> {
+        Ok(AsyncTask::new(tasks::TxExecuteManyTask {
+            actor: self.tx_actor(tx_id)?,
+            statements,
+            limit: self.limit(timeout_ms, cancel_token)?,
+            registry: self.txs.clone(),
+            id: tx_id,
+        }))
+    }
+
     /// Commit (`commit = true`) or roll back interactive transaction `tx_id`.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn tx_finish(&self, tx_id: u32, commit: bool) -> Result<AsyncTask<tasks::TxFinishTask>> {

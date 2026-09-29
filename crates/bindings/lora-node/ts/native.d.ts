@@ -102,6 +102,16 @@ export declare class Database {
     timeoutMs?: number | null,
     cancelToken?: number | null,
   ): Promise<Buffer>;
+  /** Run several statements in an interactive transaction in one call. */
+  txExecuteMany(
+    txId: number,
+    statements: Array<{
+      query: string;
+      params?: Record<string, unknown> | null;
+    }>,
+    timeoutMs?: number | null,
+    cancelToken?: number | null,
+  ): Promise<Buffer[]>;
   /** Commit (`commit = true`) or roll back an interactive transaction. */
   txFinish(txId: number, commit: boolean): Promise<void>;
   /** Force pending WAL bytes and the portable container mirror to disk. */

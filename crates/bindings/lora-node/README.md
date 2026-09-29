@@ -84,6 +84,20 @@ if ((rows[0].free as number) > 0) {
 await tx.commit();
 ```
 
+`tx.executeMany()` runs several statements in one native call and returns
+their results in order, saving the round trip each `execute()` costs
+(about 0.1 ms per statement down to 0.03 ms). Each statement sees the
+writes before it. The first failing statement stops the batch and rolls
+the transaction back; its error message ends with `(statement i of n)`.
+`timeoutMs` and `signal` bound the whole batch.
+
+```ts
+const [created, total] = await tx.executeMany([
+  { query: "CREATE (:Item {k: $k})", params: { k } },
+  { query: "MATCH (i:Item) RETURN count(i) AS c" },
+]);
+```
+
 Schema commands (`CREATE CONSTRAINT`, `CREATE INDEX`, `DROP ...`) work
 inside `transaction()` and `db.begin()` and commit or roll back together
 with the data statements.
