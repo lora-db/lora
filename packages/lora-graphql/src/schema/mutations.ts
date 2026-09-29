@@ -21,6 +21,7 @@ import type {
   GraphModel,
   MutationOperation,
   NodeType,
+  NestedOperation,
   RelationshipField,
   RelationshipPropertiesType,
   ScalarField,
@@ -241,18 +242,24 @@ export function buildMutations(
         : undefined;
     };
     const out: GraphQLInputFieldConfigMap = {};
-    const connect = byMember("ConnectMembers", (m) => {
-      const t = connectInput(owner, m.rel);
-      return rel.list ? listOf(nonNull(t)) : t;
-    });
+    const allows = (op: NestedOperation) => rel.nestedOperations.has(op);
+    const connect = allows("CONNECT")
+      ? byMember("ConnectMembers", (m) => {
+          const t = connectInput(owner, m.rel);
+          return rel.list ? listOf(nonNull(t)) : t;
+        })
+      : undefined;
     if (connect) out["connect"] = { type: connect };
-    const create = byMember("CreateMembers", (m) => {
-      if (!model.nodes.get(m.member)!.mutations.has("CREATE")) return undefined;
-      const t = nestedCreateInput(owner, m.rel);
-      return rel.list ? listOf(nonNull(t)) : t;
-    });
+    const create = allows("CREATE")
+      ? byMember("CreateMembers", (m) => {
+          if (!model.nodes.get(m.member)!.mutations.has("CREATE"))
+            return undefined;
+          const t = nestedCreateInput(owner, m.rel);
+          return rel.list ? listOf(nonNull(t)) : t;
+        })
+      : undefined;
     if (create) out["create"] = { type: create };
-    if (update) {
+    if (update && allows("DISCONNECT")) {
       out["disconnect"] = rel.list
         ? {
             type: byMember("DisconnectMembers", (m) =>
@@ -275,15 +282,19 @@ export function buildMutations(
     if (model.abstracts.has(rel.target))
       return polymorphicFields(owner, rel, update);
     const target = model.nodes.get(rel.target)!;
-    const connect = connectInput(owner, rel);
-    const fields: GraphQLInputFieldConfigMap = {
-      connect: { type: rel.list ? listOf(nonNull(connect)) : connect },
-    };
-    if (canCreate(rel)) {
+    const allows = (op: NestedOperation) => rel.nestedOperations.has(op);
+    const fields: GraphQLInputFieldConfigMap = {};
+    if (allows("CONNECT")) {
+      const connect = connectInput(owner, rel);
+      fields["connect"] = {
+        type: rel.list ? listOf(nonNull(connect)) : connect,
+      };
+    }
+    if (allows("CREATE") && canCreate(rel)) {
       const create = nestedCreateInput(owner, rel);
       fields["create"] = { type: rel.list ? listOf(nonNull(create)) : create };
     }
-    if (update) {
+    if (update && allows("DISCONNECT")) {
       fields["disconnect"] = rel.list
         ? {
             type: listOf(nonNull(ctx.inputType(target.key))),
@@ -293,6 +304,8 @@ export function buildMutations(
             type: GraphQLBoolean,
             description: `true removes the current ${target.name}.`,
           };
+    }
+    if (update && allows("UPDATE")) {
       const nested = nestedUpdateInput(owner, rel);
       if (nested) {
         fields["update"] = {
@@ -314,8 +327,11 @@ export function buildMutations(
       const fields = scalarInputs(scalarsOf(node), "CREATE");
       for (const rel of node.fields.values()) {
         if (rel.kind !== "relationship") continue;
-        const t = once(mutationNames.relationCreate(node.name, rel.name), () =>
-          relationFields(node, rel, false),
+        const inputs = relationFields(node, rel, false);
+        if (Object.keys(inputs).length === 0) continue;
+        const t = once(
+          mutationNames.relationCreate(node.name, rel.name),
+          () => inputs,
         );
         // Required single relationships are checked when the mutation
         // runs: a nested create's parent link can satisfy them.
@@ -345,9 +361,12 @@ export function buildMutations(
             description: f.description,
           };
         } else if (f.kind === "relationship") {
+          const inputs = relationFields(node, f, false);
+          if (Object.keys(inputs).length === 0) continue;
           fields[f.name] = {
-            type: once(mutationNames.relationCreate(node.name, f.name), () =>
-              relationFields(node, f, false),
+            type: once(
+              mutationNames.relationCreate(node.name, f.name),
+              () => inputs,
             ),
           };
         }
@@ -360,9 +379,12 @@ export function buildMutations(
       const fields = scalarInputs(scalarsOf(node), "UPDATE");
       for (const rel of node.fields.values()) {
         if (rel.kind !== "relationship") continue;
+        const inputs = relationFields(node, rel, true);
+        if (Object.keys(inputs).length === 0) continue;
         fields[rel.name] = {
-          type: once(mutationNames.relationUpdate(node.name, rel.name), () =>
-            relationFields(node, rel, true),
+          type: once(
+            mutationNames.relationUpdate(node.name, rel.name),
+            () => inputs,
           ),
         };
       }

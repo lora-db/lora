@@ -10,6 +10,9 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Natural key: required, unique and immutable; the tie-breaker of every sort and the anchor of cursors, global ids, updates and deletes. With generate: true, creates fill it with a UUID when the input leaves it out."
   directive @key(generate: Boolean = false) on FIELD_DEFINITION
 
+  "On an interface field: every implementation declares this relationship (with @relationship, possibly of different types or directions), so clients can select it on the interface."
+  directive @declareRelationship on FIELD_DEFINITION
+
   "A uniqueness constraint."
   directive @unique on FIELD_DEFINITION
 
@@ -25,7 +28,25 @@ export const directiveTypeDefs = /* GraphQL */ `
     queryDirection: QueryDirection = DIRECTED
     "What deleting this node does to nodes reached through the field."
     onDelete: OnDelete = DETACH
+    "Which nested writes mutation inputs offer for the field."
+    nestedOperations: [NestedOperation!] = [
+      CREATE
+      CONNECT
+      DISCONNECT
+      UPDATE
+      DELETE
+    ]
+    "false: no aggregate on the field's connection and no aggregate filter."
+    aggregate: Boolean = true
   ) on FIELD_DEFINITION
+
+  enum NestedOperation {
+    CREATE
+    CONNECT
+    DISCONNECT
+    UPDATE
+    DELETE
+  }
 
   enum QueryDirection {
     DIRECTED

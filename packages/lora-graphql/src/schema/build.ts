@@ -539,7 +539,7 @@ export function buildSchema(
           type: countFilter,
           description: "The number of related nodes.",
         },
-        ...(polymorphic(rel)
+        ...(polymorphic(rel) || !rel.aggregate
           ? {}
           : {
               aggregate: {
@@ -764,8 +764,8 @@ export function buildSchema(
         ? new GraphQLInterfaceType({
             name: abstract.name,
             description: abstract.description,
-            fields: () =>
-              Object.fromEntries(
+            fields: () => ({
+              ...Object.fromEntries(
                 [...abstract.fields.values()]
                   .filter((f) => !f.private && f.selectableOn.read)
                   .map((f) => [
@@ -773,6 +773,33 @@ export function buildSchema(
                     { type: scalarOutput(f), description: f.description },
                   ]),
               ),
+              // Declared relationships: the implementations' field, whose
+              // type and arguments the model checked are the same.
+              ...Object.fromEntries(
+                [...abstract.relationships.values()].map((rel) => {
+                  const impl = objects.get(abstract.members[0]!)!.getFields()[
+                    rel.name
+                  ]!;
+                  return [
+                    rel.name,
+                    {
+                      type: impl.type,
+                      description: rel.description,
+                      args: Object.fromEntries(
+                        impl.args.map((a) => [
+                          a.name,
+                          {
+                            type: a.type,
+                            defaultValue: a.defaultValue,
+                            description: a.description,
+                          },
+                        ]),
+                      ),
+                    },
+                  ];
+                }),
+              ),
+            }),
             resolveType,
           })
         : new GraphQLUnionType({
@@ -967,12 +994,57 @@ export function buildSchema(
     limit: { type: GraphQLInt },
   });
 
+  // Relationship connections whose properties have @sortable fields sort
+  // by `edge` too: `sort: [{ edge: { since: DESC } }, { name: ASC }]`.
+  const edgeSorts = new Map<string, GraphQLInputObjectType>();
+  const edgeSortOf = (
+    node: NodeType,
+    rel: RelationshipField,
+    props: RelationshipPropertiesType,
+  ): GraphQLInputObjectType | undefined => {
+    const sortable = [...props.fields.values()].filter((f) => f.sortable);
+    const target = model.nodes.get(rel.target)!;
+    if (sortable.length === 0 || target.fields.has("edge")) return undefined;
+    const name = `${names.relConnection(node.name, rel.name)}Sort`;
+    let t = edgeSorts.get(name);
+    if (!t) {
+      const edgeName = names.sort(props.name);
+      let edge = edgeSorts.get(edgeName);
+      if (!edge) {
+        edge = new GraphQLInputObjectType({
+          name: edgeName,
+          description: `Sorts by ${props.name} relationship properties.`,
+          fields: Object.fromEntries(
+            sortable.map((f) => [f.name, { type: sortDirection }]),
+          ),
+        });
+        edgeSorts.set(edgeName, edge);
+      }
+      t = new GraphQLInputObjectType({
+        name,
+        description: `Sorts ${rel.name} by ${target.name} fields or, under \`edge\`, relationship properties. One field per item; the @key breaks ties.`,
+        fields: () => ({
+          ...Object.fromEntries(
+            Object.values(sorts.get(rel.target)!.getFields()).map((f) => [
+              f.name,
+              { type: f.type, description: f.description },
+            ]),
+          ),
+          edge: { type: edge },
+        }),
+      });
+      edgeSorts.set(name, t);
+    }
+    return t;
+  };
+
   const connectionArgs = (
     target: string,
     where: GraphQLInputType = whereOf(target),
+    sort: GraphQLInputObjectType = sorts.get(target)!,
   ): GraphQLFieldConfigArgumentMap => ({
     where: { type: where },
-    sort: { type: listOf(nonNull(sorts.get(target)!)) },
+    sort: { type: listOf(nonNull(sort)) },
     first: { type: GraphQLInt },
     after: { type: GraphQLString },
     last: {
@@ -1076,8 +1148,16 @@ export function buildSchema(
     rel: RelationshipField,
   ): GraphQLFieldConfig<Record<string, unknown>, unknown> {
     if (!hasOwnConnection(rel)) {
+      // Opting out of aggregates needs a connection type without them.
+      const conn = rel.aggregate
+        ? connections.get(rel.target)!
+        : makeConnection(
+            names.relConnection(node.name, rel.name),
+            names.relEdge(node.name, rel.name),
+            () => objects.get(rel.target)!,
+          );
       return {
-        type: nonNull(connections.get(rel.target)!),
+        type: nonNull(conn),
         args: connectionArgs(rel.target),
         resolve: byResponseKey,
       };
@@ -1089,16 +1169,22 @@ export function buildSchema(
       names.relEdge(node.name, rel.name),
       () => objects.get(rel.target)!,
       () => propsObject(props),
-      () =>
-        connectionAggregate(
-          `${names.relConnection(node.name, rel.name)}Aggregate`,
-          model.nodes.get(rel.target)!,
-          props,
-        ),
+      rel.aggregate
+        ? () =>
+            connectionAggregate(
+              `${names.relConnection(node.name, rel.name)}Aggregate`,
+              model.nodes.get(rel.target)!,
+              props,
+            )
+        : undefined,
     );
     return {
       type: nonNull(conn),
-      args: connectionArgs(rel.target, where),
+      args: connectionArgs(
+        rel.target,
+        where,
+        edgeSortOf(node, rel, props) ?? sorts.get(rel.target)!,
+      ),
       resolve: byResponseKey,
     };
   }
