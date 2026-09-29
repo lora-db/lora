@@ -26,8 +26,14 @@ import {
   type GraphQLScalarType,
 } from "graphql";
 import { encodeCursor } from "../compile/cursor.js";
-import type { RawConnection, RawEdge, RootKind } from "../compile/read.js";
+import type {
+  RawConnection,
+  RawEdge,
+  RootKind,
+  SearchResult,
+} from "../compile/read.js";
 import { ModelError, requestError } from "../errors.js";
+import { lowerFirst } from "../model/build.js";
 import type {
   CypherField,
   FilterOperator,
@@ -37,6 +43,7 @@ import type {
   RelationshipPropertiesType,
   ScalarField,
   ScalarType,
+  SearchIndex,
 } from "../model/types.js";
 import { toGlobalId } from "./global-id.js";
 import { assertReadable } from "./guard.js";
@@ -44,7 +51,30 @@ import { buildMutations, type MutationResolver } from "./mutations.js";
 import { hasOwnConnection, names } from "./names.js";
 import { CUSTOM_SCALARS } from "./scalars.js";
 
+/** One event of a generated subscription. */
+export interface ChangeEvent {
+  operation: "CREATE" | "UPDATE" | "DELETE";
+  key: unknown;
+}
+
 export interface SchemaHooks {
+  subscribe: (
+    node: NodeType,
+    args: Record<string, unknown>,
+    context: unknown,
+  ) => AsyncIterable<ChangeEvent>;
+  resolveChangedNode: (
+    node: NodeType,
+    event: ChangeEvent,
+    info: GraphQLResolveInfo,
+    context: unknown,
+  ) => Promise<unknown>;
+  resolveSearch: (
+    node: NodeType,
+    index: SearchIndex,
+    info: GraphQLResolveInfo,
+    context: unknown,
+  ) => Promise<unknown>;
   resolveRoot: RootResolver;
   resolveNode: NodeResolver;
   resolveCypher: CypherRootResolver;
@@ -72,6 +102,12 @@ export type NodeResolver = (
 
 type SortedEdge = RawEdge & { __sort: string };
 
+/** The rows of a page in the requested order. */
+function pageOf(src: RawConnection): RawEdge[] {
+  const page = src.__rows.slice(0, src.__first);
+  return src.__backward ? page.reverse() : page;
+}
+
 const nonNull = <T extends GraphQLOutputType | GraphQLInputType>(t: T) =>
   new GraphQLNonNull(t);
 const listOf = <T extends GraphQLOutputType | GraphQLInputType>(t: T) =>
@@ -84,6 +120,18 @@ const byResponseKey: GraphQLFieldResolver<Record<string, unknown>, unknown> = (
   _ctx,
   info,
 ) => source[info.path.key as string];
+
+/** A stored VECTOR as its numbers. */
+const vectorByResponseKey: GraphQLFieldResolver<
+  Record<string, unknown>,
+  unknown
+> = (source, _args, _ctx, info) => {
+  const value = source[info.path.key as string] as
+    | { values?: number[] }
+    | null
+    | undefined;
+  return value && !Array.isArray(value) ? (value.values ?? null) : value;
+};
 
 /** Same, for nodes: fails on nodes a READ validate rule rejects. */
 const nodesByResponseKey: GraphQLFieldResolver<
@@ -436,19 +484,20 @@ export function buildSchema(
 
   const connectionResolvers = {
     edges: (src: RawConnection) =>
-      src.__rows.slice(0, src.__first).map((row) => {
+      pageOf(src).map((row) => {
         assertReadable(row.node);
         return { ...row, __sort: src.__sort };
       }),
     pageInfo: (src: RawConnection) => {
-      const page = src.__rows.slice(0, src.__first);
+      const page = pageOf(src);
       // Cursors carry sort values: as readable as the nodes themselves.
       for (const row of page) assertReadable(row.node);
       const cursor = (row: RawEdge | undefined) =>
         row ? encodeCursor(src.__sort, row.__cursor) : null;
+      const more = src.__rows.length > src.__first;
       return {
-        hasNextPage: src.__rows.length > src.__first,
-        hasPreviousPage: src.__after,
+        hasNextPage: src.__backward ? src.__after : more,
+        hasPreviousPage: src.__backward ? more : src.__after,
         startCursor: cursor(page[0]),
         endCursor: cursor(page[page.length - 1]),
       };
@@ -550,6 +599,11 @@ export function buildSchema(
     sort: { type: listOf(nonNull(sorts.get(target)!)) },
     first: { type: GraphQLInt },
     after: { type: GraphQLString },
+    last: {
+      type: GraphQLInt,
+      description: "Page backward: the last n before `before`.",
+    },
+    before: { type: GraphQLString },
   });
 
   for (const node of model.nodes.values()) {
@@ -576,7 +630,8 @@ export function buildSchema(
             fields[f.name] = {
               type: scalarOutput(f),
               description: f.description,
-              resolve: byResponseKey,
+              // Vectors are stored tagged; clients see the numbers.
+              resolve: f.vector ? vectorByResponseKey : byResponseKey,
             };
             continue;
           }
@@ -777,6 +832,45 @@ export function buildSchema(
       };
     }
   }
+  for (const node of model.nodes.values()) {
+    if (!node.read || node.search.length === 0) continue;
+    const obj = objects.get(node.name)!;
+    const match = new GraphQLObjectType<SearchResult>({
+      name: names.match(node.name),
+      description: `A ${node.name} and how well it matched, highest first.`,
+      fields: {
+        score: { type: nonNull(GraphQLFloat) },
+        node: {
+          type: nonNull(obj),
+          resolve: (src) => assertReadable(src.node),
+        },
+      },
+    });
+    for (const index of node.search) {
+      const common = {
+        where: { type: whereOf(node.name) },
+        limit: { type: GraphQLInt },
+      };
+      query[index.queryName] = {
+        type: nonNull(listOf(nonNull(match))),
+        description:
+          index.kind === "fulltext"
+            ? `Full-text search over ${index.fields.map((f) => f.name).join(", ")}. Terms are ANDed; a trailing * matches a prefix.`
+            : `${node.name} nodes most similar to \`vector\`, or to the ${node.name} with ${node.key.name} \`to\` (${index.similarity.toLowerCase()}).`,
+        args:
+          index.kind === "fulltext"
+            ? { query: { type: nonNull(GraphQLString) }, ...common }
+            : {
+                vector: { type: listOf(nonNull(GraphQLFloat)) },
+                to: { type: scalarType(node.key) as GraphQLInputType },
+                ...common,
+              },
+        resolve: (_src, _args, context, info) =>
+          hooks.resolveSearch(node, index, info, context),
+      };
+    }
+  }
+
   if (nodeInterface) {
     query["node"] = {
       type: nodeInterface,
@@ -815,6 +909,45 @@ export function buildSchema(
     };
   }
 
+  const subscription: GraphQLFieldConfigMap<unknown, unknown> = {};
+  const changeOperation = new GraphQLEnumType({
+    name: "ChangeOperation",
+    values: { CREATE: {}, UPDATE: {}, DELETE: {} },
+  });
+  for (const node of model.nodes.values()) {
+    if (!node.read || node.subscriptions.size === 0) continue;
+    const obj = objects.get(node.name)!;
+    const keyType = scalarType(node.key) as GraphQLInputType &
+      GraphQLOutputType;
+    const event = new GraphQLObjectType<ChangeEvent>({
+      name: `${node.name}ChangeEvent`,
+      fields: {
+        operation: { type: nonNull(changeOperation) },
+        [node.key.name]: {
+          type: nonNull(keyType),
+          resolve: (src) => src.key,
+        },
+        node: {
+          type: obj,
+          description: `The ${node.name} as it is now; null once deleted.`,
+          resolve: (src, _args, context, info) =>
+            hooks.resolveChangedNode(node, src, info, context),
+        },
+      },
+    });
+    subscription[`${lowerFirst(node.name)}Changed`] = {
+      type: nonNull(event),
+      description: `${node.name} changes made through this API. Give ${node.key.name} to follow one node.`,
+      args: {
+        [node.key.name]: { type: keyType },
+        operations: { type: listOf(nonNull(changeOperation)) },
+      },
+      subscribe: (_src, args, context) =>
+        hooks.subscribe(node, args as Record<string, unknown>, context),
+      resolve: (payload: unknown) => payload,
+    };
+  }
+
   if (Object.keys(query).length === 0) {
     throw new ModelError([
       { message: "no readable @node types: the Query type would be empty" },
@@ -823,6 +956,10 @@ export function buildSchema(
 
   return new GraphQLSchema({
     query: new GraphQLObjectType({ name: "Query", fields: query }),
+    subscription:
+      Object.keys(subscription).length > 0
+        ? new GraphQLObjectType({ name: "Subscription", fields: subscription })
+        : undefined,
     mutation:
       Object.keys(mutation).length > 0
         ? new GraphQLObjectType({ name: "Mutation", fields: mutation })

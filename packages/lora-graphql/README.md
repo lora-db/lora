@@ -73,14 +73,17 @@ const yoga = createYoga({
 For each `@node` type (reads are on by default; `@query(read: false)` turns
 them off):
 
-| Field                                                 | Does                                                                                                      |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `festivals(where, sort, limit)`                       | A bounded list                                                                                            |
-| `festivalsConnection(where, sort, first, after)`      | Relay connection with keyset cursors, never `SKIP`                                                        |
-| `festival(key:)`                                      | Lookup by `@key`                                                                                          |
-| `festivalsAggregate(where)`                           | `count`, and `min` / `max` (`avg` / `sum` for numbers) of sortable fields, with `@query(aggregate: true)` |
-| `node(id:)`                                           | Any `@relayId` type by global id                                                                          |
-| `createFestivals`, `updateFestival`, `deleteFestival` | Only with `@mutation`                                                                                     |
+| Field                                                                    | Does                                                                                                      |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `festivals(where, sort, limit)`                                          | A bounded list                                                                                            |
+| `festivalsConnection(where, sort, first, after, last, before)`           | Relay connection with keyset cursors in both directions, never `SKIP`                                     |
+| `festival(key:)`                                                         | Lookup by `@key`                                                                                          |
+| `festivalsAggregate(where)`                                              | `count`, and `min` / `max` (`avg` / `sum` for numbers) of sortable fields, with `@query(aggregate: true)` |
+| `node(id:)`                                                              | Any `@relayId` type by global id                                                                          |
+| `searchFestivals(query, where, limit)`                                   | Full-text search, with `@fulltext`                                                                        |
+| `similarFestivals(vector or to, where, limit)`                           | Vector similarity, with a `@vector` field                                                                 |
+| `createFestivals`, `upsertFestivals`, `updateFestival`, `deleteFestival` | Only with `@mutation`                                                                                     |
+| `festivalChanged(key, operations)`                                       | A subscription, only with `@subscription`                                                                 |
 
 Relationship fields take `where`, `sort` and `limit`; list relationships
 also get `…Connection`, whose edges carry the relationship properties and
@@ -94,34 +97,37 @@ and only by the operators listed; sortable only with `@sortable`;
 
 Model:
 
-| Directive                                       | On                | Meaning                                                                                                                           |
-| ----------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `@node(labels:, plural:)`                       | type              | A node label set; default: the type name                                                                                          |
-| `@key(generate:)`                               | field             | Required, unique and immutable. The sort tie-breaker, cursor anchor and mutation address. `generate: true` fills a UUID on create |
-| `@unique`                                       | field             | Uniqueness constraint                                                                                                             |
-| `@index(kind: RANGE \| TEXT \| POINT)`          | field             | An explicit index, usually inferred                                                                                               |
-| `@relationship(type:, direction:, properties:)` | field             | An edge to another `@node` type                                                                                                   |
-| `@relationshipProperties`                       | type              | Properties on a relationship type                                                                                                 |
-| `@alias(property:)`                             | field             | API name differs from the stored property                                                                                         |
-| `@private`                                      | field             | Stored, never exposed                                                                                                             |
-| `@readonly`                                     | field             | Exposed, never client-settable                                                                                                    |
-| `@default(value:)`                              | field             | Stored on create when the input omits it                                                                                          |
-| `@timestamp(operations: [CREATE, UPDATE])`      | field             | Set to the current time; never client-settable                                                                                    |
-| `@cardinality(max:)`                            | list relationship | Declared fan-out, for cost estimates                                                                                              |
-| `@cypher(statement:, columnName:)`              | field             | A field backed by a Cypher statement                                                                                              |
+| Directive                                                     | On                | Meaning                                                                                                                           |
+| ------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `@node(labels:, plural:)`                                     | type              | A node label set; default: the type name                                                                                          |
+| `@key(generate:)`                                             | field             | Required, unique and immutable. The sort tie-breaker, cursor anchor and mutation address. `generate: true` fills a UUID on create |
+| `@unique`                                                     | field             | Uniqueness constraint                                                                                                             |
+| `@index(kind: RANGE \| TEXT \| POINT)`                        | field             | An explicit index, usually inferred                                                                                               |
+| `@relationship(type:, direction:, properties:)`               | field             | An edge to another `@node` type                                                                                                   |
+| `@relationshipProperties`                                     | type              | Properties on a relationship type                                                                                                 |
+| `@alias(property:)`                                           | field             | API name differs from the stored property                                                                                         |
+| `@private`                                                    | field             | Stored, never exposed                                                                                                             |
+| `@readonly`                                                   | field             | Exposed, never client-settable                                                                                                    |
+| `@default(value:)`                                            | field             | Stored on create when the input omits it                                                                                          |
+| `@timestamp(operations: [CREATE, UPDATE])`                    | field             | Set to the current time; never client-settable                                                                                    |
+| `@cardinality(max:)`                                          | list relationship | Declared fan-out, for cost estimates                                                                                              |
+| `@cypher(statement:, columnName:)`                            | field             | A field backed by a Cypher statement                                                                                              |
+| `@fulltext(indexes: [{ name, fields, analyzer, queryName }])` | type              | FULLTEXT indexes, each with a search root field                                                                                   |
+| `@vector(dimensions:, similarity:, queryName:)`               | `[Float!]` field  | A VECTOR index and a similarity root field                                                                                        |
 
 API:
 
-| Directive                                         | On                      | Meaning                                                                                |
-| ------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------- |
-| `@query(read:, aggregate:)`                       | type                    | Generated reads                                                                        |
-| `@mutation(operations: [CREATE, UPDATE, DELETE])` | type                    | Generated mutations; none without it                                                   |
-| `@filterable(byValue: [...])`                     | field                   | Filter operators. Bare: `EQ` and `IN`. On a relationship: enables relationship filters |
-| `@sortable`                                       | field                   | Sort and paginate by this field                                                        |
-| `@limit(default:, max:)`                          | type, list relationship | Page size bounds                                                                       |
-| `@relayId`                                        | `@key` field            | Adds a global `id` and the `Node` interface                                            |
-| `@authentication(operations:)`                    | type, field             | Needs an authenticated request                                                         |
-| `@authorization(filter:, validate:)`              | type                    | Row-level rules, compiled into statements                                              |
+| Directive                                             | On                      | Meaning                                                                                |
+| ----------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------- |
+| `@query(read:, aggregate:)`                           | type                    | Generated reads                                                                        |
+| `@mutation(operations: [CREATE, UPDATE, DELETE])`     | type                    | Generated mutations; none without it. `upsert` needs CREATE and UPDATE                 |
+| `@subscription(operations: [CREATE, UPDATE, DELETE])` | type                    | Generated subscriptions; none without it                                               |
+| `@filterable(byValue: [...])`                         | field                   | Filter operators. Bare: `EQ` and `IN`. On a relationship: enables relationship filters |
+| `@sortable`                                           | field                   | Sort and paginate by this field                                                        |
+| `@limit(default:, max:)`                              | type, list relationship | Page size bounds                                                                       |
+| `@relayId`                                            | `@key` field            | Adds a global `id` and the `Node` interface                                            |
+| `@authentication(operations:)`                        | type, field             | Needs an authenticated request                                                         |
+| `@authorization(filter:, validate:)`                  | type                    | Row-level rules, compiled into statements                                              |
 
 `directiveTypeDefs` (or `lora-graphql directives`) prints these as SDL for
 editors and codegen.
@@ -173,6 +179,8 @@ string), `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`,
   bound to an unset variable costs nothing. `eq: null` does not mean
   `IS NULL`, and a relationship quantifier whose filter is empty is left
   out too: ask `count: { gt: 0 }` for "has any".
+- Connections page forward with `first` / `after` and backward with
+  `last` / `before`; one cursor works in both directions.
 - `sort` takes one field per item. Connections always end on a unique field
   (the `@key`, or an earlier `@unique` field) so cursors are stable; a
   cursor is signed with its sort, and replaying it under another sort is an
@@ -230,6 +238,11 @@ mutation {
 }
 ```
 
+`upsertFestivals` creates the inputs whose key is new and updates the rest,
+in one transaction; fields required on create are only required for new
+keys. `info` reports `nodesCreated`, `nodesUpdated`, `nodesDeleted`,
+`relationshipsCreated` and `relationshipsDeleted`.
+
 Each mutation runs in one interactive transaction and checks, before it
 commits:
 
@@ -241,6 +254,44 @@ commits:
 Any failure rolls the whole mutation back. Engine constraint errors come
 back as `CONSTRAINT_VIOLATION` naming the type and field. A mutation creates
 at most `maxBatch` nodes (default 1000). `@key` is not updatable.
+
+## Search
+
+```graphql
+type Event @node @fulltext(indexes: [{ fields: ["title", "summary"] }]) {
+  key: String! @key
+  title: String!
+  summary: String
+  embedding: [Float!] @vector(dimensions: 384, similarity: COSINE)
+}
+```
+
+```graphql
+{
+  searchEvents(query: "techno sun*", where: { city: { eq: "Ams" } }) {
+    score
+    node {
+      key
+      title
+    }
+  }
+  similarEvents(to: "e1", limit: 5) {
+    score
+    node {
+      key
+    }
+  }
+}
+```
+
+Full-text queries AND their terms, fold case and accents, and treat a
+trailing `*` as a prefix. Vector search takes a query `vector` or the key of
+a node whose embedding to start from (`to`, which is left out of the
+results). The index returns its top candidates before `where` applies, so
+the library asks it for four times the page when a filter is present.
+`@vector` fields are stored as VECTOR values, which the index requires, and
+read back as `[Float!]`. Both indexes are part of S1 and created by
+`assertSchema({ create: true })`; read rules apply to every result.
 
 ## @cypher fields
 
@@ -416,6 +467,30 @@ tells whether a cached read may be stale. `@cypher` mutations have no
 known write-set and are reported with `broad: true`. Only writes made
 through the library are seen.
 
+## Subscriptions
+
+```graphql
+subscription {
+  festivalChanged(key: "f1", operations: [UPDATE, DELETE]) {
+    operation
+    key
+    node {
+      name
+      capacity
+    }
+  }
+}
+```
+
+A type with `@subscription` gets `<type>Changed`, fed by the write-sets of
+mutations made through the library (`@cypher` mutations have none, and
+writes made elsewhere are not seen). A node that gained or lost a
+relationship is an `UPDATE`. `node` is read when the event is delivered,
+through the normal read path, so read rules apply: events for nodes the
+subscriber cannot read are dropped, and deletions of rule-protected types
+are sent only to subscribers following that key. Pass a `signal` in the
+context to end the stream with the request.
+
 ## CLI
 
 ```sh
@@ -485,7 +560,9 @@ Measured on LoraDB 0.15 over 20 000 festivals and 100 000 relationships
 | `@authorization` rules evaluated in Cypher  | Claim checks folded in JavaScript; node rules compiled |
 | You pick indexes                            | Inferred from the API, and verified with `explain()`   |
 | Unbounded lists                             | Every list bounded; cost limit per field               |
-| Interfaces, unions, subscriptions           | Not yet; use `changes()` for library-made writes       |
+| `@fulltext` over the Neo4j procedure        | `searchX` root fields, with the index created for you  |
+| Subscriptions over CDC                      | `@subscription`, from library-made writes              |
+| Interfaces, unions                          | Not yet                                                |
 
 ## LoraDB behaviours this works around
 

@@ -25,7 +25,7 @@ import type {
 import { upperFirst } from "./names.js";
 
 export type MutationResolver = (
-  operation: MutationOperation,
+  operation: MutationOperation | "UPSERT",
   node: NodeType,
   info: GraphQLResolveInfo,
   context: unknown,
@@ -35,6 +35,9 @@ export const mutationNames = {
   create: (t: NodeType) => `create${upperFirst(t.plural)}`,
   update: (t: NodeType) => `update${t.name}`,
   delete: (t: NodeType) => `delete${t.name}`,
+  upsert: (t: NodeType) => `upsert${upperFirst(t.plural)}`,
+  upsertInput: (t: string) => `${t}UpsertInput`,
+  upsertPayload: (t: NodeType) => `Upsert${upperFirst(t.plural)}Payload`,
   createInput: (t: string) => `${t}CreateInput`,
   updateInput: (t: string) => `${t}UpdateInput`,
   createPayload: (t: NodeType) => `Create${upperFirst(t.plural)}Payload`,
@@ -199,6 +202,31 @@ export function buildMutations(
       return fields;
     });
 
+  // Like the create input, but the key is always given and nothing else
+  // is required up front: required fields are checked for new nodes only.
+  const upsertInput = (node: NodeType): GraphQLInputObjectType =>
+    once(mutationNames.upsertInput(node.name), () => {
+      const fields: GraphQLInputFieldConfigMap = {};
+      for (const f of node.fields.values()) {
+        if (f.kind === "scalar") {
+          if (!settable(f, "CREATE")) continue;
+          const base = ctx.inputType(f);
+          const t: GraphQLInputType = f.list ? listOf(nonNull(base)) : base;
+          fields[f.name] = {
+            type: f.key ? nonNull(t) : t,
+            description: f.description,
+          };
+        } else if (f.kind === "relationship") {
+          fields[f.name] = {
+            type: once(mutationNames.relationCreate(node.name, f.name), () =>
+              relationFields(node, f, false),
+            ),
+          };
+        }
+      }
+      return fields;
+    });
+
   const updateInput = (node: NodeType): GraphQLInputObjectType =>
     once(mutationNames.updateInput(node.name), () => {
       const fields = scalarInputs(
@@ -223,6 +251,7 @@ export function buildMutations(
     description: "What a mutation wrote.",
     fields: {
       nodesCreated: { type: new GraphQLNonNull(GraphQLInt) },
+      nodesUpdated: { type: new GraphQLNonNull(GraphQLInt) },
       nodesDeleted: { type: new GraphQLNonNull(GraphQLInt) },
       relationshipsCreated: { type: new GraphQLNonNull(GraphQLInt) },
       relationshipsDeleted: { type: new GraphQLNonNull(GraphQLInt) },
@@ -234,7 +263,7 @@ export function buildMutations(
     const obj = ctx.object(node.name);
     const key = { type: nonNull(ctx.inputType(node.key)) };
     const run =
-      (op: MutationOperation) =>
+      (op: MutationOperation | "UPSERT") =>
       (
         _src: unknown,
         _args: unknown,
@@ -262,7 +291,13 @@ export function buildMutations(
         resolve: run("CREATE"),
       };
     }
-    if (node.mutations.has("UPDATE")) {
+    // A type with nothing settable after create has no update.
+    const updatable = [...node.fields.values()].some(
+      (f) =>
+        f.kind === "relationship" ||
+        (f.kind === "scalar" && settable(f, "UPDATE")),
+    );
+    if (node.mutations.has("UPDATE") && updatable) {
       out[mutationNames.update(node)] = {
         description: `Update the ${node.name} with this ${node.key.name}. The payload's ${mutationNames.updatedField(node)} is null when there is none.`,
         type: new GraphQLNonNull(
@@ -279,6 +314,26 @@ export function buildMutations(
           update: { type: nonNull(updateInput(node)) },
         },
         resolve: run("UPDATE"),
+      };
+    }
+    if (node.mutations.has("CREATE") && node.mutations.has("UPDATE")) {
+      out[mutationNames.upsert(node)] = {
+        description: `Create the ${node.name} nodes whose ${node.key.name} is new and update the others, atomically. Fields required on create are required only for new nodes.`,
+        type: new GraphQLNonNull(
+          new GraphQLObjectType({
+            name: mutationNames.upsertPayload(node),
+            fields: {
+              [mutationNames.createdField(node)]: {
+                type: new GraphQLNonNull(
+                  new GraphQLList(new GraphQLNonNull(obj)),
+                ),
+              },
+              info: { type: new GraphQLNonNull(info) },
+            },
+          }),
+        ),
+        args: { input: { type: nonNull(listOf(nonNull(upsertInput(node)))) } },
+        resolve: run("UPSERT"),
       };
     }
     if (node.mutations.has("DELETE")) {

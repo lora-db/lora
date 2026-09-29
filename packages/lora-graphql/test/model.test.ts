@@ -154,7 +154,7 @@ describe("S1: index inference", () => {
   test("derives constraints and indexes from the API", () => {
     const reqs = inferRequirements(buildModel(festivalTypeDefs)).map(
       (r) =>
-        `${r.kind === "index" ? r.index : r.constraint} ${r.label}.${r.property} — ${r.reason}`,
+        `${r.kind === "index" ? r.index : r.kind === "constraint" ? r.constraint : r.kind} ${r.label}.${"property" in r ? r.property : r.properties.join(",")} — ${r.reason}`,
     );
     expect(reqs).toEqual([
       "NODE_KEY Festival.key — Festival.key is the @key",

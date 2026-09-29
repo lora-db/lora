@@ -14,6 +14,7 @@ export const names = {
   connection: (type: string) => `${type}Connection`,
   edge: (type: string) => `${type}Edge`,
   aggregate: (type: string) => `${type}Aggregate`,
+  match: (type: string) => `${type}Match`,
   relationFilter: (type: string, field: string) =>
     `${type}${upperFirst(field)}Filter`,
   relConnection: (type: string, field: string) =>

@@ -71,6 +71,10 @@ export interface ScalarField extends FieldBase {
   timestamp: ReadonlySet<"CREATE" | "UPDATE"> | undefined;
   /** Never client-settable (`@readonly`, `@timestamp`, `@private`). */
   readonly: boolean;
+  /** `@vector`: stored as a VECTOR, searchable by similarity. */
+  vector:
+    | { dimensions: number; similarity: "COSINE" | "EUCLIDEAN" }
+    | undefined;
   description: string | undefined;
 }
 
@@ -167,12 +171,34 @@ export interface NodeType {
   aggregate: boolean;
   /** Generated mutations; empty unless `@mutation`. */
   mutations: ReadonlySet<MutationOperation>;
+  /** Change events to subscribe to; empty unless `@subscription`. */
+  subscriptions: ReadonlySet<MutationOperation>;
   limit: PageLimit;
   /** Operations that need an authenticated request. */
   authentication: ReadonlySet<AuthOperation> | undefined;
   authorization: Authorization | undefined;
+  /** Full-text and vector indexes with their search root fields. */
+  search: readonly SearchIndex[];
   description: string | undefined;
 }
+
+export type SearchIndex =
+  | {
+      kind: "fulltext";
+      name: string;
+      fields: readonly ScalarField[];
+      analyzer: "STANDARD" | "SIMPLE";
+      /** Root field, e.g. `searchFestivals`. */
+      queryName: string;
+    }
+  | {
+      kind: "vector";
+      name: string;
+      field: ScalarField;
+      dimensions: number;
+      similarity: "COSINE" | "EUCLIDEAN";
+      queryName: string;
+    };
 
 export interface RelationshipPropertiesType {
   name: string;

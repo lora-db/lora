@@ -16,6 +16,7 @@ import { renameParams } from "../model/cypher-lexer.js";
 import type {
   CypherField,
   NodeType,
+  SearchIndex,
   PageLimit,
   RelationshipField,
   ScalarField,
@@ -93,7 +94,10 @@ interface SortKey {
 export interface RawConnection {
   __rows: RawEdge[];
   __first: number;
+  /** A cursor (`after` or `before`) was given. */
   __after: boolean;
+  /** `last` / `before`: rows arrive in reverse and are flipped back. */
+  __backward: boolean;
   __sort: string;
   __totalCount?: number;
 }
@@ -228,12 +232,12 @@ function compileConnection(
   args: Args,
   sets: SelectionSetNode[],
 ): CompiledRead {
-  const first = resolveLimit(args["first"], node.limit, "first");
-  const sort = resolveSort(ctx, node, args["sort"], true);
-  const signature = sortSignature(sort);
-  const after = args["after"] as string | null | undefined;
-  const cursor =
-    after != null ? decodeCursor(after, signature, sort.length) : undefined;
+  const { first, sort, signature, cursor, backward } = resolvePage(
+    ctx,
+    node,
+    args,
+    node.limit,
+  );
 
   const where = args["where"] as Where | undefined;
   const connType = ctx.schema.getType(
@@ -300,6 +304,7 @@ function compileConnection(
         })),
         __first: first,
         __after: cursor !== undefined,
+        __backward: backward,
         __sort: signature,
         ...(count
           ? { __totalCount: count.rows[0]?.["totalCount"] as number }
@@ -424,6 +429,153 @@ export function compileCypherRoot(
     [],
     field.owner === "Mutation" ? "write" : "read",
   );
+}
+
+/** A search root field's value: nodes with their scores. */
+export interface SearchResult {
+  node: unknown;
+  score: number;
+}
+
+/**
+ * A full-text or vector search root field:
+ *
+ *   CALL db.index.fulltext.queryNodes($index, $query) YIELD node AS this, score
+ *   WHERE <where> AND <read filter>
+ *   WITH this, score ORDER BY score DESC, this.key ASC LIMIT $limit
+ *
+ * Vector search asks the index for more candidates than the page when a
+ * filter may drop some, because the index returns the top k before WHERE.
+ */
+export function compileSearch(
+  ctx: CompileContext,
+  node: NodeType,
+  index: SearchIndex,
+  args: Args,
+  fieldNodes: readonly FieldNode[],
+): CompiledRead {
+  checkAuthentication(ctx, node, "READ");
+  const label = node.labels[0]!;
+  ctx.reads.labels.add(label);
+  const limit = resolveLimit(args["limit"], node.limit, "limit");
+  const where = and(
+    compileNodeWhere(ctx, node, "this", args["where"] as Where | undefined),
+    authFilter(ctx, node, "this", "READ"),
+  );
+  const clauses: Clause[] = [];
+  if (index.kind === "fulltext") {
+    const query = args["query"] as string;
+    clauses.push({
+      kind: "procedure",
+      procedure: "db.index.fulltext.queryNodes",
+      args: [bind(ctx, index.name), bind(ctx, query)],
+      yields: [{ item: "node", alias: "this" }, { item: "score" }],
+      where,
+    });
+  } else {
+    const vector = args["vector"] as number[] | null | undefined;
+    const to = args["to"];
+    if ((vector == null) === (to == null)) {
+      throw requestError(
+        "BAD_USER_INPUT",
+        `${index.queryName} takes exactly one of \`vector\` and \`to\``,
+      );
+    }
+    if (vector && vector.length !== index.dimensions) {
+      throw requestError(
+        "BAD_USER_INPUT",
+        `\`vector\` has ${vector.length} dimensions; ${node.name}.${index.field.name} has ${index.dimensions}`,
+      );
+    }
+    const candidates = Math.min(
+      (limit + (to != null ? 1 : 0)) * (where ? 4 : 1),
+      Math.max(node.limit.max * 4, 1),
+    );
+    let source: Expr;
+    let exclude: Expr | undefined;
+    if (to != null) {
+      clauses.push({
+        kind: "match",
+        pattern: { start: { variable: "anchor", labels: [label] }, hops: [] },
+        where: and(
+          bin("=", prop(v("anchor"), node.key.property), bind(ctx, to)),
+          authFilter(ctx, node, "anchor", "READ"),
+        ),
+      });
+      source = prop(v("anchor"), index.field.property);
+      exclude = bin(
+        "<>",
+        prop(v("this"), node.key.property),
+        prop(v("anchor"), node.key.property),
+      );
+    } else {
+      source = bind(ctx, vector);
+    }
+    clauses.push({
+      kind: "procedure",
+      procedure: "db.index.vector.queryNodes",
+      args: [bind(ctx, index.name), bind(ctx, candidates), source],
+      yields: [{ item: "node", alias: "this" }, { item: "score" }],
+      where: and(exclude, where),
+    });
+  }
+  const projection = projectNode(
+    ctx,
+    node,
+    "this",
+    searchNodeSelections(ctx, node, fieldNodes),
+    limit,
+  );
+  clauses.push(
+    {
+      kind: "with",
+      items: [{ expr: v("this") }, { expr: v("score") }],
+      orderBy: [
+        { expr: v("score"), direction: "DESC" },
+        { expr: prop(v("this"), node.key.property), direction: "ASC" },
+      ],
+      limit: bind(ctx, limit),
+    },
+    ...projection.pre,
+    {
+      kind: "return",
+      items: [
+        { expr: projection.expr, alias: "node" },
+        { expr: v("score"), alias: "score" },
+      ],
+    },
+  );
+  return finish(
+    ctx,
+    clauses,
+    ["node", "score"],
+    ([r]): SearchResult[] =>
+      r!.rows.map((row) => ({
+        node: row["node"],
+        score: row["score"] as number,
+      })),
+    undefined,
+  );
+}
+
+/** The `node` selections of a `<Type>Match` list, merged across aliases. */
+function searchNodeSelections(
+  ctx: CompileContext,
+  node: NodeType,
+  fieldNodes: readonly FieldNode[],
+): SelectionSetNode[] {
+  const matchType = ctx.schema.getType(
+    names.match(node.name),
+  ) as GraphQLObjectType;
+  const out: SelectionSetNode[] = [];
+  for (const [, nodes] of collectFields(
+    ctx,
+    matchType,
+    subSelections(fieldNodes),
+  )) {
+    if (nodes[0]!.name.value === "node") out.push(...subSelections(nodes));
+  }
+  return out;
 }
 
 /**
@@ -808,6 +960,52 @@ function resolveSort(
   return keys;
 }
 
+/**
+ * `first` / `after`, or `last` / `before`. A backward page runs the sort
+ * reversed from the cursor and is flipped back by the resolvers; cursors
+ * carry the requested sort's signature, so they work in both directions.
+ */
+function resolvePage(
+  ctx: CompileContext,
+  node: NodeType,
+  args: Args,
+  limit: PageLimit,
+): {
+  first: number;
+  sort: SortKey[];
+  signature: string;
+  cursor: unknown[] | undefined;
+  backward: boolean;
+} {
+  const backward = args["last"] != null || args["before"] != null;
+  if (backward && (args["first"] != null || args["after"] != null)) {
+    throw requestError(
+      "BAD_USER_INPUT",
+      "page forward with first/after or backward with last/before, not both",
+    );
+  }
+  const first = resolveLimit(
+    backward ? args["last"] : args["first"],
+    limit,
+    backward ? "last" : "first",
+  );
+  const requested = resolveSort(ctx, node, args["sort"], true);
+  const signature = sortSignature(requested);
+  const raw = (backward ? args["before"] : args["after"]) as
+    | string
+    | null
+    | undefined;
+  const cursor =
+    raw != null ? decodeCursor(raw, signature, requested.length) : undefined;
+  const sort = backward
+    ? requested.map((k) => ({
+        ...k,
+        direction: k.direction === "ASC" ? ("DESC" as const) : ("ASC" as const),
+      }))
+    : requested;
+  return { first, sort, signature, cursor, backward };
+}
+
 function sortSignature(sort: SortKey[]): string {
   return sort.map((k) => `${k.field.name}:${k.direction}`).join(",");
 }
@@ -1108,12 +1306,12 @@ function projectRelationshipConnection(
     ? ctx.model.relationshipProperties.get(rel.properties)
     : undefined;
 
-  const first = resolveLimit(args["first"], rel.limit ?? target.limit, "first");
-  const sort = resolveSort(ctx, target, args["sort"], true);
-  const signature = sortSignature(sort);
-  const after = args["after"] as string | null | undefined;
-  const cursor =
-    after != null ? decodeCursor(after, signature, sort.length) : undefined;
+  const { first, sort, signature, cursor, backward } = resolvePage(
+    ctx,
+    target,
+    args,
+    rel.limit ?? target.limit,
+  );
 
   const own = hasOwnConnection(rel);
   const connType = ctx.schema.getType(
@@ -1165,6 +1363,7 @@ function projectRelationshipConnection(
     { key: "__rows", value: v(rowsVar) },
     { key: "__first", value: bind(ctx, first) },
     { key: "__after", value: bind(ctx, cursor !== undefined) },
+    { key: "__backward", value: bind(ctx, backward) },
     { key: "__sort", value: bind(ctx, signature) },
   ];
   if (sel.totalCount) {

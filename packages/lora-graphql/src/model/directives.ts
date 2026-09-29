@@ -50,6 +50,40 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Expose an opaque global id derived from this @key field."
   directive @relayId on FIELD_DEFINITION
 
+  "Full-text search over String fields: a FULLTEXT index and a search root field per entry."
+  directive @fulltext(indexes: [FulltextIndex!]!) on OBJECT
+
+  "A vector embedding ([Float!]): a VECTOR index and a similarity root field."
+  directive @vector(
+    dimensions: Int!
+    similarity: VectorSimilarity = COSINE
+    queryName: String
+  ) on FIELD_DEFINITION
+
+  input FulltextIndex {
+    "Index name. Default: <label>_search for the first, required after."
+    name: String
+    fields: [String!]!
+    analyzer: FulltextAnalyzer = STANDARD
+    "Root field name. Default: search<Plural>, or search<Plural>By<Name>."
+    queryName: String
+  }
+
+  enum FulltextAnalyzer {
+    STANDARD
+    SIMPLE
+  }
+
+  enum VectorSimilarity {
+    COSINE
+    EUCLIDEAN
+  }
+
+  "Generated subscriptions to changes made through the library. None without this directive."
+  directive @subscription(
+    operations: [MutationOperation!]! = [CREATE, UPDATE, DELETE]
+  ) on OBJECT
+
   "Generated mutations for a node type. None without this directive."
   directive @mutation(
     operations: [MutationOperation!]! = [CREATE, UPDATE, DELETE]
@@ -174,6 +208,9 @@ export const directiveTypeDefs = /* GraphQL */ `
 
 /** Names defined by the prelude; never treated as user types. */
 export const PRELUDE_TYPES = new Set([
+  "FulltextIndex",
+  "FulltextAnalyzer",
+  "VectorSimilarity",
   "MutationOperation",
   "TimestampOperation",
   "AuthOperation",

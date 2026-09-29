@@ -81,6 +81,14 @@ export interface ReturnItem {
 export type Clause =
   | { kind: "match"; pattern: Pattern; where: Expr | undefined }
   | { kind: "unwind"; expr: Expr; alias: string }
+  /** `CALL proc(args) YIELD item AS alias, … [WHERE …]` */
+  | {
+      kind: "procedure";
+      procedure: string;
+      args: Expr[];
+      yields: Array<{ item: string; alias?: string }>;
+      where?: Expr | undefined;
+    }
   /** A hand-written statement (`@cypher`), parameters already renamed. */
   | { kind: "raw"; text: string }
   | {
@@ -357,6 +365,19 @@ function printClause(c: Clause, indent: string): string {
       );
     case "unwind":
       return `UNWIND ${printExpr(c.expr)} AS ${name(c.alias)}`;
+    case "procedure": {
+      const yields = c.yields
+        .map((y) =>
+          y.alias && y.alias !== y.item
+            ? `${name(y.item)} AS ${name(y.alias)}`
+            : name(y.item),
+        )
+        .join(", ");
+      return (
+        `CALL ${c.procedure}(${c.args.map(printExpr).join(", ")}) YIELD ${yields}` +
+        (c.where ? `\n${indent}WHERE ${printExpr(c.where)}` : "")
+      );
+    }
     case "raw":
       return c.text
         .trim()

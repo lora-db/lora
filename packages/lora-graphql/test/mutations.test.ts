@@ -367,3 +367,41 @@ describe("cost", () => {
     expect(r.errors).toBeUndefined();
   });
 });
+
+describe("upsert", () => {
+  test("creates new keys, updates existing ones, in input order", async () => {
+    await h.data(`mutation {
+      createFestivals(input: [{ key: "f1", name: "One", capacity: 10 }]) { info { nodesCreated } }
+    }`);
+    changes.length = 0;
+    const d = await h.data<{ upsertFestivals: unknown }>(`mutation {
+      upsertFestivals(input: [
+        { key: "f2", name: "Two" }
+        { key: "f1", capacity: 20, followers: { connect: [{ key: "u1" }] } }
+      ]) {
+        festivals { key name capacity followers { key } }
+        info { nodesCreated nodesUpdated relationshipsCreated }
+      }
+    }`);
+    expect(d.upsertFestivals).toEqual({
+      festivals: [
+        { key: "f2", name: "Two", capacity: 100, followers: [] },
+        { key: "f1", name: "One", capacity: 20, followers: [{ key: "u1" }] },
+      ],
+      info: { nodesCreated: 1, nodesUpdated: 1, relationshipsCreated: 1 },
+    });
+    expect(changes[0]).toMatchObject({
+      operation: "UPSERT",
+      created: [{ type: "Festival", key: "f2" }],
+      updated: [{ type: "Festival", key: "f1" }],
+    });
+  });
+
+  test("fields required on create are required for new keys only", async () => {
+    const r = await h.run(
+      `mutation { upsertFestivals(input: [{ key: "new" }]) { info { nodesCreated } } }`,
+    );
+    expect(r.errors?.[0]?.extensions?.["code"]).toBe("BAD_USER_INPUT");
+    expect(r.errors?.[0]?.message).toBe("Festival.name is required");
+  });
+});

@@ -31,6 +31,7 @@ import { newContext, type CompileContext } from "./compile/context.js";
 import {
   compileCypherRoot,
   compileRoot,
+  compileSearch,
   type CompiledRead,
   type ReadSet,
   type RootKind,
@@ -52,8 +53,17 @@ import type {
   ModelWarning,
   MutationOperation,
   NodeType,
+  SearchIndex,
 } from "./model/types.js";
-import { buildSchema } from "./schema/build.js";
+import { buildSchema, type ChangeEvent } from "./schema/build.js";
+import {
+  authFilter,
+  authValidate,
+  checkAuthentication,
+} from "./compile/auth.js";
+import { bin, fn, printClauses, prop, v, and } from "./compile/cypher.js";
+import { bind } from "./compile/context.js";
+import { keyOf } from "./compile/read.js";
 import { fromGlobalId } from "./schema/global-id.js";
 import { assertReadable } from "./schema/guard.js";
 import { names } from "./schema/names.js";
@@ -175,6 +185,13 @@ export class LoraGraphQL {
   /** The executable schema, for any graphql-js server. */
   getSchema(): GraphQLSchema {
     this.#schema ??= buildSchema(this.model, {
+      subscribe: (node, args, context) => this.#subscribe(node, args, context),
+      resolveChangedNode: (node, event, info, context) =>
+        event.operation === "DELETE"
+          ? Promise.resolve(null)
+          : this.#resolveByKey(node, event.key, info, context),
+      resolveSearch: (node, index, info, context) =>
+        this.#resolveSearch(node, index, info, context),
       resolveRoot: (kind, node, info, context) =>
         this.#resolveRoot(kind, node, info, context),
       resolveNode: (id, info, context) => this.#resolveNode(id, info, context),
@@ -213,6 +230,12 @@ export class LoraGraphQL {
       { mode: "read", timeoutMs: this.#timeoutMs },
     );
     const present = (r: SchemaRequirement) => {
+      if (r.kind === "fulltext" || r.kind === "vector") {
+        const type = r.kind === "fulltext" ? "FULLTEXT" : "VECTOR";
+        return indexes!.rows.some(
+          (row) => row["name"] === r.name && row["type"] === type,
+        );
+      }
       if (r.kind === "constraint") {
         const wanted = {
           NODE_KEY: ["NODE_KEY"],
@@ -355,9 +378,12 @@ export class LoraGraphQL {
       const args = fieldArgs(ctx, def, sel);
       const cypher = this.model.queries.find((q) => q.name === sel.name.value);
       const root = this.#rootOf(sel.name.value);
+      const search = this.#searchOf(sel.name.value);
       let compiled: CompiledRead | undefined;
       if (cypher) compiled = compileCypherRoot(ctx, cypher, args, [sel]);
-      else if (root) {
+      else if (search) {
+        compiled = compileSearch(ctx, search.node, search.index, args, [sel]);
+      } else if (root) {
         compiled = compileRoot(ctx, root.kind, root.node, args, [sel]);
       }
       if (compiled) {
@@ -536,6 +562,17 @@ export class LoraGraphQL {
     return undefined;
   }
 
+  #searchOf(
+    fieldName: string,
+  ): { node: NodeType; index: SearchIndex } | undefined {
+    for (const node of this.model.nodes.values()) {
+      if (!node.read) continue;
+      const index = node.search.find((s) => s.queryName === fieldName);
+      if (index) return { node, index };
+    }
+    return undefined;
+  }
+
   #context(base: SelectionContext, context: unknown): CompileContext {
     return newContext(base, this.model, {
       jwt: this.#jwt(context),
@@ -589,6 +626,13 @@ export class LoraGraphQL {
     if (err instanceof GraphQLError) return err;
     const mapped = mapWriteError(this.model, err);
     if (mapped !== err) return mapped;
+    if ((err as { code?: string }).code === "LORA_INVALID_VECTOR") {
+      return requestError(
+        "BAD_USER_INPUT",
+        err instanceof Error ? err.message : String(err),
+        err,
+      );
+    }
     return requestError(
       "DATABASE_ERROR",
       err instanceof Error ? err.message : String(err),
@@ -605,6 +649,115 @@ export class LoraGraphQL {
     const ctx = this.#context(infoContext(info), context);
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
     const compiled = compileRoot(ctx, kind, node, args, info.fieldNodes);
+    return this.#run(info.fieldName, compiled, context);
+  }
+
+  /**
+   * Events for one node type, from the exact write-sets of mutations made
+   * through this instance. Nodes the subscriber may not read are skipped;
+   * deletions of rule-protected types are only sent to subscribers that
+   * follow that key (they cannot be checked after the fact).
+   */
+  async *#subscribe(
+    node: NodeType,
+    args: Record<string, unknown>,
+    context: unknown,
+  ): AsyncGenerator<ChangeEvent> {
+    const base: SelectionContext = {
+      schema: this.getSchema(),
+      fragments: {},
+      variables: {},
+    };
+    checkAuthentication(this.#context(base, context), node, "READ");
+    const key = args[node.key.name];
+    const wanted = new Set(
+      (
+        (args["operations"] as MutationOperation[] | null) ?? [
+          "CREATE",
+          "UPDATE",
+          "DELETE",
+        ]
+      ).filter((op) => node.subscriptions.has(op)),
+    );
+    const guarded =
+      !!node.authorization?.filter.some((r) => r.operations.has("READ")) ||
+      !!node.authorization?.validate.some((r) => r.operations.has("READ"));
+    const signal = (context as LoraGraphQLContext | undefined)?.signal;
+    for await (const change of this.changes(signal ? { signal } : {})) {
+      for (const event of changeEvents(change, node)) {
+        if (!wanted.has(event.operation)) continue;
+        if (key != null && keyOf(event.key) !== keyOf(key)) continue;
+        if (guarded) {
+          if (event.operation === "DELETE" && key == null) continue;
+          if (
+            event.operation !== "DELETE" &&
+            !(await this.#visible(node, event.key, base, context))
+          ) {
+            continue;
+          }
+        }
+        yield event;
+      }
+    }
+  }
+
+  async #visible(
+    node: NodeType,
+    key: unknown,
+    base: SelectionContext,
+    context: unknown,
+  ): Promise<boolean> {
+    const ctx = this.#context(base, context);
+    const where = and(
+      bin("=", prop(v("n"), node.key.property), bind(ctx, key)),
+      authFilter(ctx, node, "n", "READ"),
+      authValidate(ctx, node, "n", "READ", "BEFORE"),
+    );
+    const text = printClauses([
+      {
+        kind: "match",
+        pattern: {
+          start: { variable: "n", labels: [node.labels[0]!] },
+          hops: [],
+        },
+        where,
+      },
+      { kind: "return", items: [{ expr: fn("count", v("n")), alias: "c" }] },
+    ]);
+    const [result] = await this.#driver.run([{ text, params: ctx.params }], {
+      mode: "read",
+      timeoutMs: this.#timeoutMs,
+      verified: true,
+    });
+    return Number(result!.rows[0]?.["c"] ?? 0) > 0;
+  }
+
+  #resolveByKey(
+    node: NodeType,
+    key: unknown,
+    info: GraphQLResolveInfo,
+    context: unknown,
+  ): Promise<unknown> {
+    const ctx = this.#context(infoContext(info), context);
+    const compiled = compileRoot(
+      ctx,
+      "single",
+      node,
+      { [node.key.name]: key },
+      info.fieldNodes,
+    );
+    return this.#run(info.fieldName, compiled, context);
+  }
+
+  #resolveSearch(
+    node: NodeType,
+    index: SearchIndex,
+    info: GraphQLResolveInfo,
+    context: unknown,
+  ): Promise<unknown> {
+    const ctx = this.#context(infoContext(info), context);
+    const args = this.#args(ctx, info.parentType, info.fieldNodes);
+    const compiled = compileSearch(ctx, node, index, args, info.fieldNodes);
     return this.#run(info.fieldName, compiled, context);
   }
 
@@ -683,7 +836,7 @@ export class LoraGraphQL {
   }
 
   async #resolveMutation(
-    op: MutationOperation,
+    op: MutationOperation | "UPSERT",
     node: NodeType,
     info: GraphQLResolveInfo,
     context: unknown,
@@ -734,6 +887,23 @@ export class LoraGraphQL {
       }
     }
   }
+}
+
+/** A write's events for one node type, one per node, most specific first. */
+function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
+  const out = new Map<string, ChangeEvent>();
+  const add = (operation: ChangeEvent["operation"], key: unknown) => {
+    const id = keyOf(key);
+    if (!out.has(id)) out.set(id, { operation, key });
+  };
+  for (const e of change.deleted)
+    if (e.type === node.name) add("DELETE", e.key);
+  for (const e of change.created)
+    if (e.type === node.name) add("CREATE", e.key);
+  // Updated nodes, and nodes that gained or lost a relationship.
+  for (const e of change.entities)
+    if (e.type === node.name) add("UPDATE", e.key);
+  return [...out.values()];
 }
 
 function infoContext(info: GraphQLResolveInfo): SelectionContext {

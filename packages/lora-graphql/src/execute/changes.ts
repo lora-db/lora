@@ -19,7 +19,7 @@ export interface RelationshipRef {
 }
 
 export interface WriteChange {
-  operation: MutationOperation | "CYPHER";
+  operation: MutationOperation | "UPSERT" | "CYPHER";
   /** The Mutation field that made the change. */
   field: string;
   created: EntityRef[];

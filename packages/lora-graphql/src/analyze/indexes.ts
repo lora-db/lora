@@ -26,6 +26,25 @@ export type SchemaRequirement =
       label: string;
       property: string;
       reason: string;
+    }
+  | {
+      /** Queried by name, so matched by name. */
+      kind: "fulltext";
+      name: string;
+      label: string;
+      properties: string[];
+      analyzer: "STANDARD" | "SIMPLE";
+      reason: string;
+    }
+  | {
+      /** Queried by name, so matched by name. */
+      kind: "vector";
+      name: string;
+      label: string;
+      property: string;
+      dimensions: number;
+      similarity: "COSINE" | "EUCLIDEAN";
+      reason: string;
     };
 
 const RANGE_OPS = new Set<FilterOperator>(["LT", "LTE", "GT", "GTE"]);
@@ -69,6 +88,28 @@ export function inferRequirements(model: GraphModel): SchemaRequirement[] {
   const out: SchemaRequirement[] = [];
   for (const node of model.nodes.values()) {
     const label = node.labels[0]!;
+    for (const s of node.search) {
+      out.push(
+        s.kind === "fulltext"
+          ? {
+              kind: "fulltext",
+              name: s.name,
+              label,
+              properties: s.fields.map((f) => f.property),
+              analyzer: s.analyzer,
+              reason: `${node.name} has @fulltext ${s.name} (${s.queryName})`,
+            }
+          : {
+              kind: "vector",
+              name: s.name,
+              label,
+              property: s.field.property,
+              dimensions: s.dimensions,
+              similarity: s.similarity,
+              reason: `${node.name}.${s.field.name} is a @vector (${s.queryName})`,
+            },
+      );
+    }
     for (const f of node.fields.values()) {
       if (f.kind !== "scalar") continue;
       const at = `${node.name}.${f.name}`;
@@ -156,11 +197,50 @@ function snake(s: string): string {
     .toLowerCase();
 }
 
+/** A stable identity: equal ids need no change between two models. */
+export function requirementId(r: SchemaRequirement): string {
+  switch (r.kind) {
+    case "index":
+      return `index:${r.index}:${r.label}:${r.property}`;
+    case "constraint":
+      return `constraint:${r.constraint}:${r.label}:${r.property}`;
+    case "fulltext":
+      return `fulltext:${r.name}:${r.label}:${r.properties.join(",")}:${r.analyzer}`;
+    case "vector":
+      return `vector:${r.name}:${r.label}:${r.property}:${r.dimensions}:${r.similarity}`;
+  }
+}
+
+/** One line for humans, e.g. `RANGE index on :Festival(name)`. */
+export function describeRequirement(r: SchemaRequirement): string {
+  switch (r.kind) {
+    case "index":
+      return `${r.index} index on :${r.label}(${r.property})`;
+    case "constraint":
+      return `${r.constraint} constraint on :${r.label}(${r.property})`;
+    case "fulltext":
+      return `FULLTEXT index ${r.name} on :${r.label}(${r.properties.join(", ")})`;
+    case "vector":
+      return `VECTOR index ${r.name} on :${r.label}(${r.property}), ${r.dimensions} dimensions, ${r.similarity.toLowerCase()}`;
+  }
+}
+
 /** The DDL statement that creates a requirement, idempotently. */
 export function requirementDdl(r: SchemaRequirement): string {
   const label = quote(r.label);
-  const property = quote(r.property);
   const name = quote(r.name);
+  if (r.kind === "fulltext") {
+    const props = r.properties.map((p) => `n.${quote(p)}`).join(", ");
+    const options =
+      r.analyzer === "SIMPLE"
+        ? " OPTIONS {indexConfig: {`fulltext.analyzer`: 'simple'}}"
+        : "";
+    return `CREATE FULLTEXT INDEX ${name} IF NOT EXISTS FOR (n:${label}) ON EACH [${props}]${options}`;
+  }
+  if (r.kind === "vector") {
+    return `CREATE VECTOR INDEX ${name} IF NOT EXISTS FOR (n:${label}) ON (n.${quote(r.property)}) OPTIONS {indexConfig: {\`vector.dimensions\`: ${r.dimensions}, \`vector.similarity_function\`: '${r.similarity.toLowerCase()}'}}`;
+  }
+  const property = quote(r.property);
   if (r.kind === "constraint") {
     const kind = {
       NODE_KEY: "IS NODE KEY",

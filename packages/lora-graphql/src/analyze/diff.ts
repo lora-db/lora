@@ -11,6 +11,7 @@ import { buildSchema } from "../schema/build.js";
 import {
   inferRequirements,
   requirementDdl,
+  requirementId,
   type SchemaRequirement,
 } from "./indexes.js";
 
@@ -48,10 +49,7 @@ export function diffSchemas(
   const oldModel = buildModel(before, options);
   const newModel = buildModel(after, options);
 
-  const id = (r: SchemaRequirement) =>
-    r.kind === "index"
-      ? `index:${r.index}:${r.label}:${r.property}`
-      : `constraint:${r.constraint}:${r.label}:${r.property}`;
+  const id = requirementId;
   const oldReqs = new Map(inferRequirements(oldModel).map((r) => [id(r), r]));
   const newReqs = new Map(inferRequirements(newModel).map((r) => [id(r), r]));
   const create = [...newReqs]
@@ -64,7 +62,7 @@ export function diffSchemas(
   migrations(oldModel, newModel, statements, notes);
   for (const r of drop) {
     statements.push({
-      text: `DROP ${r.kind === "index" ? "INDEX" : "CONSTRAINT"} \`${r.name.replace(/`/g, "``")}\` IF EXISTS`,
+      text: `DROP ${r.kind === "constraint" ? "CONSTRAINT" : "INDEX"} \`${r.name.replace(/`/g, "``")}\` IF EXISTS`,
       destructive: true,
       reason: `no longer needed: ${r.reason}`,
     });
@@ -139,6 +137,11 @@ function scalars(fields: ReadonlyMap<string, Field>): Map<string, ScalarField> {
 function publicSchema(model: GraphModel): GraphQLSchema {
   const never = () => Promise.reject(new Error("not connected"));
   return buildSchema(model, {
+    resolveSearch: never,
+    subscribe: () => {
+      throw new Error("not connected");
+    },
+    resolveChangedNode: never,
     resolveRoot: never,
     resolveNode: never,
     resolveCypher: never,

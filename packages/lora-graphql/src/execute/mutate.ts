@@ -52,6 +52,7 @@ export interface MutationEnv {
 
 export interface MutationInfo {
   nodesCreated: number;
+  nodesUpdated: number;
   nodesDeleted: number;
   relationshipsCreated: number;
   relationshipsDeleted: number;
@@ -102,7 +103,7 @@ class WritePlan {
       if (f.kind !== "scalar" || f.key) continue;
       const value = input[f.name];
       if (value !== undefined && value !== null && settable(f, "CREATE")) {
-        props[f.property] = toStored(f.type, value);
+        props[f.property] = toStored(f, value);
       } else if (f.defaultValue) {
         props[f.property] = storedDefault(f);
       } else if (requiredOnCreate(f) && settable(f, "CREATE")) {
@@ -199,7 +200,7 @@ function edgeProps(
   for (const f of props.fields.values()) {
     const value = edge?.[f.name];
     if (value !== undefined && value !== null && settable(f, "CREATE")) {
-      out[f.property] = toStored(f.type, value);
+      out[f.property] = toStored(f, value);
     } else if (f.defaultValue) {
       out[f.property] = storedDefault(f);
     }
@@ -265,6 +266,7 @@ function arrow(
 class Runner {
   info: MutationInfo = {
     nodesCreated: 0,
+    nodesUpdated: 0,
     nodesDeleted: 0,
     relationshipsCreated: 0,
     relationshipsDeleted: 0,
@@ -617,7 +619,7 @@ export interface MutationResult {
 
 export async function executeMutation(
   env: MutationEnv,
-  op: MutationOperation,
+  op: MutationOperation | "UPSERT",
   node: NodeType,
   args: Record<string, unknown>,
   fieldNodes: readonly FieldNode[],
@@ -633,7 +635,7 @@ export async function executeMutation(
     jwt: env.jwt,
     degrees: env.degrees,
   });
-  checkAuthentication(planCtx, node, op);
+  checkAuthentication(planCtx, node, op === "UPSERT" ? "CREATE" : op);
   const plan = new WritePlan(env.model, planCtx);
   const schema = env.selection.schema;
 
@@ -673,6 +675,8 @@ export async function executeMutation(
       };
     } else if (op === "UPDATE") {
       payload = await update(env, runner, plan, node, args, fieldNodes, change);
+    } else if (op === "UPSERT") {
+      payload = await upsert(env, runner, plan, node, args, fieldNodes, change);
     } else {
       await remove(runner, node, args[node.key.name], change);
       payload = runner.info;
@@ -698,56 +702,9 @@ async function update(
   const key = args[node.key.name];
   const input = args["update"] as Input;
   const updatedField = mutationNames.updatedField(node);
-
-  // Visible to the updater (filter rules) and allowed before the write?
-  const ctx = runner.ctx();
-  const k = printExpr(bind(ctx, key));
-  const filter = authFilter(ctx, node, "n", "UPDATE");
-  const before = authValidate(ctx, node, "n", "UPDATE", "BEFORE");
-  const found = await runner.run(
-    `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = ${k}` +
-      (filter ? ` AND (${printExpr(filter)})` : "") +
-      `\nRETURN ${before ? printExpr(before) : "true"} AS ok`,
-    ctx,
-  );
-  if (found.length === 0) return { [updatedField]: null, info: runner.info };
-  if (found[0]!["ok"] !== true) throw forbidden(node, "UPDATE");
-
-  const set: Input = {};
-  const remove: string[] = [];
-  for (const f of node.fields.values()) {
-    if (!(f.name in input)) continue;
-    const value = input[f.name];
-    if (f.kind === "relationship") {
-      if (value) plan.relate(node, key, f, value as Input, true);
-      continue;
-    }
-    if (f.kind !== "scalar" || !settable(f, "UPDATE")) continue;
-    if (value === null) {
-      if (f.required) {
-        throw requestError(
-          "BAD_USER_INPUT",
-          `${node.name}.${f.name} is required and cannot be null`,
-        );
-      }
-      remove.push(f.property);
-    } else {
-      set[f.property] = toStored(f.type, value);
-    }
+  if (!(await applyNodeUpdate(runner, plan, node, key, input, change))) {
+    return { [updatedField]: null, info: runner.info };
   }
-  const uctx = runner.ctx();
-  const uk = printExpr(bind(uctx, key));
-  const setParam = printExpr(bind(uctx, set));
-  await runner.run(
-    `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = ${uk}\n` +
-      `SET n += ${setParam}` +
-      (remove.length > 0
-        ? `\nREMOVE ${remove.map((p) => `n.${name(p)}`).join(", ")}`
-        : "") +
-      timestampSets(node, "n", "UPDATE"),
-    uctx,
-  );
-  change.updated.push({ type: node.name, key });
 
   assertBatch(plan, env.maxBatch);
   assertUniqueKeys(plan);
@@ -765,6 +722,146 @@ async function update(
   const [value] =
     sets.length > 0 ? await runner.payload(node, [key], sets) : [{}];
   return { [updatedField]: value ?? null, info: runner.info };
+}
+
+/**
+ * Update one node's properties and plan its relationship changes. False
+ * when the caller cannot see it (or it does not exist); nothing is
+ * written then.
+ */
+async function applyNodeUpdate(
+  runner: Runner,
+  plan: WritePlan,
+  node: NodeType,
+  key: unknown,
+  input: Input,
+  change: WriteChange,
+): Promise<boolean> {
+  // Visible to the updater (filter rules) and allowed before the write?
+  const ctx = runner.ctx();
+  const k = printExpr(bind(ctx, key));
+  const filter = authFilter(ctx, node, "n", "UPDATE");
+  const before = authValidate(ctx, node, "n", "UPDATE", "BEFORE");
+  const found = await runner.run(
+    `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = ${k}` +
+      (filter ? ` AND (${printExpr(filter)})` : "") +
+      `\nRETURN ${before ? printExpr(before) : "true"} AS ok`,
+    ctx,
+  );
+  if (found.length === 0) return false;
+  if (found[0]!["ok"] !== true) throw forbidden(node, "UPDATE");
+
+  const set: Input = {};
+  const remove: string[] = [];
+  for (const f of node.fields.values()) {
+    if (!(f.name in input)) continue;
+    const value = input[f.name];
+    if (f.kind === "scalar" && f.key) continue;
+    if (f.kind === "relationship") {
+      if (value) plan.relate(node, key, f, value as Input, true);
+      continue;
+    }
+    if (f.kind !== "scalar" || !settable(f, "UPDATE")) continue;
+    if (value === null) {
+      if (f.required) {
+        throw requestError(
+          "BAD_USER_INPUT",
+          `${node.name}.${f.name} is required and cannot be null`,
+        );
+      }
+      remove.push(f.property);
+    } else {
+      set[f.property] = toStored(f, value);
+    }
+  }
+  const uctx = runner.ctx();
+  const uk = printExpr(bind(uctx, key));
+  const setParam = printExpr(bind(uctx, set));
+  await runner.run(
+    `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = ${uk}\n` +
+      `SET n += ${setParam}` +
+      (remove.length > 0
+        ? `\nREMOVE ${remove.map((p) => `n.${name(p)}`).join(", ")}`
+        : "") +
+      timestampSets(node, "n", "UPDATE"),
+    uctx,
+  );
+  runner.info.nodesUpdated += 1;
+  change.updated.push({ type: node.name, key });
+  return true;
+}
+
+/** Create the inputs whose key is new, update the others. */
+async function upsert(
+  env: MutationEnv,
+  runner: Runner,
+  plan: WritePlan,
+  node: NodeType,
+  args: Record<string, unknown>,
+  fieldNodes: readonly FieldNode[],
+  change: WriteChange,
+): Promise<unknown> {
+  const inputs = args["input"] as Input[];
+  const keys = inputs.map((i) => i[node.key.name]);
+  const distinct = new Set(keys.map(keyOf));
+  if (distinct.size < keys.length) {
+    throw requestError(
+      "CONSTRAINT_VIOLATION",
+      `the input names a ${node.name} ${node.key.name} twice`,
+      undefined,
+      { type: node.name, field: node.key.name },
+    );
+  }
+  const ctx = runner.ctx();
+  const existing = new Set(
+    (
+      await runner.run(
+        `UNWIND ${printExpr(bind(ctx, keys))} AS k\n` +
+          `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k\n` +
+          `RETURN n.${name(node.key.property)} AS key`,
+        ctx,
+      )
+    ).map((r) => keyOf(r["key"])),
+  );
+  const updated: unknown[] = [];
+  for (const [i, input] of inputs.entries()) {
+    const key = keys[i];
+    if (!existing.has(keyOf(key))) {
+      plan.create(node, input);
+      continue;
+    }
+    checkAuthentication(runner.ctx(), node, "UPDATE");
+    if (!(await applyNodeUpdate(runner, plan, node, key, input, change))) {
+      throw requestError(
+        "CONSTRAINT_VIOLATION",
+        `${node.name} ${JSON.stringify(key)} exists but is not yours to update`,
+        undefined,
+        { type: node.name, field: node.key.name },
+      );
+    }
+    updated.push(key);
+  }
+  assertBatch(plan, env.maxBatch);
+  assertUniqueKeys(plan);
+  await runner.applyCreates(plan);
+  await runner.applyDisconnects(plan);
+  await runner.applyLinks(plan);
+  await runner.checkCardinality(plan);
+  await runner.validateAfter(node, updated, "UPDATE");
+  await runner.validateCreated(plan);
+
+  const payloadType = env.selection.schema.getType(
+    mutationNames.upsertPayload(node),
+  ) as GraphQLObjectType;
+  const field = mutationNames.createdField(node);
+  const sets = payloadSelections(env, payloadType, fieldNodes, field);
+  return {
+    [field]:
+      sets.length > 0
+        ? await runner.payload(node, keys, sets)
+        : keys.map(() => ({})),
+    info: runner.info,
+  };
 }
 
 async function remove(
@@ -828,7 +925,10 @@ function assertUniqueKeys(plan: WritePlan): void {
   }
 }
 
-function emptyChange(op: MutationOperation, field: string): WriteChange {
+function emptyChange(
+  op: MutationOperation | "UPSERT",
+  field: string,
+): WriteChange {
   return {
     operation: op,
     field,

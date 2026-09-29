@@ -1,3 +1,5 @@
+import { requestError } from "../errors.js";
+
 // GraphQL point inputs → the tagged point values LoraDB takes as
 // parameters. WGS-84 inputs carry longitude/latitude (height for 3D);
 // cartesian inputs carry x/y (z for 3D).
@@ -47,8 +49,32 @@ export function toLoraPoint(input: unknown): unknown {
   return input;
 }
 
-/** A stored value as the engine takes it: points converted, lists mapped. */
-export function toStored(type: string, value: unknown): unknown {
-  if (type !== "Point" && type !== "CartesianPoint") return value;
+/**
+ * A stored value as the engine takes it: points converted, lists mapped,
+ * `@vector` fields tagged as VECTORs (a vector index skips plain lists).
+ */
+export function toStored(
+  field: {
+    name: string;
+    type: string;
+    vector?: { dimensions: number } | undefined;
+  },
+  value: unknown,
+): unknown {
+  if (field.vector && Array.isArray(value)) {
+    if (value.length !== field.vector.dimensions) {
+      throw requestError(
+        "BAD_USER_INPUT",
+        `${field.name} has ${value.length} dimensions; it needs ${field.vector.dimensions}`,
+      );
+    }
+    return {
+      kind: "vector",
+      dimension: value.length,
+      coordinateType: "FLOAT32",
+      values: value,
+    };
+  }
+  if (field.type !== "Point" && field.type !== "CartesianPoint") return value;
   return Array.isArray(value) ? value.map(toLoraPoint) : toLoraPoint(value);
 }

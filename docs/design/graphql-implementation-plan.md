@@ -37,6 +37,7 @@ reference):
 | 8: statistics | Done: related-node key anchoring, cost estimates with `maxCost`, `analyze()` degrees |
 | 9: evolution | Done: `diffSchemas` and `lora-graphql diff` |
 | 10: hardening | Benchmarks (`yarn bench`) and CLI done; loradb.com pages and release not started |
+| Beyond the plan | Backward pagination (`last` / `before`), `upsert` mutations, `@fulltext` search (E4 is fixed), `@vector` similarity search, generated `@subscription` fields. Interfaces and unions remain: without `UNION` inside `CALL { }` they need one statement per implementing type. |
 
 Open decisions, as resolved: nested operator filters; no offset
 pagination; authorization in the library; no variant cap (specialisation

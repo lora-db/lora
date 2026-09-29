@@ -277,9 +277,10 @@ exports[`TCK > relationship connection with properties 1`] = `
           "p1": 2000,
           "p2": 5,
           "p3": false,
-          "p4": "key:ASC",
-          "p5": 2000,
-          "p6": 6,
+          "p4": false,
+          "p5": "key:ASC",
+          "p6": 2000,
+          "p7": 6,
         },
         "text": "MATCH (this:Festival)
 WHERE this.key = $p0
@@ -287,10 +288,10 @@ CALL {
   WITH this
   MATCH (this)<-[this_followersConnection_rel:FOLLOWS]-(this_followersConnection:User)
   WHERE this_followersConnection_rel.since >= $p1
-  WITH this_followersConnection_rel, this_followersConnection ORDER BY this_followersConnection.key ASC LIMIT $p6
+  WITH this_followersConnection_rel, this_followersConnection ORDER BY this_followersConnection.key ASC LIMIT $p7
   RETURN collect({ node: this_followersConnection { .key }, __cursor: [this_followersConnection.key], properties: this_followersConnection_rel { .since } }) AS this_followersConnection_rows
 }
-RETURN this { followersConnection: { __rows: this_followersConnection_rows, __first: $p2, __after: $p3, __sort: $p4, __totalCount: size([(this)<-[this_followersConnection_count_rel:FOLLOWS]-(this_followersConnection_count:User) WHERE this_followersConnection_count_rel.since >= $p5 | 1]) } } AS this",
+RETURN this { followersConnection: { __rows: this_followersConnection_rows, __first: $p2, __after: $p3, __backward: $p4, __sort: $p5, __totalCount: size([(this)<-[this_followersConnection_count_rel:FOLLOWS]-(this_followersConnection_count:User) WHERE this_followersConnection_count_rel.since >= $p6 | 1]) } } AS this",
       },
     ],
   },
@@ -365,7 +366,16 @@ exports[`public schema 1`] = `
   key: ID!
   name: String!
   plays(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
-  playsConnection(after: String, first: Int, sort: [FestivalSort!], where: FestivalWhere): FestivalConnection!
+  playsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: FestivalWhere
+  ): FestivalConnection!
 }
 
 type ArtistConnection {
@@ -430,10 +440,28 @@ type DateTimeAggregate {
 type Festival implements Node {
   capacity: Int
   followers(limit: Int, sort: [UserSort!], where: UserWhere): [User!]!
-  followersConnection(after: String, first: Int, sort: [UserSort!], where: FestivalFollowersConnectionWhere): FestivalFollowersConnection!
+  followersConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [UserSort!]
+    where: FestivalFollowersConnectionWhere
+  ): FestivalFollowersConnection!
   genre(where: GenreWhere): Genre
   headliners(limit: Int, sort: [ArtistSort!], where: ArtistWhere): [Artist!]!
-  headlinersConnection(after: String, first: Int, sort: [ArtistSort!], where: ArtistWhere): ArtistConnection!
+  headlinersConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [ArtistSort!]
+    where: ArtistWhere
+  ): ArtistConnection!
 
   """Global id."""
   id: ID!
@@ -597,7 +625,16 @@ input FollowsWhere {
 
 type Genre {
   festivals(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
-  festivalsConnection(after: String, first: Int, sort: [FestivalSort!], where: FestivalWhere): FestivalConnection!
+  festivalsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: FestivalWhere
+  ): FestivalConnection!
   key: String!
   name: String!
 }
@@ -674,7 +711,16 @@ type Query {
   artists(limit: Int, sort: [ArtistSort!], where: ArtistWhere): [Artist!]!
 
   """Artist nodes, paginated with keyset cursors."""
-  artistsConnection(after: String, first: Int, sort: [ArtistSort!], where: ArtistWhere): ArtistConnection!
+  artistsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [ArtistSort!]
+    where: ArtistWhere
+  ): ArtistConnection!
 
   """The Festival with this key, or null."""
   festival(key: String!): Festival
@@ -684,7 +730,16 @@ type Query {
   festivalsAggregate(where: FestivalWhere): FestivalAggregate!
 
   """Festival nodes, paginated with keyset cursors."""
-  festivalsConnection(after: String, first: Int, sort: [FestivalSort!], where: FestivalWhere): FestivalConnection!
+  festivalsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: FestivalWhere
+  ): FestivalConnection!
 
   """The Genre with this key, or null."""
   genre(key: String!): Genre
@@ -693,7 +748,16 @@ type Query {
   genres(limit: Int, sort: [GenreSort!], where: GenreWhere): [Genre!]!
 
   """Genre nodes, paginated with keyset cursors."""
-  genresConnection(after: String, first: Int, sort: [GenreSort!], where: GenreWhere): GenreConnection!
+  genresConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [GenreSort!]
+    where: GenreWhere
+  ): GenreConnection!
 
   """Fetch any object by its global id."""
   node(id: ID!): Node
@@ -705,7 +769,16 @@ type Query {
   users(limit: Int, sort: [UserSort!], where: UserWhere): [User!]!
 
   """User nodes, paginated with keyset cursors."""
-  usersConnection(after: String, first: Int, sort: [UserSort!], where: UserWhere): UserConnection!
+  usersConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [UserSort!]
+    where: UserWhere
+  ): UserConnection!
 }
 
 enum SortDirection {
@@ -729,7 +802,16 @@ type StringAggregate {
 
 type User {
   follows(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
-  followsConnection(after: String, first: Int, sort: [FestivalSort!], where: UserFollowsConnectionWhere): UserFollowsConnection!
+  followsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: UserFollowsConnectionWhere
+  ): UserFollowsConnection!
   key: String!
   name: String
 }

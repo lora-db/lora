@@ -22,6 +22,7 @@ import { ModelError, type ModelProblem } from "../errors.js";
 import { directiveTypeDefs, PRELUDE_TYPES } from "./directives.js";
 import { codeOnly, scanParams } from "./cypher-lexer.js";
 import type {
+  SearchIndex,
   AuthOperation,
   Authorization,
   AuthorizationWhere,
@@ -317,11 +318,21 @@ export function buildModel(
       });
     }
 
+    const search = readSearch(
+      t.name,
+      labels[0]!,
+      defaultPlural(t.name),
+      nodeArgs["plural"] as string | undefined,
+      scalars,
+      directive(d("fulltext"), t, atType(t.name)),
+      problems,
+    );
     const query = directive(d("query"), t, atType(t.name)) ?? {};
     const mutation = directive(d("mutation"), t, atType(t.name));
     const mutations = new Set<MutationOperation>(
       (mutation?.["operations"] as MutationOperation[] | undefined) ?? [],
     );
+    const subscription = directive(d("subscription"), t, atType(t.name));
     const authentication = directive(d("authentication"), t, atType(t.name));
     const authorization = readAuthorization(
       directive(d("authorization"), t, atType(t.name)),
@@ -351,6 +362,8 @@ export function buildModel(
       `${plural}Connection`,
       `${plural}Aggregate`,
       lowerFirst(t.name),
+      ...search.map((x) => x.queryName),
+      `${lowerFirst(t.name)}Changed`,
     ]) {
       const other = rootFieldOwners.get(root);
       if (other) {
@@ -375,6 +388,10 @@ export function buildModel(
         ? new Set(authentication["operations"] as AuthOperation[])
         : undefined,
       authorization,
+      search,
+      subscriptions: new Set<MutationOperation>(
+        (subscription?.["operations"] as MutationOperation[] | undefined) ?? [],
+      ),
       limit: resolveLimit(
         directive(d("limit"), t, atType(t.name)),
         globalLimit,
@@ -475,6 +492,21 @@ function buildScalarField(
   const timestampArgs = directive(d("timestamp"), f, at);
   const readonlyFlag = directive(d("readonly"), f, at) !== undefined;
   const authentication = directive(d("authentication"), f, at);
+  const vectorArgs = directive(d("vector"), f, at);
+  let vector: ScalarField["vector"];
+  if (vectorArgs) {
+    const dimensions = vectorArgs["dimensions"] as number;
+    if (type !== "Float" || !shape.list) at("@vector needs a [Float!] field");
+    if (!opts.allowKey) at("@vector is not allowed on relationship properties");
+    if (!(dimensions >= 1 && dimensions <= 4096)) {
+      at("@vector(dimensions:) must be between 1 and 4096");
+    }
+    vector = {
+      dimensions,
+      similarity: vectorArgs["similarity"] as "COSINE" | "EUCLIDEAN",
+    };
+  }
+  const vectorQuery = vectorArgs?.["queryName"] as string | undefined;
   const generate = key && (keyArgs(d, f, at)?.["generate"] as boolean) === true;
   if (generate && type !== "ID" && type !== "String") {
     at("@key(generate: true) needs an ID or String field");
@@ -572,7 +604,7 @@ function buildScalarField(
     }
   }
 
-  return {
+  const field: ScalarField = {
     kind: "scalar",
     name: f.name,
     property,
@@ -591,11 +623,14 @@ function buildScalarField(
     defaultValue,
     timestamp,
     readonly: readonlyFlag || isPrivate || timestamp !== undefined,
+    vector,
     authentication: authentication
       ? new Set(authentication["operations"] as AuthOperation[])
       : undefined,
     description: f.description ?? undefined,
   };
+  if (vectorQuery) vectorQueryNames.set(field, vectorQuery);
+  return field;
 }
 
 function keyArgs(
@@ -1155,4 +1190,87 @@ function checkNodeWhere(
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// @fulltext / @vector
+// ---------------------------------------------------------------------------
+
+const vectorQueryNames = new WeakMap<ScalarField, string>();
+
+function readSearch(
+  typeName: string,
+  label: string,
+  defaultName: string,
+  plural: string | undefined,
+  scalars: ScalarField[],
+  fulltext: Record<string, unknown> | undefined,
+  problems: ModelProblem[],
+): SearchIndex[] {
+  const at = (message: string) => problems.push({ type: typeName, message });
+  const Plural = upperFirst(plural ?? defaultName);
+  const out: SearchIndex[] = [];
+  type Raw = {
+    name?: string;
+    fields: string[];
+    analyzer: "STANDARD" | "SIMPLE";
+    queryName?: string;
+  };
+  const raws = (fulltext?.["indexes"] as Raw[] | undefined) ?? [];
+  raws.forEach((raw, i) => {
+    if (i > 0 && !raw.name) {
+      at("@fulltext: every index after the first needs a name");
+    }
+    const name = raw.name ?? `${snakeCase(label)}_search`;
+    const fields: ScalarField[] = [];
+    for (const f of raw.fields) {
+      const field = scalars.find((x) => x.name === f);
+      if (!field) at(`@fulltext: ${typeName} has no field ${f}`);
+      else if ((field.type !== "String" && field.type !== "ID") || field.list) {
+        at(`@fulltext: ${f} is not a String field`);
+      } else fields.push(field);
+    }
+    if (raw.fields.length === 0) at("@fulltext: an index needs fields");
+    out.push({
+      kind: "fulltext",
+      name,
+      fields,
+      analyzer: raw.analyzer,
+      queryName:
+        raw.queryName ??
+        (i === 0 ? `search${Plural}` : `search${Plural}By${upperFirst(name)}`),
+    });
+  });
+  const vectors = scalars.filter((f) => f.vector);
+  for (const f of vectors) {
+    out.push({
+      kind: "vector",
+      name: `${snakeCase(label)}_${snakeCase(f.property)}_vector`,
+      field: f,
+      dimensions: f.vector!.dimensions,
+      similarity: f.vector!.similarity,
+      queryName:
+        vectorQueryNames.get(f) ??
+        (vectors.length === 1
+          ? `similar${Plural}`
+          : `similar${Plural}By${upperFirst(f.name)}`),
+    });
+  }
+  const names = new Set<string>();
+  for (const x of out) {
+    if (names.has(x.name)) at(`search index name ${x.name} is used twice`);
+    names.add(x.name);
+  }
+  return out;
+}
+
+function upperFirst(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function snakeCase(s: string): string {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .toLowerCase();
 }

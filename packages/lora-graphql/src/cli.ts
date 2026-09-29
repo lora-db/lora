@@ -28,7 +28,11 @@ import { diffSchemas } from "./analyze/diff.js";
 import { formatProblem, ModelError } from "./errors.js";
 import { buildModel } from "./model/build.js";
 import { directiveTypeDefs } from "./model/directives.js";
-import { inferRequirements, requirementDdl } from "./analyze/indexes.js";
+import {
+  describeRequirement,
+  inferRequirements,
+  requirementDdl,
+} from "./analyze/indexes.js";
 import { LoraGraphQL, type CheckOptions } from "./lora-graphql.js";
 import { loraDriver, type LoraDriver } from "./driver.js";
 
@@ -134,7 +138,7 @@ async function requirements(
     io.out(
       ddl
         ? `${requirementDdl(r)};`
-        : `${r.kind === "index" ? `${r.index} index` : `${r.constraint} constraint`} on :${r.label}(${r.property}), because ${r.reason}`,
+        : `${describeRequirement(r)}, because ${r.reason}`,
     );
   }
   return 0;

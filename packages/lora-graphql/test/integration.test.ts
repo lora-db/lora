@@ -86,6 +86,65 @@ describe("keyset pagination", () => {
     },
   );
 
+  test.each([
+    ["capacity", "ASC", 4],
+    ["capacity", "DESC", 3],
+    ["name", "ASC", 7],
+  ] as const)(
+    "backward by %s %s, pages of %i, visits every row once in order",
+    async (field, dir, last) => {
+      const keys: string[] = [];
+      let before: string | null = null;
+      for (let pages = 0; pages < 50; pages++) {
+        const page: {
+          festivalsConnection: {
+            edges: Array<{ node: { key: string } }>;
+            pageInfo: {
+              hasPreviousPage: boolean;
+              hasNextPage: boolean;
+              startCursor: string | null;
+            };
+          };
+        } = await h.data(
+          `query ($sort: [FestivalSort!], $last: Int, $before: String) {
+            festivalsConnection(sort: $sort, last: $last, before: $before) {
+              edges { node { key } }
+              pageInfo { hasPreviousPage hasNextPage startCursor }
+            }
+          }`,
+          { sort: [{ [field]: dir }], last, before },
+        );
+        const conn = page.festivalsConnection;
+        keys.unshift(...conn.edges.map((e) => e.node.key));
+        expect(conn.pageInfo.hasNextPage).toBe(before !== null);
+        if (!conn.pageInfo.hasPreviousPage) break;
+        before = conn.pageInfo.startCursor;
+      }
+      expect(keys).toEqual(expectedOrder(field, dir));
+    },
+  );
+
+  test("a forward cursor pages backward too", async () => {
+    const order = expectedOrder("capacity", "ASC");
+    const fwd: { festivalsConnection: { pageInfo: { endCursor: string } } } =
+      await h.data(
+        `{ festivalsConnection(first: 10, sort: [{ capacity: ASC }]) { pageInfo { endCursor } } }`,
+      );
+    const back: {
+      festivalsConnection: { edges: Array<{ node: { key: string } }> };
+    } = await h.data(
+      `query ($before: String) { festivalsConnection(last: 3, before: $before, sort: [{ capacity: ASC }]) { edges { node { key } } } }`,
+      { before: fwd.festivalsConnection.pageInfo.endCursor },
+    );
+    expect(back.festivalsConnection.edges.map((e) => e.node.key)).toEqual(
+      order.slice(6, 9),
+    );
+    const r = await h.run(
+      `{ festivalsConnection(first: 1, last: 1) { totalCount } }`,
+    );
+    expect(r.errors?.[0]?.extensions?.["code"]).toBe("BAD_USER_INPUT");
+  });
+
   test("totalCount ignores the page", async () => {
     const d = await h.data<Page>(
       `{ festivalsConnection(first: 2, where: { name: { startsWith: "Sun" } }) { totalCount edges { node { key } } } }`,

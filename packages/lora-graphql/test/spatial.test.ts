@@ -54,7 +54,13 @@ test("spatial filters imply a POINT index and seek through it", async () => {
   expect(
     h.lora
       .requirements()
-      .map((r) => (r.kind === "index" ? r.index : r.constraint)),
+      .map((r) =>
+        r.kind === "index"
+          ? r.index
+          : r.kind === "constraint"
+            ? r.constraint
+            : r.kind,
+      ),
   ).toEqual(["NODE_KEY", "POINT"]);
   const [f] = await h.lora.explain(
     `{ venues(where: { location: { distance: { from: { longitude: 4.9, latitude: 52.37 }, lte: 1000 } } }) { key } }`,
