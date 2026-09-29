@@ -24,7 +24,11 @@ import type {
   RelationshipField,
   ScalarField,
 } from "../model/types.js";
-import { hasOwnConnection, names } from "../schema/names.js";
+import {
+  connectionTypeNames,
+  hasOwnConnection,
+  names,
+} from "../schema/names.js";
 import {
   authFilter,
   authValidate,
@@ -94,6 +98,13 @@ type Where = Record<string, unknown>;
 interface SortKey {
   field: ScalarField;
   direction: "ASC" | "DESC";
+  /** A relationship property (`sort: [{ edge: { ... } }]`), not a node field. */
+  edge?: boolean;
+}
+
+/** The value a sort key orders by: `node.prop`, or `rel.prop` for edge keys. */
+function keyExpr(k: SortKey, variable: string, edge?: string): Expr {
+  return prop(v(k.edge ? edge! : variable), k.field.property);
 }
 
 /** A connection value before its resolvers turn it into edges/pageInfo. */
@@ -1264,9 +1275,10 @@ function resolveSort(
   node: NodeType,
   value: unknown,
   tieBreak: boolean,
+  props?: RelationshipPropertiesType,
 ): SortKey[] {
   const keys: SortKey[] = [];
-  for (const item of (value as Array<Record<string, unknown>> | null) ?? []) {
+  const one = (item: Record<string, unknown>): [string, unknown] => {
     const entries = Object.entries(item).filter(([, d]) => d != null);
     if (entries.length !== 1) {
       throw requestError(
@@ -1274,12 +1286,27 @@ function resolveSort(
         "each `sort` item names exactly one field",
       );
     }
-    const [fieldName, direction] = entries[0]!;
+    return entries[0]!;
+  };
+  for (const item of (value as Array<Record<string, unknown>> | null) ?? []) {
+    const [fieldName, direction] = one(item);
+    if (fieldName === "edge" && props) {
+      const [propName, dir] = one(direction as Record<string, unknown>);
+      const field = props.fields.get(propName)!;
+      if (keys.some((k) => k.edge && k.field === field)) {
+        throw requestError(
+          "BAD_USER_INPUT",
+          `\`sort\` names edge.${propName} more than once`,
+        );
+      }
+      keys.push({ field, direction: dir as "ASC" | "DESC", edge: true });
+      continue;
+    }
     const field = node.fields.get(fieldName) as ScalarField;
     // Ordering by a field reveals it, and cursors carry its values.
     checkFieldAuthentication(ctx, node.name, field);
     refuseRowRules(ctx, node, field, "sort by");
-    if (keys.some((k) => k.field === field)) {
+    if (keys.some((k) => !k.edge && k.field === field)) {
       throw requestError(
         "BAD_USER_INPUT",
         `\`sort\` names ${fieldName} more than once`,
@@ -1307,6 +1334,7 @@ function resolvePage(
   node: NodeType,
   args: Args,
   limit: PageLimit,
+  props?: RelationshipPropertiesType,
 ): {
   first: number;
   sort: SortKey[];
@@ -1326,7 +1354,7 @@ function resolvePage(
     limit,
     backward ? "last" : "first",
   );
-  const requested = resolveSort(ctx, node, args["sort"], true);
+  const requested = resolveSort(ctx, node, args["sort"], true, props);
   const signature = sortSignature(requested);
   const raw = (backward ? args["before"] : args["after"]) as
     | string
@@ -1346,20 +1374,26 @@ function resolvePage(
 }
 
 function sortSignature(sort: SortKey[]): string {
-  return sort.map((k) => `${k.field.name}:${k.direction}`).join(",");
+  return sort
+    .map((k) => `${k.edge ? "edge." : ""}${k.field.name}:${k.direction}`)
+    .join(",");
 }
 
-function sortItems(variable: string, sort: SortKey[]): SortItem[] {
+function sortItems(
+  variable: string,
+  sort: SortKey[],
+  edge?: string,
+): SortItem[] {
   return sort.map((k) => ({
-    expr: prop(v(variable), k.field.property),
+    expr: keyExpr(k, variable, edge),
     direction: k.direction,
   }));
 }
 
-function cursorValues(variable: string, sort: SortKey[]): Expr {
+function cursorValues(variable: string, sort: SortKey[], edge?: string): Expr {
   return {
     kind: "list",
-    items: sort.map((k) => prop(v(variable), k.field.property)),
+    items: sort.map((k) => keyExpr(k, variable, edge)),
   };
 }
 
@@ -1378,12 +1412,13 @@ function keysetPredicate(
   variable: string,
   sort: SortKey[],
   values: unknown[],
+  edge?: string,
 ): Expr | undefined {
   const branches: Expr[] = [];
   const equal: Expr[] = [];
   let lead: Expr | undefined;
   sort.forEach((k, i) => {
-    const target = prop(v(variable), k.field.property);
+    const target = keyExpr(k, variable, edge);
     const value = values[i];
     const p = value === null ? undefined : bind(ctx, value);
     const present = leadBound(k);
@@ -1661,17 +1696,15 @@ function projectRelationshipConnection(
     target,
     args,
     rel.limit ?? target.limit,
+    hasOwnConnection(rel) ? props : undefined,
   );
 
   const own = hasOwnConnection(rel);
+  const typeNames = connectionTypeNames(rel);
   const connType = ctx.schema.getType(
-    own
-      ? names.relConnection(rel.owner, rel.name)
-      : names.connection(target.name),
+    typeNames.connection,
   ) as GraphQLObjectType;
-  const edgeType = ctx.schema.getType(
-    own ? names.relEdge(rel.owner, rel.name) : names.edge(target.name),
-  ) as GraphQLObjectType;
+  const edgeType = ctx.schema.getType(typeNames.edge) as GraphQLObjectType;
   const sel = connectionSelections(
     ctx,
     connType,
@@ -1695,7 +1728,7 @@ function projectRelationshipConnection(
       authFilter(ctx, target, nv, "READ"),
     );
   const filter = filterFor(x, r);
-  const keyset = cursor ? keysetPredicate(ctx, x, sort, cursor) : undefined;
+  const keyset = cursor ? keysetPredicate(ctx, x, sort, cursor, r) : undefined;
 
   const nested = projectNode(
     ctx,
@@ -1706,7 +1739,7 @@ function projectRelationshipConnection(
   );
   const edgeEntries = [
     { key: "node", value: nested.expr },
-    { key: "__cursor", value: cursorValues(x, sort) },
+    { key: "__cursor", value: cursorValues(x, sort, r) },
   ];
   if (props && sel.properties.length > 0) {
     edgeEntries.push({
@@ -1820,7 +1853,7 @@ function projectRelationshipConnection(
           {
             kind: "with",
             items: [{ expr: v(r) }, { expr: v(x) }],
-            orderBy: sortItems(x, sort),
+            orderBy: sortItems(x, sort, r),
             limit: bind(ctx, first + 1),
           },
           ...nested.pre,

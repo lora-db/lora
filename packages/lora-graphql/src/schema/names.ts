@@ -30,7 +30,30 @@ export const names = {
   singleRoot: (t: NodeType) => lowerFirst(t.name),
 };
 
-/** Whether a list relationship gets its own connection/edge types. */
+/**
+ * Whether a list relationship gets its own connection/edge types (and a
+ * `{ node, edge }` where): it has relationship properties.
+ */
 export function hasOwnConnection(rel: RelationshipField): boolean {
   return rel.list && rel.properties !== undefined;
+}
+
+/**
+ * The connection and edge type names of a list relationship's connection:
+ * its own when it has properties or opts out of aggregates, the target's
+ * otherwise.
+ */
+export function connectionTypeNames(rel: RelationshipField): {
+  connection: string;
+  edge: string;
+} {
+  return hasOwnConnection(rel) || !rel.aggregate
+    ? {
+        connection: names.relConnection(rel.owner, rel.name),
+        edge: names.relEdge(rel.owner, rel.name),
+      }
+    : {
+        connection: names.connection(rel.target),
+        edge: names.edge(rel.target),
+      };
 }

@@ -98,6 +98,13 @@ export interface ScalarField extends FieldBase {
   description: string | undefined;
 }
 
+export type NestedOperation =
+  | "CREATE"
+  | "CONNECT"
+  | "DISCONNECT"
+  | "UPDATE"
+  | "DELETE";
+
 export interface RelationshipField extends FieldBase {
   kind: "relationship";
   name: string;
@@ -124,6 +131,10 @@ export interface RelationshipField extends FieldBase {
   queryDirection: "DIRECTED" | "UNDIRECTED";
   /** What deleting the owner does to nodes reached through the field. */
   onDelete: "DETACH" | "CASCADE" | "RESTRICT";
+  /** Nested writes mutation inputs offer for the field. */
+  nestedOperations: ReadonlySet<NestedOperation>;
+  /** Whether the field's connection and filters offer aggregates. */
+  aggregate: boolean;
   cardinality: number | undefined;
   limit: PageLimit | undefined;
   description: string | undefined;
@@ -243,9 +254,21 @@ export interface AbstractType {
   members: readonly string[];
   /** An interface's scalar fields, as declared on the interface. */
   fields: ReadonlyMap<string, ScalarField>;
+  /**
+   * An interface's `@declareRelationship` fields: every implementation has
+   * a relationship field of that name, target and shape.
+   */
+  relationships: ReadonlyMap<string, DeclaredRelationship>;
   plural: string;
   read: boolean;
   limit: PageLimit;
+  description: string | undefined;
+}
+
+export interface DeclaredRelationship {
+  name: string;
+  target: string;
+  list: boolean;
   description: string | undefined;
 }
 

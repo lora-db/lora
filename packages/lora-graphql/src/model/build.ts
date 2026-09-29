@@ -41,6 +41,8 @@ import type {
   FilterOperator,
   GraphModel,
   IndexKind,
+  DeclaredRelationship,
+  NestedOperation,
   NodeType,
   PageLimit,
   RelationshipField,
@@ -466,8 +468,22 @@ export function buildModel(
     }
     if (members.length === 0) at("has no @node implementations");
     const fields = new Map<string, ScalarField>();
+    const relationships = new Map<string, DeclaredRelationship>();
     if (isInterfaceType(t)) {
       for (const f of Object.values(t.getFields())) {
+        if (directive(d("declareRelationship"), f, at) !== undefined) {
+          const declaredRel = declareRelationship(t.name, f, members, nodes);
+          if (typeof declaredRel === "string") {
+            problems.push({
+              type: t.name,
+              field: f.name,
+              message: declaredRel,
+            });
+          } else {
+            relationships.set(f.name, declaredRel);
+          }
+          continue;
+        }
         const field = buildScalarField(
           t as unknown as GraphQLObjectType,
           f as GraphQLField<unknown, unknown>,
@@ -502,6 +518,7 @@ export function buildModel(
       name: t.name,
       members,
       fields,
+      relationships,
       plural,
       read: (query["read"] as boolean | undefined) ?? true,
       limit: resolveLimit(
@@ -519,6 +536,20 @@ export function buildModel(
       if (f.kind !== "relationship") continue;
       (f as { members: readonly string[] }).members = abstracts.get(f.target)
         ?.members ?? [f.target];
+      if (
+        node.mutations.has("CREATE") &&
+        f.required &&
+        !f.list &&
+        !f.nestedOperations.has("CONNECT") &&
+        !f.nestedOperations.has("CREATE")
+      ) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message:
+            "a required relationship needs CONNECT or CREATE in nestedOperations, or creates could never set it",
+        });
+      }
     }
   }
 
@@ -599,6 +630,42 @@ export function buildModel(
     warnings,
     jwt: jwtShape,
     cursorSecret: options.cursorSecret,
+  };
+}
+
+/**
+ * An interface field under `@declareRelationship`: every implementation
+ * must declare a relationship field of that name with the same target and
+ * shape (the relationship type and direction may differ). Returns the
+ * problem when one does not.
+ */
+function declareRelationship(
+  iface: string,
+  f: GraphQLField<unknown, unknown>,
+  members: readonly string[],
+  nodes: ReadonlyMap<string, NodeType>,
+): DeclaredRelationship | string {
+  let first: RelationshipField | undefined;
+  for (const m of members) {
+    const mf = nodes.get(m)?.fields.get(f.name);
+    if (mf?.kind !== "relationship") {
+      return `${m} implements ${iface} but ${f.name} on it is not a @relationship field`;
+    }
+    if (!first) first = mf;
+    else if (
+      mf.target !== first.target ||
+      mf.list !== first.list ||
+      mf.properties !== first.properties
+    ) {
+      return `every implementation must declare ${f.name} with the same target, list shape and properties (${first.owner} and ${m} differ)`;
+    }
+  }
+  if (!first) return "has no @node implementations";
+  return {
+    name: f.name,
+    target: first.target,
+    list: first.list,
+    description: f.description ?? undefined,
   };
 }
 
@@ -951,6 +1018,8 @@ function buildRelationshipField(
     filterable: filterable !== undefined,
     queryDirection: rel["queryDirection"] as "DIRECTED" | "UNDIRECTED",
     onDelete: rel["onDelete"] as "DETACH" | "CASCADE" | "RESTRICT",
+    nestedOperations: new Set(rel["nestedOperations"] as NestedOperation[]),
+    aggregate: rel["aggregate"] as boolean,
     cardinality,
     limit: limitArgs
       ? resolveLimit(limitArgs, globalLimit, t.name, f.name, problems)
