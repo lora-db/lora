@@ -68,6 +68,11 @@ export type {
   TracerLike,
 } from "./observe.js";
 export {
+  schemaHash,
+  type ManifestOperation,
+  type OperationManifest,
+} from "./codegen.js";
+export {
   envelopPlugin,
   parseOptions,
   validationRules,

@@ -30,6 +30,7 @@ import {
   type SchemaRequirement,
 } from "./analyze/indexes.js";
 import { checkPlans, type PlanReport } from "./analyze/plans.js";
+import { lintModel } from "./analyze/lint.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
 import {
@@ -54,6 +55,12 @@ import {
   type PopulatedByCallback,
 } from "./execute/mutate.js";
 import { ModelError, requestError } from "./errors.js";
+import {
+  buildManifest,
+  generateTypes,
+  schemaHash,
+  type OperationManifest,
+} from "./codegen.js";
 import {
   envelopPlugin,
   nodeEnv,
@@ -241,6 +248,15 @@ export interface CheckReport {
   cypher: CypherFinding[];
   /** Constraints and indexes the database lacks. */
   missing: SchemaRequirement[];
+  /** Indexes the database has that no part of the API needs. */
+  unused: Array<{
+    name: string;
+    type: string;
+    labels: string[];
+    properties: string[];
+  }>;
+  /** Schema lint: valid but costly or risky choices (not failures). */
+  lint: readonly ModelWarning[];
   /** Plan findings per operation and root field. */
   plans: Array<{ operation: string; field: string; reports: PlanReport[] }>;
   /** Operations that failed to compile. */
@@ -543,6 +559,8 @@ export class LoraGraphQL {
       warnings: this.model.warnings,
       cypher: await checkCypherFields(this.#driver, this.model),
       missing: (await this.assertSchema()).missing,
+      unused: await this.#unusedIndexes(),
+      lint: lintModel(this.model, { statistics: !!this.#statistics }),
       plans: [],
       errors: [],
     };
@@ -568,6 +586,33 @@ export class LoraGraphQL {
         p.reports.every((r) => r.findings.length === 0),
       );
     return report;
+  }
+
+  /** Indexes in the database that no requirement of the API matches. */
+  async #unusedIndexes(): Promise<CheckReport["unused"]> {
+    const [indexes] = await this.#driver.run(
+      [{ text: "SHOW INDEXES", params: {} }],
+      { mode: "read", timeoutMs: this.#timeoutMs },
+    );
+    const required = this.requirements();
+    return indexes!.rows
+      .filter((row) => row["type"] !== "LOOKUP" && !row["owningConstraint"])
+      .filter(
+        (row) =>
+          !required.some((r) =>
+            r.kind === "fulltext" || r.kind === "vector"
+              ? r.name === row["name"]
+              : r.kind === "index" &&
+                r.index === row["type"] &&
+                sameTarget(row, r.label, r.property),
+          ),
+      )
+      .map((row) => ({
+        name: String(row["name"]),
+        type: String(row["type"]),
+        labels: (row["labelsOrTypes"] as string[] | null) ?? [],
+        properties: (row["properties"] as string[] | null) ?? [],
+      }));
   }
 
   /**
@@ -703,6 +748,41 @@ export class LoraGraphQL {
       throw new Error(
         `invalid persisted operations:\n  ${problems.join("\n  ")}`,
       );
+    }
+  }
+
+  /**
+   * Validate persisted operations (id → source) into a manifest for
+   * `loadManifest()`, built once at build time (`lora-graphql compile`).
+   */
+  buildManifest(operations: Record<string, string>): OperationManifest {
+    return buildManifest(this.getSchema(), operations, this.validationRules());
+  }
+
+  /** TypeScript types for a manifest's variables and results. */
+  generateTypes(manifest: OperationManifest): string {
+    return generateTypes(this.getSchema(), manifest, this.model.scalars);
+  }
+
+  /**
+   * Register a manifest's operations as persisted operations, without
+   * parsing or validating them again. Refused when the manifest was built
+   * for another schema.
+   */
+  loadManifest(manifest: OperationManifest): void {
+    const hash = schemaHash(this.getSchema());
+    if (manifest.schemaHash !== hash) {
+      throw new Error(
+        "the manifest was built for a different schema; run lora-graphql compile again",
+      );
+    }
+    for (const [id, entry] of Object.entries(manifest.operations)) {
+      this.#persisted.set(id, entry.document);
+      for (const def of entry.document.definitions) {
+        if (def.kind === Kind.OPERATION_DEFINITION) {
+          this.#persistedIds.set(def, id);
+        }
+      }
     }
   }
 

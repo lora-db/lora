@@ -140,3 +140,108 @@ describe("custom scalars", () => {
 });
 
 void festivalHarness;
+
+describe("manifest and generated types", () => {
+  const typeDefs = /* GraphQL */ `
+    enum Status {
+      OPEN
+      CLOSED
+    }
+    interface Event {
+      key: String!
+      title: String!
+    }
+    type Concert implements Event @node @mutation {
+      key: String! @key
+      title: String! @filterable(byValue: [EQ, CONTAINS]) @sortable
+      band: String
+      status: Status
+      starts: DateTime
+    }
+    type Exhibition implements Event @node {
+      key: String! @key
+      title: String!
+      artist: String
+    }
+  `;
+  const operations = {
+    "concerts#Page": `query Page($where: ConcertWhere, $limit: Int = 10) {
+      concerts(where: $where, limit: $limit) { ...Card status starts }
+    }
+    fragment Card on Concert { key title }`,
+    "events#Mixed": `query Mixed { events { __typename key ... on Concert { band } ... on Exhibition { artist } } }`,
+    "concerts#Add": `mutation Add($key: String!, $title: String!) {
+      createConcerts(input: [{ key: $key, title: $title }]) { info { nodesCreated } }
+    }`,
+  };
+
+  async function setup(defs = typeDefs) {
+    const db = await createDatabase();
+    const lora = new LoraGraphQL({ typeDefs: defs, driver: loraDriver(db) });
+    await lora.assertSchema({ create: true });
+    return { db, lora };
+  }
+
+  test("types compile and describe results and variables", async () => {
+    const { lora } = await setup();
+    const manifest = lora.buildManifest(operations);
+    const types = lora.generateTypes(manifest);
+    expect(types).toContain('export type Status = "OPEN" | "CLOSED";');
+    expect(types).toContain("export interface PageVariables {");
+    const { mkdtemp, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { execFileSync } = await import("node:child_process");
+    const dir = await mkdtemp(join(tmpdir(), "lora-graphql-types-"));
+    await writeFile(join(dir, "operations.d.ts"), types);
+    await writeFile(
+      join(dir, "use.ts"),
+      `import type { PageResult, PageVariables, MixedResult, AddVariables } from "./operations";
+const v: PageVariables = { where: { title: { contains: "x" }, AND: [{ title: { eq: "y" } }] } };
+const r: PageResult = { concerts: [{ key: "k", title: "t", status: null, starts: "2026-01-01T00:00:00Z" }] };
+const m: MixedResult = { events: [{ __typename: "Concert", key: "k", band: "b" }] };
+const a: AddVariables = { key: "k", title: "t" };
+// @ts-expect-error: key is required
+const bad: AddVariables = { title: "t" };
+export { v, r, m, a, bad };
+`,
+    );
+    const { createRequire } = await import("node:module");
+    const tsc = createRequire(import.meta.url).resolve("typescript/bin/tsc");
+    try {
+      execFileSync(
+        process.execPath,
+        [tsc, "--noEmit", "--strict", join(dir, "use.ts")],
+        {
+          stdio: "pipe",
+        },
+      );
+    } catch (err) {
+      const e = err as { stdout?: Buffer };
+      throw new Error(`${String(e.stdout)}\n---\n${types}`);
+    }
+  }, 60_000);
+
+  test("loadManifest registers operations; a manifest for another schema is refused", async () => {
+    const { lora } = await setup();
+    const manifest = JSON.parse(JSON.stringify(lora.buildManifest(operations)));
+    const fresh = (await setup()).lora;
+    fresh.loadManifest(manifest);
+    const added = await fresh.execute({
+      id: "concerts#Add",
+      variables: { key: "c1", title: "Opening" },
+    });
+    expect(added.errors).toBeUndefined();
+    const page = await fresh.execute({ id: "concerts#Page" });
+    expect((page.data as { concerts: unknown[] }).concerts).toHaveLength(1);
+
+    const other = (
+      await setup(
+        typeDefs.replace("band: String", "band: String\n      rating: Int"),
+      )
+    ).lora;
+    expect(() => other.loadManifest(manifest)).toThrow(
+      "built for a different schema",
+    );
+  });
+});
