@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@loradb/lora-graphql": "file:../..",
-    "@loradb/lora-node": "^0.16.0",
+    "@loradb/lora-node": "^0.16.1",
     "graphql": "^16.11.0",
     "graphql-http": "^1.22.4",
     "jose": "^6.0.0"

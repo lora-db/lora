@@ -4583,7 +4583,7 @@ __metadata:
     vite-plugin-dts: "npm:^4.2.0"
     vitest: "npm:^2.1.0"
   peerDependencies:
-    "@loradb/lora-node": ^0.16.0
+    "@loradb/lora-node": ^0.16.1
     graphql: ^16.8.0 || ^17.0.0
   peerDependenciesMeta:
     "@loradb/lora-node":
