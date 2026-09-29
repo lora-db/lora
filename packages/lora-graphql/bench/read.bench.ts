@@ -61,6 +61,19 @@ describe("operations, end to end", () => {
   );
 });
 
+describe("through execute(): documents and compiles cached", () => {
+  const exec = async (source: string) => {
+    const r = await lora.execute({ source, context: {} });
+    if (r.errors) throw r.errors[0];
+  };
+  bench("festivals(limit: 20): ordered by key", () =>
+    exec(`{ festivals(limit: 20) { key name } }`),
+  );
+  bench("nested page with connection, @cypher and relationship", () =>
+    exec(nested),
+  );
+});
+
 describe("key order: bounded vs sorted", () => {
   bench("generated: WHERE key >= '' streams from the index", () =>
     cypher(

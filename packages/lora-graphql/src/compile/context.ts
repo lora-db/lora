@@ -24,6 +24,11 @@ export interface CompileContext extends SelectionContext {
    * statement, by `variable + "\0" + field`: set by the root match.
    */
   computed: Map<string, string>;
+  /**
+   * `$context` paths the compile read, with their values: a cached
+   * compile is reused only for a context that agrees on them.
+   */
+  contextReads: Array<[string, unknown]>;
 }
 
 export function newContext(
@@ -47,6 +52,7 @@ export function newContext(
     degrees: options.degrees ?? new Map(),
     requestContext: options.requestContext,
     computed: new Map(),
+    contextReads: [],
   };
 }
 

@@ -231,7 +231,29 @@ disconnects are intentional.
 
 ## Phase 15: Compile Caching and Read Overheads
 
-1. **Cache compiled operations.** Every resolver recompiles today:
+**Status: done, with one item measured and left.**
+
+1. Compiles are cached per field node, exact variables, claims and the
+   `$context` values they read: `festivals(limit: 20)` through
+   `execute()` goes from 0.144 ms to 0.060 ms, the nested bench operation
+   from 1.37 ms to 1.20 ms (its time is in the engine). A parameter binder
+   that reuses text across different variable values was not built:
+   values change statement structure (a `where` present or null, cursors,
+   limits), so it could not be done safely without tracking where each
+   value flows.
+2. Measured and left: the nested page statement takes 0.97 ms; its
+   relationship connection 0.375 ms with row maps, 0.318 ms with separate
+   node, cursor and property lists, 0.234 ms with node maps alone. The
+   per-parent `CALL` dominates, so the projection change is worth about 6%
+   of the statement and was not made. Edge properties were already
+   projected only when selected.
+3. Unnecessary after the E13 fix: `totalCount` in a transaction stops at
+   `LIMIT` too.
+4. EXPLAIN now estimates range, text and point seeks; plan reports carry
+   `estimatedRows`, and `check({ rowBudget })` turns large estimates into
+   findings.
+
+5. **Cache compiled operations.** Every resolver recompiles today:
    0.14 ms for the nested bench operation. An end-to-end
    `festivals(limit: 20)` takes 0.15 ms against 0.03 ms for the raw
    statement.
@@ -239,17 +261,17 @@ disconnects are intentional.
      by variable shape.
    - Store the statement text and a parameter binder.
    - Expected gain: 2x to 4x on point and simple list reads.
-2. **Lighter connection projection.** The per-parent `CALL` that collects
+6. **Lighter connection projection.** The per-parent `CALL` that collects
    `{ node, __cursor, properties }` maps takes 0.47 ms against 0.17 ms
    for a minimal collect. Build `__cursor` in JavaScript from fields
    already projected, and project edge properties only when they are
    selected.
-3. **`totalCount` without the transaction penalty.** Until E13 is fixed,
+7. **`totalCount` without the transaction penalty.** Until E13 is fixed,
    run the count and the page as two parallel `stream()` calls instead of
    one transaction under a deadline: 11.4 ms goes to about 0.3 ms. Trade-off: the
    count and the page may come from different snapshots. Make this an
    option and document the trade-off.
-4. **Engine estimates.** `explain()` now returns `estimatedRows` on some
+8. **Engine estimates.** `explain()` now returns `estimatedRows` on some
    operators, so E11 in the plan is partly out of date. Feed these
    estimates into the S2 row budgets and the S6 cost model.
 

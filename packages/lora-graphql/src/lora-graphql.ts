@@ -84,6 +84,7 @@ import { and, bin, printClauses, prop, v } from "./compile/cypher.js";
 import { bind } from "./compile/context.js";
 import { keyOf } from "./compile/read.js";
 import { compileNodeWhere } from "./compile/filter.js";
+import { lookupPath } from "./compile/auth.js";
 import { fromGlobalId } from "./schema/global-id.js";
 import { assertReadable } from "./schema/guard.js";
 import { names } from "./schema/names.js";
@@ -202,6 +203,12 @@ export interface SchemaAssertion {
 }
 
 export interface CheckOptions {
+  /**
+   * Flag statements whose largest engine row estimate (from graph
+   * statistics) exceeds this. Off by default: estimates ignore a LIMIT
+   * that stops an index-ordered scan early.
+   */
+  rowBudget?: number;
   /** Operations to compile and plan-check (S2), with example variables. */
   operations?: Array<{
     name?: string;
@@ -235,6 +242,16 @@ export interface ExecuteArgs {
 }
 
 const DOCUMENT_CACHE_SIZE = 500;
+/** Compiled root fields kept per field node, across variable values. */
+const COMPILED_PER_FIELD = 16;
+
+interface CompiledEntry {
+  variables: string;
+  claims: string;
+  statistics: number;
+  contextReads: Array<[string, unknown]>;
+  compiled: CompiledRead;
+}
 
 export class LoraGraphQL {
   readonly model: GraphModel;
@@ -261,6 +278,14 @@ export class LoraGraphQL {
   readonly #documents = new Map<string, DocumentNode>();
   readonly #persisted = new Map<string, DocumentNode>();
   #degrees = new Map<string, number>();
+  /** Bumped when statistics change: they shape cost estimates. */
+  #statisticsVersion = 0;
+  /**
+   * Compiled reads by root field node (documents are cached, so a field
+   * node repeats across requests), then by variables, claims and the
+   * `$context` values the compile read.
+   */
+  readonly #compiled = new WeakMap<FieldNode, CompiledEntry[]>();
   #statistics: Statistics | undefined;
   #schema: GraphQLSchema | undefined;
 
@@ -351,13 +376,13 @@ export class LoraGraphQL {
             ),
       resolveAbstract: (abstract, info, context) =>
         span(info, () => {
-          const ctx = this.#context(infoContext(info), context);
-          const args = this.#args(ctx, info.parentType, info.fieldNodes);
-          const compiled = compileAbstractRoot(
-            ctx,
-            abstract,
-            args,
-            info.fieldNodes,
+          const compiled = this.#cachedCompile(info, context, (ctx) =>
+            compileAbstractRoot(
+              ctx,
+              abstract,
+              this.#args(ctx, info.parentType, info.fieldNodes),
+              info.fieldNodes,
+            ),
           );
           return this.#run(info.fieldName, compiled, context, info);
         }),
@@ -468,6 +493,7 @@ export class LoraGraphQL {
     this.#degrees = new Map(
       Object.entries(stats.degrees).map(([k, d]) => [k, d.p99]),
     );
+    this.#statisticsVersion++;
   }
 
   get statistics(): Statistics | undefined {
@@ -490,7 +516,9 @@ export class LoraGraphQL {
     for (const [i, op] of (options.operations ?? []).entries()) {
       const operation = op.name ?? `operation ${i + 1}`;
       try {
-        const fields = await this.explain(op.document, op.variables ?? {});
+        const fields = await this.explain(op.document, op.variables ?? {}, {
+          rowBudget: options.rowBudget,
+        });
         for (const f of fields) report.plans.push({ operation, ...f });
       } catch (err) {
         report.errors.push({
@@ -583,7 +611,11 @@ export class LoraGraphQL {
   async explain(
     document: string | DocumentNode,
     variables: Record<string, unknown> = {},
-    options: { operationName?: string; context?: unknown } = {},
+    options: {
+      operationName?: string;
+      context?: unknown;
+      rowBudget?: number | undefined;
+    } = {},
   ): Promise<Array<{ field: string; reports: PlanReport[] }>> {
     const out: Array<{ field: string; reports: PlanReport[] }> = [];
     for (const { field, compiled } of this.compile(
@@ -591,7 +623,14 @@ export class LoraGraphQL {
       variables,
       options,
     )) {
-      out.push({ field, reports: await checkPlans(this.#driver, compiled) });
+      out.push({
+        field,
+        reports: await checkPlans(this.#driver, compiled, {
+          ...(options.rowBudget !== undefined
+            ? { rowBudget: options.rowBudget }
+            : {}),
+        }),
+      });
     }
     return out;
   }
@@ -911,6 +950,46 @@ export class LoraGraphQL {
     };
   }
 
+  /**
+   * Compile a read root field, or reuse the compile of an earlier request
+   * with the same field node, variables, claims and `$context` values.
+   * Statement text depends on all of them (claims are folded in).
+   */
+  #cachedCompile(
+    info: GraphQLResolveInfo,
+    context: unknown,
+    compile: (ctx: CompileContext) => CompiledRead,
+  ): CompiledRead {
+    const field = info.fieldNodes[0]!;
+    const variables = stableKey(info.variableValues);
+    const claims = stableKey(this.#jwt(context) ?? null);
+    const ctx = this.#context(infoContext(info), context);
+    if (variables === undefined || claims === undefined) return compile(ctx);
+    const entries = this.#compiled.get(field) ?? [];
+    const hit = entries.find(
+      (e) =>
+        e.variables === variables &&
+        e.claims === claims &&
+        e.statistics === this.#statisticsVersion &&
+        e.contextReads.every(
+          ([path, value]) =>
+            stableKey(lookupPath(context, path)) === stableKey(value),
+        ),
+    );
+    if (hit) return hit.compiled;
+    const compiled = compile(ctx);
+    entries.unshift({
+      variables,
+      claims,
+      statistics: this.#statisticsVersion,
+      contextReads: ctx.contextReads,
+      compiled,
+    });
+    entries.length = Math.min(entries.length, COMPILED_PER_FIELD);
+    this.#compiled.set(field, entries);
+    return compiled;
+  }
+
   #databaseError(field: string, err: unknown): unknown {
     let error: unknown;
     if (err instanceof GraphQLError) error = err;
@@ -966,9 +1045,15 @@ export class LoraGraphQL {
     info: GraphQLResolveInfo,
     context: unknown,
   ): Promise<unknown> {
-    const ctx = this.#context(infoContext(info), context);
-    const args = this.#args(ctx, info.parentType, info.fieldNodes);
-    const compiled = compileRoot(ctx, kind, node, args, info.fieldNodes);
+    const compiled = this.#cachedCompile(info, context, (ctx) =>
+      compileRoot(
+        ctx,
+        kind,
+        node,
+        this.#args(ctx, info.parentType, info.fieldNodes),
+        info.fieldNodes,
+      ),
+    );
     return this.#run(info.fieldName, compiled, context, info);
   }
 
@@ -1126,15 +1211,15 @@ export class LoraGraphQL {
     context: unknown,
     connection = false,
   ): Promise<unknown> {
-    const ctx = this.#context(infoContext(info), context);
-    const args = this.#args(ctx, info.parentType, info.fieldNodes);
-    const compiled = compileSearch(
-      ctx,
-      node,
-      index,
-      args,
-      info.fieldNodes,
-      connection,
+    const compiled = this.#cachedCompile(info, context, (ctx) =>
+      compileSearch(
+        ctx,
+        node,
+        index,
+        this.#args(ctx, info.parentType, info.fieldNodes),
+        info.fieldNodes,
+        connection,
+      ),
     );
     return this.#run(info.fieldName, compiled, context, info);
   }
@@ -1183,7 +1268,14 @@ export class LoraGraphQL {
     if (op) checkFieldAuthentication(ctx, field.owner, field, op);
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
     if (field.owner !== "Mutation") {
-      const compiled = compileCypherRoot(ctx, field, args, info.fieldNodes);
+      const compiled = this.#cachedCompile(info, context, (c) =>
+        compileCypherRoot(
+          c,
+          field,
+          this.#args(c, info.parentType, info.fieldNodes),
+          info.fieldNodes,
+        ),
+      );
       return this.#run(info.fieldName, compiled, context, info);
     }
     let value: unknown;
@@ -1353,6 +1445,42 @@ function findOperation(
     );
   }
   return op;
+}
+
+/**
+ * A deterministic key for JSON-like values (object keys sorted, bigints
+ * tagged); undefined when the value cannot be keyed (functions, cycles,
+ * class instances), which turns caching off for that request.
+ */
+function stableKey(value: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let ok = true;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "bigint") return { $bigint: v.toString() };
+    if (typeof v === "function" || typeof v === "symbol") {
+      ok = false;
+      return null;
+    }
+    if (v === null || typeof v !== "object") return v;
+    if (seen.has(v)) {
+      ok = false;
+      return null;
+    }
+    seen.add(v);
+    if (Array.isArray(v)) return v.map(walk);
+    const proto = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) {
+      ok = false;
+      return null;
+    }
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v).sort()) {
+      out[k] = walk((v as Record<string, unknown>)[k]);
+    }
+    return out;
+  };
+  const json = JSON.stringify(walk(value));
+  return ok ? (json ?? "undefined") : undefined;
 }
 
 function sameTarget(
