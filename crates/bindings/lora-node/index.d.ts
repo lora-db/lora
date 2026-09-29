@@ -123,6 +123,20 @@ export declare class Database {
   txExecuteMany(txId: number, statements: Array<{ query: string; params?: Record<string, any> | null }>, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer[]>
   /** Commit (`commit = true`) or roll back interactive transaction `tx_id`. */
   txFinish(txId: number, commit: boolean): Promise<void>
+  /**
+   * Open a committed-change feed. Resolves with a feed id once the feed
+   * is registered. `on_wake` fires (on the JS thread) whenever the feed
+   * may have something new: call [`Self::changes_poll`] then.
+   */
+  openChanges(fromLsn: number | null | undefined, bufferSize: number | null | undefined, onWake: () => void): Promise<number>
+  /**
+   * Drain up to `max` batches from feed `feed_id`. Resolves with
+   * `{ batches, closed }`; rejects with `LORA_CHANGES_LAGGED` (or another
+   * coded error) once the feed fails. Never waits for new commits.
+   */
+  changesPoll(feedId: number, max?: number | null | undefined): Promise<{ batches: Array<{ lsn: number; changes: Array<Record<string, any>> }>; closed: boolean }>
+  /** Close feed `feed_id`. Idempotent. */
+  changesClose(feedId: number): void
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>
   /**

@@ -114,6 +114,24 @@ export declare class Database {
   ): Promise<Buffer[]>;
   /** Commit (`commit = true`) or roll back an interactive transaction. */
   txFinish(txId: number, commit: boolean): Promise<void>;
+  /**
+   * Open a change feed; resolves with its id. `onWake` fires on the JS
+   * thread whenever the feed may have something new to poll.
+   */
+  openChanges(
+    fromLsn: number | null,
+    bufferSize: number | null,
+    onWake: () => void,
+  ): Promise<number>;
+  /** Drain up to `max` buffered batches without waiting for new commits. */
+  changesPoll(
+    feedId: number,
+    max?: number | null,
+  ): Promise<{
+    batches: Array<{ lsn: number; changes: Array<Record<string, unknown>> }>;
+    closed: boolean;
+  }>;
+  changesClose(feedId: number): void;
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>;
   clear(): Promise<void>;

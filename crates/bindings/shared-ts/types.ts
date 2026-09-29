@@ -355,6 +355,72 @@ export interface LoraQueryProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Change feed
+// ---------------------------------------------------------------------------
+
+/**
+ * Net effect of one committed write on one node or relationship.
+ *
+ * Created and updated entities carry their state after the commit; deleted
+ * entities carry their last committed state. An entity created and deleted
+ * inside the same transaction is not reported. `setKeys` / `removedKeys`
+ * (and the label lists) name what the write touched; when it touched a key
+ * more than once, the last operation wins.
+ */
+export type LoraChange =
+  | {
+      kind: "nodeCreated" | "nodeDeleted";
+      id: number;
+      labels: string[];
+      properties: Record<string, LoraValue>;
+    }
+  | {
+      kind: "nodeUpdated";
+      id: number;
+      labels: string[];
+      properties: Record<string, LoraValue>;
+      setKeys: string[];
+      removedKeys: string[];
+      addedLabels: string[];
+      removedLabels: string[];
+    }
+  | {
+      kind: "relationshipCreated" | "relationshipDeleted";
+      id: number;
+      type: string;
+      startId: number;
+      endId: number;
+      properties: Record<string, LoraValue>;
+    }
+  | {
+      kind: "relationshipUpdated";
+      id: number;
+      type: string;
+      startId: number;
+      endId: number;
+      properties: Record<string, LoraValue>;
+      setKeys: string[];
+      removedKeys: string[];
+    }
+  | {
+      /**
+       * The whole graph was replaced (`clear()` or a snapshot restore).
+       * Drop anything derived from earlier batches.
+       */
+      kind: "reset";
+    };
+
+/** Every change one committed write made, in commit order. */
+export interface LoraChangeBatch {
+  /**
+   * Strictly increasing resume token. Pass the last one you processed as
+   * `fromLsn` to resume.
+   */
+  lsn: number;
+  changes: LoraChange[];
+}
+
+// ---------------------------------------------------------------------------
 // Guards
 // ---------------------------------------------------------------------------
 
@@ -624,6 +690,8 @@ export interface RowParseError {
  * - `LORA_FOREIGN_KEY` — a relationship or dependent record references a missing entity
  * - `LORA_TRANSACTION` — a transaction lifecycle rule was violated
  * - `LORA_LOCKED` — the database directory is locked by another process or handle
+ * - `LORA_CHANGES_TRUNCATED` — a change feed cannot resume from the requested LSN
+ * - `LORA_CHANGES_LAGGED` — a change feed subscriber fell behind its buffer; resume from its last LSN
  *
  * Server errors (engine-side):
  * - `LORA_IO` — I/O failure outside the WAL / snapshot boundaries
@@ -655,6 +723,8 @@ export type LoraErrorCode =
   | "LORA_FOREIGN_KEY"
   | "LORA_TRANSACTION"
   | "LORA_LOCKED"
+  | "LORA_CHANGES_TRUNCATED"
+  | "LORA_CHANGES_LAGGED"
   | "LORA_IO"
   | "LORA_CONNECTION"
   | "LORA_WAL_CORRUPTION"
@@ -682,6 +752,8 @@ const KNOWN_ERROR_CODES = new Set<LoraErrorCode>([
   "LORA_FOREIGN_KEY",
   "LORA_TRANSACTION",
   "LORA_LOCKED",
+  "LORA_CHANGES_TRUNCATED",
+  "LORA_CHANGES_LAGGED",
   "LORA_IO",
   "LORA_CONNECTION",
   "LORA_WAL_CORRUPTION",
