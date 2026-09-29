@@ -713,49 +713,14 @@ class Runner {
         pairs,
         "BEFORE",
       );
-      const ctx = this.ctx();
       // Connecting an already-connected pair keeps one relationship and
-      // updates its properties. It is replaced rather than merged: LoraDB
-      // 0.15 ignores the bound end node of a MERGE relationship pattern.
-      // A node this plan creates has no relationship to replace.
-      const old = links.filter(
-        (l) =>
-          !plan.isFresh(rel.owner, l.from) && !plan.isFresh(rel.target, l.to),
-      );
-      const existing =
-        old.length === 0
-          ? []
-          : await this.run(
-              `UNWIND ${printExpr(
-                bind(
-                  ctx,
-                  old.map((l) => ({ from: l.from, to: l.to })),
-                ),
-              )} AS row\n` +
-                seekThenExpand("a", owner, "row.from", rel, "r", "b", target) +
-                ` AND b.${name(target.key.property)} = row.to\n` +
-                `WITH row, r, properties(r) AS old DELETE r RETURN row.from AS from, row.to AS to, old`,
-              ctx,
-            );
-      const previous = new Map<string, Input>();
-      for (const row of existing) {
-        previous.set(
-          `${keyOf(row["from"])}\0${keyOf(row["to"])}`,
-          (row["old"] as Input | null) ?? {},
-        );
-      }
+      // updates its properties: MERGE on both bound ends (E14 is fixed).
+      // `existed` tells a new relationship from an updated one.
       const lctx = this.ctx();
       const rows = printExpr(
         bind(
           lctx,
-          links.map((l) => ({
-            from: l.from,
-            to: l.to,
-            props: {
-              ...(previous.get(`${keyOf(l.from)}\0${keyOf(l.to)}`) ?? {}),
-              ...l.props,
-            },
-          })),
+          links.map((l) => ({ from: l.from, to: l.to, props: l.props })),
         ),
       );
       const text =
@@ -765,8 +730,9 @@ class Runner {
         `\nMATCH (b:${name(target.labels[0]!)}) WHERE b.${name(target.key.property)} = row.to` +
         andText(authFilter(lctx, target, "b", "READ")) +
         andText(authFilter(lctx, target, "b", "CREATE_RELATIONSHIP")) +
-        `\nCREATE (a)${arrow(rel, "r", "b", undefined)}\n` +
-        `SET r += row.props\nRETURN row.to AS key`;
+        `\nWITH a, b, row, size([(a)${arrow(rel, "", "b", undefined)} | 1]) > 0 AS existed` +
+        `\nMERGE (a)${arrow(rel, "r", "b", undefined)}\n` +
+        `SET r += row.props\nRETURN row.to AS key, existed`;
       const linked = await this.run(text, lctx);
       if (linked.length < links.length) {
         const found = new Set(linked.map((r) => keyOf(r["key"])));
@@ -789,7 +755,9 @@ class Runner {
         pairs,
         "AFTER",
       );
-      this.info.relationshipsCreated += links.length - existing.length;
+      this.info.relationshipsCreated += linked.filter(
+        (r) => r["existed"] !== true,
+      ).length;
       for (const l of links) this.connected.push(relRef(rel, l.from, l.to));
     }
   }

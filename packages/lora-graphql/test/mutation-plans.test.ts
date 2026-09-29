@@ -143,7 +143,7 @@ test("a create does not look for relationships its new nodes cannot have", async
     }
   }`);
   const texts = statements.map((s) => s.statement.text);
-  // No pre-delete of an existing pair, and no count of Stage.venue.
+  // No delete of an existing pair, and no count of Stage.venue.
   expect(texts.filter((t) => t.includes("DELETE"))).toEqual([]);
-  expect(texts.filter((t) => t.includes("size(["))).toEqual([]);
+  expect(texts.filter((t) => t.includes("AS count"))).toEqual([]);
 });

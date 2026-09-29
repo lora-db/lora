@@ -50,20 +50,11 @@ export type SchemaRequirement =
 const RANGE_OPS = new Set<FilterOperator>(["LT", "LTE", "GT", "GTE"]);
 
 /**
- * Types a RANGE index must not be inferred for. LoraDB 0.15 leaves
- * temporal values out of its sorted index but still plans range
- * predicates over them as index scans, which then return no rows. Until
- * the engine indexes temporals (or falls back to a scan), these filter
- * and sort by label scan.
+ * Types a RANGE index must not be inferred for. LoraDB keeps durations out
+ * of its sorted index (they have no total order); other temporals are
+ * indexed by the instant they denote (E17).
  */
-export const RANGE_UNINDEXABLE = new Set<ScalarType>([
-  "Date",
-  "Time",
-  "LocalTime",
-  "DateTime",
-  "LocalDateTime",
-  "Duration",
-]);
+export const RANGE_UNINDEXABLE = new Set<ScalarType>(["Duration"]);
 const TEXT_OPS = new Set<FilterOperator>([
   "CONTAINS",
   "STARTS_WITH",

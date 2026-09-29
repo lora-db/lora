@@ -23,7 +23,7 @@ const cases: Record<
   equality: {
     query: `{ festivals(where: { status: { eq: ON_SALE } }) { key } }`,
   },
-  "in becomes unwind + seek": {
+  "in becomes an index seek": {
     query: `{ festivals(where: { key: { in: ["f1", "f2"] }, capacity: { gt: 0 } }) { key } }`,
   },
   "lookup by key": { query: `{ festival(key: "f1") { key title } }` },

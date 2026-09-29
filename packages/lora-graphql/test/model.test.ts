@@ -134,14 +134,12 @@ describe("model validation", () => {
     ]);
   });
 
-  test("temporal RANGE indexes are refused until the engine supports them", () => {
+  test("RANGE indexes on durations are refused; other temporals are fine", () => {
     expect(
       problems(
-        `type A @node { key: ID! @key at: DateTime @index(kind: RANGE) }`,
+        `type A @node { key: ID! @key at: DateTime @index(kind: RANGE) span: Duration @index(kind: RANGE) }`,
       ),
-    ).toEqual([
-      "A.at: LoraDB cannot RANGE-index DateTime values yet: range filters through such an index return no rows",
-    ]);
+    ).toEqual(["A.span: Duration values have no order a RANGE index can use"]);
   });
 
   test("the key is always addressable by value", () => {
@@ -162,6 +160,7 @@ describe("S1: index inference", () => {
       "RANGE Festival.name — Festival.name is @sortable",
       "TEXT Festival.name — Festival.name is @filterable by CONTAINS, STARTS_WITH",
       "RANGE Festival.capacity — Festival.capacity is @filterable by LT, GT, GTE",
+      "RANGE Festival.startsAt — Festival.startsAt is @filterable by GTE, LT",
       "NODE_KEY Genre.key — Genre.key is the @key",
       "NOT_NULL Genre.name — Genre.name is non-null and @sortable",
       "RANGE Genre.name — Genre.name is @sortable",

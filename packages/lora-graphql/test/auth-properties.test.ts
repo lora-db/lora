@@ -120,7 +120,7 @@ const whereArb: fc.Arbitrary<Where> = fc.letrec<{ where: Where }>((tie) => ({
       ),
     }),
     fc.record({ AND: fc.array(tie("where"), { maxLength: 3 }) }),
-    fc.record({ OR: fc.array(tie("where"), { minLength: 1, maxLength: 3 }) }),
+    fc.record({ OR: fc.array(tie("where"), { maxLength: 3 }) }),
     fc.record({ NOT: tie("where") }),
   ),
 })).where;

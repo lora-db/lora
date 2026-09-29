@@ -899,9 +899,7 @@ function buildScalarField(
     ) {
       at("use a POINT index for Point fields");
     } else if (kind === "RANGE" && RANGE_UNINDEXABLE.has(type)) {
-      at(
-        `LoraDB cannot RANGE-index ${type} values yet: range filters through such an index return no rows`,
-      );
+      at(`${type} values have no order a RANGE index can use`);
     } else {
       indexes.push(kind);
     }

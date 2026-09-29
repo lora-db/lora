@@ -52,23 +52,27 @@ Engine prerequisites, re-checked against the current tree: E1 fixed (empty
 labels return no rows), E4 fixed (full-text via `CALL … YIELD`), E6 fixed
 (bigint parameters and results), E7 fixed (`begin()`), E5 partly (a single
 sort key streams from a RANGE index under a range predicate). E9 and E10
-remain. New findings, each worked around in the package:
+remain. Findings from building the package, with their state after Phase
+16 of [graphql-next-phases.md](graphql-next-phases.md):
 
-| #   | Behaviour                                                                                                             | Where                                                                                                   |
-| --- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| E13 | Reads under a deadline or in a transaction do not stop early at `LIMIT` (the pull path requires `deadline.is_none()`) | `crates/lora-database/src/database/execute.rs`, read-only branch of `execute_rows_with_params_deadline` |
-| E14 | `MERGE (a)-[r:T]->(b)` and `[(a)-[:T]->(b) \| …]` ignore an already-bound `b` and reuse any `T` edge of `a`           | planner / executor                                                                                      |
-| E15 | Writes inside `CALL { }` fail with `LORA_READ_ONLY`, though `explain()` says `mutating`                               | executor                                                                                                |
-| E16 | An aggregate nested in another call (`head(collect(x))`, `collect(x)[0..2]`) is not aggregated                        | analyzer                                                                                                |
-| E17 | RANGE indexes skip temporal values, yet range predicates on temporals are planned through them and return no rows     | `PropertyIndexKey::from_value`, `crates/lora-store/src/memory/property_index.rs`                        |
-| E18 | `x IN $list` plans a label scan; equality seeks                                                                       | optimizer                                                                                               |
-| E19 | `null` values in a property map are stored as properties (`keys(n)` includes them)                                    | store                                                                                                   |
-| E20 | Existence constraints are checked at `CREATE`, before a following `SET`                                               | executor                                                                                                |
-| E21 | `MATCH (a:A)-[:T]->(b:B)` ignores the labels of every node but the first                                              | planner (the package adds `WHERE b:B`)                                                                  |
-| E22 | Integer `/` integer returns a float                                                                                   | expression evaluator (the package wraps `toInteger`)                                                    |
-| E23 | Negative list slice bounds (`l[..-1]`) return wrong results                                                           | expression evaluator (the package writes `l[..size(l) - n]`)                                            |
-| E24 | `COUNT { … RETURN DISTINCT }`, `EXISTS { }` and `UNION` inside `CALL { }` are not supported                           | parser / analyzer (the package uses `reduce` and per-type `CALL`s)                                      |
-| E25 | `max`, `sum` and `avg` over durations are wrong (`max` returns the smallest; `sum` and `avg` return null)             | aggregate functions (the package folds durations with `reduce`)                                         |
+| #   | Behaviour                                                                                                         | State                                                                                            |
+| --- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| E13 | Reads under a deadline or in a transaction do not stop early at `LIMIT`                                           | Fixed: the pull path runs under a deadline and in transactions                                   |
+| E14 | `MERGE (a)-[r:T]->(b)` and `[(a)-[:T]->(b) \| …]` ignore an already-bound `b` and reuse any `T` edge of `a`       | Fixed                                                                                            |
+| E15 | Writes inside `CALL { }` fail with `LORA_READ_ONLY`, though `explain()` says `mutating`                           | Fixed (no `CALL (x) { }` scope syntax, `UNION` in the body or `IN TRANSACTIONS`)                 |
+| E16 | An aggregate nested in another call (`head(collect(x))`, `collect(x)[0..2]`) is not aggregated                    | Open: the package collects in a `WITH` first                                                     |
+| E17 | RANGE indexes skip temporal values, yet range predicates on temporals are planned through them and return no rows | Fixed for Date, DateTime, LocalDateTime, Time, LocalTime; Duration stays unindexed               |
+| E18 | `x IN $list` plans a label scan; equality seeks                                                                   | Fixed: one seek per distinct element                                                             |
+| E19 | `null` values in a property map are stored as properties (`keys(n)` includes them)                                | Fixed; `SET n += {a: null}` removes `a`                                                          |
+| E20 | Existence constraints are checked at `CREATE`, before a following `SET`                                           | Fixed for CREATE then SET / MERGE; `CREATE … DELETE` and `SET n:Label` still check immediately   |
+| E21 | `MATCH (a:A)-[:T]->(b:B)` ignores the labels of every node but the first                                          | Fixed                                                                                            |
+| E22 | Integer `/` integer returns a float                                                                               | Open: the package wraps `toInteger`                                                              |
+| E23 | Negative list slice bounds (`l[..-1]`) return wrong results                                                       | Open: the package writes `l[..size(l) - n]`                                                      |
+| E24 | `COUNT { … RETURN DISTINCT }`, `EXISTS { }` and `UNION` inside `CALL { }` are not supported                       | Open: the package uses `reduce` and per-type `CALL`s                                             |
+| E25 | `max`, `sum` and `avg` over durations are wrong (`max` returns the smallest; `sum` and `avg` return null)         | Open: the package folds durations with `reduce`                                                  |
+| E26 | `date('2024-01-01')`, `datetime('…')` and similar return null; only the `'…'::DATE` cast works                    | Open: the package binds temporal parameters, so it does not hit this; hand-written `@cypher` can |
+| E27 | `min()` / `max()` and list sorting compare `LocalDateTime`, `Time` and `LocalTime` values as equal                | Open                                                                                             |
+| E28 | An index keys integers and floats apart: an equality lookup for `5` misses `5.0`                                  | Open                                                                                             |
 
 ## Why
 
