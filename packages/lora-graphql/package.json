@@ -1,6 +1,6 @@
 {
   "name": "@loradb/lora-graphql",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Schema-first GraphQL for LoraDB: one annotated SDL becomes an executable, index-aware GraphQL API that compiles every operation to a single Cypher statement.",
   "license": "BUSL-1.1",
   "packageManager": "yarn@4.5.1",
@@ -63,7 +63,7 @@
     "bench": "vitest bench --run"
   },
   "peerDependencies": {
-    "@loradb/lora-node": "^0.15.0",
+    "@loradb/lora-node": "^0.16.0",
     "graphql": "^16.8.0 || ^17.0.0"
   },
   "devDependencies": {
