@@ -65,6 +65,8 @@ where
 /// * `NodeByLabelScan` → sum of per-label counts (handles `:A|B`)
 /// * `NodeByPropertyScan` → uniform-distribution heuristic from
 ///   distinct-value count, when both label and property are recorded
+/// * `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan` → a
+///   fraction of the label count, as the optimizer scores them
 ///
 /// Operators that aren't covered keep the existing `None`. The
 /// optimizer doesn't *use* these numbers yet — it's `EXPLAIN`-only —
@@ -79,6 +81,20 @@ fn annotate_node(node: &mut PlanTreeNode, stats: &GraphStats) {
         "NodeScan" => Some(stats.node_count as u64),
         "NodeByLabelScan" => labels_estimate(node, stats),
         "NodeByPropertyScan" => property_equality_estimate(node, stats),
+        // The same selectivity guesses the optimizer scores seeks with
+        // (`score_logical_op`), so EXPLAIN shows what the planner assumed.
+        "NodeByPropertyRangeScan" => {
+            let two_sided = node.details.contains_key("lo") && node.details.contains_key("hi");
+            labels_estimate(node, stats).map(|n| n.div_ceil(if two_sided { 4 } else { 3 }))
+        }
+        "NodeByTextScan" => {
+            let denom = match node.details.get("predicate").map(String::as_str) {
+                Some("CONTAINS") => 2,
+                _ => 4,
+            };
+            labels_estimate(node, stats).map(|n| n.div_ceil(denom))
+        }
+        "NodeByPointScan" => labels_estimate(node, stats).map(|n| n.div_ceil(5)),
         _ => None,
     };
     for child in &mut node.children {
