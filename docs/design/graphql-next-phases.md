@@ -352,6 +352,14 @@ data they write against.
 
 ## Phase 18: Subscriptions at Scale
 
+**Status: items 1 and 2 done; item 3 in progress.** Reads made for the
+subscribers of one write are shared by exact statement and parameters,
+so subscribers with the same shape and claims cost one visibility query
+and one node read (20 subscribers: 40 reads to 2). Events carry
+`timestamp`; `@subscription(relationships: true)` adds CONNECT and
+DISCONNECT events; `@subscription(previousState: true)` adds the stored
+values before an update or delete.
+
 1. **Shared visibility checks.** Each write costs every subscriber a
    visibility query and a node read, O(subscribers × events). Group
    subscribers by type, `where` shape and claims fingerprint. Run one

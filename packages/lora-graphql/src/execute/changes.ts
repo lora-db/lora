@@ -20,6 +20,17 @@ export interface RelationshipRef {
 
 export interface WriteChange {
   operation: MutationOperation | "UPSERT" | "CYPHER";
+  /** When the change was committed (ISO-8601), set when it is emitted. */
+  timestamp?: string;
+  /**
+   * Stored properties before the write, for updated and deleted nodes of
+   * types with `@subscription(previousState: true)`.
+   */
+  before?: Array<{
+    type: string;
+    key: unknown;
+    properties: Record<string, unknown>;
+  }>;
   /** The Mutation field that made the change. */
   field: string;
   created: EntityRef[];

@@ -509,6 +509,10 @@ export function buildModel(
       subscriptions: new Set<MutationOperation>(
         (subscription?.["operations"] as MutationOperation[] | undefined) ?? [],
       ),
+      subscriptionOptions: {
+        relationships: subscription?.["relationships"] === true,
+        previousState: subscription?.["previousState"] === true,
+      },
       limit: resolveLimit(
         directive(d("limit"), t, atType(t.name)),
         globalLimit,

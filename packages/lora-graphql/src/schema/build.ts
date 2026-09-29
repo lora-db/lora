@@ -56,8 +56,16 @@ import { CUSTOM_SCALARS } from "./scalars.js";
 
 /** One event of a generated subscription. */
 export interface ChangeEvent {
-  operation: "CREATE" | "UPDATE" | "DELETE";
+  operation: "CREATE" | "UPDATE" | "DELETE" | "CONNECT" | "DISCONNECT";
   key: unknown;
+  /** When the write was committed, ISO-8601. */
+  timestamp?: string | undefined;
+  /** For CONNECT / DISCONNECT: the relationship and its other end. */
+  relationship?:
+    | { field: string; type: string; relatedType: string; relatedKey: unknown }
+    | undefined;
+  /** Stored properties before the write (`previousState: true`). */
+  previous?: Record<string, unknown> | undefined;
 }
 
 export interface SchemaHooks {
@@ -1640,17 +1648,97 @@ export function buildSchema(
   const subscription: GraphQLFieldConfigMap<unknown, unknown> = {};
   const changeOperation = new GraphQLEnumType({
     name: "ChangeOperation",
-    values: { CREATE: {}, UPDATE: {}, DELETE: {} },
+    values: {
+      CREATE: {},
+      UPDATE: {},
+      DELETE: {},
+      CONNECT: {
+        description:
+          "A relationship was created (`@subscription(relationships: true)`).",
+      },
+      DISCONNECT: {
+        description:
+          "A relationship was removed (`@subscription(relationships: true)`).",
+      },
+    },
+  });
+  const changeRelationship = new GraphQLObjectType({
+    name: "ChangeRelationship",
+    fields: {
+      field: {
+        type: nonNull(GraphQLString),
+        description: "`Type.field` that declares it.",
+      },
+      type: {
+        type: nonNull(GraphQLString),
+        description: "The relationship type.",
+      },
+      relatedType: { type: nonNull(GraphQLString) },
+      relatedKey: {
+        type: nonNull(GraphQLString),
+        resolve: (src: { relatedKey: unknown }) => String(src.relatedKey),
+      },
+    },
   });
   for (const node of model.nodes.values()) {
     if (!node.read || node.subscriptions.size === 0) continue;
     const obj = objects.get(node.name)!;
     const keyType = scalarType(node.key) as GraphQLInputType &
       GraphQLOutputType;
+    // The stored values before an update or delete: readable scalar
+    // fields without field-level rules (they cannot be checked after the
+    // write).
+    const previousFields = [...node.fields.values()].filter(
+      (f): f is ScalarField =>
+        f.kind === "scalar" &&
+        !f.private &&
+        f.selectableOn.read &&
+        !f.vector &&
+        !(f.authorization?.validate.length ?? 0),
+    );
+    const previousState =
+      node.subscriptionOptions.previousState && previousFields.length > 0
+        ? new GraphQLObjectType<Record<string, unknown>>({
+            name: `${node.name}PreviousState`,
+            fields: Object.fromEntries(
+              previousFields.map((f) => [
+                f.name,
+                {
+                  type: scalarOutput(f),
+                  resolve: (src: Record<string, unknown>) =>
+                    src[f.property] ?? null,
+                },
+              ]),
+            ),
+          })
+        : undefined;
     const event = new GraphQLObjectType<ChangeEvent>({
       name: `${node.name}ChangeEvent`,
       fields: {
         operation: { type: nonNull(changeOperation) },
+        timestamp: {
+          type: nonNull(GraphQLString),
+          description: "When the write was committed (ISO-8601).",
+          resolve: (src) => src.timestamp ?? new Date(0).toISOString(),
+        },
+        ...(node.subscriptionOptions.relationships
+          ? {
+              relationship: {
+                type: changeRelationship,
+                description: "For CONNECT and DISCONNECT: the relationship.",
+                resolve: (src: ChangeEvent) => src.relationship ?? null,
+              },
+            }
+          : {}),
+        ...(previousState
+          ? {
+              previousState: {
+                type: previousState,
+                description: "Stored values before an update or delete.",
+                resolve: (src: ChangeEvent) => src.previous ?? null,
+              },
+            }
+          : {}),
         [node.key.name]: {
           type: nonNull(keyType),
           resolve: (src) => src.key,

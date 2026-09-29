@@ -711,6 +711,16 @@ after the fact, go only to subscribers following that `key` without a
 `where`. `@authentication(operations: [SUBSCRIBE])` guards the subscription
 itself. Pass a `signal` in the context to end the stream with the request.
 
+Every event has a `timestamp` (when the write was committed). With
+`@subscription(relationships: true)` a type also gets `CONNECT` and
+`DISCONNECT` events, one per relationship, with `relationship { field type
+relatedType relatedKey }`. With `@subscription(previousState: true)`,
+`UPDATE` and `DELETE` events carry `previousState`: the stored values
+before the write (readable scalar fields without field-level rules), at
+the cost of one read per write. Subscribers whose checks compile to the
+same statement share it: twenty subscribers with the same `where` and
+claims cost one visibility query and one node read per write.
+
 ## Transactions
 
 ```ts
