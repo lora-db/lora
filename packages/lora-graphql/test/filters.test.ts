@@ -110,3 +110,18 @@ test("UNDIRECTED relationships read both ways", async () => {
   );
   expect(d.band.friends).toEqual([{ key: "b" }, { key: "c" }]);
 });
+
+test("empty filters under NOT and OR follow logic", async () => {
+  const h = await festivalHarness();
+  const count = async (where: string) =>
+    (
+      await h.data<{ festivals: unknown[] }>(
+        `{ festivals(where: ${where}, limit: 50) { key } }`,
+      )
+    ).festivals.length;
+  expect(await count(`{ AND: [] }`)).toBe(30);
+  expect(await count(`{ NOT: { AND: [] } }`)).toBe(0);
+  expect(await count(`{ OR: [{ NOT: {} }] }`)).toBe(0);
+  expect(await count(`{ OR: [] }`)).toBe(0);
+  expect(await count(`{ OR: [{}, { name: { eq: "nope" } }] }`)).toBe(30);
+});

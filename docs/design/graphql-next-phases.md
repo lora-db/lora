@@ -255,6 +255,24 @@ disconnects are intentional.
 
 ## Phase 16: Engine Fixes That Unlock the Package
 
+**Status: done in the engine.** Condition pushdown (any end of a chain
+seeks; conditions sit on the scan that binds their variables), E13, E14,
+E15, E17, E18, E19, E20, E21, `count(n)` from label counts, and
+`tx.executeMany` in lora-node all landed, each with tests in
+`crates/lora-database/tests/`. Measured: the single-pattern connect
+pre-delete 175 ms to 0.007 ms, `IN` over 20 keys 14 ms to 0.02 ms,
+`count(n)` 1.9 ms to 0.0002 ms, a `LIMIT 10` read in a transaction 21 ms
+to 0.1 ms, a newest-first temporal feed 8.1 ms to 0.014 ms, and 200
+statements in one transaction 0.10 ms to 0.03 ms each with `executeMany`.
+Package side: `IN` filters and relationship anchors are plain `IN` seeks
+(no `UNWIND`), generated `MATCH` clauses no longer add label tests,
+temporal fields get RANGE indexes again, and connect is one `MERGE` per
+relationship field instead of delete then create. Mutation statements
+keep their seek-then-expand form. The E13 fix makes the Phase 15
+`totalCount` item unnecessary. The property-based tests found one more
+package bug on the way: `NOT` of an empty filter was ignored, and
+`OR: []` matched everything.
+
 Each fix is in `crates/`. When it lands, the package drops the workaround
 and the engine table in the plan loses a row.
 

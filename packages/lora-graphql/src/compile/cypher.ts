@@ -397,22 +397,11 @@ export function printClauses(clauses: Clause[], indent = ""): string {
 
 function printClause(c: Clause, indent: string): string {
   switch (c.kind) {
-    case "match": {
-      // LoraDB 0.15 ignores the labels of every node after the first in a
-      // MATCH pattern; test them explicitly so expansions stay typed.
-      const labelTests: Expr[] = c.pattern.hops
-        .filter((h) => h.node.variable && h.node.labels.length > 0)
-        .map((h) => ({
-          kind: "hasLabels" as const,
-          variable: h.node.variable!,
-          labels: h.node.labels,
-        }));
-      const where = and(...labelTests, c.where);
+    case "match":
       return (
         `MATCH ${printPattern(c.pattern)}` +
-        (where ? `\n${indent}WHERE ${printExpr(where)}` : "")
+        (c.where ? `\n${indent}WHERE ${printExpr(c.where)}` : "")
       );
-    }
     case "unwind":
       return `UNWIND ${printExpr(c.expr)} AS ${name(c.alias)}`;
     case "procedure": {

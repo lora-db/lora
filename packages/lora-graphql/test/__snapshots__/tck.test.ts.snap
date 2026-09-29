@@ -106,7 +106,7 @@ RETURN this { .key } AS this",
 ]
 `;
 
-exports[`TCK > in becomes unwind + seek 1`] = `
+exports[`TCK > in becomes an index seek 1`] = `
 [
   {
     "field": "festivals",
@@ -126,9 +126,8 @@ exports[`TCK > in becomes unwind + seek 1`] = `
           "p1": 0,
           "p2": 10,
         },
-        "text": "UNWIND $p0 AS this_key
-MATCH (this:Festival)
-WHERE this.key = this_key AND this.capacity > $p1
+        "text": "MATCH (this:Festival)
+WHERE this.key IN $p0 AND this.capacity > $p1
 WITH this ORDER BY this.key ASC LIMIT $p2
 RETURN this { .key } AS this",
       },
@@ -214,12 +213,10 @@ WITH this ORDER BY this.key ASC LIMIT $p2
 CALL {
   WITH this
   MATCH (this)<-[:IN_GENRE]-(this_festivals:Festival)
-  WHERE this_festivals:Festival
   WITH this_festivals ORDER BY this_festivals.key ASC LIMIT $p0
   CALL {
     WITH this_festivals
     MATCH (this_festivals)<-[:HEADLINES]-(this_festivals_headliners:Artist)
-    WHERE this_festivals_headliners:Artist
     WITH this_festivals_headliners ORDER BY this_festivals_headliners.name ASC LIMIT $p1
     RETURN collect(this_festivals_headliners { .name }) AS this_festivals_headliners_list
   }
@@ -289,7 +286,7 @@ WHERE this.key = $p0
 CALL {
   WITH this
   MATCH (this)<-[this_followersConnection_rel:FOLLOWS]-(this_followersConnection:User)
-  WHERE this_followersConnection:User AND this_followersConnection_rel.since >= $p1
+  WHERE this_followersConnection_rel.since >= $p1
   WITH this_followersConnection_rel, this_followersConnection ORDER BY this_followersConnection.key ASC LIMIT $p7
   RETURN collect({ node: this_followersConnection { .key }, __cursor: [this_followersConnection.key], properties: this_followersConnection_rel { .since } }) AS this_followersConnection_rows
 }
@@ -329,7 +326,7 @@ exports[`TCK > relationship filters 1`] = `
         "text": "MATCH (this_followers_anchor:User)
 WHERE this_followers_anchor.key = $p5
 MATCH (this_followers_anchor)-[:FOLLOWS]->(this:Festival)
-WHERE this:Festival AND size([(this)-[this_genre_rel:IN_GENRE]->(this_genre:Genre) WHERE this_genre.name STARTS WITH $p1 | 1]) > 0 AND size([(this)<-[this_followers_rel:FOLLOWS]-(this_followers:User) WHERE this_followers.key = $p3 | 1]) > 0 AND size(reduce(seen = [], seen_key IN [(this)<-[this_followers1_rel:FOLLOWS]-(this_followers1:User) | ["User", this_followers1.key]] | CASE WHEN seen_key IN seen THEN seen ELSE seen + [seen_key] END)) > $p4
+WHERE size([(this)-[this_genre_rel:IN_GENRE]->(this_genre:Genre) WHERE this_genre.name STARTS WITH $p1 | 1]) > 0 AND size([(this)<-[this_followers_rel:FOLLOWS]-(this_followers:User) WHERE this_followers.key = $p3 | 1]) > 0 AND size(reduce(seen = [], seen_key IN [(this)<-[this_followers1_rel:FOLLOWS]-(this_followers1:User) | ["User", this_followers1.key]] | CASE WHEN seen_key IN seen THEN seen ELSE seen + [seen_key] END)) > $p4
 WITH DISTINCT this
 WITH this ORDER BY this.key ASC LIMIT $p6
 RETURN this { .key } AS this",

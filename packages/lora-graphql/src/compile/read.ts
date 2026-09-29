@@ -1316,30 +1316,7 @@ function rootMatch(
   const clauses: Clause[] = [];
   let anchor: Expr | undefined;
   let expectation: Omit<SeekExpectation, "statement"> | undefined;
-  let rest = where ?? undefined;
-
-  // `x IN $list` does not use an index in LoraDB; UNWIND + equality does.
-  // Anchor on the first top-level `in` so the MATCH seeks per value.
-  const anchorField = rest ? findInAnchor(node, rest) : undefined;
-  if (anchorField && rest) {
-    const ops = rest[anchorField.name] as Where;
-    const values = dedupe(ops["in"] as unknown[]);
-    // Filtering on the field reveals it, as reading it does. A field with
-    // READ rules keeps its `in` in the WHERE too, where the rules apply.
-    checkFieldAuthentication(ctx, node.name, anchorField);
-    if (!anchorField.authorization?.validate.length) {
-      const { in: _in, ...otherOps } = ops;
-      rest = { ...rest, [anchorField.name]: otherOps };
-    }
-    const item = freshVar(ctx, `this_${anchorField.name}`);
-    clauses.push({ kind: "unwind", expr: bind(ctx, values), alias: item });
-    anchor = bin("=", prop(v("this"), anchorField.property), v(item));
-    expectation = {
-      label,
-      access: "exact",
-      reason: `${node.name}.${anchorField.name} in [...] is unwound into equality seeks`,
-    };
-  }
+  const rest = where ?? undefined;
 
   // Computed (@cypher) fields the filter or sort uses: each runs once per
   // node, in a CALL after the MATCH, and the filter moves after them.
@@ -1502,13 +1479,12 @@ function findRelatedAnchor(
     if (eq != null) {
       seek = bin("=", prop(v(a), target.key.property), bind(ctx, eq));
     } else {
-      const item = freshVar(ctx, `${a}_key`);
-      clauses.push({
-        kind: "unwind",
-        expr: bind(ctx, dedupe(inList as unknown[])),
-        alias: item,
-      });
-      seek = bin("=", prop(v(a), target.key.property), v(item));
+      // `IN` seeks once per distinct value (E18).
+      seek = bin(
+        "IN",
+        prop(v(a), target.key.property),
+        bind(ctx, dedupe(inList as unknown[])),
+      );
     }
     clauses.push({
       kind: "match",
@@ -1539,16 +1515,6 @@ function findRelatedAnchor(
         reason: `anchored on ${target.name}.${target.key.name} through ${node.name}.${rel.name}`,
       },
     };
-  }
-  return undefined;
-}
-
-function findInAnchor(node: NodeType, where: Where): ScalarField | undefined {
-  for (const [key, value] of Object.entries(where)) {
-    const field = node.fields.get(key);
-    if (field?.kind !== "scalar" || value == null) continue;
-    const list = (value as Where)["in"];
-    if (Array.isArray(list)) return field;
   }
   return undefined;
 }

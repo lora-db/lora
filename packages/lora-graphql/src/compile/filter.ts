@@ -166,13 +166,16 @@ function compileWhere(
       const branches = (value as Where[]).map((w) =>
         compileWhere(ctx, w, lookup),
       );
-      // An empty branch matches everything, so the OR is vacuous.
-      if (branches.length > 0 && branches.every((b) => b !== undefined)) {
+      // An empty branch matches everything, so the OR is vacuous; no
+      // branches at all match nothing.
+      if (branches.length === 0) parts.push(lit(false));
+      else if (branches.every((b) => b !== undefined)) {
         parts.push(or(...branches));
       }
     } else if (key === "NOT") {
+      // NOT of a filter that matches everything matches nothing.
       const inner = compileWhere(ctx, value as Where, lookup);
-      if (inner) parts.push(not(inner));
+      parts.push(inner ? not(inner) : lit(false));
     } else {
       parts.push(lookup(key)?.(value));
     }

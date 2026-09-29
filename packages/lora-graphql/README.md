@@ -844,7 +844,7 @@ Measured on LoraDB 0.15 over 20 000 festivals and 100 000 relationships
 | Relationship filters as `size([… \| 1])`; aggregates of related values with `reduce` | No `OPTIONAL MATCH`; `EXISTS { }` does not parse; aggregates nest safely             |
 | `CALL { }` for nested lists, nested connections, `@cypher` and interface members     | The only way to sort, limit and aggregate per parent                                 |
 | Ordered by an always-present string: `WHERE s >= ""`                                 | The planner walks the index in order and stops at the limit: 0.03 ms instead of 7 ms |
-| `key IN $list` becomes `UNWIND` plus equality                                        | `IN` scans the label: 0.04 ms instead of 4.6 ms                                      |
+| Mutation statements seek the key in their own `MATCH`, then expand                   | The plan no longer depends on the optimizer finding the seek: 0.06 ms per connect    |
 | A relationship filter naming a key starts from that node                             | 0.07 ms instead of 9.3 ms                                                            |
 | Keyset predicates written out, led by `sortKey >= $v` on non-null keys               | `[a, b] > $list` silently matches nothing; the lead bound gets a range scan          |
 | Lists sort by the requested fields only; connections add a unique tie-breaker        | Two sort keys cannot stream from an index                                            |
@@ -873,20 +873,20 @@ Measured on LoraDB 0.15 over 20 000 festivals and 100 000 relationships
 ## LoraDB behaviours this works around
 
 Found while building this package; each workaround goes away with its fix.
+Fixed in the engine and no longer worked around: labels after the first
+node of a `MATCH`, early `LIMIT` under a deadline or in a transaction,
+`MERGE` with a bound end node (connect is one `MERGE`), writes in
+`CALL { }`, temporal RANGE indexes (inferred again for temporal fields),
+`x IN $list` seeks, `null` values in property maps, and existence checks
+before a following `SET`.
 
-| Behaviour                                                                                                                  | Workaround                                                                              |
-| -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `MATCH` ignores the labels of every node after the first (`MATCH (a:A)-[:T]->(b:B)` returns non-`B` nodes)                 | Every generated `MATCH` tests those labels explicitly (`WHERE b:B`)                     |
-| Reads under a deadline or in a transaction do not stop early at `LIMIT` (`execute.rs`: the pull path requires no deadline) | Single-statement reads use `stream()`, which checks the deadline between rows           |
-| `MERGE (a)-[r:T]->(b)` and `[(a)-[:T]->(b) \| …]` ignore an already-bound `b`                                              | Connect deletes the pair's edge, then `CREATE`s                                         |
-| Writes inside `CALL { }` fail as read-only                                                                                 | `@cypher` mutations run unwrapped                                                       |
-| An aggregate nested in a call (`head(collect(x))`, `collect(x)[0..2]`) is not aggregated                                   | `WITH collect(x) AS c RETURN head(c)`; `reduce` for per-parent aggregates               |
-| RANGE indexes skip temporal values but range predicates still use them, returning nothing                                  | No RANGE index is inferred for temporal fields; `@index(kind: RANGE)` on one is refused |
-| Existence constraints are checked at `CREATE`, before `SET`                                                                | All properties, timestamps included, go into the `CREATE` map                           |
-| A `null` in a property map is stored                                                                                       | Absent properties are left out of the map                                               |
-| Integer division returns a float; negative list slices (`l[..-1]`) return `[]`                                             | `toInteger(a / b)` for Int fields; `l[..size(l) - n]`                                   |
-| `COUNT { … RETURN DISTINCT x }`, `EXISTS { }` and `UNION` inside `CALL` do not parse                                       | `reduce` for distinct counts; comprehensions; per-member subqueries                     |
-| `x IN $list` does not use an index; `[a, b] > $list` matches nothing; `first()` is unknown                                 | See translation rules                                                                   |
+| Behaviour                                                                                | Workaround                                                                |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| An aggregate nested in a call (`head(collect(x))`, `collect(x)[0..2]`) is not aggregated | `WITH collect(x) AS c RETURN head(c)`; `reduce` for per-parent aggregates |
+| `max`, `sum` and `avg` over durations are wrong                                          | Duration aggregates are folded with `reduce`                              |
+| Integer division returns a float; negative list slices (`l[..-1]`) return `[]`           | `toInteger(a / b)` for Int fields; `l[..size(l) - n]`                     |
+| `COUNT { … RETURN DISTINCT x }`, `EXISTS { }` and `UNION` inside `CALL` do not parse     | `reduce` for distinct counts; comprehensions; per-member subqueries       |
+| `[a, b] > $list` matches nothing; `first()` is unknown                                   | See translation rules                                                     |
 
 ## Development
 
