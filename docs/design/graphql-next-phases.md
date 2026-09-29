@@ -95,6 +95,18 @@ hand-written `@cypher` statements.
 
 ## Phase 12: Security Hardening
 
+**Status: done.** `maskErrors` (default in production) with `onError` and
+an `id`; `cursorSecret` signs cursors with HMAC-SHA-256 (pure JS, so it
+works in browsers), and without it the docs say "tagged"; claim and
+context paths read own properties, and `eq` / `in` / `includes` compare
+structurally; `guards` (depth, aliases, root fields, tokens,
+introspection) in `execute()` and `persist()`, `persistedOnly`, and
+`validationRules()` / `envelopPlugin()` for other servers;
+`test/auth-properties.test.ts` (fast-check, reference evaluator) and
+[graphql-threat-model.md](graphql-threat-model.md). The property tests
+found an engine crash: an empty index range (`x > 5 AND x < 5`) panicked
+in `CowOrdMap::range` and aborted the process. Fixed in `lora-store`.
+
 **1. Error redaction.** `DATABASE_ERROR` carries the engine's message and
 `originalError`, which leak Cypher text, labels and property names. Add a
 `maskErrors` option, on by default when `NODE_ENV=production`: the client

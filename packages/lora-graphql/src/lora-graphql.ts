@@ -6,6 +6,7 @@ import {
   lexicographicSortSchema,
   parse,
   printSchema,
+  specifiedRules,
   validate,
   type DocumentNode,
   type ExecutionResult,
@@ -15,6 +16,7 @@ import {
   type GraphQLResolveInfo,
   type GraphQLSchema,
   type OperationDefinitionNode,
+  type ValidationRule,
 } from "graphql";
 import {
   checkCypherFields,
@@ -50,6 +52,13 @@ import {
   type PopulatedByCallback,
 } from "./execute/mutate.js";
 import { ModelError, requestError } from "./errors.js";
+import {
+  envelopPlugin,
+  nodeEnv,
+  parseOptions,
+  validationRules,
+  type DocumentGuards,
+} from "./guards.js";
 import { buildModel, type ModelOptions } from "./model/build.js";
 import type {
   CypherField,
@@ -108,6 +117,36 @@ export interface LoraGraphQLOptions extends ModelOptions {
   callbacks?: Record<string, PopulatedByCallback>;
   /** Called with every statement before it runs; for logging and tests. */
   onStatement?: (event: StatementEvent) => void;
+  /**
+   * Hide database error details from clients: they get
+   * `extensions.code` `DATABASE_ERROR` and an `id`, and `onError` gets the
+   * engine's message. Default: on when `NODE_ENV` is `production`.
+   */
+  maskErrors?: boolean;
+  /** Called with every database error, masked or not. */
+  onError?: (event: DatabaseErrorEvent) => void;
+  /**
+   * Limits on the documents `execute()` and `persist()` accept: depth,
+   * aliases, root fields, tokens, introspection. `false` turns them off.
+   * For other servers use `validationRules()` or `envelopPlugin()`.
+   */
+  guards?: DocumentGuards | false;
+  /**
+   * Make `execute()` refuse `source` and run only persisted operations
+   * by `id`. Default false.
+   */
+  persistedOnly?: boolean;
+}
+
+export interface DatabaseErrorEvent {
+  /** Correlation id, also in the client error's `extensions.id`. */
+  id: string;
+  /** The root field that failed. */
+  field: string;
+  /** The engine's message, which may name labels, properties and Cypher. */
+  message: string;
+  /** The error as thrown by the driver. */
+  error: unknown;
 }
 
 export interface StatementEvent {
@@ -186,6 +225,10 @@ export class LoraGraphQL {
   readonly #spent = new WeakMap<object, Map<unknown, number>>();
   readonly #jwt: (context: unknown) => Record<string, unknown> | undefined;
   readonly #onStatement: LoraGraphQLOptions["onStatement"];
+  readonly #maskErrors: boolean;
+  readonly #guards: DocumentGuards | false;
+  readonly #persistedOnly: boolean;
+  readonly #onError: LoraGraphQLOptions["onError"];
   readonly #listeners = new Set<(change: WriteChange) => void>();
   readonly #documents = new Map<string, DocumentNode>();
   readonly #persisted = new Map<string, DocumentNode>();
@@ -217,6 +260,44 @@ export class LoraGraphQL {
       options.jwt ??
       ((context) => (context as LoraGraphQLContext | undefined)?.jwt);
     this.#onStatement = options.onStatement;
+    this.#maskErrors = options.maskErrors ?? nodeEnv() === "production";
+    this.#onError = options.onError;
+    this.#guards = options.guards ?? {};
+    this.#persistedOnly = options.persistedOnly ?? false;
+  }
+
+  /** The configured document guards as validation rules. */
+  validationRules(): ValidationRule[] {
+    return this.#guards === false ? [] : validationRules(this.#guards);
+  }
+
+  /** The configured document guards as an Envelop / Yoga plugin. */
+  envelopPlugin(): ReturnType<typeof envelopPlugin> {
+    return envelopPlugin(
+      this.#guards === false
+        ? {
+            maxDepth: Infinity,
+            maxAliases: Infinity,
+            maxRootFields: Infinity,
+            maxTokens: Infinity,
+            introspection: true,
+          }
+        : this.#guards,
+    );
+  }
+
+  #parse(source: string): DocumentNode {
+    return parse(
+      source,
+      this.#guards === false ? undefined : parseOptions(this.#guards),
+    );
+  }
+
+  #validate(document: DocumentNode): readonly GraphQLError[] {
+    return validate(this.getSchema(), document, [
+      ...specifiedRules,
+      ...this.validationRules(),
+    ]);
   }
 
   /** The executable schema, for any graphql-js server. */
@@ -473,12 +554,11 @@ export class LoraGraphQL {
    * id is looked up and executed without parsing or validating.
    */
   persist(operations: Record<string, string>): void {
-    const schema = this.getSchema();
     const problems: string[] = [];
     for (const [id, source] of Object.entries(operations)) {
       try {
-        const doc = parse(source);
-        const errors = validate(schema, doc);
+        const doc = this.#parse(source);
+        const errors = this.#validate(doc);
         if (errors.length > 0) {
           problems.push(`${id}: ${errors.map((e) => e.message).join("; ")}`);
         } else {
@@ -511,14 +591,23 @@ export class LoraGraphQL {
         };
       }
     } else if (args.source !== undefined) {
+      if (this.#persistedOnly) {
+        return {
+          errors: [
+            new GraphQLError("only persisted operations are accepted", {
+              extensions: { code: "PERSISTED_QUERY_ONLY" },
+            }),
+          ],
+        };
+      }
       document = this.#documents.get(args.source);
       if (!document) {
         try {
-          document = parse(args.source);
+          document = this.#parse(args.source);
         } catch (err) {
           return { errors: [err as GraphQLError] };
         }
-        const errors = validate(this.getSchema(), document);
+        const errors = this.#validate(document);
         if (errors.length > 0) return { errors };
         if (this.#documents.size >= DOCUMENT_CACHE_SIZE) {
           this.#documents.delete(this.#documents.keys().next().value!);
@@ -711,27 +800,58 @@ export class LoraGraphQL {
             verified: compiled.mode === "read",
           });
     } catch (err) {
-      throw this.#databaseError(err);
+      throw this.#databaseError(field, err);
     }
     return assertReadable(compiled.shape(results));
   }
 
-  #databaseError(err: unknown): unknown {
-    if (err instanceof GraphQLError) return err;
-    const mapped = mapWriteError(this.model, err);
-    if (mapped !== err) return mapped;
-    if ((err as { code?: string }).code === "LORA_INVALID_VECTOR") {
-      return requestError(
-        "BAD_USER_INPUT",
-        err instanceof Error ? err.message : String(err),
-        err,
-      );
+  #databaseError(field: string, err: unknown): unknown {
+    let error: unknown;
+    if (err instanceof GraphQLError) error = err;
+    else {
+      const mapped = mapWriteError(this.model, err);
+      if (mapped !== err) error = mapped;
+      else if ((err as { code?: string }).code === "LORA_INVALID_VECTOR") {
+        error = requestError(
+          "BAD_USER_INPUT",
+          err instanceof Error ? err.message : String(err),
+          err,
+        );
+      } else {
+        error = requestError(
+          "DATABASE_ERROR",
+          err instanceof Error ? err.message : String(err),
+          err,
+        );
+      }
     }
-    return requestError(
-      "DATABASE_ERROR",
-      err instanceof Error ? err.message : String(err),
-      err,
-    );
+    if (!(error instanceof GraphQLError)) return error;
+    if (error.extensions["code"] === "DATABASE_ERROR") {
+      const id = globalThis.crypto.randomUUID();
+      try {
+        this.#onError?.({
+          id,
+          field,
+          message: error.message,
+          error: error.originalError ?? err,
+        });
+      } catch {
+        // A failing error hook must not replace the request's error.
+      }
+      return this.#maskErrors
+        ? new GraphQLError(`database error (id ${id})`, {
+            extensions: { code: "DATABASE_ERROR", id },
+          })
+        : new GraphQLError(error.message, {
+            extensions: { ...error.extensions, id },
+            originalError: error.originalError ?? undefined,
+          });
+    }
+    // Errors the package wrote itself are safe to show; masked, they
+    // lose the engine error they were mapped from.
+    return this.#maskErrors && error.originalError
+      ? new GraphQLError(error.message, { extensions: error.extensions })
+      : error;
   }
 
   #resolveRoot(
@@ -961,7 +1081,7 @@ export class LoraGraphQL {
         info.fieldNodes,
       );
     } catch (err) {
-      throw this.#databaseError(err);
+      throw this.#databaseError(info.fieldName, err);
     }
     // A hand-written write has no known write-set: report it broadly.
     this.#emit({
@@ -1002,7 +1122,7 @@ export class LoraGraphQL {
       else this.#emit(change);
       return payload;
     } catch (err) {
-      throw this.#databaseError(err);
+      throw this.#databaseError(info.fieldName, err);
     }
   }
 

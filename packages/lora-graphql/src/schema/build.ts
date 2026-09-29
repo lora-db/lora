@@ -799,7 +799,7 @@ export function buildSchema(
       // Cursors carry sort values: as readable as the nodes themselves.
       for (const row of page) assertReadable(row.node);
       const cursor = (row: RawEdge | undefined) =>
-        row ? encodeCursor(src.__sort, row.__cursor) : null;
+        row ? encodeCursor(src.__sort, row.__cursor, model.cursorSecret) : null;
       const more = src.__rows.length > src.__first;
       return {
         hasNextPage: src.__backward ? src.__after : more,
@@ -831,7 +831,8 @@ export function buildSchema(
       fields: () => ({
         cursor: {
           type: nonNull(GraphQLString),
-          resolve: (src) => encodeCursor(src.__sort, src.__cursor),
+          resolve: (src) =>
+            encodeCursor(src.__sort, src.__cursor, model.cursorSecret),
         },
         node: {
           type: nonNull(nodeType()),

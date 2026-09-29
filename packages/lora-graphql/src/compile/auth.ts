@@ -283,13 +283,63 @@ export function claim(ctx: CompileContext, path: string): unknown {
   return lookupPath(ctx.jwt, [mapped, ...rest].join("."));
 }
 
+/**
+ * A value by dotted path, through own properties only: `$context.x` must
+ * not reach `constructor`, `__proto__` or anything else inherited.
+ */
 function lookupPath(root: unknown, path: string): unknown {
   let cur: unknown = root;
   for (const part of path.split(".")) {
-    if (cur === null || typeof cur !== "object") return undefined;
+    if (cur === null || typeof cur !== "object" || !Object.hasOwn(cur, part)) {
+      return undefined;
+    }
     cur = (cur as Record<string, unknown>)[part];
   }
   return cur;
+}
+
+/**
+ * Structural equality for claim values: arrays in order, objects by own
+ * keys in any order, bigints and numbers by value.
+ */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (typeof a === "bigint" || typeof b === "bigint") {
+    return (
+      (typeof a === "bigint" || typeof a === "number") &&
+      (typeof b === "bigint" || typeof b === "number") &&
+      a == b
+    );
+  }
+  if (a === b) return true;
+  if (
+    a === null ||
+    b === null ||
+    typeof a !== "object" ||
+    typeof b !== "object"
+  ) {
+    return false;
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((x, i) => sameValue(x, b[i]))
+    );
+  }
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return (
+    ka.length === kb.length &&
+    ka.every(
+      (k) =>
+        Object.hasOwn(b, k) &&
+        sameValue(
+          (a as Record<string, unknown>)[k],
+          (b as Record<string, unknown>)[k],
+        ),
+    )
+  );
 }
 
 /**
@@ -350,11 +400,11 @@ function claimOp(v: unknown, op: string, expected: unknown): boolean {
     case "exists":
       return (v !== undefined && v !== null) === expected;
     case "eq":
-      return v !== undefined && JSON.stringify(v) === JSON.stringify(expected);
+      return v !== undefined && sameValue(v, expected);
     case "in":
-      return Array.isArray(expected) && expected.some((e) => e === v);
+      return Array.isArray(expected) && expected.some((e) => sameValue(e, v));
     case "includes":
-      return Array.isArray(v) && v.includes(expected);
+      return Array.isArray(v) && v.some((x) => sameValue(x, expected));
     case "contains":
       return typeof v === "string" && v.includes(String(expected));
     case "startsWith":
