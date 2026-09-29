@@ -490,12 +490,28 @@ fn eval_pattern_comprehension<S: GraphStorage>(
                             let mut step_rows = Vec::new();
                             for fr in &frontier {
                                 let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
+                                // A destination (or relationship) already
+                                // bound by the outer row, or earlier in this
+                                // pattern, restricts the expansion to it.
+                                let dst_bound = step.node.var.and_then(|v| match fr.get(v) {
+                                    Some(LoraValue::Node(id)) => Some(*id),
+                                    _ => None,
+                                });
+                                let rel_bound = step.rel.var.and_then(|v| match fr.get(v) {
+                                    Some(LoraValue::Relationship(id)) => Some(*id),
+                                    _ => None,
+                                });
                                 if let Some(sid) = src_node_id {
                                     let _ = ctx.storage.try_for_each_expand_id(
                                         sid,
                                         step.rel.direction,
                                         &step.rel.types,
                                         |rel_id, dst_id| {
+                                            if dst_bound.is_some_and(|bound| bound != dst_id)
+                                                || rel_bound.is_some_and(|bound| bound != rel_id)
+                                            {
+                                                return Ok::<(), ()>(());
+                                            }
                                             let matched = ctx
                                                 .storage
                                                 .with_node(dst_id, |dst| {
