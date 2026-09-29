@@ -107,13 +107,16 @@ test("no mutation statement expands from a full scan", async () => {
   expect(await findings()).toEqual([]);
 });
 
-test("the rule catches a key test inside the expanding pattern", async () => {
+test("the rule catches an expansion from a full scan", async () => {
   const text = (match: string) => ({
     text: `UNWIND $rows AS row ${match} DELETE r`,
     params: { rows: [] },
   });
+  // A test through a function cannot seek, so the plan scans the label and
+  // expands every LIKES relationship. (Since the engine pushes conditions
+  // down, a plain key test in the pattern seeks too.)
   const inPattern = text(
-    "MATCH (a:Venue)<-[r:LIKES]-(b:Fan) WHERE b:Fan AND a.key = row.from AND b.key = row.to",
+    "MATCH (a:Venue)<-[r:LIKES]-(b:Fan) WHERE toLower(a.key) = row.from AND toLower(b.key) = row.to",
   );
   const seekFirst = text(
     "MATCH (a:Venue) WHERE a.key = row.from MATCH (a)<-[r:LIKES]-(b:Fan) WHERE b:Fan AND b.key = row.to",

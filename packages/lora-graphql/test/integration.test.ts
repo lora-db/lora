@@ -444,13 +444,16 @@ describe("connection aggregates", () => {
     const d = await h.data<{ genre: unknown }>(`{
       genre(key: "techno") {
         festivalsConnection(where: { capacity: { lt: 10000 } }) {
-          aggregate { count node { capacity { max } } }
+          aggregate { count { nodes edges } node { capacity { max } } }
         }
       }
     }`);
     expect(d.genre).toEqual({
       festivalsConnection: {
-        aggregate: { count: 3, node: { capacity: { max: 9000 } } },
+        aggregate: {
+          count: { nodes: 3, edges: 3 },
+          node: { capacity: { max: 9000 } },
+        },
       },
     });
   });

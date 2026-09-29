@@ -6,13 +6,54 @@
 import { freshVar, type CompileContext } from "./context.js";
 import { bin, fn, isNull, lit, v, type Expr } from "./cypher.js";
 
-export type ListAggregate = "min" | "max" | "sum" | "avg" | "count";
+export type ListAggregate =
+  | "min"
+  | "max"
+  | "sum"
+  | "avg"
+  | "count"
+  // Strings: the shortest and longest value, and length statistics.
+  | "shortest"
+  | "longest"
+  | "shortestLength"
+  | "longestLength"
+  | "averageLength";
+
+export interface AggregateOptions {
+  /**
+   * The values are durations: sums start from the first value rather than
+   * 0, and an average divides the sum (LoraDB's own `sum` / `avg` / `max`
+   * over durations are wrong, see E25).
+   */
+  duration?: boolean;
+}
 
 export function listAggregate(
   ctx: CompileContext,
   kind: ListAggregate,
   list: Expr,
+  options: AggregateOptions = {},
 ): Expr {
+  if (
+    kind === "shortestLength" ||
+    kind === "longestLength" ||
+    kind === "averageLength"
+  ) {
+    const s = freshVar(ctx, "agg_s");
+    const lengths: Expr = {
+      kind: "listComprehension",
+      variable: s,
+      list,
+      where: isNull(v(s), true),
+      projection: fn("size", v(s)),
+    };
+    const of = {
+      shortestLength: "min",
+      longestLength: "max",
+      averageLength: "avg",
+    } as const;
+    return listAggregate(ctx, of[kind], lengths);
+  }
   const x = freshVar(ctx, "agg_v");
   // Nulls take no part, as in Cypher's aggregate functions.
   const values: Expr = {
@@ -48,8 +89,27 @@ export function listAggregate(
         then: v(item),
         else: v(acc),
       });
+    case "shortest":
+    case "longest":
+      return fold(lit(null), {
+        kind: "case",
+        when: {
+          kind: "binary",
+          op: "OR",
+          left: isNull(v(acc)),
+          right: bin(
+            kind === "shortest" ? "<" : ">",
+            fn("size", v(item)),
+            fn("size", v(acc)),
+          ),
+        },
+        then: v(item),
+        else: v(acc),
+      });
     case "sum":
-      return fold(lit(0), bin("+", v(acc), v(item)));
+      return options.duration
+        ? durationSum()
+        : fold(lit(0), bin("+", v(acc), v(item)));
     case "avg":
       return {
         kind: "case",
@@ -57,10 +117,21 @@ export function listAggregate(
         then: lit(null),
         else: bin(
           "/",
-          fn("toFloat", fold(lit(0), bin("+", v(acc), v(item)))),
+          options.duration
+            ? durationSum()
+            : fn("toFloat", fold(lit(0), bin("+", v(acc), v(item)))),
           fn("size", values),
         ),
       };
+  }
+
+  function durationSum(): Expr {
+    return fold(lit(null), {
+      kind: "case",
+      when: isNull(v(acc)),
+      then: v(item),
+      else: bin("+", v(acc), v(item)),
+    });
   }
 }
 

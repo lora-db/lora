@@ -164,6 +164,13 @@ class WritePlan {
   }> = [];
   edgeUpdates: EdgeUpdate[] = [];
   nodeUpdates: NodeUpdate[] = [];
+  /** `update: { rel: { delete } }`: connected nodes to delete. */
+  nestedDeletes: Array<{
+    rel: RelationshipField;
+    from: unknown;
+    where: Input | undefined;
+    limit: number | undefined;
+  }> = [];
   /** `@populatedBy` callbacks for planned creates. */
   pending: Array<() => Promise<void>> = [];
 
@@ -340,6 +347,17 @@ class WritePlan {
     const create = asList<Input>(value["create"]);
     const updates = asList<Input>(value["update"]);
     const disconnect = value["disconnect"];
+    const nestedDelete = value["delete"] as Input | boolean | null | undefined;
+    if (update && nestedDelete != null && nestedDelete !== false) {
+      checkAuthentication(this.ctx, target, "DELETE");
+      const spec = nestedDelete === true ? {} : nestedDelete;
+      this.nestedDeletes.push({
+        rel,
+        from: ownerKey,
+        where: (spec["where"] as Input | null | undefined) ?? undefined,
+        limit: (spec["limit"] as number | null | undefined) ?? undefined,
+      });
+    }
     if (!rel.list && connect.length + create.length > 1) {
       throw requestError(
         "BAD_USER_INPUT",
@@ -577,6 +595,7 @@ class Runner {
     await this.applyLinks(plan);
     await this.applyEdgeUpdates(plan);
     await this.applyNodeUpdates(plan);
+    await this.applyNestedDeletes(plan);
     await this.checkCardinality(plan);
     await this.checkRequired();
     await this.validateCreated(plan);
@@ -847,6 +866,54 @@ class Runner {
       if (rows.length === 0) throw notConnected(owner, u.rel, target, u.to);
       for (const row of rows) {
         this.connected.push(relRef(u.rel, u.from, row["key"]));
+      }
+    }
+  }
+
+  /**
+   * `delete: { where, limit }`: the connected nodes `where` matches, under
+   * their DELETE rules, deleted like a bulk delete (onDelete followed). More
+   * than `limit` (default `maxBatch`) is an error, not a truncation.
+   */
+  async applyNestedDeletes(plan: WritePlan): Promise<void> {
+    for (const d of plan.nestedDeletes) {
+      const owner = this.env.model.nodes.get(d.rel.owner)!;
+      const target = this.env.model.nodes.get(d.rel.target)!;
+      const limit = d.limit ?? this.env.maxBatch;
+      if (!Number.isInteger(limit) || limit < 1) {
+        throw requestError(
+          "BAD_USER_INPUT",
+          "`limit` must be a positive integer",
+        );
+      }
+      const ctx = this.ctx();
+      const rows = await this.run(
+        seekThenExpand(
+          "a",
+          owner,
+          printExpr(bind(ctx, d.from)),
+          d.rel,
+          "",
+          "b",
+          target,
+        ) +
+          andText(compileNodeWhere(ctx, target, "b", d.where)) +
+          andText(authFilter(ctx, target, "b", "READ")) +
+          andText(authFilter(ctx, target, "b", "DELETE")) +
+          `\nRETURN DISTINCT b.${name(target.key.property)} AS key ORDER BY key LIMIT ${printExpr(bind(ctx, limit + 1))}`,
+        ctx,
+      );
+      if (rows.length > limit) {
+        throw requestError(
+          "LIMIT_EXCEEDED",
+          `more than ${limit} connected ${target.name} nodes match; narrow \`where\` or raise \`limit\``,
+        );
+      }
+      if (rows.length > 0) {
+        await this.delete(
+          target,
+          rows.map((r) => r["key"]),
+        );
       }
     }
   }

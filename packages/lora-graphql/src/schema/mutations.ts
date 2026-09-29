@@ -305,6 +305,30 @@ export function buildMutations(
             description: `true removes the current ${target.name}.`,
           };
     }
+    if (update && allows("DELETE") && target.mutations.has("DELETE")) {
+      fields["delete"] = rel.list
+        ? {
+            type: once(
+              `${owner.name}${upperFirst(rel.name)}NestedDeleteInput`,
+              () => ({
+                where: {
+                  type: ctx.where(target.name),
+                  description: `Which connected ${target.name} nodes; all of them when absent.`,
+                },
+                limit: {
+                  type: GraphQLInt,
+                  description:
+                    "At most this many (default: maxBatch); more matching is an error.",
+                },
+              }),
+              `Delete connected ${target.name} nodes, following their onDelete rules.`,
+            ),
+          }
+        : {
+            type: GraphQLBoolean,
+            description: `true deletes the connected ${target.name}.`,
+          };
+    }
     if (update && allows("UPDATE")) {
       const nested = nestedUpdateInput(owner, rel);
       if (nested) {

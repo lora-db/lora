@@ -91,6 +91,11 @@ export interface ScalarField extends FieldBase {
   populatedBy:
     | { callback: string; operations: ReadonlySet<"CREATE" | "UPDATE"> }
     | undefined;
+  /**
+   * Set on the stand-in for a `@filterable` / `@sortable` `@cypher` field:
+   * its value is the statement's, computed per row, not a property.
+   */
+  computedBy?: CypherField;
   /** `@vector`: stored as a VECTOR, searchable by similarity. */
   vector:
     | { dimensions: number; similarity: "COSINE" | "EUCLIDEAN" }
@@ -170,6 +175,11 @@ export interface CypherField extends FieldBase {
   args: readonly CypherArgument[];
   /** `$parameters` the statement uses, in order of first use. */
   params: readonly string[];
+  /**
+   * `@filterable` / `@sortable`: a scalar stand-in for filters and sorts,
+   * whose value the statement computes per row (never through an index).
+   */
+  computed: ScalarField | undefined;
   description: string | undefined;
 }
 
