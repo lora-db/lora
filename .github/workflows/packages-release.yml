@@ -414,6 +414,112 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # ──────────────────────────────────────────────────────────────────────
+  # @loradb/lora-graphql
+  # Pure-TS package over @loradb/lora-node, released in lockstep with it
+  # (its peer range is ^<this version>, kept by sync-versions.mjs). The
+  # tests run real statements, so the build job compiles the binding from
+  # the tag first; the publish job waits for publish-node so the version
+  # the peer range names is on npm before this one is.
+  # ──────────────────────────────────────────────────────────────────────
+
+  build-graphql:
+    name: build @loradb/lora-graphql
+    needs: verify-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-graphql-release-ubuntu
+
+      - uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: "20"
+
+      - name: yarn install (immutable)
+        run: corepack yarn install --immutable
+
+      - name: Build @loradb/lora-node from the tag (for the tests)
+        working-directory: crates/bindings/lora-node
+        run: |
+          corepack yarn run build:native
+          corepack yarn run build:ts
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-graphql
+
+      - name: Typecheck
+        run: corepack yarn workspace @loradb/lora-graphql typecheck
+
+      - name: Test
+        run: corepack yarn workspace @loradb/lora-graphql test
+
+      - name: Build (vite)
+        run: corepack yarn workspace @loradb/lora-graphql build
+
+      - name: npm pack (produce tarball)
+        working-directory: packages/lora-graphql
+        run: npm pack
+
+      - name: Stage tarball at workspace root for clean artifact layout
+        run: mv packages/lora-graphql/loradb-lora-graphql-*.tgz .
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: lora-graphql-tarball
+          path: loradb-lora-graphql-*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-graphql:
+    name: publish @loradb/lora-graphql
+    needs: [verify-versions, build-graphql, publish-node]
+    if: needs.verify-versions.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/lora-graphql
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm to a version that supports --provenance (>=9.5)
+        run: npm install -g npm@latest
+
+      - name: yarn install (immutable)
+        working-directory: .
+        run: corepack yarn install --immutable
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-graphql
+
+      - name: Build (vite)
+        working-directory: .
+        run: corepack yarn workspace @loradb/lora-graphql build
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ──────────────────────────────────────────────────────────────────────
   # @loradb/lora-node
   # One root package (JS + TS + loader) plus one platform subpackage per
   # napi triple. Native binaries are built in parallel matrix jobs and
@@ -1202,6 +1308,7 @@ jobs:
       - build-wasm
       - build-query
       - build-graph-canvas
+      - build-graphql
       - build-node
       - build-python-wheels
       - build-python-sdist
@@ -1210,6 +1317,7 @@ jobs:
       - publish-wasm
       - publish-query
       - publish-graph-canvas
+      - publish-graphql
       - publish-node
       - publish-python
       - publish-ruby
@@ -1235,7 +1343,7 @@ jobs:
           fi
           # In non-dry-run mode, publish jobs must have succeeded.
           if [ "$DRY" != "true" ]; then
-            for pub in publish-wasm publish-query publish-graph-canvas publish-node publish-python publish-ruby; do
+            for pub in publish-wasm publish-query publish-graph-canvas publish-graphql publish-node publish-python publish-ruby; do
               result=$(echo "$NEEDS_JSON" | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(j['$pub'].result)")
               if [ "$result" != "success" ]; then
                 echo "::error::${pub} did not succeed (result=${result})"

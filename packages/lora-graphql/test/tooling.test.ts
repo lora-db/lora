@@ -135,12 +135,18 @@ describe("execution helpers", () => {
     );
     h.lora.persist({ count: "{ festivalsAggregate { count } }" });
     const r = await h.lora.execute({ id: "count" });
-    expect(r).toEqual({ data: { festivalsAggregate: { count: 0 } } });
+    expect(r).toEqual({
+      data: { festivalsAggregate: { count: 0 } },
+      extensions: { cost: expect.any(Number) },
+    });
     expect((await h.lora.execute({ id: "missing" })).errors?.[0]?.message).toBe(
       "unknown persisted operation missing",
     );
     const adhoc = await h.lora.execute({ source: "{ festivals { key } }" });
-    expect(adhoc).toEqual({ data: { festivals: [] } });
+    expect(adhoc).toEqual({
+      data: { festivals: [] },
+      extensions: { cost: expect.any(Number) },
+    });
   });
 
   test("changes() streams committed writes", async () => {

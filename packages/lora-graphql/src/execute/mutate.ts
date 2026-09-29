@@ -31,7 +31,12 @@ import {
   subSelections,
   type SelectionContext,
 } from "../compile/selection.js";
-import type { DriverTransaction, LoraDriver, Statement } from "../driver.js";
+import type {
+  DriverTransaction,
+  LoraDriver,
+  QueryResult,
+  Statement,
+} from "../driver.js";
 import { requestError } from "../errors.js";
 import { toStored } from "../model/points.js";
 import type {
@@ -83,6 +88,25 @@ export interface MutationEnv {
   transaction?: DriverTransaction | undefined;
   /** Observes every statement, for logging and tests. */
   onStatement?: ((statement: Statement) => void) | undefined;
+  /** Runs a statement under timing, tracing and metrics, when configured. */
+  observe?:
+    | ((
+        statement: Statement,
+        run: () => Promise<QueryResult>,
+      ) => Promise<QueryResult>)
+    | undefined;
+}
+
+/** Run `statement` in `tx`, reporting it before and observing it during. */
+export function runStatement(
+  env: MutationEnv,
+  tx: DriverTransaction,
+  statement: Statement,
+): Promise<QueryResult> {
+  env.onStatement?.(statement);
+  return env.observe
+    ? env.observe(statement, () => tx.execute(statement))
+    : tx.execute(statement);
 }
 
 export interface MutationInfo {
@@ -535,8 +559,7 @@ class Runner {
     ctx: CompileContext,
   ): Promise<Array<Record<string, unknown>>> {
     const statement = { text, params: ctx.params };
-    this.env.onStatement?.(statement);
-    const result = await this.tx.execute(statement);
+    const result = await runStatement(this.env, this.tx, statement);
     return result.rows;
   }
 
@@ -1166,8 +1189,7 @@ class Runner {
     const ctx = this.ctx();
     const compiled = compileByKeys(ctx, node, keys, sets);
     const statement = compiled.statements[0]!;
-    this.env.onStatement?.(statement);
-    const result = await this.tx.execute(statement);
+    const result = await runStatement(this.env, this.tx, statement);
     return assertReadable(compiled.shape([result]) as unknown[]);
   }
 

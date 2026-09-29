@@ -1,0 +1,126 @@
+name: lora-graphql
+
+# CI gate for @loradb/lora-graphql, the schema-first GraphQL layer in
+# `packages/lora-graphql/`. Its tests run real statements, so they need a
+# LoraDB binding.
+#
+#   workspace: builds @loradb/lora-node from this tree (napi), then runs
+#              lint, typecheck, the vitest suite (including the
+#              property-based auth tests), the library build and a pack
+#              check. This is the blocking gate, and it also catches a
+#              stale lora-node dist/ locally-built binaries can hide.
+#   published: runs the same tests against the @loradb/lora-node release
+#              the peer range names. The package is released in lockstep
+#              with lora-node, so between releases the tests may use
+#              binding features that are not published yet: this job
+#              reports that drift without blocking the PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/lora-graphql/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "yarn.lock"
+      - ".yarnrc.yml"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/actions/setup-node-yarn/**"
+      - ".github/workflows/lora-graphql.yml"
+  pull_request:
+    paths:
+      - "packages/lora-graphql/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "yarn.lock"
+      - ".yarnrc.yml"
+      - "rust-toolchain.toml"
+      - ".github/actions/setup-rust/**"
+      - ".github/actions/setup-node-yarn/**"
+      - ".github/workflows/lora-graphql.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workspace:
+    name: against the workspace binding
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: lora-graphql-ubuntu
+
+      - uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: "20"
+
+      - name: yarn install (monorepo root)
+        run: corepack yarn install --immutable
+
+      - name: Build @loradb/lora-node from source (napi + TS)
+        working-directory: crates/bindings/lora-node
+        run: |
+          corepack yarn run build:native
+          corepack yarn run build:ts
+
+      - name: ESLint
+        run: corepack yarn workspace @loradb/lora-graphql lint
+
+      - name: Typecheck
+        run: corepack yarn workspace @loradb/lora-graphql typecheck
+
+      - name: Vitest
+        run: corepack yarn workspace @loradb/lora-graphql test
+
+      - name: Build library (vite)
+        run: corepack yarn workspace @loradb/lora-graphql build
+
+      - uses: ./.github/actions/copy-license
+        with:
+          destination: packages/lora-graphql
+
+      - name: Inspect publish payload (npm pack --dry-run)
+        working-directory: packages/lora-graphql
+        run: npm pack --dry-run
+
+  published:
+    name: against the published binding
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: "20"
+
+      - name: yarn install (monorepo root)
+        run: corepack yarn install --immutable
+
+      - name: Install the @loradb/lora-node release the peer range names
+        run: |
+          range=$(node -p "require('./packages/lora-graphql/package.json').peerDependencies['@loradb/lora-node']")
+          echo "peer range: $range"
+          mkdir -p "$RUNNER_TEMP/pinned"
+          (cd "$RUNNER_TEMP/pinned" && npm init -y >/dev/null && npm install "@loradb/lora-node@$range")
+          rm -rf node_modules/@loradb/lora-node
+          ln -s "$RUNNER_TEMP/pinned/node_modules/@loradb/lora-node" node_modules/@loradb/lora-node
+          node -p "'using @loradb/lora-node ' + require('@loradb/lora-node/package.json').version"
+
+      - name: Vitest
+        run: corepack yarn workspace @loradb/lora-graphql test

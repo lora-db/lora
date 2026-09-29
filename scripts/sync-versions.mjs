@@ -13,6 +13,8 @@
 //   - crates/bindings/lora-wasm/package.json         .version
 //   - packages/lora-query/package.json               .version
 //   - packages/lora-graph-canvas/package.json        .version
+//   - packages/lora-graphql/package.json             .version, and its
+//                                                    @loradb/lora-node peer range (^<version>)
 //   - apps/loradb.com/package.json                   .version
 //   - crates/bindings/lora-python/pyproject.toml     [project].version
 //   - crates/bindings/lora-ruby/lib/lora_ruby/version.rb  LoraRuby::VERSION
@@ -59,6 +61,7 @@ const targets = [
   { path: 'crates/bindings/lora-wasm/package.json', kind: 'package-json' },
   { path: 'packages/lora-query/package.json', kind: 'package-json' },
   { path: 'packages/lora-graph-canvas/package.json', kind: 'package-json' },
+  { path: 'packages/lora-graphql/package.json', kind: 'package-json' },
   { path: 'apps/loradb.com/package.json', kind: 'package-json' },
   { path: 'crates/bindings/lora-python/pyproject.toml', kind: 'pyproject' },
   { path: 'crates/bindings/lora-ruby/lib/lora_ruby/version.rb', kind: 'ruby-version' },
@@ -110,6 +113,36 @@ for (const target of targets) {
       console.log(`bumped   ${target.path} [workspace.dependencies]: ${updatedAfterDeps.changed} dep pin(s) updated to =${version}`);
       changed += 1;
     }
+  }
+}
+
+// Packages released in lockstep with a binding they peer-depend on: the
+// peer range follows the release (`^<version>`), so a new lora-graphql
+// never claims to work with an older binding it was not tested against.
+const peerTargets = [
+  { path: 'packages/lora-graphql/package.json', dep: '@loradb/lora-node' },
+];
+for (const target of peerTargets) {
+  const absolute = resolve(ROOT, target.path);
+  const source = readFileSync(absolute, 'utf8');
+  const block = source.match(/"peerDependencies"\s*:\s*\{[^}]*\}/);
+  const escaped = target.dep.replace(/[/.]/g, '\\$&');
+  const entry = block?.[0].match(new RegExp(`("${escaped}"\\s*:\\s*)"([^"]+)"`));
+  if (!block || !entry) {
+    console.error(`could not locate peerDependencies["${target.dep}"] in ${target.path}`);
+    process.exit(1);
+  }
+  const wanted = `^${version}`;
+  if (entry[2] === wanted) {
+    console.log(`ok       ${target.path} peer ${target.dep} already ${wanted}`);
+  } else if (checkOnly) {
+    drift += 1;
+    drifts.push(`  ${target.path} peerDependencies["${target.dep}"]: has ${entry[2]}, expected ${wanted}`);
+  } else {
+    const updatedBlock = block[0].replace(entry[0], `${entry[1]}"${wanted}"`);
+    writeFileSync(absolute, source.replace(block[0], updatedBlock));
+    console.log(`bumped   ${target.path} peer ${target.dep}: ${entry[2]} -> ${wanted}`);
+    changed += 1;
   }
 }
 

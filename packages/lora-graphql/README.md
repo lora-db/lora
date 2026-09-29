@@ -704,21 +704,26 @@ run in one read-only transaction; mutations need interactive transactions,
 which only the Node binding has, so the WASM binding serves reads.
 `explain()`, and so plan checks, need the Node binding too.
 
-| Option                      | Default       | Meaning                                             |
-| --------------------------- | ------------- | --------------------------------------------------- |
-| `timeoutMs`                 | 10 000        | Per statement; a `signal` in the context cancels    |
-| `maxCost`                   | 50 000        | Estimated rows per operation                        |
-| `maxBatch`                  | 1000          | Nodes created or deleted per mutation; bulk `limit` |
-| `maxQueuedChanges`          | 1000          | How far a change consumer may fall behind           |
-| `defaultLimit` / `maxLimit` | 25 / 100      | Global page sizes; `@limit` may only lower `max`    |
-| `callbacks`                 |               | Named callbacks for `@populatedBy`                  |
-| `jwt`                       | `context.jwt` | Where the claims are                                |
-| `onStatement`               |               | Observe every statement                             |
-| `cursorSecret`              |               | Sign cursors; reject unsigned or forged ones        |
-| `maskErrors`                | production    | Clients get `DATABASE_ERROR` and an `id` only       |
-| `onError`                   |               | Receives each database error's detail and `id`      |
-| `guards`                    | see below     | Document limits; `false` turns them off             |
-| `persistedOnly`             | false         | `execute()` runs persisted operations only          |
+| Option                       | Default       | Meaning                                             |
+| ---------------------------- | ------------- | --------------------------------------------------- |
+| `timeoutMs`                  | 10 000        | Per statement; a `signal` in the context cancels    |
+| `maxCost`                    | 50 000        | Estimated rows per operation                        |
+| `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
+| `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
+| `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`    |
+| `callbacks`                  |               | Named callbacks for `@populatedBy`                  |
+| `jwt`                        | `context.jwt` | Where the claims are                                |
+| `onStatement`                |               | Observe every statement                             |
+| `cursorSecret`               |               | Sign cursors; reject unsigned or forged ones        |
+| `maskErrors`                 | production    | Clients get `DATABASE_ERROR` and an `id` only       |
+| `onError`                    |               | Receives each database error's detail and `id`      |
+| `guards`                     | see below     | Document limits; `false` turns them off             |
+| `persistedOnly`              | false         | `execute()` runs persisted operations only          |
+| `budget`                     |               | Cost limit per request, from the context            |
+| `onCost`                     |               | Each root field's estimate, total and limit         |
+| `onStatementEnd`             |               | Duration, rows and error of every statement call    |
+| `tracer` / `traceStatements` |               | OpenTelemetry-style spans; Cypher text on request   |
+| `metrics`                    |               | Counters and histograms (see below)                 |
 
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
@@ -746,6 +751,33 @@ With `NODE_ENV=production`, database errors are masked and introspection
 is off unless configured otherwise. See
 [the threat model](../../docs/design/graphql-threat-model.md) for what
 the library trusts and where each check runs.
+
+### Observability
+
+`onStatement` fires before a statement runs; `onStatementEnd` after, with
+`durationMs`, `rows`, `error`, `mode`, the cost estimate, the operation
+name and the persisted id. Reads report their batch of statements in one
+event; mutations report each statement.
+
+Pass an OpenTelemetry tracer (`trace.getTracer("lora-graphql")`) as
+`tracer` and each root field gets a `lora.graphql.field` span holding a
+`lora.cypher` span per statement call, with `db.system`,
+`db.operation.name` and `db.response.returned_rows`. The Cypher text goes
+in `db.statement` only with `traceStatements: true`. `metrics` takes any
+object with `counter(name, value, attributes)` and
+`histogram(name, value, attributes)`: it receives
+`lora.graphql.statements`, `lora.graphql.errors`,
+`lora.graphql.statement.duration` (ms) and `lora.graphql.cost`.
+
+`budget(context)` sets the cost limit per request (a plan, a user), and
+`onCost` sees every estimate. `execute()` also returns the operation's
+estimate as `extensions.cost`, so clients can tune their queries.
+
+### Versions
+
+`@loradb/lora-graphql` is released in lockstep with `@loradb/lora-node`:
+version X.Y.Z declares `"@loradb/lora-node": "^X.Y.Z"` as its peer and is
+tested against that binding. Upgrade both together.
 
 ## Translation rules
 

@@ -349,6 +349,7 @@ server release draft, and vice versa.
 | -------------------- | -------- | ----------------------------------------------------------- |
 | `@loradb/lora-wasm`  | npm      | Single tarball with `dist/` + `pkg-node/` + `pkg-bundler/` + `pkg-web/`. |
 | `@loradb/lora-node`  | npm      | Root package + one optional platform subpackage per napi triple. |
+| `@loradb/lora-graphql` | npm    | Pure-TS tarball. Released in lockstep with `@loradb/lora-node`: its peer range is `^<version>` (kept by `scripts/sync-versions.mjs`), and `publish-graphql` waits for `publish-node`. |
 | `lora-python`        | PyPI     | abi3-py38 wheels (manylinux x64 + arm64, macOS x64 + arm64, Windows x64) plus an sdist. |
 | `lora-ruby`          | RubyGems | Source gem + precompiled platform gems (linux x64 + arm64, macOS x64 + arm64, Windows ucrt). |
 
@@ -466,6 +467,7 @@ you want a manual approval gate before any publish runs.
    - `@loradb/lora-wasm`
    - `@loradb/lora-node`
    - every `@loradb/lora-node-<triple>` subpackage
+   - `@loradb/lora-graphql`
 3. npm refuses to register a new package name via OIDC trusted publishing
    alone — it needs an initial publish to exist. Two options:
 
