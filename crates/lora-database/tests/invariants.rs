@@ -58,11 +58,12 @@ fn property_negative_integer() {
 }
 
 #[test]
-fn missing_property_is_rejected_by_analyzer() {
+fn missing_property_reads_as_null() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
-    let err = db.run_err("MATCH (n:User) RETURN n.nonexistent");
-    assert!(err.contains("unknown property"));
+    let rows = db.run("MATCH (n:User) RETURN n.nonexistent AS v");
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0]["v"].is_null());
 }
 
 #[test]

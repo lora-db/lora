@@ -10,6 +10,7 @@ use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, Properties};
 use lora_wal::WalRecorder;
 
 mod builder;
+mod changes;
 mod compile;
 mod execute;
 mod explain;
@@ -17,10 +18,10 @@ mod graph_api;
 mod occ;
 mod procedures;
 mod profile;
-mod pull_mode;
-mod replay;
+pub(crate) mod pull_mode;
+pub(crate) mod replay;
 mod row_projection;
-mod schema;
+pub(crate) mod schema;
 mod show_pipeline;
 mod stream;
 mod write_guard;
@@ -125,6 +126,17 @@ pub struct Database<S> {
     /// mutating query compiles at most once instead of twice) and across
     /// every subsequent call that uses the same query string.
     pub(crate) plan_cache: Arc<PlanCache>,
+    /// Committed-change fan-out for [`Database::changes`]. Idle (one atomic
+    /// load per write) until the first feed opens.
+    pub(crate) changes: Arc<crate::changes::ChangeHub>,
+}
+
+impl<S> Drop for Database<S> {
+    fn drop(&mut self) {
+        // End every open change feed so consumers see the feed close
+        // instead of waiting forever.
+        self.changes.close();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +305,9 @@ where
         let mut staged: S = (*snapshot).clone();
         let result = f(&mut staged);
         self.store.store(Arc::new(staged));
+        // The closure bypasses the recorder, so a change feed can only be
+        // told that the graph was replaced.
+        self.publish_reset();
         result
     }
 }

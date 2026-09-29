@@ -34,6 +34,7 @@ use crate::encode::{encode_query_rows, encode_rows};
 use crate::errors::{format_lora_error, INVALID_PARAMS_CODE};
 use crate::json::json_value_to_params;
 use crate::to_napi::{plan_to_napi, profile_to_napi};
+use crate::QueryLimit;
 
 fn encode_query_result_rowarrays(result: QueryResult) -> Result<Vec<u8>> {
     let QueryResult::RowArrays(row_arrays) = result else {
@@ -62,6 +63,7 @@ pub struct ExecuteTask {
     pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
     pub(crate) query: String,
     pub(crate) params: Option<serde_json::Value>,
+    pub(crate) limit: QueryLimit,
 }
 
 impl Task for ExecuteTask {
@@ -84,10 +86,18 @@ impl Task for ExecuteTask {
             format: ResultFormat::Rows,
         };
 
-        let result = self
-            .db
-            .execute_with_params(&self.query, Some(options), params_map)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
+        let result = match self.limit.deadline() {
+            Some(deadline) => self.db.execute_with_params_deadline(
+                &self.query,
+                Some(options),
+                params_map,
+                deadline,
+            ),
+            None => self
+                .db
+                .execute_with_params(&self.query, Some(options), params_map),
+        }
+        .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
 
         encode_query_result_rows(result)
     }
@@ -197,6 +207,7 @@ pub struct TransactionTask {
     pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
     pub(crate) statements: serde_json::Value,
     pub(crate) mode: Option<String>,
+    pub(crate) limit: QueryLimit,
 }
 
 impl Task for TransactionTask {
@@ -214,11 +225,21 @@ impl Task for TransactionTask {
             .begin_transaction(mode)
             .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
 
+        // One deadline bounds the whole batch; a statement that hits it
+        // fails, and dropping `tx` rolls back everything before it.
+        let deadline = self.limit.deadline();
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
-            let result = tx
-                .execute_with_params(&statement.query, Some(options), statement.params)
-                .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
+            let result = match deadline {
+                Some(deadline) => tx.execute_with_params_deadline(
+                    &statement.query,
+                    Some(options),
+                    statement.params,
+                    deadline,
+                ),
+                None => tx.execute_with_params(&statement.query, Some(options), statement.params),
+            }
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
             results.push(encode_query_result_rowarrays(result)?);
         }
 
@@ -284,4 +305,155 @@ fn parse_transaction_statements(value: serde_json::Value) -> Result<Vec<Transact
             Ok(TransactionStatement { query, params })
         })
         .collect()
+}
+
+/// Opens an interactive transaction on its own actor thread (see
+/// [`crate::interactive`]); runs on a libuv worker because acquiring the
+/// writer lock may wait for another writer.
+pub struct BeginTxTask {
+    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
+    pub(crate) mode: Option<String>,
+    pub(crate) id: u32,
+    pub(crate) registry: crate::TxRegistry,
+}
+
+impl Task for BeginTxTask {
+    type Output = u32;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let mode = parse_transaction_mode(self.mode.as_deref())?;
+        let actor = crate::interactive::TxActor::begin(self.db.clone(), mode)
+            .map_err(crate::interactive::napi_err)?;
+        self.registry
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
+            .insert(self.id, Arc::new(actor));
+        Ok(self.id)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct TxExecuteTask {
+    pub(crate) actor: Arc<crate::interactive::TxActor>,
+    pub(crate) query: String,
+    pub(crate) params: Option<serde_json::Value>,
+    pub(crate) limit: QueryLimit,
+    pub(crate) registry: crate::TxRegistry,
+    pub(crate) id: u32,
+}
+
+impl Task for TxExecuteTask {
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let params = match self.params.take() {
+            None | Some(serde_json::Value::Null) => BTreeMap::new(),
+            Some(other) => match json_value_to_params(other) {
+                Ok(params) => params,
+                Err(err) => {
+                    // The JS side treats any rejection as closing the
+                    // transaction; roll it back so the writer lock is freed.
+                    let _ = self.actor.rollback();
+                    if let Ok(mut txs) = self.registry.lock() {
+                        txs.remove(&self.id);
+                    }
+                    return Err(err);
+                }
+            },
+        };
+        let query = std::mem::take(&mut self.query);
+        match self.actor.execute(query, params, self.limit.deadline()) {
+            Ok(result) => encode_query_result_rowarrays(result),
+            Err(message) => {
+                // The actor rolled back; forget the transaction.
+                if let Ok(mut txs) = self.registry.lock() {
+                    txs.remove(&self.id);
+                }
+                Err(crate::interactive::napi_err(message))
+            }
+        }
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(Buffer::from(output))
+    }
+}
+
+/// Work unit for `Transaction.executeMany`: several statements in one
+/// native call and one actor round trip.
+pub struct TxExecuteManyTask {
+    pub(crate) actor: Arc<crate::interactive::TxActor>,
+    pub(crate) statements: serde_json::Value,
+    pub(crate) limit: QueryLimit,
+    pub(crate) registry: crate::TxRegistry,
+    pub(crate) id: u32,
+}
+
+impl Task for TxExecuteManyTask {
+    type Output = Vec<Vec<u8>>;
+    type JsValue = Vec<Buffer>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let statements = match parse_transaction_statements(std::mem::take(&mut self.statements)) {
+            Ok(statements) => statements
+                .into_iter()
+                .map(|st| (st.query, st.params))
+                .collect(),
+            Err(err) => {
+                // A rejected call closes the transaction on the JS side, so
+                // roll it back here too rather than leave the writer lock
+                // held by a handle nothing can reach.
+                let _ = self.actor.rollback();
+                if let Ok(mut txs) = self.registry.lock() {
+                    txs.remove(&self.id);
+                }
+                return Err(err);
+            }
+        };
+        match self.actor.execute_many(statements, self.limit.deadline()) {
+            Ok(results) => results
+                .into_iter()
+                .map(encode_query_result_rowarrays)
+                .collect(),
+            Err(message) => {
+                // The actor rolled back; forget the transaction.
+                if let Ok(mut txs) = self.registry.lock() {
+                    txs.remove(&self.id);
+                }
+                Err(crate::interactive::napi_err(message))
+            }
+        }
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output.into_iter().map(Buffer::from).collect())
+    }
+}
+
+pub struct TxFinishTask {
+    pub(crate) actor: Arc<crate::interactive::TxActor>,
+    pub(crate) commit: bool,
+}
+
+impl Task for TxFinishTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let result = if self.commit {
+            self.actor.commit()
+        } else {
+            self.actor.rollback()
+        };
+        result.map_err(crate::interactive::napi_err)
+    }
+
+    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
+        Ok(())
+    }
 }

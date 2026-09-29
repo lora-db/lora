@@ -122,16 +122,14 @@ fn error_where_unbound_variable() {
 fn error_unknown_label_in_match() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
-    let err = db.run_err("MATCH (n:NonexistentLabel) RETURN n");
-    assert!(err.contains("unknown label"));
+    db.assert_count("MATCH (n:NonexistentLabel) RETURN n", 0);
 }
 
 #[test]
 fn error_unknown_relationship_type_in_match() {
     let db = TestDb::new();
     db.run("CREATE (a:User {name: 'Alice'})-[:FOLLOWS]->(b:User {name: 'Bob'})");
-    let err = db.run_err("MATCH (a)-[:NONEXISTENT]->(b) RETURN a, b");
-    assert!(err.contains("unknown relationship type"));
+    db.assert_count("MATCH (a)-[:NONEXISTENT]->(b) RETURN a, b", 0);
 }
 
 #[test]
@@ -326,18 +324,18 @@ fn error_variable_from_first_union_branch_not_in_second() {
 
 #[test]
 fn error_unknown_property_in_where() {
+    // `n.nonexistent` is null, so the comparison is null and filters out.
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice'})");
-    let err = db.run_err("MATCH (n:User) WHERE n.nonexistent = 'x' RETURN n");
-    assert!(err.contains("unknown property"));
+    db.assert_count("MATCH (n:User) WHERE n.nonexistent = 'x' RETURN n", 0);
 }
 
 #[test]
 fn error_unknown_property_in_order_by() {
+    // Ordering by a key no node carries sorts on nulls; rows still come back.
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice'})");
-    let err = db.run_err("MATCH (n:User) RETURN n.name ORDER BY n.nonexistent");
-    assert!(err.contains("unknown property"));
+    db.assert_count("MATCH (n:User) RETURN n.name ORDER BY n.nonexistent", 1);
 }
 
 // ============================================================
@@ -473,11 +471,11 @@ fn error_delete_property_value_not_node() {
 
 #[test]
 fn error_unknown_label_and_unknown_property_combined() {
+    // Unknown labels and property keys are not errors (standard Cypher):
+    // the pattern matches nothing, whatever the graph holds.
     let db = TestDb::new();
     db.run("CREATE (:Known {id: 1})");
-    // Unknown label in MATCH on non-empty graph
-    let err = db.run_err("MATCH (n:TotallyFakeLabel) RETURN n.also_fake");
-    assert!(err.contains("unknown label") || err.contains("label"));
+    db.assert_count("MATCH (n:TotallyFakeLabel) RETURN n.also_fake", 0);
 }
 
 #[test]
@@ -667,16 +665,14 @@ fn error_order_by_without_return() {
 fn error_unknown_label_multiple_types_first_unknown() {
     let db = TestDb::new();
     db.run("CREATE (:Known {id:1})");
-    let err = db.run_err("MATCH (n:Unknown) RETURN n");
-    assert!(err.contains("unknown label"));
+    db.assert_count("MATCH (n:Unknown) RETURN n", 0);
 }
 
 #[test]
 fn error_unknown_rel_type_on_populated_graph() {
     let db = TestDb::new();
     db.run("CREATE (:A {id:1})-[:REAL]->(:B {id:2})");
-    let err = db.run_err("MATCH ()-[:FAKE]->() RETURN 1");
-    assert!(err.contains("unknown relationship type"));
+    db.assert_count("MATCH ()-[:FAKE]->() RETURN 1", 0);
 }
 
 // ============================================================

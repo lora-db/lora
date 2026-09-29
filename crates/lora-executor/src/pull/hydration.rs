@@ -35,6 +35,16 @@ impl<'a, S: GraphStorage> RowSource for HydratingSource<'a, S> {
     }
 }
 
+/// Replace node / relationship id references in `row` with their full
+/// hydrated form (labels, type, properties), as every query result does.
+pub fn hydrate_row<S: GraphStorage>(row: Row, storage: &S) -> Row {
+    let mut out = Row::new();
+    for (var, name, value) in row.into_iter_named() {
+        out.insert_named(var, name, hydrate_value(value, storage));
+    }
+    out
+}
+
 pub(crate) fn hydrate_value<S: GraphStorage>(value: LoraValue, storage: &S) -> LoraValue {
     match value {
         LoraValue::Node(id) => storage

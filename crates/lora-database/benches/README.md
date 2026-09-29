@@ -24,3 +24,20 @@ Run every registered database benchmark:
 ```bash
 cargo bench -p lora-database --benches
 ```
+
+## Probes (`examples/`)
+
+Targeted measurements that are quicker to read than a Criterion run and
+compare cleanly across branches (build each branch, run the same probe):
+
+| Example | Measures |
+| --- | --- |
+| `heap_probe` | Real retained heap per node / relationship / index entry via a counting allocator (`MemoryReport` is an estimate). `-- --festimap` runs the 25k-node / 100k-relationship shape from the Festimap report |
+| `perf_probe` | Mean latency of common query shapes; `-- <scenario> <seconds>` loops one scenario for an external sampler, `-- --stream` compares `execute()` with `stream()` |
+| `optional_probe` | Anchored `OPTIONAL MATCH` vs the equivalent pattern comprehension (target: within 3x) |
+| `keyset_probe` | `WHERE n.key > $after ORDER BY n.key LIMIT 20` latency at 20k and 1M nodes (target: under 1 ms p50, flat in label size) |
+| `bulk_probe` | Bulk-load time with no schema vs a uniqueness constraint, range, or full-text index declared first |
+
+```bash
+cargo run --release -p lora-database --example heap_probe
+```

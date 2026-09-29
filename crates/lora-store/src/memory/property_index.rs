@@ -12,10 +12,15 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::cow::CowMap;
+use super::id_set::IdSet;
 use crate::types::PropertyValue;
 use crate::LoraBinary;
 
-pub(super) type PropertyValueBuckets = HashMap<PropertyIndexKey, Vec<u64>>;
+/// Value → ids for one property. A copy-on-write sharded map (see
+/// [`CowMap`]) so cloning the graph (the staged copy a write works on)
+/// shares it and a write copies only the shard its value lands in.
+pub(super) type PropertyValueBuckets = CowMap<PropertyIndexKey, IdSet>;
 pub(super) type PropertyIndex = HashMap<String, PropertyValueBuckets>;
 pub(super) type ScopedPropertyIndex = HashMap<String, PropertyIndex>;
 
@@ -71,12 +76,18 @@ impl PropertyIndexState {
         key: &str,
         value: PropertyIndexKey,
     ) {
-        values
-            .entry(key.to_string())
-            .or_default()
-            .entry(value)
-            .or_default()
-            .push(entity_id);
+        let buckets = match values.get_mut(key) {
+            Some(buckets) => buckets,
+            None => values.entry(key.to_string()).or_default(),
+        };
+        match buckets.get_mut(&value) {
+            Some(ids) => {
+                ids.insert(entity_id);
+            }
+            None => {
+                buckets.get_or_insert_with(value, || IdSet::new(entity_id));
+            }
+        }
     }
 
     fn remove_value(
@@ -87,13 +98,11 @@ impl PropertyIndexState {
     ) {
         let mut remove_key = false;
         if let Some(buckets) = values.get_mut(key) {
-            if let Some(ids) = buckets.get_mut(value) {
-                if let Some(pos) = ids.iter().position(|&id| id == entity_id) {
-                    ids.swap_remove(pos);
-                }
-                if ids.is_empty() {
-                    buckets.remove(value);
-                }
+            let emptied = buckets
+                .get_mut(value)
+                .is_some_and(|ids| ids.remove(entity_id));
+            if emptied {
+                buckets.remove(value);
             }
             remove_key = buckets.is_empty();
         }
@@ -113,12 +122,11 @@ impl PropertyIndexState {
             return;
         };
 
-        Self::insert_value(
-            self.scoped_values.entry(scope.to_string()).or_default(),
-            entity_id,
-            key,
-            indexed_value,
-        );
+        let scoped = match self.scoped_values.get_mut(scope) {
+            Some(scoped) => scoped,
+            None => self.scoped_values.entry(scope.to_string()).or_default(),
+        };
+        Self::insert_value(scoped, entity_id, key, indexed_value);
     }
 
     pub(super) fn insert_with_scopes<'a>(
@@ -134,12 +142,11 @@ impl PropertyIndexState {
 
         Self::insert_value(&mut self.values, entity_id, key, indexed_value.clone());
         for scope in scopes {
-            Self::insert_value(
-                self.scoped_values.entry(scope.to_string()).or_default(),
-                entity_id,
-                key,
-                indexed_value.clone(),
-            );
+            let scoped = match self.scoped_values.get_mut(scope) {
+                Some(scoped) => scoped,
+                None => self.scoped_values.entry(scope.to_string()).or_default(),
+            };
+            Self::insert_value(scoped, entity_id, key, indexed_value.clone());
         }
     }
 
@@ -188,12 +195,11 @@ impl PropertyIndexState {
         }
     }
 
-    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&[u64]> {
+    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&IdSet> {
         let indexed_value = PropertyIndexKey::from_value(value)?;
         self.values
             .get(key)
             .and_then(|values| values.get(&indexed_value))
-            .map(Vec::as_slice)
     }
 
     pub(super) fn scoped_ids_for(
@@ -201,19 +207,26 @@ impl PropertyIndexState {
         scope: &str,
         key: &str,
         value: &PropertyValue,
-    ) -> Option<&[u64]> {
+    ) -> Option<&IdSet> {
         let indexed_value = PropertyIndexKey::from_value(value)?;
         self.scoped_values
             .get(scope)
             .and_then(|values| values.get(key))
             .and_then(|values| values.get(&indexed_value))
-            .map(Vec::as_slice)
     }
 }
 
 /// Hashable & sortable image of a [`PropertyValue`]. `None` from
-/// [`PropertyIndexKey::from_value`] means "no stable image" — temporal,
-/// spatial, and vector values fall through to the scan fallback today.
+/// [`PropertyIndexKey::from_value`] means "no stable image": durations
+/// (no total order), spatial, and vector values fall through to the scan
+/// fallback.
+///
+/// Temporal values (`Date`, `DateTime`, `LocalDateTime`, `Time`,
+/// `LocalTime`) are keyed by kind, then by the instant they denote
+/// (`order_nanos`, the order Cypher comparisons use), then by UTC offset.
+/// The offset only separates values that denote the same instant in
+/// different zones, so equality lookups stay exact while range probes
+/// widen a bound across every offset (see [`PropertyIndexKey::range_lower`]).
 ///
 /// `Ord` is hand-rolled (not derived) because [`crate::LoraBinary`]
 /// doesn't expose `Ord` on its segmented byte representation. The
@@ -229,10 +242,28 @@ pub(super) enum PropertyIndexKey {
     Bool(bool),
     Int(i64),
     Float(u64),
-    String(String),
+    /// Shared so copying an index shard or partition (a write's staged
+    /// graph copy) bumps a refcount per key instead of reallocating it.
+    String(std::sync::Arc<str>),
     Binary(LoraBinary),
     List(Vec<PropertyIndexKey>),
     Map(BTreeMap<String, PropertyIndexKey>),
+    Temporal {
+        kind: TemporalKind,
+        nanos: i128,
+        offset: i32,
+    },
+}
+
+/// Temporal key families. Values of different kinds never compare in
+/// Cypher, so each kind occupies its own contiguous run of the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum TemporalKind {
+    Date,
+    LocalTime,
+    Time,
+    LocalDateTime,
+    DateTime,
 }
 
 impl PartialOrd for PropertyIndexKey {
@@ -253,6 +284,7 @@ impl Ord for PropertyIndexKey {
             PropertyIndexKey::Binary(_) => 5,
             PropertyIndexKey::List(_) => 6,
             PropertyIndexKey::Map(_) => 7,
+            PropertyIndexKey::Temporal { .. } => 8,
         };
         match tag(self).cmp(&tag(other)) {
             Ordering::Equal => match (self, other) {
@@ -273,6 +305,18 @@ impl Ord for PropertyIndexKey {
                 }
                 (PropertyIndexKey::List(a), PropertyIndexKey::List(b)) => a.cmp(b),
                 (PropertyIndexKey::Map(a), PropertyIndexKey::Map(b)) => a.cmp(b),
+                (
+                    PropertyIndexKey::Temporal {
+                        kind: ak,
+                        nanos: an,
+                        offset: ao,
+                    },
+                    PropertyIndexKey::Temporal {
+                        kind: bk,
+                        nanos: bn,
+                        offset: bo,
+                    },
+                ) => ak.cmp(bk).then(an.cmp(bn)).then(ao.cmp(bo)),
                 _ => Ordering::Equal, // unreachable given equal tags
             },
             ord => ord,
@@ -293,7 +337,7 @@ impl PropertyIndexKey {
                     Some(Self::Float(sortable_f64_bits(*v)))
                 }
             }
-            PropertyValue::String(v) => Some(Self::String(v.clone())),
+            PropertyValue::String(v) => Some(Self::String(std::sync::Arc::from(v.as_str()))),
             PropertyValue::Binary(v) => Some(Self::Binary(v.clone())),
             PropertyValue::List(values) => values
                 .iter()
@@ -305,17 +349,74 @@ impl PropertyIndexKey {
                 .map(|(k, v)| Self::from_value(v).map(|indexed| (k.clone(), indexed)))
                 .collect::<Option<BTreeMap<_, _>>>()
                 .map(Self::Map),
-            // Temporal, spatial, and vector values have richer equality
-            // semantics and/or no stable hash representation in the storage
-            // crate today. Those continue to use the scan fallback.
-            PropertyValue::Date(_)
-            | PropertyValue::Time(_)
-            | PropertyValue::LocalTime(_)
-            | PropertyValue::DateTime(_)
-            | PropertyValue::LocalDateTime(_)
-            | PropertyValue::Duration(_)
-            | PropertyValue::Point(_)
-            | PropertyValue::Vector(_) => None,
+            PropertyValue::Date(v) => Some(Self::temporal(TemporalKind::Date, v.order_nanos(), 0)),
+            PropertyValue::LocalTime(v) => {
+                Some(Self::temporal(TemporalKind::LocalTime, v.order_nanos(), 0))
+            }
+            PropertyValue::Time(v) => Some(Self::temporal(
+                TemporalKind::Time,
+                v.order_nanos(),
+                v.offset_seconds,
+            )),
+            PropertyValue::LocalDateTime(v) => Some(Self::temporal(
+                TemporalKind::LocalDateTime,
+                v.order_nanos(),
+                0,
+            )),
+            PropertyValue::DateTime(v) => Some(Self::temporal(
+                TemporalKind::DateTime,
+                v.order_nanos(),
+                v.offset_seconds,
+            )),
+            // Durations have no total order in Cypher (a month has no fixed
+            // length), and spatial and vector values have no stable ordered
+            // image. Those use the scan fallback, and a range bound of one of
+            // these types makes the range probe fall back to a scan too.
+            PropertyValue::Duration(_) | PropertyValue::Point(_) | PropertyValue::Vector(_) => None,
+        }
+    }
+
+    fn temporal(kind: TemporalKind, nanos: i128, offset: i32) -> Self {
+        Self::Temporal {
+            kind,
+            nanos,
+            offset,
+        }
+    }
+
+    /// The smallest key a value `>= value` can have. Equal to
+    /// [`Self::from_value`] except for temporals, which widen to the lowest
+    /// offset so a bound matches every value denoting the same instant.
+    pub(super) fn range_lower(value: &PropertyValue) -> Option<Self> {
+        match Self::from_value(value)? {
+            Self::Temporal { kind, nanos, .. } => Some(Self::temporal(kind, nanos, i32::MIN)),
+            key => Some(key),
+        }
+    }
+
+    /// The largest key a value `<= value` can have; see [`Self::range_lower`].
+    pub(super) fn range_upper(value: &PropertyValue) -> Option<Self> {
+        match Self::from_value(value)? {
+            Self::Temporal { kind, nanos, .. } => Some(Self::temporal(kind, nanos, i32::MAX)),
+            key => Some(key),
+        }
+    }
+
+    /// For a one-sided temporal range, the other end of that temporal kind:
+    /// values of other types never satisfy a temporal comparison, so the
+    /// probe (and an ordered walk) stays inside the kind.
+    pub(super) fn kind_floor(&self) -> Option<Self> {
+        match self {
+            Self::Temporal { kind, .. } => Some(Self::temporal(*kind, i128::MIN, i32::MIN)),
+            _ => None,
+        }
+    }
+
+    /// Upper counterpart of [`Self::kind_floor`].
+    pub(super) fn kind_ceiling(&self) -> Option<Self> {
+        match self {
+            Self::Temporal { kind, .. } => Some(Self::temporal(*kind, i128::MAX, i32::MAX)),
+            _ => None,
         }
     }
 }

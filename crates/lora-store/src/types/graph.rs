@@ -2,12 +2,10 @@
 //! `NodeRecord` / `RelationshipRecord` envelopes every backend stores.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use lora_ast::Direction;
 
-use super::PropertyValue;
+use super::{PropertyMap, PropertyValue};
 
 pub type NodeId = u64;
 pub type RelationshipId = u64;
@@ -25,7 +23,11 @@ pub type RelationshipId = u64;
 /// [`crate::intern`] so the `Arc<str>` instances actually share their
 /// backing storage; calling `Arc::from(s)` directly works but
 /// allocates a fresh buffer per call.
-pub type Properties = BTreeMap<Arc<str>, PropertyValue>;
+///
+/// The map itself is a [`PropertyMap`]: a key-sorted `Vec` with the
+/// `BTreeMap` API, because a `BTreeMap` leaf costs ~720 bytes even for
+/// one property. See `property_map.rs`.
+pub type Properties = PropertyMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeRecord {

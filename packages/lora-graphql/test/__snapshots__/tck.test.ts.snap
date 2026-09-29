@@ -1,0 +1,1029 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`TCK > aggregate 1`] = `
+[
+  {
+    "field": "festivalsAggregate",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": 0,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.capacity > $p0
+RETURN count(this) AS \`count\`, max(this.capacity) AS capacity_max",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > connection after a cursor 1`] = `
+[
+  {
+    "field": "festivalsConnection",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": "Starland 11",
+          "p1": "f11",
+          "p2": 3,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.name >= $p0 AND (this.name > $p0 OR (this.name = $p0 AND this.key > $p1))
+WITH this ORDER BY this.name ASC, this.key ASC LIMIT $p2
+RETURN this { .key } AS node, [this.name, this.key] AS __cursor",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > connection, plan example 1`] = `
+[
+  {
+    "field": "festivalsConnection",
+    "reads": {
+      "labels": [
+        "Festival",
+        "Genre",
+      ],
+      "relationships": [
+        "IN_GENRE",
+      ],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": "land",
+          "p1": 3,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.name CONTAINS $p0
+WITH this ORDER BY this.name ASC, this.key ASC LIMIT $p1
+RETURN this { .key, .name, genre: head([(this)-[:IN_GENRE]->(this_genre:Genre) | this_genre { .name }]) } AS node, [this.name, this.key] AS __cursor",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > equality 1`] = `
+[
+  {
+    "field": "festivals",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": "ON_SALE",
+          "p1": 10,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.status = $p0
+WITH this ORDER BY this.key ASC LIMIT $p1
+RETURN this { .key } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > in becomes an index seek 1`] = `
+[
+  {
+    "field": "festivals",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": [
+            "f1",
+            "f2",
+          ],
+          "p1": 0,
+          "p2": 10,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.key IN $p0 AND this.capacity > $p1
+WITH this ORDER BY this.key ASC LIMIT $p2
+RETURN this { .key } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > list, default order by key 1`] = `
+[
+  {
+    "field": "festivals",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": 10,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.key >= ""
+WITH this ORDER BY this.key ASC LIMIT $p0
+RETURN this { .key, .name } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > lookup by key 1`] = `
+[
+  {
+    "field": "festival",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": "f1",
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.key = $p0
+RETURN this { .key, title: this.displayTitle } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > nested lists, sorted and unsorted 1`] = `
+[
+  {
+    "field": "genres",
+    "reads": {
+      "labels": [
+        "Artist",
+        "Festival",
+        "Genre",
+      ],
+      "relationships": [
+        "HEADLINES",
+        "IN_GENRE",
+      ],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": 3,
+          "p1": 25,
+          "p2": 25,
+        },
+        "text": "MATCH (this:Genre)
+WHERE this.key >= ""
+WITH this ORDER BY this.key ASC LIMIT $p2
+CALL {
+  WITH this
+  MATCH (this)<-[:IN_GENRE]-(this_festivals:Festival)
+  WITH this_festivals ORDER BY this_festivals.key ASC LIMIT $p0
+  CALL {
+    WITH this_festivals
+    MATCH (this_festivals)<-[:HEADLINES]-(this_festivals_headliners:Artist)
+    WITH this_festivals_headliners ORDER BY this_festivals_headliners.name ASC LIMIT $p1
+    RETURN collect(this_festivals_headliners { .name }) AS this_festivals_headliners_list
+  }
+  RETURN collect(this_festivals { .key, headliners: this_festivals_headliners_list }) AS this_festivals_list
+}
+RETURN this { .key, festivals: this_festivals_list } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > range filter 1`] = `
+[
+  {
+    "field": "festivals",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": 9000,
+          "p1": 5000,
+          "p2": 10,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.capacity < $p0 AND this.capacity >= $p1
+WITH this ORDER BY this.key ASC LIMIT $p2
+RETURN this { .key, .capacity } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > relationship connection with properties 1`] = `
+[
+  {
+    "field": "festival",
+    "reads": {
+      "labels": [
+        "Festival",
+        "User",
+      ],
+      "relationships": [
+        "FOLLOWS",
+      ],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": "f1",
+          "p1": 2000,
+          "p2": 5,
+          "p3": false,
+          "p4": false,
+          "p5": "key:ASC",
+          "p6": 2000,
+          "p7": 6,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.key = $p0
+CALL {
+  WITH this
+  MATCH (this)<-[this_followersConnection_rel:FOLLOWS]-(this_followersConnection:User)
+  WHERE this_followersConnection_rel.since >= $p1
+  WITH this_followersConnection_rel, this_followersConnection ORDER BY this_followersConnection.key ASC LIMIT $p7
+  RETURN collect({ node: this_followersConnection { .key }, __cursor: [this_followersConnection.key], properties: this_followersConnection_rel { .since } }) AS this_followersConnection_rows
+}
+RETURN this { followersConnection: { __rows: this_followersConnection_rows, __first: $p2, __after: $p3, __backward: $p4, __sort: $p5, __totalCount: size([(this)<-[this_followersConnection_count_rel:FOLLOWS]-(this_followersConnection_count:User) WHERE this_followersConnection_count_rel.since >= $p6 | 1]) } } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > relationship filters 1`] = `
+[
+  {
+    "field": "festivals",
+    "reads": {
+      "labels": [
+        "Festival",
+        "Genre",
+        "User",
+      ],
+      "relationships": [
+        "FOLLOWS",
+        "IN_GENRE",
+      ],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": "H",
+          "p1": "H",
+          "p2": "u1",
+          "p3": "u1",
+          "p4": 1,
+          "p5": "u1",
+          "p6": 10,
+        },
+        "text": "MATCH (this_followers_anchor:User)
+WHERE this_followers_anchor.key = $p5
+MATCH (this_followers_anchor)-[:FOLLOWS]->(this:Festival)
+WHERE size([(this)-[this_genre_rel:IN_GENRE]->(this_genre:Genre) WHERE this_genre.name STARTS WITH $p1 | 1]) > 0 AND size([(this)<-[this_followers_rel:FOLLOWS]-(this_followers:User) WHERE this_followers.key = $p3 | 1]) > 0 AND size(reduce(seen = [], seen_key IN [(this)<-[this_followers1_rel:FOLLOWS]-(this_followers1:User) | ["User", this_followers1.key]] | CASE WHEN seen_key IN seen THEN seen ELSE seen + [seen_key] END)) > $p4
+WITH DISTINCT this
+WITH this ORDER BY this.key ASC LIMIT $p6
+RETURN this { .key } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`TCK > text filter + sort 1`] = `
+[
+  {
+    "field": "festivals",
+    "reads": {
+      "labels": [
+        "Festival",
+      ],
+      "relationships": [],
+    },
+    "statements": [
+      {
+        "params": {
+          "p0": "land",
+          "p1": 5,
+        },
+        "text": "MATCH (this:Festival)
+WHERE this.name CONTAINS $p0
+WITH this ORDER BY this.name ASC LIMIT $p1
+RETURN this { .key } AS this",
+      },
+    ],
+  },
+]
+`;
+
+exports[`public schema 1`] = `
+"type Artist {
+  key: ID!
+  name: String!
+  plays(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
+  playsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: FestivalWhere
+  ): ArtistPlaysConnection!
+}
+
+type ArtistConnection {
+  edges: [ArtistEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type ArtistEdge {
+  cursor: String!
+  node: Artist!
+}
+
+input ArtistKeyFilter {
+  """Equal to."""
+  eq: ID
+
+  """Equal to any of."""
+  in: [ID!]
+}
+
+input ArtistNameFilter {
+  """Contains the substring."""
+  contains: String
+
+  """Equal to."""
+  eq: String
+}
+
+type ArtistPlaysConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: ArtistPlaysConnectionAggregate!
+  edges: [ArtistPlaysEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type ArtistPlaysConnectionAggregate {
+  count: RelationshipCount!
+  node: FestivalAggregateNode!
+}
+
+type ArtistPlaysEdge {
+  cursor: String!
+  node: Festival!
+}
+
+"""Sorts Artist nodes. One field per item; the @key breaks ties."""
+input ArtistSort {
+  key: SortDirection
+  name: SortDirection
+}
+
+"""Filters Artist nodes. Absent or null filters are ignored."""
+input ArtistWhere {
+  AND: [ArtistWhere!]
+  NOT: ArtistWhere
+  OR: [ArtistWhere!]
+  key: ArtistKeyFilter
+  name: ArtistNameFilter
+}
+
+"""Compare the number of related nodes."""
+input CountFilter {
+  eq: Int
+  gt: Int
+  gte: Int
+  lt: Int
+  lte: Int
+}
+
+"""An instant with offset, e.g. \`2026-06-21T21:00:00Z\`."""
+scalar DateTime
+
+type DateTimeAggregate {
+  max: DateTime
+  min: DateTime
+}
+
+type Festival implements Node {
+  capacity: Int
+  followers(limit: Int, sort: [UserSort!], where: UserWhere): [User!]!
+  followersConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [UserSort!]
+    where: FestivalFollowersConnectionWhere
+  ): FestivalFollowersConnection!
+  genre(where: GenreWhere): Genre
+  headliners(limit: Int, sort: [ArtistSort!], where: ArtistWhere): [Artist!]!
+  headlinersConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [ArtistSort!]
+    where: ArtistWhere
+  ): ArtistConnection!
+
+  """Global id."""
+  id: ID!
+  key: String!
+  name: String!
+  startsAt: DateTime
+  status: Status
+  title: String
+}
+
+type FestivalAggregate {
+  capacity: IntAggregate!
+  count: Int!
+  key: StringAggregate!
+  name: StringAggregate!
+  startsAt: DateTimeAggregate!
+}
+
+type FestivalAggregateNode {
+  capacity: IntAggregate!
+  key: StringAggregate!
+  name: StringAggregate!
+  startsAt: DateTimeAggregate!
+  title: StringAggregate!
+}
+
+input FestivalCapacityFilter {
+  """Equal to."""
+  eq: Int
+
+  """Greater than."""
+  gt: Int
+
+  """Greater than or equal to."""
+  gte: Int
+
+  """Less than."""
+  lt: Int
+}
+
+type FestivalConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: FestivalConnectionAggregate!
+  edges: [FestivalEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type FestivalConnectionAggregate {
+  """Matching nodes."""
+  count: Int!
+  node: FestivalAggregateNode!
+}
+
+type FestivalEdge {
+  cursor: String!
+  node: Festival!
+}
+
+type FestivalFollowersConnection {
+  edges: [FestivalFollowersEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input FestivalFollowersConnectionFilter {
+  """Every pair matches."""
+  all: FestivalFollowersConnectionWhere
+
+  """No pair matches."""
+  none: FestivalFollowersConnectionWhere
+
+  """Exactly one pair matches."""
+  single: FestivalFollowersConnectionWhere
+
+  """At least one pair matches."""
+  some: FestivalFollowersConnectionWhere
+}
+
+input FestivalFollowersConnectionWhere {
+  edge: FollowsWhere
+  node: UserWhere
+}
+
+type FestivalFollowersEdge {
+  cursor: String!
+  node: User!
+  properties: Follows!
+}
+
+input FestivalFollowersFilter {
+  """Aggregates of the related nodes (and relationship properties)."""
+  aggregate: FestivalFollowersFilterAggregate
+
+  """Every related node matches."""
+  all: UserWhere
+
+  """The number of related nodes."""
+  count: CountFilter
+
+  """No related node matches."""
+  none: UserWhere
+
+  """Exactly one related node matches."""
+  single: UserWhere
+
+  """At least one related node matches."""
+  some: UserWhere
+}
+
+input FestivalFollowersFilterAggregate {
+  count: CountFilter
+  edge: FollowsAggregateWhere
+  node: UserAggregateWhere
+}
+
+input FestivalKeyFilter {
+  """Equal to."""
+  eq: String
+
+  """Equal to any of."""
+  in: [String!]
+}
+
+input FestivalNameFilter {
+  """Contains the substring."""
+  contains: String
+
+  """Equal to."""
+  eq: String
+
+  """Equal to any of."""
+  in: [String!]
+
+  """Starts with."""
+  startsWith: String
+}
+
+"""Sorts Festival nodes. One field per item; the @key breaks ties."""
+input FestivalSort {
+  capacity: SortDirection
+  key: SortDirection
+  name: SortDirection
+  startsAt: SortDirection
+}
+
+input FestivalStartsAtFilter {
+  """Greater than or equal to."""
+  gte: DateTime
+
+  """Less than."""
+  lt: DateTime
+}
+
+input FestivalStatusFilter {
+  """Equal to."""
+  eq: Status
+
+  """Equal to any of."""
+  in: [Status!]
+}
+
+"""Filters Festival nodes. Absent or null filters are ignored."""
+input FestivalWhere {
+  AND: [FestivalWhere!]
+  NOT: FestivalWhere
+  OR: [FestivalWhere!]
+  capacity: FestivalCapacityFilter
+  followers: FestivalFollowersFilter
+
+  """Quantifiers over followers with their relationship properties."""
+  followersConnection: FestivalFollowersConnectionFilter
+
+  """Has a related Genre matching the filter."""
+  genre: GenreWhere
+  key: FestivalKeyFilter
+  name: FestivalNameFilter
+  startsAt: FestivalStartsAtFilter
+  status: FestivalStatusFilter
+}
+
+input FloatComparison {
+  eq: Float
+  gt: Float
+  gte: Float
+  lt: Float
+  lte: Float
+}
+
+type Follows {
+  since: Int!
+}
+
+type FollowsAggregateEdge {
+  since: IntAggregate!
+}
+
+input FollowsAggregateWhere {
+  since: IntAggregateFilter
+}
+
+input FollowsSinceFilter {
+  """Equal to."""
+  eq: Int
+
+  """Greater than or equal to."""
+  gte: Int
+
+  """Less than."""
+  lt: Int
+}
+
+input FollowsWhere {
+  AND: [FollowsWhere!]
+  NOT: FollowsWhere
+  OR: [FollowsWhere!]
+  since: FollowsSinceFilter
+}
+
+type Genre {
+  festivals(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
+  festivalsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: FestivalWhere
+  ): GenreFestivalsConnection!
+  key: String!
+  name: String!
+}
+
+type GenreConnection {
+  edges: [GenreEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type GenreEdge {
+  cursor: String!
+  node: Genre!
+}
+
+type GenreFestivalsConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: GenreFestivalsConnectionAggregate!
+  edges: [GenreFestivalsEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type GenreFestivalsConnectionAggregate {
+  count: RelationshipCount!
+  node: FestivalAggregateNode!
+}
+
+type GenreFestivalsEdge {
+  cursor: String!
+  node: Festival!
+}
+
+input GenreKeyFilter {
+  """Equal to."""
+  eq: String
+
+  """Equal to any of."""
+  in: [String!]
+}
+
+input GenreNameFilter {
+  """Equal to."""
+  eq: String
+
+  """Equal to any of."""
+  in: [String!]
+
+  """Starts with."""
+  startsWith: String
+}
+
+"""Sorts Genre nodes. One field per item; the @key breaks ties."""
+input GenreSort {
+  key: SortDirection
+  name: SortDirection
+}
+
+"""Filters Genre nodes. Absent or null filters are ignored."""
+input GenreWhere {
+  AND: [GenreWhere!]
+  NOT: GenreWhere
+  OR: [GenreWhere!]
+  key: GenreKeyFilter
+  name: GenreNameFilter
+}
+
+type IntAggregate {
+  avg: Float
+  max: Int
+  min: Int
+  sum: Float
+}
+
+input IntAggregateFilter {
+  avg: FloatComparison
+  max: IntComparison
+  min: IntComparison
+  sum: FloatComparison
+}
+
+input IntComparison {
+  eq: Int
+  gt: Int
+  gte: Int
+  lt: Int
+  lte: Int
+}
+
+"""An object with a global id."""
+interface Node {
+  id: ID!
+}
+
+type PageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+}
+
+type Query {
+  """The Artist with this key, or null."""
+  artist(key: ID!): Artist
+
+  """Artist nodes, at most \`limit\` (default 25, max 100)."""
+  artists(limit: Int, sort: [ArtistSort!], where: ArtistWhere): [Artist!]!
+
+  """Artist nodes, paginated with keyset cursors."""
+  artistsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [ArtistSort!]
+    where: ArtistWhere
+  ): ArtistConnection!
+
+  """The Festival with this key, or null."""
+  festival(key: String!): Festival
+
+  """Festival nodes, at most \`limit\` (default 10, max 50)."""
+  festivals(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
+  festivalsAggregate(where: FestivalWhere): FestivalAggregate!
+
+  """Festival nodes, paginated with keyset cursors."""
+  festivalsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: FestivalWhere
+  ): FestivalConnection!
+
+  """The Genre with this key, or null."""
+  genre(key: String!): Genre
+
+  """Genre nodes, at most \`limit\` (default 25, max 100)."""
+  genres(limit: Int, sort: [GenreSort!], where: GenreWhere): [Genre!]!
+
+  """Genre nodes, paginated with keyset cursors."""
+  genresConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [GenreSort!]
+    where: GenreWhere
+  ): GenreConnection!
+
+  """Fetch any object by its global id."""
+  node(id: ID!): Node
+
+  """The User with this key, or null."""
+  user(key: String!): User
+
+  """User nodes, at most \`limit\` (default 25, max 100)."""
+  users(limit: Int, sort: [UserSort!], where: UserWhere): [User!]!
+
+  """User nodes, paginated with keyset cursors."""
+  usersConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [UserSort!]
+    where: UserWhere
+  ): UserConnection!
+}
+
+"""
+Related nodes, and the relationships to them: they differ when several relationships lead to the same node.
+"""
+type RelationshipCount {
+  edges: Int!
+  nodes: Int!
+}
+
+enum SortDirection {
+  """Ascending; nulls last."""
+  ASC
+
+  """Descending; nulls first."""
+  DESC
+}
+
+enum Status {
+  ANNOUNCED
+  ON_SALE
+  SOLD_OUT
+}
+
+type StringAggregate {
+  """The longest value."""
+  longest: String
+  max: String
+  min: String
+
+  """The shortest value."""
+  shortest: String
+}
+
+input StringAggregateFilter {
+  averageLength: FloatComparison
+  longestLength: IntComparison
+  max: StringComparison
+  min: StringComparison
+  shortestLength: IntComparison
+}
+
+input StringComparison {
+  eq: String
+  gt: String
+  gte: String
+  lt: String
+  lte: String
+}
+
+type User {
+  follows(limit: Int, sort: [FestivalSort!], where: FestivalWhere): [Festival!]!
+  followsConnection(
+    after: String
+    before: String
+    first: Int
+
+    """Page backward: the last n before \`before\`."""
+    last: Int
+    sort: [FestivalSort!]
+    where: UserFollowsConnectionWhere
+  ): UserFollowsConnection!
+  key: String!
+  name: String
+}
+
+input UserAggregateWhere {
+  key: StringAggregateFilter
+  name: StringAggregateFilter
+}
+
+type UserConnection {
+  edges: [UserEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type UserEdge {
+  cursor: String!
+  node: User!
+}
+
+type UserFollowsConnection {
+  """Aggregates over every matching node (not just this page)."""
+  aggregate: UserFollowsConnectionAggregate!
+  edges: [UserFollowsEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type UserFollowsConnectionAggregate {
+  count: RelationshipCount!
+  edge: FollowsAggregateEdge!
+  node: FestivalAggregateNode!
+}
+
+input UserFollowsConnectionWhere {
+  edge: FollowsWhere
+  node: FestivalWhere
+}
+
+type UserFollowsEdge {
+  cursor: String!
+  node: Festival!
+  properties: Follows!
+}
+
+input UserKeyFilter {
+  """Equal to."""
+  eq: String
+
+  """Equal to any of."""
+  in: [String!]
+}
+
+input UserNameFilter {
+  """Equal to."""
+  eq: String
+
+  """Equal to any of."""
+  in: [String!]
+}
+
+"""Sorts User nodes. One field per item; the @key breaks ties."""
+input UserSort {
+  key: SortDirection
+  name: SortDirection
+}
+
+"""Filters User nodes. Absent or null filters are ignored."""
+input UserWhere {
+  AND: [UserWhere!]
+  NOT: UserWhere
+  OR: [UserWhere!]
+  key: UserKeyFilter
+  name: UserNameFilter
+}"
+`;

@@ -73,6 +73,16 @@ pub struct MutableExecutionContext<'a, S: GraphStorageMut> {
 pub struct MutableExecutor<'a, S: GraphStorageMut> {
     ctx: MutableExecutionContext<'a, S>,
     deadline: Option<Instant>,
+    /// The row a writing `CALL { ... }` body's bottom `Argument` yields:
+    /// the outer row it runs for. `None` outside such a body.
+    argument_seed: Option<Row>,
+    /// When set, existence constraints on created entities are checked
+    /// once the statement finishes rather than at `CREATE`, so a later
+    /// `SET` (or `ON CREATE SET`) in the same statement can supply the
+    /// property. See [`plan_defers_existence`].
+    defer_existence: bool,
+    /// Entities created while `defer_existence` is on, still to check.
+    pending_existence: Vec<EntityTarget>,
 }
 
 impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
@@ -80,11 +90,20 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         Self {
             ctx,
             deadline: None,
+            argument_seed: None,
+            defer_existence: false,
+            pending_existence: Vec::new(),
         }
     }
 
     pub fn with_deadline(ctx: MutableExecutionContext<'a, S>, deadline: Option<Instant>) -> Self {
-        Self { ctx, deadline }
+        Self {
+            ctx,
+            deadline,
+            argument_seed: None,
+            defer_existence: false,
+            pending_existence: Vec::new(),
+        }
     }
 
     #[inline]
@@ -101,17 +120,51 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         plan: &PhysicalPlan,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         let rows = self.execute_rows(plan)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
     pub fn execute_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        self.defer_existence = plan_defers_existence(plan);
+        let rows = self.execute_plan_rows(plan)?;
+        self.check_pending_existence()?;
+        Ok(rows)
+    }
+
+    /// Defer existence checks on created entities to the end of the
+    /// statement (see [`plan_defers_existence`]); the caller then runs
+    /// [`Self::check_pending_existence`].
+    pub(crate) fn defer_existence_checks(&mut self, defer: bool) {
+        self.defer_existence = defer;
+    }
+
+    /// Check the existence constraints deferred so far, clearing them.
+    pub(crate) fn check_pending_existence(&mut self) -> ExecResult<()> {
+        for target in std::mem::take(&mut self.pending_existence) {
+            let checked = match target {
+                EntityTarget::Node(id) => self.ctx.storage.check_node_existence_constraints(id),
+                EntityTarget::Relationship(id) => self
+                    .ctx
+                    .storage
+                    .check_relationship_existence_constraints(id),
+            };
+            checked.map_err(ExecutorError::ConstraintViolation)?;
+        }
+        Ok(())
+    }
+
+    fn execute_plan_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
         clear_eval_error();
 
         let rows = self.execute_node(plan, plan.root)?;
+        if plan_ends_in_write(plan) {
+            return Ok(Vec::new());
+        }
         if !plan_may_need_hydration(plan) {
             return Ok(rows);
         }
@@ -127,14 +180,24 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         compiled: &CompiledQuery,
         options: Option<ExecuteOptions>,
     ) -> ExecResult<QueryResult> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         let rows = self.execute_compiled_rows(compiled)?;
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
     pub fn execute_compiled_rows(&mut self, compiled: &CompiledQuery) -> ExecResult<Vec<Row>> {
+        let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
+        self.defer_existence = plan_defers_existence(&compiled.physical)
+            || !compiled.unions.is_empty()
+                && compiled
+                    .unions
+                    .iter()
+                    .any(|b| plan_defers_existence(&b.physical));
         if compiled.unions.is_empty() {
-            return self.execute_rows(&compiled.physical);
+            let rows = self.execute_plan_rows(&compiled.physical)?;
+            self.check_pending_existence()?;
+            return Ok(rows);
         }
 
         clear_eval_error();
@@ -160,12 +223,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             all_rows = dedup_rows(all_rows);
         }
 
+        self.check_pending_existence()?;
         Ok(all_rows)
     }
 
     fn execute_and_hydrate(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
         let rows = self.execute_node(plan, plan.root)?;
+        if plan_ends_in_write(plan) {
+            return Ok(Vec::new());
+        }
         if !plan_may_need_hydration(plan) {
             return Ok(rows);
         }
@@ -235,7 +302,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_argument(&self, _op: &ArgumentExec) -> ExecResult<Vec<Row>> {
-        Ok(vec![Row::new()])
+        Ok(vec![self.argument_seed.clone().unwrap_or_default()])
     }
 
     fn exec_node_scan(&mut self, plan: &PhysicalPlan, op: &NodeScanExec) -> ExecResult<Vec<Row>> {
@@ -457,7 +524,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
-        Ok(unwind_rows(input_rows, op, &eval_ctx))
+        unwind_rows(input_rows, op, &eval_ctx)
     }
 
     fn exec_hash_aggregation(
@@ -515,7 +582,19 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     ) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
 
-        // Inner plan is read-only and input-independent; execute once and reuse.
+        if super::optional::optional_can_correlate(plan, op.inner) {
+            let storage_ref: &S = &*self.ctx.storage;
+            return super::optional::correlated_optional_match_rows(
+                storage_ref,
+                &self.ctx.params,
+                plan,
+                op.inner,
+                input_rows,
+                &op.new_vars,
+            );
+        }
+
+        // Fallback: execute the inner plan once, uncorrelated, and join.
         let inner_rows = self.execute_node(plan, op.inner)?;
 
         Ok(optional_match_rows(input_rows, &inner_rows, &op.new_vars))
@@ -528,6 +607,31 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     ) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
         let mut out = Vec::with_capacity(input_rows.len());
+
+        if crate::pull::subtree_has_write(plan, op.inner) {
+            // A writing body runs on this executor, once per outer row,
+            // with the outer row seeded into its bottom `Argument`. Each
+            // run sees the writes of the runs before it.
+            let unit = op.new_vars.is_empty();
+            for outer_row in input_rows {
+                self.check_deadline()?;
+                let prev = self.argument_seed.replace(outer_row.clone());
+                let inner_rows = self.execute_node(plan, op.inner);
+                self.argument_seed = prev;
+                let inner_rows = inner_rows?;
+                if unit {
+                    // A unit subquery keeps the outer row as it is, once,
+                    // however many rows its body produced.
+                    out.push(outer_row);
+                    continue;
+                }
+                for inner_row in inner_rows {
+                    out.push(crate::executor::merge_optional_rows(&outer_row, &inner_row));
+                }
+            }
+            return Ok(out);
+        }
+
         let params = std::sync::Arc::new(self.ctx.params.clone());
         let storage_ref: &S = &*self.ctx.storage;
         for outer_row in input_rows {
@@ -619,7 +723,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         // SAFETY: see method-level comment.
         let storage_ref: &S = unsafe { &*storage_ptr };
-        let mut upstream = crate::pull::build_streaming(plan, input, storage_ref, params)?;
+        // Inside a writing `CALL { ... }` body the input's bottom
+        // `Argument` yields the outer row.
+        let mut upstream = match self.argument_seed.clone() {
+            Some(seed) => {
+                crate::pull::build_streaming_seeded(plan, input, storage_ref, params, seed)?
+            }
+            None => crate::pull::build_streaming(plan, input, storage_ref, params)?,
+        };
 
         let mut out = Vec::new();
         while let Some(mut row) = upstream.next_row()? {
@@ -857,7 +968,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     /// Try to find an existing node/pattern in the graph matching the MERGE
-    /// pattern. If found, bind the variable in the row and return true.
+    /// pattern. If found, bind its variables in the row and return true.
+    /// On a miss the row is left untouched, so the create path sees only
+    /// the variables that were bound before the MERGE.
     fn try_match_merge_pattern(
         &self,
         row: &mut Row,
@@ -869,58 +982,18 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 labels,
                 properties,
             } => {
-                // ID-only candidate discovery; borrow the record during
-                // label/property filtering to avoid cloning non-matches.
-                let candidate_ids = if labels.is_empty() {
-                    self.ctx.storage.all_node_ids()
-                } else {
-                    scan_node_ids_for_label_groups(&*self.ctx.storage, labels)
+                let expected_props = self.merge_expected_props(properties.as_ref(), row);
+                let Some(id) = self
+                    .merge_node_candidates(labels, &expected_props)
+                    .into_iter()
+                    .find(|&id| self.merge_node_matches(id, labels, &expected_props))
+                else {
+                    return Ok(false);
                 };
-
-                // Filter by properties if specified
-                let eval_ctx = EvalContext {
-                    storage: &*self.ctx.storage,
-                    params: &self.ctx.params,
-                };
-                let expected_props = properties.as_ref().map(|e| eval_expr(e, row, &eval_ctx));
-
-                for id in candidate_ids {
-                    let matched = self
-                        .ctx
-                        .storage
-                        .with_node(id, |node| {
-                            if !node_matches_label_groups(&node.labels, labels) {
-                                return false;
-                            }
-                            if let Some(LoraValue::Map(expected)) = &expected_props {
-                                let all_match = expected.iter().all(|(key, expected_value)| {
-                                    node.properties
-                                        .get(key.as_str())
-                                        .map(|actual| {
-                                            value_matches_property_value(expected_value, actual)
-                                        })
-                                        .unwrap_or(false)
-                                });
-                                if !all_match {
-                                    return false;
-                                }
-                            }
-                            true
-                        })
-                        .unwrap_or(false);
-
-                    if !matched {
-                        continue;
-                    }
-
-                    // Found a match — bind the variable
-                    if let Some(var_id) = var {
-                        row.insert(*var_id, LoraValue::Node(id));
-                    }
-                    return Ok(true);
+                if let Some(var_id) = var {
+                    row.insert(*var_id, LoraValue::Node(id));
                 }
-
-                Ok(false)
+                Ok(true)
             }
 
             ResolvedPatternElement::ShortestPath { .. } => {
@@ -929,146 +1002,168 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             }
 
             ResolvedPatternElement::NodeChain { head, chain } => {
-                // Resolve the head node — it should be already bound in the row.
-                let head_node_id = if let Some(var_id) = head.var {
-                    if let Some(LoraValue::Node(id)) = row.get(var_id) {
-                        *id
-                    } else {
-                        // Try to match head node as a standalone node pattern.
-                        let node_matched = self.try_match_merge_pattern(
-                            row,
-                            &ResolvedPatternPart {
-                                binding: None,
-                                element: ResolvedPatternElement::Node {
-                                    var: head.var,
-                                    labels: head.labels.clone(),
-                                    properties: head.properties.clone(),
-                                },
-                            },
-                        )?;
-                        if !node_matched {
-                            return Ok(false);
-                        }
-                        match row.get(var_id) {
-                            Some(LoraValue::Node(id)) => *id,
-                            _ => return Ok(false),
-                        }
+                // The head is usually bound by an earlier clause; otherwise
+                // every node matching it is a possible start.
+                let head_candidates = match head.var.and_then(|v| row.get(v)) {
+                    Some(LoraValue::Node(id)) => vec![*id],
+                    _ => {
+                        let expected = self.merge_expected_props(head.properties.as_ref(), row);
+                        self.merge_node_candidates(&head.labels, &expected)
+                            .into_iter()
+                            .filter(|&id| self.merge_node_matches(id, &head.labels, &expected))
+                            .collect()
                     }
-                } else {
-                    return Ok(false);
                 };
 
-                let mut current_node_id = head_node_id;
-
-                for step in chain {
-                    let eval_ctx = EvalContext {
-                        storage: &*self.ctx.storage,
-                        params: &self.ctx.params,
-                    };
-
-                    let direction = step.rel.direction;
-
-                    // Visit ID-only traversal candidates without allocating a
-                    // transient edge Vec for each MERGE chain step.
-                    let mut found = false;
-                    let _ = self.ctx.storage.try_for_each_expand_id(
-                        current_node_id,
-                        direction,
-                        &step.rel.types,
-                        |rel_id, node_id| {
-                            // Check target node labels and (optional) properties.
-                            let node_ok = self
-                                .ctx
-                                .storage
-                                .with_node(node_id, |node_rec| {
-                                    if !node_matches_label_groups(
-                                        &node_rec.labels,
-                                        &step.node.labels,
-                                    ) {
-                                        return false;
-                                    }
-                                    if let Some(props_expr) = &step.node.properties {
-                                        let expected = eval_expr(props_expr, row, &eval_ctx);
-                                        if let LoraValue::Map(expected_map) = &expected {
-                                            let all_match =
-                                                expected_map.iter().all(|(key, expected_val)| {
-                                                    node_rec
-                                                        .properties
-                                                        .get(key.as_str())
-                                                        .map(|actual| {
-                                                            value_matches_property_value(
-                                                                expected_val,
-                                                                actual,
-                                                            )
-                                                        })
-                                                        .unwrap_or(false)
-                                                });
-                                            if !all_match {
-                                                return false;
-                                            }
-                                        }
-                                    }
-                                    true
-                                })
-                                .unwrap_or(false);
-                            if !node_ok {
-                                return Ok::<(), ()>(());
-                            }
-
-                            // Check relationship properties.
-                            let rel_ok = self
-                                .ctx
-                                .storage
-                                .with_relationship(rel_id, |rel_rec| {
-                                    if let Some(rel_props_expr) = &step.rel.properties {
-                                        let expected = eval_expr(rel_props_expr, row, &eval_ctx);
-                                        if let LoraValue::Map(expected_map) = &expected {
-                                            let all_match =
-                                                expected_map.iter().all(|(key, expected_val)| {
-                                                    rel_rec
-                                                        .properties
-                                                        .get(key.as_str())
-                                                        .map(|actual| {
-                                                            value_matches_property_value(
-                                                                expected_val,
-                                                                actual,
-                                                            )
-                                                        })
-                                                        .unwrap_or(false)
-                                                });
-                                            if !all_match {
-                                                return false;
-                                            }
-                                        }
-                                    }
-                                    true
-                                })
-                                .unwrap_or(false);
-                            if !rel_ok {
-                                return Ok(());
-                            }
-
-                            // Match found — bind variables
-                            if let Some(rel_var) = step.rel.var {
-                                row.insert(rel_var, LoraValue::Relationship(rel_id));
-                            }
-                            if let Some(node_var) = step.node.var {
-                                row.insert(node_var, LoraValue::Node(node_id));
-                            }
-                            current_node_id = node_id;
-                            found = true;
-                            Err(())
-                        },
-                    );
-
-                    if !found {
-                        return Ok(false);
+                for head_id in head_candidates {
+                    let mut trial = row.clone();
+                    if let Some(var_id) = head.var {
+                        trial.insert(var_id, LoraValue::Node(head_id));
+                    }
+                    let mut used_rels = Vec::with_capacity(chain.len());
+                    if self.match_merge_chain(&mut trial, head_id, chain, &mut used_rels) {
+                        *row = trial;
+                        return Ok(true);
                     }
                 }
-
-                Ok(true)
+                Ok(false)
             }
         }
+    }
+
+    /// Match `chain` from `current`, backtracking over every candidate
+    /// edge. A step node or relationship already bound in the row (by an
+    /// earlier clause or earlier in the chain) must be the one reached;
+    /// the same relationship is never used twice in one pattern.
+    fn match_merge_chain(
+        &self,
+        row: &mut Row,
+        current: NodeId,
+        chain: &[lora_analyzer::ResolvedChain],
+        used_rels: &mut Vec<u64>,
+    ) -> bool {
+        let Some((step, rest)) = chain.split_first() else {
+            return true;
+        };
+
+        let bound_dst = match step.node.var.and_then(|v| row.get(v)) {
+            Some(LoraValue::Node(id)) => Some(*id),
+            _ => None,
+        };
+        let bound_rel = match step.rel.var.and_then(|v| row.get(v)) {
+            Some(LoraValue::Relationship(id)) => Some(*id),
+            _ => None,
+        };
+        let expected_node = self.merge_expected_props(step.node.properties.as_ref(), row);
+        let expected_rel = self.merge_expected_props(step.rel.properties.as_ref(), row);
+
+        let edges = self
+            .ctx
+            .storage
+            .expand_ids(current, step.rel.direction, &step.rel.types);
+        for (rel_id, node_id) in edges {
+            if bound_dst.is_some_and(|id| id != node_id)
+                || bound_rel.is_some_and(|id| id != rel_id)
+                || used_rels.contains(&rel_id)
+            {
+                continue;
+            }
+            if !self.merge_node_matches(node_id, &step.node.labels, &expected_node) {
+                continue;
+            }
+            if let Some(LoraValue::Map(expected_map)) = &expected_rel {
+                let rel_ok = self
+                    .ctx
+                    .storage
+                    .with_relationship(rel_id, |rel_rec| {
+                        expected_map.iter().all(|(key, expected_val)| {
+                            rel_rec
+                                .properties
+                                .get(key.as_str())
+                                .map(|actual| value_matches_property_value(expected_val, actual))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                if !rel_ok {
+                    continue;
+                }
+            }
+
+            let mut next = row.clone();
+            if let Some(rel_var) = step.rel.var {
+                next.insert(rel_var, LoraValue::Relationship(rel_id));
+            }
+            if let Some(node_var) = step.node.var {
+                next.insert(node_var, LoraValue::Node(node_id));
+            }
+            used_rels.push(rel_id);
+            if self.match_merge_chain(&mut next, node_id, rest, used_rels) {
+                *row = next;
+                return true;
+            }
+            used_rels.pop();
+        }
+        false
+    }
+
+    fn merge_expected_props(
+        &self,
+        properties: Option<&ResolvedExpr>,
+        row: &Row,
+    ) -> Option<LoraValue> {
+        let eval_ctx = EvalContext {
+            storage: &*self.ctx.storage,
+            params: &self.ctx.params,
+        };
+        properties.map(|e| eval_expr(e, row, &eval_ctx))
+    }
+
+    /// Candidate ids for a MERGE node pattern. `MERGE (n:L {key: $k})`
+    /// looks the key up in the property index instead of scanning every
+    /// `:L` node, so an upsert costs the same on a large label as on a
+    /// small one. Candidates are re-checked by [`Self::merge_node_matches`].
+    fn merge_node_candidates(
+        &self,
+        labels: &[Vec<String>],
+        expected_props: &Option<LoraValue>,
+    ) -> Vec<NodeId> {
+        let indexed = match expected_props {
+            Some(LoraValue::Map(expected)) => {
+                merge_candidates_from_index(&*self.ctx.storage, labels, expected)
+            }
+            _ => None,
+        };
+        match indexed {
+            Some(ids) => ids,
+            None if labels.is_empty() => self.ctx.storage.all_node_ids(),
+            None => scan_node_ids_for_label_groups(&*self.ctx.storage, labels),
+        }
+    }
+
+    fn merge_node_matches(
+        &self,
+        id: NodeId,
+        labels: &[Vec<String>],
+        expected_props: &Option<LoraValue>,
+    ) -> bool {
+        self.ctx
+            .storage
+            .with_node(id, |node| {
+                if !node_matches_label_groups(&node.labels, labels) {
+                    return false;
+                }
+                if let Some(LoraValue::Map(expected)) = expected_props {
+                    return expected.iter().all(|(key, expected_value)| {
+                        node.properties
+                            .get(key.as_str())
+                            .map(|actual| value_matches_property_value(expected_value, actual))
+                            .unwrap_or(false)
+                    });
+                }
+                true
+            })
+            .unwrap_or(false)
     }
 
     fn exec_delete(&mut self, plan: &PhysicalPlan, op: &DeleteExec) -> ExecResult<Vec<Row>> {
@@ -1383,6 +1478,21 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             eval_expr(expr, row, &eval_ctx)
         };
 
+        // `SET n.a = null` removes the property.
+        if matches!(new_value, LoraValue::Null) {
+            return match owner {
+                LoraValue::Node(node_id) => {
+                    self.remove_entity_property(EntityTarget::Node(node_id), property)
+                }
+                LoraValue::Relationship(rel_id) => {
+                    self.remove_entity_property(EntityTarget::Relationship(rel_id), property)
+                }
+                other => Err(ExecutorError::InvalidSetTarget {
+                    found: value_kind(&other),
+                }),
+            };
+        }
+
         match owner {
             LoraValue::Node(node_id) => {
                 let prop = lora_value_to_property(new_value)
@@ -1418,6 +1528,36 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 found: value_kind(&other),
             }),
         }
+    }
+
+    /// Remove one property, checking constraints first. Removing a
+    /// property the entity does not have is a no-op.
+    fn remove_entity_property(&mut self, target: EntityTarget, property: &str) -> ExecResult<()> {
+        match target {
+            EntityTarget::Node(node_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_node_remove_property_against_constraints(node_id, property)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
+                self.ctx.storage.remove_node_property(node_id, property);
+            }
+            EntityTarget::Relationship(rel_id) => {
+                if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_relationship_remove_property_against_constraints(rel_id, property)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
+                self.ctx
+                    .storage
+                    .remove_relationship_property(rel_id, property);
+            }
+        }
+        Ok(())
     }
 
     fn remove_property_from_expr(&mut self, row: &Row, expr: &ResolvedExpr) -> ExecResult<()> {
@@ -1481,6 +1621,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         let mut props: Properties = Properties::new();
         for (k, v) in map {
+            // `SET n = {a: null}` leaves `a` absent.
+            if matches!(v, LoraValue::Null) {
+                continue;
+            }
             let prop = lora_value_to_property(v)
                 .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
             props.insert(lora_store::intern_owned(k), prop);
@@ -1527,6 +1671,11 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         match target {
             EntityTarget::Node(node_id) => {
                 for (k, v) in map {
+                    // `SET n += {a: null}` removes `a`.
+                    if matches!(v, LoraValue::Null) {
+                        self.remove_entity_property(target, &k)?;
+                        continue;
+                    }
                     let prop = lora_value_to_property(v)
                         .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
                     if let Err(msg) = self
@@ -1541,6 +1690,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             }
             EntityTarget::Relationship(rel_id) => {
                 for (k, v) in map {
+                    if matches!(v, LoraValue::Null) {
+                        self.remove_entity_property(target, &k)?;
+                        continue;
+                    }
                     let prop = lora_value_to_property(v)
                         .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
                     if let Err(msg) = self
@@ -1738,18 +1891,24 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         let flat_labels = flatten_label_groups(labels);
         debug!("creating node with labels={flat_labels:?}");
-        if let Err(msg) = self
-            .ctx
-            .storage
-            .check_node_create_against_constraints(&flat_labels, &properties)
-        {
-            return Err(ExecutorError::ConstraintViolation(msg));
-        }
+        let checked = if self.defer_existence {
+            self.ctx
+                .storage
+                .check_node_create_deferring_existence(&flat_labels, &properties)
+        } else {
+            self.ctx
+                .storage
+                .check_node_create_against_constraints(&flat_labels, &properties)
+        };
+        checked.map_err(ExecutorError::ConstraintViolation)?;
         let created = self
             .ctx
             .storage
             .try_create_node(flat_labels, properties)
             .ok_or(ExecutorError::NodeCreateFailed)?;
+        if self.defer_existence {
+            self.pending_existence.push(EntityTarget::Node(created.id));
+        }
 
         if let Some(var_id) = var {
             row.insert(var_id, LoraValue::Node(created.id));
@@ -1808,13 +1967,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         debug!("creating relationship: src={src}, dst={dst}, type={rel_type}");
 
-        if let Err(msg) = self
-            .ctx
-            .storage
-            .check_relationship_create_against_constraints(rel_type, &properties)
-        {
-            return Err(ExecutorError::ConstraintViolation(msg));
-        }
+        let checked = if self.defer_existence {
+            self.ctx
+                .storage
+                .check_relationship_create_deferring_existence(rel_type, &properties)
+        } else {
+            self.ctx
+                .storage
+                .check_relationship_create_against_constraints(rel_type, &properties)
+        };
+        checked.map_err(ExecutorError::ConstraintViolation)?;
 
         let created = self
             .ctx
@@ -1825,6 +1987,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 dst,
                 rel_type: rel_type.clone(),
             })?;
+        if self.defer_existence {
+            self.pending_existence
+                .push(EntityTarget::Relationship(created.id));
+        }
 
         if let Some(var_id) = rel.var {
             row.insert(var_id, LoraValue::Relationship(created.id));
@@ -1832,4 +1998,91 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         Ok(created.id)
     }
+}
+
+/// Whether existence constraints on entities a plan creates must wait
+/// for the end of the statement. They can be checked at `CREATE` only
+/// when nothing after it can add a property: every write is a `CREATE`
+/// or a `DELETE`, with at most one `CREATE`. Checking early keeps a
+/// failing create from mutating anything, which the in-place write path
+/// relies on.
+pub(crate) fn plan_defers_existence(plan: &PhysicalPlan) -> bool {
+    let mut creates = 0;
+    for op in &plan.nodes {
+        match op {
+            PhysicalOp::Create(_) => creates += 1,
+            PhysicalOp::Delete(_) => {}
+            PhysicalOp::Merge(_)
+            | PhysicalOp::Set(_)
+            | PhysicalOp::Remove(_)
+            | PhysicalOp::Foreach(_) => return true,
+            _ => {}
+        }
+    }
+    creates > 1
+}
+
+/// Whether a plan is a write statement with no `RETURN` (its root is the
+/// write operator itself). Such a statement produces no result rows, as
+/// in other Cypher databases; the write operator's pass-through rows
+/// would otherwise leak as anonymous `_0` columns carrying internal ids.
+pub(crate) fn plan_ends_in_write(plan: &PhysicalPlan) -> bool {
+    match &plan.nodes[plan.root] {
+        PhysicalOp::Create(_)
+        | PhysicalOp::Merge(_)
+        | PhysicalOp::Set(_)
+        | PhysicalOp::Delete(_)
+        | PhysicalOp::Remove(_)
+        | PhysicalOp::Foreach(_) => true,
+        // A query ending in a unit `CALL { ... }` returns no rows.
+        PhysicalOp::CallSubquery(op) => op.new_vars.is_empty(),
+        _ => false,
+    }
+}
+
+/// Candidate nodes for a MERGE node pattern from the property index, or
+/// `None` to fall back to a label scan. Every candidate is still checked
+/// against the full pattern, so the only requirement is that no real
+/// match is missed. MERGE compares `1` and `1.0` as equal while the index
+/// keys them apart, so numbers look up both images; values without an
+/// exact index image (lists, maps, NaN, floats beyond 2^53) scan.
+fn merge_candidates_from_index<S: lora_store::GraphStorage>(
+    storage: &S,
+    labels: &[Vec<String>],
+    expected: &std::collections::BTreeMap<String, LoraValue>,
+) -> Option<Vec<lora_store::NodeId>> {
+    use lora_store::PropertyValue;
+
+    // A single required label scopes the lookup; otherwise look up
+    // across labels and let the pattern check filter.
+    let label = match labels {
+        [group] if group.len() == 1 => Some(group[0].as_str()),
+        _ => None,
+    };
+    let (key, value) = expected.iter().find(|(_, v)| {
+        matches!(
+            v,
+            LoraValue::String(_) | LoraValue::Bool(_) | LoraValue::Int(_)
+        ) || matches!(v, LoraValue::Float(f) if f.is_finite() && f.abs() < 9_007_199_254_740_992.0)
+    })?;
+    let images: Vec<PropertyValue> = match value {
+        LoraValue::String(s) => vec![PropertyValue::String(s.clone())],
+        LoraValue::Bool(b) => vec![PropertyValue::Bool(*b)],
+        LoraValue::Int(i) => vec![PropertyValue::Int(*i), PropertyValue::Float(*i as f64)],
+        LoraValue::Float(f) => {
+            let mut v = vec![PropertyValue::Float(*f)];
+            if f.fract() == 0.0 {
+                v.push(PropertyValue::Int(*f as i64));
+            }
+            v
+        }
+        _ => return None,
+    };
+    let mut ids: Vec<lora_store::NodeId> = images
+        .iter()
+        .flat_map(|image| storage.find_node_ids_by_property(label, key, image))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
 }

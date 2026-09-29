@@ -205,13 +205,19 @@ fn cmp_numeric_or_string(
 ) -> LoraValue {
     match (&lhs, &rhs) {
         (LoraValue::String(a), LoraValue::String(b)) => LoraValue::Bool(str_cmp(a, b)),
-        (LoraValue::Date(a), LoraValue::Date(b)) => {
-            LoraValue::Bool(num_cmp(a.to_epoch_days() as f64, b.to_epoch_days() as f64))
-        }
-        (LoraValue::DateTime(a), LoraValue::DateTime(b)) => LoraValue::Bool(num_cmp(
-            a.to_epoch_millis() as f64,
-            b.to_epoch_millis() as f64,
-        )),
+        (
+            LoraValue::Date(_)
+            | LoraValue::DateTime(_)
+            | LoraValue::LocalDateTime(_)
+            | LoraValue::Time(_)
+            | LoraValue::LocalTime(_),
+            _,
+        ) => match lhs.temporal_cmp(&rhs) {
+            // Map the ordering onto -1 / 0 / 1 so the caller's operator
+            // applies unchanged and nanosecond precision is kept.
+            Some(ord) => LoraValue::Bool(num_cmp(ord as i8 as f64, 0.0)),
+            None => LoraValue::Bool(false),
+        },
         (LoraValue::Duration(a), LoraValue::Duration(b)) => {
             LoraValue::Bool(num_cmp(a.total_seconds_approx(), b.total_seconds_approx()))
         }

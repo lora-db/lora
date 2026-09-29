@@ -71,7 +71,7 @@ impl Compiler {
 }
 
 fn compile_physical(query: &ResolvedQuery, stats: &GraphStats) -> PhysicalPlan {
-    let mut planner = Planner::new();
+    let mut planner = Planner::with_stats(stats);
     let logical = planner.plan(query);
 
     let mut optimizer = Optimizer::new();

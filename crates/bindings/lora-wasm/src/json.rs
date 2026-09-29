@@ -435,15 +435,19 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, JsError> 
                         return Ok(LoraValue::Duration(d));
                     }
                     "point" => {
-                        let srid = obj.get("srid").and_then(|v| v.as_u64()).unwrap_or(7203) as u32;
-                        let x = obj.get("x").and_then(|v| v.as_f64()).ok_or_else(|| {
-                            js_error(INVALID_PARAMS_CODE, "point.x must be a number")
-                        })?;
-                        let y = obj.get("y").and_then(|v| v.as_f64()).ok_or_else(|| {
-                            js_error(INVALID_PARAMS_CODE, "point.y must be a number")
-                        })?;
-                        let z = obj.get("z").and_then(|v| v.as_f64());
-                        return Ok(LoraValue::Point(LoraPoint { x, y, z, srid }));
+                        let coords = lora_store::NamedPointCoordinates {
+                            srid: obj.get("srid").and_then(|v| v.as_u64()).map(|v| v as u32),
+                            x: obj.get("x").and_then(|v| v.as_f64()),
+                            y: obj.get("y").and_then(|v| v.as_f64()),
+                            z: obj.get("z").and_then(|v| v.as_f64()),
+                            longitude: obj.get("longitude").and_then(|v| v.as_f64()),
+                            latitude: obj.get("latitude").and_then(|v| v.as_f64()),
+                            height: obj.get("height").and_then(|v| v.as_f64()),
+                        };
+                        let point = coords
+                            .resolve()
+                            .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
+                        return Ok(LoraValue::Point(point));
                     }
                     "vector" => {
                         let v = vector_from_json_map(&obj)

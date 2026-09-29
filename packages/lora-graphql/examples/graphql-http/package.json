@@ -1,0 +1,23 @@
+{
+  "name": "lora-graphql-example-graphql-http",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts",
+    "token": "tsx token.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@loradb/lora-graphql": "file:../..",
+    "@loradb/lora-node": "^0.16.0",
+    "graphql": "^16.11.0",
+    "graphql-http": "^1.22.4",
+    "jose": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -48,6 +48,123 @@ for (const row of res.rows) {
 }
 ```
 
+### Timeouts and cancellation
+
+Every `execute()`, `stream()` and `transaction()` call takes an optional
+third argument. A query that runs out of time or is cancelled stops at its
+next check point, rolls back any writes, releases its locks, and rejects:
+with a `LoraError` coded `LORA_TIMEOUT` for `timeoutMs`, or with the
+signal's reason (an `AbortError`) for `signal`.
+
+```ts
+await db.execute(query, params, { timeoutMs: 250 });
+
+const controller = new AbortController();
+const pending = db.execute(query, params, { signal: controller.signal });
+controller.abort(); // rejects with AbortError
+
+// Database-wide default; a call can override it, and `timeoutMs: 0` opts out.
+const bounded = await createDatabase("app", { queryTimeoutMs: 1000 });
+```
+
+### Interactive transactions
+
+`db.begin()` opens a transaction you can drive statement by statement,
+with application logic in between. A `read_write` transaction holds the
+writer lock until it commits or rolls back, so no other write interleaves
+(other writers wait; keep it short). A failed statement rolls it back, and
+an unfinished transaction rolls back when disposed.
+
+```ts
+await using tx = await db.begin("read_write");
+const { rows } = await tx.execute("MATCH (t:Trip {key: $k}) RETURN t.free AS free", { k });
+if ((rows[0].free as number) > 0) {
+  await tx.execute("MATCH (t:Trip {key: $k}) SET t.free = t.free - 1", { k });
+}
+await tx.commit();
+```
+
+`tx.executeMany()` runs several statements in one native call and returns
+their results in order, saving the round trip each `execute()` costs
+(about 0.1 ms per statement down to 0.03 ms). Each statement sees the
+writes before it. The first failing statement stops the batch and rolls
+the transaction back; its error message ends with `(statement i of n)`.
+`timeoutMs` and `signal` bound the whole batch.
+
+```ts
+const [created, total] = await tx.executeMany([
+  { query: "CREATE (:Item {k: $k})", params: { k } },
+  { query: "MATCH (i:Item) RETURN count(i) AS c" },
+]);
+```
+
+Schema commands (`CREATE CONSTRAINT`, `CREATE INDEX`, `DROP ...`) work
+inside `transaction()` and `db.begin()` and commit or roll back together
+with the data statements.
+
+### Change feed
+
+`db.changes()` yields one `LoraChangeBatch` per committed write, in commit
+order. Every write path counts: `execute()`, `stream()`, `transaction()`,
+`db.begin()` / `executeMany()`, imports, `clear()` and `loadSnapshot()`.
+Rolled-back work never appears.
+
+```ts
+const feed = db.changes({ fromLsn: savedLsn }); // omit fromLsn to start now
+await feed.ready; // optional: every commit after this point is delivered
+for await (const batch of feed) {
+  for (const change of batch.changes) {
+    if (change.kind === "nodeUpdated" && change.labels.includes("User")) {
+      invalidate(change.properties.id, change.setKeys);
+    }
+  }
+  savedLsn = batch.lsn;
+}
+```
+
+A batch is `{ lsn, changes }`. `lsn` is a strictly increasing resume
+token. Each change reports the net effect of the write on one entity, in
+the order the write first touched it:
+
+| `kind`                                       | Fields                                                                                 |
+| -------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `nodeCreated`, `nodeDeleted`                 | `id`, `labels`, `properties`                                                           |
+| `nodeUpdated`                                | `id`, `labels`, `properties`, `setKeys`, `removedKeys`, `addedLabels`, `removedLabels` |
+| `relationshipCreated`, `relationshipDeleted` | `id`, `type`, `startId`, `endId`, `properties`                                         |
+| `relationshipUpdated`                        | the relationship fields plus `setKeys`, `removedKeys`                                  |
+| `reset`                                      | none: the whole graph was replaced (`clear()`, `loadSnapshot()`)                       |
+
+Created and updated entities carry their state after the commit. Deleted
+entities carry their last committed state, so a consumer can still read
+their keys. An entity created and deleted in the same write is left out.
+When a write touches a key or label more than once, the last operation
+decides whether it is listed as set or removed.
+
+Resuming:
+
+- In-memory databases number commits with a process-local counter and keep
+  the last 1024 batches. `fromLsn` works within that window.
+- WAL-backed databases (`databaseName`, `openWalDatabase`) use the WAL's
+  commit LSN. `fromLsn` resumes across restarts for as far back as the WAL
+  holds history: the feed rebuilds older batches by replaying the WAL from
+  an empty graph or a managed checkpoint snapshot, so an old resume point
+  costs a replay.
+- An LSN the database no longer retains fails with
+  `LORA_CHANGES_TRUNCATED`: start a new feed and re-read current state.
+
+Writers never wait for a feed. Each feed buffers up to `bufferSize` batches
+(default 1024); a consumer that falls further behind receives the buffered
+batches and then `LORA_CHANGES_LAGGED`, and should resume with
+`fromLsn: feed.lastLsn`. `break`, `feed.close()`, an aborted `signal`
+(`next()` rejects with its reason) and `db.dispose()` end the feed. An open
+feed does not keep the process alive on its own.
+
+Capture starts with the first `changes()` call on a database and stays on
+until it closes. It costs about 0.5 µs per single-row write in the engine
+(and about 35% on bulk `UNWIND` writes) plus the consumer's own work.
+Snapshot restores on a WAL-backed database appear in the live feed as
+`reset` but are not part of the WAL history a later resume replays.
+
 ### Explain & Profile
 
 `db.explain()` and `db.profile()` are first-class methods alongside
@@ -175,6 +292,7 @@ await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
 | TS type                 | Runtime shape                                                                 |
 |-------------------------|-------------------------------------------------------------------------------|
 | `null`/`boolean`/`number`/`string` | pass-through JS primitives                                                     |
+| `bigint`              | integers outside `Number.MIN_SAFE_INTEGER..MAX_SAFE_INTEGER` (exact 64-bit)     |
 | `LoraValue[]` / object | homogeneous arrays and nested records                                          |
 | `LoraNode`            | `{ kind: "node", id, labels, properties }`                                      |
 | `LoraRelationship`    | `{ kind: "relationship", id, startId, endId, type, properties }`                |
@@ -190,6 +308,14 @@ await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
 | `{ kind: "point", srid: 9157, crs: "cartesian-3D", x, y, z }`                                                | Cartesian 3D         |
 | `{ kind: "point", srid: 4326, crs: "WGS-84-2D", x, y, longitude, latitude }`                                 | WGS-84 2D            |
 | `{ kind: "point", srid: 4979, crs: "WGS-84-3D", x, y, z, longitude, latitude, height }`                      | WGS-84 3D            |
+
+Point parameters accept the same shape reads return: `{ kind: "point",
+latitude, longitude[, height] }` (WGS-84 unless `srid` says otherwise) or
+`{ kind: "point", srid, x, y[, z] }`.
+
+Integer parameters outside the safe range must be passed as `bigint`; an
+integer-valued `number` past 2^53 is rejected with `LORA_INVALID_PARAMS`
+because JavaScript has already rounded it.
 
 Helper constructors (`date("2025-01-15")`, `cartesian(1, 2)`, `cartesian3d(1, 2, 3)`,
 `wgs84(lon, lat)`, `wgs84_3d(lon, lat, height)`, `duration("P1M")`, …) and
@@ -247,6 +373,9 @@ Common ones:
 - `LORA_CONFIG`, `LORA_VALIDATION` — configuration or validation failure
 - `LORA_IO`, `LORA_CONNECTION`, `LORA_WAL_CORRUPTION`, `LORA_WAL_POISONED` — storage failures
 - `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO` — snapshot codec / crypto failures
+- `LORA_LOCKED` — the database directory is locked by another process
+- `LORA_CHANGES_TRUNCATED`, `LORA_CHANGES_LAGGED`: a change feed cannot
+  resume from its `fromLsn`, or fell behind its buffer (see Change feed)
 - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
 - `UNKNOWN` — catch-all for messages without a recognized code
 
@@ -260,14 +389,13 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   `Database` (e.g. 2 000 parallel `CREATE`s via `Promise.all`) works but
   queues behind that write lock. Prefer `await`-in-a-loop or a single batched
   query for heavy write workloads.
-- **I64 precision.** Integer values above `Number.MAX_SAFE_INTEGER`
-  (2^53) are returned as JS `number` and lose precision. A `bigint`-aware
-  path would require extending the value serializer.
-- **Cancellation.** The napi `Task` abstraction does not support
-  cancellation once dispatched; a runaway query runs to completion.
+- **Stream timeouts.** `stream()` checks its deadline between rows, so a
+  single pull that does a lot of work (a large aggregation) finishes before
+  the check fires. `execute()` and `transaction()` check throughout.
 - **WAL surface.** Node persistence exposes container-backed initialization,
   `syncMode: "groupSync"`, and `db.sync()`. Checkpoint, truncate,
   and status controls are not exposed yet.
 - **Archive ownership.** One archive can only be open by one writer process at a
   time. Multiple Node handles in the same process share the same live engine;
-  a second process is rejected while the first holds the archive lock.
+  a second process is rejected with `LORA_LOCKED` while the first holds the
+  archive lock, which `dispose()` releases.

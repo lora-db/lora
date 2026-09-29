@@ -9,15 +9,16 @@ use std::sync::{Arc, RwLock, RwLockWriteGuard};
 use lora_ast::Direction;
 
 use crate::{
-    LoraPoint, MutationEvent, MutationRecorder, NodeId, NodeRecord, Properties, PropertyValue,
-    RelationshipId, RelationshipRecord,
+    DeletedRecordSink, LoraPoint, MutationEvent, MutationRecorder, NodeId, NodeRecord, Properties,
+    PropertyValue, RelationshipId, RelationshipRecord,
 };
 
+use super::chunked_vec::ChunkedVec;
 use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
     DropConstraintError, DropConstraintOutcome,
 };
-use super::entity_index_store::IndexBundle;
+use super::entity_index_store::{IndexBundle, IndexRead, IndexWrite};
 use super::fulltext_index::FulltextRegistry;
 use super::hnsw::HnswParams;
 use super::index_catalog::{
@@ -33,6 +34,14 @@ use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
 use super::text_index::TrigramRegistry;
 use super::vector_index::{VectorIndexProvider, VectorIndexRegistry, VectorSimilarity};
+
+/// Per-node adjacency list. Two relationship ids fit inline in the same
+/// 24 bytes a `Vec` header takes, so the low-degree nodes that make up
+/// most graphs (chains, trees, sparse social graphs) need no heap
+/// allocation for their edges: less memory, one fewer pointer chase per
+/// hop, and a graph clone that copies them with `memcpy` instead of one
+/// `malloc` per node.
+pub(super) type AdjList = smallvec::SmallVec<RelationshipId, 2>;
 
 #[derive(Default)]
 pub struct InMemoryGraph {
@@ -54,8 +63,8 @@ pub struct InMemoryGraph {
     /// clones in place when the refcount is 1 (no concurrent reader)
     /// and falls back to a single-record clone-on-write when readers
     /// still hold a snapshot.
-    pub(super) nodes: Vec<Option<Arc<NodeRecord>>>,
-    pub(super) relationships: Vec<Option<Arc<RelationshipRecord>>>,
+    pub(super) nodes: ChunkedVec<Option<Arc<NodeRecord>>>,
+    pub(super) relationships: ChunkedVec<Option<Arc<RelationshipRecord>>>,
     /// Live (non-tombstoned) counts kept in sync with `put_*`/`take_*` so
     /// `node_count` / `relationship_count` stay O(1) — without a counter
     /// they'd have to scan the slab.
@@ -67,8 +76,8 @@ pub struct InMemoryGraph {
     /// of `BTreeSet` because edges are inserted exactly once and traversal
     /// only needs sequential iteration; the cache-friendly contiguous layout
     /// shows up on every traversal hop.
-    pub(super) outgoing: Vec<Vec<RelationshipId>>,
-    pub(super) incoming: Vec<Vec<RelationshipId>>,
+    pub(super) outgoing: ChunkedVec<AdjList>,
+    pub(super) incoming: ChunkedVec<AdjList>,
 
     // secondary indexes
     /// Label -> the (unique, monotonic) node ids that carry it. The inner
@@ -76,8 +85,8 @@ pub struct InMemoryGraph {
     /// once per label (no dedup needed) and every consumer iterates the
     /// whole list anyway — contiguous storage iterates faster than a
     /// tree-of-pointers, and removes via `swap_remove` stay O(degree-of-label).
-    pub(super) nodes_by_label: BTreeMap<String, Vec<NodeId>>,
-    pub(super) relationships_by_type: BTreeMap<String, Vec<RelationshipId>>,
+    pub(super) nodes_by_label: BTreeMap<String, ChunkedVec<NodeId>>,
+    pub(super) relationships_by_type: BTreeMap<String, ChunkedVec<RelationshipId>>,
 
     /// All index machinery — the declared-index catalog, hash-bucket
     /// property registry, and the per-entity-kind secondary index
@@ -104,6 +113,12 @@ pub struct InMemoryGraph {
     /// updated. The recorder is not part of the graph's identity, so Clone
     /// and snapshot restore both reset it to `None`.
     pub(super) recorder: Option<Arc<dyn MutationRecorder>>,
+
+    /// Optional sink that sees each node / relationship record just before
+    /// a delete drops it. Change feeds use it to report deleted entities
+    /// without copying the graph. Like the recorder, it is not part of the
+    /// graph's identity and is dropped on clone.
+    pub(super) deleted_sink: Option<Arc<dyn DeletedRecordSink>>,
 }
 
 impl std::fmt::Debug for InMemoryGraph {
@@ -169,6 +184,7 @@ impl Clone for InMemoryGraph {
             constraint_catalog: RwLock::new(self.constraint_catalog_read().clone()),
             active_constraints: AtomicUsize::new(self.active_constraint_count()),
             recorder: None,
+            deleted_sink: None,
         }
     }
 }
@@ -178,14 +194,11 @@ impl InMemoryGraph {
         Self::default()
     }
 
-    pub fn with_capacity_hint(nodes: usize, relationships: usize) -> Self {
-        Self {
-            nodes: Vec::with_capacity(nodes),
-            relationships: Vec::with_capacity(relationships),
-            outgoing: Vec::with_capacity(nodes),
-            incoming: Vec::with_capacity(nodes),
-            ..Self::default()
-        }
+    /// Kept for API compatibility. The chunked storage allocates full
+    /// chunks as the graph grows, so there is no repeated doubling for a
+    /// capacity hint to avoid.
+    pub fn with_capacity_hint(_nodes: usize, _relationships: usize) -> Self {
+        Self::default()
     }
 
     pub fn contains_node(&self, node_id: NodeId) -> bool {
@@ -201,6 +214,11 @@ impl InMemoryGraph {
     /// mutation *after* it has been applied.
     pub fn set_mutation_recorder(&mut self, recorder: Option<Arc<dyn MutationRecorder>>) {
         self.recorder = recorder;
+    }
+
+    /// Install (or clear) the [`DeletedRecordSink`].
+    pub fn set_deleted_record_sink(&mut self, sink: Option<Arc<dyn DeletedRecordSink>>) {
+        self.deleted_sink = sink;
     }
 
     /// Handle to the currently-installed recorder, if any.
@@ -323,8 +341,8 @@ impl InMemoryGraph {
                 )
             })?;
             self.nodes.resize_with(target, || None);
-            self.outgoing.resize_with(target, Vec::new);
-            self.incoming.resize_with(target, Vec::new);
+            self.outgoing.resize_with(target, AdjList::new);
+            self.incoming.resize_with(target, AdjList::new);
         }
         Ok(target - 1)
     }
@@ -411,12 +429,16 @@ impl InMemoryGraph {
 
     #[inline]
     pub(super) fn outgoing_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
-        self.outgoing.get(Self::slot_index(id)?).map(Vec::as_slice)
+        self.outgoing
+            .get(Self::slot_index(id)?)
+            .map(|adj| adj.as_slice())
     }
 
     #[inline]
     pub(super) fn incoming_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
-        self.incoming.get(Self::slot_index(id)?).map(Vec::as_slice)
+        self.incoming
+            .get(Self::slot_index(id)?)
+            .map(|adj| adj.as_slice())
     }
 
     #[inline]
@@ -607,13 +629,15 @@ impl InMemoryGraph {
         if let Some(bucket) = self.nodes_by_label.get_mut(label) {
             bucket.push(node_id);
         } else {
-            self.nodes_by_label.insert(label.to_string(), vec![node_id]);
+            self.nodes_by_label
+                .insert(label.to_string(), std::iter::once(node_id).collect());
         }
     }
 
     fn remove_node_label_index(&mut self, node_id: NodeId, label: &str) {
         if let Some(ids) = self.nodes_by_label.get_mut(label) {
-            if let Some(pos) = ids.iter().position(|&id| id == node_id) {
+            let pos = ids.iter().position(|&id| id == node_id);
+            if let Some(pos) = pos {
                 ids.swap_remove(pos);
             }
             if ids.is_empty() {
@@ -628,19 +652,64 @@ impl InMemoryGraph {
             bucket.push(rel_id);
         } else {
             self.relationships_by_type
-                .insert(rel_type.to_string(), vec![rel_id]);
+                .insert(rel_type.to_string(), std::iter::once(rel_id).collect());
         }
     }
 
     fn remove_relationship_type_index(&mut self, rel_id: RelationshipId, rel_type: &str) {
         if let Some(ids) = self.relationships_by_type.get_mut(rel_type) {
-            if let Some(pos) = ids.iter().position(|&id| id == rel_id) {
+            let pos = ids.iter().position(|&id| id == rel_id);
+            if let Some(pos) = pos {
                 ids.swap_remove(pos);
             }
             if ids.is_empty() {
                 self.relationships_by_type.remove(rel_type);
             }
         }
+    }
+
+    /// Ids of `label` nodes whose `key` equals `value`, from the scoped
+    /// hash index. `None` when that index is not active for `key` or
+    /// `value` has no index image; the caller must then scan.
+    pub(super) fn indexed_node_ids(
+        &self,
+        label: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Option<Vec<NodeId>> {
+        super::property_index::PropertyIndexKey::from_value(value)?;
+        let indexes = self.indexes_read();
+        if !indexes.node_properties.is_active(key) {
+            return None;
+        }
+        Some(
+            indexes
+                .node_properties
+                .scoped_ids_for(label, key, value)
+                .map(|ids| ids.to_vec())
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Relationship counterpart of [`Self::indexed_node_ids`].
+    pub(super) fn indexed_rel_ids(
+        &self,
+        rel_type: &str,
+        key: &str,
+        value: &PropertyValue,
+    ) -> Option<Vec<RelationshipId>> {
+        super::property_index::PropertyIndexKey::from_value(value)?;
+        let indexes = self.indexes_read();
+        if !indexes.relationship_properties.is_active(key) {
+            return None;
+        }
+        Some(
+            indexes
+                .relationship_properties
+                .scoped_ids_for(rel_type, key, value)
+                .map(|ids| ids.to_vec())
+                .unwrap_or_default(),
+        )
     }
 
     pub(super) fn indexes_read(&self) -> std::sync::RwLockReadGuard<'_, PropertyIndexRegistry> {
@@ -1218,21 +1287,21 @@ impl InMemoryGraph {
     pub(super) fn text_indexes_read(
         &self,
         entity: StoredIndexEntity,
-    ) -> std::sync::RwLockReadGuard<'_, TrigramRegistry> {
+    ) -> IndexRead<'_, TrigramRegistry> {
         self.indexes.text.read(entity)
     }
 
     pub(super) fn text_indexes_write(
         &self,
         entity: StoredIndexEntity,
-    ) -> RwLockWriteGuard<'_, TrigramRegistry> {
+    ) -> IndexWrite<'_, TrigramRegistry> {
         self.indexes.text.write(entity)
     }
 
     pub(super) fn fulltext_indexes_read(
         &self,
         entity: StoredIndexEntity,
-    ) -> std::sync::RwLockReadGuard<'_, FulltextRegistry> {
+    ) -> IndexRead<'_, FulltextRegistry> {
         self.indexes.fulltext.read(entity)
     }
 
@@ -1240,7 +1309,7 @@ impl InMemoryGraph {
     pub(super) fn fulltext_indexes_write(
         &self,
         entity: StoredIndexEntity,
-    ) -> RwLockWriteGuard<'_, FulltextRegistry> {
+    ) -> IndexWrite<'_, FulltextRegistry> {
         self.indexes.fulltext.write(entity)
     }
 
@@ -1347,14 +1416,14 @@ impl InMemoryGraph {
     pub(super) fn sorted_indexes_read(
         &self,
         entity: StoredIndexEntity,
-    ) -> std::sync::RwLockReadGuard<'_, SortedPropertyIndex> {
+    ) -> IndexRead<'_, SortedPropertyIndex> {
         self.indexes.sorted.read(entity)
     }
 
     pub(super) fn sorted_indexes_write(
         &self,
         entity: StoredIndexEntity,
-    ) -> RwLockWriteGuard<'_, SortedPropertyIndex> {
+    ) -> IndexWrite<'_, SortedPropertyIndex> {
         self.indexes.sorted.write(entity)
     }
 
@@ -1403,14 +1472,14 @@ impl InMemoryGraph {
     pub(super) fn point_indexes_read(
         &self,
         entity: StoredIndexEntity,
-    ) -> std::sync::RwLockReadGuard<'_, PointRegistry> {
+    ) -> IndexRead<'_, PointRegistry> {
         self.indexes.point.read(entity)
     }
 
     pub(super) fn point_indexes_write(
         &self,
         entity: StoredIndexEntity,
-    ) -> RwLockWriteGuard<'_, PointRegistry> {
+    ) -> IndexWrite<'_, PointRegistry> {
         self.indexes.point.write(entity)
     }
 
@@ -1466,14 +1535,14 @@ impl InMemoryGraph {
     pub(super) fn vector_indexes_read(
         &self,
         entity: StoredIndexEntity,
-    ) -> std::sync::RwLockReadGuard<'_, VectorIndexRegistry> {
+    ) -> IndexRead<'_, VectorIndexRegistry> {
         self.indexes.vector.read(entity)
     }
 
     pub(super) fn vector_indexes_write(
         &self,
         entity: StoredIndexEntity,
-    ) -> RwLockWriteGuard<'_, VectorIndexRegistry> {
+    ) -> IndexWrite<'_, VectorIndexRegistry> {
         self.indexes.vector.write(entity)
     }
 

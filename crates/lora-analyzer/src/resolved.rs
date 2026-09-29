@@ -161,7 +161,10 @@ pub struct ResolvedWith {
 pub struct ResolvedProjection {
     pub expr: ResolvedExpr,
     pub output: VarId,
-    pub name: String,
+    /// Output column name. `Arc<str>` because executors stamp it onto
+    /// every produced row; cloning it per row is a refcount bump rather
+    /// than a heap allocation per cell.
+    pub name: std::sync::Arc<str>,
     /// True when the name came from an explicit `AS` alias.
     pub explicit_alias: bool,
     pub span: Span,

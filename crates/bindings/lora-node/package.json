@@ -1,6 +1,6 @@
 {
   "name": "@loradb/lora-node",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Node.js / TypeScript bindings for the Lora in-memory graph database",
   "license": "BUSL-1.1",
   "packageManager": "yarn@4.5.1",
@@ -55,6 +55,8 @@
       "additional": [
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
         "x86_64-apple-darwin",
         "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc"

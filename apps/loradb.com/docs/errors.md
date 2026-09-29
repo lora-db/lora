@@ -29,6 +29,9 @@ on the message.
 | `LORA_NOT_NULL_CONSTRAINT` | An existence / NOT NULL constraint rejected missing data. |
 | `LORA_FOREIGN_KEY` | A relationship or dependent record references a missing entity. |
 | `LORA_TRANSACTION` | A transaction lifecycle rule was violated. |
+| `LORA_LOCKED` | The database directory is locked by another process or live handle. |
+| `LORA_CHANGES_TRUNCATED` | A change feed was asked to resume from an LSN the database no longer retains. Start a fresh feed and re-read current state. |
+| `LORA_CHANGES_LAGGED` | A change feed subscriber fell further behind than its buffer allows. Resume with the last LSN it processed. |
 | `LORA_INVALID_VECTOR` | A vector value failed dimension or coordinate-type validation. |
 | `LORA_TIMEOUT` | The query exceeded its cooperative deadline. |
 | `LORA_DATABASE_NAME` | A logical database name violates the portable-path rules. |

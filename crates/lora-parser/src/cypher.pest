@@ -172,10 +172,16 @@ single_query = { multi_part_query | single_part_query }
 multi_part_query = { query_part+ ~ single_part_query }
 query_part = { reading_clause* ~ updating_clause* ~ with_clause }
 
+// The last alternative admits a query that ends in a unit `CALL { ... }`
+// subquery (one whose body ends in an update, not a RETURN; the analyzer
+// checks that). Each earlier reading clause must be followed by another,
+// so the final one is the `CALL { ... }`.
 single_part_query = {
     (reading_clause* ~ return_clause)
     | (reading_clause* ~ updating_clause+ ~ return_clause?)
+    | ((reading_clause ~ &reading_clause)* ~ call_subquery_clause)
 }
+call_subquery_clause = { call_subquery }
 
 reading_clause = { match_clause | unwind_clause | call_subquery | in_query_call }
 updating_clause = { create_clause | merge_clause | delete_clause | set_clause | remove_clause | foreach_clause }
@@ -343,6 +349,8 @@ map_projection_selector = {
 atom = {
     case_expression
     | exists_subquery
+    | count_subquery
+    | label_predicate
     | list_predicate
     | reduce_expression
     | cast_call_expression
@@ -358,6 +366,16 @@ atom = {
 exists_subquery = {
     EXISTS ~ lbrace ~ (MATCH ~ pattern ~ where_clause? | pattern) ~ rbrace
 }
+
+// `COUNT { (a)-[:R]->(b) WHERE ... }` — the number of matches of a
+// pattern. Lowered to `size([pattern WHERE ... | 1])`.
+count_subquery = {
+    COUNT ~ lbrace ~ MATCH? ~ pattern_element ~ (WHERE ~ expression)? ~ rbrace
+}
+
+// `n:Label`, `n:A:B` (all), `n:A|B` (any) as a boolean expression, e.g.
+// `WHERE n:Festival`. Lowered to `node.has_label` calls.
+label_predicate = { variable ~ node_labels }
 
 reduce_expression = {
     REDUCE ~ lparen ~ variable ~ eq ~ expression ~ comma ~ variable ~ IN ~ expression ~ pipe ~ expression ~ rparen

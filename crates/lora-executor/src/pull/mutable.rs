@@ -60,8 +60,14 @@ fn open_mutable_plan_cursor<'a, S: GraphStorageMut + GraphStorage + 'a>(
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
     if let Some(input) = write_op_input(plan, plan.root) {
         if subtree_is_fully_streaming(plan, input) {
-            return StreamingWriteCursor::open(storage, plan, plan.root, params)
-                .map(|c| Box::new(c) as Box<dyn RowSource + 'a>);
+            let cursor = StreamingWriteCursor::open(storage, plan, plan.root, params)?;
+            let cursor: Box<dyn RowSource + 'a> = Box::new(cursor);
+            if crate::executor::plan_ends_in_write(plan) {
+                return Ok(Box::new(DrainSilently {
+                    inner: Some(cursor),
+                }));
+            }
+            return Ok(cursor);
         }
     }
 
@@ -280,8 +286,12 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for StreamingWriteCur
             storage: storage_mut,
             params: self.params.clone(),
         });
+        // The write op is the only one in the plan, so a row is a whole
+        // statement's worth of writes for existence checks.
+        exec.defer_existence_checks(crate::executor::plan_defers_existence(self.plan));
         let op = &self.plan.nodes[self.write_op_node];
         exec.apply_write_op(op, &mut row)?;
+        exec.check_pending_existence()?;
         let row = exec.hydrate_row(row);
         Ok(Some(row))
     }
@@ -295,5 +305,20 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> Drop for StreamingWriteCursor<'
         unsafe {
             ManuallyDrop::drop(&mut self.upstream);
         }
+    }
+}
+
+/// Runs a write statement without `RETURN` to completion on the first pull
+/// and yields no rows.
+struct DrainSilently<'a> {
+    inner: Option<Box<dyn RowSource + 'a>>,
+}
+
+impl RowSource for DrainSilently<'_> {
+    fn next_row(&mut self) -> ExecResult<Option<Row>> {
+        if let Some(mut inner) = self.inner.take() {
+            while inner.next_row()?.is_some() {}
+        }
+        Ok(None)
     }
 }

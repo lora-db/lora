@@ -70,6 +70,14 @@ pub enum LoraErrorCode {
     ForeignKeyViolation,
     /// A transaction lifecycle rule was violated.
     TransactionFailure,
+    /// The database directory is held by another process or live handle.
+    Locked,
+    /// A change feed was asked to resume from an LSN the database no
+    /// longer retains (or never produced).
+    ChangesTruncated,
+    /// A change feed subscriber fell further behind than its buffer allows;
+    /// resume from the last LSN it processed.
+    ChangesLagged,
 
     // -------- Server errors --------
     /// I/O failure outside the WAL / snapshot boundaries.
@@ -125,6 +133,9 @@ impl LoraErrorCode {
             Self::NotNullConstraint => "LORA_NOT_NULL_CONSTRAINT",
             Self::ForeignKeyViolation => "LORA_FOREIGN_KEY",
             Self::TransactionFailure => "LORA_TRANSACTION",
+            Self::Locked => "LORA_LOCKED",
+            Self::ChangesTruncated => "LORA_CHANGES_TRUNCATED",
+            Self::ChangesLagged => "LORA_CHANGES_LAGGED",
             Self::Io => "LORA_IO",
             Self::Connection => "LORA_CONNECTION",
             Self::WalCorruption => "LORA_WAL_CORRUPTION",
@@ -152,7 +163,10 @@ impl LoraErrorCode {
             | Self::UniqueConstraint
             | Self::NotNullConstraint
             | Self::ForeignKeyViolation
-            | Self::TransactionFailure => LoraErrorCategory::Client,
+            | Self::TransactionFailure
+            | Self::Locked
+            | Self::ChangesTruncated
+            | Self::ChangesLagged => LoraErrorCategory::Client,
             Self::Io
             | Self::Connection
             | Self::WalCorruption
@@ -420,7 +434,7 @@ fn legacy_message_code(message: &str) -> Option<LoraErrorCode> {
 fn wal_code(err: &WalError) -> LoraErrorCode {
     match err {
         WalError::Io(inner) => io_code(inner),
-        WalError::AlreadyOpen { .. } => LoraErrorCode::Connection,
+        WalError::AlreadyOpen { .. } => LoraErrorCode::Locked,
         WalError::CrcMismatch { .. }
         | WalError::Truncated { .. }
         | WalError::UnknownKind(_)
@@ -742,6 +756,12 @@ mod tests {
             "LORA_NOT_NULL_CONSTRAINT"
         );
         assert_eq!(LoraErrorCode::Connection.as_str(), "LORA_CONNECTION");
+        assert_eq!(LoraErrorCode::Locked.as_str(), "LORA_LOCKED");
+        assert_eq!(
+            LoraErrorCode::ChangesTruncated.as_str(),
+            "LORA_CHANGES_TRUNCATED"
+        );
+        assert_eq!(LoraErrorCode::ChangesLagged.as_str(), "LORA_CHANGES_LAGGED");
         assert_eq!(LoraErrorCode::Internal.as_str(), "LORA_INTERNAL");
     }
 

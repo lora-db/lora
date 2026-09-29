@@ -31,6 +31,7 @@ export declare class Database {
     snapshotEveryCommits?: number | null,
     snapshotKeepOld?: number | null,
     snapshotOptions?: NativeSnapshotOptions | null,
+    queryTimeoutMs?: number | null,
   );
   /**
    * Non-blocking: runs on the libuv threadpool, returns a Promise.
@@ -40,7 +41,14 @@ export declare class Database {
   execute(
     query: string,
     params?: Record<string, unknown> | null,
+    timeoutMs?: number | null,
+    cancelToken?: number | null,
   ): Promise<Buffer>;
+  /** Create a cancellation token (folding in `timeoutMs` or the database default). */
+  createCancelToken(timeoutMs?: number | null): number;
+  /** Cancel the query holding `token`; it rejects with LORA_TIMEOUT. */
+  cancelQuery(token: number): void;
+  releaseCancelToken(token: number): void;
   /** Compile a query and return its plan without executing it. */
   explain(
     query: string,
@@ -51,7 +59,12 @@ export declare class Database {
     query: string,
     params?: Record<string, unknown> | null,
   ): Promise<unknown>;
-  openStream(query: string, params?: Record<string, unknown> | null): number;
+  openStream(
+    query: string,
+    params?: Record<string, unknown> | null,
+    timeoutMs?: number | null,
+    cancelToken?: number | null,
+  ): number;
   streamColumns(streamId: number): string[];
   streamNext(streamId: number): Record<string, unknown> | null;
   streamClose(streamId: number): void;
@@ -68,7 +81,57 @@ export declare class Database {
       | "rw"
       | "ro"
       | null,
+    timeoutMs?: number | null,
+    cancelToken?: number | null,
   ): Promise<Buffer[]>;
+  /** Open an interactive transaction; resolves with its id. */
+  beginTransaction(
+    mode?:
+      | "read_write"
+      | "read_only"
+      | "readwrite"
+      | "readonly"
+      | "rw"
+      | "ro"
+      | null,
+  ): Promise<number>;
+  txExecute(
+    txId: number,
+    query: string,
+    params?: Record<string, unknown> | null,
+    timeoutMs?: number | null,
+    cancelToken?: number | null,
+  ): Promise<Buffer>;
+  /** Run several statements in an interactive transaction in one call. */
+  txExecuteMany(
+    txId: number,
+    statements: Array<{
+      query: string;
+      params?: Record<string, unknown> | null;
+    }>,
+    timeoutMs?: number | null,
+    cancelToken?: number | null,
+  ): Promise<Buffer[]>;
+  /** Commit (`commit = true`) or roll back an interactive transaction. */
+  txFinish(txId: number, commit: boolean): Promise<void>;
+  /**
+   * Open a change feed; resolves with its id. `onWake` fires on the JS
+   * thread whenever the feed may have something new to poll.
+   */
+  openChanges(
+    fromLsn: number | null,
+    bufferSize: number | null,
+    onWake: () => void,
+  ): Promise<number>;
+  /** Drain up to `max` buffered batches without waiting for new commits. */
+  changesPoll(
+    feedId: number,
+    max?: number | null,
+  ): Promise<{
+    batches: Array<{ lsn: number; changes: Array<Record<string, unknown>> }>;
+    closed: boolean;
+  }>;
+  changesClose(feedId: number): void;
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>;
   clear(): Promise<void>;

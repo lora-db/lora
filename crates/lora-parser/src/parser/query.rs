@@ -78,6 +78,12 @@ pub(super) fn lower_query_part(pair: Pair<Rule>) -> Result<QueryPart, ParseError
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::reading_clause => reading_clauses.push(lower_reading_clause(p)?),
+            Rule::call_subquery_clause => {
+                let inner = single_inner(p)?;
+                reading_clauses.push(ReadingClause::CallSubquery(lower_call_subquery_pair(
+                    inner,
+                )?));
+            }
             Rule::updating_clause => updating_clauses.push(lower_updating_clause(p)?),
             Rule::with_clause => with_clause = Some(lower_with_clause(p)?),
             _ => {}
@@ -102,6 +108,12 @@ pub(super) fn lower_single_part_query(pair: Pair<Rule>) -> Result<SinglePartQuer
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::reading_clause => reading_clauses.push(lower_reading_clause(p)?),
+            Rule::call_subquery_clause => {
+                let inner = single_inner(p)?;
+                reading_clauses.push(ReadingClause::CallSubquery(lower_call_subquery_pair(
+                    inner,
+                )?));
+            }
             Rule::updating_clause => updating_clauses.push(lower_updating_clause(p)?),
             Rule::return_clause => return_clause = Some(lower_return_clause(p)?),
             _ => {}

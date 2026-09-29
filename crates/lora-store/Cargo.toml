@@ -15,10 +15,15 @@ categories = ["database-implementations", "data-structures"]
 lora-ast.workspace = true
 serde.workspace = true
 crc32fast.workspace = true
+smallvec.workspace = true
+unicode-normalization.workspace = true
 thiserror.workspace = true
 
 # Wall-clock reads go through the standard library on native targets and
 # through `js_sys::Date::now()` on wasm32-unknown-unknown, where
 # `SystemTime::now()` panics. See `temporal::unix_now`.
+[dev-dependencies]
+serde_json.workspace = true
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 js-sys = "0.3"

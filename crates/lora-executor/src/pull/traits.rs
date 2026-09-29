@@ -196,6 +196,9 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::Sort(o) => Some(o.input),
         PhysicalOp::HashAggregation(o) => Some(o.input),
         PhysicalOp::OptionalMatch(o) => Some(o.input),
+        // A `CALL { ... }` that writes runs on the mutable executor, never
+        // on the read-only pull pipeline.
+        PhysicalOp::CallSubquery(o) if subtree_has_write(plan, o.inner) => return false,
         PhysicalOp::CallSubquery(o) => Some(o.input),
         PhysicalOp::PathBuild(o) => Some(o.input),
         // Already filtered by is_streaming_op above.
@@ -205,6 +208,42 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         None => true,
         Some(c) => subtree_is_fully_streaming(plan, c),
     }
+}
+
+/// True if any operator in the subtree rooted at `node_id`, including
+/// nested `OPTIONAL MATCH` and `CALL { ... }` bodies, writes.
+pub(crate) fn subtree_has_write(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
+    let op = &plan.nodes[node_id];
+    let (first, second) = match op {
+        PhysicalOp::Create(_)
+        | PhysicalOp::Merge(_)
+        | PhysicalOp::Delete(_)
+        | PhysicalOp::Set(_)
+        | PhysicalOp::Remove(_)
+        | PhysicalOp::Foreach(_) => return true,
+        PhysicalOp::Argument(_) => (None, None),
+        PhysicalOp::NodeScan(o) => (o.input, None),
+        PhysicalOp::NodeByLabelScan(o) => (o.input, None),
+        PhysicalOp::NodeByPropertyScan(o) => (o.input, None),
+        PhysicalOp::NodeByPropertyRangeScan(o) => (o.input, None),
+        PhysicalOp::NodeByTextScan(o) => (o.input, None),
+        PhysicalOp::NodeByPointScan(o) => (o.input, None),
+        PhysicalOp::RelByPropertyRangeScan(o) => (o.input, None),
+        PhysicalOp::RelByTextScan(o) => (o.input, None),
+        PhysicalOp::RelByPointScan(o) => (o.input, None),
+        PhysicalOp::Expand(o) => (Some(o.input), None),
+        PhysicalOp::Filter(o) => (Some(o.input), None),
+        PhysicalOp::Projection(o) => (Some(o.input), None),
+        PhysicalOp::Unwind(o) => (Some(o.input), None),
+        PhysicalOp::HashAggregation(o) => (Some(o.input), None),
+        PhysicalOp::Sort(o) => (Some(o.input), None),
+        PhysicalOp::Limit(o) => (Some(o.input), None),
+        PhysicalOp::PathBuild(o) => (Some(o.input), None),
+        PhysicalOp::OptionalMatch(o) => (Some(o.input), Some(o.inner)),
+        PhysicalOp::CallSubquery(o) => (Some(o.input), Some(o.inner)),
+    };
+    first.is_some_and(|c| subtree_has_write(plan, c))
+        || second.is_some_and(|c| subtree_has_write(plan, c))
 }
 
 pub(crate) fn build_streaming<'a, S: GraphStorage + 'a>(
@@ -236,8 +275,12 @@ fn build_streaming_dispatch<'a, S: GraphStorage + 'a>(
     params: Arc<BTreeMap<String, LoraValue>>,
     seed: Option<Row>,
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
-    build_streaming_inner(plan, node_id, storage, params, seed)
-        .map(|src| wrap_metered(node_id, src))
+    build_streaming_inner(plan, node_id, storage, params, seed).map(|src| {
+        super::source::DeadlineSource::wrap(
+            wrap_metered(node_id, src),
+            crate::cancel::active_deadline(),
+        )
+    })
 }
 
 fn build_streaming_inner<'a, S: GraphStorage + 'a>(
@@ -277,17 +320,23 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             labels,
             key,
             value,
+            in_list,
         }) => {
             let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(NodeByPropertyScanSource::new(
-                upstream, ctx, *var, labels, key, value,
+                upstream, ctx, *var, labels, key, value, *in_list,
             )))
         }
 
         PhysicalOp::NodeByPropertyRangeScan(op @ NodeByPropertyRangeScanExec { input, .. }) => {
             let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
+            if op.order.is_some() {
+                return Ok(Box::new(super::scan::OrderedRangeScanSource::new(
+                    upstream, ctx, op,
+                )));
+            }
             Ok(Box::new(BufferedIndexScanSource::node_range(
                 upstream, ctx, op,
             )))
@@ -432,11 +481,23 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             )))
         }
 
-        PhysicalOp::HashAggregation(HashAggregationExec {
-            input,
-            group_by,
-            aggregates,
-        }) => {
+        PhysicalOp::HashAggregation(
+            agg @ HashAggregationExec {
+                input,
+                group_by,
+                aggregates,
+            },
+        ) => {
+            // `MATCH (n:L) RETURN count(n)`: answer from the label count.
+            // A seeded run (CALL / OPTIONAL MATCH body) may bind the
+            // scanned variable, so it always scans.
+            if seed.is_none() {
+                if let Some(rows) =
+                    crate::executor::count_all_scan_aggregation_rows(storage, plan, agg)
+                {
+                    return Ok(Box::new(BufferedRowSource::new(rows)));
+                }
+            }
             let upstream =
                 build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
@@ -531,10 +592,13 @@ fn build_buffered_subtree<'a, S: GraphStorage + 'a>(
     // The `Executor` consumes its `ExecutionContext` so we must
     // clone the params map for the fallback. In practice this is
     // small (typically empty or a handful of named parameters).
-    let executor = Executor::new(ExecutionContext {
-        storage,
-        params: (**params).clone(),
-    });
+    let executor = Executor::with_deadline(
+        ExecutionContext {
+            storage,
+            params: (**params).clone(),
+        },
+        crate::cancel::active_deadline(),
+    );
     let rows = executor.execute_subtree(plan, node_id)?;
     Ok(Box::new(BufferedRowSource::new(rows)))
 }
@@ -578,6 +642,28 @@ pub fn collect_compiled<'a, S: GraphStorage + 'a>(
     params: BTreeMap<String, LoraValue>,
     compiled: &'a CompiledQuery,
 ) -> ExecResult<Vec<Row>> {
+    let mut cursor = PullExecutor::new(storage, params).open_compiled(compiled)?;
+    drain(cursor.as_mut())
+}
+
+/// [`collect_compiled`] bounded by a cooperative `deadline`.
+///
+/// The deadline is made active for the whole open-and-drain, so every
+/// source in the pipeline (including ones built lazily mid-query by
+/// `OPTIONAL MATCH` or `CALL {}`, and buffered sub-executors) checks it.
+/// Because the pipeline is pulled, a `LIMIT` still stops the scan early.
+pub fn collect_compiled_with_deadline<'a, S: GraphStorage + 'a>(
+    storage: &'a S,
+    params: BTreeMap<String, LoraValue>,
+    compiled: &'a CompiledQuery,
+    deadline: Option<web_time::Instant>,
+) -> ExecResult<Vec<Row>> {
+    let _deadline_scope = crate::cancel::DeadlineScope::enter(deadline);
+    if let Some(deadline) = deadline {
+        if crate::cancel::deadline_reached(deadline) {
+            return Err(ExecutorError::QueryTimeout);
+        }
+    }
     let mut cursor = PullExecutor::new(storage, params).open_compiled(compiled)?;
     drain(cursor.as_mut())
 }

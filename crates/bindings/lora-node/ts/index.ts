@@ -18,6 +18,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import type {
+  LoraChangeBatch,
   LoraParams,
   LoraQueryPlan,
   LoraQueryProfile,
@@ -130,6 +131,31 @@ export interface CreateDatabaseOptions {
    * Defaults to 1000. Must be greater than zero.
    */
   groupSyncIntervalMs?: number;
+  /**
+   * Default timeout, in milliseconds, for every `execute()`, `stream()`
+   * and `transaction()` call on this database that does not pass its own
+   * `timeoutMs`. A query that runs past it rejects with `LORA_TIMEOUT`,
+   * rolls back, and releases its locks. Omit or pass 0 for no default.
+   */
+  queryTimeoutMs?: number;
+}
+
+/**
+ * Per-call limits for `execute()`, `stream()` and `transaction()`.
+ */
+export interface QueryOptions {
+  /**
+   * Abort the query after this many milliseconds. It rejects with a
+   * `LoraError` coded `LORA_TIMEOUT`; writes are rolled back and locks
+   * released. Overrides the database-wide `queryTimeoutMs`; 0 disables it.
+   */
+  timeoutMs?: number;
+  /**
+   * Cancel the query when this signal aborts. The query stops at its next
+   * check point, rolls back, releases its locks, and the call rejects with
+   * the signal's reason (an `AbortError` by default).
+   */
+  signal?: AbortSignal;
 }
 
 export interface WalDatabaseOptions {
@@ -182,11 +208,27 @@ class NativeRowStream<
 > implements RowStream<T> {
   readonly #inner: InstanceType<typeof NativeDatabase>;
   readonly #streamId: number;
+  readonly #signal: AbortSignal | undefined;
+  #release: (() => void) | undefined;
   #closed = false;
 
-  constructor(inner: InstanceType<typeof NativeDatabase>, streamId: number) {
+  constructor(
+    inner: InstanceType<typeof NativeDatabase>,
+    streamId: number,
+    signal?: AbortSignal,
+    release?: () => void,
+  ) {
     this.#inner = inner;
     this.#streamId = streamId;
+    this.#signal = signal;
+    this.#release = release;
+  }
+
+  #finish(): void {
+    this.#closed = true;
+    const release = this.#release;
+    this.#release = undefined;
+    release?.();
   }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
@@ -208,12 +250,13 @@ class NativeRowStream<
     try {
       const row = this.#inner.streamNext(this.#streamId) as T | null;
       if (row === null) {
-        this.#closed = true;
+        this.#finish();
         return { done: true, value: undefined };
       }
       return { done: false, value: row };
     } catch (err) {
-      this.#closed = true;
+      this.#finish();
+      if (this.#signal?.aborted) throw this.#signal.reason;
       throw wrapError(err);
     }
   }
@@ -236,13 +279,250 @@ class NativeRowStream<
 
   close(): void {
     if (this.#closed) return;
-    this.#closed = true;
+    this.#finish();
     try {
       this.#inner.streamClose(this.#streamId);
     } catch (err) {
       throw wrapError(err);
     }
   }
+}
+
+/** Options for `db.changes()`. */
+export interface ChangesOptions {
+  /**
+   * Resume after this LSN: the feed first yields every retained batch with
+   * a greater LSN, then live batches. Omit to start with the next commit.
+   * An LSN the database no longer retains rejects with
+   * `LORA_CHANGES_TRUNCATED`.
+   */
+  fromLsn?: number | bigint;
+  /** Stop the feed when this signal aborts; `next()` rejects with its reason. */
+  signal?: AbortSignal;
+  /**
+   * Undelivered batches the feed may hold before it ends with
+   * `LORA_CHANGES_LAGGED`. Defaults to 1024.
+   */
+  bufferSize?: number;
+}
+
+/**
+ * Committed changes, one batch per committed write, in commit order.
+ * Iterate with `for await`; `break` (or `close()`) unsubscribes.
+ */
+export interface ChangeFeed extends AsyncIterableIterator<LoraChangeBatch> {
+  /**
+   * Resolves once the feed is subscribed: every commit that finishes after
+   * this point is delivered. Rejects with the open error (for example
+   * `LORA_CHANGES_TRUNCATED`), which `next()` also surfaces.
+   */
+  readonly ready: Promise<void>;
+  /** LSN of the last batch delivered, or `fromLsn` before the first one. */
+  readonly lastLsn: number | undefined;
+  close(): void;
+}
+
+const CHANGES_POLL_MAX = 256;
+
+class NativeChangeFeed implements ChangeFeed {
+  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #signal: AbortSignal | undefined;
+  readonly #onDone: (feed: NativeChangeFeed) => void;
+  readonly #opened: Promise<number>;
+  readonly ready: Promise<void>;
+  #id: number | undefined;
+  #buffer: LoraChangeBatch[] = [];
+  #done = false;
+  #error: unknown = undefined;
+  #lastLsn: number | undefined;
+  #wakeSeq = 0;
+  #wake: (() => void) | undefined;
+  #queue: Promise<unknown> = Promise.resolve();
+  #onAbort: (() => void) | undefined;
+
+  constructor(
+    inner: InstanceType<typeof NativeDatabase>,
+    options: ChangesOptions | undefined,
+    onDone: (feed: NativeChangeFeed) => void,
+  ) {
+    this.#inner = inner;
+    this.#signal = options?.signal;
+    this.#onDone = onDone;
+    const fromLsn = normalizeLsn(options?.fromLsn);
+    this.#lastLsn = fromLsn ?? undefined;
+    const bufferSize = normalizeBufferSize(options?.bufferSize);
+    if (this.#signal?.aborted) {
+      this.#done = true;
+      this.#error = this.#signal.reason;
+      this.#opened = Promise.reject(this.#signal.reason);
+    } else {
+      // Subscribes synchronously when capture is already on, so writes
+      // issued after `changes()` returns are never missed.
+      let opening: Promise<number>;
+      try {
+        opening = inner.openChanges(fromLsn, bufferSize, () => this.#onWake());
+      } catch (err) {
+        opening = Promise.reject(err);
+      }
+      this.#opened = opening.then((id) => {
+        this.#id = id;
+        if (this.#done) this.#closeNative();
+        return id;
+      });
+      if (this.#signal) {
+        const signal = this.#signal;
+        this.#onAbort = () => {
+          this.#buffer = [];
+          this.#end(signal.reason);
+        };
+        signal.addEventListener("abort", this.#onAbort, { once: true });
+      }
+    }
+    this.ready = this.#opened.then(
+      () => undefined,
+      (err) => {
+        throw wrapError(err);
+      },
+    );
+    // `ready` is optional to await; its rejection also reaches `next()`.
+    this.ready.catch(() => undefined);
+  }
+
+  get lastLsn(): number | undefined {
+    return this.#lastLsn;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<LoraChangeBatch> {
+    return this;
+  }
+
+  next(): Promise<IteratorResult<LoraChangeBatch>> {
+    // Serialize concurrent `next()` calls so batches stay in order.
+    const result = this.#queue.then(() => this.#next());
+    this.#queue = result.catch(() => undefined);
+    return result;
+  }
+
+  async return(): Promise<IteratorResult<LoraChangeBatch>> {
+    this.close();
+    return { done: true, value: undefined };
+  }
+
+  close(): void {
+    this.#buffer = [];
+    this.#end(undefined);
+  }
+
+  /** Called by `dispose()`: the native side already dropped the feed. */
+  disposed(): void {
+    this.#id = undefined;
+    this.#end(undefined);
+  }
+
+  async #next(): Promise<IteratorResult<LoraChangeBatch>> {
+    for (;;) {
+      const buffered = this.#buffer.shift();
+      if (buffered) {
+        this.#lastLsn = buffered.lsn;
+        return { done: false, value: buffered };
+      }
+      if (this.#done) {
+        const err = this.#error;
+        this.#error = undefined;
+        if (err !== undefined) throw err;
+        return { done: true, value: undefined };
+      }
+      let id: number;
+      try {
+        id = await this.#opened;
+      } catch (err) {
+        this.#end(wrapError(err));
+        continue;
+      }
+      if (this.#done) continue;
+      const seq = this.#wakeSeq;
+      let polled: Awaited<
+        ReturnType<InstanceType<typeof NativeDatabase>["changesPoll"]>
+      >;
+      try {
+        polled = await this.#inner.changesPoll(id, CHANGES_POLL_MAX);
+      } catch (err) {
+        this.#end(this.#done ? undefined : wrapError(err));
+        continue;
+      }
+      this.#buffer.push(...(polled.batches as LoraChangeBatch[]));
+      if (polled.closed) {
+        this.#end(undefined);
+        continue;
+      }
+      if (polled.batches.length === 0 && seq === this.#wakeSeq && !this.#done) {
+        await new Promise<void>((resolve) => {
+          this.#wake = resolve;
+        });
+      }
+    }
+  }
+
+  #onWake(): void {
+    this.#wakeSeq += 1;
+    const wake = this.#wake;
+    this.#wake = undefined;
+    wake?.();
+  }
+
+  #end(error: unknown): void {
+    if (this.#done) {
+      if (error !== undefined && this.#error === undefined) this.#error = error;
+      return;
+    }
+    this.#done = true;
+    this.#error = error;
+    if (this.#onAbort && this.#signal) {
+      this.#signal.removeEventListener("abort", this.#onAbort);
+      this.#onAbort = undefined;
+    }
+    this.#closeNative();
+    this.#onDone(this);
+    this.#onWake();
+  }
+
+  #closeNative(): void {
+    const id = this.#id;
+    if (id === undefined) return;
+    this.#id = undefined;
+    try {
+      this.#inner.changesClose(id);
+    } catch {
+      // Already gone (database disposed).
+    }
+  }
+}
+
+function normalizeLsn(lsn: number | bigint | undefined): number | null {
+  if (lsn === undefined) return null;
+  const value = typeof lsn === "bigint" ? Number(lsn) : lsn;
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    (typeof lsn === "bigint" && BigInt(value) !== lsn)
+  ) {
+    throw new LoraError(
+      `\`fromLsn\` must be a non-negative safe integer, got ${String(lsn)}`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+  return value;
+}
+
+function normalizeBufferSize(size: number | undefined): number | null {
+  if (size === undefined) return null;
+  if (!Number.isInteger(size) || size < 1 || size > 0xffff_ffff) {
+    throw new LoraError(
+      `\`bufferSize\` must be a positive integer, got ${String(size)}`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+  return size;
 }
 
 function isFetchUrl(url: URL): boolean {
@@ -433,6 +713,7 @@ function normalizeSnapshotLoadOptions(
  */
 class DatabaseImpl {
   readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #feeds = new Set<NativeChangeFeed>();
 
   constructor(inner: InstanceType<typeof NativeDatabase>) {
     this.#inner = inner;
@@ -446,13 +727,33 @@ class DatabaseImpl {
    */
   async execute<
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
-  >(query: string, params?: LoraParams): Promise<QueryResult<T>> {
+  >(
+    query: string,
+    params?: LoraParams,
+    options?: QueryOptions,
+  ): Promise<QueryResult<T>> {
     try {
-      const buf = await this.#inner.execute(query, params ?? null);
+      const encoded = encodeParams(params);
+      const buf = await this.#limited(options, (timeoutMs, token) =>
+        this.#inner.execute(query, encoded, timeoutMs, token),
+      );
       return decodeResult(buf) as QueryResult<T>;
     } catch (err) {
       throw wrapError(err);
     }
+  }
+
+  /**
+   * Run `start` under `options`. Without a signal the timeout goes to the
+   * native call directly. With one, a native cancellation token carries
+   * the timeout, `abort` cancels the query server-side, and a cancelled
+   * call rejects with the signal's reason.
+   */
+  #limited<R>(
+    options: QueryOptions | undefined,
+    start: (timeoutMs: number | null, token: number | null) => Promise<R>,
+  ): Promise<R> {
+    return runLimited(this.#inner, options, start);
   }
 
   /**
@@ -467,7 +768,7 @@ class DatabaseImpl {
     try {
       return (await this.#inner.explain(
         query,
-        params ?? null,
+        encodeParams(params),
       )) as LoraQueryPlan;
     } catch (err) {
       throw wrapError(err);
@@ -487,7 +788,7 @@ class DatabaseImpl {
     try {
       return (await this.#inner.profile(
         query,
-        params ?? null,
+        encodeParams(params),
       )) as LoraQueryProfile;
     } catch (err) {
       throw wrapError(err);
@@ -504,10 +805,36 @@ class DatabaseImpl {
   stream<T extends Record<string, LoraValue> = Record<string, LoraValue>>(
     query: string,
     params?: LoraParams,
+    options?: QueryOptions,
   ): RowStream<T> {
     try {
-      const streamId = this.#inner.openStream(query, params ?? null);
-      return new NativeRowStream<T>(this.#inner, streamId);
+      const encoded = encodeParams(params);
+      const timeoutMs = normalizeTimeout(options?.timeoutMs);
+      const signal = options?.signal;
+      if (signal == null) {
+        const streamId = this.#inner.openStream(
+          query,
+          encoded,
+          timeoutMs,
+          null,
+        );
+        return new NativeRowStream<T>(this.#inner, streamId);
+      }
+      signal.throwIfAborted();
+      const token = this.#inner.createCancelToken(timeoutMs);
+      const onAbort = () => this.#inner.cancelQuery(token);
+      signal.addEventListener("abort", onAbort, { once: true });
+      const release = () => {
+        signal.removeEventListener("abort", onAbort);
+        this.#inner.releaseCancelToken(token);
+      };
+      try {
+        const streamId = this.#inner.openStream(query, encoded, null, token);
+        return new NativeRowStream<T>(this.#inner, streamId, signal, release);
+      } catch (err) {
+        release();
+        throw err;
+      }
     } catch (err) {
       throw wrapError(err);
     }
@@ -517,8 +844,9 @@ class DatabaseImpl {
   rows<T extends Record<string, LoraValue> = Record<string, LoraValue>>(
     query: string,
     params?: LoraParams,
+    options?: QueryOptions,
   ): RowStream<T> {
-    return this.stream<T>(query, params);
+    return this.stream<T>(query, params, options);
   }
 
   /**
@@ -528,14 +856,42 @@ class DatabaseImpl {
    * native transaction is dropped before commit and all prior writes in the
    * batch are rolled back.
    */
+  /**
+   * Begin an interactive transaction: run statements, decide in JS, then
+   * `commit()` or `rollback()`.
+   *
+   * A `read_write` transaction holds the database's writer lock from
+   * `begin()` until it finishes, so no other write can interleave with it
+   * (other writers wait). Reads outside the transaction keep seeing the
+   * last committed state. A statement that fails rolls the transaction
+   * back. An unfinished transaction rolls back when the handle is disposed
+   * (`await using tx = await db.begin()`), when the database is disposed,
+   * or when the process exits. Keep transactions short: while one is open,
+   * writers queue behind it.
+   */
+  async begin(mode: TransactionMode = "read_write"): Promise<Transaction> {
+    try {
+      const id = await this.#inner.beginTransaction(mode);
+      return new Transaction(this.#inner, id);
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
   async transaction<
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
   >(
     statements: TransactionStatement[],
     mode: TransactionMode = "read_write",
+    options?: QueryOptions,
   ): Promise<Array<QueryResult<T>>> {
     try {
-      const buffers = await this.#inner.transaction(statements, mode);
+      const encoded = statements.map((st) =>
+        st.params == null ? st : { ...st, params: encodeParams(st.params) },
+      );
+      const buffers = await this.#limited(options, (timeoutMs, token) =>
+        this.#inner.transaction(encoded, mode, timeoutMs, token),
+      );
       return buffers.map((buf) => decodeResult(buf)) as Array<QueryResult<T>>;
     } catch (err) {
       throw wrapError(err);
@@ -596,7 +952,36 @@ class DatabaseImpl {
       this.#inner.dispose();
     } catch (err) {
       throw wrapError(err);
+    } finally {
+      for (const feed of [...this.#feeds]) feed.disposed();
+      this.#feeds.clear();
     }
+  }
+
+  /**
+   * Subscribe to committed changes: one `LoraChangeBatch` per committed
+   * write (auto-commit query, transaction, streamed write, `clear()`,
+   * snapshot restore), in commit order. Rolled-back work never appears.
+   *
+   * ```ts
+   * for await (const batch of db.changes({ fromLsn: saved })) {
+   *   for (const change of batch.changes) handle(change);
+   *   saved = batch.lsn;
+   * }
+   * ```
+   *
+   * Writers never wait for the feed. A consumer that falls more than
+   * `bufferSize` batches behind gets `LORA_CHANGES_LAGGED` after the
+   * buffered batches and should resume with `fromLsn: feed.lastLsn`.
+   * `dispose()` ends every feed. An open feed does not keep the process
+   * alive on its own.
+   */
+  changes(options?: ChangesOptions): ChangeFeed {
+    const feed = new NativeChangeFeed(this.#inner, options, (done) =>
+      this.#feeds.delete(done),
+    );
+    this.#feeds.add(feed);
+    return feed;
   }
 
   saveSnapshot(): Promise<Buffer>;
@@ -728,6 +1113,163 @@ class DatabaseImpl {
 export type Database = DatabaseImpl;
 
 /**
+ * An open interactive transaction from `Database.begin()`.
+ */
+export class Transaction {
+  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #id: number;
+  #open = true;
+
+  /** @internal */
+  constructor(inner: InstanceType<typeof NativeDatabase>, id: number) {
+    this.#inner = inner;
+    this.#id = id;
+  }
+
+  /** Whether the transaction can still run statements. */
+  get isOpen(): boolean {
+    return this.#open;
+  }
+
+  /**
+   * Run one statement inside the transaction. It sees the transaction's
+   * own uncommitted writes. If it fails, the transaction is rolled back.
+   */
+  async execute<
+    T extends Record<string, LoraValue> = Record<string, LoraValue>,
+  >(
+    query: string,
+    params?: LoraParams,
+    options?: QueryOptions,
+  ): Promise<QueryResult<T>> {
+    this.#assertOpen();
+    try {
+      const encoded = encodeParams(params);
+      const buf = await runLimited(this.#inner, options, (timeoutMs, token) =>
+        this.#inner.txExecute(this.#id, query, encoded, timeoutMs, token),
+      );
+      return decodeResult(buf) as QueryResult<T>;
+    } catch (err) {
+      this.#open = false;
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Run several statements inside the transaction in one native call and
+   * return their results in order. Each statement sees the writes of the
+   * ones before it. This saves the per-call round trip of calling
+   * `execute()` once per statement.
+   *
+   * The batch stops at the first failing statement: the transaction is
+   * rolled back (as with a failed `execute()`) and the promise rejects
+   * with that statement's error, whose message ends with
+   * `(statement i of n)`. `options.timeoutMs` and `options.signal` bound
+   * the whole batch.
+   */
+  async executeMany<
+    T extends Record<string, LoraValue> = Record<string, LoraValue>,
+  >(
+    statements: TransactionStatement[],
+    options?: QueryOptions,
+  ): Promise<Array<QueryResult<T>>> {
+    this.#assertOpen();
+    let encoded: TransactionStatement[];
+    try {
+      encoded = statements.map((st) =>
+        st.params == null ? st : { ...st, params: encodeParams(st.params) },
+      );
+    } catch (err) {
+      // Invalid params: nothing ran, the transaction stays open.
+      throw wrapError(err);
+    }
+    try {
+      const buffers = await runLimited(
+        this.#inner,
+        options,
+        (timeoutMs, token) =>
+          this.#inner.txExecuteMany(
+            this.#id,
+            encoded as Array<{
+              query: string;
+              params?: Record<string, unknown> | null;
+            }>,
+            timeoutMs,
+            token,
+          ),
+      );
+      return buffers.map((buf) => decodeResult(buf)) as Array<QueryResult<T>>;
+    } catch (err) {
+      this.#open = false;
+      throw wrapError(err);
+    }
+  }
+
+  /** Commit every write made in the transaction and release the writer lock. */
+  async commit(): Promise<void> {
+    await this.#finish(true);
+  }
+
+  /** Discard every write made in the transaction and release the writer lock. */
+  async rollback(): Promise<void> {
+    await this.#finish(false);
+  }
+
+  /** Roll back if still open. Lets `await using tx = await db.begin()` clean up. */
+  async [Symbol.asyncDispose](): Promise<void> {
+    if (this.#open) await this.rollback();
+  }
+
+  async #finish(commit: boolean): Promise<void> {
+    this.#assertOpen();
+    this.#open = false;
+    try {
+      await this.#inner.txFinish(this.#id, commit);
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  #assertOpen(): void {
+    if (!this.#open) {
+      throw new LoraError(
+        "transaction is no longer open (already committed, rolled back, or failed)",
+        "LORA_TRANSACTION",
+      );
+    }
+  }
+}
+
+/**
+ * Run `start` under `options`. Without a signal the timeout goes to the
+ * native call directly. With one, a native cancellation token carries the
+ * timeout, `abort` cancels the query server-side, and a cancelled call
+ * rejects with the signal's reason.
+ */
+async function runLimited<R>(
+  inner: InstanceType<typeof NativeDatabase>,
+  options: QueryOptions | undefined,
+  start: (timeoutMs: number | null, token: number | null) => Promise<R>,
+): Promise<R> {
+  const timeoutMs = normalizeTimeout(options?.timeoutMs);
+  const signal = options?.signal;
+  if (signal == null) return start(timeoutMs, null);
+  signal.throwIfAborted();
+  const token = inner.createCancelToken(timeoutMs);
+  const onAbort = () => inner.cancelQuery(token);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await start(null, token);
+  } catch (err) {
+    if (signal.aborted) throw signal.reason;
+    throw err;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    inner.releaseCancelToken(token);
+  }
+}
+
+/**
  * Create and initialize a new LoraDB instance.
  *
  * **This is the only supported initialization pattern** for `lora-node`.
@@ -801,7 +1343,18 @@ export async function createDatabase(
     const groupSyncIntervalMs = options.groupSyncIntervalMs ?? null;
     return new DatabaseImpl(
       databaseName == null
-        ? new NativeDatabase()
+        ? new NativeDatabase(
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            options.queryTimeoutMs ?? null,
+          )
         : new NativeDatabase(
             databaseName,
             options.databaseDir ?? null,
@@ -812,6 +1365,7 @@ export async function createDatabase(
             null,
             null,
             null,
+            options.queryTimeoutMs ?? null,
           ),
     );
   } catch (err) {
@@ -859,4 +1413,81 @@ export async function openWalDatabase(
   } catch (err) {
     throw wrapError(err);
   }
+}
+
+/**
+ * Prepare params for the native boundary. Params cross as JSON-shaped
+ * values, which cannot carry a `bigint`, so every bigint is rewritten to
+ * `{ kind: "integer", value: "<decimal>" }` and decoded exactly on the
+ * Rust side. Returns the input unchanged (no copy) when it holds no
+ * bigint, which is the common case.
+ */
+function encodeParams(
+  params: LoraParams | null | undefined,
+): LoraParams | null {
+  if (params == null) return null;
+  return needsEncoding(params) ? (encodeBigInts(params) as LoraParams) : params;
+}
+
+/**
+ * An integer-valued `number` past 2^53 has usually already been rounded
+ * by JavaScript (an id or timestamp parsed from JSON, say). Storing it
+ * would make that corruption permanent, so refuse it and point at bigint.
+ * Magnitudes of 2^63 and up cannot be 64-bit integers and stay floats.
+ */
+function checkNumber(value: number): void {
+  if (
+    Number.isInteger(value) &&
+    !Number.isSafeInteger(value) &&
+    Math.abs(value) < 2 ** 63
+  ) {
+    throw new LoraError(
+      `integer ${value} is outside the JavaScript safe-integer range and may already be rounded; pass it as a bigint`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+}
+
+function needsEncoding(value: unknown): boolean {
+  if (typeof value === "bigint") return true;
+  if (typeof value === "number") {
+    checkNumber(value);
+    return false;
+  }
+  if (value === null || typeof value !== "object") return false;
+  if (ArrayBuffer.isView(value)) return false;
+  if (Array.isArray(value)) {
+    let found = false;
+    for (const item of value) found = needsEncoding(item) || found;
+    return found;
+  }
+  let found = false;
+  for (const key in value) {
+    found = needsEncoding((value as Record<string, unknown>)[key]) || found;
+  }
+  return found;
+}
+
+function encodeBigInts(value: unknown): unknown {
+  if (typeof value === "bigint")
+    return { kind: "integer", value: value.toString() };
+  if (value === null || typeof value !== "object" || ArrayBuffer.isView(value))
+    return value;
+  if (Array.isArray(value)) return value.map(encodeBigInts);
+  const out: Record<string, unknown> = {};
+  for (const key in value)
+    out[key] = encodeBigInts((value as Record<string, unknown>)[key]);
+  return out;
+}
+
+function normalizeTimeout(timeoutMs: number | undefined): number | null {
+  if (timeoutMs === undefined) return null;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new LoraError(
+      `timeoutMs must be a non-negative finite number, got ${timeoutMs}`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+  // The native side takes whole milliseconds as u32; 0 disables.
+  return Math.min(Math.ceil(timeoutMs), 0xffff_ffff);
 }

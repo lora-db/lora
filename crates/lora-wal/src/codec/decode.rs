@@ -165,7 +165,7 @@ impl<'a> PayloadReader<'a> {
 
     fn read_properties(&mut self) -> Result<Properties, WalError> {
         let len = self.read_len_bounded("property")?;
-        let mut properties = BTreeMap::new();
+        let mut properties = Properties::with_capacity(len);
         for _ in 0..len {
             let key = self.read_string()?;
             let value = self.read_value()?;

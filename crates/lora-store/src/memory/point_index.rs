@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::types::spatial::LoraPoint;
 
+use super::cow::{CowIdMap, CowMap};
 use super::entity_index_store::ScopedPropertyKey;
 use super::index_catalog::IndexConfigValue;
 
@@ -64,7 +65,13 @@ impl Default for PointScope {
 #[derive(Debug, Clone)]
 pub(super) struct PointGrid {
     cell_size: f64,
-    pub(super) cells: HashMap<(i32, i32), Vec<(LoraPoint, u64)>>,
+    /// Copy-on-write shards (see [`super::cow`]) so a write's staged
+    /// graph copy shares the grid and copies only the cells it changes.
+    ///
+    /// Each cell maps entity id → point. A dense cell (every festival in
+    /// one city) then splits into id shards, so a write copies one shard
+    /// and removes by id instead of scanning the whole cell.
+    pub(super) cells: CowMap<(i32, i32), CowIdMap<LoraPoint>>,
 }
 
 impl PointGrid {
@@ -75,7 +82,7 @@ impl PointGrid {
             } else {
                 DEFAULT_CELL_SIZE
             },
-            cells: HashMap::new(),
+            cells: CowMap::default(),
         }
     }
 
@@ -88,21 +95,27 @@ impl PointGrid {
 
     fn insert(&mut self, point: LoraPoint, id: u64) {
         let cell = self.cell_for(point.x, point.y);
-        self.cells.entry(cell).or_default().push((point, id));
+        self.cells
+            .get_or_insert_with(cell, CowIdMap::default)
+            .insert(id, point);
     }
 
     fn remove(&mut self, point: &LoraPoint, id: u64) {
         let cell = self.cell_for(point.x, point.y);
-        if let Some(bucket) = self.cells.get_mut(&cell) {
-            if let Some(pos) = bucket
-                .iter()
-                .position(|(p, i)| *i == id && points_equal(p, point))
-            {
-                bucket.swap_remove(pos);
-            }
-            if bucket.is_empty() {
-                self.cells.remove(&cell);
-            }
+        let present = self
+            .cells
+            .get(&cell)
+            .and_then(|bucket| bucket.get(&id))
+            .is_some_and(|stored| points_equal(stored, point));
+        if !present {
+            return;
+        }
+        let emptied = self.cells.get_mut(&cell).is_some_and(|bucket| {
+            bucket.remove(&id);
+            bucket.is_empty()
+        });
+        if emptied {
+            self.cells.remove(&cell);
         }
     }
 
@@ -138,9 +151,7 @@ impl PointGrid {
         };
         for cell in cells {
             if let Some(bucket) = self.cells.get(&cell) {
-                for (_, id) in bucket {
-                    out.insert(*id);
-                }
+                out.extend(bucket.keys());
             }
         }
         out
@@ -149,12 +160,26 @@ impl PointGrid {
     fn all_ids(&self) -> BTreeSet<u64> {
         self.cells
             .values()
-            .flat_map(|bucket| bucket.iter().map(|(_, id)| *id))
+            .flat_map(|bucket| bucket.keys())
             .collect()
     }
 }
 
 impl PointRegistry {
+    /// Whether any of `scopes` has an index on `property`. Checked through
+    /// a read guard before maintenance takes a (copy-on-write) write guard.
+    pub(super) fn covers_any<'a>(
+        &self,
+        scopes: impl IntoIterator<Item = &'a str>,
+        property: &str,
+    ) -> bool {
+        !self.by_scope.is_empty()
+            && scopes.into_iter().any(|scope| {
+                self.by_scope
+                    .contains_key(&ScopedPropertyKey::new(scope, property))
+            })
+    }
+
     /// Resolve the optional `cellSize` knob from a catalog `OPTIONS`
     /// map. Returns `None` when the key is missing, non-numeric, or
     /// non-positive — the registry then falls back to

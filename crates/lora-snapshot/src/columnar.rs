@@ -5,8 +5,8 @@ use lora_store::{
         decode_constraint_definitions, decode_index_definitions, decode_property_value,
         encode_constraint_definitions, encode_index_definitions, encode_property_value,
     },
-    ConstraintDefinition, IndexDefinition, NodeRecord, PropertyValue, RelationshipRecord,
-    SnapshotPayload, VectorIndexSnapshot,
+    ConstraintDefinition, IndexDefinition, NodeRecord, Properties, PropertyValue,
+    RelationshipRecord, SnapshotPayload, VectorIndexSnapshot,
 };
 use serde::{Deserialize, Serialize};
 
@@ -140,7 +140,7 @@ impl ColumnarSnapshot {
             nodes.push(NodeRecord {
                 id,
                 labels: labels.to_vec(),
-                properties: BTreeMap::new(),
+                properties: Properties::new(),
             });
         }
         Ok(nodes)
@@ -169,7 +169,7 @@ impl ColumnarSnapshot {
                 src,
                 dst,
                 rel_type,
-                properties: BTreeMap::new(),
+                properties: Properties::new(),
             });
         }
         Ok(relationships)

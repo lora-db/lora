@@ -43,7 +43,7 @@ pub enum WalError {
     #[error("WAL structure is malformed: {0}")]
     Malformed(String),
 
-    #[error("WAL directory is already open by another live handle: {dir}")]
+    #[error("database directory is locked by another process or live handle: {dir}")]
     AlreadyOpen { dir: PathBuf },
 
     #[error("WAL is poisoned: a previous append failed and the log is no longer durable")]

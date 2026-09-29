@@ -15,7 +15,7 @@
 | Feature | Parse status | Execution status | Risk |
 |---------|-------------|-----------------|------|
 | General-purpose `CALL` | Parsed to AST | Only documented `db.index.vector.*` and `db.index.fulltext.*` procedures are supported; other procedures return an unsupported-feature error | Low — clear error |
-| General-purpose `CALL ... YIELD` | Parsed to AST | Only documented index query procedures are supported | Low — clear error |
+| General-purpose `CALL ... YIELD` | Parsed to AST | The index query procedures compose as clauses (`CALL ... YIELD ... MATCH ...`); other procedures return an unsupported-feature error | Low — clear error |
 | `LOAD CSV` | Not in grammar | N/A | Low |
 | `USE <graph>` (multi-database) | Not in grammar | N/A | Low |
 | `EXPLAIN` / `PROFILE` (Cypher keywords) | Not in grammar | API-only | Low — exposed as `db.explain()` / `db.profile()` API methods rather than Cypher syntax. `PROFILE` runs the query for real (including writes); `EXPLAIN` is plan-only. |
@@ -46,6 +46,19 @@ The following features were listed as gaps in earlier revisions of this document
 | Map projection | Tests in `tests/projection.rs` |
 | Parameter binding (`$name`, `$1`) via the Rust API | Tests in `tests/parameters.rs` |
 | Index and constraint DDL (`CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE LOOKUP INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`, `CREATE CONSTRAINT`, `DROP`, `SHOW`) | Tests in `tests/schema.rs`, vector/full-text index tests, and constraint tests |
+| Unknown labels, relationship types and property keys are not errors (match nothing / read `null`), independent of the stored data | `tests/unknown_names.rs` |
+| `ORDER BY` on aliases and aggregates; `SKIP` / `LIMIT` after aggregation and `DISTINCT`. Previously the sort and limit ran before the projection, silently returning unsorted rows or counts over a truncated input | `tests/order_limit_semantics.rs` |
+| `CALL db.index.* (...) YIELD ... [WHERE ...]` as a composable clause, and fully hydrated nodes from standalone calls | `tests/procedure_yield.rs` |
+| Full-text ASCII folding and `term*` prefix queries | `tests/procedure_yield.rs` |
+| `COUNT { pattern }`, `WHERE n:Label` label predicates, standard Cypher function names (`split`, `trim`, `replace`, `point.distance`, math and path names) | `tests/cypher_compat.rs` |
+| Schema DDL inside transactions (atomic with data, durable through the WAL) | `tests/schema_in_transaction.rs` |
+| Write statements without `RETURN` return no rows | `tests/write_results.rs` |
+| Query deadlines and cancellation reach every execution path, including streaming writes; a bounded write that times out rolls back | `tests/timeouts.rs` |
+| RANGE indexes hold temporal values, so a range predicate on a `DATETIME` property is index-backed and `WHERE n.createdAt > $t ORDER BY n.createdAt DESC LIMIT k` streams from the index. Previously temporal values were left out of the index while range predicates were still planned through it, returning no rows | `tests/temporal_range_index.rs` |
+| Writes inside `CALL { ... }` run on the mutable executor, per outer row, with unit subqueries keeping the outer rows. Previously every write in a subquery body failed with `LORA_READ_ONLY` although `explain()` reported the query as mutating | `tests/call_subquery_writes.rs` |
+| `null` in a property map is not stored and `SET` with `null` removes the property; existence constraints on entities a statement creates are checked when the statement finishes, so `CREATE (n:User) SET n.name = $name` passes | `tests/null_properties_and_deferred_existence.rs` |
+| A read with an early `LIMIT` stops scanning once the limit is met, also under a deadline and inside an explicit transaction. Previously both ran the full executor and materialized every row first | `tests/early_limit.rs` |
+| Node binding: exact 64-bit integers (`bigint`), per-call `timeoutMs` / `AbortSignal` and a database-wide `queryTimeoutMs`, interactive transactions (`db.begin()`), typed `LORA_LOCKED` for a directory held by another process, `{latitude, longitude}` point params, musl prebuilds | `crates/bindings/lora-node/test/{integers,timeouts,interactive,locking}.test.ts` |
 
 ---
 
@@ -62,7 +75,8 @@ The following features were listed as gaps in earlier revisions of this document
 |-----|---------------|------|
 | WAL/operator controls are not uniform across surfaces | Observed | **Low–Medium** — Rust and `lora-server` expose explicit checkpoint/status/truncate controls. Node, Python, Go, and Ruby can open filesystem-backed WAL databases; WASM remains snapshot-only. See [WAL](../operations/wal.md). |
 | Constraint/index coverage is scoped | Observed | **Medium** — uniqueness, existence, type, key, RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT surfaces exist; composite multi-property seeks and ANN vector execution are still absent |
-| Transaction isolation is conservative | Observed | **Medium** — auto-commit writes publish optimistically under a writer mutex; explicit read-write transactions serialize for their full lifetime; read-only transactions pin snapshots |
+| Transaction isolation is conservative | Observed | **Medium** — auto-commit writes publish optimistically under a writer mutex; explicit read-write transactions (including interactive `db.begin()` transactions in the Node binding) hold the writer lock for their full lifetime, so other writers wait; read-only transactions pin snapshots |
+| A second in-process open of a database directory shares the open engine | Observed | Low — both handles talk to one engine and one WAL writer, never two; a second *process* gets `LORA_LOCKED` |
 | Node / relationship IDs are never reused | Observed | Low — `u64` counter will not overflow in practice |
 | Tombstones and clone-heavy compatibility APIs | Observed | **Low–Medium** — deleted IDs leave slot gaps; hot executor paths use borrow closures, but `all_nodes()` and other record-returning scans still allocate |
 
@@ -74,6 +88,7 @@ The following features were listed as gaps in earlier revisions of this document
 |-------|---------------|------|
 | `toLower` / `toUpper` are not locale-aware | Observed | Low — Unicode case mapping is supported, locale-specific folding is host-side |
 | Integer overflow not explicitly handled | Inferred | Low — Rust panics in debug, wraps in release |
+| `round()` returns an integer for integral results and rounds half away from zero | Observed | Low — Neo4j returns a float |
 | Float comparison uses IEEE 754 | Observed | Low — `NaN != NaN` is standard |
 | Variable-length undirected traversal does not guard against reciprocal edges | Inferred | Low — visited-node tracking avoids repeats |
 
@@ -98,8 +113,29 @@ The following features were listed as gaps in earlier revisions of this document
 | Write publication still serializes | Observed | Read-only auto-commit queries load Arc snapshots without a store lock; write commits and explicit read-write transactions serialize through the database writer mutex |
 | Some predicates still scan | Observed | Vector similarity, regex, non-indexed properties, nested map paths, and unsupported composite seek shapes scan candidate records |
 | Clone-heavy read API | Observed | Allocation overhead proportional to result set |
-| Query timeout coverage is partial | Observed | Rust materialized execute paths have cooperative deadlines; streaming and language bindings still need surfaces |
-| Optimizer is still local | Observed | Cost-based index selection exists for scan/filter sites, but no join ordering, global cardinality search, or sorted-index ORDER BY planning |
+| Query timeout coverage | Observed | Cooperative deadlines and cancellation cover eager, streaming and write execution in Rust and the Node binding (`execute`, `transaction`, `stream`, `begin`). A `stream()` checks between rows, so one blocking pull (a large aggregation) finishes before the check. HTTP and the other bindings do not expose timeouts yet |
+| Optimizer is still local | Observed | Cost-based index selection exists for scan/filter sites, and a single-key `ORDER BY` over a range-indexed property with a range predicate streams from the index. WHERE conditions are pushed down to the scan of the variable they test (so `n.key = $k` and `n.key IN $list` seek on any node of a pattern), a chain starts from its cheaper end, and an unfiltered `count(n)` over one label reads the label count. No join ordering or global cardinality search; multi-key or unbounded `ORDER BY` still sorts |
+| Staged writes share structure | Observed | Writes the in-place fast path cannot prove failure-free (relationship `CREATE`, `MERGE`, `SET` from an expression, anything with a deadline) run on a copy of the graph so a failure leaves nothing behind. The copy is structural: node and relationship slots, adjacency lists and label indexes are chunked copy-on-write vectors, and every secondary index (hash, range, text, point, full-text) is split into copy-on-write shards, so a write copies only the chunks and shards it touches. A single-row write costs tens of microseconds regardless of graph size (`tests/write_scaling.rs`) |
+
+### Memory per element
+
+Measured with a counting allocator (`cargo run --release -p lora-database
+--example heap_probe`); live heap only, so process RSS adds allocator
+overhead on top.
+
+| Element | Bytes |
+|---------|-------|
+| Node, no properties, one label | ~170 |
+| Each property on a node or relationship (inline value) | ~64, plus the value's own heap for strings, lists, maps |
+| Relationship, no properties | ~115 |
+| Unique-valued entry in a RANGE index or uniqueness constraint | ~290 |
+| 20k festivals + 5k users + 100k relationships, no indexes | ~320 per element |
+| Same, with two uniqueness constraints, a full-text and a point index | ~430 per element |
+
+Declaring indexes and constraints before a bulk load keeps the load
+linear: a uniqueness check looks the value up in its backing index rather
+than scanning the graph. For the largest loads, creating indexes after
+the load is still somewhat faster because the index is built in one pass.
 
 ---
 
@@ -124,7 +160,7 @@ The following features were listed as gaps in earlier revisions of this document
 
 ### Medium term (robustness)
 
-5. Expand timeout coverage to streaming APIs, HTTP, and language bindings
+5. Expand timeout coverage to HTTP and the Python, Go, Ruby and WASM bindings (Rust and Node are covered)
 6. Add authentication middleware to the HTTP server
 7. Add ANN execution for vector indexes and broader composite-index optimizer rewrites
 8. ~~Introduce borrowing iterators on `GraphStorage`~~ — partially addressed: `with_node` / `with_relationship` closures now cover the executor's hot paths without requiring `&NodeRecord` access from every backend. Still open: streaming iterators for bulk scans
@@ -136,8 +172,8 @@ The following features were listed as gaps in earlier revisions of this document
     filesystem-backed surfaces, and Rust / `lora-server` expose explicit
     checkpoint/admin controls. Remaining work is operational polish,
     scheduled checkpoints, and richer multi-process/process-manager guidance.
-11. Richer optimizer: join ordering, sorted-index ORDER BY planning, broader cardinality estimation
-12. `CALL` / procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`)
+11. Richer optimizer: join ordering, multi-key sorted-index ORDER BY, broader cardinality estimation
+12. More `CALL` procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`); the index queries already compose with `YIELD`
 13. `FOREACH`
 14. Quantified path patterns
 

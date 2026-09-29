@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::memory::{ConstraintRequest, IndexRequest};
-use crate::{NodeId, Properties, PropertyValue, RelationshipId};
+use crate::{NodeId, NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord};
 
 /// A durable, replayable mutation against a graph store.
 ///
@@ -138,6 +138,19 @@ pub trait MutationRecorder: Send + Sync + 'static {
     fn poisoned(&self) -> Option<String> {
         None
     }
+}
+
+/// Observer for records a delete is about to drop.
+///
+/// Installed with [`InMemoryGraph::set_deleted_record_sink`]. Change feeds
+/// use it to describe deleted entities (labels, properties, endpoints)
+/// when the write mutates the live graph in place and no pre-write copy
+/// exists.
+///
+/// [`InMemoryGraph::set_deleted_record_sink`]: crate::InMemoryGraph::set_deleted_record_sink
+pub trait DeletedRecordSink: Send + Sync + 'static {
+    fn node_deleted(&self, record: &NodeRecord);
+    fn relationship_deleted(&self, record: &RelationshipRecord);
 }
 
 /// Convenience adapter that turns any `Fn(MutationEvent) + Send + Sync`

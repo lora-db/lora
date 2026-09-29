@@ -21,11 +21,10 @@ use web_time::Instant;
 
 use anyhow::Result;
 use lora_ast::{
-    ConstraintKind as AstConstraintKind, ConstraintNameSpec, CreateConstraint, CreateIndex,
-    DropConstraint, DropIndex, Expr, IndexEntityKind as AstIndexEntityKind,
-    IndexKind as AstIndexKind, IndexKindFilter, IndexNameSpec, IndexOptions,
-    PropertyTypeExpr as AstPropertyTypeExpr, PropertyTypeTerm as AstPropertyTypeTerm,
-    ScalarType as AstScalarType, SchemaCommand, ShowConstraints, ShowIndexes,
+    ConstraintKind as AstConstraintKind, ConstraintNameSpec, CreateConstraint, CreateIndex, Expr,
+    IndexEntityKind as AstIndexEntityKind, IndexKind as AstIndexKind, IndexKindFilter,
+    IndexNameSpec, IndexOptions, PropertyTypeExpr as AstPropertyTypeExpr,
+    PropertyTypeTerm as AstPropertyTypeTerm, ScalarType as AstScalarType, SchemaCommand,
     VectorCoordType as AstVectorCoordType,
 };
 use lora_executor::{LoraValue, Row};
@@ -85,133 +84,110 @@ where
         &self,
         command: &SchemaCommand,
         params: BTreeMap<String, LoraValue>,
-        deadline: Option<Instant>,
-    ) -> Result<Vec<Row>> {
-        match command {
-            SchemaCommand::CreateIndex(cmd) => self.execute_create_index(cmd, params, deadline),
-            SchemaCommand::DropIndex(cmd) => self.execute_drop_index(cmd, params),
-            SchemaCommand::ShowIndexes(cmd) => self.execute_show_indexes(cmd, &params),
-            SchemaCommand::CreateConstraint(cmd) => {
-                self.execute_create_constraint(cmd, params, deadline)
-            }
-            SchemaCommand::DropConstraint(cmd) => self.execute_drop_constraint(cmd, params),
-            SchemaCommand::ShowConstraints(cmd) => self.execute_show_constraints(cmd, &params),
-        }
-    }
-
-    fn execute_create_index(
-        &self,
-        cmd: &CreateIndex,
-        params: BTreeMap<String, LoraValue>,
         _deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
-        let request = build_index_request(cmd, &params)?;
-        let if_not_exists = cmd.if_not_exists;
-
+        if schema_command_is_read(command) {
+            let snapshot = self.read_store();
+            return show_schema(&*snapshot, command, &params);
+        }
         // Catalog mutation goes through the canonical write path so the
         // writer lock is held for the duration and the store can emit
         // the durable catalog mutation event used by WAL/archive replay.
-        let outcome = self.with_logged_store_mut(|store| {
-            store
-                .create_index(request, if_not_exists)
-                .map_err(map_create_index_error)
-        })?;
+        self.with_logged_store_mut(|store| apply_schema_mutation(store, command, &params))
+    }
+}
 
-        match outcome {
-            CreateIndexOutcome::Created(_def) => Ok(Vec::new()),
-            CreateIndexOutcome::NoOpExists(_def) => {
-                // The Cypher reference returns *no rows* and a notification
-                // for IF NOT EXISTS no-ops. Notifications are not a
-                // first-class result kind in lora yet; surface this via
-                // the absence of a row, mirroring the row count.
-                Ok(Vec::new())
+/// `SHOW INDEXES` / `SHOW CONSTRAINTS`: pure reads of the catalog.
+pub(crate) fn schema_command_is_read(command: &SchemaCommand) -> bool {
+    matches!(
+        command,
+        SchemaCommand::ShowIndexes(_) | SchemaCommand::ShowConstraints(_)
+    )
+}
+
+/// Run a `SHOW ...` schema command against `store`.
+pub(crate) fn show_schema<G: GraphStorage + ?Sized>(
+    store: &G,
+    command: &SchemaCommand,
+    params: &BTreeMap<String, LoraValue>,
+) -> Result<Vec<Row>> {
+    match command {
+        SchemaCommand::ShowIndexes(cmd) => {
+            let rows: Vec<Row> = store
+                .list_indexes()
+                .into_iter()
+                .filter(|def| index_matches_filter(def, cmd.filter))
+                .map(definition_to_row)
+                .collect();
+            match &cmd.pipeline {
+                Some(pipeline) => super::show_pipeline::apply_pipeline(rows, pipeline, params),
+                None => Ok(rows),
             }
         }
+        SchemaCommand::ShowConstraints(cmd) => {
+            let rows: Vec<Row> = store
+                .list_constraints()
+                .into_iter()
+                .map(constraint_to_row)
+                .collect();
+            match &cmd.pipeline {
+                Some(pipeline) => super::show_pipeline::apply_pipeline(rows, pipeline, params),
+                None => Ok(rows),
+            }
+        }
+        _ => Err(DatabaseOperationError::validation("not a SHOW command").into()),
     }
+}
 
-    fn execute_show_indexes(
-        &self,
-        cmd: &ShowIndexes,
-        params: &BTreeMap<String, LoraValue>,
-    ) -> Result<Vec<Row>> {
-        let snapshot = self.read_store();
-        let indexes = snapshot.list_indexes();
-        let rows: Vec<Row> = indexes
-            .into_iter()
-            .filter(|def| index_matches_filter(def, cmd.filter))
-            .map(definition_to_row)
-            .collect();
-        match &cmd.pipeline {
-            Some(pipeline) => super::show_pipeline::apply_pipeline(rows, pipeline, params),
-            None => Ok(rows),
+/// Apply a `CREATE` / `DROP` index or constraint command to `store`. Used
+/// on the live store by auto-commit DDL and on a transaction's staged
+/// graph, where it commits or rolls back together with the data
+/// statements around it. `IF [NOT] EXISTS` no-ops return no rows, like
+/// successful DDL (Cypher reports them as notifications).
+pub(crate) fn apply_schema_mutation<G: GraphStorageMut + ?Sized>(
+    store: &mut G,
+    command: &SchemaCommand,
+    params: &BTreeMap<String, LoraValue>,
+) -> Result<Vec<Row>> {
+    match command {
+        SchemaCommand::CreateIndex(cmd) => {
+            let request = build_index_request(cmd, params)?;
+            match store
+                .create_index(request, cmd.if_not_exists)
+                .map_err(map_create_index_error)?
+            {
+                CreateIndexOutcome::Created(_) | CreateIndexOutcome::NoOpExists(_) => {}
+            }
+        }
+        SchemaCommand::DropIndex(cmd) => {
+            let name = match &cmd.name {
+                IndexNameSpec::Literal(n) => n.clone(),
+                IndexNameSpec::Parameter(p) => resolve_string_param(p, params)?,
+            };
+            store
+                .drop_index(&name, cmd.if_exists)
+                .map_err(map_drop_index_error)?;
+        }
+        SchemaCommand::CreateConstraint(cmd) => {
+            let request = build_constraint_request(cmd, params)?;
+            store
+                .create_constraint(request, cmd.if_not_exists)
+                .map_err(map_create_constraint_error)?;
+        }
+        SchemaCommand::DropConstraint(cmd) => {
+            let name = match &cmd.name {
+                ConstraintNameSpec::Literal(n) => n.clone(),
+                ConstraintNameSpec::Parameter(p) => resolve_string_param(p, params)?,
+            };
+            store
+                .drop_constraint(&name, cmd.if_exists)
+                .map_err(map_drop_constraint_error)?;
+        }
+        SchemaCommand::ShowIndexes(_) | SchemaCommand::ShowConstraints(_) => {
+            return Err(DatabaseOperationError::validation("SHOW is not a mutation").into());
         }
     }
-
-    fn execute_drop_index(
-        &self,
-        cmd: &DropIndex,
-        params: BTreeMap<String, LoraValue>,
-    ) -> Result<Vec<Row>> {
-        let name = match &cmd.name {
-            IndexNameSpec::Literal(n) => n.clone(),
-            IndexNameSpec::Parameter(p) => resolve_string_param(p, &params)?,
-        };
-        let if_exists = cmd.if_exists;
-        let _outcome = self.with_logged_store_mut(|store| {
-            store
-                .drop_index(&name, if_exists)
-                .map_err(map_drop_index_error)
-        })?;
-        Ok(Vec::new())
-    }
-
-    fn execute_create_constraint(
-        &self,
-        cmd: &CreateConstraint,
-        params: BTreeMap<String, LoraValue>,
-        _deadline: Option<Instant>,
-    ) -> Result<Vec<Row>> {
-        let request = build_constraint_request(cmd, &params)?;
-        let if_not_exists = cmd.if_not_exists;
-        let _outcome = self.with_logged_store_mut(|store| {
-            store
-                .create_constraint(request, if_not_exists)
-                .map_err(map_create_constraint_error)
-        })?;
-        Ok(Vec::new())
-    }
-
-    fn execute_drop_constraint(
-        &self,
-        cmd: &DropConstraint,
-        params: BTreeMap<String, LoraValue>,
-    ) -> Result<Vec<Row>> {
-        let name = match &cmd.name {
-            ConstraintNameSpec::Literal(n) => n.clone(),
-            ConstraintNameSpec::Parameter(p) => resolve_string_param(p, &params)?,
-        };
-        let if_exists = cmd.if_exists;
-        let _outcome = self.with_logged_store_mut(|store| {
-            store
-                .drop_constraint(&name, if_exists)
-                .map_err(map_drop_constraint_error)
-        })?;
-        Ok(Vec::new())
-    }
-
-    fn execute_show_constraints(
-        &self,
-        cmd: &ShowConstraints,
-        params: &BTreeMap<String, LoraValue>,
-    ) -> Result<Vec<Row>> {
-        let snapshot = self.read_store();
-        let constraints = snapshot.list_constraints();
-        let rows: Vec<Row> = constraints.into_iter().map(constraint_to_row).collect();
-        match &cmd.pipeline {
-            Some(pipeline) => super::show_pipeline::apply_pipeline(rows, pipeline, params),
-            None => Ok(rows),
-        }
-    }
+    Ok(Vec::new())
 }
 
 fn is_index_keyword(word: &str) -> bool {

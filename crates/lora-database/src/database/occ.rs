@@ -53,8 +53,18 @@ where
                 .map_err(anyhow::Error::from)
         };
 
-        if live_fast_path_safe(compiled) {
-            self.run_live_fast_with_durable_recorder(run)
+        // The live fast path mutates the graph in place with no rollback,
+        // which is only sound for plans that cannot fail midway. A deadline
+        // (timeout or cancellation) can stop any plan midway, so bounded
+        // writes take the staged path, where a failure discards every
+        // change instead of leaving a partial write behind.
+        if deadline.is_none() && live_fast_path_safe(compiled) {
+            let may_delete = compiled
+                .physical
+                .nodes
+                .iter()
+                .any(|op| matches!(op, PhysicalOp::Delete(_)));
+            self.run_live_fast_with_durable_recorder(may_delete, run)
         } else {
             self.run_with_durable_recorder(run)
         }

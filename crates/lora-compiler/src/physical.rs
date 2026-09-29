@@ -103,6 +103,9 @@ pub struct NodeByPropertyScanExec {
     pub labels: Vec<Vec<String>>,
     pub key: String,
     pub value: ResolvedExpr,
+    /// `true` when `value` is a list and the scan seeks `key IN value`
+    /// (one index lookup per distinct element) instead of `key = value`.
+    pub in_list: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +118,10 @@ pub struct NodeByPropertyRangeScanExec {
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,
     pub hi_inclusive: bool,
+    /// Set when the optimizer replaced an `ORDER BY var.key` above this
+    /// scan: rows must come out in that order (from the index when it can
+    /// supply it, otherwise sorted by the operator itself).
+    pub order: Option<lora_ast::SortDirection>,
 }
 
 #[derive(Debug, Clone)]

@@ -33,12 +33,14 @@ fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalN
         | PhysicalOp::HashAggregation(_)
         | PhysicalOp::OptionalMatch(_)
         | PhysicalOp::CallSubquery(_)
-        | PhysicalOp::NodeByPropertyRangeScan(_)
         | PhysicalOp::NodeByTextScan(_)
         | PhysicalOp::NodeByPointScan(_)
         | PhysicalOp::RelByPropertyRangeScan(_)
         | PhysicalOp::RelByTextScan(_)
         | PhysicalOp::RelByPointScan(_) => true,
+        // An ordered range scan streams from the index; an unordered one
+        // buffers its candidate set.
+        PhysicalOp::NodeByPropertyRangeScan(op) => op.order.is_none(),
         PhysicalOp::Argument(_)
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)

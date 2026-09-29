@@ -16,6 +16,7 @@
 
 pub mod binary;
 pub mod graph;
+pub mod property_map;
 pub mod property_value;
 pub mod spatial;
 pub mod temporal;
@@ -25,12 +26,13 @@ pub use binary::LoraBinary;
 pub use graph::{
     ExpandedRelationship, NodeId, NodeRecord, Properties, RelationshipId, RelationshipRecord,
 };
+pub use property_map::PropertyMap;
 pub use property_value::PropertyValue;
 pub use spatial::{
     cartesian_distance, haversine_distance, point_distance, resolve_srid, resolve_srid_checked,
     srid_from_crs_name, srid_is_3d, srid_is_geographic, srid_is_supported, LoraPoint,
-    PointKeyFamily, SridResolveError, CRS_CARTESIAN, CRS_CARTESIAN_3D, CRS_WGS84_2D, CRS_WGS84_3D,
-    SRID_CARTESIAN, SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
+    NamedPointCoordinates, PointKeyFamily, SridResolveError, CRS_CARTESIAN, CRS_CARTESIAN_3D,
+    CRS_WGS84_2D, CRS_WGS84_3D, SRID_CARTESIAN, SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
 };
 pub use temporal::{
     days_in_month, is_leap_year, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime,

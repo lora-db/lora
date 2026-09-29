@@ -186,11 +186,14 @@ fn remove_property_from_relationship() {
 }
 
 #[test]
-fn remove_nonexistent_property_is_rejected_by_analyzer() {
+fn remove_nonexistent_property_is_a_noop() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
-    let err = db.run_err("MATCH (n:User) REMOVE n.nonexistent");
-    assert!(err.contains("unknown property"));
+    db.run("MATCH (n:User) REMOVE n.nonexistent");
+    let rows = db.run("MATCH (n:User) RETURN n.name AS name, n.nonexistent AS v");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "Alice");
+    assert!(rows[0]["v"].is_null());
 }
 
 #[test]

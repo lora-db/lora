@@ -12,13 +12,16 @@
 //!   [`crate::SnapshotPayload`] vocabulary.
 //! - `tests` — unit tests covering the in-memory backend.
 
+mod chunked_vec;
 mod constraint_catalog;
 mod constraint_enforce;
+mod cow;
 mod entity_index_store;
 #[allow(dead_code)]
 mod fulltext_index;
 mod graph;
 mod hnsw;
+mod id_set;
 mod impls;
 mod index_catalog;
 mod mem_report;

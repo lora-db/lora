@@ -139,7 +139,7 @@ impl InMemoryGraph {
             if !node.labels.iter().any(|l| l == label) {
                 continue;
             }
-            validate_record_against_constraint(def, &node.properties, &mut seen)?;
+            validate_record_against_constraint(def, &node.properties, &mut seen, true)?;
         }
         Ok(())
     }
@@ -154,7 +154,7 @@ impl InMemoryGraph {
             if rel.rel_type != rel_type {
                 continue;
             }
-            validate_record_against_constraint(def, &rel.properties, &mut seen)?;
+            validate_record_against_constraint(def, &rel.properties, &mut seen, true)?;
         }
         Ok(())
     }
@@ -164,9 +164,10 @@ fn validate_record_against_constraint(
     def: &ConstraintDefinition,
     properties: &Properties,
     seen: &mut HashSet<String>,
+    check_existence: bool,
 ) -> Result<(), ConstraintViolation> {
     // 1) Existence checks.
-    if def.kind.requires_existence() {
+    if check_existence && def.kind.requires_existence() {
         let missing: Vec<String> = def
             .properties
             .iter()
@@ -484,6 +485,15 @@ fn check_record_constraints(
     graph: &InMemoryGraph,
     record: ConstraintRecord<'_>,
 ) -> Result<(), ConstraintViolation> {
+    check_record_constraints_with(catalog, graph, record, true)
+}
+
+fn check_record_constraints_with(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    record: ConstraintRecord<'_>,
+    check_existence: bool,
+) -> Result<(), ConstraintViolation> {
     for def in catalog.iter() {
         if !record.applies_to(def) {
             continue;
@@ -491,7 +501,7 @@ fn check_record_constraints(
 
         let properties = record.properties();
         let mut probe: HashSet<String> = HashSet::new();
-        validate_record_against_constraint(def, properties, &mut probe)?;
+        validate_record_against_constraint(def, properties, &mut probe, check_existence)?;
 
         if def.kind.requires_uniqueness() {
             if let Some(tuple) = constrained_tuple(def, properties) {
@@ -542,6 +552,110 @@ pub(crate) fn check_relationship_create(
     )
 }
 
+/// [`check_node_create`] without the existence checks, for a statement
+/// that checks existence once it has finished (a later `SET` in the same
+/// statement may still supply the property). Pair with
+/// [`check_node_existence`].
+pub(crate) fn check_node_create_deferred(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    labels: &[String],
+    properties: &Properties,
+) -> Result<(), ConstraintViolation> {
+    check_record_constraints_with(
+        catalog,
+        graph,
+        ConstraintRecord::Node {
+            labels: NodeLabelMatcher::AnyOf(labels),
+            properties,
+            skip: None,
+        },
+        false,
+    )
+}
+
+/// Relationship counterpart of [`check_node_create_deferred`].
+pub(crate) fn check_relationship_create_deferred(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    rel_type: &str,
+    properties: &Properties,
+) -> Result<(), ConstraintViolation> {
+    check_record_constraints_with(
+        catalog,
+        graph,
+        ConstraintRecord::Relationship {
+            rel_type,
+            properties,
+            skip: None,
+        },
+        false,
+    )
+}
+
+/// Existence (and key) constraints on a node as it stands now. A node
+/// that no longer exists passes.
+pub(crate) fn check_node_existence(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    node_id: NodeId,
+) -> Result<(), ConstraintViolation> {
+    let Some(node) = graph.node_at(node_id) else {
+        return Ok(());
+    };
+    for def in catalog.iter() {
+        if def.entity != StoredIndexEntity::Node
+            || !def.kind.requires_existence()
+            || !node.labels.iter().any(|l| l == &def.label)
+        {
+            continue;
+        }
+        if let Some(missing) = def
+            .properties
+            .iter()
+            .find(|p| !node.properties.contains_key(p.as_str()))
+        {
+            return Err(missing_property_violation(def, missing));
+        }
+    }
+    Ok(())
+}
+
+/// Relationship counterpart of [`check_node_existence`].
+pub(crate) fn check_relationship_existence(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    rel_id: RelationshipId,
+) -> Result<(), ConstraintViolation> {
+    let Some(rel) = graph.rel_at(rel_id) else {
+        return Ok(());
+    };
+    for def in catalog.iter() {
+        if def.entity != StoredIndexEntity::Relationship
+            || !def.kind.requires_existence()
+            || rel.rel_type != def.label
+        {
+            continue;
+        }
+        if let Some(missing) = def
+            .properties
+            .iter()
+            .find(|p| !rel.properties.contains_key(p.as_str()))
+        {
+            return Err(missing_property_violation(def, missing));
+        }
+    }
+    Ok(())
+}
+
+/// Whether another node with `label` already holds `target` for `keys`.
+///
+/// Uniqueness constraints own a backing range index, which keeps the
+/// label-scoped hash index for the first key active. Looking the value up
+/// there makes each check O(matches) instead of a scan of every node in
+/// the graph, which made loading N constrained nodes O(N^2). When the
+/// value has no index image (temporal, spatial, vector) or the index is
+/// not active, fall back to scanning the label's nodes only.
 fn any_other_node_with_tuple(
     graph: &InMemoryGraph,
     label: &str,
@@ -549,26 +663,28 @@ fn any_other_node_with_tuple(
     target: &[PropertyValue],
     skip: Option<NodeId>,
 ) -> bool {
-    for (id, node) in graph.iter_nodes() {
-        if Some(id) == skip {
-            continue;
-        }
-        if !node.labels.iter().any(|l| l == label) {
-            continue;
-        }
-        let matches = keys.iter().enumerate().all(|(idx, key)| {
-            node.properties
-                .get(key.as_str())
-                .map(|v| v == &target[idx])
-                .unwrap_or(false)
-        });
-        if matches {
-            return true;
-        }
-    }
-    false
+    let tuple_matches = |node: &crate::NodeRecord| {
+        node.labels.iter().any(|l| l == label)
+            && keys.iter().enumerate().all(|(idx, key)| {
+                node.properties
+                    .get(key.as_str())
+                    .map(|v| v == &target[idx])
+                    .unwrap_or(false)
+            })
+    };
+    let candidates = match (keys.first(), target.first()) {
+        (Some(key), Some(value)) => graph.indexed_node_ids(label, key, value),
+        _ => None,
+    };
+    let candidates =
+        candidates.unwrap_or_else(|| crate::GraphStorage::node_ids_by_label(graph, label));
+    candidates
+        .into_iter()
+        .filter(|id| Some(*id) != skip)
+        .any(|id| graph.node_at(id).is_some_and(tuple_matches))
 }
 
+/// Relationship counterpart of [`any_other_node_with_tuple`].
 fn any_other_rel_with_tuple(
     graph: &InMemoryGraph,
     rel_type: &str,
@@ -576,24 +692,25 @@ fn any_other_rel_with_tuple(
     target: &[PropertyValue],
     skip: Option<RelationshipId>,
 ) -> bool {
-    for (id, rel) in graph.iter_rels() {
-        if Some(id) == skip {
-            continue;
-        }
-        if rel.rel_type != rel_type {
-            continue;
-        }
-        let matches = keys.iter().enumerate().all(|(idx, key)| {
-            rel.properties
-                .get(key.as_str())
-                .map(|v| v == &target[idx])
-                .unwrap_or(false)
-        });
-        if matches {
-            return true;
-        }
-    }
-    false
+    let tuple_matches = |rel: &crate::RelationshipRecord| {
+        rel.rel_type == rel_type
+            && keys.iter().enumerate().all(|(idx, key)| {
+                rel.properties
+                    .get(key.as_str())
+                    .map(|v| v == &target[idx])
+                    .unwrap_or(false)
+            })
+    };
+    let candidates = match (keys.first(), target.first()) {
+        (Some(key), Some(value)) => graph.indexed_rel_ids(rel_type, key, value),
+        _ => None,
+    };
+    let candidates =
+        candidates.unwrap_or_else(|| crate::GraphStorage::rel_ids_by_type(graph, rel_type));
+    candidates
+        .into_iter()
+        .filter(|id| Some(*id) != skip)
+        .any(|id| graph.rel_at(id).is_some_and(tuple_matches))
 }
 
 fn render_constraint_property_label(def: &ConstraintDefinition) -> String {

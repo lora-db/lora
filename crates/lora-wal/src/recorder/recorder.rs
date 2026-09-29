@@ -153,6 +153,37 @@ impl WalRecorder {
     /// - [`WroteCommit::No`] when no mutations fired during the query
     ///   and no records were written.
     pub fn commit(&self) -> Result<WroteCommit, WalError> {
+        let events = self.take_armed_buffer()?;
+        if events.is_empty() {
+            return Ok(WroteCommit::No);
+        }
+
+        self.wal.commit_tx(events).inspect_err(|e| {
+            self.state_lock()
+                .poisoned
+                .get_or_insert_with(|| e.to_string());
+        })
+    }
+
+    /// Like [`Self::commit`], but also hands back the committed events and
+    /// the LSN of the `TxCommit` record. Returns `None` when the query
+    /// fired no mutations. Change feeds use this; it clones the event
+    /// buffer, so the plain [`Self::commit`] stays the default.
+    pub fn commit_capture(&self) -> Result<Option<(Lsn, Vec<MutationEvent>)>, WalError> {
+        let events = self.take_armed_buffer()?;
+        if events.is_empty() {
+            return Ok(None);
+        }
+        let captured = events.clone();
+        let lsn = self.wal.commit_tx_lsn(events).inspect_err(|e| {
+            self.state_lock()
+                .poisoned
+                .get_or_insert_with(|| e.to_string());
+        })?;
+        Ok(lsn.map(|lsn| (lsn, captured)))
+    }
+
+    fn take_armed_buffer(&self) -> Result<Vec<MutationEvent>, WalError> {
         let events = {
             let mut state = self.state_lock();
             if state.poisoned.is_some() {
@@ -165,16 +196,7 @@ impl WalRecorder {
             state.armed = false;
             std::mem::take(&mut state.buffer)
         };
-
-        if events.is_empty() {
-            return Ok(WroteCommit::No);
-        }
-
-        self.wal.commit_tx(events).inspect_err(|e| {
-            self.state_lock()
-                .poisoned
-                .get_or_insert_with(|| e.to_string());
-        })
+        Ok(events)
     }
 
     /// Commit an explicit transaction's externally-buffered mutation
@@ -192,15 +214,27 @@ impl WalRecorder {
         &self,
         events: impl IntoIterator<Item = MutationEvent>,
     ) -> Result<WroteCommit, WalBufferedCommitError> {
+        Ok(match self.commit_events_lsn(events)? {
+            Some(_) => WroteCommit::Yes,
+            None => WroteCommit::No,
+        })
+    }
+
+    /// Like [`Self::commit_events`], but returns the LSN of the `TxCommit`
+    /// record (`None` when there were no events and nothing was written).
+    pub fn commit_events_lsn(
+        &self,
+        events: impl IntoIterator<Item = MutationEvent>,
+    ) -> Result<Option<Lsn>, WalBufferedCommitError> {
         self.ensure_not_poisoned()
             .map_err(|e| WalBufferedCommitError::Poisoned(e.reason().to_string()))?;
 
         let events: Vec<MutationEvent> = events.into_iter().collect();
         if events.is_empty() {
-            return Ok(WroteCommit::No);
+            return Ok(None);
         }
 
-        self.wal.commit_tx(events).map_err(|e| {
+        self.wal.commit_tx_lsn(events).map_err(|e| {
             self.state_lock()
                 .poisoned
                 .get_or_insert_with(|| e.to_string());

@@ -17,7 +17,7 @@ use web_time::Instant;
 use anyhow::Result;
 use lora_ast::Statement;
 use lora_executor::{
-    classify_stream, collect_compiled, project_rows, ExecuteOptions, LoraValue,
+    classify_stream, collect_compiled_with_deadline, project_rows, ExecuteOptions, LoraValue,
     MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
 };
 use lora_parser::parse_query;
@@ -107,6 +107,23 @@ where
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
+    /// Execute a parameterised query that stops at an absolute `deadline`.
+    ///
+    /// Pair with [`lora_executor::CancellableDeadline`] to also cancel the
+    /// query from another thread before the deadline: a cancelled query
+    /// fails with a timeout error, aborts its WAL transaction, and releases
+    /// its locks, exactly like one that ran out of time.
+    pub fn execute_with_params_deadline(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Instant,
+    ) -> Result<QueryResult, LoraError> {
+        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
     /// Execute a query and return hydrated rows before final result-format
     /// projection.
     pub fn execute_rows(&self, query: &str) -> Result<Vec<Row>, LoraError> {
@@ -147,7 +164,13 @@ where
         // queries land here too once they ship). These bypass the
         // analyzer/compiler, which doesn't yet model standalone CALL.
         if super::procedures::is_procedure_call_text(query) {
-            let document = parse_query(query)?;
+            // `CALL ... YIELD ... RETURN` also starts with a procedure name
+            // but runs through the regular pipeline; reuse the cached parse
+            // so telling the two apart costs nothing after the first call.
+            let document = match self.plan_cache.document(query) {
+                Some(document) => document,
+                None => std::sync::Arc::new(parse_query(query)?),
+            };
             if let lora_ast::Statement::Query(lora_ast::Query::StandaloneCall(call)) =
                 &document.statement
             {
@@ -167,8 +190,11 @@ where
             if let Some(rec) = &self.wal {
                 ensure_wal_query_can_start(rec)?;
             }
-            if deadline.is_none() && should_collect_read_via_pull(&compiled) {
-                return collect_compiled(&*store, params, &compiled).map_err(anyhow::Error::from);
+            if should_collect_read_via_pull(&compiled) {
+                // The pull pipeline checks the deadline as rows are pulled,
+                // so a bounded read still stops early at its LIMIT.
+                return collect_compiled_with_deadline(&*store, params, &compiled, deadline)
+                    .map_err(anyhow::Error::from);
             }
             let executor = lora_executor::Executor::with_deadline(
                 lora_executor::ExecutionContext {

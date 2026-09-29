@@ -1,5 +1,9 @@
 use anyhow::Result;
-use lora_wal::{WalBufferedCommitError, WalRecorder};
+use lora_store::MutationEvent;
+use lora_wal::{Lsn, WalBufferedCommitError, WalRecorder};
+
+/// Commit LSN and events of a write committed while a change feed captures.
+pub(crate) type CapturedCommit = (Lsn, Vec<MutationEvent>);
 
 /// Policy for a failed write while a WAL scope is armed.
 #[derive(Debug, Clone, Copy)]
@@ -38,16 +42,27 @@ impl<'a> WalWriteScope<'a> {
     ///
     /// Returns `true` when a WAL commit record was written and flushed. The
     /// caller can use that to trigger managed snapshot accounting exactly once.
-    pub(crate) fn finish<R>(self, result: &Result<R>) -> Result<bool> {
-        let wrote_commit = match result {
-            Ok(_) => self.recorder.commit()?.wrote(),
+    ///
+    /// With `capture`, a written commit also hands back its commit LSN and
+    /// events for the change feed.
+    pub(crate) fn finish<R>(
+        self,
+        result: &Result<R>,
+        capture: bool,
+    ) -> Result<(bool, Option<CapturedCommit>)> {
+        let outcome = match result {
+            Ok(_) if capture => {
+                let captured = self.recorder.commit_capture()?;
+                (captured.is_some(), captured)
+            }
+            Ok(_) => (self.recorder.commit()?.wrote(), None),
             Err(_) => {
                 abort_armed(self.recorder, self.abort_policy)?;
-                false
+                (false, None)
             }
         };
         ensure_wal_not_poisoned(self.recorder)?;
-        Ok(wrote_commit)
+        Ok(outcome)
     }
 }
 

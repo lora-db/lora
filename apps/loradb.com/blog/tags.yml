@@ -137,3 +137,8 @@ ingest:
   label: Ingest
   permalink: /ingest
   description: Data ingestion patterns and pipelines.
+
+graphql:
+  label: GraphQL
+  permalink: /graphql
+  description: The schema-first GraphQL layer, @loradb/lora-graphql.

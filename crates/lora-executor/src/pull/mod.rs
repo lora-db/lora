@@ -93,7 +93,7 @@ pub use columns::{compiled_result_columns, plan_result_columns};
 pub use mutable::MutablePullExecutor;
 pub use shape::{classify_stream, StreamShape};
 pub use source::{drain, BufferedRowSource, RowSource};
-pub use traits::{collect_compiled, PullExecutor};
+pub use traits::{collect_compiled, collect_compiled_with_deadline, PullExecutor};
 
 // Crate-internal re-exports used by the buffered executor in
 // `crate::executor` for the streaming aggregate fast-path and for
@@ -102,6 +102,9 @@ pub(crate) use aggregate::{
     classify_streamable_aggregates, AggState, StreamableAggKind, StreamableAggSpec,
 };
 pub(crate) use context::StreamCtx;
+pub use hydration::hydrate_row;
 pub(crate) use hydration::{hydrate_value, HydratingSource};
 pub(crate) use source::ArgumentSource;
-pub(crate) use traits::{build_streaming, build_streaming_seeded, subtree_is_fully_streaming};
+pub(crate) use traits::{
+    build_streaming, build_streaming_seeded, subtree_has_write, subtree_is_fully_streaming,
+};

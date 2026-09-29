@@ -19,6 +19,7 @@ use lora_parser::parse_query;
 use lora_store::{InMemoryGraph, MutationEvent, MutationRecorder};
 use lora_wal::WalRecorder;
 
+use crate::changes::ChangeHub;
 use crate::error::LoraError;
 use crate::explain::{OperatorMetrics, ProfileMetrics, QueryPlan, QueryProfile};
 use crate::live_store::LiveStore;
@@ -252,6 +253,7 @@ pub struct Transaction<'db> {
     pub(crate) inner: Arc<Mutex<TxInner>>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
     pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
+    pub(crate) changes: Arc<ChangeHub>,
     mode: TransactionMode,
 }
 
@@ -261,9 +263,12 @@ impl<'db> Transaction<'db> {
         live: LiveStoreGuard<'db>,
         wal: Option<Arc<WalRecorder>>,
         snapshots: Option<Arc<ManagedSnapshotStore>>,
+        changes: Arc<ChangeHub>,
         mode: TransactionMode,
     ) -> Self {
-        let buffer_mutations = wal.is_some();
+        // The buffer feeds the WAL at commit and, while a change feed is
+        // capturing, the feed's batch.
+        let buffer_mutations = wal.is_some() || changes.is_active();
         let inner = TxInner {
             staged: None,
             buffer: Arc::new(Mutex::new(Vec::new())),
@@ -279,6 +284,7 @@ impl<'db> Transaction<'db> {
             inner: Arc::new(Mutex::new(inner)),
             wal,
             snapshots,
+            changes,
             mode,
         }
     }
@@ -338,6 +344,21 @@ impl<'db> Transaction<'db> {
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
+    /// Execute a parameterised query inside the transaction that stops at an
+    /// absolute `deadline` (see [`crate::Database::execute_with_params_deadline`]).
+    /// Several statements can share one deadline to bound the whole
+    /// transaction.
+    pub fn execute_with_params_deadline(
+        &mut self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Instant,
+    ) -> Result<QueryResult, LoraError> {
+        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
     /// Execute a query inside the transaction and return hydrated rows before
     /// final result-format projection.
     pub fn execute_rows(&mut self, query: &str) -> Result<Vec<Row>, LoraError> {
@@ -360,6 +381,12 @@ impl<'db> Transaction<'db> {
         params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
+        if crate::Database::<InMemoryGraph>::is_schema_command_text(query) {
+            let document = parse_query(query)?;
+            if let lora_ast::Statement::Schema(command) = &document.statement {
+                return self.execute_schema_in_tx(command, &params);
+            }
+        }
         let compiled = self.compile_in_tx(query)?;
         self.execute_rows_compiled_deadline(&compiled, params, deadline)
     }
@@ -567,6 +594,49 @@ impl<'db> Transaction<'db> {
         }
     }
 
+    /// Schema DDL inside a transaction. `SHOW` reads the transaction's
+    /// view (including DDL applied earlier in it). `CREATE` / `DROP`
+    /// apply to the staged graph like a data write: they emit catalog
+    /// events into the transaction's WAL buffer, become visible to later
+    /// statements, and are published by `commit` or discarded by
+    /// `rollback`, all-or-nothing with the data statements.
+    fn execute_schema_in_tx(
+        &mut self,
+        command: &lora_ast::SchemaCommand,
+        params: &BTreeMap<String, LoraValue>,
+    ) -> Result<Vec<Row>> {
+        use crate::database::schema::{apply_schema_mutation, schema_command_is_read, show_schema};
+
+        if schema_command_is_read(command) {
+            if self.is_read_only_unchecked() {
+                self.precheck_open_no_savepoint()?;
+                let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
+                return show_schema(live.as_graph(), command, params);
+            }
+            let inner = self.begin_statement()?;
+            if let Some(staged) = inner.staged.as_ref() {
+                return show_schema(staged, command, params);
+            }
+            drop(inner);
+            let live = self.live.as_ref().ok_or(TransactionError::NoGraphGuard)?;
+            return show_schema(live.as_graph(), command, params);
+        }
+
+        if self.is_read_only_unchecked() {
+            return Err(TransactionError::ReadOnlyMutation.into());
+        }
+        let mut inner = self.begin_statement()?;
+        let savepoint = self.prepare_mutating_statement(&mut inner)?;
+        let result = {
+            let staged = inner.staged_mut()?;
+            apply_schema_mutation(staged, command, params)
+        };
+        if result.is_err() {
+            restore_savepoint(&mut inner, savepoint);
+        }
+        result
+    }
+
     fn prepare_mutating_statement(
         &self,
         inner: &mut MutexGuard<'_, TxInner>,
@@ -729,8 +799,35 @@ impl<'db> Transaction<'db> {
             mode,
         } = self.take_commit_state()?;
 
-        let wrote_wal_commit = self.replay_commit_wal(mode, buffer_events)?;
+        let capture = self.changes.is_active()
+            && matches!(mode, TransactionMode::ReadWrite)
+            && staged.is_some()
+            && !buffer_events.is_empty();
+        let (wrote_wal_commit, captured) = if capture && self.wal.is_some() {
+            let events = buffer_events.clone();
+            let lsn = self.replay_commit_wal_lsn(mode, buffer_events)?;
+            (lsn.is_some(), lsn.map(|lsn| (Some(lsn), events)))
+        } else if capture {
+            (false, Some((None, buffer_events)))
+        } else {
+            (self.replay_commit_wal(mode, buffer_events)?, None)
+        };
         self.publish_staged_graph(mode, staged, wrote_wal_commit)?;
+
+        if let Some((lsn, events)) = captured {
+            // Still holding the writer lease, so the batch is ordered
+            // against the next commit.
+            if let Some(LiveStoreGuard::Write(lease)) = &self.live {
+                let post = lease.store.load_full();
+                crate::changes::publish_committed(
+                    &self.changes,
+                    lsn.map(|lsn| lsn.raw()),
+                    &events,
+                    &crate::changes::PreImages::for_events(&events, Some(&lease.snapshot)),
+                    &post,
+                );
+            }
+        }
 
         self.live.take();
         Ok(())
@@ -785,6 +882,23 @@ impl<'db> Transaction<'db> {
         }
 
         Ok(rec.commit_events(buffer_events)?.wrote())
+    }
+
+    /// [`Self::replay_commit_wal`] for a capturing change feed: returns the
+    /// commit LSN instead of a flag.
+    fn replay_commit_wal_lsn(
+        &self,
+        mode: TransactionMode,
+        buffer_events: Vec<MutationEvent>,
+    ) -> Result<Option<lora_wal::Lsn>> {
+        let Some(rec) = &self.wal else {
+            return Ok(None);
+        };
+        if !matches!(mode, TransactionMode::ReadWrite) {
+            ensure_wal_not_poisoned(rec)?;
+            return Ok(None);
+        }
+        Ok(rec.commit_events_lsn(buffer_events)?)
     }
 
     fn publish_staged_graph(
@@ -910,6 +1024,12 @@ fn execute_read_compiled(
     params: BTreeMap<String, LoraValue>,
     deadline: Option<Instant>,
 ) -> Result<Vec<Row>> {
+    // Same fast path as auto-commit reads: a plan with an early LIMIT runs
+    // on the pull pipeline so it stops scanning once the LIMIT is met.
+    if crate::database::pull_mode::should_collect_read_via_pull(compiled) {
+        return lora_executor::collect_compiled_with_deadline(storage, params, compiled, deadline)
+            .map_err(anyhow::Error::from);
+    }
     let executor = Executor::with_deadline(ExecutionContext { storage, params }, deadline);
     executor
         .execute_compiled_rows(compiled)

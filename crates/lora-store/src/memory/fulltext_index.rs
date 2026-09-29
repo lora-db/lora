@@ -13,9 +13,17 @@
 //! Tokenisation is delegated to [`standard_analyzer`] which is a tiny
 //! Lucene-style "standard" analyzer:
 //!   * lowercase,
+//!   * ASCII-fold: strip diacritics and map letters without a
+//!     decomposition (`ø` → `o`, `æ` → `ae`, `ß` → `ss`), so `Sonar`
+//!     matches `Sónar` and `Oya*` matches `Øyafestivalen`. Indexing and
+//!     querying share the analyzer, so folded and accented queries match
+//!     the same documents,
 //!   * split on Unicode non-alphanumeric characters (punctuation,
 //!     whitespace, control chars),
 //!   * drop empty fragments.
+//!
+//! Queries AND their terms; a term ending in `*` matches every indexed
+//! term with that prefix.
 //!
 //! Maintenance is synchronous: every property set / unset on a covered
 //! `(entity, property)` triggers a re-index call through the secondary
@@ -23,8 +31,11 @@
 //! `fulltext.eventually_consistent` OPTION parses but is currently a
 //! no-op — we always apply changes inline.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
+use std::sync::Arc;
+
+use super::cow::{CowIdMap, CowMap, CowOrdMap};
 use crate::Properties;
 
 use super::StoredIndexEntity;
@@ -32,25 +43,66 @@ use super::StoredIndexEntity;
 pub(super) type TermCounts = BTreeMap<String, u32>;
 pub(super) type PropertyTermCounts = BTreeMap<String, TermCounts>;
 
-/// Split `text` into the lowercase tokens used by both indexing and
-/// query parsing. Mirrors Lucene's "standard" analyzer for ASCII text:
-/// alphanumeric runs are tokens; everything else is a separator.
+/// Split `text` into the lowercase, ASCII-folded tokens used by both
+/// indexing and query parsing. Mirrors Lucene's "standard" analyzer plus
+/// an ASCII-folding filter: alphanumeric runs are tokens; everything
+/// else is a separator.
 pub fn standard_analyzer(text: &str) -> Vec<String> {
+    analyze(text, false).into_iter().map(|(t, _)| t).collect()
+}
+
+/// Tokenise, optionally keeping a trailing `*` on a token as a prefix
+/// marker (query side). Returns `(token, is_prefix)`.
+fn analyze(text: &str, keep_prefix_marker: bool) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     let mut buf = String::new();
     for ch in text.chars() {
         if ch.is_alphanumeric() {
             for low in ch.to_lowercase() {
-                buf.push(low);
+                push_folded(&mut buf, low);
             }
         } else if !buf.is_empty() {
-            out.push(std::mem::take(&mut buf));
+            let prefix = keep_prefix_marker && ch == '*';
+            out.push((std::mem::take(&mut buf), prefix));
         }
     }
     if !buf.is_empty() {
-        out.push(buf);
+        out.push((buf, false));
     }
     out
+}
+
+/// Append `ch` to `buf` with diacritics removed. Canonical decomposition
+/// splits `ó` into `o` + a combining accent, which is dropped; letters
+/// that have no decomposition but a conventional ASCII spelling are
+/// mapped explicitly. Anything else (CJK, Cyrillic, ...) passes through.
+fn push_folded(buf: &mut String, ch: char) {
+    if ch.is_ascii() {
+        buf.push(ch);
+        return;
+    }
+    let mapped = match ch {
+        'ø' => Some("o"),
+        'æ' => Some("ae"),
+        'œ' => Some("oe"),
+        'ß' => Some("ss"),
+        'đ' | 'ð' => Some("d"),
+        'ł' => Some("l"),
+        'þ' => Some("th"),
+        'ı' => Some("i"),
+        'ħ' => Some("h"),
+        _ => None,
+    };
+    if let Some(s) = mapped {
+        buf.push_str(s);
+        return;
+    }
+    unicode_normalization::char::decompose_canonical(ch, |c| {
+        // Combining diacritical marks.
+        if !('\u{0300}'..='\u{036f}').contains(&c) {
+            buf.push(c);
+        }
+    });
 }
 
 /// Registry of fulltext indexes for either nodes or relationships.
@@ -78,6 +130,10 @@ impl FulltextRegistry {
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &FulltextIndex)> {
+        self.by_name.iter()
+    }
+
+    pub(super) fn by_name(&self) -> impl Iterator<Item = (&String, &FulltextIndex)> {
         self.by_name.iter()
     }
 
@@ -118,6 +174,13 @@ impl FulltextRegistry {
             .filter(move |(_, idx)| idx.covers_any_label(labels.clone()))
     }
 
+    /// Whether any index in this registry holds `entity_id`.
+    pub(super) fn indexes_entity(&self, entity_id: u64) -> bool {
+        self.by_name
+            .values()
+            .any(|index| index.entity_terms.contains_key(&entity_id))
+    }
+
     pub(super) fn remove_entity_everywhere(&mut self, entity_id: u64) {
         for index in self.by_name.values_mut() {
             index.remove_entity(entity_id);
@@ -131,10 +194,12 @@ pub(super) struct FulltextIndex {
     pub properties: Vec<String>,
     /// `term → entity → term_frequency`. Term frequency is the count of
     /// tokens for the entity across all covered properties.
-    pub(super) postings: BTreeMap<String, BTreeMap<u64, u32>>,
+    /// Keys are `Arc<str>` shared with `entity_terms`, so copying a shard
+    /// for a write bumps refcounts instead of reallocating term strings.
+    pub(super) postings: CowOrdMap<Arc<str>, CowIdMap<u32>>,
     /// `entity → set<term>` reverse map so re-indexing can remove the
     /// stale contribution before adding the new one.
-    pub(super) entity_terms: BTreeMap<u64, BTreeSet<String>>,
+    pub(super) entity_terms: CowMap<u64, Arc<[Arc<str>]>>,
 }
 
 impl FulltextIndex {
@@ -142,8 +207,8 @@ impl FulltextIndex {
         Self {
             labels,
             properties,
-            postings: BTreeMap::new(),
-            entity_terms: BTreeMap::new(),
+            postings: CowOrdMap::default(),
+            entity_terms: CowMap::default(),
         }
     }
 
@@ -164,37 +229,39 @@ impl FulltextIndex {
     pub(super) fn reindex_entity(&mut self, entity_id: u64, terms: TermCounts) {
         // Drop old contribution.
         if let Some(old_terms) = self.entity_terms.remove(&entity_id) {
-            for term in old_terms {
-                if let Some(bucket) = self.postings.get_mut(&term) {
+            for term in old_terms.iter() {
+                let emptied = self.postings.get_mut(&**term).is_some_and(|bucket| {
                     bucket.remove(&entity_id);
-                    if bucket.is_empty() {
-                        self.postings.remove(&term);
-                    }
+                    bucket.is_empty()
+                });
+                if emptied {
+                    self.postings.remove(&**term);
                 }
             }
         }
         if terms.is_empty() {
             return;
         }
-        let mut new_terms = BTreeSet::new();
+        let mut new_terms: Vec<Arc<str>> = Vec::with_capacity(terms.len());
         for (term, tf) in terms {
+            let term: Arc<str> = Arc::from(term);
             self.postings
-                .entry(term.clone())
-                .or_default()
+                .get_or_insert_with(term.clone(), CowIdMap::default)
                 .insert(entity_id, tf);
-            new_terms.insert(term);
+            new_terms.push(term);
         }
-        self.entity_terms.insert(entity_id, new_terms);
+        self.entity_terms.insert(entity_id, new_terms.into());
     }
 
     pub(super) fn remove_entity(&mut self, entity_id: u64) {
         if let Some(terms) = self.entity_terms.remove(&entity_id) {
-            for term in terms {
-                if let Some(bucket) = self.postings.get_mut(&term) {
+            for term in terms.iter() {
+                let emptied = self.postings.get_mut(&**term).is_some_and(|bucket| {
                     bucket.remove(&entity_id);
-                    if bucket.is_empty() {
-                        self.postings.remove(&term);
-                    }
+                    bucket.is_empty()
+                });
+                if emptied {
+                    self.postings.remove(&**term);
                 }
             }
         }
@@ -206,18 +273,45 @@ impl FulltextIndex {
     /// term frequencies across the matched terms; ties broken by
     /// entity id ascending.
     pub(super) fn query(&self, query_text: &str) -> Vec<(u64, f64)> {
-        let tokens = standard_analyzer(query_text);
+        let tokens = analyze(query_text, true);
         if tokens.is_empty() {
             return Vec::new();
         }
-        // Find the smallest posting list to seed the intersection.
-        let mut posting_iter: Vec<&BTreeMap<u64, u32>> = Vec::with_capacity(tokens.len());
-        for token in &tokens {
-            match self.postings.get(token) {
-                Some(p) => posting_iter.push(p),
+        // Resolve each query term to a posting list. A prefix term merges
+        // the postings of every indexed term starting with it.
+        let mut merged: Vec<BTreeMap<u64, u32>> = Vec::new();
+        let mut exact: Vec<&CowIdMap<u32>> = Vec::with_capacity(tokens.len());
+        for (token, prefix) in &tokens {
+            if *prefix {
+                let mut union: BTreeMap<u64, u32> = BTreeMap::new();
+                let prefix = token.clone();
+                for (_, posting) in self
+                    .postings
+                    .range(
+                        std::ops::Bound::Included(Arc::from(token.as_str())),
+                        std::ops::Bound::Unbounded,
+                    )
+                    .take_while(|(term, _)| term.starts_with(prefix.as_str()))
+                {
+                    for (id, tf) in posting.iter() {
+                        let slot = union.entry(*id).or_insert(0);
+                        *slot = slot.saturating_add(*tf);
+                    }
+                }
+                if union.is_empty() {
+                    return Vec::new();
+                }
+                merged.push(union);
+                continue;
+            }
+            match self.postings.get(token.as_str()) {
+                Some(p) => exact.push(p),
                 None => return Vec::new(), // term not present → AND fails
             }
         }
+        // Find the smallest posting list to seed the intersection.
+        let mut posting_iter: Vec<Posting<'_>> = exact.into_iter().map(Posting::Index).collect();
+        posting_iter.extend(merged.iter().map(Posting::Merged));
         posting_iter.sort_by_key(|p| p.len());
 
         let mut results: BTreeMap<u64, u32> = BTreeMap::new();
@@ -225,8 +319,8 @@ impl FulltextIndex {
         let Some(seed) = posting_iter.first() else {
             return Vec::new();
         };
-        for (id, tf) in *seed {
-            results.insert(*id, *tf);
+        for (id, tf) in seed.iter() {
+            results.insert(id, tf);
         }
         // Intersect with the rest, summing TF as we go.
         for posting in posting_iter.iter().skip(1) {
@@ -252,6 +346,36 @@ impl FulltextIndex {
                 .then_with(|| a.0.cmp(&b.0))
         });
         out
+    }
+}
+
+/// A query term's posting list: straight from the index, or the union
+/// built for a prefix term.
+enum Posting<'a> {
+    Index(&'a CowIdMap<u32>),
+    Merged(&'a BTreeMap<u64, u32>),
+}
+
+impl Posting<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Posting::Index(p) => p.len(),
+            Posting::Merged(p) => p.len(),
+        }
+    }
+
+    fn get(&self, id: &u64) -> Option<&u32> {
+        match self {
+            Posting::Index(p) => p.get(id),
+            Posting::Merged(p) => p.get(id),
+        }
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = (u64, u32)> + '_> {
+        match self {
+            Posting::Index(p) => Box::new(p.iter().map(|(id, tf)| (*id, *tf))),
+            Posting::Merged(p) => Box::new(p.iter().map(|(id, tf)| (*id, *tf))),
+        }
     }
 }
 

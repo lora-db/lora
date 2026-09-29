@@ -23,12 +23,11 @@ fn create_allows_new_relationship_type_when_graph_is_not_empty() {
     let mut analyzer = Analyzer::new(&graph);
     assert!(analyzer.analyze(&doc).is_ok());
 
+    // A type no relationship carries yet is not an error: it matches
+    // nothing (standard Cypher), independent of the stored data.
     let match_doc = parse_query("MATCH (a)-[:KNOWS]->(b) RETURN a, b").unwrap();
     let mut analyzer = Analyzer::new(&graph);
-    assert!(matches!(
-        analyzer.analyze(&match_doc),
-        Err(SemanticError::UnknownRelationshipType(rel_type)) if rel_type == "KNOWS"
-    ));
+    assert!(analyzer.analyze(&match_doc).is_ok());
 }
 
 #[test]

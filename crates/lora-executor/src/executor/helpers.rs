@@ -39,7 +39,7 @@ use web_time::Instant;
 
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::{AggregateFunction, FunctionId, ResolvedExpr, ResolvedMapSelector};
-use lora_ast::{Direction, RangeLiteral};
+use lora_ast::{Direction, RangeLiteral, SortDirection};
 use lora_compiler::physical::{
     ExpandExec, HashAggregationExec, LimitExec, NodeByLabelScanExec, NodeByPropertyScanExec,
     NodeScanExec, PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, UnwindExec,
@@ -54,8 +54,19 @@ use crate::value::{lora_value_to_property, LoraPath, LoraValue, Row};
 /// elapsed; both executors call this every operator-level recursion
 /// step and from inside per-row inner loops.
 #[inline]
+/// Pre-size for a scan that emits `rows x candidates` rows. Capped: a
+/// cartesian product (`MATCH (a:A), (b:B)`) would otherwise reserve its
+/// full size up front, hundreds of gigabytes at 20k x 20k, before the
+/// first deadline check or the first row. Past the cap the Vec grows on
+/// demand.
+fn scan_output_capacity(rows: usize, candidates: usize) -> usize {
+    const MAX_PRESIZE_ROWS: usize = 1 << 16;
+    rows.saturating_mul(candidates).min(MAX_PRESIZE_ROWS)
+}
+
 pub(super) fn check_deadline_at(deadline: Instant) -> ExecResult<()> {
-    if Instant::now() >= deadline {
+    // Also true when the query was cancelled; see `crate::cancel`.
+    if crate::cancel::deadline_reached(deadline) {
         Err(ExecutorError::QueryTimeout)
     } else {
         Ok(())
@@ -114,14 +125,24 @@ pub(super) fn unwind_rows<S: GraphStorage>(
     input_rows: Vec<Row>,
     op: &UnwindExec,
     eval_ctx: &EvalContext<'_, S>,
-) -> Vec<Row> {
-    let mut out = Vec::new();
+) -> ExecResult<Vec<Row>> {
+    let mut out = Vec::with_capacity(input_rows.len());
 
     for row in input_rows {
-        match eval_expr(&op.expr, &row, eval_ctx) {
+        // `eval_expr_result` so a failing list expression (a bad function
+        // argument, a missing index) is an error, not an empty UNWIND.
+        match eval_expr_result(&op.expr, &row, eval_ctx).map_err(ExecutorError::RuntimeError)? {
             LoraValue::List(values) => {
+                let mut values = values.into_iter();
+                let last = values.next_back();
                 for value in values {
                     let mut new_row = row.clone();
+                    new_row.insert(op.alias, value);
+                    out.push(new_row);
+                }
+                // The input row moves into the last element's output.
+                if let Some(value) = last {
+                    let mut new_row = row;
                     new_row.insert(op.alias, value);
                     out.push(new_row);
                 }
@@ -135,7 +156,7 @@ pub(super) fn unwind_rows<S: GraphStorage>(
         }
     }
 
-    out
+    Ok(out)
 }
 
 pub(super) fn limit_rows<S: GraphStorage>(
@@ -200,7 +221,7 @@ pub(super) fn node_scan_rows<S: GraphStorage>(
     deadline: Option<Instant>,
 ) -> ExecResult<Vec<Row>> {
     let node_ids = storage.all_node_ids();
-    let mut out = Vec::with_capacity(base_rows.len().saturating_mul(node_ids.len()));
+    let mut out = Vec::with_capacity(scan_output_capacity(base_rows.len(), node_ids.len()));
 
     if deadline.is_none() {
         for row in base_rows {
@@ -248,7 +269,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
 ) -> ExecResult<Vec<Row>> {
     let candidate_ids = scan_node_ids_for_label_groups(storage, &op.labels);
     let candidates_prefiltered = label_group_candidates_prefiltered(&op.labels);
-    let mut out = Vec::with_capacity(base_rows.len().saturating_mul(candidate_ids.len()));
+    let mut out = Vec::with_capacity(scan_output_capacity(base_rows.len(), candidate_ids.len()));
 
     if deadline.is_none() {
         for row in base_rows {
@@ -324,55 +345,30 @@ pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
     let eval_ctx = EvalContext { storage, params };
     let mut out = Vec::new();
 
-    if deadline.is_none() {
-        for row in base_rows {
-            let expected = eval_expr(&op.value, &row, &eval_ctx);
-
-            if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
-                if node_matches_property_filter(
-                    storage,
-                    existing_id,
-                    &op.labels,
-                    &op.key,
-                    &expected,
-                ) {
-                    out.push(row);
-                }
-                continue;
-            }
-
-            let candidates =
-                indexed_node_property_candidates(storage, &op.labels, &op.key, &expected);
-            for id in candidates.ids {
-                if !candidates.prefiltered
-                    && !node_matches_property_filter(storage, id, &op.labels, &op.key, &expected)
-                {
-                    continue;
-                }
-                let mut new_row = row.clone();
-                new_row.insert(op.var, LoraValue::Node(id));
-                out.push(new_row);
-            }
-        }
-        return Ok(out);
-    }
-
     for row in base_rows {
         check_optional_deadline(deadline)?;
         let expected = eval_expr(&op.value, &row, &eval_ctx);
 
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
-            if node_matches_property_filter(storage, existing_id, &op.labels, &op.key, &expected) {
+            if property_scan_matches(
+                storage,
+                existing_id,
+                &op.labels,
+                &op.key,
+                &expected,
+                op.in_list,
+            ) {
                 out.push(row);
             }
             continue;
         }
 
-        let candidates = indexed_node_property_candidates(storage, &op.labels, &op.key, &expected);
+        let candidates =
+            property_scan_candidates(storage, &op.labels, &op.key, &expected, op.in_list);
         for id in candidates.ids {
             check_optional_deadline(deadline)?;
             if !candidates.prefiltered
-                && !node_matches_property_filter(storage, id, &op.labels, &op.key, &expected)
+                && !property_scan_matches(storage, id, &op.labels, &op.key, &expected, op.in_list)
             {
                 continue;
             }
@@ -406,10 +402,17 @@ pub(crate) fn count_all_scan_aggregation_rows<S: GraphStorage>(
         return None;
     }
     let specs = crate::pull::classify_streamable_aggregates(&op.aggregates)?;
-    if !specs
-        .iter()
-        .all(|spec| matches!(spec.kind, crate::pull::StreamableAggKind::CountAll))
-    {
+    let scan_var = scan_subtree_var(plan, op.input)?;
+    // `count(*)` counts rows; `count(n)` of the scanned node counts the
+    // same rows, since a scan never binds `n` to null.
+    let counts_rows = specs.iter().all(|spec| match spec.kind {
+        crate::pull::StreamableAggKind::CountAll => true,
+        crate::pull::StreamableAggKind::CountField => {
+            matches!(&spec.arg, Some(ResolvedExpr::Variable(v)) if *v == scan_var)
+        }
+        _ => false,
+    });
+    if !counts_rows {
         return None;
     }
 
@@ -422,6 +425,14 @@ pub(crate) fn count_all_scan_aggregation_rows<S: GraphStorage>(
     Some(vec![row])
 }
 
+fn scan_subtree_var(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> Option<VarId> {
+    match &plan.nodes[node_id] {
+        PhysicalOp::NodeScan(op) => Some(op.var),
+        PhysicalOp::NodeByLabelScan(op) => Some(op.var),
+        _ => None,
+    }
+}
+
 fn count_rows_for_scan_subtree<S: GraphStorage>(
     storage: &S,
     plan: &PhysicalPlan,
@@ -432,6 +443,12 @@ fn count_rows_for_scan_subtree<S: GraphStorage>(
             Some(storage.node_count())
         }
         PhysicalOp::NodeByLabelScan(op) if scan_input_is_argument(plan, op.input) => {
+            // One label: the label index already holds the answer.
+            if let [group] = op.labels.as_slice() {
+                if let [label] = group.as_slice() {
+                    return Some(storage.node_count_by_label(label));
+                }
+            }
             let ids = scan_node_ids_for_label_groups(storage, &op.labels);
             if label_group_candidates_prefiltered(&op.labels) {
                 return Some(ids.len());
@@ -550,7 +567,14 @@ pub(super) fn expand_rows<S: GraphStorage>(
     op: &ExpandExec,
 ) -> ExecResult<Vec<Row>> {
     let eval_ctx = EvalContext { storage, params };
-    let mut out = Vec::new();
+    // Most expansions emit at least one row per input; sizing up front
+    // avoids re-copying every row as a large output buffer grows.
+    let mut out = Vec::with_capacity(input_rows.len());
+    // Matching (rel, dst) pairs for the current input row. Collected
+    // first so the input row can be *moved* into its last output
+    // instead of cloned: a degree-k node costs k-1 row clones, and a
+    // degree-1 hop (chains, trees walked upward) costs none.
+    let mut matches: Vec<(u64, u64)> = Vec::new();
 
     for row in input_rows {
         let Some(src_node_id) = bound_node_id_for_expand(&row, op.src)? else {
@@ -558,6 +582,7 @@ pub(super) fn expand_rows<S: GraphStorage>(
         };
 
         let mut rel_property_filter = None;
+        matches.clear();
 
         storage.try_for_each_expand_id(
             src_node_id,
@@ -607,22 +632,37 @@ pub(super) fn expand_rows<S: GraphStorage>(
                     }
                 }
 
-                let mut new_row = row.clone();
-                if !new_row.contains_key(op.dst) {
-                    new_row.insert(op.dst, LoraValue::Node(dst_id));
-                }
-                if let Some(rel_var) = op.rel {
-                    if !new_row.contains_key(rel_var) {
-                        new_row.insert(rel_var, LoraValue::Relationship(rel_id));
-                    }
-                }
-                out.push(new_row);
+                matches.push((rel_id, dst_id));
                 Ok(())
             },
         )?;
+
+        let Some((&last, rest)) = matches.split_last() else {
+            continue;
+        };
+        for &(rel_id, dst_id) in rest {
+            let mut new_row = row.clone();
+            bind_expand_target(&mut new_row, op, rel_id, dst_id);
+            out.push(new_row);
+        }
+        let mut new_row = row;
+        bind_expand_target(&mut new_row, op, last.0, last.1);
+        out.push(new_row);
     }
 
     Ok(out)
+}
+
+#[inline]
+fn bind_expand_target(row: &mut Row, op: &ExpandExec, rel_id: u64, dst_id: u64) {
+    if !row.contains_key(op.dst) {
+        row.insert(op.dst, LoraValue::Node(dst_id));
+    }
+    if let Some(rel_var) = op.rel {
+        if !row.contains_key(rel_var) {
+            row.insert(rel_var, LoraValue::Relationship(rel_id));
+        }
+    }
 }
 
 pub(super) fn expand_var_len_rows<S: GraphStorage>(
@@ -728,10 +768,16 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
 ) -> ExecResult<Properties> {
     let eval_ctx = EvalContext { storage, params };
 
+    // A `null` value in a property map means "no property": it is never
+    // stored, so `keys(n)` and existence checks do not see it.
     if let ResolvedExpr::Map(items) = expr {
         let mut out = Properties::new();
         for (k, v) in items {
-            let prop = lora_value_to_property(eval_expr(v, row, &eval_ctx))
+            let value = eval_expr(v, row, &eval_ctx);
+            if matches!(value, LoraValue::Null) {
+                continue;
+            }
+            let prop = lora_value_to_property(value)
                 .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
             out.insert(lora_store::intern(k), prop);
         }
@@ -742,6 +788,9 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
         LoraValue::Map(map) => {
             let mut out = Properties::new();
             for (k, v) in map {
+                if matches!(v, LoraValue::Null) {
+                    continue;
+                }
                 let prop = lora_value_to_property(v)
                     .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
                 // Route every CREATE/SET property key through the
@@ -1057,6 +1106,9 @@ pub(super) fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
         (Relationship(x), Relationship(y)) => x.cmp(y),
         (Date(x), Date(y)) => x.cmp(y),
         (DateTime(x), DateTime(y)) => x.cmp(y),
+        (LocalDateTime(x), LocalDateTime(y)) => x.cmp(y),
+        (Time(x), Time(y)) => x.cmp(y),
+        (LocalTime(x), LocalTime(y)) => x.cmp(y),
         (Duration(x), Duration(y)) => x.cmp(y),
         (Vector(x), Vector(y)) => x.to_key_string().cmp(&y.to_key_string()),
         _ => type_rank(a)
@@ -1189,6 +1241,18 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
             if node_matches_range_filter(storage, existing_id, &filter) {
                 out.push(row);
+            }
+            continue;
+        }
+
+        if op.order.is_some() {
+            let mut cursor =
+                OrderedRangeCursor::new(storage, op, lo_value.clone(), hi_value.clone());
+            while let Some(id) = cursor.next_id(storage) {
+                check_optional_deadline(deadline)?;
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
             }
             continue;
         }
@@ -1363,10 +1427,14 @@ fn range_comparison(actual: &LoraValue, bound: &LoraValue) -> Option<Ordering> {
     match (actual, bound) {
         (LoraValue::Null, _) | (_, LoraValue::Null) => None,
         (LoraValue::String(a), LoraValue::String(b)) => Some(a.cmp(b)),
-        (LoraValue::Date(a), LoraValue::Date(b)) => Some(a.to_epoch_days().cmp(&b.to_epoch_days())),
-        (LoraValue::DateTime(a), LoraValue::DateTime(b)) => {
-            Some(a.to_epoch_millis().cmp(&b.to_epoch_millis()))
-        }
+        (
+            LoraValue::Date(_)
+            | LoraValue::DateTime(_)
+            | LoraValue::LocalDateTime(_)
+            | LoraValue::Time(_)
+            | LoraValue::LocalTime(_),
+            _,
+        ) => actual.temporal_cmp(bound),
         (LoraValue::Duration(a), LoraValue::Duration(b)) => a
             .total_seconds_approx()
             .partial_cmp(&b.total_seconds_approx()),
@@ -1553,6 +1621,92 @@ pub(crate) fn indexed_node_property_candidates<S: GraphStorage>(
     NodePropertyCandidates {
         ids: out,
         prefiltered: labels.is_empty() || label_hint.is_some(),
+    }
+}
+
+/// Candidate ids for a `NodeByPropertyScan`. With `in_list` the scan
+/// seeks `key IN expected`: one lookup per distinct list element, the
+/// union deduplicated. A `null` list matches nothing. Any other non-list
+/// value yields every labelled node unfiltered, so the `Filter` kept
+/// above the scan evaluates (and reports) the predicate itself.
+pub(crate) fn property_scan_candidates<S: GraphStorage>(
+    storage: &S,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+    in_list: bool,
+) -> NodePropertyCandidates {
+    if !in_list {
+        return indexed_node_property_candidates(storage, labels, key, expected);
+    }
+    match expected {
+        LoraValue::Null => NodePropertyCandidates {
+            ids: Vec::new(),
+            prefiltered: true,
+        },
+        LoraValue::List(items) => {
+            let mut seen = BTreeSet::new();
+            let mut ids = Vec::new();
+            for item in items {
+                if matches!(item, LoraValue::Null) {
+                    continue;
+                }
+                let candidates = indexed_node_property_candidates(storage, labels, key, item);
+                for id in candidates.ids {
+                    if seen.contains(&id) {
+                        continue;
+                    }
+                    if !candidates.prefiltered
+                        && !node_matches_property_filter(storage, id, labels, key, item)
+                    {
+                        continue;
+                    }
+                    seen.insert(id);
+                    ids.push(id);
+                }
+            }
+            NodePropertyCandidates {
+                ids,
+                prefiltered: true,
+            }
+        }
+        _ => NodePropertyCandidates {
+            ids: scan_node_ids_for_label_groups(storage, labels)
+                .into_iter()
+                .filter(|&id| {
+                    storage
+                        .with_node(id, |n| node_matches_label_groups(&n.labels, labels))
+                        .unwrap_or(false)
+                })
+                .collect(),
+            prefiltered: true,
+        },
+    }
+}
+
+/// Whether `node_id` passes a `NodeByPropertyScan` (labels plus
+/// `key = expected`, or `key IN expected` when `in_list`). Mirrors
+/// [`property_scan_candidates`], including its non-list fallback.
+pub(crate) fn property_scan_matches<S: GraphStorage>(
+    storage: &S,
+    node_id: NodeId,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+    in_list: bool,
+) -> bool {
+    if !in_list {
+        return node_matches_property_filter(storage, node_id, labels, key, expected);
+    }
+    match expected {
+        LoraValue::Null => false,
+        LoraValue::List(items) => items.iter().any(|item| {
+            !matches!(item, LoraValue::Null)
+                && node_matches_property_filter(storage, node_id, labels, key, item)
+        }),
+        _ => storage
+            .with_node(node_id, |n| node_matches_label_groups(&n.labels, labels))
+            .unwrap_or(false),
     }
 }
 
@@ -2270,4 +2424,194 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
     }
 
     Ok(out)
+}
+
+/// Node ids of an ordered range scan (`op.order` set), in `ORDER BY op.key`
+/// order, each already checked against the exact bounds and labels.
+///
+/// The index serves the order when every bound is a string: a string
+/// comparison only lets strings through, and among strings the index's
+/// order is Cypher's order. Ids are then pulled from the index in chunks
+/// that grow as rows are consumed, so a `LIMIT` above stops the scan
+/// after a few small index reads. For any other bound the index order is
+/// not Cypher's (it orders every integer before every float), so the
+/// cursor collects the candidates and sorts them by value itself.
+pub(crate) struct OrderedRangeCursor {
+    lo: Option<LoraValue>,
+    hi: Option<LoraValue>,
+    mode: OrderedMode,
+    pending: std::vec::IntoIter<NodeId>,
+    labels: Vec<Vec<String>>,
+    key: String,
+    lo_inclusive: bool,
+    hi_inclusive: bool,
+}
+
+enum OrderedMode {
+    Index {
+        label: String,
+        descending: bool,
+        after: Option<(PropertyValue, NodeId)>,
+        chunk: usize,
+        exhausted: bool,
+    },
+    Buffered,
+}
+
+impl OrderedRangeCursor {
+    pub(crate) fn new<S: GraphStorage>(
+        storage: &S,
+        op: &lora_compiler::NodeByPropertyRangeScanExec,
+        lo: Option<LoraValue>,
+        hi: Option<LoraValue>,
+    ) -> Self {
+        let descending = matches!(op.order, Some(SortDirection::Desc));
+        // Strings and temporals of one kind have a single contiguous,
+        // correctly ordered run in the index, so the walk can stream from
+        // it. Numbers cannot: integers and floats are keyed separately.
+        let mut bounds = lo.iter().chain(hi.iter());
+        let string_bounds = match bounds.next() {
+            Some(LoraValue::String(_)) => bounds.all(|v| matches!(v, LoraValue::String(_))),
+            Some(
+                first @ (LoraValue::Date(_)
+                | LoraValue::DateTime(_)
+                | LoraValue::LocalDateTime(_)
+                | LoraValue::Time(_)
+                | LoraValue::LocalTime(_)),
+            ) => bounds.all(|v| std::mem::discriminant(v) == std::mem::discriminant(first)),
+            _ => false,
+        };
+        let index_label = single_label_hint(&op.labels).filter(|label| {
+            string_bounds
+                && storage
+                    .node_range_ordered_chunk(label, &op.key, None, None, descending, None, 0)
+                    .is_some()
+        });
+
+        let mut cursor = Self {
+            lo,
+            hi,
+            mode: OrderedMode::Buffered,
+            pending: Vec::new().into_iter(),
+            labels: op.labels.clone(),
+            key: op.key.clone(),
+            lo_inclusive: op.lo_inclusive,
+            hi_inclusive: op.hi_inclusive,
+        };
+        match index_label {
+            Some(label) => {
+                cursor.mode = OrderedMode::Index {
+                    label: label.to_string(),
+                    descending,
+                    after: None,
+                    chunk: 64,
+                    exhausted: false,
+                }
+            }
+            None => {
+                cursor.pending = cursor
+                    .sorted_candidates(storage, op, descending)
+                    .into_iter()
+            }
+        }
+        cursor
+    }
+
+    fn filter(&self) -> NodeRangeFilter<'_> {
+        NodeRangeFilter {
+            labels: &self.labels,
+            key: &self.key,
+            lo: self.lo.as_ref(),
+            lo_inclusive: self.lo_inclusive,
+            hi: self.hi.as_ref(),
+            hi_inclusive: self.hi_inclusive,
+        }
+    }
+
+    /// Fallback: every matching id, sorted by the property value in Cypher
+    /// order (ties by id).
+    fn sorted_candidates<S: GraphStorage>(
+        &self,
+        storage: &S,
+        op: &lora_compiler::NodeByPropertyRangeScanExec,
+        descending: bool,
+    ) -> Vec<NodeId> {
+        let lo_prop = self.lo.clone().and_then(|v| lora_value_to_property(v).ok());
+        let hi_prop = self.hi.clone().and_then(|v| lora_value_to_property(v).ok());
+        let candidates = match single_label_hint(&op.labels) {
+            Some(label) => storage
+                .node_range_candidates(label, &op.key, lo_prop.as_ref(), hi_prop.as_ref())
+                .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
+            None => scan_node_ids_for_label_groups(storage, &op.labels),
+        };
+        let filter = self.filter();
+        let mut keyed: Vec<(LoraValue, NodeId)> = candidates
+            .into_iter()
+            .filter(|&id| node_matches_range_filter(storage, id, &filter))
+            .map(|id| {
+                let value = storage
+                    .with_node(id, |n| n.properties.get(op.key.as_str()).cloned())
+                    .flatten()
+                    .map(LoraValue::from)
+                    .unwrap_or(LoraValue::Null);
+                (value, id)
+            })
+            .collect();
+        keyed.sort_by(|(a, ai), (b, bi)| {
+            let ord = compare_values_total(a, b).then(ai.cmp(bi));
+            if descending {
+                ord.reverse()
+            } else {
+                ord
+            }
+        });
+        keyed.into_iter().map(|(_, id)| id).collect()
+    }
+
+    pub(crate) fn next_id<S: GraphStorage>(&mut self, storage: &S) -> Option<NodeId> {
+        loop {
+            if let Some(id) = self.pending.next() {
+                if matches!(self.mode, OrderedMode::Buffered)
+                    || node_matches_range_filter(storage, id, &self.filter())
+                {
+                    return Some(id);
+                }
+                continue;
+            }
+            let lo_prop = self.lo.clone().and_then(|v| lora_value_to_property(v).ok());
+            let hi_prop = self.hi.clone().and_then(|v| lora_value_to_property(v).ok());
+            let OrderedMode::Index {
+                label,
+                descending,
+                after,
+                chunk,
+                exhausted,
+            } = &mut self.mode
+            else {
+                return None;
+            };
+            if *exhausted {
+                return None;
+            }
+            let ids = storage.node_range_ordered_chunk(
+                label,
+                &self.key,
+                lo_prop.as_ref(),
+                hi_prop.as_ref(),
+                *descending,
+                after.as_ref().map(|(v, id)| (v, *id)),
+                *chunk,
+            )?;
+            if ids.len() < *chunk {
+                *exhausted = true;
+            }
+            let last = *ids.last()?;
+            let last_value = storage
+                .with_node(last, |n| n.properties.get(self.key.as_str()).cloned())
+                .flatten()?;
+            *after = Some((last_value, last));
+            *chunk = (*chunk * 2).min(4096);
+            self.pending = ids.into_iter();
+        }
+    }
 }

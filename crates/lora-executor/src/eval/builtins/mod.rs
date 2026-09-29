@@ -29,6 +29,7 @@ mod cast_ns;
 mod crypto;
 mod edge;
 mod geo;
+mod index_ns;
 mod json_ns;
 mod list;
 mod map_ns;
@@ -77,6 +78,7 @@ pub(super) fn dispatch<S: GraphStorage>(
         "edge" => edge::dispatch(op, args, ctx),
         "path" => path::dispatch(op, args, ctx),
         "value" => value::dispatch(op, args, ctx),
+        "index" => index_ns::dispatch(op, args, ctx),
         _ => None,
     }
 }
@@ -111,6 +113,7 @@ fn name_is_known(name: &str) -> bool {
         "edge" => edge::known(op).is_some(),
         "path" => path::known(op).is_some(),
         "value" => value::known(op).is_some(),
+        "index" => index_ns::known(op).is_some(),
         _ => false,
     }
 }

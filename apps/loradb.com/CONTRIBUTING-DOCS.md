@@ -168,6 +168,17 @@ tokenizer's keyword list and regexes in
 `src/components/CypherCode/tokenize.js`. Adding a missing keyword is
 a one-line change.
 
+## Unlisted pages
+
+A page can ship ahead of what it documents with `unlisted: true` in its
+front matter and no `sidebars.js` entry: a deploy builds it (reachable by
+URL, `noindex`, left out of the sitemap and search) without advertising it.
+To list it, drop `unlisted`, add it to `sidebars.js` (and to
+`plugins/llms-txt/manifest.js` if it belongs in the LLM bundle), and run
+`corepack yarn workspace loradb-docs build`. The GraphQL pages in
+`docs/graphql/` were listed this way with the first `@loradb/lora-graphql`
+release.
+
 ## Historical posts
 
 Blog posts under `blog/` are release notes and essays, so keep their

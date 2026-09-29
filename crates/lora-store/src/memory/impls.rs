@@ -113,6 +113,57 @@ impl GraphStorage for InMemoryGraph {
         .map_err(|e| format!("[{}] {e}", e.gql_status()))
     }
 
+    fn check_node_create_deferring_existence(
+        &self,
+        labels: &[String],
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_create_deferred(
+            &catalog, self, labels, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_create_deferring_existence(
+        &self,
+        rel_type: &str,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_create_deferred(
+            &catalog, self, rel_type, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_node_existence_constraints(&self, node_id: NodeId) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_existence(&catalog, self, node_id)
+            .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_existence_constraints(
+        &self,
+        rel_id: RelationshipId,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_existence(&catalog, self, rel_id)
+            .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
     fn check_node_set_property_against_constraints(
         &self,
         node_id: NodeId,
@@ -246,6 +297,20 @@ impl GraphStorage for InMemoryGraph {
         Some(candidates.into_iter().collect())
     }
 
+    fn node_range_ordered_chunk(
+        &self,
+        label: &str,
+        property: &str,
+        lo: Option<&PropertyValue>,
+        hi: Option<&PropertyValue>,
+        descending: bool,
+        after: Option<(&PropertyValue, NodeId)>,
+        max: usize,
+    ) -> Option<Vec<NodeId>> {
+        self.sorted_indexes_read(crate::StoredIndexEntity::Node)
+            .ordered_chunk(label, property, lo, hi, descending, after, max)
+    }
+
     fn node_point_within_bbox(
         &self,
         label: &str,
@@ -331,7 +396,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn node_ids_by_label(&self, label: &str) -> Vec<NodeId> {
         match self.nodes_by_label.get(label) {
-            Some(ids) => ids.clone(),
+            Some(ids) => ids.iter().copied().collect(),
             None => Vec::new(),
         }
     }
@@ -350,7 +415,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn rel_ids_by_type(&self, rel_type: &str) -> Vec<RelationshipId> {
         match self.relationships_by_type.get(rel_type) {
-            Some(ids) => ids.clone(),
+            Some(ids) => ids.iter().copied().collect(),
             None => Vec::new(),
         }
     }
@@ -491,6 +556,10 @@ impl GraphStorage for InMemoryGraph {
 
     fn relationship_count(&self) -> usize {
         self.live_rel_count
+    }
+
+    fn node_count_by_label(&self, label: &str) -> usize {
+        self.nodes_by_label.get(label).map_or(0, |ids| ids.len())
     }
 
     // ---------- Overrides: record-returning scans (direct iteration) ----------
@@ -635,7 +704,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.nodes_by_label.get(label) {
-            for &id in ids {
+            for &id in ids.iter() {
                 if let Some(node) = self.node_at(id) {
                     for key in node.properties.keys() {
                         keys.insert(key.to_string());
@@ -651,7 +720,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.relationships_by_type.get(rel_type) {
-            for &id in ids {
+            for &id in ids.iter() {
                 if let Some(rel) = self.rel_at(id) {
                     for key in rel.properties.keys() {
                         keys.insert(key.to_string());
@@ -685,7 +754,7 @@ impl GraphStorage for InMemoryGraph {
                     return Vec::new();
                 };
                 ids.iter()
-                    .filter_map(|&id| self.node_at(id).cloned())
+                    .filter_map(|id| self.node_at(id).cloned())
                     .collect()
             }
             None => indexes
@@ -693,7 +762,7 @@ impl GraphStorage for InMemoryGraph {
                 .ids_for(key, value)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| self.node_at(id).cloned())
+                .filter_map(|id| self.node_at(id).cloned())
                 .collect(),
         }
     }
@@ -754,7 +823,7 @@ impl GraphStorage for InMemoryGraph {
                     return Vec::new();
                 };
                 ids.iter()
-                    .filter_map(|&id| self.rel_at(id).cloned())
+                    .filter_map(|id| self.rel_at(id).cloned())
                     .collect()
             }
             None => indexes
@@ -762,7 +831,7 @@ impl GraphStorage for InMemoryGraph {
                 .ids_for(key, value)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| self.rel_at(id).cloned())
+                .filter_map(|id| self.rel_at(id).cloned())
                 .collect(),
         }
     }
@@ -1102,6 +1171,9 @@ impl GraphStorageMut for InMemoryGraph {
     fn delete_relationship(&mut self, rel_id: RelationshipId) -> bool {
         let applied = match self.take_rel(rel_id) {
             Some(rel) => {
+                if let Some(sink) = &self.deleted_sink {
+                    sink.relationship_deleted(&rel);
+                }
                 self.on_relationship_deleted(&rel);
                 true
             }
@@ -1127,6 +1199,9 @@ impl GraphStorageMut for InMemoryGraph {
             None => return false,
         };
 
+        if let Some(sink) = &self.deleted_sink {
+            sink.node_deleted(&node);
+        }
         self.on_node_deleted(&node);
 
         // take_node already cleared the per-node adjacency Vecs.
@@ -1171,8 +1246,10 @@ impl GraphStorageMut for InMemoryGraph {
         // event plus whatever follows. Matches WAL semantics where the log
         // is the source of truth across a truncation.
         let recorder = self.recorder.take();
+        let deleted_sink = self.deleted_sink.take();
         *self = Self::default();
         self.recorder = recorder;
+        self.deleted_sink = deleted_sink;
         self.emit(|| MutationEvent::Clear);
     }
 

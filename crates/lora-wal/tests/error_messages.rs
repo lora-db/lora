@@ -92,7 +92,7 @@ fn already_open() {
     };
     assert_eq!(
         err.to_string(),
-        "WAL directory is already open by another live handle: /tmp/wal"
+        "database directory is locked by another process or live handle: /tmp/wal"
     );
 }
 

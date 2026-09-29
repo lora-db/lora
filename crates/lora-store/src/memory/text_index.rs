@@ -25,8 +25,9 @@
 //! scope referencing a (label, property) pair is dropped, the bucket
 //! itself is removed so an empty TEXT catalog pays zero memory.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
+use super::cow::{CowIdMap, CowMap};
 use super::entity_index_store::ScopedPropertyKey;
 
 /// Registry of trigram scopes for either nodes or relationships.
@@ -38,7 +39,7 @@ pub(super) struct TrigramRegistry {
 #[derive(Debug, Default, Clone)]
 pub(super) struct TrigramScope {
     /// Trigram → entity ids whose property value contains it.
-    pub(super) grams: BTreeMap<[u8; 3], BTreeSet<u64>>,
+    pub(super) grams: CowMap<[u8; 3], CowIdMap<()>>,
     /// Reference count: how many catalog entries point at this scope.
     /// We allow multiple TEXT indexes on the same `(label, property)`
     /// (different names, redundant); the scope is freed only when the
@@ -47,6 +48,20 @@ pub(super) struct TrigramScope {
 }
 
 impl TrigramRegistry {
+    /// Whether any of `scopes` has an index on `property`. Checked through
+    /// a read guard before maintenance takes a (copy-on-write) write guard.
+    pub(super) fn covers_any<'a>(
+        &self,
+        scopes: impl IntoIterator<Item = &'a str>,
+        property: &str,
+    ) -> bool {
+        !self.by_scope.is_empty()
+            && scopes.into_iter().any(|scope| {
+                self.by_scope
+                    .contains_key(&ScopedPropertyKey::new(scope, property))
+            })
+    }
+
     /// Mark a scope as in-use, allocating it if missing. Returns
     /// `true` if the scope was freshly created (caller should
     /// backfill it from existing data).
@@ -136,17 +151,20 @@ impl TrigramRegistry {
 impl TrigramScope {
     fn insert(&mut self, id: u64, value: &str) {
         for tri in trigrams(value) {
-            self.grams.entry(tri).or_default().insert(id);
+            self.grams
+                .get_or_insert_with(tri, CowIdMap::default)
+                .insert(id, ());
         }
     }
 
     fn remove(&mut self, id: u64, value: &str) {
         for tri in trigrams(value) {
-            if let Some(set) = self.grams.get_mut(&tri) {
+            let emptied = self.grams.get_mut(&tri).is_some_and(|set| {
                 set.remove(&id);
-                if set.is_empty() {
-                    self.grams.remove(&tri);
-                }
+                set.is_empty()
+            });
+            if emptied {
+                self.grams.remove(&tri);
             }
         }
     }
@@ -161,12 +179,12 @@ impl TrigramScope {
         // Probe lowest-cardinality trigram first — once that bucket is
         // narrowed, intersection on subsequent probes runs over a
         // smaller working set.
-        grams.sort_by_key(|tri| self.grams.get(tri).map(BTreeSet::len).unwrap_or(usize::MAX));
+        grams.sort_by_key(|tri| self.grams.get(tri).map(CowIdMap::len).unwrap_or(usize::MAX));
         let first = self.grams.get(&grams[0])?;
-        let mut out = first.clone();
+        let mut out: BTreeSet<u64> = first.keys().collect();
         for tri in &grams[1..] {
             let next = self.grams.get(tri)?;
-            out.retain(|id| next.contains(id));
+            out.retain(|id| next.contains_key(id));
             if out.is_empty() {
                 return Some(out);
             }
