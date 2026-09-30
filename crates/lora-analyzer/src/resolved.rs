@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{analyzer::FunctionId, symbols::*};
 use lora_ast::{
     BinaryOp, Direction, ListPredicateKind, RangeLiteral, SortDirection, Span, UnaryOp,
@@ -317,4 +319,177 @@ pub enum LiteralValue {
     TypeName(String),
     Bool(bool),
     Null,
+}
+
+impl ResolvedExpr {
+    /// Every variable the expression reads. Patterns inside it (`EXISTS`,
+    /// pattern comprehensions) contribute the outer variables they name and
+    /// their own fresh ones: an over-approximation, which is safe for every
+    /// caller (it only ever keeps a predicate in place, or a binding in a
+    /// row).
+    pub fn collect_vars(&self, out: &mut BTreeSet<VarId>) {
+        let expr = self;
+        match expr {
+            ResolvedExpr::Variable(v) => {
+                out.insert(*v);
+            }
+            ResolvedExpr::Property { expr, .. } => ResolvedExpr::collect_vars(expr, out),
+            ResolvedExpr::Binary { lhs, rhs, .. } => {
+                ResolvedExpr::collect_vars(lhs, out);
+                ResolvedExpr::collect_vars(rhs, out);
+            }
+            ResolvedExpr::Unary { expr, .. } => ResolvedExpr::collect_vars(expr, out),
+            ResolvedExpr::Function { args, .. } => {
+                for arg in args {
+                    ResolvedExpr::collect_vars(arg, out);
+                }
+            }
+            ResolvedExpr::List(items) => {
+                for item in items {
+                    ResolvedExpr::collect_vars(item, out);
+                }
+            }
+            ResolvedExpr::Map(items) => {
+                for (_, v) in items {
+                    ResolvedExpr::collect_vars(v, out);
+                }
+            }
+            ResolvedExpr::Case {
+                input,
+                alternatives,
+                else_expr,
+            } => {
+                if let Some(e) = input {
+                    ResolvedExpr::collect_vars(e, out);
+                }
+                for (w, t) in alternatives {
+                    ResolvedExpr::collect_vars(w, out);
+                    ResolvedExpr::collect_vars(t, out);
+                }
+                if let Some(e) = else_expr {
+                    ResolvedExpr::collect_vars(e, out);
+                }
+            }
+            ResolvedExpr::ListPredicate {
+                variable,
+                list,
+                predicate,
+                ..
+            } => {
+                out.insert(*variable);
+                ResolvedExpr::collect_vars(list, out);
+                ResolvedExpr::collect_vars(predicate, out);
+            }
+            ResolvedExpr::ListComprehension {
+                variable,
+                list,
+                filter,
+                map_expr,
+                ..
+            } => {
+                out.insert(*variable);
+                ResolvedExpr::collect_vars(list, out);
+                if let Some(f) = filter {
+                    ResolvedExpr::collect_vars(f, out);
+                }
+                if let Some(m) = map_expr {
+                    ResolvedExpr::collect_vars(m, out);
+                }
+            }
+            ResolvedExpr::Reduce {
+                accumulator,
+                init,
+                variable,
+                list,
+                expr,
+                ..
+            } => {
+                out.insert(*accumulator);
+                out.insert(*variable);
+                ResolvedExpr::collect_vars(init, out);
+                ResolvedExpr::collect_vars(list, out);
+                ResolvedExpr::collect_vars(expr, out);
+            }
+            ResolvedExpr::Index { expr, index } => {
+                ResolvedExpr::collect_vars(expr, out);
+                ResolvedExpr::collect_vars(index, out);
+            }
+            ResolvedExpr::Slice { expr, from, to } => {
+                ResolvedExpr::collect_vars(expr, out);
+                if let Some(f) = from {
+                    ResolvedExpr::collect_vars(f, out);
+                }
+                if let Some(t) = to {
+                    ResolvedExpr::collect_vars(t, out);
+                }
+            }
+            ResolvedExpr::MapProjection { base, selectors } => {
+                ResolvedExpr::collect_vars(base, out);
+                for sel in selectors {
+                    if let ResolvedMapSelector::Literal(_, e) = sel {
+                        ResolvedExpr::collect_vars(e, out);
+                    }
+                }
+            }
+            // A pattern reads the outer variables it names (`(a)<-[:T]-(x)`
+            // reads `a`). Its own fresh variables are collected too: an
+            // over-approximation, which only ever keeps a predicate in place.
+            ResolvedExpr::ExistsSubquery { pattern, where_ } => {
+                pattern.collect_vars(out);
+                if let Some(w) = where_ {
+                    ResolvedExpr::collect_vars(w, out);
+                }
+            }
+            ResolvedExpr::PatternComprehension {
+                pattern,
+                where_,
+                map_expr,
+            } => {
+                pattern.collect_vars(out);
+                if let Some(w) = where_ {
+                    ResolvedExpr::collect_vars(w, out);
+                }
+                ResolvedExpr::collect_vars(map_expr, out);
+            }
+            ResolvedExpr::Literal(_) | ResolvedExpr::Parameter(_) => {}
+        }
+    }
+}
+
+impl ResolvedPattern {
+    /// Every variable the pattern binds or names, and those its property
+    /// maps read.
+    pub fn collect_vars(&self, out: &mut BTreeSet<VarId>) {
+        let pattern = self;
+        let node = |n: &ResolvedNode, out: &mut BTreeSet<VarId>| {
+            out.extend(n.var);
+            if let Some(p) = &n.properties {
+                ResolvedExpr::collect_vars(p, out);
+            }
+        };
+        for part in &pattern.parts {
+            out.extend(part.binding);
+            match &part.element {
+                ResolvedPatternElement::Node {
+                    var, properties, ..
+                } => {
+                    out.extend(*var);
+                    if let Some(p) = properties {
+                        ResolvedExpr::collect_vars(p, out);
+                    }
+                }
+                ResolvedPatternElement::NodeChain { head, chain }
+                | ResolvedPatternElement::ShortestPath { head, chain, .. } => {
+                    node(head, out);
+                    for link in chain {
+                        out.extend(link.rel.var);
+                        if let Some(p) = &link.rel.properties {
+                            ResolvedExpr::collect_vars(p, out);
+                        }
+                        node(&link.node, out);
+                    }
+                }
+            }
+        }
+    }
 }

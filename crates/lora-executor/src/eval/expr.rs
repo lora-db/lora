@@ -331,6 +331,10 @@ fn eval_exists_subquery<S: GraphStorage>(
 
     // Process each pattern part. The final part short-circuits because EXISTS
     // only cares whether at least one complete binding survives the WHERE.
+    // Match on a row holding only what the subquery reads: every candidate
+    // clones it, and the outer row may carry large values (collected lists).
+    let scoped = scoped_row(row, pattern, [where_]);
+    let row = &scoped;
     let mut candidate_rows = vec![row.clone()];
 
     for (part_idx, part) in pattern.parts.iter().enumerate() {
@@ -462,7 +466,12 @@ fn eval_pattern_comprehension<S: GraphStorage>(
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> LoraValue {
-    // Reuse the same pattern matching as EXISTS
+    // Reuse the same pattern matching as EXISTS, on a row holding only what
+    // the comprehension reads: every candidate and every expansion clones it,
+    // and the outer row may carry large values (the lists earlier CALLs
+    // collected), which made the cost proportional to them.
+    let scoped = scoped_row(row, pattern, [where_, Some(map_expr)]);
+    let row = &scoped;
     let mut candidate_rows = vec![row.clone()];
 
     for part in &pattern.parts {
@@ -563,6 +572,27 @@ fn eval_pattern_comprehension<S: GraphStorage>(
             .map(|r| eval_expr(map_expr, r, ctx))
             .collect(),
     )
+}
+
+/// A copy of `row` with only the variables `pattern` and `exprs` use: the
+/// bindings a pattern subquery can read.
+fn scoped_row<const N: usize>(
+    row: &Row,
+    pattern: &lora_analyzer::ResolvedPattern,
+    exprs: [Option<&ResolvedExpr>; N],
+) -> Row {
+    let mut vars = std::collections::BTreeSet::new();
+    pattern.collect_vars(&mut vars);
+    for expr in exprs.into_iter().flatten() {
+        expr.collect_vars(&mut vars);
+    }
+    let mut scoped = Row::new();
+    for var in vars {
+        if let Some(value) = row.get(var) {
+            scoped.insert(var, value.clone());
+        }
+    }
+    scoped
 }
 
 fn match_node_pattern<S: GraphStorage>(
