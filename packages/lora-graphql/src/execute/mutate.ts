@@ -2101,15 +2101,18 @@ async function upsert(
       { type: node.name, field: node.key.name },
     );
   }
-  // Existing nodes the caller may update. One the caller can read but not
-  // update looks new, and its create fails on the key constraint; one the
-  // caller cannot read fails like a denied create (Runner.moveHiddenKeys).
+  // Existing nodes the caller may read and update. One the caller can read
+  // but not update looks new, and its create fails on the key constraint;
+  // one the caller cannot read (even where the UPDATE rules would let it
+  // through) takes the create path and fails like a denied create
+  // (Runner.moveHiddenKeys): updating it would reveal it (G-20).
   const ctx = runner.ctx();
   const existing = new Set(
     (
       await runner.run(
         `UNWIND ${printExpr(bind(ctx, keys))} AS k\n` +
           `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k` +
+          andText(authFilter(ctx, node, "n", "READ")) +
           andText(authFilter(ctx, node, "n", "UPDATE")) +
           `\nRETURN n.${name(node.key.property)} AS key`,
         ctx,

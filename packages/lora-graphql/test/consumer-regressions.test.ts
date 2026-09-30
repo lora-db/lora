@@ -1617,3 +1617,104 @@ describe("G-21 review: subscribe() ends, charges and refuses cleanly", () => {
     t.close();
   });
 });
+
+describe("G-20 review: upsert, bulk and anonymous creates keep hidden keys hidden", () => {
+  // Doc READ is owner-only; UPDATE has no filter, so it is looser than READ.
+  const typeDefs =
+    J +
+    `type Doc @node @mutation(operations: [CREATE, UPDATE])
+      @authorization(
+        filter: [{ operations: [READ], where: { node: { owner: { eq: "$jwt.sub" } } } }]
+        validate: [{ operations: [CREATE], where: { node: { key: { startsWith: "\${jwt.sub}:" } } } }]) {
+      key: String! @key @filterable(byValue: [EQ, STARTS_WITH])
+      owner: String!
+      title: String
+    }
+    type Room @node @mutation(operations: [CREATE])
+      @authorization(
+        filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]
+        validate: [{ operations: [CREATE], where: { node: { key: { startsWith: "\${jwt.sub}:" } } } }]) {
+      key: String! @key @filterable(byValue: [EQ, STARTS_WITH])
+      owner: String!
+    }`;
+  const seed =
+    "CREATE (:Doc {key: 'a:x', owner: 'a', title: 'secret'}), " +
+    "(:Room {key: 'a:b', owner: 'a'}), (:Room {key: 'm:mine', owner: 'm'})";
+  const m = { jwt: { sub: "m" } };
+  const answer = (r: ExecutionResult) => ({
+    data: r.data,
+    errors: r.errors?.map((e) => [e.extensions?.["code"], e.message]),
+  });
+  const docs = (t: Test) =>
+    cypher(
+      t,
+      "MATCH (d:Doc) RETURN d.key AS key, d.title AS title ORDER BY key",
+    );
+  const roomKeys = async (t: Test) =>
+    (await cypher(t, "MATCH (r:Room) RETURN r.key AS key ORDER BY key")).map(
+      (r) => r["key"],
+    );
+
+  test("an upsert of a node UPDATE allows but READ hides answers as a free key", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const upsert = (key: string) =>
+      t.run(
+        `mutation { upsertDocs(input: [{ key: "${key}", owner: "m", title: "pwned" }]) { docs { key title } } }`,
+        {},
+        m,
+      );
+    const hidden = answer(await upsert("a:x"));
+    expect(hidden.errors).toEqual([
+      ["FORBIDDEN", "not allowed to create this Doc"],
+    ]);
+    expect(hidden).toEqual(answer(await upsert("a:free")));
+    expect(await docs(t)).toEqual([{ key: "a:x", title: "secret" }]);
+    // The caller's own node is still updated.
+    const own = await t.run(
+      `mutation { createDocs(input: [{ key: "m:1", owner: "m" }]) { docs { key } } }`,
+      {},
+      m,
+    );
+    expect(own.errors).toBeUndefined();
+    const again = await upsert("m:1");
+    expect(again.errors).toBeUndefined();
+    expect(again.data).toEqual({
+      upsertDocs: { docs: [{ key: "m:1", title: "pwned" }] },
+    });
+    t.close();
+  });
+
+  test("a bulk create mixing a hidden key and an allowed one answers as with a free key", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const bulk = async (other: string) =>
+      answer(
+        await t.run(
+          `mutation { createRooms(input: [{ key: "m:new", owner: "m" }, { key: "${other}", owner: "m" }]) { rooms { key } } }`,
+          {},
+          m,
+        ),
+      );
+    const hidden = await bulk("a:b");
+    expect(hidden.errors).toEqual([
+      ["FORBIDDEN", "not allowed to create this Room"],
+    ]);
+    expect(hidden).toEqual(await bulk("a:zzz"));
+    expect(await roomKeys(t)).toEqual(["a:b", "m:mine"]);
+    t.close();
+  });
+
+  test("an anonymous create answers the same for a hidden key and a free one", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const anonymous = async (key: string) =>
+      answer(
+        await t.run(
+          `mutation { createRooms(input: [{ key: "${key}", owner: "a" }]) { rooms { key } } }`,
+        ),
+      );
+    const hidden = await anonymous("a:b");
+    expect(hidden.errors?.[0]?.[0]).toBe("UNAUTHENTICATED");
+    expect(hidden).toEqual(await anonymous("a:zzz"));
+    expect(await roomKeys(t)).toEqual(["a:b", "m:mine"]);
+    t.close();
+  });
+});

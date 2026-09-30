@@ -344,7 +344,8 @@ mutation {
 
 `upsertFestivals(input: [...])` creates the inputs whose key is new and
 updates the rest. Fields required on create are required only for new keys.
-Upsert never updates a node the caller cannot read. Creating under a key
+Upsert never updates a node the caller cannot read, even where its
+`UPDATE` rules would allow the update. Creating under a key
 held by such a node, by `create…`, `upsert…` or a nested `create`, answers
 as if the key were free: the same error a free key gets, or `FORBIDDEN`
 where a free key would be created. It is never reported as taken, so a

@@ -65,6 +65,9 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   (nested creates included) under a key that exists but is hidden from
   the caller by a READ filter gets the answer the same key would get if
   it were free, never a CONSTRAINT_VIOLATION that confirms it exists.
+  An upsert looks for the existing node through the READ filter as well
+  as the UPDATE one, so a node its UPDATE rules would allow but READ
+  hides takes the create path too, rather than being updated.
   Before creating, the mutation moves each such node to a placeholder key
   inside its transaction, so everything it checks (rules, connect
   targets, cardinality, required relationships) runs on a graph that
