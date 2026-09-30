@@ -99,4 +99,22 @@ describe("database directory lock", () => {
     expect(await c.nodeCount()).toBe(2);
     c.dispose();
   });
+
+  it("keeps the directory locked while any in-process handle is open", async () => {
+    const dir = await tempDir();
+    const a = await createDatabase("app", { databaseDir: dir });
+    const b = await createDatabase("app", { databaseDir: dir });
+    a.dispose();
+
+    // `b` still owns the engine, so another process cannot become a
+    // second writer on the same WAL.
+    const child = await openInChild(dir);
+    expect(child.ok).toBe(false);
+    expect(child.message).toContain("LORA_LOCKED");
+    await b.execute("CREATE (:X {key: 'b'})");
+    expect(await b.nodeCount()).toBe(1);
+    b.dispose();
+
+    expect(await openInChild(dir)).toEqual({ ok: true, message: "" });
+  });
 });
