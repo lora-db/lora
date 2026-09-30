@@ -95,6 +95,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Integer overflow not explicitly handled | Inferred | Low — Rust panics in debug, wraps in release |
 | `round()` returns an integer for integral results and rounds half away from zero | Observed | Low — Neo4j returns a float |
 | Float comparison uses IEEE 754 | Observed | Low — `NaN != NaN` is standard |
+| lora-graphql: a `@unique` (non-key) value held by a node the caller cannot read is reported as taken on create and update | Observed | Medium for fields whose use must stay private (an email). Keys are covered: a create under a hidden key answers as under a free one (G-20, `docs/design/graphql-threat-model.md`). Key such a field, or leave `@unique` off it |
 | `<`, `<=`, `>`, `>=` between two temporals of different types (a `DATE` and a `DATETIME`) is an error, including when a RANGE index answers the predicate | Observed | Low. A deliberate divergence: Cypher gives `null`, which made `WHERE d >= date()` over `DATETIME` values drop every row silently (E-1). A query that relied on the `null` now fails and names both types |
 | Variable-length undirected traversal does not guard against reciprocal edges | Inferred | Low — visited-node tracking avoids repeats |
 

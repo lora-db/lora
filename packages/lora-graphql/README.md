@@ -389,7 +389,14 @@ mutation {
   is an error that writes nothing, and an empty `where` is refused.
 - **`upsertFestivals`** creates the inputs whose key is new and updates the
   rest; fields required on create are required only for new keys. A key the
-  caller may not see reads as taken.
+  caller may not see is never updated, and never reported as taken: it gets
+  the answer a free key would (see below).
+- **Creating under a hidden key** (`createFestivals`, `upsertFestivals`, a
+  nested `create`) answers as if the key were free: whatever error the free
+  key would get, and where it would be created, `FORBIDDEN` ("not allowed to
+  create"), never a `CONSTRAINT_VIOLATION` that would confirm the key
+  exists. A key held by a node the caller can read is still reported as
+  taken. See `docs/design/graphql-threat-model.md`.
 - **Deletes** follow `onDelete`: `DETACH` (default) removes the
   relationships, `CASCADE` deletes what the field reaches (checking the
   caller may delete each node), `RESTRICT` refuses while related nodes

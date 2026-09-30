@@ -1,4 +1,4 @@
-// Regressions from a production integration (items G-1 to G-19 of the
+// Regressions from a production integration (items G-1 to G-22 of the
 // Festimap brief). Each block names its item; the suite runs on graphql
 // 16 and 17 (`yarn test`, `yarn test:graphql17`).
 
@@ -1096,5 +1096,154 @@ describe("G-18: plan findings belong to the statement part they come from", () =
       "expected an index text seek on :A (A.title contains), plan uses NodeByLabelScan",
     ]);
     expect(report.notes).toHaveLength(1);
+  });
+});
+
+describe("G-20: a create under a hidden key answers as under a free one", () => {
+  // `a:b` exists but only its member `a` can see it; `m:hidden` is in m's
+  // key space but hidden from m too; `m:mine` is m's own.
+  const typeDefs =
+    J +
+    `type Room @node @mutation(operations: [CREATE, UPDATE])
+      @authorization(
+        filter: [{ where: { node: { members: { some: { key: { eq: "$jwt.sub" } } } } } }]
+        validate: [{ operations: [CREATE], where: { node: { key: { startsWith: "\${jwt.sub}:" } } } }]) {
+      key: String! @key @filterable(byValue: [EQ, STARTS_WITH])
+      members: [User!]! @relationship(type: "IN", direction: IN)
+    }
+    type User @node @mutation(operations: [UPDATE]) {
+      key: String! @key
+      rooms: [Room!]! @relationship(type: "IN", direction: OUT)
+    }
+    type Num @node @mutation(operations: [CREATE])
+      @authorization(filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+      id: Int! @key
+      owner: String!
+    }
+    type Tag @node @mutation(operations: [CREATE]) { key: String! @key }`;
+  const seed =
+    "CREATE (a:User {key: 'a'}), (m:User {key: 'm'}), " +
+    "(a)-[:IN]->(:Room {key: 'a:b'}), (a)-[:IN]->(:Room {key: 'm:hidden'}), " +
+    "(m)-[:IN]->(:Room {key: 'm:mine'}), (:Num {id: 7, owner: 'a'}), (:Tag {key: 't'})";
+  const m = { jwt: { sub: "m" } };
+  const errors = (r: {
+    errors?: ReadonlyArray<{ message: string; extensions?: unknown }>;
+  }) =>
+    r.errors?.map((e) => [
+      (e.extensions as Record<string, unknown> | undefined)?.["code"],
+      e.message,
+    ]);
+  const create = (t: Test, key: string, member = "m") =>
+    t.run(
+      `mutation { createRooms(input: [{ key: "${key}", members: { connect: [{ key: "${member}" }] } }]) { rooms { key } } }`,
+      {},
+      m,
+    );
+  const upsert = (t: Test, key: string) =>
+    t.run(
+      `mutation { upsertRooms(input: [{ key: "${key}", members: { connect: [{ key: "m" }] } }]) { rooms { key } } }`,
+      {},
+      m,
+    );
+  const forbidden = [["FORBIDDEN", "not allowed to create this Room"]];
+  const rooms = (t: Test) =>
+    cypher(
+      t,
+      "MATCH (r:Room) OPTIONAL MATCH (u:User)-[:IN]->(r) " +
+        "RETURN r.key AS key, collect(u.key) AS members ORDER BY key",
+    );
+  const seeded = [
+    { key: "a:b", members: ["a"] },
+    { key: "m:hidden", members: ["a"] },
+    { key: "m:mine", members: ["m"] },
+  ];
+
+  test("the brief: an existing hidden key and a free one get the same FORBIDDEN", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(errors(await create(t, "a:b"))).toEqual(forbidden);
+    expect(errors(await create(t, "a:zzz"))).toEqual(forbidden);
+    expect(await rooms(t)).toEqual(seeded);
+    t.close();
+  });
+
+  test("upsert answers the same for a hidden key and a free one", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(errors(await upsert(t, "a:b"))).toEqual(forbidden);
+    expect(errors(await upsert(t, "a:zzz"))).toEqual(forbidden);
+    expect(await rooms(t)).toEqual(seeded);
+    t.close();
+  });
+
+  test("an error raised before the rules is the free key's error too", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const notFound = [["NOT_FOUND", 'Room.members: no User with key "nobody"']];
+    expect(errors(await create(t, "a:b", "nobody"))).toEqual(notFound);
+    expect(errors(await create(t, "a:zzz", "nobody"))).toEqual(notFound);
+    t.close();
+  });
+
+  test("a nested create under a hidden key answers as under a free one", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const nested = (key: string) =>
+      t.run(
+        `mutation { updateUser(key: "m", update: { rooms: { create: [{ node: { key: "${key}" } }] } }) { user { key } } }`,
+        {},
+        m,
+      );
+    const hidden = errors(await nested("a:b"));
+    expect(hidden?.[0]?.[0]).toBe("FORBIDDEN");
+    expect(hidden).toEqual(errors(await nested("a:zzz")));
+    expect(await rooms(t)).toEqual(seeded);
+    t.close();
+  });
+
+  test("a hidden key the rules would allow is refused like a denial", async () => {
+    // The one answer a taken key cannot share with a free one: the free
+    // key is created. The taken one reads as a denial, not as taken.
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(errors(await create(t, "m:hidden"))).toEqual(forbidden);
+    expect(
+      errors(
+        await t.run(
+          `mutation { createNums(input: [{ id: 7, owner: "m" }]) { nums { id } } }`,
+          {},
+          m,
+        ),
+      ),
+    ).toEqual([["FORBIDDEN", "not allowed to create this Num"]]);
+    expect(await rooms(t)).toEqual(seeded);
+    expect(
+      await cypher(t, "MATCH (n:Num) RETURN n.id AS id, n.owner AS owner"),
+    ).toEqual([{ id: 7, owner: "a" }]);
+    t.close();
+  });
+
+  test("allowed: a free key in the caller's space is created", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await create(t, "m:new");
+    expect(r.errors).toBeUndefined();
+    expect(r.data).toEqual({ createRooms: { rooms: [{ key: "m:new" }] } });
+    const n = await t.run(
+      `mutation { createNums(input: [{ id: 8, owner: "m" }]) { nums { id } } }`,
+      {},
+      m,
+    );
+    expect(n.data).toEqual({ createNums: { nums: [{ id: 8 }] } });
+    t.close();
+  });
+
+  test("allowed: a collision with a node the caller can see stays CONSTRAINT_VIOLATION", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(errors(await create(t, "m:mine"))).toEqual([
+      ["CONSTRAINT_VIOLATION", "Room.key must be unique; the value is taken"],
+    ]);
+    // A type without a READ filter hides nothing.
+    const tag = await t.run(
+      `mutation { createTags(input: [{ key: "t" }]) { tags { key } } }`,
+      {},
+      m,
+    );
+    expect(codes(tag)).toEqual(["CONSTRAINT_VIOLATION"]);
+    t.close();
   });
 });

@@ -203,14 +203,18 @@ test("@jwt: rules may only use declared claims", () => {
   );
 });
 
-test("upsert does not reveal hidden keys: they read as taken", async () => {
+test("upsert does not reveal hidden keys: they read as a denied create", async () => {
+  // "Taken" would tell alice that a3 exists in another tenant (G-20).
   const r = await h.run(
     `mutation { upsertAccounts(input: [{ key: "a3", tenant: "t1", owner: "alice" }]) { info { nodesCreated nodesUpdated } } }`,
     {},
     alice,
   );
-  expect(r.errors?.[0]?.extensions).toMatchObject({
-    code: "CONSTRAINT_VIOLATION",
-    field: "key",
-  });
+  expect(r.errors?.map((e) => [e.extensions?.["code"], e.message])).toEqual([
+    ["FORBIDDEN", "not allowed to create this Account"],
+  ]);
+  const a3 = await h.db.execute(
+    "MATCH (a:Account {key: 'a3'}) RETURN a.tenant AS tenant, a.owner AS owner",
+  );
+  expect(a3.rows).toEqual([{ tenant: "t2", owner: "alice" }]);
 });

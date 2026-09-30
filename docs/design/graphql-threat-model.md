@@ -57,6 +57,23 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   separator must be one no subject contains, or one user's space
   contains another's (G-19,
   [graphql-claim-interpolation.md](graphql-claim-interpolation.md)).
+- **Probe for keys the caller cannot see.** A `create…` or `upsert…`
+  (nested creates included) under a key that exists but is hidden from
+  the caller by a READ filter gets the answer the same key would get if
+  it were free, never a CONSTRAINT_VIOLATION that confirms it exists.
+  Before creating, the mutation moves each such node to a placeholder key
+  inside its transaction, so everything it checks (rules, connect
+  targets, cardinality, required relationships) runs on a graph that
+  differs from the free-key case only in that hidden key, and raises the
+  free key's error. Where the free key would be created, the mutation
+  fails with the FORBIDDEN of a denied create instead. Either way the
+  transaction rolls back and the key is restored (G-20). What a caller
+  can still learn: that a key the rules would let them create is not
+  free, as a FORBIDDEN where a free key succeeds. A collision with a node
+  the caller can read stays CONSTRAINT_VIOLATION, which tells them
+  nothing new. A non-key `@unique` field is not covered: a value held by
+  a hidden node still reads as taken. Do not make a field `@unique` if
+  whether a value is taken must stay private; key it instead.
 - **Forge cursors.** Without `cursorSecret`, cursors are tagged with
   their sort, not signed: a client can craft one, but it only moves a
   page's start within rows the caller may read, because sorting on fields

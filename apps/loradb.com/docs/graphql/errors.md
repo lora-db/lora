@@ -119,7 +119,9 @@ A write would leave the graph in a state the model forbids. `extensions`
 names the `type` and `field`:
 
 - a `@key` or `@unique` value is taken ("must be unique; the value is
-  taken");
+  taken"). A `@key` held by a node the caller cannot read is not reported
+  this way: the create answers as it would for a free key, with
+  `FORBIDDEN` where a free key would be created;
 - the same key appears twice in one input;
 - a required property would be missing, including a required
   `@populatedBy` field whose callback returned `null`;

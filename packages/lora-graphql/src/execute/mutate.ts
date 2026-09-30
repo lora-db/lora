@@ -651,6 +651,11 @@ class Runner {
   disconnected: RelationshipRef[] = [];
   /** Nodes updated per type, for AFTER validation. */
   updated = new Map<NodeType, { keys: unknown[]; fields: Set<string> }>();
+  /**
+   * A type this mutation creates under a key held by a node the caller
+   * cannot read; see {@link Runner.moveHiddenKeys}.
+   */
+  hiddenKey: NodeType | undefined;
 
   constructor(
     readonly env: MutationEnv,
@@ -684,6 +689,7 @@ class Runner {
     for (const task of plan.pending) await task();
     assertBatch(plan, this.env.maxBatch);
     assertUniqueKeys(plan);
+    await this.moveHiddenKeys(plan);
     await this.applyCreates(plan);
     await this.applyDisconnects(plan);
     await this.applyLinks(plan);
@@ -693,6 +699,35 @@ class Runner {
     await this.checkCardinality(plan);
     await this.checkRequired();
     await this.validateCreated(plan);
+  }
+
+  /**
+   * A create under a key held by a node the caller cannot read must not
+   * tell them the key exists (G-20). The unique constraint would fail it
+   * with CONSTRAINT_VIOLATION before the rules run, while a free key gets
+   * the rules' answer: an existence oracle. So the hidden node moves to a
+   * placeholder key for the rest of the transaction, and the mutation runs
+   * on a graph that differs from the free-key case only in that hidden
+   * key: every error it raises is the one a free key gets. When it would
+   * succeed, `executeMutation` fails it with the FORBIDDEN of a denied
+   * create. Either way the transaction rolls back, and the key with it.
+   */
+  async moveHiddenKeys(plan: WritePlan): Promise<void> {
+    for (const [node, rows] of plan.creates) {
+      const ctx = this.ctx();
+      const visible = authFilter(ctx, node, "n", "READ");
+      if (!visible) continue;
+      const moves = rows.map((r) => ({ key: r.key, to: placeholderKey(node) }));
+      const key = `n.${name(node.key.property)}`;
+      const [moved] = await this.run(
+        `UNWIND ${printExpr(bind(ctx, moves))} AS m\n` +
+          `MATCH (n:${name(node.labels[0]!)}) WHERE ${key} = m.key` +
+          ` AND NOT coalesce(${printExpr(visible)}, false)\n` +
+          `SET ${key} = m.to\nRETURN count(n) AS moved`,
+        ctx,
+      );
+      if (Number(moved?.["moved"] ?? 0) > 0) this.hiddenKey ??= node;
+    }
   }
 
   async applyCreates(plan: WritePlan): Promise<void> {
@@ -1804,6 +1839,20 @@ function requiredMissing(
   );
 }
 
+/**
+ * A key no request names, of the key's type, for a node moved out of the
+ * way by {@link Runner.moveHiddenKeys}: never committed.
+ */
+function placeholderKey(node: NodeType): unknown {
+  if (node.key.type === "Int" || node.key.type === "BigInt") {
+    const [hi, lo] = globalThis.crypto.getRandomValues(new Uint32Array(2));
+    // Below -2^62: outside GraphQL's Int, and a BigInt key there is taken
+    // with odds of 1 in 2^62 (the unique constraint would still catch it).
+    return -(2n ** 62n) - ((BigInt(hi! & 0x3fffffff) << 32n) | BigInt(lo!));
+  }
+  return `\u0000lora-graphql:hidden:${globalThis.crypto.randomUUID()}`;
+}
+
 function dedupe(keys: unknown[]): unknown[] {
   return [...new Map(keys.map((k) => [keyOf(k), k])).values()];
 }
@@ -2000,6 +2049,8 @@ export async function executeMutation(
         break;
       }
     }
+    // Only now, so that any other error is the one a free key gets.
+    if (runner.hiddenKey) throw forbidden(runner.hiddenKey, "CREATE");
     if (!owned) await tx.commit();
     fillChange(change, runner);
     return { payload, change };
@@ -2031,8 +2082,9 @@ async function upsert(
       { type: node.name, field: node.key.name },
     );
   }
-  // Existing nodes the caller may update. A hidden one looks new, and its
-  // create then fails on the key constraint like any taken key would.
+  // Existing nodes the caller may update. One the caller can read but not
+  // update looks new, and its create fails on the key constraint; one the
+  // caller cannot read fails like a denied create (Runner.moveHiddenKeys).
   const ctx = runner.ctx();
   const existing = new Set(
     (
