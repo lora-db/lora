@@ -391,8 +391,25 @@ pub(super) fn tokenize_to_term_counts(value: &str) -> TermCounts {
 pub(super) fn string_property_term_counts(properties: &Properties) -> PropertyTermCounts {
     let mut out = PropertyTermCounts::new();
     for (key, value) in properties {
-        if let crate::PropertyValue::String(value) = value {
-            out.insert(key.to_string(), tokenize_to_term_counts(value));
+        match value {
+            crate::PropertyValue::String(value) => {
+                out.insert(key.to_string(), tokenize_to_term_counts(value));
+            }
+            // A list property indexes each of its strings, like Lucene's
+            // multi-valued fields; other elements are skipped.
+            crate::PropertyValue::List(items) => {
+                let mut counts = TermCounts::new();
+                for item in items {
+                    if let crate::PropertyValue::String(text) = item {
+                        merge_term_counts(&mut counts, tokenize_to_term_counts(text));
+                    }
+                }
+                if !counts.is_empty() {
+                    out.insert(key.to_string(), counts);
+                }
+            }
+            // Numbers, booleans, temporals, points and vectors are not text.
+            _ => {}
         }
     }
     out

@@ -68,14 +68,12 @@ fn within_bbox(args: &[LoraValue]) -> LoraValue {
                 );
                 return LoraValue::Null;
             }
-            let in_x = p.x >= ll.x.min(ur.x) && p.x <= ll.x.max(ur.x);
-            let in_y = p.y >= ll.y.min(ur.y) && p.y <= ll.y.max(ur.y);
-            let in_z = match (p.z, ll.z, ur.z) {
-                (Some(pz), Some(lz), Some(uz)) => pz >= lz.min(uz) && pz <= lz.max(uz),
-                (None, None, None) => true,
-                _ => return LoraValue::Null,
-            };
-            LoraValue::Bool(in_x && in_y && in_z)
+            // A geographic box with ll.longitude > ur.longitude crosses
+            // the antimeridian.
+            match lora_store::bbox_contains(p, ll, ur) {
+                Some(inside) => LoraValue::Bool(inside),
+                None => LoraValue::Null,
+            }
         }
         _ => LoraValue::Null,
     }

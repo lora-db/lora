@@ -8,10 +8,12 @@
 //! * [`distance`] — Cartesian + Haversine distance + the
 //!   [`point_distance`] dispatcher.
 
+mod bbox;
 mod distance;
 mod point;
 mod srid;
 
+pub use bbox::{bbox_contains, bbox_x_ranges};
 pub use distance::{cartesian_distance, haversine_distance, point_distance};
 pub use point::{LoraPoint, NamedPointCoordinates};
 pub use srid::{

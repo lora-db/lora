@@ -996,7 +996,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
-        Ok(limit_rows(rows, op, &eval_ctx))
+        limit_rows(rows, op, &eval_ctx)
     }
 
     fn exec_call_subquery(

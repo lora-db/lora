@@ -32,7 +32,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `UNWIND` | **Supported** | List unwinding, empty/null handling, `list.range()` |
 | `UNION` / `UNION ALL` | **Supported** | Deduplication, multi-branch, ORDER BY / LIMIT on result |
 | `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering. Keys may name projection aliases, aggregates, or (for non-aggregating, non-DISTINCT projections) original variables. With a RANGE index or uniqueness constraint on the sort property and a range predicate on it (`WHERE n.key > $after ORDER BY n.key LIMIT k`), rows stream from the index and the scan stops after `k` rows |
-| `SKIP` / `LIMIT` | **Supported** | Pagination patterns. Applied after aggregation and `DISTINCT` |
+| `SKIP` / `LIMIT` | **Supported** | Pagination patterns. Applied after aggregation and `DISTINCT`. The count must be a non-negative integer (an integral float is accepted): `null` (for example an omitted `$limit`), a negative number or a fraction is an error, as in Neo4j, never "no limit" |
 | `DISTINCT` | **Supported** | In RETURN and WITH |
 | `EXPLAIN` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.explain(query, params?)`; deliberately not exposed as a Cypher keyword. |
 | `PROFILE` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.profile(query, params?)`; runs the query and reports per-operator timing. |
@@ -270,7 +270,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | `geo.distance(a, b)` | **Supported** | Euclidean for Cartesian, Haversine for geographic (Earth radius 6,371 km) |
 | Component access: `p.x`, `p.y`, `p.latitude`, `p.longitude`, `p.srid` | **Supported** | Via property access on Point |
 | 3D points (Cartesian SRID 9157, WGS-84 SRID 4979) | **Supported** | `z` / `height` exposed via property access; `geo.distance()` on WGS-84-3D ignores height and falls back to great-circle |
-| `geo.within_bbox(p, ll, ur)` | **Supported** | Same-SRID closed bounding box; mixed 2D/3D inputs return `null` |
+| `geo.within_bbox(p, ll, ur)` | **Supported** | Same-SRID closed bounding box; mixed 2D/3D inputs return `null`. On WGS-84, `ll.longitude > ur.longitude` means the box crosses the antimeridian (`[ll.lon, 180]` and `[-180, ur.lon]`, as Neo4j's `point.withinBBox`); a point index answers it with two seeks. Cartesian corners are normalised to min/max |
 
 ## 13a. Index DDL and optimizer rewrites
 
@@ -294,7 +294,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | Node / relationship key constraints | **Supported** | Composition of existence + uniqueness; single + composite; node-key uses `IS NODE KEY`, rel-key uses `IS RELATIONSHIP KEY` |
 | Property type constraints (`IS :: T`) | **Supported** | Scalar (`BOOLEAN`/`STRING`/`INTEGER`/`FLOAT`/`DATE`/`LOCAL TIME`/`ZONED TIME`/`LOCAL DATETIME`/`ZONED DATETIME`/`DURATION`/`POINT`), `LIST<T NOT NULL>`, `VECTOR<COORD>(DIM)`, and closed dynamic unions (`T1 \| T2`); `MAP`/`ANY` rejected with `22N90` |
 | Vector index / ANN index | **Supported** | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS {indexConfig: {vector.dimensions, vector.similarity_function}}` (node + rel). The default provider is an exact flat scan over the indexed scope. Setting `vector.indexProvider: 'hnsw'` in `indexConfig` selects an approximate HNSW index (since v0.12.0), tunable with `vector.hnsw.m`, `vector.hnsw.ef_construction`, `vector.hnsw.ef_search`, and `vector.hnsw.quantization`; its graph is persisted in snapshots. Procedures `db.index.vector.queryNodes` / `queryRelationships` use whichever provider the index has |
-| Full-text indexing | **Supported (standard/simple analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default) and `'simple'`; others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + ASCII folding (`Sónar` matches `Sonar`, `Øya` matches `Oya`) + non-alphanumeric split, intersect posting lists (AND semantics); a term ending in `*` matches every indexed term with that prefix. Scores are summed TF; rows `(node\|relationship, score)` come back sorted descending with full node / relationship values. |
+| Full-text indexing | **Supported (standard/simple analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default) and `'simple'`; others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + ASCII folding (`Sónar` matches `Sonar`, `Øya` matches `Oya`) + non-alphanumeric split, intersect posting lists (AND semantics); a term ending in `*` matches every indexed term with that prefix. A list property indexes each of its strings (other elements, and non-string properties, are skipped). Scores are summed TF; rows `(node\|relationship, score)` come back sorted descending with full node / relationship values. |
 
 ## 13b. Vector types and functions
 

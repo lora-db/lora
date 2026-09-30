@@ -573,7 +573,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
-        Ok(limit_rows(rows, op, &eval_ctx))
+        limit_rows(rows, op, &eval_ctx)
     }
 
     fn exec_optional_match(

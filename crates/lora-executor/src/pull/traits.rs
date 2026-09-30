@@ -19,7 +19,7 @@ use lora_compiler::CompiledQuery;
 use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
-use crate::eval::{clear_eval_error, eval_expr};
+use crate::eval::clear_eval_error;
 use crate::executor::{plan_may_need_hydration, ExecutionContext, Executor};
 use crate::profile::wrap_metered;
 use crate::value::{LoraValue, Row};
@@ -455,16 +455,14 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             // empty row (matching the buffered executor semantics).
             let ctx = StreamCtx::new(storage, params);
             let eval_ctx = ctx.eval_ctx();
-            let scratch = Row::new();
-            let skip_n = skip
-                .as_ref()
-                .and_then(|e| eval_expr(e, &scratch, &eval_ctx).as_i64())
-                .unwrap_or(0)
-                .max(0) as usize;
-            let limit_n = limit
-                .as_ref()
-                .and_then(|e| eval_expr(e, &scratch, &eval_ctx).as_i64())
-                .map(|n| n.max(0) as usize);
+            let skip_n = match skip.as_ref() {
+                Some(e) => crate::executor::eval_row_count("SKIP", e, &eval_ctx)?,
+                None => 0,
+            };
+            let limit_n = match limit.as_ref() {
+                Some(e) => Some(crate::executor::eval_row_count("LIMIT", e, &eval_ctx)?),
+                None => None,
+            };
             Ok(Box::new(LimitSource::new(upstream, skip_n, limit_n)))
         }
 

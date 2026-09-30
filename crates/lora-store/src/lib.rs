@@ -19,18 +19,18 @@ pub mod types;
 // `types` module is also `pub` so callers can opt for the namespaced
 // path (`lora_store::types::spatial::LoraPoint`) when they prefer it.
 pub use types::{
-    cartesian_distance, cosine_similarity_bounded, cosine_similarity_raw, days_in_month,
-    dot_product, euclidean_distance, euclidean_distance_squared, euclidean_norm,
-    euclidean_similarity, hamming_distance, haversine_distance, is_leap_year, manhattan_distance,
-    manhattan_norm, parse_string_values, point_distance, resolve_srid, resolve_srid_checked,
-    srid_from_crs_name, srid_is_3d, srid_is_geographic, srid_is_supported, ExpandedRelationship,
-    LocalOffset, LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime,
-    LoraLocalTime, LoraPoint, LoraTime, LoraVector, NamedPointCoordinates, NodeId, NodeRecord,
-    ParseVectorCoordinateTypeError, PointKeyFamily, Properties, PropertyMap, PropertyValue,
-    RawCoordinate, RelationshipId, RelationshipRecord, SridResolveError, VectorBuildError,
-    VectorCoordinateType, VectorValues, ZoneId, CRS_CARTESIAN, CRS_CARTESIAN_3D, CRS_WGS84_2D,
-    CRS_WGS84_3D, MAX_VECTOR_DIMENSION, SRID_CARTESIAN, SRID_CARTESIAN_3D, SRID_WGS84,
-    SRID_WGS84_3D,
+    bbox_contains, bbox_x_ranges, cartesian_distance, cosine_similarity_bounded,
+    cosine_similarity_raw, days_in_month, dot_product, euclidean_distance,
+    euclidean_distance_squared, euclidean_norm, euclidean_similarity, hamming_distance,
+    haversine_distance, is_leap_year, manhattan_distance, manhattan_norm, parse_string_values,
+    point_distance, resolve_srid, resolve_srid_checked, srid_from_crs_name, srid_is_3d,
+    srid_is_geographic, srid_is_supported, ExpandedRelationship, LocalOffset, LoraBinary, LoraDate,
+    LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime, LoraVector,
+    NamedPointCoordinates, NodeId, NodeRecord, ParseVectorCoordinateTypeError, PointKeyFamily,
+    Properties, PropertyMap, PropertyValue, RawCoordinate, RelationshipId, RelationshipRecord,
+    SridResolveError, VectorBuildError, VectorCoordinateType, VectorValues, ZoneId, CRS_CARTESIAN,
+    CRS_CARTESIAN_3D, CRS_WGS84_2D, CRS_WGS84_3D, MAX_VECTOR_DIMENSION, SRID_CARTESIAN,
+    SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
 };
 
 // ---------- Storage trait surface ----------

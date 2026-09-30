@@ -159,32 +159,61 @@ pub(super) fn unwind_rows<S: GraphStorage>(
     Ok(out)
 }
 
+/// A `SKIP` or `LIMIT` count, evaluated against an empty row. `null`, a
+/// negative number or a non-integer is an error, as in Neo4j: reading
+/// `LIMIT null` as "no limit" would turn an omitted parameter into an
+/// unbounded result.
+pub(crate) fn eval_row_count<S: GraphStorage>(
+    clause: &str,
+    expr: &ResolvedExpr,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<usize> {
+    let value =
+        eval_expr_result(expr, &Row::new(), eval_ctx).map_err(ExecutorError::RuntimeError)?;
+    let n = match value {
+        LoraValue::Int(n) => Some(n),
+        LoraValue::Float(f) if f.fract() == 0.0 && f.is_finite() => Some(f as i64),
+        _ => None,
+    };
+    match n {
+        Some(n) if n >= 0 => Ok(n as usize),
+        _ => Err(ExecutorError::RuntimeError(format!(
+            "{clause} expects a non-negative integer, got {}",
+            describe_count(&value)
+        ))),
+    }
+}
+
+fn describe_count(value: &LoraValue) -> String {
+    match value {
+        LoraValue::Null => "null".to_string(),
+        LoraValue::Int(n) => n.to_string(),
+        LoraValue::Float(f) => f.to_string(),
+        other => value_kind(other),
+    }
+}
+
 pub(super) fn limit_rows<S: GraphStorage>(
     mut rows: Vec<Row>,
     op: &LimitExec,
     eval_ctx: &EvalContext<'_, S>,
-) -> Vec<Row> {
-    let limit = op
-        .limit
-        .as_ref()
-        .and_then(|e| eval_expr(e, &Row::new(), eval_ctx).as_i64())
-        .unwrap_or(rows.len() as i64)
-        .max(0) as usize;
-
-    let skip = op
-        .skip
-        .as_ref()
-        .and_then(|e| eval_expr(e, &Row::new(), eval_ctx).as_i64())
-        .unwrap_or(0)
-        .max(0) as usize;
+) -> ExecResult<Vec<Row>> {
+    let limit = match op.limit.as_ref() {
+        Some(e) => eval_row_count("LIMIT", e, eval_ctx)?,
+        None => rows.len(),
+    };
+    let skip = match op.skip.as_ref() {
+        Some(e) => eval_row_count("SKIP", e, eval_ctx)?,
+        None => 0,
+    };
 
     if skip >= rows.len() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     rows.drain(0..skip);
     rows.truncate(limit);
-    rows
+    Ok(rows)
 }
 
 #[inline]
@@ -1714,9 +1743,33 @@ pub(crate) fn node_by_point_scan_rows<S: GraphStorage>(
 
         let candidate_ids = match single_label_hint(&op.labels) {
             Some(label) => match &probe {
-                Probe::WithinBBox { ll, ur } => storage
-                    .node_point_within_bbox(label, &op.key, (ll.x, ll.y), (ur.x, ur.y))
-                    .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
+                Probe::WithinBBox { ll, ur } => {
+                    // Two seeks when the box crosses the antimeridian.
+                    let (ranges, n) = lora_store::bbox_x_ranges(ll, ur);
+                    let (lo_y, hi_y) = (ll.y.min(ur.y), ll.y.max(ur.y));
+                    let mut ids = Vec::new();
+                    let mut indexed = true;
+                    for (lo_x, hi_x) in &ranges[..n] {
+                        match storage.node_point_within_bbox(
+                            label,
+                            &op.key,
+                            (*lo_x, lo_y),
+                            (*hi_x, hi_y),
+                        ) {
+                            Some(found) => ids.extend(found),
+                            None => indexed = false,
+                        }
+                    }
+                    if !indexed {
+                        scan_node_ids_for_label_groups(storage, &op.labels)
+                    } else {
+                        if n > 1 {
+                            ids.sort_unstable();
+                            ids.dedup();
+                        }
+                        ids
+                    }
+                }
                 Probe::WithinDistance { center, max, .. } => storage
                     .node_point_within_distance(label, &op.key, (center.x, center.y), *max)
                     .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
@@ -1771,19 +1824,7 @@ enum Probe {
 
 fn point_predicate_holds(actual: &lora_store::LoraPoint, probe: &Probe) -> bool {
     match probe {
-        Probe::WithinBBox { ll, ur } => {
-            if actual.srid != ll.srid || actual.srid != ur.srid {
-                return false;
-            }
-            let in_x = actual.x >= ll.x.min(ur.x) && actual.x <= ll.x.max(ur.x);
-            let in_y = actual.y >= ll.y.min(ur.y) && actual.y <= ll.y.max(ur.y);
-            let in_z = match (actual.z, ll.z, ur.z) {
-                (Some(pz), Some(lz), Some(uz)) => pz >= lz.min(uz) && pz <= lz.max(uz),
-                (None, None, None) => true,
-                _ => return false,
-            };
-            in_x && in_y && in_z
-        }
+        Probe::WithinBBox { ll, ur } => lora_store::bbox_contains(actual, ll, ur).unwrap_or(false),
         Probe::WithinDistance {
             center,
             max,
@@ -2617,7 +2658,23 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
 
         let candidate_ids = rel_candidate_ids(storage, &op.types, |ty| match &probe {
             Probe::WithinBBox { ll, ur } => {
-                storage.relationship_point_within_bbox(ty, &op.key, (ll.x, ll.y), (ur.x, ur.y))
+                // Two seeks when the box crosses the antimeridian.
+                let (ranges, n) = lora_store::bbox_x_ranges(ll, ur);
+                let (lo_y, hi_y) = (ll.y.min(ur.y), ll.y.max(ur.y));
+                let mut ids = Vec::new();
+                for (lo_x, hi_x) in &ranges[..n] {
+                    ids.extend(storage.relationship_point_within_bbox(
+                        ty,
+                        &op.key,
+                        (*lo_x, lo_y),
+                        (*hi_x, hi_y),
+                    )?);
+                }
+                if n > 1 {
+                    ids.sort_unstable();
+                    ids.dedup();
+                }
+                Some(ids)
             }
             Probe::WithinDistance { center, max, .. } => {
                 storage.relationship_point_within_distance(ty, &op.key, (center.x, center.y), *max)
