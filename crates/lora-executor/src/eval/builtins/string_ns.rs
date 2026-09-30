@@ -273,9 +273,26 @@ fn after(args: &[LoraValue]) -> LoraValue {
     }
 }
 
+/// `string.split(s, delimiter)` / Cypher `split`.
+///
+/// The delimiter is a string, a `/regex/`, or a list of strings (as in
+/// Neo4j 5): a list splits on any of its delimiters, taken literally; at
+/// each position the first delimiter in the list that matches wins. A
+/// null in the list makes the result null.
+///
+/// An empty delimiter splits into Unicode code points (Rust `char`s), not
+/// grapheme clusters: `split('é', '')` is `['é']` for the precomposed
+/// U+00E9 but `['e', '́']` for `e` plus a combining acute accent.
+/// A list whose delimiters are all empty behaves the same way; empty
+/// delimiters next to non-empty ones are ignored.
 fn split(args: &[LoraValue]) -> LoraValue {
-    let (Some(s), Some(LoraValue::String(sep))) = (as_str(args.first()), args.get(1)) else {
+    let Some(s) = as_str(args.first()) else {
         return LoraValue::Null;
+    };
+    let sep = match args.get(1) {
+        Some(LoraValue::String(sep)) => sep,
+        Some(LoraValue::List(seps)) => return split_on_any(s, seps),
+        _ => return LoraValue::Null,
     };
     if is_regex(sep) {
         let pattern = strip_regex(sep);
@@ -290,11 +307,7 @@ fn split(args: &[LoraValue]) -> LoraValue {
     } else if sep.is_empty() {
         // An empty delimiter splits into characters, as in Cypher: `str::split`
         // would add an empty string at each end.
-        LoraValue::List(
-            s.chars()
-                .map(|c| LoraValue::String(c.to_string()))
-                .collect(),
-        )
+        split_chars(s)
     } else {
         LoraValue::List(
             s.split(sep.as_str())
@@ -302,6 +315,51 @@ fn split(args: &[LoraValue]) -> LoraValue {
                 .collect(),
         )
     }
+}
+
+fn split_chars(s: &str) -> LoraValue {
+    LoraValue::List(
+        s.chars()
+            .map(|c| LoraValue::String(c.to_string()))
+            .collect(),
+    )
+}
+
+/// Split on any of `seps`, read literally; see [`split`].
+fn split_on_any(s: &str, seps: &[LoraValue]) -> LoraValue {
+    let mut delimiters: Vec<&str> = Vec::with_capacity(seps.len());
+    let mut saw_empty = false;
+    for sep in seps {
+        match sep {
+            LoraValue::String(d) if d.is_empty() => saw_empty = true,
+            LoraValue::String(d) => delimiters.push(d),
+            _ => return LoraValue::Null,
+        }
+    }
+    if delimiters.is_empty() {
+        return if saw_empty {
+            split_chars(s)
+        } else {
+            LoraValue::List(vec![LoraValue::String(s.to_string())])
+        };
+    }
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut pos = 0;
+    while pos < s.len() {
+        let rest = &s[pos..];
+        match delimiters.iter().find(|d| rest.starts_with(**d)) {
+            Some(d) => {
+                parts.push(LoraValue::String(s[start..pos].to_string()));
+                pos += d.len();
+                start = pos;
+            }
+            // Step one character, keeping `pos` on a char boundary.
+            None => pos += rest.chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    parts.push(LoraValue::String(s[start..].to_string()));
+    LoraValue::List(parts)
 }
 
 fn join(args: &[LoraValue]) -> LoraValue {

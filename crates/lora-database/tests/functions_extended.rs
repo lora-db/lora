@@ -209,6 +209,53 @@ fn split_empty_delimiter_gives_the_characters() {
         db.scalar("RETURN size(split('abc', ''))"),
         serde_json::json!(3)
     );
+    // Code points, not grapheme clusters: a decomposed é is two elements.
+    assert_eq!(
+        db.scalar("RETURN split('e\u{301}', '')"),
+        serde_json::json!(["e", "\u{301}"])
+    );
+}
+
+/// A list of delimiters splits on any of them, as in Neo4j 5 (it returned
+/// null).
+#[test]
+fn split_on_a_list_of_delimiters() {
+    let db = TestDb::new();
+    assert_eq!(
+        db.scalar("RETURN split('a,b;c', [',', ';'])"),
+        serde_json::json!(["a", "b", "c"])
+    );
+    assert_eq!(
+        db.scalar("RETURN string.split('a,,b;', [',', ';'])"),
+        serde_json::json!(["a", "", "b", ""])
+    );
+    // Multi-character delimiters; the first one in the list that matches
+    // at a position wins.
+    assert_eq!(
+        db.scalar("RETURN split('a--b-c', ['--', '-'])"),
+        serde_json::json!(["a", "b", "c"])
+    );
+    assert_eq!(
+        db.scalar("RETURN split('a--b', ['-', '--'])"),
+        serde_json::json!(["a", "", "b"])
+    );
+    assert_eq!(
+        db.scalar("RETURN split('abc', [])"),
+        serde_json::json!(["abc"])
+    );
+    assert_eq!(
+        db.scalar("RETURN split('abc', [''])"),
+        serde_json::json!(["a", "b", "c"])
+    );
+    assert_eq!(
+        db.scalar("RETURN split('abc', [',', null])"),
+        serde_json::json!(null)
+    );
+    // A list delimiter is literal text, never a regex.
+    assert_eq!(
+        db.scalar("RETURN split('a.b', ['.'])"),
+        serde_json::json!(["a", "b"])
+    );
 }
 
 // ============================================================

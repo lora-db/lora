@@ -154,8 +154,17 @@ RETURN string.split('p12', '');              // ['p', '1', '2']
 RETURN string.join(['red', 'green'], ', ');  // 'red, green'
 RETURN string.words('  red green\tblue ')   // ['red', 'green', 'blue']`} />
 
-Empty input returns `['']`. An empty delimiter splits into characters
-(and `split('', '')` is `[]`).
+Empty input returns `['']`. An empty delimiter splits into Unicode code
+points, not grapheme clusters (and `split('', '')` is `[]`): a
+precomposed `é` stays one element, an `e` followed by a combining accent
+becomes two.
+
+A list of delimiters splits on any of them, as in Neo4j 5. Each is
+literal text (never a regex), and at each position the first one in the
+list that matches wins.
+
+<QueryCodeBlock code={String.raw`RETURN split('a,b;c', [',', ';']);      // ['a', 'b', 'c']
+RETURN split('a--b-c', ['--', '-'])     // ['a', 'b', 'c']`} />
 `string.words` uses Unicode whitespace and drops empty fields, which is
 usually what you want for tokenizing human-entered text.
 
