@@ -192,12 +192,17 @@ fn database_clear(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
     without_gvl_lora_result(ruby, move || db.try_clear())
 }
 
+/// Dropping the last handle to a persistent database flushes and closes its
+/// WAL, so the drop runs with the GVL released like any other engine call.
 fn database_close(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
-    let mut slot = rb_self
+    let db = rb_self
         .db
         .lock()
-        .map_err(|_| query_error(ruby, "database lock poisoned"))?;
-    slot.take();
+        .map_err(|_| query_error(ruby, "database lock poisoned"))?
+        .take();
+    if let Some(db) = db {
+        without_gvl(move || drop(db)).map_err(|panic| query_error(ruby, panic.to_string()))?;
+    }
     Ok(())
 }
 

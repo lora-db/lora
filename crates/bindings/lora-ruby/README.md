@@ -206,10 +206,12 @@ db = LoraRuby::Database.open_wal(
 
 ## Concurrency (GVL release)
 
-Every engine call (`execute`, `explain`, `profile`, `clear`, snapshot
-save/load, opening a database) runs under `rb_thread_call_without_gvl`, so
-other Ruby threads run while the engine is busy. Auto-commit reads can
-overlap on engine snapshots; writes serialize on the engine's writer lock.
+Every engine call that can block (`execute`, `explain`, `profile`, `clear`,
+snapshot save/load, opening and closing a database) runs under
+`rb_thread_call_without_gvl`, so other Ruby threads run while the engine is
+busy. `node_count` and `relationship_count` read a snapshot without waiting
+and keep the GVL. Auto-commit reads can overlap on engine snapshots; writes
+serialize on the engine's writer lock.
 
 A write waiting for that lock waits with the GVL released, and the Ruby
 binding has no interactive transactions: each write takes the lock and

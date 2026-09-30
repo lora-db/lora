@@ -65,25 +65,38 @@ class TestWriterLock < Minitest::Test
   end
 
   # clear waits for the writer lock; while it waits, other Ruby threads
-  # must keep running (the GVL is released for the wait).
+  # must keep running (the GVL is released for the wait). A clear that
+  # happened not to wait (the writer had not started, or had finished)
+  # proves nothing, so the child retries until one waited at least 20 ms.
   def test_clear_waits_for_the_writer_lock_without_the_gvl
     out = run_child(<<~RUBY)
       db = LoraRuby::Database.create
       ticks = 0
       stop = false
       ticker = Thread.new { until stop; ticks += 1; Thread.pass; end }
-      writer = Thread.new { db.execute("UNWIND range(1, 400000) AS i CREATE (:X {i: i})") }
-      sleep 0.05
-      before = ticks
-      db.clear
-      during = ticks - before
-      writer.join
+      clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+      result = nil
+      10.times do
+        writer = Thread.new { db.execute("UNWIND range(1, 400000) AS i CREATE (:X {i: i})") }
+        sleep 0.05
+        before = ticks
+        started = clock.call
+        db.clear
+        waited = clock.call - started
+        during = ticks - before
+        writer.join
+        if waited >= 0.02
+          result = "waited=\#{waited.round(3)} ticks=\#{during}"
+          break
+        end
+      end
       stop = true
       ticker.join
-      puts "ticks=\#{during}"
+      puts(result || "never waited")
     RUBY
+    refute_includes out, "never waited", "no clear waited for the writer lock in 10 tries"
     ticks = out[/ticks=(\d+)/, 1].to_i
-    assert_operator ticks, :>, 0, "Ruby threads froze while clear waited for the writer lock"
+    assert_operator ticks, :>, 0, "Ruby threads froze while clear waited for the writer lock: #{out}"
   end
 
   # The process exits promptly while many writers are running or waiting
