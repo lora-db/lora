@@ -503,7 +503,10 @@ type Mutation {
 ```
 
 `this` is the parent node; arguments are `$parameters`; `$jwt` holds the
-request's claims. `columnName` is inferred from `RETURN x` or `RETURN … AS x`.
+request's claims. `columnName` is inferred when the statement's last
+top-level `RETURN` has one item, `RETURN x` or `RETURN … AS x` (commas
+inside calls, lists, maps and `CALL { }` do not count); with several
+items, set it.
 Fields returning `@node` types are projected with the selection like any
 other node, and read filters apply to them.
 

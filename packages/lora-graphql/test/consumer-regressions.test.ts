@@ -1003,3 +1003,51 @@ describe("G-3: a @storedAs scalar keeps its SDL description", () => {
     );
   });
 });
+
+describe("G-8: @cypher column inference reads the single returned column", () => {
+  const column = (statement: string, type = "Int") => {
+    const lora = new LoraGraphQL({
+      typeDefs: `type F @node { key: String! @key
+        n: ${type} @cypher(statement: ${JSON.stringify(statement)}) }`,
+      driver: undefined as never,
+    });
+    const f = lora.model.nodes.get("F")!.fields.get("n")!;
+    return f.kind === "cypher" ? f.columnName : undefined;
+  };
+
+  test("commas inside calls, lists and maps", () => {
+    expect(column("RETURN coalesce(1, 2) AS n")).toBe("n");
+    expect(
+      column("RETURN reduce(s = 0, x IN [1, 2, 3] | s + x) AS total"),
+    ).toBe("total");
+    expect(column("RETURN size([x IN [1, 2] WHERE x > 1 | x]) AS c")).toBe("c");
+    expect(column("RETURN {a: 1, b: 2}.a AS m")).toBe("m");
+  });
+
+  test("RETURNs inside subqueries, strings and comments are not the last", () => {
+    expect(
+      column("CALL { WITH this RETURN 1 AS a, 2 AS b } RETURN a + b AS sum"),
+    ).toBe("sum");
+    expect(column("RETURN size('RETURN a, b') AS len")).toBe("len");
+    expect(column("RETURN 1 AS one // RETURN x, y")).toBe("one");
+    expect(column("RETURN DISTINCT this.key AS `the, key`", "String")).toBe(
+      "the, key",
+    );
+  });
+
+  test("ORDER BY, SKIP and LIMIT after the item, and bare variables", () => {
+    expect(
+      column(
+        "MATCH (x:F) RETURN x.key AS k ORDER BY x.key, x.n LIMIT 1",
+        "String",
+      ),
+    ).toBe("k");
+    expect(column("WITH 1 AS v RETURN v")).toBe("v");
+  });
+
+  test("two returned columns still need columnName", () => {
+    expect(() => column("RETURN 1 AS a, 2 AS b")).toThrow(
+      /cannot tell which column holds the value/,
+    );
+  });
+});

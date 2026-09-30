@@ -94,3 +94,39 @@ export function codeOnly(text: string): string {
   }
   return out.toUpperCase().replace(/\s+/g, " ");
 }
+
+/**
+ * `text` with the same length and offsets, strings and comments blanked
+ * and the insides of backtick-quoted names replaced by `_`, so structure
+ * (brackets, commas, keywords) can be read without being fooled by them.
+ */
+export function maskLiterals(text: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i]!;
+    let end: number;
+    if (c === "'" || c === '"') {
+      end = skipQuoted(text, i, c);
+      out += " ".repeat(end - i);
+    } else if (c === "`") {
+      const close = text.indexOf("`", i + 1);
+      end = close < 0 ? text.length : close + 1;
+      out +=
+        "`" + "_".repeat(Math.max(0, end - i - 2)) + (close < 0 ? "" : "`");
+    } else if (c === "/" && text[i + 1] === "/") {
+      const nl = text.indexOf("\n", i);
+      end = nl < 0 ? text.length : nl;
+      out += " ".repeat(end - i);
+    } else if (c === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      end = close < 0 ? text.length : close + 2;
+      out += text.slice(i, end).replace(/[^\n]/g, " ");
+    } else {
+      end = i + 1;
+      out += c;
+    }
+    i = end;
+  }
+  return out;
+}

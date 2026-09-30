@@ -26,7 +26,7 @@ import {
 import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
 import { ModelError, type ModelProblem } from "../errors.js";
 import { directiveTypeDefs, PRELUDE_TYPES } from "./directives.js";
-import { codeOnly, scanParams } from "./cypher-lexer.js";
+import { codeOnly, maskLiterals, scanParams } from "./cypher-lexer.js";
 import type {
   AbstractType,
   SearchIndex,
@@ -1567,19 +1567,44 @@ function buildCypherField(
 }
 
 /** The column of a statement ending in `RETURN x` or `RETURN … AS x`. */
+/**
+ * The column a statement returns, when it returns exactly one: the alias
+ * of the single item of its last top-level RETURN (or the item, when it
+ * is a bare variable). Brackets, strings and comments are respected, so
+ * `RETURN coalesce(a, b) AS n` and a RETURN inside `CALL { }` do not
+ * confuse it.
+ */
 function inferColumn(statement: string): string | undefined {
-  const matches = [...statement.matchAll(/\bRETURN\b/gi)];
-  const last = matches[matches.length - 1];
+  const code = maskLiterals(statement);
+  const depths: number[] = [];
+  let depth = 0;
+  for (const c of code) {
+    if (c === ")" || c === "]" || c === "}") depth--;
+    depths.push(depth);
+    if (c === "(" || c === "[" || c === "{") depth++;
+  }
+  const topLevel = (re: RegExp, from = 0) =>
+    [...code.slice(from).matchAll(re)]
+      .map((m) => ({ index: m.index! + from, length: m[0].length }))
+      .filter((m) => depths[m.index] === 0);
+  const last = topLevel(/\bRETURN\b/gi).at(-1);
   if (!last) return undefined;
-  const tail = statement
-    .slice(last.index! + last[0].length)
-    .replace(/\s+(ORDER\s+BY|SKIP|LIMIT)\b[\s\S]*$/i, "")
-    .replace(/^\s*DISTINCT\b/i, "")
-    .trim();
-  if (tail.includes(",")) return undefined;
-  const alias = /\bAS\s+`?([A-Za-z_][A-Za-z0-9_]*)`?\s*$/i.exec(tail);
-  if (alias) return alias[1];
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(tail) ? tail : undefined;
+  const start = last.index + last.length;
+  const stop =
+    topLevel(/\b(ORDER\s+BY|SKIP|LIMIT|UNION)\b/gi, start)[0]?.index ??
+    code.length;
+  const commas = topLevel(/,/g, start).filter((m) => m.index < stop);
+  if (commas.length > 0) return undefined;
+  const item = code.slice(start, stop).replace(/^\s*DISTINCT\b/i, "");
+  const offset = stop - item.length;
+  const alias = /\bAS\s+(`[^`]*`|[A-Za-z_][A-Za-z0-9_]*)\s*$/i.exec(item);
+  if (alias) {
+    const at = offset + alias.index + alias[0].indexOf(alias[1]!);
+    const name = statement.slice(at, at + alias[1]!.length);
+    return name.startsWith("`") ? name.slice(1, -1) : name;
+  }
+  const bare = item.trim();
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(bare) ? bare : undefined;
 }
 
 function shapeOf(shape: ReturnType<typeof unwrap>): Omit<TypeShape, "named"> {
