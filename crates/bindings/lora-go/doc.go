@@ -61,4 +61,12 @@
 // A single *Database is safe to share across goroutines. Read-only
 // queries can share the Rust store read lock, while writes serialize
 // on the store write lock. Close must not race with any in-flight call.
+//
+// A write waiting for the lock blocks its goroutine inside a cgo call,
+// which holds an OS thread but not a P, so GOMAXPROCS=1 is fine and the
+// writer holding the lock always gets to run. Each concurrently waiting
+// writer does occupy a thread: keep the number of concurrent writers well
+// below [runtime/debug.SetMaxThreads] (10000 by default), or the runtime
+// aborts with "thread exhaustion". A mutating [Database.Stream] holds the
+// lock until it is exhausted or closed; see its documentation.
 package lora

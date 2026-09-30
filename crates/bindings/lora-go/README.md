@@ -194,6 +194,30 @@ enough that the worst-case latency is acceptable even if it can't be
 interrupted, or (b) guard the database with a per-call timeout at a
 higher layer (e.g. a rate-limited queue).
 
+## Concurrency
+
+A single `*Database` is safe to share across goroutines. Reads run in
+parallel; writes serialize on the engine's writer lock.
+
+- **Waiting writers hold an OS thread, not a P.** A write waiting for the
+  lock blocks inside its cgo call. The Go runtime hands that goroutine's
+  P to another goroutine, so the writer holding the lock always runs, even
+  with `GOMAXPROCS=1` and many concurrent writers. Each waiting writer does
+  occupy an OS thread: keep concurrent writers well below
+  `debug.SetMaxThreads` (10000 by default), or the runtime aborts with
+  `thread exhaustion`. Bound them with a semaphore if they are unbounded.
+- **`Execute` and `Transaction` hold the lock only for their own call.**
+  `Transaction` is a batch: the whole statement list runs in one call.
+- **A mutating `Stream` holds the lock until it is done.** A `Stream` over
+  `CREATE`, `SET`, `MERGE`, `DELETE`, … takes the writer lock when it
+  opens and keeps it until the iterator is exhausted (commit) or closed
+  (rollback). Every other write waits meanwhile, so drain or close it
+  promptly, and do not write from the goroutine holding it before it is
+  done: that write waits for the stream, which waits for that goroutine.
+  The iterator may be pulled and closed from any goroutine (the engine
+  keeps the lock on its own thread), and it stays valid after
+  `db.Close()`.
+
 ## Errors
 
 Every method returns a `*LoraError` on failure. The `Code` field is

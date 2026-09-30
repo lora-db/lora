@@ -343,9 +343,15 @@ func (db *Database) ProfileContext(ctx context.Context, query string, params Par
 	}
 }
 
-// Stream runs a query and returns an iterator over its rows. The current
-// binding materializes the native result first, then exposes row-by-row
-// consumption to Go callers.
+// Stream runs a query and returns an iterator over its rows, pulled from
+// the engine one Next call at a time. The iterator may be used from any
+// goroutine, and outlives [Database.Close].
+//
+// A mutating query (CREATE, SET, MERGE, DELETE, ...) holds the database's
+// writer lock until the iterator is exhausted, which commits it, or
+// closed, which rolls an unfinished one back. Every other write waits
+// meanwhile, so drain or close it promptly, and never write from the
+// goroutine holding it before it is done (that write waits for itself).
 func (db *Database) Stream(query string, params Params) (*RowIterator, error) {
 	return db.StreamContext(context.Background(), query, params)
 }
