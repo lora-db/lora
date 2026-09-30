@@ -59,6 +59,7 @@ The following features were listed as gaps in earlier revisions of this document
 | `null` in a property map is not stored and `SET` with `null` removes the property; existence constraints on entities a statement creates are checked when the statement finishes, so `CREATE (n:User) SET n.name = $name` passes | `tests/null_properties_and_deferred_existence.rs` |
 | A read with an early `LIMIT` stops scanning once the limit is met, also under a deadline and inside an explicit transaction. Previously both ran the full executor and materialized every row first | `tests/early_limit.rs` |
 | `<`, `<=`, `>`, `>=` on lists compare element by element, and a null or mismatched operand gives `null`. Previously both gave `false`: `[f.name, f.key] > $after` matched nothing, `NOT (1 < 'a')` was true, and integers above 2^53 compared through `f64` | `tests/comparison_ordering.rs` |
+| `first()` as the standard name for `head()` | `tests/expressions.rs` |
 | Node binding: exact 64-bit integers (`bigint`), per-call `timeoutMs` / `AbortSignal` and a database-wide `queryTimeoutMs`, interactive transactions (`db.begin()`), typed `LORA_LOCKED` for a directory held by another process, `{latitude, longitude}` point params, musl prebuilds | `crates/bindings/lora-node/test/{integers,timeouts,interactive,locking}.test.ts` |
 
 ---

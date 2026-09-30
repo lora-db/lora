@@ -194,7 +194,7 @@ integral results, where Neo4j returns a float.
 | Function | Status |
 |----------|--------|
 | `value.size(list)` / `size(list)` | **Supported** |
-| `list.first` / `head`, `list.rest` / `tail`, `list.last` / `last` | **Supported** |
+| `list.first` / `head` / `first`, `list.rest` / `tail`, `list.last` / `last` | **Supported** |
 | `value.reverse(list)` / `reverse(list)` | **Supported** |
 | `list.range(start, end[, step])` | **Supported** |
 | `reduce(acc = init, x IN list \| expr)` | **Supported** |

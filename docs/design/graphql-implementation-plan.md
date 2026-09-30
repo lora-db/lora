@@ -55,8 +55,10 @@ is per request, and the engine caches plans by text).
 Engine prerequisites, re-checked against the current tree: E1 fixed (empty
 labels return no rows), E4 fixed (full-text via `CALL … YIELD`), E6 fixed
 (bigint parameters and results), E7 fixed (`begin()`), E5 partly (a single
-sort key streams from a RANGE index under a range predicate). E9 and E10
-remain. Findings from building the package, with their state after Phase
+sort key streams from a RANGE index under a range predicate), E9 fixed
+(lists compare element by element; the library still writes keyset
+predicates out, since their lead bound gets a range scan) and E10 fixed
+(`first()`). Findings from building the package, with their state after Phase
 16 of [graphql-next-phases.md](graphql-next-phases.md):
 
 | #   | Behaviour                                                                                                         | State                                                                                            |

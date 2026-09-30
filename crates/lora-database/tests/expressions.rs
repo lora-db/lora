@@ -329,6 +329,19 @@ fn head_of_empty_list_is_null() {
     assert!(TestDb::new().scalar("RETURN list.first([])").is_null());
 }
 
+/// `first()` is the standard name the support matrix lists (Festimap brief
+/// P2-2); it was unknown while `head()` worked.
+#[test]
+fn first_is_head() {
+    let db = TestDb::new();
+    assert_eq!(db.scalar("RETURN first([1, 2])"), 1);
+    assert_eq!(db.scalar("RETURN FIRST(['a'])"), "a");
+    assert!(db.scalar("RETURN first([])").is_null());
+    assert!(db.scalar("RETURN first(null)").is_null());
+    db.run("CREATE (:L {xs: [3, 4]})");
+    assert_eq!(db.scalar("MATCH (l:L) RETURN first(l.xs)"), 3);
+}
+
 // ============================================================
 // Range function
 // ============================================================

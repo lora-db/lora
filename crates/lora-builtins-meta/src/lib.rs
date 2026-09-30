@@ -503,6 +503,7 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
     alias("range", "list.range"),
     // Cypher / historical compatibility aliases.
     alias("head", "list.first"),
+    alias("first", "list.first"),
     alias("last", "list.last"),
     alias("coalesce", "value.coalesce"),
     alias("tolower", "string.lower"),
