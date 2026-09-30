@@ -29,6 +29,7 @@ import {
 import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
 import { ModelError, type ModelProblem } from "../errors.js";
 import { directiveTypeDefs, PRELUDE_TYPES } from "./directives.js";
+import { checkDirectivePositions } from "./positions.js";
 import { codeOnly, maskLiterals, scanParams } from "./cypher-lexer.js";
 import type {
   AbstractType,
@@ -159,6 +160,7 @@ export function buildModel(
   const interfaceTypes: GraphQLInterfaceType[] = [];
   const unionTypes: GraphQLUnionType[] = [];
   let jwtShape: Map<string, string> | undefined;
+  let jwtType: string | undefined;
   const warnings: ModelWarning[] = [];
   for (const t of userTypes) {
     if (isScalarType(t)) {
@@ -223,6 +225,7 @@ export function buildModel(
         });
       }
       jwtShape = new Map();
+      jwtType = t.name;
       for (const f of Object.values(t.getFields())) {
         const claim = directive(d("jwtClaim"), f, atType(t.name));
         jwtShape.set(f.name, (claim?.["path"] as string | undefined) ?? f.name);
@@ -281,22 +284,15 @@ export function buildModel(
     ...unionTypes.map((t) => t.name),
   ]);
   const propsNames = new Set(propsTypes.map((t) => t.name));
+  checkDirectivePositions(
+    { schema, nodeNames, propsNames, jwtType, targetNames, userTypes },
+    problems,
+  );
 
   const relationshipProperties = new Map<string, RelationshipPropertiesType>();
   for (const t of propsTypes) {
     const fields = new Map<string, ScalarField>();
     for (const f of Object.values(t.getFields())) {
-      // Directives that relationship writes and reads do not apply are
-      // refused, never silently ignored.
-      for (const unsupported of ["populatedBy", "cypher"]) {
-        if (f.astNode?.directives?.some((x) => x.name.value === unsupported)) {
-          problems.push({
-            type: t.name,
-            field: f.name,
-            message: `@${unsupported} is not supported on a relationship property`,
-          });
-        }
-      }
       const field = buildScalarField(t, f, d, problems, {
         allowKey: false,
       });

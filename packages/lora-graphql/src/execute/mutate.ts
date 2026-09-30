@@ -346,6 +346,32 @@ class WritePlan {
     value: Input,
     update: boolean,
   ): void {
+    // `@authentication` on the relationship field covers writing it too.
+    checkFieldAuthentication(
+      this.ctx,
+      owner.name,
+      rel,
+      update ? "UPDATE" : "CREATE",
+    );
+    if (asList(value["connect"]).length + asList(value["create"]).length > 0) {
+      checkFieldAuthentication(
+        this.ctx,
+        owner.name,
+        rel,
+        "CREATE_RELATIONSHIP",
+      );
+    }
+    if (
+      (value["disconnect"] != null && value["disconnect"] !== false) ||
+      (value["delete"] != null && value["delete"] !== false)
+    ) {
+      checkFieldAuthentication(
+        this.ctx,
+        owner.name,
+        rel,
+        "DELETE_RELATIONSHIP",
+      );
+    }
     if (this.model.abstracts.has(rel.target)) {
       // Member-keyed input: each member's part goes to its concrete copy.
       const members = memberFields(this.model, rel);
@@ -521,6 +547,15 @@ function edgeProps(
         refused = {
           ...refused,
           update: propertyError(props.name, f, "UPDATE", onUpdate),
+        };
+      } else if (!settable(f, "UPDATE")) {
+        // Re-connecting an existing pair would update the property.
+        refused = {
+          ...refused,
+          update: requestError(
+            "BAD_USER_INPUT",
+            `${props.name}.${f.name} is set when the relationship is created; it cannot change on a re-connect`,
+          ),
         };
       }
       out[f.property] = toStored(f, value);

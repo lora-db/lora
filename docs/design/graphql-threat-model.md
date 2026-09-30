@@ -103,6 +103,13 @@ each check runs. The user-facing rules are in the package
 
 ## Writes and change events
 
+- A directive in a position the model would not apply is a model error at
+  startup (`src/model/positions.ts`), so a rule or visibility directive
+  written to protect data is never accepted and ignored. `@authentication`
+  on a relationship field guards writing the relationship (connect,
+  disconnect, nested create and delete), not only reading it, and a
+  relationship property settable on create only cannot be changed by a
+  re-connect.
 - A mutation runs in one transaction. BEFORE rules are checked before
   the first write and AFTER rules before commit; a failure rolls back.
 - `onWrite` listeners and `changes()` receive the exact write-set
