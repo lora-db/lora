@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use napi::bindgen_prelude::*;
-use napi::{Env, Error as NapiError, JsUnknown, Status};
+use napi::{Env, Error as NapiError, JsObject, JsUnknown, Status};
 use napi_derive::napi;
 
 use lora_database::{
@@ -413,20 +413,43 @@ impl Database {
     /// Begin an interactive transaction. Resolves with a transaction id
     /// once it is open; a read-write transaction holds the writer lock
     /// (other writers wait) until it commits or rolls back.
+    ///
+    /// Waiting for the writer lock happens on the transaction's own thread
+    /// and never occupies a libuv worker (see [`interactive`]).
     #[napi(ts_return_type = "Promise<number>")]
     pub fn begin_transaction(
         &self,
+        env: Env,
         #[napi(
             ts_arg_type = "\"read_write\" | \"read_only\" | \"readwrite\" | \"readonly\" | null | undefined"
         )]
         mode: Option<String>,
-    ) -> Result<AsyncTask<tasks::BeginTxTask>> {
-        Ok(AsyncTask::new(tasks::BeginTxTask {
-            db: self.inner()?,
+    ) -> Result<JsObject> {
+        let mode = tasks::parse_transaction_mode(mode.as_deref())?;
+        let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
+        let (deferred, promise) = env.create_deferred::<u32, Resolver<u32>>()?;
+        let registry = self.txs.clone();
+        let actor = interactive::TxActor::spawn(
+            self.inner()?,
             mode,
-            id: self.next_tx_id.fetch_add(1, Ordering::Relaxed),
-            registry: self.txs.clone(),
-        }))
+            Box::new(move |opened| {
+                // Settled on the JS thread, after this call has registered
+                // the actor: a failed open unregisters it there.
+                deferred.resolve(Box::new(move |_env| match opened {
+                    Ok(()) => Ok(id),
+                    Err(message) => {
+                        forget_tx(&registry, id);
+                        Err(interactive::napi_err(message))
+                    }
+                }))
+            }),
+        )
+        .map_err(interactive::napi_err)?;
+        self.txs
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
+            .insert(id, Arc::new(actor));
+        Ok(promise)
     }
 
     /// Run one statement inside interactive transaction `tx_id`. A failed
@@ -434,6 +457,7 @@ impl Database {
     #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn tx_execute(
         &self,
+        env: Env,
         tx_id: u32,
         query: String,
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
@@ -441,15 +465,41 @@ impl Database {
         >,
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
-    ) -> Result<AsyncTask<tasks::TxExecuteTask>> {
-        Ok(AsyncTask::new(tasks::TxExecuteTask {
-            actor: self.tx_actor(tx_id)?,
+    ) -> Result<JsObject> {
+        let actor = self.tx_actor(tx_id)?;
+        let deadline = self.limit(timeout_ms, cancel_token)?.deadline();
+        let params = match params {
+            None | Some(serde_json::Value::Null) => BTreeMap::new(),
+            Some(other) => match json_value_to_params(other) {
+                Ok(params) => params,
+                Err(err) => {
+                    // The JS side treats any rejection as closing the
+                    // transaction; roll it back so the writer lock is freed.
+                    forget_tx(&self.txs, tx_id);
+                    actor.rollback(Box::new(|_| {}));
+                    return Err(err);
+                }
+            },
+        };
+        let (deferred, promise) = env.create_deferred::<Buffer, Resolver<Buffer>>()?;
+        let registry = self.txs.clone();
+        actor.execute(
             query,
             params,
-            limit: self.limit(timeout_ms, cancel_token)?,
-            registry: self.txs.clone(),
-            id: tx_id,
-        }))
+            deadline,
+            Box::new(move |result| {
+                let encoded = result.map(tasks::encode_query_result_rowarrays);
+                deferred.resolve(Box::new(move |_env| match encoded {
+                    Ok(bytes) => Ok(Buffer::from(bytes?)),
+                    Err(message) => {
+                        // The actor rolled back; forget the transaction.
+                        forget_tx(&registry, tx_id);
+                        Err(interactive::napi_err(message))
+                    }
+                }))
+            }),
+        );
+        Ok(promise)
     }
 
     /// Run several statements inside interactive transaction `tx_id` in one
@@ -459,31 +509,79 @@ impl Database {
     #[napi(ts_return_type = "Promise<Buffer[]>")]
     pub fn tx_execute_many(
         &self,
+        env: Env,
         tx_id: u32,
         #[napi(ts_arg_type = "Array<{ query: string; params?: Record<string, any> | null }>")]
         statements: serde_json::Value,
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
-    ) -> Result<AsyncTask<tasks::TxExecuteManyTask>> {
-        Ok(AsyncTask::new(tasks::TxExecuteManyTask {
-            actor: self.tx_actor(tx_id)?,
+    ) -> Result<JsObject> {
+        let actor = self.tx_actor(tx_id)?;
+        let deadline = self.limit(timeout_ms, cancel_token)?.deadline();
+        let statements = match tasks::parse_transaction_statements(statements) {
+            Ok(statements) => statements
+                .into_iter()
+                .map(|st| (st.query, st.params))
+                .collect(),
+            Err(err) => {
+                // A rejected call closes the transaction on the JS side, so
+                // roll it back here too rather than leave the writer lock
+                // held by a handle nothing can reach.
+                forget_tx(&self.txs, tx_id);
+                actor.rollback(Box::new(|_| {}));
+                return Err(err);
+            }
+        };
+        let (deferred, promise) = env.create_deferred::<Vec<Buffer>, Resolver<Vec<Buffer>>>()?;
+        let registry = self.txs.clone();
+        actor.execute_many(
             statements,
-            limit: self.limit(timeout_ms, cancel_token)?,
-            registry: self.txs.clone(),
-            id: tx_id,
-        }))
+            deadline,
+            Box::new(move |result| {
+                let encoded = result.map(|results| {
+                    results
+                        .into_iter()
+                        .map(tasks::encode_query_result_rowarrays)
+                        .collect::<Result<Vec<_>>>()
+                });
+                deferred.resolve(Box::new(move |_env| match encoded {
+                    Ok(buffers) => Ok(buffers?.into_iter().map(Buffer::from).collect()),
+                    Err(message) => {
+                        // The actor rolled back; forget the transaction.
+                        forget_tx(&registry, tx_id);
+                        Err(interactive::napi_err(message))
+                    }
+                }))
+            }),
+        );
+        Ok(promise)
     }
 
     /// Commit (`commit = true`) or roll back interactive transaction `tx_id`.
     #[napi(ts_return_type = "Promise<void>")]
-    pub fn tx_finish(&self, tx_id: u32, commit: bool) -> Result<AsyncTask<tasks::TxFinishTask>> {
+    pub fn tx_finish(&self, env: Env, tx_id: u32, commit: bool) -> Result<JsObject> {
         let actor = self
             .txs
             .lock()
             .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
             .remove(&tx_id)
             .ok_or_else(|| interactive::napi_err(tx_closed_message()))?;
-        Ok(AsyncTask::new(tasks::TxFinishTask { actor, commit }))
+        let (deferred, promise) = env.create_deferred::<(), Resolver<()>>()?;
+        // The handle rides along to the JS thread and is dropped there, after
+        // the actor has finished: its thread is joined off the actor itself.
+        let keep = actor.clone();
+        let done: interactive::Done<()> = Box::new(move |result| {
+            deferred.resolve(Box::new(move |_env| {
+                drop(keep);
+                result.map_err(interactive::napi_err)
+            }))
+        });
+        if commit {
+            actor.commit(done);
+        } else {
+            actor.rollback(done);
+        }
+        Ok(promise)
     }
 
     /// Open a committed-change feed. Resolves with a feed id once the feed
@@ -613,10 +711,18 @@ impl Database {
     #[napi]
     pub fn dispose(&self) -> Result<()> {
         // Dropping an open transaction's actor rolls it back and releases
-        // the writer lock.
-        if let Ok(mut txs) = self.txs.lock() {
-            txs.clear();
+        // the writer lock. Close every actor before joining any: an actor
+        // still waiting for the writer lock must not be joined while the one
+        // holding it waits for a command.
+        let actors = self
+            .txs
+            .lock()
+            .map(|mut txs| std::mem::take(&mut *txs))
+            .unwrap_or_default();
+        for actor in actors.values() {
+            actor.close();
         }
+        drop(actors);
         // End every change feed opened through this handle.
         if let Ok(mut feeds) = self.feeds.lock() {
             feeds.close_all();
@@ -981,6 +1087,16 @@ impl Database {
             Some(d) => QueryLimit::Timeout(d),
             None => QueryLimit::None,
         })
+    }
+}
+
+/// How a transaction call's promise is settled on the JS thread.
+type Resolver<T> = Box<dyn FnOnce(Env) -> Result<T> + Send>;
+
+/// Drop transaction `id` from the registry (on the JS thread).
+fn forget_tx(registry: &TxRegistry, id: u32) {
+    if let Ok(mut txs) = registry.lock() {
+        txs.remove(&id);
     }
 }
 

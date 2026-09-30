@@ -347,6 +347,15 @@ db.execute(…)   ──►   ExecuteTask::compute()   ──►  parser → ana
                    into JsUnknown and resolves the Promise
 ```
 
+Interactive transactions (`db.begin()`) take another path: each open
+transaction lives on its own thread, which takes and holds the writer lock,
+and every call on it (`execute`, `executeMany`, `commit`, `rollback`) is a
+message to that thread, whose reply settles the promise on the JS thread. No
+libuv worker ever waits for a transaction, so any number of concurrent
+`begin()` calls — waiting their turn for the writer lock — leaves the pool free
+for other queries, and the transaction holding the lock always gets to run its
+next statement.
+
 The Rust crate is added to the workspace root (`Cargo.toml`). The Node side is
 self-contained inside this directory. Only sub-millisecond operations
 (`clear`, `nodeCount`, `relationshipCount`) stay synchronous inside napi; the
@@ -387,8 +396,11 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   queries can share the store read lock, while writes serialize on the store
   write lock. Firing many concurrent write queries against the same
   `Database` (e.g. 2 000 parallel `CREATE`s via `Promise.all`) works but
-  queues behind that write lock. Prefer `await`-in-a-loop or a single batched
-  query for heavy write workloads.
+  queues behind that write lock — and an auto-commit or batched write waiting
+  for it occupies a pool thread meanwhile, delaying other queries (never
+  deadlocking: the writer holding the lock always runs). Prefer
+  `await`-in-a-loop or a single batched query for heavy write workloads.
+  Interactive transactions wait on their own threads, not the pool.
 - **Stream timeouts.** `stream()` checks its deadline between rows, so a
   single pull that does a lot of work (a large aggregation) finishes before
   the check fires. `execute()` and `transaction()` check throughout.

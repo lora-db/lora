@@ -36,7 +36,7 @@ use crate::json::json_value_to_params;
 use crate::to_napi::{plan_to_napi, profile_to_napi};
 use crate::QueryLimit;
 
-fn encode_query_result_rowarrays(result: QueryResult) -> Result<Vec<u8>> {
+pub(crate) fn encode_query_result_rowarrays(result: QueryResult) -> Result<Vec<u8>> {
     let QueryResult::RowArrays(row_arrays) = result else {
         return Err(NapiError::new(
             Status::GenericFailure,
@@ -254,12 +254,12 @@ impl Task for TransactionTask {
     }
 }
 
-struct TransactionStatement {
-    query: String,
-    params: BTreeMap<String, LoraValue>,
+pub(crate) struct TransactionStatement {
+    pub(crate) query: String,
+    pub(crate) params: BTreeMap<String, LoraValue>,
 }
 
-fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode> {
+pub(crate) fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode> {
     match mode.unwrap_or("read_write") {
         "read_write" | "readwrite" | "rw" => Ok(TransactionMode::ReadWrite),
         "read_only" | "readonly" | "ro" => Ok(TransactionMode::ReadOnly),
@@ -270,7 +270,9 @@ fn parse_transaction_mode(mode: Option<&str>) -> Result<TransactionMode> {
     }
 }
 
-fn parse_transaction_statements(value: serde_json::Value) -> Result<Vec<TransactionStatement>> {
+pub(crate) fn parse_transaction_statements(
+    value: serde_json::Value,
+) -> Result<Vec<TransactionStatement>> {
     let serde_json::Value::Array(items) = value else {
         return Err(NapiError::new(
             Status::InvalidArg,
@@ -305,155 +307,4 @@ fn parse_transaction_statements(value: serde_json::Value) -> Result<Vec<Transact
             Ok(TransactionStatement { query, params })
         })
         .collect()
-}
-
-/// Opens an interactive transaction on its own actor thread (see
-/// [`crate::interactive`]); runs on a libuv worker because acquiring the
-/// writer lock may wait for another writer.
-pub struct BeginTxTask {
-    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
-    pub(crate) mode: Option<String>,
-    pub(crate) id: u32,
-    pub(crate) registry: crate::TxRegistry,
-}
-
-impl Task for BeginTxTask {
-    type Output = u32;
-    type JsValue = u32;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        let mode = parse_transaction_mode(self.mode.as_deref())?;
-        let actor = crate::interactive::TxActor::begin(self.db.clone(), mode)
-            .map_err(crate::interactive::napi_err)?;
-        self.registry
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
-            .insert(self.id, Arc::new(actor));
-        Ok(self.id)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct TxExecuteTask {
-    pub(crate) actor: Arc<crate::interactive::TxActor>,
-    pub(crate) query: String,
-    pub(crate) params: Option<serde_json::Value>,
-    pub(crate) limit: QueryLimit,
-    pub(crate) registry: crate::TxRegistry,
-    pub(crate) id: u32,
-}
-
-impl Task for TxExecuteTask {
-    type Output = Vec<u8>;
-    type JsValue = Buffer;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        let params = match self.params.take() {
-            None | Some(serde_json::Value::Null) => BTreeMap::new(),
-            Some(other) => match json_value_to_params(other) {
-                Ok(params) => params,
-                Err(err) => {
-                    // The JS side treats any rejection as closing the
-                    // transaction; roll it back so the writer lock is freed.
-                    let _ = self.actor.rollback();
-                    if let Ok(mut txs) = self.registry.lock() {
-                        txs.remove(&self.id);
-                    }
-                    return Err(err);
-                }
-            },
-        };
-        let query = std::mem::take(&mut self.query);
-        match self.actor.execute(query, params, self.limit.deadline()) {
-            Ok(result) => encode_query_result_rowarrays(result),
-            Err(message) => {
-                // The actor rolled back; forget the transaction.
-                if let Ok(mut txs) = self.registry.lock() {
-                    txs.remove(&self.id);
-                }
-                Err(crate::interactive::napi_err(message))
-            }
-        }
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(Buffer::from(output))
-    }
-}
-
-/// Work unit for `Transaction.executeMany`: several statements in one
-/// native call and one actor round trip.
-pub struct TxExecuteManyTask {
-    pub(crate) actor: Arc<crate::interactive::TxActor>,
-    pub(crate) statements: serde_json::Value,
-    pub(crate) limit: QueryLimit,
-    pub(crate) registry: crate::TxRegistry,
-    pub(crate) id: u32,
-}
-
-impl Task for TxExecuteManyTask {
-    type Output = Vec<Vec<u8>>;
-    type JsValue = Vec<Buffer>;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        let statements = match parse_transaction_statements(std::mem::take(&mut self.statements)) {
-            Ok(statements) => statements
-                .into_iter()
-                .map(|st| (st.query, st.params))
-                .collect(),
-            Err(err) => {
-                // A rejected call closes the transaction on the JS side, so
-                // roll it back here too rather than leave the writer lock
-                // held by a handle nothing can reach.
-                let _ = self.actor.rollback();
-                if let Ok(mut txs) = self.registry.lock() {
-                    txs.remove(&self.id);
-                }
-                return Err(err);
-            }
-        };
-        match self.actor.execute_many(statements, self.limit.deadline()) {
-            Ok(results) => results
-                .into_iter()
-                .map(encode_query_result_rowarrays)
-                .collect(),
-            Err(message) => {
-                // The actor rolled back; forget the transaction.
-                if let Ok(mut txs) = self.registry.lock() {
-                    txs.remove(&self.id);
-                }
-                Err(crate::interactive::napi_err(message))
-            }
-        }
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output.into_iter().map(Buffer::from).collect())
-    }
-}
-
-pub struct TxFinishTask {
-    pub(crate) actor: Arc<crate::interactive::TxActor>,
-    pub(crate) commit: bool,
-}
-
-impl Task for TxFinishTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        let result = if self.commit {
-            self.actor.commit()
-        } else {
-            self.actor.rollback()
-        };
-        result.map_err(crate::interactive::napi_err)
-    }
-
-    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
-        Ok(())
-    }
 }

@@ -118,6 +118,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Issue | Classification | Impact |
 |-------|---------------|--------|
 | Write publication still serializes | Observed | Read-only auto-commit queries load Arc snapshots without a store lock; write commits and explicit read-write transactions serialize through the database writer mutex |
+| Writers waiting on the Node pool | Fixed | A read-write `begin()` transaction waited for the writer lock on a libuv worker, and each of its calls went through one; with more waiting transactions than pool threads, the lock holder could not run its next statement and the process stopped. Interactive transactions now wait and run on their own threads and settle their promises from there (`crates/bindings/lora-node/src/interactive.rs`, `test/pool.test.ts`). Auto-commit and batched writes waiting for the lock still occupy a pool thread (a latency, not a deadlock) |
 | Some predicates still scan | Observed | Vector similarity, regex, non-indexed properties, nested map paths, and unsupported composite seek shapes scan candidate records |
 | Clone-heavy read API | Observed | Allocation overhead proportional to result set |
 | Query timeout coverage | Observed | Cooperative deadlines and cancellation cover eager, streaming and write execution in Rust and the Node binding (`execute`, `transaction`, `stream`, `begin`). A `stream()` checks between rows, so one blocking pull (a large aggregation) finishes before the check. HTTP and the other bindings do not expose timeouts yet |

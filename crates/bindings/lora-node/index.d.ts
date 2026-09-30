@@ -107,6 +107,9 @@ export declare class Database {
    * Begin an interactive transaction. Resolves with a transaction id
    * once it is open; a read-write transaction holds the writer lock
    * (other writers wait) until it commits or rolls back.
+   *
+   * Waiting for the writer lock happens on the transaction's own thread
+   * and never occupies a libuv worker (see [`interactive`]).
    */
   beginTransaction(mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<number>
   /**
