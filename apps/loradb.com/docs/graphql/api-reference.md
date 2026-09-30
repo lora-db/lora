@@ -290,7 +290,8 @@ Runs a query or mutation. Pass `id` for a persisted operation, or
 `source` for an ad hoc document (parsed, guarded, validated and cached by
 source text, up to 500 documents). The result's `extensions.cost` holds
 the operation's estimated rows. Errors are returned in `errors`, never
-thrown. Subscriptions need a server's `subscribe`, not `execute()`.
+thrown. Given a subscription, it returns a `WRONG_OPERATION_TYPE` error:
+run subscriptions with `subscribe()`, which takes the same arguments.
 
 ### persist(operations)
 

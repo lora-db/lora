@@ -210,7 +210,8 @@ tag), a cache per token, and a TTL for writes the library cannot see.
 Every operation gets a cost estimate before it runs: the rows it touches,
 multiplying page sizes through nested lists, capped by `@cardinality`, and
 summed across root fields. An operation over `maxCost` (default 50 000)
-fails with `COST_EXCEEDED` and runs nothing.
+fails with `COST_EXCEEDED` and runs nothing. A subscription is charged per
+event.
 
 ```ts
 const lora = new LoraGraphQL({

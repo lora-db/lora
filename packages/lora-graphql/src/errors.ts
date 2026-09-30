@@ -41,7 +41,8 @@ export type LoraGraphQLErrorCode =
   | "NOT_FOUND"
   | "CONSTRAINT_VIOLATION"
   | "DATABASE_ERROR"
-  | "PERSISTED_QUERY_ONLY";
+  | "PERSISTED_QUERY_ONLY"
+  | "WRONG_OPERATION_TYPE";
 
 /** A request-time error with a stable `extensions.code`. */
 export function requestError(

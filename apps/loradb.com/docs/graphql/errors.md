@@ -29,7 +29,8 @@ are written for developers and may change.
 | `NOT_FOUND` | A `connect`, `disconnect` or nested update names a node that does not exist or the caller cannot see | `type`, sometimes `keys` | Fix the key |
 | `CONSTRAINT_VIOLATION` | A write would break a key, uniqueness, required value or cardinality rule | `type`, `field` | Fix the input |
 | `DATABASE_ERROR` | The engine failed: a timeout, a cancelled request, or an unexpected error | `id` | Retry once, then report the `id` |
-| `PERSISTED_QUERY_ONLY` | `execute()` got a document while `persistedOnly` is on | | Send a persisted id |
+| `PERSISTED_QUERY_ONLY` | `execute()` or `subscribe()` got a document while `persistedOnly` is on | | Send a persisted id |
+| `WRONG_OPERATION_TYPE` | `execute()` got a subscription, or `subscribe()` a query or mutation | | Fix the server: route the operation to the other method |
 
 Every mutation runs in one transaction, so any error in it rolls the
 whole mutation back: nothing is partially written.
@@ -83,7 +84,9 @@ The library never clamps silently. It raises `LIMIT_EXCEEDED` when:
 The operation's estimated rows touched are over `maxCost` (default
 50 000) or the request's `budget`. The check runs before each root field
 executes and accumulates across the operation's root fields, so
-repeating a field under aliases does not get around it. The error names
+repeating a field under aliases does not get around it. A subscription is
+charged per event: each event's fields are checked against the limit on
+their own, so a long-lived subscription does not run out of budget. The error names
 the field, the estimate and the limit, and `extensions` carries `cost`
 and `maxCost`.
 
@@ -142,6 +145,13 @@ is replaced by `database error (id ...)`, and `extensions.id` matches the
 `id` your `onError` hook received with the full detail. Without masking,
 the engine's message is kept and the `id` is still added. See
 [observability](/docs/graphql/observability#database-errors).
+
+### WRONG_OPERATION_TYPE
+
+`execute()` runs queries and mutations; `subscribe()` runs subscriptions.
+Each returns this error, without running anything, for an operation of
+the other kind. It points at the server's routing, not the client's
+request.
 
 ## Errors without a code
 

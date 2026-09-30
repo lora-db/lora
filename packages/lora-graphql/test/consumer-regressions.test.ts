@@ -2,8 +2,13 @@
 // Festimap brief). Each block names its item; the suite runs on graphql
 // 16 and 17 (`yarn test`, `yarn test:graphql17`).
 
-import { GraphQLScalarType, type ExecutionResult } from "graphql";
-import { describe, expect, test } from "vitest";
+import {
+  GraphQLScalarType,
+  parse,
+  subscribe,
+  type ExecutionResult,
+} from "graphql";
+import { describe, expect, test, vi } from "vitest";
 import { createDatabase } from "@loradb/lora-node";
 import { LoraGraphQL, loraDriver, ModelError } from "../src/index.js";
 import { createTestLoraGraphQL, expectSeeks } from "../src/testing.js";
@@ -1460,6 +1465,155 @@ describe("G-21: subscribe() runs a subscription, by id or by source", () => {
     });
     expect(codes(refused as ExecutionResult)).toEqual(["PERSISTED_QUERY_ONLY"]);
     only.close();
+    t.close();
+  });
+});
+
+describe("G-21 review: subscribe() ends, charges and refuses cleanly", () => {
+  const typeDefs =
+    J +
+    `type F @node @mutation @subscription {
+      key: String! @key
+      child: F @relationship(type: "C", direction: OUT)
+    }`;
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  /** The instance's live write listeners, as `changes()` registers them. */
+  const listeners = (t: Test) => {
+    const live = new Set<unknown>();
+    const onWrite = t.lora.onWrite.bind(t.lora);
+    vi.spyOn(t.lora, "onWrite").mockImplementation((listener) => {
+      live.add(listener);
+      const off = onWrite(listener);
+      return () => {
+        live.delete(listener);
+        return off();
+      };
+    });
+    return live;
+  };
+  const create = (t: Test, key: string) =>
+    t.lora.execute({
+      source: `mutation { createFs(input: [{ key: "${key}" }]) { fs { key } } }`,
+    });
+  const pending = Symbol("pending");
+  const within = <T>(p: Promise<T>) =>
+    Promise.race([
+      p,
+      new Promise((r) => setTimeout(r, 500)).then(() => pending),
+    ]);
+
+  test("return() ends a quiet, filtered subscription and drops its listener", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs });
+    const live = listeners(t);
+    for (const source of [
+      'subscription { fChanged(key: "z") { key } }',
+      "subscription { fChanged { key } }",
+    ]) {
+      const it = await t.lora.subscribe({ source });
+      if (!(Symbol.asyncIterator in it)) throw new Error(JSON.stringify(it));
+      const next = it.next();
+      await settle();
+      expect(live.size).toBe(1);
+      // No write follows: return() must not wait for an event.
+      expect(await within(it.return!())).toEqual({
+        done: true,
+        value: undefined,
+      });
+      expect(live.size).toBe(0);
+      expect(await within(next)).toEqual({ done: true, value: undefined });
+      await create(t, "z");
+      expect(live.size).toBe(0);
+    }
+    t.close();
+  });
+
+  test("a signal aborted before subscribe() ends the stream at once", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs });
+    const live = listeners(t);
+    const it = await t.lora.subscribe({
+      source: "subscription { fChanged { key } }",
+      context: { signal: AbortSignal.abort() },
+    });
+    if (!(Symbol.asyncIterator in it)) throw new Error(JSON.stringify(it));
+    expect(await within(it.next())).toEqual({ done: true, value: undefined });
+    expect(live.size).toBe(0);
+    t.close();
+  });
+
+  test("an unknown operationName is an error result, not a stream", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs });
+    const r = await t.lora.subscribe({
+      source: "subscription S { fChanged { key } }",
+      operationName: "Nope",
+    });
+    expect(Symbol.asyncIterator in r).toBe(false);
+    expect((r as ExecutionResult).errors?.map((e) => e.message)).toEqual([
+      'Unknown operation named "Nope".',
+    ]);
+    t.close();
+  });
+
+  test("the cost budget holds per event, not across the subscription", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, maxCost: 50 });
+    const source =
+      "subscription { fChanged { key node { key child { key } } } }";
+    const events = 60;
+    const viaSubscribe = await t.lora.subscribe({ source });
+    const viaSchema = await subscribe({
+      schema: t.lora.getSchema(),
+      document: parse(source),
+      contextValue: {},
+    });
+    const results = Promise.all(
+      [viaSubscribe, viaSchema].map(async (it) => {
+        if (!(Symbol.asyncIterator in it)) throw new Error(JSON.stringify(it));
+        const got: ExecutionResult[] = [];
+        for await (const r of it) {
+          got.push(r);
+          if (got.length === events) break;
+        }
+        return got;
+      }),
+    );
+    await settle();
+    for (let i = 0; i < events; i++) await create(t, `k${i}`);
+    for (const got of await results) {
+      expect(got).toHaveLength(events);
+      expect(got.flatMap((r) => codes(r) ?? [])).toEqual([]);
+    }
+    // One event over the limit still fails: a node with its child
+    // estimates 2 rows.
+    const tight = await createTestLoraGraphQL({
+      typeDefs,
+      budget: (c) => ((c as { tight?: boolean }).tight ? 1 : undefined),
+    });
+    const it = await tight.lora.subscribe({ source, context: { tight: true } });
+    if (!(Symbol.asyncIterator in it)) throw new Error(JSON.stringify(it));
+    const first = it.next();
+    await settle();
+    await create(tight, "x");
+    expect(codes((await first).value as ExecutionResult)).toEqual([
+      "COST_EXCEEDED",
+    ]);
+    await it.return!();
+    tight.close();
+    t.close();
+  });
+
+  test("execute() and subscribe() refuse the other's operations with a code", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs });
+    const wrong = [
+      await t.lora.execute({ source: "subscription { fChanged { key } }" }),
+      (await t.lora.subscribe({ source: "{ fs { key } }" })) as ExecutionResult,
+      (await t.lora.subscribe({
+        source: 'mutation { createFs(input: [{ key: "a" }]) { fs { key } } }',
+      })) as ExecutionResult,
+    ];
+    expect(wrong.map(codes)).toEqual([
+      ["WRONG_OPERATION_TYPE"],
+      ["WRONG_OPERATION_TYPE"],
+      ["WRONG_OPERATION_TYPE"],
+    ]);
     t.close();
   });
 });

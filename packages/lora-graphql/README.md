@@ -945,8 +945,10 @@ WASM binding serves reads.
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
 `NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`),
-`DATABASE_ERROR` (with an `id`, also given to `onError`) and
-`PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under `persistedOnly`). An invalid SDL
+`DATABASE_ERROR` (with an `id`, also given to `onError`),
+`PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under
+`persistedOnly`) and `WRONG_OPERATION_TYPE` (`execute()` got a
+subscription, or `subscribe()` a query or mutation). An invalid SDL
 throws one `ModelError` listing every problem, each located by type and
 field.
 

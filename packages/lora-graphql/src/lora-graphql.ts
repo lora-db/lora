@@ -319,6 +319,12 @@ export class LoraGraphQL {
   readonly #scalars: LoraGraphQLOptions["scalars"];
   /** Estimated cost spent per request context and operation. */
   readonly #spent = new WeakMap<object, Map<unknown, number>>();
+  /**
+   * Cost spent per subscription event (its root value). A subscription
+   * reuses one context and operation for every event, so each event is
+   * charged on its own, like one operation.
+   */
+  readonly #eventSpent = new WeakMap<object, number>();
   readonly #jwt: (context: unknown) => Record<string, unknown> | undefined;
   readonly #onStatement: LoraGraphQLOptions["onStatement"];
   readonly #maskErrors: boolean;
@@ -870,7 +876,8 @@ export class LoraGraphQL {
   /**
    * Execute a query or mutation against the schema. Parsed and validated
    * documents are cached by source text; persisted ones by id. A
-   * subscription runs with {@link LoraGraphQL.subscribe}.
+   * subscription runs with {@link LoraGraphQL.subscribe}; given one, this
+   * returns a `WRONG_OPERATION_TYPE` error.
    */
   async execute(args: ExecuteArgs): Promise<ExecutionResult> {
     const document = this.#document(args);
@@ -878,7 +885,8 @@ export class LoraGraphQL {
     if (operationType(document, args.operationName) === "subscription") {
       return {
         errors: [
-          new GraphQLError(
+          requestError(
+            "WRONG_OPERATION_TYPE",
             "execute() runs queries and mutations; run a subscription with subscribe()",
           ),
         ],
@@ -912,8 +920,11 @@ export class LoraGraphQL {
    * single result with the errors when it cannot start (an unknown id, a
    * validation error, a denied subscribe). Takes the same arguments as
    * {@link LoraGraphQL.execute}, a persisted id included, with the same
-   * document cache and guards. End it with `return()` on the iterator, or
-   * with an `AbortSignal` passed as `context.signal`.
+   * document cache and guards; a query or mutation gets a
+   * `WRONG_OPERATION_TYPE` error. End it with `return()` on the iterator
+   * or with an `AbortSignal` passed as `context.signal`: either ends it at
+   * once, without waiting for another event, and drops its listener. The
+   * cost limit applies to each event on its own.
    */
   async subscribe(
     args: ExecuteArgs,
@@ -924,7 +935,8 @@ export class LoraGraphQL {
     if (type && type !== "subscription") {
       return {
         errors: [
-          new GraphQLError(
+          requestError(
+            "WRONG_OPERATION_TYPE",
             `subscribe() runs subscriptions; run a ${type} with execute()`,
           ),
         ],
@@ -996,7 +1008,8 @@ export class LoraGraphQL {
 
   /**
    * Committed writes as an async iterator, e.g. for a subscription
-   * resolver. Only writes made through this instance are seen.
+   * resolver. Only writes made through this instance are seen. `return()`
+   * or aborting `signal` (already aborted included) ends it at once.
    */
   changes(
     options: { signal?: AbortSignal; maxQueued?: number } = {},
@@ -1030,9 +1043,11 @@ export class LoraGraphQL {
     const finish = () => {
       done = true;
       stop();
+      options.signal?.removeEventListener("abort", finish);
       wake?.();
     };
-    options.signal?.addEventListener("abort", finish, { once: true });
+    if (options.signal?.aborted) finish();
+    else options.signal?.addEventListener("abort", finish, { once: true });
     const iterator: AsyncIterableIterator<WriteChange> = {
       [Symbol.asyncIterator]: () => iterator,
       next: async () => {
@@ -1116,7 +1131,8 @@ export class LoraGraphQL {
 
   /**
    * Charge `cost` to the operation: the limit holds per operation, so
-   * aliasing a root field many times does not multiply it.
+   * aliasing a root field many times does not multiply it. A
+   * subscription is charged per event.
    */
   #charge(
     field: string,
@@ -1125,7 +1141,12 @@ export class LoraGraphQL {
     info?: GraphQLResolveInfo,
   ) {
     let total = cost;
-    if (info && context !== null && typeof context === "object") {
+    const event: unknown =
+      info?.operation.operation === "subscription" ? info.rootValue : undefined;
+    if (event !== null && typeof event === "object") {
+      total = (this.#eventSpent.get(event) ?? 0) + cost;
+      this.#eventSpent.set(event, total);
+    } else if (info && context !== null && typeof context === "object") {
       const byOperation =
         this.#spent.get(context) ?? new Map<unknown, number>();
       total = (byOperation.get(info.operation) ?? 0) + cost;
@@ -1348,7 +1369,7 @@ export class LoraGraphQL {
     node: NodeType,
     args: Record<string, unknown>,
     context: unknown,
-  ): AsyncGenerator<ChangeEvent> {
+  ): AsyncIterableIterator<ChangeEvent> {
     const base: SelectionContext = {
       schema: this.getSchema(),
       fragments: {},
@@ -1364,7 +1385,36 @@ export class LoraGraphQL {
       authFilter(ctx, node, "n", op);
       authValidate(ctx, node, "n", op, "BEFORE");
     }
-    return this.#events(node, args, context, base);
+    // The stream's own signal: ended by `context.signal` or by return().
+    // An async generator runs return() only once its pending next()
+    // yields, and a quiet or filtered stream may never yield again, so
+    // return() aborts the changes() underneath, which wakes that next().
+    const stop = new AbortController();
+    const outer = (context as LoraGraphQLContext | undefined)?.signal;
+    const end = () => {
+      outer?.removeEventListener("abort", end);
+      stop.abort();
+    };
+    if (outer?.aborted) end();
+    else outer?.addEventListener("abort", end, { once: true });
+    const events = this.#events(node, args, context, base, stop.signal);
+    const iterator: AsyncIterableIterator<ChangeEvent> = {
+      [Symbol.asyncIterator]: () => iterator,
+      next: async () => {
+        const result = await events.next();
+        if (result.done) end();
+        return result;
+      },
+      return: (value?: unknown) => {
+        end();
+        return events.return(value);
+      },
+      throw: (error?: unknown) => {
+        end();
+        return events.throw(error);
+      },
+    };
+    return iterator;
   }
 
   async *#events(
@@ -1372,6 +1422,7 @@ export class LoraGraphQL {
     args: Record<string, unknown>,
     context: unknown,
     base: SelectionContext,
+    signal: AbortSignal,
   ): AsyncGenerator<ChangeEvent> {
     const key = args[node.key.name];
     const where = args["where"] as Record<string, unknown> | null | undefined;
@@ -1393,8 +1444,7 @@ export class LoraGraphQL {
     // Whether events must be checked in the database: read rules, or a
     // `where` (on the node as it is after the write).
     const check = guarded || (where != null && Object.keys(where).length > 0);
-    const signal = (context as LoraGraphQLContext | undefined)?.signal;
-    for await (const change of this.changes(signal ? { signal } : {})) {
+    for await (const change of this.changes({ signal })) {
       const events = changeEvents(change, node).filter(
         (e) =>
           wanted.has(e.operation) &&

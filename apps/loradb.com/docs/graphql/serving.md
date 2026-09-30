@@ -206,7 +206,10 @@ A subscription runs with `subscribe()`, which takes the same arguments,
 persisted `id` included, with the same document cache, guards and
 `persistedOnly` rule. It returns an async iterable of results, one per
 event, or a single result with the errors when the subscription cannot
-start. Given a subscription, `execute()` returns an error that says so.
+start. Given a subscription, `execute()` returns a `WRONG_OPERATION_TYPE`
+error, and so does `subscribe()` given a query or mutation. The cost limit
+(`maxCost` or `budget`) applies to each event on its own, so a long-lived
+subscription never runs out of it.
 
 ```ts
 const stream = await lora.subscribe({
@@ -218,8 +221,10 @@ if (!(Symbol.asyncIterator in stream)) return send(stream); // it did not start
 for await (const event of stream) sendEvent(event);
 ```
 
-End a stream with the `signal`: `return()` on the iterator only takes
-effect once the next event arrives.
+End a stream with the `signal` or with `return()` on the iterator (what
+`for await` does on `break`). Either ends it at once, even while it waits
+for an event that a quiet or filtered subscription may never get, and
+drops its listener.
 
 ## Subscriptions over WebSockets
 
