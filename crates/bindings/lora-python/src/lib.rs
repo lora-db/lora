@@ -28,14 +28,17 @@ use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraError as EngineLoraError,
-    QueryResult, ResultFormat, SnapshotConfig, SnapshotOptions, WalConfig,
+    QueryResult, ResultFormat, Row, SnapshotConfig, SnapshotOptions, WalConfig,
 };
 
 mod errors;
 mod from_python;
+mod gil;
 mod stream;
 mod to_python;
 
+use gil::without_gil;
+use lora_binding_buffer::stream::{OpeningStream, ShapeCache};
 use stream::NativeStream;
 
 use errors::{lora_query_err_from_anyhow, InvalidParamsError, LoraError, LoraQueryError};
@@ -59,6 +62,7 @@ use to_python::{
 fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
     m.add_class::<PyQueryStream>()?;
+    m.add_class::<PyOpeningStream>()?;
     m.add("LoraError", py.get_type_bound::<LoraError>())?;
     m.add("LoraQueryError", py.get_type_bound::<LoraQueryError>())?;
     m.add(
@@ -82,6 +86,8 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyclass(module = "lora_python._native")]
 pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
+    /// Stream shapes per query text (see `stream.rs`).
+    shapes: ShapeCache,
 }
 
 #[pymethods]
@@ -94,11 +100,11 @@ impl Database {
         options: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
         let options = py_database_open_options(options)?;
-        let db = py
-            .allow_threads(move || open_database(database_name, options))
+        let db = without_gil(py, move || open_database(database_name, options))
             .map_err(LoraQueryError::new_err)?;
         Ok(Self {
             db: Mutex::new(Some(db)),
+            shapes: ShapeCache::default(),
         })
     }
 
@@ -129,11 +135,11 @@ impl Database {
             ));
         }
         options.wal_dir = Some(wal_dir);
-        let db = py
-            .allow_threads(move || open_wal_database(options))
-            .map_err(LoraQueryError::new_err)?;
+        let db =
+            without_gil(py, move || open_wal_database(options)).map_err(LoraQueryError::new_err)?;
         Ok(Self {
             db: Mutex::new(Some(db)),
+            shapes: ShapeCache::default(),
         })
     }
 
@@ -156,7 +162,7 @@ impl Database {
 
         let db = self.inner()?;
         // Release the GIL for the duration of engine work.
-        let exec_result = py.allow_threads(move || {
+        let exec_result = without_gil(py, move || {
             let options = ExecuteOptions {
                 format: ResultFormat::RowArrays,
             };
@@ -207,8 +213,7 @@ impl Database {
             _ => None,
         };
         let db = self.inner()?;
-        let plan = py
-            .allow_threads(move || db.explain(&query, params_map))
+        let plan = without_gil(py, move || db.explain(&query, params_map))
             .map_err(lora_query_err_from_anyhow)?;
         query_plan_to_py(py, &plan)
     }
@@ -231,8 +236,7 @@ impl Database {
             _ => None,
         };
         let db = self.inner()?;
-        let prof = py
-            .allow_threads(move || db.profile(&query, params_map))
+        let prof = without_gil(py, move || db.profile(&query, params_map))
             .map_err(lora_query_err_from_anyhow)?;
         query_profile_to_py(py, &prof)
     }
@@ -252,26 +256,41 @@ impl Database {
             _ => BTreeMap::new(),
         };
         let db = self.inner()?;
-        // A mutating stream waits here for the writer lock, so the GIL is
-        // released: the thread holding the lock may need it to finish.
-        let (stream, columns) = py
-            .allow_threads(move || NativeStream::open(&db, &query, params_map))
+        let stream = NativeStream::open(py, db, &self.shapes, query, params_map)
             .map_err(lora_query_err_from_anyhow)?;
         Ok(PyQueryStream {
-            columns,
-            stream: Mutex::new(Some(stream)),
+            stream: Some(stream),
         })
     }
 
-    /// Whether `stream(query)` would open a mutating stream, i.e. one that
-    /// holds the writer lock until it is exhausted or closed. Compiles the
-    /// query into the plan cache (the stream then reuses the plan) without
-    /// running it. Used by `AsyncDatabase.stream` to pick where to open it.
-    fn _stream_is_mutating(&self, py: Python<'_>, query: String) -> PyResult<bool> {
+    /// `stream(query)` for `AsyncDatabase.stream`: returns a `QueryStream`,
+    /// or an `OpeningStream` when a mutating stream is still waiting for
+    /// the writer lock after a brief spin (the caller then waits for it off
+    /// the event loop). The spin runs with the GIL released.
+    #[pyo3(signature = (query, params=None))]
+    fn _stream_open_nowait<'py>(
+        &self,
+        py: Python<'py>,
+        query: String,
+        params: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<PyObject> {
+        let params_map = match params {
+            Some(p) if !p.is_none() => py_object_to_params(p)?,
+            _ => BTreeMap::new(),
+        };
         let db = self.inner()?;
-        py.allow_threads(move || db.explain(&query, None))
-            .map(|plan| plan.shape.is_mutating())
-            .map_err(lora_query_err_from_anyhow)
+        match NativeStream::open_nowait(py, db, &self.shapes, query, params_map)
+            .map_err(lora_query_err_from_anyhow)?
+        {
+            Ok(stream) => Ok(PyQueryStream {
+                stream: Some(stream),
+            }
+            .into_py(py)),
+            Err(opening) => Ok(PyOpeningStream {
+                opening: Some(opening),
+            }
+            .into_py(py)),
+        }
     }
 
     /// Execute statement objects inside one native transaction.
@@ -290,7 +309,7 @@ impl Database {
         let parsed_statements = py_statements_to_transaction(statements)?;
         let db = self.inner()?;
 
-        let exec_results = py.allow_threads(move || {
+        let exec_results = without_gil(py, move || {
             let mut tx = db.begin_transaction(parsed_mode)?;
             let mut results = Vec::with_capacity(parsed_statements.len());
             for statement in parsed_statements {
@@ -319,10 +338,15 @@ impl Database {
     }
 
     /// Drop every node and relationship. Constant-time, but waits for the
-    /// writer lock, so it runs with the GIL released.
+    /// writer lock, so it runs with the GIL released, unless the lock is
+    /// known to be free (see [`gil::writer_lock_free`]).
     fn clear(&self, py: Python<'_>) -> PyResult<()> {
         let db = self.inner()?;
-        py.allow_threads(move || db.clear());
+        if db.wal().is_none() && gil::writer_lock_free() {
+            db.clear();
+        } else {
+            without_gil(py, move || db.clear());
+        }
         Ok(())
     }
 
@@ -389,9 +413,10 @@ impl Database {
         }
 
         let path = py_fspath(target)?;
-        let meta = py
-            .allow_threads(move || db.save_snapshot_to_with_options(&path, &snapshot_options))
-            .map_err(lora_query_err_from_anyhow)?;
+        let meta = without_gil(py, move || {
+            db.save_snapshot_to_with_options(&path, &snapshot_options)
+        })
+        .map_err(lora_query_err_from_anyhow)?;
         Ok(snapshot_meta_to_py(py, meta)?.into_any().unbind())
     }
 
@@ -410,27 +435,19 @@ impl Database {
 
         if matches!(format, Some("base64")) {
             let bytes = py_base64_decode(py, source)?;
-            let meta = py
-                .allow_threads(move || {
-                    db.load_snapshot_from_bytes_with_credentials(
-                        bytes.as_slice(),
-                        credentials.as_ref(),
-                    )
-                })
-                .map_err(lora_query_err_from_anyhow)?;
+            let meta = without_gil(py, move || {
+                db.load_snapshot_from_bytes_with_credentials(bytes.as_slice(), credentials.as_ref())
+            })
+            .map_err(lora_query_err_from_anyhow)?;
             return snapshot_meta_to_py(py, meta);
         }
 
         if let Ok(bytes) = source.extract::<PyBackedBytes>() {
             let bytes = bytes.as_ref().to_vec();
-            let meta = py
-                .allow_threads(move || {
-                    db.load_snapshot_from_bytes_with_credentials(
-                        bytes.as_slice(),
-                        credentials.as_ref(),
-                    )
-                })
-                .map_err(lora_query_err_from_anyhow)?;
+            let meta = without_gil(py, move || {
+                db.load_snapshot_from_bytes_with_credentials(bytes.as_slice(), credentials.as_ref())
+            })
+            .map_err(lora_query_err_from_anyhow)?;
             return snapshot_meta_to_py(py, meta);
         }
 
@@ -440,14 +457,10 @@ impl Database {
                 PyTypeError::new_err("snapshot reader.read() must return bytes or bytearray")
             })?;
             let bytes = bytes.as_ref().to_vec();
-            let meta = py
-                .allow_threads(move || {
-                    db.load_snapshot_from_bytes_with_credentials(
-                        bytes.as_slice(),
-                        credentials.as_ref(),
-                    )
-                })
-                .map_err(lora_query_err_from_anyhow)?;
+            let meta = without_gil(py, move || {
+                db.load_snapshot_from_bytes_with_credentials(bytes.as_slice(), credentials.as_ref())
+            })
+            .map_err(lora_query_err_from_anyhow)?;
             return snapshot_meta_to_py(py, meta);
         }
 
@@ -457,23 +470,18 @@ impl Database {
                 PyTypeError::new_err("snapshot source.tobytes() must return bytes or bytearray")
             })?;
             let bytes = bytes.as_ref().to_vec();
-            let meta = py
-                .allow_threads(move || {
-                    db.load_snapshot_from_bytes_with_credentials(
-                        bytes.as_slice(),
-                        credentials.as_ref(),
-                    )
-                })
-                .map_err(lora_query_err_from_anyhow)?;
+            let meta = without_gil(py, move || {
+                db.load_snapshot_from_bytes_with_credentials(bytes.as_slice(), credentials.as_ref())
+            })
+            .map_err(lora_query_err_from_anyhow)?;
             return snapshot_meta_to_py(py, meta);
         }
 
         let path = py_fspath(source)?;
-        let meta = py
-            .allow_threads(move || {
-                db.load_snapshot_from_with_credentials(&path, credentials.as_ref())
-            })
-            .map_err(lora_query_err_from_anyhow)?;
+        let meta = without_gil(py, move || {
+            db.load_snapshot_from_with_credentials(&path, credentials.as_ref())
+        })
+        .map_err(lora_query_err_from_anyhow)?;
         snapshot_meta_to_py(py, meta)
     }
 
@@ -501,64 +509,76 @@ impl Database {
     }
 }
 
-/// A row stream. Thread-safe: a mutating stream runs on its own thread
-/// (see `stream.rs`), so `next()`, `close()` and the final drop may happen
-/// on any Python thread, before or after the `Database` is closed.
+/// A row stream. A mutating stream runs on its own thread (see
+/// `stream.rs`), so `next()`, `close()` and the final drop may happen on
+/// any Python thread, before or after the `Database` is closed. Every
+/// method runs with the GIL held throughout, which serializes them.
 #[pyclass(name = "QueryStream", module = "lora_python._native")]
 pub struct PyQueryStream {
-    columns: Vec<String>,
-    stream: Mutex<Option<NativeStream>>,
-}
-
-impl PyQueryStream {
-    fn slot(&self) -> PyResult<std::sync::MutexGuard<'_, Option<NativeStream>>> {
-        self.stream
-            .lock()
-            .map_err(|_| LoraQueryError::new_err("query stream lock poisoned"))
-    }
+    stream: Option<NativeStream>,
 }
 
 #[pymethods]
 impl PyQueryStream {
     fn columns(&self) -> PyResult<Vec<String>> {
-        match self.slot()?.as_ref() {
-            Some(_) => Ok(self.columns.clone()),
+        match &self.stream {
+            Some(stream) => Ok(stream.columns().to_vec()),
             None => Err(LoraQueryError::new_err("query stream is closed")),
         }
     }
 
     /// Close the stream. An unfinished mutating stream rolls back and
     /// releases the writer lock before this returns.
-    fn close(&self) -> PyResult<()> {
-        let stream = self.slot()?.take();
-        drop(stream);
-        Ok(())
+    fn close(&mut self) {
+        self.stream.take();
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
-    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let mut slot = self.slot()?;
-        let Some(stream) = slot.as_mut() else {
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(stream) = self.stream.as_mut() else {
             return Ok(None);
         };
         // Pulling keeps the GIL: it never waits for a lock (a mutating
         // stream's actor took the writer lock when it opened and needs no
         // GIL to answer), and releasing the GIL per row would make every
         // row queue for it behind busy Python threads.
-        match stream.next() {
+        match stream.next_row() {
             Ok(Some(row)) => Ok(Some(row_to_py_dict(py, &row)?)),
             Ok(None) => {
-                slot.take();
+                self.stream.take();
                 Ok(None)
             }
             Err(e) => {
-                slot.take();
+                self.stream.take();
                 Err(lora_query_err_from_anyhow(e))
             }
         }
+    }
+}
+
+/// A mutating stream whose actor still waits for the writer lock (see
+/// `Database._stream_open_nowait`). Dropping it unwaited rolls the stream
+/// back once it opens, without waiting for that.
+#[pyclass(name = "OpeningStream", module = "lora_python._native")]
+pub struct PyOpeningStream {
+    opening: Option<OpeningStream<Row, EngineLoraError>>,
+}
+
+#[pymethods]
+impl PyOpeningStream {
+    /// Wait (GIL released) until the stream is open and return it.
+    fn wait(&mut self, py: Python<'_>) -> PyResult<PyQueryStream> {
+        let opening = self
+            .opening
+            .take()
+            .ok_or_else(|| LoraQueryError::new_err("query stream is closed"))?;
+        let stream = without_gil(py, move || opening.wait()).map_err(lora_query_err_from_anyhow)?;
+        Ok(PyQueryStream {
+            stream: Some(NativeStream::Actor(stream)),
+        })
     }
 }
 
@@ -571,7 +591,7 @@ fn save_snapshot_to_vec(
     db: Arc<InnerDatabase<InMemoryGraph>>,
     options: SnapshotOptions,
 ) -> PyResult<(Vec<u8>, lora_database::SnapshotMeta)> {
-    let result = py.allow_threads(move || {
+    let result = without_gil(py, move || {
         db.save_snapshot_to_bytes_with_options(&options)
             .map(|(bytes, info)| (bytes, snapshot_info_to_meta(info)))
     });

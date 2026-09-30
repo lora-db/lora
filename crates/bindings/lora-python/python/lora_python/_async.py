@@ -29,11 +29,13 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import queue
 import sys
 import threading
 from typing import Any, AsyncIterator, Callable, Iterable, Mapping, Optional, TypeVar
 
 from ._native import Database as _Database
+from ._native import OpeningStream as _OpeningStream
 from .types import LoraParams, QueryResult, SnapshotMeta
 
 _T = TypeVar("_T")
@@ -69,24 +71,23 @@ def _hand_over(future: "asyncio.Future[Any]", stream: Any, error: Optional[BaseE
 
 
 def _open_stream(
-    inner: _Database,
-    query: str,
-    params: Optional[dict],
+    opening: _OpeningStream,
     loop: asyncio.AbstractEventLoop,
     opened: "asyncio.Future[Any]",
 ) -> None:
-    """Open a mutating stream on a thread of its own.
+    """Finish opening a mutating stream on a thread of its own (see
+    ``_Openers``).
 
     Opening waits (GIL released) for the writer lock, which another stream
     or writer may hold for a while. Waiting on the event loop blocked the
     loop, often the only thread that could finish the stream holding the
     lock: a deadlock. Waiting on the default executor would park one of
     its few threads per waiting stream. This thread only waits for the
-    lock, hands the open stream to the loop and exits.
+    lock and hands the open stream to the loop.
     """
     stream, error = None, None
     try:
-        stream = inner.stream(query, params)
+        stream = opening.wait()
     except BaseException as caught:  # noqa: BLE001 - handed to the awaiting coroutine
         error = caught
     try:
@@ -95,6 +96,56 @@ def _open_stream(
         # The loop closed meanwhile; nobody is waiting for the stream.
         if stream is not None:
             stream.close()
+
+
+class _Openers:
+    """Daemon threads for ``_open_stream``, reused across opens.
+
+    Each open gets a thread of its own for as long as it waits: an idle
+    thread if there is one, a new one otherwise, so no open ever queues
+    behind another. A thread that finishes waits a while for the next open
+    (starting a thread costs more than a small stream) and then exits.
+    Daemon threads, so an open still waiting for the lock at exit does not
+    hold up the interpreter.
+    """
+
+    _IDLE_SECONDS = 10.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._jobs: "queue.SimpleQueue[Callable[[], None]]" = queue.SimpleQueue()
+        self._idle = 0  # threads waiting for a job that no submit claimed
+
+    def submit(self, job: Callable[[], None]) -> None:
+        with self._lock:
+            claimed = self._idle > 0
+            if claimed:
+                self._idle -= 1
+        if claimed:
+            self._jobs.put(job)
+        else:
+            threading.Thread(
+                target=self._work, args=(job,), name="lora-stream-open", daemon=True
+            ).start()
+
+    def _work(self, job: Callable[[], None]) -> None:
+        while True:
+            job()
+            with self._lock:
+                self._idle += 1
+            try:
+                job = self._jobs.get(timeout=self._IDLE_SECONDS)
+            except queue.Empty:
+                with self._lock:
+                    if self._idle > 0:
+                        # Unclaimed idle slot: no job is on its way for it.
+                        self._idle -= 1
+                        return
+                # A submit claimed this slot just now: its job is coming.
+                job = self._jobs.get()
+
+
+_openers = _Openers()
 
 
 class AsyncDatabase:
@@ -175,25 +226,23 @@ class AsyncDatabase:
         Rows are pulled one per iteration step, never ahead. A read-only
         stream reads a snapshot and never waits for a lock, so it opens
         on the event loop. A mutating stream takes the writer lock when it
-        opens, so it opens on a thread of its own (``_open_stream``), and
-        holds the lock until it is exhausted (commit) or closed early
-        (rollback: ``break``, an exception, cancellation). Its rows come
+        opens: if the lock is busy, it waits for it on a thread of its own
+        (``_open_stream``), never on the loop. It holds the lock until it
+        is exhausted (commit) or closed early (rollback: ``break``, an
+        exception, cancellation). Its rows come
         from the native stream's own thread, which holds the lock and never
         waits for the loop or the executor.
         """
         params = dict(params) if params is not None else None
-        if self._inner._stream_is_mutating(query):
+        # A mutating stream that gets the writer lock at once (after a
+        # brief spin, GIL released) opens here; one still waiting for it
+        # comes back as an ``OpeningStream``, finished off the loop.
+        stream = self._inner._stream_open_nowait(query, params)
+        if isinstance(stream, _OpeningStream):
             loop = asyncio.get_running_loop()
             opened = loop.create_future()
-            threading.Thread(
-                target=_open_stream,
-                args=(self._inner, query, params, loop, opened),
-                name="lora-stream-open",
-                daemon=True,
-            ).start()
+            _openers.submit(functools.partial(_open_stream, stream, loop, opened))
             stream = await opened
-        else:
-            stream = self._inner.stream(query, params)
         try:
             for row in stream:
                 yield row

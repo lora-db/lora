@@ -35,3 +35,4 @@ anyhow.workspace = true
 
 lora-database.workspace = true
 lora-store.workspace = true
+lora-binding-buffer.workspace = true

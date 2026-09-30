@@ -6,7 +6,7 @@ Mirrors what the native ``_native`` module exposes. The high-level
 """
 
 from os import PathLike
-from typing import Any, BinaryIO, Iterable, Iterator, Literal, Mapping, Optional, overload
+from typing import Any, BinaryIO, Iterable, Iterator, Literal, Mapping, Optional, Union, overload
 
 from .types import QueryResult, SnapshotMeta
 
@@ -53,7 +53,11 @@ class Database:
         query: str,
         params: Optional[Mapping[str, Any]] = None,
     ) -> Iterator[Mapping[str, Any]]: ...
-    def _stream_is_mutating(self, query: str) -> bool: ...
+    def _stream_open_nowait(
+        self,
+        query: str,
+        params: Optional[Mapping[str, Any]] = None,
+    ) -> Union["QueryStream", "OpeningStream"]: ...
     def transaction(
         self,
         statements: Iterable[Mapping[str, Any]],
@@ -133,3 +137,8 @@ class QueryStream(Iterator[Mapping[str, Any]]):
 
     def columns(self) -> list[str]: ...
     def close(self) -> None: ...
+
+class OpeningStream:
+    """A mutating stream still waiting for the writer lock (internal)."""
+
+    def wait(self) -> QueryStream: ...

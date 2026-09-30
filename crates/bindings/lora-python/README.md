@@ -121,8 +121,9 @@ so the thread holding the lock always keeps running.
   from open until it is exhausted (commit) or closed early (rollback).
   It runs on a native thread of its own, so a stream can be pulled,
   closed or garbage-collected on any thread, and may outlive the
-  `Database` it came from. `AsyncDatabase.stream` opens it on a dedicated
-  thread, never on the event loop, and pulls one row per iteration step.
+  `Database` it came from. `AsyncDatabase.stream` never waits for the
+  lock on the event loop: a stream that does not get it at once finishes
+  opening on a thread of its own. It pulls one row per iteration step.
 - While your own code holds a mutating stream open, do not wait on
   another write to the same database from that same thread or coroutine:
   that write waits for the lock your stream holds. On `AsyncDatabase`,

@@ -912,6 +912,7 @@ name = "lora-python"
 version = "0.18.0"
 dependencies = [
  "anyhow",
+ "lora-binding-buffer",
  "lora-database",
  "lora-store",
  "pyo3",
