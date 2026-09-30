@@ -1,4 +1,4 @@
-//! Phase 16 planner fixes (docs/design/graphql-next-phases.md):
+//! Planner fixes driven by the GraphQL layer's read shapes:
 //!
 //! * condition pushdown: a WHERE conjunct that reads one pattern variable
 //!   runs right on that variable's scan (so key tests become index seeks),
