@@ -419,6 +419,23 @@ impl PropertyIndexKey {
             _ => None,
         }
     }
+
+    /// The kind of a temporal key; `None` for every other key.
+    pub(super) fn temporal_kind(&self) -> Option<TemporalKind> {
+        match self {
+            Self::Temporal { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
+    /// The first and last possible temporal keys: the temporal kinds sit
+    /// next to each other, so these bound all of them at once.
+    pub(super) fn all_temporals() -> (Self, Self) {
+        (
+            Self::temporal(TemporalKind::Date, i128::MIN, i32::MIN),
+            Self::temporal(TemporalKind::DateTime, i128::MAX, i32::MAX),
+        )
+    }
 }
 
 fn sortable_f64_bits(value: f64) -> u64 {

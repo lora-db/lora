@@ -60,6 +60,7 @@ The following features were listed as gaps in earlier revisions of this document
 | A read with an early `LIMIT` stops scanning once the limit is met, also under a deadline and inside an explicit transaction. Previously both ran the full executor and materialized every row first | `tests/early_limit.rs` |
 | `<`, `<=`, `>`, `>=` on lists compare element by element, and a null or mismatched operand gives `null`. Previously both gave `false`: `[f.name, f.key] > $after` matched nothing, `NOT (1 < 'a')` was true, and integers above 2^53 compared through `f64` | `tests/comparison_ordering.rs` |
 | `first()` as the standard name for `head()` | `tests/expressions.rs` |
+| `date()`, `datetime()`, `localdatetime()`, `time()`, `localtime()` and `duration()` build the type they are named for, from nothing (now), a string, a map or another temporal. Previously all six aliased one function that ignored the name: `date()` and `date(datetime())` returned a `DATETIME`, a map argument returned the current instant, and `time('12:00Z')` was `null`. With `date()` a `DATETIME`, `WHERE f.startsOn >= date()` compared a `DATE` with a `DATETIME`, which was `null`, and dropped every row | `tests/temporal_constructors.rs` |
 | `split(s, '')` splits into characters. Previously it kept an empty string at each end: `['', 'p', '1', '2', '']` | `tests/functions_extended.rs` |
 | A `WITH ... WHERE` predicate that reads a projected variable only inside a pattern (`size([(a)<-[:T]-() \| 1]) = 0`, `EXISTS { (a)--() }`) stays above the projection. Previously the optimizer did not see variables inside patterns, pushed the predicate below the `WITH` and ran it with the variable unbound: no rows, at the cost of a scan per row | `tests/with_predicates.rs` |
 | Node binding: exact 64-bit integers (`bigint`), per-call `timeoutMs` / `AbortSignal` and a database-wide `queryTimeoutMs`, interactive transactions (`db.begin()`), typed `LORA_LOCKED` for a directory held by another process, `{latitude, longitude}` point params, musl prebuilds | `crates/bindings/lora-node/test/{integers,timeouts,interactive,locking}.test.ts` |
@@ -94,6 +95,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Integer overflow not explicitly handled | Inferred | Low — Rust panics in debug, wraps in release |
 | `round()` returns an integer for integral results and rounds half away from zero | Observed | Low — Neo4j returns a float |
 | Float comparison uses IEEE 754 | Observed | Low — `NaN != NaN` is standard |
+| `<`, `<=`, `>`, `>=` between two temporals of different types (a `DATE` and a `DATETIME`) is an error, including when a RANGE index answers the predicate | Observed | Low. A deliberate divergence: Cypher gives `null`, which made `WHERE d >= date()` over `DATETIME` values drop every row silently (E-1). A query that relied on the `null` now fails and names both types |
 | Variable-length undirected traversal does not guard against reciprocal edges | Inferred | Low — visited-node tracking avoids repeats |
 
 ---

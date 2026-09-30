@@ -91,7 +91,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Arithmetic `+ - * / % ^` | **Supported** | `/` and `%` by zero → null |
 | Unary `-` / `+` | **Supported** | |
 | Equality `=` / `<>` | **Supported** | |
-| Comparison `< > <= >=` | **Supported** | Numbers (integers exactly, also above 2^53), strings, booleans (`false < true`), temporals of one kind, durations, and lists: element by element, a prefix before the longer list. A null or an operand of another kind gives `null`, never `false`, so `[a, b] > $cursor` works for keyset pagination and `NOT (1 < 'a')` is `null` |
+| Comparison `< > <= >=` | **Supported** | Numbers (integers exactly, also above 2^53), strings, booleans (`false < true`), temporals of one kind, durations, and lists: element by element, a prefix before the longer list. A null or an operand of another kind gives `null`, never `false`, so `[a, b] > $cursor` works for keyset pagination and `NOT (1 < 'a')` is `null`. Two temporals of different kinds (a `DATE` against a `DATETIME`) are an error on every plan, index-backed or not, where Cypher gives `null`: see section 12 |
 | `AND` / `OR` / `NOT` / `XOR` | **Supported** | Three-valued logic with nulls |
 | `IN` list membership | **Supported** | Null propagation per Cypher spec |
 | `IS NULL` / `IS NOT NULL` | **Supported** | |
@@ -232,6 +232,8 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 
 | Function | Status | Notes |
 |----------|--------|-------|
+| `date()`, `datetime()`, `localdatetime()`, `time()`, `localtime()` | **Supported** | Cypher constructors. With no argument, the current value of that type (`date()` is today's `DATE`). With one, the value cast to that type: `date(x)` is `x::DATE`. A string is parsed, a map gives the components (`{year, month, day, hour, minute, second, millisecond, microsecond, nanosecond, timezone}`), and another temporal keeps the components the target has (`date(datetime())` is today's date, `time(dt)` keeps the offset). An argument that does not convert is an error, `null` gives `null` |
+| `duration(x)` | **Supported** | `x::DURATION`: ISO 8601 string or component map |
 | `temporal.today()` / `'...'::DATE` / `{year, month, day}::DATE` | **Supported** | ISO string, map, or current day |
 | `temporal.now()` / `now()` / `temporal.now(kind)` / `'...'::DATETIME` / `{...}::DATETIME` | **Supported** | Current `DATETIME` by default; `kind` accepts `"date"`, `"time"`, `"local_time"`, `"local_datetime"` |
 | `'...'::TIME` | **Supported** | ISO string |
@@ -244,7 +246,7 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 | `temporal.between(a, b)` | **Supported** | Between dates or datetimes |
 | `temporal.in_days(a, b)` | **Supported** | `DATE` values |
 
-Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
+Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering two values of different temporal types (`date('2026-10-01') >= datetime()`) is an error, not Cypher's `null`: a `WHERE` on it would otherwise drop every row without a word. It fails the same way when a RANGE index answers the predicate and the indexed property holds another temporal type than the bound. `=` between different temporal types is `false`, and `ORDER BY`, `min` and `max` still order mixed values. Convert one side first: `date(x)`, `datetime(x)`. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
 
 ## 13. Spatial types and functions
 

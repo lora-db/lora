@@ -79,8 +79,10 @@ WHERE e.at >= temporal.now() AND e.at < temporal.now() + 'P7D'::DURATION
 RETURN e
 ORDER BY e.at`} />
 
-Different temporal types are **not** cross-comparable — convert first
-or compare in matching units.
+Different temporal types are **not** cross-comparable. Ordering a
+`Date` against a `DateTime` (`<`, `<=`, `>`, `>=`) is an error rather
+than a silent `null`, so a `WHERE` never drops rows because of it.
+Convert first, for example with `date(x)` or `datetime(x)`.
 
 ## Arithmetic
 
@@ -224,11 +226,12 @@ instant** — ordering is timezone-safe.
 
 ### Cross-type comparison
 
-`Date` and `DateTime` aren't directly comparable. Convert via
-component reconstruction:
+`Date` and `DateTime` aren't directly comparable: ordering one against
+the other is an error. Convert one side, `date(dt)` takes the date of a
+`DateTime` in its own offset:
 
 <QueryCodeBlock code={String.raw`MATCH (e:Event)
-WHERE {year: e.at.year, month: e.at.month, day: e.at.day}::DATE = '2024-01-15'::DATE
+WHERE date(e.at) >= date()
 RETURN e`} />
 
 ### `'P1M'::DURATION` vs `'P30D'::DURATION`

@@ -42,6 +42,20 @@ handwritten Cypher, while `CAST(value AS TYPE)` is also supported by the
 Cypher grammar. `TRY_CAST(value AS TYPE)` returns `null` instead of
 reporting a conversion error.
 
+The Cypher constructors work as well, and build the type they are named
+for. With no argument they return the current value: `date()` is today's
+`DATE`, `datetime()` the current `DATETIME`, and `localdatetime()`,
+`time()` and `localtime()` likewise. With one argument they are the cast:
+`date(x)` is `x::DATE`, `duration(x)` is `x::DURATION`. Another temporal
+keeps the components the target has, so `date(datetime())` is today's
+date and `localtime(dt)` drops the offset. An argument that does not
+convert is an error.
+
+<QueryCodeBlock code={String.raw`RETURN date() AS today,
+       date(datetime('2026-10-01T23:30:00+02:00')) AS day,  // 2026-10-01
+       datetime('2026-10-01') AS midnight,                   // 2026-10-01T00:00:00Z
+       time({hour: 9, minute: 30, timezone: '+01:00'}) AS t`} />
+
 The zero-argument current-value helpers also have bare aliases:
 <CypherCode code="now()" /> for <CypherCode code="temporal.now()" />,
 <CypherCode code="timestamp()" /> for

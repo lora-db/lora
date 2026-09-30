@@ -59,7 +59,6 @@ pub use mutable::{MutableExecutionContext, MutableExecutor};
 // are exactly the ones referenced as `crate::executor::*` from
 // outside `crate::executor`.
 pub(crate) use aggregation::aggregate_rows;
-pub(crate) use helpers::OrderedRangeCursor;
 #[allow(unused_imports)]
 pub(crate) use helpers::{
     bound_node_id_for_expand, bound_relationship_id_for_expand, build_path_value,
@@ -71,6 +70,7 @@ pub(crate) use helpers::{
     rel_by_point_scan_rows, rel_by_property_range_scan_rows, rel_by_text_scan_rows, resolve_range,
     scan_node_ids_for_label_groups, GroupValueKey, NodePropertyCandidates,
 };
+pub(crate) use helpers::{check_node_range_temporal_kinds, OrderedRangeCursor};
 pub(crate) use optional::{
     merge_optional_rows, null_extend_optional_row, optional_can_correlate, optional_match_rows,
     optional_rows_compatible,

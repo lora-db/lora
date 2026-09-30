@@ -63,13 +63,12 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 span,
             } => {
                 let fn_name = name.join(".");
-                let legacy_cast = legacy_cast_target(&fn_name);
-                let resolve_name = legacy_cast.map_or(fn_name.as_str(), |(name, _)| name);
+                let lowering = named_lowering(&fn_name, args.len());
+                let resolve_name = lowering.as_ref().map_or(fn_name.as_str(), |l| l.target);
                 let function = resolve_function_name(resolve_name, span.start, span.end)?;
-                if legacy_cast.is_some() {
-                    validate_fixed_arity(&fn_name, args.len(), 1)?;
-                } else {
-                    validate_function_arity(function, &fn_name, args.len())?;
+                match &lowering {
+                    Some(l) => validate_arity(&fn_name, args.len(), l.min_args, Some(l.max_args))?,
+                    None => validate_function_arity(function, &fn_name, args.len())?,
                 }
 
                 let mut args = args
@@ -83,10 +82,8 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                if let Some((_, target)) = legacy_cast {
-                    args.push(ResolvedExpr::Literal(LiteralValue::TypeName(
-                        target.to_string(),
-                    )));
+                if let Some(l) = lowering {
+                    args.push(ResolvedExpr::Literal(l.trailing));
                 }
 
                 Ok(ResolvedExpr::Function {
@@ -188,13 +185,12 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 ..
             } => {
                 let fn_name = name.join(".");
-                let legacy_cast = legacy_cast_target(&fn_name);
-                let resolve_name = legacy_cast.map_or(fn_name.as_str(), |(name, _)| name);
+                let lowering = named_lowering(&fn_name, args.len());
+                let resolve_name = lowering.as_ref().map_or(fn_name.as_str(), |l| l.target);
                 let function = resolve_function_name(resolve_name, span.start, span.end)?;
-                if legacy_cast.is_some() {
-                    validate_fixed_arity(&fn_name, args.len(), 1)?;
-                } else {
-                    validate_function_arity(function, &fn_name, args.len())?;
+                match &lowering {
+                    Some(l) => validate_arity(&fn_name, args.len(), l.min_args, Some(l.max_args))?,
+                    None => validate_function_arity(function, &fn_name, args.len())?,
                 }
 
                 let mut args = args
@@ -208,10 +204,8 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                if let Some((_, target)) = legacy_cast {
-                    args.push(ResolvedExpr::Literal(LiteralValue::TypeName(
-                        target.to_string(),
-                    )));
+                if let Some(l) = lowering {
+                    args.push(ResolvedExpr::Literal(l.trailing));
                 }
 
                 Ok(ResolvedExpr::Function {
@@ -512,17 +506,59 @@ fn format_literal_type(target: &LiteralTypeExpr) -> String {
     }
 }
 
-fn legacy_cast_target(fn_name: &str) -> Option<(&'static str, &'static str)> {
+/// A call whose meaning depends on the name it was written with, not
+/// only on the builtin that name resolves to: the call is rewritten to
+/// `target(args..., trailing)`.
+struct NamedLowering {
+    target: &'static str,
+    trailing: LiteralValue,
+    min_args: usize,
+    max_args: usize,
+}
+
+/// `toString(x)` is `cast.to(x, STRING)`; `date()` is today's date
+/// (`temporal.now('date')`) and `date(x)` builds a DATE from `x`
+/// (`cast.to(x, DATE)`), and likewise for the other Cypher temporal
+/// constructors. They all alias `temporal.now` for completion and
+/// resolution, but only the name says which type to build.
+fn named_lowering(fn_name: &str, arg_count: usize) -> Option<NamedLowering> {
     let lower = fn_name.to_ascii_lowercase();
+    let cast = |target: &'static str, ty: &str| NamedLowering {
+        target,
+        trailing: LiteralValue::TypeName(ty.to_string()),
+        min_args: 1,
+        max_args: 1,
+    };
+    let temporal = |now_kind: &str, ty: &str| {
+        if arg_count == 0 {
+            NamedLowering {
+                target: "temporal.now",
+                trailing: LiteralValue::String(now_kind.to_string()),
+                min_args: 0,
+                max_args: 1,
+            }
+        } else {
+            NamedLowering {
+                min_args: 0,
+                ..cast("cast.to", ty)
+            }
+        }
+    };
     Some(match lower.as_str() {
-        "tostring" => ("cast.to", "STRING"),
-        "tointeger" => ("cast.to", "INTEGER"),
-        "tofloat" => ("cast.to", "FLOAT"),
-        "toboolean" => ("cast.to", "BOOLEAN"),
-        "tostringornull" => ("cast.try", "STRING"),
-        "tointegerornull" => ("cast.try", "INTEGER"),
-        "tofloatornull" => ("cast.try", "FLOAT"),
-        "tobooleanornull" => ("cast.try", "BOOLEAN"),
+        "tostring" => cast("cast.to", "STRING"),
+        "tointeger" => cast("cast.to", "INTEGER"),
+        "tofloat" => cast("cast.to", "FLOAT"),
+        "toboolean" => cast("cast.to", "BOOLEAN"),
+        "tostringornull" => cast("cast.try", "STRING"),
+        "tointegerornull" => cast("cast.try", "INTEGER"),
+        "tofloatornull" => cast("cast.try", "FLOAT"),
+        "tobooleanornull" => cast("cast.try", "BOOLEAN"),
+        "date" => temporal("date", "DATE"),
+        "datetime" => temporal("datetime", "DATETIME"),
+        "localdatetime" => temporal("local_datetime", "LOCAL_DATETIME"),
+        "time" => temporal("time", "TIME"),
+        "localtime" => temporal("local_time", "LOCAL_TIME"),
+        "duration" => cast("cast.to", "DURATION"),
         _ => return None,
     })
 }
@@ -536,30 +572,21 @@ fn resolve_function_name(
         .ok_or_else(|| SemanticError::UnknownFunction(name.to_string(), start, end))
 }
 
-fn validate_fixed_arity(
-    source_name: &str,
-    arg_count: usize,
-    expected: usize,
-) -> Result<(), SemanticError> {
-    if arg_count == expected {
-        Ok(())
-    } else {
-        Err(SemanticError::WrongArity(
-            source_name.to_string(),
-            expected.to_string(),
-            arg_count,
-        ))
-    }
-}
-
 fn validate_function_arity(
     function: FunctionId,
     source_name: &str,
     arg_count: usize,
 ) -> Result<(), SemanticError> {
     let arity = function.arity();
-    let min = arity.min;
-    let max = arity.max;
+    validate_arity(source_name, arg_count, arity.min, arity.max)
+}
+
+fn validate_arity(
+    source_name: &str,
+    arg_count: usize,
+    min: usize,
+    max: Option<usize>,
+) -> Result<(), SemanticError> {
     if arg_count < min {
         let expected = if max == Some(min) {
             format!("{min}")

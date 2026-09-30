@@ -76,10 +76,6 @@ fn incomparable_operands_are_null_not_false() {
     assert_eq!(scalar("RETURN 1 < 'a'"), Value::Null);
     assert_eq!(scalar("RETURN [1] < 1"), Value::Null);
     assert_eq!(scalar("RETURN [1, 'a'] < [1, 2]"), Value::Null);
-    assert_eq!(
-        scalar("RETURN date('2026-01-01') < datetime('2026-01-02T00:00:00Z')"),
-        Value::Null
-    );
     // So negating one cannot make it true.
     assert_eq!(scalar("RETURN NOT (1 < 'a')"), Value::Null);
     let db = TestDb::new();
@@ -88,6 +84,22 @@ fn incomparable_operands_are_null_not_false() {
     assert_eq!(
         db.column("MATCH (n:N) WHERE NOT (n.v < 'm') RETURN n.v AS v", "v"),
         vec![json!("x")]
+    );
+}
+
+/// Two temporals of different kinds are an error, not Cypher's null: a
+/// `WHERE f.d >= date()` over DATETIME values dropped every row (E-1).
+#[test]
+fn temporals_of_different_kinds_do_not_compare() {
+    let err = TestDb::new().run_err("RETURN date('2026-01-01') < datetime('2026-01-02T00:00:00Z')");
+    assert!(
+        err.contains("cannot compare a DATE with a DATETIME"),
+        "{err}"
+    );
+    // Equality stays false: a DATE is never equal to a DATETIME.
+    assert_eq!(
+        scalar("RETURN date('2026-01-01') = datetime('2026-01-01T00:00:00Z')"),
+        json!(false)
     );
 }
 

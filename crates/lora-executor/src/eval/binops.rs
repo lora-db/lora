@@ -94,10 +94,17 @@ pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> Lora
         }
 
         // Cypher ordering: null or incomparable operands give null; lists
-        // compare element by element.
+        // compare element by element. Two temporals of different kinds are
+        // an error rather than Cypher's null: `d >= date()` against a
+        // DATETIME `d` would otherwise drop every row without a word.
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
             match compare_values(&lhs, &rhs) {
-                None => LoraValue::Null,
+                None => {
+                    if let Some(msg) = temporal_kind_mismatch(&lhs, &rhs) {
+                        set_eval_error(msg);
+                    }
+                    LoraValue::Null
+                }
                 Some(ord) => LoraValue::Bool(match op {
                     BinaryOp::Lt => ord.is_lt(),
                     BinaryOp::Gt => ord.is_gt(),
@@ -229,6 +236,30 @@ pub(crate) fn compare_values(a: &LoraValue, b: &LoraValue) -> Option<std::cmp::O
         }
         _ => a.temporal_cmp(b),
     }
+}
+
+/// The error for ordering two temporal values of different kinds (a DATE
+/// against a DATETIME, a TIME against a LOCAL_TIME, ...), which Cypher
+/// would silently answer with null. `None` when the operands are not two
+/// temporals of different kinds.
+pub(crate) fn temporal_kind_mismatch(a: &LoraValue, b: &LoraValue) -> Option<String> {
+    let kind = |v: &LoraValue| -> Option<&'static str> {
+        Some(match v {
+            LoraValue::Date(_) => "DATE",
+            LoraValue::DateTime(_) => "DATETIME",
+            LoraValue::LocalDateTime(_) => "LOCAL_DATETIME",
+            LoraValue::Time(_) => "TIME",
+            LoraValue::LocalTime(_) => "LOCAL_TIME",
+            _ => return None,
+        })
+    };
+    let (ka, kb) = (kind(a)?, kind(b)?);
+    (ka != kb).then(|| {
+        format!(
+            "cannot compare a {ka} with a {kb}: temporal values of different types do not \
+             order against each other; convert one side first, e.g. date(x) or datetime(x)"
+        )
+    })
 }
 
 /// An integer against a float, exactly: `2^53 + 1 > 2^53 as f64` holds.

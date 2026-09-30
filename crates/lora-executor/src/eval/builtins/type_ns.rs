@@ -350,79 +350,185 @@ fn cast_boolean(value: Option<&LoraValue>) -> Option<LoraValue> {
     })
 }
 
+// Temporal casts follow Cypher's constructors: `date(x)` is
+// `cast.to(x, DATE)`. A string is parsed, a map gives the components, and
+// another temporal value contributes the components the target has: the
+// date of a datetime, the wall clock of a zoned time. A value without a
+// date or a time the target needs (a TIME cast to DATE) does not cast.
+
 fn cast_date(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(match value? {
-        LoraValue::Date(d) => LoraValue::Date(d.clone()),
-        LoraValue::String(s) => LoraValue::Date(LoraDate::parse(s).ok()?),
-        LoraValue::Map(m) => {
-            let year = m.get("year").and_then(LoraValue::as_i64).unwrap_or(0) as i32;
-            let month = m.get("month").and_then(LoraValue::as_i64).unwrap_or(1) as u32;
-            let day = m.get("day").and_then(LoraValue::as_i64).unwrap_or(1) as u32;
-            LoraValue::Date(LoraDate::new(year, month, day).ok()?)
-        }
+    Some(LoraValue::Date(match value? {
+        LoraValue::Date(d) => d.clone(),
+        LoraValue::DateTime(dt) => dt.date(),
+        LoraValue::LocalDateTime(dt) => local_datetime_date(dt),
+        LoraValue::String(s) => LoraDate::parse(s)
+            .or_else(|_| LoraDateTime::parse(s).map(|dt| dt.date()))
+            .ok()?,
+        LoraValue::Map(m) => map_date(m)?,
         _ => return None,
-    })
+    }))
 }
 
 fn cast_time(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(match value? {
-        LoraValue::Time(t) => LoraValue::Time(t.clone()),
-        LoraValue::String(s) => LoraValue::Time(LoraTime::parse(s).ok()?),
+    Some(LoraValue::Time(match value? {
+        LoraValue::Time(t) => t.clone(),
+        LoraValue::LocalTime(t) => {
+            LoraTime::new(t.hour, t.minute, t.second, t.nanosecond, 0).ok()?
+        }
+        LoraValue::DateTime(dt) => LoraTime::new(
+            dt.hour,
+            dt.minute,
+            dt.second,
+            dt.nanosecond,
+            dt.offset_seconds,
+        )
+        .ok()?,
+        LoraValue::LocalDateTime(dt) => {
+            LoraTime::new(dt.hour, dt.minute, dt.second, dt.nanosecond, 0).ok()?
+        }
+        LoraValue::String(s) => LoraTime::parse(s).ok()?,
+        LoraValue::Map(m) => {
+            let (h, mi, sec, ns) = map_clock(m)?;
+            LoraTime::new(h, mi, sec, ns, map_offset(m)?).ok()?
+        }
         _ => return None,
-    })
+    }))
 }
 
 fn cast_local_time(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(match value? {
-        LoraValue::LocalTime(t) => LoraValue::LocalTime(t.clone()),
-        LoraValue::String(s) => LoraValue::LocalTime(LoraLocalTime::parse(s).ok()?),
+    Some(LoraValue::LocalTime(match value? {
+        LoraValue::LocalTime(t) => t.clone(),
+        LoraValue::Time(t) => LoraLocalTime::new(t.hour, t.minute, t.second, t.nanosecond).ok()?,
+        LoraValue::DateTime(dt) => {
+            LoraLocalTime::new(dt.hour, dt.minute, dt.second, dt.nanosecond).ok()?
+        }
+        LoraValue::LocalDateTime(dt) => {
+            LoraLocalTime::new(dt.hour, dt.minute, dt.second, dt.nanosecond).ok()?
+        }
+        LoraValue::String(s) => LoraLocalTime::parse(s).ok()?,
+        LoraValue::Map(m) => {
+            let (h, mi, sec, ns) = map_clock(m)?;
+            LoraLocalTime::new(h, mi, sec, ns).ok()?
+        }
         _ => return None,
-    })
+    }))
 }
 
 fn cast_datetime(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(match value? {
-        LoraValue::DateTime(dt) => LoraValue::DateTime(dt.clone()),
-        LoraValue::String(s) => LoraValue::DateTime(LoraDateTime::parse(s).ok()?),
+    Some(LoraValue::DateTime(match value? {
+        LoraValue::DateTime(dt) => dt.clone(),
+        LoraValue::Date(d) => LoraDateTime::new(d.year, d.month, d.day, 0, 0, 0, 0, 0).ok()?,
+        LoraValue::LocalDateTime(dt) => LoraDateTime::new(
+            dt.year,
+            dt.month,
+            dt.day,
+            dt.hour,
+            dt.minute,
+            dt.second,
+            dt.nanosecond,
+            0,
+        )
+        .ok()?,
+        // A date alone is midnight UTC: `datetime('2026-10-01')`.
+        LoraValue::String(s) => match LoraDateTime::parse(s) {
+            Ok(dt) => dt,
+            Err(_) => {
+                let d = LoraDate::parse(s).ok()?;
+                LoraDateTime::new(d.year, d.month, d.day, 0, 0, 0, 0, 0).ok()?
+            }
+        },
         LoraValue::Map(m) => {
-            let year = m.get("year").and_then(LoraValue::as_i64).unwrap_or(0) as i32;
-            let month = m.get("month").and_then(LoraValue::as_i64).unwrap_or(1) as u32;
-            let day = m.get("day").and_then(LoraValue::as_i64).unwrap_or(1) as u32;
-            let hour = m.get("hour").and_then(LoraValue::as_i64).unwrap_or(0) as u32;
-            let minute = m.get("minute").and_then(LoraValue::as_i64).unwrap_or(0) as u32;
-            let second = m.get("second").and_then(LoraValue::as_i64).unwrap_or(0) as u32;
-            let ms = m
-                .get("millisecond")
-                .and_then(LoraValue::as_i64)
-                .unwrap_or(0) as u32;
-            let offset = match m.get("timezone") {
-                Some(LoraValue::String(tz)) => timezone_name_to_offset(tz),
-                _ => 0,
-            };
-            LoraValue::DateTime(
-                LoraDateTime::new(
-                    year,
-                    month,
-                    day,
-                    hour,
-                    minute,
-                    second,
-                    ms * 1_000_000,
-                    offset,
-                )
-                .ok()?,
-            )
+            let d = map_date(m)?;
+            let (h, mi, sec, ns) = map_clock(m)?;
+            LoraDateTime::new(d.year, d.month, d.day, h, mi, sec, ns, map_offset(m)?).ok()?
         }
         _ => return None,
-    })
+    }))
 }
 
 fn cast_local_datetime(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(match value? {
-        LoraValue::LocalDateTime(dt) => LoraValue::LocalDateTime(dt.clone()),
-        LoraValue::String(s) => LoraValue::LocalDateTime(LoraLocalDateTime::parse(s).ok()?),
+    let (date, (h, mi, sec, ns)) = match value? {
+        LoraValue::LocalDateTime(dt) => return Some(LoraValue::LocalDateTime(dt.clone())),
+        LoraValue::DateTime(dt) => (dt.date(), (dt.hour, dt.minute, dt.second, dt.nanosecond)),
+        LoraValue::Date(d) => (d.clone(), (0, 0, 0, 0)),
+        LoraValue::String(s) => match LoraLocalDateTime::parse(s) {
+            Ok(dt) => return Some(LoraValue::LocalDateTime(dt)),
+            Err(_) => (LoraDate::parse(s).ok()?, (0, 0, 0, 0)),
+        },
+        LoraValue::Map(m) => (map_date(m)?, map_clock(m)?),
         _ => return None,
-    })
+    };
+    // Validates the clock the same way `LoraLocalDateTime::parse` does.
+    LoraLocalTime::new(h, mi, sec, ns).ok()?;
+    Some(LoraValue::LocalDateTime(LoraLocalDateTime {
+        year: date.year,
+        month: date.month,
+        day: date.day,
+        hour: h,
+        minute: mi,
+        second: sec,
+        nanosecond: ns,
+    }))
+}
+
+fn local_datetime_date(dt: &LoraLocalDateTime) -> LoraDate {
+    LoraDate {
+        year: dt.year,
+        month: dt.month,
+        day: dt.day,
+    }
+}
+
+fn map_int(m: &std::collections::BTreeMap<String, LoraValue>, key: &str) -> Option<Option<i64>> {
+    match m.get(key) {
+        None | Some(LoraValue::Null) => Some(None),
+        Some(v) => v.as_i64().map(Some),
+    }
+}
+
+/// `{year, month, day}`; `year` is required, `month` and `day` default
+/// to 1. A non-integer component does not cast.
+fn map_date(m: &std::collections::BTreeMap<String, LoraValue>) -> Option<LoraDate> {
+    let year = i32::try_from(map_int(m, "year")??).ok()?;
+    let month = u32::try_from(map_int(m, "month")?.unwrap_or(1)).ok()?;
+    let day = u32::try_from(map_int(m, "day")?.unwrap_or(1)).ok()?;
+    LoraDate::new(year, month, day).ok()
+}
+
+/// `{hour, minute, second, millisecond, microsecond, nanosecond}`, all
+/// defaulting to 0; the sub-second parts add up as in Cypher.
+fn map_clock(m: &std::collections::BTreeMap<String, LoraValue>) -> Option<(u32, u32, u32, u32)> {
+    let part = |key: &str| -> Option<u32> { u32::try_from(map_int(m, key)?.unwrap_or(0)).ok() };
+    let nanos = part("millisecond")? as u64 * 1_000_000
+        + part("microsecond")? as u64 * 1_000
+        + part("nanosecond")? as u64;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
+    Some((
+        part("hour")?,
+        part("minute")?,
+        part("second")?,
+        nanos as u32,
+    ))
+}
+
+/// The `timezone` of a map: an offset (`'+01:00'`, `'Z'`) or one of the
+/// zone names the engine knows. An unknown zone does not cast, rather than
+/// quietly reading as UTC.
+fn map_offset(m: &std::collections::BTreeMap<String, LoraValue>) -> Option<i32> {
+    match m.get("timezone") {
+        None | Some(LoraValue::Null) => Some(0),
+        Some(LoraValue::String(tz)) => {
+            if let Ok(t) = LoraTime::parse(&format!("00:00{tz}")) {
+                return Some(t.offset_seconds);
+            }
+            let offset = timezone_name_to_offset(tz);
+            (offset != 0 || matches!(tz.as_str(), "UTC" | "GMT" | "Europe/London"))
+                .then_some(offset)
+        }
+        _ => None,
+    }
 }
 
 fn cast_duration(value: Option<&LoraValue>) -> Option<LoraValue> {

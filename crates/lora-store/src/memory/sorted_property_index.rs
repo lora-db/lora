@@ -146,6 +146,34 @@ impl SortedPropertyIndex {
         Some(out)
     }
 
+    /// Whether the scope holds a temporal value of another kind than
+    /// `like` (a DATE when `like` is a DATETIME, ...). `Some(false)` when
+    /// `like` is not temporal; `None` when the scope is not indexed. Two
+    /// probes: the temporal kinds are contiguous, so only the first and
+    /// last temporal keys can differ in kind from `like`.
+    pub(super) fn holds_other_temporal_kind(
+        &self,
+        label: &str,
+        property: &str,
+        like: &PropertyValue,
+    ) -> Option<bool> {
+        let scope = self
+            .by_scope
+            .get(&ScopedPropertyKey::new(label, property))?;
+        let Some(kind) = PropertyIndexKey::from_value(like).and_then(|k| k.temporal_kind()) else {
+            return Some(false);
+        };
+        let (floor, ceiling) = PropertyIndexKey::all_temporals();
+        let mut temporals = scope
+            .by_value
+            .range(Bound::Included(floor), Bound::Included(ceiling));
+        let other = |key: Option<(&PropertyIndexKey, &IdSet)>| {
+            key.and_then(|(k, _)| k.temporal_kind())
+                .is_some_and(|k| k != kind)
+        };
+        Some(other(temporals.next()) || other(temporals.next_back()))
+    }
+
     /// Ids in `[lo, hi]` (inclusive; the caller refilters exact bounds)
     /// in value order, then id order within a value, starting strictly
     /// after `after` and returning at most `max`. `descending` walks the

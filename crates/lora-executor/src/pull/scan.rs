@@ -562,6 +562,12 @@ impl<'a, S: GraphStorage> RowSource for OrderedRangeScanSource<'a, S> {
             let hi = self.op.hi.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
             let cursor =
                 crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, lo, hi);
+            crate::executor::check_node_range_temporal_kinds(
+                self.ctx.storage,
+                self.op,
+                None,
+                &cursor.filter(),
+            )?;
             self.current = Some((row, cursor));
         }
     }

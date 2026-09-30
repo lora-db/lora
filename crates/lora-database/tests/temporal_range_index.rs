@@ -98,75 +98,87 @@ fn feed_latency_does_not_grow_with_label_size() {
 }
 
 /// Every temporal kind, with range and equality predicates, gives the
-/// same rows with and without the index.
+/// same rows with and without the index. Each kind also carries its own
+/// label: under `:Ev`, where the kinds mix, a range bound meets values of
+/// other temporal kinds, which is an error on both plans (E-1).
 #[test]
 fn every_temporal_kind_matches_the_unindexed_plan() {
     let seed = |indexed: bool| {
         let db = TestDb::new();
         if indexed {
-            db.run("CREATE INDEX ev_t FOR (e:Ev) ON (e.t)");
+            for label in ["Ev", "D", "Dt", "Ldt", "T", "Lt", "S", "I"] {
+                db.run(&format!("CREATE INDEX ev_{label} FOR (e:{label}) ON (e.t)"));
+            }
         }
         db.run(
             "UNWIND range(0, 29) AS i CREATE \
-             (:Ev {i: i, kind: 'date', t: ('2024-01-01'::DATE) + ({days: i}::DURATION)}), \
-             (:Ev {i: i, kind: 'datetime', t: ('2024-01-01T00:00:00Z'::DATETIME) + ({hours: i}::DURATION)}), \
-             (:Ev {i: i, kind: 'localdatetime', t: ('2024-09-01T00:00:00'::LOCAL_DATETIME) + ({days: i * 3}::DURATION)}), \
-             (:Ev {i: i, kind: 'time', t: ('08:00:00+01:00'::TIME) + ({minutes: i * 7}::DURATION)}), \
-             (:Ev {i: i, kind: 'localtime', t: ('08:00:00'::LOCAL_TIME) + ({seconds: i * 13}::DURATION)}), \
-             (:Ev {i: i, kind: 'string', t: 'x' + toString(i)}), \
-             (:Ev {i: i, kind: 'int', t: i})",
+             (:Ev:D {i: i, t: ('2024-01-01'::DATE) + ({days: i}::DURATION)}), \
+             (:Ev:Dt {i: i, t: ('2024-01-01T00:00:00Z'::DATETIME) + ({hours: i}::DURATION)}), \
+             (:Ev:Ldt {i: i, t: ('2024-09-01T00:00:00'::LOCAL_DATETIME) + ({days: i * 3}::DURATION)}), \
+             (:Ev:T {i: i, t: ('08:00:00+01:00'::TIME) + ({minutes: i * 7}::DURATION)}), \
+             (:Ev:Lt {i: i, t: ('08:00:00'::LOCAL_TIME) + ({seconds: i * 13}::DURATION)}), \
+             (:Ev:S {i: i, t: 'x' + toString(i)}), \
+             (:Ev:I {i: i, t: i})",
         );
         // Same instant as datetime i = 3, written in another offset.
-        db.run(
-            "CREATE (:Ev {i: 100, kind: 'datetime', t: ('2024-01-01T05:00:00+02:00'::DATETIME)})",
-        );
+        db.run("CREATE (:Ev:Dt {i: 100, t: ('2024-01-01T05:00:00+02:00'::DATETIME)})");
         db
     };
     let indexed = seed(true);
     let plain = seed(false);
 
     let queries = [
-        "MATCH (e:Ev) WHERE e.t > ('2024-01-10'::DATE) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t >= ('2024-01-10'::DATE) AND e.t < ('2024-01-20'::DATE) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t <= ('2024-01-03'::DATE) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t >= ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t > ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t <= ('2024-01-01T04:00:00+01:00'::DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t < ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t = ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t = ('2024-01-01T05:00:00+02:00'::DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t > ('2024-09-20T00:00:00'::LOCAL_DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t < ('2024-09-10T00:00:00'::LOCAL_DATETIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t >= ('08:30:00+01:00'::TIME) AND e.t < ('09:30:00+02:00'::TIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t > ('08:05:00'::LOCAL_TIME) RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t = ('2024-01-05'::DATE) RETURN e.i AS i",
-        "MATCH (e:Ev) WHERE e.t > ('2024-01-10'::DATE) RETURN e.i AS i ORDER BY e.t DESC LIMIT 5",
-        "MATCH (e:Ev) WHERE e.t < ('2024-09-20T00:00:00'::LOCAL_DATETIME) RETURN e.i AS i ORDER BY e.t DESC LIMIT 5",
-        "MATCH (e:Ev) WHERE e.t > ('08:02:00'::LOCAL_TIME) RETURN e.i AS i ORDER BY e.t LIMIT 5",
-        "MATCH (e:Ev) WHERE e.t > ('07:00:00Z'::TIME) RETURN e.i AS i ORDER BY e.t LIMIT 5",
-        "MATCH (e:Ev) WHERE e.t > 'x2' RETURN e.i AS i ORDER BY i",
-        "MATCH (e:Ev) WHERE e.t > 25 RETURN e.i AS i ORDER BY i",
+        "MATCH (e:D) WHERE e.t > ('2024-01-10'::DATE) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:D) WHERE e.t >= ('2024-01-10'::DATE) AND e.t < ('2024-01-20'::DATE) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:D) WHERE e.t <= ('2024-01-03'::DATE) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Dt) WHERE e.t >= ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Dt) WHERE e.t > ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Dt) WHERE e.t <= ('2024-01-01T04:00:00+01:00'::DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Dt) WHERE e.t < ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Dt) WHERE e.t = ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Dt) WHERE e.t = ('2024-01-01T05:00:00+02:00'::DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Ldt) WHERE e.t > ('2024-09-20T00:00:00'::LOCAL_DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Ldt) WHERE e.t < ('2024-09-10T00:00:00'::LOCAL_DATETIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:T) WHERE e.t >= ('08:30:00+01:00'::TIME) AND e.t < ('09:30:00+02:00'::TIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:Lt) WHERE e.t > ('08:05:00'::LOCAL_TIME) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:D) WHERE e.t = ('2024-01-05'::DATE) RETURN e.i AS i",
+        "MATCH (e:D) WHERE e.t > ('2024-01-10'::DATE) RETURN e.i AS i ORDER BY e.t DESC LIMIT 5",
+        "MATCH (e:Ldt) WHERE e.t < ('2024-09-20T00:00:00'::LOCAL_DATETIME) RETURN e.i AS i ORDER BY e.t DESC LIMIT 5",
+        "MATCH (e:Lt) WHERE e.t > ('08:02:00'::LOCAL_TIME) RETURN e.i AS i ORDER BY e.t LIMIT 5",
+        "MATCH (e:T) WHERE e.t > ('07:00:00Z'::TIME) RETURN e.i AS i ORDER BY e.t LIMIT 5",
+        "MATCH (e:S) WHERE e.t > 'x2' RETURN e.i AS i ORDER BY i",
+        "MATCH (e:I) WHERE e.t > 25 RETURN e.i AS i ORDER BY i",
         // A duration bound has no index image: the scan answers it.
-        "MATCH (e:Ev) WHERE e.t > ('P1D'::DURATION) RETURN e.i AS i ORDER BY i",
+        "MATCH (e:D) WHERE e.t > ('P1D'::DURATION) RETURN e.i AS i ORDER BY i",
     ];
     for q in queries {
         let got = indexed.run(q);
         let want = plain.run(q);
         assert_eq!(got, want, "{q}");
     }
+    for q in [
+        "MATCH (e:Ev) WHERE e.t > ('2024-01-10'::DATE) RETURN e.i AS i",
+        "MATCH (e:Ev) WHERE e.t < ('2024-09-10T00:00:00'::LOCAL_DATETIME) RETURN e.i AS i ORDER BY e.t LIMIT 5",
+        "MATCH (e:Ev) WHERE e.t >= ('08:30:00+01:00'::TIME) RETURN e.i AS i",
+    ] {
+        for db in [&indexed, &plain] {
+            let err = db.run_err(q);
+            assert!(err.contains("cannot compare"), "{q}: {err}");
+        }
+    }
 
     let got = ints(
-        &indexed.run("MATCH (e:Ev) WHERE e.t >= ('2024-01-01T03:00:00Z'::DATETIME) AND e.t <= ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i"),
+        &indexed.run("MATCH (e:Dt) WHERE e.t >= ('2024-01-01T03:00:00Z'::DATETIME) AND e.t <= ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i ORDER BY i"),
         "i",
     );
     assert_eq!(got, vec![3, 100], "same instant in two offsets");
     let got = ints(
-        &indexed.run("MATCH (e:Ev) WHERE e.t = ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i"),
+        &indexed.run("MATCH (e:Dt) WHERE e.t = ('2024-01-01T03:00:00Z'::DATETIME) RETURN e.i AS i"),
         "i",
     );
     assert_eq!(got, vec![3], "equality is exact, offset included");
     let got = ints(
-        &indexed.run("MATCH (e:Ev) WHERE e.t > ('2024-01-27'::DATE) RETURN e.i AS i ORDER BY i"),
+        &indexed.run("MATCH (e:D) WHERE e.t > ('2024-01-27'::DATE) RETURN e.i AS i ORDER BY i"),
         "i",
     );
     assert_eq!(got, vec![27, 28, 29]);
@@ -213,12 +225,11 @@ fn comparisons_and_ordering_on_every_temporal_kind() {
     ] {
         assert_eq!(db.run(q), vec![json!({ "r": want })], "{q}");
     }
-    // Temporals of different kinds do not order against each other: the
-    // comparison is null, as in Cypher (tests/comparison_ordering.rs).
-    assert_eq!(
-        db.run("RETURN ('2024-01-01'::DATE) < ('2024-01-02T00:00:00Z'::DATETIME) AS r"),
-        vec![json!({ "r": null })]
-    );
+    // Temporals of different kinds do not order against each other. Cypher
+    // answers null; LoraDB fails instead (tests/comparison_ordering.rs).
+    assert!(db
+        .run_err("RETURN ('2024-01-01'::DATE) < ('2024-01-02T00:00:00Z'::DATETIME) AS r")
+        .contains("cannot compare a DATE with a DATETIME"));
 
     let rows = db.run(
         "UNWIND [('2024-10-01T00:00'::LOCAL_DATETIME), ('2024-09-01T00:00'::LOCAL_DATETIME), \

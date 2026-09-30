@@ -297,6 +297,16 @@ impl GraphStorage for InMemoryGraph {
         Some(candidates.into_iter().collect())
     }
 
+    fn node_range_holds_other_temporal_kind(
+        &self,
+        label: &str,
+        property: &str,
+        like: &PropertyValue,
+    ) -> Option<bool> {
+        self.sorted_indexes_read(crate::StoredIndexEntity::Node)
+            .holds_other_temporal_kind(label, property, like)
+    }
+
     fn node_range_ordered_chunk(
         &self,
         label: &str,
@@ -356,6 +366,16 @@ impl GraphStorage for InMemoryGraph {
         let registry = self.sorted_indexes_read(crate::StoredIndexEntity::Relationship);
         let candidates = registry.range_candidates(rel_type, property, lo, hi)?;
         Some(candidates.into_iter().collect())
+    }
+
+    fn relationship_range_holds_other_temporal_kind(
+        &self,
+        rel_type: &str,
+        property: &str,
+        like: &PropertyValue,
+    ) -> Option<bool> {
+        self.sorted_indexes_read(crate::StoredIndexEntity::Relationship)
+            .holds_other_temporal_kind(rel_type, property, like)
     }
 
     fn relationship_point_within_bbox(
