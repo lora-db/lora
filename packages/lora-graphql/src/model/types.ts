@@ -349,6 +349,8 @@ export interface GraphModel {
   warnings: readonly ModelWarning[];
   /** Custom scalars (`@storedAs`), by name: their storage type. */
   scalars: ReadonlyMap<string, ScalarType>;
+  /** Custom scalars' SDL descriptions, by name, when they have one. */
+  scalarDescriptions: ReadonlyMap<string, string>;
   /** Object types without @node that @cypher fields return. */
   objects: ReadonlyMap<string, PlainObjectType>;
   /** The `@jwt` claims shape, when declared: claim name → token path. */

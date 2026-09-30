@@ -2,6 +2,7 @@
 // Festimap brief). Each block names its item; the suite runs on graphql
 // 16 and 17 (`yarn test`, `yarn test:graphql17`).
 
+import { GraphQLScalarType } from "graphql";
 import { describe, expect, test } from "vitest";
 import { LoraGraphQL, ModelError } from "../src/index.js";
 import { createTestLoraGraphQL, expectSeeks } from "../src/testing.js";
@@ -947,5 +948,58 @@ describe("G-2: generateTypes merges a field selected twice", () => {
       /key: string;\s+name: string;\s+family: string \| null;/,
     );
     t.close();
+  });
+});
+
+describe("G-3: a @storedAs scalar keeps its SDL description", () => {
+  const typeDefs = `
+    """A URL-safe key: lowercase letters, digits and dashes."""
+    scalar Slug @storedAs(type: STRING)
+    type F @node { key: Slug! @key }`;
+  const implementation = (description: string) =>
+    new GraphQLScalarType({
+      name: "Slug",
+      description,
+      serialize: (v) => v,
+      parseValue: (v) => v,
+    });
+  const build = (scalars?: Record<string, GraphQLScalarType>) =>
+    new LoraGraphQL({
+      typeDefs,
+      driver: undefined as never,
+      ...(scalars ? { scalars } : {}),
+    });
+  const description = "A URL-safe key: lowercase letters, digits and dashes.";
+
+  test("with or without an implementation", () => {
+    const plain = build();
+    const given = build({ Slug: implementation("Something else.") });
+    for (const lora of [plain, given]) {
+      expect(lora.getSchema().getType("Slug")!.description).toBe(description);
+      expect(lora.printPublicSchema()).toContain(description);
+    }
+    // The implementation still parses and serializes.
+    const parse = (given.getSchema().getType("Slug") as GraphQLScalarType)
+      .parseValue;
+    expect(parse("a-b")).toBe("a-b");
+  });
+
+  test("the schema hash does not depend on the implementation", () => {
+    const hash = (lora: LoraGraphQL) => lora.buildManifest({}).schemaHash;
+    expect(hash(build({ Slug: implementation("One.") }))).toBe(
+      hash(build({ Slug: implementation("Two.") })),
+    );
+    expect(hash(build())).toBe(hash(build({ Slug: implementation("One.") })));
+  });
+
+  test("without an SDL description the defaults stay", () => {
+    const lora = new LoraGraphQL({
+      typeDefs: `scalar Slug @storedAs(type: STRING)
+        type F @node { key: Slug! @key }`,
+      driver: undefined as never,
+    });
+    expect(lora.getSchema().getType("Slug")!.description).toBe(
+      "Stored as String.",
+    );
   });
 });

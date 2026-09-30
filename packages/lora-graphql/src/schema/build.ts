@@ -317,23 +317,36 @@ export function buildSchema(
     : undefined;
 
   // Custom scalars: the implementation given in the scalars option, or a
-  // pass-through that serializes and parses like its storage type.
+  // pass-through that serializes and parses like its storage type. The
+  // SDL's description wins over the implementation's, so clients see the
+  // schema's documentation and the schema hash does not depend on which
+  // implementation was passed.
   const customScalars = new Map<string, GraphQLScalarType>();
   const customScalar = (name: string): GraphQLScalarType | undefined => {
     const stored = model.scalars.get(name);
     if (!stored) return undefined;
     let t = customScalars.get(name);
     if (!t) {
-      const base = baseType(stored, undefined) as GraphQLScalarType;
-      t =
-        hooks.scalars?.[name] ??
-        new GraphQLScalarType({
+      const documented = model.scalarDescriptions.get(name);
+      const given = hooks.scalars?.[name];
+      if (given) {
+        t =
+          documented === undefined || documented === given.description
+            ? given
+            : new GraphQLScalarType({
+                ...given.toConfig(),
+                description: documented,
+              });
+      } else {
+        const base = baseType(stored, undefined) as GraphQLScalarType;
+        t = new GraphQLScalarType({
           name,
-          description: `Stored as ${stored}.`,
+          description: documented ?? `Stored as ${stored}.`,
           serialize: base.serialize,
           parseValue: base.parseValue,
           parseLiteral: base.parseLiteral,
         });
+      }
       customScalars.set(name, t);
     }
     return t;

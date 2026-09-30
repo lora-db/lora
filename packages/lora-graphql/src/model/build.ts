@@ -148,6 +148,7 @@ export function buildModel(
 
   const enums = new Map<string, EnumType>();
   const scalars = new Map<string, ScalarType>();
+  const scalarDescriptions = new Map<string, string>();
   const nodeTypes: GraphQLObjectType[] = [];
   const propsTypes: GraphQLObjectType[] = [];
   const plainTypes: GraphQLObjectType[] = [];
@@ -159,7 +160,10 @@ export function buildModel(
   for (const t of userTypes) {
     if (isScalarType(t)) {
       const stored = storageOf(t);
-      if (stored && !(t.name in BUILTIN_SCALARS)) scalars.set(t.name, stored);
+      if (stored && !(t.name in BUILTIN_SCALARS)) {
+        scalars.set(t.name, stored);
+        if (t.description) scalarDescriptions.set(t.name, t.description);
+      }
       if (!(t.name in BUILTIN_SCALARS) && !stored) {
         problems.push({
           type: t.name,
@@ -792,6 +796,7 @@ export function buildModel(
     warnings,
     objects,
     scalars,
+    scalarDescriptions,
     jwt: jwtShape,
     cursorSecret: options.cursorSecret,
   };
