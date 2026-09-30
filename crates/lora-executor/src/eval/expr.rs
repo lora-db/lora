@@ -414,6 +414,19 @@ fn eval_exists_subquery<S: GraphStorage>(
                                     Some(LoraValue::Node(id)) => Some(*id),
                                     _ => None,
                                 });
+                                if let Some(range) = &step.rel.range {
+                                    if let Some(sid) = src_node_id {
+                                        expand_var_length_step(
+                                            sid,
+                                            step,
+                                            range,
+                                            fr,
+                                            ctx,
+                                            &mut step_rows,
+                                        );
+                                    }
+                                    continue;
+                                }
                                 if let Some(sid) = src_node_id {
                                     let _ = ctx.storage.try_for_each_expand_id(
                                         sid,
@@ -548,6 +561,19 @@ fn eval_pattern_comprehension<S: GraphStorage>(
                                     Some(LoraValue::Relationship(id)) => Some(*id),
                                     _ => None,
                                 });
+                                if let Some(range) = &step.rel.range {
+                                    if let Some(sid) = src_node_id {
+                                        expand_var_length_step(
+                                            sid,
+                                            step,
+                                            range,
+                                            fr,
+                                            ctx,
+                                            &mut step_rows,
+                                        );
+                                    }
+                                    continue;
+                                }
                                 if let Some(sid) = src_node_id {
                                     let _ = ctx.storage.try_for_each_expand_id(
                                         sid,
@@ -689,6 +715,133 @@ fn match_node_pattern<S: GraphStorage>(
         out.push(r);
     }
     out
+}
+
+/// Expand a variable-length step `-[r:T*min..max {k: v}]->(dst)` of a
+/// pattern subquery from node `src`: every path of `min..=max` hops that
+/// repeats no relationship, whose relationships all carry the map's
+/// properties, and that ends on a node matching the step's node pattern (and
+/// on the node or relationship list the row already binds, if any). Each
+/// match extends `row` with `r` bound to the path's relationships.
+fn expand_var_length_step<S: GraphStorage>(
+    src: lora_store::NodeId,
+    step: &lora_analyzer::ResolvedChain,
+    range: &lora_ast::RangeLiteral,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+    out: &mut Vec<Row>,
+) {
+    let (min_hops, max_hops) = crate::executor::resolve_range(range);
+    let walk = VarLengthWalk {
+        step,
+        row,
+        ctx,
+        min_hops,
+        max_hops,
+        dst_bound: step.node.var.and_then(|v| match row.get(v) {
+            Some(LoraValue::Node(id)) => Some(*id),
+            _ => None,
+        }),
+        rels_bound: step.rel.var.and_then(|v| match row.get(v) {
+            Some(LoraValue::List(items)) => items
+                .iter()
+                .map(|item| match item {
+                    LoraValue::Relationship(id) => Some(*id),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }),
+    };
+    walk.visit(src, &mut Vec::new(), out);
+}
+
+struct VarLengthWalk<'q, 'c, S: GraphStorage> {
+    step: &'q lora_analyzer::ResolvedChain,
+    row: &'q Row,
+    ctx: &'q EvalContext<'c, S>,
+    min_hops: u64,
+    max_hops: u64,
+    dst_bound: Option<lora_store::NodeId>,
+    rels_bound: Option<Vec<lora_store::RelationshipId>>,
+}
+
+impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
+    fn visit(
+        &self,
+        node: lora_store::NodeId,
+        path: &mut Vec<lora_store::RelationshipId>,
+        out: &mut Vec<Row>,
+    ) {
+        let hops = path.len() as u64;
+        if hops >= self.min_hops {
+            self.emit(node, path, out);
+        }
+        if hops >= self.max_hops {
+            return;
+        }
+        let mut next = Vec::new();
+        let _ = self.ctx.storage.try_for_each_expand_id(
+            node,
+            self.step.rel.direction,
+            &self.step.rel.types,
+            |rel_id, dst_id| {
+                next.push((rel_id, dst_id));
+                Ok::<(), ()>(())
+            },
+        );
+        for (rel_id, dst_id) in next {
+            if path.contains(&rel_id)
+                || !rel_matches_properties(rel_id, &self.step.rel.properties, self.row, self.ctx)
+            {
+                continue;
+            }
+            path.push(rel_id);
+            self.visit(dst_id, path, out);
+            path.pop();
+        }
+    }
+
+    fn emit(
+        &self,
+        node: lora_store::NodeId,
+        path: &[lora_store::RelationshipId],
+        out: &mut Vec<Row>,
+    ) {
+        if self.dst_bound.is_some_and(|bound| bound != node)
+            || self
+                .rels_bound
+                .as_deref()
+                .is_some_and(|bound| bound != path)
+        {
+            return;
+        }
+        let matched = self
+            .ctx
+            .storage
+            .with_node(node, |n| {
+                node_matches_labels(&n.labels, &self.step.node.labels)
+                    && node_matches_properties(
+                        &n.properties,
+                        &self.step.node.properties,
+                        self.row,
+                        self.ctx,
+                    )
+            })
+            .unwrap_or(false);
+        if !matched {
+            return;
+        }
+        let mut r = self.row.clone();
+        if let Some(rv) = self.step.rel.var {
+            let rels = path.iter().map(|id| LoraValue::Relationship(*id)).collect();
+            r.insert(rv, LoraValue::List(rels));
+        }
+        if let Some(nv) = self.step.node.var {
+            r.insert(nv, LoraValue::Node(node));
+        }
+        out.push(r);
+    }
 }
 
 /// Find the node ID of the current source node for a chain step.
