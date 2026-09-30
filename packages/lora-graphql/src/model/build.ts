@@ -156,6 +156,25 @@ export function buildModel(
     (t) => !t.name.startsWith("__") && !PRELUDE_TYPES.has(t.name),
   );
 
+  // `extend schema @authorizationDefaults(...)`.
+  const defaults: {
+    bypass?: AuthorizationWhere;
+    mutations?: AuthorizationWhere;
+  } = {};
+  for (const node of [schema.astNode, ...schema.extensionASTNodes]) {
+    if (!node) continue;
+    const args = directive(
+      d("authorizationDefaults"),
+      { astNode: node },
+      (message) => problems.push({ type: "schema", message }),
+    );
+    if (!args) continue;
+    if (args["bypass"] != null)
+      defaults.bypass = args["bypass"] as AuthorizationWhere;
+    if (args["mutations"] != null)
+      defaults.mutations = args["mutations"] as AuthorizationWhere;
+  }
+
   const enums = new Map<string, EnumType>();
   const scalars = new Map<string, ScalarType>();
   const scalarDescriptions = new Map<string, string>();
@@ -714,6 +733,64 @@ export function buildModel(
     }
   }
 
+  // @authorizationDefaults: a claims-only bypass, and the write rule of
+  // every @mutation type without one of its own.
+  if (defaults.bypass) {
+    const violations = claimsOnlyViolations(defaults.bypass);
+    for (const key of violations) {
+      problems.push({
+        type: "schema",
+        message: `@authorizationDefaults(bypass:) tests claims only (jwt, AND, OR, NOT), so it stays a compile-time decision; ${key} is not allowed`,
+      });
+    }
+    if (violations.length === 0) {
+      checkRuleWhere(
+        nodes,
+        relationshipProperties,
+        undefined,
+        "schema",
+        undefined,
+        defaults.bypass,
+        problems,
+        jwtShape,
+      );
+    }
+  }
+  if (defaults.mutations) {
+    const WRITES: AuthOperation[] = ["CREATE", "UPDATE", "DELETE"];
+    for (const node of nodes.values()) {
+      if (node.mutations.size === 0) continue;
+      const own = [
+        ...(node.authorization?.filter ?? []),
+        ...(node.authorization?.validate ?? []),
+      ].some((r) => WRITES.some((op) => r.operations.has(op)));
+      if (own) continue;
+      (node as { authorization: Authorization }).authorization = {
+        ...(node.authorization ?? { filter: [] }),
+        validate: [
+          ...(node.authorization?.validate ?? []),
+          {
+            operations: new Set<AuthOperation>(WRITES),
+            when: new Set<"BEFORE" | "AFTER">(["BEFORE", "AFTER"]),
+            requireAuthentication: true,
+            where: defaults.mutations,
+          },
+        ],
+      };
+    }
+  }
+  for (const node of nodes.values()) {
+    for (const f of node.fields.values()) {
+      if (f.authorization?.bypass !== undefined || f.authorization?.public) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message: "@authorization(bypass:, public:) belong on the type",
+        });
+      }
+    }
+  }
+
   const ruleEnds = (f: RelationshipField): RuleEnds | undefined => {
     const source = nodes.get(f.owner);
     const target = nodes.get(f.target);
@@ -954,6 +1031,7 @@ export function buildModel(
     scalarDescriptions,
     jwt: jwtShape,
     viewer,
+    bypass: defaults.bypass,
     cursorSecret: options.cursorSecret,
   };
   // An update input with nothing in it would break the schema: the
@@ -1868,7 +1946,14 @@ function readAuthorization(
     requireAuthentication: r.requireAuthentication ?? true,
     where: r.where,
   }));
-  return { filter, validate };
+  return {
+    filter,
+    validate,
+    ...(args["bypass"] != null ? { bypass: args["bypass"] as boolean } : {}),
+    ...(args["public"] != null
+      ? { public: new Set(args["public"] as AuthOperation[]) }
+      : {}),
+  };
 }
 
 const SCALAR_WHERE_OPS = new Set([
@@ -1887,6 +1972,24 @@ const SCALAR_WHERE_OPS = new Set([
 const PROPERTY_OPS = new Set<AuthOperation>(["READ", "CREATE", "UPDATE"]);
 const JWT_OPS = new Set([...SCALAR_WHERE_OPS, "includes", "exists"]);
 const COUNT_WHERE_OPS = new Set(["eq", "lt", "lte", "gt", "gte"]);
+
+/** Keys of a rule that are not claim tests: `node`, `viewer`, … */
+function claimsOnlyViolations(where: unknown, path = ""): string[] {
+  if (!isRecord(where)) return [];
+  const out: string[] = [];
+  for (const [k, value] of Object.entries(where)) {
+    const here = path ? `${path}.${k}` : k;
+    if (k === "AND" || k === "OR") {
+      if (Array.isArray(value)) {
+        value.forEach((w, i) =>
+          out.push(...claimsOnlyViolations(w, `${here}[${i}]`)),
+        );
+      }
+    } else if (k === "NOT") out.push(...claimsOnlyViolations(value, here));
+    else if (k !== "jwt") out.push(here);
+  }
+  return out;
+}
 
 /** A rule over a relationship's source, target and edge. */
 const isRelationshipRule = (rule: {

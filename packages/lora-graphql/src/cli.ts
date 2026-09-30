@@ -317,6 +317,7 @@ async function check(
       `unused   ${u.type} index ${u.name} on :${u.labels.join(":")}(${u.properties.join(", ")})`,
     );
   }
+  for (const s of report.security) io.out(`error    ${formatProblem(s)}`);
   for (const m of report.missing)
     io.out(`error    missing ${describeRequirement(m)}`);
   for (const c of report.cypher)

@@ -103,6 +103,14 @@ each check runs. The user-facing rules are in the package
 
 ## Writes and change events
 
+- `@authorizationDefaults(bypass:)` is claims-only (checked at startup), so
+  who it lets through is decided from the verified token alone. It skips
+  filter, validate, field, relationship and property rules for those
+  callers, on every type without `@authorization(bypass: false)`; it does
+  not skip `@authentication`. `check()` fails on a `@mutation` type whose
+  generated writes no rule guards, unless the type declares them
+  `public`.
+
 - Rules on a relationship field (`CONNECT`, `DISCONNECT`, `UPDATE_EDGE`,
   `READ_EDGE`) apply to writes through the field and through a field
   declaring the same relationship type from the other side. They do not

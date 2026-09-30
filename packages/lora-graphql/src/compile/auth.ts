@@ -88,7 +88,7 @@ export function authFilter(
   variable: string,
   op: AuthOperation,
 ): Expr | undefined {
-  if (ctx.inAuth) return undefined;
+  if (ctx.inAuth || bypassed(ctx, node)) return undefined;
   const rules = (node.authorization?.filter ?? []).filter((r) =>
     r.operations.has(op),
   );
@@ -175,7 +175,7 @@ export function fieldReadGuard(
   const rules = (field.authorization?.validate ?? []).filter(
     (r) => r.operations.has("READ") && r.when.has("BEFORE"),
   );
-  if (rules.length === 0) return undefined;
+  if (rules.length === 0 || bypassed(ctx, node)) return undefined;
   if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
     return { when: lit(false), code: "UNAUTHENTICATED" };
   }
@@ -197,7 +197,9 @@ function validateRules(
   op: AuthOperation,
   rules: readonly AuthorizationValidateRule[],
 ): Expr | undefined {
-  if (ctx.inAuth || rules.length === 0) return undefined;
+  if (ctx.inAuth || rules.length === 0 || bypassed(ctx, node)) {
+    return undefined;
+  }
   if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
     throw requestError(
       "UNAUTHENTICATED",
@@ -241,7 +243,7 @@ export function propertyAccess(
   const rules = (field.authorization?.validate ?? []).filter((r) =>
     r.operations.has(op),
   );
-  if (rules.length === 0) return "allowed";
+  if (rules.length === 0 || bypassed(ctx, undefined)) return "allowed";
   if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
     return "unauthenticated";
   }
@@ -280,6 +282,24 @@ export function forbidden(node: NodeType, op: AuthOperation) {
     "FORBIDDEN",
     `not allowed to ${op.toLowerCase()} this ${node.name}`,
   );
+}
+
+/**
+ * The schema's bypass (`@authorizationDefaults(bypass:)`) grants this
+ * request: it skips every filter and validate rule, except on a type with
+ * `@authorization(bypass: false)`. Claims only, so it is decided here.
+ */
+function bypassed(ctx: CompileContext, node: NodeType | undefined): boolean {
+  const bypass = ctx.model.bypass;
+  if (!bypass || !ctx.jwt || node?.authorization?.bypass === false) {
+    return false;
+  }
+  try {
+    return compileRulePart(ctx, undefined, "", bypass) === true;
+  } catch (err) {
+    if (err instanceof MissingClaim) return false;
+    throw err;
+  }
 }
 
 /** A rule needs a claim the request lacks: the whole rule denies. */
@@ -438,6 +458,7 @@ export function relationshipRules(
       r.operations.has(op),
     );
     if (rules.length === 0) continue;
+    if (bypassed(ctx, ctx.model.nodes.get(field.owner))) continue;
     const label = `${op.toLowerCase().replace("_", " ")} ${field.owner}.${field.name}`;
     if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
       if (mode === "read") return false;

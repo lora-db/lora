@@ -683,6 +683,25 @@ type Post
 - Rules are checked against the model at startup: an unknown field,
   operator or (with `@jwt`) claim, or a test that is empty or null, is an
   error, not an open door.
+- **Schema-wide defaults.**
+
+  ```graphql
+  extend schema
+    @authorizationDefaults(
+      bypass: { jwt: { roles: { includes: "admin" } } }
+      mutations: { jwt: { roles: { includes: "editor" } } }
+    )
+  ```
+
+  A request passing `bypass` skips every filter and validate rule, field
+  and relationship rules included; `@authentication` still applies.
+  `bypass` tests claims only, so it is decided before the statement is
+  built: an admin's statement carries no rule predicate. A type keeps its
+  rules for everyone with `@authorization(bypass: false)`. `mutations` is
+  the write rule (`CREATE`, `UPDATE`, `DELETE`) of every `@mutation` type
+  that declares no rule for those operations; a type's own rules replace
+  it, never merge with it. `check()` fails on a `@mutation` type whose
+  writes nothing guards, unless it says `@authorization(public: [...])`.
 
 Relationship and `@cypher` fields take field-level `@authorization`
 with READ validate rules: a row failing the rule reads the field as
@@ -957,9 +976,13 @@ files, and exits non-zero on any finding. It is the CI gate. Options:
 - `--database dir [--name app]`: check an existing database as it is, and
   report indexes it has that the API does not use.
 
-It also prints lint notes that do not fail the run: mutations without
-rules, `CASE_INSENSITIVE` and `IS_NULL` filters (no index applies), and
-list relationships without `@cardinality` or statistics.
+A `@mutation` type with a generated write no rule guards (no
+`@authentication` or `@authorization` rule for it, and no
+`@authorizationDefaults(mutations:)` default) fails the run: declare it
+with `@authorization(public: [CREATE, ...])` when every caller may make
+it. It also prints lint notes that do not fail the run: `CASE_INSENSITIVE`
+and `IS_NULL` filters (no index applies), and list relationships without
+`@cardinality` or statistics.
 
 `compile` validates persisted operations (`.graphql` files, one entry per
 operation, or a JSON map of id to source) into `manifest.json`, which

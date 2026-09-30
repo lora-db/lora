@@ -181,8 +181,11 @@ describe("no directive is silently ignored", () => {
   });
 
   test("every library directive has a sample use", () => {
+    // @storedAs (on scalars) and @authorizationDefaults (on the schema)
+    // have one place each, which graphql-js enforces.
+    const elsewhere = new Set(["storedAs", "authorizationDefaults"]);
     expect(
-      [...locations.keys()].filter((n) => !USE[n] && n !== "storedAs"),
+      [...locations.keys()].filter((n) => !USE[n] && !elsewhere.has(n)),
     ).toEqual([]);
   });
 

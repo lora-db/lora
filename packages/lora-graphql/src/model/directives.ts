@@ -217,7 +217,19 @@ export const directiveTypeDefs = /* GraphQL */ `
   directive @authorization(
     filter: [AuthorizationFilterRule!]
     validate: [AuthorizationValidateRule!]
+    "On a type: false keeps the schema's bypass (see @authorizationDefaults) from skipping this type's rules."
+    bypass: Boolean
+    "On a @mutation type: operations deliberately open to every caller, so check() does not report them as unguarded."
+    public: [AuthOperation!]
   ) on OBJECT | FIELD_DEFINITION
+
+  "Schema-wide authorization settings, on \`extend schema\`."
+  directive @authorizationDefaults(
+    "A claims-only test (jwt, AND, OR, NOT): a request passing it skips every filter and validate rule (not @authentication)."
+    bypass: AuthorizationWhere
+    "The write rule of every @mutation type that declares no CREATE, UPDATE or DELETE rule of its own."
+    mutations: AuthorizationWhere
+  ) on SCHEMA
 
   input AuthorizationFilterRule {
     operations: [AuthOperation!]! = [READ, UPDATE, DELETE]

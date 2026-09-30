@@ -33,7 +33,7 @@ import {
   type SchemaRequirement,
 } from "./analyze/indexes.js";
 import { checkPlans, type PlanReport } from "./analyze/plans.js";
-import { lintModel } from "./analyze/lint.js";
+import { lintModel, unguardedMutations } from "./analyze/lint.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
 import { CompileCache, stableKey } from "./compile/cache.js";
@@ -295,6 +295,11 @@ export interface CheckReport {
   }>;
   /** Schema lint: valid but costly or risky choices (not failures). */
   lint: readonly ModelWarning[];
+  /**
+   * `@mutation` types with writes no rule guards (failures): declare them
+   * with `@authorization(public: [...])` when that is intended.
+   */
+  security: readonly ModelWarning[];
   /** Plan findings per operation and root field. */
   plans: Array<{ operation: string; field: string; reports: PlanReport[] }>;
   /** Operations that failed to compile. */
@@ -691,6 +696,7 @@ export class LoraGraphQL {
       missing: (await this.assertSchema()).missing,
       unused: await this.#unusedIndexes(),
       lint: lintModel(this.model, { statistics: !!this.#statistics }),
+      security: unguardedMutations(this.model),
       plans: [],
       errors: [],
     };
@@ -710,6 +716,7 @@ export class LoraGraphQL {
       }
     }
     report.ok =
+      report.security.length === 0 &&
       report.cypher.length === 0 &&
       report.missing.length === 0 &&
       report.errors.length === 0 &&

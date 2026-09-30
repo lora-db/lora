@@ -249,6 +249,10 @@ export interface AuthorizationValidateRule {
 export interface Authorization {
   filter: readonly AuthorizationFilterRule[];
   validate: readonly AuthorizationValidateRule[];
+  /** `bypass: false`: the schema's bypass does not skip these rules. */
+  bypass?: boolean;
+  /** `public:` operations deliberately open to every caller. */
+  public?: ReadonlySet<AuthOperation>;
 }
 
 export interface PageLimit {
@@ -370,6 +374,11 @@ export interface GraphModel {
   objects: ReadonlyMap<string, PlainObjectType>;
   /** The `@jwt` claims shape, when declared: claim name → token path. */
   jwt: ReadonlyMap<string, string> | undefined;
+  /**
+   * `@authorizationDefaults(bypass:)`: a claims-only test that, when a
+   * request passes it, skips every filter and validate rule.
+   */
+  bypass: AuthorizationWhere | undefined;
   /** The `@viewer` claim: the caller's node type and identifying field. */
   viewer: { claim: string; type: string; field: string } | undefined;
   /** Secret cursors are signed with, when configured. */

@@ -14,17 +14,6 @@ export function lintModel(
 ): ModelWarning[] {
   const out: ModelWarning[] = [];
   for (const node of model.nodes.values()) {
-    const writes = node.mutations.size > 0;
-    const guarded =
-      node.authentication !== undefined ||
-      (node.authorization?.filter.length ?? 0) > 0 ||
-      (node.authorization?.validate.length ?? 0) > 0;
-    if (writes && !guarded) {
-      out.push({
-        type: node.name,
-        message: `has mutations (${[...node.mutations].join(", ")}) but no @authentication or @authorization: any caller that reaches the API can write it`,
-      });
-    }
     for (const f of node.fields.values()) {
       if (f.kind === "scalar") {
         if (f.filters.has("CASE_INSENSITIVE")) {
@@ -57,6 +46,37 @@ export function lintModel(
             "no @cardinality and no statistics: cost estimates assume each parent has a full page of these; run analyze() or declare @cardinality(max:)",
         });
       }
+    }
+  }
+  return out;
+}
+
+/**
+ * `@mutation` types with a generated write no rule guards: any caller
+ * that reaches the API can make it. An error in `check()`, unless the type
+ * declares the operation open with `@authorization(public: [...])`. A
+ * write is guarded by `@authentication` for it, a filter or validate rule
+ * for it (a `@authorizationDefaults(mutations:)` default included), or a
+ * schema bypass alone does not count: it only lets some callers skip rules.
+ */
+export function unguardedMutations(model: GraphModel): ModelWarning[] {
+  const out: ModelWarning[] = [];
+  for (const node of model.nodes.values()) {
+    const rules = [
+      ...(node.authorization?.filter ?? []),
+      ...(node.authorization?.validate ?? []),
+    ];
+    const open = [...node.mutations].filter(
+      (op) =>
+        !node.authentication?.has(op) &&
+        !rules.some((r) => r.operations.has(op)) &&
+        !node.authorization?.public?.has(op),
+    );
+    if (open.length > 0) {
+      out.push({
+        type: node.name,
+        message: `${open.join(", ")} ${open.length === 1 ? "has" : "have"} no @authentication or @authorization rule: any caller that reaches the API can make ${open.length === 1 ? "it" : "them"}. Guard ${open.length === 1 ? "it" : "them"}, or declare @authorization(public: [${open.join(", ")}])`,
+      });
     }
   }
   return out;
