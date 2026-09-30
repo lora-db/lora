@@ -8,6 +8,7 @@ import {
   printSchema,
   specifiedRules,
   validate,
+  validateSchema,
   type DocumentNode,
   type ExecutionResult,
   type FieldNode,
@@ -502,6 +503,14 @@ export class LoraGraphQL {
         span(info, () => this.#resolveMutation(op, node, info, context)),
     });
     checkCustomRequires(this.model, schema);
+    // A generated schema graphql-js rejects would fail every request:
+    // fail here instead, where the server wires the schema up.
+    const invalid = validateSchema(schema);
+    if (invalid.length > 0) {
+      throw new ModelError(
+        invalid.map((e) => ({ message: `generated schema: ${e.message}` })),
+      );
+    }
     this.#schema = schema;
     return schema;
   }

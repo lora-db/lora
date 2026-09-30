@@ -712,3 +712,86 @@ describe("G-14: a nested create is visible to a filter on its new edge", () => {
     t.close();
   });
 });
+
+describe("G-4 / G-12: an input with nothing in it is left out", () => {
+  const fieldsOf = (t: Test, name: string) =>
+    Object.keys(
+      (
+        t.schema.getType(name) as never as {
+          getFields(): Record<string, unknown>;
+        }
+      ).getFields(),
+    );
+
+  test("nothing updatable: no update input, no update mutations, a warning", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `
+        type Hashtag @node @mutation(operations: [CREATE, UPDATE]) {
+          key: String! @key
+          name: String! @settable(onCreate: true, onUpdate: false)
+          posts: [Post!]! @relationship(type: "TAGGED", direction: IN, nestedOperations: [])
+        }
+        type Post @node { key: String! @key }`,
+    });
+    expect(await t.data("{ hashtags { key } }")).toEqual({ hashtags: [] });
+    expect(t.schema.getType("HashtagUpdateInput")).toBeUndefined();
+    const mutations = Object.keys(t.schema.getMutationType()!.getFields());
+    expect(mutations).toContain("createHashtags");
+    expect(mutations).not.toContain("updateHashtag");
+    expect(t.lora.model.warnings).toContainEqual({
+      type: "Hashtag",
+      message: expect.stringMatching(/nothing is updatable/),
+    });
+    await t.data(
+      `mutation { createHashtags(input: [{ key: "h", name: "H" }]) { hashtags { key } } }`,
+    );
+    t.close();
+  });
+
+  test("a nested update of a type with nothing updatable is left out too", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `
+        type Post @node @mutation(operations: [UPDATE]) {
+          key: String! @key
+          title: String
+          tag: Tag @relationship(type: "TAGGED", direction: OUT, nestedOperations: [CONNECT, UPDATE])
+        }
+        type Tag @node @mutation(operations: [UPDATE]) {
+          key: String! @key
+          name: String @readonly
+        }`,
+    });
+    expect(t.schema.getType("TagUpdateInput")).toBeUndefined();
+    expect(fieldsOf(t, "PostTagUpdateRelationInput")).toEqual(["connect"]);
+    expect(await t.data("{ posts { key } }")).toEqual({ posts: [] });
+    t.close();
+  });
+
+  test("no settable relationship property: no edge input", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `
+        type Person @node @mutation {
+          key: String! @key
+          channels: [Channel!]! @relationship(type: "MEMBER_OF", direction: OUT, properties: "Membership")
+        }
+        type Channel @node { key: String! @key }
+        type Membership @relationshipProperties {
+          role: String! @default(value: "member") @readonly
+        }`,
+      seed: ["CREATE (:Channel {key: 'c'})"],
+    });
+    expect(await t.data("{ persons { key } }")).toEqual({ persons: [] });
+    expect(t.schema.getType("MembershipCreateInput")).toBeUndefined();
+    expect(fieldsOf(t, "PersonChannelsConnectInput")).toEqual(["key"]);
+    await t.data(
+      `mutation { createPersons(input: [{ key: "a", channels: { connect: [{ key: "c" }] } }]) { persons { key } } }`,
+    );
+    expect(
+      await cypher(
+        t,
+        "MATCH (:Person)-[r:MEMBER_OF]->(:Channel) RETURN r.role AS role",
+      ),
+    ).toEqual([{ role: "member" }]);
+    t.close();
+  });
+});

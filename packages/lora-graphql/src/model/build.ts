@@ -54,6 +54,7 @@ import type {
   ScalarType,
 } from "./types.js";
 import { PLACEHOLDER } from "./types.js";
+import { isUpdatable } from "./inputs.js";
 
 export interface ModelOptions {
   /** Page size used when a list or connection gets no `limit` / `first`. */
@@ -781,7 +782,7 @@ export function buildModel(
   }
 
   if (problems.length > 0) throw new ModelError(dedupeProblems(problems));
-  return {
+  const model: GraphModel = {
     nodes,
     abstracts,
     enums,
@@ -794,6 +795,18 @@ export function buildModel(
     jwt: jwtShape,
     cursorSecret: options.cursorSecret,
   };
+  // An update input with nothing in it would break the schema: the
+  // mutations that take it are left out, and the model says so.
+  for (const node of nodes.values()) {
+    if (node.mutations.has("UPDATE") && !isUpdatable(model, node)) {
+      warnings.push({
+        type: node.name,
+        message:
+          "@mutation(operations: [UPDATE]) but nothing is updatable (no field settable on update, no relationship with a nested operation): update mutations are left out",
+      });
+    }
+  }
+  return model;
 }
 
 /**

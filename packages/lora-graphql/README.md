@@ -421,6 +421,14 @@ bounded like bulk deletes and following `onDelete`. `limit` defaults to
 writes in the inputs, and `aggregate: false` removes the relationship's
 aggregates and aggregate filter.
 
+An input left with no field is left out, with what would take it: a
+relationship without settable properties has no `edge` input, and a type
+with nothing settable on update (no settable field, no relationship with
+a nested write) has no update mutations; the model warns when
+`@mutation(operations: [UPDATE])` asked for them. A generated schema
+graphql-js would reject is a `ModelError` from `getSchema()`, never an
+error on every request.
+
 ## Search
 
 ```graphql

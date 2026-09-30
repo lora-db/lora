@@ -27,6 +27,9 @@ import type {
   ScalarField,
 } from "../model/types.js";
 import { memberFields } from "../model/relations.js";
+import { hasSettable, isUpdatable, settable } from "../model/inputs.js";
+
+export { isUpdatable, settable };
 import { upperFirst } from "./names.js";
 
 /** A generated mutation: the single-node ones, and the bulk ones by where. */
@@ -82,14 +85,6 @@ export interface MutationSchemaContext {
   where: (typeName: string) => GraphQLInputType;
 }
 
-/** Whether clients may set a field on `op` (`@settable`, `@readonly`, …). */
-export function settable(
-  f: ScalarField | RelationshipField,
-  op: "CREATE" | "UPDATE",
-): boolean {
-  return op === "CREATE" ? f.settableOn.create : f.settableOn.update;
-}
-
 /** Whether the create input must carry the field. */
 export function requiredOnCreate(f: ScalarField): boolean {
   return (
@@ -98,15 +93,6 @@ export function requiredOnCreate(f: ScalarField): boolean {
     !f.timestamp?.has("CREATE") &&
     !f.populatedBy?.operations.has("CREATE") &&
     !(f.key && f.generate)
-  );
-}
-
-/** A type with nothing settable after create has no update. */
-export function isUpdatable(node: NodeType): boolean {
-  return [...node.fields.values()].some(
-    (f) =>
-      (f.kind === "relationship" || f.kind === "scalar") &&
-      settable(f, "UPDATE"),
   );
 }
 
@@ -174,6 +160,8 @@ export function buildMutations(
   const edgeField = (rel: RelationshipField): GraphQLInputFieldConfigMap => {
     if (!rel.properties) return {};
     const props = model.relationshipProperties.get(rel.properties)!;
+    // Nothing settable on create: no `edge` at all, not an empty input.
+    if (!hasSettable(props, "CREATE")) return {};
     const t = propsCreate(props);
     return { edge: { type: propsRequired(props) ? nonNull(t) : t } };
   };
@@ -204,7 +192,7 @@ export function buildMutations(
       : undefined;
     const edge = props ? propsUpdate(props) : undefined;
     const node =
-      target.mutations.has("UPDATE") && isUpdatable(target)
+      target.mutations.has("UPDATE") && isUpdatable(model, target)
         ? updateInput(target)
         : undefined;
     if (!edge && !node) return undefined;
@@ -518,7 +506,7 @@ export function buildMutations(
         i: GraphQLResolveInfo,
       ) =>
         resolve(op, node, i, context);
-    const updatable = isUpdatable(node);
+    const updatable = isUpdatable(model, node);
     const adjust = adjustInput(node);
     const updateArgs = {
       ...(updatable ? { update: { type: updateInput(node) } } : {}),
