@@ -14,6 +14,7 @@ import type {
   AuthorizationWhere,
   NodeType,
 } from "../model/types.js";
+import { PLACEHOLDER } from "../model/types.js";
 import { and, lit, not, or, type Expr } from "./cypher.js";
 import type { CompileContext } from "./context.js";
 import { compileNodeWhere } from "./filter.js";
@@ -403,13 +404,39 @@ export function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Replace `"$jwt.path"` and `"$context.path"` strings; not ok when a
- * referenced value is absent.
+ * Replace `"$jwt.path"` and `"$context.path"` strings, and the
+ * `${jwt.path}` / `${context.path}` placeholders inside strings; not ok
+ * when a referenced value is absent (or, in a placeholder, not a scalar).
  */
 function substitute(
   value: unknown,
   ctx: CompileContext,
 ): { ok: boolean; value: unknown } {
+  if (typeof value === "string" && value.includes("${")) {
+    let ok = true;
+    const built = value.replace(
+      PLACEHOLDER,
+      (_, source: string, path: string) => {
+        let v: unknown;
+        if (source === "jwt") v = claim(ctx, path);
+        else {
+          v = lookupPath(ctx.requestContext, path);
+          ctx.contextReads.push([path, v]);
+        }
+        if (
+          typeof v === "string" ||
+          typeof v === "number" ||
+          typeof v === "bigint" ||
+          typeof v === "boolean"
+        ) {
+          return String(v);
+        }
+        ok = false;
+        return "";
+      },
+    );
+    return ok ? { ok, value: built } : { ok, value: undefined };
+  }
   if (
     typeof value === "string" &&
     (value.startsWith("$jwt.") || value.startsWith("$context."))

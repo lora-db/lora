@@ -431,3 +431,101 @@ describe("G-6: re-connecting keeps a relationship's properties", () => {
     t.close();
   });
 });
+
+describe("G-19: claims inside rule strings", () => {
+  const typeDefs = (where: string) =>
+    J +
+    `type PlannedSet @node @mutation
+      @authorization(validate: [{ operations: [CREATE, UPDATE], where: ${where} }]) {
+      key: String! @key
+      slot: String
+    }`;
+  const prefix = `{ node: { key: { startsWith: "\${jwt.sub}:" } } }`;
+  const create = (key: string) =>
+    `mutation { createPlannedSets(input: [{ key: "${key}" }]) { plannedSets { key } } }`;
+  const as = (sub: string, roles: string[] = []) => ({ jwt: { sub, roles } });
+  const stored = (t: Test) =>
+    cypher(t, "MATCH (p:PlannedSet) RETURN p.key AS k ORDER BY k");
+
+  test("a user cannot take another user's key space", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs: typeDefs(prefix) });
+    // The workaround `startsWith: "$jwt.sub"` let p1 take p10's keys.
+    expect(codes(await t.run(create("p10:slot"), {}, as("p1")))).toEqual([
+      "FORBIDDEN",
+    ]);
+    expect(codes(await t.run(create("p1slot"), {}, as("p1")))).toEqual([
+      "FORBIDDEN",
+    ]);
+    expect(codes(await t.run(create("p1:slot")))).toEqual(["UNAUTHENTICATED"]);
+    expect(await stored(t)).toEqual([]);
+    t.close();
+  });
+
+  test("a user can create and update keys in their own space", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs: typeDefs(prefix) });
+    await t.data(create("p1:slot"), {}, as("p1"));
+    await t.data(create("p10:slot"), {}, as("p10"));
+    await t.data(
+      `mutation { updatePlannedSet(key: "p1:slot", update: { slot: "x" }) { plannedSet { slot } } }`,
+      {},
+      as("p1"),
+    );
+    const other = await t.run(
+      `mutation { updatePlannedSet(key: "p10:slot", update: { slot: "x" }) { plannedSet { slot } } }`,
+      {},
+      as("p1"),
+    );
+    expect(codes(other)).toEqual(["FORBIDDEN"]);
+    expect(await stored(t)).toEqual([{ k: "p10:slot" }, { k: "p1:slot" }]);
+    t.close();
+  });
+
+  test("a missing or non-scalar claim denies, under NOT too", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: typeDefs(
+        `{ OR: [{ node: { key: { startsWith: "\${jwt.roles}" } } }, { NOT: { node: { key: { startsWith: "\${jwt.roles}" } } } }] }`,
+      ),
+    });
+    expect(
+      codes(await t.run(create("admin:x"), {}, as("p1", ["admin"]))),
+    ).toEqual(["FORBIDDEN"]);
+    expect(await stored(t)).toEqual([]);
+    t.close();
+  });
+
+  test("context values interpolate into filter rules", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type Doc @node @authorization(filter: [{ requireAuthentication: false,
+        where: { node: { key: { startsWith: "\${context.tenant}/" } } } }]) { key: String! @key }`,
+      seed: [
+        "CREATE (:Doc {key: 'acme/1'}), (:Doc {key: 'acme2/1'}), (:Doc {key: 'other/1'})",
+      ],
+    });
+    const docs = (tenant: string | undefined) =>
+      t.data("{ docs { key } }", {}, tenant === undefined ? {} : { tenant });
+    expect(await docs("acme")).toEqual({ docs: [{ key: "acme/1" }] });
+    expect(await docs("other")).toEqual({ docs: [{ key: "other/1" }] });
+    expect(await docs(undefined)).toEqual({ docs: [] });
+    t.close();
+  });
+
+  test("malformed references are model errors", () => {
+    const build = (where: string) => () =>
+      new LoraGraphQL({
+        typeDefs: typeDefs(where),
+        driver: undefined as never,
+      });
+    expect(build(`{ node: { key: { startsWith: "$jwt.sub-" } } }`)).toThrow(
+      /"\$jwt\.sub-" is not a jwt reference; to put one inside a string write "\$\{jwt\.sub\}-"/,
+    );
+    expect(build(`{ node: { key: { startsWith: "\${jwt.nope}:" } } }`)).toThrow(
+      /\$jwt\.nope is not a claim of the @jwt type/,
+    );
+    expect(build(`{ node: { key: { startsWith: "\${sub}:" } } }`)).toThrow(
+      /a placeholder is \$\{jwt\.<claim>\} or \$\{context\.<path>\}/,
+    );
+    expect(build(`{ jwt: { sub: { startsWith: "\${context.x}" } } }`)).toThrow(
+      /placeholders belong in node parts/,
+    );
+  });
+});

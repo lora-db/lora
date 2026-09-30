@@ -53,6 +53,7 @@ import type {
   ScalarField,
   ScalarType,
 } from "./types.js";
+import { PLACEHOLDER } from "./types.js";
 
 export interface ModelOptions {
   /** Page size used when a list or connection gets no `limit` / `first`. */
@@ -1708,6 +1709,8 @@ function checkRuleWhere(
         );
       } else if (k === "node" && node) {
         checkNodeWhere(nodes, node, value, here, at);
+        for (const problem of ruleStringProblems(value))
+          at(`${here}: ${problem}`);
         if (jwtShape) {
           for (const ref of claimRefs(value)) {
             if (!jwtShape.has(ref))
@@ -1724,9 +1727,14 @@ function checkRuleWhere(
             if (!isRecord(ops))
               at(`${here}.${claim} must be an operator object`);
             else {
-              for (const op of Object.keys(ops)) {
+              for (const [op, operand] of Object.entries(ops)) {
                 if (!JWT_OPS.has(op))
                   at(`${here}.${claim}: unknown operator ${op}`);
+                if (JSON.stringify(operand ?? null).includes("${")) {
+                  at(
+                    `${here}.${claim}.${op}: claim tests compare with literals; \${...} placeholders belong in node parts`,
+                  );
+                }
               }
             }
           }
@@ -1898,14 +1906,62 @@ function snakeCase(s: string): string {
     .toLowerCase();
 }
 
-/** Claim names referenced as "$jwt.name…" strings anywhere in a value. */
+/**
+ * Claim names referenced anywhere in a value: as "$jwt.name…" strings and
+ * as ${jwt.name…} placeholders.
+ */
 function claimRefs(value: unknown): string[] {
   if (typeof value === "string") {
+    if (value.includes("${")) {
+      return [...value.matchAll(PLACEHOLDER)]
+        .filter((m) => m[1] === "jwt")
+        .map((m) => m[2]!.split(".")[0]!);
+    }
     return value.startsWith("$jwt.") ? [value.slice(5).split(".")[0]!] : [];
   }
   if (Array.isArray(value)) return value.flatMap(claimRefs);
   if (value !== null && typeof value === "object") {
     return Object.values(value).flatMap(claimRefs);
+  }
+  return [];
+}
+
+const REFERENCE_PATH = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
+
+/**
+ * Malformed claim and context references in a rule's strings: a whole
+ * string "$jwt.path" names a path and nothing else; any `${` starts a
+ * `${jwt.path}` or `${context.path}` placeholder.
+ */
+function ruleStringProblems(value: unknown): string[] {
+  if (typeof value === "string") {
+    if (value.includes("${")) {
+      const rest = value.replace(PLACEHOLDER, (m, _source, path: string) =>
+        REFERENCE_PATH.test(path) ? "" : m,
+      );
+      return rest.includes("${")
+        ? [`"${value}": a placeholder is \${jwt.<claim>} or \${context.<path>}`]
+        : [];
+    }
+    for (const prefix of ["$jwt.", "$context."]) {
+      if (
+        value.startsWith(prefix) &&
+        !REFERENCE_PATH.test(value.slice(prefix.length))
+      ) {
+        const source = prefix.slice(1, -1);
+        const path =
+          /^[A-Za-z0-9_.]*[A-Za-z0-9_]/.exec(value.slice(prefix.length))?.[0] ??
+          "claim";
+        return [
+          `"${value}" is not a ${source} reference; to put one inside a string write "\${${source}.${path}}${value.slice(prefix.length + path.length)}"`,
+        ];
+      }
+    }
+    return [];
+  }
+  if (Array.isArray(value)) return value.flatMap(ruleStringProblems);
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).flatMap(ruleStringProblems);
   }
   return [];
 }

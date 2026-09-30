@@ -212,6 +212,9 @@ export interface CustomField extends FieldBase {
 
 export type Field = ScalarField | RelationshipField | CypherField | CustomField;
 
+/** A `${jwt.path}` / `${context.path}` placeholder inside a rule string. */
+export const PLACEHOLDER = /\$\{(jwt|context)\.([A-Za-z0-9_.]+)\}/g;
+
 /** `{ node, jwt, AND, OR, NOT }`, as written in `@authorization`. */
 export type AuthorizationWhere = Record<string, unknown>;
 

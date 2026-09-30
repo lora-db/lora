@@ -581,6 +581,12 @@ type Post
   `"$context.path"` strings values from the GraphQL context. `jwt` tests
   claims (`eq`, `in`, `includes`, `contains`, `startsWith`, `endsWith`,
   `lt`, `lte`, `gt`, `gte`, `exists`).
+- Inside a longer string, write `${jwt.path}` or `${context.path}`:
+  `key: { startsWith: "${jwt.sub}:" }` confines a user to keys that begin
+  with their `sub` and `:`. The claim must be a string, number or boolean;
+  otherwise the rule denies. Pick a separator no `sub` contains: with `-`,
+  user `a` could take `a-b-…`, the key space of user `a-b`. See
+  [docs/design/graphql-claim-interpolation.md](../../docs/design/graphql-claim-interpolation.md).
 - **Claim tests run in JavaScript at compile time**, so an admin's
   statement carries no filter at all. Statements stay specialised and
   index-friendly.

@@ -45,6 +45,13 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   with (G-10). Directives about stored values (`@default`, `@timestamp`,
   `@private`, …) on a relationship field are model errors, never
   silently ignored.
+- **Squat another user's keys.** A rule can build a string from claims
+  (`key: { startsWith: "${jwt.sub}:" }`), so a client-chosen key can be
+  tied to its owner. The built string is a bound parameter. A claim that
+  is absent or not a scalar makes the rule deny, under `NOT` too. The
+  separator must be one no subject contains, or one user's space
+  contains another's (G-19,
+  [graphql-claim-interpolation.md](graphql-claim-interpolation.md)).
 - **Forge cursors.** Without `cursorSecret`, cursors are tagged with
   their sort, not signed: a client can craft one, but it only moves a
   page's start within rows the caller may read, because sorting on fields
