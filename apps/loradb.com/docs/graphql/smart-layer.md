@@ -39,7 +39,11 @@ with the reason for each:
 | `WITHIN_BBOX`, `DISTANCE` | POINT index |
 | `@fulltext`, `@vector` | FULLTEXT and VECTOR indexes, by name |
 
-Interface fields are inferred for every implementation's label.
+Interface fields are inferred for every implementation's label. Indexes
+and constraints go on a type's primary (first) label. A `@key` or `@unique`
+field needs no separate RANGE index: its constraint's index serves. Duration
+fields get no RANGE index (durations have no total order), and
+relationship properties get no index at all.
 
 ```ts
 const { missing } = await lora.assertSchema(); // report only
@@ -148,12 +152,15 @@ commit it reports a `WriteChange`:
 
 | Field | Holds |
 | --- | --- |
+| `operation` | `CREATE`, `UPDATE`, `DELETE`, `UPSERT`, `CYPHER`, or `EXTERNAL` for changes from the engine feed |
+| `field` | The `Mutation` field that made the change |
 | `created`, `updated`, `deleted` | Nodes, as `{ type, key }` |
 | `connected`, `disconnected` | Relationships, by declaring field and both keys |
 | `entities` | Every node whose observable state changed, relationship ends included |
 | `types`, `relationshipTypes` | The node and relationship types touched |
 | `broad` | `true` for `@cypher` mutations, whose write-set is unknown |
 | `timestamp` | When the write was committed |
+| `before` | Stored values before the write, for types with `@subscription(previousState: true)` |
 
 ```ts
 lora.onWrite((change) => {
@@ -173,14 +180,19 @@ Festival write.
 
 Limits worth knowing:
 
-- By default only writes made through the library, in this process, are
+- By default only writes made through this `LoraGraphQL` instance are
   seen, and `@cypher` mutations are reported with `broad: true` and no
   entities: treat everything as changed.
 - With `changeFeed: true` (lora-node), `changes()` and subscriptions are
-  fed by the engine's committed change feed: every write from any path or
-  process, with keys and relationship fields resolved, resuming from its
-  last position if it falls behind. `onWrite` still reports this
-  instance's mutations. Call `lora.close()` to stop the feed.
+  fed by the engine's committed change feed: every committed write to that
+  database, whichever path in the owning process made it (raw Cypher,
+  `@cypher` mutations, other instances), with keys and relationship fields
+  resolved. A database directory is open in one process at a time, so this
+  is not a cross-process feed. If the library's reader falls behind the
+  engine, it resumes from the last position it read. The position is kept
+  in memory only: a new instance starts at the current commit, and writes
+  made while no instance was running are not replayed. `onWrite` still
+  reports this instance's mutations. Call `lora.close()` to stop the feed.
 - A `changes()` consumer that falls `maxQueuedChanges` (default 1000)
   behind is ended with an error rather than buffered without bound.
 - `onWrite` and `changes()` receive the full write-set without applying
@@ -211,7 +223,8 @@ const lora = new LoraGraphQL({
 ```
 
 - `budget(context)` sets the limit per request, for example per plan or
-  user; `undefined` falls back to `maxCost`.
+  user; `undefined` falls back to `maxCost`. `onCost` sees every root
+  field's estimate; see [observability](/docs/graphql/observability).
 - `execute()` returns the estimate in `extensions.cost`, so clients can
   tune their queries.
 - `lora.analyze()` (or `lora-graphql analyze schema.graphql --database dir`) samples node
@@ -256,8 +269,11 @@ break with no data migration.
 lora-graphql compile schema.graphql --operations src/operations --out generated
 ```
 
-The input is `.graphql` files (one entry per operation) or a JSON map of id
-to source. It writes:
+The input is `.graphql` files or directories of them, or a JSON map of id
+to source. Each operation in a `.graphql` file becomes one entry, with the
+id `<file path relative to the working directory>#<OperationName>` (an
+anonymous operation gets its position, starting at 1). A JSON map keeps its
+own ids. It writes:
 
 - `manifest.json`, which `lora.loadManifest(manifest)` registers as
   persisted operations without parsing or validating them again;
@@ -268,10 +284,15 @@ to source. It writes:
 import manifest from "./generated/manifest.json" with { type: "json" };
 
 lora.loadManifest(manifest);
-const result = await lora.execute({ id: "TopFestivals", variables, context });
+const result = await lora.execute({
+  id: "src/operations/festivals.graphql#TopFestivals",
+  variables,
+  context,
+});
 ```
 
-The manifest records a hash of the public schema and is refused for any
-other schema, so a stale build fails at startup. Statement text is not in
+Without `--out`, the files go to `lora-graphql/`. The manifest records a
+hash of the public schema and is refused for any other schema, so a stale
+build fails at startup. Statement text is not in
 the manifest: it depends on variable values and claims, and is compiled per
 request, then cached.

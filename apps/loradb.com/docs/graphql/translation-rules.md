@@ -6,7 +6,9 @@ description: How @loradb/lora-graphql compiles GraphQL operations into LoraDB Cy
 
 # Translation rules
 
-Every read root field compiles to one Cypher statement. Every mutation
+Every read root field compiles to one Cypher statement, except a
+connection that also asks for `totalCount` or `aggregate`: those are
+counted by a second statement in the same read transaction. Every mutation
 compiles to a short sequence of statements in one interactive
 transaction. This page shows the shapes the compiler chooses and why. You
 do not need it to use the library, but it helps when you read a plan, a
@@ -58,7 +60,10 @@ Things to notice:
   `OPTIONAL MATCH`.
 
 To see the statements for your own operations, pass `onStatement` to
-`new LoraGraphQL`, or run `lora.explain(query, variables)`.
+`new LoraGraphQL` (see [observability](/docs/graphql/observability)),
+call `lora.compile(query, variables)` to get them without running
+anything, or run `lora.explain(query, variables)` to plan them. `compile()`
+and `explain()` take queries only.
 
 ## The rules
 
@@ -135,7 +140,13 @@ for repeated field nodes. See
 ## Engine behaviours the compiler works around
 
 Some rules exist because of current LoraDB behaviour. Each workaround goes
-away when the engine fix lands:
+away when the engine fix lands. Engine fixes have already retired the
+workarounds for labels after the first node of a `MATCH`, early `LIMIT`
+under a deadline or in a transaction, `MERGE` with a bound end node
+(connect is now one `MERGE`), writes inside `CALL { }`, RANGE indexes on
+temporal values (inferred again for temporal fields), `x IN $list` seeks,
+`null` values in property maps, and existence checks before a following
+`SET`. These remain:
 
 | Behaviour | Workaround |
 | --- | --- |
@@ -144,3 +155,4 @@ away when the engine fix lands:
 | Integer division returns a float; negative list slices return `[]` | `toInteger(a / b)` for `Int` fields; `l[..size(l) - n]` |
 | `COUNT { ... RETURN DISTINCT x }`, `EXISTS { }` and `UNION` inside `CALL` do not parse | `reduce` for distinct counts; comprehensions; per-member subqueries |
 | `[a, b] > $list` matches nothing | Keyset predicates written out |
+| `first()` is unknown | `head()` |

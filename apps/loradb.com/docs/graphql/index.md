@@ -153,7 +153,8 @@ fields, lexer tokens, introspection) to GraphQL Yoga and other Envelop
 servers. For servers without Envelop, use `lora.validationRules()` and the
 exported `parseOptions()`. The package ships runnable
 [examples](https://github.com/lora-db/lora/tree/main/packages/lora-graphql/examples)
-for GraphQL Yoga, Apollo Server and graphql-http.
+for GraphQL Yoga, Apollo Server and graphql-http, and
+[serving the schema](/docs/graphql/serving) covers each server in detail.
 
 ## Run a query
 
@@ -183,8 +184,10 @@ for GraphQL Yoga, Apollo Server and graphql-http.
 }
 ```
 
-Every list is bounded (25 by default, at most 100), connections page by
-keyset cursors, and the whole root field compiles to one Cypher statement.
+Every list is bounded (25 by default, at most 100) and connections page by
+keyset cursors. The root field compiles to one Cypher statement; a
+connection that also asks for `totalCount` or `aggregate` adds a second
+one, run in the same read transaction.
 
 ## Execute and persisted operations
 
@@ -215,11 +218,13 @@ await lora.execute({ id: "topFestivals", variables: { n: 5 }, context });
 `persist()` parses and validates every document once, so a broken one fails
 at startup. At request time an id is looked up and executed without parsing
 or validation. With `persistedOnly: true`, `execute()` refuses ad hoc
-documents altogether.
+documents altogether with a `PERSISTED_QUERY_ONLY` error.
 
 `lora-graphql compile` does the validation at build time instead: it writes
 a `manifest.json` for `lora.loadManifest()` and an `operations.d.ts` with
-typed variables and results. See [typed tooling](/docs/graphql/smart-layer#s8-typed-tooling).
+typed variables and results. Operations read from `.graphql` files get ids
+of the form `<file path>#<OperationName>`. See
+[typed tooling](/docs/graphql/smart-layer#s8-typed-tooling).
 
 Two caveats:
 
@@ -252,18 +257,27 @@ installed.
   per type and per field.
 - JWT verification. Your server verifies the token.
 - Federation.
-- Cross-process subscriptions by default. Without options, subscriptions
-  and change events see the writes made through the library in this
-  process. With `changeFeed: true` (lora-node) they are fed by the
-  engine's committed change feed and see every write, from any process or
-  path, in commit order; see
-  [change tracking](/docs/graphql/smart-layer).
+- Subscriptions over writes made outside the library, by default.
+  Without options, subscriptions and change events see only the writes
+  made through this `LoraGraphQL` instance. With `changeFeed: true`
+  (lora-node) they are fed by the engine's committed change feed and see
+  every committed write to that database, whichever path in the owning
+  process made it (raw Cypher, `@cypher` mutations, other instances), in
+  commit order. A database directory is open in one process at a time, so
+  there are no cross-process subscriptions. See
+  [change tracking](/docs/graphql/smart-layer#s5-write-sets-and-change-tracking).
 
 ## Next
 
+- [Serving the schema](/docs/graphql/serving)
 - [Directive reference](/docs/graphql/directives)
 - [The generated API](/docs/graphql/generated-api)
 - [The smart layer](/docs/graphql/smart-layer)
 - [Authorization](/docs/graphql/authorization)
+- [Observability](/docs/graphql/observability)
+- [Testing](/docs/graphql/testing)
+- [CLI](/docs/graphql/cli)
+- [API reference](/docs/graphql/api-reference)
+- [Errors](/docs/graphql/errors)
 - [Translation rules](/docs/graphql/translation-rules)
 - [Migrating from @neo4j/graphql](/docs/graphql/migrating-from-neo4j)

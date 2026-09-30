@@ -28,10 +28,10 @@ The surface is restrictive by design:
 | `festivals(where, sort, limit)` | A bounded list |
 | `festivalsConnection(where, sort, first, after, last, before)` | A Relay connection with keyset cursors in both directions, `totalCount` and `aggregate` |
 | `festival(key:)` | Lookup by `@key` |
-| `festivalsAggregate(where)` | `count`, and `min` / `max` (`avg` / `sum` for numbers) of sortable fields, with `@query(aggregate: true)` |
+| `festivalsAggregate(where)` | `count`, and aggregates of the `@key`, `@sortable` and duration fields, with `@query(aggregate: true)` |
 | `festivalsGrouped(by, where, limit)` | Aggregates per group of `@groupBy` values, with `@query(aggregate: true)` |
 | `searchFestivals(query, where, limit)` and `searchFestivalsConnection` | Full-text search, with `@fulltext` |
-| `similarFestivals(vector or to, where, limit)` | Vector similarity, with a `@vector` field |
+| `similarFestivals(vector or to, where, limit)` and `similarFestivalsConnection` | Vector similarity, with a `@vector` field |
 | `node(id:)` | Any `@relayId` type by global id |
 | `events(where, sort, limit)` | An interface's or union's members together |
 | `createFestivals`, `upsertFestivals` | With `@mutation(CREATE)`; upsert also needs `UPDATE` |
@@ -73,9 +73,11 @@ interfaces and unions.
 - **Absent and `null` filters are left out of the statement**, so a filter
   bound to an unset variable costs nothing. `eq: null` does not mean "is
   null": use `isNull: true`, where the field offers `IS_NULL`.
-- `count` and `single` count related nodes once each, however many
-  relationships lead to them. `all` holds on an empty set, and a missing
-  property fails it.
+- `count` takes `eq`, `lt`, `lte`, `gt` and `gte`. `count` and `single`
+  count related nodes once each, however many relationships lead to them.
+  `all` holds on an empty set, and a missing property fails it.
+- A quantifier with an empty filter (`some: {}`) is left out like any
+  other empty filter. To ask "has any", use `count: { gt: 0 }`.
 - `sort` takes one field per item. Nulls sort last ascending and first
   descending, as in Cypher.
 - Every list is bounded: `limit` defaults to `@limit(default:)` (globally
@@ -161,16 +163,22 @@ With `@query(aggregate: true)`:
 }
 ```
 
-- Aggregates cover the `@key` and `@sortable` fields. Numbers get `min`,
-  `max`, `avg` and `sum`; strings get `min`, `max`, `shortest` and
-  `longest`; durations get `min`, `max`, `sum` and `avg`.
+- `<plural>Aggregate` and `<plural>Grouped` cover the `@key`, the
+  `@sortable` fields and duration fields. A connection's `aggregate.node`
+  covers every readable, non-list field except booleans, enums and points.
+  `@selectable(onAggregate: false)` removes a field from both.
+- Numbers get `min`, `max`, `avg` and `sum`; strings and ids get `min`,
+  `max`, `shortest` and `longest`; durations get `min`, `max`, `sum` and
+  `avg`; temporals get `min` and `max`.
 - `<plural>Grouped(by:)` groups by `@groupBy` fields and returns at most
   `limit` groups, ordered by the group values.
 - Relationship filters take an `aggregate` over related nodes and edge
   properties, including `shortestLength`, `longestLength` and
   `averageLength` for strings.
-- Relationship connections count `count { nodes edges }`. They differ when
-  several relationships lead to the same node.
+- A relationship connection has an `aggregate` when its target type has
+  `@query(aggregate: true)`. It counts `count { nodes edges }`, which
+  differ when several relationships lead to the same node, and aggregates
+  relationship properties under `edge`.
 - `@relationship(aggregate: false)` drops a relationship's aggregates and
   aggregate filter.
 
@@ -224,8 +232,9 @@ type Event @node @fulltext(indexes: [{ fields: ["title", "summary"] }]) {
 - A search index returns its top candidates before `where` applies. With a
   filter, the library asks for four times the page, so a very selective
   filter can return fewer rows than `limit` even when more matches exist.
-- Search connections page by keyset on score and key. Vector connections
-  page within `4 × @limit(max:)` candidates.
+- `searchEventsConnection` and `similarEventsConnection` page forward
+  with `first` and `after`. Search connections page by keyset on score and
+  key. Vector connections page within `4 × @limit(max:)` candidates.
 - Read rules apply to every result. Both index kinds are created by
   `assertSchema({ create: true })`.
 
@@ -253,6 +262,10 @@ An interface `where` takes the interface's fields plus `typename`. A union
 `where` takes one filter per member, and once any member is named, members
 not named are left out. An interface field with `@declareRelationship` can
 be selected at interface level.
+
+A relationship to an interface or union connects, creates and disconnects
+per member: `events: { connect: { Concert: [{ key: "c1" }] } }`. A single
+relationship to a union holds one node across all members.
 
 ## Mutations
 
@@ -305,8 +318,10 @@ mutation {
 
 - Relationship inputs offer `connect`, `create`, `disconnect`, `update`
   (connected nodes and relationship properties, in place) and `delete`.
-  `@relationship(nestedOperations:)` trims the list. Nested `create` is
-  offered only when the target type has `@mutation(CREATE)`.
+  `@relationship(nestedOperations:)` trims the list. Nested writes follow
+  the target type's own `@mutation`: `create` needs its `CREATE`, `delete`
+  its `DELETE`, and updating the connected node its `UPDATE` (relationship
+  properties can always be updated).
 - Connect is by key. A missing or invisible target is `NOT_FOUND`, not a
   silent no-op. Connecting an already connected pair keeps one
   relationship and updates its properties.
@@ -318,9 +333,12 @@ mutation {
 ### Updates and adjust
 
 - `update` sets fields; `null` removes a property. `@key` is not updatable.
-- `adjust` applies math (`add`, `subtract`, `multiply`, `divide`) and list
-  (`push`, `pop`, `remove`) operators to the stored value atomically. A
-  missing number counts as 0 and a missing list as empty.
+- `adjust` applies one operator per field to the stored value atomically,
+  on `updateFestival` and `updateFestivals`. `Int` and `Float` take `add`,
+  `subtract`, `multiply` and `divide` (`Int` division stays an integer);
+  `BigInt` takes `add` and `subtract`; lists take `push`, `pop` (a count
+  from the end) and `remove` (every occurrence). A missing number counts as
+  0 and a missing list as empty.
 
 ### Upsert
 
@@ -378,12 +396,13 @@ subscription {
 ```
 
 - By default events come from the write-sets of mutations made through
-  the library, in this process: `@cypher` mutations have no write-set, and
+  this `LoraGraphQL` instance: `@cypher` mutations have no write-set, and
   writes made elsewhere are not seen. With `changeFeed: true` (lora-node)
   events come from the engine's committed change feed instead: every
-  write, whichever path or process made it, in commit order.
-  `previousState` needs library writes (the feed carries the state after
-  the write).
+  committed write to that database, whichever path in the owning process
+  made it (raw Cypher, `@cypher` mutations, other instances), in commit
+  order. `previousState` needs library writes (the feed carries the state
+  after the write).
 - A node that gained or lost a relationship is an `UPDATE`. With
   `@subscription(relationships: true)` the type also sends `CONNECT` and
   `DISCONNECT` events with `relationship { field type relatedType relatedKey }`.
@@ -395,6 +414,8 @@ subscription {
 - Events for nodes the subscriber cannot read are dropped. Deletions cannot
   be checked after the fact, so they go only to subscribers that follow
   that `key` without a `where`.
+- `@authentication(operations: [SUBSCRIBE])` guards the subscription
+  itself.
 - Subscribers whose checks compile to the same statement share it: twenty
   subscribers with the same `where` and claims cost one visibility query
   and one node read per write.
@@ -430,6 +451,9 @@ Your own Cypher through `tx.execute()` is not part of any write-set.
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
 `NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`) and
-`DATABASE_ERROR` (with an `id`). See
+`DATABASE_ERROR` (with an `id`). A document over a guard limit is
+`LIMIT_EXCEEDED`, introspection while it is off is `FORBIDDEN`, and an ad
+hoc document under `persistedOnly` is `PERSISTED_QUERY_ONLY`. See
+[errors](/docs/graphql/errors) for each code, and
 [authorization](/docs/graphql/authorization#mask-database-errors) for how
 database errors are masked in production.

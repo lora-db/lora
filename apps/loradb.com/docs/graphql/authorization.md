@@ -98,7 +98,10 @@ const lora = new LoraGraphQL({ typeDefs, driver, persistedOnly: true });
 lora.loadManifest(manifest); // from lora-graphql compile, or lora.persist({...})
 ```
 
-With `persistedOnly`, `execute()` answers any ad hoc document with
+Clients then send only an id: the key you gave `persist()`, or for a
+manifest compiled from `.graphql` files, `<file path>#<OperationName>` (see
+[typed tooling](/docs/graphql/smart-layer#s8-typed-tooling)). With
+`persistedOnly`, `execute()` answers any ad hoc document with
 `PERSISTED_QUERY_ONLY`. This applies to `execute()`: if you serve
 `getSchema()` through another server, that server decides what it
 accepts.
@@ -210,13 +213,29 @@ type Post
 }
 ```
 
-A rule is `{ node, jwt, AND, OR, NOT }`:
+Rule defaults:
+
+| Rule | `operations` | `when` | `requireAuthentication` |
+| --- | --- | --- | --- |
+| `filter` | `[READ, UPDATE, DELETE]` | | `true` |
+| `validate` | `[READ, CREATE, UPDATE, DELETE]` | `[BEFORE, AFTER]` | `true` |
+
+A rule with `requireAuthentication: true` does not grant anything to an
+anonymous request.
+
+A rule's `where` is `{ node, jwt, AND, OR, NOT }`:
 
 - `node` is a filter over the type. `"$jwt.path"` strings become the
   caller's claims, and `"$context.path"` strings values from the GraphQL
   context.
 - `jwt` tests claims with `eq`, `in`, `includes`, `contains`, `startsWith`,
   `endsWith`, `lt`, `lte`, `gt`, `gte` and `exists`.
+- `node` accepts the operators `eq`, `in`, `lt`, `lte`, `gt`, `gte`,
+  `contains`, `startsWith`, `endsWith`, `withinBBox` and `distance` on
+  fields, whether or not they are `@filterable`, and `some`, `all`,
+  `none`, `single` and `count` on list relationships (a single
+  relationship takes the target's filter directly). `@cypher` and
+  `@customResolver` fields cannot be used in rules.
 
 #### Filter rules hide nodes
 

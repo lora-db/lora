@@ -54,8 +54,9 @@ prints the rewritten SDL on standard output, preceded by one
   `title_CONTAINS` or the neo4j 6 `{ title: { contains } }` form), they
   follow what the operations use. Without it, every type keeps its
   mutations, as in `@neo4j/graphql`, and a TODO says to narrow them.
-- What has no equivalent (`@coalesce`, federation, `connectOrCreate`,
-  type-level `@vector`) is removed and listed as a TODO. `@authorization`
+- What has no equivalent (`@coalesce`, `@exclude`,
+  `@subscriptionsAuthorization`, the federation directives,
+  `connectOrCreate`, type-level `@vector`) is removed and listed as a TODO. `@authorization`
   and `@authentication` rules are kept, with a TODO to check their filter
   operators.
 
@@ -99,7 +100,9 @@ bite:
 6. **Math and list operators move to `adjust`.**
 7. **Errors carry codes.** `extensions.code` is one of `BAD_USER_INPUT`,
    `INVALID_CURSOR`, `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`,
-   `FORBIDDEN`, `NOT_FOUND`, `CONSTRAINT_VIOLATION` or `DATABASE_ERROR`.
+   `FORBIDDEN`, `NOT_FOUND`, `CONSTRAINT_VIOLATION` or `DATABASE_ERROR`,
+   plus `PERSISTED_QUERY_ONLY` when the server accepts persisted
+   operations only. See [errors](/docs/graphql/errors).
 
 ## What changes on the server
 
@@ -113,11 +116,14 @@ bite:
   API uses and run `assertSchema({ create: true })`, or apply
   `lora-graphql requirements --ddl` in your migrations.
 - **Subscriptions follow library writes unless you opt into the feed.**
-  By default events come from mutations made through the library in this
-  process, and `@cypher` mutations produce a broad change. With
+  By default events come from mutations made through the `LoraGraphQL`
+  instance, and `@cypher` mutations produce a broad change. With
   `changeFeed: true` (lora-node) they come from the engine's committed
-  change feed instead, which covers raw Cypher and other processes and
-  resumes after restarts from the WAL, like CDC.
+  change feed instead, which covers every committed write to the database
+  from the process that owns it, raw Cypher included. It is not CDC: a
+  database is open in one process at a time, and the feed starts at the
+  current commit, so writes made while the server was down are not
+  replayed. `migrate` adds a TODO to every `@subscription` it rewrites.
 - **`@cypher` is the same idea with stricter checks.** Parameters must be
   field arguments or `$jwt`, and statements on `Query` fields may not
   write. `check` plans every statement.
