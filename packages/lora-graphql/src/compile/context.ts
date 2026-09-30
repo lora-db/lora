@@ -29,6 +29,13 @@ export interface CompileContext extends SelectionContext {
    * compile is reused only for a context that agrees on them.
    */
   contextReads: Array<[string, unknown]>;
+  /**
+   * Claims the compile read, by the path looked up in the token (`""` is
+   * the whole token). `bound` stays true while every read only substituted
+   * the value into a rule's `node` filter, so a cached compile may rebind
+   * it as a parameter; otherwise the value may shape the statement text.
+   */
+  claimReads: Map<string, { value: unknown; bound: boolean }>;
 }
 
 export function newContext(
@@ -53,7 +60,19 @@ export function newContext(
     requestContext: options.requestContext,
     computed: new Map(),
     contextReads: [],
+    claimReads: new Map(),
   };
+}
+
+/** Record that the compile read the claim at `path` (see `claimReads`). */
+export function noteClaim(
+  ctx: CompileContext,
+  path: string,
+  value: unknown,
+  bound: boolean,
+): void {
+  const seen = ctx.claimReads.get(path);
+  ctx.claimReads.set(path, { value, bound: bound && (seen?.bound ?? true) });
 }
 
 /** Bind a value as the next positional parameter `$pN`. */

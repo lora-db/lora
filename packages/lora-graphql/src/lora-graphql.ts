@@ -36,6 +36,7 @@ import { checkPlans, type PlanReport } from "./analyze/plans.js";
 import { lintModel } from "./analyze/lint.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
+import { CompileCache, stableKey } from "./compile/cache.js";
 import {
   compileAbstractRoot,
   compileCypherRoot,
@@ -299,9 +300,6 @@ export interface ExecuteArgs {
 }
 
 const DOCUMENT_CACHE_SIZE = 500;
-/** Compiled root fields kept per field node, across variable values. */
-const COMPILED_PER_FIELD = 16;
-
 /** A subscriber's share of one change: the events of its node type. */
 interface SubscriberDelivery {
   change: WriteChange;
@@ -328,14 +326,6 @@ interface SubscriptionCompile<C> {
   compiled: C;
   param: string;
   share: string | undefined;
-}
-
-interface CompiledEntry {
-  variables: string;
-  claims: string;
-  statistics: number;
-  contextReads: Array<[string, unknown]>;
-  compiled: CompiledRead;
 }
 
 export class LoraGraphQL {
@@ -391,10 +381,9 @@ export class LoraGraphQL {
   #statisticsVersion = 0;
   /**
    * Compiled reads by root field node (documents are cached, so a field
-   * node repeats across requests), then by variables, claims and the
-   * `$context` values the compile read.
+   * node repeats across requests), then by what each compile read.
    */
-  readonly #compiled = new WeakMap<FieldNode, CompiledEntry[]>();
+  readonly #compiled = new CompileCache();
   /**
    * Reads made for subscribers of one change, by statement text and
    * parameters: subscribers whose checks or node reads compile to the same
@@ -1190,9 +1179,13 @@ export class LoraGraphQL {
     return undefined;
   }
 
-  #context(base: SelectionContext, context: unknown): CompileContext {
+  #context(
+    base: SelectionContext,
+    context: unknown,
+    jwt = this.#jwt(context),
+  ): CompileContext {
     return newContext(base, this.model, {
-      jwt: this.#jwt(context),
+      jwt,
       degrees: this.#degrees,
       requestContext: context,
     });
@@ -1331,42 +1324,30 @@ export class LoraGraphQL {
 
   /**
    * Compile a read root field, or reuse the compile of an earlier request
-   * with the same field node, variables, claims and `$context` values.
-   * Statement text depends on all of them (claims are folded in).
+   * that agrees on what this compile reads: the field node, the variables
+   * it references, the claims and `$context` values it looked up (see
+   * `CompileCache`).
    */
   #cachedCompile(
     info: GraphQLResolveInfo,
     context: unknown,
     compile: (ctx: CompileContext) => CompiledRead,
   ): CompiledRead {
-    const field = info.fieldNodes[0]!;
-    const variables = stableKey(coercedVariables(info.variableValues));
-    const claims = stableKey(this.#jwt(context) ?? null);
-    const ctx = this.#context(infoContext(info), context);
-    if (variables === undefined || claims === undefined) return compile(ctx);
-    const entries = this.#compiled.get(field) ?? [];
-    const hit = entries.find(
-      (e) =>
-        e.variables === variables &&
-        e.claims === claims &&
-        e.statistics === this.#statisticsVersion &&
-        e.contextReads.every(
-          ([path, value]) =>
-            stableKey(lookupPath(context, path)) === stableKey(value),
-        ),
+    const base = infoContext(info);
+    return this.#compiled.get(
+      {
+        fieldNodes: info.fieldNodes,
+        fragments: info.fragments,
+        variables: coercedVariables(info.variableValues),
+        jwt: this.#jwt(context),
+        context,
+        statistics: this.#statisticsVersion,
+      },
+      (jwt) => {
+        const ctx = this.#context(base, context, jwt);
+        return { ctx, compiled: compile(ctx) };
+      },
     );
-    if (hit) return hit.compiled;
-    const compiled = compile(ctx);
-    entries.unshift({
-      variables,
-      claims,
-      statistics: this.#statisticsVersion,
-      contextReads: ctx.contextReads,
-      compiled,
-    });
-    entries.length = Math.min(entries.length, COMPILED_PER_FIELD);
-    this.#compiled.set(field, entries);
-    return compiled;
   }
 
   #databaseError(field: string, err: unknown): unknown {
@@ -2193,42 +2174,6 @@ function requiredCustomFields(node: NodeType, requires: string): string[] {
       ? [s.name.value]
       : [],
   );
-}
-
-/**
- * A deterministic key for JSON-like values (object keys sorted, bigints
- * tagged); undefined when the value cannot be keyed (functions, cycles,
- * class instances), which turns caching off for that request.
- */
-function stableKey(value: unknown): string | undefined {
-  const seen = new Set<unknown>();
-  let ok = true;
-  const walk = (v: unknown): unknown => {
-    if (typeof v === "bigint") return { $bigint: v.toString() };
-    if (typeof v === "function" || typeof v === "symbol") {
-      ok = false;
-      return null;
-    }
-    if (v === null || typeof v !== "object") return v;
-    if (seen.has(v)) {
-      ok = false;
-      return null;
-    }
-    seen.add(v);
-    if (Array.isArray(v)) return v.map(walk);
-    const proto = Object.getPrototypeOf(v);
-    if (proto !== Object.prototype && proto !== null) {
-      ok = false;
-      return null;
-    }
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(v).sort()) {
-      out[k] = walk((v as Record<string, unknown>)[k]);
-    }
-    return out;
-  };
-  const json = JSON.stringify(walk(value));
-  return ok ? (json ?? "undefined") : undefined;
 }
 
 /** A cached compile still holds for these `$context` values. */

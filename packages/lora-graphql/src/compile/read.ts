@@ -45,7 +45,7 @@ import {
   fieldValidate,
   propertyAccess,
 } from "./auth.js";
-import { bind, freshVar, type CompileContext } from "./context.js";
+import { bind, freshVar, noteClaim, type CompileContext } from "./context.js";
 import { decodeCursor } from "./cursor.js";
 import {
   and,
@@ -1317,6 +1317,7 @@ export function bindStatement(
 ): string {
   const names = new Map<string, string>();
   for (const p of field.params) {
+    if (p === "jwt") noteClaim(ctx, "", ctx.jwt, false);
     const value = p === "jwt" ? (ctx.jwt ?? null) : (args[p] ?? null);
     names.set(p, (bind(ctx, value) as { name: string }).name);
   }

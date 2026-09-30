@@ -5,6 +5,10 @@
 import { createDatabase } from "@loradb/lora-node";
 import { expect, test } from "vitest";
 import { LoraGraphQL, loraDriver, type StatementEvent } from "../src/index.js";
+import { parse as parseDocument, type FieldNode } from "graphql";
+import { CompileCache } from "../src/compile/cache.js";
+import type { CompileContext } from "../src/compile/context.js";
+import type { CompiledRead } from "../src/compile/read.js";
 
 const typeDefs = /* GraphQL */ `
   type Doc
@@ -90,4 +94,124 @@ test("a context without the value a rule reads is not served a cached compile", 
       Object.assign(Object.create({ tenant: "t1" }), { jwt: { sub: "a" } }),
     ),
   ).toEqual([]);
+});
+
+test("per-user tokens share one compile when a rule only binds the claim", async () => {
+  const { keys, statements } = await setup();
+  for (let round = 0; round < 2; round++) {
+    expect(await keys({ jwt: { sub: "a", iat: round }, tenant: "t1" })).toEqual(
+      ["a1"],
+    );
+    expect(await keys({ jwt: { sub: "b", jti: "x" }, tenant: "t1" })).toEqual([
+      "b1",
+    ]);
+    expect(await keys({ jwt: { sub: "c" }, tenant: "t1" })).toEqual([]);
+    // A claim of another type is not rebound: it compiles on its own.
+    expect(await keys({ jwt: { sub: 7 }, tenant: "t1" })).toEqual([]);
+    expect(await keys({ jwt: {}, tenant: "t1" })).toEqual([]);
+  }
+  // One statement text for every string subject.
+  const texts = new Set(
+    statements
+      .filter((e) => typeof e.statement.params["p1"] === "string")
+      .map((e) => e.statement.text),
+  );
+  expect(texts.size).toBe(1);
+});
+
+// ---------------------------------------------------------------------------
+// The cache itself, with a stand-in compile that counts its calls.
+// ---------------------------------------------------------------------------
+
+function fieldOf(source: string): FieldNode[] {
+  const doc = parseDocument(source);
+  const op = doc.definitions[0] as unknown as {
+    selectionSet: { selections: FieldNode[] };
+  };
+  return [op.selectionSet.selections[0]!];
+}
+
+/** A compile that reads `sub` (bound into a filter) and, if asked, `roles`. */
+function fakeCompile(readRoles: boolean) {
+  let calls = 0;
+  const compile = (jwt: Record<string, unknown> | undefined) => {
+    calls++;
+    const claimReads = new Map<string, { value: unknown; bound: boolean }>();
+    const params: Record<string, unknown> = { p0: 25 };
+    let text = "MATCH (n) WHERE n.owner = $p1 RETURN n LIMIT $p0";
+    params["p1"] = jwt?.["sub"];
+    claimReads.set("sub", { value: jwt?.["sub"], bound: true });
+    if (readRoles) {
+      const admin = (jwt?.["roles"] as string[] | undefined)?.includes("admin");
+      claimReads.set("roles", { value: jwt?.["roles"], bound: false });
+      if (admin) text = "MATCH (n) RETURN n LIMIT $p0";
+    }
+    const ctx = { claimReads, contextReads: [] } as unknown as CompileContext;
+    const compiled = {
+      statements: [{ text, params }],
+      cost: 25,
+      columns: ["n"],
+    } as unknown as CompiledRead;
+    return { ctx, compiled };
+  };
+  return { compile, calls: () => calls };
+}
+
+const request = (
+  fieldNodes: FieldNode[],
+  jwt: Record<string, unknown> | undefined,
+  variables: Record<string, unknown> = {},
+) => ({
+  fieldNodes,
+  fragments: {},
+  variables,
+  jwt,
+  context: {},
+  statistics: 0,
+});
+
+test("the cache keys on the claims the compile read, rebinding bound ones", () => {
+  const cache = new CompileCache();
+  const field = fieldOf(`{ docs { key } }`);
+  const { compile, calls } = fakeCompile(true);
+  // An anonymous request first does not stop later tokens sharing.
+  cache.get(request(field, undefined), compile);
+  expect(calls()).toBe(1);
+  for (let i = 0; i < 100; i++) {
+    const got = cache.get(
+      request(field, { sub: `user${i}`, iat: i, roles: ["user"] }),
+      compile,
+    );
+    expect(got.statements[0]!.params["p1"]).toBe(`user${i}`);
+  }
+  // The first compile keys on the value and notes that `sub` was bound;
+  // the second compiles with a marker, proving `sub` only a parameter.
+  expect(calls()).toBe(3);
+  const admin = cache.get(
+    request(field, { sub: "root", roles: ["admin"] }),
+    compile,
+  );
+  expect(admin.statements[0]!.text).not.toContain("owner");
+  expect(calls()).toBe(4);
+  // Unauthenticated requests never share an authenticated compile.
+  cache.get(request(field, undefined), compile);
+  expect(calls()).toBe(4);
+});
+
+test("the cache keys on the variables the field uses, and caps its size", () => {
+  const cache = new CompileCache(3);
+  const field = fieldOf(`query($a: Int, $b: Int) { docs(limit: $a) { key } }`);
+  const { compile, calls } = fakeCompile(false);
+  cache.get(request(field, { sub: "x" }, { a: 1, b: 1 }), compile);
+  cache.get(request(field, { sub: "y" }, { a: 1, b: 2 }), compile);
+  expect(calls()).toBe(2);
+  // `$b` is not used: the same variables key.
+  cache.get(request(field, { sub: "y" }, { a: 1, b: 3 }), compile);
+  expect(calls()).toBe(2);
+  cache.get(request(field, { sub: "y" }, { a: 2, b: 2 }), compile);
+  expect(calls()).toBe(3);
+  for (let a = 3; a < 10; a++) {
+    cache.get(request(field, { sub: "y" }, { a }), compile);
+  }
+  expect(cache.size).toBe(3);
 });

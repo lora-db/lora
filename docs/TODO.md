@@ -84,7 +84,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P1 Mutations make several JS round trips under the writer lock — use `tx.executeMany`, fold validation and read-back into the last write (no `executeMany` in `src/`).
 - [ ] P1 Bounded write queue: fail fast with `OVERLOADED`/503.
 - [ ] P1 `maxCost` counts projected rows only — charge scans, `totalCount` and aggregates (from `explain()`/`analyze()`).
-- [ ] P1 Compile cache is keyed on all claims + all variables, so per-user tokens recompile every request (`src/lora-graphql.ts:1266`). Key on what the compile read; cap total size.
+- [ ] P2 Compile cache: keyed lookups miss every request because the key variable is in the cache key; rebind variables into parameter slots the way `$jwt` claims are (`src/compile/cache.ts`).
 - [ ] P2 Resolve `@populatedBy` callbacks in parallel before `begin()` (`src/execute/mutate.ts:1238`).
 - [ ] P2 Batch a delete's neighbour lookup with `UNWIND` (`mutate.ts:1624,1670`).
 - [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).

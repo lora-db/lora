@@ -235,7 +235,10 @@ Two caveats:
 - The Cypher text is not precompiled. It depends on variable values (absent
   filters are left out) and on the caller's claims (claim checks are
   folded into the statement), so it is compiled per request and cached per
-  field, variables and claims.
+  field on what the compile read: the variables the field uses, the claims
+  and `$context` values it looked up. A claim used only as a rule's filter
+  value (`"$jwt.sub"`) is bound as a parameter, so different users share
+  one compile.
 - Servers that parse every request themselves produce new document nodes
   each time and do not benefit from the per-field compile cache. Use
   `execute()`, persisted operations, or a server with a document cache.

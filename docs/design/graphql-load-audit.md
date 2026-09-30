@@ -199,11 +199,8 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - Real tokens differ per user and per issue (`sub`, `iat`, `jti`), so with per-user tokens every request recompiles.
   - Measured with a distinct token per request, on a schema with no auth rules at all: keyed lookups drop 22.6k → 19.4k req/s (−14%). Schemas with `@authorization` rules compile more per request, and so lose more.
   - Large variables, such as embedding vectors, are serialized into the key on every call.
-- **Solutions:**
-  - Key on the claim paths the compile actually read, the way `contextReads` already works.
-  - Bind claim values as parameters, so the statement text is claim-independent.
-  - Key on only the variables a field uses.
-  - Cap the cache in total, not only per field.
+- **Fixed:** the cache (`src/compile/cache.ts`) keys an entry on what the compile read: the variables the field references, each claim it looked up, the `$context` values it read, whether the request is authenticated, and the statistics version. A claim substituted into a rule's `node` filter (`"$jwt.sub"`) becomes a parameter slot, so users with different subjects share one compile. Capped at 16 entries per field node and 4,096 in total. A keyed lookup on a type with a `$jwt.sub` rule costs 13% less CPU per request.
+- **Still open:** keyed lookups miss on every request, because the key variable is part of the cache key. Rebinding variables into parameter slots, the way claims are rebound, would let them hit.
 
 ### 9. Subscriptions and the change feed
 
@@ -246,7 +243,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - `timeoutMs` defaults to 10 s;
   - document guards cap depth, aliases, root fields and tokens;
   - introspection is off in production.
-- **Bounded caches and queues:** documents 500, compiles 16 per field, change-feed ids 50k, subscriber queues 1,000.
+- **Bounded caches and queues:** documents 500, compiles 16 per field and 4,096 in total, change-feed ids 50k, subscriber queues 1,000.
 - **Plan-cache friendly statements:** every value is a parameter, so statement text is stable.
 - **Snapshot reads:** writers never block readers.
 - **Early failure:** an over-limit request fails before it touches the database.
@@ -258,7 +255,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 3. Fix the posting-list copy in the engine (finding 5). Until then, add the lint warning.
 4. Shorten the write lock hold with `executeMany`, and add a bounded write queue with load shedding (finding 4).
 5. Charge scans in `maxCost`. Add top-k sort and ordered-index selection to the engine (findings 6 and 7).
-6. Fix the compile-cache key (finding 8) and the feed pump's unhandled rejection (finding 9).
+6. Done: the compile-cache key (finding 8) and the feed pump's unhandled rejection (finding 9).
 7. Prototype and benchmark worker threads sharing one engine, as the scaling story past one JS thread (finding 3).
 
 ## Gaps in this audit

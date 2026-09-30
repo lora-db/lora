@@ -16,7 +16,7 @@ import type {
 } from "../model/types.js";
 import { PLACEHOLDER } from "../model/types.js";
 import { and, lit, not, or, type Expr } from "./cypher.js";
-import type { CompileContext } from "./context.js";
+import { noteClaim, type CompileContext } from "./context.js";
 import { compileNodeWhere } from "./filter.js";
 
 type Where = Record<string, unknown>;
@@ -381,10 +381,17 @@ function toExpr(f: Folded): Expr | undefined {
  * A claim by name. With a `@jwt` type, the name's first segment maps to its
  * `@jwtClaim(path:)`, whether the token arrived decoded or not.
  */
-export function claim(ctx: CompileContext, path: string): unknown {
+export function claim(
+  ctx: CompileContext,
+  path: string,
+  bound = false,
+): unknown {
   const [head, ...rest] = path.split(".");
   const mapped = ctx.model.jwt?.get(head!) ?? head!;
-  return lookupPath(ctx.jwt, [mapped, ...rest].join("."));
+  const full = [mapped, ...rest].join(".");
+  const value = lookupPath(ctx.jwt, full);
+  noteClaim(ctx, full, value, bound);
+  return value;
 }
 
 /**
@@ -485,7 +492,8 @@ function substitute(
     (value.startsWith("$jwt.") || value.startsWith("$context."))
   ) {
     let v: unknown;
-    if (value.startsWith("$jwt.")) v = claim(ctx, value.slice(5));
+    // Only bound as a filter value: a cached compile may rebind it.
+    if (value.startsWith("$jwt.")) v = claim(ctx, value.slice(5), true);
     else {
       v = lookupPath(ctx.requestContext, value.slice(9));
       ctx.contextReads.push([value.slice(9), v]);
