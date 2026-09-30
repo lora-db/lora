@@ -18,6 +18,7 @@ crc32fast.workspace = true
 smallvec.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
+jiff.workspace = true
 
 # Wall-clock reads go through the standard library on native targets and
 # through `js_sys::Date::now()` on wasm32-unknown-unknown, where

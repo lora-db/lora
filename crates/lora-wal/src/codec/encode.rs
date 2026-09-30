@@ -239,7 +239,11 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<(), WalError>
             );
         }
         PropertyValue::DateTime(value) => {
-            out.push(VALUE_DATE_TIME);
+            out.push(if value.zone.is_some() {
+                VALUE_ZONED_DATE_TIME
+            } else {
+                VALUE_DATE_TIME
+            });
             write_date_fields(out, value.year, value.month, value.day);
             write_time_fields(
                 out,
@@ -249,6 +253,9 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<(), WalError>
                 value.nanosecond,
             );
             write_i32(out, value.offset_seconds);
+            if let Some(zone) = value.zone {
+                write_string(out, zone.name())?;
+            }
         }
         PropertyValue::LocalDateTime(value) => {
             out.push(VALUE_LOCAL_DATE_TIME);
@@ -521,7 +528,12 @@ fn size_value(size: &mut usize, value: &PropertyValue) -> Result<(), WalError> {
         PropertyValue::Date(_) => add_size(size, 12)?,
         PropertyValue::Time(_) => add_size(size, 20)?,
         PropertyValue::LocalTime(_) => add_size(size, 16)?,
-        PropertyValue::DateTime(_) => add_size(size, 32)?,
+        PropertyValue::DateTime(value) => {
+            add_size(size, 32)?;
+            if let Some(zone) = value.zone {
+                size_string(size, zone.name())?;
+            }
+        }
         PropertyValue::LocalDateTime(_) => add_size(size, 28)?,
         PropertyValue::Duration(_) => add_size(size, 32)?,
         PropertyValue::Point(value) => {

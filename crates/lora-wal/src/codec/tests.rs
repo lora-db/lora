@@ -74,7 +74,14 @@ fn all_extension_values_event() -> MutationEvent {
             second: 56,
             nanosecond: 789,
             offset_seconds: -1800,
+            zone: None,
         }),
+    );
+    props.insert(
+        "zoned_datetime".into(),
+        PropertyValue::DateTime(
+            LoraDateTime::parse("2026-10-25T02:30:00+01:00[Europe/Amsterdam]").unwrap(),
+        ),
     );
     props.insert(
         "localdatetime".into(),

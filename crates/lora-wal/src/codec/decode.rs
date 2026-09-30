@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use lora_store::{
     codec::{decode_constraint_request, decode_index_request},
     LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint, LoraTime,
-    LoraVector, MutationEvent, Properties, PropertyValue, VectorValues,
+    LoraVector, MutationEvent, Properties, PropertyValue, VectorValues, ZoneId,
 };
 
 use super::format::*;
@@ -218,16 +218,27 @@ impl<'a> PayloadReader<'a> {
                 second: self.read_u32()?,
                 nanosecond: self.read_u32()?,
             }),
-            VALUE_DATE_TIME => PropertyValue::DateTime(LoraDateTime {
-                year: self.read_i32()?,
-                month: self.read_u32()?,
-                day: self.read_u32()?,
-                hour: self.read_u32()?,
-                minute: self.read_u32()?,
-                second: self.read_u32()?,
-                nanosecond: self.read_u32()?,
-                offset_seconds: self.read_i32()?,
-            }),
+            tag @ (VALUE_DATE_TIME | VALUE_ZONED_DATE_TIME) => {
+                let mut value = LoraDateTime {
+                    year: self.read_i32()?,
+                    month: self.read_u32()?,
+                    day: self.read_u32()?,
+                    hour: self.read_u32()?,
+                    minute: self.read_u32()?,
+                    second: self.read_u32()?,
+                    nanosecond: self.read_u32()?,
+                    offset_seconds: self.read_i32()?,
+                    zone: None,
+                };
+                if tag == VALUE_ZONED_DATE_TIME {
+                    let name = self.read_string()?;
+                    value.zone =
+                        Some(ZoneId::lookup(&name).ok_or_else(|| {
+                            WalError::Decode(format!("unknown time zone `{name}`"))
+                        })?);
+                }
+                PropertyValue::DateTime(value)
+            }
             VALUE_LOCAL_DATE_TIME => PropertyValue::LocalDateTime(LoraLocalDateTime {
                 year: self.read_i32()?,
                 month: self.read_u32()?,

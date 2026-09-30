@@ -37,6 +37,10 @@ pub(super) const VALUE_DURATION: u8 = 12;
 pub(super) const VALUE_POINT: u8 = 13;
 pub(super) const VALUE_VECTOR: u8 = 14;
 pub(super) const VALUE_BINARY: u8 = 15;
+/// A DATETIME with a named zone: the `VALUE_DATE_TIME` fields, then the
+/// zone's name. A DATETIME without one keeps `VALUE_DATE_TIME`, so logs
+/// written before zones existed replay unchanged.
+pub(super) const VALUE_ZONED_DATE_TIME: u8 = 16;
 
 pub(super) const VECTOR_FLOAT64: u8 = 1;
 pub(super) const VECTOR_FLOAT32: u8 = 2;

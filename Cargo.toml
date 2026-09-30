@@ -70,5 +70,9 @@ getrandom = "0.2"
 argon2 = "0.5"
 flate2 = "1"
 rayon = "1"
+# Named time zones: the IANA database bundled into the binary (no
+# filesystem access, so it also works on wasm32). Unlicense OR MIT; the tz
+# data itself is public domain. Used only to resolve zones.
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
 web-time = "1"

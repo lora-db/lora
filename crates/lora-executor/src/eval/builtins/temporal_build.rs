@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use lora_store::{
-    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraTime,
+    LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraTime, ZoneId,
 };
 
 use crate::value::LoraValue;
@@ -125,6 +125,21 @@ struct Parts {
     date: Option<LoraDate>,
     clock: Option<Clock>,
     offset: Option<i32>,
+    /// A named zone. With a date, the offset is resolved from it when the
+    /// value is built (`offset`, if set, is kept when still valid).
+    zone: Option<ZoneId>,
+}
+
+/// A `timezone`: a fixed offset or a named zone.
+#[derive(Debug, Clone, Copy)]
+enum Zone {
+    Offset(i32),
+    Named(ZoneId),
+}
+
+/// The current instant, in whole seconds since the epoch.
+fn now_seconds() -> i64 {
+    LoraDateTime::now().epoch_seconds()
 }
 
 impl Parts {
@@ -146,16 +161,19 @@ impl Parts {
                 date: None,
                 clock: clock(t.hour, t.minute, t.second, t.nanosecond),
                 offset: Some(t.offset_seconds),
+                zone: None,
             },
             LoraValue::LocalTime(t) => Self {
                 date: None,
                 clock: clock(t.hour, t.minute, t.second, t.nanosecond),
                 offset: None,
+                zone: None,
             },
             LoraValue::DateTime(dt) => Self {
                 date: Some(dt.date()),
                 clock: clock(dt.hour, dt.minute, dt.second, dt.nanosecond),
                 offset: Some(dt.offset_seconds),
+                zone: dt.zone,
             },
             LoraValue::LocalDateTime(dt) => Self {
                 date: Some(LoraDate {
@@ -165,13 +183,49 @@ impl Parts {
                 }),
                 clock: clock(dt.hour, dt.minute, dt.second, dt.nanosecond),
                 offset: None,
+                zone: None,
             },
             _ => return None,
         })
     }
 
-    /// Move a zoned value to `offset`, keeping its instant.
+    /// Put the value in `zone`. With `keep_instant`, a value that has an
+    /// instant (a clock and an offset) is moved to the zone keeping it, as
+    /// `datetime({datetime: dt, timezone: …})` does; otherwise the zone
+    /// replaces the old one and the wall clock stays, as in truncation.
+    fn set_zone(&mut self, zone: Zone, keep_instant: bool) -> Result<(), String> {
+        let instant = match (self.offset, self.clock) {
+            (Some(offset), Some(clock)) if keep_instant => Some(
+                self.date
+                    .as_ref()
+                    .map_or_else(now_seconds, |d| d.to_epoch_days() * 86_400)
+                    + (clock.nanos_of_day() / NANOS_PER_SECOND) as i64
+                    - offset as i64,
+            ),
+            _ => None,
+        };
+        match zone {
+            Zone::Offset(offset) => match instant {
+                Some(_) => self.shift_to(offset)?,
+                None => {
+                    self.offset = Some(offset);
+                    self.zone = None;
+                }
+            },
+            Zone::Named(named) => {
+                match instant {
+                    Some(secs) => self.shift_to(named.offset_at(secs))?,
+                    None => self.offset = None,
+                }
+                self.zone = Some(named);
+            }
+        }
+        Ok(())
+    }
+
+    /// Move a value to the fixed `offset`, keeping its instant.
     fn shift_to(&mut self, offset: i32) -> Result<(), String> {
+        self.zone = None;
         let Some(from) = self.offset else {
             self.offset = Some(offset);
             return Ok(());
@@ -192,7 +246,12 @@ impl Parts {
     /// The value of type `kind`; a missing clock is midnight, a missing
     /// offset UTC.
     fn build(self, kind: Kind) -> Result<LoraValue, String> {
-        let offset = self.offset.unwrap_or(0);
+        // A time in a named zone takes the zone's offset now, as in Neo4j:
+        // it has no date to resolve daylight saving against.
+        let offset = self
+            .offset
+            .or_else(|| self.zone.map(|z| z.offset_at(now_seconds())))
+            .unwrap_or(0);
         let date = || {
             self.date
                 .clone()
@@ -216,9 +275,20 @@ impl Parts {
             }
             Kind::DateTime => {
                 let d = date()?;
-                LoraValue::DateTime(LoraDateTime::new(
-                    d.year, d.month, d.day, hour, minute, second, nanosecond, offset,
-                )?)
+                LoraValue::DateTime(match self.zone {
+                    Some(zone) => LoraDateTime::in_zone(
+                        &d,
+                        hour,
+                        minute,
+                        second,
+                        nanosecond,
+                        zone,
+                        self.offset,
+                    )?,
+                    None => LoraDateTime::new(
+                        d.year, d.month, d.day, hour, minute, second, nanosecond, offset,
+                    )?,
+                })
             }
             Kind::LocalDateTime => {
                 let d = date()?;
@@ -440,7 +510,7 @@ pub(super) fn from_map(m: &BTreeMap<String, LoraValue>, kind: Kind) -> Result<Lo
     }
     // A zoned value given a new zone keeps its instant.
     if let Some(zone) = given.values[Field::Timezone as usize] {
-        base.shift_to(parse_zone(zone)?)?;
+        base.set_zone(parse_zone(zone)?, true)?;
     }
     apply_fields(&given, base, kind, false)
 }
@@ -466,11 +536,16 @@ fn from_epoch_map(given: &Given<'_>, epoch: Field) -> Result<LoraValue, String> 
         }
         _ => count * 1_000_000,
     };
-    let offset = match given.values[Field::Timezone as usize] {
-        Some(zone) => parse_zone(zone)?,
-        None => 0,
+    let utc = datetime_from_instant(nanos, 0)?;
+    let dt = match given.values[Field::Timezone as usize]
+        .map(parse_zone)
+        .transpose()?
+    {
+        None => utc,
+        Some(Zone::Offset(offset)) => utc.to_offset(offset).ok_or("datetime out of range")?,
+        Some(Zone::Named(zone)) => utc.to_zone(zone).ok_or("datetime out of range")?,
     };
-    datetime_from_instant(nanos, offset).map(LoraValue::DateTime)
+    Ok(LoraValue::DateTime(dt))
 }
 
 /// Resolve the map's components over `base` and build `kind`.
@@ -612,23 +687,29 @@ fn resolve_clock(
     Ok(clock)
 }
 
-/// A `timezone`: an offset (`'+01:00'`, `'Z'`) or one of the zone names
-/// the engine knows. An unknown zone is an error rather than UTC.
-fn parse_zone(value: &LoraValue) -> Result<i32, String> {
+/// A `timezone`: an offset (`'+01:00'`, `'Z'`) or an IANA zone name
+/// (`'Europe/Amsterdam'`, case-insensitive), which keeps its daylight
+/// saving rules and its name. A few abbreviations outside the IANA
+/// database (`PST`, `JST`, …) still read as their fixed standard offset.
+/// An unknown zone is an error rather than UTC.
+fn parse_zone(value: &LoraValue) -> Result<Zone, String> {
     let LoraValue::String(tz) = value else {
         return Err(format!(
             "`timezone` must be a string, got {}",
             type_name(value)
         ));
     };
-    if let Ok(t) = LoraTime::parse(&format!("00:00{tz}")) {
-        return Ok(t.offset_seconds);
+    if tz.starts_with(['+', '-']) || tz == "Z" {
+        return LoraTime::parse(&format!("00:00{tz}"))
+            .map(|t| Zone::Offset(t.offset_seconds))
+            .map_err(|_| format!("invalid time zone offset `{tz}`"));
     }
-    let offset = timezone_name_to_offset(tz);
-    if offset != 0 || matches!(tz.as_str(), "UTC" | "GMT" | "Europe/London") {
-        Ok(offset)
-    } else {
-        Err(format!("unknown time zone `{tz}`"))
+    if let Some(zone) = ZoneId::lookup(tz) {
+        return Ok(Zone::Named(zone));
+    }
+    match timezone_name_to_offset(tz) {
+        0 => Err(format!("unknown time zone `{tz}`")),
+        offset => Ok(Zone::Offset(offset)),
     }
 }
 
@@ -955,7 +1036,7 @@ pub(super) fn truncate(
     };
     let given = Given::collect(m, kind, true)?;
     if let Some(zone) = given.values[Field::Timezone as usize] {
-        parts.offset = Some(parse_zone(zone)?);
+        parts.set_zone(parse_zone(zone)?, false)?;
     }
     apply_fields(&given, parts, kind, true)
 }

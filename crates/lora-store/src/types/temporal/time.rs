@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use super::calendar::unix_now;
+use super::datetime::split_zone_suffix;
 use super::format::{format_offset, format_subsecond};
 use super::parsing::parse_time_string;
 
@@ -43,9 +44,17 @@ impl LoraTime {
         })
     }
 
+    /// `12:00+01:00`; with a named zone (`12:00[Europe/Amsterdam]`) the
+    /// offset is the zone's offset now, as in Neo4j: a time has no date to
+    /// resolve daylight saving against.
     pub fn parse(s: &str) -> Result<Self, String> {
+        let (s, zone) = split_zone_suffix(s)?;
         let (h, m, sec, ns, offset) = parse_time_string(s)?;
-        let offset = offset.unwrap_or(0);
+        let offset = match (offset, zone) {
+            (Some(offset), _) => offset,
+            (None, Some(zone)) => zone.offset_at(unix_now().0 as i64),
+            (None, None) => 0,
+        };
         Self::new(h, m, sec, ns, offset)
     }
 

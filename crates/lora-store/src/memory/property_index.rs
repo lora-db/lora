@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use super::cow::CowMap;
 use super::id_set::IdSet;
 use crate::types::PropertyValue;
-use crate::LoraBinary;
+use crate::{LoraBinary, ZoneId};
 
 /// Value → ids for one property. A copy-on-write sharded map (see
 /// [`CowMap`]) so cloning the graph (the staged copy a write works on)
@@ -252,6 +252,10 @@ pub(super) enum PropertyIndexKey {
         kind: TemporalKind,
         nanos: i128,
         offset: i32,
+        /// A DATETIME's named zone: the same instant and offset in another
+        /// zone is another value. Only breaks ties; range bounds use
+        /// extreme offsets, so it never decides a range.
+        zone: Option<ZoneId>,
     },
 }
 
@@ -310,13 +314,19 @@ impl Ord for PropertyIndexKey {
                         kind: ak,
                         nanos: an,
                         offset: ao,
+                        zone: az,
                     },
                     PropertyIndexKey::Temporal {
                         kind: bk,
                         nanos: bn,
                         offset: bo,
+                        zone: bz,
                     },
-                ) => ak.cmp(bk).then(an.cmp(bn)).then(ao.cmp(bo)),
+                ) => ak
+                    .cmp(bk)
+                    .then(an.cmp(bn))
+                    .then(ao.cmp(bo))
+                    .then(az.cmp(bz)),
                 _ => Ordering::Equal, // unreachable given equal tags
             },
             ord => ord,
@@ -363,11 +373,12 @@ impl PropertyIndexKey {
                 v.order_nanos(),
                 0,
             )),
-            PropertyValue::DateTime(v) => Some(Self::temporal(
-                TemporalKind::DateTime,
-                v.order_nanos(),
-                v.offset_seconds,
-            )),
+            PropertyValue::DateTime(v) => Some(Self::Temporal {
+                kind: TemporalKind::DateTime,
+                nanos: v.order_nanos(),
+                offset: v.offset_seconds,
+                zone: v.zone,
+            }),
             // Durations have no total order in Cypher (a month has no fixed
             // length), and spatial and vector values have no stable ordered
             // image. Those use the scan fallback, and a range bound of one of
@@ -381,6 +392,7 @@ impl PropertyIndexKey {
             kind,
             nanos,
             offset,
+            zone: None,
         }
     }
 

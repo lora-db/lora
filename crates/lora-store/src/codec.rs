@@ -13,7 +13,7 @@ use crate::{
     LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
     LoraTime, LoraVector, PropertyValue, StoredConstraintKind, StoredIndexEntity, StoredIndexKind,
     StoredIndexState, StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType,
-    StoredVectorCoordType, VectorValues,
+    StoredVectorCoordType, VectorValues, ZoneId,
 };
 
 type Result<T> = std::result::Result<T, StoreCodecError>;
@@ -130,6 +130,10 @@ const VALUE_DURATION: u8 = 12;
 const VALUE_POINT: u8 = 13;
 const VALUE_VECTOR: u8 = 14;
 const VALUE_BINARY: u8 = 15;
+/// A DATETIME with a named zone: the `VALUE_DATE_TIME` fields, then the
+/// zone's name. A DATETIME without one keeps `VALUE_DATE_TIME`, so data
+/// written before zones existed decodes unchanged.
+const VALUE_ZONED_DATE_TIME: u8 = 16;
 
 const VECTOR_FLOAT64: u8 = 1;
 const VECTOR_FLOAT32: u8 = 2;
@@ -430,7 +434,11 @@ fn write_property_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<()> 
             );
         }
         PropertyValue::DateTime(value) => {
-            out.push(VALUE_DATE_TIME);
+            out.push(if value.zone.is_some() {
+                VALUE_ZONED_DATE_TIME
+            } else {
+                VALUE_DATE_TIME
+            });
             write_date_fields(out, value.year, value.month, value.day);
             write_time_fields(
                 out,
@@ -440,6 +448,9 @@ fn write_property_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<()> 
                 value.nanosecond,
             );
             write_i32(out, value.offset_seconds);
+            if let Some(zone) = value.zone {
+                write_string(out, zone.name())?;
+            }
         }
         PropertyValue::LocalDateTime(value) => {
             out.push(VALUE_LOCAL_DATE_TIME);
@@ -983,16 +994,26 @@ impl<'a> Reader<'a> {
                 second: self.read_u32()?,
                 nanosecond: self.read_u32()?,
             }),
-            VALUE_DATE_TIME => PropertyValue::DateTime(LoraDateTime {
-                year: self.read_i32()?,
-                month: self.read_u32()?,
-                day: self.read_u32()?,
-                hour: self.read_u32()?,
-                minute: self.read_u32()?,
-                second: self.read_u32()?,
-                nanosecond: self.read_u32()?,
-                offset_seconds: self.read_i32()?,
-            }),
+            tag @ (VALUE_DATE_TIME | VALUE_ZONED_DATE_TIME) => {
+                let mut value = LoraDateTime {
+                    year: self.read_i32()?,
+                    month: self.read_u32()?,
+                    day: self.read_u32()?,
+                    hour: self.read_u32()?,
+                    minute: self.read_u32()?,
+                    second: self.read_u32()?,
+                    nanosecond: self.read_u32()?,
+                    offset_seconds: self.read_i32()?,
+                    zone: None,
+                };
+                if tag == VALUE_ZONED_DATE_TIME {
+                    let name = self.read_string()?;
+                    value.zone = Some(ZoneId::lookup(&name).ok_or_else(|| {
+                        StoreCodecError::Decode(format!("unknown time zone `{name}`"))
+                    })?);
+                }
+                PropertyValue::DateTime(value)
+            }
             VALUE_LOCAL_DATE_TIME => PropertyValue::LocalDateTime(LoraLocalDateTime {
                 year: self.read_i32()?,
                 month: self.read_u32()?,
@@ -1117,6 +1138,29 @@ mod tests {
 
         let bytes = encode_property_value(&value).unwrap();
         assert_eq!(decode_property_value(&bytes).unwrap(), value);
+    }
+
+    #[test]
+    fn datetimes_roundtrip_with_and_without_a_zone() {
+        let fixed = LoraDateTime::parse("2026-07-01T12:00:00+02:00").unwrap();
+        let zoned = LoraDateTime::parse("2026-07-01T12:00:00+02:00[Europe/Amsterdam]").unwrap();
+        for value in [fixed.clone(), zoned] {
+            let value = PropertyValue::DateTime(value);
+            let bytes = encode_property_value(&value).unwrap();
+            assert_eq!(decode_property_value(&bytes).unwrap(), value);
+        }
+        // A DATETIME without a zone keeps its pre-zone encoding, so data
+        // written by earlier versions decodes unchanged.
+        let bytes = encode_property_value(&PropertyValue::DateTime(fixed)).unwrap();
+        assert_eq!(bytes[0], VALUE_DATE_TIME);
+        assert_eq!(bytes.len(), 1 + 8 * 4);
+        let mut unknown = vec![VALUE_ZONED_DATE_TIME];
+        unknown.extend_from_slice(&bytes[1..]);
+        write_string(&mut unknown, "Mars/Olympus").unwrap();
+        assert!(decode_property_value(&unknown)
+            .unwrap_err()
+            .to_string()
+            .contains("Mars/Olympus"));
     }
 
     #[test]

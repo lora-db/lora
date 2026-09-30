@@ -32,7 +32,7 @@ Each value is first-class: store it as a
 | `Date` | year, month, day | — |
 | `Time` | hour, minute, second, nanosecond | UTC offset |
 | `LocalTime` | hour, minute, second, nanosecond | — |
-| `DateTime` | Date + Time fields | UTC offset |
+| `DateTime` | Date + Time fields | UTC offset, and optionally a named zone |
 | `LocalDateTime` | Date + LocalTime fields | — |
 | `Duration` | months, days, seconds, nanoseconds | — |
 
@@ -86,6 +86,32 @@ times such as `21:40:32.142+01:00`, `214032.142+0100`, `21:40` or `21`
 with an offset of `Z`, `±HH:MM`, `±HHMM` or `±HH`. Fields are fixed width
 (`2015-7-21` is refused), and the local types refuse an offset rather
 than drop it: `localtime('12:00+01:00')` is an error.
+
+### Time zones
+
+A `timezone` can be an offset (`'+02:00'`, `'Z'`) or an IANA zone name
+(`'Europe/Amsterdam'`, matched case-insensitively). A `DATETIME` in a
+named zone keeps the zone, prints it after the offset
+(`2026-07-01T12:00:00+02:00[Europe/Amsterdam]`) and parses back from
+that form; a string with a zone and no offset takes the zone's offset,
+and an offset the zone does not have at that moment is an error. The
+zone database is built into LoraDB, so every platform, including the
+browser, resolves zones the same way.
+
+Daylight saving follows the zone's rules, as in Neo4j. A local time
+that does not exist (the spring gap) moves forward by the length of the
+gap, and one that happens twice (the autumn overlap) takes the earlier
+offset. Adding a duration moves the calendar part (months, days) on the
+wall clock and the rest (hours and smaller) on the instant, so `P1D`
+keeps the time of day across a change and `PT24H` is 24 hours. A
+`TIME` has no date to resolve daylight saving against, so a named zone
+gives it the zone's current offset.
+
+<QueryCodeBlock code={String.raw`RETURN datetime({year: 2026, month: 7, day: 1, hour: 12, timezone: 'Europe/Amsterdam'});
+        // 2026-07-01T12:00:00+02:00[Europe/Amsterdam]
+RETURN datetime('2026-03-29T02:30[Europe/Amsterdam]');      // 2026-03-29T03:30:00+02:00[Europe/Amsterdam]
+RETURN datetime('2026-03-28T12:00[Europe/Amsterdam]') + duration('P1D')
+        // 2026-03-29T12:00:00+02:00[Europe/Amsterdam]`} />
 
 The zero-argument current-value helpers also have bare aliases:
 <CypherCode code="now()" /> for <CypherCode code="temporal.now()" />,
@@ -441,8 +467,10 @@ matching types.
 
 ### Timezone handling
 
-`DateTime` carries a UTC offset. Compare `DateTime` values across zones
-freely — they're normalised to UTC internally. `LocalDateTime` has no
+`DateTime` carries a UTC offset, and a named zone when it was built with
+one (see [Time zones](#time-zones)). Compare `DateTime` values across
+zones freely: they order by instant. Equality also compares the zone, so
+the same instant at `+02:00` and in `Europe/Amsterdam` are not equal. `LocalDateTime` has no
 zone; two `LocalDateTime` values compare by naive wall-clock order.
 
 ### Strict ISO parsing

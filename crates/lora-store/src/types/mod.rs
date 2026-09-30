@@ -35,8 +35,8 @@ pub use spatial::{
     CRS_WGS84_2D, CRS_WGS84_3D, SRID_CARTESIAN, SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
 };
 pub use temporal::{
-    days_in_month, is_leap_year, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime,
-    LoraLocalTime, LoraTime,
+    days_in_month, is_leap_year, LocalOffset, LoraDate, LoraDateTime, LoraDuration,
+    LoraLocalDateTime, LoraLocalTime, LoraTime, ZoneId,
 };
 pub use vector::{
     cosine_similarity_bounded, cosine_similarity_raw, dot_product, euclidean_distance,

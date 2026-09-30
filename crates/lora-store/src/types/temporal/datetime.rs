@@ -9,6 +9,7 @@ use super::date::LoraDate;
 use super::duration::LoraDuration;
 use super::format::{format_offset, format_subsecond};
 use super::parsing::parse_time_string;
+use super::zone::{LocalOffset, ZoneId};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraDateTime {
@@ -20,6 +21,10 @@ pub struct LoraDateTime {
     pub second: u32,
     pub nanosecond: u32,
     pub offset_seconds: i32,
+    /// The named zone (`Europe/Amsterdam`) the value is in, if any.
+    /// `offset_seconds` is always the zone's offset at this instant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<ZoneId>,
 }
 
 impl LoraDateTime {
@@ -53,10 +58,16 @@ impl LoraDateTime {
             second,
             nanosecond,
             offset_seconds,
+            zone: None,
         })
     }
 
+    /// `2026-07-01T12:00:00+02:00`, and with a named zone
+    /// `2026-07-01T12:00:00+02:00[Europe/Amsterdam]` or
+    /// `2026-07-01T12:00:00[Europe/Amsterdam]` (the zone gives the offset).
+    /// An offset the zone does not have at that instant is an error.
     pub fn parse(s: &str) -> Result<Self, String> {
+        let (s, zone) = split_zone_suffix(s)?;
         let t_pos = s
             .find('T')
             .ok_or_else(|| format!("Invalid datetime: {s}"))?;
@@ -65,9 +76,135 @@ impl LoraDateTime {
 
         let date = LoraDate::parse(date_part)?;
         let (h, m, sec, ns, offset) = parse_time_string(time_part)?;
-        let offset = offset.unwrap_or(0);
+        match (zone, offset) {
+            (None, offset) => Self::new(
+                date.year,
+                date.month,
+                date.day,
+                h,
+                m,
+                sec,
+                ns,
+                offset.unwrap_or(0),
+            ),
+            (Some(zone), None) => Self::in_zone(&date, h, m, sec, ns, zone, None),
+            (Some(zone), Some(offset)) => {
+                let dt = Self::new(date.year, date.month, date.day, h, m, sec, ns, offset)?;
+                if zone.offset_at(dt.epoch_seconds()) != offset {
+                    return Err(format!("The offset does not match {zone}: {s}"));
+                }
+                Ok(Self {
+                    zone: Some(zone),
+                    ..dt
+                })
+            }
+        }
+    }
 
-        Self::new(date.year, date.month, date.day, h, m, sec, ns, offset)
+    /// The local date-time in `zone`, at the offset the zone has then. A
+    /// local time in a daylight-saving gap moves forward by the length of
+    /// the gap; one in an overlap takes the earlier offset, unless
+    /// `prefer` is the other one (as when arithmetic keeps an offset that
+    /// is still valid). This is how Neo4j (java.time) resolves them.
+    #[allow(clippy::too_many_arguments)] // Structural datetime constructor.
+    pub fn in_zone(
+        date: &LoraDate,
+        hour: u32,
+        minute: u32,
+        second: u32,
+        nanosecond: u32,
+        zone: ZoneId,
+        prefer: Option<i32>,
+    ) -> Result<Self, String> {
+        let (y, mo, d) = (date.year, date.month, date.day);
+        let offset = match zone.local_offset(y, mo, d, hour, minute, second) {
+            LocalOffset::Unique(offset) => offset,
+            LocalOffset::Overlap { earlier, later } => {
+                if prefer == Some(later) {
+                    later
+                } else {
+                    earlier
+                }
+            }
+            LocalOffset::Gap { before, after } => {
+                // The instant the local time names at the old offset, shown
+                // at the new one: 02:30 in a 02:00 to 03:00 gap is 03:30.
+                let dt = Self::new(y, mo, d, hour, minute, second, nanosecond, before)?;
+                let moved = dt
+                    .shift_local_seconds((after - before) as i64)
+                    .ok_or("datetime out of range")?;
+                return Ok(Self {
+                    offset_seconds: after,
+                    zone: Some(zone),
+                    ..moved
+                });
+            }
+        };
+        Ok(Self {
+            zone: Some(zone),
+            ..Self::new(y, mo, d, hour, minute, second, nanosecond, offset)?
+        })
+    }
+
+    /// The same instant, shown in `zone`.
+    pub fn to_zone(&self, zone: ZoneId) -> Option<Self> {
+        let offset = zone.offset_at(self.epoch_seconds());
+        let moved = self.shift_local_seconds(offset as i64 - self.offset_seconds as i64)?;
+        Some(Self {
+            offset_seconds: offset,
+            zone: Some(zone),
+            ..moved
+        })
+    }
+
+    /// The same instant at a fixed `offset`, without a named zone.
+    pub fn to_offset(&self, offset: i32) -> Option<Self> {
+        let moved = self.shift_local_seconds(offset as i64 - self.offset_seconds as i64)?;
+        Some(Self {
+            offset_seconds: offset,
+            zone: None,
+            ..moved
+        })
+    }
+
+    /// Whole seconds since the Unix epoch (UTC).
+    pub fn epoch_seconds(&self) -> i64 {
+        let days = days_from_civil(self.year, self.month, self.day);
+        days * 86_400 + self.hour as i64 * 3600 + self.minute as i64 * 60 + self.second as i64
+            - self.offset_seconds as i64
+    }
+
+    /// The wall clock moved by `seconds`, offset and zone unchanged.
+    fn shift_local_seconds(&self, seconds: i64) -> Option<Self> {
+        self.add_fixed(&LoraDuration {
+            seconds,
+            ..LoraDuration::zero()
+        })
+    }
+
+    /// This value with the clock set to the given fields: re-resolved in
+    /// its zone, keeping the offset when it is still valid.
+    fn with_clock(&self, hour: u32, minute: u32, second: u32, nanosecond: u32) -> Self {
+        let fixed = Self {
+            hour,
+            minute,
+            second,
+            nanosecond,
+            ..self.clone()
+        };
+        match self.zone {
+            Some(zone) => Self::in_zone(
+                &self.date(),
+                hour,
+                minute,
+                second,
+                nanosecond,
+                zone,
+                Some(self.offset_seconds),
+            )
+            .unwrap_or(fixed),
+            None => fixed,
+        }
     }
 
     pub fn now() -> Self {
@@ -84,6 +221,7 @@ impl LoraDateTime {
             second: (day_secs % 60) as u32,
             nanosecond: nanos,
             offset_seconds: 0,
+            zone: None,
         }
     }
 
@@ -109,7 +247,46 @@ impl LoraDateTime {
             .unwrap_or_else(|| clamp_duration_overflow(self.offset_seconds, dur))
     }
 
+    /// In a named zone, the months and days move the wall clock and the
+    /// result is re-resolved in the zone (keeping the offset if it is still
+    /// valid); the seconds and nanoseconds then move the instant. This is
+    /// Neo4j's (java.time's) `ZonedDateTime.plus`.
     pub fn try_add_duration(&self, dur: &LoraDuration) -> Option<Self> {
+        let Some(zone) = self.zone else {
+            return self.add_fixed(dur);
+        };
+        let mut out = self.clone();
+        if dur.months != 0 || dur.days != 0 {
+            let local = self.add_fixed(&LoraDuration {
+                months: dur.months,
+                days: dur.days,
+                ..LoraDuration::zero()
+            })?;
+            out = Self::in_zone(
+                &local.date(),
+                local.hour,
+                local.minute,
+                local.second,
+                local.nanosecond,
+                zone,
+                Some(self.offset_seconds),
+            )
+            .ok()?;
+        }
+        if dur.seconds != 0 || dur.nanoseconds != 0 {
+            out = out
+                .add_fixed(&LoraDuration {
+                    seconds: dur.seconds,
+                    nanoseconds: dur.nanoseconds,
+                    ..LoraDuration::zero()
+                })?
+                .to_zone(zone)?;
+        }
+        Some(out)
+    }
+
+    /// `dur` added to the wall clock at a fixed offset (and zone).
+    fn add_fixed(&self, dur: &LoraDuration) -> Option<Self> {
         let current_months = (self.year as i64)
             .checked_mul(12)?
             .checked_add(self.month as i64 - 1)?;
@@ -146,33 +323,16 @@ impl LoraDateTime {
             second: (rem % 60) as u32,
             nanosecond: final_nanos,
             offset_seconds: self.offset_seconds,
+            zone: self.zone,
         })
     }
 
     pub fn truncate_to_day(&self) -> Self {
-        Self {
-            year: self.year,
-            month: self.month,
-            day: self.day,
-            hour: 0,
-            minute: 0,
-            second: 0,
-            nanosecond: 0,
-            offset_seconds: self.offset_seconds,
-        }
+        self.with_clock(0, 0, 0, 0)
     }
 
     pub fn truncate_to_hour(&self) -> Self {
-        Self {
-            year: self.year,
-            month: self.month,
-            day: self.day,
-            hour: self.hour,
-            minute: 0,
-            second: 0,
-            nanosecond: 0,
-            offset_seconds: self.offset_seconds,
-        }
+        self.with_clock(self.hour, 0, 0, 0)
     }
 
     pub fn date(&self) -> LoraDate {
@@ -214,6 +374,7 @@ fn clamp_duration_overflow(offset_seconds: i32, dur: &LoraDuration) -> LoraDateT
             second: 0,
             nanosecond: 0,
             offset_seconds,
+            zone: None,
         }
     } else {
         LoraDateTime {
@@ -225,6 +386,7 @@ fn clamp_duration_overflow(offset_seconds: i32, dur: &LoraDuration) -> LoraDateT
             second: 59,
             nanosecond: 999_999_999,
             offset_seconds,
+            zone: None,
         }
     }
 }
@@ -237,11 +399,12 @@ impl PartialOrd for LoraDateTime {
 
 impl Ord for LoraDateTime {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Instant first; the offset only breaks ties so `Ord` agrees with
-        // the field-wise `Eq`.
+        // Instant first; the offset and zone only break ties so `Ord`
+        // agrees with the field-wise `Eq`.
         self.order_nanos()
             .cmp(&other.order_nanos())
             .then(self.offset_seconds.cmp(&other.offset_seconds))
+            .then(self.zone.cmp(&other.zone))
     }
 }
 
@@ -253,8 +416,25 @@ impl fmt::Display for LoraDateTime {
             self.year, self.month, self.day, self.hour, self.minute, self.second
         )?;
         format_subsecond(f, self.nanosecond)?;
-        format_offset(f, self.offset_seconds)
+        format_offset(f, self.offset_seconds)?;
+        match self.zone {
+            Some(zone) => write!(f, "[{zone}]"),
+            None => Ok(()),
+        }
     }
+}
+
+/// Split a trailing `[Region/City]` zone off a datetime or time string.
+pub(super) fn split_zone_suffix(s: &str) -> Result<(&str, Option<ZoneId>), String> {
+    let Some(body) = s.strip_suffix(']') else {
+        return Ok((s, None));
+    };
+    let open = body
+        .rfind('[')
+        .ok_or_else(|| format!("Invalid time zone in: {s}"))?;
+    let name = &body[open + 1..];
+    let zone = ZoneId::lookup(name).ok_or_else(|| format!("Unknown time zone `{name}`"))?;
+    Ok((&body[..open], Some(zone)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -364,6 +544,7 @@ mod tests {
             second: 59,
             nanosecond: 0,
             offset_seconds: 0,
+            zone: None,
         };
         let duration = LoraDuration {
             months: 1,
@@ -386,6 +567,7 @@ mod tests {
             second: 59,
             nanosecond: 900_000_000,
             offset_seconds: 0,
+            zone: None,
         };
         let duration = LoraDuration {
             months: 0,
@@ -398,6 +580,87 @@ mod tests {
         assert_eq!(
             (out.day, out.hour, out.minute, out.second, out.nanosecond),
             (12, 0, 0, 0, 100_000_000)
+        );
+    }
+
+    fn dt(s: &str) -> String {
+        LoraDateTime::parse(s)
+            .map(|d| d.to_string())
+            .unwrap_or_else(|e| e)
+    }
+
+    #[test]
+    fn named_zones_parse_and_print() {
+        for (input, want) in [
+            (
+                "2026-07-01T12:00:00+02:00[Europe/Amsterdam]",
+                "2026-07-01T12:00:00+02:00[Europe/Amsterdam]",
+            ),
+            (
+                "2026-01-15T12:00[Europe/Amsterdam]",
+                "2026-01-15T12:00:00+01:00[Europe/Amsterdam]",
+            ),
+            (
+                "2026-07-01T12:00[Europe/London]",
+                "2026-07-01T12:00:00+01:00[Europe/London]",
+            ),
+            (
+                "2026-01-15T12:00[europe/london]",
+                "2026-01-15T12:00:00Z[Europe/London]",
+            ),
+            (
+                "2026-07-01T12:00[Asia/Kolkata]",
+                "2026-07-01T12:00:00+05:30[Asia/Kolkata]",
+            ),
+            // A gap moves forward, an overlap takes the earlier offset.
+            (
+                "2026-03-29T02:30[Europe/Amsterdam]",
+                "2026-03-29T03:30:00+02:00[Europe/Amsterdam]",
+            ),
+            (
+                "2026-10-25T02:30[Europe/Amsterdam]",
+                "2026-10-25T02:30:00+02:00[Europe/Amsterdam]",
+            ),
+            (
+                "2026-10-25T02:30+01:00[Europe/Amsterdam]",
+                "2026-10-25T02:30:00+01:00[Europe/Amsterdam]",
+            ),
+        ] {
+            assert_eq!(dt(input), want, "{input}");
+            // The printed form parses back to the same value.
+            let v = LoraDateTime::parse(want).unwrap();
+            assert_eq!(LoraDateTime::parse(&v.to_string()).unwrap(), v);
+        }
+        assert!(LoraDateTime::parse("2026-07-01T12:00+01:00[Europe/Amsterdam]").is_err());
+        assert!(LoraDateTime::parse("2026-07-01T12:00[Mars/Olympus]").is_err());
+    }
+
+    #[test]
+    fn arithmetic_keeps_the_zone_across_dst() {
+        let add = |s: &str, dur: &str| {
+            LoraDateTime::parse(s)
+                .unwrap()
+                .try_add_duration(&LoraDuration::parse(dur).unwrap())
+                .unwrap()
+                .to_string()
+        };
+        // A day is a calendar day: same wall clock after the spring jump.
+        assert_eq!(
+            add("2026-03-28T12:00[Europe/Amsterdam]", "P1D"),
+            "2026-03-29T12:00:00+02:00[Europe/Amsterdam]"
+        );
+        // 24 hours is 24 hours on the clock of the instant.
+        assert_eq!(
+            add("2026-03-28T12:00[Europe/Amsterdam]", "PT24H"),
+            "2026-03-29T13:00:00+02:00[Europe/Amsterdam]"
+        );
+        assert_eq!(
+            add("2026-10-25T01:30[Europe/Amsterdam]", "PT1H"),
+            "2026-10-25T02:30:00+02:00[Europe/Amsterdam]"
+        );
+        assert_eq!(
+            add("2026-10-25T02:30+02:00[Europe/Amsterdam]", "PT1H"),
+            "2026-10-25T02:30:00+01:00[Europe/Amsterdam]"
         );
     }
 }

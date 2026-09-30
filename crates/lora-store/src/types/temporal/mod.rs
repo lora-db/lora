@@ -12,6 +12,7 @@
 //! * [`time`] — [`LoraTime`] (zoned) and [`LoraLocalTime`] (zone-naive).
 //! * [`datetime`] — [`LoraDateTime`] (zoned) and [`LoraLocalDateTime`].
 //! * [`duration`] — [`LoraDuration`] (months / days / seconds / nanos).
+//! * [`zone`] — [`ZoneId`], a named IANA time zone.
 
 mod calendar;
 mod date;
@@ -20,9 +21,11 @@ mod duration;
 mod format;
 mod parsing;
 mod time;
+mod zone;
 
 pub use calendar::{days_in_month, is_leap_year};
 pub use date::LoraDate;
 pub use datetime::{LoraDateTime, LoraLocalDateTime};
 pub use duration::LoraDuration;
 pub use time::{LoraLocalTime, LoraTime};
+pub use zone::{LocalOffset, ZoneId};
