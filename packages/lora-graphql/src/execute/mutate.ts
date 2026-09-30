@@ -7,6 +7,7 @@ import type { FieldNode, GraphQLObjectType, SelectionSetNode } from "graphql";
 import {
   authFilter,
   authValidate,
+  checkKeyScope,
   relationshipRules,
   checkAuthentication,
   checkFieldAuthentication,
@@ -238,6 +239,7 @@ class WritePlan {
       }
       key = globalThis.crypto.randomUUID();
     }
+    checkKeyScope(this.ctx, node, key);
     const props: Input = {};
     const written = new Set<string>();
     if (input[node.key.name] !== undefined && input[node.key.name] !== null) {

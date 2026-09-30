@@ -683,6 +683,15 @@ type Post
 - Rules are checked against the model at startup: an unknown field,
   operator or (with `@jwt`) claim, or a test that is empty or null, is an
   error, not an open door.
+- **Owner-scoped keys.** `key: String! @key(scope: VIEWER, separator: ":")`
+  keeps created keys in the caller's key space: a create (nested creates
+  and upsert-creates included) must use a key that starts with the
+  `@viewer` claim and the separator, and is longer than that prefix. It
+  is checked before any statement runs, so `FORBIDDEN` for `bob:x` reads
+  the same whether `bob:x` exists or not. A claim containing the
+  separator is refused, so user `a` cannot write into the key space of
+  user `a:b`. It needs `@viewer`; the schema's bypass skips it. Keys shared
+  by two owners (`f1:lou`) stay hand-written rules.
 - **Masks.** A field-level READ rule fails the row; a mask substitutes a
   value instead:
 

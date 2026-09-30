@@ -8,7 +8,16 @@ export const directiveTypeDefs = /* GraphQL */ `
   directive @node(labels: [String!], plural: String) on OBJECT
 
   "Natural key: required, unique and immutable; the tie-breaker of every sort and the anchor of cursors, global ids, updates and deletes. With generate: true, creates fill it with a UUID when the input leaves it out."
-  directive @key(generate: Boolean = false) on FIELD_DEFINITION
+  directive @key(
+    generate: Boolean = false
+    "VIEWER: a created key must start with the caller's @viewer claim and the separator (lou:tomorrowland)."
+    scope: KeyScope
+    separator: String = ":"
+  ) on FIELD_DEFINITION
+
+  enum KeyScope {
+    VIEWER
+  }
 
   "On an interface field: every implementation declares this relationship (with @relationship, possibly of different types or directions), so clients can select it on the interface."
   directive @declareRelationship on FIELD_DEFINITION
@@ -362,6 +371,7 @@ export const directiveTypeDefs = /* GraphQL */ `
 
 /** Names defined by the prelude; never treated as user types. */
 export const PRELUDE_TYPES = new Set([
+  "KeyScope",
   "AuthorizationMask",
   "AuthorizationRuleDefinition",
   "QueryDirection",

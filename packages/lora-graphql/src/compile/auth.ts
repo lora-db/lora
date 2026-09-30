@@ -355,6 +355,43 @@ export function maskSettled(
   );
 }
 
+/**
+ * `@key(scope: VIEWER)`: a created key must start with the caller's
+ * `@viewer` claim and the separator. Checked in JavaScript before any
+ * statement runs, so the answer never depends on whether the key exists.
+ * A claim containing the separator is refused: it could reach into
+ * another caller's key space (`a` taking `a:b:…` from `a:b`).
+ */
+export function checkKeyScope(
+  ctx: CompileContext,
+  node: NodeType,
+  key: unknown,
+): void {
+  const scope = node.key.keyScope;
+  const mapping = ctx.model.viewer;
+  if (!scope || !mapping || ctx.inAuth || bypassed(ctx, node)) return;
+  if (!ctx.jwt) {
+    throw requestError(
+      "UNAUTHENTICATED",
+      `create on ${node.name} needs an authenticated request`,
+    );
+  }
+  const owner = claim(ctx, mapping.claim);
+  const prefix =
+    typeof owner === "string" || typeof owner === "number"
+      ? `${owner}${scope.separator}`
+      : undefined;
+  if (
+    prefix === undefined ||
+    String(owner).includes(scope.separator) ||
+    typeof key !== "string" ||
+    !key.startsWith(prefix) ||
+    key.length === prefix.length
+  ) {
+    throw forbidden(node, "CREATE");
+  }
+}
+
 /** A rule needs a claim the request lacks: the whole rule denies. */
 class MissingClaim extends Error {}
 

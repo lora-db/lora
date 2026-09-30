@@ -931,6 +931,16 @@ export function buildModel(
   // Rule sugar (isViewer, viewer) expands into the plain rule AST before
   // the rules are checked, so the checks and the compiler see one form.
   if (viewer && jwtType) checkViewer(viewer, nodes, jwtType, problems);
+  for (const node of nodes.values()) {
+    if (node.key.keyScope && !viewer) {
+      problems.push({
+        type: node.name,
+        field: node.key.name,
+        message:
+          "@key(scope: VIEWER) needs a @viewer claim on the @jwt type: it names whose key space a create writes in",
+      });
+    }
+  }
   const viewerNode = viewer ? nodes.get(viewer.type) : undefined;
   const desugar = (
     owner: NodeType | undefined,
@@ -1319,6 +1329,20 @@ function buildScalarField(
   }
   const vectorQuery = vectorArgs?.["queryName"] as string | undefined;
   const generate = key && (keyArgs(d, f, at)?.["generate"] as boolean) === true;
+  const scopeArgs = key ? keyArgs(d, f, at) : undefined;
+  const keyScope =
+    scopeArgs?.["scope"] === "VIEWER"
+      ? { separator: (scopeArgs["separator"] as string | undefined) ?? ":" }
+      : undefined;
+  if (keyScope) {
+    if (generate) at("@key(scope:) and @key(generate: true) are exclusive");
+    if (keyScope.separator.length === 0) {
+      at("@key(separator:) cannot be empty");
+    }
+    if (type !== "ID" && type !== "String") {
+      at("@key(scope:) needs an ID or String field");
+    }
+  }
   if (generate && type !== "ID" && type !== "String") {
     at("@key(generate: true) needs an ID or String field");
   }
@@ -1455,6 +1479,7 @@ function buildScalarField(
     groupBy,
     indexes,
     generate,
+    ...(keyScope ? { keyScope } : {}),
     defaultValue,
     timestamp,
     readonly:

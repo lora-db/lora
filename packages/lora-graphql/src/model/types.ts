@@ -96,6 +96,11 @@ export interface ScalarField extends FieldBase {
   indexes: readonly IndexKind[];
   /** `@key(generate: true)`: creates fill a UUID when the input omits it. */
   generate: boolean;
+  /**
+   * `@key(scope: VIEWER)`: a created key starts with the caller's `@viewer`
+   * claim and `separator`.
+   */
+  keyScope?: { separator: string } | undefined;
   /** `@default(value:)`, stored on create when the input omits the field. */
   defaultValue: { value: unknown } | undefined;
   /** `@timestamp`: set to the current time by these operations. */

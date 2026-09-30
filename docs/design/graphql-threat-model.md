@@ -103,6 +103,11 @@ each check runs. The user-facing rules are in the package
 
 ## Writes and change events
 
+- `@key(scope: VIEWER)` checks a created key against the verified claim in
+  JavaScript before any statement runs: the answer does not depend on the
+  database, so it cannot reveal whether a key exists. A claim containing
+  the separator is refused.
+
 - `@authorization(mask:)` substitutes a value per row in projections and
   in filters (which compare the masked value), so neither reveals the
   stored value; sorting, grouping and aggregating by a masked field are
