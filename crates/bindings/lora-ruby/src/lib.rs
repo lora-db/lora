@@ -186,22 +186,31 @@ fn database_open_wal(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusErro
 /// `clear` takes the engine's writer lock, so it waits for any write in
 /// flight. That wait runs with the GVL released like every other engine
 /// call: holding it would freeze every Ruby thread until the running
-/// writer committed.
+/// writer committed. When no write can be in flight (an in-memory database
+/// and no GVL-free call running, see [`gvl::nothing_released`]) the lock
+/// is free and clear runs at once, so it skips the GVL round trip.
 fn database_clear(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
     let db = database_inner(ruby, rb_self)?;
+    if db.wal().is_none() && gvl::nothing_released() {
+        return db.try_clear().map_err(|e| query_error_from_anyhow(ruby, e));
+    }
     without_gvl_lora_result(ruby, move || db.try_clear())
 }
 
 /// Dropping the last handle to a persistent database flushes and closes its
-/// WAL, so the drop runs with the GVL released like any other engine call.
+/// WAL, so that drop runs with the GVL released like any other engine
+/// call. An in-memory database has nothing to flush and drops in place.
 fn database_close(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
     let db = rb_self
         .db
         .lock()
         .map_err(|_| query_error(ruby, "database lock poisoned"))?
         .take();
-    if let Some(db) = db {
-        without_gvl(move || drop(db)).map_err(|panic| query_error(ruby, panic.to_string()))?;
+    match db {
+        Some(db) if db.wal().is_some() => {
+            without_gvl(move || drop(db)).map_err(|panic| query_error(ruby, panic.to_string()))?
+        }
+        _ => {}
     }
     Ok(())
 }

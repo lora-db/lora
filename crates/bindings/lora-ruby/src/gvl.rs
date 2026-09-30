@@ -4,6 +4,36 @@ use std::ffi::c_void;
 use std::fmt;
 use std::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Calls running with the GVL released right now, process-wide.
+static RELEASED: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether no thread runs a GVL-free call. Called with the GVL held, this
+/// means no other Ruby thread can hold or take the engine's writer lock
+/// before the caller does: taking it needs either the GVL or a GVL-free
+/// call (the binding has no interactive transactions or streams, and it
+/// is not Ractor-safe, so there is one GVL). Background threads of a
+/// persistent database are not covered.
+pub(crate) fn nothing_released() -> bool {
+    RELEASED.load(Ordering::SeqCst) == 0
+}
+
+/// Counts a call in [`RELEASED`] while alive.
+struct Released;
+
+impl Released {
+    fn enter() -> Self {
+        RELEASED.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        RELEASED.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 pub(crate) struct GvlPanic {
     payload: Box<dyn std::any::Any + Send>,
@@ -80,6 +110,7 @@ where
         func: Some(f),
         result: MaybeUninit::uninit(),
     };
+    let _released = Released::enter();
 
     unsafe {
         rb_sys::rb_thread_call_without_gvl(
