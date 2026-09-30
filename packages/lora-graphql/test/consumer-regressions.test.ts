@@ -529,3 +529,49 @@ describe("G-19: claims inside rule strings", () => {
     );
   });
 });
+
+describe("G-11: the required-relationship check seeks and sees other edges", () => {
+  const typeDefs = `
+    type Person @node @mutation(operations: [UPDATE]) {
+      key: String! @key
+      sent: [Message!]! @relationship(type: "SENT", direction: OUT)
+    }
+    type Message @node @mutation(operations: [UPDATE]) {
+      key: String! @key
+      from: Person! @relationship(type: "SENT", direction: IN)
+    }`;
+  const seed = [
+    "CREATE (a:Person {key: 'a'}), (b:Person {key: 'b'}), (a)-[:SENT]->(:Message {key: 'm1'}), (b)-[:SENT]->(:Message {key: 'm2'})",
+  ];
+
+  test("disconnecting leaves no message without a sender", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.run(
+      `mutation { updatePerson(key: "a", update: { sent: { disconnect: ["m1"] } }) { person { key } } }`,
+    );
+    // m2 still has its SENT: the check must look at m1's own.
+    expect(codes(r)).toEqual(["CONSTRAINT_VIOLATION"]);
+    expect(r.errors![0]!.message).toBe(
+      'Message "m1" requires a Person (Message.from)',
+    );
+    expect(
+      await cypher(
+        t,
+        "MATCH (:Person)-[:SENT]->(m:Message) RETURN m.key AS k ORDER BY k",
+      ),
+    ).toEqual([{ k: "m1" }, { k: "m2" }]);
+    t.close();
+  });
+
+  test("the check binds the count in the WITH, so it keeps the key seek", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.run(
+      `mutation { updatePerson(key: "a", update: { sent: { disconnect: ["m1"] } }) { person { key } } }`,
+    );
+    const check = t.statements.find((s) => s.statement.text.includes("= 0"));
+    expect(check?.statement.text).toMatch(
+      /WITH a, size\(\[\(a\)<-\[:`?SENT`?\]-\(x\) WHERE .* \| 1\]\) AS related WHERE related = 0/,
+    );
+    t.close();
+  });
+});

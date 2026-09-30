@@ -1276,7 +1276,9 @@ class Runner {
       const rows = await this.run(
         `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
           `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = k\n` +
-          `WITH a WHERE size([(a)${arrow(field, "", "x", undefined)} WHERE ${memberTest(model, "x", field)} | 1]) = 0\n` +
+          // The count is bound in the WITH and tested after it: the form
+          // every LoraDB release plans as a seek (G-11).
+          `WITH a, size([(a)${arrow(field, "", "x", undefined)} WHERE ${memberTest(model, "x", field)} | 1]) AS related WHERE related = 0\n` +
           `RETURN a.${name(owner.key.property)} AS key`,
         ctx,
       );
