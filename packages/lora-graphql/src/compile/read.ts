@@ -43,6 +43,8 @@ import {
   checkPropertyAccess,
   fieldReadGuard,
   fieldValidate,
+  maskedValue,
+  maskSettled,
   propertyAccess,
   refusedEdgeRead,
   relationshipRules,
@@ -450,6 +452,12 @@ function refuseRowRules(
     throw requestError(
       "FORBIDDEN",
       `cannot ${what} ${node.name}.${field.name}: it has row-level read rules`,
+    );
+  }
+  if (!maskSettled(ctx, node, field)) {
+    throw requestError(
+      "FORBIDDEN",
+      `cannot ${what} ${node.name}.${field.name}: it is masked per row`,
     );
   }
 }
@@ -1954,12 +1962,21 @@ export function projectNode(
       ? fieldReadGuard(ctx, node, guarded, variable)
       : undefined;
     if (field?.kind === "scalar") {
+      const masked = maskedValue(
+        ctx,
+        node,
+        field,
+        variable,
+        prop(v(variable), field.property),
+      );
       if (guard) {
         entries.push({
           kind: "entry",
           key,
-          value: guardedValue(guard, prop(v(variable), field.property)),
+          value: guardedValue(guard, masked),
         });
+      } else if (field.authorization?.mask?.length) {
+        entries.push({ kind: "entry", key, value: masked });
       } else {
         entries.push(
           key === field.property

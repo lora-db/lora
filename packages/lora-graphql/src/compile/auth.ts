@@ -302,6 +302,59 @@ function bypassed(ctx: CompileContext, node: NodeType | undefined): boolean {
   }
 }
 
+/**
+ * A scalar field's value as the reader may see it: under
+ * `@authorization(mask:)`, a row failing `unless` reads the mask's value.
+ * Rules see the stored value, and so does a request the bypass lets
+ * through. `raw` is the stored value's expression.
+ */
+export function maskedValue(
+  ctx: CompileContext,
+  node: NodeType,
+  field: { authorization?: Authorization | undefined },
+  variable: string,
+  raw: Expr,
+): Expr {
+  const masks = field.authorization?.mask;
+  if (!masks?.length || ctx.inAuth || bypassed(ctx, node)) return raw;
+  let value = raw;
+  // The first mask that fails decides: build from the last one out.
+  for (const m of [...masks].reverse()) {
+    const unless = compileRule(ctx, node, variable, m.unless);
+    if (unless === true) continue;
+    const substitute = bind(ctx, m.value);
+    value =
+      unless === false
+        ? substitute
+        : {
+            kind: "case",
+            when: fn("coalesce", unless, lit(false)),
+            then: value,
+            else: substitute,
+          };
+  }
+  return value;
+}
+
+/**
+ * Whether a masked field reads its stored value on every row for this
+ * request (no mask, or every `unless` settled true by the claims). Sorting,
+ * grouping and aggregating need it: a per-row mask there would reveal or
+ * reorder by the hidden values.
+ */
+export function maskSettled(
+  ctx: CompileContext,
+  node: NodeType,
+  field: { authorization?: Authorization | undefined },
+): boolean {
+  const masks = field.authorization?.mask;
+  if (!masks?.length || ctx.inAuth || bypassed(ctx, node)) return true;
+  const probe = { ...ctx, params: {}, vars: new Set(ctx.vars) };
+  return masks.every(
+    (m) => compileRule(probe, node, "probe", m.unless) === true,
+  );
+}
+
 /** A rule needs a claim the request lacks: the whole rule denies. */
 class MissingClaim extends Error {}
 

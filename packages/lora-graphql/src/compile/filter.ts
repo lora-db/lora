@@ -23,6 +23,8 @@ import {
   checkFieldAuthentication,
   checkPropertyAccess,
   fieldValidate,
+  maskedValue,
+  maskSettled,
   refuseEdgeRowRules,
 } from "./auth.js";
 import { bind, freshVar, type CompileContext } from "./context.js";
@@ -87,9 +89,10 @@ function nodeKeys(
       checkFieldAuthentication(ctx, node.name, f);
       const rule = fieldValidate(ctx, node, f, variable, "READ");
       return (value) => {
+        // A masked field is compared as the reader sees it.
         const pred = scalarPredicate(
           ctx,
-          prop(v(variable), f.property),
+          maskedValue(ctx, node, f, variable, prop(v(variable), f.property)),
           value as Where,
         );
         return pred && and(rule, pred);
@@ -608,6 +611,12 @@ function aggregatePredicate(
           throw requestError(
             "FORBIDDEN",
             `cannot aggregate ${target.name}.${field.name}: it has row-level read rules`,
+          );
+        }
+        if (!maskSettled(ctx, target, field)) {
+          throw requestError(
+            "FORBIDDEN",
+            `cannot aggregate ${target.name}.${field.name}: it is masked per row`,
           );
         }
       }

@@ -871,7 +871,43 @@ export function buildModel(
     }
   }
   for (const node of nodes.values()) {
+    if (node.authorization?.mask) {
+      problems.push({
+        type: node.name,
+        message: "@authorization(mask:) belongs on a scalar field",
+      });
+    }
     for (const f of node.fields.values()) {
+      const masks = f.authorization?.mask ?? [];
+      const at = (message: string) =>
+        problems.push({ type: node.name, field: f.name, message });
+      if (masks.length > 0 && (f.kind !== "scalar" || f.key)) {
+        at(
+          "@authorization(mask:) belongs on a scalar field that is not the @key",
+        );
+      } else if (f.kind === "scalar") {
+        for (const m of masks) {
+          const missing = (m as { missingValue?: boolean }).missingValue;
+          if (m.value === null && f.required) {
+            at(
+              missing
+                ? "@authorization(mask:) on a non-null field needs a value"
+                : "@authorization(mask:) value null does not fit a non-null field",
+            );
+          } else if (
+            m.value !== null &&
+            (!defaultMatches(f.type, f.list, m.value) ||
+              (f.enumName !== undefined &&
+                !(enums.get(f.enumName)?.values ?? []).some(
+                  (v) => v.name === m.value,
+                )))
+          ) {
+            at(
+              `@authorization(mask:) value ${JSON.stringify(m.value)} does not fit ${f.list ? `[${f.enumName ?? f.type}]` : (f.enumName ?? f.type)}`,
+            );
+          }
+        }
+      }
       if (f.authorization?.bypass !== undefined || f.authorization?.public) {
         problems.push({
           type: node.name,
@@ -931,6 +967,11 @@ export function buildModel(
     ]);
     for (const f of node.fields.values()) {
       if (!f.authorization) continue;
+      for (const m of f.authorization.mask ?? []) {
+        const rule = { where: m.unless };
+        desugar(node, node.name, f.name, [rule]);
+        (m as { unless: AuthorizationWhere }).unless = rule.where;
+      }
       const rel = f.authorization.validate.filter(isRelationshipRule);
       desugar(node, node.name, f.name, [
         ...f.authorization.filter,
@@ -991,6 +1032,17 @@ export function buildModel(
           message:
             "field-level @authorization takes validate rules; filter rules belong on the type",
         });
+      }
+      for (const m of f.authorization.mask ?? []) {
+        checkAuthorizationWhere(
+          nodes,
+          relationshipProperties,
+          node,
+          m.unless,
+          problems,
+          jwtShape,
+          viewerNode,
+        );
       }
       for (const rule of f.authorization.validate) {
         if (!isRelationshipRule(rule)) {
@@ -1069,6 +1121,9 @@ export function buildModel(
         at(
           "@authorization on a relationship property takes validate rules only",
         );
+      }
+      if (f.authorization?.mask) {
+        at("@authorization(mask:) belongs on a scalar field of a @node type");
       }
       const ops = [
         ...(f.authorization?.validate ?? []).flatMap((r) => [...r.operations]),
@@ -2062,6 +2117,20 @@ function readAuthorization(
     ...(args["bypass"] != null ? { bypass: args["bypass"] as boolean } : {}),
     ...(args["public"] != null
       ? { public: new Set(args["public"] as AuthOperation[]) }
+      : {}),
+    ...(args["mask"] != null
+      ? {
+          mask: (
+            args["mask"] as Array<{
+              unless: AuthorizationWhere;
+              value?: unknown;
+            }>
+          ).map((m) => ({
+            unless: m.unless,
+            value: m.value ?? null,
+            ...("value" in m ? {} : { missingValue: true }),
+          })),
+        }
       : {}),
   };
 }

@@ -683,6 +683,37 @@ type Post
 - Rules are checked against the model at startup: an unknown field,
   operator or (with `@jwt`) claim, or a test that is empty or null, is an
   error, not an open door.
+- **Masks.** A field-level READ rule fails the row; a mask substitutes a
+  value instead:
+
+  ```graphql
+  status: ConnectionRequestStatus!
+    @authorization(
+      mask: [
+        {
+          unless: {
+            OR: [
+              { node: { status: { in: [PENDING, ACCEPTED] } } }
+              { node: { to: { isViewer: true } } }
+            ]
+          }
+          value: PENDING
+        }
+      ]
+    )
+  lastSeenAt: DateTime
+    @authorization(mask: [{ unless: { node: { isViewer: true } } }])
+  ```
+
+  A row failing `unless` reads the field as `value` (`null` when left
+  out, which a non-null field refuses; `value` is type-checked). Filters
+  compare the value the reader sees, so a mask never leaks through a
+  filter, and such a filter cannot use the field's index. Rules see the
+  stored value. Sorting, grouping and aggregating by a masked field are
+  refused unless the claims settle the mask (the brief proposed sorting by
+  the masked value; refusing keeps order from hinting at hidden values).
+  Masks sit on scalar fields of `@node` types other than the `@key`.
+
 - **Named rules.** Define a rule once and use it as `{ rule: "name" }`
   wherever a rule part may stand:
 

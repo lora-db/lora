@@ -253,6 +253,11 @@ export interface Authorization {
   bypass?: boolean;
   /** `public:` operations deliberately open to every caller. */
   public?: ReadonlySet<AuthOperation>;
+  /**
+   * `mask:` on a scalar field: a row failing `unless` reads the field as
+   * `value`, in projections and filters alike.
+   */
+  mask?: ReadonlyArray<{ unless: AuthorizationWhere; value: unknown }>;
 }
 
 export interface PageLimit {

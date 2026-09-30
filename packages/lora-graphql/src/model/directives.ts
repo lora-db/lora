@@ -221,6 +221,8 @@ export const directiveTypeDefs = /* GraphQL */ `
     bypass: Boolean
     "On a @mutation type: operations deliberately open to every caller, so check() does not report them as unguarded."
     public: [AuthOperation!]
+    "On a scalar field: a row failing unless reads the field as value (null when left out) instead of failing the request."
+    mask: [AuthorizationMask!]
   ) on OBJECT | FIELD_DEFINITION
 
   "Named rules over claims, usable in any rule as { rule: name }, on \`extend schema\`."
@@ -246,6 +248,11 @@ export const directiveTypeDefs = /* GraphQL */ `
     "The write rule of every @mutation type that declares no CREATE, UPDATE or DELETE rule of its own."
     mutations: AuthorizationWhere
   ) on SCHEMA
+
+  input AuthorizationMask {
+    unless: AuthorizationWhere!
+    value: DefaultValue
+  }
 
   input AuthorizationFilterRule {
     operations: [AuthOperation!]! = [READ, UPDATE, DELETE]
@@ -355,6 +362,7 @@ export const directiveTypeDefs = /* GraphQL */ `
 
 /** Names defined by the prelude; never treated as user types. */
 export const PRELUDE_TYPES = new Set([
+  "AuthorizationMask",
   "AuthorizationRuleDefinition",
   "QueryDirection",
   "OnDelete",

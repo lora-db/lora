@@ -103,6 +103,12 @@ each check runs. The user-facing rules are in the package
 
 ## Writes and change events
 
+- `@authorization(mask:)` substitutes a value per row in projections and
+  in filters (which compare the masked value), so neither reveals the
+  stored value; sorting, grouping and aggregating by a masked field are
+  refused unless the claims settle the mask. Rules, `onWrite` and the
+  change feed see stored values.
+
 - `@authorizationDefaults(bypass:)` is claims-only (checked at startup), so
   who it lets through is decided from the verified token alone. It skips
   filter, validate, field, relationship and property rules for those
