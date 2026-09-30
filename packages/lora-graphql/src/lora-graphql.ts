@@ -244,11 +244,17 @@ export interface CheckOptions {
    * that stops an index-ordered scan early.
    */
   rowBudget?: number;
-  /** Operations to compile and plan-check (S2), with example variables. */
+  /**
+   * Operations to compile and plan-check (S2), with example variables and
+   * the GraphQL context to compile them under (e.g. `{ jwt }`, so rules
+   * compile as they do for a signed-in caller). Without one, an operation
+   * compiles as an anonymous request would.
+   */
   operations?: Array<{
     name?: string;
     document: string | DocumentNode;
     variables?: Record<string, unknown>;
+    context?: unknown;
   }>;
 }
 
@@ -618,6 +624,7 @@ export class LoraGraphQL {
       try {
         const fields = await this.explain(op.document, op.variables ?? {}, {
           rowBudget: options.rowBudget,
+          context: op.context,
         });
         for (const f of fields) report.plans.push({ operation, ...f });
       } catch (err) {

@@ -575,3 +575,92 @@ describe("G-11: the required-relationship check seeks and sees other edges", () 
     t.close();
   });
 });
+
+describe("G-7: field READ rules compile per row; check() takes a context", () => {
+  const typeDefs =
+    J +
+    `type Person @node {
+      key: String! @key
+      name: String
+      saved: [Post!]! @relationship(type: "SAVED", direction: OUT)
+        @authorization(validate: [{ operations: [READ], where: { node: { key: { eq: "$jwt.sub" } } } }])
+      email: String @authentication(operations: [READ])
+    }
+    type Post @node { key: String! @key }`;
+  const seed = [
+    "CREATE (a:Person {key: 'a', email: 'a@x'})-[:SAVED]->(:Post {key: 'p'}), (:Person {key: 'b'})",
+  ];
+  const query = `{ person(key: "a") { key saved { key } } }`;
+
+  test("an anonymous compile of a private field plans like a signed-in one", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const [anonymous] = t.lora.compile(query);
+    const [signedIn] = t.lora.compile(
+      query,
+      {},
+      {
+        context: { jwt: { sub: "a" } },
+      },
+    );
+    expect(anonymous!.compiled.statements).toHaveLength(1);
+    expect(anonymous!.compiled.statements[0]!.text).toMatch(/__forbidden/);
+    expect(signedIn!.compiled.statements[0]!.text).toMatch(/__forbidden/);
+    await expectSeeks(t.lora, query);
+    t.close();
+  });
+
+  test("each row enforces the rule", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(await t.data(query, {}, member)).toEqual({
+      person: { key: "a", saved: [{ key: "p" }] },
+    });
+    const other = await t.run(query, {}, { jwt: { sub: "b", roles: [] } });
+    expect(codes(other)).toEqual(["FORBIDDEN"]);
+    expect(other.errors![0]!.message).toBe("not allowed to read Person.saved");
+    expect(other.data).toEqual({ person: null });
+    const connection = await t.run(
+      `{ person(key: "a") { savedConnection { totalCount } } }`,
+      {},
+      { jwt: { sub: "b", roles: [] } },
+    );
+    expect(codes(connection)).toEqual(["FORBIDDEN"]);
+    const anonymous = await t.run(query);
+    expect(codes(anonymous)).toEqual(["UNAUTHENTICATED"]);
+    expect(anonymous.errors![0]!.message).toBe(
+      "Person.saved needs an authenticated request",
+    );
+    // @authentication on a field reads the same way.
+    expect(codes(await t.run(`{ person(key: "a") { email } }`))).toEqual([
+      "UNAUTHENTICATED",
+    ]);
+    expect(await t.data(`{ person(key: "a") { email } }`, {}, member)).toEqual({
+      person: { email: "a@x" },
+    });
+    // Nothing selected, nothing refused: other fields stay readable.
+    expect(await t.data(`{ person(key: "b") { key name } }`)).toEqual({
+      person: { key: "b", name: null },
+    });
+    t.close();
+  });
+
+  test("check() compiles each operation under its own context", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const report = await t.lora.check({
+      operations: [
+        { name: "anonymous", document: query },
+        { name: "owner", document: query, context: { jwt: { sub: "s-1" } } },
+      ],
+    });
+    expect(report.errors).toEqual([]);
+    expect(report.ok).toBe(true);
+    const params = (name: string) =>
+      Object.values(
+        report.plans.find((p) => p.operation === name)!.reports[0]!.statement
+          .params,
+      );
+    // The owner's statement carries the claim the rule compares with.
+    expect(params("owner")).toContain("s-1");
+    expect(params("anonymous")).not.toContain("s-1");
+    t.close();
+  });
+});

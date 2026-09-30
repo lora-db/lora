@@ -41,6 +41,7 @@ import {
   checkAuthentication,
   checkFieldAuthentication,
   checkPropertyAccess,
+  fieldReadGuard,
   fieldValidate,
   propertyAccess,
 } from "./auth.js";
@@ -1841,24 +1842,19 @@ export function projectNode(
     }
     const def = defs[fieldName];
     const field = node.fields.get(fieldName);
-    const rel = field ?? connectionOf(node, fieldName);
-    if (rel) checkFieldAuthentication(ctx, node.name, rel);
+    // Field-level READ rules and @authentication: a row failing them reads
+    // the field as FORBIDDEN (UNAUTHENTICATED without a token), checked
+    // per row so the statement is the same with or without a token.
+    const guarded = field ?? connectionOf(node, fieldName);
+    const guard = guarded
+      ? fieldReadGuard(ctx, node, guarded, variable)
+      : undefined;
     if (field?.kind === "scalar") {
-      const rule = fieldValidate(ctx, node, field, variable, "READ");
-      if (rule) {
-        // Field-level READ rule: a row failing it reads as FORBIDDEN.
+      if (guard) {
         entries.push({
           kind: "entry",
           key,
-          value: {
-            kind: "case",
-            when: fn("coalesce", rule, lit(false)),
-            then: prop(v(variable), field.property),
-            else: {
-              kind: "map",
-              entries: [{ key: "__forbidden", value: lit(true) }],
-            },
-          },
+          value: guardedValue(guard, prop(v(variable), field.property)),
         });
       } else {
         entries.push(
@@ -1911,26 +1907,10 @@ export function projectNode(
       );
     }
     pre.push(...result.pre);
-    // A field-level READ rule on a relationship or @cypher field: a row
-    // failing it reads as FORBIDDEN, like a scalar field's.
-    const guarded = field ?? connectionOf(node, fieldName);
-    const rule = guarded
-      ? fieldValidate(ctx, node, guarded, variable, "READ")
-      : undefined;
     entries.push({
       kind: "entry",
       key,
-      value: rule
-        ? {
-            kind: "case",
-            when: fn("coalesce", rule, lit(false)),
-            then: result.expr,
-            else: {
-              kind: "map",
-              entries: [{ key: "__forbidden", value: lit(true) }],
-            },
-          }
-        : result.expr,
+      value: guard ? guardedValue(guard, result.expr) : result.expr,
     });
   }
   // Read validation: the resolvers turn `false` into a FORBIDDEN error.
@@ -1938,6 +1918,27 @@ export function projectNode(
   if (validate)
     entries.push({ kind: "entry", key: "__authorized", value: validate });
   return { pre, expr: { kind: "mapProjection", variable, entries } };
+}
+
+/** `value` where the guard holds, else the marker the resolvers raise. */
+function guardedValue(
+  guard: NonNullable<ReturnType<typeof fieldReadGuard>>,
+  value: Expr,
+): Expr {
+  return {
+    kind: "case",
+    when: fn("coalesce", guard.when, lit(false)),
+    then: value,
+    else: {
+      kind: "map",
+      entries: [
+        { key: "__forbidden", value: lit(true) },
+        ...(guard.code === "UNAUTHENTICATED"
+          ? [{ key: "__unauthenticated", value: lit(true) }]
+          : []),
+      ],
+    },
+  };
 }
 
 function connectionOf(

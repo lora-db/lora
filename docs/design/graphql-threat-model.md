@@ -25,6 +25,11 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   `node(id:)` and subscription events. `test/auth-properties.test.ts`
   checks this against a reference evaluator over random graphs, claims,
   contexts and nested filters.
+- **Read a guarded field without a token.** Field-level READ rules and
+  `@authentication` are checked per row in the statement, with or without
+  a token; without one every row reads the field as `UNAUTHENTICATED`.
+  The statement's shape does not depend on the token, which is what lets
+  plans be checked anonymously (G-7).
 - **Probe with claims.** A rule that needs a claim or context value the
   request lacks denies, and a `NOT` cannot turn that into a grant. Claim
   and context paths read own properties only, so `constructor`,

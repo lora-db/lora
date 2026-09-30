@@ -3,7 +3,7 @@
 //   lora-graphql print <schema.graphql>
 //   lora-graphql directives
 //   lora-graphql requirements <schema.graphql> [--ddl]
-//   lora-graphql check <schema.graphql> [--operations <file|dir>]... [--variables <file>]
+//   lora-graphql check <schema.graphql> [--operations <file|dir>]... [--variables <file>] [--context <file>]
 //                      [--baseline <file> [--update-baseline]] [--row-budget <n>]
 //                      [--database <dir> [--name <db>]] [--json]
 //   lora-graphql compile <schema.graphql> --operations <file|dir>... [--out <dir>]
@@ -50,7 +50,8 @@ const USAGE = `lora-graphql <command>
   directives                                the directive definitions, for editors
   requirements <schema.graphql> [--ddl]     constraints and indexes the API needs
   check <schema.graphql> [--operations <file|dir>]... [--json]
-        [--variables <file>] [--baseline <file> [--update-baseline]]
+        [--variables <file>] [--context <file>]
+        [--baseline <file> [--update-baseline]]
         [--row-budget <n>] [--database <dir> [--name <db>]]
                                             CI gate: model, lint, @cypher statements and
                                             the plans of your operations, on an in-memory
@@ -142,6 +143,7 @@ class UsageError extends Error {}
 const VALUE_FLAGS = new Set([
   "--out",
   "--variables",
+  "--context",
   "--baseline",
   "--row-budget",
   "--database",
@@ -241,13 +243,25 @@ async function check(
         Record<string, unknown>
       >)
     : {};
+  // GraphQL contexts per operation name, `*` for every other operation.
+  const contexts = values.has("--context")
+    ? (JSON.parse(await read(values.get("--context")!)) as Record<
+        string,
+        unknown
+      >)
+    : {};
   const operations: NonNullable<CheckOptions["operations"]> = [];
   for (const path of operationPaths) {
     for (const f of await graphqlFiles(path)) {
       for (const op of operationsIn(schema, f.path, f.source)) {
-        const given =
-          fixtures[op.name!] ?? fixtures[op.name!.split("#")[1] ?? ""];
-        operations.push(given ? { ...op, variables: given } : op);
+        const short = op.name!.split("#")[1] ?? "";
+        const given = fixtures[op.name!] ?? fixtures[short];
+        const context = contexts[op.name!] ?? contexts[short] ?? contexts["*"];
+        operations.push({
+          ...op,
+          ...(given ? { variables: given } : {}),
+          ...(context !== undefined ? { context } : {}),
+        });
       }
     }
   }

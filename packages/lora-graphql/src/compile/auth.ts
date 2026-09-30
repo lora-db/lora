@@ -144,6 +144,49 @@ export function fieldValidate(
   );
 }
 
+/**
+ * The per-row condition for reading a field with field-level READ rules
+ * (`@authorization(validate:)`, `@authentication`), for projecting it. It
+ * never throws: a request without the token a rule needs gets a condition
+ * that is false on every row, so the statement has the same shape with or
+ * without a token and its plan can be checked anonymously. `code` is the
+ * error a failing row reads as. Undefined when nothing guards the field.
+ */
+export function fieldReadGuard(
+  ctx: CompileContext,
+  node: NodeType,
+  field: {
+    authentication: ReadonlySet<AuthOperation> | undefined;
+    authenticationJwt?: AuthorizationWhere | undefined;
+    authorization?: Authorization | undefined;
+  },
+  variable: string,
+): { when: Expr; code: "FORBIDDEN" | "UNAUTHENTICATED" } | undefined {
+  if (ctx.inAuth) return undefined;
+  if (
+    field.authentication?.has("READ") &&
+    (!ctx.jwt || !claimsSatisfy(ctx, field.authenticationJwt))
+  ) {
+    return { when: lit(false), code: "UNAUTHENTICATED" };
+  }
+  const rules = (field.authorization?.validate ?? []).filter(
+    (r) => r.operations.has("READ") && r.when.has("BEFORE"),
+  );
+  if (rules.length === 0) return undefined;
+  if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
+    return { when: lit(false), code: "UNAUTHENTICATED" };
+  }
+  const folded = foldOr(
+    rules.map((r) =>
+      r.requireAuthentication && !ctx.jwt
+        ? false
+        : compileRule(ctx, node, variable, r.where),
+    ),
+  );
+  if (folded === true) return undefined;
+  return { when: folded === false ? lit(false) : folded, code: "FORBIDDEN" };
+}
+
 function validateRules(
   ctx: CompileContext,
   node: NodeType,

@@ -138,9 +138,31 @@ const listOf = <T extends GraphQLOutputType | GraphQLInputType>(t: T) =>
   new GraphQLList(t);
 
 /**
- * Values under response keys: the compiler projects each alias. A field
- * whose row-level READ rule failed arrives as `{ __forbidden: true }`.
+ * Throws for a field whose row-level READ rule failed: the compiler
+ * projects it as `{ __forbidden: true }` (with `__unauthenticated` when
+ * the request had no token), whatever the field's type.
  */
+function assertFieldReadable(value: unknown, info: GraphQLResolveInfo): void {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    (value as { __forbidden?: unknown }).__forbidden !== true
+  ) {
+    return;
+  }
+  if ((value as { __unauthenticated?: unknown }).__unauthenticated) {
+    throw requestError(
+      "UNAUTHENTICATED",
+      `${info.parentType.name}.${info.fieldName} needs an authenticated request`,
+    );
+  }
+  throw requestError(
+    "FORBIDDEN",
+    `not allowed to read ${info.parentType.name}.${info.fieldName}`,
+  );
+}
+
+/** Values under response keys: the compiler projects each alias. */
 const byResponseKey: GraphQLFieldResolver<Record<string, unknown>, unknown> = (
   source,
   _args,
@@ -148,16 +170,7 @@ const byResponseKey: GraphQLFieldResolver<Record<string, unknown>, unknown> = (
   info,
 ) => {
   const value = source[info.path.key as string];
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    (value as { __forbidden?: unknown }).__forbidden === true
-  ) {
-    throw requestError(
-      "FORBIDDEN",
-      `not allowed to read ${info.parentType.name}.${info.fieldName}`,
-    );
-  }
+  assertFieldReadable(value, info);
   return value;
 };
 
@@ -170,6 +183,7 @@ const vectorByResponseKey: GraphQLFieldResolver<
     | { values?: number[] }
     | null
     | undefined;
+  assertFieldReadable(value, info);
   return value && !Array.isArray(value) ? (value.values ?? null) : value;
 };
 
@@ -177,8 +191,11 @@ const vectorByResponseKey: GraphQLFieldResolver<
 const nodesByResponseKey: GraphQLFieldResolver<
   Record<string, unknown>,
   unknown
-> = (source, _args, _ctx, info) =>
-  assertReadable(source[info.path.key as string]);
+> = (source, _args, _ctx, info) => {
+  const value = source[info.path.key as string];
+  assertFieldReadable(value, info);
+  return assertReadable(value);
+};
 
 const OPERATOR_FIELDS: Record<FilterOperator, string> = {
   EQ: "eq",

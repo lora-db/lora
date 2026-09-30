@@ -608,6 +608,12 @@ type Post
   pass, sorting or aggregating by it is refused, and writing it checks the
   rule. Field-level `@authentication` also guards filtering, sorting and
   aggregating on the field.
+- Reading a guarded field is checked per row, token or not: without the
+  token a rule needs, each row reads the field as `UNAUTHENTICATED`. The
+  statement has the same shape either way, so `compile()`, `explain()`,
+  `check()` and `expectSeeks` plan-check such operations without a token;
+  pass `context` (per operation in `check({ operations })`) to compile
+  them as a signed-in caller.
 - `@authentication(operations:, jwt:)` covers `READ`, `CREATE`, `UPDATE`,
   `DELETE`, `CREATE_RELATIONSHIP`, `DELETE_RELATIONSHIP` and `SUBSCRIBE`,
   and may require claims.
@@ -811,6 +817,10 @@ files, and exits non-zero on any finding. It is the CI gate. Options:
 
 - `--variables vars.json`: variables per operation name, instead of
   sample values for the required ones.
+- `--context ctx.json`: the GraphQL context per operation name (`*` for
+  the rest), e.g. `{ "*": { "jwt": { "sub": "u1" } } }`, so rules compile
+  as they do for a signed-in caller. `check({ operations })` takes the
+  same as `context` on each operation.
 - `--baseline plans.json`: the operators of every statement; a plan that
   differs fails, so plan changes show up in review (`--update-baseline`
   accepts them; a missing file is written).
