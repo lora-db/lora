@@ -16,9 +16,11 @@ The Rust `Database<InMemoryGraph>` also exposes a direct graph API
 detach delete) for embedded callers that intentionally bypass Cypher. Those
 methods use the same storage mutation primitives and recorder events.
 
+Row files (JSONL, JSON array, CSV) can be imported and query results exported
+through `lora-io` and the `Database` import/export driver; see
+[Row import and export](#row-import-and-export).
+
 There are no:
-- Bulk import tools
-- CSV/JSON file loaders
 - ETL pipelines
 - External streaming ingestion service
 - Database migration scripts
@@ -77,9 +79,43 @@ MERGE (n:User {id: 1001}) RETURN n
 MERGE (n:User {id: 1002}) ON MATCH SET n.name = 'updated' ON CREATE SET n:New RETURN n
 ```
 
+## Row import and export
+
+Two layers:
+
+- **`crates/lora-io`** — row-level codecs, independent of the engine. Encoders
+  (`JsonlEncoder`, `JsonArrayEncoder`, `CsvEncoder`) stream rows to any
+  `std::io::Write`; decoders (`JsonlDecoder`, `JsonArrayDecoder`,
+  `CsvDecoder`) parse bytes back into flat `(name, LoraValue)` records.
+  `Format` picks the codec. `RowMapping` (`src/mapping.rs`) describes how
+  rows become graph data: `RowMapping::Node` (a label, an optional id column,
+  column-to-property specs) or `RowMapping::Relationship` (match two existing
+  nodes by key and create a typed relationship). `RowMapping::to_cypher()`
+  renders it as an `UNWIND $rows AS r CREATE …` template.
+- **`crates/lora-database/src/io.rs`** — the driver on `Database`:
+  - `import_rows(reader, format, &mapping, batch_size)` renders the mapping
+    to a template and calls `import_with_template`.
+  - `import_with_template(reader, format, template, batch_size)` decodes rows
+    and executes the caller's Cypher once per batch with `$rows` bound to the
+    batch (default `DEFAULT_IMPORT_BATCH_SIZE` = 1,000). Each batch is its own
+    auto-committed statement, so a failure mid-file leaves earlier batches
+    applied. The header is read first, so format errors surface before any
+    write.
+  - `export_query(query, params, format, writer)` runs the query, materialises
+    the result as `RowArrays`, and encodes it. On `Database<InMemoryGraph>`,
+    `export_query_streaming` pulls rows off `stream_with_params` instead, so
+    memory stays bounded by the encoder buffer.
+
+Both return row counts (`ImportStats { rows, batches }`, `ExportStats { rows }`).
+Imports go through the normal Cypher write path, so they produce the same
+`MutationEvent`s and WAL records as any other write. The WASM binding exposes
+this as `importRows`, `importRowsWithCypher`, and `exportRows` (used by the
+playground's import dialog).
+
 ## Data lineage
 
-All data originates from Cypher queries submitted by clients. There is no external data source integration.
+All data originates from Cypher statements: submitted by clients, or generated
+by the import driver from row files.
 
 ```mermaid
 graph LR
@@ -90,14 +126,6 @@ graph LR
 ```
 
 ## Considerations for future ingestion work
-
-### Bulk loading (needs confirmation)
-
-If bulk loading is needed, potential approaches:
-1. **Direct Rust graph API** -- bypass the Cypher pipeline, call `Database<InMemoryGraph>` graph methods directly
-2. **Batch Cypher endpoint** -- accept an array of queries in a single request
-3. **CSV import command** -- parse a CSV and map rows to `CREATE` statements
-4. **Snapshot restore** -- encode/decode the graph through the snapshot codec
 
 ### Persistence (snapshots and WAL)
 
@@ -118,5 +146,7 @@ LoraDB ships two persistence primitives:
    files and replays committed transactions on boot. Rust and `lora-server`
    expose the full operator surface; Node, Python, Go, and Ruby expose
    filesystem-backed WAL opens; WASM remains snapshot-only. See
-   [../operations/wal.md](../operations/wal.md) for the operator-facing reference
-   and [../decisions/0004-wal.md](../decisions/0004-wal.md) for the design.
+   the [website WAL page](../../apps/loradb.com/docs/wal.md) for the
+   operator-facing reference, [../operations/wal.md](../operations/wal.md) for
+   internals, and [../decisions/0004-wal.md](../decisions/0004-wal.md) for the
+   design.

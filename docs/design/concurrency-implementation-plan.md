@@ -5,49 +5,45 @@ to concurrent reads, concurrent writes, and concurrent file syncs.
 
 ## Current State
 
-The current implementation already supports snapshot-based concurrent reads:
-`LiveStore` wraps `Arc<S>` in `RwLock`, read paths clone the current `Arc`, and
-live read streams pin that snapshot for their lifetime.
+Reads are snapshot-based and concurrent: `LiveStore`
+(`crates/lora-database/src/live_store.rs`) holds `Arc<S>` behind a `RwLock`,
+read paths clone the current `Arc`, and live read streams pin that snapshot
+for their lifetime.
 
-Writes are still serialized. Auto-commit writes, explicit read-write
-transactions, mutating streams, checkpointing, and snapshot restore all route
-through the database writer mutex. The `LockTable` and `MutationWriteSet`
-types exist, but the database commit path does not yet use them for
+Writes are serialized. Auto-commit writes, explicit read-write transactions,
+mutating streams, checkpointing, and snapshot restore all take the database
+writer mutex. Auto-commit writes take one of two shapes
+(`database/occ.rs`, `database/write_guard.rs`):
+
+- **Staged** (the default): the closure runs on a structural copy of the
+  graph, which is published only after the WAL commit succeeds. A failure
+  discards the copy and leaves the live graph unchanged.
+- **Live fast path**: a plan provably unable to fail midway (one write
+  clause: a node-only `CREATE`, a `SET` of literal or parameter values, or
+  a `DELETE`; no `MERGE`, `REMOVE`, `FOREACH`, `CALL { }` or `UNION`) with
+  no deadline mutates the live graph in place through `Arc::make_mut`. If such
+  a plan fails after emitting WAL events anyway, the recorder is poisoned
+  and the database must recover from snapshot + WAL.
+
+The `LockTable` and `MutationWriteSet` types exist in `lora-store`, and the
+database builds a `LockTable`, but no commit path uses them yet for
 fine-grained concurrent commits.
 
-The WAL path is intentionally single-threaded for this release. `WalRecorder`
-buffers mutation events in memory, `abort` only clears that buffer, and
-production commits use `Wal::commit_tx` to write the begin/batch/commit triple
-in one critical section. `SyncMode::GroupSync` commits write bytes to the OS,
-while the background flusher, `force_fsync`, checkpoint, `Database::sync`, and
-clean drop provide the fsync boundary.
+The WAL path is single-threaded. `WalRecorder` buffers mutation events in
+memory, `abort` only clears that buffer, and commits use the one-shot
+`Wal::commit_tx` (or `commit_tx_lsn`, which also returns the commit LSN for
+the change feed) to write the begin/batch/commit triple in one critical
+section, so an aborted query never reaches disk. `SyncMode::GroupSync`
+commits write bytes to the OS, while the background flusher, `force_fsync`,
+checkpoint, `Database::sync`, and clean drop provide the fsync boundary.
 
-## Performance Guard Usage
+## Performance Guard
 
-Before every implementation phase, capture a local baseline from the same
-machine/session:
-
-```bash
-cargo bench -p lora-database --bench concurrency_guard \
-    -- --output-format bencher > /tmp/lora-before.bencher
-```
-
-After the phase, rerun the same benchmark and compare:
-
-```bash
-cargo bench -p lora-database --bench concurrency_guard \
-    -- --output-format bencher > /tmp/lora-after.bencher
-
-node scripts/check-bench-delta.mjs \
-    --baseline /tmp/lora-before.bencher \
-    --current /tmp/lora-after.bencher \
-    --threshold 1.15
-```
-
-The default local gate is a 15 percent slowdown limit. For filesystem-heavy
-phases, rerun once before treating a failure as real. If a slowdown is
-intentional, write down the reason in the phase notes and use the new result as
-the next phase baseline.
+Every phase below is gated by the `concurrency_guard` bench: capture a
+baseline on the same machine and session before the phase, rerun after, and
+compare with `scripts/check-bench-delta.mjs` at `--threshold 1.15`. The
+commands, the covered cases and how to read a failure are in
+[Perf smoke → Concurrency guard](../performance/perf-smoke.md#concurrency-guard).
 
 ## Phase 0: Baseline And Documentation
 
@@ -89,6 +85,11 @@ Performance guard usage:
 ## Phase 2: Stage Auto-Commit Writes
 
 Goal: stop mutating the live graph directly during auto-commit execution.
+
+Status: mostly in place. Auto-commit writes are staged unless the plan is
+provably failure-free (see Current State); what remains is the write
+attempt below, carrying its events, write-set and base snapshot to a
+commit step.
 
 - Make auto-commit writes execute on a staged graph with a buffering recorder,
   matching the explicit transaction model.

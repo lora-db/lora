@@ -26,14 +26,18 @@ Key forces:
 
 `InMemoryGraph` stores primary records in slot vectors:
 
-- `Vec<Option<Arc<NodeRecord>>>` for nodes
-- `Vec<Option<Arc<RelationshipRecord>>>` for relationships
-- `Vec<Vec<RelationshipId>>` for outgoing and incoming adjacency
-- `BTreeMap<String, Vec<NodeId>>` for labels
-- `BTreeMap<String, Vec<RelationshipId>>` for relationship types
+- `ChunkedVec<Option<Arc<NodeRecord>>>` for nodes
+- `ChunkedVec<Option<Arc<RelationshipRecord>>>` for relationships
+- `ChunkedVec<SmallVec<RelationshipId, 2>>` for outgoing and incoming adjacency
+- `BTreeMap<String, ChunkedVec<NodeId>>` for labels
+- `BTreeMap<String, ChunkedVec<RelationshipId>>` for relationship types
 - lazy exact-match property indexes for indexable property values
-- an explicit index catalog plus RANGE/TEXT/POINT backing registries for
-  declared secondary indexes
+- an explicit index catalog plus RANGE/TEXT/POINT/FULLTEXT/VECTOR backing
+  registries for declared secondary indexes, and a constraint catalog
+
+`ChunkedVec` is a `Vec` split into `Arc`-shared chunks, so a clone copies one
+pointer per chunk and a write copies only the chunks it touches (added
+2026-09-29, `d004ba4e`, together with copy-on-write secondary indexes).
 
 IDs are monotonic `u64`s and are never reused. Deletes leave tombstones in the
 slot vectors. Records are held behind `Arc` so database snapshots and staged
@@ -42,11 +46,14 @@ records.
 
 ### Database-level snapshot publication
 
-`lora-database` publishes the current store through `ArcSwap`. Read-only
-auto-commit queries load an `Arc<InMemoryGraph>` and execute without holding a
-store lock. Mutating auto-commit queries stage a clone, buffer mutation events,
-serialize commit publication through the writer mutex, append WAL records when
-configured, and swap in the new `Arc`.
+`lora-database` publishes the current store through a `RwLock<Arc<S>>`
+(`live_store.rs`; an earlier `ArcSwap` was replaced because its internal `Arc`
+defeated `Arc::make_mut`). Read-only auto-commit queries clone the
+`Arc<InMemoryGraph>` under a brief read lock and execute without holding a
+store lock. Mutating auto-commit queries take the writer mutex, stage a clone
+(or, for plans that cannot fail midway, mutate the live graph in place),
+buffer mutation events, append WAL records when configured, and publish the
+new `Arc`.
 
 Explicit read-only transactions pin a snapshot. Explicit read-write
 transactions hold the writer mutex until commit or rollback.
@@ -56,7 +63,9 @@ transactions hold the writer mutex until commit or rollback.
 The storage API is split into:
 
 - `GraphStorage` for reads, scans, expansion, and default helpers.
-- `GraphCatalog` for the analyzer's narrow count/name/property-key checks.
+- `GraphCatalog` for narrow count/name/property-key checks. (The analyzer
+  originally validated labels, types and keys through it; since 2026-09-29,
+  `d004ba4e`, it no longer reads the graph at all.)
 - `BorrowedGraphStorage` for backends that can expose borrowed records.
 - `GraphStorageMut` for primitive writes, deletes, property/label helpers, and
   `clear`.
@@ -77,8 +86,9 @@ audit, CDC, and replication work later.
 - Exact-match property lookups on indexable values can use internal lazy
   indexes, and declared RANGE/TEXT/POINT/LOOKUP indexes can guide the
   optimizer for scoped predicates. Constraint DDL, VECTOR indexes, and
-  FULLTEXT indexes now exist; vector procedures still use flat scans rather
-  than ANN execution.
+  FULLTEXT indexes now exist. Vector indexes default to an exact flat scan;
+  approximate (HNSW) search shipped in v0.12.0 and is opt-in per index via
+  `vector.indexProvider: 'hnsw'`.
 - Bulk compatibility APIs that return owned records still allocate; executor hot
   paths use borrowed closure hooks where possible.
 

@@ -11,45 +11,45 @@ on nearly every feature branch.
 
 | Crate | Test type | Location | What it covers |
 |-------|-----------|----------|---------------|
-| `lora-store` | Unit tests | `src/memory/` (`#[cfg(test)]`) | Node / relationship CRUD, label normalization, adjacency, property mutation, delete semantics, index catalog helpers |
-| `lora-analyzer` | Unit tests | `src/analyzer.rs` (`#[cfg(test)]`) | Semantic validation (for example, unknown rel type in MATCH vs CREATE) |
-| `lora-parser` | Unit tests | `tests/parser.rs` *(plus parser module tests)* | Grammar rules: match, where, return, create, delete, set, remove, merge, unwind, union, call, with, schema/index DDL, case, literals, parameters, relationships, ranges, star, order / skip / limit, string escapes, operators |
-| `lora-database` | Integration tests | `tests/*.rs` | Full pipeline (parse → analyze → compile → execute) for all Cypher features, plus snapshot save / load / format-version compatibility |
-| `lora-server` | HTTP tests | `tests/{http,admin}.rs` | Axum routing, health, query endpoint, parse-error response, create-then-match flow, opt-in admin snapshot endpoints |
-| `lora-go` | Go tests | `crates/bindings/lora-go/*_test.go` | cgo round-trip over `lora-ffi`, execute + params, typed value shapes, error codes, context cancellation semantics. CI: `.github/workflows/lora-go.yml` (`go vet` + `go test -race` + `go run ./examples/basic`) |
-| `lora-ruby` | Ruby tests | `crates/bindings/lora-ruby/test/` (minitest) | rb-sys / Magnus round-trip, execute + params, typed value shapes, error classes, GVL release. CI: `.github/workflows/lora-ruby.yml` (`rake compile` + `rake test` across Ruby 3.1/3.2/3.3) |
+| `lora-store` | Unit tests | `src/memory/tests.rs` and module `#[cfg(test)]` blocks | Node / relationship CRUD, label normalization, adjacency, property mutation, delete semantics, index catalog helpers |
+| `lora-analyzer` | Unit tests | `src/analyzer/tests.rs` | Semantic validation (scoping, unbound variables, builtin signatures) |
+| `lora-parser` | Unit + integration tests | `src/parser/` (`#[cfg(test)]`), `tests/error_messages.rs` | Grammar rules and parse-error messages. End-to-end parse coverage lives in `lora-database/tests/parser.rs` |
+| `lora-compiler`, `lora-executor` | Unit tests | module `#[cfg(test)]` blocks (`optimizer.rs`, `eval/binops.rs`, `eval/builtins/`, `executor/optional.rs`, …) | Optimizer rewrites, operators, builtin functions, cancellation |
+| `lora-wal`, `lora-snapshot` | Unit + integration tests | module `#[cfg(test)]` blocks, `tests/error_messages.rs` | Segment and LSN handling, codec round-trips, error-message baselines |
+| `lora-database` | Integration tests | `tests/*.rs` | Full pipeline (parse → analyze → compile → execute) for all Cypher features, plus transactions, WAL, snapshots and the change feed |
+| `lora-server` | HTTP tests | `tests/{http,admin,concurrency,error_messages}.rs` | Axum routing, health, query endpoint, parse-error response, create-then-match flow, opt-in admin snapshot endpoints, concurrent writes |
+| `lora-ffi` | Integration tests | `crates/bindings/lora-ffi/tests/pool.rs` | Streams and writers pulled from a thread pool |
+| `lora-node` | Vitest | `crates/bindings/lora-node/test/` | Execute, transactions, interactive `begin()`, 64-bit integers, timeouts, directory locking, the libuv pool, change feed, explain/profile |
+| `lora-wasm` | Vitest | `crates/bindings/lora-wasm/test/` | Database API, single-thread writer-lock behaviour, the worker client |
+| `lora-python` | pytest | `crates/bindings/lora-python/tests/` | Sync and async APIs, concurrency (GIL release), explain/profile |
+| `lora-go` | Go tests | `crates/bindings/lora-go/*_test.go` | cgo round-trip over `lora-ffi`, execute + params, typed value shapes, error codes, context cancellation semantics, snapshots, concurrency. CI: `.github/workflows/lora-go.yml` (`go vet` + `go test -race` + `go run ./examples/basic`) |
+| `lora-ruby` | Ruby tests | `crates/bindings/lora-ruby/test/` (minitest) | rb-sys / Magnus round-trip, execute + params, typed value shapes, error classes, GVL release, writer lock. CI: `.github/workflows/lora-ruby.yml` (`rake compile` + `rake test` across Ruby 3.1/3.2/3.3) |
+| `@loradb/lora-graphql` | Vitest | `packages/lora-graphql/test/` | Model, TCK snapshots, integration, authorization (including a property-based reference evaluator), mutations, subscriptions, CLI, driver routing. CI: `.github/workflows/lora-graphql.yml` |
+| `@loradb/lora-query`, `@loradb/lora-graph-canvas` | Vitest | `packages/*/test/` | Package-level behaviour |
 
 ## Integration test files (`lora-database/tests/`)
 
-| File | Coverage area |
-|------|--------------|
-| `aggregation.rs` | `count`, `sum`, `avg`, `min`, `max`, `collect`, `stdev`, `stdevp`, `percentileCont`, `percentileDisc`; grouped, distinct, empty set, null handling |
-| `create.rs` | Node / relationship creation, labels, properties, patterns, batch, unicode |
-| `errors.rs` | Parse errors, semantic errors, unknown labels / types / properties / variables / functions, arity checks |
-| `expressions.rs` | Arithmetic, boolean, comparison, string ops, `CASE`, functions, `UNWIND`, list comprehension, regex, `EXISTS` subquery, pattern comprehension |
-| `functions_extended.rs` | String, math (incl. trig), list, type conversion, entity introspection, path, temporal, spatial, list predicates, map projection |
-| `invariants.rs` | Graph integrity after mutations, node / relationship consistency, isolation |
-| `match.rs` | Node matching, labels, properties, relationships, direction, cross-products, multi-hop, optional match, variable binding |
-| `merge.rs` | `MERGE` node / relationship, `ON MATCH SET`, `ON CREATE SET`, idempotency |
-| `ordering.rs` | `ORDER BY` asc / desc, multi-key sort, null ordering, computed expressions |
-| `parameters.rs` | Named / numeric parameters, all value types, parameters in WHERE / CREATE / RETURN |
-| `schema.rs` | `CREATE INDEX`, `DROP INDEX`, `SHOW INDEXES`, `IF [NOT] EXISTS`, conflict errors, parameterized index names |
-| `index_acceleration.rs` | Optimizer rewrites and result correctness for node/relationship RANGE, TEXT, and POINT index scans |
-| `paths.rs` | Variable-length traversal, fixed / unbounded ranges, zero-hop, direction, cycles, chains, diamonds, fan patterns, `shortestPath`, `allShortestPaths` |
-| `projection.rs` | `RETURN` expressions, aliases, star, distinct, literals, computed columns, map projection |
-| `temporal.rs` | `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration` — construction, component access, comparison, arithmetic |
-| `vectors.rs` | `VECTOR` construction, storage, `vector.coordinates(v, INTEGER)` / `vector.coordinates(v, FLOAT)`, similarity / distance / norm functions, exhaustive kNN via `ORDER BY … LIMIT k` |
-| `types_advanced.rs` | List indexing / slicing / concatenation / equality, map operations, null semantics, type coercion, mixed types |
-| `union.rs` | `UNION`, `UNION ALL`, deduplication, multi-branch, `ORDER BY` on result |
-| `update.rs` | `SET` property / label / replace / merge, `REMOVE` property / label, `DELETE`, `DETACH DELETE` |
-| `where_clause.rs` | Comparison, boolean, string predicates, null checks, `IN`, regex, list predicates, arithmetic, relationship properties |
-| `with.rs` | Variable piping, renaming, filtering, aggregation, star, ordering, pagination |
-| `snapshot.rs` | Snapshot round-trip, atomic rename + `.tmp` cleanup, format-version gating, checksum failure, catalog trailer, `MutationRecorder` replay shape |
-| `wal.rs` | WAL recovery, sync/checkpoint behavior, catalog DDL replay |
-| `seeds.rs` | Shared seed-graph builders (social, org, transport, knowledge, …) |
-| `test_helpers.rs` | `TestDb` helper with `run` / `assert` / `column` / `scalar` utilities |
-| `advanced_queries.rs` | Complex multi-clause queries and forward-looking features (most are `#[ignore]`) |
-| `parser.rs` | Parse-to-AST coverage exercised via `Database::parse` |
+One file per feature area. Most areas are listed by file; the regression
+files added with each engine fix are grouped by what they pin, and each
+opens with a `//!` comment saying what it guards.
+
+| Area | Files | Coverage |
+|------|-------|----------|
+| Reading | `match.rs`, `optional_match_correlated.rs`, `paths.rs`, `where_clause.rs`, `unknown_names.rs` | Node and relationship matching, direction, cross-products, multi-hop, `OPTIONAL MATCH` anchored on bound nodes, variable-length and shortest paths, predicates; unknown labels / types / properties match nothing or read `null` |
+| Projection and ordering | `projection.rs`, `with.rs`, `with_predicates.rs`, `ordering.rs`, `order_limit_semantics.rs`, `union.rs` | `RETURN` and `WITH` piping, star, distinct, map projection, `ORDER BY` / `SKIP` / `LIMIT` after projection, aggregation and `DISTINCT`, `UNION [ALL]` |
+| Expressions and values | `expressions.rs`, `functions_extended.rs`, `builtin_namespaces.rs`, `cypher_compat.rs`, `comparison_ordering.rs`, `types_advanced.rs`, `binary.rs`, `parameters.rs` | Operators, `CASE`, comprehensions, `EXISTS` / `COUNT` subqueries, namespaced and standard-name builtins, list ordering and null comparisons, lists / maps / null semantics, binary values, named and numeric parameters |
+| Pattern subqueries | `pattern_subquery_scope.rs`, `pattern_subquery_rel_properties.rs`, `pattern_subquery_var_length.rs` | Pattern comprehensions and `EXISTS { }` read their bindings, honour relationship property maps and variable-length ranges |
+| Aggregation | `aggregation.rs` | `count`, `sum`, `avg`, `min`, `max`, `collect`, `stdev`, `stdevp`, `percentileCont`, `percentileDisc`; grouped, distinct, empty set, null handling |
+| Temporal, spatial, vector | `temporal.rs`, `temporal_constructors.rs`, `spatial.rs`, `vectors.rs` | Temporal construction, components, comparison and arithmetic; 2D/3D points, SRIDs; `VECTOR` values, similarity / distance / norm, exhaustive kNN |
+| Writes | `create.rs`, `merge.rs`, `merge_bound_end.rs`, `update.rs`, `foreach.rs`, `call_subquery_writes.rs`, `unwind_ingestion.rs`, `null_properties_and_deferred_existence.rs`, `write_results.rs` | `CREATE`, `MERGE` (including bound end nodes), `SET` / `REMOVE` / `DELETE`, `FOREACH`, writes inside `CALL { }`, bulk `UNWIND` ingestion, `null` in property maps, deferred existence checks, write statements without `RETURN` |
+| Schema and indexes | `schema.rs`, `schema_in_transaction.rs`, `constraints.rs`, `index_acceleration.rs`, `temporal_range_index.rs`, `order_by_index.rs`, `empty_ranges.rs`, `fulltext_index.rs`, `vector_index.rs`, `procedure_yield.rs` | Index and constraint DDL (also inside transactions), RANGE / TEXT / POINT rewrites, temporal range indexes, index-ordered `ORDER BY ... LIMIT`, full-text and vector index procedures, `CALL ... YIELD` |
+| Planner and execution | `planner_pushdown.rs`, `early_limit.rs`, `explain_profile.rs`, `explain_estimates.rs`, `timeouts.rs` | Condition push-down and index seeks, early `LIMIT`, `explain()` / `profile()` and their estimates, deadlines and cancellation on every path |
+| Allocation and scaling | `borrowed_variable_reads.rs`, `projection_shares_variables.rs`, `row_value_sharing.rs`, `write_scaling.rs`, `scale.rs` | Reads and projections share values instead of copying; a write's cost does not grow with graph size; a large-database correctness run (ignored by default) |
+| Transactions and durability | `transactions.rs`, `invariants.rs`, `wal.rs`, `snapshot.rs`, `managed_snapshots.rs`, `change_feed.rs` | Explicit transactions, graph integrity after mutations, WAL recovery / checkpoints / DDL replay, snapshot round-trip and format gating, managed snapshots with an LSN fence, the committed-change feed |
+| Errors | `errors.rs`, `error_messages.rs` | Parse and semantic errors, unbound variables, unknown functions, arity checks; error-message baselines |
+| Storage traits | `backend_stub.rs` | The storage trait surface on a backend that cannot hand out long-lived borrows |
+| Docs and roadmap | `docs_examples.rs`, `parser.rs`, `advanced_queries.rs` | Every query example in the site docs runs; parse-to-AST coverage via `Database::parse`; complex multi-clause queries (most `#[ignore]`d) |
+| Helpers | `test_helpers.rs`, `seeds.rs` | `TestDb` with `run` / `assert` / `column` / `scalar`; shared seed graphs (social, org, transport, knowledge, …) |
 
 ## Server integration test files (`lora-server/tests/`)
 
@@ -57,22 +57,27 @@ on nearly every feature branch.
 |------|--------------|
 | `http.rs` | Core HTTP surface — routing, `/health`, `/query`, `/explain`, happy / parse-error paths, params, and create-then-match |
 | `admin.rs` | Snapshot and WAL admin routes — `POST /admin/snapshot/{save,load}`, `/admin/checkpoint`, `/admin/wal/status`, `/admin/wal/truncate`, body handling, default-path behavior, `path` override, opt-in 404s, and round-trips against a live server |
+| `concurrency.rs` | Concurrent writes against the writer lock without runtime stalls |
+| `error_messages.rs` | Error-message baselines for server errors |
 
-## Ignored tests (58)
+## Ignored tests
 
-All ignored tests carry an explicit reason via `#[ignore = "..."]`. Categories:
+All ignored tests carry an explicit reason via `#[ignore = "..."]`. Most
+(`pending implementation` and a handful of specific reasons such as
+`CALL db.labels()`, type mismatch detection, or parameters as labels) are
+forward-looking specifications: queries the engine did not support when
+they were written. Two more are slow runs (`scale.rs`, a 100k-row
+`UNWIND`) that are ignored only for time.
 
-| Reason | Count | Category |
-|--------|-------|----------|
-| `pending implementation` | ~45 | Forward-looking: `CALL { … }` subqueries, constraints, some pattern / aggregation edge cases |
-| `stored procedures: CALL db.labels() not yet implemented` | 1 | Procedures |
-| `temporal types: date/time functions not yet implemented` | 2 | Historical — most temporal tests now pass |
-| `duration type: duration arithmetic not yet implemented` | 1 | Specific duration edge case |
-| `utility functions: compatibility utilities not yet implemented` | 1 | Functions |
-| `constraint violation rollback: rollback on constraint error not yet implemented` | 1 | Transactions |
-| `type validation: type mismatch in comparison not yet detected` | 1 | Validation |
-| `parameter as label: dynamic labels via parameters not standard Cypher` | 1 | Parameters |
-| `parameter validation: type checking at parse time not yet implemented` | 1 | Parameters |
+The list is not current: a good share of the specification tests now
+pass and are waiting to be un-ignored. Run them to see where they stand:
+
+```bash
+cargo test -p lora-database -- --ignored
+```
+
+Triage (un-ignore what passes, give the rest a specific reason) is tracked
+in [`docs/TODO.md`](../TODO.md).
 
 ## How to run tests
 
@@ -128,14 +133,15 @@ Located under `crates/lora-database/benches/`:
 | `realistic.rs` | Domain-shaped workloads that combine multiple operators |
 | `wal.rs` | Durability and recovery overhead |
 | `concurrent.rs` | Concurrent read/write workload behavior |
-| `concurrency_guard.rs` | Focused concurrency guardrail suite |
+| `concurrency_guard.rs` | Focused concurrency guardrail suite — see [perf-smoke docs](../performance/perf-smoke.md#concurrency-guard) |
 | `engine.rs`, `advanced.rs`, `temporal_spatial.rs` | Older deep-dive suites retained for historical comparison; prefer `query_implementations.rs` for new query-feature coverage |
-| `perf_smoke.rs` | 4-bench CI canary for ≥3× regressions — see [perf-smoke docs](../performance/perf-smoke.md) |
+| `perf_smoke.rs` | CI canary for large (2–3×) regressions across read, stream, transaction and WAL paths — see [perf-smoke docs](../performance/perf-smoke.md) |
+| `memory.rs` | Retained-heap regression gate, run by `.github/workflows/memory-bench.yml` |
 | `fixtures.rs` | Shared graph patterns (chains, social, org, dependency) |
 
 Run with `cargo bench --package lora-database`.
 
-The `perf_smoke` suite also runs automatically on every PR
+The `perf_smoke` suite also runs automatically on PRs that touch the engine
 via [`.github/workflows/perf-smoke.yml`](../../.github/workflows/perf-smoke.yml),
 comparing against `crates/lora-database/benches/perf_smoke_baseline.json`
 using `scripts/check-perf-smoke.mjs`. It is intentionally a canary, not
@@ -152,7 +158,7 @@ authoritative performance tooling.
 ## Recommended testing improvements
 
 1. **Optimizer tests** — continue expanding plan-transformation coverage beyond the index acceleration suite
-2. **Concurrency tests** — exercise store lock behavior under parallel requests
+2. **Concurrency tests** — keep extending writer-lock coverage under parallel requests beyond `lora-server/tests/concurrency.rs` and the binding pool tests
 3. **Property-based testing** — generate random Cypher queries to stress the parser / executor
 4. **Property-based snapshot round-trips** — generate random graphs, save, load, assert structural equality
 5. **HTTP parameter coverage** — keep expanding JSON param conversion cases beyond the current success / invalid-shape tests

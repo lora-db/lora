@@ -8,37 +8,54 @@ map-backed: node and relationship IDs are direct indexes into vectors of
 optional records. Deletes leave tombstones, IDs are never reused, and a compact
 `live_*_count` is maintained for catalog reads.
 
-`lora-database` wraps this store in an `ArcSwap` snapshot holder. Read-only
-auto-commit queries load an `Arc<InMemoryGraph>` and run without a store lock.
-Mutating auto-commit queries stage changes against a cloned snapshot, append WAL
-records when configured, and publish the new `Arc` atomically. Explicit
-read-write transactions still serialize through the database writer mutex.
+`lora-database` wraps this store in a `RwLock<Arc<InMemoryGraph>>` snapshot
+holder (`live_store.rs`). Read-only auto-commit queries clone the `Arc` under a
+brief read lock and run without a store lock. Mutating auto-commit queries take
+the database writer mutex, stage changes against a cloned graph (or mutate the
+live graph in place via `Arc::make_mut` for plans that cannot fail midway),
+append WAL records when configured, and publish the new `Arc` under the write
+lock. Explicit read-write transactions also serialize through the writer mutex.
 
 ## Core data structures
 
 ```text
 InMemoryGraph
-├── nodes:                  Vec<Option<Arc<NodeRecord>>>
-├── relationships:          Vec<Option<Arc<RelationshipRecord>>>
-├── outgoing:               Vec<Vec<RelationshipId>>
-├── incoming:               Vec<Vec<RelationshipId>>
-├── nodes_by_label:         BTreeMap<String, Vec<NodeId>>
-├── relationships_by_type:  BTreeMap<String, Vec<RelationshipId>>
-├── indexes:                RwLock<PropertyIndexRegistry>
-├── index_catalog:          RwLock<IndexCatalog>
-├── text_indexes:           RwLock<TextIndexRegistry>
-├── sorted_indexes:         RwLock<SortedPropertyIndexRegistry>
-├── point_indexes:          RwLock<PointIndexRegistry>
 ├── next_node_id:           u64
 ├── next_rel_id:            u64
+├── nodes:                  ChunkedVec<Option<Arc<NodeRecord>>>
+├── relationships:          ChunkedVec<Option<Arc<RelationshipRecord>>>
 ├── live_node_count:        usize
 ├── live_rel_count:         usize
-└── recorder:               Option<Arc<dyn MutationRecorder>>
+├── outgoing:               ChunkedVec<AdjList>      // SmallVec<RelationshipId, 2>
+├── incoming:               ChunkedVec<AdjList>
+├── nodes_by_label:         BTreeMap<String, ChunkedVec<NodeId>>
+├── relationships_by_type:  BTreeMap<String, ChunkedVec<RelationshipId>>
+├── indexes:                IndexBundle
+│   ├── catalog:            RwLock<IndexCatalog>
+│   ├── properties:         RwLock<PropertyIndexRegistry>
+│   ├── text / sorted / point / fulltext / vector:
+│   │                       EntityIndexStore<…> (one per entity kind)
+│   └── active_* counters:  AtomicUsize
+├── constraint_catalog:     RwLock<ConstraintCatalog>
+├── active_constraints:     AtomicUsize
+├── recorder:               Option<Arc<dyn MutationRecorder>>
+└── deleted_sink:           Option<Arc<dyn DeletedRecordSink>>
 ```
 
-Records are held behind `Arc` so a staged writer can share unchanged records
-with the current published snapshot. Property, label, and relationship changes
-use `Arc::make_mut`, so only touched records are cloned.
+(`crates/lora-store/src/memory/graph.rs`, `IndexBundle` in
+`memory/entity_index_store.rs`.)
+
+`ChunkedVec` (`memory/chunked_vec.rs`) is a `Vec` split into 512-entry chunks
+shared by `Arc`: cloning the graph copies one pointer per chunk, and a write
+copies only the chunks it touches. Records are also held behind `Arc`, so a
+staged writer shares unchanged records with the current published snapshot;
+property, label, and relationship changes use `Arc::make_mut`, so only touched
+records are cloned. Secondary indexes are copy-on-write too (`memory/cow.rs`),
+so write cost stays flat as the graph grows.
+
+`recorder` and `deleted_sink` are not part of the graph's identity and are
+dropped on clone. `deleted_sink` sees each record just before a delete drops
+it, so change feeds can report deleted entities without copying the graph.
 
 ### Node record
 
@@ -46,7 +63,7 @@ use `Arc::make_mut`, so only touched records are cloned.
 struct NodeRecord {
     id: NodeId,           // u64, auto-incremented
     labels: Vec<String>,  // trimmed, empty labels removed, duplicates removed
-    properties: BTreeMap<String, PropertyValue>,
+    properties: PropertyMap,
 }
 ```
 
@@ -58,9 +75,13 @@ struct RelationshipRecord {
     src: NodeId,          // source node
     dst: NodeId,          // destination node
     rel_type: String,     // trimmed, non-empty, immutable
-    properties: BTreeMap<String, PropertyValue>,
+    properties: PropertyMap,
 }
 ```
+
+`PropertyMap` (`types/property_map.rs`) is a key-sorted `Vec` with a
+`BTreeMap`-shaped API: same iteration order and serde form, much smaller
+per-bag overhead.
 
 Relationship creation fails if either endpoint is missing or the trimmed type is
 empty.
@@ -248,8 +269,9 @@ the executor uses `with_node` / `with_relationship` closures where possible.
 - **Scoped constraint/index surface** — uniqueness, existence, type, key,
   RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT surfaces exist. Composite
   RANGE definitions are cataloged, but current optimizer rewrites target one
-  property at a time, and vector procedures still use flat scans rather than
-  ANN execution.
+  property at a time. Vector indexes default to an exact flat scan; an
+  approximate HNSW backend (`memory/hnsw.rs`) is opt-in per index with
+  `OPTIONS {indexConfig: {`vector.indexProvider`: 'hnsw'}}`.
 - **Clone compatibility APIs** — bulk read helpers allocate owned records even
   though executor hot paths avoid many clones.
 - **Vectors cannot be stored inside list properties** — a vector can be a direct
@@ -262,7 +284,7 @@ Snapshots are encoded by the `lora-snapshot` columnar codec. The current file
 magic is `LORACOL1`; the envelope contains an explicit binary manifest, a
 BLAKE3 checksum, and an optional compressed/encrypted body. `lora-database` writes snapshots via
 an atomic `<path>.tmp` + rename protocol and publishes loaded snapshots by
-swapping the database's `ArcSwap` store pointer.
+replacing the `Arc` in the database's `RwLock<Arc<S>>` store holder.
 
 The WAL is built on `MutationEvent`. When WAL is enabled, `InMemoryGraph` has a
 `MutationRecorder`; writes are buffered into committed batches and replayed on
@@ -270,7 +292,8 @@ recovery. Named databases use the same WAL events with a `.loradb` container
 mirror.
 
 See [Snapshots](../operations/snapshots.md) and [WAL](../operations/wal.md) for
-operator-facing details.
+details, and the website's [WAL and Checkpoints](../../apps/loradb.com/docs/wal.md)
+for operating it.
 
 ## Next steps
 

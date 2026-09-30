@@ -23,13 +23,14 @@ cargo build
 cargo build --release
 ```
 
-The release build uses aggressive optimizations configured in `.cargo/config.toml`:
-- `rustflags = ["-C", "target-cpu=native"]` -- optimize for the build machine's CPU
+The release build uses aggressive optimizations configured in `.cargo/config.toml` (`[profile.release]`):
 - `lto = "fat"` -- full link-time optimization
 - `codegen-units = 1` -- single codegen unit for maximum optimization
 - `panic = "abort"` -- no unwinding overhead
 
-**Note**: The `target-cpu=native` flag means release binaries are not portable to machines with different CPU feature sets.
+There is no `target-cpu=native` flag, so release binaries run on any machine
+of the target architecture. The only `rustflags` in that file raise the wasm32
+memory ceiling to 4 GiB for `wasm32-unknown-unknown` builds.
 
 ### Binary location
 
@@ -79,7 +80,7 @@ Then snapshot on demand:
 
 ```bash
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
-# => {"formatVersion":1,"nodeCount":1024,"relationshipCount":4096,"walLsn":null}
+# => {"formatVersion":2,"nodeCount":1024,"relationshipCount":4096,"walLsn":null}
 ```
 
 `--restore-from` is independent of `--snapshot-path`. You can restore from a read-only seed (`/var/lib/lora/seed.bin`) and snapshot to a writable path (`/var/lib/lora/runtime.bin`). See [Snapshots](snapshots.md) for the wire format and atomic-rename protocol.
@@ -87,7 +88,10 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
 ### WAL-backed recovery
 
 `--wal-dir <DIR>` enables the write-ahead log and mounts WAL admin routes.
-`--wal-sync-mode` accepts `group-sync`; the server's fsync interval is 50 ms.
+`--wal-sync-mode` accepts only `group-sync` (the default); the server's fsync
+interval is 50 ms. A second process pointed at the same directory exits at
+startup with "database directory is locked by another process or live handle"
+(the WAL holds `<dir>/.lora-wal.lock`; embedded hosts see it as `LORA_LOCKED`).
 
 ```bash
 ./target/release/lora-server \
@@ -166,13 +170,13 @@ The server uses the `tracing` crate for structured logging. Trace-level logs are
 | Rate limiting | None |
 | Metrics | None (tracing instrumented but no subscriber) |
 | Health check | `GET /health` |
-| Graceful shutdown | Tokio default (signal handling) |
+| Graceful shutdown | None: no SIGTERM/SIGINT handling; `axum::serve` runs until the process is killed |
 
 ## Known operational risks
 
 1. **Memory growth** -- no eviction policy; the graph grows without bound
 2. **Write publication contention** -- write commits and explicit read-write transactions serialize; large writes, restores, and checkpoints can still affect latency
-3. **Durability depends on configuration** -- without `--wal-dir`, only snapshots survive crashes; with group/none sync modes, the crash window matches the chosen fsync policy. See [WAL](wal.md)
+3. **Durability depends on configuration** -- without `--wal-dir`, only snapshots survive crashes; with `group-sync` (the only mode), up to ~50 ms of acknowledged writes can be lost on a power failure or kernel crash. See [WAL](wal.md)
 4. **No auth** -- anyone who can reach the server's bind address (default `127.0.0.1:4747`) can execute arbitrary queries including `DETACH DELETE`. Bind to `0.0.0.0` only in trusted networks.
 5. **Admin surface has no auth** -- when `--snapshot-path` or `--wal-dir` is set, the matching `POST /admin/*` routes are reachable by anyone who can hit the bind address. Treat them as privileged. See [Security → Admin surface](security.md#admin-surface).
 6. **Panic = abort** -- in release mode, any panic terminates the process immediately with no recovery

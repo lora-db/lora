@@ -23,47 +23,8 @@
 | Inline `WHERE` inside variable-length relationship | Not in grammar | N/A | Low — parse error |
 | Type mismatch detection between comparable types | Accepted | Compared without error; `<`, `>`, `<=`, `>=` give `null`, as in Cypher | Low — 1 ignored test |
 | Parameter as a label or relationship type | N/A | Not implemented | Low — not standard Cypher |
-| Vector ANN execution | N/A | `CREATE VECTOR INDEX` and `db.index.vector.*` procedures are queryable, but they use flat scans over the indexed scope | **Medium** — fine for demos and small corpora; dedicated ANN execution is still needed for production-scale semantic retrieval |
+| Vector ANN execution is opt-in | N/A | Vector indexes use exact flat scans over the indexed scope by default; an HNSW index is built with ``OPTIONS {indexConfig: {`vector.indexProvider`: 'hnsw'}}`` (`lora-store/src/memory/hnsw.rs`, `tests/vector_index.rs`) | Low — flat is exact and fine for small corpora; choose HNSW for production-scale semantic retrieval |
 | List-of-`VECTOR` as a property | Parsed | Rejected at write time (`PropertyConversionError::NestedVectorInList`) | Low — loud error; shape decision to keep future indexing viable |
-
-### Implemented since initial audit
-
-The following features were listed as gaps in earlier revisions of this document but are now implemented and verified by tests:
-
-| Feature | Evidence |
-|---------|----------|
-| HTTP `POST /query` with a `params` field | `crates/lora-server/src/app/routes.rs` parses JSON params and forwards them to `QueryRunner::execute_with_params`; `crates/lora-server/tests/http.rs` covers success and invalid-param cases |
-| Temporal types (`Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`, `Duration`) | 89 passing tests in `tests/temporal.rs` |
-| Spatial types (`Point`: Cartesian 2D/3D and WGS-84 2D/3D — SRIDs 7203, 9157, 4326, 4979) | Tests in `tests/functions_extended.rs` and `tests/types_advanced.rs` |
-| `VECTOR` value type (six coordinate tags; cast-based construction; property storage on nodes and relationships; similarity / distance / norm functions; exhaustive kNN via `ORDER BY … LIMIT k`; cataloged vector index procedures with flat-scan execution) | Tests in `tests/vectors.rs` |
-| `shortestPath()` / `allShortestPaths()` | Tests in `tests/paths.rs` |
-| Advanced aggregates: `stdev`, `stdevp`, `percentileCont`, `percentileDisc` | Tests in `tests/aggregation.rs` |
-| Trigonometry: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians` | Tests in `tests/functions_extended.rs` |
-| `UNION` / `UNION ALL` | 59 passing tests in `tests/union.rs` |
-| Variable-length paths (`*`, `*1..3`, `*0..1`, …) | Tests in `tests/paths.rs` |
-| `EXISTS { pattern }` subquery | Tests in `tests/where_clause.rs` and `tests/expressions.rs` |
-| Pattern comprehension | Tests in `tests/expressions.rs` |
-| Map projection | Tests in `tests/projection.rs` |
-| Parameter binding (`$name`, `$1`) via the Rust API | Tests in `tests/parameters.rs` |
-| Index and constraint DDL (`CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE LOOKUP INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`, `CREATE CONSTRAINT`, `DROP`, `SHOW`) | Tests in `tests/schema.rs`, vector/full-text index tests, and constraint tests |
-| Unknown labels, relationship types and property keys are not errors (match nothing / read `null`), independent of the stored data | `tests/unknown_names.rs` |
-| `ORDER BY` on aliases and aggregates; `SKIP` / `LIMIT` after aggregation and `DISTINCT`. Previously the sort and limit ran before the projection, silently returning unsorted rows or counts over a truncated input | `tests/order_limit_semantics.rs` |
-| `CALL db.index.* (...) YIELD ... [WHERE ...]` as a composable clause, and fully hydrated nodes from standalone calls | `tests/procedure_yield.rs` |
-| Full-text ASCII folding and `term*` prefix queries | `tests/procedure_yield.rs` |
-| `COUNT { pattern }`, `WHERE n:Label` label predicates, standard Cypher function names (`split`, `trim`, `replace`, `point.distance`, math and path names) | `tests/cypher_compat.rs` |
-| Schema DDL inside transactions (atomic with data, durable through the WAL) | `tests/schema_in_transaction.rs` |
-| Write statements without `RETURN` return no rows | `tests/write_results.rs` |
-| Query deadlines and cancellation reach every execution path, including streaming writes; a bounded write that times out rolls back | `tests/timeouts.rs` |
-| RANGE indexes hold temporal values, so a range predicate on a `DATETIME` property is index-backed and `WHERE n.createdAt > $t ORDER BY n.createdAt DESC LIMIT k` streams from the index. Previously temporal values were left out of the index while range predicates were still planned through it, returning no rows | `tests/temporal_range_index.rs` |
-| Writes inside `CALL { ... }` run on the mutable executor, per outer row, with unit subqueries keeping the outer rows. Previously every write in a subquery body failed with `LORA_READ_ONLY` although `explain()` reported the query as mutating | `tests/call_subquery_writes.rs` |
-| `null` in a property map is not stored and `SET` with `null` removes the property; existence constraints on entities a statement creates are checked when the statement finishes, so `CREATE (n:User) SET n.name = $name` passes | `tests/null_properties_and_deferred_existence.rs` |
-| A read with an early `LIMIT` stops scanning once the limit is met, also under a deadline and inside an explicit transaction. Previously both ran the full executor and materialized every row first | `tests/early_limit.rs` |
-| `<`, `<=`, `>`, `>=` on lists compare element by element, and a null or mismatched operand gives `null`. Previously both gave `false`: `[f.name, f.key] > $after` matched nothing, `NOT (1 < 'a')` was true, and integers above 2^53 compared through `f64` | `tests/comparison_ordering.rs` |
-| `first()` as the standard name for `head()` | `tests/expressions.rs` |
-| `date()`, `datetime()`, `localdatetime()`, `time()`, `localtime()` and `duration()` build the type they are named for, from nothing (now), a string, a map or another temporal. Previously all six aliased one function that ignored the name: `date()` and `date(datetime())` returned a `DATETIME`, a map argument returned the current instant, and `time('12:00Z')` was `null`. With `date()` a `DATETIME`, `WHERE f.startsOn >= date()` compared a `DATE` with a `DATETIME`, which was `null`, and dropped every row | `tests/temporal_constructors.rs` |
-| `split(s, '')` splits into characters. Previously it kept an empty string at each end: `['', 'p', '1', '2', '']` | `tests/functions_extended.rs` |
-| A `WITH ... WHERE` predicate that reads a projected variable only inside a pattern (`size([(a)<-[:T]-() \| 1]) = 0`, `EXISTS { (a)--() }`) stays above the projection. Previously the optimizer did not see variables inside patterns, pushed the predicate below the `WITH` and ran it with the variable unbound: no rows, at the cost of a scan per row | `tests/with_predicates.rs` |
-| Node binding: exact 64-bit integers (`bigint`), per-call `timeoutMs` / `AbortSignal` and a database-wide `queryTimeoutMs`, interactive transactions (`db.begin()`), typed `LORA_LOCKED` for a directory held by another process, `{latitude, longitude}` point params, musl prebuilds | `crates/bindings/lora-node/test/{integers,timeouts,interactive,locking}.test.ts` |
 
 ---
 
@@ -79,7 +40,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Gap | Classification | Risk |
 |-----|---------------|------|
 | WAL/operator controls are not uniform across surfaces | Observed | **Low–Medium** — Rust and `lora-server` expose explicit checkpoint/status/truncate controls. Node, Python, Go, and Ruby can open filesystem-backed WAL databases; WASM remains snapshot-only. See [WAL](../operations/wal.md). |
-| Constraint/index coverage is scoped | Observed | **Medium** — uniqueness, existence, type, key, RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT surfaces exist; composite multi-property seeks and ANN vector execution are still absent |
+| Constraint/index coverage is scoped | Observed | **Medium** — uniqueness, existence, type, key, RANGE, TEXT, POINT, LOOKUP, VECTOR, and FULLTEXT surfaces exist; composite multi-property seeks are still absent, and ANN vector execution (HNSW) is opt-in per index |
 | Transaction isolation is conservative | Observed | **Medium** — auto-commit writes publish optimistically under a writer mutex; explicit read-write transactions (including interactive `db.begin()` transactions in the Node binding) hold the writer lock for their full lifetime, so other writers wait; read-only transactions pin snapshots |
 | A second in-process open of a database directory shares the open engine | Observed | Low — both handles talk to one engine and one WAL writer, never two; a second *process* gets `LORA_LOCKED` |
 | Node / relationship IDs are never reused | Observed | Low — `u64` counter will not overflow in practice |
@@ -92,7 +53,6 @@ The following features were listed as gaps in earlier revisions of this document
 | Issue | Classification | Risk |
 |-------|---------------|------|
 | `toLower` / `toUpper` are not locale-aware | Observed | Low — Unicode case mapping is supported, locale-specific folding is host-side |
-| Integer overflow not explicitly handled | Inferred | Low — Rust panics in debug, wraps in release |
 | `round()` returns an integer for integral results and rounds half away from zero | Observed | Low — Neo4j returns a float |
 | Float comparison uses IEEE 754 | Observed | Low — `NaN != NaN` is standard |
 | lora-graphql: a `@unique` (non-key) value held by a node the caller cannot read is reported as taken on create and update | Observed | Medium for fields whose use must stay private (an email). Keys are covered: a create under a hidden key answers as under a free one (G-20, `docs/design/graphql-threat-model.md`). Key such a field, or leave `@unique` off it |
@@ -175,22 +135,21 @@ the load is still somewhat faster because the index is built in one pass.
 
 ### Medium term (robustness)
 
-5. Expand timeout coverage to HTTP and the Python, Go, Ruby and WASM bindings (Rust and Node are covered)
-6. Add authentication middleware to the HTTP server
-7. Add ANN execution for vector indexes and broader composite-index optimizer rewrites
-8. ~~Introduce borrowing iterators on `GraphStorage`~~ — partially addressed: `with_node` / `with_relationship` closures now cover the executor's hot paths without requiring `&NodeRecord` access from every backend. Still open: streaming iterators for bulk scans
+4. Expand timeout coverage to HTTP and the Python, Go, Ruby and WASM bindings (Rust and Node are covered)
+5. Add authentication middleware to the HTTP server
+6. Broader composite-index optimizer rewrites (ANN vector execution ships as the opt-in HNSW provider)
+7. ~~Introduce borrowing iterators on `GraphStorage`~~ — partially addressed: `with_node` / `with_relationship` closures now cover the executor's hot paths without requiring `&NodeRecord` access from every backend. Still open: streaming iterators for bulk scans
 
 ### Long term (capability)
 
-10. ~~Persistence (WAL and/or snapshots)~~ — partially addressed:
-    snapshots ship across surfaces, WAL-backed opens ship on
-    filesystem-backed surfaces, and Rust / `lora-server` expose explicit
-    checkpoint/admin controls. Remaining work is operational polish,
-    scheduled checkpoints, and richer multi-process/process-manager guidance.
-11. Richer optimizer: join ordering, multi-key sorted-index ORDER BY, broader cardinality estimation
-12. More `CALL` procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`); the index queries already compose with `YIELD`
-13. `FOREACH`
-14. Quantified path patterns
+8. ~~Persistence (WAL and/or snapshots)~~ — partially addressed:
+   snapshots ship across surfaces, WAL-backed opens ship on
+   filesystem-backed surfaces, and Rust / `lora-server` expose explicit
+   checkpoint/admin controls. Remaining work is operational polish,
+   scheduled checkpoints, and richer multi-process/process-manager guidance.
+9. Richer optimizer: join ordering, multi-key sorted-index ORDER BY, broader cardinality estimation
+10. More `CALL` procedures (starting with `db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()`); the index queries already compose with `YIELD`
+11. Quantified path patterns
 
 ## Next steps
 

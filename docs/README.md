@@ -8,6 +8,10 @@ Technical documentation for **contributors** to the Lora (LoraDB) engine and its
 
 ---
 
+## Open work
+
+- [TODO](TODO.md) — the single open-work list. When an item ships, delete its line; other docs describe how things are, not what is left to do.
+
 ## Architecture
 
 - [System Context](architecture/system-context.md) — what the system is, what it is not, external boundaries
@@ -41,8 +45,11 @@ For public docs writing conventions, including `QueryCodeBlock`,
 ## Design
 
 - [Change Management](design/change-management.md) — how to evolve the system safely
-- [Concurrent Write Implementation Plan](design/concurrency-implementation-plan.md) — current concurrency state, phased implementation plan, and local performance guard usage
+- [Concurrent Write Implementation Plan](design/concurrency-implementation-plan.md) — current concurrency state and the phased implementation plan (guard usage lives in Perf Smoke)
 - [Known Risks](design/known-risks.md) — engineering risks and recommended priorities
+- [Error Style](design/error-style.md) — the shape and tone of every error message in the workspace
+- [GraphQL Threat Model](design/graphql-threat-model.md) — what `packages/lora-graphql` defends against, what it trusts, and where each check runs
+- [GraphQL Load Audit](design/graphql-load-audit.md) — how `lora-graphql` behaves under concurrent load, and what becomes the bottleneck
 
 ## Decisions
 
@@ -56,7 +63,7 @@ Architectural Decision Records for non-trivial design choices.
 ## Performance
 
 - [Benchmarks](performance/benchmarks.md) — performance test results and measurements
-- [Concurrency Performance Guard](performance/concurrency-guard.md) — local before/after benchmark gate for concurrency work
+- [Perf Smoke](performance/perf-smoke.md) — CI canary for large regressions, plus the local before/after concurrency guard
 - [Notes](performance/notes.md) — optimisation notes and bottlenecks
 
 ## Testing
@@ -68,7 +75,12 @@ Architectural Decision Records for non-trivial design choices.
 - [Deployment](operations/deployment.md) — how to build, run, and deploy
 - [Security](operations/security.md) — security posture and data-handling risks
 - [Snapshots](operations/snapshots.md) — durable save/load, admin endpoints, atomic rename, checkpoint fences
-- [WAL](operations/wal.md) — write-ahead log, recovery, sync modes, and checkpoints
+- [WAL](operations/wal.md) — write-ahead log internals: segments, records, recovery, directory lock, truncation (operator guide: [`apps/loradb.com/docs/wal.md`](../apps/loradb.com/docs/wal.md))
+
+## License
+
+- [License Strategy](license/strategy.md) — why the core is BSL 1.1 and what stays open
+- [License Usage](license/usage.md) — what the BSL allows in practice
 
 ## Reference
 
@@ -89,6 +101,7 @@ Architectural Decision Records for non-trivial design choices.
 | A breaking change plan | `docs/design/change-management.md` |
 | Benchmark numbers | `docs/performance/benchmarks.md` |
 | An engineering risk / open question | `docs/design/known-risks.md` |
+| Open work, a planned feature | `docs/TODO.md` |
 | How tests are organised | `docs/testing/strategy.md` |
 
 Keep user-facing prose out of this tree. If you find yourself explaining _what

@@ -15,8 +15,8 @@ Every Cypher feature touches up to six crates in a fixed order:
 6. lora-database    Add integration tests under tests/
 ```
 
-Not every feature requires changes in every crate. A new function only needs
-executor changes (plus tests). A new row-producing clause usually needs all
+Not every feature requires changes in every crate. A new function needs a
+`lora-builtins-meta` entry plus executor changes (and tests). A new row-producing clause usually needs all
 six. Schema commands are the main exception: `CREATE INDEX`, `DROP INDEX`, and
 `SHOW INDEXES` parse into `Statement::Schema` and are routed by
 `lora-database/src/database/schema.rs` directly to the store catalog instead of
@@ -25,7 +25,11 @@ and rarely needs updating for language features.
 
 ## Walkthrough: Adding a new clause
 
-This example walks through what it would take to add a hypothetical `FOREACH` clause.
+This walks through how `FOREACH` was added, using the real code, as a template
+for the next clause. (For a feature that is not implemented yet, see the
+"Not implemented" rows of the
+[Cypher support matrix](../reference/cypher-support-matrix.md), for example
+`COLLECT { }` subqueries.)
 
 ### Step 1: AST definition (`lora-ast/src/ast.rs`)
 
@@ -33,10 +37,10 @@ Add a new struct:
 
 ```rust
 #[derive(Debug, Clone)]
-pub struct ForEach {
+pub struct Foreach {
     pub variable: Variable,
     pub list: Expr,
-    pub updating_clauses: Vec<UpdatingClause>,
+    pub body: Vec<UpdatingClause>,
     pub span: Span,
 }
 ```
@@ -46,7 +50,7 @@ Add it to the `UpdatingClause` enum:
 ```rust
 pub enum UpdatingClause {
     // ... existing variants
-    ForEach(ForEach),
+    Foreach(Foreach),
 }
 ```
 
@@ -55,24 +59,33 @@ pub enum UpdatingClause {
 Add the PEG rule:
 
 ```pest
-foreach_clause = { FOREACH ~ lparen ~ variable ~ IN ~ expression ~ pipe ~ updating_clause+ ~ rparen }
-```
-
-Add `FOREACH` to the reserved words and keyword list.
-
-Add `foreach_clause` to the `updating_clause` alternatives.
-
-### Step 3: Parser lowering (`lora-parser/src/parser.rs`)
-
-Add a `lower_foreach` function that converts a pest pair into the AST struct:
-
-```rust
-fn lower_foreach(pair: Pair<Rule>) -> Result<ForEach, ParseError> {
-    // Extract children, call lower_expression, lower_updating_clause, etc.
+foreach_clause = {
+    FOREACH ~ lparen ~ variable ~ IN ~ expression ~ pipe
+    ~ updating_clause+
+    ~ rparen
 }
 ```
 
-Wire it into `lower_updating_clause` match arm.
+Add a `FOREACH = @{ ^"FOREACH" ~ !ident_part }` keyword rule and add `FOREACH`
+to the reserved-word list.
+
+Add `foreach_clause` to the `updating_clause` alternatives.
+
+### Step 3: Parser lowering (`lora-parser/src/parser/`)
+
+Lowering is split by area under `src/parser/`. `lower_foreach` lives in
+`clauses.rs` and converts a pest pair into the AST struct:
+
+```rust
+pub(super) fn lower_foreach(pair: Pair<Rule>) -> Result<Foreach, ParseError> {
+    // Walk pair.into_inner(): Rule::variable -> lower_variable,
+    // Rule::expression -> lower_expression,
+    // Rule::updating_clause -> super::query::lower_updating_clause
+}
+```
+
+It is wired into the `Rule::foreach_clause` arm of `lower_updating_clause` in
+`query.rs`.
 
 ### Step 4: Resolved types (`lora-analyzer/src/resolved.rs`)
 
@@ -80,60 +93,72 @@ Add the resolved representation:
 
 ```rust
 #[derive(Debug, Clone)]
-pub struct ResolvedForEach {
+pub struct ResolvedForeach {
     pub variable: VarId,
     pub list: ResolvedExpr,
-    pub clauses: Vec<ResolvedClause>,
+    pub body: Vec<ResolvedClause>,
 }
 ```
 
-Add `ForEach(ResolvedForEach)` to `ResolvedClause`.
+Add `Foreach(ResolvedForeach)` to `ResolvedClause`.
 
-### Step 5: Analyzer (`lora-analyzer/src/analyzer.rs`)
+### Step 5: Analyzer (`lora-analyzer/src/analyzer/clauses.rs`)
 
-Add analysis logic:
+Add analysis logic. The loop variable must not leak into later clauses, so the
+outer scope is snapshotted and restored:
 
 ```rust
-fn analyze_foreach(&mut self, f: &ForEach) -> Result<ResolvedForEach, SemanticError> {
-    let list = self.analyze_expr(&f.list)?;
+pub(super) fn analyze_foreach(&mut self, f: &Foreach) -> Result<ResolvedForeach, SemanticError> {
+    let list = self.analyze_expr(&f.list)?;          // outer scope
+    let outer = self.visible_bindings();
     let variable = self.declare_fresh_variable(&f.variable.name)?;
-    let clauses = f.updating_clauses.iter()
-        .map(|c| self.analyze_updating_clause(c))
+    let body = f.body.iter()
+        .map(|c| self.analyze_foreach_body_clause(c)) // updating clauses only
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(ResolvedForEach { variable, list, clauses })
+    self.replace_scope(outer);
+    Ok(ResolvedForeach { variable, list, body })
 }
 ```
 
-Wire into `analyze_updating_clause`.
+Wire it into the updating-clause match.
 
 ### Step 6: Plan nodes (`lora-compiler/src/logical.rs` + `physical.rs`)
 
-Add logical operator:
+Add the logical operator:
 
 ```rust
-pub struct ForEachOp {
+pub struct Foreach {
     pub input: PlanNodeId,
     pub variable: VarId,
     pub list: ResolvedExpr,
-    pub body: Vec<PlanNodeId>,
+    pub body: Vec<ResolvedClause>,
 }
 ```
 
-Add the physical equivalent and lowering in `optimizer.rs`.
+Add the physical equivalent (`ForeachExec`) and its arm in
+`lower_logical_op` in `optimizer.rs`. If the operator writes, add it to
+`plan_is_mutating` in `lora-executor/src/pull/shape.rs`, or the plan is
+classified read-only and runs on the read-only executor.
 
 ### Step 7: Planner (`lora-compiler/src/planner.rs`)
 
-Add `plan_foreach` method to convert the resolved clause into plan nodes.
+Add a `plan_foreach` method to convert the resolved clause into a plan node.
 
-### Step 8: Executor (`lora-executor/src/executor.rs`)
+### Step 8: Executor (`lora-executor/src/executor/` and `src/pull/`)
 
-Add execution logic in `MutableExecutor`:
+Add execution logic in `MutableExecutor` (`executor/mutable.rs`):
 
 ```rust
-fn exec_foreach(&mut self, plan: &PhysicalPlan, op: &ForEachExec) -> ExecResult<Vec<Row>> {
-    // Evaluate list, iterate, execute body for each element
+fn exec_foreach(&mut self, plan: &PhysicalPlan, op: &ForeachExec) -> ExecResult<Vec<Row>> {
+    // Evaluate list per input row, bind the variable, apply each body clause,
+    // pass the input row through unchanged
 }
 ```
+
+Row-producing read operators should also get a streaming `RowSource` in
+`src/pull/` so `stream()` and early-`LIMIT` reads stay lazy. An operator with
+no pull source (as `Foreach` has none) runs through the buffered executor as a
+fallback.
 
 ### Step 8a: Mutation event (write-only features)
 
@@ -151,19 +176,24 @@ Add integration tests in `crates/lora-database/tests/` (one file per feature are
 
 ## Walkthrough: Adding a new function
 
-Functions are simpler because they only require executor changes:
+Functions are simpler. Builtins are namespaced (`<namespace>.<operation>`,
+e.g. `value.size`); bare historical names such as `size()` are aliases.
 
-1. Add handling in `lora-executor/src/eval.rs` in the `eval_function` match:
+1. Declare it in `crates/lora-builtins-meta/src/lib.rs`: add a `spec(...)`
+   entry (name, min/max arity) to `BUILTIN_SPECS`, and an `alias(...)` to
+   `BUILTIN_ALIASES` if a bare name should resolve to it. The analyzer checks
+   names and arities against this table, so without the entry the function is
+   rejected as unknown.
+2. Add the dispatch arm in the namespace module under
+   `lora-executor/src/eval/builtins/` (for example `value.rs`):
 
 ```rust
-"size" => match args.first() {
-    Some(LoraValue::List(l)) => LoraValue::Int(l.len() as i64),
-    Some(LoraValue::String(s)) => LoraValue::Int(s.len() as i64),
-    _ => LoraValue::Null,
-},
+"size" => size(args),
 ```
 
-The parser already handles `function_name(args...)` syntax generically.
+The `drift_tests` in `eval/builtins/mod.rs` fail if a `BUILTIN_SPECS` entry has
+no dispatch arm. The parser already handles `function_name(args...)` syntax
+generically.
 
 ## Walkthrough: Adding a new expression operator
 
@@ -171,7 +201,7 @@ The parser already handles `function_name(args...)` syntax generically.
 2. Add the grammar rule in `cypher.pest`
 3. Add parser lowering
 4. The analyzer passes through operators without transformation
-5. Add evaluation in `lora-executor/src/eval.rs` (`eval_binary` or `eval_unary`)
+5. Add evaluation in `lora-executor/src/eval/` (`binops.rs` for binary operators, `expr.rs` for the rest)
 
 ## Naming conventions (observed)
 
@@ -208,6 +238,12 @@ The parser uses several helper patterns:
 
 ### Read vs write context in analyzer
 
-The `PatternContext` enum (`Read` / `Write`) controls validation behavior:
-- In `Read` context: labels and types must exist in the graph
-- In `Write` context: any label or type name is accepted
+The `PatternContext` enum (`Read` / `OptionalRead` / `Write`) records where a
+pattern appears. In read contexts it still drives the check that one node
+variable is not given conflicting label sets (`analyzer/patterns.rs`). It no
+longer gates names: `validate_label_name` and
+`validate_relationship_type_name` are no-ops. Since 2026-09-29 (`d004ba4e`)
+the analyzer does not read the graph, so any label, relationship type, or
+property key is accepted in every context. An unknown label or type matches nothing and
+an unknown property reads `null`. Do not add checks against the stored catalog:
+a query's validity must not depend on the data.

@@ -5,13 +5,15 @@
 An in-memory property graph database with a Cypher-like query language (a broad, tested subset — see the [Cypher support matrix](../reference/cypher-support-matrix.md) for the exact list of supported clauses, functions, and data types), written in Rust. It provides:
 
 - A PEG-based Cypher parser (pest) covering the supported subset
-- Semantic analysis with variable scoping and schema validation
+- Semantic analysis with variable scoping and function validation (it does not read the graph, so unknown labels, types and property keys are not errors)
 - A query compiler with logical and physical plan stages
-- An optimizer framework with filter push-down, top-k sort annotation, and
-  catalog-backed index selection
-- A row-at-a-time physical plan executor
-- An in-memory graph store with secondary indexes
+- An optimizer with filter push-down, cost-scored index selection for node and
+  relationship scans, index-ordered sorts, and top-k sort annotation
+- A physical plan executor with a pull-based `RowSource` pipeline (streams, early-`LIMIT` reads) and a buffered fallback
+- An in-memory graph store with secondary indexes (property, range, text, point, fulltext, and flat or HNSW vector)
+- Row import/export as JSONL, JSON, or CSV (`lora-io`)
 - Multiple ways to reach the engine: direct embedding from Rust, an HTTP/JSON server, and language bindings for Node, WebAssembly, Python, Go (via a shared C ABI), and Ruby
+- TypeScript packages on top of the Node/WASM bindings: GraphQL (`@loradb/lora-graphql`), a Cypher editor (`@loradb/lora-query`), and a graph canvas (`@loradb/lora-graph-canvas`)
 
 ## What Lora is not
 
@@ -32,10 +34,11 @@ C4Context
     Person(dev, "Developer", "Writes Cypher-like queries")
 
     System_Boundary(lora_ws, "Lora workspace") {
-      System(lora_core, "Lora core engine", "Parser, analyzer, compiler, executor, in-memory store (lora-database and its pipeline crates)")
+      System(lora_core, "Lora core engine", "Parser, analyzer, compiler, executor, in-memory store, lora-builtins-meta, lora-io (lora-database and its pipeline crates)")
       System(lora_server, "lora-server", "Axum-based HTTP/JSON transport")
       System(lora_ffi, "lora-ffi", "C ABI over lora-database (consumed by lora-go)")
       System(lora_bindings, "Language bindings", "lora-node, lora-wasm, lora-python, lora-go, lora-ruby")
+      System(lora_packages, "TypeScript packages", "lora-graphql, lora-query, lora-graph-canvas")
     }
 
     Rel(dev, lora_core, "cargo dep (embedded)", "Rust API")
@@ -44,6 +47,9 @@ C4Context
     Rel(lora_server, lora_core, "QueryRunner::execute")
     Rel(lora_ffi, lora_core, "wraps Database")
     Rel(lora_bindings, lora_core, "wrap Database (directly or via lora-ffi)")
+    Rel(dev, lora_packages, "npm install", "TypeScript")
+    Rel(lora_packages, lora_bindings, "lora-graphql runs on lora-node")
+    Rel(lora_packages, lora_core, "lora-query compiles the parser crates to its own WASM module")
 ```
 
 ## External dependencies
@@ -78,8 +84,9 @@ The engine is reached through **multiple in-process surfaces**, all of which ult
 - **HTTP API** (`lora-server`) — `POST /query` accepts `{"query": "...", "params": {...}, "format": "..."}` and returns JSON. `params` and `format` are optional.
 - **C ABI** (`lora-ffi`) — a `#[no_mangle]` C-compatible surface around `Database`, used by the Go binding and available to any third-party cgo-style consumer.
 - **Language bindings** — `lora-node` (napi-rs), `lora-wasm` (wasm-bindgen / wasm-pack), `lora-python` (PyO3), `lora-go` (cgo over `lora-ffi`), `lora-ruby` (Magnus / rb-sys).
+- **TypeScript packages** — `packages/lora-graphql` (schema-first GraphQL over `lora-node`), `packages/lora-query` (React CodeMirror editor; ships its own WASM build of the parser crates for validation and formatting), `packages/lora-graph-canvas` (React 2D/3D graph canvas).
 
-All of these live in this workspace; see `crates/lora-server`, `crates/bindings/lora-ffi`, `crates/bindings/lora-node`, `crates/bindings/lora-wasm`, `crates/bindings/lora-python`, `crates/bindings/lora-go`, and `crates/bindings/lora-ruby`. There are no message queues, database connections, file watchers, or scheduled jobs. The graph exists entirely within the host process address space.
+All of these live in this workspace; see `crates/lora-server`, `crates/bindings/lora-ffi`, `crates/bindings/lora-node`, `crates/bindings/lora-wasm`, `crates/bindings/lora-python`, `crates/bindings/lora-go`, `crates/bindings/lora-ruby`, and `packages/`. There are no message queues, database connections, file watchers, or scheduled jobs. The graph exists entirely within the host process address space.
 
 ## Next steps
 

@@ -1,4 +1,4 @@
-# Write-ahead log
+# Write-ahead log: internals
 
 LoraDB's WAL (write-ahead log) gives the in-memory engine **continuous
 durability**: every mutating query is appended to the log before the
@@ -8,9 +8,11 @@ committed writes on the next boot. The WAL is fully optional — without
 `--wal-dir` the server still runs as a pure in-memory database with
 snapshot-only durability.
 
-This document is the operator-facing reference. For the design rationale
-and the seams under the hood, read
-[../decisions/0004-wal.md](../decisions/0004-wal.md).
+This page covers how the WAL works inside `lora-wal` and `lora-database`.
+**Operating it** (quick start per binding, sync mode, admin routes, what is in
+the directory, troubleshooting) is documented on the website:
+[WAL and Checkpoints](../../apps/loradb.com/docs/wal.md). For the design
+rationale, read [../decisions/0004-wal.md](../decisions/0004-wal.md).
 
 ## Scope and surface
 
@@ -31,35 +33,17 @@ The WAL is shipped today through:
   `/admin/wal/status`, `/admin/wal/truncate`, and `/admin/checkpoint`.
 
 The WASM binding remains snapshot-only because it has no filesystem path
-surface. Rust and `lora-server` expose the full operator surface, including
-explicit checkpoints and WAL admin status/truncate.
+surface.
 
-## Quick start
+## Sync mode
 
-```bash
-# Fresh boot with a WAL.
-lora-server --wal-dir /var/lib/lora/wal
+`SyncMode` (`crates/lora-wal/src/config.rs`) has one variant,
+`GroupSync { interval_ms }`, defaulting to 50 ms. Commit bytes are written to
+the OS before the call returns; `fsync` runs on the background flusher
+(`src/wal/group_flusher.rs`), on explicit sync, on checkpoint, and on clean
+drop. `lora-server` only accepts `group-sync` (`config/env.rs`).
 
-# Crash recovery on next start: same flag, same dir.
-lora-server --wal-dir /var/lib/lora/wal
-
-# WAL + snapshot hybrid: load snapshot, replay WAL above its fence,
-# and use the snapshot path as the default checkpoint target.
-lora-server --wal-dir /var/lib/lora/wal \
-            --snapshot-path /var/lib/lora/graph.bin \
-            --restore-from /var/lib/lora/graph.bin
-```
-
-## Sync modes
-
-`--wal-sync-mode` controls when the WAL `fsync`s. `group-sync` is the
-only supported mode.
-
-| Mode | `fsync` cadence | Crash window | When to use |
-|---|---|---|---|
-| `group-sync` (default) | On a 50 ms timer, explicit sync, checkpoint, or clean drop | Up to the configured interval since the last fsync | Write-heavy workloads with an explicit sync option when needed |
-
-### GroupSync Honesty
+### GroupSync failure latching
 
 If the background flusher's `fsync` fails (full disk, hardware error,
 revoked permissions), the failure is **latched** onto the WAL itself.
@@ -70,11 +54,19 @@ From that moment:
 - The recorder's `poisoned()` flag becomes `Some(...)`, so the next
   query through `Database::execute_with_params` fails with a clear
   durability error.
-- `/admin/wal/status` reports the cause in `bgFailure`.
+- `WalAdmin::wal_status` (and `/admin/wal/status`) reports the cause in
+  `bgFailure`.
 
-The expected operator response is: stop accepting writes, restart from
-the last consistent snapshot + WAL, and remediate the underlying disk
-problem.
+## Directory lock
+
+`Wal::open` takes a best-effort advisory lock on `<dir>/.lora-wal.lock`
+(`crates/lora-wal/src/lock.rs`, `flock` on Unix) and holds it for the handle's
+lifetime. A second live open of the same directory, from another process or
+the same one, fails with `WalError::AlreadyOpen`, which `lora-database` maps to
+`LoraErrorCode::Locked` (`LORA_LOCKED`). Acquisition retries for up to 100 ms
+to absorb the race between a clean drop releasing the lock and an immediate
+reopen. `.loradb` archives take their own lock
+(`crates/lora-database/src/wal/archive/lock.rs`).
 
 ## File layout
 
@@ -91,6 +83,10 @@ Each segment has a self-describing header (magic, format version, base
 LSN, sealed flag, header CRC) and a sequence of length-prefixed,
 CRC-checked records. The active segment is always the file with the
 highest numeric id — there is no separate `CURRENT` pointer file.
+
+Segment files are named by a zero-padded 10-digit id (`src/dir.rs`); files
+that don't match the pattern (a stray `.tmp`, `.lora-wal.lock`) are ignored
+when listing segments.
 
 Segment rotation happens before appending a new record when the active segment
 crosses `segment_target_bytes` (default 8 MiB). Transaction-style record groups
@@ -140,68 +136,19 @@ If the WAL contains a `Checkpoint` marker newer than the snapshot's
 operator probably meant to pass a more recent snapshot. Replay still
 proceeds from the snapshot's fence (conservative-correct).
 
-## Admin routes
+## Truncation
 
-The WAL admin routes mount when `--wal-dir` is set, **independent** of
-`--snapshot-path`:
-
-```http
-POST /admin/wal/status
-```
-
-Returns a JSON snapshot of WAL state:
-
-```json
-{
-  "durableLsn": 4815,
-  "nextLsn": 4820,
-  "activeSegmentId": 3,
-  "oldestSegmentId": 2,
-  "bgFailure": null
-}
-```
-
-```http
-POST /admin/wal/truncate
-Content-Type: application/json
-
-{ "fenceLsn": 4815 }
-```
-
-Drops sealed segments whose entire range is at or below `fenceLsn`. The
-active segment and the segment immediately preceding it are always
-retained. With no body, the WAL truncates up to its current
-`durableLsn`.
-
-```http
-POST /admin/checkpoint
-Content-Type: application/json
-
-{ "path": "/var/lib/lora/checkpoint.bin" }
-```
-
-Writes a snapshot stamped with the WAL's `durable_lsn`, appends a
-`Checkpoint` marker, and truncates the log up to that fence. When
-`--snapshot-path` is configured, the body's `path` is optional — the
-snapshot path is the default. When `--snapshot-path` is **not**
-configured, the body must include a `path` or the call returns 400.
-
-> ⚠️ **Security.** The admin routes share the auth (or lack thereof)
-> story of the snapshot routes — see
-> [snapshots.md](snapshots.md#the-http-admin-surface). Deploy behind
-> authenticated transport only.
-
-## Failure modes and what to do
-
-| Symptom | Cause | Operator action |
-|---|---|---|
-| Query fails with `WAL flush failed: ...` | `fsync` returned an OS error | Investigate disk, restart from last checkpoint |
-| `/admin/wal/status` shows `bgFailure: "..."` | GroupSync background flusher hit a fsync error | Same as above |
-| Boot prints "snapshot at LSN X is older than the newest checkpoint marker" | Operator passed a stale `--restore-from` | Check whether a more recent snapshot exists; replay from the older one is still safe but does extra work |
-| A `*.wal.tmp` is left in the WAL dir | Crash mid-rotation | Safe to delete — segment rotation never relies on `.tmp` files |
+`Wal::truncate_up_to(fence)` (`src/wal/wal.rs`) drops sealed segments whose
+entire LSN range is at or below the fence. The active segment is never
+deleted, and the segment immediately before it is kept so a crash before the
+next checkpoint still finds a self-describing log start. `checkpoint_to` calls
+it after writing the `Checkpoint` marker, under the writer mutex;
+`/admin/wal/truncate` calls it without taking any store lock.
 
 ## See also
 
+- [WAL and Checkpoints](../../apps/loradb.com/docs/wal.md) — operator guide:
+  quick start, sync mode, admin routes, directory contents.
 - [Snapshots](snapshots.md) — point-in-time saves and the
   `wal_lsn` checkpoint fence.
 - [0004-wal.md](../decisions/0004-wal.md) — design decision and

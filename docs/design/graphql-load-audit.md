@@ -18,13 +18,13 @@ The question: how many concurrent requests a lora-graphql server takes, how well
   - 1 s warmup and 5 s measured per step.
 - **Per step:** exact latency percentiles, the server's CPU in cores, event-loop delay and RSS. Mixed scenarios also give per-operation percentiles.
 - **Machine:** Apple M1 Max (10 cores, 32 GB), Node 24.11.
-- **Defaults** unless stated: in-memory database, `UV_THREADPOOL_SIZE` 4, the default driver ("stream").
+- **Defaults** unless stated: in-memory database, `UV_THREADPOOL_SIZE` 4, the driver as it was before the finding 2 fix ("stream").
 
 Client and server share the machine: the numbers compare configurations; they are not a capacity plan.
 
 ## Headline numbers
 
-Peak throughput, and latency at 32 in flight. "stream" is the current driver; "transaction" is the same server with reads sent through `db.transaction()` instead of `db.stream()` (finding 2).
+Peak throughput, and latency at 32 in flight. "stream" is the driver before the finding 2 fix, which sent every read through `db.stream()`; "transaction" is the same server with reads sent through `db.transaction()` instead. Finding 2 has the numbers after the fix.
 
 | scenario | stream: peak ok/s | stream: p99 at 32 | transaction: peak ok/s | transaction: p99 at 32 | cores used (stream / tx) |
 |---|--:|--:|--:|--:|--:|
@@ -50,7 +50,7 @@ Peak throughput, and latency at 32 in flight. "stream" is the current driver; "t
 | 300 | 16% errors, ramp stopped | 94 / 249 ms | 272 ms |
 | 400 | | 1,291 / 2,031 ms (saturated) | 2,032 ms |
 
-On the current driver, a mix with 30% scan-type queries saturates below 100 req/s. After that point, a cheap key lookup waits a median of 142 ms behind heavy queries. Routing reads through transactions lifts the knee to about 250 req/s.
+On the stream driver, a mix with 30% scan-type queries saturated below 100 req/s. After that point, a cheap key lookup waited a median of 142 ms behind heavy queries. Routing reads through transactions lifted the knee to about 250 req/s.
 
 ## Findings
 
@@ -91,23 +91,10 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - In open-loop mixed traffic at 200 req/s, key lookups went from p50 499 ms to 1.3 ms.
   - Interleaved on one binary, in process: key lookups run at 47.8k ops/s on v0.18.0, 44.9k all-transaction, and 49.4k with the final routing.
 - **E13 check:** on 500k nodes, every generated read shape stops at `LIMIT` on the transaction path as early as it did on a stream (about 0.3 ms each).
-
-
-- **Classification:** Observed.
-- **What happens:**
-  - The driver sends every single-statement generated read through `db.stream().toArray()` (`src/driver.ts:140`). The binding runs the whole query, and converts each cell, synchronously on the main thread: `streamNext` is a synchronous napi call, and `toArray` loops over it.
-  - A query that takes 10 ms blocks every other request for 10 ms. In the headline table:
-    - the `page` query stays at about 105 req/s from 1 to 512 in flight;
-    - the event loop is blocked up to 1.1 s at a time;
-    - at 512 connections, clients could not even connect (`ETIMEDOUT`: the server was not accepting sockets).
-  - The same query through `db.transaction()` runs on libuv workers: 443 req/s at 4 cores, with event-loop p99 at 2 ms.
-- **Cancellation:**
-  - `stream()` checks the deadline only between rows. A blocking operator (sort, aggregation, DISTINCT) runs to completion inside one `next()`, so `timeoutMs` cannot stop it.
-  - An `AbortSignal` listener cannot fire while the thread is blocked.
-- **Why stream was chosen:** the driver's comment says LoraDB 0.15 read the whole label under a deadline, so `LIMIT` on an index-ordered scan did not terminate early. The binding audit found that the current engine early-terminates LIMIT reads under a deadline through the pull collector. That needs confirming for `transaction()`.
-- **Solutions:**
-  - **Short term:** stream only reads that are bounded by construction (a lookup by `@key`, where stream is cheapest: 26k vs 23k/s). Send everything else through `transaction()`. Confirm early termination with a test that orders by an indexed field and limits on a large label.
-  - **Binding:** make `stream()` asynchronous. Open the cursor and pull rows in batches of N on a worker (an `AsyncTask` per batch), and decode on the main thread only once per batch.
+- **Before the fix:** the driver sent every single-statement generated read through `db.stream().toArray()`. `streamNext` is a synchronous napi call, so the whole query, and the conversion of each cell, ran on the main thread.
+  - A query that took 10 ms blocked every other request for 10 ms: the `page` query stayed at about 105 req/s from 1 to 512 in flight, the event loop was blocked up to 1.1 s at a time, and at 512 connections the server stopped accepting sockets (`ETIMEDOUT`).
+  - `stream()` checks the deadline only between rows, so a blocking operator (sort, aggregation, DISTINCT) inside one `next()` could not be stopped by `timeoutMs`, and an `AbortSignal` listener could not fire while the thread was blocked.
+- **Still open (binding):** `db.stream()` itself is still synchronous, for any caller that uses it on a large result. Make it asynchronous: open the cursor and pull rows in batches of N on a worker (an `AsyncTask` per batch), and decode on the main thread only once per batch.
 
 ### 3. Two throughput ceilings: one JS thread, and the libuv pool
 
@@ -182,7 +169,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - the aggregate: 713 → 113.
 - **Plans** (`db.explain`):
   - The page query is `NodeByPropertyRangeScan(capacity > $p0)` → `Sort` → `Limit 25`. The range filter matches up to 98% of the label, and all of it is sorted to return 25 rows. There is no top-k sort, and no index-ordered scan on `name` with early termination, although the planner's own estimate (6,667 rows) says the filter is not selective.
-  - `totalCount` repeats the scan in a second statement, with `count()`. Two statements also take the connection off the stream path (`src/compile/read.ts:361`).
+  - `totalCount` repeats the scan in a second statement, with `count()`. Two statements also mean a shared read-only transaction rather than one `execute()` (`src/compile/read.ts:361`).
   - `festivalsAggregate` is a full scan.
   - All three count as 0 or 1 against `maxCost`, which counts projected rows, not scanned rows (`read.ts:336-376`).
 - **Solutions:**
@@ -224,7 +211,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 - **Fan-out:**
   - Every subscriber is its own feed listener, and rebuilds its events per change (`src/lora-graphql.ts:1397`, `:1714`).
   - `#visible` and `#resolveByKey` compile, and usually run, one read per subscriber per event.
-  - Cost is therefore O(subscribers × changes). A 1,000-node bulk write with 10k subscribers is about 10M iterations plus the reads, on the event loop, and those reads use the stream path from finding 2.
+  - Cost is therefore O(subscribers × changes). A 1,000-node bulk write with 10k subscribers is about 10M iterations plus the reads, on the event loop, and those reads run through the driver from finding 2.
 - **Crash risk:** a feed error that is not `LORA_CHANGES_LAGGED` is rethrown inside a floating `void this.#pump(...)` (`src/execute/feed.ts:59`, `:79`). That is an unhandled rejection: by default it crashes the process, and otherwise the feed silently stops.
 - **Engine side:**
   - Once a feed is open, every commit builds its change batch under the writer lock.
@@ -269,7 +256,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 ## Recommended order
 
 1. Release the lora-node pool fix (`f6251b0`) and raise the peer range. Until then, any production v0.18.0 server can hang.
-2. Done: reads no longer stream (finding 2). Still to do: document `UV_THREADPOOL_SIZE` (finding 3).
+2. Done: reads run off the JS thread, except a bounded `@key` lookup, which streams its one row (finding 2). Still to do: document `UV_THREADPOOL_SIZE` (finding 3), and make `db.stream()` asynchronous in the binding.
 3. Fix the posting-list copy in the engine (finding 5). Until then, add the lint warning.
 4. Shorten the write lock hold with `executeMany`, and add a bounded write queue with load shedding (finding 4).
 5. Charge scans in `maxCost`. Add top-k sort and ordered-index selection to the engine (findings 6 and 7).

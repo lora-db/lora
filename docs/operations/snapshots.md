@@ -24,10 +24,19 @@ recovery replays only the records past the fence.
 
 The manifest carries the snapshot format version, optional `wal_lsn`, node and
 relationship counts, compression mode, encryption metadata, and body length. The
-current body format version is tracked in `crates/lora-snapshot/src/format.rs`.
-Body format v3 appends the explicit index catalog trailer so snapshots preserve
-`CREATE INDEX` / `DROP INDEX` state. The reader still accepts v2 bodies, which
-load with an empty index catalog.
+current body format version is tracked in `crates/lora-snapshot/src/format.rs`
+and is **v5**. Each version appends a trailer after the previous one:
+
+| Body version | Adds |
+|---|---|
+| v2 | Base columnar body (no trailers) |
+| v3 | Index catalog trailer, so snapshots preserve `CREATE INDEX` / `DROP INDEX` state |
+| v4 | Constraint catalog trailer |
+| v5 | Vector-index backend trailer: HNSW graph state, JSON-encoded |
+
+Writers always emit v5. The reader accepts v2 through v5; a missing trailer
+loads as empty (no indexes, no constraints, vector backends rebuilt from the
+property store).
 
 `wal_lsn` marks a checkpoint produced by `Database::checkpoint_to`, managed
 snapshot checkpointing, or HTTP `POST /admin/checkpoint`. It carries the WAL's

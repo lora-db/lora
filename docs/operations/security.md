@@ -55,7 +55,7 @@ attack primitives:
 3. **Recovery-state mutation.** WAL truncate and checkpoint routes can remove
    sealed WAL history or write snapshot files. A malicious or mistaken caller
    can weaken recovery options.
-4. **Denial of service.** `load` holds the store write lock for the full restore duration, blocking other queries. Repeated calls turn the server unresponsive.
+4. **Denial of service.** `load` holds the database writer lock for the full decode-and-restore, blocking every write (and every other admin mutation) until it finishes. Reads keep running on the previous snapshot and switch to the restored graph when it is published. Repeated calls on a large file keep the server unable to accept writes.
 
 LoraDB's mitigation posture today:
 

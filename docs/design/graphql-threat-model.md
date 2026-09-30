@@ -1,9 +1,9 @@
 # GraphQL: Threat Model
 
 What `packages/lora-graphql` defends against, what it trusts, and where
-each check runs. Companion to
-[graphql-implementation-plan.md](graphql-implementation-plan.md) and
-Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
+each check runs. The user-facing rules are in the package
+[README](../../packages/lora-graphql/README.md) and on the site's
+[authorization](../../apps/loradb.com/docs/graphql/authorization.md) page.
 
 ## Trust boundaries
 
@@ -59,8 +59,8 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   tied to its owner. The built string is a bound parameter. A claim that
   is absent or not a scalar makes the rule deny, under `NOT` too. The
   separator must be one no subject contains, or one user's space
-  contains another's (G-19,
-  [graphql-claim-interpolation.md](graphql-claim-interpolation.md)).
+  contains another's (G-19): with `-`, user `a` could take `a-b-…`, the
+  key space of user `a-b`.
 - **Probe for keys the caller cannot see.** A `create…` or `upsert…`
   (nested creates included) under a key that exists but is hidden from
   the caller by a READ filter gets the answer the same key would get if
@@ -113,8 +113,12 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   SUBSCRIBE rules, in the database, after the write. A deleted node
   cannot be checked after the fact: its deletion only reaches subscribers
   that follow that key, and only unfiltered ones.
-- A `@cypher` mutation has no known write-set. It emits one broad event
-  (`broad: true`) that names nothing.
+- A `@cypher` mutation has no known write-set. Its `onWrite` event is one
+  broad event (`broad: true`) that names nothing. Without `changeFeed`,
+  that broad event is also what subscriptions and `changes()` get. With
+  `changeFeed: true` they are fed from the engine's committed change feed
+  instead, which names the nodes and relationships the statement
+  actually wrote.
 
 ## Where each check runs
 

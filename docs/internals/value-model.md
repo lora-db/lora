@@ -137,6 +137,8 @@ Maintained by `InMemoryGraph`:
 | Sorted property indexes | Catalog-backed sorted scopes | Range predicates on declared RANGE indexes |
 | Text indexes | Trigram candidate registry | `STARTS WITH`, `CONTAINS`, `ENDS WITH` predicates |
 | Point indexes | Grid-bucket spatial registry | `geo.within_bbox`, radius predicates |
+| Full-text indexes | `FulltextRegistry` | `db.index.fulltext.query*` procedures |
+| Vector indexes | `VectorIndexRegistry`: flat (default) or HNSW backend | `db.index.vector.query*` procedures |
 
 The lazy property index covers `null`, booleans, integers, finite floats,
 strings, binary values, and nested lists/maps made only from indexable values.
@@ -147,7 +149,11 @@ Explicit index DDL is intentionally performance-oriented. RANGE, TEXT,
 POINT, LOOKUP, VECTOR, and FULLTEXT definitions are cataloged and visible
 through `SHOW INDEXES`; vector and full-text query procedures are
 available. Constraint DDL covers uniqueness, existence, type, and key
-constraints. ANN execution for vector indexes is still future work.
+constraints. Vector indexes default to an exact flat scan over the indexed
+scope. Setting `vector.indexProvider: 'hnsw'` in the index's `indexConfig`
+selects an approximate HNSW backend (`lora-store/src/memory/hnsw.rs`, shipped
+in v0.12.0); its graph state is persisted in the snapshot's vector-index
+trailer (body format v5).
 
 ## Spatial points
 
@@ -165,7 +171,7 @@ constraints. ANN execution for vector indexes is still future work.
 ## Vectors
 
 `LoraVector` is a first-class property and query value defined in
-`lora-store/src/vector.rs`. Every binding speaks the same canonical
+`lora-store/src/types/vector/` (`types.rs`, `build.rs`, `similarity.rs`). Every binding speaks the same canonical
 tagged shape on the wire; the engine carries the narrow typed storage
 internally.
 
@@ -248,7 +254,8 @@ host-built vectors as to Cypher-built ones.
   through on ints; matches the `vector.coordinates(vector)` semantics.
 - `RawCoordinate::Int(i64)` / `RawCoordinate::Float(f64)` — the single
   entry point for user-supplied coordinates. The executor
-  (`eval.rs::coerce_list_to_raw_coords`) and every binding funnel
+  (`coerce_list_to_raw_coords` in `lora-executor/src/eval/vector.rs`, with a
+  cast-path twin in `eval/builtins/type_ns.rs`) and every binding funnel
   values through `RawCoordinate` so the coercion rules live in one
   place.
 - `parse_string_values` — parses string inputs used by casts such as
@@ -310,9 +317,10 @@ as a standalone value, not as a list entry.
 
 ### Function surface
 
-All analyzed in `lora-analyzer/src/analyzer.rs` (`KNOWN_FUNCTIONS`,
-`function_arity`, `try_vector_enum_literal`) and executed in
-`lora-executor/src/eval.rs`:
+Declared in `lora-builtins-meta` (`BUILTIN_SPECS`: name, arity, enum-slot
+positions), analyzed in `lora-analyzer/src/analyzer/expressions.rs`, and
+executed in `lora-executor/src/eval/builtins/vector_ns.rs` (math in
+`lora-store/src/types/vector/similarity.rs`):
 
 | Cypher | Arity | Notes |
 |---|---|---|
@@ -353,22 +361,26 @@ keeps the numerics predictable across storage types.
 - **Quoted strings pass through unchanged** in enum slots, so
   `vector.distance(a, b, 'EUCLIDEAN')` works the same as
   `vector.distance(a, b, EUCLIDEAN)`.
-- **Arity is enforced.** `function_arity` pins every vector function
-  to its exact count; wrong arity produces `SemanticError::WrongArity`
-  at analysis time.
+- **Arity is enforced.** The `BUILTIN_SPECS` entry pins each vector
+  function's arity; `validate_function_arity` reports a mismatch as
+  `SemanticError::WrongArity` at analysis time.
 - **Unknown vector function names are caught.** `vector.bogus(...)`
   and `vector.similarity.manhattan(...)` both fail
-  `validate_function_name` with `SemanticError::UnknownFunction`.
+  `resolve_function_name` with `SemanticError::UnknownFunction`.
+- **Enum slots come from the same table.** The slot positions listed above
+  are the `enum_arg_slots` of each `spec_enum(...)` entry
+  (`accepts_enum_literal`).
 
 ### What's not implemented
 
-- **ANN execution for vector indexes** — `CREATE VECTOR INDEX` and
-  `db.index.vector.*` procedures exist, but the current procedure path
-  is a flat scan over the indexed scope.
+- **HNSW by default** — approximate search exists but is opt-in per
+  index (`vector.indexProvider: 'hnsw'`); the default provider is the
+  exact flat scan.
 - **Built-in embedding generation** — no plugin system.
 - **Extra metrics** beyond those listed above. Adding one is
-  mechanical: implement in `vector.rs`, wire into
-  `eval_vector.distance_fn` / `eval_vector.norm_fn`, add a test in
+  mechanical: implement in `lora-store/src/types/vector/similarity.rs`,
+  wire into `distance` / `norm` in
+  `lora-executor/src/eval/builtins/vector_ns.rs`, add a test in
   `crates/lora-database/tests/vectors.rs`.
 - **Typed vector helpers over HTTP.** `lora-server` accepts JSON
   `params`, but HTTP has no host-language helper constructors. Pass a
@@ -378,12 +390,15 @@ keeps the numerics predictable across storage types.
 ## Schema validation
 
 Lora is schema-free — labels, relationship types, and property keys are
-created implicitly on write. The analyzer performs soft validation only:
+created implicitly on write. The analyzer does not read the graph, so it
+never rejects a name (since 2026-09-29, `d004ba4e`):
 
 | Context | Labels | Rel types | Properties |
 |---|---|---|---|
-| `MATCH` | Must exist in graph (unless graph is empty) | Same | Same |
+| `MATCH` / `OPTIONAL MATCH` | Any name; unknown labels match nothing | Any name; unknown types match nothing | Any key; missing keys read `null` |
 | `CREATE` / `MERGE` / `SET` | Any name allowed | Any name allowed | Any name allowed |
 
-This means the first write to an empty graph can use any names, and `MATCH`
-queries against those names succeed once data exists.
+A query is therefore valid or invalid independent of the data: the same
+`MATCH` returns no rows on an empty graph and matching rows once data exists.
+Declared constraints (uniqueness, existence, type, key) are the only
+data-level validation, and they run at write time in the store.

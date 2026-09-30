@@ -106,6 +106,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Pattern comprehension `[pattern WHERE p \| e]` | **Supported** | |
 | `EXISTS { pattern }` subquery | **Supported** | In WHERE |
 | `COUNT { pattern [WHERE ...] }` subquery | **Supported** | Number of matches; `MATCH` keyword optional |
+| `COLLECT { subquery }` | **Not yet implemented** | Not in grammar; use `collect()` over a `CALL { }` subquery or a pattern comprehension |
 | Label predicate `n:Label`, `n:A:B`, `n:A\|B` | **Supported** | Boolean expression, e.g. `WHERE n:Festival` |
 | `REDUCE(acc = init, x IN list \| expr)` | **Supported** | |
 | List predicates (`all`, `any`, `none`, `single`) | **Supported** | |
@@ -121,10 +122,10 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `avg(expr)` | **Supported** | Returns float; skips nulls; null for empty set |
 | `min(expr)` / `max(expr)` | **Supported** | Numeric, string, and temporal ordering |
 | `collect(expr)` | **Supported** | Including `collect(DISTINCT ...)` |
-| `stdev(expr)` | **Supported** | Sample standard deviation (n-1) |
-| `stdevp(expr)` | **Supported** | Population standard deviation (n) |
-| `percentileCont(expr, p)` | **Supported** | Continuous, linear interpolation |
-| `percentileDisc(expr, p)` | **Supported** | Discrete, nearest-rank |
+| `stdev(expr)` | **Supported** | Sample standard deviation (n-1). `DISTINCT` is accepted but silently ignored |
+| `stdevp(expr)` | **Supported** | Population standard deviation (n). `DISTINCT` is accepted but silently ignored |
+| `percentileCont(expr, p)` | **Supported** | Continuous, linear interpolation. `DISTINCT` is accepted but silently ignored |
+| `percentileDisc(expr, p)` | **Supported** | Discrete, nearest-rank. `DISTINCT` is accepted but silently ignored |
 | Grouped aggregation | **Supported** | Non-aggregated columns act as GROUP BY |
 | Multi-aggregate queries | **Supported** | Multiple aggregates in one RETURN |
 | HAVING-style filtering | **Supported** | Via `WITH ... WHERE` |
@@ -285,7 +286,7 @@ Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same
 | Property existence constraints (`IS NOT NULL`) | **Supported** | Single property only; rejects CREATE missing the prop, REMOVE of the prop, and SET-label that would activate it on an incomplete node; returns `22N77`. An entity created by a statement that also sets properties (`CREATE ... SET`, `MERGE ... ON CREATE SET`) is checked when the statement finishes |
 | Node / relationship key constraints | **Supported** | Composition of existence + uniqueness; single + composite; node-key uses `IS NODE KEY`, rel-key uses `IS RELATIONSHIP KEY` |
 | Property type constraints (`IS :: T`) | **Supported** | Scalar (`BOOLEAN`/`STRING`/`INTEGER`/`FLOAT`/`DATE`/`LOCAL TIME`/`ZONED TIME`/`LOCAL DATETIME`/`ZONED DATETIME`/`DURATION`/`POINT`), `LIST<T NOT NULL>`, `VECTOR<COORD>(DIM)`, and closed dynamic unions (`T1 \| T2`); `MAP`/`ANY` rejected with `22N90` |
-| Vector index / ANN index | **Partial** | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS {indexConfig: {vector.dimensions, vector.similarity_function}}` (node + rel). Procedures `db.index.vector.queryNodes` / `queryRelationships` execute a flat scan over label-matching entities; ANN structure (HNSW) is a follow-up. |
+| Vector index / ANN index | **Supported** | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS {indexConfig: {vector.dimensions, vector.similarity_function}}` (node + rel). The default provider is an exact flat scan over the indexed scope. Setting `vector.indexProvider: 'hnsw'` in `indexConfig` selects an approximate HNSW index (since v0.12.0), tunable with `vector.hnsw.m`, `vector.hnsw.ef_construction`, `vector.hnsw.ef_search`, and `vector.hnsw.quantization`; its graph is persisted in snapshots. Procedures `db.index.vector.queryNodes` / `queryRelationships` use whichever provider the index has |
 | Full-text indexing | **Supported (standard/simple analyzer)** | `CREATE FULLTEXT INDEX FOR (n:A\|B) ON EACH [n.p, n.q]` — multi-label, multi-property, relationship scope. `OPTIONS {fulltext.analyzer}` accepts `'standard'` (default) and `'simple'`; others rejected. Procedures `db.index.fulltext.queryNodes` / `queryRelationships` tokenise with lowercase + ASCII folding (`Sónar` matches `Sonar`, `Øya` matches `Oya`) + non-alphanumeric split, intersect posting lists (AND semantics); a term ending in `*` matches every indexed term with that prefix. Scores are summed TF; rows `(node\|relationship, score)` come back sorted descending with full node / relationship values. |
 
 ## 13b. Vector types and functions
@@ -320,7 +321,7 @@ Alias matching is case-insensitive.
 | `type.of(v)` | 1 | **Supported** | Returns `"VECTOR<COORD>(N)"`. |
 | `vector.coordinates(v, INTEGER)` | 2 | **Supported** | Rejects non-vector; float coordinates truncate toward zero. |
 | `vector.coordinates(v, FLOAT)` | 2 | **Supported** | Rejects non-vector. |
-| Vector index procedures / approximate kNN | — | **Partial** | `db.index.vector.queryNodes` / `queryRelationships` query the cataloged index scope but still execute a flat scan. Dedicated ANN execution is not yet implemented. Exhaustive kNN also works via `ORDER BY vector.similarity(...) LIMIT k`. |
+| Vector index procedures / approximate kNN | — | **Supported** | `db.index.vector.queryNodes` / `queryRelationships` query the cataloged index scope: an exact flat scan by default, approximate kNN when the index was created with `vector.indexProvider: 'hnsw'` (opt-in). Exhaustive kNN also works via `ORDER BY vector.similarity(...) LIMIT k`. |
 | Built-in embedding / plugin integration | — | **Not yet implemented** | LoraDB has no plugin surface — produce embeddings host-side. |
 
 ### Storage semantics
@@ -435,6 +436,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | `null OR true` → `true` | **Supported** |
 | `null OR false` → `null` | **Supported** |
 | `null IN list` → `null` | **Supported** |
+| `x IN list` where `x` is absent and `list` contains `null` → `null` | **Deviation**: returns `false` (`5 IN [1, null]` is `false`; `1 IN [1, null]` is correctly `true`). Pinned by `where_value_not_in_list_with_null` in `crates/lora-database/tests/where_clause.rs` |
 | `IS NULL` / `IS NOT NULL` | **Supported** |
 | Aggregates skip nulls (except `count(*)`) | **Supported** |
 
@@ -446,6 +448,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | `EXPLAIN` / `PROFILE` (as Cypher keywords) | Clause | Not in grammar — exposed instead as the `db.explain()` / `db.profile()` API methods so callers must explicitly request plan-only or instrumented execution. |
 | `LOAD CSV` | DDL | Not in grammar |
 | `USE <graph>` (multi-database) | Clause | Not in grammar |
+| `COLLECT { }` subquery | Expression | Not in grammar |
 | Quantified path patterns | Pattern | Future openCypher syntax |
 | Inline WHERE inside variable-length | Pattern | Not in grammar |
 | Type mismatch detection in comparison | Validation | 1 ignored test |

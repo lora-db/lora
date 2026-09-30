@@ -4,12 +4,16 @@
 
 ### Snapshot publication and writer serialization
 
-The database stores the graph in an `ArcSwap<InMemoryGraph>`.
-Auto-commit read-only queries load an `Arc` snapshot and run without holding a
-store lock, so readers can overlap and keep seeing their pinned snapshot after a
-writer publishes a newer graph. Mutating auto-commit queries stage a
-copy-on-write clone, then serialize commit publication through the database
-writer mutex. Explicit read-write transactions hold that writer mutex for the
+The database stores the graph as an `Arc<InMemoryGraph>` behind a `RwLock`
+(`LiveStore`, `crates/lora-database/src/live_store.rs`). Auto-commit read-only
+queries take the read lock just long enough to clone the `Arc`, then run on
+that snapshot without holding a store lock, so readers can overlap and keep
+seeing their pinned snapshot after a writer publishes a newer graph. Mutating
+auto-commit queries serialize through the database writer mutex: most stage a
+copy-on-write clone and publish it on success, while plans that provably
+cannot fail midway (a node-only `CREATE`, a `SET` of literal or parameter
+values, a `DELETE`) with no deadline mutate the live `Arc` in place through
+`Arc::make_mut`. Explicit read-write transactions hold the writer mutex for the
 transaction lifetime.
 
 This means:
@@ -20,14 +24,17 @@ This means:
 - A long-running stream pins its snapshot, which can increase memory pressure by
   keeping older `Arc` records alive.
 
-**Source**: `crates/lora-database/src/database/mod.rs`,
+**Source**: `crates/lora-database/src/live_store.rs`,
 `crates/lora-database/src/database/execute.rs`,
-`crates/lora-database/src/database/occ.rs`, and
+`crates/lora-database/src/database/occ.rs`,
+`crates/lora-database/src/database/write_guard.rs`, and
 `crates/lora-database/src/transaction.rs`.
 
-`execute_with_timeout` / `execute_with_params_timeout` add cooperative
-deadline checks during executor work. The checks are not preemptive; very large
-single operator steps can still run until they reach the next check.
+Deadlines and cancellation are cooperative and reach eager, streaming and
+write execution (`crates/lora-database/tests/timeouts.rs`); a bounded write
+that times out rolls back. The checks are not preemptive: a stream checks
+between rows, so one blocking pull (a large sort or aggregation) runs until it
+reaches the next check.
 
 ### Clone-heavy read API
 
@@ -65,10 +72,13 @@ For indexable values, `find_nodes_by_property` and
 `find_relationships_by_property` go directly through the property index and then
 intersect with the label / relationship-type index when one is present. The
 index currently covers `null`, booleans, integers, non-NaN floats, strings, and
-nested lists/maps that contain only those values.
+nested lists/maps that contain only those values, and temporal values
+(`Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`), keyed by kind and
+then by the instant they denote, so RANGE indexes answer temporal range
+predicates (`crates/lora-database/tests/temporal_range_index.rs`).
 
-Temporal values, vector values, regex predicates, nested map paths, and NaN
-float values deliberately fall back to scans. Spatial predicates can use POINT
+Durations, vector values, regex predicates, nested map paths, and NaN float
+values deliberately fall back to scans. Spatial predicates can use POINT
 indexes when the point is stored as a top-level property and the query is
 scoped to the indexed label or relationship type.
 
@@ -99,8 +109,7 @@ the same time.
 
 ### Snapshot save / load
 
-Snapshot operations publish through the same current-store pointer but do not
-use the old `RwLock` model.
+Snapshot operations read and publish through the same `LiveStore` as queries.
 
 - **Save.** `Database::save_snapshot_to` loads an `Arc` snapshot, encodes it with
   the `lora-snapshot` columnar codec, writes to `<path>.tmp`, `fsync`s, renames,
@@ -134,16 +143,12 @@ The planner chains two `NodeScan` operators, producing a cross-product. For `N` 
 The `.cargo/config.toml` enables aggressive optimization for release builds:
 
 ```toml
-[build]
-rustflags = ["-C", "target-cpu=native"]
-
 [profile.release]
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 ```
 
-- `target-cpu=native` -- uses SIMD and CPU-specific instructions
 - `lto = "fat"` -- cross-crate link-time optimization
 - `codegen-units = 1` -- better optimization at the cost of compile time
 - `panic = "abort"` -- removes unwinding tables
@@ -183,14 +188,31 @@ estimated cost beats the label/type scan:
 The original predicate remains above conservative TEXT/POINT candidate scans,
 so correctness does not depend on the secondary structure being exact.
 
+### Condition push-down
+
+A `WHERE` clause is split into its `AND` conjuncts, and a conjunct that reads
+one pattern variable runs on that variable's scan, so `n.key = $k` and
+`n.key IN $list` become index seeks on any node of a pattern. A chain starts
+from whichever end is cheaper.
+
+**Source**: `crates/lora-compiler/src/pattern.rs` (`split_conjuncts`);
+coverage in `crates/lora-database/tests/planner_pushdown.rs`
+
+### Early `LIMIT` and index-ordered reads
+
+A read with a `LIMIT` stops scanning once the limit is met, including under a
+deadline and inside an explicit transaction
+(`crates/lora-database/tests/early_limit.rs`). A single-key
+`ORDER BY n.prop ... LIMIT k` over a RANGE-indexed property with a range
+predicate streams from the index instead of sorting every match
+(`crates/lora-database/tests/order_by_index.rs`).
+
 ### Not implemented
 
 | Optimization | Description |
 |-------------|-------------|
 | Join ordering | No cost-based optimization for multi-pattern queries |
-| Predicate decomposition | Compound `AND` predicates are not split for selective push-down |
-| Limit push-down | `LIMIT` is not pushed to scan operators |
-| Sorted-index ordering | RANGE indexes narrow filters, but `ORDER BY n.prop` still sorts rows in memory |
+| Multi-key sorted-index ordering | `ORDER BY` on two or more keys, or with no range predicate on the indexed key, still sorts rows in memory |
 | Redundant scan elimination | Rescanning the same label is not detected |
 | Short-circuit evaluation | Filters evaluate all predicates regardless |
 | Common subexpression elimination | Not implemented |
@@ -231,10 +253,8 @@ scalar and scalar-container properties.
 
 1. **Write publication windows** -- continue shrinking serialized commit/checkpoint/restore windows for write-heavy paths
 2. **Borrowing APIs** -- migrate more executor internals from owned `GraphStorage` helpers onto `with_node` / `with_relationship` and other borrowed hooks
-3. **Index coverage** -- add ANN execution for vector indexes, broader composite-index rewrites, and sorted-index ORDER BY planning
-4. **Streaming coverage** -- keep moving remaining blocking internals toward cursor-shaped sources where semantics allow it
-5. **Query timeout coverage** -- extend deadline cancellation into streaming APIs and more fine-grained executor loops
-6. **HashMap option** -- consider `HashMap` for primary storage when ordering is not needed
+3. **Index coverage** -- broader composite-index rewrites and multi-key sorted-index `ORDER BY` (vector ANN ships as the opt-in HNSW provider; single-key index ordering is done)
+4. **Streaming coverage** -- keep moving remaining blocking internals toward cursor-shaped sources where semantics allow it, so a deadline can stop a blocking operator mid-pull
 
 ## Next steps
 

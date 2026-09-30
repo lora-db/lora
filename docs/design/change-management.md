@@ -12,17 +12,17 @@ The graph is schema-free -- labels, types, and properties are implicit. This mea
 - **Removing a property**: `REMOVE n.prop` on relevant nodes/relationships
 - **Renaming a label**: there is no rename operation; create with the new label and remove the old one
 
-There are no migration scripts or schema definition files. All changes are immediate and in-memory.
+There are no migration scripts or schema definition files. Data changes are immediate; they survive a restart only when the database is WAL-backed or snapshotted (see [Rollback strategy](#rollback-strategy)). Indexes and constraints are the exception to "schema-free": they are declared with DDL and follow the same durability rules as data.
 
 ### Backward compatibility considerations
 
-Since the analyzer validates labels and types against the live graph for `MATCH` queries:
+Unknown names are not errors, as in standard Cypher, and the answer does not depend on whether matching data happens to exist (`crates/lora-database/tests/unknown_names.rs`):
 
-1. If a label is removed from all nodes, `MATCH (n:OldLabel)` will fail with `UnknownLabel`
-2. If a relationship type is removed from all relationships, `MATCH ()-[:OLD_TYPE]->()` will fail with `UnknownRelationshipType`
-3. If a property key is removed from all entities, `WHERE n.oldProp = x` will fail with `UnknownPropertyAt`
+1. If a label is removed from all nodes, `MATCH (n:OldLabel)` matches nothing
+2. If a relationship type is removed from all relationships, `MATCH ()-[:OLD_TYPE]->()` matches nothing
+3. If a property key is removed from all entities, `n.oldProp` reads `null`, so `WHERE n.oldProp = x` filters every row out
 
-This means removing the last instance of a label/type/property is a breaking change for existing queries. On an empty graph, all names are accepted.
+Removing the last instance of a label/type/property therefore does not break existing queries, but it silently changes their results: a query that used to return rows returns none. Search application queries for a name before retiring it.
 
 ### Snapshot format compatibility
 
@@ -121,16 +121,19 @@ The `smallvec = "2.0.0-alpha.12"` dependency is a pre-release version. Monitor f
 | `cypher.pest` grammar | High | Changes can break parsing of all queries; PEG grammars are sensitive to rule ordering |
 | `GraphStorage` / `GraphStorageMut` traits | High | Any signature change affects all downstream crates |
 | `InMemoryGraph` indexes | High | Index maintenance bugs cause silent data inconsistency |
-| `eval.rs` expression / function dispatch | Medium | Expression semantics affect all queries; test carefully |
-| `executor.rs` | Medium | Complex file with interleaved read and write paths |
-| `parser.rs` | Medium | Large file; easy to break one rule when adding another |
+| `lora-executor/src/eval/` expression / function dispatch | Medium | Expression semantics affect all queries; test carefully |
+| `lora-executor/src/executor/` and `pull/` | Medium | Read and write execution paths, eager and pull-based, that must agree |
+| `lora-parser/src/parser/` | Medium | AST building for every grammar rule; easy to break one rule when adding another |
+| WAL and snapshot formats | High | A durable on-disk contract; see [Snapshot format compatibility](#snapshot-format-compatibility) and [WAL](../operations/wal.md) |
 | Result projection | Low | Only affects output format, not correctness |
 | HTTP routing | Low | Simple Axum routes, well-isolated |
 
 ## Rollback strategy
 
-Since the graph is ephemeral and there is no deployment pipeline:
+What a restart gives back depends on how the database was opened:
 
 - **Code changes**: revert the git commit
-- **Data changes**: restart the server (all data is lost)
-- **There is no way to undo a query** -- `DELETE` and `SET` are permanent within a session
+- **In-memory database**: a restart loses all data; there is nothing to roll back to
+- **WAL-backed database**: a restart replays the WAL (from the last checkpoint snapshot, when there is one), so every committed write comes back, including the one you wanted to undo. See [WAL](../operations/wal.md)
+- **Snapshots**: loading an earlier snapshot without its WAL rolls the data back to that point and drops every later write. With the WAL attached, replay above the snapshot's fence brings those writes back. See [Snapshots](../operations/snapshots.md)
+- **There is no way to undo a committed query** -- `DELETE` and `SET` are permanent once committed. Use an explicit transaction and roll it back to try a write without keeping it
