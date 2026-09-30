@@ -27,7 +27,7 @@ impl<'a, S: GraphStorage> RowSource for HydratingSource<'a, S> {
             Some(row) => {
                 let mut out = Row::new();
                 for (var, name, value) in row.into_iter_named() {
-                    out.insert_named(var, name, hydrate_value(value, self.storage));
+                    out.insert_named_inline(var, name, hydrate_value(value, self.storage));
                 }
                 Ok(Some(out))
             }
@@ -40,7 +40,7 @@ impl<'a, S: GraphStorage> RowSource for HydratingSource<'a, S> {
 pub fn hydrate_row<S: GraphStorage>(row: Row, storage: &S) -> Row {
     let mut out = Row::new();
     for (var, name, value) in row.into_iter_named() {
-        out.insert_named(var, name, hydrate_value(value, storage));
+        out.insert_named_inline(var, name, hydrate_value(value, storage));
     }
     out
 }

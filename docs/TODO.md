@@ -14,15 +14,9 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — Cypher correctness
 
-- [ ] P1 **E-4 class, remaining sites.** A value the row carries for other reasons is
-      copied per candidate in OPTIONAL MATCH, expand + filter, variable-length expand,
-      shortestPath / allShortestPaths, FOREACH, UNWIND followed by WITH/WHERE, nested
-      comprehensions / reduce / quantifiers, and `CALL { }` without an importing WITH:
-      with a 20k-element list carried, ~0.05 ms becomes ~25-90 ms. Sharing large values
-      behind an `Arc` in row slots fixed all of them but cost 10-16% on hot paths
-      (withdrawn; patch kept out of tree). Next: `LoraValue::List` as `Arc<[..]>`, or
-      scope rows per construct as pattern subqueries do (`2390fbe`).
-- [ ] P3 `size(big)` and other function arguments still copy a list per call.
+- [ ] P3 A function with two or more arguments (`coalesce(big, [])`), an operator
+      (`big + [x]`) or a map/list literal still copies a carried list per call; a lone
+      variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
 - [ ] P2 `head(collect(x))` returns null (E16).
 - [ ] P2 `7/2` returns `3.5`; integer division should give `3` (E22).
 - [ ] P2 `[1,2,3][..-1]` returns `[]` (E23).

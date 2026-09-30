@@ -34,6 +34,7 @@ compare cleanly across branches (build each branch, run the same probe):
 | --- | --- |
 | `heap_probe` | Real retained heap per node / relationship / index entry via a counting allocator (`MemoryReport` is an estimate). `-- --festimap` runs the 25k-node / 100k-relationship shape from the Festimap report |
 | `perf_probe` | Mean latency of common query shapes; `-- <scenario> <seconds>` loops one scenario for an external sampler, `-- --stream` compares `execute()` with `stream()` |
+| `carried_probe` | A 200-row hop / OPTIONAL MATCH with a 10k-element list carried in the row vs none (Festimap E-4; target: within 2x). `-- '<body>'` times another query body |
 | `optional_probe` | Anchored `OPTIONAL MATCH` vs the equivalent pattern comprehension (target: within 3x) |
 | `keyset_probe` | `WHERE n.key > $after ORDER BY n.key LIMIT 20` latency at 20k and 1M nodes (target: under 1 ms p50, flat in label size) |
 | `bulk_probe` | Bulk-load time with no schema vs a uniqueness constraint, range, or full-text index declared first |

@@ -73,6 +73,43 @@ pub(super) fn check_deadline_at(deadline: Instant) -> ExecResult<()> {
     }
 }
 
+/// Project `item` from `source` into `projected`. A bare variable takes the
+/// source's slot as is, so a large value it holds is shared, not copied.
+#[inline]
+pub(crate) fn project_item<S: GraphStorage>(
+    projected: &mut Row,
+    source: &Row,
+    item: &lora_analyzer::ResolvedProjection,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<()> {
+    if let ResolvedExpr::Variable(var) = &item.expr {
+        if projected.insert_named_from(item.output, item.name.clone(), source, *var) {
+            return Ok(());
+        }
+    }
+    let value =
+        eval_expr_result(&item.expr, source, eval_ctx).map_err(ExecutorError::RuntimeError)?;
+    projected.insert_named(item.output, item.name.clone(), value);
+    Ok(())
+}
+
+/// [`project_item`] for a projection that keeps the row's existing bindings.
+#[inline]
+pub(crate) fn project_item_in_place<S: GraphStorage>(
+    row: &mut Row,
+    item: &lora_analyzer::ResolvedProjection,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<()> {
+    if let ResolvedExpr::Variable(var) = &item.expr {
+        if row.insert_named_from_self(item.output, item.name.clone(), *var) {
+            return Ok(());
+        }
+    }
+    let value = eval_expr_result(&item.expr, row, eval_ctx).map_err(ExecutorError::RuntimeError)?;
+    row.insert_named(item.output, item.name.clone(), value);
+    Ok(())
+}
+
 pub(super) fn filter_rows_checked<S: GraphStorage>(
     input_rows: Vec<Row>,
     predicate: &ResolvedExpr,
@@ -98,17 +135,13 @@ pub(super) fn project_rows_checked<S: GraphStorage>(
         if op.include_existing {
             let mut projected = row;
             for item in &op.items {
-                let value = eval_expr_result(&item.expr, &projected, eval_ctx)
-                    .map_err(ExecutorError::RuntimeError)?;
-                projected.insert_named(item.output, item.name.clone(), value);
+                project_item_in_place(&mut projected, item, eval_ctx)?;
             }
             out.push(projected);
         } else {
             let mut projected = Row::new();
             for item in &op.items {
-                let value = eval_expr_result(&item.expr, &row, eval_ctx)
-                    .map_err(ExecutorError::RuntimeError)?;
-                projected.insert_named(item.output, item.name.clone(), value);
+                project_item(&mut projected, &row, item, eval_ctx)?;
             }
             out.push(projected);
         }

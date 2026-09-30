@@ -11,7 +11,7 @@
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::{clear_eval_error, EvalContext};
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-use crate::eval::{eval_expr, eval_expr_result, eval_truthy_result};
+use crate::eval::{eval_expr, eval_truthy_result};
 use crate::value::{LoraValue, Row};
 use crate::{project_rows, ExecuteOptions, QueryResult};
 
@@ -36,6 +36,7 @@ use super::helpers::{
     node_matches_label_groups, node_matches_property_filter, scan_node_ids_for_label_groups,
 };
 use super::{merge_optional_rows, optional_match_rows};
+use super::{project_item, project_item_in_place};
 use super::{sort_row_bound, sort_rows_with_top_k};
 
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -167,7 +168,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let mut out = Row::new();
 
         for (var, name, value) in row.into_iter_named() {
-            out.insert_named(var, name, self.hydrate_value(value));
+            out.insert_named_inline(var, name, self.hydrate_value(value));
         }
 
         out
@@ -704,17 +705,13 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 if op.include_existing {
                     let mut projected = row;
                     for item in &op.items {
-                        let value = eval_expr_result(&item.expr, &projected, &eval_ctx)
-                            .map_err(ExecutorError::RuntimeError)?;
-                        projected.insert_named(item.output, item.name.clone(), value);
+                        project_item_in_place(&mut projected, item, &eval_ctx)?;
                     }
                     Ok(projected)
                 } else {
                     let mut projected = Row::new();
                     for item in &op.items {
-                        let value = eval_expr_result(&item.expr, &row, &eval_ctx)
-                            .map_err(ExecutorError::RuntimeError)?;
-                        projected.insert_named(item.output, item.name.clone(), value);
+                        project_item(&mut projected, &row, item, &eval_ctx)?;
                     }
                     Ok(projected)
                 }

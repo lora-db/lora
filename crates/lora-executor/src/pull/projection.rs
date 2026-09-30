@@ -13,7 +13,7 @@ use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr_result;
-use crate::executor::GroupValueKey;
+use crate::executor::{project_item, project_item_in_place, GroupValueKey};
 use crate::value::{LoraValue, Row};
 
 use super::{RowSource, StreamCtx};
@@ -53,17 +53,13 @@ impl<'a, S: GraphStorage> RowSource for ProjectionSource<'a, S> {
                 if self.include_existing {
                     let mut projected = row;
                     for item in self.items {
-                        let value = eval_expr_result(&item.expr, &projected, &eval_ctx)
-                            .map_err(ExecutorError::RuntimeError)?;
-                        projected.insert_named(item.output, item.name.clone(), value);
+                        project_item_in_place(&mut projected, item, &eval_ctx)?;
                     }
                     Ok(Some(projected))
                 } else {
                     let mut projected = Row::new();
                     for item in self.items {
-                        let value = eval_expr_result(&item.expr, &row, &eval_ctx)
-                            .map_err(ExecutorError::RuntimeError)?;
-                        projected.insert_named(item.output, item.name.clone(), value);
+                        project_item(&mut projected, &row, item, &eval_ctx)?;
                     }
                     Ok(Some(projected))
                 }

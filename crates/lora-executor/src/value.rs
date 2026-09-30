@@ -353,6 +353,89 @@ pub fn lora_value_to_property(value: LoraValue) -> Result<PropertyValue, Propert
     Ok(PropertyValue::from(value))
 }
 
+/// A row slot's value. Large values sit behind an `Arc`, so cloning the row
+/// (every expand candidate, OPTIONAL MATCH merge, UNWIND element, FOREACH
+/// iteration) bumps a refcount instead of copying a list the row only carries
+/// (E-4: a 10k-element list made a 200-row hop ~250x slower). Small values
+/// stay inline: an `Arc` in every slot costs an allocation per insert and a
+/// pointer chase per read, 10-16% on hot paths.
+#[derive(Debug, Clone)]
+enum SlotValue {
+    Inline(LoraValue),
+    Shared(Arc<LoraValue>),
+}
+
+impl SlotValue {
+    #[inline]
+    fn new(value: LoraValue) -> Self {
+        // Ids, scalars and strings, most of what rows hold, are decided
+        // here; only containers walk `is_large`.
+        let large = match &value {
+            LoraValue::String(s) => s.len() >= LARGE_BYTES,
+            LoraValue::List(_)
+            | LoraValue::Map(_)
+            | LoraValue::Path(_)
+            | LoraValue::Binary(_)
+            | LoraValue::Vector(_) => is_large(&value),
+            _ => false,
+        };
+        if large {
+            SlotValue::Shared(Arc::new(value))
+        } else {
+            SlotValue::Inline(value)
+        }
+    }
+
+    #[inline]
+    fn get(&self) -> &LoraValue {
+        match self {
+            SlotValue::Inline(v) => v,
+            SlotValue::Shared(v) => v,
+        }
+    }
+
+    #[inline]
+    fn into_value(self) -> LoraValue {
+        match self {
+            SlotValue::Inline(v) => v,
+            SlotValue::Shared(v) => Arc::try_unwrap(v).unwrap_or_else(|v| (*v).clone()),
+        }
+    }
+}
+
+/// A string at least this long is shared rather than copied.
+const LARGE_BYTES: usize = 256;
+
+impl PartialEq for SlotValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
+/// Whether copying `value` costs enough for a row to share it: a list, map
+/// or path with 8+ entries or a nested container, a long string, a binary or
+/// a vector. Looks at no more than 8 elements.
+fn is_large(value: &LoraValue) -> bool {
+    const ENTRIES: usize = 8;
+    let heavy = |v: &LoraValue| match v {
+        LoraValue::List(_)
+        | LoraValue::Map(_)
+        | LoraValue::Path(_)
+        | LoraValue::Vector(_)
+        | LoraValue::Binary(_) => true,
+        LoraValue::String(s) => s.len() >= LARGE_BYTES,
+        _ => false,
+    };
+    match value {
+        LoraValue::List(items) => items.len() >= ENTRIES || items.iter().any(heavy),
+        LoraValue::Map(map) => map.len() >= ENTRIES || map.values().any(heavy),
+        LoraValue::String(s) => s.len() >= LARGE_BYTES,
+        LoraValue::Path(p) => p.nodes.len() >= ENTRIES,
+        LoraValue::Binary(_) | LoraValue::Vector(_) => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct RowEntry {
     /// Stored alongside the value so iterators can hand back `&VarId` while
@@ -366,7 +449,7 @@ struct RowEntry {
     /// operator, so producers mint one `Arc` per column and every row (and
     /// every row clone) holds a refcount instead of a private heap copy.
     name: Option<Arc<str>>,
-    value: LoraValue,
+    value: SlotValue,
 }
 
 /// Row layout: a positional vector indexed by `VarId.0`. Two reasons this beats
@@ -397,10 +480,10 @@ impl Serialize for Row {
         let mut ser_map = serializer.serialize_map(Some(self.len()))?;
         for entry in self.entries.iter().flatten() {
             match &entry.name {
-                Some(name) => ser_map.serialize_entry(&**name, &entry.value)?,
+                Some(name) => ser_map.serialize_entry(&**name, entry.value.get())?,
                 None => {
                     let fallback = format!("_{}", entry.var);
-                    ser_map.serialize_entry(fallback.as_str(), &entry.value)?;
+                    ser_map.serialize_entry(fallback.as_str(), entry.value.get())?;
                 }
             }
         }
@@ -413,11 +496,9 @@ impl Row {
         Self::default()
     }
 
+    #[inline]
     pub fn get(&self, key: VarId) -> Option<&LoraValue> {
-        self.entries
-            .get(key.0 as usize)
-            .and_then(|slot| slot.as_ref())
-            .map(|entry| &entry.value)
+        self.slot(key).map(SlotValue::get)
     }
 
     /// Returns the column name for `key`, generating the `_{key}` fallback
@@ -432,9 +513,74 @@ impl Row {
             })
     }
 
+    #[inline]
     pub fn insert(&mut self, key: VarId, value: LoraValue) {
-        // Preserve any previously-set explicit name when overwriting an entry;
-        // otherwise leave name as None so the fallback is produced lazily.
+        self.set_value(key, SlotValue::new(value));
+    }
+
+    #[inline]
+    pub fn insert_named(&mut self, key: VarId, name: impl Into<Arc<str>>, value: LoraValue) {
+        self.set_named(key, name.into(), SlotValue::new(value));
+    }
+
+    /// [`Self::insert`] that never shares the value: for a binding rebound
+    /// per element of a list construct (`reduce`, a comprehension or
+    /// quantifier variable), where the row is reused rather than cloned.
+    #[inline]
+    pub fn insert_inline(&mut self, key: VarId, value: LoraValue) {
+        self.set_value(key, SlotValue::Inline(value));
+    }
+
+    /// [`Self::insert_named`] that never shares the value: for a row about to
+    /// leave the executor (hydrated output), where no clone follows and the
+    /// `Arc` would be an allocation per row for nothing.
+    pub fn insert_named_inline(&mut self, key: VarId, name: impl Into<Arc<str>>, value: LoraValue) {
+        self.set_named(key, name.into(), SlotValue::Inline(value));
+    }
+
+    /// Bind `key` (named `name`) to the value `source` holds for `from`,
+    /// sharing a large value instead of copying it. Returns `false`, and
+    /// changes nothing, when `from` is unset in `source`.
+    pub fn insert_named_from(
+        &mut self,
+        key: VarId,
+        name: impl Into<Arc<str>>,
+        source: &Row,
+        from: VarId,
+    ) -> bool {
+        let Some(value) = source.slot(from).cloned() else {
+            return false;
+        };
+        self.set_named(key, name.into(), value);
+        true
+    }
+
+    /// [`Self::insert_named_from`] with the row itself as the source.
+    pub fn insert_named_from_self(
+        &mut self,
+        key: VarId,
+        name: impl Into<Arc<str>>,
+        from: VarId,
+    ) -> bool {
+        let Some(value) = self.slot(from).cloned() else {
+            return false;
+        };
+        self.set_named(key, name.into(), value);
+        true
+    }
+
+    #[inline]
+    fn slot(&self, key: VarId) -> Option<&SlotValue> {
+        self.entries
+            .get(key.0 as usize)
+            .and_then(|slot| slot.as_ref())
+            .map(|entry| &entry.value)
+    }
+
+    /// Set `key`'s value, keeping any explicit name already stored;
+    /// otherwise leave the name as `None` so the fallback is produced lazily.
+    #[inline]
+    fn set_value(&mut self, key: VarId, value: SlotValue) {
         let idx = self.ensure_slot(key);
         match &mut self.entries[idx] {
             Some(existing) => existing.value = value,
@@ -449,12 +595,13 @@ impl Row {
         }
     }
 
-    pub fn insert_named(&mut self, key: VarId, name: impl Into<Arc<str>>, value: LoraValue) {
+    #[inline]
+    fn set_named(&mut self, key: VarId, name: Arc<str>, value: SlotValue) {
         let idx = self.ensure_slot(key);
         let was_set = self.entries[idx].is_some();
         self.entries[idx] = Some(RowEntry {
             var: key,
-            name: Some(name.into()),
+            name: Some(name),
             value,
         });
         if !was_set {
@@ -492,7 +639,7 @@ impl Row {
         self.entries
             .iter()
             .flatten()
-            .map(|entry| (&entry.var, &entry.value))
+            .map(|entry| (&entry.var, entry.value.get()))
     }
 
     /// Iterate `(key, name, value)`. The name is a `Cow`: borrowed when an
@@ -506,7 +653,7 @@ impl Row {
                 Some(n) => std::borrow::Cow::Borrowed(&**n),
                 None => std::borrow::Cow::Owned(format!("_{}", entry.var)),
             };
-            (&entry.var, name, &entry.value)
+            (&entry.var, name, entry.value.get())
         })
     }
 
@@ -520,7 +667,7 @@ impl Row {
             (
                 var,
                 name.unwrap_or_else(|| Arc::from(format!("_{var}"))),
-                value,
+                value.into_value(),
             )
         })
     }
@@ -808,4 +955,59 @@ fn try_as_hydrated_relationship(map: &BTreeMap<String, LoraValue>) -> Option<Hyd
         rel_type,
         properties,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn big() -> LoraValue {
+        LoraValue::List((0..100).map(LoraValue::Int).collect())
+    }
+
+    #[test]
+    fn a_slot_is_no_larger_than_its_value() {
+        // The `Shared` variant fits in `LoraValue`'s niche: rows stay as
+        // compact as before, and clone as one memcpy for inline values.
+        assert_eq!(
+            std::mem::size_of::<SlotValue>(),
+            std::mem::size_of::<LoraValue>()
+        );
+    }
+
+    #[test]
+    fn a_cloned_row_shares_a_large_value_and_copies_a_small_one() {
+        let mut row = Row::new();
+        row.insert(VarId(0), big());
+        row.insert(VarId(1), LoraValue::List(vec![LoraValue::Int(1)]));
+        let copy = row.clone();
+        assert!(std::ptr::eq(
+            row.get(VarId(0)).unwrap(),
+            copy.get(VarId(0)).unwrap()
+        ));
+        assert!(!std::ptr::eq(
+            row.get(VarId(1)).unwrap(),
+            copy.get(VarId(1)).unwrap()
+        ));
+        assert_eq!(row, copy);
+    }
+
+    #[test]
+    fn a_shared_value_is_handed_out_whole_by_each_owner() {
+        let mut row = Row::new();
+        row.insert_named(VarId(0), "big", big());
+        let mut projected = Row::new();
+        assert!(projected.insert_named_from(VarId(1), "alias", &row, VarId(0)));
+        assert!(!projected.insert_named_from(VarId(2), "missing", &row, VarId(5)));
+        assert!(std::ptr::eq(
+            row.get(VarId(0)).unwrap(),
+            projected.get(VarId(1)).unwrap()
+        ));
+        assert_eq!(projected.len(), 1);
+        let (_, name, value) = projected.into_iter_named().next().unwrap();
+        assert_eq!(&*name, "alias");
+        assert_eq!(value, big());
+        // The original still holds its own copy.
+        assert_eq!(row.get(VarId(0)), Some(&big()));
+    }
 }

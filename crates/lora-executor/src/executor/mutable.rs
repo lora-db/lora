@@ -243,7 +243,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         let mut out = Row::new();
 
         for (var, name, value) in row.into_iter_named() {
-            out.insert_named(var, name, self.hydrate_value(value));
+            out.insert_named_inline(var, name, self.hydrate_value(value));
         }
 
         out

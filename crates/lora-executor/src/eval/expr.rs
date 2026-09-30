@@ -106,10 +106,7 @@ pub fn eval_expr<S: GraphStorage>(
             function,
             distinct: _,
             args,
-        } => {
-            let args: Vec<LoraValue> = args.iter().map(|a| eval_expr(a, row, ctx)).collect();
-            eval_function(*function, &args, ctx)
-        }
+        } => eval_call(*function, args, row, ctx),
 
         ResolvedExpr::Parameter(name) => ctx.params.get(name).cloned().unwrap_or(LoraValue::Null),
 
@@ -128,7 +125,7 @@ pub fn eval_expr<S: GraphStorage>(
                     let mut inner_row = row.clone();
                     let mut count = 0usize;
                     for item in items {
-                        inner_row.insert(*variable, item);
+                        inner_row.insert_inline(*variable, item);
                         if eval_expr(predicate, &inner_row, ctx).is_truthy() {
                             count += 1;
                         }
@@ -159,7 +156,7 @@ pub fn eval_expr<S: GraphStorage>(
                     for item in items {
                         // When no map_expr, we need the item after filter —
                         // stash it in the row binding and read it back if kept.
-                        inner_row.insert(*variable, item);
+                        inner_row.insert_inline(*variable, item);
                         if let Some(f) = filter {
                             if !eval_expr(f, &inner_row, ctx).is_truthy() {
                                 continue;
@@ -197,8 +194,8 @@ pub fn eval_expr<S: GraphStorage>(
                     let mut inner_row = row.clone();
                     let mut acc = init_val;
                     for item in items {
-                        inner_row.insert(*accumulator, acc);
-                        inner_row.insert(*variable, item);
+                        inner_row.insert_inline(*accumulator, acc);
+                        inner_row.insert_inline(*variable, item);
                         acc = eval_expr(expr, &inner_row, ctx);
                     }
                     acc
@@ -371,6 +368,22 @@ fn eval_ref<'r, S: GraphStorage>(
         ResolvedExpr::Variable(var) => Cow::Borrowed(row.get(*var).unwrap_or(&NULL)),
         _ => Cow::Owned(eval_expr(expr, row, ctx)),
     }
+}
+
+/// A function call. A lone variable argument (`size(big)`, `head(list)`) is
+/// read in place instead of copied per call.
+fn eval_call<S: GraphStorage>(
+    function: lora_analyzer::FunctionId,
+    args: &[ResolvedExpr],
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> LoraValue {
+    if let [ResolvedExpr::Variable(var)] = args {
+        let value = row.get(*var).unwrap_or(&NULL);
+        return eval_function(function, std::slice::from_ref(value), ctx);
+    }
+    let args: Vec<LoraValue> = args.iter().map(|a| eval_expr(a, row, ctx)).collect();
+    eval_function(function, &args, ctx)
 }
 
 fn eval_exists_subquery<S: GraphStorage>(
