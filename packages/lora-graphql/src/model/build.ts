@@ -620,6 +620,18 @@ export function buildModel(
         node.mutations.has("CREATE") &&
         f.required &&
         !f.list &&
+        !f.settableOn.create
+      ) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message:
+            "a required relationship must be settable on create, or creates could never set it",
+        });
+      } else if (
+        node.mutations.has("CREATE") &&
+        f.required &&
+        !f.list &&
         !f.nestedOperations.has("CONNECT") &&
         !f.nestedOperations.has("CREATE")
       ) {
@@ -1145,11 +1157,30 @@ function buildRelationshipField(
   if (properties !== undefined && !propsNames.has(properties)) {
     at(`${properties} is not a @relationshipProperties type`);
   }
-  for (const forbidden of ["key", "unique", "sortable", "alias", "index"]) {
+  // Directives about stored values have no meaning on a relationship:
+  // refused, never silently ignored.
+  for (const forbidden of [
+    "key",
+    "unique",
+    "sortable",
+    "alias",
+    "index",
+    "default",
+    "timestamp",
+    "populatedBy",
+    "selectable",
+    "private",
+    "groupBy",
+    "vector",
+    "relayId",
+    "storedAs",
+  ]) {
     if (directive(d(forbidden), f, at)) {
       at(`@${forbidden} is not allowed on a relationship field`);
     }
   }
+  const settableArgs = directive(d("settable"), f, at);
+  const readonlyFlag = directive(d("readonly"), f, at) !== undefined;
   const filterable = directive(d("filterable"), f, at);
   if (filterable?.["byValue"] !== undefined) {
     at("@filterable on a relationship takes no byValue");
@@ -1183,6 +1214,14 @@ function buildRelationshipField(
     queryDirection: rel["queryDirection"] as "DIRECTED" | "UNDIRECTED",
     onDelete: rel["onDelete"] as "DETACH" | "CASCADE" | "RESTRICT",
     nestedOperations: new Set(rel["nestedOperations"] as NestedOperation[]),
+    settableOn: {
+      create:
+        !readonlyFlag &&
+        ((settableArgs?.["onCreate"] as boolean | undefined) ?? true),
+      update:
+        !readonlyFlag &&
+        ((settableArgs?.["onUpdate"] as boolean | undefined) ?? true),
+    },
     aggregate: rel["aggregate"] as boolean,
     cardinality,
     limit: limitArgs

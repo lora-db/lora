@@ -238,3 +238,111 @@ describe("G-9: field rules on relationship properties are enforced", () => {
     ).toThrow(/not a claim of the @jwt type/);
   });
 });
+
+describe("G-10: @settable and @readonly on relationship fields", () => {
+  const typeDefs = `
+    type Request @node @mutation {
+      key: String! @key
+      note: String
+      from: Person! @relationship(type: "SENT", direction: IN) @settable(onCreate: true, onUpdate: false)
+      to: Person @relationship(type: "TO", direction: OUT)
+    }
+    type Person @node { key: String! @key }`;
+  const seed = [
+    "CREATE (a:Person {key:'a'}), (:Person {key:'b'}), (a)-[:SENT]->(:Request {key:'r'})",
+  ];
+  const sender = (t: Test) =>
+    cypher(
+      t,
+      "MATCH (p:Person)-[:SENT]->(:Request {key:'r'}) RETURN p.key AS k",
+    );
+
+  test("an update cannot re-point a relationship settable on create only", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.run(
+      `mutation { updateRequest(key: "r", update: { from: { connect: { key: "b" } } }) { request { from { key } } } }`,
+    );
+    // Absent from RequestUpdateInput, like a scalar settable on create only.
+    expect(r.errors?.[0]?.message).toMatch(/from/);
+    expect(t.schema.getType("RequestUpdateInput")).toBeDefined();
+    expect(
+      Object.keys(
+        (
+          t.schema.getType("RequestUpdateInput") as never as {
+            getFields(): Record<string, unknown>;
+          }
+        ).getFields(),
+      ).sort(),
+    ).toEqual(["note", "to"]);
+    // An upsert of the existing node keeps the relationship it was created with.
+    const up = await t.run(
+      `mutation { upsertRequests(input: [{ key: "r", note: "x", from: { connect: { key: "b" } } }]) { requests { key note from { key } } } }`,
+    );
+    expect(up.errors).toBeUndefined();
+    expect(up.data).toEqual({
+      upsertRequests: {
+        requests: [{ key: "r", note: "x", from: { key: "a" } }],
+      },
+    });
+    expect(await sender(t)).toEqual([{ k: "a" }]);
+    t.close();
+  });
+
+  test("create sets it, and other relationships stay updatable", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const created = await t.data(
+      `mutation { createRequests(input: [{ key: "r2", from: { connect: { key: "b" } } }]) { requests { from { key } } } }`,
+    );
+    expect(created).toEqual({
+      createRequests: { requests: [{ from: { key: "b" } }] },
+    });
+    const updated = await t.data(
+      `mutation { updateRequest(key: "r", update: { to: { connect: { key: "b" } } }) { request { to { key } from { key } } } }`,
+    );
+    expect(updated).toEqual({
+      updateRequest: { request: { to: { key: "b" }, from: { key: "a" } } },
+    });
+    t.close();
+  });
+
+  test("@readonly leaves it out of both inputs; value directives are refused", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: typeDefs.replace(
+        'to: Person @relationship(type: "TO", direction: OUT)',
+        'to: Person @relationship(type: "TO", direction: OUT) @readonly',
+      ),
+      seed,
+    });
+    for (const input of ["RequestCreateInput", "RequestUpdateInput"]) {
+      const fields = (
+        t.schema.getType(input) as never as {
+          getFields(): Record<string, unknown>;
+        }
+      ).getFields();
+      expect(fields["to"]).toBeUndefined();
+    }
+    t.close();
+    expect(
+      () =>
+        new LoraGraphQL({
+          typeDefs: typeDefs.replace(
+            "@settable(onCreate: true, onUpdate: false)",
+            "@settable(onCreate: false)",
+          ),
+          driver: undefined as never,
+        }),
+    ).toThrow(
+      /Request\.from: a required relationship must be settable on create/,
+    );
+    expect(
+      () =>
+        new LoraGraphQL({
+          typeDefs: typeDefs.replace(
+            "direction: OUT)",
+            'direction: OUT) @default(value: "b")',
+          ),
+          driver: undefined as never,
+        }),
+    ).toThrow(/@default is not allowed on a relationship field/);
+  });
+});

@@ -83,7 +83,10 @@ export interface MutationSchemaContext {
 }
 
 /** Whether clients may set a field on `op` (`@settable`, `@readonly`, …). */
-export function settable(f: ScalarField, op: "CREATE" | "UPDATE"): boolean {
+export function settable(
+  f: ScalarField | RelationshipField,
+  op: "CREATE" | "UPDATE",
+): boolean {
   return op === "CREATE" ? f.settableOn.create : f.settableOn.update;
 }
 
@@ -102,8 +105,8 @@ export function requiredOnCreate(f: ScalarField): boolean {
 export function isUpdatable(node: NodeType): boolean {
   return [...node.fields.values()].some(
     (f) =>
-      f.kind === "relationship" ||
-      (f.kind === "scalar" && settable(f, "UPDATE")),
+      (f.kind === "relationship" || f.kind === "scalar") &&
+      settable(f, "UPDATE"),
   );
 }
 
@@ -350,7 +353,7 @@ export function buildMutations(
     once(mutationNames.createInput(node.name), () => {
       const fields = scalarInputs(scalarsOf(node), "CREATE");
       for (const rel of node.fields.values()) {
-        if (rel.kind !== "relationship") continue;
+        if (rel.kind !== "relationship" || !settable(rel, "CREATE")) continue;
         const inputs = relationFields(node, rel, false);
         if (Object.keys(inputs).length === 0) continue;
         const t = once(
@@ -384,7 +387,7 @@ export function buildMutations(
             type: f.key ? nonNull(t) : t,
             description: f.description,
           };
-        } else if (f.kind === "relationship") {
+        } else if (f.kind === "relationship" && settable(f, "CREATE")) {
           const inputs = relationFields(node, f, false);
           if (Object.keys(inputs).length === 0) continue;
           fields[f.name] = {
@@ -402,7 +405,7 @@ export function buildMutations(
     return once(mutationNames.updateInput(node.name), () => {
       const fields = scalarInputs(scalarsOf(node), "UPDATE");
       for (const rel of node.fields.values()) {
-        if (rel.kind !== "relationship") continue;
+        if (rel.kind !== "relationship" || !settable(rel, "UPDATE")) continue;
         const inputs = relationFields(node, rel, true);
         if (Object.keys(inputs).length === 0) continue;
         fields[rel.name] = {

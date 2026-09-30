@@ -279,6 +279,12 @@ class WritePlan {
           `${node.name}.${f.name} is required: connect or create one`,
         );
       }
+      if (value && !settable(f, "CREATE")) {
+        throw requestError(
+          "BAD_USER_INPUT",
+          `${node.name}.${f.name} cannot be set on create`,
+        );
+      }
       if (value) this.relate(node, key, f, value, false);
     }
     return key;
@@ -1062,6 +1068,12 @@ class Runner {
       for (const f of node.fields.values()) {
         if (f.kind === "relationship") {
           const value = input[f.name];
+          if (value && !settable(f, "UPDATE")) {
+            throw requestError(
+              "BAD_USER_INPUT",
+              `${node.name}.${f.name} cannot be changed after create`,
+            );
+          }
           if (value) plan.relate(node, key, f, value as Input, true);
           continue;
         }
@@ -1948,11 +1960,15 @@ async function upsert(
   const updates: Array<{ key: unknown; input: Input }> = [];
   for (const [i, input] of inputs.entries()) {
     if (existing.has(keyOf(keys[i]))) {
-      // Fields set only on create keep the value they were created with.
+      // Fields and relationships set only on create keep the value they
+      // were created with.
       const kept = Object.fromEntries(
         Object.entries(input).filter(([k]) => {
           const f = node.fields.get(k);
-          return f?.kind !== "scalar" || settable(f, "UPDATE");
+          return (
+            (f?.kind !== "scalar" && f?.kind !== "relationship") ||
+            settable(f, "UPDATE")
+          );
         }),
       );
       updates.push({ key: keys[i], input: kept });

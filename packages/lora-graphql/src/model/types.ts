@@ -142,6 +142,11 @@ export interface RelationshipField extends FieldBase {
   onDelete: "DETACH" | "CASCADE" | "RESTRICT";
   /** Nested writes mutation inputs offer for the field. */
   nestedOperations: ReadonlySet<NestedOperation>;
+  /**
+   * `@settable` / `@readonly`: whether create and update inputs offer the
+   * field at all (an upsert of an existing node keeps its relationship).
+   */
+  settableOn: { create: boolean; update: boolean };
   /** Whether the field's connection and filters offer aggregates. */
   aggregate: boolean;
   cardinality: number | undefined;

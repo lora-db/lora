@@ -39,7 +39,12 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   on both ends, so its rules test claims only, and the model refuses a
   `node` part instead of guessing which end it means. Reading, filtering,
   sorting and aggregating such a property follow its READ rules
-  (`test/consumer-regressions.test.ts`, G-9).
+  (`test/consumer-regressions.test.ts`, G-9). `@settable` and `@readonly`
+  on a relationship field take it out of the create or update input, and
+  an upsert of an existing node keeps the relationship it was created
+  with (G-10). Directives about stored values (`@default`, `@timestamp`,
+  `@private`, …) on a relationship field are model errors, never
+  silently ignored.
 - **Forge cursors.** Without `cursorSecret`, cursors are tagged with
   their sort, not signed: a client can craft one, but it only moves a
   page's start within rows the caller may read, because sorting on fields
