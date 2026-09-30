@@ -610,6 +610,29 @@ Relationship and `@cypher` fields take field-level `@authorization`
 with READ validate rules: a row failing the rule reads the field as
 `FORBIDDEN`, and filtering through the field applies the rule too.
 
+Relationship properties take field-level `@authentication` and
+`@authorization(validate:)` for `READ`, `CREATE` and `UPDATE`. One
+`@relationshipProperties` type can serve fields on both ends, so these
+rules test claims (`jwt`) only; a `node` part is a model error. Setting
+the property on connect or nested create checks `CREATE` for a new
+relationship and `UPDATE` for one that already exists; `update: { edge }`
+checks `UPDATE`. A request the READ rules refuse reads the property as
+`FORBIDDEN` and cannot filter, sort or aggregate by it.
+
+```graphql
+type Membership @relationshipProperties {
+  role: String
+    @authorization(
+      validate: [
+        {
+          operations: [CREATE, UPDATE]
+          where: { jwt: { roles: { includes: "admin" } } }
+        }
+      ]
+    )
+}
+```
+
 ## The smart layer
 
 **S1: indexes from the API.** `requirements()` derives every constraint and

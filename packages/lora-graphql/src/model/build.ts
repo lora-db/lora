@@ -700,6 +700,55 @@ export function buildModel(
     }
   }
 
+  // Rules on relationship properties: validate rules over claims, for
+  // reading and writing the property.
+  for (const props of relationshipProperties.values()) {
+    for (const f of props.fields.values()) {
+      if (!f.authorization && !f.authentication) continue;
+      const at = (message: string) =>
+        problems.push({ type: props.name, field: f.name, message });
+      if (f.authorization?.filter.length) {
+        at(
+          "@authorization on a relationship property takes validate rules only",
+        );
+      }
+      const ops = [
+        ...(f.authorization?.validate ?? []).flatMap((r) => [...r.operations]),
+        ...(f.authentication ?? []),
+      ];
+      const unsupported = [
+        ...new Set(ops.filter((op) => !PROPERTY_OPS.has(op))),
+      ];
+      if (unsupported.length > 0) {
+        at(
+          `rules on a relationship property apply to READ, CREATE and UPDATE, not ${unsupported.join(", ")}`,
+        );
+      }
+      for (const rule of f.authorization?.validate ?? []) {
+        checkRuleWhere(
+          nodes,
+          undefined,
+          props.name,
+          f.name,
+          rule.where,
+          problems,
+          jwtShape,
+        );
+      }
+      if (f.authenticationJwt) {
+        checkRuleWhere(
+          nodes,
+          undefined,
+          props.name,
+          f.name,
+          { jwt: f.authenticationJwt },
+          problems,
+          jwtShape,
+        );
+      }
+    }
+  }
+
   // A plain object type exists to shape @cypher results.
   const returned = new Set(
     [
@@ -1566,6 +1615,7 @@ const SCALAR_WHERE_OPS = new Set([
   "startsWith",
   "endsWith",
 ]);
+const PROPERTY_OPS = new Set<AuthOperation>(["READ", "CREATE", "UPDATE"]);
 const JWT_OPS = new Set([...SCALAR_WHERE_OPS, "includes", "exists"]);
 const COUNT_WHERE_OPS = new Set(["eq", "lt", "lte", "gt", "gte"]);
 
@@ -1580,8 +1630,30 @@ function checkAuthorizationWhere(
   problems: ModelProblem[],
   jwtShape?: ReadonlyMap<string, string>,
 ) {
+  checkRuleWhere(nodes, node, node.name, undefined, where, problems, jwtShape);
+}
+
+/**
+ * Check a rule's where. Without `node` (a relationship property's rules)
+ * only claims may be tested: a @relationshipProperties type can sit under
+ * several relationship fields, from either end, so `node` would be
+ * ambiguous.
+ */
+function checkRuleWhere(
+  nodes: ReadonlyMap<string, NodeType>,
+  node: NodeType | undefined,
+  type: string,
+  field: string | undefined,
+  where: unknown,
+  problems: ModelProblem[],
+  jwtShape?: ReadonlyMap<string, string>,
+) {
   const at = (message: string) =>
-    problems.push({ type: node.name, message: `@authorization: ${message}` });
+    problems.push({
+      type,
+      ...(field ? { field } : {}),
+      message: `@authorization: ${message}`,
+    });
   const visit = (w: unknown, path: string) => {
     if (!isRecord(w)) return at(`${path || "where"} must be an object`);
     for (const [k, value] of Object.entries(w)) {
@@ -1591,7 +1663,11 @@ function checkAuthorizationWhere(
         else value.forEach((x, i) => visit(x, `${here}[${i}]`));
       } else if (k === "NOT") {
         visit(value, here);
-      } else if (k === "node") {
+      } else if (k === "node" && !node) {
+        at(
+          `${here}: rules on relationship properties test claims (jwt) only; node rules belong on the node types`,
+        );
+      } else if (k === "node" && node) {
         checkNodeWhere(nodes, node, value, here, at);
         if (jwtShape) {
           for (const ref of claimRefs(value)) {

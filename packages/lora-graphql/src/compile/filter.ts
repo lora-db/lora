@@ -21,6 +21,7 @@ import {
   authFilter,
   checkAuthentication,
   checkFieldAuthentication,
+  checkPropertyAccess,
   fieldValidate,
 } from "./auth.js";
 import { bind, freshVar, type CompileContext } from "./context.js";
@@ -142,6 +143,8 @@ export function compilePropsWhere(
 ): Expr | undefined {
   return compileWhere(ctx, where, (key) => {
     const f = props.fields.get(key);
+    // Filtering on a property reveals it: the same rules as reading it.
+    if (f) checkPropertyAccess(ctx, props.name, f, "READ");
     return f
       ? (value) =>
           scalarPredicate(ctx, prop(v(variable), f.property), value as Where)
@@ -587,7 +590,8 @@ function aggregatePredicate(
     for (const [fieldName, aggs] of Object.entries(where ?? {})) {
       const field = lookup(fieldName);
       if (!field || aggs === null || aggs === undefined) continue;
-      if (!onEdge) {
+      if (onEdge) checkPropertyAccess(ctx, props!.name, field, "READ");
+      else {
         checkFieldAuthentication(ctx, target.name, field);
         // An aggregate over values some rows may not read would reveal
         // them: refused unless the claims alone settle the rules.

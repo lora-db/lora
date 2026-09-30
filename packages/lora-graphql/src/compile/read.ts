@@ -40,7 +40,9 @@ import {
   authValidate,
   checkAuthentication,
   checkFieldAuthentication,
+  checkPropertyAccess,
   fieldValidate,
+  propertyAccess,
 } from "./auth.js";
 import { bind, freshVar, type CompileContext } from "./context.js";
 import { decodeCursor } from "./cursor.js";
@@ -1618,6 +1620,7 @@ function resolveSort(
     if (fieldName === "edge" && props) {
       const [propName, dir] = one(direction as Record<string, unknown>);
       const field = props.fields.get(propName)!;
+      checkPropertyAccess(ctx, props.name, field, "READ");
       if (keys.some((k) => k.edge && k.field === field)) {
         throw requestError(
           "BAD_USER_INPUT",
@@ -2448,6 +2451,19 @@ function projectProperties(
   for (const [key, nodes] of collectFields(ctx, objType, sets)) {
     const field = props.fields.get(nodes[0]!.name.value);
     if (!field) continue;
+    // Rules on a relationship property test claims only: a request they
+    // refuse reads it as FORBIDDEN, on every row that has it.
+    if (propertyAccess(ctx, field, "READ") !== "allowed") {
+      entries.push({
+        kind: "entry",
+        key,
+        value: {
+          kind: "map",
+          entries: [{ key: "__forbidden", value: lit(true) }],
+        },
+      });
+      continue;
+    }
     entries.push(
       key === field.property
         ? { kind: "property", key }
@@ -2517,6 +2533,8 @@ function connectionSelections(
           if (sideName === "node") {
             checkFieldAuthentication(ctx, target.name, field);
             refuseRowRules(ctx, target, field, "aggregate");
+          } else {
+            checkPropertyAccess(ctx, props!.name, field, "READ");
           }
           const fieldType = getNamedType(
             sideType.getFields()[fieldName]!.type,

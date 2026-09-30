@@ -9,8 +9,10 @@ import {
   authValidate,
   checkAuthentication,
   checkFieldAuthentication,
+  checkPropertyAccess,
   fieldValidate,
   forbidden,
+  propertyAccess,
 } from "../compile/auth.js";
 import { bind, newContext, type CompileContext } from "../compile/context.js";
 import {
@@ -126,6 +128,12 @@ interface Link {
   /** @key of the target node. */
   to: unknown;
   props: Record<string, unknown>;
+  /**
+   * Relationship properties the input sets whose rules refuse it when the
+   * relationship is new (`create`) or already exists (`update`): known
+   * only once the MERGE ran, so the check follows it (and rolls back).
+   */
+  refused?: { create?: Error; update?: Error };
 }
 
 interface CreateRow {
@@ -407,7 +415,7 @@ class WritePlan {
         rel,
         from: ownerKey,
         to: c[target.key.name],
-        props: edgeProps(this.model, rel, c["edge"] as Input | undefined),
+        ...edgeProps(this.ctx, rel, c["edge"] as Input | undefined),
       });
     }
     for (const c of create) {
@@ -416,7 +424,7 @@ class WritePlan {
         rel,
         from: ownerKey,
         to: key,
-        props: edgeProps(this.model, rel, c["edge"] as Input | undefined),
+        ...edgeProps(this.ctx, rel, c["edge"] as Input | undefined),
       });
     }
     for (const u of updates) {
@@ -428,6 +436,7 @@ class WritePlan {
         const remove: string[] = [];
         for (const f of props.fields.values()) {
           if (!(f.name in edge) || !settable(f, "UPDATE")) continue;
+          checkPropertyAccess(this.ctx, props.name, f, "UPDATE");
           if (edge[f.name] === null) {
             if (f.required) {
               throw requestError(
@@ -449,22 +458,59 @@ class WritePlan {
 }
 
 function edgeProps(
-  model: GraphModel,
+  ctx: CompileContext,
   rel: RelationshipField,
   edge: Input | undefined,
-): Record<string, unknown> {
-  if (!rel.properties) return {};
-  const props = model.relationshipProperties.get(rel.properties)!;
+): Pick<Link, "props" | "refused"> {
+  if (!rel.properties) return { props: {} };
+  const props = ctx.model.relationshipProperties.get(rel.properties)!;
   const out: Record<string, unknown> = {};
+  let refused: Link["refused"];
   for (const f of props.fields.values()) {
     const value = edge?.[f.name];
     if (value !== undefined && value !== null && settable(f, "CREATE")) {
+      // Setting a property on connect creates it on a new relationship
+      // and updates it on an existing one: both rules must be known.
+      const onCreate = propertyAccess(ctx, f, "CREATE");
+      const onUpdate = propertyAccess(ctx, f, "UPDATE");
+      if (onCreate !== "allowed" && onUpdate !== "allowed") {
+        checkPropertyAccess(ctx, props.name, f, "CREATE");
+      }
+      if (onCreate !== "allowed") {
+        refused = {
+          ...refused,
+          create: propertyError(props.name, f, "CREATE", onCreate),
+        };
+      }
+      if (onUpdate !== "allowed") {
+        refused = {
+          ...refused,
+          update: propertyError(props.name, f, "UPDATE", onUpdate),
+        };
+      }
       out[f.property] = toStored(f, value);
     } else if (f.defaultValue) {
       out[f.property] = storedDefault(f);
     }
   }
-  return out;
+  return refused ? { props: out, refused } : { props: out };
+}
+
+function propertyError(
+  type: string,
+  f: ScalarField,
+  op: "CREATE" | "UPDATE",
+  access: "forbidden" | "unauthenticated" | "allowed",
+): Error {
+  return access === "unauthenticated"
+    ? requestError(
+        "UNAUTHENTICATED",
+        `${type}.${f.name} needs an authenticated request`,
+      )
+    : requestError(
+        "FORBIDDEN",
+        `not allowed to ${op.toLowerCase()} ${type}.${f.name}`,
+      );
 }
 
 const TEMPORAL_KIND: Partial<Record<string, string>> = {
@@ -742,8 +788,21 @@ class Runner {
         andText(authFilter(lctx, target, "b", "CREATE_RELATIONSHIP")) +
         `\nWITH a, b, row, size([(a)${arrow(rel, "", "b", undefined)} | 1]) > 0 AS existed` +
         `\nMERGE (a)${arrow(rel, "r", "b", undefined)}\n` +
-        `SET r += row.props\nRETURN row.to AS key, existed`;
+        `SET r += row.props\nRETURN row.from AS from, row.to AS key, existed`;
       const linked = await this.run(text, lctx);
+      // Rules on the properties set, now that new and existing
+      // relationships are told apart; a refusal rolls the mutation back.
+      const byPair = new Map(
+        links.map((l) => [`${keyOf(l.from)}\0${keyOf(l.to)}`, l]),
+      );
+      for (const row of linked) {
+        const refused = byPair.get(
+          `${keyOf(row["from"])}\0${keyOf(row["key"])}`,
+        )?.refused;
+        const error =
+          row["existed"] === true ? refused?.update : refused?.create;
+        if (error) throw error;
+      }
       if (linked.length < links.length) {
         const found = new Set(linked.map((r) => keyOf(r["key"])));
         const missing = links

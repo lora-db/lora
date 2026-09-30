@@ -168,6 +168,66 @@ function validateRules(
   return toExpr(folded);
 }
 
+/**
+ * Whether `op` may touch a relationship property with field-level rules.
+ * A @relationshipProperties type can sit under several relationship
+ * fields, from either end, so its rules test claims only (checked at
+ * startup) and fold to a yes or no here. `"unauthenticated"` when every
+ * rule needs a token and the request has none.
+ */
+export function propertyAccess(
+  ctx: CompileContext,
+  field: {
+    authentication: ReadonlySet<AuthOperation> | undefined;
+    authenticationJwt?: AuthorizationWhere | undefined;
+    authorization?: Authorization | undefined;
+  },
+  op: AuthOperation,
+): "allowed" | "forbidden" | "unauthenticated" {
+  if (ctx.inAuth) return "allowed";
+  if (
+    field.authentication?.has(op) &&
+    (!ctx.jwt || !claimsSatisfy(ctx, field.authenticationJwt))
+  ) {
+    return "unauthenticated";
+  }
+  const rules = (field.authorization?.validate ?? []).filter((r) =>
+    r.operations.has(op),
+  );
+  if (rules.length === 0) return "allowed";
+  if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
+    return "unauthenticated";
+  }
+  const granted = rules.some(
+    (r) =>
+      !(r.requireAuthentication && !ctx.jwt) &&
+      compileRule(ctx, undefined, "", r.where) === true,
+  );
+  return granted ? "allowed" : "forbidden";
+}
+
+/** Throws unless `op` may write (or filter by) the relationship property. */
+export function checkPropertyAccess(
+  ctx: CompileContext,
+  type: string,
+  field: Parameters<typeof propertyAccess>[1] & { name: string },
+  op: AuthOperation,
+): void {
+  const access = propertyAccess(ctx, field, op);
+  if (access === "unauthenticated") {
+    throw requestError(
+      "UNAUTHENTICATED",
+      `${type}.${field.name} needs an authenticated request`,
+    );
+  }
+  if (access === "forbidden") {
+    throw requestError(
+      "FORBIDDEN",
+      `not allowed to ${op.toLowerCase()} ${type}.${field.name}`,
+    );
+  }
+}
+
 export function forbidden(node: NodeType, op: AuthOperation) {
   return requestError(
     "FORBIDDEN",
@@ -180,7 +240,7 @@ class MissingClaim extends Error {}
 
 function compileRule(
   ctx: CompileContext,
-  node: NodeType,
+  node: NodeType | undefined,
   variable: string,
   where: AuthorizationWhere,
 ): Folded {

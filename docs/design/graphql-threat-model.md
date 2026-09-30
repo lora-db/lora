@@ -30,6 +30,16 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   and context paths read own properties only, so `constructor`,
   `__proto__` and other inherited names resolve to nothing. `eq`, `in`
   and `includes` on claims compare structurally.
+- **Write a guarded field.** Field-level rules apply on every path that
+  writes the field. Relationship properties are covered on connect,
+  nested create, re-connect and edge update; a re-connect is checked
+  against the UPDATE rules when the relationship already exists and
+  against CREATE otherwise, after the `MERGE`, and a refusal rolls the
+  mutation back. A `@relationshipProperties` type can sit under fields
+  on both ends, so its rules test claims only, and the model refuses a
+  `node` part instead of guessing which end it means. Reading, filtering,
+  sorting and aggregating such a property follow its READ rules
+  (`test/consumer-regressions.test.ts`, G-9).
 - **Forge cursors.** Without `cursorSecret`, cursors are tagged with
   their sort, not signed: a client can craft one, but it only moves a
   page's start within rows the caller may read, because sorting on fields
@@ -67,16 +77,17 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
 
 ## Where each check runs
 
-| Check                                             | When                               |
-| ------------------------------------------------- | ---------------------------------- |
-| Model validity, rule fields, `@cypher` parameters | Startup (`new LoraGraphQL`)        |
-| `@cypher` read-only for queries                   | Startup; planned with `check()`    |
-| Persisted documents                               | `persist()`                        |
-| Document guards                                   | Parse and validation, per request  |
-| `@authentication`, claim-only rule parts          | Compile time, per request          |
-| Node rules (filter, validate)                     | In the database, in the statement  |
-| Cost limit                                        | Compile time, before the statement |
-| Timeouts, cancellation                            | In the database                    |
+| Check                                             | When                                        |
+| ------------------------------------------------- | ------------------------------------------- |
+| Model validity, rule fields, `@cypher` parameters | Startup (`new LoraGraphQL`)                 |
+| `@cypher` read-only for queries                   | Startup; planned with `check()`             |
+| Persisted documents                               | `persist()`                                 |
+| Document guards                                   | Parse and validation, per request           |
+| `@authentication`, claim-only rule parts          | Compile time, per request                   |
+| Relationship property rules (claims only)         | Compile time; a connect's after its `MERGE` |
+| Node rules (filter, validate)                     | In the database, in the statement           |
+| Cost limit                                        | Compile time, before the statement          |
+| Timeouts, cancellation                            | In the database                             |
 
 ## Operator checklist
 
