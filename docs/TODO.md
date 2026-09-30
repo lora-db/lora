@@ -93,7 +93,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 Schema lint: warn on low-cardinality inferred indexes (enum, boolean, `@default`).
 - [ ] P2 Opt-in `totalCount` cap.
 - [ ] P2 Cursor HMAC: use `node:crypto.createHmac`, precompute per secret (`src/compile/cursor.ts:82`).
-- [ ] P2 Prototype worker threads sharing one engine; benchmark.
+- [ ] P2 Worker threads sharing one engine: confirm `bench:load --workers 0,1,2,4` on a quiet machine; document multi-worker serving (change feed for cache invalidation).
 - [ ] P3 Document cache is FIFO, not LRU; `onWrite` listeners run synchronously on the request path (`src/lora-graphql.ts:986`).
 - [ ] P3 S8 types for `@cypher` parameters in `compile` output.
 - [ ] P3 Load-test `@authorization` rules, cascading and bulk mutations.

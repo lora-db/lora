@@ -20,7 +20,8 @@ import {
 } from "./scenarios.js";
 
 export interface LoadgenInput {
-  origin: string;
+  /** Server endpoints: connections are spread across them. */
+  origins: string[];
   scenario: Scenario;
   size: GraphSize;
   mode: "closed" | "open";
@@ -53,12 +54,15 @@ const input = workerData as LoadgenInput;
 const random = rng(input.seed);
 const pick = (n: number) => Math.floor(random() * n);
 const next = picker(input.scenario, random);
-const pool = new Pool(input.origin, {
-  connections: input.concurrency,
-  pipelining: 1,
-  headersTimeout: input.requestTimeoutMs,
-  bodyTimeout: input.requestTimeoutMs,
-});
+const pools = input.origins.map(
+  (origin) =>
+    new Pool(origin, {
+      connections: Math.ceil(input.concurrency / input.origins.length),
+      pipelining: 1,
+      headersTimeout: input.requestTimeoutMs,
+      bodyTimeout: input.requestTimeoutMs,
+    }),
+);
 
 const latencies: number[] = [];
 const byOperation: Partial<Record<OperationName, number[]>> = {};
@@ -87,7 +91,7 @@ function claims(): string {
 }
 
 /** Send one request; record it when it was due at or after measureFrom. */
-async function request(due: number): Promise<void> {
+async function request(due: number, pool: Pool): Promise<void> {
   const name = next();
   const op = operations[name];
   const headers: Record<string, string> = {
@@ -133,8 +137,11 @@ async function request(due: number): Promise<void> {
 }
 
 async function closed(): Promise<void> {
-  const worker = async () => {
-    while (performance.now() < end) await request(performance.now());
+  // Each worker keeps one endpoint, offset by thread, so connections spread
+  // evenly across endpoints even when a thread runs a single worker.
+  const worker = async (_: unknown, i: number) => {
+    const pool = pools[(i + input.seed - 1) % pools.length]!;
+    while (performance.now() < end) await request(performance.now(), pool);
   };
   await Promise.all(Array.from({ length: input.concurrency }, worker));
 }
@@ -152,7 +159,9 @@ async function open(): Promise<void> {
         if (due >= measureFrom) dropped++;
         continue;
       }
-      const p = request(due).finally(() => pending.delete(p));
+      const p = request(due, pools[sent % pools.length]!).finally(() =>
+        pending.delete(p),
+      );
       pending.add(p);
     }
     await new Promise((resolve) => setTimeout(resolve, 1));
@@ -161,7 +170,7 @@ async function open(): Promise<void> {
 }
 
 await (input.mode === "closed" ? closed() : open());
-await pool.close();
+await Promise.all(pools.map((pool) => pool.close()));
 
 const output: LoadgenOutput = {
   latencies: Float64Array.from(latencies),

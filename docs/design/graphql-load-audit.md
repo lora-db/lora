@@ -116,7 +116,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 - **Solutions:**
   - Document `UV_THREADPOOL_SIZE` = cores (minus what the HTTP layer needs) in the serving docs. It is free, and it is the single biggest lever once finding 2 is fixed.
   - **Worker threads sharing one engine:** verified that two `worker_threads` opening the same persistent directory share one engine and see each other's writes. The persistent-database registry is process-wide (`crates/bindings/lora-node/src/lib.rs:43`). This allows one process with N GraphQL threads, for example `reusePort` listeners on Linux, or a dispatcher.
-    - Not benchmarked yet.
+    - Benchmarked with `yarn bench:load --workers N` on a loaded machine (best of 5 interleaved runs, 128 connections): byKey 22.8k req/s on the main thread, 44.9k with 2 workers, 48.2k with 4; traverse 10.6k, 18.3k and 21.2k. One worker costs nothing against the main thread. Confirm on a quiet machine.
     - Caveat: `lora.onWrite` is per instance, so cache invalidation across threads needs the change feed or a broadcast.
     - In-memory databases are not shared.
   - Lower `maxCost` (default 50k rows) for public endpoints, so one request cannot shape tens of thousands of nodes on the event loop.
@@ -256,7 +256,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 4. Shorten the write lock hold with `executeMany`, and add a bounded write queue with load shedding (finding 4).
 5. Charge scans in `maxCost`. Add top-k sort and ordered-index selection to the engine (findings 6 and 7).
 6. Done: the compile-cache key (finding 8) and the feed pump's unhandled rejection (finding 9).
-7. Prototype and benchmark worker threads sharing one engine, as the scaling story past one JS thread (finding 3).
+7. Worker threads sharing one engine are benchmarked (about 2x for keyed reads with 2 workers); document them as the scaling story past one JS thread (finding 3).
 
 ## Gaps in this audit
 

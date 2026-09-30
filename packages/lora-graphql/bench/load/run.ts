@@ -33,6 +33,9 @@ const help = `Usage: yarn bench:load [options]
   --scale N           graph size, 1 = 20k festivals, 2k users, 100k follows (default 1)
   --persist           back the database with a WAL directory
   --uv-threads N      server UV_THREADPOOL_SIZE (default: Node's, 4)
+  --workers N         serve from N worker threads over one persistent
+                      database directory, each on its own port (implies a
+                      WAL-backed directory; default: the main thread, 0)
   --claims KIND       none | shared | unique: JWT claims per request (default none)
   --threads N         client threads (default 4)
   --request-timeout MS  client-side timeout per request (default 15000)
@@ -55,6 +58,7 @@ const { values: args } = parseArgs({
     scale: { type: "string", default: "1" },
     persist: { type: "boolean", default: false },
     "uv-threads": { type: "string" },
+    workers: { type: "string", default: "0" },
     claims: { type: "string", default: "none" },
     threads: { type: "string", default: "4" },
     "request-timeout": { type: "string", default: "15000" },
@@ -79,6 +83,7 @@ const steps = list(args.rate ?? args.concurrency).map(Number);
 const scale = Number(args.scale);
 const size = graphSize(scale);
 const clientThreads = Number(args.threads);
+const workers = Number(args.workers);
 const requestTimeoutMs = Number(args["request-timeout"]);
 const slo = Number(args.slo);
 const maxErrorRate = Number(args["max-errors"]) / 100;
@@ -134,7 +139,7 @@ class Server {
     const server = new Server(child);
     const ready = await server.#next(10 * 60_000);
     if (ready?.type !== "ready") throw new Error("server did not start");
-    return { server, port: ready.port, seedMs: ready.seedMs };
+    return { server, ports: ready.ports, seedMs: ready.seedMs };
   }
 
   /** The server's stats since the last call, or null when it does not answer. */
@@ -182,7 +187,7 @@ function split(total: number, parts: number): number[] {
 
 async function step(
   scenario: string,
-  port: number,
+  ports: number[],
   server: Server,
   load: number,
 ): Promise<Step> {
@@ -195,7 +200,7 @@ async function step(
   const outputs = await Promise.all(
     shares.map((share, i) => {
       const input: LoadgenInput = {
-        origin: `http://127.0.0.1:${port}`,
+        origins: ports.map((port) => `http://127.0.0.1:${port}`),
         scenario: scenarios[scenario]!,
         size,
         mode,
@@ -332,10 +337,11 @@ console.log(
     `${args.duration}s steps, latencies in ms, ${cpus()[0]?.model ?? "?"} × ${availableParallelism()}`,
 );
 for (const scenario of scenarioNames) {
-  const { server, port, seedMs } = await Server.start({
+  const { server, ports, seedMs } = await Server.start({
     scale,
     persist: args.persist,
     timeoutMs: 10_000,
+    workers,
   });
   const ops = Object.keys(scenarios[scenario]!)
     .map((op) =>
@@ -349,7 +355,7 @@ for (const scenario of scenarioNames) {
   );
   printRow(columns.map(([name]) => name));
   for (const load of steps) {
-    const s = await step(scenario, port, server, load);
+    const s = await step(scenario, ports, server, load);
     results.push(s);
     printRow(cells(s));
     if (s.operations) {
@@ -404,7 +410,8 @@ const meta = {
   size,
   durationSec: Number(args.duration),
   warmupSec: Number(args.warmup),
-  persist: args.persist,
+  persist: args.persist || workers > 0,
+  workers,
   uvThreadpool: args["uv-threads"] ?? "default",
   clientThreads,
   claims: args.claims,
@@ -422,7 +429,8 @@ const md = [
   "",
   `${mode}-loop, scale ${scale}, ${meta.durationSec}s steps after ${meta.warmupSec}s warmup, ` +
     `${meta.cpu} × ${meta.cores}, ${meta.memoryGB} GB, Node ${meta.node}, ` +
-    `UV_THREADPOOL_SIZE ${meta.uvThreadpool}, claims ${meta.claims}${args.persist ? ", WAL-backed" : ", in memory"}, ` +
+    `UV_THREADPOOL_SIZE ${meta.uvThreadpool}, claims ${meta.claims}${meta.persist ? ", WAL-backed" : ", in memory"}` +
+    `${workers > 0 ? `, ${workers} server worker threads` : ""}, ` +
     `${meta.loraNodeBinary}. Latencies in ms.`,
   "",
   "## Summary",
