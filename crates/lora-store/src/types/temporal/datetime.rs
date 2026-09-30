@@ -274,7 +274,11 @@ impl LoraLocalDateTime {
             .find('T')
             .ok_or_else(|| format!("Invalid localdatetime: {s}"))?;
         let date = LoraDate::parse(&s[..t_pos])?;
-        let (h, m, sec, ns, _) = parse_time_string(&s[t_pos + 1..])?;
+        // A local datetime has no zone: an offset is refused rather than
+        // dropped.
+        let (h, m, sec, ns, None) = parse_time_string(&s[t_pos + 1..])? else {
+            return Err(format!("A local datetime has no offset: {s}"));
+        };
         if h > 23 {
             return Err(format!("Invalid hour: {h}"));
         }

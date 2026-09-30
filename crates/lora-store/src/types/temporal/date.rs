@@ -3,8 +3,9 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use super::calendar::{civil_from_days, days_from_civil, days_in_month, unix_now};
+use super::calendar::{civil_from_days, days_from_civil, days_in_month, is_leap_year, unix_now};
 use super::duration::LoraDuration;
+use super::parsing::parse_date;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoraDate {
@@ -25,21 +26,79 @@ impl LoraDate {
         Ok(Self { year, month, day })
     }
 
+    /// Parse any ISO 8601 date form: calendar (`2015-07-21`, `20150721`,
+    /// `2015-07`, `2015`), week (`2015-W30-2`), ordinal (`2015-202`) or
+    /// quarter (`2015-Q3-21`) dates. See [`super::parsing`].
     pub fn parse(s: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = s.split('-').collect();
-        if parts.len() != 3 {
-            return Err(format!("Invalid date format: {s}"));
+        parse_date(s)
+    }
+
+    /// The date of ISO week `week` (1..=52 or 53) of the week-based
+    /// `year`, on `day_of_week` (1 = Monday .. 7 = Sunday). Week 1 is the
+    /// week with the year's first Thursday.
+    pub fn from_iso_week(year: i32, week: u32, day_of_week: u32) -> Result<Self, String> {
+        if !(1..=weeks_in_week_year(year)).contains(&week) {
+            return Err(format!("Invalid week {week} for week-based year {year}"));
         }
-        let year = parts[0]
-            .parse::<i32>()
-            .map_err(|_| format!("Invalid date: {s}"))?;
-        let month = parts[1]
-            .parse::<u32>()
-            .map_err(|_| format!("Invalid date: {s}"))?;
-        let day = parts[2]
-            .parse::<u32>()
-            .map_err(|_| format!("Invalid date: {s}"))?;
-        Self::new(year, month, day)
+        if !(1..=7).contains(&day_of_week) {
+            return Err(format!("Invalid dayOfWeek: {day_of_week}"));
+        }
+        let days = first_monday_of_week_year(year) + (week as i64 - 1) * 7 + day_of_week as i64 - 1;
+        Ok(Self::from_epoch_days(days))
+    }
+
+    /// Day `ordinal_day` (1..=365 or 366) of `year`.
+    pub fn from_ordinal(year: i32, ordinal_day: u32) -> Result<Self, String> {
+        let len = if is_leap_year(year) { 366 } else { 365 };
+        if !(1..=len).contains(&ordinal_day) {
+            return Err(format!("Invalid ordinalDay {ordinal_day} for {year}"));
+        }
+        Ok(Self::from_epoch_days(
+            days_from_civil(year, 1, 1) + ordinal_day as i64 - 1,
+        ))
+    }
+
+    /// Day `day_of_quarter` (1..=92) of `quarter` (1..=4) of `year`.
+    pub fn from_quarter(year: i32, quarter: u32, day_of_quarter: u32) -> Result<Self, String> {
+        if !(1..=4).contains(&quarter) {
+            return Err(format!("Invalid quarter: {quarter}"));
+        }
+        let first_month = (quarter - 1) * 3 + 1;
+        let len: u32 = (first_month..first_month + 3)
+            .map(|m| days_in_month(year, m))
+            .sum();
+        if !(1..=len).contains(&day_of_quarter) {
+            return Err(format!(
+                "Invalid dayOfQuarter {day_of_quarter} for {year}-Q{quarter}"
+            ));
+        }
+        Ok(Self::from_epoch_days(
+            days_from_civil(year, first_month, 1) + day_of_quarter as i64 - 1,
+        ))
+    }
+
+    /// The ISO week-based year and week number of this date.
+    pub fn iso_week(&self) -> (i32, u32) {
+        let days = self.to_epoch_days();
+        let mut week_year = self.year;
+        if days >= first_monday_of_week_year(week_year + 1) {
+            week_year += 1;
+        } else if days < first_monday_of_week_year(week_year) {
+            week_year -= 1;
+        }
+        let week = (days - first_monday_of_week_year(week_year)) / 7 + 1;
+        (week_year, week as u32)
+    }
+
+    /// The quarter (1..=4) this date is in.
+    pub fn quarter(&self) -> u32 {
+        (self.month - 1) / 3 + 1
+    }
+
+    /// The day of this date's quarter (1..=92).
+    pub fn day_of_quarter(&self) -> u32 {
+        let first_month = (self.quarter() - 1) * 3 + 1;
+        (self.to_epoch_days() - days_from_civil(self.year, first_month, 1)) as u32 + 1
     }
 
     pub fn today() -> Self {
@@ -116,6 +175,20 @@ impl LoraDate {
             day: 1,
         }
     }
+}
+
+/// Epoch day of the Monday that starts week 1 of the week-based `year`:
+/// the Monday on or before January 4th.
+fn first_monday_of_week_year(year: i32) -> i64 {
+    let jan4 = days_from_civil(year, 1, 4);
+    // 1970-01-01 was a Thursday; 0 = Monday.
+    jan4 - (jan4 + 3).rem_euclid(7)
+}
+
+/// 53 when the year starts on a Thursday, or on a Wednesday in a leap
+/// year; 52 otherwise.
+fn weeks_in_week_year(year: i32) -> u32 {
+    ((first_monday_of_week_year(year + 1) - first_monday_of_week_year(year)) / 7) as u32
 }
 
 fn civil_from_days_checked(days: i64) -> Option<(i32, u32, u32)> {

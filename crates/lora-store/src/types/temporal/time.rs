@@ -122,9 +122,13 @@ impl LoraLocalTime {
         })
     }
 
+    /// A local time has no zone: a string with an offset is refused
+    /// rather than read without it.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (h, m, sec, ns, _) = parse_time_string(s)?;
-        Self::new(h, m, sec, ns)
+        match parse_time_string(s)? {
+            (h, m, sec, ns, None) => Self::new(h, m, sec, ns),
+            (.., Some(_)) => Err(format!("A local time has no offset: {s}")),
+        }
     }
 
     pub fn now() -> Self {
