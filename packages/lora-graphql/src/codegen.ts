@@ -225,31 +225,43 @@ export function generateTypes(
 
     const output = (
       t: GraphQLOutputType,
-      set: SelectionSetNode | undefined,
+      sets: SelectionSetNode[],
       depth: string,
     ): string => {
-      if (isNonNullType(t)) return outputInner(t.ofType, set, depth);
-      return `${outputInner(t, set, depth)} | null`;
+      if (isNonNullType(t)) return outputInner(t.ofType, sets, depth);
+      return `${outputInner(t, sets, depth)} | null`;
     };
     const outputInner = (
       t: GraphQLOutputType,
-      set: SelectionSetNode | undefined,
+      sets: SelectionSetNode[],
       depth: string,
     ): string => {
-      if (isListType(t)) return `Array<${output(t.ofType, set, depth)}>`;
+      if (isListType(t)) return `Array<${output(t.ofType, sets, depth)}>`;
       const n = getNamedType(t)!;
       if (isScalarType(n)) return scalar(n);
       if (isEnumType(n)) return enumType(n);
-      return selection(n as GraphQLCompositeType, set!, depth);
+      return selection(n as GraphQLCompositeType, sets, depth);
     };
 
-    /** The object type a selection set produces on `parent`. */
+    /**
+     * The object type selection sets produce on `parent`. Fields with the
+     * same response key are merged as graphql-js merges them: one field,
+     * with the sub-selections of every mention.
+     */
     const selection = (
       parent: GraphQLCompositeType,
-      set: SelectionSetNode,
+      sets: SelectionSetNode[],
       depth: string,
     ): string => {
-      const fields = new Map<string, { type: string; optional: boolean }>();
+      interface Mention {
+        /** The field's output type, or the `__typename` literal union. */
+        type: GraphQLOutputType | string;
+        sets: SelectionSetNode[];
+      }
+      const fields = new Map<
+        string,
+        { mentions: Mention[]; optional: boolean }
+      >();
       const add = (
         on: GraphQLCompositeType,
         s: SelectionSetNode,
@@ -258,7 +270,7 @@ export function generateTypes(
         for (const sel of s.selections) {
           if (sel.kind === Kind.FIELD) {
             const key = sel.alias?.value ?? sel.name.value;
-            let type: string;
+            let type: GraphQLOutputType | string;
             if (sel.name.value === "__typename") {
               type = possible(schema, on)
                 .map((p) => JSON.stringify(p))
@@ -269,14 +281,25 @@ export function generateTypes(
                   ? on.getFields()[sel.name.value]
                   : undefined;
               if (!def) continue;
-              type = output(def.type, sel.selectionSet, `${depth}  `);
+              type = def.type;
             }
-            const prior = fields.get(key);
-            fields.set(key, {
-              type:
-                prior && prior.type !== type ? `${prior.type} | ${type}` : type,
-              optional: (prior?.optional ?? true) && conditional,
-            });
+            const entry = fields.get(key) ?? { mentions: [], optional: true };
+            // Same output type: one field whose selection is the union of
+            // the mentions'. Different ones (members of an abstract type
+            // with fields of different types) stay alternatives.
+            const same = entry.mentions.find(
+              (m) => String(m.type) === String(type),
+            );
+            if (same) {
+              if (sel.selectionSet) same.sets.push(sel.selectionSet);
+            } else {
+              entry.mentions.push({
+                type,
+                sets: sel.selectionSet ? [sel.selectionSet] : [],
+              });
+            }
+            entry.optional &&= conditional;
+            fields.set(key, entry);
           } else if (sel.kind === Kind.INLINE_FRAGMENT) {
             const cond = sel.typeCondition
               ? (schema.getType(
@@ -294,15 +317,24 @@ export function generateTypes(
           }
         }
       };
-      add(parent, set, false);
-      const body = [...fields].map(
-        ([k, f]) => `${depth}  ${k}${f.optional ? "?" : ""}: ${f.type};`,
-      );
+      for (const set of sets) add(parent, set, false);
+      const body = [...fields].map(([k, f]) => {
+        const types = [
+          ...new Set(
+            f.mentions.map((m) =>
+              typeof m.type === "string"
+                ? m.type
+                : output(m.type, m.sets, `${depth}  `),
+            ),
+          ),
+        ];
+        return `${depth}  ${k}${f.optional ? "?" : ""}: ${types.join(" | ")};`;
+      });
       return `{\n${body.join("\n")}\n${depth}}`;
     };
 
     lines.push(
-      `export interface ${base}Result ${selection(root, op.selectionSet, "")}`,
+      `export interface ${base}Result ${selection(root, [op.selectionSet], "")}`,
       "",
     );
   }

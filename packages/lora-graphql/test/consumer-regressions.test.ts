@@ -923,3 +923,29 @@ describe("G-16: re-upserting single relationships is batched", () => {
     t.close();
   });
 });
+
+describe("G-2: generateTypes merges a field selected twice", () => {
+  test("one field with the sub-selections of every mention", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `
+        type Genre @node { key: String! @key  name: String!  family: String }
+        type Festival @node {
+          key: String! @key
+          genre: Genre @relationship(type: "IN_GENRE", direction: OUT)
+        }`,
+    });
+    const types = t.lora.generateTypes(
+      t.lora.buildManifest({
+        q: "query Q { festivals { genre { key name } ...F } } fragment F on Festival { genre { key family } }",
+      }),
+    );
+    const result = types.slice(types.indexOf("export interface QResult"));
+    expect(result).toContain("genre: {");
+    expect(result).not.toMatch(/\} \| null \| \{/);
+    const genre = result.slice(result.indexOf("genre: {"));
+    expect(genre.slice(0, genre.indexOf("}"))).toMatch(
+      /key: string;\s+name: string;\s+family: string \| null;/,
+    );
+    t.close();
+  });
+});
