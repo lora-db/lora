@@ -239,6 +239,18 @@ Available: `.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`,
 `.millisecond`, `.days`, `.months`, `.years`, `.hours`, `.minutes`,
 `.seconds`.
 
+A `DATETIME` also has `.timezone` (the zone's name, such as
+`Europe/Amsterdam`, or the offset when it has no named zone), `.offset`
+(`+02:00`, or `Z`), `.offsetMinutes`, `.offsetSeconds`, `.epochSeconds`
+and `.epochMillis`. A `TIME` has `.timezone` (its offset) and the three
+offset fields.
+
+<QueryCodeBlock code={String.raw`WITH datetime('2026-07-01T12:00:00+02:00[Europe/Amsterdam]') AS dt
+RETURN dt.timezone,      // 'Europe/Amsterdam'
+       dt.offset,        // '+02:00'
+       dt.offsetMinutes, // 120
+       dt.epochSeconds   // 1782900000`} />
+
 ### Build a year-month key
 
 <QueryCodeBlock code={String.raw`MATCH (e:Event)

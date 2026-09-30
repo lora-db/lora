@@ -61,6 +61,19 @@ Three-valued logic applies — `null AND false` is `false`, `null AND
 true` is `null`. See the full truth table in
 [Scalars → Null](../data-types/scalars#null).
 
+`AND` and `OR` evaluate left to right and stop as soon as the left side
+decides: after `false AND` or `true OR` the right side is not evaluated,
+so it cannot fail the query. That makes a guard work:
+
+<QueryCodeBlock code={String.raw`MATCH (e:Event)
+WHERE type.of(e.at) = 'DATE' AND e.at >= date('2024-01-01')
+RETURN e`} />
+
+Here an `e.at` that holds a `DATETIME` never reaches the comparison,
+which would otherwise be an error (see
+[Temporal types](../data-types/temporal#cross-type-comparison)). A
+`null` left side decides nothing, so the right side is evaluated.
+
 ### Precedence
 
 `NOT` binds tightest, then `AND`, then `XOR`, then `OR`. Parenthesise

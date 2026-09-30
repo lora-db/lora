@@ -67,6 +67,30 @@ pub fn eval_expr<S: GraphStorage>(
             eval_in(&l, &r)
         }
 
+        // `AND` / `OR` short-circuit: a left side that decides the result
+        // (`false AND …`, `true OR …`) leaves the right side unevaluated,
+        // so its errors cannot fail the query and a guard such as
+        // `type.of(x) = 'DATE' AND x >= date(…)` protects the comparison.
+        // A `null` left side decides nothing: three-valued logic needs the
+        // right side (`null AND false` is `false`).
+        ResolvedExpr::Binary {
+            lhs,
+            op: op @ (BinaryOp::And | BinaryOp::Or),
+            rhs,
+        } => {
+            let l = eval_expr(lhs, row, ctx);
+            let decides = match (&l, op) {
+                (LoraValue::Null, _) => false,
+                (l, BinaryOp::And) => !l.is_truthy(),
+                (l, _) => l.is_truthy(),
+            };
+            if decides {
+                return LoraValue::Bool(matches!(op, BinaryOp::Or));
+            }
+            let r = eval_expr(rhs, row, ctx);
+            eval_binary(op, l, r)
+        }
+
         ResolvedExpr::Binary { lhs, op, rhs } => {
             let l = eval_expr(lhs, row, ctx);
             let r = eval_expr(rhs, row, ctx);
@@ -1004,7 +1028,14 @@ fn eval_property<S: GraphStorage>(
             "millisecond" => LoraValue::Int((dt.nanosecond / 1_000_000) as i64),
             "dayOfWeek" => LoraValue::Int(dt.date().day_of_week() as i64),
             "dayOfYear" => LoraValue::Int(dt.date().day_of_year() as i64),
-            _ => LoraValue::Null,
+            // The zone's name for a named zone, else the offset.
+            "timezone" => LoraValue::String(match dt.zone {
+                Some(zone) => zone.name().to_string(),
+                None => offset_string(dt.offset_seconds),
+            }),
+            "epochSeconds" => LoraValue::Int(dt.epoch_seconds()),
+            "epochMillis" => LoraValue::Int(dt.to_epoch_millis()),
+            _ => offset_component(dt.offset_seconds, key),
         },
 
         LoraValue::LocalDateTime(dt) => match key {
@@ -1023,7 +1054,8 @@ fn eval_property<S: GraphStorage>(
             "minute" => LoraValue::Int(t.minute as i64),
             "second" => LoraValue::Int(t.second as i64),
             "millisecond" => LoraValue::Int((t.nanosecond / 1_000_000) as i64),
-            _ => LoraValue::Null,
+            "timezone" => LoraValue::String(offset_string(t.offset_seconds)),
+            _ => offset_component(t.offset_seconds, key),
         },
 
         LoraValue::LocalTime(t) => match key {
@@ -1070,4 +1102,25 @@ fn eval_property<S: GraphStorage>(
 
         _ => LoraValue::Null,
     }
+}
+
+/// `offset`, `offsetMinutes`, `offsetSeconds` of a zoned temporal; null
+/// for any other key.
+fn offset_component(offset_seconds: i32, key: &str) -> LoraValue {
+    match key {
+        "offset" => LoraValue::String(offset_string(offset_seconds)),
+        "offsetMinutes" => LoraValue::Int((offset_seconds / 60) as i64),
+        "offsetSeconds" => LoraValue::Int(offset_seconds as i64),
+        _ => LoraValue::Null,
+    }
+}
+
+/// An offset as Cypher prints it: `Z`, `+02:00`, `-05:30`.
+fn offset_string(offset_seconds: i32) -> String {
+    if offset_seconds == 0 {
+        return "Z".to_string();
+    }
+    let sign = if offset_seconds < 0 { '-' } else { '+' };
+    let abs = offset_seconds.unsigned_abs();
+    format!("{sign}{:02}:{:02}", abs / 3600, abs % 3600 / 60)
 }
