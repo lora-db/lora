@@ -406,9 +406,10 @@ on; otherwise it does nothing.
 ## Drivers
 
 `loraDriver(db)` adapts a `Database` from `@loradb/lora-node` or
-`@loradb/lora-wasm`. It streams single generated reads (so a `LIMIT`
-stops an index-ordered scan early), runs other statements in one
-transaction, and exposes `begin()`, `explain()` and `changes()` when the
+`@loradb/lora-wasm`. It runs each operation's statements in one
+transaction, read-only for reads. With lora-node that runs on a libuv
+worker, not the JavaScript thread, so a slow read does not hold up other
+requests. It exposes `begin()`, `explain()` and `changes()` when the
 database has them.
 
 | Driver method | Needed for | lora-node | lora-wasm |
@@ -436,7 +437,7 @@ interface RunOptions {
   mode: "read" | "write"; // "read" must reject writes
   timeoutMs?: number;
   signal?: AbortSignal;
-  verified?: boolean; // a read the library vouches for; may be streamed
+  verified?: boolean; // a read the library vouches for; may skip the read-only transaction
 }
 interface DriverTransaction {
   execute(statement: Statement): Promise<QueryResult>;

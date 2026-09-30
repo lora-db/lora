@@ -915,9 +915,10 @@ Both need `@loradb/lora-node` and work with any test runner.
 ## Drivers, limits and errors
 
 `loraDriver(db)` adapts a `Database` from `@loradb/lora-node` or
-`@loradb/lora-wasm`. Single-statement reads stream; multi-statement reads
-run in one read-only transaction; mutations need interactive transactions,
-which only the Node binding has, so the WASM binding serves reads.
+`@loradb/lora-wasm`. Reads run in one read-only transaction per operation
+(with lora-node, on a libuv worker, not the JavaScript thread); mutations
+need interactive transactions, which only the Node binding has, so the
+WASM binding serves reads.
 `explain()`, and so plan checks, need the Node binding too.
 
 | Option                       | Default       | Meaning                                             |

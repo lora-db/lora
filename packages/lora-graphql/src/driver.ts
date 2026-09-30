@@ -36,8 +36,8 @@ export interface RunOptions {
   signal?: AbortSignal | undefined;
   /**
    * A read the library vouches for: generated, or a @cypher statement
-   * checked read-only at startup. The driver may stream it outside a
-   * read-only transaction.
+   * checked read-only at startup. A custom driver may run it outside a
+   * read-only transaction; `loraDriver` always uses one.
    */
   verified?: boolean;
 }
@@ -104,14 +104,6 @@ export interface LoraDatabaseLike {
     fromLsn?: number;
     signal?: AbortSignal;
   }): AsyncIterable<DriverChangeBatch> & { ready: Promise<void> };
-  stream?(
-    query: string,
-    params?: never,
-    options?: { timeoutMs?: number; signal?: AbortSignal },
-  ): {
-    columns(): string[];
-    toArray(): Promise<Array<Record<string, unknown>>>;
-  };
   begin?(mode?: "read_write" | "read_only"): Promise<{
     execute(
       query: string,
@@ -133,24 +125,11 @@ export interface LoraDatabaseLike {
  * ```
  */
 export function loraDriver(db: LoraDatabaseLike): LoraDriver {
-  const stream =
-    typeof db.stream === "function" ? db.stream.bind(db) : undefined;
   const driver: LoraDriver = {
     async run(statements, options) {
-      // A single generated read streams: LoraDB 0.15 runs reads under a
-      // deadline or inside a transaction without early termination, so a
-      // `LIMIT 20` over an index-ordered scan would read the whole label.
-      // The stream checks the deadline between rows.
-      if (
-        stream &&
-        options.mode === "read" &&
-        options.verified &&
-        statements.length === 1
-      ) {
-        const s = statements[0]!;
-        const rows = stream(s.text, s.params as never, runLimits(options));
-        return [{ columns: rows.columns(), rows: await rows.toArray() }];
-      }
+      // Reads never use db.stream(): it runs the query on the JS thread,
+      // so one slow read blocks every other request. A transaction runs on
+      // a libuv worker and stops at LIMIT as early as a stream does.
       return db.transaction(
         statements.map((s) => ({ query: s.text, params: s.params as never })),
         options.mode === "read" ? "read_only" : "read_write",
