@@ -346,3 +346,88 @@ describe("G-10: @settable and @readonly on relationship fields", () => {
     ).toThrow(/@default is not allowed on a relationship field/);
   });
 });
+
+describe("G-6: re-connecting keeps a relationship's properties", () => {
+  const typeDefs = `
+    type User @node @mutation(operations: [CREATE, UPDATE]) {
+      key: String! @key
+      plan: [Slot!]! @relationship(type: "PLANS", direction: OUT, properties: "Planned")
+      home: Slot @relationship(type: "HOME", direction: OUT, properties: "Planned")
+    }
+    type Slot @node { key: String! @key }
+    type Planned @relationshipProperties {
+      reminder: Boolean! @default(value: false)
+      note: String
+    }`;
+  const seed = [
+    "CREATE (:User {key:'u'}), (:Slot {key:'s'}), (:Slot {key:'t'})",
+  ];
+
+  test("a list relationship keeps what a re-connect does not set", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.data(
+      `mutation { updateUser(key: "u", update: { plan: { connect: [{ key: "s", edge: { reminder: true, note: "n" } }] } }) { user { key } } }`,
+    );
+    const again = await t.data(
+      `mutation { updateUser(key: "u", update: { plan: { connect: [{ key: "s" }, { key: "t" }] } })
+        { info { relationshipsCreated } user { planConnection(sort: [{ key: ASC }]) { edges { node { key } properties { reminder note } } } } } }`,
+    );
+    expect(again).toEqual({
+      updateUser: {
+        info: { relationshipsCreated: 1 },
+        user: {
+          planConnection: {
+            edges: [
+              { node: { key: "s" }, properties: { reminder: true, note: "n" } },
+              // A new relationship still gets the default.
+              {
+                node: { key: "t" },
+                properties: { reminder: false, note: null },
+              },
+            ],
+          },
+        },
+      },
+    });
+    // What a re-connect does set, it sets.
+    await t.data(
+      `mutation { updateUser(key: "u", update: { plan: { connect: [{ key: "s", edge: { note: "m" } }] } }) { user { key } } }`,
+    );
+    expect(
+      await cypher(
+        t,
+        "MATCH (:User)-[r:PLANS]->(:Slot {key:'s'}) RETURN r.reminder AS r, r.note AS n",
+      ),
+    ).toEqual([{ r: true, n: "m" }]);
+    t.close();
+  });
+
+  test("a single relationship re-connected to its target keeps it", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const home = (edge: string, key = "s") =>
+      t.data(
+        `mutation { updateUser(key: "u", update: { home: { connect: { key: "${key}"${edge} } } })
+          { info { relationshipsCreated relationshipsDeleted } } }`,
+      );
+    const stored = () =>
+      cypher(
+        t,
+        "MATCH (:User {key:'u'})-[r:HOME]->(s:Slot) RETURN s.key AS s, r.reminder AS reminder",
+      );
+    await home(", edge: { reminder: true }");
+    expect(await home("")).toEqual({
+      updateUser: {
+        info: { relationshipsCreated: 0, relationshipsDeleted: 0 },
+      },
+    });
+    expect(await stored()).toEqual([{ s: "s", reminder: true }]);
+    // Replacing it with another target is a new relationship.
+    expect(await home("", "t")).toEqual({
+      updateUser: {
+        info: { relationshipsCreated: 1, relationshipsDeleted: 1 },
+      },
+    });
+    expect(await stored()).toEqual([{ s: "t", reminder: false }]);
+    t.close();
+  });
+});

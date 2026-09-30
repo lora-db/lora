@@ -127,7 +127,10 @@ interface Link {
   from: unknown;
   /** @key of the target node. */
   to: unknown;
+  /** Relationship properties the input sets. */
   props: Record<string, unknown>;
+  /** `@default`s of the properties it leaves out: for a new relationship only. */
+  defaults: Record<string, unknown>;
   /**
    * Relationship properties the input sets whose rules refuse it when the
    * relationship is new (`create`) or already exists (`update`): known
@@ -169,6 +172,11 @@ class WritePlan {
     from: unknown;
     /** Keys to disconnect; undefined: every current target (single fields). */
     to: unknown[] | undefined;
+    /**
+     * Replacing a single relationship: the target being connected, whose
+     * relationship (and its properties) stays if it is already there.
+     */
+    keep?: unknown;
   }> = [];
   edgeUpdates: EdgeUpdate[] = [];
   nodeUpdates: NodeUpdate[] = [];
@@ -412,8 +420,16 @@ class WritePlan {
           );
         }
         checkAuthentication(this.ctx, owner, "DELETE_RELATIONSHIP");
-        // A single relationship is replaced, never doubled.
-        this.disconnects.push({ rel, from: ownerKey, to: undefined });
+        // A single relationship is replaced, never doubled. Re-connecting
+        // the current target keeps its relationship as it is.
+        const keep =
+          connect.length === 1 ? connect[0]![target.key.name] : undefined;
+        this.disconnects.push({
+          rel,
+          from: ownerKey,
+          to: undefined,
+          ...(keep !== undefined ? { keep } : {}),
+        });
       }
     }
     for (const c of connect) {
@@ -467,10 +483,11 @@ function edgeProps(
   ctx: CompileContext,
   rel: RelationshipField,
   edge: Input | undefined,
-): Pick<Link, "props" | "refused"> {
-  if (!rel.properties) return { props: {} };
+): Pick<Link, "props" | "defaults" | "refused"> {
+  if (!rel.properties) return { props: {}, defaults: {} };
   const props = ctx.model.relationshipProperties.get(rel.properties)!;
   const out: Record<string, unknown> = {};
+  const defaults: Record<string, unknown> = {};
   let refused: Link["refused"];
   for (const f of props.fields.values()) {
     const value = edge?.[f.name];
@@ -496,10 +513,10 @@ function edgeProps(
       }
       out[f.property] = toStored(f, value);
     } else if (f.defaultValue) {
-      out[f.property] = storedDefault(f);
+      defaults[f.property] = storedDefault(f);
     }
   }
-  return refused ? { props: out, refused } : { props: out };
+  return refused ? { props: out, defaults, refused } : { props: out, defaults };
 }
 
 function propertyError(
@@ -716,6 +733,9 @@ class Runner {
         (d.to ? `UNWIND ${printExpr(bind(ctx, d.to))} AS k\n` : "") +
         seekThenExpand("a", owner, from, d.rel, "r", "b", target) +
         (d.to ? ` AND b.${name(target.key.property)} = k` : "") +
+        (d.keep !== undefined
+          ? ` AND b.${name(target.key.property)} <> ${printExpr(bind(ctx, d.keep))}`
+          : "") +
         `${guard}\n`;
       const returned = `b.${name(target.key.property)} AS key`;
       const pairs = (rows: Array<Record<string, unknown>>) =>
@@ -782,7 +802,12 @@ class Runner {
       const rows = printExpr(
         bind(
           lctx,
-          links.map((l) => ({ from: l.from, to: l.to, props: l.props })),
+          links.map((l) => ({
+            from: l.from,
+            to: l.to,
+            props: l.props,
+            defaults: l.defaults,
+          })),
         ),
       );
       const text =
@@ -794,6 +819,9 @@ class Runner {
         andText(authFilter(lctx, target, "b", "CREATE_RELATIONSHIP")) +
         `\nWITH a, b, row, size([(a)${arrow(rel, "", "b", undefined)} | 1]) > 0 AS existed` +
         `\nMERGE (a)${arrow(rel, "r", "b", undefined)}\n` +
+        // Defaults apply when the relationship is created, never to an
+        // existing one (a re-connect keeps what it has).
+        `ON CREATE SET r += row.defaults\n` +
         `SET r += row.props\nRETURN row.from AS from, row.to AS key, existed`;
       const linked = await this.run(text, lctx);
       // Rules on the properties set, now that new and existing

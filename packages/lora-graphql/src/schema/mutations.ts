@@ -186,7 +186,7 @@ export function buildMutations(
         [target.key.name]: { type: nonNull(ctx.inputType(target.key)) },
         ...edgeField(rel),
       }),
-      `Connect an existing ${target.name} by ${target.key.name}. Connecting a connected pair updates the relationship's properties.`,
+      `Connect an existing ${target.name} by ${target.key.name}. Connecting a connected pair sets the relationship properties given and keeps the others.`,
     );
   };
 

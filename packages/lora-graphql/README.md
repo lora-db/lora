@@ -117,7 +117,7 @@ Model:
 | `@readonly`                                                                                                | field             | Exposed, never client-settable; on a relationship, absent from create and update inputs                                                                                                                                                  |
 | `@settable(onCreate:, onUpdate:)`                                                                          | field             | Which mutations may set it, e.g. set once on create; on a relationship, whether the inputs offer it (an upsert of an existing node keeps it)                                                                                             |
 | `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only                                                                                                                                                                                                 |
-| `@default(value:)`                                                                                         | field             | Stored on create when the input omits it                                                                                                                                                                                                 |
+| `@default(value:)`                                                                                         | field             | Stored on create when the input omits it; on a relationship property, when the relationship is created                                                                                                                                   |
 | `@timestamp(operations: [CREATE, UPDATE])`                                                                 | field             | Set to the current time; never client-settable                                                                                                                                                                                           |
 | `@populatedBy(callback:, operations:)`                                                                     | field             | Computed by a named callback on write                                                                                                                                                                                                    |
 | `@cardinality(max:)`                                                                                       | list relationship | Declared fan-out, for cost estimates                                                                                                                                                                                                     |
@@ -375,7 +375,10 @@ mutation {
 - **Updates** set fields (`null` removes one) and relationships (`connect`,
   `create`, `disconnect`, and `update` of connected nodes and relationship
   properties in place). Connecting an already-connected pair keeps one
-  relationship and updates its properties.
+  relationship and sets the properties the input gives; the others,
+  `@default`s included, keep their values. Defaults apply when a
+  relationship is created. Re-connecting a single relationship to its
+  current target keeps that relationship.
 - **`adjust`** applies math (`add`, `subtract`, `multiply`, `divide`) and
   list (`push`, `pop`, `remove`) operators to the stored value atomically;
   a missing number counts as 0 and a missing list as empty.
