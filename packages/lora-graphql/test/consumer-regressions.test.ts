@@ -875,3 +875,51 @@ describe("G-13: @timestamp on relationship properties", () => {
     t.close();
   });
 });
+
+describe("G-16: re-upserting single relationships is batched", () => {
+  const typeDefs = `
+    type Msg @node @mutation {
+      key: String! @key
+      text: String
+      conv: Conv! @relationship(type: "IN", direction: OUT)
+    }
+    type Conv @node @mutation { key: String! @key }`;
+  const seed = ["CREATE (:Conv {key: 'c'}), (:Conv {key: 'd'})"];
+  const upsert = (conv: string) =>
+    `mutation { upsertMsgs(input: [${Array.from(
+      { length: 200 },
+      (_, i) => `{ key: "m${i}", conv: { connect: { key: "${conv}" } } }`,
+    ).join(" ")}]) { info { relationshipsCreated relationshipsDeleted } } }`;
+
+  test("an identical re-upsert runs a constant number of statements and writes nothing", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.data(upsert("c"));
+    t.statements.length = 0;
+    expect(await t.data(upsert("c"))).toEqual({
+      upsertMsgs: {
+        info: { relationshipsCreated: 0, relationshipsDeleted: 0 },
+      },
+    });
+    expect(t.statements.length).toBeLessThanOrEqual(8);
+    t.close();
+  });
+
+  test("re-pointing every row is batched too, and stays single", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.data(upsert("c"));
+    t.statements.length = 0;
+    expect(await t.data(upsert("d"))).toEqual({
+      upsertMsgs: {
+        info: { relationshipsCreated: 200, relationshipsDeleted: 200 },
+      },
+    });
+    expect(t.statements.length).toBeLessThanOrEqual(8);
+    expect(
+      await cypher(
+        t,
+        "MATCH (m:Msg)-[:IN]->(c:Conv) RETURN c.key AS c, count(m) AS n",
+      ),
+    ).toEqual([{ c: "d", n: 200 }]);
+    t.close();
+  });
+});

@@ -733,28 +733,51 @@ class Runner {
   }
 
   async applyDisconnects(plan: WritePlan): Promise<void> {
+    // One statement per field and shape (listed keys, or a single
+    // relationship's current target), however many nodes it covers.
+    const groups = new Map<
+      string,
+      { rel: RelationshipField; list: boolean; rows: typeof plan.disconnects }
+    >();
     for (const d of plan.disconnects) {
-      const owner = this.env.model.nodes.get(d.rel.owner)!;
-      const target = this.env.model.nodes.get(d.rel.target)!;
+      const id = `${d.rel.owner}.${d.rel.name}\0${d.rel.target}\0${d.to ? "list" : "single"}`;
+      const group = groups.get(id) ?? { rel: d.rel, list: !!d.to, rows: [] };
+      group.rows.push(d);
+      groups.set(id, group);
+    }
+    for (const { rel, list, rows: batch } of groups.values()) {
+      const owner = this.env.model.nodes.get(rel.owner)!;
+      const target = this.env.model.nodes.get(rel.target)!;
       const ctx = this.ctx();
-      const from = printExpr(bind(ctx, d.from));
+      const input = printExpr(
+        bind(
+          ctx,
+          batch.map((d) => ({
+            from: d.from,
+            to: d.to ?? null,
+            keep: d.keep ?? null,
+          })),
+        ),
+      );
       // Nodes the caller cannot see keep their relationships, and both
       // ends must allow DELETE_RELATIONSHIP when their rules say so.
       const guard =
         andText(authFilter(ctx, target, "b", "READ")) +
         andText(authFilter(ctx, target, "b", "DELETE_RELATIONSHIP")) +
         andText(authFilter(ctx, owner, "a", "DELETE_RELATIONSHIP"));
+      const bKey = `b.${name(target.key.property)}`;
       const matchText =
-        (d.to ? `UNWIND ${printExpr(bind(ctx, d.to))} AS k\n` : "") +
-        seekThenExpand("a", owner, from, d.rel, "r", "b", target) +
-        (d.to ? ` AND b.${name(target.key.property)} = k` : "") +
-        (d.keep !== undefined
-          ? ` AND b.${name(target.key.property)} <> ${printExpr(bind(ctx, d.keep))}`
-          : "") +
+        `UNWIND ${input} AS row\n` +
+        (list ? `UNWIND row.to AS k\n` : "") +
+        seekThenExpand("a", owner, "row.from", rel, "r", "b", target) +
+        (list
+          ? ` AND ${bKey} = k`
+          : // Re-connecting the current target keeps its relationship.
+            ` AND (row.keep IS NULL OR ${bKey} <> row.keep)`) +
         `${guard}\n`;
-      const returned = `b.${name(target.key.property)} AS key`;
+      const returned = `row.from AS from, ${bKey} AS key`;
       const pairs = (rows: Array<Record<string, unknown>>) =>
-        rows.map((r) => ({ from: d.from, to: r["key"] }));
+        rows.map((r) => ({ from: r["from"], to: r["key"] }));
       if (this.endRules(owner, target, "DELETE_RELATIONSHIP", "BEFORE")) {
         const doomed = await this.run(`${matchText}RETURN ${returned}`, ctx);
         await this.checkEnds(
@@ -778,7 +801,7 @@ class Runner {
       );
       this.info.relationshipsDeleted += rows.length;
       for (const row of rows) {
-        this.disconnected.push(relRef(d.rel, d.from, row["key"]));
+        this.disconnected.push(relRef(rel, row["from"], row["key"]));
       }
     }
   }
