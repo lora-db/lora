@@ -189,6 +189,17 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * persisted operations by `id`. Default false.
    */
   persistedOnly?: boolean;
+  /**
+   * How `execute()` commits a mutation with several root fields.
+   * `"field"` (the default): each root field in its own transaction, so a
+   * later failure leaves the earlier ones committed. `"operation"`: every
+   * root field in one transaction, committed only when the operation
+   * reports no error, rolled back (with `data: null`) otherwise. A
+   * `transaction` in the context takes precedence. Servers that call
+   * graphql-js on `getSchema()` directly get per-operation atomicity by
+   * putting a `lora.begin()` transaction in the context.
+   */
+  mutationTransaction?: "field" | "operation";
 }
 
 export interface CostEvent {
@@ -395,6 +406,7 @@ export class LoraGraphQL {
   >();
   #statistics: Statistics | undefined;
   #schema: GraphQLSchema | undefined;
+  readonly #mutationTransaction: "field" | "operation";
 
   constructor(options: LoraGraphQLOptions) {
     this.model = buildModel(options.typeDefs, options);
@@ -466,6 +478,7 @@ export class LoraGraphQL {
     this.#budget = options.budget;
     this.#onCost = options.onCost;
     this.#persistedOnly = options.persistedOnly ?? false;
+    this.#mutationTransaction = options.mutationTransaction ?? "field";
   }
 
   /** The configured document guards as validation rules. */
@@ -936,14 +949,65 @@ export class LoraGraphQL {
         ],
       };
     }
-    const contextValue = args.context ?? {};
-    const result = await graphqlExecute({
-      schema: this.getSchema(),
-      document,
-      variableValues: args.variables,
-      operationName: args.operationName,
-      contextValue,
-    });
+    let contextValue = args.context ?? {};
+    // One transaction for every root field of the mutation, when asked.
+    const operation = getOperationAST(document, args.operationName);
+    const atomic =
+      this.#mutationTransaction === "operation" &&
+      operation?.operation === "mutation" &&
+      operation.selectionSet.selections.length +
+        (operation.selectionSet.selections.some((s) => s.kind !== Kind.FIELD)
+          ? 1
+          : 0) >
+        1 &&
+      !(contextValue as LoraGraphQLContext).transaction &&
+      this.#driver.begin !== undefined;
+    let tx: LoraTransaction | undefined;
+    if (atomic) {
+      tx = await this.begin();
+      contextValue = Object.assign(
+        Object.create(Object.getPrototypeOf(contextValue) as object) as object,
+        contextValue,
+        { transaction: tx },
+      );
+    }
+    let result: ExecutionResult;
+    try {
+      result = (await graphqlExecute({
+        schema: this.getSchema(),
+        document,
+        variableValues: args.variables,
+        operationName: args.operationName,
+        contextValue,
+      })) as ExecutionResult;
+    } catch (err) {
+      await tx?.rollback();
+      throw err;
+    }
+    if (tx) {
+      if (result.errors?.length) {
+        // Nothing of the operation was written: say so with the data.
+        await tx.rollback();
+        result = { ...result, data: null };
+      } else {
+        try {
+          await tx.commit();
+        } catch (err) {
+          await tx.rollback().catch(() => undefined);
+          const error = this.#databaseError("commit", err);
+          return {
+            data: null,
+            errors: [
+              error instanceof GraphQLError
+                ? error
+                : new GraphQLError(
+                    error instanceof Error ? error.message : String(error),
+                  ),
+            ],
+          };
+        }
+      }
+    }
     // The operation's cost estimate, so clients can tune their queries.
     const spent =
       contextValue !== null && typeof contextValue === "object"

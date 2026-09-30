@@ -1085,7 +1085,8 @@ export function buildSchema(
         fields: () =>
           Object.fromEntries(
             [...props.fields.values()]
-              .filter((f) => !f.private)
+              // `@selectable(onRead: false)` hides it here as on a node.
+              .filter((f) => !f.private && f.selectableOn.read)
               .map((f) => [
                 f.name,
                 {
@@ -1575,6 +1576,12 @@ export function buildSchema(
         pageInfo: {
           type: nonNull(pageInfo),
           resolve: connectionResolvers.pageInfo,
+        },
+        totalCount: {
+          type: nonNull(GraphQLInt),
+          description:
+            "Every match after `where` and the read rules (a vector search counts within its candidate window).",
+          resolve: connectionResolvers.totalCount,
         },
       },
     });

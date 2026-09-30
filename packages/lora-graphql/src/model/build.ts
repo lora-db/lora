@@ -12,7 +12,10 @@ import {
   isUnionType,
   Kind,
   parse,
+  valueFromAST,
+  type ConstValueNode,
   type DocumentNode,
+  type GraphQLArgument,
   type GraphQLNamedType,
   type GraphQLDirective,
   type GraphQLField,
@@ -283,6 +286,17 @@ export function buildModel(
   for (const t of propsTypes) {
     const fields = new Map<string, ScalarField>();
     for (const f of Object.values(t.getFields())) {
+      // Directives that relationship writes and reads do not apply are
+      // refused, never silently ignored.
+      for (const unsupported of ["populatedBy", "cypher"]) {
+        if (f.astNode?.directives?.some((x) => x.name.value === unsupported)) {
+          problems.push({
+            type: t.name,
+            field: f.name,
+            message: `@${unsupported} is not supported on a relationship property`,
+          });
+        }
+      }
       const field = buildScalarField(t, f, d, problems, {
         allowKey: false,
       });
@@ -700,7 +714,14 @@ export function buildModel(
       rules.push(...f.authorization.validate);
     }
     for (const rule of rules) {
-      checkAuthorizationWhere(nodes, node, rule.where, problems, jwtShape);
+      checkAuthorizationWhere(
+        nodes,
+        relationshipProperties,
+        node,
+        rule.where,
+        problems,
+        jwtShape,
+      );
     }
     for (const where of [
       node.authenticationJwt,
@@ -709,6 +730,7 @@ export function buildModel(
       if (where) {
         checkAuthorizationWhere(
           nodes,
+          relationshipProperties,
           node,
           { jwt: where },
           problems,
@@ -745,6 +767,7 @@ export function buildModel(
       for (const rule of f.authorization?.validate ?? []) {
         checkRuleWhere(
           nodes,
+          relationshipProperties,
           undefined,
           props.name,
           f.name,
@@ -756,6 +779,7 @@ export function buildModel(
       if (f.authenticationJwt) {
         checkRuleWhere(
           nodes,
+          relationshipProperties,
           undefined,
           props.name,
           f.name,
@@ -1476,7 +1500,7 @@ function buildCypherField(
     cypherArgs.push({
       name: a.name,
       type: { named: argNamed, ...argShape },
-      defaultValue: a.defaultValue,
+      defaultValue: argumentDefault(a),
       description: a.description ?? undefined,
     });
   }
@@ -1574,6 +1598,21 @@ function buildCypherField(
  * `RETURN coalesce(a, b) AS n` and a RETURN inside `CALL { }` do not
  * confuse it.
  */
+/**
+ * An SDL argument's default, as a value. graphql 16 keeps it on
+ * `defaultValue`; graphql 17 builds `default: { literal }` from SDL and
+ * leaves `defaultValue` undefined, so reading only `defaultValue` drops
+ * `peers(limit: Int = 2)` to `peers(limit: Int)` there.
+ */
+function argumentDefault(a: GraphQLArgument): unknown {
+  if (a.defaultValue !== undefined) return a.defaultValue;
+  const d = (a as { default?: { value?: unknown; literal?: ConstValueNode } })
+    .default;
+  if (!d) return undefined;
+  if ("value" in d) return d.value;
+  return d.literal ? valueFromAST(d.literal, a.type) : undefined;
+}
+
 function inferColumn(statement: string): string | undefined {
   const code = maskLiterals(statement);
   const depths: number[] = [];
@@ -1708,12 +1747,22 @@ const isRecord = (x: unknown): x is Record<string, unknown> =>
 /** Check an `@authorization` where against the model, at startup. */
 function checkAuthorizationWhere(
   nodes: ReadonlyMap<string, NodeType>,
+  props: ReadonlyMap<string, RelationshipPropertiesType>,
   node: NodeType,
   where: unknown,
   problems: ModelProblem[],
   jwtShape?: ReadonlyMap<string, string>,
 ) {
-  checkRuleWhere(nodes, node, node.name, undefined, where, problems, jwtShape);
+  checkRuleWhere(
+    nodes,
+    props,
+    node,
+    node.name,
+    undefined,
+    where,
+    problems,
+    jwtShape,
+  );
 }
 
 /**
@@ -1724,6 +1773,7 @@ function checkAuthorizationWhere(
  */
 function checkRuleWhere(
   nodes: ReadonlyMap<string, NodeType>,
+  props: ReadonlyMap<string, RelationshipPropertiesType>,
   node: NodeType | undefined,
   type: string,
   field: string | undefined,
@@ -1751,7 +1801,7 @@ function checkRuleWhere(
           `${here}: rules on relationship properties test claims (jwt) only; node rules belong on the node types`,
         );
       } else if (k === "node" && node) {
-        checkNodeWhere(nodes, node, value, here, at);
+        checkNodeWhere(nodes, props, node, value, here, at);
         for (const problem of ruleStringProblems(value))
           at(`${here}: ${problem}`);
         if (jwtShape) {
@@ -1792,6 +1842,7 @@ function checkRuleWhere(
 
 function checkNodeWhere(
   nodes: ReadonlyMap<string, NodeType>,
+  props: ReadonlyMap<string, RelationshipPropertiesType>,
   node: NodeType,
   where: unknown,
   path: string,
@@ -1812,16 +1863,27 @@ function checkNodeWhere(
       if (!Array.isArray(value)) at(`${here} must be a list`);
       else
         value.forEach((x, i) =>
-          checkNodeWhere(nodes, node, x, `${here}[${i}]`, at),
+          checkNodeWhere(nodes, props, node, x, `${here}[${i}]`, at),
         );
       continue;
     }
     if (k === "NOT") {
-      checkNodeWhere(nodes, node, value, here, at);
+      checkNodeWhere(nodes, props, node, value, here, at);
       continue;
     }
     const field = node.fields.get(k);
-    if (!field) {
+    const connection = k.endsWith("Connection")
+      ? node.fields.get(k.slice(0, -"Connection".length))
+      : undefined;
+    if (
+      !field &&
+      connection?.kind === "relationship" &&
+      connection.list &&
+      connection.properties
+    ) {
+      // `<field>Connection: { some: { node, edge } }`, as in a public where.
+      checkConnectionWhere(nodes, props, connection, value, here, at);
+    } else if (!field) {
       at(`${here}: ${node.name} has no field ${k}`);
     } else if (field.kind === "cypher" || field.kind === "custom") {
       at(
@@ -1840,7 +1902,7 @@ function checkNodeWhere(
       const target = nodes.get(field.target);
       if (!target) continue;
       if (!field.list) {
-        checkNodeWhere(nodes, target, value, here, at);
+        checkNodeWhere(nodes, props, target, value, here, at);
         continue;
       }
       if (!isRecord(value)) {
@@ -1857,10 +1919,81 @@ function checkNodeWhere(
             }
           }
         } else if (["some", "all", "none", "single"].includes(q)) {
-          checkNodeWhere(nodes, target, inner, `${here}.${q}`, at);
+          checkNodeWhere(nodes, props, target, inner, `${here}.${q}`, at);
         } else {
           at(`${here}: expected some, all, none, single or count`);
         }
+      }
+    }
+  }
+}
+
+/** A rule's `<field>Connection` test: quantifiers over { node, edge }. */
+function checkConnectionWhere(
+  nodes: ReadonlyMap<string, NodeType>,
+  props: ReadonlyMap<string, RelationshipPropertiesType>,
+  rel: RelationshipField,
+  value: unknown,
+  path: string,
+  at: (message: string) => void,
+) {
+  if (!isRecord(value) || Object.keys(value).length === 0) {
+    return at(`${path} must be a non-empty object`);
+  }
+  const target = nodes.get(rel.target);
+  const edgeType = props.get(rel.properties!);
+  for (const [q, inner] of Object.entries(value)) {
+    const here = `${path}.${q}`;
+    if (!["some", "all", "none", "single"].includes(q)) {
+      at(`${path}: expected some, all, none or single`);
+      continue;
+    }
+    if (!isRecord(inner) || Object.keys(inner).length === 0) {
+      at(`${here} is empty: a rule must test something`);
+      continue;
+    }
+    for (const [side, test] of Object.entries(inner)) {
+      if (side === "node") {
+        if (target)
+          checkNodeWhere(nodes, props, target, test, `${here}.node`, at);
+      } else if (side === "edge") {
+        if (edgeType) checkEdgeWhere(edgeType, test, `${here}.edge`, at);
+      } else {
+        at(`${here}: expected node or edge`);
+      }
+    }
+  }
+}
+
+function checkEdgeWhere(
+  edgeType: RelationshipPropertiesType,
+  where: unknown,
+  path: string,
+  at: (message: string) => void,
+) {
+  if (!isRecord(where) || Object.keys(where).length === 0) {
+    return at(`${path} is empty: a rule must test something`);
+  }
+  for (const [k, value] of Object.entries(where)) {
+    const here = `${path}.${k}`;
+    if (value === null) {
+      at(`${here} is null: a rule must test something`);
+    } else if (k === "AND" || k === "OR") {
+      if (!Array.isArray(value)) at(`${here} must be a list`);
+      else
+        value.forEach((x, i) =>
+          checkEdgeWhere(edgeType, x, `${here}[${i}]`, at),
+        );
+    } else if (k === "NOT") {
+      checkEdgeWhere(edgeType, value, here, at);
+    } else if (!edgeType.fields.has(k)) {
+      at(`${here}: ${edgeType.name} has no field ${k}`);
+    } else if (!isRecord(value) || Object.keys(value).length === 0) {
+      at(`${here} must be a non-empty operator object`);
+    } else {
+      for (const [op, operand] of Object.entries(value)) {
+        if (!SCALAR_WHERE_OPS.has(op)) at(`${here}: unknown operator ${op}`);
+        else if (operand === null) at(`${here}.${op} is null`);
       }
     }
   }
@@ -1900,8 +2033,9 @@ function readSearch(
     for (const f of raw.fields) {
       const field = scalars.find((x) => x.name === f);
       if (!field) at(`@fulltext: ${typeName} has no field ${f}`);
-      else if ((field.type !== "String" && field.type !== "ID") || field.list) {
-        at(`@fulltext: ${f} is not a String field`);
+      // A list of strings indexes each of its strings.
+      else if (field.type !== "String" && field.type !== "ID") {
+        at(`@fulltext: ${f} is not a String or [String] field`);
       } else fields.push(field);
     }
     if (raw.fields.length === 0) at("@fulltext: an index needs fields");

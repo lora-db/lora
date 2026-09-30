@@ -117,7 +117,7 @@ Model:
 | `@private`                                                                                                 | field             | Stored, never exposed                                                                                                                                                                                                                    |
 | `@readonly`                                                                                                | field             | Exposed, never client-settable; on a relationship, absent from create and update inputs                                                                                                                                                  |
 | `@settable(onCreate:, onUpdate:)`                                                                          | field             | Which mutations may set it, e.g. set once on create; on a relationship, whether the inputs offer it (an upsert of an existing node keeps it)                                                                                             |
-| `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only                                                                                                                                                                                                 |
+| `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only; on a relationship property, it leaves the edge type too (`onAggregate: false`, the edge aggregates)                                                                                            |
 | `@default(value:)`                                                                                         | field             | Stored on create when the input omits it; on a relationship property, when the relationship is created                                                                                                                                   |
 | `@timestamp(operations: [CREATE, UPDATE])`                                                                 | field             | Set to the current time; never client-settable. On a relationship property: CREATE when the relationship is created, UPDATE on edge updates and re-connects that set properties                                                          |
 | `@populatedBy(callback:, operations:)`                                                                     | field             | Computed by a named callback on write                                                                                                                                                                                                    |
@@ -204,8 +204,11 @@ string), `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`,
   properties together.
 - **Absent and `null` filters are left out of the statement**, so a filter
   bound to an unset variable costs nothing. `eq: null` does not mean
-  `IS NULL`: use `isNull: true`. A relationship quantifier whose filter is
-  empty is left out too: ask `count: { gt: 0 }` for "has any".
+  `IS NULL`: use `isNull: true`. An `OR` branch left empty that way is left
+  out of the `OR`, and an `OR` or `NOT` with nothing left is left out
+  entirely, so an unset variable never widens a filter to every row; a
+  literal `OR: []` matches nothing. A relationship quantifier whose filter
+  is empty is left out too: ask `count: { gt: 0 }` for "has any".
 - `count` and `single` count related nodes once each, however many
   relationships lead to them. `all` holds on an empty set, and a missing
   property fails it.
@@ -413,7 +416,15 @@ commits:
   (`CONSTRAINT_VIOLATION`);
 - `@authorization` validate rules, type and field level (`FORBIDDEN`).
 
-Any failure rolls the whole mutation back. Engine constraint errors come
+Any failure rolls the whole mutation back. Atomicity is per root field:
+in an operation with several root fields, each runs in its own
+transaction, so a later failure leaves the earlier ones committed. Pass
+`mutationTransaction: "operation"` to run every root field of a mutation
+in one transaction through `execute()` (persisted operations included):
+it commits only when the operation reports no error, and otherwise rolls
+back and returns `data: null`. With another server, put a `lora.begin()`
+transaction in the context (see [Transactions](#transactions)). Engine
+constraint errors come
 back as `CONSTRAINT_VIOLATION` naming the type and field. A mutation creates
 or deletes at most `maxBatch` nodes (default 1000). `@key` is not updatable.
 `info` reports `nodesCreated`, `nodesUpdated`, `nodesDeleted`,
@@ -467,7 +478,11 @@ type Event @node @fulltext(indexes: [{ fields: ["title", "summary"] }]) {
 ```
 
 Full-text queries AND their terms, fold case and accents, and treat a
-trailing `*` as a prefix. Vector search takes a query `vector` or the key of
+trailing `*` as a prefix. A `[String!]` field in `@fulltext` indexes each
+of its strings. Search connections (`searchEventsConnection`) page with
+cursors and take `totalCount`: every match after `where` and the read
+rules (a vector search counts within its candidate window); a selection of
+only `totalCount` reads no page. Vector search takes a query `vector` or the key of
 a node whose embedding to start from (`to`, which is left out of the
 results). The index returns its top candidates before `where` applies, so
 the library asks it for four times the page when a filter is present.
@@ -595,8 +610,9 @@ type Post
 }
 ```
 
-- A rule is `{ node, jwt, AND, OR, NOT }`. `node` is a filter over the type,
-  where `"$jwt.path"` strings become the caller's claims and
+- A rule is `{ node, jwt, AND, OR, NOT }`. `node` is a filter over the type
+  (relationship properties included, through `<field>Connection: { some:
+{ node, edge } }`), where `"$jwt.path"` strings become the caller's claims and
   `"$context.path"` strings values from the GraphQL context. `jwt` tests
   claims (`eq`, `in`, `includes`, `contains`, `startsWith`, `endsWith`,
   `lt`, `lte`, `gt`, `gte`, `exists`).
@@ -961,14 +977,14 @@ the document before that. `execute()`, `subscribe()` and `persist()` apply them,
 `lora.validationRules()` / `lora.envelopPlugin()` bring them to any other
 server (GraphQL Yoga takes the plugin as is):
 
-| Guard           | Default    | Limit                                    |
-| --------------- | ---------- | ---------------------------------------- |
-| `maxDepth`      | 12         | Field nesting, through fragments         |
-| `maxIntrospectionDepth` | 20 | Nesting under `__schema` / `__type`      |
-| `maxAliases`    | 30         | Aliased fields per document              |
-| `maxRootFields` | 20         | Root fields per operation                |
-| `maxTokens`     | 5000       | Lexer tokens per document, while parsing |
-| `introspection` | production | Off when `NODE_ENV` is `production`      |
+| Guard                   | Default    | Limit                                    |
+| ----------------------- | ---------- | ---------------------------------------- |
+| `maxDepth`              | 12         | Field nesting, through fragments         |
+| `maxIntrospectionDepth` | 20         | Nesting under `__schema` / `__type`      |
+| `maxAliases`            | 30         | Aliased fields per document              |
+| `maxRootFields`         | 20         | Root fields per operation                |
+| `maxTokens`             | 5000       | Lexer tokens per document, while parsing |
+| `introspection`         | production | Off when `NODE_ENV` is `production`      |
 
 With `NODE_ENV=production`, database errors are masked and introspection
 is off unless configured otherwise. See
@@ -1035,22 +1051,22 @@ Measured on LoraDB 0.15 over 20 000 festivals and 100 000 relationships
 
 ## Coming from @neo4j/graphql
 
-| @neo4j/graphql                                              | lora-graphql                                                     |
-| ----------------------------------------------------------- | ---------------------------------------------------------------- |
-| Every type gets every operation                             | Reads by default; mutations and subscriptions opt in             |
-| Every field filterable by every operator                    | `@filterable(byValue:)`, checked against the type                |
-| Offset cursors (`arrayconnection:N`)                        | Keyset cursors tagged with their sort (signed with a secret)     |
-| `update`/`delete` with an optional `where`                  | By `@key`, or bulk with a required, bounded `where`              |
-| `connect: { where }`, silently a no-op when nothing matches | Connect by key; a missing target is `NOT_FOUND`                  |
-| Single relationships not enforced; required ones refused    | Enforced from both sides; required ones supported                |
-| `{ viewers: { add: 1 } }`                                   | `adjust: { viewers: { add: 1 } }`                                |
-| `@id`, `@populatedBy`, `@timestamp`                         | `@key(generate: true)`, `@populatedBy`, `@timestamp`             |
-| `@authorization` rules evaluated in Cypher                  | Claim checks folded in JavaScript; node rules compiled           |
-| You pick indexes                                            | Inferred from the API, and verified with `explain()`             |
-| Unbounded lists; complexity left to you                     | Every list bounded; a cost limit per operation                   |
+| @neo4j/graphql                                              | lora-graphql                                                                                 |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Every type gets every operation                             | Reads by default; mutations and subscriptions opt in                                         |
+| Every field filterable by every operator                    | `@filterable(byValue:)`, checked against the type                                            |
+| Offset cursors (`arrayconnection:N`)                        | Keyset cursors tagged with their sort (signed with a secret)                                 |
+| `update`/`delete` with an optional `where`                  | By `@key`, or bulk with a required, bounded `where`                                          |
+| `connect: { where }`, silently a no-op when nothing matches | Connect by key; a missing target is `NOT_FOUND`                                              |
+| Single relationships not enforced; required ones refused    | Enforced from both sides; required ones supported                                            |
+| `{ viewers: { add: 1 } }`                                   | `adjust: { viewers: { add: 1 } }`                                                            |
+| `@id`, `@populatedBy`, `@timestamp`                         | `@key(generate: true)`, `@populatedBy`, `@timestamp`                                         |
+| `@authorization` rules evaluated in Cypher                  | Claim checks folded in JavaScript; node rules compiled                                       |
+| You pick indexes                                            | Inferred from the API, and verified with `explain()`                                         |
+| Unbounded lists; complexity left to you                     | Every list bounded; a cost limit per operation                                               |
 | Subscriptions over CDC                                      | `@subscription`, from library-made writes or, with `changeFeed: true`, every committed write |
-| Interfaces and unions with `UNION`                          | Per-member subqueries merged by sort, each using its own indexes |
-| Federation                                                  | Not supported                                                    |
+| Interfaces and unions with `UNION`                          | Per-member subqueries merged by sort, each using its own indexes                             |
+| Federation                                                  | Not supported                                                                                |
 
 ## LoraDB behaviours this works around
 

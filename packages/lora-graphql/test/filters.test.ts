@@ -111,7 +111,7 @@ test("UNDIRECTED relationships read both ways", async () => {
   expect(d.band.friends).toEqual([{ key: "b" }, { key: "c" }]);
 });
 
-test("empty filters under NOT and OR follow logic", async () => {
+test("empty filters under NOT and OR are left out", async () => {
   const h = await festivalHarness();
   const count = async (where: string) =>
     (
@@ -120,8 +120,10 @@ test("empty filters under NOT and OR follow logic", async () => {
       )
     ).festivals.length;
   expect(await count(`{ AND: [] }`)).toBe(30);
-  expect(await count(`{ NOT: { AND: [] } }`)).toBe(0);
-  expect(await count(`{ OR: [{ NOT: {} }] }`)).toBe(0);
+  // An emptied NOT or OR branch adds nothing...
+  expect(await count(`{ NOT: { AND: [] } }`)).toBe(30);
+  expect(await count(`{ OR: [{ NOT: {} }] }`)).toBe(30);
+  expect(await count(`{ OR: [{}, { name: { eq: "nope" } }] }`)).toBe(0);
+  // ...but a literal empty OR still matches nothing.
   expect(await count(`{ OR: [] }`)).toBe(0);
-  expect(await count(`{ OR: [{}, { name: { eq: "nope" } }] }`)).toBe(30);
 });

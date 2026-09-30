@@ -1079,22 +1079,26 @@ export function compileSearch(
         ),
       )
     : undefined;
-  const where = and(
-    compileNodeWhere(ctx, node, "this", args["where"] as Where | undefined),
-    authFilter(ctx, node, "this", "READ"),
-    keyset,
-  );
-  const clauses: Clause[] = [];
-  if (index.kind === "fulltext") {
-    const query = args["query"] as string;
-    clauses.push({
-      kind: "procedure",
-      procedure: "db.index.fulltext.queryNodes",
-      args: [bind(ctx, index.name), bind(ctx, query)],
-      yields: [{ item: "node", alias: "this" }, { item: "score" }],
-      where,
-    });
-  } else {
+  // The index call and its filters, for the page (with the keyset) and
+  // for `totalCount` (every match, in its own parameter scope).
+  const matches = (c: CompileContext, keyset: Expr | undefined): Clause[] => {
+    const where = and(
+      compileNodeWhere(c, node, "this", args["where"] as Where | undefined),
+      authFilter(c, node, "this", "READ"),
+      keyset,
+    );
+    const clauses: Clause[] = [];
+    if (index.kind === "fulltext") {
+      const query = args["query"] as string;
+      clauses.push({
+        kind: "procedure",
+        procedure: "db.index.fulltext.queryNodes",
+        args: [bind(c, index.name), bind(c, query)],
+        yields: [{ item: "node", alias: "this" }, { item: "score" }],
+        where,
+      });
+      return clauses;
+    }
     const vector = args["vector"] as number[] | null | undefined;
     const to = args["to"];
     if ((vector == null) === (to == null)) {
@@ -1116,19 +1120,17 @@ export function compileSearch(
     let source: Expr;
     let exclude: Expr | undefined;
     if (to != null) {
-      checkFieldAuthentication(ctx, node.name, index.field);
+      checkFieldAuthentication(c, node.name, index.field);
       clauses.push({
         kind: "match",
         pattern: { start: { variable: "anchor", labels: [label] }, hops: [] },
         // The anchor's vector is read to rank the others: it must be
         // readable, or an unreadable node's vector would leak through them.
         where: and(
-          bin("=", prop(v("anchor"), node.key.property), bind(ctx, to)),
-          authFilter(ctx, node, "anchor", "READ"),
-          coalesceFalse(authValidate(ctx, node, "anchor", "READ", "BEFORE")),
-          coalesceFalse(
-            fieldValidate(ctx, node, index.field, "anchor", "READ"),
-          ),
+          bin("=", prop(v("anchor"), node.key.property), bind(c, to)),
+          authFilter(c, node, "anchor", "READ"),
+          coalesceFalse(authValidate(c, node, "anchor", "READ", "BEFORE")),
+          coalesceFalse(fieldValidate(c, node, index.field, "anchor", "READ")),
         ),
       });
       source = prop(v("anchor"), index.field.property);
@@ -1138,18 +1140,34 @@ export function compileSearch(
         prop(v("anchor"), node.key.property),
       );
     } else {
-      source = bind(ctx, vector);
+      source = bind(c, vector);
     }
     clauses.push({
       kind: "procedure",
       procedure: "db.index.vector.queryNodes",
-      args: [bind(ctx, index.name), bind(ctx, candidates), source],
+      args: [bind(c, index.name), bind(c, candidates), source],
       yields: [{ item: "node", alias: "this" }, { item: "score" }],
       where: and(exclude, where),
     });
-  }
-  const selections = connection
+    return clauses;
+  };
+  const sel = connection
     ? searchConnectionSelections(ctx, node, fieldNodes)
+    : undefined;
+  if (sel && !sel.page) {
+    // Only `totalCount`: no page is read.
+    return searchCount(ctx, node, matches, (rows) => ({
+      __rows: [],
+      __first: limit,
+      __after: cursor !== undefined,
+      __backward: false,
+      __sort: SEARCH_SORT,
+      __totalCount: rows,
+    }));
+  }
+  const clauses = matches(ctx, keyset);
+  const selections = sel
+    ? sel.node
     : searchNodeSelections(ctx, node, fieldNodes);
   const projection = projectNode(ctx, node, "this", selections, limit);
   clauses.push(
@@ -1183,24 +1201,35 @@ export function compileSearch(
       ],
     },
   );
-  if (connection) {
-    return finish(
+  if (sel) {
+    const count = sel.totalCount
+      ? searchCount(ctx, node, matches, () => undefined)
+      : undefined;
+    const compiled = finish(
       ctx,
       clauses,
       ["node", "score", "__cursor"],
-      ([r]): RawConnection => ({
-        __rows: r!.rows.map((row) => ({
-          node: row["node"],
-          score: row["score"],
-          __cursor: row["__cursor"] as unknown[],
-        })),
-        __first: limit,
-        __after: cursor !== undefined,
-        __backward: false,
-        __sort: SEARCH_SORT,
-      }),
+      ([r, c]): RawConnection => {
+        const row = c?.rows[0];
+        if (c) assertNoneDenied(row);
+        return {
+          __rows: r!.rows.map((row) => ({
+            node: row["node"],
+            score: row["score"],
+            __cursor: row["__cursor"] as unknown[],
+          })),
+          __first: limit,
+          __after: cursor !== undefined,
+          __backward: false,
+          __sort: SEARCH_SORT,
+          ...(c ? { __totalCount: Number(row?.["totalCount"] ?? 0) } : {}),
+        };
+      },
       undefined,
+      count?.statements ?? [],
     );
+    if (count) compiled.cost += count.cost;
+    return compiled;
   }
   return finish(
     ctx,
@@ -1215,12 +1244,55 @@ export function compileSearch(
   );
 }
 
+/**
+ * `totalCount` of a search connection: every match after \`where\` and the
+ * read rules (a vector search counts within its candidate window), in its
+ * own parameter scope. A row the READ rules would refuse makes the count
+ * FORBIDDEN, as on other connections.
+ */
+function searchCount(
+  ctx: CompileContext,
+  node: NodeType,
+  matches: (c: CompileContext, keyset: Expr | undefined) => Clause[],
+  shape: (count: number) => RawConnection | undefined,
+): CompiledRead {
+  const statsCtx: CompileContext = {
+    ...ctx,
+    params: {},
+    vars: new Set(["this"]),
+    computed: new Map(),
+  };
+  const clauses: Clause[] = [
+    ...matches(statsCtx, undefined),
+    {
+      kind: "return",
+      items: [
+        { expr: fn("count", v("this")), alias: "totalCount" },
+        ...deniedItem(statsCtx, node, "this"),
+      ],
+    },
+  ];
+  const compiled = finish(
+    statsCtx,
+    clauses,
+    ["totalCount"],
+    ([r]) => {
+      const row = r!.rows[0];
+      assertNoneDenied(row);
+      return shape(Number(row?.["totalCount"] ?? 0));
+    },
+    undefined,
+  );
+  compiled.cost = 1;
+  return compiled;
+}
+
 /** The `edges { node }` selections of a search connection. */
 function searchConnectionSelections(
   ctx: CompileContext,
   node: NodeType,
   fieldNodes: readonly FieldNode[],
-): SelectionSetNode[] {
+): ReturnType<typeof connectionSelections> {
   const connType = ctx.schema.getType(
     names.searchConnection(node.name),
   ) as GraphQLObjectType;
@@ -1234,7 +1306,7 @@ function searchConnectionSelections(
     subSelections(fieldNodes),
     node,
     undefined,
-  ).node;
+  );
 }
 
 /** The `node` selections of a `<Type>Match` list, merged across aliases. */

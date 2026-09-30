@@ -166,19 +166,25 @@ function compileWhere(
         parts.push(compileWhere(ctx, w, lookup));
       }
     } else if (key === "OR") {
-      const branches = (value as Where[]).map((w) =>
-        compileWhere(ctx, w, lookup),
-      );
-      // An empty branch matches everything, so the OR is vacuous; no
-      // branches at all match nothing.
-      if (branches.length === 0) parts.push(lit(false));
-      else if (branches.every((b) => b !== undefined)) {
-        parts.push(or(...branches));
+      const list = value as Where[];
+      // A literal `OR: []` matches nothing. A branch left empty once its
+      // absent and null filters are left out is itself left out, and an
+      // OR with no branch left adds nothing: absent variables never widen
+      // a filter to every row.
+      if (list.length === 0) {
+        parts.push(lit(false));
+        continue;
       }
+      const branches = list
+        .map((w) => compileWhere(ctx, w, lookup))
+        .filter((b): b is Expr => b !== undefined);
+      if (branches.length > 0) parts.push(or(...branches));
     } else if (key === "NOT") {
-      // NOT of a filter that matches everything matches nothing.
+      // A NOT with nothing left inside adds nothing (not "NOT TRUE"). In
+      // an authorization rule it still denies: a rule never widens.
       const inner = compileWhere(ctx, value as Where, lookup);
-      parts.push(inner ? not(inner) : lit(false));
+      if (inner) parts.push(not(inner));
+      else if (ctx.inAuth) parts.push(lit(false));
     } else {
       parts.push(lookup(key)?.(value));
     }
