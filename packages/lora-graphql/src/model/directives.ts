@@ -251,6 +251,14 @@ export const directiveTypeDefs = /* GraphQL */ `
     CREATE_RELATIONSHIP
     DELETE_RELATIONSHIP
     SUBSCRIBE
+    "On a relationship field: creating one of its relationships (connect, nested create)."
+    CONNECT
+    "On a relationship field: removing one of its relationships (disconnect)."
+    DISCONNECT
+    "On a relationship field: setting properties on an existing relationship (edge update, re-connect)."
+    UPDATE_EDGE
+    "On a relationship field: reading, filtering, sorting or aggregating its properties."
+    READ_EDGE
   }
 
   enum AuthorizationWhen {

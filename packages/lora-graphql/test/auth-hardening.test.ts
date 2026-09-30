@@ -119,7 +119,7 @@ test("field-level @authorization on relationship and @cypher fields takes READ r
   const cypher = (r: string) => `
       type A @node { key: ID! @key n: Int @cypher(statement: "RETURN 1 AS n", columnName: "n") ${r} }
     `;
-  expect(() => buildModel(rel(rule))).toThrow(/takes READ rules only/);
+  expect(() => buildModel(rel(rule))).toThrow(/takes READ rules, or CONNECT/);
   expect(() => buildModel(cypher(rule))).toThrow(/takes READ rules only/);
   expect(() => buildModel(rel(read))).not.toThrow();
   expect(() => buildModel(cypher(read))).not.toThrow();

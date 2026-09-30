@@ -150,10 +150,26 @@ function visible(
   return bySub || byRole;
 }
 
+/**
+ * A filter left with no test (`AND: []`, and AND / OR / NOT of only such)
+ * is left out wherever it stands, not read as TRUE: a NOT over it or an OR
+ * branch of it adds nothing. A literal `OR: []` still matches nothing.
+ */
+function isEmpty(w: Where): boolean {
+  if ("AND" in w) return w.AND.every(isEmpty);
+  if ("OR" in w) return w.OR.length > 0 && w.OR.every(isEmpty);
+  if ("NOT" in w) return isEmpty(w.NOT);
+  return false;
+}
+
 function matches(doc: DocRow, w: Where): boolean {
-  if ("AND" in w) return w.AND.every((x) => matches(doc, x));
-  if ("OR" in w) return w.OR.some((x) => matches(doc, x));
-  if ("NOT" in w) return !matches(doc, w.NOT);
+  if ("AND" in w) return w.AND.every((x) => isEmpty(x) || matches(doc, x));
+  if ("OR" in w) {
+    if (w.OR.length === 0) return false;
+    const branches = w.OR.filter((x) => !isEmpty(x));
+    return branches.length === 0 || branches.some((x) => matches(doc, x));
+  }
+  if ("NOT" in w) return isEmpty(w.NOT) || !matches(doc, w.NOT);
   if ("level" in w) {
     const f = w.level;
     if (f.eq !== undefined) return doc.level === f.eq;

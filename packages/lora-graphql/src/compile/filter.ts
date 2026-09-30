@@ -23,6 +23,7 @@ import {
   checkFieldAuthentication,
   checkPropertyAccess,
   fieldValidate,
+  refuseEdgeRowRules,
 } from "./auth.js";
 import { bind, freshVar, type CompileContext } from "./context.js";
 import {
@@ -530,6 +531,7 @@ function connectionPredicate(
     if (inner === null || inner === undefined) continue;
     const w = inner as Where;
     if (!nonEmptyPair(ctx, target, props, w)) continue;
+    if (w["edge"] != null) refuseEdgeRowRules(ctx, rel);
     switch (quantifier) {
       case "some":
         parts.push(bin(">", count(w, false), lit(0)));
@@ -635,6 +637,7 @@ function aggregatePredicate(
     false,
   );
   if (props) {
+    if (value["edge"] != null) refuseEdgeRowRules(ctx, rel);
     side(value["edge"] as Where | undefined, (n) => props.fields.get(n), true);
   }
   if (value["count"]) {

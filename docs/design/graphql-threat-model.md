@@ -103,6 +103,14 @@ each check runs. The user-facing rules are in the package
 
 ## Writes and change events
 
+- Rules on a relationship field (`CONNECT`, `DISCONNECT`, `UPDATE_EDGE`,
+  `READ_EDGE`) apply to writes through the field and through a field
+  declaring the same relationship type from the other side. They do not
+  apply to relationships removed by deleting a node (the type's `DELETE`
+  rule decides), nor to Cypher run with `tx.execute`. `READ_EDGE` refuses
+  filtering, sorting and aggregating by the properties unless the claims
+  settle it, so a filter cannot probe a hidden value.
+
 - `isViewer` and `viewer` (with `@viewer`) are resolved from the claim the
   server verified, like `$jwt.sub`: the library never looks the caller up
   by anything the client sends. The `@viewer` field must be `@key` or

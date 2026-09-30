@@ -42,16 +42,19 @@ export function desugarRule(
   ctx: DesugarContext,
   owner: NodeType | undefined,
   where: AuthorizationWhere,
+  ends?: { source: NodeType; target: NodeType },
 ): AuthorizationWhere {
   if (!isRecord(where)) return where;
   const out: Where = {};
   for (const [key, value] of Object.entries(where)) {
     if (key === "AND" || key === "OR") {
       out[key] = Array.isArray(value)
-        ? value.map((w) => desugarRule(ctx, owner, w as Where))
+        ? value.map((w) => desugarRule(ctx, owner, w as Where, ends))
         : value;
     } else if (key === "NOT") {
-      out[key] = desugarRule(ctx, owner, value as Where);
+      out[key] = desugarRule(ctx, owner, value as Where, ends);
+    } else if (ends && (key === "source" || key === "target")) {
+      out[key] = desugarNode(ctx, ends[key], value);
     } else if (key === "node" && owner) {
       out[key] = desugarNode(ctx, owner, value);
     } else if (key === "viewer") {

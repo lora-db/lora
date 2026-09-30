@@ -697,6 +697,66 @@ relationship and `UPDATE` for one that already exists; `update: { edge }`
 checks `UPDATE`. A request the READ rules refuse reads the property as
 `FORBIDDEN` and cannot filter, sort or aggregate by it.
 
+### Rules on relationships
+
+A relationship field also takes validate rules for the relationship's
+own operations, where both ends are known:
+
+```graphql
+type Trip @node @mutation {
+  key: String! @key
+  owner: Person! @relationship(type: "OWNS", direction: IN)
+  members: [Person!]!
+    @relationship(type: "MEMBER", direction: IN, properties: "TripInvite")
+    @authorization(
+      validate: [
+        # the owner invites
+        {
+          operations: [CONNECT]
+          where: { source: { owner: { isViewer: true } } }
+        }
+        # the owner removes anyone; a member removes only themselves
+        {
+          operations: [DISCONNECT]
+          where: {
+            OR: [
+              { source: { owner: { isViewer: true } } }
+              { target: { isViewer: true } }
+            ]
+          }
+        }
+        # only the member answers their own invitation, and reads its marker
+        {
+          operations: [UPDATE_EDGE, READ_EDGE]
+          where: { target: { isViewer: true } }
+        }
+      ]
+    )
+}
+```
+
+- `source` is the node declaring the field, `target` the related node and
+  `edge` the relationship's properties; `jwt`, `viewer`, `AND`, `OR` and
+  `NOT` work as in any rule. A `node` part is a model error here, and so
+  is a relationship operation on a type or scalar field, or in the same
+  rule as `READ`.
+- `CONNECT` covers a new relationship (connect, nested create);
+  `DISCONNECT` a disconnect, including replacing a single relationship;
+  `UPDATE_EDGE` `update: [{ edge }]` and a re-connect that sets
+  properties; `READ_EDGE` reading the properties. `CONNECT` and
+  `UPDATE_EDGE` are checked on the relationship after the write and
+  `DISCONNECT` before it, in the mutation's transaction: a failure is
+  `FORBIDDEN` and rolls the mutation back.
+- The rules hold whichever side the write comes from: a connect through
+  `Person.trips` (the same relationship type, the other direction)
+  answers to `Trip.members`' rules, with source and target as declared on
+  `Trip.members`. If both fields carry rules, both apply.
+- A relationship failing `READ_EDGE` reads its properties as `FORBIDDEN`.
+  Unless the claims alone settle the rule, nothing may filter, sort or
+  aggregate by that relationship's properties.
+- Deleting a node removes its relationships without `DISCONNECT` rules:
+  who may delete the node is the type's `DELETE` rule.
+
 ```graphql
 type Membership @relationshipProperties {
   role: String

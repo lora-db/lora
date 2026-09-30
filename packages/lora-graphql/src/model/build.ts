@@ -63,7 +63,7 @@ import type {
   ScalarField,
   ScalarType,
 } from "./types.js";
-import { PLACEHOLDER } from "./types.js";
+import { PLACEHOLDER, RELATIONSHIP_OPERATIONS } from "./types.js";
 import { isUpdatable } from "./inputs.js";
 
 export interface ModelOptions {
@@ -714,6 +714,16 @@ export function buildModel(
     }
   }
 
+  const ruleEnds = (f: RelationshipField): RuleEnds | undefined => {
+    const source = nodes.get(f.owner);
+    const target = nodes.get(f.target);
+    if (!source || !target) return undefined;
+    return {
+      source,
+      target,
+      edge: f.properties ? relationshipProperties.get(f.properties) : undefined,
+    };
+  };
   // Rule sugar (isViewer, viewer) expands into the plain rule AST before
   // the rules are checked, so the checks and the compiler see one form.
   if (viewer && jwtType) checkViewer(viewer, nodes, jwtType, problems);
@@ -723,6 +733,7 @@ export function buildModel(
     type: string,
     field: string | undefined,
     rules: ReadonlyArray<{ where: AuthorizationWhere }>,
+    ends?: { source: NodeType; target: NodeType },
   ) => {
     const ctx: DesugarContext = {
       nodes,
@@ -740,6 +751,7 @@ export function buildModel(
         ctx,
         owner,
         rule.where,
+        ends,
       );
     }
   };
@@ -749,12 +761,14 @@ export function buildModel(
       ...(node.authorization?.validate ?? []),
     ]);
     for (const f of node.fields.values()) {
-      if (f.authorization) {
-        desugar(node, node.name, f.name, [
-          ...f.authorization.filter,
-          ...f.authorization.validate,
-        ]);
-      }
+      if (!f.authorization) continue;
+      const rel = f.authorization.validate.filter(isRelationshipRule);
+      desugar(node, node.name, f.name, [
+        ...f.authorization.filter,
+        ...f.authorization.validate.filter((r) => !isRelationshipRule(r)),
+      ]);
+      const ends = f.kind === "relationship" ? ruleEnds(f) : undefined;
+      if (ends) desugar(undefined, node.name, f.name, rel, ends);
     }
   }
   for (const props of relationshipProperties.values()) {
@@ -770,6 +784,17 @@ export function buildModel(
       ...(node.authorization?.filter ?? []),
       ...(node.authorization?.validate ?? []),
     ];
+    for (const rule of rules) {
+      const misplaced = [...rule.operations].filter((op) =>
+        RELATIONSHIP_OPERATIONS.has(op),
+      );
+      if (misplaced.length > 0) {
+        problems.push({
+          type: node.name,
+          message: `@authorization: ${misplaced.join(", ")} rules belong on a relationship field`,
+        });
+      }
+    }
     for (const f of node.fields.values()) {
       if (!f.authorization) continue;
       if (f.authorization.filter.length > 0) {
@@ -780,7 +805,43 @@ export function buildModel(
             "field-level @authorization takes validate rules; filter rules belong on the type",
         });
       }
-      rules.push(...f.authorization.validate);
+      for (const rule of f.authorization.validate) {
+        if (!isRelationshipRule(rule)) {
+          rules.push(rule);
+          continue;
+        }
+        const ends = f.kind === "relationship" ? ruleEnds(f) : undefined;
+        if (!ends) {
+          if (f.kind === "scalar") {
+            problems.push({
+              type: node.name,
+              field: f.name,
+              message:
+                "@authorization: CONNECT, DISCONNECT, UPDATE_EDGE and READ_EDGE rules belong on a relationship field",
+            });
+          } else if (f.kind === "relationship") {
+            problems.push({
+              type: node.name,
+              field: f.name,
+              message:
+                "@authorization: relationship rules need a @node target, not an interface or union",
+            });
+          }
+          continue;
+        }
+        checkRuleWhere(
+          nodes,
+          relationshipProperties,
+          undefined,
+          node.name,
+          f.name,
+          rule.where,
+          problems,
+          jwtShape,
+          viewerNode,
+          ends,
+        );
+      }
     }
     for (const rule of rules) {
       checkAuthorizationWhere(
@@ -1249,7 +1310,11 @@ function buildRelationshipField(
 ): RelationshipField | undefined {
   const at = (message: string) =>
     problems.push({ type: t.name, field: f.name, message });
-  const authorization = readOnlyRules(directive(d("authorization"), f, at), at);
+  const authorization = readOnlyRules(
+    directive(d("authorization"), f, at),
+    at,
+    true,
+  );
   const rel = directive(d("relationship"), f, at);
   if (!rel) {
     at(
@@ -1758,15 +1823,26 @@ function authOps(
 function readOnlyRules(
   args: Record<string, unknown> | undefined,
   at: (message: string) => void,
+  relationship = false,
 ): Authorization | undefined {
   const rules = readAuthorization(args);
   if (!rules) return undefined;
-  if (
-    rules.validate.some((r) => [...r.operations].some((op) => op !== "READ"))
-  ) {
-    at(
-      "field-level @authorization on a relationship or @cypher field takes READ rules only; write rules belong on the types",
-    );
+  for (const r of rules.validate) {
+    const ops = [...r.operations];
+    const rel = ops.filter((op) => RELATIONSHIP_OPERATIONS.has(op));
+    if (rel.length > 0 && !relationship) {
+      at(`${rel.join(", ")} rules belong on a relationship field`);
+    } else if (rel.length > 0 && rel.length < ops.length) {
+      at(
+        `a rule on ${rel.join(", ")} tests source, target and edge; give READ its own rule`,
+      );
+    } else if (rel.length === 0 && ops.some((op) => op !== "READ")) {
+      at(
+        relationship
+          ? "field-level @authorization on a relationship field takes READ rules, or CONNECT, DISCONNECT, UPDATE_EDGE and READ_EDGE rules; write rules for the nodes belong on the types"
+          : "field-level @authorization on a relationship or @cypher field takes READ rules only; write rules belong on the types",
+      );
+    }
   }
   return rules;
 }
@@ -1812,6 +1888,12 @@ const PROPERTY_OPS = new Set<AuthOperation>(["READ", "CREATE", "UPDATE"]);
 const JWT_OPS = new Set([...SCALAR_WHERE_OPS, "includes", "exists"]);
 const COUNT_WHERE_OPS = new Set(["eq", "lt", "lte", "gt", "gte"]);
 
+/** A rule over a relationship's source, target and edge. */
+const isRelationshipRule = (rule: {
+  operations: ReadonlySet<AuthOperation>;
+}): boolean =>
+  [...rule.operations].some((op) => RELATIONSHIP_OPERATIONS.has(op));
+
 const isRecord = (x: unknown): x is Record<string, unknown> =>
   typeof x === "object" && x !== null && !Array.isArray(x);
 
@@ -1844,6 +1926,13 @@ function checkAuthorizationWhere(
  * several relationship fields, from either end, so `node` would be
  * ambiguous.
  */
+/** The ends a relationship field's rule tests, for its checks. */
+interface RuleEnds {
+  source: NodeType;
+  target: NodeType;
+  edge: RelationshipPropertiesType | undefined;
+}
+
 function checkRuleWhere(
   nodes: ReadonlyMap<string, NodeType>,
   props: ReadonlyMap<string, RelationshipPropertiesType>,
@@ -1854,6 +1943,7 @@ function checkRuleWhere(
   problems: ModelProblem[],
   jwtShape?: ReadonlyMap<string, string>,
   viewerNode?: NodeType,
+  ends?: RuleEnds,
 ) {
   const at = (message: string) =>
     problems.push({
@@ -1861,6 +1951,20 @@ function checkRuleWhere(
       ...(field ? { field } : {}),
       message: `@authorization: ${message}`,
     });
+  // A filter over a node type, with the strings and claims it uses.
+  const nodePart = (t: NodeType, value: unknown, here: string) => {
+    checkNodeWhere(nodes, props, t, value, here, at);
+    for (const problem of ruleStringProblems(value)) at(`${here}: ${problem}`);
+    if (jwtShape) {
+      for (const ref of claimRefs(value)) {
+        if (!jwtShape.has(ref))
+          at(`${here}: $jwt.${ref} is not a claim of the @jwt type`);
+      }
+    }
+  };
+  const expected = ends
+    ? "source, target, edge, viewer, jwt, AND, OR or NOT"
+    : "node, viewer, jwt, AND, OR or NOT";
   const visit = (w: unknown, path: string) => {
     if (!isRecord(w)) return at(`${path || "where"} must be an object`);
     for (const [k, value] of Object.entries(w)) {
@@ -1870,33 +1974,26 @@ function checkRuleWhere(
         else value.forEach((x, i) => visit(x, `${here}[${i}]`));
       } else if (k === "NOT") {
         visit(value, here);
+      } else if (ends && (k === "source" || k === "target")) {
+        nodePart(ends[k], value, here);
+      } else if (ends && k === "edge") {
+        if (!ends.edge) at(`${here}: the relationship has no properties`);
+        else {
+          checkEdgeWhere(ends.edge, value, here, at);
+          for (const problem of ruleStringProblems(value))
+            at(`${here}: ${problem}`);
+        }
+      } else if (k === "node" && ends) {
+        at(`${here}: a relationship rule tests source, target and edge`);
       } else if (k === "node" && !node) {
         at(
           `${here}: rules on relationship properties test claims (jwt) only; node rules belong on the node types`,
         );
       } else if (k === "node" && node) {
-        checkNodeWhere(nodes, props, node, value, here, at);
-        for (const problem of ruleStringProblems(value))
-          at(`${here}: ${problem}`);
-        if (jwtShape) {
-          for (const ref of claimRefs(value)) {
-            if (!jwtShape.has(ref))
-              at(`${here}: $jwt.${ref} is not a claim of the @jwt type`);
-          }
-        }
+        nodePart(node, value, here);
       } else if (k === "viewer") {
         // Desugaring already reported a missing @viewer.
-        if (viewerNode) {
-          checkNodeWhere(nodes, props, viewerNode, value, here, at);
-          for (const problem of ruleStringProblems(value))
-            at(`${here}: ${problem}`);
-          if (jwtShape) {
-            for (const ref of claimRefs(value)) {
-              if (!jwtShape.has(ref))
-                at(`${here}: $jwt.${ref} is not a claim of the @jwt type`);
-            }
-          }
-        }
+        if (viewerNode) nodePart(viewerNode, value, here);
       } else if (k === "jwt") {
         if (!isRecord(value)) at(`${here} must be an object`);
         else {
@@ -1920,7 +2017,7 @@ function checkRuleWhere(
           }
         }
       } else {
-        at(`${here}: expected node, viewer, jwt, AND, OR or NOT`);
+        at(`${here}: expected ${expected}`);
       }
     }
   };

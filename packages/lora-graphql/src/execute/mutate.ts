@@ -7,6 +7,7 @@ import type { FieldNode, GraphQLObjectType, SelectionSetNode } from "graphql";
 import {
   authFilter,
   authValidate,
+  relationshipRules,
   checkAuthentication,
   checkFieldAuthentication,
   checkPropertyAccess,
@@ -859,6 +860,17 @@ class Runner {
       const returned = `row.from AS from, ${bKey} AS key`;
       const pairs = (rows: Array<Record<string, unknown>>) =>
         rows.map((r) => ({ from: r["from"], to: r["key"] }));
+      // Rules on the relationship field, before the relationships go.
+      if (
+        relationshipRules(this.ctx(), rel, "DISCONNECT", {
+          owner: "a",
+          target: "b",
+          rel: "r",
+        }) !== undefined
+      ) {
+        const doomed = await this.run(`${matchText}RETURN ${returned}`, ctx);
+        await this.checkRelationshipRules("DISCONNECT", rel, pairs(doomed));
+      }
       if (this.endRules(owner, target, "DELETE_RELATIONSHIP", "BEFORE")) {
         const doomed = await this.run(`${matchText}RETURN ${returned}`, ctx);
         await this.checkEnds(
@@ -989,6 +1001,29 @@ class Runner {
           { type: target.name, keys: missing },
         );
       }
+      // Rules on the relationship field: a new relationship is a CONNECT,
+      // an existing one given properties an UPDATE_EDGE.
+      await this.checkRelationshipRules(
+        "CONNECT",
+        rel,
+        linked
+          .filter((r) => r["existed"] !== true)
+          .map((r) => ({ from: r["from"], to: r["key"] })),
+      );
+      await this.checkRelationshipRules(
+        "UPDATE_EDGE",
+        rel,
+        linked
+          .filter(
+            (r) =>
+              r["existed"] === true &&
+              Object.keys(
+                byPair.get(`${keyOf(r["from"])}\0${keyOf(r["key"])}`)?.props ??
+                  {},
+              ).length > 0,
+          )
+          .map((r) => ({ from: r["from"], to: r["key"] })),
+      );
       await this.checkEnds(
         "CREATE_RELATIONSHIP",
         owner,
@@ -1000,6 +1035,44 @@ class Runner {
         (r) => r["existed"] !== true,
       ).length;
       for (const l of links) this.connected.push(relRef(rel, l.from, l.to));
+    }
+  }
+
+  /**
+   * Rules on the relationship field (and on a field declaring the same
+   * relationship from the other side) for `op`, on each pair's
+   * relationship as it stands: after the write for CONNECT and
+   * UPDATE_EDGE, before it for DISCONNECT. FORBIDDEN when any fails; the
+   * mutation rolls back.
+   */
+  async checkRelationshipRules(
+    op: "CONNECT" | "DISCONNECT" | "UPDATE_EDGE",
+    rel: RelationshipField,
+    pairs: Array<{ from: unknown; to: unknown }>,
+  ): Promise<void> {
+    if (pairs.length === 0) return;
+    const ctx = this.ctx();
+    const cond = relationshipRules(ctx, rel, op, {
+      owner: "a",
+      target: "b",
+      rel: "r",
+    });
+    if (cond === undefined) return;
+    const owner = this.env.model.nodes.get(rel.owner)!;
+    const target = this.env.model.nodes.get(rel.target)!;
+    const rows = await this.run(
+      `UNWIND ${printExpr(bind(ctx, pairs))} AS row\n` +
+        `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = row.from\n` +
+        `MATCH (b:${name(target.labels[0]!)}) WHERE b.${name(target.key.property)} = row.to\n` +
+        `MATCH (a)${arrow(rel, "r", "b", undefined)}\n` +
+        `RETURN coalesce(${printExpr(cond === false ? lit(false) : cond)}, false) AS ok`,
+      ctx,
+    );
+    if (rows.some((r) => r["ok"] !== true)) {
+      throw requestError(
+        "FORBIDDEN",
+        `not allowed to ${op.toLowerCase().replace("_", " ")} ${owner.name}.${rel.name}`,
+      );
     }
   }
 
@@ -1074,6 +1147,11 @@ class Runner {
         `\nRETURN b.${name(target.key.property)} AS key`;
       const rows = await this.run(text, ctx);
       if (rows.length === 0) throw notConnected(owner, u.rel, target, u.to);
+      await this.checkRelationshipRules(
+        "UPDATE_EDGE",
+        u.rel,
+        rows.map((r) => ({ from: u.from, to: r["key"] })),
+      );
       for (const row of rows) {
         this.connected.push(relRef(u.rel, u.from, row["key"]));
       }

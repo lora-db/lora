@@ -44,7 +44,22 @@ export type AuthOperation =
   | MutationOperation
   | "CREATE_RELATIONSHIP"
   | "DELETE_RELATIONSHIP"
-  | "SUBSCRIBE";
+  | "SUBSCRIBE"
+  | RelationshipOperation;
+
+/** Operations of rules on a relationship field, over `source`, `target`, `edge`. */
+export type RelationshipOperation =
+  | "CONNECT"
+  | "DISCONNECT"
+  | "UPDATE_EDGE"
+  | "READ_EDGE";
+
+export const RELATIONSHIP_OPERATIONS: ReadonlySet<AuthOperation> = new Set([
+  "CONNECT",
+  "DISCONNECT",
+  "UPDATE_EDGE",
+  "READ_EDGE",
+]);
 
 /** Field-level options shared by every field kind. */
 interface FieldBase {

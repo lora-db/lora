@@ -44,6 +44,8 @@ import {
   fieldReadGuard,
   fieldValidate,
   propertyAccess,
+  refusedEdgeRead,
+  relationshipRules,
 } from "./auth.js";
 import { bind, freshVar, noteClaim, type CompileContext } from "./context.js";
 import { decodeCursor } from "./cursor.js";
@@ -2198,6 +2200,18 @@ function projectRelationshipConnection(
   const x = freshVar(ctx, `${parent}_${key}`);
   const r = freshVar(ctx, `${x}_rel`);
   const pattern = relationshipPattern(parent, rel, label, x, r);
+  // READ_EDGE rules decide per relationship: its properties read as
+  // FORBIDDEN where they fail, and nothing may filter, sort or aggregate
+  // by them (that would reveal the values the rule hides).
+  const edgeRead = props
+    ? relationshipRules(
+        ctx,
+        rel,
+        "READ_EDGE",
+        { owner: parent, target: x, rel: r },
+        "read",
+      )
+    : undefined;
 
   const whereArg = args["where"] as Where | null | undefined;
   const nodeWhere = own ? (whereArg?.["node"] as Where | undefined) : whereArg;
@@ -2208,6 +2222,14 @@ function projectRelationshipConnection(
       props ? compilePropsWhere(ctx, props, rv, edgeWhere) : undefined,
       authFilter(ctx, target, nv, "READ"),
     );
+  if (
+    edgeRead !== undefined &&
+    (edgeWhere != null ||
+      sort.some((k) => k.edge) ||
+      (sel.aggregate?.edge.length ?? 0) > 0)
+  ) {
+    throw refusedEdgeRead(rel);
+  }
   const filter = filterFor(x, r);
   const keyset = cursor ? keysetPredicate(ctx, x, sort, cursor, r) : undefined;
 
@@ -2225,7 +2247,7 @@ function projectRelationshipConnection(
   if (props && sel.properties.length > 0) {
     edgeEntries.push({
       key: "properties",
-      value: projectProperties(ctx, props.name, r, sel.properties),
+      value: projectProperties(ctx, props.name, r, sel.properties, edgeRead),
     });
   }
 
@@ -2547,6 +2569,7 @@ function projectProperties(
   propsType: string,
   variable: string,
   sets: SelectionSetNode[],
+  guard?: Expr | false,
 ): Expr {
   const props = ctx.model.relationshipProperties.get(propsType)!;
   const objType = ctx.schema.getType(propsType) as GraphQLObjectType;
@@ -2564,6 +2587,17 @@ function projectProperties(
           kind: "map",
           entries: [{ key: "__forbidden", value: lit(true) }],
         },
+      });
+      continue;
+    }
+    if (guard !== undefined) {
+      entries.push({
+        kind: "entry",
+        key,
+        value: guardedValue(
+          { when: guard === false ? lit(false) : guard, code: "FORBIDDEN" },
+          prop(v(variable), field.property),
+        ),
       });
       continue;
     }

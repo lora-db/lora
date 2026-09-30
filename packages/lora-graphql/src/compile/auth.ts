@@ -13,11 +13,14 @@ import type {
   AuthorizationValidateRule,
   AuthorizationWhere,
   NodeType,
+  RelationshipField,
+  RelationshipOperation,
+  RelationshipPropertiesType,
 } from "../model/types.js";
 import { PLACEHOLDER } from "../model/types.js";
 import { and, bin, fn, lit, not, or, type Expr } from "./cypher.js";
 import { bind, freshVar, noteClaim, type CompileContext } from "./context.js";
-import { compileNodeWhere } from "./filter.js";
+import { compileNodeWhere, compilePropsWhere } from "./filter.js";
 
 type Where = Record<string, unknown>;
 type Folded = Expr | boolean;
@@ -287,9 +290,10 @@ function compileRule(
   node: NodeType | undefined,
   variable: string,
   where: AuthorizationWhere,
+  ends?: RuleEnds,
 ): Folded {
   try {
-    return compileRulePart(ctx, node, variable, where);
+    return compileRulePart(ctx, node, variable, where, false, ends);
   } catch (err) {
     // Caught at the rule, not inside it: a NOT cannot turn a missing
     // claim into a grant.
@@ -310,11 +314,12 @@ function compileRulePart(
   variable: string,
   where: AuthorizationWhere,
   underNot = false,
+  ends?: RuleEnds,
 ): Folded {
   const child = (w: Where, negated = underNot): Folded => {
-    if (negated) return compileRulePart(ctx, node, variable, w, true);
+    if (negated) return compileRulePart(ctx, node, variable, w, true, ends);
     try {
-      return compileRulePart(ctx, node, variable, w, false);
+      return compileRulePart(ctx, node, variable, w, false, ends);
     } catch (err) {
       if (err instanceof MissingClaim) return false;
       throw err;
@@ -328,10 +333,33 @@ function compileRulePart(
     } else if (key === "OR") {
       parts.push(foldOr((value as Where[]).map((w) => child(w))));
     } else if (key === "NOT") {
-      const inner = compileRulePart(ctx, node, variable, value as Where, true);
+      const inner = compileRulePart(
+        ctx,
+        node,
+        variable,
+        value as Where,
+        true,
+        ends,
+      );
       parts.push(typeof inner === "boolean" ? !inner : not(inner));
     } else if (key === "viewer") {
       parts.push(viewerTest(ctx, value));
+    } else if (ends && (key === "source" || key === "target")) {
+      const end = ends[key];
+      parts.push(
+        inRule(ctx, value, (w) =>
+          compileNodeWhere(ctx, end.node, end.variable, w),
+        ),
+      );
+    } else if (ends && key === "edge") {
+      const edge = ends.edge;
+      parts.push(
+        edge
+          ? inRule(ctx, value, (w) =>
+              compilePropsWhere(ctx, edge.props, edge.variable, w),
+            )
+          : false,
+      );
     } else if (key === "jwt") {
       parts.push(matchClaims(ctx, value as Where));
     } else if (key === "node" && node) {
@@ -355,6 +383,151 @@ function compileRulePart(
     }
   }
   return foldAnd(parts);
+}
+
+/**
+ * A filter part of a rule, with `$jwt` / `$context` strings substituted,
+ * compiled as a rule (no nested rules applied). Empty compiles deny.
+ */
+function inRule(
+  ctx: CompileContext,
+  value: unknown,
+  compile: (where: Where) => Expr | undefined,
+): Folded {
+  const bound = substitute(value, ctx);
+  if (!bound.ok) throw new MissingClaim();
+  const wasInAuth = ctx.inAuth;
+  ctx.inAuth = true;
+  try {
+    return compile(bound.value as Where) ?? false;
+  } finally {
+    ctx.inAuth = wasInAuth;
+  }
+}
+
+/** The statement variables a relationship rule's parts test. */
+interface RuleEnds {
+  source: { node: NodeType; variable: string };
+  target: { node: NodeType; variable: string };
+  edge: { props: RelationshipPropertiesType; variable: string } | undefined;
+}
+
+/**
+ * Rules on relationship fields for `op` on relationships of `rel`, with
+ * the statement's owner-side, target-side and relationship variables. The
+ * rules of `rel` itself apply, and so do those of a field on the other
+ * side declaring the same relationship type (a connect from
+ * `Person.trips` answers to `Trip.members`' rules), with source and
+ * target swapped. Within a field any rule grants; across fields all must.
+ *
+ * `"write"` throws UNAUTHENTICATED / FORBIDDEN when the claims already
+ * decide against the request; `"read"` never throws. Undefined when no
+ * rule applies or the claims alone grant.
+ */
+export function relationshipRules(
+  ctx: CompileContext,
+  rel: RelationshipField,
+  op: RelationshipOperation,
+  vars: { owner: string; target: string; rel: string },
+  mode: "write" | "read" = "write",
+): Expr | false | undefined {
+  if (ctx.inAuth) return undefined;
+  const parts: Folded[] = [];
+  for (const { field, flipped } of relationshipRuleFields(ctx, rel)) {
+    const rules = (field.authorization?.validate ?? []).filter((r) =>
+      r.operations.has(op),
+    );
+    if (rules.length === 0) continue;
+    const label = `${op.toLowerCase().replace("_", " ")} ${field.owner}.${field.name}`;
+    if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
+      if (mode === "read") return false;
+      throw requestError(
+        "UNAUTHENTICATED",
+        `${label} needs an authenticated request`,
+      );
+    }
+    const source = ctx.model.nodes.get(field.owner)!;
+    const target = ctx.model.nodes.get(field.target)!;
+    const props = field.properties
+      ? ctx.model.relationshipProperties.get(field.properties)
+      : undefined;
+    const ends: RuleEnds = {
+      source: { node: source, variable: flipped ? vars.target : vars.owner },
+      target: { node: target, variable: flipped ? vars.owner : vars.target },
+      edge: props ? { props, variable: vars.rel } : undefined,
+    };
+    const folded = foldOr(
+      rules.map((r) =>
+        r.requireAuthentication && !ctx.jwt
+          ? false
+          : compileRule(ctx, undefined, "", r.where, ends),
+      ),
+    );
+    if (folded === false && mode === "write") {
+      throw requestError("FORBIDDEN", `not allowed to ${label}`);
+    }
+    parts.push(folded);
+  }
+  const all = foldAnd(parts);
+  return all === true ? undefined : all === false ? false : all;
+}
+
+/** FORBIDDEN: using a relationship's properties its READ_EDGE rules guard. */
+export function refusedEdgeRead(rel: RelationshipField): Error {
+  return requestError(
+    "FORBIDDEN",
+    `${rel.owner}.${rel.name}: its READ_EDGE rules decide per relationship, so its properties cannot be filtered, sorted or aggregated by`,
+  );
+}
+
+/**
+ * Throws when `rel`'s properties have READ_EDGE rules that are not settled
+ * by the claims alone: filtering, sorting or aggregating by them would
+ * reveal what the rules hide per relationship.
+ */
+export function refuseEdgeRowRules(
+  ctx: CompileContext,
+  rel: RelationshipField,
+): void {
+  if (ctx.inAuth) return;
+  const probe = { ...ctx, params: {}, vars: new Set(ctx.vars) };
+  const rule = relationshipRules(
+    probe,
+    rel,
+    "READ_EDGE",
+    { owner: "a", target: "b", rel: "r" },
+    "read",
+  );
+  if (rule !== undefined) throw refusedEdgeRead(rel);
+}
+
+/** Fields whose relationship rules cover `rel`'s relationships. */
+export function relationshipRuleFields(
+  ctx: CompileContext,
+  rel: RelationshipField,
+): Array<{ field: RelationshipField; flipped: boolean }> {
+  const out: Array<{ field: RelationshipField; flipped: boolean }> = [];
+  const hasRules = (f: RelationshipField) =>
+    f.authorization?.validate.some((r) =>
+      [...r.operations].some((op) =>
+        ["CONNECT", "DISCONNECT", "UPDATE_EDGE", "READ_EDGE"].includes(op),
+      ),
+    ) ?? false;
+  if (hasRules(rel)) out.push({ field: rel, flipped: false });
+  const target = ctx.model.nodes.get(rel.target);
+  for (const f of target?.fields.values() ?? []) {
+    if (
+      f.kind === "relationship" &&
+      f !== rel &&
+      f.type === rel.type &&
+      f.target === rel.owner &&
+      f.direction !== rel.direction &&
+      hasRules(f)
+    ) {
+      out.push({ field: f, flipped: true });
+    }
+  }
+  return out;
 }
 
 /**

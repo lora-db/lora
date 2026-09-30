@@ -773,6 +773,6 @@ describe("field-level @authorization on relationship and @cypher fields", () => 
     );
     await expect(
       festivalHarness({ typeDefs: broken, seed: [] }),
-    ).rejects.toThrow("takes READ rules only");
+    ).rejects.toThrow("takes READ rules");
   });
 });
