@@ -41,6 +41,7 @@ use lora_database::{
 
 use crate::actor::{self, Lifecycle};
 use crate::errors::format_lora_error;
+use crate::stream::JsBoundWriter;
 use crate::QueryLimit;
 
 /// Completion callback of a transaction command; reports the transaction
@@ -110,12 +111,20 @@ impl TxActor {
         let (commands, inbox) = mpsc::channel::<Command>();
         let opened = Arc::new(Mutex::new(Some(opened)));
         let lifecycle = Lifecycle::new();
+        // A read-write transaction needs the JS thread to release the
+        // writer lock; registering keeps a mutating stream from waiting for
+        // the lock on the JS thread meanwhile (see `crate::stream`).
+        let writer = matches!(mode, TransactionMode::ReadWrite).then(JsBoundWriter::register);
         let thread = {
             let opened = opened.clone();
             let lifecycle = lifecycle.clone();
             std::thread::Builder::new()
                 .name("lora-tx".into())
-                .spawn(move || run(db, mode, inbox, opened, lifecycle))
+                .spawn(move || {
+                    // Released once `run` has dropped the transaction.
+                    let _writer = writer;
+                    run(db, mode, inbox, opened, lifecycle)
+                })
         };
         let thread = match thread {
             Ok(thread) => Some(thread),

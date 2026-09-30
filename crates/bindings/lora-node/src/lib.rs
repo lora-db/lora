@@ -75,6 +75,8 @@ pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
     streams: Mutex<BTreeMap<u32, NativeQueryStream>>,
     next_stream_id: AtomicU32,
+    /// Stream shapes per query text.
+    shapes: lora_binding_buffer::stream::ShapeCache,
     /// Database-wide timeout applied when a call passes none.
     default_timeout_ms: Option<u32>,
     /// Cancellation handles for in-flight queries started with an
@@ -150,6 +152,7 @@ impl Database {
             db: Mutex::new(Some(db)),
             streams: Mutex::new(BTreeMap::new()),
             next_stream_id: AtomicU32::new(1),
+            shapes: Default::default(),
             default_timeout_ms: query_timeout_ms.filter(|ms| *ms > 0),
             cancels: Mutex::new(BTreeMap::new()),
             next_cancel_id: AtomicU32::new(1),
@@ -311,18 +314,26 @@ impl Database {
         let lora_err = |e: LoraError| NapiError::new(Status::GenericFailure, format_lora_error(&e));
         // A mutating stream takes the writer lock when it opens. Waiting for
         // it here, on the JS thread, deadlocks against an interactive
-        // transaction holding the lock (it needs the JS thread for its next
-        // command), so such a stream opens on its own thread and is pulled
-        // asynchronously (see [`stream`]).
-        let plan = db.explain(&query, None).map_err(lora_err)?;
-        let (kind, columns) = if plan.shape.is_mutating() {
-            let actor = stream::StreamActor::spawn(db, query, params_map, deadline)
-                .map_err(interactive::napi_err)?;
-            (StreamKind::Actor(actor), plan.result_columns)
+        // transaction or another mutating stream holding the lock (they
+        // need the JS thread to release it) and blocks the event loop
+        // behind a pool query, so unless the lock is free such a stream
+        // opens on its own thread and is pulled asynchronously (see
+        // [`stream`]). With the lock free it opens and is pulled here, like
+        // a read.
+        let shape = self.shapes.classify(&db, &query).map_err(lora_err)?;
+        let local_writer = if shape.mutating {
+            stream::register_local_writer().map(Some)
         } else {
-            let local = stream::LocalStream::open(db, &query, params_map).map_err(lora_err)?;
-            let columns = local.stream.columns().to_vec();
-            (StreamKind::Local(local), columns)
+            Some(None)
+        };
+        let kind = match local_writer {
+            Some(writer) => StreamKind::Local(
+                stream::LocalStream::open(db, &query, params_map, writer).map_err(lora_err)?,
+            ),
+            None => StreamKind::Actor(
+                stream::StreamActor::spawn(db, query, params_map, deadline, shape.columns)
+                    .map_err(interactive::napi_err)?,
+            ),
         };
         let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
         let mut streams = self
@@ -333,7 +344,6 @@ impl Database {
             stream_id,
             NativeQueryStream {
                 kind,
-                columns,
                 deadline,
                 _limit: limit,
             },
@@ -350,7 +360,10 @@ impl Database {
         let stream = streams
             .get(&stream_id)
             .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
-        Ok(stream.columns.clone())
+        Ok(match &stream.kind {
+            StreamKind::Local(local) => local.stream.columns().to_vec(),
+            StreamKind::Actor(actor) => actor.columns.to_vec(),
+        })
     }
 
     /// Whether stream `stream_id` is pulled with [`Self::stream_next_async`]
@@ -1094,16 +1107,17 @@ pub struct NativeQueryStream {
     // Declared first, so dropped first: the stream borrows from a database
     // `Arc` it holds and must go before anything it depends on.
     kind: StreamKind,
-    columns: Vec<String>,
     deadline: Option<std::time::Instant>,
     /// Keeps a cancellation handle alive for the stream's lifetime.
     _limit: QueryLimit,
 }
 
 enum StreamKind {
-    /// Read-only: pulled synchronously on the JS thread.
+    /// Pulled synchronously on the JS thread: read-only, or a mutating
+    /// stream opened while the writer lock was free.
     Local(stream::LocalStream),
-    /// Mutating: opened and pulled on its own thread.
+    /// Mutating, opened while the writer lock may have been busy: opened
+    /// and pulled on its own thread.
     Actor(stream::StreamActor),
 }
 

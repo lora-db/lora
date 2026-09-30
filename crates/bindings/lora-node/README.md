@@ -405,8 +405,11 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   deadlocking: the writer holding the lock always runs). Prefer
   `await`-in-a-loop or a single batched query for heavy write workloads.
   Interactive transactions wait on their own threads, not the pool, and so
-  do mutating `stream()`s: one opens without blocking the event loop, and
-  its first `next()` waits for the writer lock.
+  do mutating `stream()`s while the lock may be busy: one opens without
+  blocking the event loop, and its first `next()` waits for the writer
+  lock. A mutating stream opened while nothing else writes (no transaction,
+  other mutating stream or pool query in flight) finds the lock free and
+  is pulled synchronously, as cheaply as a read.
 - **Stream timeouts.** `stream()` checks its deadline between rows, so a
   single pull that does a lot of work (a large aggregation) finishes before
   the check fires. `execute()` and `transaction()` check throughout.

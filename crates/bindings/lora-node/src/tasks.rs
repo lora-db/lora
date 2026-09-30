@@ -71,6 +71,8 @@ impl Task for ExecuteTask {
     type JsValue = Buffer;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        // May hold or wait for the writer lock (see `crate::stream`).
+        let _work = crate::stream::PoolWork::enter();
         // Parse params here (on the worker thread) so param-validation errors
         // surface as Promise rejections, not synchronous throws.
         let params_map = match self.params.take() {
@@ -151,6 +153,8 @@ impl Task for ProfileTask {
     type JsValue = JsUnknown;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        // May hold or wait for the writer lock (see `crate::stream`).
+        let _work = crate::stream::PoolWork::enter();
         let params_map = match self.params.take() {
             None | Some(serde_json::Value::Null) => None,
             Some(other) => Some(json_value_to_params(other)?),
@@ -193,6 +197,8 @@ impl Task for ClearTask {
     type JsValue = ();
 
     fn compute(&mut self) -> Result<Self::Output> {
+        // May hold or wait for the writer lock (see `crate::stream`).
+        let _work = crate::stream::PoolWork::enter();
         self.db
             .try_clear()
             .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
@@ -215,6 +221,8 @@ impl Task for TransactionTask {
     type JsValue = Vec<Buffer>;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        // May hold or wait for the writer lock (see `crate::stream`).
+        let _work = crate::stream::PoolWork::enter();
         let mode = parse_transaction_mode(self.mode.as_deref())?;
         let statements = parse_transaction_statements(std::mem::take(&mut self.statements))?;
         let options = ExecuteOptions {
