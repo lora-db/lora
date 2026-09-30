@@ -131,3 +131,213 @@ export async function expectSeeks(
     );
   }
 }
+
+/** The access `expectAccess` expects: entries allowed, and entries denied. */
+export interface AccessExpectations {
+  /** The claims to act as; undefined acts anonymously. */
+  as: Record<string, unknown> | undefined;
+  /** Other GraphQL context values the rules read (`$context.*`). */
+  context?: Record<string, unknown>;
+  allowed?: readonly string[];
+  denied?: readonly string[];
+}
+
+/**
+ * Assert who may do what, against the database: each entry runs as the
+ * caller in a transaction that is always rolled back, and every mismatch
+ * is reported at once. Entries:
+ *
+ * - `read Trip lou:tomorrowland` (denied: not visible, or refused)
+ * - `create Trip lou:x {"name": "X"}` (other input fields as JSON)
+ * - `update Trip lou:x {"name": "Y"}` and `delete Trip lou:x`
+ * - `connect Trip.members lou:tomorrowland → f1` (also `->`)
+ * - `disconnect Trip.members lou:tomorrowland → f1`
+ * - `update-edge Trip.members lou:tomorrowland → f1 {"rsvp": "GOING"}`
+ *
+ * Denied means `FORBIDDEN`, `UNAUTHENTICATED` or `NOT_FOUND` (a node the
+ * caller cannot see); any other error is reported as a mismatch either way.
+ */
+export async function expectAccess(
+  target: LoraGraphQL | { lora: LoraGraphQL },
+  expectations: AccessExpectations,
+): Promise<void> {
+  const lora = target instanceof LoraGraphQL ? target : target.lora;
+  const problems: string[] = [];
+  const check = async (entry: string, allowed: boolean) => {
+    let outcome: AccessOutcome;
+    try {
+      outcome = await tryAccess(lora, entry, expectations);
+    } catch (err) {
+      problems.push(
+        `${entry}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    if (outcome.kind === "error") {
+      problems.push(`${entry}: failed with ${outcome.message}`);
+    } else if (allowed && outcome.kind === "denied") {
+      problems.push(
+        `expected allowed, was denied: ${entry} (${outcome.message})`,
+      );
+    } else if (!allowed && outcome.kind === "allowed") {
+      problems.push(`expected denied, was allowed: ${entry}`);
+    }
+  };
+  for (const entry of expectations.allowed ?? []) await check(entry, true);
+  for (const entry of expectations.denied ?? []) await check(entry, false);
+  if (problems.length > 0) {
+    const who = expectations.as ? JSON.stringify(expectations.as) : "anonymous";
+    throw new Error(
+      `access as ${who} differs in ${problems.length} ${problems.length === 1 ? "entry" : "entries"}:\n  ${problems.join("\n  ")}`,
+    );
+  }
+}
+
+type AccessOutcome =
+  | { kind: "allowed" }
+  | { kind: "denied"; message: string }
+  | { kind: "error"; message: string };
+
+const DENIED = new Set(["FORBIDDEN", "UNAUTHENTICATED", "NOT_FOUND"]);
+
+async function tryAccess(
+  lora: LoraGraphQL,
+  entry: string,
+  expectations: AccessExpectations,
+): Promise<AccessOutcome> {
+  const { source, variables, isRead, root } = accessOperation(lora, entry);
+  const tx = await lora.begin();
+  try {
+    const result = await lora.execute({
+      source,
+      variables,
+      context: {
+        ...expectations.context,
+        ...(expectations.as ? { jwt: expectations.as } : {}),
+        transaction: tx,
+      },
+    });
+    const error = result.errors?.[0];
+    if (error) {
+      const code = (error.extensions as Record<string, unknown> | undefined)?.[
+        "code"
+      ];
+      return typeof code === "string" && DENIED.has(code)
+        ? { kind: "denied", message: `${code}: ${error.message}` }
+        : {
+            kind: "error",
+            message: `${String(code ?? "error")}: ${error.message}`,
+          };
+    }
+    if (isRead) {
+      const value = (result.data as Record<string, unknown> | null)?.[root];
+      if (value == null) return { kind: "denied", message: "not visible" };
+    }
+    return { kind: "allowed" };
+  } finally {
+    await tx.rollback();
+  }
+}
+
+function accessOperation(
+  lora: LoraGraphQL,
+  entry: string,
+): {
+  operation: string;
+  source: string;
+  variables: Record<string, unknown>;
+  isRead: boolean;
+  root: string;
+} {
+  const m =
+    /^\s*(read|create|update|delete|connect|disconnect|update-edge)\s+([A-Za-z_][\w]*)(?:\.([A-Za-z_]\w*))?\s+(\S+)(?:\s*(?:→|->)\s*(\S+))?\s*(\{.*\})?\s*$/s.exec(
+      entry,
+    );
+  if (!m) {
+    throw new Error(
+      "expected `<read|create|update|delete> Type key [json]` or `<connect|disconnect|update-edge> Type.field key → key [json]`",
+    );
+  }
+  const [, operation, typeName, fieldName, key, other, json] = m as unknown as [
+    string,
+    string,
+    string,
+    string | undefined,
+    string,
+    string | undefined,
+    string | undefined,
+  ];
+  const node = lora.model.nodes.get(typeName);
+  if (!node) throw new Error(`${typeName} is not a @node type`);
+  const input = json ? (JSON.parse(json) as Record<string, unknown>) : {};
+  const keyType = `${node.key.customScalar ?? node.key.type}!`;
+  const lower = typeName.charAt(0).toLowerCase() + typeName.slice(1);
+  const upperPlural =
+    node.plural.charAt(0).toUpperCase() + node.plural.slice(1);
+  const relational = ["connect", "disconnect", "update-edge"].includes(
+    operation,
+  );
+  if (relational !== (fieldName !== undefined && other !== undefined)) {
+    throw new Error(
+      relational
+        ? `${operation} takes Type.field key → key`
+        : `${operation} takes Type key`,
+    );
+  }
+  switch (operation) {
+    case "read":
+      return {
+        operation,
+        source: `query($key: ${keyType}) { ${lower}(${node.key.name}: $key) { ${node.key.name} } }`,
+        variables: { key },
+        isRead: true,
+        root: lower,
+      };
+    case "create":
+      return {
+        operation,
+        source: `mutation($input: [${typeName}CreateInput!]!) { create${upperPlural}(input: $input) { __typename } }`,
+        variables: { input: [{ ...input, [node.key.name]: key }] },
+        isRead: false,
+        root: `create${upperPlural}`,
+      };
+    case "update":
+      return {
+        operation,
+        source: `mutation($key: ${keyType}, $update: ${typeName}UpdateInput!) { update${typeName}(${node.key.name}: $key, update: $update) { __typename } }`,
+        variables: { key, update: input },
+        isRead: false,
+        root: `update${typeName}`,
+      };
+    case "delete":
+      return {
+        operation,
+        source: `mutation($key: ${keyType}) { delete${typeName}(${node.key.name}: $key) { __typename } }`,
+        variables: { key },
+        isRead: false,
+        root: `delete${typeName}`,
+      };
+  }
+  const field = node.fields.get(fieldName!);
+  if (field?.kind !== "relationship") {
+    throw new Error(`${typeName}.${fieldName} is not a relationship field`);
+  }
+  const targetKey = lora.model.nodes.get(field.target)?.key.name ?? "key";
+  const change =
+    operation === "connect"
+      ? {
+          connect: field.list
+            ? [{ [targetKey]: other, ...(json ? { edge: input } : {}) }]
+            : { [targetKey]: other, ...(json ? { edge: input } : {}) },
+        }
+      : operation === "disconnect"
+        ? { disconnect: field.list ? [other] : true }
+        : { update: [{ [targetKey]: other, edge: input }] };
+  return {
+    operation,
+    source: `mutation($key: ${keyType}, $update: ${typeName}UpdateInput!) { update${typeName}(${node.key.name}: $key, update: $update) { __typename } }`,
+    variables: { key, update: { [fieldName!]: change } },
+    isRead: false,
+    root: `update${typeName}`,
+  };
+}

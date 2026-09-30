@@ -1079,6 +1079,28 @@ asserted, runs the seed, and records every statement in `t.statements`.
 the query uses the index access it was compiled for (`rowBudget` too).
 Both need `@loradb/lora-node` and work with any test runner.
 
+`expectAccess` checks who may do what, against the database:
+
+```ts
+await expectAccess(t, {
+  as: { sub: "lou", roles: [] },
+  allowed: [
+    "read Trip lou:tomorrowland",
+    'update Person lou {"name": "Lou"}',
+    "connect Trip.members lou:tomorrowland → f1",
+  ],
+  denied: ['update-edge Trip.members lou:tomorrowland → f1 {"rsvp": "GOING"}'],
+});
+```
+
+Entries are `read`, `create`, `update` or `delete` a `Type key`, and
+`connect`, `disconnect` or `update-edge` a `Type.field key → key`, each
+with optional input as JSON. Every entry runs as the caller in a
+transaction that is rolled back, so probes leave no trace. Denied means
+`FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND` or (for `read`) not visible;
+any other error is a mismatch either way. All mismatches are reported at
+once.
+
 ## Drivers, limits and errors
 
 `loraDriver(db)` adapts a `Database` from `@loradb/lora-node` or
