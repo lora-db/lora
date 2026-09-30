@@ -14,10 +14,9 @@ next, **P2** planned, **P3** when convenient.
 
 ## P0 — ship now
 
-- [ ] **Release 0.18.1** with `f6251b0` + `4a6cd94` (libuv-pool deadlock, E-3) and
-      `15d47bd` (pattern-comprehension cost, E-4). No tag contains them; packages are
-      still `0.18.0`. Then raise `@loradb/lora-graphql`'s `lora-node` peer from
-      `^0.18.0` to the patch version.
+- [ ] **Release 0.19.0** with the E-3 and E-4 fixes and their follow-ups (every
+      binding's writer-lock audit, named time zones, the temporal constructors).
+      `sync-versions.mjs` raises `@loradb/lora-graphql`'s `lora-node` peer with it.
 - [ ] **G-23 — the depth guard blocks introspection.** `depthOf()` in
       `packages/lora-graphql/src/guards.ts:119-146` counts `__schema`/`__type` like any
       field. Skip introspection subtrees or add `maxIntrospectionDepth`; add the
@@ -28,8 +27,15 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — Cypher correctness
 
-- [ ] **E-4 follow-up** (uncommitted: `value.rs`, `eval/expr.rs`, `pull/projection.rs`,
-      five new tests). Finish and commit; delete `tests/zz_probe_small_rows.rs` first.
+- [ ] P1 **E-4 class, remaining sites.** A value the row carries for other reasons is
+      copied per candidate in OPTIONAL MATCH, expand + filter, variable-length expand,
+      shortestPath / allShortestPaths, FOREACH, UNWIND followed by WITH/WHERE, nested
+      comprehensions / reduce / quantifiers, and `CALL { }` without an importing WITH:
+      with a 20k-element list carried, ~0.05 ms becomes ~25-90 ms. Sharing large values
+      behind an `Arc` in row slots fixed all of them but cost 10-16% on hot paths
+      (withdrawn; patch kept out of tree). Next: `LoraValue::List` as `Arc<[..]>`, or
+      scope rows per construct as pattern subqueries do (`2390fbe`).
+- [ ] P3 `size(big)` and other function arguments still copy a list per call.
 - [ ] P2 `head(collect(x))` returns null (E16).
 - [ ] P2 `7/2` returns `3.5`; integer division should give `3` (E22).
 - [ ] P2 `[1,2,3][..-1]` returns `[]` (E23).
