@@ -44,6 +44,15 @@ In scope:
   `lora-go`, and `lora-ruby`.
 - The shared `lora-ffi` C ABI (consumed by `lora-go` and any
   third-party cgo consumer).
+- The JS/TS packages under `packages/`:
+  - `@loradb/lora-graphql` — the schema-first GraphQL layer (for example
+    Cypher injection through generated statements, reads or writes that get
+    past `@authorization` / `@authentication` rules, or unbounded request
+    cost). What it trusts, what a client can and cannot do, and where each
+    check runs are set out in
+    [`docs/design/graphql-threat-model.md`](docs/design/graphql-threat-model.md).
+  - `@loradb/lora-query` — the Cypher editor and its WASM parser.
+  - `@loradb/lora-graph-canvas` — the React graph canvas.
 - The release artifacts and checksums published on the Releases page.
 
 Out of scope:

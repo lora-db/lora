@@ -98,8 +98,9 @@ runtime):
 - **lora-ruby** -- Magnus / rb-sys native extension
 - **bindings/shared-ts** -- shared TypeScript types for `lora-node` + `lora-wasm`
 
-Changes to Cypher language support typically touch crates 1-6 in
-order. See [docs/internals/cypher-development.md](docs/internals/cypher-development.md)
+Changes to Cypher language support typically touch `lora-ast`,
+`lora-parser`, `lora-analyzer`, `lora-compiler`, and `lora-executor`, in
+that order. See [docs/internals/cypher-development.md](docs/internals/cypher-development.md)
 for a step-by-step walkthrough.
 
 ## Adding a new Cypher feature
@@ -108,19 +109,75 @@ The general flow for adding a new clause or expression:
 
 1. Add the grammar rule in `lora-parser/src/cypher.pest`
 2. Add the AST type in `lora-ast/src/ast.rs`
-3. Add parser lowering in `lora-parser/src/parser.rs`
+3. Add parser lowering in `lora-parser/src/parser/` (`clauses.rs`,
+   `expressions.rs`, `patterns.rs`, … by construct)
 4. Add resolved types in `lora-analyzer/src/resolved.rs`
-5. Add analysis in `lora-analyzer/src/analyzer.rs`
+5. Add analysis in `lora-analyzer/src/analyzer/` (`clauses.rs`,
+   `expressions.rs`, `patterns.rs`)
 6. Add plan nodes in `lora-compiler/src/logical.rs` and `physical.rs`
 7. Add planner logic in `lora-compiler/src/planner.rs`
-8. Add execution in `lora-executor/src/executor.rs`
+8. Add execution in `lora-executor/src/`: the streaming operators in
+   `pull/`, the buffered operators in `executor/` (`immutable.rs` for
+   reads, `mutable.rs` for writes), and expression evaluation in `eval/`
 9. Add integration or HTTP test cases in the affected crate's `tests/`
    directory, usually `crates/lora-database/tests/` or
    `crates/lora-server/tests/http.rs`
 
+A new built-in **function** does not need grammar, AST, or plan changes.
+Declare it (name, arity, aliases, enum/type argument slots) in
+`crates/lora-builtins-meta/src/lib.rs` — the single table the analyzer
+validates against, the executor dispatches on, and the `@loradb/lora-query`
+editor reads for autocomplete — then implement it in the matching
+namespace module under `lora-executor/src/eval/builtins/`. Drift tests in
+`lora-executor` fail if a declared builtin has no dispatch arm.
+
 Update user-facing docs when the feature changes syntax, errors, or
 observable behavior. The public docs source lives in
 `apps/loradb.com/docs/`; implementation notes belong under `docs/`.
+
+## JS/TS packages (`packages/`)
+
+Three npm packages live under `packages/` and join the Yarn 4 workspace
+at the repository root (bootstrap once with `corepack enable` +
+`yarn install --immutable`, see [Getting started](#getting-started)):
+
+- **`@loradb/lora-query`** (`packages/lora-query`) -- React + CodeMirror
+  Cypher editor. Its parser is the embedded Rust crate `lora-query-wasm`,
+  built with wasm-pack, so it needs the `wasm32-unknown-unknown` target
+  and `wasm-pack` installed.
+- **`@loradb/lora-graph-canvas`** (`packages/lora-graph-canvas`) -- React
+  2D/3D graph canvas. Pure TypeScript.
+- **`@loradb/lora-graphql`** (`packages/lora-graphql`) -- schema-first
+  GraphQL layer over `@loradb/lora-node`. Its tests run real statements,
+  so build the Node binding from the tree first.
+
+Each package has the same scripts: `build`, `typecheck`, `test` (vitest),
+and `lint`. Run them with `yarn workspace <name> <script>`:
+
+```bash
+# lora-query: build the WASM parser first (build = build:wasm + build:lib)
+yarn workspace @loradb/lora-query build:wasm
+yarn workspace @loradb/lora-query test
+yarn workspace @loradb/lora-query build
+
+# lora-graph-canvas
+yarn workspace @loradb/lora-graph-canvas test
+yarn workspace @loradb/lora-graph-canvas build
+
+# lora-graphql: needs a built @loradb/lora-node
+(cd crates/bindings/lora-node && yarn run build:native && yarn run build:ts)
+yarn workspace @loradb/lora-graphql test
+yarn workspace @loradb/lora-graphql test:graphql17   # same suite on graphql 17
+yarn workspace @loradb/lora-graphql build
+```
+
+`lora-query` and `lora-graph-canvas` also have `storybook` /
+`build:storybook`, and `lora-graphql` has `bench` and `bench:load`. CI
+runs `lora-query.yml` and `lora-graphql.yml` on changes to those
+packages; `lora-graph-canvas` has no dedicated workflow — `play-loradb.yml`
+builds it, and the release pipeline builds, typechecks, and tests it. The packages are versioned in lockstep with
+the rest of the repo by `scripts/sync-versions.mjs` — don't bump their
+`version` by hand.
 
 ## Commit conventions
 

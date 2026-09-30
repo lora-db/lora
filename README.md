@@ -379,11 +379,11 @@ cargo fmt --all --check       # Formatting
 cargo bench                   # Criterion benchmarks
 ```
 
-Integration coverage lives in `crates/lora-database/tests/` (one file per feature area) and `crates/lora-server/tests/http.rs`. Benchmarks are Criterion-driven and tracked by the `benchmarks` workflow — see [docs/performance/benchmarks.md](docs/performance/benchmarks.md).
+Integration coverage lives in `crates/lora-database/tests/` (one file per feature area) and `crates/lora-server/tests/http.rs`. Benchmarks are Criterion-driven; `perf-smoke` and `memory-bench` gate regressions on every PR, and the manual `benchmarks` workflow records a full snapshot for a release tag — see [docs/performance/benchmarks.md](docs/performance/benchmarks.md).
 
 ## CI/CD
 
-LoraDB ships via GitHub Actions. Every push and pull request runs the full quality gate; tagged releases fan out to crates.io, npm, PyPI, and GitHub Releases.
+LoraDB ships via GitHub Actions. Every push and pull request runs the full quality gate; tagged releases fan out to crates.io, npm, PyPI, RubyGems, and GitHub Releases.
 
 | Workflow | Purpose |
 |----------|---------|
@@ -394,11 +394,16 @@ LoraDB ships via GitHub Actions. Every push and pull request runs the full quali
 | [`lora-go`](.github/workflows/lora-go.yml) | Build `lora-ffi`, run `go vet` + `go test -race` on the Go binding |
 | [`lora-ruby`](.github/workflows/lora-ruby.yml) | Compile the Ruby native extension + run `rake test` across Ruby versions |
 | [`lora-server`](.github/workflows/lora-server.yml) | Build standalone server binaries |
-| [`benchmarks`](.github/workflows/benchmarks.yml) | Criterion performance regression tracking |
+| [`lora-query`](.github/workflows/lora-query.yml) | Build the WASM parser + lint, typecheck, test, and build the `@loradb/lora-query` editor |
+| [`lora-graphql`](.github/workflows/lora-graphql.yml) | Lint, typecheck, and test `@loradb/lora-graphql` against a `lora-node` built from the tree (and, non-blocking, against the published release) |
+| [`perf-smoke`](.github/workflows/perf-smoke.yml) | Per-PR performance canary; fails only on ≥3× regressions vs. the checked-in baseline |
+| [`memory-bench`](.github/workflows/memory-bench.yml) | Per-PR memory-footprint gate for the in-memory store vs. the checked-in baseline |
+| [`benchmarks`](.github/workflows/benchmarks.yml) | Manual-dispatch Criterion snapshot for a release tag (optionally attached to the GitHub Release) |
 | [`release`](.github/workflows/release.yml) | Tag-driven release of server binaries |
 | [`packages-release`](.github/workflows/packages-release.yml) | Tag-driven publish of npm / PyPI / RubyGems + verify-only path for the Go module |
 | [`cargo-release`](.github/workflows/cargo-release.yml) | crates.io publish orchestration |
 | [`loradb-docs`](.github/workflows/loradb-docs.yml) | Deploys [loradb.com](https://loradb.com) |
+| [`play-loradb`](.github/workflows/play-loradb.yml) | Builds and deploys the [play.loradb.com](https://play.loradb.com) playground |
 | [`commitlint`](.github/workflows/commitlint.yml) | Conventional-commit enforcement |
 
 Conventional Commits are enforced on every PR via `commitlint` + Husky. Local Husky commits also run `cargo fmt --all --check` and `cargo clippy --workspace -- -D warnings` before commitlint. Releases are driven by `git-cliff` — see [RELEASING.md](RELEASING.md).
