@@ -664,3 +664,51 @@ describe("G-7: field READ rules compile per row; check() takes a context", () =>
     t.close();
   });
 });
+
+describe("G-14: a nested create is visible to a filter on its new edge", () => {
+  const typeDefs =
+    J +
+    `type User @node @mutation {
+      key: String! @key
+      sent: [Request!]! @relationship(type: "SENT", direction: OUT, nestedOperations: [CREATE, CONNECT])
+    }
+    type Request @node @mutation
+      @authorization(filter: [{ where: { node: { from: { key: { eq: "$jwt.sub" } } } } }]) {
+      key: String! @key
+      from: User! @relationship(type: "SENT", direction: IN)
+    }`;
+  const seed = ["CREATE (:User {key: 'a'}), (:User {key: 'b'})"];
+
+  test("the created node and its edge are there, and readable", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.data(
+      `mutation { updateUser(key: "a", update: { sent: { create: [{ node: { key: "r1" } }] } })
+        { user { sent { key from { key } } } } }`,
+      {},
+      member,
+    );
+    expect(r).toEqual({
+      updateUser: { user: { sent: [{ key: "r1", from: { key: "a" } }] } },
+    });
+    t.close();
+  });
+
+  test("an existing node the caller cannot see still cannot be connected", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.data(
+      `mutation { updateUser(key: "a", update: { sent: { create: [{ node: { key: "r1" } }] } }) { user { key } } }`,
+      {},
+      member,
+    );
+    const r = await t.run(
+      `mutation { updateUser(key: "b", update: { sent: { connect: [{ key: "r1" }] } }) { user { key } } }`,
+      {},
+      { jwt: { sub: "b", roles: [] } },
+    );
+    expect(codes(r)).toEqual(["NOT_FOUND"]);
+    expect(
+      await cypher(t, "MATCH (u:User)-[:SENT]->(:Request) RETURN u.key AS u"),
+    ).toEqual([{ u: "a" }]);
+    t.close();
+  });
+});

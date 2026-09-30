@@ -597,7 +597,9 @@ type Post
 - `filter` rules (any passing rule grants) make other nodes invisible:
   in lists, lookups, counts, aggregates, search, nested relationships,
   relationship filters, subscriptions, and as targets of updates, deletes
-  and connects. Filter rules for `CREATE_RELATIONSHIP` and
+  and connects. A node the same mutation creates is not hidden from its
+  own connects, so a filter that depends on the new relationship (a
+  request visible to its sender) does not block a nested create. Filter rules for `CREATE_RELATIONSHIP` and
   `DELETE_RELATIONSHIP` guard both ends of connects and disconnects.
 - `validate` rules fail the request with `FORBIDDEN`: `BEFORE` an update or
   delete, `AFTER` a create or update (rolling it back), and for `READ`: on

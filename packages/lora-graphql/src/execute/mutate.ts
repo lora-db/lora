@@ -617,6 +617,10 @@ function seekThenExpand(
   );
 }
 
+/** `row.fresh OR (<expr>)`: a filter that nodes this mutation creates skip. */
+const orFresh = (e: Expr | undefined): Expr | undefined =>
+  e && bin("OR", prop(v("row"), "fresh"), e);
+
 /** `AND (<expr>)`, or nothing. */
 const andText = (e: Expr | undefined) => (e ? ` AND (${printExpr(e)})` : "");
 
@@ -807,6 +811,10 @@ class Runner {
             to: l.to,
             props: l.props,
             defaults: l.defaults,
+            // Created by this mutation: not a node the caller must be
+            // able to see already. Its READ filter may well depend on
+            // the relationship this statement creates.
+            fresh: plan.isFresh(target.name, l.to),
           })),
         ),
       );
@@ -815,7 +823,7 @@ class Runner {
         `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = row.from` +
         andText(authFilter(lctx, owner, "a", "CREATE_RELATIONSHIP")) +
         `\nMATCH (b:${name(target.labels[0]!)}) WHERE b.${name(target.key.property)} = row.to` +
-        andText(authFilter(lctx, target, "b", "READ")) +
+        andText(orFresh(authFilter(lctx, target, "b", "READ"))) +
         andText(authFilter(lctx, target, "b", "CREATE_RELATIONSHIP")) +
         `\nWITH a, b, row, size([(a)${arrow(rel, "", "b", undefined)} | 1]) > 0 AS existed` +
         `\nMERGE (a)${arrow(rel, "r", "b", undefined)}\n` +
