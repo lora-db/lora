@@ -289,7 +289,10 @@ export function forbidden(node: NodeType, op: AuthOperation) {
  * request: it skips every filter and validate rule, except on a type with
  * `@authorization(bypass: false)`. Claims only, so it is decided here.
  */
-function bypassed(ctx: CompileContext, node: NodeType | undefined): boolean {
+export function bypassed(
+  ctx: CompileContext,
+  node: NodeType | undefined,
+): boolean {
   const bypass = ctx.model.bypass;
   if (!bypass || !ctx.jwt || node?.authorization?.bypass === false) {
     return false;

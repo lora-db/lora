@@ -241,6 +241,8 @@ export type AuthorizationWhere = Record<string, unknown>;
 export interface AuthorizationFilterRule {
   operations: ReadonlySet<AuthOperation>;
   requireAuthentication: boolean;
+  /** `requireAuthentication` was left to its default (true). */
+  requireAuthenticationDefaulted?: boolean;
   where: AuthorizationWhere;
 }
 
@@ -248,6 +250,8 @@ export interface AuthorizationValidateRule {
   operations: ReadonlySet<AuthOperation>;
   when: ReadonlySet<"BEFORE" | "AFTER">;
   requireAuthentication: boolean;
+  /** `requireAuthentication` was left to its default (true). */
+  requireAuthenticationDefaulted?: boolean;
   where: AuthorizationWhere;
 }
 

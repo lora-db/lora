@@ -34,6 +34,11 @@ import {
 } from "./analyze/indexes.js";
 import { checkPlans, type PlanReport } from "./analyze/plans.js";
 import { lintModel, unguardedMutations } from "./analyze/lint.js";
+import {
+  accessLints,
+  accessMatrix,
+  type AccessEntry,
+} from "./analyze/access.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
 import { CompileCache, stableKey } from "./compile/cache.js";
@@ -688,6 +693,16 @@ export class LoraGraphQL {
    * The CI gate: @cypher statements plan, the database has what the API
    * needs, and each operation's statements seek where they should.
    */
+  /**
+   * Who may do what: for every type and guarded field, each operation as
+   * each kind of caller (anonymous, authenticated, and each role the rules
+   * test), with the verdict and the rules that decide it. Read off the
+   * model; stable, so it can be snapshotted and reviewed as a diff.
+   */
+  accessMatrix(): AccessEntry[] {
+    return accessMatrix(this.model, this.getSchema());
+  }
+
   async check(options: CheckOptions = {}): Promise<CheckReport> {
     const report: CheckReport = {
       ok: true,
@@ -695,7 +710,10 @@ export class LoraGraphQL {
       cypher: await checkCypherFields(this.#driver, this.model),
       missing: (await this.assertSchema()).missing,
       unused: await this.#unusedIndexes(),
-      lint: lintModel(this.model, { statistics: !!this.#statistics }),
+      lint: [
+        ...lintModel(this.model, { statistics: !!this.#statistics }),
+        ...accessLints(this.model, this.getSchema()),
+      ],
       security: unguardedMutations(this.model),
       plans: [],
       errors: [],

@@ -2128,12 +2128,14 @@ function readAuthorization(
   const filter = ((args["filter"] as Raw[] | undefined) ?? []).map((r) => ({
     operations: new Set(r.operations),
     requireAuthentication: r.requireAuthentication ?? true,
+    requireAuthenticationDefaulted: r.requireAuthentication == null,
     where: r.where,
   }));
   const validate = ((args["validate"] as Raw[] | undefined) ?? []).map((r) => ({
     operations: new Set(r.operations),
     when: new Set<"BEFORE" | "AFTER">(r.when ?? ["BEFORE", "AFTER"]),
     requireAuthentication: r.requireAuthentication ?? true,
+    requireAuthenticationDefaulted: r.requireAuthentication == null,
     where: r.where,
   }));
   return {

@@ -48,6 +48,8 @@ const USAGE = `lora-graphql <command>
 
   print <schema.graphql>                    the public SDL clients see
   directives                                the directive definitions, for editors
+  access <schema.graphql> [--json]          who may do what: each type and guarded field,
+                                            operation and kind of caller
   requirements <schema.graphql> [--ddl]     constraints and indexes the API needs
   check <schema.graphql> [--operations <file|dir>]... [--json]
         [--variables <file>] [--context <file>]
@@ -95,6 +97,8 @@ export async function main(
       case "directives":
         io.out(directiveTypeDefs.trim());
         return 0;
+      case "access":
+        return await access(need(positional, 1), flags.has("--json"), io);
       case "requirements":
         return await requirements(need(positional, 1), flags.has("--ddl"), io);
       case "check":
@@ -165,6 +169,37 @@ function offline(typeDefs: string): LoraGraphQL {
     run: () => Promise.reject(new Error("no database")),
   };
   return new LoraGraphQL({ typeDefs, driver });
+}
+
+async function access(
+  [file]: string[],
+  json: boolean,
+  io: Io,
+): Promise<number> {
+  const matrix = offline(await read(file!)).accessMatrix();
+  if (json) {
+    io.out(JSON.stringify(matrix, null, 2));
+    return 0;
+  }
+  const rows = matrix.map((e) => [
+    e.field ? `${e.type}.${e.field}` : e.type,
+    e.operation,
+    e.principal,
+    e.verdict,
+    e.by.join(", "),
+  ]);
+  const widths = [0, 1, 2, 3].map((i) =>
+    Math.max(...rows.map((r) => r[i]!.length), 0),
+  );
+  for (const r of rows) {
+    io.out(
+      r
+        .map((cell, i) => (i < 4 ? cell.padEnd(widths[i]!) : cell))
+        .join("  ")
+        .trimEnd(),
+    );
+  }
+  return 0;
 }
 
 async function print([file]: string[], io: Io): Promise<number> {

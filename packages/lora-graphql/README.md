@@ -1062,6 +1062,18 @@ files, and exits non-zero on any finding. It is the CI gate. Options:
 - `--database dir [--name app]`: check an existing database as it is, and
   report indexes it has that the API does not use.
 
+`access` prints who may do what: for every type and guarded field, each
+operation as each kind of caller (anonymous, authenticated, and each role
+the rules test, such as `roles:admin`), with the verdict (`allowed`,
+`filtered`, `validated`, `masked`, `denied`, `unauthenticated`) and the
+rules that decide it. `lora.accessMatrix()` returns the same list; its
+order is stable, so a snapshot in CI turns access changes into diffs.
+
+`check` lints authorization too: a filter rule every signed-in caller
+passes, a rule whose default `requireAuthentication` refuses anonymous
+callers a branch that needs no claims, and field rules the schema's
+bypass skips.
+
 A `@mutation` type with a generated write no rule guards (no
 `@authentication` or `@authorization` rule for it, and no
 `@authorizationDefaults(mutations:)` default) fails the run: declare it

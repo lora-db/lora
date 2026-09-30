@@ -265,14 +265,16 @@ export const directiveTypeDefs = /* GraphQL */ `
 
   input AuthorizationFilterRule {
     operations: [AuthOperation!]! = [READ, UPDATE, DELETE]
-    requireAuthentication: Boolean = true
+    "Default true: without a token the rule denies."
+    requireAuthentication: Boolean
     where: AuthorizationWhere!
   }
 
   input AuthorizationValidateRule {
     operations: [AuthOperation!]! = [READ, CREATE, UPDATE, DELETE]
     when: [AuthorizationWhen!]! = [BEFORE, AFTER]
-    requireAuthentication: Boolean = true
+    "Default true: without a token the rule denies."
+    requireAuthentication: Boolean
     where: AuthorizationWhere!
   }
 

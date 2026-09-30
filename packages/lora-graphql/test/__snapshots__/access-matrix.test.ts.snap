@@ -1,0 +1,27 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`accessMatrix > the README's Post example 1`] = `
+[
+  "Post READ anonymous: filtered (filter[0], filter[1], filter[2], filter[3])",
+  "Post READ authenticated: filtered (filter[0], filter[1], filter[2], filter[3])",
+  "Post READ roles:admin: allowed (filter[0], filter[1], filter[2], filter[3])",
+  "Post CREATE anonymous: unauthenticated (@authentication, validate[0])",
+  "Post CREATE authenticated: validated (@authentication, validate[0])",
+  "Post CREATE roles:admin: allowed (@authentication, validate[0])",
+  "Post UPDATE anonymous: unauthenticated (@authentication, filter[0], filter[1], filter[2], filter[3], validate[0])",
+  "Post UPDATE authenticated: filtered (@authentication, filter[0], filter[1], filter[2], filter[3], validate[0])",
+  "Post UPDATE roles:admin: allowed (@authentication, filter[0], filter[1], filter[2], filter[3], validate[0])",
+  "Post DELETE anonymous: unauthenticated (@authentication, filter[0], filter[1], filter[2], filter[3])",
+  "Post DELETE authenticated: filtered (@authentication, filter[0], filter[1], filter[2], filter[3])",
+  "Post DELETE roles:admin: allowed (@authentication, filter[0], filter[1], filter[2], filter[3])",
+  "Post.notes READ anonymous: unauthenticated (@authentication)",
+  "Post.notes READ authenticated: allowed (@authentication)",
+  "Post.notes READ roles:admin: allowed (@authentication)",
+  "Post.royalties READ anonymous: unauthenticated (validate[0])",
+  "Post.royalties READ authenticated: validated (validate[0])",
+  "Post.royalties READ roles:admin: validated (validate[0])",
+  "User READ anonymous: allowed (no rule)",
+  "User READ authenticated: allowed (no rule)",
+  "User READ roles:admin: allowed (no rule)",
+]
+`;
