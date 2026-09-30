@@ -103,6 +103,40 @@ test("check --row-budget and --variables", async () => {
   expect(r.code).toBe(0);
 });
 
+test("check --context compiles operations as a signed-in caller", async () => {
+  await writeFile(
+    join(dir, "guarded.graphql"),
+    `type Claims @jwt { sub: String! }
+     type Note @node @authorization(filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+       key: String! @key
+       owner: String!
+     }`,
+  );
+  await mkdir(join(dir, "guarded-ops"), { recursive: true });
+  await writeFile(
+    join(dir, "guarded-ops", "notes.graphql"),
+    `query Mine { notes { key } }`,
+  );
+  await writeFile(
+    join(dir, "ctx.json"),
+    JSON.stringify({ "*": { jwt: { sub: "u-7" } } }),
+  );
+  const params = async (...extra: string[]) => {
+    const r = await cli(
+      "check",
+      join(dir, "guarded.graphql"),
+      "--operations",
+      join(dir, "guarded-ops"),
+      "--json",
+      ...extra,
+    );
+    const report = JSON.parse(r.out);
+    return Object.values(report.plans[0].reports[0].statement.params);
+  };
+  expect(await params("--context", join(dir, "ctx.json"))).toContain("u-7");
+  expect(await params()).not.toContain("u-7");
+});
+
 test("compile writes a manifest and types", async () => {
   const out = join(dir, "compiled");
   const r = await cli(
