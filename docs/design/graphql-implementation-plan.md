@@ -79,6 +79,7 @@ predicates out, since their lead bound gets a range scan) and E10 fixed
 | E26 | `date('2024-01-01')`, `datetime('…')` and similar return null; only the `'…'::DATE` cast works                    | Open: the package binds temporal parameters, so it does not hit this; hand-written `@cypher` can |
 | E27 | `min()` / `max()` and list sorting compare `LocalDateTime`, `Time` and `LocalTime` values as equal                | Open                                                                                             |
 | E28 | An index keys integers and floats apart: an equality lookup for `5` misses `5.0`                                  | Open                                                                                             |
+| E29 | `WITH a WHERE size([(a)<-[:T]-() \| 1]) = 0` ran below the `WITH` with `a` unbound: no rows, a label scan per row | Fixed; the package binds the count in the `WITH` anyway (`checkRequired()`, Festimap G-11)       |
 
 ## Why
 
