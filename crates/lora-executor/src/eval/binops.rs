@@ -36,6 +36,18 @@ pub(super) fn eval_unary(op: UnaryOp, value: LoraValue) -> LoraValue {
     }
 }
 
+/// `lhs IN rhs`, reading the list in place.
+pub(super) fn eval_in(lhs: &LoraValue, rhs: &LoraValue) -> LoraValue {
+    if matches!(lhs, LoraValue::Null) {
+        return LoraValue::Null;
+    }
+    match rhs {
+        LoraValue::List(values) => LoraValue::Bool(values.iter().any(|v| value_eq(lhs, v))),
+        LoraValue::Null => LoraValue::Null,
+        _ => LoraValue::Bool(false),
+    }
+}
+
 pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match op {
         // Lora three-valued boolean logic:
@@ -121,18 +133,7 @@ pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> Lora
         BinaryOp::Mod => mod_values(lhs, rhs),
         BinaryOp::Pow => pow_values(lhs, rhs),
 
-        BinaryOp::In => {
-            if matches!(lhs, LoraValue::Null) {
-                return LoraValue::Null;
-            }
-            match rhs {
-                LoraValue::List(values) => {
-                    LoraValue::Bool(values.iter().any(|v| value_eq(&lhs, v)))
-                }
-                LoraValue::Null => LoraValue::Null,
-                _ => LoraValue::Bool(false),
-            }
-        }
+        BinaryOp::In => eval_in(&lhs, &rhs),
 
         BinaryOp::StartsWith => match (lhs, rhs) {
             (LoraValue::Null, _) | (_, LoraValue::Null) => LoraValue::Null,

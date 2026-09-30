@@ -14,12 +14,14 @@
 #[allow(unused_imports)]
 use crate::value::LoraPath;
 use crate::value::{LoraValue, Row};
+use lora_analyzer::symbols::VarId;
 use lora_analyzer::{LiteralValue, ResolvedExpr, ResolvedMapSelector};
-use lora_ast::ListPredicateKind;
+use lora_ast::{BinaryOp, ListPredicateKind};
 use lora_store::GraphStorage;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use super::binops::{eval_binary, eval_unary, value_eq};
+use super::binops::{eval_binary, eval_in, eval_unary, value_eq};
 use super::errors::{clear_eval_error, take_eval_error};
 use super::functions::eval_function;
 
@@ -51,8 +53,18 @@ pub fn eval_expr<S: GraphStorage>(
         }
 
         ResolvedExpr::Property { expr, property } => {
-            let base = eval_expr(expr, row, ctx);
+            let base = eval_ref(expr, row, ctx);
             eval_property(&base, property, ctx)
+        }
+
+        ResolvedExpr::Binary {
+            lhs,
+            op: BinaryOp::In,
+            rhs,
+        } => {
+            let l = eval_expr(lhs, row, ctx);
+            let r = eval_ref(rhs, row, ctx);
+            eval_in(&l, &r)
         }
 
         ResolvedExpr::Binary { lhs, op, rhs } => {
@@ -173,9 +185,9 @@ pub fn eval_expr<S: GraphStorage>(
         }
 
         ResolvedExpr::Index { expr, index } => {
-            let base = eval_expr(expr, row, ctx);
+            let base = eval_ref(expr, row, ctx);
             let idx = eval_expr(index, row, ctx);
-            match (base, idx) {
+            match (&*base, idx) {
                 (LoraValue::List(items), LoraValue::Int(i)) => {
                     let i = if i < 0 {
                         match i64::try_from(items.len())
@@ -198,8 +210,8 @@ pub fn eval_expr<S: GraphStorage>(
         }
 
         ResolvedExpr::Slice { expr, from, to } => {
-            let base = eval_expr(expr, row, ctx);
-            match base {
+            let base = eval_ref(expr, row, ctx);
+            match &*base {
                 LoraValue::List(items) => {
                     let len = items.len() as i64;
                     let start = from
@@ -225,7 +237,7 @@ pub fn eval_expr<S: GraphStorage>(
         }
 
         ResolvedExpr::MapProjection { base, selectors } => {
-            let base_val = eval_expr(base, row, ctx);
+            let base_val = eval_ref(base, row, ctx);
             let mut result = BTreeMap::new();
 
             for sel in selectors {
@@ -238,7 +250,7 @@ pub fn eval_expr<S: GraphStorage>(
                         // Borrow the stored record (when the backend supports it)
                         // via `with_node` / `with_relationship`; otherwise the
                         // closure still runs against an owned fetch.
-                        match &base_val {
+                        match &*base_val {
                             LoraValue::Node(id) => {
                                 ctx.storage.with_node(*id, |node| {
                                     for (k, v) in &node.properties {
@@ -305,21 +317,42 @@ pub fn eval_expr<S: GraphStorage>(
             }
         }
 
-        ResolvedExpr::ExistsSubquery { pattern, where_ } => {
-            eval_exists_subquery(pattern, where_.as_deref(), row, ctx)
-        }
+        ResolvedExpr::ExistsSubquery {
+            pattern,
+            where_,
+            reads,
+        } => eval_exists_subquery(pattern, where_.as_deref(), reads, row, ctx),
 
         ResolvedExpr::PatternComprehension {
             pattern,
             where_,
             map_expr,
-        } => eval_pattern_comprehension(pattern, where_.as_deref(), map_expr, row, ctx),
+            reads,
+        } => eval_pattern_comprehension(pattern, where_.as_deref(), map_expr, reads, row, ctx),
+    }
+}
+
+static NULL: LoraValue = LoraValue::Null;
+
+/// `expr`'s value, borrowed from the row when `expr` is a bare variable.
+/// Reading one element, slice, key or property of a carried list or map, or
+/// testing `x IN list`, must not copy the whole value: a pattern subquery
+/// evaluates its WHERE once per candidate.
+fn eval_ref<'r, S: GraphStorage>(
+    expr: &ResolvedExpr,
+    row: &'r Row,
+    ctx: &EvalContext<'_, S>,
+) -> Cow<'r, LoraValue> {
+    match expr {
+        ResolvedExpr::Variable(var) => Cow::Borrowed(row.get(*var).unwrap_or(&NULL)),
+        _ => Cow::Owned(eval_expr(expr, row, ctx)),
     }
 }
 
 fn eval_exists_subquery<S: GraphStorage>(
     pattern: &lora_analyzer::ResolvedPattern,
     where_: Option<&ResolvedExpr>,
+    reads: &[VarId],
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> LoraValue {
@@ -333,9 +366,7 @@ fn eval_exists_subquery<S: GraphStorage>(
     // only cares whether at least one complete binding survives the WHERE.
     // Match on a row holding only what the subquery reads: every candidate
     // clones it, and the outer row may carry large values (collected lists).
-    let scoped = scoped_row(row, pattern, [where_]);
-    let row = &scoped;
-    let mut candidate_rows = vec![row.clone()];
+    let mut candidate_rows = vec![scoped_row(row, reads)];
 
     for (part_idx, part) in pattern.parts.iter().enumerate() {
         let is_last_part = part_idx + 1 == pattern.parts.len();
@@ -463,6 +494,7 @@ fn eval_pattern_comprehension<S: GraphStorage>(
     pattern: &lora_analyzer::ResolvedPattern,
     where_: Option<&ResolvedExpr>,
     map_expr: &ResolvedExpr,
+    reads: &[VarId],
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> LoraValue {
@@ -470,9 +502,7 @@ fn eval_pattern_comprehension<S: GraphStorage>(
     // the comprehension reads: every candidate and every expansion clones it,
     // and the outer row may carry large values (the lists earlier CALLs
     // collected), which made the cost proportional to them.
-    let scoped = scoped_row(row, pattern, [where_, Some(map_expr)]);
-    let row = &scoped;
-    let mut candidate_rows = vec![row.clone()];
+    let mut candidate_rows = vec![scoped_row(row, reads)];
 
     for part in &pattern.parts {
         let mut next_rows = Vec::new();
@@ -574,20 +604,18 @@ fn eval_pattern_comprehension<S: GraphStorage>(
     )
 }
 
-/// A copy of `row` with only the variables `pattern` and `exprs` use: the
-/// bindings a pattern subquery can read.
-fn scoped_row<const N: usize>(
-    row: &Row,
-    pattern: &lora_analyzer::ResolvedPattern,
-    exprs: [Option<&ResolvedExpr>; N],
-) -> Row {
-    let mut vars = std::collections::BTreeSet::new();
-    pattern.collect_vars(&mut vars);
-    for expr in exprs.into_iter().flatten() {
-        expr.collect_vars(&mut vars);
+/// A copy of `row` holding only `reads`, the variables a pattern subquery
+/// uses (computed once by the analyzer). Every candidate and every expansion
+/// step clones this row, so values the subquery never reads (a list collected
+/// by an earlier CALL) must not ride along. A row holding nothing but what
+/// the subquery reads is cloned as is: scoping it would save nothing.
+fn scoped_row(row: &Row, reads: &[VarId]) -> Row {
+    let read_bound = reads.iter().filter(|&&var| row.contains_key(var)).count();
+    if read_bound == row.len() {
+        return row.clone();
     }
     let mut scoped = Row::new();
-    for var in vars {
+    for &var in reads {
         if let Some(value) = row.get(var) {
             scoped.insert(var, value.clone());
         }

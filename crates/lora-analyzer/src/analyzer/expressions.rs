@@ -397,10 +397,13 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 let resolved_pattern =
                     self.analyze_pattern(pattern, PatternContext::OptionalRead)?;
                 let resolved_where = where_.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
-                Ok(ResolvedExpr::ExistsSubquery {
+                let mut expr = ResolvedExpr::ExistsSubquery {
                     pattern: resolved_pattern,
                     where_: resolved_where.map(Box::new),
-                })
+                    reads: Vec::new(),
+                };
+                fill_subquery_reads(&mut expr);
+                Ok(expr)
             }
 
             Expr::PatternComprehension {
@@ -421,13 +424,28 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 let resolved_pattern = self.analyze_pattern(&pat, PatternContext::OptionalRead)?;
                 let resolved_where = where_.as_ref().map(|e| self.analyze_expr(e)).transpose()?;
                 let resolved_map = self.analyze_expr(map_expr)?;
-                Ok(ResolvedExpr::PatternComprehension {
+                let mut expr = ResolvedExpr::PatternComprehension {
                     pattern: resolved_pattern,
                     where_: resolved_where.map(Box::new),
                     map_expr: Box::new(resolved_map),
-                })
+                    reads: Vec::new(),
+                };
+                fill_subquery_reads(&mut expr);
+                Ok(expr)
             }
         }
+    }
+}
+
+/// Record on a pattern subquery the variables it uses, so the executor can
+/// hand it only those bindings without walking the expression per row.
+fn fill_subquery_reads(expr: &mut ResolvedExpr) {
+    let mut vars = std::collections::BTreeSet::new();
+    expr.collect_vars(&mut vars);
+    if let ResolvedExpr::ExistsSubquery { reads, .. }
+    | ResolvedExpr::PatternComprehension { reads, .. } = expr
+    {
+        *reads = vars.into_iter().collect();
     }
 }
 

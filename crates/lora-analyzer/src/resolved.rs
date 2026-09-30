@@ -296,11 +296,18 @@ pub enum ResolvedExpr {
     ExistsSubquery {
         pattern: ResolvedPattern,
         where_: Option<Box<ResolvedExpr>>,
+        /// Every variable the pattern and WHERE use (see
+        /// [`ResolvedExpr::collect_vars`]), sorted: the outer bindings the
+        /// subquery can read, computed once so evaluation need not walk it.
+        reads: Vec<VarId>,
     },
     PatternComprehension {
         pattern: ResolvedPattern,
         where_: Option<Box<ResolvedExpr>>,
         map_expr: Box<ResolvedExpr>,
+        /// Every variable the pattern, WHERE and projection use, as for
+        /// [`ResolvedExpr::ExistsSubquery`].
+        reads: Vec<VarId>,
     },
 }
 
@@ -434,7 +441,9 @@ impl ResolvedExpr {
             // A pattern reads the outer variables it names (`(a)<-[:T]-(x)`
             // reads `a`). Its own fresh variables are collected too: an
             // over-approximation, which only ever keeps a predicate in place.
-            ResolvedExpr::ExistsSubquery { pattern, where_ } => {
+            ResolvedExpr::ExistsSubquery {
+                pattern, where_, ..
+            } => {
                 pattern.collect_vars(out);
                 if let Some(w) = where_ {
                     ResolvedExpr::collect_vars(w, out);
@@ -444,6 +453,7 @@ impl ResolvedExpr {
                 pattern,
                 where_,
                 map_expr,
+                ..
             } => {
                 pattern.collect_vars(out);
                 if let Some(w) = where_ {
