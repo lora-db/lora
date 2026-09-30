@@ -93,20 +93,17 @@ pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> Lora
             }
         }
 
-        // Lora null semantics: comparisons with null return null.
+        // Cypher ordering: null or incomparable operands give null; lists
+        // compare element by element.
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
-            if matches!(lhs, LoraValue::Null) || matches!(rhs, LoraValue::Null) {
-                return LoraValue::Null;
-            }
-            match op {
-                BinaryOp::Lt => cmp_numeric_or_string(lhs, rhs, |a, b| a < b, |a, b| a < b),
-                BinaryOp::Gt => cmp_numeric_or_string(lhs, rhs, |a, b| a > b, |a, b| a > b),
-                BinaryOp::Le => cmp_numeric_or_string(lhs, rhs, |a, b| a <= b, |a, b| a <= b),
-                BinaryOp::Ge => cmp_numeric_or_string(lhs, rhs, |a, b| a >= b, |a, b| a >= b),
-                _ => {
-                    set_eval_error("invalid comparison operator dispatch".to_string());
-                    LoraValue::Null
-                }
+            match compare_values(&lhs, &rhs) {
+                None => LoraValue::Null,
+                Some(ord) => LoraValue::Bool(match op {
+                    BinaryOp::Lt => ord.is_lt(),
+                    BinaryOp::Gt => ord.is_gt(),
+                    BinaryOp::Le => ord.is_le(),
+                    _ => ord.is_ge(),
+                }),
             }
         }
 
@@ -197,34 +194,62 @@ pub(super) fn value_eq(a: &LoraValue, b: &LoraValue) -> bool {
     }
 }
 
-fn cmp_numeric_or_string(
-    lhs: LoraValue,
-    rhs: LoraValue,
-    num_cmp: impl Fn(f64, f64) -> bool,
-    str_cmp: impl Fn(&str, &str) -> bool,
-) -> LoraValue {
-    match (&lhs, &rhs) {
-        (LoraValue::String(a), LoraValue::String(b)) => LoraValue::Bool(str_cmp(a, b)),
-        (
-            LoraValue::Date(_)
-            | LoraValue::DateTime(_)
-            | LoraValue::LocalDateTime(_)
-            | LoraValue::Time(_)
-            | LoraValue::LocalTime(_),
-            _,
-        ) => match lhs.temporal_cmp(&rhs) {
-            // Map the ordering onto -1 / 0 / 1 so the caller's operator
-            // applies unchanged and nanosecond precision is kept.
-            Some(ord) => LoraValue::Bool(num_cmp(ord as i8 as f64, 0.0)),
-            None => LoraValue::Bool(false),
-        },
-        (LoraValue::Duration(a), LoraValue::Duration(b)) => {
-            LoraValue::Bool(num_cmp(a.total_seconds_approx(), b.total_seconds_approx()))
+/// How `a` orders against `b` for `<`, `<=`, `>` and `>=`; `None` when
+/// the comparison is null: a null operand, or values of kinds Cypher does
+/// not order against each other (a string and a number, two temporals of
+/// different kinds, ...).
+///
+/// Numbers compare by value, integers exactly (never through `f64`),
+/// strings by code point, booleans with `false < true`, temporals of one
+/// kind by the instant they denote. Lists compare lexicographically: the
+/// first pair of elements that differs decides, a null or incomparable
+/// pair before that makes the result null, and a list that is a prefix of
+/// the other sorts first.
+pub(crate) fn compare_values(a: &LoraValue, b: &LoraValue) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (LoraValue::Null, _) | (_, LoraValue::Null) => None,
+        (LoraValue::Int(x), LoraValue::Int(y)) => Some(x.cmp(y)),
+        (LoraValue::Int(x), LoraValue::Float(y)) => int_float_cmp(*x, *y),
+        (LoraValue::Float(x), LoraValue::Int(y)) => int_float_cmp(*y, *x).map(Ordering::reverse),
+        (LoraValue::Float(x), LoraValue::Float(y)) => x.partial_cmp(y),
+        (LoraValue::String(x), LoraValue::String(y)) => Some(x.as_str().cmp(y.as_str())),
+        (LoraValue::Bool(x), LoraValue::Bool(y)) => Some(x.cmp(y)),
+        (LoraValue::Duration(x), LoraValue::Duration(y)) => x
+            .total_seconds_approx()
+            .partial_cmp(&y.total_seconds_approx()),
+        (LoraValue::List(xs), LoraValue::List(ys)) => {
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                match compare_values(x, y)? {
+                    Ordering::Equal => continue,
+                    decided => return Some(decided),
+                }
+            }
+            Some(xs.len().cmp(&ys.len()))
         }
-        _ => match (lhs.as_f64(), rhs.as_f64()) {
-            (Some(a), Some(b)) => LoraValue::Bool(num_cmp(a, b)),
-            _ => LoraValue::Bool(false),
-        },
+        _ => a.temporal_cmp(b),
+    }
+}
+
+/// An integer against a float, exactly: `2^53 + 1 > 2^53 as f64` holds.
+/// NaN orders against nothing.
+fn int_float_cmp(i: i64, f: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if f.is_nan() {
+        return None;
+    }
+    // Every i64 lies in [-2^63, 2^63); a float outside it decides alone.
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    if f >= TWO_63 {
+        return Some(Ordering::Less);
+    }
+    if f < -TWO_63 {
+        return Some(Ordering::Greater);
+    }
+    let whole = f.trunc();
+    match i.cmp(&(whole as i64)) {
+        Ordering::Equal => 0.0f64.partial_cmp(&(f - whole)),
+        decided => Some(decided),
     }
 }
 

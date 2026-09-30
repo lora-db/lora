@@ -210,10 +210,15 @@ fn comparisons_and_ordering_on_every_temporal_kind() {
             "RETURN ('2024-01-01T02:00:00+02:00'::DATETIME) > ('2024-01-01T00:00:00Z'::DATETIME) AS r",
             false,
         ),
-        ("RETURN ('2024-01-01'::DATE) < ('2024-01-02T00:00:00Z'::DATETIME) AS r", false),
     ] {
         assert_eq!(db.run(q), vec![json!({ "r": want })], "{q}");
     }
+    // Temporals of different kinds do not order against each other: the
+    // comparison is null, as in Cypher (tests/comparison_ordering.rs).
+    assert_eq!(
+        db.run("RETURN ('2024-01-01'::DATE) < ('2024-01-02T00:00:00Z'::DATETIME) AS r"),
+        vec![json!({ "r": null })]
+    );
 
     let rows = db.run(
         "UNWIND [('2024-10-01T00:00'::LOCAL_DATETIME), ('2024-09-01T00:00'::LOCAL_DATETIME), \

@@ -91,7 +91,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Arithmetic `+ - * / % ^` | **Supported** | `/` and `%` by zero → null |
 | Unary `-` / `+` | **Supported** | |
 | Equality `=` / `<>` | **Supported** | |
-| Comparison `< > <= >=` | **Supported** | Numeric, string, and temporal |
+| Comparison `< > <= >=` | **Supported** | Numbers (integers exactly, also above 2^53), strings, booleans (`false < true`), temporals of one kind, durations, and lists: element by element, a prefix before the longer list. A null or an operand of another kind gives `null`, never `false`, so `[a, b] > $cursor` works for keyset pagination and `NOT (1 < 'a')` is `null` |
 | `AND` / `OR` / `NOT` / `XOR` | **Supported** | Three-valued logic with nulls |
 | `IN` list membership | **Supported** | Null propagation per Cypher spec |
 | `IS NULL` / `IS NOT NULL` | **Supported** | |

@@ -21,7 +21,7 @@
 | `EXPLAIN` / `PROFILE` (Cypher keywords) | Not in grammar | API-only | Low — exposed as `db.explain()` / `db.profile()` API methods rather than Cypher syntax. `PROFILE` runs the query for real (including writes); `EXPLAIN` is plan-only. |
 | Quantified path patterns | Not in grammar | N/A | Low — future openCypher syntax |
 | Inline `WHERE` inside variable-length relationship | Not in grammar | N/A | Low — parse error |
-| Type mismatch detection between comparable types | Accepted | Compared without error | Low — 1 ignored test |
+| Type mismatch detection between comparable types | Accepted | Compared without error; `<`, `>`, `<=`, `>=` give `null`, as in Cypher | Low — 1 ignored test |
 | Parameter as a label or relationship type | N/A | Not implemented | Low — not standard Cypher |
 | Vector ANN execution | N/A | `CREATE VECTOR INDEX` and `db.index.vector.*` procedures are queryable, but they use flat scans over the indexed scope | **Medium** — fine for demos and small corpora; dedicated ANN execution is still needed for production-scale semantic retrieval |
 | List-of-`VECTOR` as a property | Parsed | Rejected at write time (`PropertyConversionError::NestedVectorInList`) | Low — loud error; shape decision to keep future indexing viable |
@@ -58,6 +58,7 @@ The following features were listed as gaps in earlier revisions of this document
 | Writes inside `CALL { ... }` run on the mutable executor, per outer row, with unit subqueries keeping the outer rows. Previously every write in a subquery body failed with `LORA_READ_ONLY` although `explain()` reported the query as mutating | `tests/call_subquery_writes.rs` |
 | `null` in a property map is not stored and `SET` with `null` removes the property; existence constraints on entities a statement creates are checked when the statement finishes, so `CREATE (n:User) SET n.name = $name` passes | `tests/null_properties_and_deferred_existence.rs` |
 | A read with an early `LIMIT` stops scanning once the limit is met, also under a deadline and inside an explicit transaction. Previously both ran the full executor and materialized every row first | `tests/early_limit.rs` |
+| `<`, `<=`, `>`, `>=` on lists compare element by element, and a null or mismatched operand gives `null`. Previously both gave `false`: `[f.name, f.key] > $after` matched nothing, `NOT (1 < 'a')` was true, and integers above 2^53 compared through `f64` | `tests/comparison_ordering.rs` |
 | Node binding: exact 64-bit integers (`bigint`), per-call `timeoutMs` / `AbortSignal` and a database-wide `queryTimeoutMs`, interactive transactions (`db.begin()`), typed `LORA_LOCKED` for a directory held by another process, `{latitude, longitude}` point params, musl prebuilds | `crates/bindings/lora-node/test/{integers,timeouts,interactive,locking}.test.ts` |
 
 ---

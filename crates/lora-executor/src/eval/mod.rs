@@ -8,7 +8,7 @@
 //!   lookup helpers, and the EXISTS / pattern-comprehension pattern matchers.
 //! - `binops` — unary and binary operator evaluation: `eval_unary`,
 //!   `eval_binary`, structural equality (`value_eq`), comparison
-//!   (`cmp_numeric_or_string`), and the arithmetic value combinators
+//!   (`compare_values`), and the arithmetic value combinators
 //!   (`add_values`, `sub_values`, `mul_values`, `div_values`,
 //!   `mod_values`, `pow_values`, `substring_by_chars`).
 //! - `functions` — `eval_function` dispatcher over the built-in
