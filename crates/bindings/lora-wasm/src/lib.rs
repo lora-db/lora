@@ -34,6 +34,7 @@ use json::{
     parse_snapshot_credentials, parse_snapshot_options, parse_transaction_mode,
     parse_transaction_statements, plan_to_json, profile_to_json, row_to_json, serialize_rows,
 };
+use lora_binding_buffer::stream::ShapeCache;
 use writer::{WriterClaim, WriterState};
 /// Deprecated umbrella code preserved for binding-level static-message
 /// call sites (stream closed, lock invariants). Engine errors go through
@@ -169,16 +170,18 @@ pub struct WasmDatabase {
     db: Arc<InnerDatabase<InMemoryGraph>>,
     /// Set while a write stream holds the writer lock; see [`writer`].
     writer: WriterState,
+    /// Stream shapes per query text, so opening a stream does not re-plan
+    /// the query to classify it.
+    shapes: ShapeCache,
 }
 
 impl WasmDatabase {
     /// Whether `query` would take the writer lock. A query that fails to
     /// compile reports `false`: it fails before taking the lock anyway.
     fn is_mutating(&self, query: &str) -> bool {
-        self.db
-            .explain(query, None)
-            .map(|plan| plan.shape.is_mutating())
-            .unwrap_or(false)
+        self.shapes
+            .classify(&self.db, query)
+            .is_ok_and(|shape| shape.mutating)
     }
 
     /// Error instead of trapping when `query` is a write and a write
@@ -215,6 +218,7 @@ impl WasmDatabase {
         Self {
             db: Arc::new(InnerDatabase::in_memory()),
             writer: WriterState::default(),
+            shapes: ShapeCache::default(),
         }
     }
 
