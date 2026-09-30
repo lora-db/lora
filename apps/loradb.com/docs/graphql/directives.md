@@ -106,8 +106,9 @@ type Festival @node {
   returned map.
 - Arguments must be scalars or enums, and `jwt` is reserved.
 - On `Query` and object types the statement may not write. On `Mutation` it
-  may, but the library cannot know what it wrote: change events for it are
-  broad.
+  may, but the library cannot know what it wrote: its `onWrite` event is
+  broad, and so are its subscription events unless `changeFeed: true`
+  feeds them from the engine.
 - A scalar, non-list `@cypher` field of a `@node` type may take
   `@filterable` and `@sortable` when every argument has a default. The
   statement then runs per node before the filter, in root fields only, and

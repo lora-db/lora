@@ -69,7 +69,8 @@ Vector indexes are single-property node or relationship indexes. They
 require an `indexConfig` map with:
 
 - `vector.dimensions` - integer dimension in `1..=4096`;
-- `vector.similarity_function` - `'cosine'` or `'euclidean'`.
+- `vector.similarity_function` - `'cosine'`, `'euclidean'`, `'dot'`
+  (alias `'dot_product'`), or `'manhattan'`.
 
 <QueryCodeBlock code={String.raw`CREATE VECTOR INDEX movie_embedding
 FOR (m:Movie)
@@ -94,15 +95,78 @@ YIELD relationship, score;`} />
 `k` must be positive. The query argument can be a `VECTOR`, a
 `[...]::VECTOR<COORD>(DIM)` cast, a numeric list, or a parameter containing a vector.
 Numeric lists are coerced to `FLOAT32` vectors. The query dimension
-must match the index dimension.
+must match the index dimension. Results are sorted by descending score,
+ties broken by ascending entity id.
 
-:::note Current execution
-The vector procedure uses the cataloged vector index definition for
-scope, dimensions, and similarity, but nearest-neighbour execution is
-currently a flat scan over label/type-matching entities. Results are
-sorted by descending score. A dedicated ANN structure is still future
-work.
-:::
+### Restricting results
+
+An optional fourth argument takes an options map. Its only key is
+`restrictTo`, a list of entity ids (or node / relationship values) that
+the results may come from:
+
+<QueryCodeBlock code={String.raw`CALL db.index.vector.queryNodes('movie_embedding', 5, $query, {restrictTo: $ids})
+YIELD node, score;`} />
+
+Unknown option keys are rejected. When the `CALL` stands alone (nothing
+after `YIELD`), the options must be an inline map literal — values
+inside it may be parameters, as above, but `$opts` as the whole map is
+rejected. A `CALL` followed by further clauses (`RETURN`, `WITH`, …)
+accepts a map parameter too.
+
+### Providers: flat (exact) and HNSW (approximate)
+
+Each vector index has a backend, chosen with the optional
+`vector.indexProvider` key:
+
+| Provider | Behaviour |
+|---|---|
+| `'flat'` (default) | Exact. Scores every entity in the index scope and returns the true top `k`. |
+| `'hnsw'` | Approximate nearest-neighbour search over an HNSW graph. Much faster on large scopes; may miss some true neighbours. |
+
+<QueryCodeBlock code={String.raw`CREATE VECTOR INDEX doc_embedding_ann
+FOR (d:Doc)
+ON (d.embedding)
+OPTIONS {indexConfig: {
+  \`vector.dimensions\`: 384,
+  \`vector.similarity_function\`: 'cosine',
+  \`vector.indexProvider\`: 'hnsw',
+  \`vector.hnsw.m\`: 16,
+  \`vector.hnsw.ef_construction\`: 200,
+  \`vector.hnsw.ef_search\`: 100
+}};
+
+CALL db.index.vector.queryNodes('doc_embedding_ann', 10, $query)
+YIELD node, score;`} />
+
+Queries are unchanged — the same `db.index.vector.*` procedures run
+against either provider. HNSW tuning keys, all optional:
+
+| Key | Default | Range | Effect |
+|---|---|---|---|
+| `vector.hnsw.m` | `16` | `4..=128` | Neighbours per node per layer. Higher improves recall and costs memory and insert time. |
+| `vector.hnsw.ef_construction` | `200` | `16..=2000` | Candidate list size while building the graph. Higher gives a better graph and slower inserts. |
+| `vector.hnsw.ef_search` | `100` | `16..=2000` | Candidate list size per query (never below `k`). Higher improves recall and slows queries. |
+| `vector.hnsw.quantization` | `'none'` | `'none'`, `'int8'` | `'int8'` stores coordinates as 8-bit integers (about 4× less memory, slightly less precise scores). Requires `'cosine'` similarity and coordinates in `[-1, 1]` (unit-normalised embeddings); larger values are clipped. |
+
+Out-of-range or mistyped values fail `CREATE VECTOR INDEX`, and any
+provider other than `'flat'` or `'hnsw'` is rejected. The `vector.hnsw.*`
+keys are validated for every vector index but only take effect with
+`'hnsw'`. `SHOW INDEXES` lists them under `options`. A label or
+relationship type and property can carry only one vector index, so
+switching provider means `DROP INDEX` and creating it again.
+
+With `restrictTo`, HNSW widens its search internally, but a very
+selective filter can still return fewer than `k` hits; raise
+`vector.hnsw.ef_search` or use a flat index for tightly filtered
+queries. Snapshots carry the HNSW graph, so a restore returns the same
+results as before; after a WAL recovery the graph is rebuilt
+from the stored vectors.
+
+### Lazy population
+
+`vector.populate.async: true` skips the backfill at create time. The
+index shows as `POPULATING` in `SHOW INDEXES` until the first query
+against it builds it and flips it to `ONLINE`.
 
 ## Full-text indexes
 
@@ -244,7 +308,8 @@ index list.
 
 ## Limitations
 
-- Vector procedures use flat scan execution today; no ANN structure yet.
+- Vector indexes default to the exact `flat` provider; HNSW is opt-in
+  via `vector.indexProvider: 'hnsw'` and returns approximate results.
 - Full-text query strings use term intersection and term-frequency
   scoring, not a Lucene-style query language.
 - Composite RANGE indexes are cataloged, but current planner rewrites

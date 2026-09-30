@@ -1,20 +1,22 @@
 ---
 title: Schema-Free Writes and Soft Validation
 sidebar_label: Schema-Free
-description: How LoraDB handles schema — labels, relationship types, and property keys spring into existence on write, while reads stay strict — and where validation still applies.
+description: How LoraDB handles schema — labels, relationship types, and property keys spring into existence on write, reads never depend on which names exist — and where validation still applies.
 ---
 
 # Schema-Free Writes and Soft Validation
 
-**Writes are permissive, reads are strict.** `CREATE` / `MERGE` /
+**Writes are permissive, and so are reads.** `CREATE` / `MERGE` /
 `SET` accept any label, relationship type, or property key without a
 `CREATE TABLE` step — names come into existence the first time they're
-written. `MATCH` refuses labels and relationship types the live graph
-has never seen. Property keys on `MATCH` stay lenient (missing key →
-`null`).
+written. `MATCH` accepts any name too: a label or relationship type no
+entity carries simply matches nothing, and a missing property key
+yields `null`.
 
-That split is deliberate: permissive writes keep iteration fast, and
-strict reads catch typos before they silently return zero rows.
+That is standard Cypher behaviour, and it keeps answers stable: the same
+query gives the same *kind* of answer on an empty graph, a populated
+one, and one whose last `:Comment` was just deleted or rolled back.
+Whether a query is valid never depends on what data happens to exist.
 
 ## What "schema-free" actually means
 
@@ -31,18 +33,19 @@ it.
 <QueryCodeBlock code={String.raw`CREATE (c:Country {name: 'NL', iso: 'NLD'})`} />
 
 On an empty graph, this creates the label `Country` and the property
-keys `name` and `iso`. The next `MATCH (:Country)` will succeed.
+keys `name` and `iso`. The next `MATCH (:Country)` will find it.
 
-### The opposite is not true
+### Unknown names are not errors
 
-A `MATCH` for a label that was **never** created fails at analysis:
+A `MATCH` for a label that was **never** created is still a valid
+query — it returns zero rows:
 
 <QueryCodeBlock code={String.raw`MATCH (u:NeverWritten) RETURN u
-// Unknown label :NeverWritten`} />
+// 0 rows`} />
 
-This is deliberate — typo-catching. The alternative (silently return
-zero rows) hides the bug until your integration tests reach
-production. See [Troubleshooting → Semantic errors](../troubleshooting#semantic-errors).
+The flip side: a typo such as `:Persn` also returns zero rows instead of
+failing. Catch those in tests or with a small app-layer list of valid
+labels (see [below](#when-to-add-a-soft-schema-at-the-app-layer)).
 
 ## Permissive writes
 
@@ -56,12 +59,12 @@ MATCH (s:Spaceship)
 SET s.engine = 'Epstein drive'
 // Adds a new property key; totally legal.`} />
 
-This is good for quick iteration and bad for safety. There is no
-constraint preventing you from creating a second `:Spaceship` with
-completely different properties, or from typo-ing `Spaceshi` and
-polluting the label set.
+This is good for quick iteration and bad for safety. Unless you add a
+[constraint](../queries/constraints), nothing prevents you from creating
+a second `:Spaceship` with completely different properties, and nothing
+ever stops you from typo-ing `Spaceshi` and polluting the label set.
 
-### Things the engine won't catch
+### Things the engine won't catch without constraints
 
 - Two `:Person` nodes with different property sets
   (`{name, born}` vs `{username, dob}`).
@@ -71,34 +74,30 @@ polluting the label set.
 - A property value that's an `Integer` in one place and `String` in
   another.
 
-If any of these matter, enforce them at the application layer, or in
-a `MATCH`-before-`CREATE` idiom, or with [`MERGE`](#merge-for-idempotent-writes).
+If any of these matter, declare [constraints](../queries/constraints)
+(existence, uniqueness, key, or property type), enforce them at the
+application layer, or use [`MERGE`](#merge-for-idempotent-writes).
+Differently-named keys such as `email` vs `e_mail` are only ever caught
+at the application layer.
 
-## Strict reads
+## Lenient reads
 
-[`MATCH`](../queries/match) validates label and relationship-type
-names against live graph state. The "live" part matters:
+[`MATCH`](../queries/match) does not check label, relationship-type, or
+property-key names against the stored data. The same rules hold on an
+empty graph, a populated one, and after the last entity of a kind was
+deleted, had its label removed, or was rolled back:
 
-- On an **empty** graph, every label and type is unknown — but
-  `MATCH (:Foo)` on an empty graph succeeds with zero rows. There's
-  nothing to validate against.
-- On a **populated** graph, the label has to have been seen before.
-
-Property keys in `MATCH` are **not** validated this way — a missing
-property simply yields `null` on access. See
-[Properties → missing vs null](./properties#missing-vs-null).
+- A label or relationship type no entity carries matches nothing.
+- A property key an entity doesn't have yields `null` on access. See
+  [Properties → missing vs null](./properties#missing-vs-null).
+- `OPTIONAL MATCH` over an unknown name keeps the outer row with
+  `null`s; `UNION` branches over unknown names contribute no rows.
 
 ### Reading back what you wrote
 
-The two rules meet cleanly in this pattern:
-
 <CypherSnippet code={String.raw`CREATE (:Spaceship {name: 'Rocinante'});
-MATCH (s:Spaceship) RETURN s;  // works — :Spaceship now exists`} />
-
-And break in this one:
-
-<CypherSnippet code={String.raw`// Empty graph
-MATCH (s:NeverWritten) RETURN s;  // analysis error on a populated graph`} />
+MATCH (s:Spaceship) RETURN s;      // 1 row
+MATCH (s:NeverWritten) RETURN s;   // 0 rows — not an error`} />
 
 ## `MERGE` for idempotent writes
 
@@ -139,10 +138,10 @@ for `type.of`, `toInteger`, `toString`, and friends.
 |---|---|---|
 | Declare up front | Required (`CREATE TABLE`) | Not required |
 | Add a new property | Migration | Just `SET it` |
-| Enforce "every node has X" | Constraint | Application code |
-| Enforce "X is unique" | `UNIQUE` | `MERGE` on the key |
+| Enforce "every node has X" | Constraint | [Existence constraint](../queries/constraints) (`IS NOT NULL`) |
+| Enforce "X is unique" | `UNIQUE` | [Uniqueness constraint](../queries/constraints) + `MERGE` on the key |
 | Catch typos in writes | Schema | Code review / tests |
-| Catch typos in reads | Schema | Analyzer rejects unknown labels/types |
+| Catch typos in reads | Schema | Tests / app-layer name list — unknown names return zero rows |
 | Index lookups | Explicit schema-managed indexes | Optional RANGE/TEXT/POINT/LOOKUP/VECTOR/FULLTEXT indexes for performance and search |
 
 ## When to add a "soft schema" at the app layer
@@ -166,6 +165,6 @@ net back, where it's cheap.
 - [MERGE](../queries/unwind-merge#merge) — idempotent writes.
 - [Properties](./properties) — missing vs null, value typing.
 - [Troubleshooting → Semantic errors](../troubleshooting#semantic-errors)
-  — typo-catching on reads.
+  — what the analyzer still rejects.
 - [Limitations → Storage](../limitations#storage) — scoped index and
   constraint coverage.

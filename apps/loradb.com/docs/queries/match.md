@@ -283,9 +283,11 @@ RETURN u`} />
 
 ### Empty graph
 
-`MATCH (:Unknown)` on an empty graph succeeds with zero rows. On a
-populated graph without any node of that label, it fails at analysis:
-`Unknown label :Unknown`. See [Troubleshooting](../troubleshooting#semantic-errors).
+`MATCH (:Unknown)` succeeds with zero rows — on an empty graph and on
+a populated graph without any node of that label alike. Unknown labels,
+relationship types, and property keys are never analysis errors; a
+misspelled label just matches nothing. See
+[Schema-free](../concepts/schema-free#unknown-names-are-not-errors).
 
 ### Self-loops
 

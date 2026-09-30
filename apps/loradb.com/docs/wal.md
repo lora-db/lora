@@ -238,13 +238,32 @@ return a poisoned error and `/admin/wal/status` reports `bgFailure`.
 Restart from the last consistent snapshot + WAL after fixing the
 underlying disk issue.
 
+`group-sync` is the only mode; `lora-server` runs its background fsync
+every 50 ms, so a power loss or kernel crash can lose up to that much
+acknowledged work. A process crash alone loses nothing that was already
+written to the OS.
+
 For checkpointed deployments, call `sync()` when you need an immediate
 durability point. A checkpoint snapshot is stamped with the WAL's current
 `durableLsn`; in `group-sync` mode that fence
 can trail the newest writes until the background fsync catches up.
 
-In `none` mode, `durableLsn` is only a logical fence for checkpointing.
-It is not a power-loss guarantee.
+## What's in the WAL directory
+
+```text
+<wal-dir>/
+  .lora-wal.lock      held while a handle has the directory open
+  0000000001.wal      sealed, oldest
+  0000000002.wal      sealed
+  0000000003.wal      active (highest id)
+```
+
+Segments rotate at the segment target (8 MiB by default), always at a
+transaction boundary. There is no `CURRENT` pointer file: the active
+segment is the one with the highest id. Files that don't match the
+segment name pattern (such as a leftover `.tmp`) are ignored at boot.
+Treat the directory as one unit: back it up, move it, or delete it
+whole, never segment by segment.
 
 ## HTTP admin routes
 
@@ -270,12 +289,27 @@ curl -sX POST http://127.0.0.1:4747/admin/checkpoint \
   -d '{"path": "/var/lib/lora/checkpoint.bin"}'
 ```
 
+`/admin/wal/status` returns:
+
+```json
+{
+  "durableLsn": 4815,
+  "nextLsn": 4820,
+  "activeSegmentId": 3,
+  "oldestSegmentId": 2,
+  "bgFailure": null
+}
+```
+
 `/admin/checkpoint` can omit the body only when `--snapshot-path` is
 configured. Without a configured default, the request body must include
-`path` or the route returns `400 Bad Request`.
+`path` or the route returns `400 Bad Request`. A checkpoint blocks writes
+while it runs; reads continue.
 
 `/admin/wal/truncate` can omit the body; in that case it truncates up
-to the WAL's current `durableLsn`.
+to the WAL's current `durableLsn`. It drops only sealed segments whose
+whole LSN range is at or below the fence. The active segment and the
+one just before it are always kept.
 
 ## Boundaries
 
@@ -288,8 +322,11 @@ to the WAL's current `durableLsn`.
   off by default but unauthenticated when enabled. Put them behind
   authenticated ingress only.
 - **No shared WAL/container root.** One live handle owns one WAL directory or
-  `.loradb` archive. Opening the same root from another process, or from a second live
-  handle in the same process, fails until the first handle is closed.
+  `.loradb` archive, enforced by an advisory lock (`.lora-wal.lock` inside a
+  WAL directory; archives take their own lock).
+  Opening the same root from another process, or from a second live handle in
+  the same process, fails with `LORA_LOCKED` until the first handle is closed.
+  See [Troubleshooting](./troubleshooting#walcontainer-root-is-already-open).
 - **Binding support is asymmetric.** The filesystem-backed bindings can
   open WAL-backed databases. Rust and `lora-server` expose full
   checkpoint, truncate, status, and sync-mode controls. Node also

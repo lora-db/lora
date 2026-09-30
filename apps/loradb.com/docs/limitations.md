@@ -29,7 +29,7 @@ in the internal documentation.
 
 | Theme | Biggest gaps |
 |---|---|
-| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; explicit RANGE/TEXT/POINT/LOOKUP/VECTOR/FULLTEXT indexes and schema constraints exist; no ANN structure |
+| Storage | WAL-backed open exists on Rust, Node, Python, Go, Ruby, and `lora-server`; WASM stays snapshot-only; explicit RANGE/TEXT/POINT/LOOKUP/VECTOR/FULLTEXT indexes and schema constraints exist; HNSW vector search is opt-in |
 | Concurrency | Snapshot reads can overlap; write commits and explicit read-write transactions serialize; timeout coverage is API-dependent |
 | Clauses | `FOREACH` is supported for updating clauses; no general-purpose `CALL` or `LOAD CSV` |
 | Patterns | No quantified path patterns |
@@ -38,7 +38,7 @@ in the internal documentation.
 | Functions | No external utility compatibility layer; case conversion is Unicode-aware but not locale-specific |
 | Parameters | No dynamic labels / relationship types; no parse-time type check |
 | Spatial | No WKT I/O, no CRS transforms; `geo.within_bbox` exists for same-SRID boxes |
-| Vectors | VECTOR indexes are cataloged and queryable through flat-scan procedures; no ANN structure; no embedding generation; no list-of-vectors properties |
+| Vectors | VECTOR indexes are exact (flat scan) by default, approximate with `vector.indexProvider: 'hnsw'`; no embedding generation; no list-of-vectors properties |
 | Browser playground | Params are browser-local tab state; no shared hosted database, no true query abort, and no remote import |
 
 ## Clauses
@@ -73,7 +73,7 @@ in the internal documentation.
 
 | Feature | Status |
 |---|---|
-| `DISTINCT` on `stdev`, `stdevp`, `percentileCont`, `percentileDisc` | Not supported — use `collect(DISTINCT x)` and aggregate the unwound list |
+| `DISTINCT` on `stdev`, `stdevp`, `percentileCont`, `percentileDisc` | Not supported — the `DISTINCT` is silently ignored; use `collect(DISTINCT x)` and aggregate the unwound list |
 | `GROUP BY` keyword | Not supported — non-aggregated columns are the implicit group key |
 | `HAVING` keyword | Not supported — filter post-aggregate through `WITH … WHERE` |
 
@@ -83,7 +83,7 @@ in the internal documentation.
 |---|---|
 | External utility compatibility layer | Not supported |
 | User-defined functions | Not supported — no registration surface |
-| [`temporal.truncate`](./functions/temporal#truncation) units | `DATE` supports `"year"`, `"month"`, and `"day"`; `DATETIME` supports `"year"`, `"month"`, `"day"`, and `"hour"`. `"quarter"`, `"week"`, and sub-hour truncation are not yet supported |
+| [`temporal.truncate`](./functions/temporal#truncation) units | `DATE` supports `"year"`, `"month"`, and `"day"`; `DATETIME` supports `"year"`, `"month"`, `"day"`, and `"hour"`. `"quarter"`, `"week"`, and sub-hour units return `null` |
 | [`string.lower` / `string.upper`](./functions/string#tolower--toupper) | Unicode case mapping is supported; locale-specific case folding is not |
 | [`string.normalize(str[, form])`](./functions/string#normalize) | Unicode NFC/NFD/NFKC/NFKD normalization is supported; locale-specific transliteration is not |
 
@@ -94,23 +94,23 @@ in the internal documentation.
 | Binary / byte arrays | Supported as a byte-string property value through binding wire formats; there is no Cypher byte literal |
 | Fixed-precision decimals | Not supported — use scaled integers or strings |
 | User-defined types | Not supported |
-| Numeric overflow guarding | Not supported — Rust panics in debug, wraps in release |
+| Numeric overflow guarding | Integer `+`, `-`, `*`, `%` and unary `-` fail the query on overflow (`LORA_VALIDATION`); `list.sum` over integers still wraps |
 
 ## Spatial
 
 | Feature | Status |
 |---|---|
 | WGS-84 3D [`geo.distance`](./functions/spatial#geodistance) honouring `height` | Not yet supported — computes surface great-circle only |
-| `geo.within_bbox()` | Supported for same-SRID 2D/3D bounding boxes; mixed dimensionality returns `null` |
+| `geo.within_bbox()` | Supported for same-SRID 2D/3D bounding boxes; mixed SRIDs (including 2D vs 3D) fail the query |
 | `point.fromWKT()` / WKT output | Not yet supported |
-| CRS transformation between SRIDs | Not yet supported — cross-SRID `geo.distance` returns `null` |
+| CRS transformation between SRIDs | Not yet supported — cross-SRID `geo.distance` fails the query |
 | Custom SRIDs | Not supported — only `7203`, `9157`, `4326`, `4979` |
 
 ## Vectors
 
 | Feature | Status |
 |---|---|
-| Vector ANN structure | Not yet supported — `db.index.vector.*` procedures use the cataloged index scope but still perform a flat scan over matching entities |
+| Vector ANN structure | Opt-in per index with `vector.indexProvider: 'hnsw'` (tunable `vector.hnsw.*` keys); the default `flat` provider scans every matching entity. See [Indexes → Providers](./queries/indexes#providers-flat-exact-and-hnsw-approximate) |
 | Built-in embedding generation | Not supported — no plugin surface; generate embeddings in host code |
 | [List-of-vectors as a property](./data-types/vectors#restriction-no-list-of-vectors-as-a-property) | Not supported — rejected at write time; hang many embeddings off separate nodes |
 | Dimension > 4096 | Not supported — rejected at construction time |
@@ -134,7 +134,7 @@ in the internal documentation.
 | WAL controls are not uniform across bindings | Rust and `lora-server` expose the full [WAL](./wal) surface. Node exposes archive/raw WAL opens plus sync-mode control. Python, Go, and Ruby expose archive/raw WAL opens with managed snapshot options. WASM remains snapshot-only. |
 | Time-based checkpoint scheduler — not yet supported | Explicit WAL helpers can write managed snapshots after N committed transactions, and Rust / `lora-server` expose explicit checkpoints. Nothing schedules checkpoints by wall-clock time in the background for you. |
 | Constraint coverage is scoped | Uniqueness, existence, node key, relationship key, and property type constraints exist for a label or relationship type. There is no database-wide uniqueness constraint, and existence constraints are single-property only. |
-| Index coverage is scoped | `CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`, `DROP INDEX`, and `SHOW INDEXES` exist. Composite RANGE indexes are cataloged, but current planner rewrites are single-property. Vector procedures are flat scans today, not ANN. |
+| Index coverage is scoped | `CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`, `DROP INDEX`, and `SHOW INDEXES` exist. Composite RANGE indexes are cataloged, but current planner rewrites are single-property. Vector indexes are exact flat scans unless created with the `'hnsw'` provider. |
 | Explicit transactions are surface-dependent | Rust and in-process bindings expose transaction APIs; HTTP has no multi-query transaction endpoint |
 | ID reuse — not supported | Deleting an entity does not free its `u64` id |
 
@@ -219,6 +219,6 @@ See [Why LoraDB](./why) for the project's intended direction.
 - [**Queries → Overview**](./queries/) — the supported subset.
 - [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
 - [**Parameters**](./queries/parameters) — typed parameter binding across bindings and JSON parameter binding over HTTP.
-- [**Schema-free**](./concepts/schema-free) — strict reads, permissive writes.
+- [**Schema-free**](./concepts/schema-free) — permissive writes, lenient reads.
 - [**Functions → Overview**](./functions/overview) — supported functions.
 - [**Concepts → Graph Model**](./concepts/graph-model) — the underlying data model.

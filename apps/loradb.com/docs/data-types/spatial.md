@@ -198,12 +198,13 @@ Any `null` coordinate makes the `POINT` cast return `null`:
 
 ### Cross-SRID operations
 
-`geo.distance` with mismatched SRIDs returns `null`, not an error:
+`geo.distance` with mismatched SRIDs fails the query with a
+`LORA_VALIDATION` error:
 
 <QueryCodeBlock code={String.raw`RETURN geo.distance({x: 0, y: 0}::POINT, {latitude: 0, longitude: 0}::POINT)
-// null`} />
+// error: Cannot compute distance between points with different SRIDs`} />
 
-Detect at filter time:
+Guard at filter time when a scope may mix SRIDs:
 
 <QueryCodeBlock code={String.raw`MATCH (a:Loc), (b:Loc)
 WHERE a.loc.srid = b.loc.srid
@@ -224,7 +225,7 @@ between computed points — use `geo.distance(a, b) < epsilon` instead.
 ## Limitations
 
 - **WGS-84 3D `geo.distance` ignores `height`** — surface great-circle only.
-- **Cross-SRID `geo.distance`** returns `null` (no CRS transforms).
+- **Cross-SRID `geo.distance`** fails the query (no CRS transforms).
 - **No WKT I/O** — parse WKT host-side. Use `geo.within_bbox` for
   same-SRID bounding-box predicates.
 - **No custom SRIDs** — only the four listed above.

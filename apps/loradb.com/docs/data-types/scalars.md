@@ -94,8 +94,8 @@ rows where `p.in_stock` is `false` or `null`.
 | Op | Example | Notes |
 |---|---|---|
 | `+`, `-`, `*` | `1 + 2` | Integer if both operands are integers |
-| `/` | `10 / 3` → `3` | Integer division when both sides are `Int` |
-| `%` | `10 % 3` → `1` | Modulo |
+| `/` | `10 / 3` → `3.333…` | Always returns `Float`; use `toInteger(a / b)` to truncate |
+| `%` | `10 % 3` → `1` | Integer modulo |
 | `^` | `2 ^ 10` → `1024` | Exponent |
 | unary `-`, `+` | `-x` | |
 
@@ -125,8 +125,10 @@ For very large ids, note [integer precision in JS](../getting-started/node#perfo
 
 ### Limitations
 
-Integer overflow is not explicitly guarded. Rust panics in debug, wraps
-in release. For extreme inputs, convert to `Float` first.
+Integer `+`, `-`, `*`, `%` and unary `-` are overflow-checked: a result
+outside the `i64` range fails the query with a `LORA_VALIDATION` error
+(`integer addition overflowed`, …) instead of wrapping. For extreme
+inputs, convert to `Float` first.
 
 ## Float
 
@@ -143,10 +145,11 @@ RETURN 10 / 3.0      // 3.333…`} />
 
 - `NaN == NaN` → `false`
 - `NaN` comparisons → `false`
-- `1.0 / 0.0` → `Infinity` (not `null` — float division is defined)
+- Division by zero returns `null` for floats too — `1.0 / 0.0` and
+  `0.0 / 0.0` never produce `Infinity` or `NaN`
 
-<QueryCodeBlock code={String.raw`RETURN 1.0 / 0.0;          // Infinity
-RETURN 0.0 / 0.0          // NaN`} />
+<QueryCodeBlock code={String.raw`RETURN 1.0 / 0.0;          // null
+RETURN 0.0 / 0.0          // null`} />
 
 ### Rounding
 
@@ -292,9 +295,10 @@ RETURN p.name, p.age + 1 AS next_age
 
 ### Booleans and truthiness
 
-There's no truthy coercion. `WHERE x` requires `x` to be a boolean;
-`WHERE 0` or `WHERE ''` are analysis errors. Use `WHERE x IS NOT NULL`
-for existence checks.
+`WHERE x` drops a row only when `x` is `false` or `null`. Any other
+value keeps it — including `0`, `''`, and `[]`, so `WHERE 0` filters
+nothing. Write the comparison you mean (`WHERE x <> 0`,
+`WHERE x IS NOT NULL`) rather than relying on a bare value.
 
 ### Very small numbers
 

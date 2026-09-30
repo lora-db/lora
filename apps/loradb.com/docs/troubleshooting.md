@@ -41,7 +41,7 @@ shortest way out.
 | Symptom | Jump to |
 |---|---|
 | Parse error, missing paren/direction | [Parse errors](#parse-errors) |
-| `Unknown label`, `Unknown variable`, `Unknown function` | [Semantic errors](#semantic-errors) |
+| `Unknown variable`, `Unknown function`, `WrongArity` | [Semantic errors](#semantic-errors) |
 | `DeleteNodeWithRelationships` | [Executor errors](#executor-errors) |
 | Query returns empty for no reason | [Queries return empty results](#queries-return-empty-results) |
 | N × M row explosion | [MATCH returns a cross-product](#match-returns-a-cross-product) |
@@ -192,9 +192,8 @@ Common mistakes:
 
 | Message | Cause |
 |---|---|
-| `Unknown label :Foo` | No node with that label exists yet; populate the graph first or use [`CREATE`](./queries/create). |
 | `Unknown variable x` | `x` wasn't introduced by an earlier clause, or it was dropped by a [`WITH`](./queries/return-with#with) that didn't project it. |
-| `Unsupported feature: CALL` | General-purpose procedures are not implemented. The supported `CALL` surface is limited to vector and full-text index query procedures; see [Indexes](./queries/indexes). |
+| `unsupported feature: unknown procedure` | General-purpose procedures such as `db.labels()` are not implemented. The supported `CALL` surface is limited to vector and full-text index query procedures; see [Indexes](./queries/indexes). |
 | `Unknown function 'foo'` | Not in the built-in list. See [Functions](./functions/overview). |
 | `WrongArity` | Function exists but was called with the wrong number of arguments. |
 | `Aggregate in WHERE` | Aggregates aren't allowed in [`WHERE`](./queries/where). Use [`WITH … WHERE`](./queries/return-with#having-style-filtering-with). |
@@ -217,8 +216,10 @@ Common mistakes:
    `Database.open_wal("./wal")`, `lora.OpenWal(...)`,
    `LoraRuby::Database.open_wal("./wal")`), or load a snapshot if you expect data to
    survive restarts. See [Limitations → Storage](./limitations#storage).
-2. **Label case mismatch** — `:user` ≠ `:User`. Labels and types are
-   case-sensitive. See [Nodes](./concepts/nodes).
+2. **Label typo or case mismatch** — `:user` ≠ `:User`, and `:Usr`
+   is not an error. Labels and types are case-sensitive, and a name no
+   entity carries simply matches nothing. See [Nodes](./concepts/nodes)
+   and [Schema-free](./concepts/schema-free#unknown-names-are-not-errors).
 3. **Property type mismatch** — `{id: 1}` matches integer `1`, not the
    string `"1"`. See [Data Types](./data-types/overview).
 4. **A parameter is unbound** — missing parameters resolve to `null`,
@@ -881,11 +882,11 @@ RETURN region, revenue`} />
 
 ### `stdev`/`percentile*` don't support DISTINCT
 
-**Symptom:** `stdev(DISTINCT …)` / `percentileCont(DISTINCT …)` fails
-with an analysis error.
+**Symptom:** `stdev(DISTINCT …)` / `percentileCont(DISTINCT …)` returns
+the same value as without `DISTINCT` — duplicates are still counted.
 
-**Likely cause:** These aggregates don't support `DISTINCT`
-directly (see [Limitations](./limitations#aggregates)).
+**Likely cause:** These aggregates ignore `DISTINCT` silently (see
+[Limitations](./limitations#aggregates)).
 
 **Fix:** `collect(DISTINCT …)`, `UNWIND`, then aggregate.
 
@@ -1054,7 +1055,7 @@ wrong, the bug may be in the **data model**, not the query. See the
 - [**Cheat sheet**](./queries/cheat-sheet) — one-page quick reference.
 - [**Parameters**](./queries/parameters) — typed parameter binding.
 - [**Result formats**](./concepts/result-formats) — each response shape in detail.
-- [**Schema-free**](./concepts/schema-free) — strict reads, permissive writes.
+- [**Schema-free**](./concepts/schema-free) — permissive writes, lenient reads.
 - [**WHERE**](./queries/where) — predicate reference.
 - [**RETURN / WITH**](./queries/return-with) — projection and HAVING.
 - [**Aggregation (queries)**](./queries/aggregation) — clause-level grouping.

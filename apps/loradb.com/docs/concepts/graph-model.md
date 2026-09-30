@@ -90,8 +90,9 @@ write:
 <QueryCodeBlock code={String.raw`CREATE (c:Country {name: 'NL', iso: 'NLD'})`} />
 
 The first time this runs, the label `Country` and properties `name`,
-`iso` come into existence. Writes are permissive; reads validate
-labels and relationship types against the live graph. The full rules
+`iso` come into existence. Writes are permissive, and reads never
+reject a name — a label or type nothing carries just matches nothing.
+The full rules
 — and the trade-offs that come with "no schema" — live on their own
 page: [**Schema-free writes and soft validation**](./schema-free).
 

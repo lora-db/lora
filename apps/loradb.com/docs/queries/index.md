@@ -87,10 +87,10 @@ see the [**Cheat sheet**](/docs/queries/cheat-sheet).
 - Auto-commit reads can overlap on Arc snapshots. Write commits and explicit
   read-write transactions serialize. See
   [Limitations → Concurrency](/docs/limitations#concurrency).
-- Names (labels, relationship types, property keys) are validated
-  against the live graph for [`MATCH`](/docs/queries/match); any name is accepted
-  by [`CREATE`](/docs/queries/create), [`MERGE`](/docs/queries/unwind-merge#merge), and
-  [`SET`](/docs/queries/set-delete).
+- Names (labels, relationship types, property keys) are never checked
+  against the stored data: [`CREATE`](/docs/queries/create), [`MERGE`](/docs/queries/unwind-merge#merge), and
+  [`SET`](/docs/queries/set-delete) accept any name, and a
+  [`MATCH`](/docs/queries/match) on a name nothing carries returns zero rows.
 - Unknown function names are rejected at analysis time — see
   [**Functions**](/docs/functions/overview).
 

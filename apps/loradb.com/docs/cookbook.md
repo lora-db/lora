@@ -584,8 +584,8 @@ yields retention between 0 and 1.
 #### Query
 
 <QueryCodeBlock code={String.raw`MATCH (v:Venue)
+WHERE v.location.srid = $here.srid  // guard cross-SRID and missing locations
 WITH v, geo.distance(v.location, $here) AS metres
-WHERE metres IS NOT NULL            // guard cross-SRID
 RETURN v.name, metres
 ORDER BY metres
 LIMIT 10`} />
@@ -593,9 +593,9 @@ LIMIT 10`} />
 #### Explanation
 
 [`geo.distance`](./functions/spatial#geodistance) on same-SRID WGS-84
-points returns metres. The null guard catches cases where some
-venues were stored with a different SRID — cross-SRID distance
-returns `null`.
+points returns metres. The SRID guard skips venues stored with a
+different SRID — cross-SRID distance fails the whole query — and venues
+without a location, whose `srid` is `null`.
 
 #### Variations
 

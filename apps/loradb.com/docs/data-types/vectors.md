@@ -19,10 +19,10 @@ A `VECTOR` has three fixed attributes:
 
 :::info Scope
 `CREATE VECTOR INDEX` and `db.index.vector.queryNodes` /
-`queryRelationships` are supported. The current query procedure uses
-the index definition for scope, dimensions, and scoring, then performs
-a flat scan over matching entities. Approximate nearest-neighbour
-structures such as HNSW are not implemented yet.
+`queryRelationships` are supported. By default an index is exact: it
+scores every entity in its label/type scope. Opt in to approximate
+nearest-neighbour search with an HNSW graph per index via
+`vector.indexProvider: 'hnsw'` — see [Choosing a provider](#choosing-a-provider).
 
 LoraDB also has no plugin system today, so there is no built-in
 embedding generation. Produce embeddings in your application (hosted
@@ -149,7 +149,8 @@ OPTIONS {indexConfig: {
 Required options:
 
 - `vector.dimensions` - integer dimension in `1..=4096`;
-- `vector.similarity_function` - `'cosine'` or `'euclidean'`.
+- `vector.similarity_function` - `'cosine'`, `'euclidean'`, `'dot'`
+  (alias `'dot_product'`), or `'manhattan'`.
 
 Query the indexed node scope with `db.index.vector.queryNodes`:
 
@@ -168,9 +169,30 @@ or a parameter containing a vector. Numeric lists
 are coerced to `FLOAT32` vectors. `k` must be positive, and the query
 dimension must match the configured index dimension.
 
-The current implementation still scans the indexed label/type scope
-linearly. Use selective labels or relationship types while the ANN
-structure is future work.
+An optional fourth argument, `{restrictTo: [...]}`, limits results to
+the given entity ids. See
+[Indexes → Restricting results](../queries/indexes#restricting-results).
+
+### Choosing a provider
+
+The default `flat` provider scores every entity in the indexed
+label/type scope, so it is exact and its cost grows linearly with the
+scope. For large collections, build the index with the HNSW provider
+instead — queries stay the same, results become approximate:
+
+<QueryCodeBlock code={String.raw`CREATE VECTOR INDEX doc_embedding_ann
+FOR (d:Doc)
+ON (d.embedding)
+OPTIONS {indexConfig: {
+  \`vector.dimensions\`: 384,
+  \`vector.similarity_function\`: 'cosine',
+  \`vector.indexProvider\`: 'hnsw'
+}};`} />
+
+The tuning keys `vector.hnsw.m`, `vector.hnsw.ef_construction`,
+`vector.hnsw.ef_search`, and `vector.hnsw.quantization` (`'int8'` for
+cosine indexes over unit-normalised embeddings) are documented in
+[Indexes → Providers](../queries/indexes#providers-flat-exact-and-hnsw-approximate).
 
 ## Exhaustive kNN
 
@@ -469,8 +491,9 @@ manual probes. See [Queries → Parameters](../queries/parameters#http-api).
 
 ## Limitations
 
-- **ANN structures — not yet supported.** Vector indexes are cataloged
-  and queryable, but `db.index.vector.*` performs a flat scan today.
+- **ANN is opt-in.** Vector indexes default to the exact `flat`
+  provider; `vector.indexProvider: 'hnsw'` switches an index to
+  approximate search, which can miss some true neighbours.
 - **Similarity / distance functions are exhaustive.** Direct
   `vector.similarity(...)` and `vector.distance(...)` calls score every
   candidate matched by the query.

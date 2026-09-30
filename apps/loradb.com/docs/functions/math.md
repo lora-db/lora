@@ -218,35 +218,39 @@ RETURN p`} />
 | `+` | `a + b` | Also concatenates strings and lists |
 | `-` | `a - b` | Unary `-x` allowed |
 | `*` | `a * b` | |
-| `/` | `a / b` | Integer / integer is integer division; divide by zero → `null` |
-| `%` | `a % b` | Modulo; mod by zero → `null` |
-| `^` | `a ^ b` | Exponent |
+| `/` | `a / b` | Always returns a `Float`, even for two integers; divide by zero (`0` or `0.0`) → `null` |
+| `%` | `a % b` | Integer modulo; mod by zero → `null`; a `Float` operand → `null` |
+| `^` | `a ^ b` | Exponent; an integral result that fits in `Int` comes back as `Int` |
 
-<QueryCodeBlock code={String.raw`RETURN 10 / 3;           // 3         (integer division)
-RETURN 10 / 3.0;         // 3.333…    (float)
+<QueryCodeBlock code={String.raw`RETURN 10 / 3;           // 3.333…    (always float)
+RETURN 10 / 4;           // 2.5
 RETURN 10 % 3;           // 1
 RETURN 2 ^ 10;           // 1024
 RETURN 1 / 0            // null`} />
+
+`+`, `-`, `*`, `%` and unary `-` on integers are overflow-checked: a
+result outside the 64-bit range fails the query instead of wrapping.
+See [Integer overflow](#integer-overflow).
 
 ### Mixed-type arithmetic
 
 <QueryCodeBlock code={String.raw`RETURN 1 + 2.5;          // 3.5 (Float)
 RETURN 10 / 3.0         // 3.333…`} />
 
-Any `Float` operand promotes the result to `Float`. To do integer
-division on a float input, floor first:
+Any `Float` operand promotes the result to `Float`. For integer
+(truncating) division, wrap the quotient in `toInteger`:
 
-<QueryCodeBlock code={String.raw`RETURN toInteger(10 / 3.0)    // 3`} />
+<QueryCodeBlock code={String.raw`RETURN toInteger(10 / 3)      // 3`} />
 
 ## Numeric precedence
 
-`^` binds tightest, then unary `-`/`+`, then `*` / `/` / `%`, then
+Unary `-`/`+` binds tightest, then `^`, then `*` / `/` / `%`, then
 binary `+` / `-`, then comparisons. Use parentheses freely.
 
 <QueryCodeBlock code={String.raw`RETURN 1 + 2 * 3;        // 7
 RETURN (1 + 2) * 3;      // 9
-RETURN -2 ^ 2;           // -4        (binds as -(2^2))
-RETURN (-2) ^ 2         // 4`} />
+RETURN -2 ^ 2;           // 4         (binds as (-2)^2)
+RETURN -(2 ^ 2)         // -4`} />
 
 ## Common patterns
 
@@ -310,32 +314,43 @@ RETURN sum(r.stars * r.weight) / sum(r.weight) AS weighted_mean`} />
 
 ### Integer overflow
 
-No guard — Rust panics in debug, wraps in release. For potentially
-huge inputs, coerce to `Float` with
-[`toFloat`](./string#type-conversion) first.
+Integer `+`, `-`, `*`, `%` and unary `-` are checked. A result outside
+the `i64` range fails the query with a `LORA_VALIDATION` error such as
+`integer addition overflowed` — it never wraps or panics:
+
+<QueryCodeBlock code={String.raw`RETURN 9223372036854775807 + 1
+// error: integer addition overflowed`} />
+
+For potentially huge inputs, coerce to `Float` with
+[`toFloat`](./string#type-conversion) first. `list.sum` over integers is
+not checked and still wraps.
 
 ### NaN / Infinity
 
-IEEE 754 applies. `NaN` is neither less than nor greater than any
-value; `NaN == NaN` is `false`.
+Division by zero never produces `Infinity` or `NaN` — it returns
+`null`, for integer and float operands alike. Math functions guard
+their domains the same way.
 
-<QueryCodeBlock code={String.raw`RETURN 1.0 / 0.0;          // Infinity
-RETURN 0.0 / 0.0;          // NaN
+<QueryCodeBlock code={String.raw`RETURN 1.0 / 0.0;          // null
+RETURN 0.0 / 0.0;          // null
 RETURN math.sqrt(-1)           // null   (Cypher-level domain guard, not NaN)`} />
 
-### Integer division vs float division
+If a `NaN` value does reach a query, IEEE 754 applies: `NaN` is neither less than nor greater than any
+value, and `NaN == NaN` is `false`.
 
-<QueryCodeBlock code={String.raw`RETURN 7 / 2;       // 3
-RETURN 7 / 2.0;     // 3.5
-RETURN 7.0 / 2     // 3.5`} />
+### Division always returns a float
 
-A single `.0` on either side flips to float division.
+<QueryCodeBlock code={String.raw`RETURN 7 / 2;                  // 3.5
+RETURN 6 / 2;                  // 3.0
+RETURN toInteger(7 / 2)       // 3`} />
+
+Use `toInteger` when you want truncating integer division.
 
 ## Limitations
 
-- Integer overflow is not explicitly guarded. Rust panics in debug
-  builds, wraps in release. Coerce to `Float` with `toFloat` on
-  potentially huge inputs.
+- Integer `+`, `-`, `*`, `%` and unary `-` fail the query on overflow
+  instead of wrapping. Coerce to `Float` with `toFloat` on potentially
+  huge inputs. `list.sum` over integers is not overflow-checked.
 - `NaN` and `Infinity` follow IEEE 754 — `NaN == NaN` evaluates to
   `false`, and `NaN` is neither less nor greater than any other value.
 - `math.random()` / `random()` is not cryptographically secure.

@@ -91,15 +91,17 @@ RETURN geo.distance(
 )
        // ≈ 155_000.0`} />
 
-`geo.distance` on points with different SRIDs returns `null`. That covers
-Cartesian-vs-geographic, 2D-vs-3D mismatches, and any custom SRID.
+`geo.distance` on points with different SRIDs fails the query with
+`Cannot compute distance between points with different SRIDs`. That
+covers Cartesian-vs-geographic and 2D-vs-3D mismatches. A `null`
+argument returns `null`.
 
 ## geo.within_bbox
 
 `geo.within_bbox(p, lowerLeft, upperRight)` returns `true` when `p`
 falls inside the closed bounding box formed by the two corner points.
-All three points must share an SRID. For 3D points, all three must carry
-the third coordinate; mixed 2D/3D inputs return `null`.
+All three points must share an SRID — a mismatch, including mixed 2D
+and 3D inputs, fails the query.
 
 <QueryCodeBlock code={String.raw`MATCH (v:Venue)
 WHERE geo.within_bbox(
@@ -270,12 +272,12 @@ LIMIT 5`} />
 
 ### Cross-SRID distance
 
-Returns `null` rather than raising:
+Fails the query with a `LORA_VALIDATION` error:
 
 <QueryCodeBlock code={String.raw`RETURN geo.distance({x: 0, y: 0}::POINT, {latitude: 0, longitude: 0}::POINT)
-// null`} />
+// error: Cannot compute distance between points with different SRIDs`} />
 
-Detect at analysis time:
+Filter to matching SRIDs first:
 
 <QueryCodeBlock code={String.raw`MATCH (a:Spot), (b:Spot)
 WHERE a.location.srid = b.location.srid
@@ -301,7 +303,7 @@ used with `geo.distance`.
 - **WGS-84 3D `geo.distance` ignores `height`** — it computes surface
   great-circle distance only. A true 3D geodesic (ellipsoid + altitude)
   distance is not implemented.
-- **Cross-SRID distance** returns `null`. There is no built-in CRS
+- **Cross-SRID distance** fails the query. There is no built-in CRS
   transformation.
 - **No WKT I/O or CRS transforms.** Convert WKT host-side and keep all
   compared points in the same SRID.

@@ -391,7 +391,7 @@ N".
 - **Quantified path patterns** (`((:X)-[:R]->(:Y)){1,3}`) — not in
   the grammar.
 - **Path utility procedures** — no `CALL` surface.
-- **Inline `WHERE` inside `*` patterns** — parsed but not evaluated.
+- **Inline `WHERE` inside `*` patterns** — rejected at parse time.
   Move the predicate into a standalone `WHERE` using `path.nodes(p)` /
   `path.edges(p)`.
 

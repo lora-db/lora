@@ -248,10 +248,11 @@ by date requires parsing on every comparison. Prefer the typed form.
 
 ## Limitations
 
-- `temporal.truncate` supports only `"year"` and `"month"` for
-  `DATE` values.
-- `temporal.truncate` supports only `"year"`, `"month"`, `"day"`, and
-  `"hour"` for `DATETIME` values.
+- `temporal.truncate` supports `"year"`, `"month"`, and `"day"` for
+  `DATE` values (`"day"` returns the date unchanged), and `"year"`,
+  `"month"`, `"day"`, and `"hour"` for `DATETIME` values. Units are
+  case-insensitive; any other unit (`"quarter"`, `"week"`, `"minute"`, …)
+  or any other temporal type returns `null`.
 - Parsing is strict ISO 8601 — non-ISO shapes (`MM/DD/YYYY`,
   RFC-2822) are rejected.
 - Arithmetic between different temporal types (e.g. `Date - Time`) is

@@ -216,7 +216,7 @@ fn main() {
 }
 ```
 
-Common causes: parse errors, unknown labels, unknown functions. See
+Common causes: parse errors, unknown variables, unknown functions. See
 [Troubleshooting → Parse errors](../troubleshooting#parse-errors)
 and [Semantic errors](../troubleshooting#semantic-errors).
 
@@ -372,8 +372,8 @@ Everything is `Result`. Errors fall into three buckets:
 | Bucket | Typical cause | How to handle |
 |---|---|---|
 | Parse | Missing paren, bad syntax | Fix the query string |
-| Semantic | Unknown label, unknown function, wrong arity | Adjust names or fix version |
-| Runtime | `DeleteNodeWithRelationships`, division by zero (returns `null`, doesn't error), integer overflow (debug only) | Adjust query; see [Troubleshooting](../troubleshooting) |
+| Semantic | Unknown variable, unknown function, wrong arity | Adjust names or fix version |
+| Runtime | `DeleteNodeWithRelationships`, integer overflow; division by zero returns `null` rather than erroring | Adjust query; see [Troubleshooting](../troubleshooting) |
 
 Pattern:
 

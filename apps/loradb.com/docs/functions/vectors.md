@@ -14,7 +14,8 @@ computation is **exhaustive** when called directly in a query. For a
 cataloged vector search surface, use
 [`CREATE VECTOR INDEX`](../queries/indexes#vector-indexes) with
 `db.index.vector.queryNodes` or `queryRelationships`; those procedures
-currently use flat scan execution over the indexed label/type scope.
+are exact by default and approximate (HNSW) when the index is created
+with `vector.indexProvider: 'hnsw'`.
 
 All similarity / distance math uses `f32` internally: coordinates
 are converted into `f32` before accumulation, then the scalar result
@@ -614,12 +615,14 @@ YIELD node, score;`} />
 This returns the top `k` rows by descending score. `k` must be
 positive, and the query vector dimension must match the index
 configuration. See [Queries → Indexes → Vector indexes](../queries/indexes#vector-indexes)
-for relationship indexes and option details.
+for relationship indexes, the `restrictTo` option, and the HNSW
+provider for approximate search on large collections.
 
 ## Limitations
 
-- **No ANN structure yet** — vector index procedures are supported, but
-  currently scan the indexed label/type scope linearly.
+- **ANN is opt-in** — vector indexes are exact (`flat`) by default and
+  scan their label/type scope; create them with
+  `vector.indexProvider: 'hnsw'` for approximate search.
 - **Direct vector function calls are exhaustive** — keep `MATCH`
   filters tight when using `ORDER BY vector.similarity(...) LIMIT k`.
 - **No embedding generation** — LoraDB has no plugin surface. Produce

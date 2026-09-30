@@ -19,7 +19,7 @@ on the message.
 | Code | When you'll see it |
 |---|---|
 | `LORA_PARSE` | Cypher syntax could not be parsed. |
-| `LORA_SEMANTIC` | Unknown variable, label, function, or type mismatch. |
+| `LORA_SEMANTIC` | Unknown variable or function, wrong arity, or type mismatch. |
 | `LORA_INVALID_PARAMS` | A parameter value couldn't be coerced into a Lora value. |
 | `LORA_READ_ONLY` | A mutating statement was issued in a read-only context. |
 | `LORA_NOT_FOUND` | A named entity (database, label, key) does not exist. |

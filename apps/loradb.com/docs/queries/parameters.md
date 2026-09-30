@@ -226,9 +226,13 @@ The full tagged helper is required only when the vector will be
 `{kind, dimension, coordinateType, values}` shape.
 
 `CREATE VECTOR INDEX` and `db.index.vector.queryNodes` /
-`queryRelationships` are supported, but the current procedure execution
-is still a flat scan over the indexed label/type scope. Use selective
-labels and filters today; a dedicated ANN structure is future work.
+`queryRelationships` are supported. They are exact scans over the
+indexed label/type scope by default, and approximate when the index uses
+`vector.indexProvider: 'hnsw'` — see
+[Indexes → Providers](./indexes#providers-flat-exact-and-hnsw-approximate).
+When a standalone `CALL` passes the optional options map, write it as an
+inline literal (`{restrictTo: $ids}`); a whole-map `$opts` parameter is
+rejected there.
 
 ### Default a missing value host-side
 

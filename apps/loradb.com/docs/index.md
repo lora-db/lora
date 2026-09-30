@@ -154,7 +154,7 @@ before wiring LoraDB into an app:
 | [**WAL & checkpoints**](/docs/wal) | Continuous durability on Rust, Node, Python, Go, Ruby, and `lora-server` — with full operator controls on Rust and the server. |
 | [**Performance**](/docs/performance) | Benchmark tables, CI `benchmark-summary.json`, and how to read regression signals. |
 | [**Errors**](/docs/errors) | Error codes, diagnostic shape, and how to read parser / analyzer / runtime failures. |
-| [**Limitations**](/docs/limitations) | What's not supported - binding-level WAL-control asymmetry, limited `CALL`, no ANN vector index structure, etc. |
+| [**Limitations**](/docs/limitations) | What's not supported - binding-level WAL-control asymmetry, limited `CALL`, no embedding generation, etc. |
 | [**Troubleshooting**](/docs/troubleshooting) | Common errors and the shortest path out. |
 
 ## The engine's boundaries
@@ -170,8 +170,8 @@ Every item below is a deliberate trade-off, not an oversight:
 - **Indexes are explicit but scoped.** `CREATE INDEX`, `CREATE TEXT INDEX`,
   `CREATE POINT INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`,
   `DROP INDEX`, and `SHOW INDEXES` exist for node and relationship scopes.
-  Vector search currently uses flat scan execution from the indexed scope;
-  a dedicated ANN structure is still future work.
+  Vector indexes are exact flat scans by default; approximate HNSW search
+  is opt-in per index with `vector.indexProvider: 'hnsw'`.
 - **Constraints are optional.** Use
   [`CREATE CONSTRAINT`](/docs/queries/constraints) for uniqueness, existence,
   node keys, relationship keys, and property type checks when a label or
