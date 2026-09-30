@@ -164,7 +164,7 @@ normalization supports NFC/NFD/NFKC/NFKD.
 | `string.slice(str, start[, len])` | **Supported** |
 | `string.prefix(str, n)`, `string.suffix(str, n)` | **Supported** |
 | `string.find`, `string.count`, `string.before`, `string.after` | **Supported** |
-| `string.split(str, delim)` (`split` alias), `string.join(list, delim)`, `string.words(str)` | **Supported** | An empty `delim` splits into characters: `split('p12', '')` is `['p', '1', '2']` |
+| `string.split(str, delim)` (`split` alias), `string.join(list, delim)`, `string.words(str)` | **Supported** | An empty `delim` splits into Unicode code points (not grapheme clusters): `split('p12', '')` is `['p', '1', '2']`. A list of delimiters splits on any of them, as in Neo4j 5: `split('a,b;c', [',', ';'])` is `['a', 'b', 'c']`; list delimiters are literal text and the first one in the list that matches at a position wins |
 | `string.slugify`, `string.escape`, `string.url_encode`, `string.url_decode` | **Supported** |
 | `string.reverse(str)` / `value.reverse(str)` | **Supported** |
 | `string.length(str)` (`char_length`, `character_length` aliases), `value.size(str)` / `size(str)` | **Supported** |
@@ -227,27 +227,34 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 | `Date` | **Supported** | year (i32), month, day |
 | `Time` | **Supported** | hour, minute, second, nanosecond + UTC offset |
 | `LocalTime` | **Supported** | timezone-naive clock time |
-| `DateTime` | **Supported** | local fields + UTC offset |
+| `DateTime` | **Supported** | local fields + UTC offset, and an optional named IANA zone |
 | `LocalDateTime` | **Supported** | timezone-naive datetime |
 | `Duration` | **Supported** | months, days, seconds, nanoseconds |
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `date()`, `datetime()`, `localdatetime()`, `time()`, `localtime()` | **Supported** | Cypher constructors. With no argument, the current value of that type (`date()` is today's `DATE`). With one, the value cast to that type: `date(x)` is `x::DATE`. A string is parsed, a map gives the components (`{year, month, day, hour, minute, second, millisecond, microsecond, nanosecond, timezone}`), and another temporal keeps the components the target has (`date(datetime())` is today's date, `time(dt)` keeps the offset). An argument that does not convert is an error, `null` gives `null` |
+| `date()`, `datetime()`, `localdatetime()`, `time()`, `localtime()` | **Supported** | Cypher constructors. With no argument, the current value of that type (`date()` is today's `DATE`). With one, the value cast to that type: `date(x)` is `x::DATE`. A string is parsed, a map gives the components, and another temporal keeps the components the target has (`date(datetime())` is today's date, `time(dt)` keeps the offset). An argument that does not convert is an error, `null` gives `null` |
+| Constructor maps | **Supported** | Calendar (`year, month, day`), ISO week (`year, week, dayOfWeek`; `year` is the week-based year), ordinal (`year, ordinalDay`) and quarter (`year, quarter, dayOfQuarter`) dates; `hour, minute, second, millisecond, microsecond, nanosecond`; `timezone`; `date` / `time` / `datetime` to start from another temporal; `epochSeconds` (with `nanosecond`) and `epochMillis` for `DATETIME`. Keys match case-insensitively. An unknown key, a key the type has no use for, two date forms at once, or a smaller component without the larger ones (`day` without `month`, `minute` without `hour`) is an error naming the key. `weekYear` is not a constructor key (it is not one in Neo4j either) |
+| ISO 8601 strings | **Supported** | Extended and basic forms: `2015-07-21` / `20150721`, `2015-07` / `201507`, `2015`, `2015-W30-2` / `2015W302`, `2015-W30`, `2015-202` / `2015202`, `2015-Q3-21` / `2015Q321`, signed or longer years (`-0044-03-15`); times `HH:MM:SS.f` / `HHMMSS.f`, `HH:MM` / `HHMM`, `HH`, with an offset `Z`, `±HH:MM`, `±HHMM` or `±HH` (at most ±18:00) and, for `DATETIME` and `TIME`, a zone suffix `[Europe/Amsterdam]`. Fields are fixed width (`2015-7-21` and `9:00` are refused). `LOCAL_TIME` and `LOCAL_DATETIME` refuse an offset or zone rather than drop it |
+| Named time zones | **Supported** | IANA zones from a database built into the binary (`jiff`), with daylight saving, on every platform including wasm. A `DATETIME` keeps the zone and prints it: `2026-07-01T12:00:00+02:00[Europe/Amsterdam]`. A local time in a gap moves forward by the gap, one in an overlap takes the earlier offset, as in Neo4j; an offset the zone does not have is an error. Months and days move the wall clock and are re-resolved in the zone, smaller units move the instant. A `TIME` in a named zone takes the zone's current offset. A few non-IANA abbreviations (`PST`, `JST`, …) read as fixed offsets. Stored zoned values use a new encoding (value tag 16 in the snapshot and WAL codecs) that versions before 0.19.0 cannot read; values without a zone keep the old encoding |
+| `dt.timezone`, `dt.offset`, `dt.epochSeconds` accessors | **Not yet implemented** | Component access covers the date and clock fields only |
 | `duration(x)` | **Supported** | `x::DURATION`: ISO 8601 string or component map |
 | `temporal.today()` / `'...'::DATE` / `{year, month, day}::DATE` | **Supported** | ISO string, map, or current day |
 | `temporal.now()` / `now()` / `temporal.now(kind)` / `'...'::DATETIME` / `{...}::DATETIME` | **Supported** | Current `DATETIME` by default; `kind` accepts `"date"`, `"time"`, `"local_time"`, `"local_datetime"` |
 | `'...'::TIME` | **Supported** | ISO string |
 | `'...'::LOCAL_TIME` | **Supported** | ISO string |
 | `'...'::LOCAL_DATETIME` / `{...}::LOCAL_DATETIME` | **Supported** | |
-| `'...'::DURATION` / `{...}::DURATION` | **Supported** | ISO 8601 or `{years, months, days, hours, minutes, seconds}` |
+| `'...'::DURATION` / `{...}::DURATION` | **Supported** | ISO 8601 or `{years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds}`, each an integer or a float. A fraction cascades into the smaller units as in Neo4j (a month is 30.436875 days): `duration({hours: 1.5})` is `PT1H30M` |
 | `CAST(value AS TYPE)` / `TRY_CAST(value AS TYPE)` | **Supported** | Cast syntax in the Cypher grammar; `TRY_CAST` returns `null` on failed conversion |
-| `temporal.truncate(unit, date)` | **Partial** | Supported units: `"year"`, `"month"`, `"day"` |
-| `temporal.truncate(unit, datetime)` | **Partial** | Supported units: `"year"`, `"month"`, `"day"`, `"hour"` |
-| `temporal.between(a, b)` | **Supported** | Between dates or datetimes |
-| `temporal.in_days(a, b)` | **Supported** | `DATE` values |
+| `temporal.truncate(unit, value)` | **Supported** | Every temporal type; units `"millennium"`, `"century"`, `"decade"`, `"year"`, `"weekYear"`, `"quarter"`, `"month"`, `"week"`, `"day"`, `"hour"`, `"minute"`, `"second"`, `"millisecond"`, `"microsecond"`, case-insensitive. Keeps the value's type; `null` for a unit the type does not have |
+| `date.truncate(unit, value[, map])`, and on `datetime`, `localdatetime`, `time`, `localtime` | **Supported** | Builds the named type, then applies the map's components; a `timezone` in the map replaces the zone keeping the local time. A bad unit, value or map is an error |
+| `date.transaction()`, `.statement()`, `.realtime()` (all five types) | **Supported** | One clock: the three agree. No time zone argument |
+| `datetime.fromepoch(seconds, nanos)`, `datetime.fromEpochMillis(ms)` | **Supported** | UTC |
+| `duration.between(a, b)`, `duration.inMonths`, `duration.inDays`, `duration.inSeconds` | **Supported** | Neo4j semantics for any two temporals: months, then days, then time; a value without a time is at midnight; with both zoned, `b` is read in `a`'s zone; without a date on either side only the times of day count |
+| `temporal.between(a, b)` | **Supported** | Between dates or datetimes; datetimes give days and time, no months |
+| `temporal.in_days(a, b)` | **Supported** | Whole days between any two temporals (as `duration.inDays`) |
 
-Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering two values of different temporal types (`date('2026-10-01') >= datetime()`) is an error, not Cypher's `null`: a `WHERE` on it would otherwise drop every row without a word. It fails the same way when a RANGE index answers the predicate and the indexed property holds another temporal type than the bound. `=` between different temporal types is `false`, and `ORDER BY`, `min` and `max` still order mixed values. Convert one side first: `date(x)`, `datetime(x)`. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
+Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering two values of different temporal types (`date('2026-10-01') >= datetime()`) is an error, not Cypher's `null`: a `WHERE` on it would otherwise drop every row without a word. It fails the same way when a RANGE index answers the predicate and the indexed property holds another temporal type than the bound. `=` between different temporal types is `false`, and `ORDER BY`, `min` and `max` still order mixed values. Convert one side first: `date(x)`, `datetime(x)`. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset and the named zone. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
 
 ## 13. Spatial types and functions
 

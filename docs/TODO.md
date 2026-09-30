@@ -50,7 +50,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P3 Path bindings in `CREATE` patterns not materialised (`executor/mutable.rs:1789`).
 - [ ] P3 Vector procedure options reject `$param` maps (`database/procedures.rs:314-318`).
 - [ ] P3 `SHOW FULLTEXT INDEXES` parses but always returns empty (`cypher.pest:77`).
-- [ ] P3 `temporal.truncate`: no quarter / week / sub-hour units (`builtins/temporal.rs:281-313`).
 - [ ] P3 3D geodesic distance ignores height; no WKT / CRS transform.
 - [ ] P3 Short-circuit `AND`/`OR` (both sides always evaluated, `eval/expr.rs:69-72`).
 

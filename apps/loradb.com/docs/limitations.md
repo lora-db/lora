@@ -83,7 +83,9 @@ in the internal documentation.
 |---|---|
 | External utility compatibility layer | Not supported |
 | User-defined functions | Not supported — no registration surface |
-| [`temporal.truncate`](./functions/temporal#truncation) units | `DATE` supports `"year"`, `"month"`, and `"day"`; `DATETIME` supports `"year"`, `"month"`, `"day"`, and `"hour"`. `"quarter"`, `"week"`, and sub-hour units return `null` |
+| [Truncation](./functions/temporal#truncation) units | Every Cypher unit, from `"millennium"` down to `"microsecond"`. `temporal.truncate(unit, value)` returns `null` for a unit the value's type does not have; `date.truncate(…)` and the other `<type>.truncate` forms fail instead |
+| `<type>.transaction()`, `.statement()`, `.realtime()` | Supported; LoraDB has one clock, so the three agree. They take no time zone argument |
+| [Named time zones](./functions/temporal#time-zones) | Supported for `DATETIME`, with daylight saving from the built-in IANA database. A `TIME` in a named zone takes the zone's current offset. A `DATETIME` stored with a named zone cannot be read by LoraDB versions before 0.19.0 |
 | [`string.lower` / `string.upper`](./functions/string#tolower--toupper) | Unicode case mapping is supported; locale-specific case folding is not |
 | [`string.normalize(str[, form])`](./functions/string#normalize) | Unicode NFC/NFD/NFKC/NFKD normalization is supported; locale-specific transliteration is not |
 

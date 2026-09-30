@@ -16,7 +16,7 @@ LoraDB has six first-class temporal types. Each can be stored as a
 | `Date` | year, month, day | — |
 | `Time` | hour, minute, second, nanosecond | UTC offset |
 | `LocalTime` | hour, minute, second, nanosecond | — |
-| `DateTime` | Date + Time fields | UTC offset |
+| `DateTime` | Date + Time fields | UTC offset, and optionally a named zone (`Europe/Amsterdam`) |
 | `LocalDateTime` | Date + LocalTime fields | — |
 | `Duration` | months, days, seconds, nanoseconds | — |
 
@@ -60,7 +60,45 @@ to the target temporal type:
   on: {year: 2024, month: 1, day: 15}::DATE
 })`} />
 
+A map can also give an ISO week date (`{year, week, dayOfWeek}`), an
+ordinal date (`{year, ordinalDay}`) or a quarter date (`{year, quarter,
+dayOfQuarter}`), start from another temporal (`{date: d, day: 1}`), or
+count from the Unix epoch (`{epochSeconds}`, `{epochMillis}`, `DATETIME`
+only). A key the type has no use for, or a smaller component without
+the larger ones (`day` without `month`), is an error that names it.
+
+<QueryCodeBlock code={String.raw`RETURN date({year: 2026, week: 1, dayOfWeek: 1}) AS first_monday,  // 2025-12-29
+       date({year: 2026, ordinalDay: 100}) AS day_100,             // 2026-04-10
+       duration({hours: 1.5}) AS ninety_minutes                    // PT1H30M`} />
+
 See more in [Temporal Functions → Construction and current time](../functions/temporal#construction-and-current-time).
+
+### ISO strings
+
+Strings take every ISO 8601 form, in the extended or the basic format:
+calendar dates (`2026-05-01`, `20260501`, `2026-05`, `2026`), week dates
+(`2026-W18-5`), ordinal dates (`2026-121`), quarter dates (`2026-Q2-31`)
+and times with an optional offset (`09:00:00.5+02:00`, `090000+0200`).
+Fields are fixed width, so `2026-5-1` and `9:00` are refused, and the
+local types refuse an offset instead of dropping it:
+`'09:00+02:00'::LOCAL_TIME` is an error.
+
+### Time zones
+
+A `DateTime` can carry a named IANA zone as well as its offset. It
+prints as `2026-07-01T12:00:00+02:00[Europe/Amsterdam]`, parses back
+from that form, and follows the zone's daylight saving rules through
+arithmetic and truncation. See
+[Temporal Functions → Time zones](../functions/temporal#time-zones).
+
+<QueryCodeBlock code={String.raw`RETURN datetime({year: 2026, month: 1, day: 15, hour: 9, timezone: 'Europe/Amsterdam'}) AS winter,
+       // 2026-01-15T09:00:00+01:00[Europe/Amsterdam]
+       datetime({year: 2026, month: 7, day: 15, hour: 9, timezone: 'Europe/Amsterdam'}) AS summer
+       // 2026-07-15T09:00:00+02:00[Europe/Amsterdam]`} />
+
+A `DateTime` stored with a named zone uses a storage encoding that
+LoraDB versions before 0.19.0 cannot read, in snapshots and in the WAL.
+Values without a zone are stored exactly as before.
 
 ### From host language
 
@@ -117,7 +155,7 @@ Across host-language bindings, temporals are tagged:
 | `Date` | `{kind: "date", iso: "YYYY-MM-DD"}` |
 | `Time` | `{kind: "time", iso: "HH:MM:SS.nnnnn+ZZ:ZZ"}` |
 | `LocalTime` | `{kind: "localtime", iso: "HH:MM:SS.nnnnn"}` |
-| `DateTime` | `{kind: "datetime", iso: "YYYY-MM-DDTHH:MM:SS.nnnnn+ZZ:ZZ"}` |
+| `DateTime` | `{kind: "datetime", iso: "YYYY-MM-DDTHH:MM:SS.nnnnn+ZZ:ZZ"}`, with `[Region/City]` appended for a named zone |
 | `LocalDateTime` | `{kind: "localdatetime", iso: "YYYY-MM-DDTHH:MM:SS.nnnnn"}` |
 | `Duration` | `{kind: "duration", iso: "P…"}` |
 
@@ -217,12 +255,14 @@ RETURN '2024-03-31'::DATE + 'P1M'::DURATION    // 2024-04-30`} />
 
 ### Timezone-aware comparison
 
-`DateTime` values in different offsets compare by the **same UTC
-instant** — ordering is timezone-safe.
+`DateTime` values in different offsets or zones order by their UTC
+instant, so ordering is timezone-safe. Equality also compares the offset
+and zone: the same instant written at `Z` and at `+01:00` orders equal
+but is not `=`.
 
-<QueryCodeBlock code={String.raw`RETURN '2024-01-01T12:00:00Z'::DATETIME =
-       '2024-01-01T13:00:00+01:00'::DATETIME
-// true`} />
+<QueryCodeBlock code={String.raw`RETURN '2024-01-01T12:00:00Z'::DATETIME < '2024-01-01T13:30:00+01:00'::DATETIME,  // true
+       '2024-01-01T12:00:00Z'::DATETIME <= '2024-01-01T13:00:00+01:00'::DATETIME, // true
+       '2024-01-01T12:00:00Z'::DATETIME = '2024-01-01T13:00:00+01:00'::DATETIME   // false`} />
 
 ### Cross-type comparison
 
@@ -248,13 +288,14 @@ by date requires parsing on every comparison. Prefer the typed form.
 
 ## Limitations
 
-- `temporal.truncate` supports `"year"`, `"month"`, and `"day"` for
-  `DATE` values (`"day"` returns the date unchanged), and `"year"`,
-  `"month"`, `"day"`, and `"hour"` for `DATETIME` values. Units are
-  case-insensitive; any other unit (`"quarter"`, `"week"`, `"minute"`, …)
-  or any other temporal type returns `null`.
-- Parsing is strict ISO 8601 — non-ISO shapes (`MM/DD/YYYY`,
-  RFC-2822) are rejected.
+- Truncation takes every Cypher unit, from `"millennium"` down to
+  `"microsecond"` (case-insensitive). `temporal.truncate(unit, value)`
+  returns `null` for a unit the value's type does not have, while
+  `date.truncate(…)` and the other `<type>.truncate` forms fail.
+- Parsing is strict ISO 8601. Non-ISO shapes (`MM/DD/YYYY`, RFC-2822)
+  and fields that are not fixed width are rejected.
+- A `Time` has no date to resolve daylight saving against, so a named
+  zone gives it the zone's current offset.
 - Arithmetic between different temporal types (e.g. `Date - Time`) is
   not supported.
 
