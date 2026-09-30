@@ -104,6 +104,12 @@ export interface CompiledRead {
   cost: number;
   /** `read` for queries; `write` for @cypher mutations. */
   mode: "read" | "write";
+  /**
+   * At most one row, found by an exact @key seek, projecting only stored
+   * properties: no relationship, @cypher field or rule traversal. Cheap
+   * enough for a driver to run synchronously.
+   */
+  bounded?: boolean;
 }
 
 type Args = Record<string, unknown>;
@@ -263,11 +269,34 @@ function compileSingle(
     ...projection.pre,
     { kind: "return", items: [{ expr: projection.expr, alias: "this" }] },
   ];
-  return finish(ctx, clauses, ["this"], ([r]) => r!.rows[0]?.["this"] ?? null, {
-    label,
-    access: "exact",
-    reason: `lookup by @key ${node.key.name}`,
-  });
+  const compiled = finish(
+    ctx,
+    clauses,
+    ["this"],
+    ([r]) => r!.rows[0]?.["this"] ?? null,
+    { label, access: "exact", reason: `lookup by @key ${node.key.name}` },
+  );
+  // Every selected field is a stored property, and nothing traversed a
+  // relationship (READ rules included: their filters record what they read).
+  const objType = ctx.schema.getType(node.name) as GraphQLObjectType;
+  const storedOnly = [...collectFields(ctx, objType, sets).values()].every(
+    (nodes) => {
+      const name = nodes[0]!.name.value;
+      return (
+        name === "__typename" ||
+        (name === "id" && node.key.relayId) ||
+        node.fields.get(name)?.kind === "scalar"
+      );
+    },
+  );
+  if (
+    storedOnly &&
+    compiled.reads.relationships.length === 0 &&
+    compiled.statements.length === 1
+  ) {
+    compiled.bounded = true;
+  }
+  return compiled;
 }
 
 function compileConnection(

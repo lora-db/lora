@@ -36,10 +36,15 @@ export interface RunOptions {
   signal?: AbortSignal | undefined;
   /**
    * A read the library vouches for: generated, or a @cypher statement
-   * checked read-only at startup. A custom driver may run it outside a
-   * read-only transaction; `loraDriver` always uses one.
+   * checked read-only at startup. The driver may run it outside a
+   * read-only transaction.
    */
   verified?: boolean;
+  /**
+   * A verified read of at most one row, by an exact @key seek, projecting
+   * only stored properties. Cheap enough to run synchronously.
+   */
+  bounded?: boolean;
 }
 
 /** An open interactive transaction: statements see earlier writes. */
@@ -99,6 +104,19 @@ export interface LoraDatabaseLike {
     mode?: "read_write" | "read_only",
     options?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<QueryResult[]>;
+  execute?(
+    query: string,
+    params?: never,
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<QueryResult>;
+  stream?(
+    query: string,
+    params?: never,
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): {
+    columns(): string[] | Promise<string[]>;
+    toArray(): Promise<Array<Record<string, unknown>>>;
+  };
   explain?(query: string, params?: never): Promise<QueryPlan>;
   changes?(options?: {
     fromLsn?: number;
@@ -125,11 +143,40 @@ export interface LoraDatabaseLike {
  * ```
  */
 export function loraDriver(db: LoraDatabaseLike): LoraDriver {
+  const execute =
+    typeof db.execute === "function" ? db.execute.bind(db) : undefined;
+  const stream =
+    typeof db.stream === "function" ? db.stream.bind(db) : undefined;
   const driver: LoraDriver = {
     async run(statements, options) {
-      // Reads never use db.stream(): it runs the query on the JS thread,
-      // so one slow read blocks every other request. A transaction runs on
-      // a libuv worker and stops at LIMIT as early as a stream does.
+      const single =
+        options.mode === "read" && options.verified && statements.length === 1
+          ? statements[0]!
+          : undefined;
+      // One keyed row of stored properties: a stream answers it on the JS
+      // thread faster (~7 µs) than a hop to a libuv worker. Any other read
+      // must not run there: db.stream() runs the whole query on the JS
+      // thread, so one slow read would block every other request.
+      if (single && options.bounded && stream) {
+        const rows = stream(
+          single.text,
+          single.params as never,
+          runLimits(options),
+        );
+        return [{ columns: await rows.columns(), rows: await rows.toArray() }];
+      }
+      // A single verified read needs no read-only transaction: execute()
+      // runs it on a libuv worker at less than half a transaction's cost,
+      // and stops at LIMIT as early.
+      if (single && execute) {
+        return [
+          await execute(
+            single.text,
+            single.params as never,
+            runLimits(options),
+          ),
+        ];
+      }
       return db.transaction(
         statements.map((s) => ({ query: s.text, params: s.params as never })),
         options.mode === "read" ? "read_only" : "read_write",

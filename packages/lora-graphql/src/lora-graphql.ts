@@ -1228,6 +1228,7 @@ export class LoraGraphQL {
                   // Queries and object @cypher fields are checked read-only
                   // when the model is built; writes never reach this path.
                   verified: compiled.mode === "read",
+                  ...(compiled.bounded && { bounded: true }),
                 }),
               ),
       );

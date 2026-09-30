@@ -407,11 +407,14 @@ on; otherwise it does nothing.
 ## Drivers
 
 `loraDriver(db)` adapts a `Database` from `@loradb/lora-node` or
-`@loradb/lora-wasm`. It runs each operation's statements in one
-transaction, read-only for reads. With lora-node that runs on a libuv
-worker, not the JavaScript thread, so a slow read does not hold up other
-requests. It exposes `begin()`, `explain()` and `changes()` when the
-database has them.
+`@loradb/lora-wasm`. A read of one statement runs with `execute()`; with
+lora-node that runs on a libuv worker, not the JavaScript thread, so a
+slow read does not hold up other requests. A lookup by `@key` that
+selects only stored fields (`bounded`) streams its single row
+synchronously, which is faster than the hop to a worker. A read of several
+statements runs in one read-only transaction, and a write in a read-write
+one. It exposes `begin()`, `explain()` and `changes()` when the database
+has them.
 
 | Driver method | Needed for | lora-node | lora-wasm |
 | --- | --- | --- | --- |
@@ -439,6 +442,7 @@ interface RunOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   verified?: boolean; // a read the library vouches for; may skip the read-only transaction
+  bounded?: boolean; // a verified read of at most one row by @key: cheap enough to run synchronously
 }
 interface DriverTransaction {
   execute(statement: Statement): Promise<QueryResult>;

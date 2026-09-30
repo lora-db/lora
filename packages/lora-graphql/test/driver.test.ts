@@ -1,10 +1,16 @@
 import { expect, test } from "vitest";
 import { createDatabase } from "@loradb/lora-node";
-import { loraDriver, type LoraDatabaseLike } from "../src/index.js";
+import {
+  LoraGraphQL,
+  loraDriver,
+  type LoraDatabaseLike,
+} from "../src/index.js";
+import { appTypeDefs } from "./fixtures.js";
 
 // A database that records how the driver calls it.
 function recording() {
   const calls: string[] = [];
+  const result = { columns: [], rows: [] };
   const db = {
     transaction: async (
       statements: Array<{ query: string }>,
@@ -12,29 +18,70 @@ function recording() {
       options?: { timeoutMs?: number },
     ) => {
       calls.push(`transaction ${mode} ${options?.timeoutMs}`);
-      return statements.map(() => ({ columns: [], rows: [] }));
+      return statements.map(() => result);
     },
-    stream: () => {
-      calls.push("stream");
-      throw new Error("stream must not be called");
+    execute: async (
+      _q: string,
+      _p: unknown,
+      options?: { timeoutMs?: number },
+    ) => {
+      calls.push(`execute ${options?.timeoutMs}`);
+      return result;
+    },
+    stream: (_q: string, _p: unknown, options?: { timeoutMs?: number }) => {
+      calls.push(`stream ${options?.timeoutMs}`);
+      return { columns: () => [], toArray: async () => [] };
     },
   };
   return { db: db as unknown as LoraDatabaseLike, calls };
 }
 
-test("a verified single read runs in a read-only transaction, not a stream", async () => {
-  // db.stream() runs the query on the JS thread: one slow read would
-  // block every other request.
+const one = [{ text: "MATCH (n) RETURN n", params: {} }];
+const read = { mode: "read" as const, timeoutMs: 50, verified: true };
+
+test("only a bounded read streams; other single reads run off the JS thread", async () => {
+  // db.stream() runs the whole query on the JS thread: fine for one keyed
+  // row, but any larger read there would block every other request.
   const { db, calls } = recording();
-  await loraDriver(db).run([{ text: "MATCH (n) RETURN n", params: {} }], {
-    mode: "read",
-    timeoutMs: 50,
-    verified: true,
-  });
-  expect(calls).toEqual(["transaction read_only 50"]);
+  const driver = loraDriver(db);
+  await driver.run(one, { ...read, bounded: true });
+  await driver.run(one, read);
+  expect(calls).toEqual(["stream 50", "execute 50"]);
 });
 
-test("a read stops at LIMIT in a transaction under a deadline", async () => {
+test("several statements share one read-only transaction; writes one read-write", async () => {
+  const { db, calls } = recording();
+  const driver = loraDriver(db);
+  await driver.run([...one, ...one], read);
+  await driver.run(one, { mode: "read", timeoutMs: 50 }); // not verified
+  await driver.run(one, { mode: "write", timeoutMs: 50 });
+  expect(calls).toEqual([
+    "transaction read_only 50",
+    "transaction read_only 50",
+    "transaction read_write 50",
+  ]);
+});
+
+test("a lookup by @key is bounded only when it projects stored properties", async () => {
+  const lora = new LoraGraphQL({
+    typeDefs: appTypeDefs,
+    driver: loraDriver(await createDatabase()),
+  });
+  const bounded = (query: string) =>
+    lora.compile(query).map(({ compiled }) => compiled.bounded ?? false);
+  expect(bounded(`{ festival(key: "f1") { key name capacity } }`)).toEqual([
+    true,
+  ]);
+  expect(bounded(`{ festival(key: "f1") { key followers { key } } }`)).toEqual([
+    false,
+  ]);
+  expect(bounded(`{ festival(key: "f1") { key followerCount } }`)).toEqual([
+    false,
+  ]);
+  expect(bounded(`{ festivals(limit: 1) { key } }`)).toEqual([false]);
+});
+
+test("a single read stops at LIMIT under a deadline", async () => {
   const db = await createDatabase();
   await db.execute("UNWIND range(1, 200000) AS i CREATE (:N {i: i})");
   const driver = loraDriver(db);
