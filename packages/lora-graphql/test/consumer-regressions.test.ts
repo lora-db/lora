@@ -1718,3 +1718,75 @@ describe("G-20 review: upsert, bulk and anonymous creates keep hidden keys hidde
     t.close();
   });
 });
+
+describe("G-22 review: what counts as the caller setting a guarded field", () => {
+  const rule = `@authorization(validate: [{ operations: [CREATE, UPDATE], where: { jwt: { roles: { includes: "admin" } } } }])`;
+  const typeDefs =
+    J +
+    `type User @node @mutation {
+      key: String! @key
+      note: String ${rule}
+      level: Int @default(value: 1) ${rule}
+      createdAt: DateTime! @timestamp(operations: [CREATE]) ${rule}
+      channels: [Channel!]!
+        @relationship(type: "MEMBER_OF", direction: OUT, properties: "Membership")
+    }
+    type Channel @node { key: String! @key }
+    type Membership @relationshipProperties {
+      role: String! @default(value: "member") ${rule}
+    }`;
+  const seed = "CREATE (:Channel {key: 'c'})";
+
+  test("allowed: an explicit null is not a write; the default fills it", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.run(
+      `mutation { createUsers(input: [{ key: "u", note: null, level: null }]) { users { key note level } } }`,
+      {},
+      member,
+    );
+    expect(r.errors).toBeUndefined();
+    expect(r.data).toEqual({
+      createUsers: { users: [{ key: "u", note: null, level: 1 }] },
+    });
+    // A value is a write.
+    const set = await t.run(
+      `mutation { createUsers(input: [{ key: "w", level: 2 }]) { users { key } } }`,
+      {},
+      member,
+    );
+    expect(codes(set)).toEqual(["FORBIDDEN"]);
+    t.close();
+  });
+
+  test("allowed: a @timestamp the server stamps is not the caller's write", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.run(
+      `mutation { createUsers(input: [{ key: "u" }]) { users { key } } }`,
+      {},
+      member,
+    );
+    expect(r.errors).toBeUndefined();
+    const [row] = await cypher(t, "MATCH (u:User) RETURN u.createdAt AS at");
+    expect(row?.["at"]).toBeTruthy();
+    t.close();
+  });
+
+  test("allowed: an edge property @default is not the caller's write; setting it is", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const connect = (key: string, edge: string) =>
+      t.run(
+        `mutation { createUsers(input: [{ key: "${key}", channels: { connect: [{ key: "c"${edge} }] } }]) { users { key } } }`,
+        {},
+        member,
+      );
+    const r = await connect("u", "");
+    expect(r.errors).toBeUndefined();
+    expect(
+      await cypher(t, "MATCH (:User)-[e:MEMBER_OF]->() RETURN e.role AS role"),
+    ).toEqual([{ role: "member" }]);
+    expect(codes(await connect("w", `, edge: { role: "owner" }`))).toEqual([
+      "FORBIDDEN",
+    ]);
+    t.close();
+  });
+});
