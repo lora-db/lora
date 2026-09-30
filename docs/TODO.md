@@ -107,6 +107,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 `tracing-subscriber` + configurable log level in `lora-server` (logs are invisible today).
 - [ ] P2 Graceful SIGTERM shutdown in `lora-server`.
 - [ ] P2 Query-size and result-size limits on HTTP (only axum's JSON body default).
+- [ ] P2 Confirm on a quiet machine that chunked write streams close the Python/Go per-row gap to 0.18.0 (`3e515cd`); only 0.19.0 vs patched was measured.
 - [ ] P3 Node: read streams via `ThreadsafeFunction`; column-major TypedArray decoding (`lora-node/src/stream.rs:3`).
 - [ ] P3 lora-query: delete the dead `fallbackFromDocOverrides` ("TODO: enable after yarn build:wasm", `packages/lora-query/src/cypher/data.ts:429`) — the WASM already exports `builtins()`.
 - [ ] P3 lora-graph-canvas: internalise the kapsule renderer deps (`engines/3d-force-graph/kapsule.ts:11`).

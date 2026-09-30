@@ -10,8 +10,9 @@
 //! goroutine migrates between OS threads, a finalizer runs on its own), so a
 //! mutating stream lives on a dedicated thread (an actor, a pooled thread
 //! from `lora_binding_buffer::stream::WriteStream`): the thread opens the
-//! stream, pulls a row per request, and drops the stream (committing an
-//! exhausted one, rolling back an unfinished one) before it is done. Once
+//! stream, sends its rows in chunks, reading one chunk ahead without
+//! committing, and drops the stream (committing once the caller has pulled
+//! past the last row, rolling back an unfinished one) before it is done. Once
 //! open, the actor waits only for the caller's requests, never for another
 //! caller thread, so a request is always answered promptly.
 //!

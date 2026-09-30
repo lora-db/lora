@@ -533,6 +533,50 @@ def test_stream_and_transaction_helpers() -> None:
     ]
 
 
+def _count(db: Database, label: str) -> int:
+    return db.execute(f"MATCH (n:{label}) RETURN count(n) AS c")["rows"][0]["c"]
+
+
+def test_mutating_stream_commits_only_at_its_end() -> None:
+    # Many rows, so the native side sends several chunks ahead of the
+    # iteration; the writes commit only once the iteration reaches the end.
+    db = Database.create()
+    query = "UNWIND list.range(1, 2000) AS i CREATE (:Chunked {i: i}) RETURN i"
+    assert [row["i"] for row in db.stream(query)] == list(range(1, 2001))
+    assert _count(db, "Chunked") == 2000
+
+    # Every row read, but not the end: closing rolls back.
+    stream = db.stream(query.replace("Chunked", "AllButEnd"))
+    assert [next(stream)["i"] for _ in range(2000)] == list(range(1, 2001))
+    stream.close()
+    assert _count(db, "AllButEnd") == 0
+
+    # Abandoned mid-way, past the first chunk: rolls back and frees the lock.
+    stream = db.stream(query.replace("Chunked", "Abandoned"))
+    for _ in range(700):
+        next(stream)
+    del stream
+    assert _count(db, "Abandoned") == 0
+    db.execute("CREATE (:AfterAbandon)")
+    assert _count(db, "AfterAbandon") == 1
+
+
+def test_mutating_stream_error_mid_stream_rolls_back() -> None:
+    # A query ending in a write streams row by row: the duplicate fails
+    # after 499 nodes were created, on the first pull.
+    db = Database.create()
+    db.execute("CREATE CONSTRAINT failing_id FOR (n:Failing) REQUIRE n.id IS UNIQUE")
+    xs = list(range(1, 600))
+    xs[499] = 1
+    stream = db.stream("UNWIND $xs AS x CREATE (:Failing {id: x})", {"xs": xs})
+    with pytest.raises(LoraQueryError):
+        next(stream)
+    assert list(stream) == []
+    assert _count(db, "Failing") == 0
+    db.execute("CREATE (:AfterError)")
+    assert _count(db, "AfterError") == 1
+
+
 def test_is_vector_returns_false_for_non_vectors() -> None:
     from lora_python import is_vector
 

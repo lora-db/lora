@@ -223,7 +223,9 @@ class AsyncDatabase:
     ) -> AsyncIterator[Mapping[str, Any]]:
         """Yield query rows asynchronously.
 
-        Rows are pulled one per iteration step, never ahead. A read-only
+        Rows are handed out one per iteration step. A mutating stream's
+        native thread may run a chunk of rows ahead of the iteration, but
+        commits only once the iteration reaches the end. A read-only
         stream reads a snapshot and never waits for a lock, so it opens
         on the event loop. A mutating stream takes the writer lock when it
         opens: if the lock is busy, it waits for it on a thread of its own

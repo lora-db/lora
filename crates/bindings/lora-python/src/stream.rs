@@ -11,9 +11,10 @@
 //! dropped off its thread, and with it the writer lock, hanging every later
 //! write). So a mutating stream lives on a dedicated thread (an actor, a
 //! pooled thread from `lora_binding_buffer::stream::WriteStream`): the
-//! thread opens the stream, pulls a row per request, and drops the stream
-//! (committing an exhausted one, rolling back an unfinished one) before it
-//! is done. Once open, the actor waits only for its handle's requests and
+//! thread opens the stream, sends its rows in chunks, reading one chunk
+//! ahead without committing, and drops the stream (committing once the
+//! caller has pulled past the last row, rolling back an unfinished one)
+//! before it is done. Once open, the actor waits only for its handle's requests and
 //! never needs the GIL, so a request is always answered promptly.
 //!
 //! Whether a query streams as a write comes from a per-database

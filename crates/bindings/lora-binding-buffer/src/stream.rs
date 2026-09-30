@@ -7,10 +7,10 @@
 //!   is exhausted or dropped, and that lock guard must be released on the
 //!   thread that took it, while a host may pull and drop the stream from
 //!   any thread. The stream therefore lives on an actor thread that opens
-//!   it, pulls one row per request and drops it. Actor threads are pooled,
-//!   and a request and its reply spin briefly before parking, so a stream
-//!   drained in a loop does not pay a thread start per open or a park and
-//!   wake-up per row.
+//!   it, sends its rows in chunks (reading one chunk ahead, without
+//!   committing) and drops it. Actor threads are pooled, and a request and
+//!   its reply spin briefly before parking, so a stream drained in a loop
+//!   pays neither a thread start per open nor a round trip per row.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -116,6 +116,31 @@ mod actor {
     type Db = Arc<Database<InMemoryGraph>>;
     type Pulled<T, E> = Result<Option<T>, E>;
 
+    /// Most rows the actor pulls for one reply.
+    const CHUNK_ROWS: usize = 256;
+    /// About how long the actor pulls for one reply before sending what it
+    /// has: long enough to spread a round trip over many rows, short
+    /// enough that the first rows of a slow query arrive promptly.
+    const CHUNK_TIME: Duration = Duration::from_micros(50);
+
+    /// How a reply's rows end.
+    enum Tail<E> {
+        /// More rows may follow: ask again.
+        More,
+        /// No rows remain; the writes are staged, not committed. The next
+        /// request commits.
+        Drained,
+        /// The stream is gone, committed (`Ok`) or rolled back (`Err`),
+        /// and the writer lock released.
+        Done(Result<(), E>),
+    }
+
+    /// One reply: the next rows, then how they end.
+    type Chunk<T, E> = (Vec<T>, Tail<E>);
+
+    /// What the actor reports once it opened the stream (or failed to).
+    type Opened<T, E> = Result<(Vec<String>, Chunk<T, E>), E>;
+
     /// [`WriteStream`]s started and not yet done (their actor may hold or
     /// wait for the writer lock), process-wide.
     static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -144,13 +169,22 @@ mod actor {
     /// A mutating stream on its actor thread. Pull it and drop it on any
     /// thread; dropping an unfinished one rolls it back and releases the
     /// writer lock before `drop` returns.
+    ///
+    /// The actor sends rows in chunks and reads one chunk ahead of the
+    /// consumer, pulling with [`lora_database::QueryStream::pull`], which
+    /// does not commit at the end. It commits only when the consumer asks
+    /// for the row after the last one, so a stream abandoned before that
+    /// still rolls back.
     pub struct WriteStream<T, E> {
         columns: Vec<String>,
+        /// Rows received and not yet handed out.
+        rows: std::vec::IntoIter<T>,
+        /// How the received rows end.
+        tail: Tail<E>,
         requests: Option<Sender<()>>,
-        replies: Receiver<Pulled<T, E>>,
+        replies: Receiver<Chunk<T, E>>,
         /// Disconnects once the actor has dropped the stream.
         done: Receiver<()>,
-        ended: bool,
     }
 
     impl<T, E> WriteStream<T, E>
@@ -185,8 +219,8 @@ mod actor {
             F: FnMut(Row) -> Result<T, E> + Send + 'static,
         {
             let (requests, inbox) = mpsc::channel::<()>();
-            let (reply, replies) = mpsc::channel::<Pulled<T, E>>();
-            let (opened_tx, opened) = mpsc::sync_channel::<Result<Vec<String>, E>>(1);
+            let (reply, replies) = mpsc::channel::<Chunk<T, E>>();
+            let (opened_tx, opened) = mpsc::sync_channel::<Opened<T, E>>(1);
             let (done_tx, done) = mpsc::channel::<()>();
             let active = Active::enter();
             let job = move || {
@@ -204,31 +238,55 @@ mod actor {
                         return;
                     }
                 };
-                if opened_tx.send(Ok(stream.columns().to_vec())).is_err() {
+                let columns = stream.columns().to_vec();
+                // The first rows travel with the open.
+                let chunk = pull_chunk(&mut stream, &mut map);
+                let mut drained = matches!(chunk.1, Tail::Drained);
+                if let Tail::Done(_) = chunk.1 {
+                    // An error: roll back and release the writer lock
+                    // before the caller hears of it.
+                    drop(stream);
+                    let _ = opened_tx.send(Ok((columns, chunk)));
+                    return;
+                }
+                if opened_tx.send(Ok((columns, chunk))).is_err() {
                     // Nobody waits for it any more: roll back.
                     return;
                 }
-                while recv(&inbox).is_ok() {
-                    let pulled = match stream.next_row() {
-                        Ok(Some(row)) => map(row).map(Some),
-                        Ok(None) => Ok(None),
-                        Err(e) => Err(E::from(LoraError::from_anyhow(e))),
-                    };
-                    if matches!(pulled, Ok(Some(_))) {
-                        if reply.send(pulled).is_err() {
-                            return;
-                        }
-                    } else {
-                        // End or error: finish the stream (commit or roll
-                        // back) and release the writer lock before the
-                        // caller hears of it.
+                loop {
+                    // Read the next chunk while the caller consumes the
+                    // last one. Once drained, the next request commits.
+                    let chunk = (!drained).then(|| pull_chunk(&mut stream, &mut map));
+                    if let Some((_, Tail::Done(_))) = chunk {
+                        // An error: roll back and release the writer lock
+                        // at once; the caller hears of it after the rows
+                        // before it.
                         drop(stream);
-                        let _ = reply.send(pulled);
+                        if recv(&inbox).is_ok() {
+                            let _ = reply.send(chunk.expect("chunk checked above"));
+                        }
+                        return;
+                    }
+                    if recv(&inbox).is_err() {
+                        // The handle was dropped: `stream` drops here,
+                        // rolling back.
+                        return;
+                    }
+                    let Some(chunk) = chunk else {
+                        let committed = stream
+                            .finish()
+                            .map_err(|e| E::from(LoraError::from_anyhow(e)));
+                        // Release the writer lock before the caller hears
+                        // of the commit.
+                        drop(stream);
+                        let _ = reply.send((Vec::new(), Tail::Done(committed)));
+                        return;
+                    };
+                    drained = matches!(chunk.1, Tail::Drained);
+                    if reply.send(chunk).is_err() {
                         return;
                     }
                 }
-                // The handle was dropped: `stream` drops here, rolling back
-                // if it was not exhausted.
             };
             run_pooled(Box::new(job))
                 .map_err(|e| E::from(internal(format!("could not start stream thread: {e}"))))?;
@@ -245,21 +303,62 @@ mod actor {
         /// Pull the next row: `None` at the end (the writes are then
         /// committed). An error rolls the writes back. Both end the
         /// stream; later pulls report the end.
+        #[inline]
         pub fn next_row(&mut self) -> Pulled<T, E> {
-            if self.ended {
-                return Ok(None);
+            if let Some(row) = self.rows.next() {
+                return Ok(Some(row));
             }
-            let closed = || E::from(internal("query stream thread exited".into()));
-            let sent = self.requests.as_ref().map(|requests| requests.send(()));
-            if !matches!(sent, Some(Ok(()))) {
-                self.ended = true;
-                return Err(closed());
+            self.refill()
+        }
+
+        /// Out of received rows: finish per the tail, or ask the actor for
+        /// more (or, once drained, to commit).
+        #[cold]
+        fn refill(&mut self) -> Pulled<T, E> {
+            loop {
+                match std::mem::replace(&mut self.tail, Tail::Done(Ok(()))) {
+                    Tail::Done(result) => return result.map(|()| None),
+                    Tail::More | Tail::Drained => {}
+                }
+                let closed = || E::from(internal("query stream thread exited".into()));
+                let sent = self.requests.as_ref().map(|requests| requests.send(()));
+                if !matches!(sent, Some(Ok(()))) {
+                    return Err(closed());
+                }
+                let Ok((rows, tail)) = recv(&self.replies) else {
+                    return Err(closed());
+                };
+                self.rows = rows.into_iter();
+                self.tail = tail;
+                if let Some(row) = self.rows.next() {
+                    return Ok(Some(row));
+                }
             }
-            let pulled = recv(&self.replies).map_err(|_| closed()).and_then(|p| p);
-            if !matches!(pulled, Ok(Some(_))) {
-                self.ended = true;
+        }
+    }
+
+    /// Pull up to [`CHUNK_ROWS`] rows, or for about [`CHUNK_TIME`], without
+    /// committing. On an error the stream has rolled back.
+    fn pull_chunk<T, E, F>(stream: &mut lora_database::QueryStream<'_>, map: &mut F) -> Chunk<T, E>
+    where
+        E: From<LoraError>,
+        F: FnMut(Row) -> Result<T, E>,
+    {
+        let start = Instant::now();
+        let mut rows = Vec::new();
+        loop {
+            let row = match stream.pull() {
+                Ok(Some(row)) => row,
+                Ok(None) => return (rows, Tail::Drained),
+                Err(e) => return (rows, Tail::Done(Err(E::from(LoraError::from_anyhow(e))))),
+            };
+            match map(row) {
+                Ok(row) => rows.push(row),
+                Err(e) => return (rows, Tail::Done(Err(e))),
             }
-            pulled
+            if rows.len() >= CHUNK_ROWS || (rows.len() % 16 == 0 && start.elapsed() >= CHUNK_TIME) {
+                return (rows, Tail::More);
+            }
         }
     }
 
@@ -268,10 +367,10 @@ mod actor {
     /// has opened it.
     pub struct OpeningStream<T, E> {
         parts: Option<Parts<T, E>>,
-        opened: Receiver<Result<Vec<String>, E>>,
+        opened: Receiver<Opened<T, E>>,
     }
 
-    type Parts<T, E> = (Sender<()>, Receiver<Pulled<T, E>>, Receiver<()>);
+    type Parts<T, E> = (Sender<()>, Receiver<Chunk<T, E>>, Receiver<()>);
 
     impl<T, E> OpeningStream<T, E>
     where
@@ -296,9 +395,9 @@ mod actor {
 
         fn finish(
             mut self,
-            opened: Result<Result<Vec<String>, E>, RecvError>,
+            opened: Result<Opened<T, E>, RecvError>,
         ) -> Result<WriteStream<T, E>, E> {
-            let columns =
+            let (columns, (rows, tail)) =
                 opened.map_err(|_| E::from(internal("stream thread exited".into())))??;
             let (requests, replies, done) = self
                 .parts
@@ -306,18 +405,19 @@ mod actor {
                 .ok_or_else(|| E::from(internal("stream already opened".into())))?;
             Ok(WriteStream {
                 columns,
+                rows: rows.into_iter(),
+                tail,
                 requests: Some(requests),
                 replies,
                 done,
-                ended: false,
             })
         }
     }
 
     impl<T, E> Drop for WriteStream<T, E> {
         /// Stop the actor and wait for it to drop the stream (rolling back
-        /// an unfinished one). The actor is idle between pulls, so this is
-        /// prompt.
+        /// an unfinished one). The actor pulls at most one chunk between
+        /// requests, so this is prompt.
         fn drop(&mut self) {
             self.requests.take();
             let _ = recv(&self.done);
