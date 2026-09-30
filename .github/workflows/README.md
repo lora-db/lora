@@ -27,11 +27,12 @@ it needs a tag resolver.
 | ---------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | **Quality gates**            | `commitlint`, `workspace-quality`                                | Run on every PR + every push to `main`. Must be green to merge.                                  |
 | **Per-binding CI**           | `lora-server`, `lora-node`, `lora-wasm`, `lora-python`, `lora-ruby`, `lora-go` | Path-filtered per binding. Run on PR + push + manual dispatch. Must be green to merge.          |
-| **Docs / site**              | `loradb-docs`                                                    | Builds `apps/loradb.com`; deploys to Cloudflare Pages on tag push, `release.released`, and dispatch. |
+| **Per-package CI**           | `lora-query`, `lora-graphql`                                     | Path-filtered per JS/TS package under `packages/`. Run on PR + push `main` + manual dispatch. Must be green to merge. |
+| **Docs / site**              | `loradb-docs`, `play-loradb`                                     | `loradb-docs` builds `apps/loradb.com` and deploys it to Cloudflare Pages on tag push, `release.released`, and dispatch. `play-loradb` builds `apps/play.loradb.com` and deploys it to Cloudflare Pages on push to `main` and dispatch. PRs build only. |
 | **Server binary release**    | `release`                                                        | Tag-driven. Builds `lora-server` archives and creates a **draft** GitHub Release.                |
-| **Client package release**   | `packages-release`                                               | Tag-driven. Publishes `@loradb/lora-wasm`, `@loradb/lora-node`, `lora-python`, `lora-ruby`; verifies + archives the Go binding. |
+| **Client package release**   | `packages-release`                                               | Tag-driven. Publishes `@loradb/lora-wasm`, `@loradb/lora-node`, `@loradb/lora-query`, `@loradb/lora-graph-canvas`, `@loradb/lora-graphql`, `lora-python`, `lora-ruby`; verifies + archives the Go binding. |
 | **Crates.io release**        | `cargo-release`                                                  | Tag-driven. Publishes every public Rust crate to crates.io in dependency order.                  |
-| **Benchmark / maintenance**  | `benchmarks`, `perf-smoke`                                       | `benchmarks` runs the full criterion suite on manual dispatch only and publishes a JSON state summary. `perf-smoke` runs a small canary on every PR + push to `main`, uploads a JSON state summary, and fails only on ≥3× regressions. |
+| **Benchmark / maintenance**  | `benchmarks`, `perf-smoke`, `memory-bench`                       | `benchmarks` runs the full criterion suite on manual dispatch only and publishes a JSON state summary. `perf-smoke` runs a small canary on every PR + push to `main`, uploads a JSON state summary, and fails only on ≥3× regressions. `memory-bench` runs the store's memory-footprint bench on PR + push to `main` and fails when a scenario exceeds its per-scenario tolerance vs. the checked-in baseline. |
 
 The three tag-driven release workflows (`release`, `packages-release`,
 `cargo-release`) fire off the same `vX.Y.Z[-pre]` tag push and run in
@@ -57,17 +58,34 @@ the workflow file itself. Bindings that share TS types
 | Workflow            | Matrix                                                                  | Per-binding-specific steps                                                                                                                                                                 |
 | ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `lora-server.yml`   | `{ubuntu-latest, windows-latest}`                                       | `cargo check / test / build --release -p lora-server`. Uploads a CI release-profile binary as a 7-day artifact (not a release asset).                                                      |
-| `lora-node.yml`     | `{ubuntu-latest, macos-latest}`                                         | `cargo check -p lora-node` + `npm run verify:types` + `npm run build:native` (napi) + `build:ts` + `typecheck` + `vitest` + `npm pack`. Uploads a tarball artifact.                         |
-| `lora-wasm.yml`     | `ubuntu-latest`                                                         | `cargo check` (host + `wasm32-unknown-unknown`) + wasm-pack build + `build:ts` + `typecheck` + `vitest` + Playwright browser smoke + `npm pack`. Uploads a tarball artifact.                |
+| `lora-node.yml`     | `{ubuntu-latest, macos-latest}`                                         | `cargo check -p lora-node` + `corepack yarn install --immutable` + `corepack yarn run verify:types` + `build:native` (napi) + `build:ts` + `typecheck` + `test` (vitest) + `npm pack`. Uploads a tarball artifact. |
+| `lora-wasm.yml`     | `ubuntu-latest`                                                         | `cargo check` (host + `wasm32-unknown-unknown`) + `corepack yarn install --immutable` + `verify:types` + `build:wasm` (wasm-pack) + `build:ts` + `typecheck` + `vitest` + Playwright browser smoke + `npm pack`. Uploads a tarball artifact. |
 | `lora-python.yml`   | `{ubuntu-latest, macos-latest} × {3.8, 3.11, 3.12}`                     | venv + `maturin develop --release` (no separate `cargo check` — maturin drives cargo internally) + `pytest` + `maturin build --release` + sanity import + example run. Uploads wheels.      |
 | `lora-ruby.yml`     | `{ubuntu-latest, macos-latest} × {3.1, 3.2, 3.3}`                       | `cargo check -p lora_ruby` + `bundle exec rake compile` (rb-sys) + `rake test` (minitest) + sanity require + example run + `rake build` (source gem). Uploads the built `.gem` artifact.   |
 | `lora-go.yml`       | `{ubuntu-latest, macos-latest}`                                         | `cargo build --release -p lora-ffi` + `cargo check -p lora-ffi` + `gofmt -l` + `go vet` + `go test -race` + `go run ./examples/basic`. Uploads the built `liblora_ffi.{a,so,dylib}` artifact. |
+
+### Per-package CI
+
+The JS/TS packages under `packages/` install through the Yarn 4
+workspace at the repo root (`corepack yarn install --immutable`), so
+their path filters also cover `package.json`, `yarn.lock`, and
+`.yarnrc.yml`.
+
+| Workflow            | Matrix          | Per-package-specific steps                                                                                                                                                                  |
+| ------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lora-query.yml`    | `ubuntu-latest` | Path-filtered to `packages/lora-query/**`, `lora-ast`, `lora-parser`, and the root manifests. `cargo check` (host + `wasm32`) + `cargo test -p lora-query-wasm` + `build:wasm` (wasm-pack) + `lint` + `typecheck` + `test` (vitest) + `build:lib` + `build:storybook` + pack check. Uploads the Storybook build. |
+| `lora-graphql.yml`  | `ubuntu-latest` | Path-filtered to `packages/lora-graphql/**`, `crates/**`, and the root manifests. `workspace` job (blocking): builds `@loradb/lora-node` from the tree (napi + TS), then `lint` + `typecheck` + `test` + `test:graphql17` + `build` + `npm pack --dry-run`. `published` job (`continue-on-error`): runs the tests against the `@loradb/lora-node` release the peer range names, and skips while that version is not on npm yet. |
+
+`@loradb/lora-graph-canvas` has no dedicated workflow; it is built,
+typechecked, and tested by `build-graph-canvas` in `packages-release`,
+and built by `play-loradb` on every change to it.
 
 ### Docs / site
 
 | Workflow            | Trigger                                                                        | What it does                                                                                                                                                                                                                                                 |
 | ------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `loradb-docs.yml`   | Tag push `v*.*.*[-*]`, PR (path-filtered to `apps/loradb.com/**`), `release.released`, dispatch | Builds `apps/loradb.com` (Docusaurus). On PR, uploads the build output as an inspection artifact only. On every other trigger, deploys the build directory to the Cloudflare Pages project `loradb-docs` at https://loradb.com. Branch pushes to `main` are intentionally not deployed. |
+| `play-loradb.yml`   | Push `main` + PR (path-filtered to `apps/play.loradb.com/**`, `packages/lora-query/**`, `packages/lora-graph-canvas/**`, `crates/bindings/lora-wasm/**`, own yml), dispatch | Builds `@loradb/lora-wasm`, `@loradb/lora-query`, and `@loradb/lora-graph-canvas`, then typechecks and statically exports the Next.js playground `apps/play.loradb.com`. On PR, build only. On push to `main` and dispatch, deploys `out/` to the Cloudflare Pages project `play-loradb` at https://play.loradb.com (environment `production`). |
 
 ### Server binary release
 
@@ -79,7 +97,7 @@ the workflow file itself. Bindings that share TS types
 
 | Workflow                | Trigger                                                                         | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ----------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages-release.yml`  | Tag push `v*.*.*[-*]`, dispatch (`tag` + `dry_run` inputs)                      | `verify-versions` → parallel build legs for every ecosystem → per-ecosystem publish jobs guarded by `dry_run != 'true'` (wasm + node → npm, python → PyPI, ruby → RubyGems). The Go binding is a verify-only path: it runs `verify-go` (matrix) + `build-go-archives` (convenience tarballs) + `verify-go-module-resolvable` (polls `proxy.golang.org` on real tag pushes). One final `summary` job is the branch-protection gate — fails if any upstream job failed or (outside dry-run) any publish job didn't succeed. Skipped jobs are treated as neutral. |
+| `packages-release.yml`  | Tag push `v*.*.*[-*]`, dispatch (`tag` + `dry_run` inputs)                      | `verify-versions` → parallel build legs for every ecosystem → per-ecosystem publish jobs guarded by `dry_run != 'true'` (`publish-wasm`, `publish-node`, `publish-query`, `publish-graph-canvas`, `publish-graphql` → npm, where `publish-graphql` waits for `publish-node`; `publish-python` → PyPI; `publish-ruby` → RubyGems). The Go binding is a verify-only path: it runs `verify-go` (matrix) + `build-go-archives` (convenience tarballs) + `verify-go-module-resolvable` (polls `proxy.golang.org` on real tag pushes). One final `summary` job is the branch-protection gate — fails if any upstream job failed or (outside dry-run) any publish job didn't succeed. Skipped jobs are treated as neutral. |
 
 ### Crates.io release
 
@@ -93,6 +111,7 @@ the workflow file itself. Bindings that share TS types
 | -------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `benchmarks.yml`     | Dispatch only (`tag` + `attach_to_release`) | `verify-versions` → `bench` runs `cargo bench -p lora-database` for the tagged commit, packages a criterion snapshot, and writes `benchmark-summary.json`. Optional `attach-to-release` uploads both the archive and standalone summary JSON as GitHub Release assets.       |
 | `perf-smoke.yml`     | PR + push `main` (path-filtered to engine crates, bench sources, baseline, scripts, own yml), dispatch | Runs the `perf_smoke` suite, writes `benchmark-summary.json`, and pipes the bencher output into `scripts/check-perf-smoke.mjs`. Fails only when a bench is ≥3× slower than its checked-in baseline. See [`docs/performance/perf-smoke.md`](../../docs/performance/perf-smoke.md). |
+| `memory-bench.yml`   | PR + push `main` (path-filtered to `crates/lora-store/**`, `crates/lora-database/**`, `scripts/check-mem-bench.mjs`, `setup-rust`, own yml), dispatch | Runs `cargo bench -p lora-database --bench memory -- --quick` and diffs the per-scenario totals against `crates/lora-database/benches/memory_baseline.json` with `scripts/check-mem-bench.mjs`. Fails when a scenario exceeds its tolerance; writes the per-scenario table to the step summary and uploads the log. |
 
 ## Shared composite actions
 
@@ -105,9 +124,10 @@ reduces the chance of a Windows/macOS/Linux branching footgun.
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`setup-rust`](../actions/setup-rust/action.yml)                  | every workflow that compiles Rust                                                                             | Installs the stable toolchain (optional `targets` / `components`) and, when `cache-key` is passed, primes a Swatinem/rust-cache partition. The `cache-key` per call keeps workflows from ever sharing `target/` — a stale cross-workflow cache previously masked pyo3 SIGILLs. |
 | [`resolve-release-tag`](../actions/resolve-release-tag/action.yml) | `release`, `cargo-release`, `packages-release`, `benchmarks`                                                  | Resolves a release tag from either an explicit `tag` input or `GITHUB_REF_NAME`, validates it as `vX.Y.Z[-pre]`, emits `tag` / `version` / `prerelease` outputs. Keeps tag parsing in one place. |
-| [`copy-license`](../actions/copy-license/action.yml)              | `packages-release` (wasm, node, python, ruby, go archive jobs)                                                | Copies the repo-root `LICENSE` into a destination directory in a cross-platform way. Replaces ad-hoc `cp ../../LICENSE LICENSE` / pwsh `Copy-Item` branches. |
+| [`copy-license`](../actions/copy-license/action.yml)              | `packages-release` (wasm, node, query, graph-canvas, graphql, python, ruby, go archive jobs), `lora-query`, `lora-graphql` | Copies the repo-root `LICENSE` into a destination directory in a cross-platform way. Replaces ad-hoc `cp ../../LICENSE LICENSE` / pwsh `Copy-Item` branches. |
+| [`setup-node-yarn`](../actions/setup-node-yarn/action.yml)        | every workflow that installs the Yarn workspace: `commitlint`, `lora-node`, `lora-wasm`, `lora-query`, `lora-graphql`, `loradb-docs`, `play-loradb`, `packages-release` | Installs Node (optional `registry-url` for npm publish jobs) and activates the pinned Yarn (default `4.5.1`) through Corepack, with a `yarn` shim so bare `yarn` and `corepack yarn` agree on every OS. Fails if either resolves a different version. |
 
-Why we intentionally **don't** have `setup-node-package`,
+Why we intentionally **don't** have per-binding `setup-node-package`,
 `setup-python-maturin`, `setup-go-binding`, or `setup-ruby-gem`
 composites: each would save 4–6 lines in at most two workflows, and
 each binding's setup differs enough (matrix shape, registry config,
@@ -126,10 +146,11 @@ the safest way to stay consistent.
   Keep it current — a stale header is worse than none.
 - **`permissions:` block.** Always set at the top level. Default is
   `contents: read`. Raise only where needed: `release` / `benchmarks`
-  use `contents: write`; `loradb-docs` adds `pages: write` +
-  `id-token: write`; the npm/PyPI/RubyGems publish jobs in
+  use `contents: write`; `loradb-docs` and `play-loradb` add
+  `deployments: write`; the npm/PyPI/RubyGems publish jobs in
   `packages-release` set `id-token: write` at the job level for OIDC
-  trusted publishing.
+  trusted publishing, and `verify-go-module-resolvable` sets
+  `contents: write` at the job level to push the Go module tag.
 - **`concurrency:` block.** Always set. PR-facing workflows cancel
   in-progress runs of the same ref:
   `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.
@@ -163,7 +184,7 @@ the safest way to stay consistent.
   release). If/when upstream ships a new major, update deliberately.
 - **Artifact naming.** Release artifacts include the tag:
   `lora-server-<tag>-<target>.<ext>`, `lora-ffi-<tag>-<triple>.tar.gz`,
-  `lora-server-<tag>-benchmarks.tar.gz`. CI artifacts don't encode a
+  `lora-server-<tag>-benchmarks.tar.gz` (from `benchmarks`). CI artifacts don't encode a
   tag but encode the OS/runtime they were built on so PR runs do not
   collide: `lora-node-<os>-tarball`, `lora-python-<os>-py<ver>-wheel`,
   `lora-ruby-<os>-ruby<ver>-gem`, etc.
@@ -177,11 +198,11 @@ path will succeed.
 
 | Environment          | Used by                                    | Primary auth                                                                             | Fallback secret                                                       |
 | -------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `npm-publish`        | `packages-release` → `publish-wasm`, `publish-node` | OIDC trusted publisher configured on npmjs.com per package, bound to this environment.   | `NPM_TOKEN` (scoped automation token with `publish` on `@loradb`).    |
+| `npm-publish`        | `packages-release` → `publish-wasm`, `publish-node`, `publish-query`, `publish-graph-canvas`, `publish-graphql` | OIDC trusted publisher configured on npmjs.com per package, bound to this environment.   | `NPM_TOKEN` (scoped automation token with `publish` on `@loradb`).    |
 | `pypi-publish`       | `packages-release` → `publish-python`      | OIDC trusted publisher configured on pypi.org for project `lora-python`, bound here.     | `PYPI_API_TOKEN` (project-scoped API token).                          |
 | `rubygems-publish`   | `packages-release` → `publish-ruby`        | OIDC trusted publisher configured on rubygems.org for gem `lora-ruby`, bound here.       | `RUBYGEMS_API_KEY` (gem-scoped API key with `push_rubygem`).          |
 | `crates-io-publish`  | `cargo-release` → `publish`                | **Required**: `CARGO_REGISTRY_TOKEN`. crates.io has no OIDC trusted publishing yet; if/when it ships, flip to `id-token: write` and delete the secret. | — |
-| `production`         | `loradb-docs` → `deploy`                   | Cloudflare Pages direct upload via `cloudflare/wrangler-action@v3`.                      | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`                       |
+| `production`         | `loradb-docs` → `deploy`, `play-loradb` → `deploy` | Cloudflare Pages direct upload via `cloudflare/wrangler-action@v3`.                      | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`                       |
 
 Bootstrap details (first publish of each name, trusted-publisher
 registration, yank / recovery semantics) live in
@@ -232,11 +253,11 @@ the following in a single PR:
    - Add a row to [the classification table](#classification) and
      [the workflow index](#workflow-index) in this file.
    - Add the environment to [Environments & secrets](#environments--secrets).
-   - In [`../../RELEASE.md`](../../RELEASE.md): add the binding to the
-     pre-release version-bump block, the published-package sanity
-     list, and the post-release smoke-test list.
-   - In [`../../RELEASING.md`](../../RELEASING.md): add a "Releasing
-     the X binding" section following the Go section as a template.
+   - In [`../../RELEASING.md`](../../RELEASING.md): add the binding to
+     the release checklist's version-bump block, published-package
+     sanity list, and post-release smoke-test list, and add a
+     "Releasing the X binding" section following the Go section as a
+     template.
 7. **Shared actions**. If the binding introduces a pattern that will
    appear in a second workflow in the near term, extract a composite
    action under `.github/actions/` — otherwise leave it inline.
@@ -245,9 +266,9 @@ the following in a single PR:
 
 ## Related files
 
-- [`RELEASE.md`](../../RELEASE.md) — human release checklist.
-- [`RELEASING.md`](../../RELEASING.md) — technical release flow
-  (what each release workflow does, how to recover).
+- [`RELEASING.md`](../../RELEASING.md) — the human release checklist,
+  then the technical release flow (what each release workflow does, how
+  to recover).
 - [`cliff.toml`](../../cliff.toml) — changelog template used by
   `release.yml`.
 - [`scripts/sync-versions.mjs`](../../scripts/sync-versions.mjs) —

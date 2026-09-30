@@ -1,9 +1,10 @@
 name: packages-release
 
-# Tag-driven client-package release pipeline. Covers four distributable
+# Tag-driven client-package release pipeline. Covers seven distributable
 # packages plus a verify-only path for the Go binding:
 #   - @loradb/lora-wasm  → npm
 #   - @loradb/lora-node  → npm (root + per-triple optional subpackages)
+#   - @loradb/lora-query, @loradb/lora-graph-canvas, @loradb/lora-graphql → npm
 #   - lora-python        → PyPI (manylinux + macOS + Windows wheels + sdist)
 #   - lora-ruby          → RubyGems (source gem + precompiled platform gems)
 #   - lora-go            → no registry upload. Go resolves the module via

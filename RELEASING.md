@@ -1,6 +1,193 @@
+# Releasing LoraDB
+
+One `vX.Y.Z` tag releases everything: the `lora-server` binaries, the
+client packages (npm, PyPI, RubyGems, the Go module) and the Rust crates
+on crates.io. This document starts with the human checklist for cutting
+a release, then describes each release workflow in turn:
+
+- [Release checklist](#release-checklist) — what a maintainer does, in order.
+- [Releasing `lora-server`](#releasing-lora-server) — `release.yml`.
+- [Releasing the client packages](#releasing-the-client-packages) —
+  `packages-release.yml`.
+- [Releasing the Rust crates](#releasing-the-rust-crates-cratesio) —
+  `cargo-release.yml`.
+- [Releasing the Go binding](#releasing-the-go-binding-githubcomlora-dblora-cratesbindingslora-go) —
+  the verify-only Go path in `packages-release.yml`.
+
+## Release checklist
+
+### Pre-release
+
+- [ ] `main` is green: `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all --check`.
+- [ ] Every public commit on `main` since the last tag follows Conventional Commits
+      (`corepack yarn exec commitlint --from=<lastTag> --to=HEAD`). There is no
+      hand-written `CHANGELOG.md` in the repo: the `changelog` job in
+      `release.yml` renders the release notes from these commits with
+      `git-cliff` (see [Changelog generation](#changelog-generation)). To
+      preview them locally: `git cliff --unreleased`.
+- [ ] No `TODO (release)` or `XXX` markers left in code paths touched this cycle (`rg 'TODO ?\(release\)|XXX' crates/`).
+- [ ] `README.md` install / usage snippets still work against a fresh clone.
+- [ ] Licensing is correct:
+  - [ ] Root `LICENSE` is BSL 1.1.
+  - [ ] BSL Change Date is three years from the intended public release date.
+  - [ ] BSL Change License is Apache License 2.0.
+  - [ ] Root package metadata uses `BUSL-1.1`.
+  - [ ] `apps/loradb.com/LICENSE` is MIT.
+  - [ ] No project-authored docs claim the database core is MIT or Apache before
+        the Change Date.
+- [ ] Version bumped consistently. Run the sync helper — it updates every manifest in one go —
+      then refresh the two committed lockfiles and commit:
+  ```bash
+  node scripts/sync-versions.mjs X.Y.Z
+  cargo check --workspace                         # refreshes Cargo.lock
+  corepack yarn install --mode=update-lockfile    # refreshes yarn.lock
+  node scripts/sync-versions.mjs X.Y.Z --check    # sanity check
+  git commit -am "chore(release): vX.Y.Z"
+  ```
+  Touches: workspace `Cargo.toml` (`[workspace.package].version` and the
+  `=X.Y.Z` internal-dep pins in `[workspace.dependencies]`),
+  `crates/bindings/lora-node/package.json`,
+  `crates/bindings/lora-wasm/package.json`,
+  `packages/lora-query/package.json`, `packages/lora-graph-canvas/package.json`,
+  `packages/lora-graphql/package.json` (version **and** its
+  `@loradb/lora-node` peer range `^X.Y.Z`), `apps/loradb.com/package.json`,
+  `crates/bindings/lora-python/pyproject.toml`, and
+  `crates/bindings/lora-ruby/lib/lora_ruby/version.rb`.
+  The repo is Yarn 4 with a single root `yarn.lock` (`package-lock.json`
+  is gitignored). `yarn.lock` records the `@loradb/lora-graphql` peer
+  range, so it changes on every bump, and CI installs with
+  `yarn install --immutable`: a stale `yarn.lock` fails every JS job.
+  `crates/bindings/lora-ruby/Gemfile.lock` is gitignored; a local
+  `bundle install` refreshes your copy, but there is nothing to commit.
+- [ ] The commit that bumps versions is `chore(release): vX.Y.Z` (commitlint
+      rejects a bare `Release vX.Y.Z`; git-cliff skips `chore(release):`
+      commits so the notes don't reference themselves).
+- [ ] Every release workflow (`release`, `packages-release`, `cargo-release`,
+      and the manual `benchmarks`) starts with a `verify-versions` job that
+      re-runs `sync-versions.mjs --check` against the tag; if any manifest is
+      out of sync with the tag, that workflow fails before any build runs.
+
+### Secrets and sensitive data audit
+
+Run before every tag that will end up on a public remote:
+
+- [ ] `git ls-files | rg -i '\.(env|pem|key|p12|jks|keystore|db|sqlite|dump|sql)$'` returns no unexpected hits.
+- [ ] `for s in 'PRIVATE KEY' 'BEGIN RSA' 'api_key' 'aws_secret'; do git log --all --oneline -S "$s"; done` returns no unexpected commits.
+- [ ] No embedded production database dumps, customer data, or proprietary third-party data.
+- [ ] No credentials in CI workflows (they should all be `${{ secrets.* }}`).
+- [ ] No large generated artifacts tracked (`dist/`, `build/`, `pkg-*`, `*.node`, `.venv/`, `node_modules/`).
+
+### Cutting the release
+
+1. (Optional but recommended on workflow changes) Dry-run both client
+   pipelines:
+   - **Actions → packages-release → Run workflow**, `tag: vX.Y.Z`, `dry_run: true`.
+   - **Actions → cargo-release → Run workflow**, `tag: vX.Y.Z`, `dry_run: true`.
+   - Also run `node scripts/publish-crates.mjs --dry-run` locally — it
+     exercises `cargo publish --workspace --dry-run` end-to-end.
+2. Tag:
+   ```bash
+   git tag -a vX.Y.Z -m "lora vX.Y.Z"
+   git push origin main
+   git push origin vX.Y.Z
+   ```
+   Use `vX.Y.Z-<pre>` (for example `v0.2.0-rc.1`) for a pre-release.
+3. Three workflows trigger in parallel:
+   - `release` — builds the `lora-server` binaries and creates a draft
+     GitHub Release.
+   - `packages-release` — builds and publishes `@loradb/lora-wasm`,
+     `@loradb/lora-node` (+ platform subpackages), `@loradb/lora-query`,
+     `@loradb/lora-graph-canvas`, `@loradb/lora-graphql` (after
+     `@loradb/lora-node`), `lora-python`, and `lora-ruby` (+ precompiled
+     platform gems) to npm / PyPI / RubyGems, and verifies the Go module.
+   - `cargo-release` — publishes every public workspace crate to
+     crates.io in dependency order.
+4. Review the draft GitHub Release:
+   - [ ] Every archive attached (Linux x86_64, Windows x86_64, macOS Intel, macOS ARM).
+   - [ ] Matching `.sha256` next to each archive.
+   - [ ] `lora-server-vX.Y.Z-SHA256SUMS.txt` and `CHANGELOG.md` present.
+5. Confirm the published client packages:
+   - [ ] <https://www.npmjs.com/package/@loradb/lora-wasm> shows `X.Y.Z`.
+   - [ ] <https://www.npmjs.com/package/@loradb/lora-node> shows `X.Y.Z`
+         with matching `optionalDependencies` for every platform
+         subpackage.
+   - [ ] <https://www.npmjs.com/package/@loradb/lora-query>,
+         <https://www.npmjs.com/package/@loradb/lora-graph-canvas>, and
+         <https://www.npmjs.com/package/@loradb/lora-graphql> show `X.Y.Z`.
+   - [ ] <https://pypi.org/project/lora-python/X.Y.Z/> shows the sdist
+         and every platform wheel.
+   - [ ] <https://rubygems.org/gems/lora-ruby/versions/X.Y.Z> lists the
+         source gem and every precompiled platform gem
+         (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
+         `arm64-darwin`, `x64-mingw-ucrt`).
+   - [ ] <https://crates.io/crates/lora-database/X.Y.Z> exists, plus the
+         other eleven public crates (`lora-ast`, `lora-builtins-meta`,
+         `lora-store`, `lora-snapshot`, `lora-parser`, `lora-analyzer`,
+         `lora-compiler`, `lora-executor`, `lora-io`, `lora-wal`,
+         `lora-server`).
+   - [ ] The Go binding resolves via the proxy:
+         `GOPROXY=https://proxy.golang.org go list -m github.com/lora-db/lora/crates/bindings/lora-go@vX.Y.Z`
+         returns the expected version. The `verify-go-module-resolvable`
+         CI job also covers this, but re-running locally surfaces any
+         network flakiness that only shows up in your environment.
+6. Review the git-cliff release notes that pre-fill the server draft, add
+   highlights / breaking changes / upgrade steps if needed, and **Publish**
+   the draft.
+7. (Optional) Benchmark snapshot: **Actions → benchmarks → Run workflow**
+   with `tag: vX.Y.Z`. It runs outside the release path and, with
+   `attach_to_release: true`, attaches the snapshot to the release (see
+   [Benchmark snapshots](#benchmark-snapshots)).
+
+### Post-release
+
+- [ ] Smoke-test one downloaded archive end-to-end (verify checksum, extract, start server, run one query).
+- [ ] `npm install @loradb/lora-wasm@X.Y.Z` in a throwaway dir and import once.
+- [ ] `npm install @loradb/lora-node@X.Y.Z` and run the `require()` smoke test.
+- [ ] `npm install @loradb/lora-graphql@X.Y.Z @loradb/lora-node@X.Y.Z graphql` in a
+      throwaway dir and import once (the peer range must resolve to the
+      `lora-node` just published).
+- [ ] `pip install lora-python==X.Y.Z` in a fresh venv and run `python examples/basic.py`.
+- [ ] `gem install lora-ruby -v X.Y.Z` in a throwaway dir and run
+      `ruby -r lora_ruby -e 'puts LoraRuby::VERSION'`, then
+      `ruby examples/basic.rb` from the checked-out crate.
+- [ ] `cargo add lora-database@X.Y.Z` in a throwaway crate and run the README snippet.
+- [ ] `cargo install lora-server --version X.Y.Z` and start the binary once.
+- [ ] `go get github.com/lora-db/lora/crates/bindings/lora-go@vX.Y.Z` in a
+      throwaway module, then `go run ./examples/basic` (or a tiny
+      `main.go` that opens a DB, runs `MATCH (n) RETURN count(n)`,
+      and prints the result) to confirm the module builds against a
+      freshly compiled `lora-ffi`.
+- [ ] Close / move the milestone.
+- [ ] Open the next iteration's milestone and bump to the next
+      pre-release version with `scripts/sync-versions.mjs` if desired (same
+      lockfile + commit steps as above).
+
+### Emergency rollback
+
+- A published **server release** can be unpublished on GitHub (it becomes a draft).
+- **Published npm / PyPI / RubyGems versions cannot be overwritten.**
+  npm's `unpublish` window is 72 hours for packages with no dependents;
+  after that, ship a patch release. PyPI never allows re-uploading the
+  same version. RubyGems allows `gem yank X.Y.Z` (hides it from new
+  resolves while leaving existing `Gemfile.lock` files working) but not
+  a re-push of the same version. For any publish mistake, cut
+  `vX.Y.(Z+1)` with the fix.
+- **Published crates.io versions cannot be overwritten ever.** You can
+  `cargo yank` a broken version (it stays resolvable for existing
+  `Cargo.lock` files but is hidden from new dependency solves). Yank is
+  not a rollback — cut a patch release.
+- A pushed tag can be moved, but only before anyone relies on it. After that,
+  cut a new patch release (`vX.Y.Z+1`) instead.
+- A pushed commit cannot be taken back once anyone has fetched it — prefer a
+  revert commit over force-pushing on `main`.
+- See the "Recovery from a failed publish" sections below for
+  partial-publish recovery (some subpackages out, others not).
+
+---
+
 # Releasing `lora-server`
 
-This document describes how release artifacts for the `lora-server` binary are
+This part describes how release artifacts for the `lora-server` binary are
 produced and published.
 
 ## Overview
@@ -9,7 +196,10 @@ Releases are driven by **annotated semver tags** of the form `vX.Y.Z`. Pushing
 such a tag triggers the [`release`](.github/workflows/release.yml) workflow,
 which runs in four stages:
 
-1. **`build`** — one matrix job per target (Linux x86_64, Windows x86_64,
+1. **`verify-versions`** — re-runs `node scripts/sync-versions.mjs <version>
+   --check` against the tag. Every other job needs it, so a manifest that
+   disagrees with the tag stops the release before anything is built.
+2. **`build`** — one matrix job per target (Linux x86_64, Windows x86_64,
    macOS Intel, macOS Apple Silicon):
    1. Checks out the tagged commit.
    2. Builds `lora-server` in release mode for the target.
@@ -17,7 +207,7 @@ which runs in four stages:
       archive (`.tar.gz` on Unix, `.zip` on Windows).
    4. Writes a SHA-256 checksum next to the archive.
    5. Uploads archive + checksum as a workflow artifact.
-2. **`changelog`** — runs in parallel with `build`:
+3. **`changelog`** — runs in parallel with `build`:
    1. Checks out the tagged commit with full git history + tags.
    2. Runs [`git-cliff`](https://git-cliff.org) (config: `cliff.toml`) over
       the Conventional-Commits history to render two files:
@@ -26,28 +216,24 @@ which runs in four stages:
       - `CHANGELOG.md` — the full, cumulative changelog across every tag,
         attached to the release as a downloadable asset.
    3. Uploads both as a single workflow artifact.
-3. **`bench`** — runs in parallel with `build`:
-   1. Checks out the tagged commit.
-   2. Executes the criterion benchmark suite (`cargo bench --locked -p
-      lora-database`) in release mode on `ubuntu-latest`.
-   3. Captures raw stdout plus the HTML reports under `target/criterion/`,
-      adds a short `README.txt` describing the snapshot, tarballs everything
-      as `lora-server-vX.Y.Z-benchmarks.tar.gz`, writes a `.sha256`, and
-      uploads archive + checksum as a workflow artifact.
-4. **`publish`** — runs once, after every `build` leg, `changelog`, and
-   `bench` have succeeded:
+4. **`publish`** — runs once, after `verify-versions`, every `build` leg,
+   and `changelog` have succeeded:
    1. Downloads every workflow artifact produced upstream into `dist/`.
-   2. Concatenates the individual `.sha256` files (binary archives +
-      benchmarks) into an aggregated `lora-server-vX.Y.Z-SHA256SUMS.txt`.
+   2. Concatenates the per-archive `.sha256` files into an aggregated
+      `lora-server-vX.Y.Z-SHA256SUMS.txt`.
    3. Composes the release body from `release-notes.md` and appends an asset
       table.
    4. Creates (or updates) a **draft** GitHub Release for the tag and
       attaches every binary archive, every per-archive `.sha256`, the
-      aggregated `SHA256SUMS.txt`, the full `CHANGELOG.md`, and the
-      benchmark tarball as release assets — in a single atomic step.
+      aggregated `SHA256SUMS.txt`, and the full `CHANGELOG.md` as release
+      assets — in a single atomic step.
+
+Benchmarks are deliberately **not** part of `release.yml`, so benchmark
+noise or runtime never blocks a release. They run on demand in the separate
+`benchmarks.yml` workflow (see [Benchmark snapshots](#benchmark-snapshots)).
 
 The release is left as a **draft** on purpose. A maintainer reviews the
-assets, fills in release notes, and publishes manually.
+assets and the pre-filled release notes, and publishes manually.
 
 The workflow artifacts are kept for 30 days as a secondary copy — the main
 downloadable distribution path is the GitHub Release assets.
@@ -87,8 +273,6 @@ is target-agnostic.
 lora-server-vX.Y.Z-<target-triple>.<ext>
 lora-server-vX.Y.Z-<target-triple>.<ext>.sha256
 lora-server-vX.Y.Z-SHA256SUMS.txt
-lora-server-vX.Y.Z-benchmarks.tar.gz
-lora-server-vX.Y.Z-benchmarks.tar.gz.sha256
 CHANGELOG.md
 ```
 
@@ -104,13 +288,16 @@ lora-server-v0.1.0-x86_64-apple-darwin.tar.gz.sha256
 lora-server-v0.1.0-aarch64-apple-darwin.tar.gz
 lora-server-v0.1.0-aarch64-apple-darwin.tar.gz.sha256
 lora-server-v0.1.0-SHA256SUMS.txt
-lora-server-v0.1.0-benchmarks.tar.gz
-lora-server-v0.1.0-benchmarks.tar.gz.sha256
 CHANGELOG.md
 ```
 
 `SHA256SUMS.txt` is the concatenation of all per-archive `.sha256` files and
 can be used to verify every archive in one go.
+
+If `benchmarks.yml` is later run for the tag with `attach_to_release: true`,
+it adds `lora-server-vX.Y.Z-benchmarks.tar.gz`,
+`lora-server-vX.Y.Z-benchmarks.summary.json`, and a `.sha256` for each.
+These are not part of `SHA256SUMS.txt`.
 
 Each archive contains a single top-level directory named after the archive
 (without the extension). Inside:
@@ -175,19 +362,21 @@ README for the full option list.
 
 ## Cutting a release
 
-1. **Bump the version.** Update `version` in the workspace `Cargo.toml` to the
-   new `X.Y.Z`. Run `cargo check --workspace` so `Cargo.lock` picks up the
-   change, then commit:
+The full sequence (version bump, audits, tag, post-release checks) is the
+[Release checklist](#release-checklist) at the top of this file. The
+server-specific part:
 
-   ```bash
-   git commit -am "Release vX.Y.Z"
-   ```
+1. **Bump the version** with `scripts/sync-versions.mjs`, refresh the
+   lockfiles, and commit as `chore(release): vX.Y.Z` — see the checklist's
+   version-bump step. Do **not** edit only `Cargo.toml`: `verify-versions`
+   checks every manifest against the tag and fails the release on any
+   drift.
 
 2. **Tag the commit.** Use an annotated tag matching `vX.Y.Z`
    (or `vX.Y.Z-<pre>` for pre-releases such as `v0.2.0-rc.1`):
 
    ```bash
-   git tag -a vX.Y.Z -m "lora-server vX.Y.Z"
+   git tag -a vX.Y.Z -m "lora vX.Y.Z"
    ```
 
 3. **Push the commit and the tag.**
@@ -197,16 +386,18 @@ README for the full option list.
    git push origin vX.Y.Z
    ```
 
-   Pushing the tag is what starts the release workflow. Watch it in the
+   Pushing the tag is what starts the release workflow (and
+   `packages-release` + `cargo-release` alongside it). Watch it in the
    **Actions** tab of the repository.
 
 4. **Publish the draft release.** Once the `publish` job finishes, open the
    draft release under **Releases** on GitHub:
    - Confirm all expected assets are attached: one archive + one `.sha256`
-     per row in the matrix above, plus the aggregated `SHA256SUMS.txt`.
-   - Add release notes (highlights, breaking changes, upgrade steps) — the
-     workflow pre-fills a short platform/asset overview you can keep or
-     replace.
+     per row in the matrix above, plus the aggregated `SHA256SUMS.txt` and
+     `CHANGELOG.md`.
+   - Review the release notes. The body is pre-filled with the git-cliff
+     notes for this tag plus an asset table; add highlights, breaking
+     changes, or upgrade steps as needed.
    - Click **Publish release**.
 
 ## Re-running a release (recovery)
@@ -246,9 +437,11 @@ same flow as a regular release.
   **workflow_dispatch** with the same tag — previously successful legs are
   fast because `Swatinem/rust-cache` hits, and once every leg passes, the
   draft release is populated in one atomic `publish` step.
-- **Version drift.** The artifact filename uses the **tag**, not the
-  `Cargo.toml` version. If the two disagree, reconcile `Cargo.toml` first and
-  re-tag against a new commit. Keep them in sync.
+- **`verify-versions` failed (version drift).** A manifest disagrees with
+  the tag, so nothing was built. The artifact filenames use the **tag**, so
+  never work around it: run `node scripts/sync-versions.mjs X.Y.Z`, commit
+  the fix, and tag the new commit (use a new patch version if the tag was
+  already public).
 - **macOS runners are slow.** First run per target on a new cache may take up
   to ~15 minutes. Subsequent runs hit `Swatinem/rust-cache` and are much
   faster.
@@ -285,22 +478,34 @@ release is still readable.
 
 ## Benchmark snapshots
 
-The `bench` job runs the criterion suite defined in
-`crates/lora-database/benches/` once per release tag and pins the output to
-the release:
+Benchmarks are **not** run by `release.yml`. The separate
+[`benchmarks`](.github/workflows/benchmarks.yml) workflow runs on manual
+dispatch only (**Actions → benchmarks → Run workflow**) with two inputs:
+`tag` (an existing release tag) and `attach_to_release` (default `true`).
+
+It re-runs `verify-versions` for the tag, then runs the criterion suite
+defined in `crates/lora-database/benches/` (`cargo bench --locked -p
+lora-database --benches`) on `ubuntu-latest` and packages a snapshot:
 
 ```
 lora-server-vX.Y.Z-benchmarks.tar.gz
-  ├── benchmarks.log        # raw `cargo bench` stdout (bencher format)
-  ├── criterion/            # criterion HTML reports + estimates.json
-  └── README.txt            # describes the snapshot
+  ├── benchmarks.log          # raw `cargo bench` stdout (bencher format)
+  ├── benchmark-summary.json  # machine-readable summary (scripts/summarize-benchmarks.mjs)
+  ├── criterion/              # criterion HTML reports + estimates.json
+  └── README.txt              # describes the snapshot
+lora-server-vX.Y.Z-benchmarks.summary.json   # the same summary, standalone
 ```
+
+Each file gets a `.sha256`. Both are uploaded as a workflow artifact and,
+with `attach_to_release: true`, added to the tag's GitHub Release.
 
 Treat the numbers as a **relative trend signal**, not authoritative
 microbenchmark results. GitHub-hosted runners have noisy neighbors, variable
-CPU topology, and thermal throttling. The value is that every released
-version has the same benchmark harness executed against the same code, so
-regressions and improvements show up even if absolute numbers drift.
+CPU topology, and thermal throttling. The value is that every version run
+through the workflow has the same benchmark harness executed against the
+same code, so large shifts show up even if absolute numbers drift. The
+snapshot is not compared against a previous one; per-PR regression gating
+is the job of `perf-smoke.yml` (and `memory-bench.yml` for memory).
 
 For more rigorous comparisons, run the suite on dedicated hardware:
 
@@ -309,10 +514,9 @@ cargo bench -p lora-database
 open target/criterion/report/index.html
 ```
 
-If the benchmark job flakes (transient runner failure, toolchain hiccup), use
-**Actions → release → Run workflow** with the existing tag to rebuild. All
-jobs are idempotent against an existing tag — cached Rust builds make
-recovery cheap.
+If the benchmark job flakes (transient runner failure, toolchain hiccup),
+dispatch it again with the same tag — it is idempotent against an existing
+tag, and it never affects the release itself.
 
 ## What is intentionally **not** done yet
 
@@ -325,20 +529,24 @@ These would be reasonable next steps but are out of scope for now:
   Windows targets for `lora-node` (which does ship musl builds).
 - Bench regression gating (e.g. fail the release if a benchmark regresses
   beyond a threshold vs. the previous tag). Requires a low-noise runner.
-- Auto-committing `CHANGELOG.md` back to `main`. The release ships it as an
-  asset; syncing the repo copy is a separate PR today.
+- A `CHANGELOG.md` in the repository. The release renders it with git-cliff
+  and ships it only as a release asset; nothing commits it back to `main`.
 
 ---
 
-# Releasing the client packages (`lora-node`, `lora-wasm`, `lora-python`, `lora-ruby`)
+# Releasing the client packages
 
-The client packages use the **same semver tag** as the server. One
-`git push origin vX.Y.Z` triggers two independent workflows:
+The client packages — the `lora-node`, `lora-wasm`, `lora-python`, and
+`lora-ruby` bindings plus the JS/TS packages under `packages/`
+(`lora-query`, `lora-graph-canvas`, `lora-graphql`) — use the **same
+semver tag** as the server. One `git push origin vX.Y.Z` triggers
+`packages-release.yml` alongside the other release workflows:
 
 - `release.yml` — builds `lora-server` binaries and creates a draft GitHub
   Release (see above).
-- `packages-release.yml` — builds the four client packages and publishes
-  them to npm, PyPI, and RubyGems.
+- `packages-release.yml` — builds the seven client packages and publishes
+  them to npm, PyPI, and RubyGems (plus the verify-only Go path, see
+  [Releasing the Go binding](#releasing-the-go-binding-githubcomlora-dblora-cratesbindingslora-go)).
 
 They run in parallel. Nothing the package workflow does depends on the
 server release draft, and vice versa.
@@ -349,6 +557,8 @@ server release draft, and vice versa.
 | -------------------- | -------- | ----------------------------------------------------------- |
 | `@loradb/lora-wasm`  | npm      | Single tarball with `dist/` + `pkg-node/` + `pkg-bundler/` + `pkg-web/`. |
 | `@loradb/lora-node`  | npm      | Root package + one optional platform subpackage per napi triple. |
+| `@loradb/lora-query` | npm      | React + CodeMirror Cypher editor: `dist/` plus the `wasm/` build of the embedded `lora-query-wasm` parser crate. |
+| `@loradb/lora-graph-canvas` | npm | Pure-TS React graph canvas (`dist/`). No native or WASM code. |
 | `@loradb/lora-graphql` | npm    | Pure-TS tarball. Released in lockstep with `@loradb/lora-node`: its peer range is `^<version>` (kept by `scripts/sync-versions.mjs`), and `publish-graphql` waits for `publish-node`. |
 | `lora-python`        | PyPI     | abi3-py38 wheels (manylinux x64 + arm64, macOS x64 + arm64, Windows x64) plus an sdist. |
 | `lora-ruby`          | RubyGems | Source gem + precompiled platform gems (linux x64 + arm64, macOS x64 + arm64, Windows ucrt). |
@@ -434,7 +644,8 @@ to the job that uses them. See
 [`.github/workflows/README.md` → Environments & secrets](.github/workflows/README.md#environments--secrets)
 for the canonical table. The bootstrap details for each environment:
 
-- **`npm-publish`** — used by `publish-wasm` and `publish-node` in
+- **`npm-publish`** — used by `publish-wasm`, `publish-node`,
+  `publish-query`, `publish-graph-canvas`, and `publish-graphql` in
   `packages-release.yml`.
   - Secret: `NPM_TOKEN` (automation token, `publish` permission). Only
     required until trusted publishing is live for every npm package
@@ -449,13 +660,14 @@ for the canonical table. The bootstrap details for each environment:
   - Secret: `CARGO_REGISTRY_TOKEN` (required; see "Trusted publishing
     (OIDC) — current status" further down for why OIDC is not yet an
     option on crates.io).
-- **`github-pages`** — used by `deploy` in `loradb-docs.yml`. Created
-  automatically by GitHub the first time Pages is enabled; no secret
-  is needed (authentication is OIDC via `actions/deploy-pages@v4`).
-  Add a required reviewer here if you want a manual approval gate on
-  docs deploys.
+- **`production`** — used by `deploy` in `loradb-docs.yml` (loradb.com)
+  and `deploy` in `play-loradb.yml` (play.loradb.com). Both deploy to
+  Cloudflare Pages via `cloudflare/wrangler-action@v3`.
+  - Secrets (repository- or environment-level): `CLOUDFLARE_API_TOKEN`
+    (scoped to "Pages — Edit") and `CLOUDFLARE_ACCOUNT_ID`. Add a required reviewer here if you want a
+    manual approval gate on site deploys.
 
-Create the first four environments under **Settings → Environments**
+Create all five environments under **Settings → Environments**
 in this repository. Add at least one required reviewer on each if
 you want a manual approval gate before any publish runs.
 
@@ -467,6 +679,8 @@ you want a manual approval gate before any publish runs.
    - `@loradb/lora-wasm`
    - `@loradb/lora-node`
    - every `@loradb/lora-node-<triple>` subpackage
+   - `@loradb/lora-query`
+   - `@loradb/lora-graph-canvas`
    - `@loradb/lora-graphql`
 3. npm refuses to register a new package name via OIDC trusted publishing
    alone — it needs an initial publish to exist. Two options:
@@ -564,15 +778,14 @@ you want a manual approval gate before any publish runs.
 
 ## Release flow
 
-1. Bump every manifest (same checklist as the server release):
+1. Bump every manifest — the version-bump step of the
+   [Release checklist](#release-checklist), shared by every release
+   workflow:
 
    ```bash
    node scripts/sync-versions.mjs X.Y.Z
    cargo check --workspace
-   (cd crates/bindings/lora-node && npm install --package-lock-only --ignore-scripts)
-   (cd crates/bindings/lora-wasm && npm install --package-lock-only --ignore-scripts)
-   (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
-   (cd crates/bindings/lora-ruby && bundle install)
+   corepack yarn install --mode=update-lockfile
    node scripts/sync-versions.mjs X.Y.Z --check
    git commit -am "chore(release): vX.Y.Z"
    ```
@@ -593,13 +806,19 @@ you want a manual approval gate before any publish runs.
    git push origin vX.Y.Z
    ```
 
-   Both workflows trigger. Watch them side by side under **Actions**.
+   All three release workflows trigger. Watch them side by side under
+   **Actions**.
 
 4. When `packages-release` is green:
    - <https://www.npmjs.com/package/@loradb/lora-wasm> lists the new version.
    - <https://www.npmjs.com/package/@loradb/lora-node> lists the new version
      and its `optionalDependencies` references every platform subpackage
      at the same version.
+   - <https://www.npmjs.com/package/@loradb/lora-query>,
+     <https://www.npmjs.com/package/@loradb/lora-graph-canvas>, and
+     <https://www.npmjs.com/package/@loradb/lora-graphql> list the new
+     version. `publish-graphql` runs only after `publish-node`, so the
+     `@loradb/lora-node` release its peer range names is already live.
    - <https://pypi.org/project/lora-python/> lists the new version with
      one sdist + every platform wheel.
    - <https://rubygems.org/gems/lora-ruby> lists the new version with a
@@ -608,7 +827,7 @@ you want a manual approval gate before any publish runs.
      `x64-mingw-ucrt`).
 
 5. When `release.yml` is green: finish the server draft release as
-   usual (see the top of this file).
+   usual (see [Cutting a release](#cutting-a-release)).
 
 ## Recovery from a failed publish
 
@@ -692,7 +911,9 @@ subpackages are already public. Recovery rules:
   `verify-versions`, which re-runs `scripts/sync-versions.mjs --check`.
   If any of workspace `Cargo.toml` (including the internal-dep pins in
   `[workspace.dependencies]`), `crates/bindings/lora-node/package.json`,
-  `crates/bindings/lora-wasm/package.json`, `apps/loradb.com/package.json`,
+  `crates/bindings/lora-wasm/package.json`, the three
+  `packages/*/package.json` (plus the `@loradb/lora-graphql` peer range on
+  `@loradb/lora-node`), `apps/loradb.com/package.json`,
   `crates/bindings/lora-python/pyproject.toml`, or
   `crates/bindings/lora-ruby/lib/lora_ruby/version.rb` disagrees with the tag,
   the build never starts.
@@ -718,7 +939,7 @@ subpackages are already public. Recovery rules:
 A semver tag push also triggers `cargo-release.yml`, which publishes the
 workspace's library + server crates to [crates.io](https://crates.io).
 It runs in parallel with `release.yml` (server binaries) and
-`packages-release.yml` (npm + PyPI) — same tag, three independent
+`packages-release.yml` (npm + PyPI + RubyGems) — same tag, three independent
 workflows.
 
 ## Which crates go public
@@ -728,12 +949,14 @@ Published on every release:
 | Crate           | Role                                                       |
 | --------------- | ---------------------------------------------------------- |
 | `lora-ast`      | AST types for the Cypher query language.                   |
+| `lora-builtins-meta` | Static metadata table for the namespaced builtin functions (arity, aliases, aggregates), shared by the analyzer, executor, and editor WASM. |
 | `lora-store`    | In-memory graph store with property indexes.               |
 | `lora-snapshot` | Column-oriented snapshot encoding, compression, and encryption. |
 | `lora-parser`   | Cypher grammar + parser (pest-based).                      |
 | `lora-analyzer` | Semantic analysis over parsed Cypher queries.              |
 | `lora-compiler` | Query-plan compiler.                                       |
 | `lora-executor` | Query-plan executor.                                       |
+| `lora-io`       | Row-level bulk import/export codecs (JSONL, JSON, CSV).    |
 | `lora-wal`      | Write-ahead log and replay engine.                         |
 | `lora-database` | Embeddable in-memory graph database — the main public API. |
 | `lora-server`   | HTTP server binary (`lora-server`) wrapping `lora-database`. |
@@ -747,8 +970,10 @@ Intentionally **not** published to crates.io:
 | `lora-python` | pyo3 cdylib shipped as a PyPI wheel; same reasoning.        |
 | `lora-ffi`    | C ABI helper crate used by out-of-tree language bindings.   |
 | `lora-ruby`   | Ruby native extension shipped as a RubyGem.                 |
+| `lora-binding-buffer` | Shared binary buffer helpers for the native bindings; internal only. |
+| `lora-query-wasm` | The parser bridge embedded in `packages/lora-query`, shipped inside the `@loradb/lora-query` npm package. |
 
-All five keep `publish = false` in their `Cargo.toml`.
+All seven keep `publish = false` in their `Cargo.toml`.
 
 ## Publish order
 
@@ -757,12 +982,14 @@ Computed from the workspace dependency DAG and hard-coded in
 
 ```
 lora-ast
+  -> lora-builtins-meta
   -> lora-store
   -> lora-snapshot
   -> lora-parser
   -> lora-analyzer
   -> lora-compiler
   -> lora-executor
+  -> lora-io
   -> lora-wal
   -> lora-database
   -> lora-server
@@ -783,9 +1010,9 @@ anything else in the workspace depends on it.
    crates.io reports that the crate name is already taken. Quick check:
 
    ```bash
-   for name in lora-ast lora-store lora-snapshot lora-parser \
-               lora-analyzer lora-compiler lora-executor lora-wal \
-               lora-database lora-server; do
+   for name in lora-ast lora-builtins-meta lora-store lora-snapshot \
+               lora-parser lora-analyzer lora-compiler lora-executor \
+               lora-io lora-wal lora-database lora-server; do
      status=$(curl -sSo /dev/null -w "%{http_code}" \
        "https://crates.io/api/v1/crates/${name}")
      echo "${status} ${name}"
@@ -845,16 +1072,16 @@ The workflow itself doesn't have to change.
 
 ## Release flow
 
-1. Bump every manifest in one shot. `scripts/sync-versions.mjs` now also
-   rewrites the pinned internal-dep versions in `[workspace.dependencies]`,
-   so a single call covers the crates.io side too:
+1. Bump every manifest in one shot — the version-bump step of the
+   [Release checklist](#release-checklist). `scripts/sync-versions.mjs`
+   also rewrites the pinned internal-dep versions in
+   `[workspace.dependencies]`, so a single call covers the crates.io side
+   too:
 
    ```bash
    node scripts/sync-versions.mjs X.Y.Z
-   cargo check --workspace --locked            # refresh Cargo.lock
-   (cd crates/bindings/lora-node && npm install --package-lock-only --ignore-scripts)
-   (cd crates/bindings/lora-wasm && npm install --package-lock-only --ignore-scripts)
-   (cd apps/loradb.com  && npm install --package-lock-only --ignore-scripts)
+   cargo check --workspace                         # refresh Cargo.lock (not --locked: the lockfile must change)
+   corepack yarn install --mode=update-lockfile    # refresh yarn.lock
    node scripts/sync-versions.mjs X.Y.Z --check
    git commit -am "chore(release): vX.Y.Z"
    ```
@@ -891,7 +1118,7 @@ The workflow itself doesn't have to change.
 
    Three workflows trigger:
    - `release.yml` — server binaries → draft GitHub Release.
-   - `packages-release.yml` — npm + PyPI.
+   - `packages-release.yml` — npm + PyPI + RubyGems (+ the Go module check).
    - `cargo-release.yml` — crates.io.
 
 5. When `cargo-release` is green, confirm
