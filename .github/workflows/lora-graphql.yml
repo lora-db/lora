@@ -82,8 +82,11 @@ jobs:
       - name: Typecheck
         run: corepack yarn workspace @loradb/lora-graphql typecheck
 
-      - name: Vitest
+      - name: Vitest (graphql 16)
         run: corepack yarn workspace @loradb/lora-graphql test
+
+      - name: Vitest (graphql 17)
+        run: corepack yarn workspace @loradb/lora-graphql test:graphql17
 
       - name: Build library (vite)
         run: corepack yarn workspace @loradb/lora-graphql build

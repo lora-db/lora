@@ -44,9 +44,9 @@ describe("diffSchemas (S7)", () => {
     expect(diff.notes).toEqual([
       "Artist.name is now Artist.displayName over the same property `name`: an API break with no data migration",
     ]);
-    expect(diff.api.breaking.map((c) => c.description)).toContain(
-      "Artist.name was removed.",
-    );
+    expect(
+      diff.api.breaking.map((c) => c.description.replace(/^Field /, "")),
+    ).toContain("Artist.name was removed.");
     expect(diff.api.breaking.map((c) => c.description)).toContain(
       "ArtistNameFilter was removed.",
     );

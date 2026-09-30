@@ -934,7 +934,8 @@ exceeds the budget; every plan report carries `estimatedRows` either way.
 
 `@loradb/lora-graphql` is released in lockstep with `@loradb/lora-node`:
 version X.Y.Z declares `"@loradb/lora-node": "^X.Y.Z"` as its peer and is
-tested against that binding. Upgrade both together.
+tested against that binding. Upgrade both together. `graphql` 16 and 17 are
+both supported peers; the test suite runs on each.
 
 ## Translation rules
 
@@ -994,6 +995,7 @@ before a following `SET`.
 
 ```sh
 yarn test       # vitest: model, TCK snapshots, integration, auth, mutations, CLI
+yarn test:graphql17  # the same suite on graphql 17
 yarn bench      # latency on a seeded graph
 yarn typecheck && yarn lint && yarn build
 ```

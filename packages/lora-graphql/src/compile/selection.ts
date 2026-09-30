@@ -12,12 +12,42 @@ import {
   type GraphQLObjectType,
   type GraphQLSchema,
   type SelectionSetNode,
+  versionInfo,
 } from "graphql";
 
 export interface SelectionContext {
   schema: GraphQLSchema;
   fragments: Record<string, FragmentDefinitionNode>;
+  /**
+   * Variable values as graphql-js hands them to `getArgumentValues`: the
+   * coerced map on graphql 16, `{ sources, coerced }` on 17. Read plain
+   * values through `coercedVariables()`.
+   */
   variables: Record<string, unknown>;
+}
+
+const GRAPHQL_17 = versionInfo.major >= 17;
+
+/** The coerced variable values, on graphql 16 and 17 alike. */
+export function coercedVariables(
+  variables: unknown,
+): Record<string, unknown> | undefined {
+  const v = variables as Record<string, unknown> | null | undefined;
+  if (v == null) return undefined;
+  return GRAPHQL_17 ? (v["coerced"] as Record<string, unknown>) : v;
+}
+
+/**
+ * The variable values of a `getVariableValues()` result, in the shape the
+ * installed graphql's `getArgumentValues()` takes: 16 returns
+ * `{ coerced }`, 17 returns `{ variableValues: { sources, coerced } }`.
+ */
+export function variableValuesOf(result: object): Record<string, unknown> {
+  const r = result as Record<string, unknown>;
+  return (GRAPHQL_17 ? r["variableValues"] : r["coerced"]) as Record<
+    string,
+    unknown
+  >;
 }
 
 /** The fields selected on an object type, grouped by response key. */

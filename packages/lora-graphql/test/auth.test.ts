@@ -1,5 +1,6 @@
 import { authSeed, authTypeDefs } from "./fixtures.js";
 import { festivalHarness, type Harness } from "./harness.js";
+import { unknownField } from "./graphql-messages.js";
 
 let h: Harness;
 beforeEach(async () => {
@@ -200,7 +201,7 @@ describe("more rules", () => {
       `mutation { createDocs(input: [{ key: "x", level: 1, audit: "forged" }]) { info { nodesCreated } } }`,
     );
     expect(r.errors?.[0]?.message).toMatch(
-      /"audit" is not defined by type "DocCreateInput"/,
+      unknownField("audit", "DocCreateInput"),
     );
   });
 

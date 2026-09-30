@@ -2,6 +2,7 @@ import { createDatabase } from "@loradb/lora-node";
 import { graphql } from "graphql";
 import { LoraGraphQL, loraDriver, type WriteChange } from "../src/index.js";
 import { festivalHarness, type Harness } from "./harness.js";
+import { unknownField } from "./graphql-messages.js";
 
 const typeDefs = /* GraphQL */ `
   type Venue @node @mutation {
@@ -117,7 +118,7 @@ test("@populatedBy computes on create and update; @settable and @selectable", as
     `mutation { updateVenue(key: "v1", update: { code: "X2" }) { info { nodesUpdated } } }`,
   );
   expect(code.errors?.[0]?.message).toMatch(
-    /"code" is not defined by type "VenueUpdateInput"/,
+    unknownField("code", "VenueUpdateInput"),
   );
   const secret = await h.run(`{ venue(key: "v1") { secret } }`);
   expect(secret.errors?.[0]?.message).toMatch(/Cannot query field "secret"/);

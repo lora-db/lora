@@ -138,7 +138,7 @@ test("diff exits non-zero on breaking changes", async () => {
     join(dir, "next.graphql"),
   );
   expect(r.code).toBe(1);
-  expect(r.out).toMatch(/breaking {3}Festival\.title was removed\./);
+  expect(r.out).toMatch(/breaking {3}(Field )?Festival\.title was removed\./);
   expect(r.out).toMatch(
     /note {7}Festival\.title is now Festival\.headline over the same property `displayTitle`/,
   );

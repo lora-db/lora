@@ -70,11 +70,14 @@ describe("model validation", () => {
   });
 
   test("graphql-js validates directive usage", () => {
-    expect(
-      problems(`type A @node { key: ID! @key @filterable(byValue: [NOPE]) }`),
-    ).toEqual([
-      'A.key: @filterable: Argument "byValue" has invalid value [NOPE].',
-    ]);
+    const invalid = problems(
+      `type A @node { key: ID! @key @filterable(byValue: [NOPE]) }`,
+    );
+    expect(invalid).toHaveLength(1);
+    // graphql 16 and 17 word it differently.
+    expect(invalid[0]).toMatch(
+      /^A\.key: @filterable: Argument "(byValue|@filterable\(byValue:\))" has invalid value/,
+    );
     expect(problems(`type A @node { key: ID! @key @unknown }`)[0]).toMatch(
       /Unknown directive/,
     );

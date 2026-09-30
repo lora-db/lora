@@ -29,7 +29,8 @@ const neo4j = /* GraphQL */ `
 test("rewrites what maps and lists what does not", () => {
   const { typeDefs, todos } = migrateNeo4j(neo4j);
   expect(typeDefs).toContain("id: ID! @key(generate: true)");
-  expect(typeDefs).toContain(
+  // graphql 17 prints object values with inner spaces.
+  expect(typeDefs.replace(/\{ | \}/g, (m) => m.trim())).toContain(
     '@fulltext(indexes: [{name: "movieTitles", fields: ["title"]}])',
   );
   expect(typeDefs).toContain(

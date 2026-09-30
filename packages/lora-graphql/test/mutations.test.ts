@@ -1,6 +1,7 @@
 import type { WriteChange } from "../src/index.js";
 import { appTypeDefs } from "./fixtures.js";
 import { festivalHarness, type Harness } from "./harness.js";
+import { unknownField } from "./graphql-messages.js";
 
 let h: Harness;
 const changes: WriteChange[] = [];
@@ -217,7 +218,7 @@ describe("update and delete", () => {
       `mutation { updateFestival(key: "f1", update: { key: "f2" }) { info { nodesCreated } } }`,
     );
     expect(r.errors?.[0]?.message).toMatch(
-      /"key" is not defined by type "FestivalUpdateInput"/,
+      unknownField("key", "FestivalUpdateInput"),
     );
   });
 

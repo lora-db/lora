@@ -42,7 +42,12 @@ import {
   type ReadSet,
   type RootKind,
 } from "./compile/read.js";
-import { fieldArgs, type SelectionContext } from "./compile/selection.js";
+import {
+  coercedVariables,
+  fieldArgs,
+  variableValuesOf,
+  type SelectionContext,
+} from "./compile/selection.js";
 import type { LoraDriver, QueryResult, Statement } from "./driver.js";
 import { affects, type WriteChange } from "./execute/changes.js";
 import { executeCypherMutation } from "./execute/cypher-mutation.js";
@@ -703,7 +708,7 @@ export class LoraGraphQL {
     const base: SelectionContext = {
       schema,
       fragments,
-      variables: coerced.coerced,
+      variables: variableValuesOf(coerced),
     };
     const queryType = schema.getQueryType()!;
     const out: Array<{ field: string; compiled: CompiledRead }> = [];
@@ -1166,7 +1171,7 @@ export class LoraGraphQL {
     compile: (ctx: CompileContext) => CompiledRead,
   ): CompiledRead {
     const field = info.fieldNodes[0]!;
-    const variables = stableKey(info.variableValues);
+    const variables = stableKey(coercedVariables(info.variableValues));
     const claims = stableKey(this.#jwt(context) ?? null);
     const ctx = this.#context(infoContext(info), context);
     if (variables === undefined || claims === undefined) return compile(ctx);
