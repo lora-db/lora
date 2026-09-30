@@ -4,7 +4,8 @@
 
 import { GraphQLScalarType } from "graphql";
 import { describe, expect, test } from "vitest";
-import { LoraGraphQL, ModelError } from "../src/index.js";
+import { createDatabase } from "@loradb/lora-node";
+import { LoraGraphQL, loraDriver, ModelError } from "../src/index.js";
 import { createTestLoraGraphQL, expectSeeks } from "../src/testing.js";
 
 const J = "type Claims @jwt { sub: String!  roles: [String!] }\n";
@@ -1049,5 +1050,51 @@ describe("G-8: @cypher column inference reads the single returned column", () =>
     expect(() => column("RETURN 1 AS a, 2 AS b")).toThrow(
       /cannot tell which column holds the value/,
     );
+  });
+});
+
+describe("G-18: plan findings belong to the statement part they come from", () => {
+  const typeDefs = `type A @node {
+    key: String! @key
+    title: String!
+    others: [A!]! @cypher(statement: "MATCH (other:A) WHERE other.key <> this.key RETURN other LIMIT 3", columnName: "other")
+  }`;
+  const seed = [
+    "UNWIND range(1, 50) AS i CREATE (:A {key: toString(i), title: 'x'})",
+  ];
+
+  test("a @cypher field's own scan does not fail the root's seek", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const query = `{ a(key: "1") { key others { key } } }`;
+    await expectSeeks(t.lora, query);
+    const [field] = await t.lora.explain(query);
+    const report = field!.reports[0]!;
+    expect(report.findings).toEqual([]);
+    expect(report.notes).toEqual([
+      expect.objectContaining({
+        rule: "full-scan",
+        message: expect.stringMatching(/a subquery scans :A/),
+      }),
+    ]);
+    t.close();
+  });
+
+  test("a root that scans is still a finding, beside the note", async () => {
+    // No assertSchema: the TEXT index `contains` needs is missing.
+    const lora = new LoraGraphQL({
+      typeDefs: typeDefs.replace(
+        "title: String!",
+        "title: String! @filterable(byValue: [CONTAINS])",
+      ),
+      driver: loraDriver(await createDatabase()),
+    });
+    const [field] = await lora.explain(
+      `{ as(where: { title: { contains: "x" } }) { key others { key } } }`,
+    );
+    const report = field!.reports[0]!;
+    expect(report.findings.map((f) => f.message)).toEqual([
+      "expected an index text seek on :A (A.title contains), plan uses NodeByLabelScan",
+    ]);
+    expect(report.notes).toHaveLength(1);
   });
 });

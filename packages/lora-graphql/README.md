@@ -684,8 +684,11 @@ index the API needs, with the reason for each:
 **S2: plans are checked.** Every compiled statement records the access path
 it was written for. `lora.explain(query, variables)` plans each statement and
 reports a label scan where a seek was expected, a mutating plan behind a
-read, or result columns that do not match. `lora.check({ operations })`
-runs this over your operations; the CLI does it in CI.
+read, or result columns that do not match. The access path checked is the
+root field's own, outside every `CALL { }`: a label scan inside one (a
+`@cypher` statement's `MATCH`) is reported as a lint-level `notes` entry,
+not blamed on the root. `lora.check({ operations })` runs this over your
+operations; the CLI does it in CI.
 
 **S3: compile once.** `lora.persist({ id: source })` parses and validates
 persisted operations at startup, and `lora.execute({ id, variables, context })`

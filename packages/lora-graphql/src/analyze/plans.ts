@@ -28,6 +28,12 @@ export interface PlanReport {
    */
   estimatedRows: number | null;
   findings: PlanFinding[];
+  /**
+   * Lint-level observations that do not fail a check: label scans inside
+   * a `CALL { }` body, such as a `@cypher` statement's own access path.
+   * They are the statement's author's to review, not the root field's.
+   */
+  notes: PlanFinding[];
 }
 
 const SEEK_OPERATORS: Record<SeekExpectation["access"], string[]> = {
@@ -51,7 +57,20 @@ export async function checkPlans(
   for (const [i, statement] of compiled.statements.entries()) {
     const plan = await driver.explain(statement);
     const nodes = flatten(plan.tree);
+    // The root field's access path is the part of the plan outside every
+    // CALL { } body; scans inside one belong to that subquery (a @cypher
+    // statement, a nested list) and are reported as notes, not blamed on
+    // the root.
+    const outer = flattenOuter(plan.tree);
+    const inner = nodes.filter((n) => !outer.includes(n));
     const findings: PlanFinding[] = [];
+    const notes: PlanFinding[] = inner
+      .filter((n) => n.operator === "NodeByLabelScan")
+      .map((n) => ({
+        rule: "full-scan" as const,
+        message: `a subquery scans :${n.details["labels"] ?? "?"} (NodeByLabelScan), e.g. a @cypher statement's own MATCH`,
+        statement: statement.text,
+      }));
     if (plan.shape !== "readOnly") {
       findings.push({
         rule: "mutating-read",
@@ -67,12 +86,12 @@ export async function checkPlans(
       });
     }
     for (const e of compiled.expectations.filter((x) => x.statement === i)) {
-      const scans = nodes.filter(
+      const scans = outer.filter(
         (n) =>
           n.operator === "NodeByLabelScan" &&
           n.details["labels"]?.split(/[,:|&\s]+/).includes(e.label),
       );
-      const seeks = nodes.filter(
+      const seeks = outer.filter(
         (n) =>
           SEEK_OPERATORS[e.access].includes(n.operator) &&
           n.details["labels"]?.split(/[,:|&\s]+/).includes(e.label),
@@ -108,6 +127,7 @@ export async function checkPlans(
       operators: nodes.map((n) => n.operator),
       estimatedRows,
       findings,
+      notes,
     });
   }
   return reports;
@@ -166,6 +186,15 @@ function sourceScan(expand: PlanNode): PlanNode | undefined {
 
 function flatten(node: PlanNode): PlanNode[] {
   return [node, ...node.children.flatMap(flatten)];
+}
+
+/** Like flatten, without the bodies of `CallSubquery` (its later children). */
+function flattenOuter(node: PlanNode): PlanNode[] {
+  const children =
+    node.operator === "CallSubquery"
+      ? node.children.slice(0, 1)
+      : node.children;
+  return [node, ...children.flatMap(flattenOuter)];
 }
 
 function sameColumns(a: string[], b: string[]): boolean {

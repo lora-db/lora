@@ -328,6 +328,9 @@ async function check(
       for (const f of r.findings) {
         io.out(`error    ${p.operation} › ${p.field}: ${f.message}`);
       }
+      for (const n of r.notes) {
+        io.out(`lint     ${p.operation} › ${p.field}: ${n.message}`);
+      }
     }
   }
   for (const key of changed) {
