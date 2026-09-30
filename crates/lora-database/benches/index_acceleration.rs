@@ -11,6 +11,9 @@
 //! * `RelByPropertyRangeScan`  ← `MATCH ()-[r:T]->() WHERE r.prop > X`
 //! * `RelByTextScan`           ← `MATCH ()-[r:T]->() WHERE r.prop STARTS WITH …`
 //!
+//! `index_acceleration/shared_value` covers writes into and reads of one
+//! indexed value shared by every node.
+//!
 //! Run with:
 //!   `cargo bench -p lora-database --bench index_acceleration`
 //!
@@ -177,6 +180,46 @@ fn bench_rel_text(c: &mut Criterion) {
     group.finish();
 }
 
+/// Writes and reads against one indexed value shared by every node (an
+/// enum, a boolean, a `@default`). A write that moves a node into or out
+/// of that bucket must not copy the whole posting list; the reads check
+/// that chunking the list keeps lookups and range scans as fast.
+fn bench_shared_value(c: &mut Criterion) {
+    let mut group = c.benchmark_group("index_acceleration/shared_value");
+    for n in [2_000usize, 50_000] {
+        let db = BenchDb::with_capacity_hint(n, 0);
+        db.run("CREATE INDEX cap FOR (f:Festival) ON (f.capacity)");
+        db.run(&format!(
+            "UNWIND list.range(0, {}) AS i \
+             CREATE (:Festival {{key: 'f' + type.cast(i, STRING), capacity: 100}})",
+            n - 1
+        ));
+        db.run("CREATE INDEX fkey FOR (f:Festival) ON (f.key)");
+        run(
+            &db,
+            "MATCH (f:Festival {capacity: 100}) RETURN count(f) AS c",
+        );
+
+        let toggle = "MERGE (f:Festival {key: 'f7'}) \
+             SET f.capacity = CASE f.capacity WHEN 100 THEN 101 ELSE 100 END";
+        group.bench_function(format!("staged_move/{n}"), |b| b.iter(|| run(&db, toggle)));
+        let update = "MATCH (f:Festival {key: 'f9'}) \
+             SET f.capacity = CASE f.capacity WHEN 100 THEN 101 ELSE 100 END";
+        group.bench_function(format!("in_place_move/{n}"), |b| {
+            b.iter(|| {
+                let reader = db.service.snapshot();
+                run(&db, update);
+                drop(reader);
+            })
+        });
+        let lookup = "MATCH (f:Festival {capacity: 100}) RETURN count(f) AS c";
+        group.bench_function(format!("lookup/{n}"), |b| b.iter(|| run(&db, lookup)));
+        let range = "MATCH (f:Festival) WHERE f.capacity > 99 RETURN count(f) AS c";
+        group.bench_function(format!("range/{n}"), |b| b.iter(|| run(&db, range)));
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = index_acceleration;
     config = bench_config();
@@ -185,5 +228,6 @@ criterion_group! {
         bench_node_text,
         bench_rel_range,
         bench_rel_text,
+        bench_shared_value,
 }
 criterion_main!(index_acceleration);

@@ -156,8 +156,9 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - country and genre keys.
 
   At a million nodes sharing `status: ACTIVE`, every write to one of them copies a million-id set. Because writes are serialized, that caps the write rate for the whole database.
+- **Fixed:** a bucket past 64 ids is now a table of sorted chunks (up to 512 ids when appended, split past 1,024), each behind an `Arc`, so a write copies the chunk table and one chunk (`id_set.rs`, `tests/shared_index_value_writes.rs`). At 50k nodes sharing one value, a write that moves a node in or out of the bucket went from 1.0 ms to 16 µs.
 - **Solutions:**
-  - **Engine:** make large posting lists copy-on-write in chunks, as `ChunkedVec` does for labels, or keep a staged delta over a shared base. Keep it internal: no `imbl`, for the MPL license.
+  - **Engine:** done (above), with internal types only: no `imbl`, for the MPL license.
   - **Library:** `lora-graphql lint` or `analyze` could warn when an inferred index covers an enum, a boolean or a `@default` field. It could also let such filters run unindexed when the engine is not fixed.
 
 ### 6. Scans the cost limit does not charge for
@@ -252,7 +253,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 
 1. Release the lora-node pool fix (`f6251b0`) and raise the peer range. Until then, any production v0.18.0 server can hang.
 2. Done: reads run off the JS thread, except a bounded `@key` lookup, which streams its one row (finding 2). Still to do: document `UV_THREADPOOL_SIZE` (finding 3), and make `db.stream()` asynchronous in the binding.
-3. Fix the posting-list copy in the engine (finding 5). Until then, add the lint warning.
+3. Done: the posting-list copy in the engine (finding 5).
 4. Shorten the write lock hold with `executeMany`, and add a bounded write queue with load shedding (finding 4).
 5. Charge scans in `maxCost`. Add top-k sort and ordered-index selection to the engine (findings 6 and 7).
 6. Done: the compile-cache key (finding 8) and the feed pump's unhandled rejection (finding 9).

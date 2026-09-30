@@ -53,8 +53,6 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — performance
 
-- [ ] P1 Indexed posting lists are cloned whole on write — O(nodes sharing the value)
-      per write (`lora-store/src/memory/id_set.rs`, whole-bucket COW).
 - [ ] P2 Composite multi-property seeks (`optimizer.rs:975`); composite RANGE indexes are catalog-only (`:484+`).
 - [ ] P2 Index-ordered scan when the filter isn't selective; count a range from the index.
 - [ ] P2 Join ordering and global cardinality estimation (`estimatedRows` exist only for seeks — E11).
@@ -88,7 +86,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).
 - [ ] P2 `check()` plan-checks queries only — extend to mutations and subscriptions.
 - [ ] P2 `@cypher` `cost` argument; document its per-row semantics (`src/model/directives.ts:196`).
-- [ ] P2 Schema lint: warn on low-cardinality inferred indexes (enum, boolean, `@default`).
+- [ ] P3 Schema lint: warn on low-cardinality inferred indexes (enum, boolean, `@default`); writes no longer pay for them, but they rarely help reads.
 - [ ] P2 Opt-in `totalCount` cap.
 - [ ] P2 Cursor HMAC: use `node:crypto.createHmac`, precompute per secret (`src/compile/cursor.ts:82`).
 - [ ] P2 Worker threads sharing one engine: confirm `bench:load --workers 0,1,2,4` on a quiet machine; document multi-worker serving (change feed for cache invalidation).
