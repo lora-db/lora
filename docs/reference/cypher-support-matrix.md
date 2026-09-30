@@ -103,7 +103,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | List concatenation `+` | **Supported** | |
 | String concatenation `+` | **Supported** | |
 | List comprehension `[x IN list WHERE p \| e]` | **Supported** | |
-| Pattern comprehension `[pattern WHERE p \| e]` | **Supported** | |
+| Pattern comprehension `[pattern WHERE p \| e]` | **Supported** | A start node the outer row does not bind, with an inline property map (`[(v:Person {subject: $s}) \| v]`), seeks that property instead of scanning the label; the same holds for `EXISTS { }` and `COUNT { }` |
 | `EXISTS { pattern }` subquery | **Supported** | In WHERE |
 | `COUNT { pattern [WHERE ...] }` subquery | **Supported** | Number of matches; `MATCH` keyword optional |
 | `COLLECT { subquery }` | **Not yet implemented** | Not in grammar; use `collect()` over a `CALL { }` subquery or a pattern comprehension |

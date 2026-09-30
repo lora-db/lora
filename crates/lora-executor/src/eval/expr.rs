@@ -714,10 +714,29 @@ fn match_node_pattern<S: GraphStorage>(
 
     // Candidate discovery only needs IDs — defer record lookup until after
     // label/property filtering so we can borrow once per matching candidate.
+    // An inline property map (`(v:Person {subject: $s})`) seeks one of its
+    // properties, as `MATCH` does, instead of scanning the label: a pattern
+    // subquery runs once per outer row.
+    let seek =
+        node.properties
+            .as_ref()
+            .and_then(|props_expr| match eval_expr(props_expr, row, ctx) {
+                LoraValue::Map(exp) => exp.iter().next().map(|(key, value)| {
+                    crate::executor::indexed_node_property_candidates(
+                        ctx.storage,
+                        &node.labels,
+                        key,
+                        value,
+                    )
+                    .ids
+                }),
+                _ => None,
+            });
     let first_label = node.labels.iter().flat_map(|g| g.iter()).next();
-    let candidate_ids: Vec<lora_store::NodeId> = match first_label {
-        Some(label) => ctx.storage.node_ids_by_label(label),
-        None => ctx.storage.all_node_ids(),
+    let candidate_ids: Vec<lora_store::NodeId> = match (seek, first_label) {
+        (Some(ids), _) => ids,
+        (None, Some(label)) => ctx.storage.node_ids_by_label(label),
+        (None, None) => ctx.storage.all_node_ids(),
     };
 
     let mut out = Vec::new();
