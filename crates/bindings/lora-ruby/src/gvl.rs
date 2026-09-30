@@ -37,6 +37,13 @@ impl fmt::Display for GvlPanic {
 
 /// Run `f` with Ruby's Global VM Lock released.
 ///
+/// Every engine call that can wait for the writer lock goes through here.
+/// The binding has no interactive transactions: a writer takes the lock
+/// and releases it inside one call, entirely GVL-free, so the holder never
+/// needs the GVL to finish and a waiter always sees it released. Waiting
+/// with the GVL held would freeze every Ruby thread for the wait (and, with
+/// a lock held across Ruby calls, deadlock).
+///
 /// Semantics match `rb_thread_call_without_gvl` — other Ruby threads can
 /// progress while `f` runs. The closure MUST NOT touch Ruby state (no
 /// `Value`s, no allocations into the Ruby heap), which we arrange by

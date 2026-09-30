@@ -206,14 +206,22 @@ db = LoraRuby::Database.open_wal(
 
 ## Concurrency (GVL release)
 
-`Database#execute` calls `rb_thread_call_without_gvl`, so other Ruby
-threads run while the engine is busy. Auto-commit reads can overlap on engine
-snapshots; write commits and explicit read-write transactions serialize.
+Every engine call (`execute`, `explain`, `profile`, `clear`, snapshot
+save/load, opening a database) runs under `rb_thread_call_without_gvl`, so
+other Ruby threads run while the engine is busy. Auto-commit reads can
+overlap on engine snapshots; writes serialize on the engine's writer lock.
+
+A write waiting for that lock waits with the GVL released, and the Ruby
+binding has no interactive transactions: each write takes the lock and
+releases it within one call. So a waiting writer never blocks the writer
+holding the lock, however many threads write at once.
 
 The engine has no cancellation hook, so we pass a `NULL` unblock
-function. A thread interrupted mid-query (`Thread#kill`) will observe
-the interrupt **after** the current query finishes. Keep queries short
-if you rely on cooperative cancellation.
+function. A thread interrupted mid-query (`Thread#kill`, `Ctrl-C`) will
+observe the interrupt **after** the current call finishes, including a
+write that was still waiting for the writer lock (it runs, then the
+interrupt fires). Keep queries short if you rely on cooperative
+cancellation.
 
 ## Local development
 

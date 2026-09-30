@@ -183,9 +183,13 @@ fn database_open_wal(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusErro
     Ok(Database::from_db(db))
 }
 
+/// `clear` takes the engine's writer lock, so it waits for any write in
+/// flight. That wait runs with the GVL released like every other engine
+/// call: holding it would freeze every Ruby thread until the running
+/// writer committed.
 fn database_clear(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
-    database_inner(ruby, rb_self)?.clear();
-    Ok(())
+    let db = database_inner(ruby, rb_self)?;
+    without_gvl_lora_result(ruby, move || db.try_clear())
 }
 
 fn database_close(ruby: &Ruby, rb_self: &Database) -> Result<(), MagnusError> {
