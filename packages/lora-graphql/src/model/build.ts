@@ -457,13 +457,14 @@ export function buildModel(
           f.readonly &&
           !f.defaultValue &&
           !f.timestamp?.has("CREATE") &&
+          !f.populatedBy?.operations.has("CREATE") &&
           !(f.key && f.generate)
         ) {
           problems.push({
             type: t.name,
             field: f.name,
             message:
-              "is required but cannot be set on create; add @default, @timestamp or @key(generate: true), or drop @mutation(operations: CREATE)",
+              "is required but cannot be set on create; add @default, @timestamp, @populatedBy(operations: [CREATE]) or @key(generate: true), or drop @mutation(operations: CREATE)",
           });
         }
       }

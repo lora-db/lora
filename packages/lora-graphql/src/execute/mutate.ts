@@ -284,7 +284,7 @@ class WritePlan {
     input: Input,
   ): Promise<unknown> {
     const cb = this.env.callbacks[f.populatedBy!.callback]!;
-    return cb({
+    const value = await cb({
       operation,
       type: node.name,
       field: f.name,
@@ -292,6 +292,16 @@ class WritePlan {
       input,
       context: this.env.requestContext,
     });
+    // A required field must stay set, whatever the callback returns.
+    if (f.required && (value === null || value === undefined)) {
+      throw requestError(
+        "CONSTRAINT_VIOLATION",
+        `${node.name}.${f.name} is required, but its @populatedBy callback ${f.populatedBy!.callback} returned ${String(value)}`,
+        undefined,
+        { type: node.name, field: f.name },
+      );
+    }
+    return value;
   }
 
   /** Plan connect / create / update / disconnect under one relationship field. */

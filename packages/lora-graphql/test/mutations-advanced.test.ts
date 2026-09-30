@@ -311,3 +311,38 @@ test("the cost limit holds per operation, not per root field", async () => {
   );
   expect(aliased.errors?.[0]?.extensions?.["code"]).toBe("COST_EXCEEDED");
 });
+
+test("a required @populatedBy field is valid, and must be populated", async () => {
+  const lora = new LoraGraphQL({
+    typeDefs: /* GraphQL */ `
+      type Slugged @node @mutation {
+        key: String! @key
+        name: String!
+        slug: String! @populatedBy(callback: "slug", operations: [CREATE])
+      }
+    `,
+    driver: loraDriver(await createDatabase()),
+    callbacks: {
+      slug: ({ input }) =>
+        input["name"] === "none" ? null : String(input["name"]).toLowerCase(),
+    },
+  });
+  const schema = lora.getSchema();
+  const run = (source: string) => graphql({ schema, source, contextValue: {} });
+
+  const ok = await run(
+    `mutation { createSluggeds(input: [{ key: "s1", name: "Big" }]) { sluggeds { slug } } }`,
+  );
+  expect(ok.errors).toBeUndefined();
+  expect(ok.data).toEqual({ createSluggeds: { sluggeds: [{ slug: "big" }] } });
+
+  const missing = await run(
+    `mutation { createSluggeds(input: [{ key: "s2", name: "none" }]) { sluggeds { slug } } }`,
+  );
+  expect(missing.errors?.[0]?.extensions?.["code"]).toBe(
+    "CONSTRAINT_VIOLATION",
+  );
+  expect(missing.errors?.[0]?.message).toMatch(/Slugged\.slug is required/);
+  const found = await run(`{ slugged(key: "s2") { key } }`);
+  expect(found.data).toEqual({ slugged: null });
+});
