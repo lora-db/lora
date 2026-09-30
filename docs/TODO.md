@@ -17,10 +17,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] **Release 0.19.0** with the E-3 and E-4 fixes and their follow-ups (every
       binding's writer-lock audit, named time zones, the temporal constructors).
       `sync-versions.mjs` raises `@loradb/lora-graphql`'s `lora-node` peer with it.
-- [ ] **G-23 — the depth guard blocks introspection.** `depthOf()` in
-      `packages/lora-graphql/src/guards.ts:119-146` counts `__schema`/`__type` like any
-      field. Skip introspection subtrees or add `maxIntrospectionDepth`; add the
-      acceptance test from Festimap's `LORADB_REQUESTS.md`.
+
 ## Engine — Cypher correctness
 
 - [ ] P1 **E-4 class, remaining sites.** A value the row carries for other reasons is

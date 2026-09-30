@@ -471,7 +471,7 @@ transaction whose statements see earlier writes.
 | `schemaHash(schema)` | The SHA-256 hash of a public schema that manifests record |
 | `toGlobalId(type, key)`, `fromGlobalId(id)` | Encode and decode the opaque ids of `@relayId` types |
 | `validationRules(guards?)`, `parseOptions(guards?)`, `envelopPlugin(guards?)` | Document guards without an instance |
-| `DEFAULT_GUARDS` | `{ maxDepth: 12, maxAliases: 30, maxRootFields: 20, maxTokens: 5000 }` |
+| `DEFAULT_GUARDS` | `{ maxDepth: 12, maxIntrospectionDepth: 20, maxAliases: 30, maxRootFields: 20, maxTokens: 5000 }` |
 | `ModelError`, `formatProblem(problem)` | The model error and its line formatter |
 | `LoraTransaction` | The transaction class `begin()` returns |
 
@@ -479,7 +479,8 @@ transaction whose statements see earlier writes.
 
 | Field | Default | Limit |
 | --- | --- | --- |
-| `maxDepth` | 12 | Field nesting, fragments followed |
+| `maxDepth` | 12 | Field nesting, fragments followed; `__schema` and `__type` count as one level |
+| `maxIntrospectionDepth` | 20 | Nesting under `__schema` / `__type`: the standard introspection query needs 15 |
 | `maxAliases` | 30 | Aliased fields in one document |
 | `maxRootFields` | 20 | Root fields in one operation |
 | `maxTokens` | 5000 | Lexer tokens in one document, checked while parsing |

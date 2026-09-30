@@ -3,14 +3,22 @@
 // 16 and 17 (`yarn test`, `yarn test:graphql17`).
 
 import {
+  buildSchema,
+  getIntrospectionQuery,
   GraphQLScalarType,
   parse,
   subscribe,
+  validate,
   type ExecutionResult,
 } from "graphql";
 import { describe, expect, test, vi } from "vitest";
 import { createDatabase } from "@loradb/lora-node";
-import { LoraGraphQL, loraDriver, ModelError } from "../src/index.js";
+import {
+  LoraGraphQL,
+  loraDriver,
+  ModelError,
+  validationRules,
+} from "../src/index.js";
 import { createTestLoraGraphQL, expectSeeks } from "../src/testing.js";
 
 const J = "type Claims @jwt { sub: String!  roles: [String!] }\n";
@@ -1788,5 +1796,44 @@ describe("G-22 review: what counts as the caller setting a guarded field", () =>
       "FORBIDDEN",
     ]);
     t.close();
+  });
+});
+
+describe("G-23: the depth guard lets the standard introspection query through", () => {
+  const schema = buildSchema("type Query { a: String }");
+  const rules = validationRules({ introspection: true });
+
+  test("getIntrospectionQuery with every option passes the default guards", () => {
+    const query = getIntrospectionQuery({
+      descriptions: true,
+      inputValueDeprecation: true,
+      schemaDescription: true,
+      directiveIsRepeatable: true,
+      specifiedByUrl: true,
+      oneOf: true,
+    } as Parameters<typeof getIntrospectionQuery>[0]);
+    expect(validate(schema, parse(query), rules)).toEqual([]);
+  });
+
+  test("a runaway ofType chain is still refused", () => {
+    const chain = (n: number): string =>
+      n === 0 ? "name" : `ofType { ${chain(n - 1)} }`;
+    const query = `{ __type(name: "Query") { ${chain(30)} } }`;
+    expect(validate(schema, parse(query), rules).map((e) => e.message)).toEqual(
+      ["the operation nests introspection deeper than 20 levels"],
+    );
+  });
+
+  test("introspection does not hide depth elsewhere in the operation", () => {
+    const deep = (n: number): string =>
+      n === 0 ? "a" : `a { ${deep(n - 1)} }`;
+    const errors = validate(
+      buildSchema("type Q { a: Q } schema { query: Q }"),
+      parse(`{ __schema { queryType { name } } ${deep(13)} }`),
+      rules,
+    ).map((e) => e.message);
+    expect(errors).toContain(
+      "the operation nests fields deeper than 12 levels",
+    );
   });
 });

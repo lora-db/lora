@@ -450,6 +450,7 @@ export class LoraGraphQL {
       this.#guards === false
         ? {
             maxDepth: Infinity,
+            maxIntrospectionDepth: Infinity,
             maxAliases: Infinity,
             maxRootFields: Infinity,
             maxTokens: Infinity,

@@ -67,6 +67,7 @@ the document before that:
 | Guard | Default | Limit |
 | --- | --- | --- |
 | `maxDepth` | 12 | Field nesting, through fragments |
+| `maxIntrospectionDepth` | 20 | Nesting under `__schema` / `__type` |
 | `maxAliases` | 30 | Aliased fields per document |
 | `maxRootFields` | 20 | Root fields per operation |
 | `maxTokens` | 5000 | Lexer tokens per document, checked while parsing |

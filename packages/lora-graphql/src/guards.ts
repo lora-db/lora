@@ -15,8 +15,19 @@ import {
 } from "graphql";
 
 export interface DocumentGuards {
-  /** Deepest field nesting, fragments followed. Default 12. */
+  /**
+   * Deepest field nesting, fragments followed. Default 12. An
+   * introspection field (`__schema`, `__type`) counts as one level here:
+   * its subtree follows the type-reference chain, not the graph, and is
+   * bounded by `maxIntrospectionDepth`.
+   */
   maxDepth?: number;
+  /**
+   * Deepest nesting under `__schema` or `__type`, the field included.
+   * Default 20: the standard introspection query (every option on) needs
+   * 15, and a runaway `ofType { ofType … }` chain is still refused.
+   */
+  maxIntrospectionDepth?: number;
   /** Aliased fields in one document. Default 30. */
   maxAliases?: number;
   /** Root fields in one operation. Default 20. */
@@ -32,6 +43,7 @@ export interface DocumentGuards {
 
 export const DEFAULT_GUARDS = {
   maxDepth: 12,
+  maxIntrospectionDepth: 20,
   maxAliases: 30,
   maxRootFields: 20,
   maxTokens: 5000,
@@ -42,6 +54,8 @@ export function resolveGuards(
 ): Required<DocumentGuards> {
   return {
     maxDepth: guards.maxDepth ?? DEFAULT_GUARDS.maxDepth,
+    maxIntrospectionDepth:
+      guards.maxIntrospectionDepth ?? DEFAULT_GUARDS.maxIntrospectionDepth,
     maxAliases: guards.maxAliases ?? DEFAULT_GUARDS.maxAliases,
     maxRootFields: guards.maxRootFields ?? DEFAULT_GUARDS.maxRootFields,
     maxTokens: guards.maxTokens ?? DEFAULT_GUARDS.maxTokens,
@@ -53,7 +67,7 @@ export function resolveGuards(
 export function validationRules(guards: DocumentGuards = {}): ValidationRule[] {
   const g = resolveGuards(guards);
   const rules: ValidationRule[] = [
-    depthRule(g.maxDepth),
+    depthRule(g.maxDepth, g.maxIntrospectionDepth),
     aliasRule(g.maxAliases),
     rootFieldRule(g.maxRootFields),
   ];
@@ -125,7 +139,10 @@ function depthOf(
   for (const sel of set.selections) {
     let d = 0;
     if (sel.kind === Kind.FIELD) {
-      d = sel.selectionSet ? 1 + depthOf(sel.selectionSet, fragments, memo) : 1;
+      d =
+        sel.selectionSet && !INTROSPECTION_ROOTS.has(sel.name.value)
+          ? 1 + depthOf(sel.selectionSet, fragments, memo)
+          : 1;
     } else if (sel.kind === Kind.INLINE_FRAGMENT) {
       d = depthOf(sel.selectionSet, fragments, memo);
     } else {
@@ -145,15 +162,62 @@ function depthOf(
   return deepest;
 }
 
-function depthRule(max: number): ValidationRule {
+/** Fields whose subtree is measured by `maxIntrospectionDepth`. */
+const INTROSPECTION_ROOTS = new Set(["__schema", "__type"]);
+
+/**
+ * Deepest introspection field (`__schema`, `__type`) under `set`, counted
+ * from that field. `seen` stops fragment cycles.
+ */
+function introspectionDepthOf(
+  set: SelectionSetNode,
+  fragments: Map<string, FragmentDefinitionNode>,
+  memo: Map<string, number>,
+  seen: Set<string> = new Set(),
+): number {
+  let deepest = 0;
+  for (const sel of set.selections) {
+    let d = 0;
+    if (sel.kind === Kind.FIELD) {
+      if (!sel.selectionSet) continue;
+      d = INTROSPECTION_ROOTS.has(sel.name.value)
+        ? 1 + depthOf(sel.selectionSet, fragments, memo)
+        : introspectionDepthOf(sel.selectionSet, fragments, memo, seen);
+    } else if (sel.kind === Kind.INLINE_FRAGMENT) {
+      d = introspectionDepthOf(sel.selectionSet, fragments, memo, seen);
+    } else {
+      const frag = fragments.get(sel.name.value);
+      if (!frag || seen.has(sel.name.value)) continue;
+      seen.add(sel.name.value);
+      d = introspectionDepthOf(frag.selectionSet, fragments, memo, seen);
+    }
+    deepest = Math.max(deepest, d);
+  }
+  return deepest;
+}
+
+function depthRule(max: number, maxIntrospection: number): ValidationRule {
   return (context) => {
     const fragments = fragmentsOf(context);
     return {
       OperationDefinition(op) {
-        const depth = depthOf(op.selectionSet, fragments, new Map());
+        const memo = new Map<string, number>();
+        const depth = depthOf(op.selectionSet, fragments, memo);
         if (depth > max) {
           context.reportError(
             guardError(`the operation nests fields deeper than ${max} levels`),
+          );
+        }
+        const introspection = introspectionDepthOf(
+          op.selectionSet,
+          fragments,
+          memo,
+        );
+        if (introspection > maxIntrospection) {
+          context.reportError(
+            guardError(
+              `the operation nests introspection deeper than ${maxIntrospection} levels`,
+            ),
           );
         }
       },
