@@ -442,6 +442,14 @@ fn eval_exists_subquery<S: GraphStorage>(
                                             if !matched {
                                                 return Ok::<(), ()>(());
                                             }
+                                            if !rel_matches_properties(
+                                                rel_id,
+                                                &step.rel.properties,
+                                                fr,
+                                                ctx,
+                                            ) {
+                                                return Ok(());
+                                            }
                                             let mut r = fr.clone();
                                             if let Some(rv) = step.rel.var {
                                                 r.insert(rv, LoraValue::Relationship(rel_id));
@@ -567,6 +575,14 @@ fn eval_pattern_comprehension<S: GraphStorage>(
                                                 .unwrap_or(false);
                                             if !matched {
                                                 return Ok::<(), ()>(());
+                                            }
+                                            if !rel_matches_properties(
+                                                rel_id,
+                                                &step.rel.properties,
+                                                fr,
+                                                ctx,
+                                            ) {
+                                                return Ok(());
                                             }
                                             let mut r = fr.clone();
                                             if let Some(rv) = step.rel.var {
@@ -724,6 +740,24 @@ fn node_matches_properties<S: GraphStorage>(
     } else {
         true
     }
+}
+
+/// Whether relationship `rel_id` has the properties a pattern's
+/// `[:T {k: v}]` map (evaluated against `row`) asks for.
+fn rel_matches_properties<S: GraphStorage>(
+    rel_id: lora_store::RelationshipId,
+    expected: &Option<ResolvedExpr>,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> bool {
+    if expected.is_none() {
+        return true;
+    }
+    ctx.storage
+        .with_relationship(rel_id, |rel| {
+            node_matches_properties(&rel.properties, expected, row, ctx)
+        })
+        .unwrap_or(false)
 }
 
 pub fn eval_expr_result<S: GraphStorage>(
